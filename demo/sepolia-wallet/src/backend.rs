@@ -1,13 +1,13 @@
 //! Secret-bearing backend for the standalone Sepolia development wallet.
 //!
 //! This module is deliberately independent from the production vault and
-//! authorization formats. It supports one generated key, one fixed testnet,
-//! and native EIP-1559 transfers only. There is no key import/export API.
+//! authorization formats. It supports one fixed testnet, a v2 mnemonic/raw-key
+//! vault with a guarded legacy-v1 migration path, and native EIP-1559 transfers.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -35,7 +35,18 @@ use windows::core::PCWSTR;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::rpc;
-use crate::ui::{FeeSelection, SendReceipt, TransferPreview, WalletBackend, WalletSnapshot};
+use crate::ui::{
+    FeeSelection, NewMnemonicWords, SecretReveal, SecretRevealKind, SendReceipt, SensitiveText,
+    TransferPreview, WalletBackend, WalletKind, WalletSnapshot,
+};
+use crate::vault_v2::{
+    OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
+    seal_vault_v2,
+};
+use crate::wallet_secret::{
+    MnemonicWordCount, SecretError, SecretExport, SecretExportKind, SecretInput, WalletSecret,
+    WalletSource,
+};
 
 const NATIVE_TRANSFER_GAS: u64 = 21_000;
 const MAX_TRANSFER_WEI: u64 = 10_000_000_000_000_000_000;
@@ -44,6 +55,8 @@ const MAX_FEE_PER_GAS: u64 = 100_000_000_000;
 const FEE_QUOTE_TTL: Duration = Duration::from_secs(60);
 const MIN_CONFIRMABLE_QUOTE_SECONDS: u64 = 3;
 const MAX_GWEI_INPUT_BYTES: usize = 32;
+const GENERATED_BACKUP_TTL: Duration = Duration::from_secs(30);
+const MAX_V2_VAULT_BYTES: usize = 4_096;
 
 const VAULT_MAGIC: &[u8; 8] = b"YWSPV001";
 const VAULT_VERSION: u16 = 1;
@@ -76,10 +89,13 @@ const MAX_PENDING_RAW_BYTES: usize = 512;
 /// It intentionally has no `Debug` implementation because it owns the unlocked
 /// private key and a local vault path.
 pub struct DemoBackend {
+    /// Legacy v1 path retained solely for authenticated migration/open.
     vault_path: PathBuf,
+    vault_v2_path: PathBuf,
     pending_path: PathBuf,
     rpc: Box<dyn RpcAccess>,
     unlocked: Option<UnlockedWallet>,
+    pending_generation: Option<PendingGeneratedWallet>,
     last_balance: Option<Word>,
     prepared: Option<PreparedTransfer>,
     clock: Box<dyn MonotonicClock>,
@@ -87,9 +103,35 @@ pub struct DemoBackend {
     sign_attempts: usize,
 }
 
-struct UnlockedWallet {
-    private_key: Zeroizing<[u8; KEY_BYTES]>,
-    address: [u8; 20],
+enum UnlockedWallet {
+    LegacyV1 {
+        private_key: Zeroizing<[u8; KEY_BYTES]>,
+        address: [u8; 20],
+    },
+    V2(OpenedVaultV2),
+}
+
+struct PendingGeneratedWallet {
+    wallet: WalletSecret,
+    password: VaultPassword,
+    expires_at: Instant,
+}
+
+impl UnlockedWallet {
+    fn validated_metadata(&self) -> Result<([u8; 20], WalletKind, u8), BackendError> {
+        match self {
+            Self::LegacyV1 { address, .. } => Ok((*address, WalletKind::LegacyV1RawPrivateKey, 1)),
+            Self::V2(opened) => validated_wallet_metadata(opened.wallet()),
+        }
+    }
+
+    #[cfg(test)]
+    fn legacy_private_key_for_test(&self) -> &[u8; KEY_BYTES] {
+        match self {
+            Self::LegacyV1 { private_key, .. } => private_key,
+            Self::V2(_) => panic!("test expected a legacy v1 wallet"),
+        }
+    }
 }
 
 /// Exact, signer-ready Sepolia fields fixed at preview time.
@@ -164,17 +206,20 @@ impl DemoBackend {
     pub fn new() -> Result<Self, String> {
         let local_data = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| error_text(BackendError::StorageUnavailable))?;
-        let vault_path = PathBuf::from(local_data)
+        let vault_directory = PathBuf::from(local_data)
             .join("YourWallet")
-            .join("SepoliaDemo")
-            .join("vault-v1.bin");
+            .join("SepoliaDemo");
+        let vault_path = vault_directory.join("vault-v1.bin");
+        let vault_v2_path = vault_directory.join("vault-v2.bin");
         let pending_path = sibling_pending_path(&vault_path)?;
         let rpc = rpc::SepoliaRpc::new();
         Ok(Self {
             vault_path,
+            vault_v2_path,
             pending_path,
             rpc: Box::new(LiveRpc(rpc)),
             unlocked: None,
+            pending_generation: None,
             last_balance: None,
             prepared: None,
             clock: Box::new(SystemClock),
@@ -186,11 +231,14 @@ impl DemoBackend {
     #[cfg(test)]
     fn with_rpc(vault_path: PathBuf, rpc: impl RpcAccess + 'static) -> Self {
         let pending_path = vault_path.with_file_name("pending-v1.bin");
+        let vault_v2_path = vault_path.with_file_name("vault-v2.bin");
         Self {
             vault_path,
+            vault_v2_path,
             pending_path,
             rpc: Box::new(rpc),
             unlocked: None,
+            pending_generation: None,
             last_balance: None,
             prepared: None,
             clock: Box::new(SystemClock),
@@ -212,20 +260,21 @@ impl DemoBackend {
     /// Returns whether the separate disposable testnet vault exists.
     #[must_use]
     pub fn wallet_exists(&self) -> bool {
-        self.vault_path.is_file()
+        path_may_exist(&self.vault_v2_path) || path_may_exist(&self.vault_path)
     }
 
     /// Reports a prior signed transaction whose broadcast result was not
     /// durably resolved. A new transaction is never signed while this is true.
     #[must_use]
     pub fn pending_broadcast_exists(&self) -> bool {
-        self.pending_path.is_file()
+        path_may_exist(&self.pending_path)
     }
 
     /// Immediately forgets the unlocked key and cached balance.
     #[cfg(test)]
     pub fn lock(&mut self) {
         self.prepared = None;
+        self.pending_generation = None;
         self.unlocked = None;
         self.last_balance = None;
     }
@@ -236,7 +285,8 @@ impl DemoBackend {
     pub fn address(&self) -> Option<String> {
         self.unlocked
             .as_ref()
-            .map(|wallet| checksum_address(wallet.address))
+            .and_then(|wallet| wallet.validated_metadata().ok())
+            .map(|(address, _, _)| checksum_address(address))
     }
 
     /// Retries exactly the previously persisted signed transaction bytes.
@@ -250,15 +300,19 @@ impl DemoBackend {
 
     fn snapshot(&self) -> Result<WalletSnapshot, BackendError> {
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let (address, wallet_kind, account_count) = wallet.validated_metadata()?;
         let balance_eth = self
             .last_balance
             .map_or_else(|| "조회 전".to_owned(), format_ether);
         Ok(WalletSnapshot {
-            address: checksum_address(wallet.address),
+            address: checksum_address(address),
             balance_eth,
+            wallet_kind,
+            account_count,
         })
     }
 
+    #[cfg(test)]
     fn create(&mut self, password: &str) -> Result<WalletSnapshot, BackendError> {
         self.prepared = None;
         validate_password(password)?;
@@ -271,7 +325,7 @@ impl DemoBackend {
         let vault = seal_vault(&private_key, password)?;
         write_new_vault(&self.vault_path, vault.as_slice())?;
 
-        self.unlocked = Some(UnlockedWallet {
+        self.unlocked = Some(UnlockedWallet::LegacyV1 {
             private_key,
             address,
         });
@@ -281,21 +335,316 @@ impl DemoBackend {
 
     fn open(&mut self, password: &str) -> Result<WalletSnapshot, BackendError> {
         self.prepared = None;
-        validate_password(password)?;
-        let bytes = read_vault(&self.vault_path)?;
-        let private_key = open_vault(bytes.as_slice(), password)?;
-        let address = address_from_private_key(&private_key)?;
-        self.unlocked = Some(UnlockedWallet {
-            private_key,
-            address,
+        self.pending_generation = None;
+        self.unlocked = None;
+        self.last_balance = None;
+        match fs::symlink_metadata(&self.vault_v2_path) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_file() {
+                    return Err(BackendError::VaultInvalid);
+                }
+                let password = VaultPassword::new(password.to_owned()).map_err(map_vault_error)?;
+                let bytes = read_v2_vault(&self.vault_v2_path)?;
+                let opened = open_vault_v2(bytes.as_slice(), &password).map_err(map_vault_error)?;
+                validated_wallet_metadata(opened.wallet())?;
+                self.unlocked = Some(UnlockedWallet::V2(opened));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                validate_password(password)?;
+                let bytes = read_vault(&self.vault_path)?;
+                let private_key = open_vault(bytes.as_slice(), password)?;
+                let address = address_from_private_key(&private_key)?;
+                self.unlocked = Some(UnlockedWallet::LegacyV1 {
+                    private_key,
+                    address,
+                });
+            }
+            Err(_) => return Err(BackendError::StorageUnavailable),
+        }
+        self.snapshot()
+    }
+
+    fn begin_generate(
+        &mut self,
+        words: NewMnemonicWords,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<SecretReveal, BackendError> {
+        self.prepared = None;
+        self.ensure_management_mutation_allowed()?;
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        let password = matching_vault_password(password, password_confirmation)?;
+        let word_count = match words {
+            NewMnemonicWords::Twelve => MnemonicWordCount::Twelve,
+            NewMnemonicWords::TwentyFour => MnemonicWordCount::TwentyFour,
+        };
+        let wallet = WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;
+        let (_, kind, _) = validated_wallet_metadata(&wallet)?;
+        if !matches!(
+            kind,
+            WalletKind::V2Mnemonic {
+                word_count: 12 | 24
+            }
+        ) {
+            return Err(BackendError::WalletMetadataInvalid);
+        }
+        let export = wallet.export_mnemonic().map_err(map_secret_error)?;
+        let expires_at = self
+            .clock
+            .now()
+            .checked_add(GENERATED_BACKUP_TTL)
+            .ok_or(BackendError::GenerationExpired)?;
+        self.pending_generation = Some(PendingGeneratedWallet {
+            wallet,
+            password,
+            expires_at,
         });
+        secret_reveal(export)
+    }
+
+    fn confirm_generated(&mut self) -> Result<WalletSnapshot, BackendError> {
+        self.prepared = None;
+        let pending = self
+            .pending_generation
+            .take()
+            .ok_or(BackendError::NoPendingGeneration)?;
+        if self.clock.now() >= pending.expires_at {
+            return Err(BackendError::GenerationExpired);
+        }
+        self.ensure_management_mutation_allowed()?;
+        self.persist_new_v2(
+            pending.wallet,
+            pending.password,
+            VaultOrigin::GeneratedMnemonic,
+        )
+    }
+
+    fn cancel_generated(&mut self) {
+        self.pending_generation = None;
+    }
+
+    fn import_mnemonic(
+        &mut self,
+        mnemonic: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, BackendError> {
+        self.prepared = None;
+        self.ensure_management_mutation_allowed()?;
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        let password = matching_vault_password(password, password_confirmation)?;
+        let wallet = WalletSecret::import_mnemonic(SecretInput::new(take_sensitive(mnemonic)))
+            .map_err(map_secret_error)?;
+        self.persist_new_v2(wallet, password, VaultOrigin::ImportedMnemonic)
+    }
+
+    fn import_private_key(
+        &mut self,
+        private_key: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, BackendError> {
+        self.prepared = None;
+        self.ensure_management_mutation_allowed()?;
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        let password = matching_vault_password(password, password_confirmation)?;
+        let wallet =
+            WalletSecret::import_raw_private_key(SecretInput::new(take_sensitive(private_key)))
+                .map_err(map_secret_error)?;
+        self.persist_new_v2(wallet, password, VaultOrigin::ImportedRawPrivateKey)
+    }
+
+    fn migrate_legacy(
+        &mut self,
+        old_password: SensitiveText,
+        new_password: SensitiveText,
+        new_password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, BackendError> {
+        self.prepared = None;
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        if path_may_exist(&self.vault_v2_path) {
+            return Err(BackendError::AlreadyExists);
+        }
+        if !path_may_exist(&self.vault_path) {
+            return Err(BackendError::LegacyNotFound);
+        }
+
+        let old_password = take_sensitive_zeroizing(old_password);
+        validate_password(old_password.as_str())?;
+        let legacy_bytes = read_vault(&self.vault_path)?;
+        let private_key = open_vault(legacy_bytes.as_slice(), old_password.as_str())?;
+        let legacy_address = address_from_private_key(&private_key)?;
+        let wallet =
+            WalletSecret::from_raw_private_key_bytes(private_key).map_err(map_secret_error)?;
+        let (migrated_address, kind, account_count) = validated_wallet_metadata(&wallet)?;
+        if migrated_address != legacy_address
+            || kind != WalletKind::V2RawPrivateKey
+            || account_count != 1
+        {
+            return Err(BackendError::WalletMetadataInvalid);
+        }
+        let new_password = matching_vault_password(new_password, new_password_confirmation)?;
+        let metadata = confirmed_metadata(VaultOrigin::MigratedV1RawPrivateKey)?;
+        let sealed = seal_vault_v2(&wallet, &new_password, metadata).map_err(map_vault_error)?;
+        let opened = open_vault_v2(sealed.as_bytes(), &new_password).map_err(map_vault_error)?;
+        let (opened_address, _, _) = validated_wallet_metadata(opened.wallet())?;
+        if opened_address != legacy_address {
+            return Err(BackendError::WalletMetadataInvalid);
+        }
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if path_may_exist(&self.vault_v2_path) {
+            return Err(BackendError::AlreadyExists);
+        }
+        write_new_file(&self.vault_v2_path, sealed.as_bytes())?;
+        if remove_legacy_vault(&self.vault_path).is_err() {
+            self.unlocked = None;
+            self.last_balance = None;
+            return Err(BackendError::MigrationCleanup);
+        }
+        self.unlocked = Some(UnlockedWallet::V2(opened));
         self.last_balance = None;
         self.snapshot()
     }
 
+    fn export_mnemonic_inner(
+        &mut self,
+        password: SensitiveText,
+    ) -> Result<SecretReveal, BackendError> {
+        self.prepared = None;
+        self.ensure_secret_export_allowed()?;
+        let opened = self.reopen_authenticated_v2(password)?;
+        if opened.wallet().source() != WalletSource::Mnemonic {
+            return Err(BackendError::MnemonicUnavailable);
+        }
+        self.ensure_secret_export_allowed()?;
+        secret_reveal(
+            opened
+                .wallet()
+                .export_mnemonic()
+                .map_err(map_secret_error)?,
+        )
+    }
+
+    fn export_account_private_key_inner(
+        &mut self,
+        password: SensitiveText,
+    ) -> Result<SecretReveal, BackendError> {
+        self.prepared = None;
+        self.ensure_secret_export_allowed()?;
+        let export = match self.unlocked.as_ref().ok_or(BackendError::Locked)? {
+            UnlockedWallet::V2(_) => {
+                let opened = self.reopen_authenticated_v2(password)?;
+                opened
+                    .wallet()
+                    .export_account_private_key(0)
+                    .map_err(map_secret_error)?
+            }
+            UnlockedWallet::LegacyV1 {
+                private_key,
+                address,
+            } => {
+                let password = take_sensitive_zeroizing(password);
+                validate_password(password.as_str())?;
+                let bytes = read_vault(&self.vault_path)?;
+                let reopened_key = open_vault(bytes.as_slice(), password.as_str())?;
+                if address_from_private_key(&reopened_key)? != *address
+                    || reopened_key.as_ref() != private_key.as_ref()
+                {
+                    return Err(BackendError::WalletChanged);
+                }
+                let wallet = WalletSecret::from_raw_private_key_bytes(reopened_key)
+                    .map_err(map_secret_error)?;
+                validated_wallet_metadata(&wallet)?;
+                wallet
+                    .export_account_private_key(0)
+                    .map_err(map_secret_error)?
+            }
+        };
+        self.ensure_secret_export_allowed()?;
+        secret_reveal(export)
+    }
+
+    fn persist_new_v2(
+        &mut self,
+        wallet: WalletSecret,
+        password: VaultPassword,
+        origin: VaultOrigin,
+    ) -> Result<WalletSnapshot, BackendError> {
+        self.ensure_management_mutation_allowed()?;
+        validated_wallet_metadata(&wallet)?;
+        let metadata = confirmed_metadata(origin)?;
+        let sealed = seal_vault_v2(&wallet, &password, metadata).map_err(map_vault_error)?;
+        let opened = open_vault_v2(sealed.as_bytes(), &password).map_err(map_vault_error)?;
+        validated_wallet_metadata(opened.wallet())?;
+        self.ensure_management_mutation_allowed()?;
+        write_new_file(&self.vault_v2_path, sealed.as_bytes())?;
+        self.unlocked = Some(UnlockedWallet::V2(opened));
+        self.last_balance = Some(Word::ZERO);
+        self.snapshot()
+    }
+
+    fn ensure_management_mutation_allowed(&self) -> Result<(), BackendError> {
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if self.wallet_exists() {
+            return Err(BackendError::AlreadyExists);
+        }
+        Ok(())
+    }
+
+    fn ensure_secret_export_allowed(&self) -> Result<(), BackendError> {
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        Ok(())
+    }
+
+    fn reopen_authenticated_v2(
+        &self,
+        password: SensitiveText,
+    ) -> Result<OpenedVaultV2, BackendError> {
+        let UnlockedWallet::V2(current) = self.unlocked.as_ref().ok_or(BackendError::Locked)?
+        else {
+            return Err(BackendError::MnemonicUnavailable);
+        };
+        let password = VaultPassword::new(take_sensitive(password)).map_err(map_vault_error)?;
+        let bytes = read_v2_vault(&self.vault_v2_path)?;
+        let reopened = open_vault_v2(bytes.as_slice(), &password).map_err(map_vault_error)?;
+        let current_metadata = validated_wallet_metadata(current.wallet())?;
+        let reopened_metadata = validated_wallet_metadata(reopened.wallet())?;
+        if reopened.vault_id() != current.vault_id()
+            || reopened.metadata() != current.metadata()
+            || reopened_metadata != current_metadata
+        {
+            return Err(BackendError::WalletChanged);
+        }
+        Ok(reopened)
+    }
+
     fn refresh_snapshot(&mut self) -> Result<WalletSnapshot, BackendError> {
         self.prepared = None;
-        let address = self.unlocked.as_ref().ok_or(BackendError::Locked)?.address;
+        let (address, _, _) = self
+            .unlocked
+            .as_ref()
+            .ok_or(BackendError::Locked)?
+            .validated_metadata()?;
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
@@ -320,7 +669,7 @@ impl DemoBackend {
         if self.pending_broadcast_exists() {
             return Err(BackendError::PendingExists);
         }
-        let sender = wallet.address;
+        let (sender, _, _) = wallet.validated_metadata()?;
         let recipient = parse_address(recipient)?;
         let value = parse_ether(amount_eth)?;
         if value.is_zero() {
@@ -432,9 +781,10 @@ impl DemoBackend {
             .take()
             .ok_or(BackendError::NoPreparedTransfer)?;
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let (wallet_address, _, _) = wallet.validated_metadata()?;
         let expected_estimated_gas_price =
             prepared.quoted_base_fee.checked_add(prepared.priority_fee);
-        if wallet.address != prepared.sender
+        if wallet_address != prepared.sender
             || prepared.recipient == [0; 20]
             || prepared.value.is_zero()
             || prepared.value > Word::from_u64(MAX_TRANSFER_WEI)
@@ -507,16 +857,34 @@ impl DemoBackend {
         {
             self.sign_attempts += 1;
         }
-        let signed = sign_native_type_two(
-            &wallet.private_key,
-            prepared.sender,
-            prepared.recipient,
-            prepared.value,
-            prepared.nonce,
-            prepared.gas_limit,
-            prepared.priority_fee,
-            prepared.maximum_fee,
-        )?;
+        let signed = match wallet {
+            UnlockedWallet::LegacyV1 { private_key, .. } => sign_native_type_two(
+                private_key,
+                prepared.sender,
+                prepared.recipient,
+                prepared.value,
+                prepared.nonce,
+                prepared.gas_limit,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )?,
+            UnlockedWallet::V2(opened) => {
+                let private_key = opened
+                    .wallet()
+                    .account_private_key(0)
+                    .map_err(map_secret_error)?;
+                sign_native_type_two(
+                    private_key.as_bytes(),
+                    prepared.sender,
+                    prepared.recipient,
+                    prepared.value,
+                    prepared.nonce,
+                    prepared.gas_limit,
+                    prepared.priority_fee,
+                    prepared.maximum_fee,
+                )?
+            }
+        };
         write_new_pending(
             &self.pending_path,
             signed.transaction_hash,
@@ -565,12 +933,69 @@ impl DemoBackend {
 }
 
 impl WalletBackend for DemoBackend {
-    fn create_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String> {
-        self.create(password).map_err(error_text)
+    fn begin_generate_wallet(
+        &mut self,
+        words: NewMnemonicWords,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        self.begin_generate(words, password, password_confirmation)
+            .map_err(error_text)
+    }
+
+    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
+        self.confirm_generated().map_err(error_text)
+    }
+
+    fn cancel_generated_wallet(&mut self) -> Result<(), String> {
+        self.cancel_generated();
+        Ok(())
+    }
+
+    fn import_mnemonic_wallet(
+        &mut self,
+        mnemonic: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.import_mnemonic(mnemonic, password, password_confirmation)
+            .map_err(error_text)
+    }
+
+    fn import_private_key_wallet(
+        &mut self,
+        private_key: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.import_private_key(private_key, password, password_confirmation)
+            .map_err(error_text)
     }
 
     fn open_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String> {
         self.open(password).map_err(error_text)
+    }
+
+    fn migrate_legacy_wallet(
+        &mut self,
+        old_password: SensitiveText,
+        new_password: SensitiveText,
+        new_password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.migrate_legacy(old_password, new_password, new_password_confirmation)
+            .map_err(error_text)
+    }
+
+    fn export_mnemonic(&mut self, password: SensitiveText) -> Result<SecretReveal, String> {
+        self.export_mnemonic_inner(password).map_err(error_text)
+    }
+
+    fn export_account_private_key(
+        &mut self,
+        password: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        self.export_account_private_key_inner(password)
+            .map_err(error_text)
     }
 
     fn refresh(&mut self) -> Result<WalletSnapshot, String> {
@@ -766,9 +1191,20 @@ enum BackendError {
     StorageUnavailable,
     AlreadyExists,
     NotFound,
+    LegacyNotFound,
     InvalidPassword,
+    PasswordMismatch,
     VaultAuthentication,
     VaultInvalid,
+    InvalidMnemonic,
+    InvalidPrivateKey,
+    WalletMetadataInvalid,
+    WalletChanged,
+    GenerationPending,
+    NoPendingGeneration,
+    GenerationExpired,
+    MigrationCleanup,
+    MnemonicUnavailable,
     RandomnessUnavailable,
     CryptographicFailure,
     Locked,
@@ -801,9 +1237,20 @@ impl std::fmt::Debug for BackendError {
             Self::StorageUnavailable => "BackendError::StorageUnavailable",
             Self::AlreadyExists => "BackendError::AlreadyExists",
             Self::NotFound => "BackendError::NotFound",
+            Self::LegacyNotFound => "BackendError::LegacyNotFound",
             Self::InvalidPassword => "BackendError::InvalidPassword",
+            Self::PasswordMismatch => "BackendError::PasswordMismatch",
             Self::VaultAuthentication => "BackendError::VaultAuthentication",
             Self::VaultInvalid => "BackendError::VaultInvalid",
+            Self::InvalidMnemonic => "BackendError::InvalidMnemonic",
+            Self::InvalidPrivateKey => "BackendError::InvalidPrivateKey",
+            Self::WalletMetadataInvalid => "BackendError::WalletMetadataInvalid",
+            Self::WalletChanged => "BackendError::WalletChanged",
+            Self::GenerationPending => "BackendError::GenerationPending",
+            Self::NoPendingGeneration => "BackendError::NoPendingGeneration",
+            Self::GenerationExpired => "BackendError::GenerationExpired",
+            Self::MigrationCleanup => "BackendError::MigrationCleanup",
+            Self::MnemonicUnavailable => "BackendError::MnemonicUnavailable",
             Self::RandomnessUnavailable => "BackendError::RandomnessUnavailable",
             Self::CryptographicFailure => "BackendError::CryptographicFailure",
             Self::Locked => "BackendError::Locked",
@@ -837,11 +1284,42 @@ fn error_text(error: BackendError) -> String {
         BackendError::StorageUnavailable => "지갑 저장소를 준비하지 못했습니다.".to_owned(),
         BackendError::AlreadyExists => "이미 Sepolia 테스트 지갑이 있습니다.".to_owned(),
         BackendError::NotFound => "저장된 Sepolia 테스트 지갑이 없습니다.".to_owned(),
+        BackendError::LegacyNotFound => "마이그레이션할 v1 테스트 지갑이 없습니다.".to_owned(),
         BackendError::InvalidPassword => "비밀번호 형식이 올바르지 않습니다.".to_owned(),
+        BackendError::PasswordMismatch => "새 비밀번호 확인이 일치하지 않습니다.".to_owned(),
         BackendError::VaultAuthentication => {
             "비밀번호가 틀렸거나 지갑 파일이 손상되었습니다.".to_owned()
         }
         BackendError::VaultInvalid => "지갑 파일 형식이 올바르지 않습니다.".to_owned(),
+        BackendError::InvalidMnemonic => {
+            "영어 복구 문구와 체크섬을 확인해 주세요.".to_owned()
+        }
+        BackendError::InvalidPrivateKey => {
+            "개인 키는 0x 접두사 선택과 정확한 64자리 16진수여야 합니다.".to_owned()
+        }
+        BackendError::WalletMetadataInvalid => {
+            "지갑 계정 메타데이터 안전 검증에 실패했습니다.".to_owned()
+        }
+        BackendError::WalletChanged => {
+            "열린 지갑과 현재 저장된 지갑이 일치하지 않습니다.".to_owned()
+        }
+        BackendError::GenerationPending => {
+            "먼저 표시된 복구 문구의 백업을 확인하거나 취소해 주세요.".to_owned()
+        }
+        BackendError::NoPendingGeneration => {
+            "확인할 새 복구 문구가 없습니다. 다시 생성해 주세요.".to_owned()
+        }
+        BackendError::GenerationExpired => {
+            "복구 문구 확인 시간이 끝났습니다. 새 지갑 생성을 다시 시작해 주세요.".to_owned()
+        }
+        BackendError::MigrationCleanup => {
+            "v2 지갑은 저장됐지만 이전 v1 파일을 정리하지 못했습니다. 앱을 다시 열어 주세요."
+                .to_owned()
+        }
+        BackendError::MnemonicUnavailable => {
+            "이 지갑은 복구 문구로 만든 지갑이 아니어서 복구 문구를 내보낼 수 없습니다. v1 지갑은 먼저 v2로 이전해도 원래 개인 키 지갑으로 유지됩니다."
+                .to_owned()
+        }
         BackendError::RandomnessUnavailable | BackendError::CryptographicFailure => {
             "안전한 키 처리를 완료하지 못했습니다.".to_owned()
         }
@@ -897,6 +1375,112 @@ fn error_text(error: BackendError) -> String {
     }
 }
 
+fn take_sensitive_zeroizing(value: SensitiveText) -> Zeroizing<String> {
+    value.into_zeroizing()
+}
+
+fn take_sensitive(value: SensitiveText) -> String {
+    let mut value = value.into_zeroizing();
+    std::mem::take(&mut *value)
+}
+
+fn matching_vault_password(
+    password: SensitiveText,
+    confirmation: SensitiveText,
+) -> Result<VaultPassword, BackendError> {
+    let mut password = take_sensitive_zeroizing(password);
+    let confirmation = take_sensitive_zeroizing(confirmation);
+    if password.as_bytes() != confirmation.as_bytes() {
+        return Err(BackendError::PasswordMismatch);
+    }
+    VaultPassword::new(std::mem::take(&mut *password)).map_err(map_vault_error)
+}
+
+fn confirmed_metadata(origin: VaultOrigin) -> Result<VaultCreationMetadata, BackendError> {
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| BackendError::StorageUnavailable)?
+        .as_secs();
+    VaultCreationMetadata::confirmed(origin, created_at, 1).map_err(map_vault_error)
+}
+
+fn validated_wallet_metadata(
+    wallet: &WalletSecret,
+) -> Result<([u8; 20], WalletKind, u8), BackendError> {
+    let account_zero = wallet
+        .account(0)
+        .ok_or(BackendError::WalletMetadataInvalid)?;
+    if account_zero.requested_index() != 0 || account_zero.actual_index() != 0 {
+        return Err(BackendError::WalletMetadataInvalid);
+    }
+    let address = *account_zero.address().as_bytes();
+    match wallet.source() {
+        WalletSource::Mnemonic => {
+            let word_count = wallet
+                .word_count()
+                .filter(|count| matches!(count, 12 | 15 | 18 | 21 | 24))
+                .ok_or(BackendError::WalletMetadataInvalid)?;
+            let account_one = wallet
+                .account(1)
+                .ok_or(BackendError::WalletMetadataInvalid)?;
+            if wallet.account_count() != 2
+                || wallet.account(2).is_some()
+                || account_one.requested_index() != 1
+                || account_one.actual_index() != 1
+                || account_one.address().as_bytes() == &address
+            {
+                return Err(BackendError::WalletMetadataInvalid);
+            }
+            Ok((
+                address,
+                WalletKind::V2Mnemonic { word_count },
+                wallet.account_count(),
+            ))
+        }
+        WalletSource::RawPrivateKey => {
+            if wallet.word_count().is_some()
+                || wallet.account_count() != 1
+                || wallet.account(1).is_some()
+            {
+                return Err(BackendError::WalletMetadataInvalid);
+            }
+            Ok((address, WalletKind::V2RawPrivateKey, 1))
+        }
+    }
+}
+
+fn secret_reveal(export: SecretExport) -> Result<SecretReveal, BackendError> {
+    let (kind, text) = export.into_zeroizing_text();
+    let kind = match kind {
+        SecretExportKind::Mnemonic => SecretRevealKind::Mnemonic,
+        SecretExportKind::AccountPrivateKey => SecretRevealKind::AccountPrivateKey,
+    };
+    Ok(SecretReveal::new(kind, text))
+}
+
+const fn map_secret_error(error: SecretError) -> BackendError {
+    match error {
+        SecretError::RandomnessUnavailable => BackendError::RandomnessUnavailable,
+        SecretError::InvalidMnemonic => BackendError::InvalidMnemonic,
+        SecretError::InvalidPrivateKey => BackendError::InvalidPrivateKey,
+        SecretError::UnsupportedAccount | SecretError::DerivationFailed => {
+            BackendError::WalletMetadataInvalid
+        }
+        SecretError::ExportUnavailable => BackendError::MnemonicUnavailable,
+        SecretError::CryptographicFailure => BackendError::CryptographicFailure,
+    }
+}
+
+const fn map_vault_error(error: VaultError) -> BackendError {
+    match error {
+        VaultError::InvalidPassword => BackendError::InvalidPassword,
+        VaultError::InvalidMetadata => BackendError::WalletMetadataInvalid,
+        VaultError::RandomnessUnavailable => BackendError::RandomnessUnavailable,
+        VaultError::CryptographicFailure => BackendError::CryptographicFailure,
+        VaultError::AuthenticationFailed => BackendError::VaultAuthentication,
+    }
+}
+
 fn validate_password(password: &str) -> Result<(), BackendError> {
     if !(MINIMUM_PASSWORD_BYTES..=MAXIMUM_PASSWORD_BYTES).contains(&password.len())
         || password.chars().any(char::is_control)
@@ -906,6 +1490,7 @@ fn validate_password(password: &str) -> Result<(), BackendError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn generate_private_key() -> Result<Zeroizing<[u8; KEY_BYTES]>, BackendError> {
     for _ in 0..8 {
         let mut candidate = Zeroizing::new([0_u8; KEY_BYTES]);
@@ -932,6 +1517,7 @@ fn address_from_public_key(public: &PublicKey) -> [u8; 20] {
     address
 }
 
+#[cfg(test)]
 fn seal_vault(
     private_key: &[u8; KEY_BYTES],
     password: &str,
@@ -994,6 +1580,7 @@ struct VaultHeader {
     nonce: [u8; NONCE_BYTES],
 }
 
+#[cfg(test)]
 fn encode_vault_header(
     vault_id: [u8; 16],
     salt: [u8; SALT_BYTES],
@@ -1086,6 +1673,7 @@ fn array_at<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Back
         .map_err(|_| BackendError::VaultInvalid)
 }
 
+#[cfg(test)]
 fn fill_random_nonzero(bytes: &mut [u8]) -> Result<(), BackendError> {
     for _ in 0..4 {
         getrandom::fill(bytes).map_err(|_| BackendError::RandomnessUnavailable)?;
@@ -1094,6 +1682,16 @@ fn fill_random_nonzero(bytes: &mut [u8]) -> Result<(), BackendError> {
         }
     }
     Err(BackendError::RandomnessUnavailable)
+}
+
+fn path_may_exist(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        // A metadata/permission error is not evidence that the security-
+        // relevant name is absent. Callers therefore quarantine or reject.
+        Err(_) => true,
+    }
 }
 
 fn read_vault(path: &Path) -> Result<Zeroizing<Vec<u8>>, BackendError> {
@@ -1121,6 +1719,39 @@ fn read_vault(path: &Path) -> Result<Zeroizing<Vec<u8>>, BackendError> {
     Ok(bytes)
 }
 
+fn read_v2_vault(path: &Path) -> Result<Zeroizing<Vec<u8>>, BackendError> {
+    let file = File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            BackendError::NotFound
+        } else {
+            BackendError::StorageUnavailable
+        }
+    })?;
+    let length = file
+        .metadata()
+        .map_err(|_| BackendError::StorageUnavailable)?
+        .len();
+    if length == 0 || length > MAX_V2_VAULT_BYTES as u64 {
+        return Err(BackendError::VaultInvalid);
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(length as usize));
+    file.take((MAX_V2_VAULT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| BackendError::StorageUnavailable)?;
+    if bytes.len() as u64 != length || bytes.len() > MAX_V2_VAULT_BYTES {
+        return Err(BackendError::VaultInvalid);
+    }
+    Ok(bytes)
+}
+
+fn remove_legacy_vault(path: &Path) -> Result<(), BackendError> {
+    let parent = path.parent().ok_or(BackendError::StorageUnavailable)?;
+    let parent_directory = DurableParentDirectory::open(parent)?;
+    fs::remove_file(path).map_err(|_| BackendError::StorageUnavailable)?;
+    parent_directory.flush()
+}
+
+#[cfg(test)]
 fn write_new_vault(path: &Path, bytes: &[u8]) -> Result<(), BackendError> {
     if bytes.len() != VAULT_FILE_BYTES {
         return Err(BackendError::VaultInvalid);
@@ -2025,7 +2656,7 @@ mod tests {
         let private_key = Zeroizing::new([7_u8; KEY_BYTES]);
         let address = address_from_private_key(&private_key).expect("derive test address");
         let mut backend = DemoBackend::with_rpc_and_clock(vault, rpc, clock);
-        backend.unlocked = Some(UnlockedWallet {
+        backend.unlocked = Some(UnlockedWallet::LegacyV1 {
             private_key,
             address,
         });
@@ -2036,6 +2667,7 @@ mod tests {
     fn remove_test_backend_files(backend: &DemoBackend) {
         let _ = fs::remove_file(&backend.pending_path);
         let _ = fs::remove_file(&backend.vault_path);
+        let _ = fs::remove_file(&backend.vault_v2_path);
         if let Some(parent) = backend.vault_path.parent() {
             let _ = fs::remove_dir(parent);
         }
@@ -2064,6 +2696,300 @@ mod tests {
                 hex_without_prefix(&random)
             ))
             .join("vault-v1.bin")
+    }
+
+    fn sensitive(value: &str) -> SensitiveText {
+        SensitiveText::new(value.to_owned())
+    }
+
+    fn v2_backend(clock: TestClock) -> DemoBackend {
+        DemoBackend::with_rpc_and_clock(temporary_vault(), test_rpc(), clock)
+    }
+
+    fn write_legacy_fixture(backend: &DemoBackend, password: &str, key_byte: u8) -> [u8; 20] {
+        let private_key = Zeroizing::new([key_byte; KEY_BYTES]);
+        let address = address_from_private_key(&private_key).expect("legacy fixture address");
+        let sealed = seal_vault(&private_key, password).expect("seal legacy fixture");
+        write_new_vault(&backend.vault_path, sealed.as_slice()).expect("write legacy fixture");
+        address
+    }
+
+    #[test]
+    fn generated_mnemonic_is_not_persisted_until_confirmation_and_opens_as_v2() {
+        for words in [NewMnemonicWords::Twelve, NewMnemonicWords::TwentyFour] {
+            let clock = TestClock::new(Instant::now());
+            let mut backend = v2_backend(clock);
+            let reveal = backend
+                .begin_generate(words, sensitive(TEST_PASSWORD), sensitive(TEST_PASSWORD))
+                .expect("begin generated mnemonic");
+            assert!(!backend.vault_path.exists());
+            assert!(!backend.vault_v2_path.exists());
+            assert!(backend.pending_generation.is_some());
+            drop(reveal);
+
+            let snapshot = backend
+                .confirm_generated()
+                .expect("confirm generated mnemonic");
+            let expected_words = match words {
+                NewMnemonicWords::Twelve => 12,
+                NewMnemonicWords::TwentyFour => 24,
+            };
+            assert!(
+                snapshot.wallet_kind
+                    == WalletKind::V2Mnemonic {
+                        word_count: expected_words,
+                    }
+            );
+            assert_eq!(snapshot.account_count, 2);
+            assert!(backend.vault_v2_path.is_file());
+            assert!(!backend.vault_path.exists());
+            assert!(backend.pending_generation.is_none());
+            assert!(matches!(backend.unlocked, Some(UnlockedWallet::V2(_))));
+
+            let expected_address = snapshot.address;
+            backend.lock();
+            let reopened = backend.open(TEST_PASSWORD).expect("reopen generated v2");
+            assert_eq!(reopened.address, expected_address);
+            assert_eq!(reopened.account_count, 2);
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn generated_mnemonic_cancel_and_backend_expiry_write_nothing() {
+        let clock = TestClock::new(Instant::now());
+        let mut cancelled = v2_backend(clock);
+        let reveal = cancelled
+            .begin_generate(
+                NewMnemonicWords::Twelve,
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("begin cancellable generation");
+        drop(reveal);
+        cancelled.cancel_generated();
+        assert!(matches!(
+            cancelled.confirm_generated(),
+            Err(BackendError::NoPendingGeneration)
+        ));
+        assert!(!cancelled.vault_v2_path.exists());
+        remove_test_backend_files(&cancelled);
+
+        let clock = TestClock::new(Instant::now());
+        let mut expired = v2_backend(clock.clone());
+        drop(
+            expired
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin expiring generation"),
+        );
+        clock.advance(GENERATED_BACKUP_TTL);
+        assert!(matches!(
+            expired.confirm_generated(),
+            Err(BackendError::GenerationExpired)
+        ));
+        assert!(expired.pending_generation.is_none());
+        assert!(!expired.vault_v2_path.exists());
+        remove_test_backend_files(&expired);
+    }
+
+    #[test]
+    fn mnemonic_and_raw_import_validate_metadata_and_never_overwrite() {
+        let generated = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)
+            .expect("generate import fixture");
+        let (_, mut phrase) = generated
+            .export_mnemonic()
+            .expect("export import fixture")
+            .into_zeroizing_text();
+        let imported_phrase = SensitiveText::new(std::mem::take(&mut *phrase));
+        let mut mnemonic_backend = v2_backend(TestClock::new(Instant::now()));
+        let snapshot = mnemonic_backend
+            .import_mnemonic(
+                imported_phrase,
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import mnemonic");
+        assert_eq!(snapshot.account_count, 2);
+        assert!(matches!(
+            snapshot.wallet_kind,
+            WalletKind::V2Mnemonic { word_count: 12 }
+        ));
+        assert!(matches!(
+            mnemonic_backend.import_private_key(
+                SensitiveText::new("11".repeat(KEY_BYTES)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            ),
+            Err(BackendError::AlreadyExists)
+        ));
+        remove_test_backend_files(&mnemonic_backend);
+
+        let mut raw_backend = v2_backend(TestClock::new(Instant::now()));
+        let snapshot = raw_backend
+            .import_private_key(
+                SensitiveText::new("22".repeat(KEY_BYTES)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import raw key");
+        assert!(snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
+        assert_eq!(snapshot.account_count, 1);
+        assert!(matches!(
+            raw_backend.export_mnemonic_inner(sensitive(TEST_PASSWORD)),
+            Err(BackendError::MnemonicUnavailable)
+        ));
+        assert!(
+            raw_backend
+                .export_account_private_key_inner(sensitive(TEST_PASSWORD))
+                .is_ok()
+        );
+        remove_test_backend_files(&raw_backend);
+    }
+
+    #[test]
+    fn v2_open_never_falls_back_to_legacy_and_export_requires_reauthentication() {
+        let mut backend = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            backend
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin v2 fixture"),
+        );
+        let snapshot = backend.confirm_generated().expect("persist v2 fixture");
+        let legacy_password = "legacy demo password";
+        write_legacy_fixture(&backend, legacy_password, 3);
+        backend.lock();
+        assert!(matches!(
+            backend.open(legacy_password),
+            Err(BackendError::VaultAuthentication)
+        ));
+        let reopened = backend.open(TEST_PASSWORD).expect("open preferred v2");
+        assert_eq!(reopened.address, snapshot.address);
+        assert!(matches!(
+            backend.export_mnemonic_inner(sensitive(legacy_password)),
+            Err(BackendError::VaultAuthentication)
+        ));
+        assert!(
+            backend
+                .export_mnemonic_inner(sensitive(TEST_PASSWORD))
+                .is_ok()
+        );
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn legacy_migration_reauthenticates_preserves_address_and_removes_v1() {
+        let mut backend = v2_backend(TestClock::new(Instant::now()));
+        let legacy_address = write_legacy_fixture(&backend, TEST_PASSWORD, 4);
+        let expected = checksum_address(legacy_address);
+        assert!(matches!(
+            backend.migrate_legacy(
+                sensitive("wrong legacy password"),
+                sensitive("new migration password"),
+                sensitive("new migration password"),
+            ),
+            Err(BackendError::VaultAuthentication)
+        ));
+        assert!(!backend.vault_v2_path.exists());
+        assert!(backend.vault_path.is_file());
+
+        let snapshot = backend
+            .migrate_legacy(
+                sensitive(TEST_PASSWORD),
+                sensitive("new migration password"),
+                sensitive("new migration password"),
+            )
+            .expect("migrate legacy v1");
+        assert_eq!(snapshot.address, expected);
+        assert!(snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
+        assert_eq!(snapshot.account_count, 1);
+        assert!(backend.vault_v2_path.is_file());
+        assert!(!backend.vault_path.exists());
+        backend.lock();
+        assert_eq!(
+            backend
+                .open("new migration password")
+                .expect("open migrated v2")
+                .address,
+            expected
+        );
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn pending_broadcast_blocks_every_wallet_management_mutation() {
+        let mut backend = v2_backend(TestClock::new(Instant::now()));
+        write_new_file(&backend.pending_path, b"pending quarantine sentinel")
+            .expect("write pending sentinel");
+        assert!(matches!(
+            backend.begin_generate(
+                NewMnemonicWords::Twelve,
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            ),
+            Err(BackendError::PendingExists)
+        ));
+        assert!(matches!(
+            backend.import_private_key(
+                SensitiveText::new("33".repeat(KEY_BYTES)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            ),
+            Err(BackendError::PendingExists)
+        ));
+        assert!(!backend.vault_v2_path.exists());
+        remove_test_backend_files(&backend);
+
+        let mut migration = v2_backend(TestClock::new(Instant::now()));
+        write_legacy_fixture(&migration, TEST_PASSWORD, 5);
+        write_new_file(&migration.pending_path, b"pending quarantine sentinel")
+            .expect("write migration pending sentinel");
+        assert!(matches!(
+            migration.migrate_legacy(
+                sensitive(TEST_PASSWORD),
+                sensitive("new migration password"),
+                sensitive("new migration password"),
+            ),
+            Err(BackendError::PendingExists)
+        ));
+        assert!(migration.vault_path.is_file());
+        assert!(!migration.vault_v2_path.exists());
+        remove_test_backend_files(&migration);
+    }
+
+    #[test]
+    fn non_regular_pending_and_v2_entries_fail_closed() {
+        let mut pending = v2_backend(TestClock::new(Instant::now()));
+        fs::create_dir_all(&pending.pending_path).expect("create non-regular pending entry");
+        assert!(pending.pending_broadcast_exists());
+        assert!(matches!(
+            pending.begin_generate(
+                NewMnemonicWords::Twelve,
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            ),
+            Err(BackendError::PendingExists)
+        ));
+        fs::remove_dir(&pending.pending_path).expect("remove pending directory fixture");
+        remove_test_backend_files(&pending);
+
+        let mut selector = v2_backend(TestClock::new(Instant::now()));
+        write_legacy_fixture(&selector, TEST_PASSWORD, 6);
+        fs::create_dir(&selector.vault_v2_path).expect("create non-regular v2 entry");
+        assert!(matches!(
+            selector.open(TEST_PASSWORD),
+            Err(BackendError::VaultInvalid)
+        ));
+        assert!(selector.unlocked.is_none());
+        fs::remove_dir(&selector.vault_v2_path).expect("remove v2 directory fixture");
+        remove_test_backend_files(&selector);
     }
 
     #[test]
@@ -2220,11 +3146,11 @@ mod tests {
 
         let prepared = backend.prepared.as_ref().expect("prepared object");
         let expected = sign_native_type_two(
-            &backend
+            backend
                 .unlocked
                 .as_ref()
                 .expect("unlocked wallet")
-                .private_key,
+                .legacy_private_key_for_test(),
             prepared.sender,
             prepared.recipient,
             prepared.value,
@@ -2420,9 +3346,20 @@ mod tests {
             BackendError::StorageUnavailable,
             BackendError::AlreadyExists,
             BackendError::NotFound,
+            BackendError::LegacyNotFound,
             BackendError::InvalidPassword,
+            BackendError::PasswordMismatch,
             BackendError::VaultAuthentication,
             BackendError::VaultInvalid,
+            BackendError::InvalidMnemonic,
+            BackendError::InvalidPrivateKey,
+            BackendError::WalletMetadataInvalid,
+            BackendError::WalletChanged,
+            BackendError::GenerationPending,
+            BackendError::NoPendingGeneration,
+            BackendError::GenerationExpired,
+            BackendError::MigrationCleanup,
+            BackendError::MnemonicUnavailable,
             BackendError::RandomnessUnavailable,
             BackendError::CryptographicFailure,
             BackendError::Locked,
@@ -2646,11 +3583,11 @@ mod tests {
         let (mut backend, rpc, _) = prepared_mutable_backend();
         let prepared = backend.prepared.as_ref().expect("prepared transfer");
         let expected = sign_native_type_two(
-            &backend
+            backend
                 .unlocked
                 .as_ref()
                 .expect("unlocked wallet")
-                .private_key,
+                .legacy_private_key_for_test(),
             prepared.sender,
             prepared.recipient,
             prepared.value,

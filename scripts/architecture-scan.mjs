@@ -131,6 +131,7 @@ const rootManifest = await text("Cargo.toml");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
+const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
 requireInvariant(
   !rootManifest.includes("demo/sepolia-wallet"),
   "Sepolia demo must remain outside the production workspace",
@@ -159,6 +160,33 @@ requireInvariant(
     sepoliaDemoBackend.includes("retry_pending_inner") &&
     sepoliaDemoBackend.includes("rlp_integer(&[y_parity])"),
   "Sepolia demo lost durable ambiguous-broadcast or canonical-signature guards",
+);
+requireInvariant(
+  sepoliaDemoUi.includes("pub struct SensitiveText(Zeroizing<String>);") &&
+    /pub struct SecretReveal\s*\{[\s\S]*?text:\s*Zeroizing<String>[\s\S]*?\}/u.test(
+      sepoliaDemoUi,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Debug)[^\]]*\)\]\s*pub struct (?:SensitiveText|SecretReveal)/u.test(
+      sepoliaDemoUi,
+    ) &&
+    !/impl\s+(?:Clone|Debug)\s+for\s+(?:SensitiveText|SecretReveal)/u.test(sepoliaDemoUi),
+  "Sepolia secret input/reveal wrappers must stay zeroizing, non-Clone, and non-Debug",
+);
+requireInvariant(
+  sepoliaDemoUi.includes(
+    "const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20)",
+  ) &&
+    sepoliaDemoUi.includes(".selectable(false)") &&
+    !/copy_text\s*\([^)]*(?:secret|reveal|mnemonic|private_key)/isu.test(sepoliaDemoUi),
+  "Sepolia secret reveal must stay short-lived, non-selectable, and clipboard-free",
+);
+requireInvariant(
+  sepoliaDemoBackend.includes("V2(OpenedVaultV2)") &&
+    sepoliaDemoBackend.includes(".account_private_key(0)") &&
+    sepoliaDemoBackend.includes("pending_generation: Option<PendingGeneratedWallet>") &&
+    sepoliaDemoBackend.includes("self.ensure_management_mutation_allowed()?") &&
+    sepoliaDemoBackend.includes("path_may_exist(&self.pending_path)"),
+  "Sepolia v2 unlock/account-0/pending-quarantine management boundary changed",
 );
 
 const noNetworkManifests = [

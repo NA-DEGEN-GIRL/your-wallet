@@ -124,14 +124,14 @@ fn run_smoke() -> HeadlessReport {
     match ui::run_headless_smoke() {
         Ok(evidence) => HeadlessReport::success(
             "smoke",
-            "창 없이 송금 화면 흐름을 확인했습니다.",
+            "창 없이 지갑 관리와 송금 화면 흐름을 확인했습니다.",
             false,
             evidence.transitions_checked,
             evidence.backend_routes_checked,
         ),
         Err(()) => HeadlessReport::failure(
             "smoke",
-            "창 없는 송금 화면 흐름 확인에 실패했습니다.",
+            "창 없는 지갑 관리와 송금 화면 흐름 확인에 실패했습니다.",
             "state_machine",
             false,
             2,
@@ -162,7 +162,7 @@ fn run_all() -> HeadlessReport {
     let Ok(evidence) = ui::run_headless_smoke() else {
         return HeadlessReport::failure(
             "all",
-            "창 없는 송금 화면 흐름 확인에 실패했습니다.",
+            "창 없는 지갑 관리와 송금 화면 흐름 확인에 실패했습니다.",
             "state_machine",
             false,
             2,
@@ -214,8 +214,8 @@ mod tests {
     fn smoke_report_is_stable_and_explicitly_window_free() {
         let report = run(HeadlessCheck::Smoke);
         assert!(report.succeeded());
-        assert_eq!(report.transitions_checked, 14);
-        assert_eq!(report.backend_routes_checked, 7);
+        assert_eq!(report.transitions_checked, 34);
+        assert_eq!(report.backend_routes_checked, 17);
         assert!(!report.gui_started);
         assert!(!report.mouse_or_keyboard_automation_used);
         assert!(!report.network_used);

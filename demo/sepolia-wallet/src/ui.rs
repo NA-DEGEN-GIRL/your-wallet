@@ -12,6 +12,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const MINIMUM_PASSWORD_BYTES: usize = 12;
 const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
+const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StatusPalette {
@@ -51,6 +52,81 @@ pub struct WalletSnapshot {
     pub address: String,
     /// Human-readable Sepolia ETH balance without a ticker suffix.
     pub balance_eth: String,
+    /// Authenticated local vault/source category.
+    pub wallet_kind: WalletKind,
+    /// Number of account metadata records validated by the backend.
+    pub account_count: u8,
+}
+
+/// Non-secret source/format metadata for the currently unlocked wallet.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum WalletKind {
+    /// Legacy v1 vault containing one raw private key.
+    LegacyV1RawPrivateKey,
+    /// V2 wallet backed by an English recovery phrase.
+    V2Mnemonic { word_count: u8 },
+    /// V2 wallet backed by one imported raw private key.
+    V2RawPrivateKey,
+}
+
+/// Supported recovery-phrase sizes for newly generated wallets.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub enum NewMnemonicWords {
+    /// Twelve English words.
+    #[default]
+    Twelve,
+    /// Twenty-four English words.
+    TwentyFour,
+}
+
+/// Category of a secret that may be revealed exactly once in the UI.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum SecretRevealKind {
+    /// English BIP-39 recovery phrase.
+    Mnemonic,
+    /// Lowercase hexadecimal account-0 private key.
+    AccountPrivateKey,
+}
+
+/// Owned secret input crossing the worker boundary without a plain-text
+/// `Debug` or `Clone` implementation.
+pub struct SensitiveText(Zeroizing<String>);
+
+impl SensitiveText {
+    #[must_use]
+    pub(crate) fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    pub(crate) fn into_zeroizing(self) -> Zeroizing<String> {
+        self.0
+    }
+}
+
+/// One-shot, zeroizing secret returned by the backend.
+///
+/// Deliberately has neither `Clone` nor `Debug`; it can only be moved into the
+/// short-lived reveal state.
+pub struct SecretReveal {
+    kind: SecretRevealKind,
+    text: Zeroizing<String>,
+}
+
+impl SecretReveal {
+    #[must_use]
+    pub(crate) const fn new(kind: SecretRevealKind, text: Zeroizing<String>) -> Self {
+        Self { kind, text }
+    }
+
+    #[must_use]
+    const fn kind(&self) -> SecretRevealKind {
+        self.kind
+    }
+
+    #[must_use]
+    fn expose_secret(&self) -> &str {
+        self.text.as_str()
+    }
 }
 
 /// Result of one accepted Sepolia broadcast.
@@ -122,11 +198,82 @@ pub struct TransferPreview {
 /// must never place passwords, recovery phrases, keys, addresses, raw
 /// transactions, RPC URLs, or raw server responses in an error string.
 pub trait WalletBackend: Send + 'static {
-    /// Create and persist a new Sepolia-only development vault.
-    fn create_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String>;
+    /// Generate a mnemonic wallet in memory and return its one-shot backup.
+    /// No vault may be written until `confirm_generated_wallet` is called.
+    fn begin_generate_wallet(
+        &mut self,
+        words: NewMnemonicWords,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        let _ = (words, password, password_confirmation);
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
 
-    /// Open the existing local development vault.
+    /// Persist the exact pending generated wallet after the UI's continuous
+    /// two-second backup-confirmation hold.
+    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Forget an unconfirmed generated wallet without writing it.
+    fn cancel_generated_wallet(&mut self) -> Result<(), String> {
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Import and persist an already-backed-up English recovery phrase.
+    fn import_mnemonic_wallet(
+        &mut self,
+        mnemonic: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        let _ = (mnemonic, password, password_confirmation);
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Import and persist one raw Ethereum private key.
+    fn import_private_key_wallet(
+        &mut self,
+        private_key: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        let _ = (private_key, password, password_confirmation);
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Open the existing local v2 vault, or a legacy v1 vault when no v2 file
+    /// exists. A failing v2 open never falls back to v1.
     fn open_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String>;
+
+    /// Reauthenticate a v1 raw-key vault and migrate it to v2 without changing
+    /// account 0.
+    fn migrate_legacy_wallet(
+        &mut self,
+        old_password: SensitiveText,
+        new_password: SensitiveText,
+        new_password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        let _ = (old_password, new_password, new_password_confirmation);
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Reauthenticate and return a one-shot mnemonic reveal. Raw-key and v1
+    /// wallets must reject this operation categorically.
+    fn export_mnemonic(&mut self, password: SensitiveText) -> Result<SecretReveal, String> {
+        let _ = password;
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Reauthenticate and return only account 0's private key.
+    fn export_account_private_key(
+        &mut self,
+        password: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        let _ = password;
+        Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
+    }
 
     /// Refresh the selected public address and Sepolia ETH balance.
     fn refresh(&mut self) -> Result<WalletSnapshot, String>;
@@ -182,11 +329,36 @@ pub fn install_korean_font(context: &egui::Context) {
 }
 
 enum WorkerCommand {
-    Create {
-        password: Zeroizing<String>,
+    BeginGenerate {
+        words: NewMnemonicWords,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    },
+    ConfirmGenerated,
+    CancelGenerated,
+    ImportMnemonic {
+        mnemonic: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
+    },
+    ImportPrivateKey {
+        private_key: SensitiveText,
+        password: SensitiveText,
+        password_confirmation: SensitiveText,
     },
     Open {
         password: Zeroizing<String>,
+    },
+    MigrateLegacy {
+        old_password: SensitiveText,
+        new_password: SensitiveText,
+        new_password_confirmation: SensitiveText,
+    },
+    ExportMnemonic {
+        password: SensitiveText,
+    },
+    ExportAccountPrivateKey {
+        password: SensitiveText,
     },
     Refresh,
     PrepareTransfer {
@@ -200,8 +372,15 @@ enum WorkerCommand {
 }
 
 enum WorkerEvent {
-    Created(Result<WalletSnapshot, String>),
+    GenerationBegun(Result<SecretReveal, String>),
+    GeneratedConfirmed(Result<WalletSnapshot, String>),
+    GeneratedCancelled(Result<(), String>),
+    MnemonicImported(Result<WalletSnapshot, String>),
+    PrivateKeyImported(Result<WalletSnapshot, String>),
     Opened(Result<WalletSnapshot, String>),
+    LegacyMigrated(Result<WalletSnapshot, String>),
+    MnemonicExported(Result<SecretReveal, String>),
+    AccountPrivateKeyExported(Result<SecretReveal, String>),
     Refreshed(Result<WalletSnapshot, String>),
     TransferPrepared(Box<Result<TransferPreview, String>>),
     PreparedConfirmed(Result<SendReceipt, String>),
@@ -211,8 +390,15 @@ enum WorkerEvent {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PendingAction {
-    Create,
+    BeginGenerate,
+    ConfirmGenerated,
+    CancelGenerated,
+    ImportMnemonic,
+    ImportPrivateKey,
     Open,
+    MigrateLegacy,
+    ExportMnemonic,
+    ExportAccountPrivateKey,
     Refresh,
     PrepareTransfer,
     ConfirmPrepared,
@@ -228,11 +414,65 @@ enum FeeMode {
     Custom,
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum SetupMode {
+    #[default]
+    Open,
+    Generate,
+    ImportMnemonic,
+    ImportPrivateKey,
+    MigrateLegacy,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SecretHoldAction {
+    ConfirmGeneratedBackup,
+    ExportMnemonic,
+    ExportAccountPrivateKey,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RevealPurpose {
+    GeneratedBackup,
+    ReauthenticatedExport,
+}
+
+struct TimedSecretReveal {
+    reveal: SecretReveal,
+    purpose: RevealPurpose,
+    expires_at: Instant,
+}
+
+impl TimedSecretReveal {
+    fn new(reveal: SecretReveal, purpose: RevealPurpose, now: Instant) -> Option<Self> {
+        Some(Self {
+            reveal,
+            purpose,
+            expires_at: now.checked_add(SECRET_REVEAL_DURATION)?,
+        })
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        now >= self.expires_at
+    }
+
+    fn remaining_seconds(&self, now: Instant) -> u64 {
+        self.expires_at.saturating_duration_since(now).as_secs()
+    }
+}
+
 impl PendingAction {
     const fn korean(self) -> &'static str {
         match self {
-            Self::Create => "새 테스트 지갑을 안전하게 만드는 중...",
+            Self::BeginGenerate => "새 복구 문구를 안전하게 만드는 중...",
+            Self::ConfirmGenerated => "백업 확인된 v2 지갑을 저장하는 중...",
+            Self::CancelGenerated => "저장 전 복구 문구를 지우는 중...",
+            Self::ImportMnemonic => "복구 문구를 검증하고 v2 지갑을 저장하는 중...",
+            Self::ImportPrivateKey => "개인 키를 검증하고 v2 지갑을 저장하는 중...",
             Self::Open => "테스트 지갑을 여는 중...",
+            Self::MigrateLegacy => "v1 개인 키 지갑을 v2로 이전하는 중...",
+            Self::ExportMnemonic => "비밀번호를 확인하고 복구 문구를 준비하는 중...",
+            Self::ExportAccountPrivateKey => "비밀번호를 확인하고 계정 키를 준비하는 중...",
             Self::Refresh => "Sepolia 잔액을 확인하는 중...",
             Self::PrepareTransfer => "nonce와 최대 수수료를 확인하는 중...",
             Self::ConfirmPrepared => "확인한 테스트 전송을 서명하고 제출하는 중...",
@@ -329,8 +569,16 @@ impl HoldToSend {
 pub struct WalletApp {
     commands: Option<Sender<WorkerCommand>>,
     events: Receiver<WorkerEvent>,
+    setup_mode: SetupMode,
+    mnemonic_words: NewMnemonicWords,
+    export_kind: SecretRevealKind,
     password: String,
+    password_confirmation: String,
+    old_password: String,
+    imported_secret: String,
     password_visible: bool,
+    imported_secret_visible: bool,
+    reauth_password: String,
     snapshot: Option<WalletSnapshot>,
     recipient: String,
     amount_eth: String,
@@ -340,6 +588,8 @@ pub struct WalletApp {
     prepared: Option<TransferPreview>,
     pending: Option<PendingAction>,
     hold: HoldToSend,
+    secret_hold: HoldToSend,
+    secret_reveal: Option<TimedSecretReveal>,
     notice: Option<String>,
     error: Option<String>,
     last_transaction_hash: Option<String>,
@@ -355,8 +605,16 @@ impl WalletApp {
         Self {
             commands: Some(command_sender),
             events: event_receiver,
+            setup_mode: SetupMode::Open,
+            mnemonic_words: NewMnemonicWords::Twelve,
+            export_kind: SecretRevealKind::Mnemonic,
             password: String::new(),
+            password_confirmation: String::new(),
+            old_password: String::new(),
+            imported_secret: String::new(),
             password_visible: false,
+            imported_secret_visible: false,
+            reauth_password: String::new(),
             snapshot: None,
             recipient: String::new(),
             amount_eth: String::new(),
@@ -366,6 +624,8 @@ impl WalletApp {
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
+            secret_hold: HoldToSend::default(),
+            secret_reveal: None,
             notice: None,
             error: None,
             last_transaction_hash: None,
@@ -379,8 +639,16 @@ impl WalletApp {
         Self {
             commands: None,
             events: receiver,
+            setup_mode: SetupMode::Open,
+            mnemonic_words: NewMnemonicWords::Twelve,
+            export_kind: SecretRevealKind::Mnemonic,
             password: String::new(),
+            password_confirmation: String::new(),
+            old_password: String::new(),
+            imported_secret: String::new(),
             password_visible: false,
+            imported_secret_visible: false,
+            reauth_password: String::new(),
             snapshot: None,
             recipient: String::new(),
             amount_eth: String::new(),
@@ -390,6 +658,8 @@ impl WalletApp {
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
+            secret_hold: HoldToSend::default(),
+            secret_reveal: None,
             notice: None,
             error: Some(safe_error(message.into())),
             last_transaction_hash: None,
@@ -412,13 +682,83 @@ impl WalletApp {
         }
     }
 
-    fn create_wallet(&mut self) {
-        if !valid_password(&self.password) {
+    fn begin_generate_wallet(&mut self) {
+        if !valid_password(&self.password) || !valid_password(&self.password_confirmation) {
             self.error = Some("비밀번호는 UTF-8 기준 12바이트 이상 입력해 주세요.".to_owned());
             return;
         }
-        let password = Zeroizing::new(std::mem::take(&mut self.password));
-        self.send_command(WorkerCommand::Create { password }, PendingAction::Create);
+        if self.password != self.password_confirmation {
+            self.error = Some("새 비밀번호 확인이 일치하지 않습니다.".to_owned());
+            return;
+        }
+        let password = SensitiveText::new(std::mem::take(&mut self.password));
+        let password_confirmation =
+            SensitiveText::new(std::mem::take(&mut self.password_confirmation));
+        self.send_command(
+            WorkerCommand::BeginGenerate {
+                words: self.mnemonic_words,
+                password,
+                password_confirmation,
+            },
+            PendingAction::BeginGenerate,
+        );
+    }
+
+    fn confirm_generated_wallet(&mut self) {
+        self.secret_reveal = None;
+        self.secret_hold.reset();
+        self.send_command(
+            WorkerCommand::ConfirmGenerated,
+            PendingAction::ConfirmGenerated,
+        );
+    }
+
+    fn cancel_generated_wallet(&mut self) {
+        self.secret_reveal = None;
+        self.secret_hold.reset();
+        self.send_command(
+            WorkerCommand::CancelGenerated,
+            PendingAction::CancelGenerated,
+        );
+    }
+
+    fn import_wallet(&mut self, mnemonic: bool) {
+        if self.imported_secret.trim().is_empty()
+            || !valid_password(&self.password)
+            || !valid_password(&self.password_confirmation)
+        {
+            self.error =
+                Some("가져올 비밀값과 12바이트 이상의 새 비밀번호를 확인해 주세요.".to_owned());
+            return;
+        }
+        if self.password != self.password_confirmation {
+            self.error = Some("새 비밀번호 확인이 일치하지 않습니다.".to_owned());
+            return;
+        }
+        let secret = SensitiveText::new(std::mem::take(&mut self.imported_secret));
+        let password = SensitiveText::new(std::mem::take(&mut self.password));
+        let password_confirmation =
+            SensitiveText::new(std::mem::take(&mut self.password_confirmation));
+        let (command, action) = if mnemonic {
+            (
+                WorkerCommand::ImportMnemonic {
+                    mnemonic: secret,
+                    password,
+                    password_confirmation,
+                },
+                PendingAction::ImportMnemonic,
+            )
+        } else {
+            (
+                WorkerCommand::ImportPrivateKey {
+                    private_key: secret,
+                    password,
+                    password_confirmation,
+                },
+                PendingAction::ImportPrivateKey,
+            )
+        };
+        self.send_command(command, action);
     }
 
     fn open_wallet(&mut self) {
@@ -428,6 +768,105 @@ impl WalletApp {
         }
         let password = Zeroizing::new(std::mem::take(&mut self.password));
         self.send_command(WorkerCommand::Open { password }, PendingAction::Open);
+    }
+
+    fn migrate_legacy_wallet(&mut self) {
+        if !valid_password(&self.old_password)
+            || !valid_password(&self.password)
+            || !valid_password(&self.password_confirmation)
+        {
+            self.error =
+                Some("이전 비밀번호와 12바이트 이상의 새 비밀번호를 확인해 주세요.".to_owned());
+            return;
+        }
+        if self.password != self.password_confirmation {
+            self.error = Some("새 비밀번호 확인이 일치하지 않습니다.".to_owned());
+            return;
+        }
+        let old_password = SensitiveText::new(std::mem::take(&mut self.old_password));
+        let new_password = SensitiveText::new(std::mem::take(&mut self.password));
+        let new_password_confirmation =
+            SensitiveText::new(std::mem::take(&mut self.password_confirmation));
+        self.send_command(
+            WorkerCommand::MigrateLegacy {
+                old_password,
+                new_password,
+                new_password_confirmation,
+            },
+            PendingAction::MigrateLegacy,
+        );
+    }
+
+    fn export_secret(&mut self, action: SecretHoldAction) {
+        if !valid_password(&self.reauth_password) {
+            self.error = Some("내보내려면 현재 비밀번호를 다시 입력해 주세요.".to_owned());
+            self.secret_hold.reset();
+            return;
+        }
+        let password = SensitiveText::new(std::mem::take(&mut self.reauth_password));
+        let (command, pending) = match action {
+            SecretHoldAction::ExportMnemonic => (
+                WorkerCommand::ExportMnemonic { password },
+                PendingAction::ExportMnemonic,
+            ),
+            SecretHoldAction::ExportAccountPrivateKey => (
+                WorkerCommand::ExportAccountPrivateKey { password },
+                PendingAction::ExportAccountPrivateKey,
+            ),
+            SecretHoldAction::ConfirmGeneratedBackup => return,
+        };
+        self.secret_hold.reset();
+        self.send_command(command, pending);
+    }
+
+    fn handle_secret_hold_outcome(
+        &mut self,
+        outcome: HoldOutcome,
+        action: SecretHoldAction,
+    ) -> bool {
+        if !matches!(outcome, HoldOutcome::Triggered) || self.pending.is_some() {
+            return false;
+        }
+        match action {
+            SecretHoldAction::ConfirmGeneratedBackup => {
+                let valid_backup = self.secret_reveal.as_ref().is_some_and(|reveal| {
+                    reveal.purpose == RevealPurpose::GeneratedBackup
+                        && !reveal.is_expired(Instant::now())
+                });
+                if !valid_backup {
+                    return false;
+                }
+                self.confirm_generated_wallet();
+                self.pending == Some(PendingAction::ConfirmGenerated)
+            }
+            SecretHoldAction::ExportMnemonic | SecretHoldAction::ExportAccountPrivateKey => {
+                if self.prepared.is_some() || self.secret_reveal.is_some() {
+                    return false;
+                }
+                self.export_secret(action);
+                self.pending.is_some()
+            }
+        }
+    }
+
+    fn expire_secret_reveal(&mut self, now: Instant) {
+        let expired_purpose = self
+            .secret_reveal
+            .as_ref()
+            .filter(|reveal| reveal.is_expired(now))
+            .map(|reveal| reveal.purpose);
+        if let Some(purpose) = expired_purpose {
+            self.secret_reveal = None;
+            self.secret_hold.reset();
+            if purpose == RevealPurpose::GeneratedBackup && self.pending.is_none() {
+                self.send_command(
+                    WorkerCommand::CancelGenerated,
+                    PendingAction::CancelGenerated,
+                );
+            } else {
+                self.notice = Some("비밀값 표시 시간이 끝나 메모리에서 지웠습니다.".to_owned());
+            }
+        }
     }
 
     fn refresh(&mut self) {
@@ -515,24 +954,95 @@ impl WalletApp {
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         self.pending = None;
         match event {
-            WorkerEvent::Created(result) => match result {
-                Ok(snapshot) => {
-                    clear_prepared_state(&mut self.prepared, &mut self.hold);
-                    self.snapshot = Some(snapshot);
+            WorkerEvent::GenerationBegun(result) => match result {
+                Ok(reveal) => {
+                    self.secret_reveal = TimedSecretReveal::new(
+                        reveal,
+                        RevealPurpose::GeneratedBackup,
+                        Instant::now(),
+                    );
+                    self.secret_hold.reset();
                     self.notice = Some(
-                        "새 테스트 지갑을 만들었습니다. 키는 로컬 암호화 파일에만 저장됩니다."
+                        "복구 문구는 아직 저장되지 않았습니다. 적어 둔 뒤 2초 확인을 완료하세요."
                             .to_owned(),
                     );
                 }
                 Err(error) => self.error = Some(safe_error(error)),
             },
+            WorkerEvent::GeneratedConfirmed(result) => match result {
+                Ok(snapshot) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = None;
+                    self.snapshot = Some(snapshot);
+                    self.notice = Some(
+                        "복구 문구 백업을 확인하고 새 v2 테스트 지갑을 저장했습니다.".to_owned(),
+                    );
+                }
+                Err(error) => self.error = Some(safe_error(error)),
+            },
+            WorkerEvent::GeneratedCancelled(result) => match result {
+                Ok(()) => {
+                    self.secret_reveal = None;
+                    self.notice =
+                        Some("저장하지 않은 복구 문구를 메모리에서 지웠습니다.".to_owned());
+                }
+                Err(error) => self.error = Some(safe_error(error)),
+            },
+            WorkerEvent::MnemonicImported(result) | WorkerEvent::PrivateKeyImported(result) => {
+                match result {
+                    Ok(snapshot) => {
+                        clear_prepared_state(&mut self.prepared, &mut self.hold);
+                        self.snapshot = Some(snapshot);
+                        self.notice =
+                            Some("가져온 비밀값을 v2 테스트 지갑으로 저장했습니다.".to_owned());
+                    }
+                    Err(error) => self.error = Some(safe_error(error)),
+                }
+            }
             WorkerEvent::Opened(result) => match result {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.snapshot = Some(snapshot);
                     self.notice = Some("테스트 지갑을 열었습니다.".to_owned());
                 }
-                Err(error) => self.error = Some(safe_error(error)),
+                Err(error) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = None;
+                    self.snapshot = None;
+                    self.error = Some(safe_error(error));
+                }
+            },
+            WorkerEvent::LegacyMigrated(result) => match result {
+                Ok(snapshot) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.snapshot = Some(snapshot);
+                    self.notice = Some(
+                        "계정 주소를 유지한 채 v1 개인 키 지갑을 v2로 이전했습니다.".to_owned(),
+                    );
+                }
+                Err(error) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = None;
+                    self.snapshot = None;
+                    self.error = Some(safe_error(error));
+                }
+            },
+            WorkerEvent::MnemonicExported(result)
+            | WorkerEvent::AccountPrivateKeyExported(result) => match result {
+                Ok(reveal) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = TimedSecretReveal::new(
+                        reveal,
+                        RevealPurpose::ReauthenticatedExport,
+                        Instant::now(),
+                    );
+                    self.notice =
+                        Some("비밀값은 잠시만 표시되며 복사 기능을 제공하지 않습니다.".to_owned());
+                }
+                Err(error) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.error = Some(safe_error(error));
+                }
             },
             WorkerEvent::Refreshed(result) => match result {
                 Ok(snapshot) => {
@@ -588,14 +1098,113 @@ impl WalletApp {
     }
 
     fn wallet_setup(&mut self, ui: &mut egui::Ui) {
-        let setup_enabled = self.pending.is_none() && self.prepared.is_none();
+        let setup_enabled = self.pending.is_none()
+            && self.prepared.is_none()
+            && !self
+                .secret_reveal
+                .as_ref()
+                .is_some_and(|reveal| reveal.purpose == RevealPurpose::GeneratedBackup);
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.heading("1. 테스트 지갑 준비");
-        ui.label("처음이면 새 지갑을 만들고, 이미 만들었다면 같은 비밀번호로 열어 주세요.");
+        ui.label("v2 지갑을 만들거나 가져오고, 기존 v1/v2 지갑을 열거나 이전할 수 있습니다.");
         ui.add_space(8.0);
+        let _ = ui.add_enabled_ui(setup_enabled, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.setup_mode, SetupMode::Open, "열기");
+                ui.selectable_value(&mut self.setup_mode, SetupMode::Generate, "새로 만들기");
+                ui.selectable_value(
+                    &mut self.setup_mode,
+                    SetupMode::ImportMnemonic,
+                    "복구 문구 가져오기",
+                );
+                ui.selectable_value(
+                    &mut self.setup_mode,
+                    SetupMode::ImportPrivateKey,
+                    "개인 키 가져오기",
+                );
+                ui.selectable_value(
+                    &mut self.setup_mode,
+                    SetupMode::MigrateLegacy,
+                    "v1 → v2 이전",
+                );
+            });
+        });
+        ui.add_space(8.0);
+
+        if matches!(
+            self.setup_mode,
+            SetupMode::ImportMnemonic | SetupMode::ImportPrivateKey
+        ) {
+            let hint = if self.setup_mode == SetupMode::ImportMnemonic {
+                "영어 복구 문구"
+            } else {
+                "64자리 16진수 개인 키"
+            };
+            ui.horizontal(|ui| {
+                ui.label(hint);
+                if ui
+                    .button(if self.imported_secret_visible {
+                        "숨기기"
+                    } else {
+                        "보기"
+                    })
+                    .clicked()
+                {
+                    self.imported_secret_visible = !self.imported_secret_visible;
+                }
+            });
+            let mut edit = egui::TextEdit::multiline(&mut self.imported_secret)
+                .hint_text(hint)
+                .desired_width(f32::INFINITY)
+                .desired_rows(3);
+            if !self.imported_secret_visible {
+                edit = edit.password(true);
+            }
+            let _ = ui.add_enabled(setup_enabled, edit);
+            ui.label(
+                RichText::new(
+                    "클립보드 복사 버튼은 제공하지 않습니다. 가져온 비밀값은 작업 뒤 지워집니다.",
+                )
+                .small()
+                .color(palette.muted),
+            );
+        }
+
+        if self.setup_mode == SetupMode::MigrateLegacy {
+            let mut old_edit = egui::TextEdit::singleline(&mut self.old_password)
+                .hint_text("기존 v1 비밀번호")
+                .desired_width(320.0);
+            if !self.password_visible {
+                old_edit = old_edit.password(true);
+            }
+            let _ = ui.add_enabled(setup_enabled, old_edit);
+        }
+
+        if self.setup_mode == SetupMode::Generate {
+            ui.horizontal(|ui| {
+                ui.label("새 복구 문구 길이");
+                let _ = ui.add_enabled_ui(setup_enabled, |ui| {
+                    ui.selectable_value(
+                        &mut self.mnemonic_words,
+                        NewMnemonicWords::Twelve,
+                        "12단어",
+                    );
+                    ui.selectable_value(
+                        &mut self.mnemonic_words,
+                        NewMnemonicWords::TwentyFour,
+                        "24단어",
+                    );
+                });
+            });
+        }
+
         ui.horizontal(|ui| {
             let mut edit = egui::TextEdit::singleline(&mut self.password)
-                .hint_text("비밀번호 (12바이트 이상)")
+                .hint_text(if self.setup_mode == SetupMode::Open {
+                    "현재 비밀번호"
+                } else {
+                    "새 v2 비밀번호 (12바이트 이상)"
+                })
                 .desired_width(320.0);
             if !self.password_visible {
                 edit = edit.password(true);
@@ -610,26 +1219,40 @@ impl WalletApp {
                 self.password_visible = !self.password_visible;
             }
         });
+        if self.setup_mode != SetupMode::Open {
+            let mut edit = egui::TextEdit::singleline(&mut self.password_confirmation)
+                .hint_text("새 v2 비밀번호 다시 입력")
+                .desired_width(320.0);
+            if !self.password_visible {
+                edit = edit.password(true);
+            }
+            let _ = ui.add_enabled(setup_enabled, edit);
+        }
         ui.label(
-            RichText::new("지갑 파일 또는 비밀번호를 잃으면 복구할 수 없습니다.")
+            RichText::new("비밀번호를 잃으면 로컬 지갑 파일을 열 수 없습니다.")
                 .small()
                 .color(palette.muted),
         );
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(setup_enabled, egui::Button::new("새 테스트 지갑 만들기"))
-                .clicked()
-            {
-                self.create_wallet();
+        let button_label = match self.setup_mode {
+            SetupMode::Open => "기존 테스트 지갑 열기",
+            SetupMode::Generate => "복구 문구 생성 (아직 저장 안 함)",
+            SetupMode::ImportMnemonic => "복구 문구를 v2로 가져오기",
+            SetupMode::ImportPrivateKey => "개인 키를 v2로 가져오기",
+            SetupMode::MigrateLegacy => "주소를 유지해 v1을 v2로 이전",
+        };
+        if ui
+            .add_enabled(setup_enabled, egui::Button::new(button_label))
+            .clicked()
+        {
+            match self.setup_mode {
+                SetupMode::Open => self.open_wallet(),
+                SetupMode::Generate => self.begin_generate_wallet(),
+                SetupMode::ImportMnemonic => self.import_wallet(true),
+                SetupMode::ImportPrivateKey => self.import_wallet(false),
+                SetupMode::MigrateLegacy => self.migrate_legacy_wallet(),
             }
-            if ui
-                .add_enabled(setup_enabled, egui::Button::new("기존 테스트 지갑 열기"))
-                .clicked()
-            {
-                self.open_wallet();
-            }
-        });
+        }
     }
 
     fn account_panel(&mut self, ui: &mut egui::Ui) {
@@ -638,6 +1261,18 @@ impl WalletApp {
         };
         ui.separator();
         ui.heading("2. 내 Sepolia 계정");
+        let kind_label = match snapshot.wallet_kind {
+            WalletKind::LegacyV1RawPrivateKey => "v1 개인 키 지갑",
+            WalletKind::V2Mnemonic { .. } => "v2 복구 문구 지갑",
+            WalletKind::V2RawPrivateKey => "v2 개인 키 지갑",
+        };
+        ui.label(format!(
+            "지갑 형식: {kind_label} · 전송 계정: 0 · 검증된 계정 메타데이터: {}개",
+            snapshot.account_count
+        ));
+        if let WalletKind::V2Mnemonic { word_count } = snapshot.wallet_kind {
+            ui.label(format!("복구 문구: 영어 {word_count}단어"));
+        }
         ui.label("주소");
         ui.horizontal_wrapped(|ui| {
             ui.monospace(&snapshot.address);
@@ -660,6 +1295,159 @@ impl WalletApp {
                 self.refresh();
             }
         });
+    }
+
+    fn secret_management_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let palette = StatusPalette::from_visuals(ui.visuals());
+        ui.add_space(10.0);
+        ui.collapsing("지갑 비밀값 내보내기", |ui| {
+            ui.colored_label(
+                palette.warning,
+                "주변 화면 녹화·사진·악성 프로그램에 노출될 수 있습니다.",
+            );
+            match snapshot.wallet_kind {
+                WalletKind::V2Mnemonic { .. } => {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(
+                            &mut self.export_kind,
+                            SecretRevealKind::Mnemonic,
+                            "복구 문구",
+                        );
+                        ui.selectable_value(
+                            &mut self.export_kind,
+                            SecretRevealKind::AccountPrivateKey,
+                            "계정 0 개인 키",
+                        );
+                    });
+                }
+                WalletKind::LegacyV1RawPrivateKey => {
+                    self.export_kind = SecretRevealKind::AccountPrivateKey;
+                    ui.label(
+                        "v1은 원래 복구 문구를 저장하지 않았으므로 복구 문구 내보내기가 불가능합니다. v2로 이전해도 개인 키 지갑으로 유지됩니다.",
+                    );
+                }
+                WalletKind::V2RawPrivateKey => {
+                    self.export_kind = SecretRevealKind::AccountPrivateKey;
+                    ui.label("이 지갑은 개인 키로 가져왔으므로 복구 문구가 없습니다.");
+                }
+            }
+            let edit = egui::TextEdit::singleline(&mut self.reauth_password)
+                .hint_text("현재 비밀번호 재입력")
+                .desired_width(320.0)
+                .password(true);
+            let enabled = self.pending.is_none()
+                && self.prepared.is_none()
+                && self.secret_reveal.is_none();
+            let _ = ui.add_enabled(enabled, edit);
+            let action = match self.export_kind {
+                SecretRevealKind::Mnemonic => SecretHoldAction::ExportMnemonic,
+                SecretRevealKind::AccountPrivateKey => {
+                    SecretHoldAction::ExportAccountPrivateKey
+                }
+            };
+            let label = match action {
+                SecretHoldAction::ExportMnemonic => "재인증 후 복구 문구 표시 — 2초 동안 누르기",
+                SecretHoldAction::ExportAccountPrivateKey => {
+                    "재인증 후 계정 0 개인 키 표시 — 2초 동안 누르기"
+                }
+                SecretHoldAction::ConfirmGeneratedBackup => unreachable!(),
+            };
+            let hold_enabled = enabled && valid_password(&self.reauth_password);
+            let response = ui.add_enabled(hold_enabled, secret_hold_button(label));
+            let now = Instant::now();
+            let outcome = self.secret_hold.update(
+                now,
+                hold_to_send_input(context, &response, hold_enabled),
+            );
+            let _ = self.handle_secret_hold_outcome(outcome, action);
+            if matches!(outcome, HoldOutcome::Holding(_)) {
+                context.request_repaint_after(Duration::from_millis(16));
+            }
+            let progress = self.secret_hold.fraction(now);
+            let _ = ui.add(
+                egui::ProgressBar::new(progress)
+                    .desired_width(300.0)
+                    .text(format!("{:.1} / 2.0초", progress * 2.0)),
+            );
+            ui.label(
+                RichText::new("비밀값 클립보드 복사 기능은 제공하지 않습니다.")
+                    .small()
+                    .color(palette.muted),
+            );
+        });
+    }
+
+    fn secret_reveal_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
+        let Some(reveal) = self.secret_reveal.as_ref() else {
+            return;
+        };
+        let now = Instant::now();
+        let purpose = reveal.purpose;
+        let kind = reveal.reveal.kind();
+        let remaining = reveal.remaining_seconds(now);
+        let label = match kind {
+            SecretRevealKind::Mnemonic => "영어 복구 문구",
+            SecretRevealKind::AccountPrivateKey => "계정 0 개인 키",
+        };
+        let secret = reveal.reveal.expose_secret();
+        let palette = StatusPalette::from_visuals(ui.visuals());
+        ui.separator();
+        ui.heading("비밀값 일회성 표시");
+        ui.colored_label(
+            palette.warning,
+            format!("{label} · 약 {remaining}초 뒤 자동으로 지워집니다."),
+        );
+        let _ = ui.add(
+            egui::Label::new(RichText::new(secret).monospace().size(18.0))
+                .selectable(false)
+                .wrap(),
+        );
+        ui.label(
+            RichText::new("앱은 이 값을 클립보드에 복사하지 않습니다.")
+                .small()
+                .color(palette.muted),
+        );
+        if purpose == RevealPurpose::GeneratedBackup {
+            ui.label("종이나 오프라인 매체에 정확히 적은 뒤 아래 확인을 계속 누르세요.");
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        self.pending.is_none(),
+                        egui::Button::new("저장하지 않고 지우기"),
+                    )
+                    .clicked()
+                {
+                    self.cancel_generated_wallet();
+                    return;
+                }
+                let enabled = self.pending.is_none() && remaining > 0;
+                let response = ui.add_enabled(
+                    enabled,
+                    secret_hold_button("백업 확인 후 v2 저장 — 2초 동안 누르기"),
+                );
+                let outcome = self
+                    .secret_hold
+                    .update(now, hold_to_send_input(context, &response, enabled));
+                let _ = self
+                    .handle_secret_hold_outcome(outcome, SecretHoldAction::ConfirmGeneratedBackup);
+                if matches!(outcome, HoldOutcome::Holding(_)) {
+                    context.request_repaint_after(Duration::from_millis(16));
+                }
+            });
+            let progress = self.secret_hold.fraction(now);
+            let _ = ui.add(
+                egui::ProgressBar::new(progress)
+                    .desired_width(300.0)
+                    .text(format!("{:.1} / 2.0초", progress * 2.0)),
+            );
+        } else if ui.button("지금 지우기").clicked() {
+            self.secret_reveal = None;
+            self.secret_hold.reset();
+        }
+        context.request_repaint_after(Duration::from_millis(100));
     }
 
     fn send_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
@@ -859,6 +1647,12 @@ fn hold_to_send_button() -> egui::Button<'static> {
         .min_size(egui::vec2(300.0, 48.0))
 }
 
+fn secret_hold_button(label: &'static str) -> egui::Button<'static> {
+    egui::Button::new(label)
+        .sense(egui::Sense::drag())
+        .min_size(egui::vec2(300.0, 44.0))
+}
+
 fn hold_to_send_input(
     context: &egui::Context,
     response: &egui::Response,
@@ -947,12 +1741,17 @@ fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
 impl Drop for WalletApp {
     fn drop(&mut self) {
         self.password.zeroize();
+        self.password_confirmation.zeroize();
+        self.old_password.zeroize();
+        self.imported_secret.zeroize();
+        self.reauth_password.zeroize();
     }
 }
 
 impl eframe::App for WalletApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_events();
+        self.expire_secret_reveal(Instant::now());
         egui::TopBottomPanel::top("testnet_warning").show(context, |ui| {
             let palette = StatusPalette::from_visuals(ui.visuals());
             ui.vertical_centered(|ui| {
@@ -969,6 +1768,8 @@ impl eframe::App for WalletApp {
                 ui.add_space(8.0);
                 self.wallet_setup(ui);
                 self.account_panel(ui);
+                self.secret_management_panel(context, ui);
+                self.secret_reveal_panel(context, ui);
                 self.send_panel(context, ui);
 
                 if let Some(action) = self.pending {
@@ -988,7 +1789,7 @@ impl eframe::App for WalletApp {
                 ui.add_space(18.0);
                 ui.label(
                     RichText::new(
-                        "키는 로컬 암호화 파일에만 저장됩니다. 개발용 단일 PC 테스트판이며 메인넷·토큰·브라우저 연결은 지원하지 않습니다.",
+                        "v2 비밀값은 로컬 암호화 파일에만 저장됩니다. 개발용 단일 PC 테스트판이며 메인넷·브라우저 연결은 지원하지 않습니다.",
                     )
                     .small()
                     .color(palette.muted),
@@ -1015,11 +1816,56 @@ fn spawn_worker(
 
 fn execute_worker_command(backend: &mut dyn WalletBackend, command: WorkerCommand) -> WorkerEvent {
     match command {
-        WorkerCommand::Create { password } => {
-            WorkerEvent::Created(backend.create_wallet(password.as_str()))
+        WorkerCommand::BeginGenerate {
+            words,
+            password,
+            password_confirmation,
+        } => WorkerEvent::GenerationBegun(backend.begin_generate_wallet(
+            words,
+            password,
+            password_confirmation,
+        )),
+        WorkerCommand::ConfirmGenerated => {
+            WorkerEvent::GeneratedConfirmed(backend.confirm_generated_wallet())
         }
+        WorkerCommand::CancelGenerated => {
+            WorkerEvent::GeneratedCancelled(backend.cancel_generated_wallet())
+        }
+        WorkerCommand::ImportMnemonic {
+            mnemonic,
+            password,
+            password_confirmation,
+        } => WorkerEvent::MnemonicImported(backend.import_mnemonic_wallet(
+            mnemonic,
+            password,
+            password_confirmation,
+        )),
+        WorkerCommand::ImportPrivateKey {
+            private_key,
+            password,
+            password_confirmation,
+        } => WorkerEvent::PrivateKeyImported(backend.import_private_key_wallet(
+            private_key,
+            password,
+            password_confirmation,
+        )),
         WorkerCommand::Open { password } => {
             WorkerEvent::Opened(backend.open_wallet(password.as_str()))
+        }
+        WorkerCommand::MigrateLegacy {
+            old_password,
+            new_password,
+            new_password_confirmation,
+        } => WorkerEvent::LegacyMigrated(backend.migrate_legacy_wallet(
+            old_password,
+            new_password,
+            new_password_confirmation,
+        )),
+        WorkerCommand::ExportMnemonic { password } => {
+            WorkerEvent::MnemonicExported(backend.export_mnemonic(password))
+        }
+        WorkerCommand::ExportAccountPrivateKey { password } => {
+            WorkerEvent::AccountPrivateKeyExported(backend.export_account_private_key(password))
         }
         WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh()),
         WorkerCommand::PrepareTransfer {
@@ -1059,8 +1905,16 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     let mut app = WalletApp {
         commands: Some(command_sender),
         events: event_receiver,
+        setup_mode: SetupMode::Open,
+        mnemonic_words: NewMnemonicWords::Twelve,
+        export_kind: SecretRevealKind::Mnemonic,
         password: String::new(),
+        password_confirmation: String::new(),
+        old_password: String::new(),
+        imported_secret: String::new(),
         password_visible: false,
+        imported_secret_visible: false,
+        reauth_password: String::new(),
         snapshot: None,
         recipient: RECIPIENT_SENTINEL.to_owned(),
         amount_eth: AMOUNT_SENTINEL.to_owned(),
@@ -1070,11 +1924,134 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         prepared: None,
         pending: None,
         hold: HoldToSend::default(),
+        secret_hold: HoldToSend::default(),
+        secret_reveal: None,
         notice: None,
         error: None,
         last_transaction_hash: None,
     };
     let mut backend = HeadlessBackend::default();
+
+    app.mnemonic_words = NewMnemonicWords::Twelve;
+    app.password = "headless-vault-pass".to_owned();
+    app.password_confirmation = "headless-vault-pass".to_owned();
+    app.begin_generate_wallet();
+    if app.pending != Some(PendingAction::BeginGenerate) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::BeginGenerate {
+                words: NewMnemonicWords::Twelve,
+                ..
+            }
+        )
+    })?;
+    if app.pending.is_some()
+        || !app.secret_reveal.as_ref().is_some_and(|reveal| {
+            reveal.purpose == RevealPurpose::GeneratedBackup
+                && reveal.reveal.kind() == SecretRevealKind::Mnemonic
+        })
+    {
+        return Err(());
+    }
+    if !app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::ConfirmGeneratedBackup,
+    ) || app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::ConfirmGeneratedBackup,
+    ) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ConfirmGenerated)
+    })?;
+    if app.pending.is_some()
+        || app.secret_reveal.is_some()
+        || app.snapshot.as_ref().map(|snapshot| snapshot.wallet_kind)
+            != Some(WalletKind::V2Mnemonic { word_count: 12 })
+    {
+        return Err(());
+    }
+
+    app.reauth_password = "headless-vault-pass".to_owned();
+    if !app.handle_secret_hold_outcome(HoldOutcome::Triggered, SecretHoldAction::ExportMnemonic)
+        || app.handle_secret_hold_outcome(HoldOutcome::Triggered, SecretHoldAction::ExportMnemonic)
+    {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ExportMnemonic { .. })
+    })?;
+    if !app.secret_reveal.as_ref().is_some_and(|reveal| {
+        reveal.purpose == RevealPurpose::ReauthenticatedExport
+            && reveal.reveal.kind() == SecretRevealKind::Mnemonic
+    }) {
+        return Err(());
+    }
+    app.secret_reveal = None;
+
+    app.reauth_password = "headless-vault-pass".to_owned();
+    if !app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::ExportAccountPrivateKey,
+    ) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ExportAccountPrivateKey { .. })
+    })?;
+    if !app.secret_reveal.as_ref().is_some_and(|reveal| {
+        reveal.purpose == RevealPurpose::ReauthenticatedExport
+            && reveal.reveal.kind() == SecretRevealKind::AccountPrivateKey
+    }) {
+        return Err(());
+    }
+    app.secret_reveal = None;
+
+    app.imported_secret = "headless mnemonic marker".to_owned();
+    app.password = "headless-import-pass".to_owned();
+    app.password_confirmation = "headless-import-pass".to_owned();
+    app.import_wallet(true);
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ImportMnemonic { .. })
+    })?;
+    app.imported_secret = "headless private key marker".to_owned();
+    app.password = "headless-import-pass".to_owned();
+    app.password_confirmation = "headless-import-pass".to_owned();
+    app.import_wallet(false);
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ImportPrivateKey { .. })
+    })?;
+
+    app.old_password = "headless-legacy-pass".to_owned();
+    app.password = "headless-migrate-pass".to_owned();
+    app.password_confirmation = "headless-migrate-pass".to_owned();
+    app.migrate_legacy_wallet();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::MigrateLegacy { .. })
+    })?;
+    app.password = "headless-open-pass".to_owned();
+    app.open_wallet();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Open { .. })
+    })?;
+
+    app.password = "headless-vault-pass".to_owned();
+    app.password_confirmation = "headless-vault-pass".to_owned();
+    app.begin_generate_wallet();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::BeginGenerate { .. })
+    })?;
+    app.cancel_generated_wallet();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::CancelGenerated)
+    })?;
+    if app.secret_reveal.is_some() {
+        return Err(());
+    }
 
     app.prepare_transfer();
     if app.pending != Some(PendingAction::PrepareTransfer) {
@@ -1190,6 +2167,16 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.last_transaction_hash.as_deref() != Some("headless-retried")
         || backend.calls
             != [
+                "begin-generate-12",
+                "confirm-generated",
+                "export-mnemonic",
+                "export-private-key",
+                "import-mnemonic",
+                "import-private-key",
+                "migrate",
+                "open",
+                "begin-generate-12",
+                "cancel-generated",
                 "prepare-recommended",
                 "confirm",
                 "prepare-faster",
@@ -1204,7 +2191,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 14,
+        transitions_checked: 34,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -1273,18 +2260,98 @@ fn headless_preview(mode: FeeMode) -> TransferPreview {
     }
 }
 
+fn headless_snapshot(wallet_kind: WalletKind) -> WalletSnapshot {
+    WalletSnapshot {
+        address: "headless-account".to_owned(),
+        balance_eth: "headless-balance".to_owned(),
+        account_count: if matches!(wallet_kind, WalletKind::V2Mnemonic { .. }) {
+            2
+        } else {
+            1
+        },
+        wallet_kind,
+    }
+}
+
+fn headless_reveal(kind: SecretRevealKind) -> SecretReveal {
+    SecretReveal::new(kind, Zeroizing::new("headless-secret-marker".to_owned()))
+}
+
 #[derive(Default)]
 struct HeadlessBackend {
     calls: Vec<&'static str>,
 }
 
 impl WalletBackend for HeadlessBackend {
-    fn create_wallet(&mut self, _password: &str) -> Result<WalletSnapshot, String> {
-        Err("headless operation rejected".to_owned())
+    fn begin_generate_wallet(
+        &mut self,
+        words: NewMnemonicWords,
+        _password: SensitiveText,
+        _password_confirmation: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        self.calls.push(match words {
+            NewMnemonicWords::Twelve => "begin-generate-12",
+            NewMnemonicWords::TwentyFour => "begin-generate-24",
+        });
+        Ok(headless_reveal(SecretRevealKind::Mnemonic))
+    }
+
+    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
+        self.calls.push("confirm-generated");
+        Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
+    }
+
+    fn cancel_generated_wallet(&mut self) -> Result<(), String> {
+        self.calls.push("cancel-generated");
+        Ok(())
+    }
+
+    fn import_mnemonic_wallet(
+        &mut self,
+        _mnemonic: SensitiveText,
+        _password: SensitiveText,
+        _password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.calls.push("import-mnemonic");
+        Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
+    }
+
+    fn import_private_key_wallet(
+        &mut self,
+        _private_key: SensitiveText,
+        _password: SensitiveText,
+        _password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.calls.push("import-private-key");
+        Ok(headless_snapshot(WalletKind::V2RawPrivateKey))
     }
 
     fn open_wallet(&mut self, _password: &str) -> Result<WalletSnapshot, String> {
-        Err("headless operation rejected".to_owned())
+        self.calls.push("open");
+        Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
+    }
+
+    fn migrate_legacy_wallet(
+        &mut self,
+        _old_password: SensitiveText,
+        _new_password: SensitiveText,
+        _new_password_confirmation: SensitiveText,
+    ) -> Result<WalletSnapshot, String> {
+        self.calls.push("migrate");
+        Ok(headless_snapshot(WalletKind::V2RawPrivateKey))
+    }
+
+    fn export_mnemonic(&mut self, _password: SensitiveText) -> Result<SecretReveal, String> {
+        self.calls.push("export-mnemonic");
+        Ok(headless_reveal(SecretRevealKind::Mnemonic))
+    }
+
+    fn export_account_private_key(
+        &mut self,
+        _password: SensitiveText,
+    ) -> Result<SecretReveal, String> {
+        self.calls.push("export-private-key");
+        Ok(headless_reveal(SecretRevealKind::AccountPrivateKey))
     }
 
     fn refresh(&mut self) -> Result<WalletSnapshot, String> {
@@ -1398,9 +2465,20 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "지갑 저장소를 준비하지 못했습니다.",
     "이미 Sepolia 테스트 지갑이 있습니다.",
     "저장된 Sepolia 테스트 지갑이 없습니다.",
+    "마이그레이션할 v1 테스트 지갑이 없습니다.",
     "비밀번호 형식이 올바르지 않습니다.",
+    "새 비밀번호 확인이 일치하지 않습니다.",
     "비밀번호가 틀렸거나 지갑 파일이 손상되었습니다.",
     "지갑 파일 형식이 올바르지 않습니다.",
+    "영어 복구 문구와 체크섬을 확인해 주세요.",
+    "개인 키는 0x 접두사 선택과 정확한 64자리 16진수여야 합니다.",
+    "지갑 계정 메타데이터 안전 검증에 실패했습니다.",
+    "열린 지갑과 현재 저장된 지갑이 일치하지 않습니다.",
+    "먼저 표시된 복구 문구의 백업을 확인하거나 취소해 주세요.",
+    "확인할 새 복구 문구가 없습니다. 다시 생성해 주세요.",
+    "복구 문구 확인 시간이 끝났습니다. 새 지갑 생성을 다시 시작해 주세요.",
+    "v2 지갑은 저장됐지만 이전 v1 파일을 정리하지 못했습니다. 앱을 다시 열어 주세요.",
+    "이 지갑은 복구 문구로 만든 지갑이 아니어서 복구 문구를 내보낼 수 없습니다. v1 지갑은 먼저 v2로 이전해도 원래 개인 키 지갑으로 유지됩니다.",
     "안전한 키 처리를 완료하지 못했습니다.",
     "먼저 Sepolia 테스트 지갑을 열어 주세요.",
     "Sepolia 연결을 확인하지 못했습니다.",
@@ -1867,6 +2945,40 @@ mod tests {
         preview
     }
 
+    fn test_app(
+        commands: std::sync::mpsc::Sender<WorkerCommand>,
+        events: std::sync::mpsc::Receiver<WorkerEvent>,
+    ) -> super::WalletApp {
+        super::WalletApp {
+            commands: Some(commands),
+            events,
+            setup_mode: super::SetupMode::Open,
+            mnemonic_words: super::NewMnemonicWords::Twelve,
+            export_kind: super::SecretRevealKind::Mnemonic,
+            password: String::new(),
+            password_confirmation: String::new(),
+            old_password: String::new(),
+            imported_secret: String::new(),
+            password_visible: false,
+            imported_secret_visible: false,
+            reauth_password: String::new(),
+            snapshot: None,
+            recipient: String::new(),
+            amount_eth: String::new(),
+            fee_mode: super::FeeMode::Recommended,
+            custom_priority_fee_gwei: String::new(),
+            custom_max_fee_gwei: String::new(),
+            prepared: None,
+            pending: None,
+            hold: HoldToSend::default(),
+            secret_hold: HoldToSend::default(),
+            secret_reveal: None,
+            notice: None,
+            error: None,
+            last_transaction_hash: None,
+        }
+    }
+
     #[test]
     fn confirmation_hold_is_impossible_without_preview() {
         assert!(!confirmation_enabled(None, None));
@@ -1889,24 +3001,8 @@ mod tests {
     fn triggered_hold_dispatches_confirm_exactly_once_and_blocks_while_pending() {
         let (commands, command_receiver) = std::sync::mpsc::channel();
         let (_event_sender, events) = std::sync::mpsc::channel();
-        let mut app = super::WalletApp {
-            commands: Some(commands),
-            events,
-            password: String::new(),
-            password_visible: false,
-            snapshot: None,
-            recipient: String::new(),
-            amount_eth: String::new(),
-            fee_mode: super::FeeMode::Recommended,
-            custom_priority_fee_gwei: String::new(),
-            custom_max_fee_gwei: String::new(),
-            prepared: Some(exact_preview()),
-            pending: None,
-            hold: HoldToSend::default(),
-            notice: None,
-            error: None,
-            last_transaction_hash: None,
-        };
+        let mut app = test_app(commands, events);
+        app.prepared = Some(exact_preview());
 
         assert!(!app.handle_hold_outcome(HoldOutcome::Idle));
         assert!(app.handle_hold_outcome(HoldOutcome::Triggered));
@@ -1916,6 +3012,83 @@ mod tests {
             Ok(WorkerCommand::ConfirmPrepared)
         ));
         assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn generated_reveal_expiry_dispatches_one_cancel_and_drops_the_reveal() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let start = Instant::now();
+        let reveal = super::SecretReveal::new(
+            super::SecretRevealKind::Mnemonic,
+            zeroize::Zeroizing::new("headless secret marker".to_owned()),
+        );
+        app.secret_reveal =
+            super::TimedSecretReveal::new(reveal, super::RevealPurpose::GeneratedBackup, start);
+
+        app.expire_secret_reveal(start + super::SECRET_REVEAL_DURATION);
+        assert!(app.secret_reveal.is_none());
+        assert!(app.pending == Some(super::PendingAction::CancelGenerated));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(WorkerCommand::CancelGenerated)
+        ));
+        app.expire_secret_reveal(start + super::SECRET_REVEAL_DURATION + Duration::from_secs(1));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn secret_export_handler_is_exactly_once_while_pending() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.reauth_password = "headless export password".to_owned();
+        app.prepared = Some(exact_preview());
+        assert!(!app.handle_secret_hold_outcome(
+            HoldOutcome::Triggered,
+            super::SecretHoldAction::ExportMnemonic,
+        ));
+        assert!(command_receiver.try_recv().is_err());
+        app.prepared = None;
+        assert!(app.handle_secret_hold_outcome(
+            HoldOutcome::Triggered,
+            super::SecretHoldAction::ExportMnemonic,
+        ));
+        assert!(!app.handle_secret_hold_outcome(
+            HoldOutcome::Triggered,
+            super::SecretHoldAction::ExportMnemonic,
+        ));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(WorkerCommand::ExportMnemonic { .. })
+        ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_open_or_migration_clears_stale_unlocked_ui_state() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.snapshot = Some(super::headless_snapshot(super::WalletKind::V2Mnemonic {
+            word_count: 12,
+        }));
+        app.prepared = Some(exact_preview());
+        app.apply_worker_event(WorkerEvent::Opened(Err(
+            "비밀번호가 틀렸거나 지갑 파일이 손상되었습니다.".to_owned(),
+        )));
+        assert!(app.snapshot.is_none());
+        assert!(app.prepared.is_none());
+
+        app.snapshot = Some(super::headless_snapshot(
+            super::WalletKind::LegacyV1RawPrivateKey,
+        ));
+        app.apply_worker_event(WorkerEvent::LegacyMigrated(Err(
+            "v2 지갑은 저장됐지만 이전 v1 파일을 정리하지 못했습니다. 앱을 다시 열어 주세요."
+                .to_owned(),
+        )));
+        assert!(app.snapshot.is_none());
     }
 
     #[test]
@@ -1979,11 +3152,6 @@ mod tests {
     }
 
     impl WalletBackend for RecordingBackend {
-        fn create_wallet(&mut self, _input: &str) -> Result<WalletSnapshot, String> {
-            self.calls.push("create");
-            Err("unused".to_owned())
-        }
-
         fn open_wallet(&mut self, _input: &str) -> Result<WalletSnapshot, String> {
             self.calls.push("open");
             Err("unused".to_owned())
@@ -2061,8 +3229,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 14);
-        assert_eq!(evidence.backend_routes_checked, 7);
+        assert_eq!(evidence.transitions_checked, 34);
+        assert_eq!(evidence.backend_routes_checked, 17);
         Ok(())
     }
 }
