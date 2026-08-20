@@ -14,6 +14,7 @@ use pbkdf2::pbkdf2_hmac;
 use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use sha2::Sha512;
 use sha3::{Digest as _, Keccak256};
+use subtle::{Choice, ConstantTimeEq as _};
 use zeroize::{Zeroize as _, Zeroizing};
 
 const BIP39_PBKDF2_ROUNDS: u32 = 2_048;
@@ -30,6 +31,8 @@ const MANAGED_ACCOUNT_COUNT: usize = 2;
 const MAX_MNEMONIC_INPUT_BYTES: usize = 4_096;
 const PRIVATE_KEY_BYTES: usize = 32;
 const MAX_ENTROPY_BYTES: usize = 32;
+const BACKUP_CHALLENGE_WORDS: usize = 4;
+const MAX_BIP39_WORD_BYTES: usize = 8;
 
 type HmacSha512 = Hmac<Sha512>;
 
@@ -41,6 +44,7 @@ pub(crate) enum SecretError {
     InvalidPrivateKey,
     UnsupportedAccount,
     ExportUnavailable,
+    BackupConfirmationFailed,
     DerivationFailed,
     CryptographicFailure,
 }
@@ -53,6 +57,7 @@ impl fmt::Display for SecretError {
             Self::InvalidPrivateKey => "secp256k1 private key is invalid",
             Self::UnsupportedAccount => "demo account index is unsupported",
             Self::ExportUnavailable => "requested secret export is unavailable",
+            Self::BackupConfirmationFailed => "generated wallet backup confirmation failed",
             Self::DerivationFailed => "BIP-32 account derivation failed",
             Self::CryptographicFailure => "secret cryptographic operation failed",
         })
@@ -452,6 +457,67 @@ impl WalletSecret {
         })
     }
 
+    /// Verify one generated-wallet backup attempt without exposing which field
+    /// differed. Every challenged word is compared as an eight-byte padded
+    /// value plus a length byte, and the four word results and full account-0
+    /// address result are aggregated before returning a single category.
+    pub(crate) fn verify_generated_backup(
+        &self,
+        positions: [u8; BACKUP_CHALLENGE_WORDS],
+        answers: &[Zeroizing<String>; BACKUP_CHALLENGE_WORDS],
+        first_address: &Zeroizing<String>,
+    ) -> Result<(), SecretError> {
+        let Self::Mnemonic {
+            entropy,
+            entropy_length,
+            ..
+        } = self
+        else {
+            return Err(SecretError::BackupConfirmationFailed);
+        };
+        let word_count = usize::from((*entropy_length / 4) * 3);
+        if !valid_backup_positions(positions, word_count) {
+            return Err(SecretError::BackupConfirmationFailed);
+        }
+
+        let mnemonic =
+            Mnemonic::from_entropy_in(Language::English, &entropy[..usize::from(*entropy_length)])
+                .map_err(|_| SecretError::BackupConfirmationFailed)?;
+        let mut matches = Choice::from(1_u8);
+        for (position, answer) in positions.into_iter().zip(answers.iter()) {
+            let expected = mnemonic
+                .words()
+                .nth(usize::from(position - 1))
+                .ok_or(SecretError::BackupConfirmationFailed)?;
+            let (expected_padded, expected_length, expected_shape) = padded_backup_word(expected);
+            let (answer_padded, answer_length, answer_shape) = padded_backup_word(answer.as_str());
+            matches &= expected_padded.ct_eq(&answer_padded);
+            matches &= expected_length.ct_eq(&answer_length);
+            matches &= expected_shape;
+            matches &= answer_shape;
+        }
+
+        // Re-derive account 0 before accepting persisted metadata as the
+        // comparison target. The zeroizing key is never exported from here.
+        let account_key = self
+            .account_private_key(0)
+            .map_err(|_| SecretError::BackupConfirmationFailed)?;
+        drop(account_key);
+        let expected_address = self
+            .account(0)
+            .ok_or(SecretError::BackupConfirmationFailed)?
+            .address();
+        let (entered_address, address_shape) = decode_backup_address(first_address.as_str());
+        matches &= expected_address.as_bytes().ct_eq(&entered_address);
+        matches &= address_shape;
+
+        if bool::from(matches) {
+            Ok(())
+        } else {
+            Err(SecretError::BackupConfirmationFailed)
+        }
+    }
+
     /// Returns a lowercase 64-digit account private key.
     pub(crate) fn export_account_private_key(
         &self,
@@ -682,6 +748,68 @@ fn validate_mnemonic_shape(phrase: &str) -> Result<(), SecretError> {
         count = count.checked_add(1).ok_or(SecretError::InvalidMnemonic)?;
     }
     validate_import_word_count(count)
+}
+
+fn valid_backup_positions(positions: [u8; BACKUP_CHALLENGE_WORDS], word_count: usize) -> bool {
+    positions.iter().enumerate().all(|(index, position)| {
+        usize::from(*position) <= word_count
+            && *position != 0
+            && (index == 0 || positions[index - 1] < *position)
+    })
+}
+
+#[allow(clippy::needless_range_loop)] // Security shape: exactly eight indexed iterations.
+fn padded_backup_word(value: &str) -> ([u8; MAX_BIP39_WORD_BYTES], u8, Choice) {
+    let bytes = value.as_bytes();
+    let mut padded = [0_u8; MAX_BIP39_WORD_BYTES];
+    let length = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
+    let mut shape = u8::from(!bytes.is_empty() && bytes.len() <= MAX_BIP39_WORD_BYTES);
+    for index in 0..MAX_BIP39_WORD_BYTES {
+        let byte = bytes.get(index).copied().unwrap_or_default();
+        padded[index] = byte;
+        if index < bytes.len() {
+            shape &= u8::from(byte.is_ascii_lowercase());
+        }
+    }
+    (padded, length, Choice::from(shape))
+}
+
+fn decode_backup_address(value: &str) -> ([u8; 20], Choice) {
+    const PREFIX_BYTES: usize = 2;
+    const HEX_BYTES: usize = 40;
+
+    let input = value.as_bytes();
+    let mut valid = u8::from(input.len() == PREFIX_BYTES + HEX_BYTES);
+    valid &= u8::from(input.first().copied() == Some(b'0'));
+    valid &= u8::from(input.get(1).copied() == Some(b'x'));
+    let mut output = [0_u8; 20];
+    for (index, byte) in output.iter_mut().enumerate() {
+        let (high, high_valid) = backup_hex_nibble(
+            input
+                .get(PREFIX_BYTES + index * 2)
+                .copied()
+                .unwrap_or_default(),
+        );
+        let (low, low_valid) = backup_hex_nibble(
+            input
+                .get(PREFIX_BYTES + index * 2 + 1)
+                .copied()
+                .unwrap_or_default(),
+        );
+        *byte = (high << 4) | low;
+        valid &= high_valid;
+        valid &= low_valid;
+    }
+    (output, Choice::from(valid))
+}
+
+const fn backup_hex_nibble(value: u8) -> (u8, u8) {
+    match value {
+        b'0'..=b'9' => (value - b'0', 1),
+        b'a'..=b'f' => (value - b'a' + 10, 1),
+        b'A'..=b'F' => (value - b'A' + 10, 1),
+        _ => (0, 0),
+    }
 }
 
 fn validate_private_key(bytes: &[u8; PRIVATE_KEY_BYTES]) -> Result<(), SecretError> {
@@ -962,6 +1090,74 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn generated_backup_verification_aggregates_words_and_full_first_address()
+    -> Result<(), SecretError> {
+        let wallet = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)?;
+        let positions = [1, 4, 8, 12];
+        let (answers, first_address) = generated_backup_answers(&wallet, positions)?;
+        wallet.verify_generated_backup(positions, &answers, &first_address)?;
+
+        let (mut wrong_word, first_address) = generated_backup_answers(&wallet, positions)?;
+        wrong_word[0] = Zeroizing::new("zzzzzzzz".to_owned());
+        assert!(matches!(
+            wallet.verify_generated_backup(positions, &wrong_word, &first_address),
+            Err(SecretError::BackupConfirmationFailed)
+        ));
+
+        let (answers, mut wrong_address) = generated_backup_answers(&wallet, positions)?;
+        wrong_address.zeroize();
+        wrong_address.push_str("0x0000000000000000000000000000000000000000");
+        assert!(matches!(
+            wallet.verify_generated_backup(positions, &answers, &wrong_address),
+            Err(SecretError::BackupConfirmationFailed)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_backup_verification_rejects_unbounded_and_invalid_challenge_shapes()
+    -> Result<(), SecretError> {
+        let wallet = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)?;
+        let positions = [1, 4, 8, 12];
+        let (mut answers, first_address) = generated_backup_answers(&wallet, positions)?;
+        answers[2] = Zeroizing::new("a".repeat(4_096));
+        assert!(matches!(
+            wallet.verify_generated_backup(positions, &answers, &first_address),
+            Err(SecretError::BackupConfirmationFailed)
+        ));
+
+        let (answers, first_address) = generated_backup_answers(&wallet, positions)?;
+        for invalid in [[0, 4, 8, 12], [1, 4, 4, 12], [4, 1, 8, 12], [1, 4, 8, 13]] {
+            assert!(matches!(
+                wallet.verify_generated_backup(invalid, &answers, &first_address),
+                Err(SecretError::BackupConfirmationFailed)
+            ));
+        }
+        Ok(())
+    }
+
+    fn generated_backup_answers(
+        wallet: &WalletSecret,
+        positions: [u8; 4],
+    ) -> Result<([Zeroizing<String>; 4], Zeroizing<String>), SecretError> {
+        let (_, phrase) = wallet.export_mnemonic()?.into_zeroizing_text();
+        let answers = positions.map(|position| {
+            Zeroizing::new(
+                phrase
+                    .split(' ')
+                    .nth(usize::from(position - 1))
+                    .expect("generated backup test position")
+                    .to_owned(),
+            )
+        });
+        let account = wallet.account(0).ok_or(SecretError::DerivationFailed)?;
+        let mut address = Zeroizing::new(String::with_capacity(42));
+        address.push_str("0x");
+        encode_lower_hex(account.address().as_bytes(), &mut address);
+        Ok((answers, address))
+    }
+
     fn compressed_public_hex(key: &ExtendedPrivateKey) -> Result<String, SecretError> {
         let mut secret = SecretKey::from_byte_array(*key.private_key)
             .map_err(|_| SecretError::DerivationFailed)?;
@@ -971,5 +1167,5 @@ mod tests {
     }
 
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
-    use zeroize::Zeroize as _;
+    use zeroize::{Zeroize as _, Zeroizing};
 }

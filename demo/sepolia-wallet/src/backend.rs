@@ -40,7 +40,8 @@ use crate::erc20::{self, TokenAmount};
 use crate::rpc;
 use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
 use crate::ui::{
-    CustomTokenSnapshot, CustomTokenState, FeeSelection, NewMnemonicWords, SecretReveal,
+    CustomTokenSnapshot, CustomTokenState, FeeSelection, GeneratedBackupChallenge,
+    GeneratedBackupConfirmation, GeneratedBackupReveal, NewMnemonicWords, SecretReveal,
     SecretRevealKind, SendReceipt, SensitiveText, SessionPermit, TransferPreview, WalletBackend,
     WalletKind, WalletSnapshot,
 };
@@ -60,7 +61,9 @@ const MAX_FEE_PER_GAS: u64 = 100_000_000_000;
 const FEE_QUOTE_TTL: Duration = Duration::from_secs(60);
 const MIN_CONFIRMABLE_QUOTE_SECONDS: u64 = 3;
 const MAX_GWEI_INPUT_BYTES: usize = 32;
-const GENERATED_BACKUP_TTL: Duration = Duration::from_secs(30);
+const GENERATED_BACKUP_TTL: Duration = Duration::from_secs(120);
+const MAX_RANDOM_SAMPLES: usize = 256;
+const GENERATED_BACKUP_CHALLENGE_WORDS: usize = 4;
 const MAX_V2_VAULT_BYTES: usize = 4_096;
 
 const VAULT_MAGIC: &[u8; 8] = b"YWSPV001";
@@ -123,6 +126,14 @@ struct PendingGeneratedWallet {
     wallet: WalletSecret,
     password: VaultPassword,
     expires_at: Instant,
+    stage: PendingGeneratedStage,
+}
+
+enum PendingGeneratedStage {
+    Display,
+    Challenge {
+        positions: [u8; GENERATED_BACKUP_CHALLENGE_WORDS],
+    },
 }
 
 impl UnlockedWallet {
@@ -518,7 +529,7 @@ impl DemoBackend {
         words: NewMnemonicWords,
         password: SensitiveText,
         password_confirmation: SensitiveText,
-    ) -> Result<SecretReveal, BackendError> {
+    ) -> Result<GeneratedBackupReveal, BackendError> {
         self.prepared = None;
         self.ensure_management_mutation_allowed()?;
         if self.pending_generation.is_some() {
@@ -530,7 +541,7 @@ impl DemoBackend {
             NewMnemonicWords::TwentyFour => MnemonicWordCount::TwentyFour,
         };
         let wallet = WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;
-        let (_, kind, _) = validated_wallet_metadata(&wallet)?;
+        let (first_address, kind, _) = validated_wallet_metadata(&wallet)?;
         if !matches!(
             kind,
             WalletKind::V2Mnemonic {
@@ -549,25 +560,99 @@ impl DemoBackend {
             wallet,
             password,
             expires_at,
+            stage: PendingGeneratedStage::Display,
         });
-        secret_reveal(export)
+        generated_backup_reveal(export, first_address, expires_at)
     }
 
-    fn confirm_generated(&mut self) -> Result<WalletSnapshot, BackendError> {
+    fn begin_generated_challenge(&mut self) -> Result<GeneratedBackupChallenge, BackendError> {
         self.prepared = None;
-        let pending = self
+        let mut pending = self
             .pending_generation
             .take()
             .ok_or(BackendError::NoPendingGeneration)?;
         if self.clock.now() >= pending.expires_at {
             return Err(BackendError::GenerationExpired);
         }
+        if !matches!(pending.stage, PendingGeneratedStage::Display) {
+            return Err(BackendError::BackupConfirmationFailed);
+        }
+        let word_count = pending
+            .wallet
+            .word_count()
+            .filter(|count| matches!(count, 12 | 24))
+            .ok_or(BackendError::WalletMetadataInvalid)?;
+        let positions = random_backup_challenge_positions(word_count)?;
+        pending.stage = PendingGeneratedStage::Challenge { positions };
+        let challenge = GeneratedBackupChallenge::new(positions, pending.expires_at);
+        self.pending_generation = Some(pending);
+        Ok(challenge)
+    }
+
+    fn confirm_generated(
+        &mut self,
+        confirmation: GeneratedBackupConfirmation,
+        permit: &SessionPermit<'_>,
+    ) -> Result<WalletSnapshot, BackendError> {
+        self.prepared = None;
+        let pending = self
+            .pending_generation
+            .take()
+            .ok_or(BackendError::NoPendingGeneration)?;
+        let PendingGeneratedStage::Challenge { positions } = pending.stage else {
+            return Err(BackendError::BackupConfirmationFailed);
+        };
+
         self.ensure_management_mutation_allowed()?;
-        self.persist_new_v2(
-            pending.wallet,
-            pending.password,
-            VaultOrigin::GeneratedMnemonic,
-        )
+        let metadata = confirmed_metadata(VaultOrigin::GeneratedMnemonic)?;
+        // First authority boundary: do not even compare the submitted backup
+        // data after the originating session has been revoked or expired.
+        self.ensure_generated_confirmation_live(permit, pending.expires_at)?;
+        let (words, first_address) = confirmation.into_zeroizing_parts();
+        pending
+            .wallet
+            .verify_generated_backup(positions, &words, &first_address)
+            .map_err(map_secret_error)?;
+        drop(words);
+        drop(first_address);
+
+        // Second boundary: successful verification grants no authority after
+        // this point unless the session and original deadline remain live.
+        self.ensure_generated_confirmation_live(permit, pending.expires_at)?;
+        let sealed =
+            seal_vault_v2(&pending.wallet, &pending.password, metadata).map_err(map_vault_error)?;
+        // Third boundary: sealing performs the first expensive KDF. Recheck
+        // before authenticated open performs the second.
+        self.ensure_generated_confirmation_live(permit, pending.expires_at)?;
+        let opened =
+            open_vault_v2(sealed.as_bytes(), &pending.password).map_err(map_vault_error)?;
+        let original_metadata = validated_wallet_metadata(&pending.wallet)?;
+        if validated_wallet_metadata(opened.wallet())? != original_metadata {
+            return Err(BackendError::WalletMetadataInvalid);
+        }
+        // Fourth boundary: never activate a stale seal/open/validation result.
+        self.ensure_generated_confirmation_live(permit, pending.expires_at)?;
+        self.ensure_management_mutation_allowed()?;
+        // Fifth boundary immediately adjacent to the only filesystem write.
+        self.ensure_generated_confirmation_live(permit, pending.expires_at)?;
+        write_new_file(&self.vault_v2_path, sealed.as_bytes())?;
+
+        self.unlocked = Some(UnlockedWallet::V2(opened));
+        self.last_balance = Some(Word::ZERO);
+        self.snapshot()
+    }
+
+    fn ensure_generated_confirmation_live(
+        &self,
+        permit: &SessionPermit<'_>,
+        expires_at: Instant,
+    ) -> Result<(), BackendError> {
+        ensure_session_current(permit)?;
+        if self.clock.now() >= expires_at {
+            Err(BackendError::GenerationExpired)
+        } else {
+            Ok(())
+        }
     }
 
     fn cancel_generated(&mut self) {
@@ -1429,13 +1514,22 @@ impl WalletBackend for DemoBackend {
         words: NewMnemonicWords,
         password: SensitiveText,
         password_confirmation: SensitiveText,
-    ) -> Result<SecretReveal, String> {
+    ) -> Result<GeneratedBackupReveal, String> {
         self.begin_generate(words, password, password_confirmation)
             .map_err(error_text)
     }
 
-    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
-        self.confirm_generated().map_err(error_text)
+    fn begin_generated_backup_challenge(&mut self) -> Result<GeneratedBackupChallenge, String> {
+        self.begin_generated_challenge().map_err(error_text)
+    }
+
+    fn confirm_generated_wallet(
+        &mut self,
+        confirmation: GeneratedBackupConfirmation,
+        permit: &SessionPermit<'_>,
+    ) -> Result<WalletSnapshot, String> {
+        self.confirm_generated(confirmation, permit)
+            .map_err(error_text)
     }
 
     fn cancel_generated_wallet(&mut self) -> Result<(), String> {
@@ -1747,6 +1841,7 @@ enum BackendError {
     GenerationPending,
     NoPendingGeneration,
     GenerationExpired,
+    BackupConfirmationFailed,
     MigrationCleanup,
     MnemonicUnavailable,
     RandomnessUnavailable,
@@ -1807,6 +1902,7 @@ impl std::fmt::Debug for BackendError {
             Self::GenerationPending => "BackendError::GenerationPending",
             Self::NoPendingGeneration => "BackendError::NoPendingGeneration",
             Self::GenerationExpired => "BackendError::GenerationExpired",
+            Self::BackupConfirmationFailed => "BackendError::BackupConfirmationFailed",
             Self::MigrationCleanup => "BackendError::MigrationCleanup",
             Self::MnemonicUnavailable => "BackendError::MnemonicUnavailable",
             Self::RandomnessUnavailable => "BackendError::RandomnessUnavailable",
@@ -1887,6 +1983,9 @@ fn error_text(error: BackendError) -> String {
         }
         BackendError::NoPendingGeneration => {
             "확인할 새 복구 문구가 없습니다. 다시 생성해 주세요.".to_owned()
+        }
+        BackendError::BackupConfirmationFailed => {
+            "백업 확인에 실패했습니다. 지갑은 저장되지 않았습니다.".to_owned()
         }
         BackendError::GenerationExpired => {
             "복구 문구 확인 시간이 끝났습니다. 새 지갑 생성을 다시 시작해 주세요.".to_owned()
@@ -2078,6 +2177,75 @@ fn secret_reveal(export: SecretExport) -> Result<SecretReveal, BackendError> {
     Ok(SecretReveal::new(kind, text))
 }
 
+fn generated_backup_reveal(
+    export: SecretExport,
+    first_address: [u8; 20],
+    expires_at: Instant,
+) -> Result<GeneratedBackupReveal, BackendError> {
+    let (kind, phrase) = export.into_zeroizing_text();
+    if kind != SecretExportKind::Mnemonic {
+        return Err(BackendError::MnemonicUnavailable);
+    }
+    Ok(GeneratedBackupReveal::new(
+        phrase,
+        Zeroizing::new(checksum_address(first_address)),
+        expires_at,
+    ))
+}
+
+fn random_backup_challenge_positions(
+    word_count: u8,
+) -> Result<[u8; GENERATED_BACKUP_CHALLENGE_WORDS], BackendError> {
+    choose_backup_challenge_positions(word_count, |bytes| {
+        getrandom::fill(bytes).map_err(|_| BackendError::RandomnessUnavailable)
+    })
+}
+
+fn choose_backup_challenge_positions(
+    word_count: u8,
+    mut fill_random: impl FnMut(&mut [u8]) -> Result<(), BackendError>,
+) -> Result<[u8; GENERATED_BACKUP_CHALLENGE_WORDS], BackendError> {
+    if !matches!(word_count, 12 | 24) {
+        return Err(BackendError::WalletMetadataInvalid);
+    }
+    let mut pool = [0_u8; 24];
+    for (index, value) in pool.iter_mut().take(usize::from(word_count)).enumerate() {
+        *value = u8::try_from(index).map_err(|_| BackendError::CryptographicFailure)?;
+    }
+    let mut positions = [0_u8; GENERATED_BACKUP_CHALLENGE_WORDS];
+    for (selection, position) in positions.iter_mut().enumerate() {
+        let remaining = word_count
+            .checked_sub(u8::try_from(selection).map_err(|_| BackendError::CryptographicFailure)?)
+            .ok_or(BackendError::CryptographicFailure)?;
+        let offset = usize::from(random_below(remaining, &mut fill_random)?);
+        pool.swap(selection, selection + offset);
+        *position = pool[selection]
+            .checked_add(1)
+            .ok_or(BackendError::CryptographicFailure)?;
+    }
+    positions.sort_unstable();
+    Ok(positions)
+}
+
+fn random_below(
+    bound: u8,
+    fill_random: &mut impl FnMut(&mut [u8]) -> Result<(), BackendError>,
+) -> Result<u8, BackendError> {
+    if bound == 0 {
+        return Err(BackendError::CryptographicFailure);
+    }
+    let bound_u16 = u16::from(bound);
+    let limit = 256_u16 - (256_u16 % bound_u16);
+    for _ in 0..MAX_RANDOM_SAMPLES {
+        let mut sample = [0_u8; 1];
+        fill_random(&mut sample)?;
+        if u16::from(sample[0]) < limit {
+            return Ok(sample[0] % bound);
+        }
+    }
+    Err(BackendError::RandomnessUnavailable)
+}
+
 const fn map_secret_error(error: SecretError) -> BackendError {
     match error {
         SecretError::RandomnessUnavailable => BackendError::RandomnessUnavailable,
@@ -2087,6 +2255,7 @@ const fn map_secret_error(error: SecretError) -> BackendError {
             BackendError::WalletMetadataInvalid
         }
         SecretError::ExportUnavailable => BackendError::MnemonicUnavailable,
+        SecretError::BackupConfirmationFailed => BackendError::BackupConfirmationFailed,
         SecretError::CryptographicFailure => BackendError::CryptographicFailure,
     }
 }
@@ -3505,6 +3674,39 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct ExpireOnCallClock {
+        start: Instant,
+        calls: Arc<Mutex<usize>>,
+        expire_on_call: usize,
+    }
+
+    impl ExpireOnCallClock {
+        fn new(start: Instant, expire_on_call: usize) -> Self {
+            Self {
+                start,
+                calls: Arc::new(Mutex::new(0)),
+                expire_on_call,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().expect("expiry clock calls")
+        }
+    }
+
+    impl MonotonicClock for ExpireOnCallClock {
+        fn now(&self) -> Instant {
+            let mut calls = self.calls.lock().expect("expiry clock lock");
+            *calls += 1;
+            if *calls >= self.expire_on_call {
+                self.start + GENERATED_BACKUP_TTL
+            } else {
+                self.start
+            }
+        }
+    }
+
+    #[derive(Clone)]
     struct MutableRpc {
         state: Arc<Mutex<MutableRpcState>>,
     }
@@ -3783,6 +3985,74 @@ mod tests {
         SensitiveText::new(value.to_owned())
     }
 
+    fn empty_generated_confirmation() -> GeneratedBackupConfirmation {
+        GeneratedBackupConfirmation::new(
+            std::array::from_fn(|_| SensitiveText::new(String::new())),
+            SensitiveText::new(String::new()),
+        )
+    }
+
+    fn generated_confirmation(
+        backend: &DemoBackend,
+        wrong_word: bool,
+        wrong_address: bool,
+    ) -> GeneratedBackupConfirmation {
+        let pending = backend
+            .pending_generation
+            .as_ref()
+            .expect("generated confirmation fixture pending");
+        let PendingGeneratedStage::Challenge { positions } = &pending.stage else {
+            panic!("generated confirmation fixture challenge stage");
+        };
+        let (_, phrase) = pending
+            .wallet
+            .export_mnemonic()
+            .expect("generated confirmation fixture export")
+            .into_zeroizing_text();
+        let mut words = positions.map(|position| {
+            let word = phrase
+                .split(' ')
+                .nth(usize::from(position - 1))
+                .expect("generated confirmation fixture position");
+            SensitiveText::new(word.to_owned())
+        });
+        if wrong_word {
+            words[0] = SensitiveText::new("zzzzzzzz".to_owned());
+        }
+        let account = pending
+            .wallet
+            .account(0)
+            .expect("generated confirmation fixture account");
+        let first_address = if wrong_address {
+            "0x0000000000000000000000000000000000000000".to_owned()
+        } else {
+            checksum_address(*account.address().as_bytes())
+        };
+        GeneratedBackupConfirmation::new(words, SensitiveText::new(first_address))
+    }
+
+    fn begin_challenge_and_confirmation(backend: &mut DemoBackend) -> GeneratedBackupConfirmation {
+        backend
+            .begin_generated_challenge()
+            .expect("begin generated backup challenge");
+        generated_confirmation(backend, false, false)
+    }
+
+    fn confirm_generated_fixture(
+        backend: &mut DemoBackend,
+    ) -> Result<WalletSnapshot, BackendError> {
+        let confirmation = begin_challenge_and_confirmation(backend);
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        backend.confirm_generated(confirmation, &permit)
+    }
+
+    fn confirm_without_pending(backend: &mut DemoBackend) -> Result<WalletSnapshot, BackendError> {
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        backend.confirm_generated(empty_generated_confirmation(), &permit)
+    }
+
     fn v2_backend(clock: TestClock) -> DemoBackend {
         DemoBackend::with_rpc_and_clock(temporary_vault(), test_rpc(), clock)
     }
@@ -3818,10 +4088,28 @@ mod tests {
             assert!(!backend.vault_path.exists());
             assert!(!backend.vault_v2_path.exists());
             assert!(backend.pending_generation.is_some());
+            let display_deadline = reveal.expires_at();
             drop(reveal);
-
+            let challenge = backend
+                .begin_generated_challenge()
+                .expect("begin generated backup challenge");
+            assert_eq!(challenge.expires_at(), display_deadline);
+            let positions = challenge.positions();
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(positions.into_iter().all(|position| {
+                position >= 1
+                    && position
+                        <= match words {
+                            NewMnemonicWords::Twelve => 12,
+                            NewMnemonicWords::TwentyFour => 24,
+                        }
+            }));
+            assert!(!backend.vault_v2_path.exists());
+            let confirmation = generated_confirmation(&backend, false, false);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
             let snapshot = backend
-                .confirm_generated()
+                .confirm_generated(confirmation, &permit)
                 .expect("confirm generated mnemonic");
             let expected_words = match words {
                 NewMnemonicWords::Twelve => 12,
@@ -3862,7 +4150,7 @@ mod tests {
         drop(reveal);
         cancelled.cancel_generated();
         assert!(matches!(
-            cancelled.confirm_generated(),
+            confirm_without_pending(&mut cancelled),
             Err(BackendError::NoPendingGeneration)
         ));
         assert!(!cancelled.vault_v2_path.exists());
@@ -3881,12 +4169,302 @@ mod tests {
         );
         clock.advance(GENERATED_BACKUP_TTL);
         assert!(matches!(
-            expired.confirm_generated(),
+            expired.begin_generated_challenge(),
             Err(BackendError::GenerationExpired)
         ));
         assert!(expired.pending_generation.is_none());
         assert!(!expired.vault_v2_path.exists());
         remove_test_backend_files(&expired);
+    }
+
+    #[test]
+    fn generated_challenge_selection_is_distinct_sorted_bounded_and_rejection_capped() {
+        let mut samples = [11_u8, 10, 9, 8].into_iter();
+        let positions = choose_backup_challenge_positions(12, |output| {
+            output[0] = samples.next().expect("deterministic challenge sample");
+            Ok(())
+        })
+        .expect("deterministic challenge positions");
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            positions
+                .into_iter()
+                .all(|position| (1..=12).contains(&position))
+        );
+
+        let mut calls = 0_usize;
+        assert!(matches!(
+            choose_backup_challenge_positions(12, |output| {
+                calls += 1;
+                output[0] = u8::MAX;
+                Ok(())
+            }),
+            Err(BackendError::RandomnessUnavailable)
+        ));
+        assert_eq!(calls, 256);
+    }
+
+    #[test]
+    fn generated_challenge_rejection_sampling_has_uniform_accepted_buckets() {
+        for bound in [12_u8, 11, 10, 9, 24, 23, 22, 21] {
+            let limit = 256_u16 - (256_u16 % u16::from(bound));
+            let mut buckets = vec![0_usize; usize::from(bound)];
+            for sample in 0_u16..=u16::from(u8::MAX) {
+                let mut calls = 0_usize;
+                let selected = random_below(bound, &mut |output| {
+                    calls += 1;
+                    output[0] = if calls == 1 {
+                        u8::try_from(sample).expect("sample byte")
+                    } else {
+                        0
+                    };
+                    Ok(())
+                })
+                .expect("bounded rejection sample");
+                if sample < limit {
+                    buckets[usize::from(selected)] += 1;
+                    assert_eq!(calls, 1);
+                    assert_eq!(
+                        selected,
+                        u8::try_from(sample).expect("accepted byte") % bound
+                    );
+                } else {
+                    assert_eq!(selected, 0);
+                    assert_eq!(calls, 2);
+                }
+            }
+            let expected =
+                usize::from(u8::try_from(limit / u16::from(bound)).expect("bucket count"));
+            assert!(buckets.into_iter().all(|count| count == expected));
+        }
+    }
+
+    #[test]
+    fn generated_confirmation_is_one_attempt_for_word_and_address_mismatch() {
+        for (wrong_word, wrong_address) in [(true, false), (false, true)] {
+            let mut backend = v2_backend(TestClock::new(Instant::now()));
+            drop(
+                backend
+                    .begin_generate(
+                        NewMnemonicWords::Twelve,
+                        sensitive(TEST_PASSWORD),
+                        sensitive(TEST_PASSWORD),
+                    )
+                    .expect("begin mismatch generation"),
+            );
+            backend
+                .begin_generated_challenge()
+                .expect("begin mismatch challenge");
+            let confirmation = generated_confirmation(&backend, wrong_word, wrong_address);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+            assert!(matches!(
+                backend.confirm_generated(confirmation, &permit),
+                Err(BackendError::BackupConfirmationFailed)
+            ));
+            assert!(backend.pending_generation.is_none());
+            assert!(!backend.vault_v2_path.exists());
+            assert!(matches!(
+                confirm_without_pending(&mut backend),
+                Err(BackendError::NoPendingGeneration)
+            ));
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn generated_stage_replay_cancel_and_inclusive_deadline_fail_closed() {
+        let mut before_challenge = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            before_challenge
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin pre-challenge confirmation"),
+        );
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        assert!(matches!(
+            before_challenge.confirm_generated(empty_generated_confirmation(), &permit),
+            Err(BackendError::BackupConfirmationFailed)
+        ));
+        assert!(before_challenge.pending_generation.is_none());
+        assert!(!before_challenge.vault_v2_path.exists());
+        remove_test_backend_files(&before_challenge);
+
+        let mut replay = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            replay
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin replay generation"),
+        );
+        replay
+            .begin_generated_challenge()
+            .expect("begin replay challenge");
+        assert!(matches!(
+            replay.begin_generated_challenge(),
+            Err(BackendError::BackupConfirmationFailed)
+        ));
+        assert!(replay.pending_generation.is_none());
+        assert!(!replay.vault_v2_path.exists());
+        remove_test_backend_files(&replay);
+
+        let mut cancelled = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            cancelled
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin challenge cancellation"),
+        );
+        cancelled
+            .begin_generated_challenge()
+            .expect("begin cancellable challenge");
+        cancelled.cancel_generated();
+        assert!(cancelled.pending_generation.is_none());
+        assert!(!cancelled.vault_v2_path.exists());
+        remove_test_backend_files(&cancelled);
+
+        let clock = TestClock::new(Instant::now());
+        let mut expired = v2_backend(clock.clone());
+        drop(
+            expired
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin challenge expiry"),
+        );
+        expired
+            .begin_generated_challenge()
+            .expect("begin expiring challenge");
+        let confirmation = generated_confirmation(&expired, false, false);
+        clock.advance(GENERATED_BACKUP_TTL);
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        assert!(matches!(
+            expired.confirm_generated(confirmation, &permit),
+            Err(BackendError::GenerationExpired)
+        ));
+        assert!(expired.pending_generation.is_none());
+        assert!(!expired.vault_v2_path.exists());
+        remove_test_backend_files(&expired);
+    }
+
+    #[test]
+    fn generated_confirmation_rechecks_permit_at_all_five_commit_boundaries() {
+        for revoke_on_check in 1..=5 {
+            let mut backend = v2_backend(TestClock::new(Instant::now()));
+            drop(
+                backend
+                    .begin_generate(
+                        NewMnemonicWords::Twelve,
+                        sensitive(TEST_PASSWORD),
+                        sensitive(TEST_PASSWORD),
+                    )
+                    .expect("begin revoked generation"),
+            );
+            backend
+                .begin_generated_challenge()
+                .expect("begin revoked challenge");
+            let confirmation = generated_confirmation(&backend, false, false);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::revoke_on_check(0, &active_epoch, revoke_on_check);
+            assert!(matches!(
+                backend.confirm_generated(confirmation, &permit),
+                Err(BackendError::Locked)
+            ));
+            assert!(backend.pending_generation.is_none());
+            assert!(!backend.vault_v2_path.exists());
+            assert!(backend.unlocked.is_none());
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn generated_confirmation_rechecks_inclusive_deadline_at_all_five_commit_boundaries() {
+        for expire_on_call in 3..=7 {
+            let clock = ExpireOnCallClock::new(Instant::now(), expire_on_call);
+            let mut backend =
+                DemoBackend::with_rpc_and_clock(temporary_vault(), test_rpc(), clock.clone());
+            drop(
+                backend
+                    .begin_generate(
+                        NewMnemonicWords::Twelve,
+                        sensitive(TEST_PASSWORD),
+                        sensitive(TEST_PASSWORD),
+                    )
+                    .expect("begin expiring generation"),
+            );
+            backend
+                .begin_generated_challenge()
+                .expect("begin expiring challenge");
+            let confirmation = generated_confirmation(&backend, false, false);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+
+            assert!(matches!(
+                backend.confirm_generated(confirmation, &permit),
+                Err(BackendError::GenerationExpired)
+            ));
+            assert_eq!(clock.calls(), expire_on_call);
+            assert!(backend.pending_generation.is_none());
+            assert!(!backend.vault_v2_path.exists());
+            assert!(backend.unlocked.is_none());
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn generated_confirmation_is_bound_to_its_generation() {
+        let mut backend = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            backend
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin first generation"),
+        );
+        backend
+            .begin_generated_challenge()
+            .expect("begin first challenge");
+        let first_confirmation = generated_confirmation(&backend, false, false);
+        backend.cancel_generated();
+
+        drop(
+            backend
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin second generation"),
+        );
+        backend
+            .begin_generated_challenge()
+            .expect("begin second challenge");
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+
+        assert!(matches!(
+            backend.confirm_generated(first_confirmation, &permit),
+            Err(BackendError::BackupConfirmationFailed)
+        ));
+        assert!(backend.pending_generation.is_none());
+        assert!(!backend.vault_v2_path.exists());
+        assert!(backend.unlocked.is_none());
+        remove_test_backend_files(&backend);
     }
 
     #[test]
@@ -3942,7 +4520,7 @@ mod tests {
         backend.lock();
         assert!(backend.pending_generation.is_none());
         assert!(matches!(
-            backend.confirm_generated(),
+            confirm_without_pending(&mut backend),
             Err(BackendError::NoPendingGeneration)
         ));
         assert!(!backend.vault_v2_path.exists());
@@ -4015,7 +4593,7 @@ mod tests {
                 )
                 .expect("begin v2 fixture"),
         );
-        let snapshot = backend.confirm_generated().expect("persist v2 fixture");
+        let snapshot = confirm_generated_fixture(&mut backend).expect("persist v2 fixture");
         let legacy_password = "legacy demo password";
         write_legacy_fixture(&backend, legacy_password, 3);
         backend.lock();
@@ -5356,6 +5934,7 @@ mod tests {
             BackendError::GenerationPending,
             BackendError::NoPendingGeneration,
             BackendError::GenerationExpired,
+            BackendError::BackupConfirmationFailed,
             BackendError::MigrationCleanup,
             BackendError::MnemonicUnavailable,
             BackendError::RandomnessUnavailable,

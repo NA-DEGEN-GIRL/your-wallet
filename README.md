@@ -22,9 +22,14 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
    사용한다면 12글자 이상으로 입력하세요.
 4. `새로 만들기`에서 영어 복구 문구를 12단어 또는 24단어로 고른 뒤
    `복구 문구 생성 (아직 저장 안 함)`을 누릅니다.
-5. 잠시 표시되는 복구 문구를 종이나 오프라인 매체에 정확히 적습니다. 확인이
-   끝나면 `백업 확인 후 v2 저장 — 2초 동안 누르기`를 2초 동안 계속 누릅니다.
-   이 확인 전에는 지갑 파일을 쓰지 않습니다.
+5. 생성된 12/24단어와 첫 주소를 번호가 붙은 목록에서 직접 기록합니다. 전체
+   120초 안에 화면의 단어 확인 전환 버튼을 2초 연속 누른 뒤, 무작위 네
+   위치의 단어와 첫 주소 전체를 다시 입력합니다. 마지막
+   `백업 확인 후 v2 지갑 저장 — 2초 누르기`도 2초 연속 눌러야 합니다.
+   불일치 한 번은 절차를 소모하며 파일을 쓰지 않습니다. 만료, 취소, 포커스
+   상실, 비활성 잠금 또는 명시적 잠금은 backend commit checkpoint에서 관찰되면
+   파일을 쓰지 않습니다. 마지막 pre-write checkpoint 이후의 race는 아래 경계를
+   따릅니다.
 6. 화면에 나온 내 주소 옆의 `주소 복사`를 누릅니다.
 7. [ethereum.org의 Sepolia faucet 안내](https://ethereum.org/developers/docs/networks/)에서
    복사한 주소로 무료 테스트 ETH를 받습니다. Faucet마다 로그인이나 사용량
@@ -91,6 +96,35 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
 20초 동안 한 번만 표시합니다. 표시값은 `Clone`/일반 디버그 출력이 없는
 zeroizing 소유값이며 시간이 끝나거나 닫으면 지웁니다. 화면 캡처·악성 프로그램
 등의 위험은 막아 주지 못하므로 테스트 키만 사용하세요.
+
+### 생성 지갑 백업 확인 경계
+
+생성 백업은 Display → Challenge → Confirm의 한 번뿐인 절차입니다. backend가
+Display 시작 시 정한 120초 deadline을 두 단계가 공유합니다. Display는 사용자가
+전환하기 전까지 번호가 붙은 12/24단어와 첫 파생 주소를 보여 주고, Challenge를
+요청하기 전에 reveal을 drop/zeroize합니다. Challenge DTO에는 CSPRNG로 고른 서로
+다른 네 위치와 deadline만 있으며, 기대 단어·주소·mnemonic은 포함하지 않습니다.
+
+사용자는 네 단어와 첫 주소 전체를 다시 입력하고 마지막 2초 연속 누르기로 저장을
+승인합니다. 응답은 한 번만 소비되며 불일치는 검증 단계에서 끝나므로 파일을 쓰지
+않습니다. backend는 검증 전, 검증 직후/봉인 직전, 봉인 후/열기 전, 열기와 metadata
+검증 후, 실제 write 직전에 같은 SessionPermit과 inclusive deadline을 다시 확인합니다.
+만료, 취소, 포커스 상실, 비활성 잠금, 명시적 잠금 또는 stale session epoch가 이 다섯
+checkpoint 중 하나에서 관찰되면 pending secret을 폐기하고 파일을 쓰지 않습니다.
+마지막 pre-write check를 통과한 뒤 `write_new_file`이 실행되는 사이에 revoke/expiry가
+발생하는 race에서는 durable vault 파일이 남을 수 있습니다. 이 경우 UI는 stale
+response를 버리고 backend를 잠그며, 사용자는 저장된 vault를 다시 인증해 열어야
+합니다. 기존 재인증 mnemonic/private-key export의 20초 reveal 정책은 변경하지
+않습니다.
+
+이 demo는 ceremony 중 Cut/Copy/Paste 이벤트를 차단하고 Paste payload를 지운 뒤
+버리며, 모든 비밀·전송 입력에 고정 egui ID를 사용해 focus를 반납하고 TextEdit
+undo state를 제거합니다. 따라서 이후 Ctrl+Z로 이전 입력이 UI에 되살아나는 경로는
+막습니다. 다만 framework가 관리하는 galley와 이미 drop된 undo String을 포함해
+egui의 일반 String, renderer, allocator, IME, 접근성 계층 또는 OS 메모리의 물리적
+완전 삭제는 보장하지 못합니다. production 연결은
+`crates/secret-input-ui` 같은 전용 helper에서 캡처/메모리/clipboard 경계를 검증하기
+전까지 STOP-SHIP입니다.
 
 ## 전송 화면이 두 단계인 이유
 

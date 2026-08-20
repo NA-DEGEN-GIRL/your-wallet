@@ -18,6 +18,9 @@ const MINIMUM_PASSWORD_BYTES: usize = 12;
 const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
 const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20);
 const INACTIVITY_LOCK_DURATION: Duration = Duration::from_secs(5 * 60);
+const GENERATED_BACKUP_CHALLENGE_WORDS: usize = 4;
+const GENERATED_BACKUP_ONE_ATTEMPT_WARNING: &str =
+    "확인은 단 한 번만 가능합니다. 불일치하면 이 지갑은 저장되지 않습니다.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StatusPalette {
@@ -136,6 +139,108 @@ impl SensitiveText {
 
     pub(crate) fn into_zeroizing(self) -> Zeroizing<String> {
         self.0
+    }
+}
+
+/// One-shot generated-wallet display payload. It deliberately has neither
+/// `Clone` nor `Debug`; both strings zeroize when the display state is dropped.
+pub struct GeneratedBackupReveal {
+    phrase: Zeroizing<String>,
+    first_address: Zeroizing<String>,
+    expires_at: Instant,
+}
+
+impl GeneratedBackupReveal {
+    #[must_use]
+    pub(crate) const fn new(
+        phrase: Zeroizing<String>,
+        first_address: Zeroizing<String>,
+        expires_at: Instant,
+    ) -> Self {
+        Self {
+            phrase,
+            first_address,
+            expires_at,
+        }
+    }
+
+    #[must_use]
+    fn phrase(&self) -> &str {
+        self.phrase.as_str()
+    }
+
+    #[must_use]
+    fn first_address(&self) -> &str {
+        self.first_address.as_str()
+    }
+
+    #[must_use]
+    pub(crate) const fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+}
+
+/// Public prompt metadata for the second ceremony stage. Expected words and
+/// the account address never cross this boundary.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GeneratedBackupChallenge {
+    positions: [u8; GENERATED_BACKUP_CHALLENGE_WORDS],
+    expires_at: Instant,
+}
+
+impl GeneratedBackupChallenge {
+    #[must_use]
+    pub(crate) const fn new(
+        positions: [u8; GENERATED_BACKUP_CHALLENGE_WORDS],
+        expires_at: Instant,
+    ) -> Self {
+        Self {
+            positions,
+            expires_at,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn positions(&self) -> [u8; GENERATED_BACKUP_CHALLENGE_WORDS] {
+        self.positions
+    }
+
+    #[must_use]
+    pub(crate) const fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+}
+
+/// One-shot, zeroizing response to a generated backup challenge. The payload
+/// is move-only and has no `Debug` implementation.
+pub struct GeneratedBackupConfirmation {
+    words: [SensitiveText; GENERATED_BACKUP_CHALLENGE_WORDS],
+    first_address: SensitiveText,
+}
+
+impl GeneratedBackupConfirmation {
+    #[must_use]
+    pub(crate) fn new(
+        words: [SensitiveText; GENERATED_BACKUP_CHALLENGE_WORDS],
+        first_address: SensitiveText,
+    ) -> Self {
+        Self {
+            words,
+            first_address,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn into_zeroizing_parts(
+        self,
+    ) -> (
+        [Zeroizing<String>; GENERATED_BACKUP_CHALLENGE_WORDS],
+        Zeroizing<String>,
+    ) {
+        (
+            self.words.map(SensitiveText::into_zeroizing),
+            self.first_address.into_zeroizing(),
+        )
     }
 }
 
@@ -294,21 +399,32 @@ impl<'a> SessionPermit<'a> {
 /// must never place passwords, recovery phrases, keys, addresses, raw
 /// transactions, RPC URLs, or raw server responses in an error string.
 pub trait WalletBackend: Send + 'static {
-    /// Generate a mnemonic wallet in memory and return its one-shot backup.
-    /// No vault may be written until `confirm_generated_wallet` is called.
+    /// Generate a mnemonic wallet in memory and return its one-shot backup
+    /// display. No vault may be written until verified confirmation succeeds.
     fn begin_generate_wallet(
         &mut self,
         words: NewMnemonicWords,
         password: SensitiveText,
         password_confirmation: SensitiveText,
-    ) -> Result<SecretReveal, String> {
+    ) -> Result<GeneratedBackupReveal, String> {
         let _ = (words, password, password_confirmation);
         Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
     }
 
-    /// Persist the exact pending generated wallet after the UI's continuous
-    /// two-second backup-confirmation hold.
-    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
+    /// Consume the display stage and mint a random four-position prompt. The
+    /// result contains positions and the original deadline only.
+    fn begin_generated_backup_challenge(&mut self) -> Result<GeneratedBackupChallenge, String> {
+        Err("생성 백업 확인 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Consume exactly one response and persist only after backend verification
+    /// and live permit checks at every irreversible boundary.
+    fn confirm_generated_wallet(
+        &mut self,
+        confirmation: GeneratedBackupConfirmation,
+        permit: &SessionPermit<'_>,
+    ) -> Result<WalletSnapshot, String> {
+        let _ = (confirmation, permit);
         Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
     }
 
@@ -463,7 +579,10 @@ enum WorkerCommand {
         password: SensitiveText,
         password_confirmation: SensitiveText,
     },
-    ConfirmGenerated,
+    BeginGeneratedBackupChallenge,
+    ConfirmGenerated {
+        confirmation: GeneratedBackupConfirmation,
+    },
     CancelGenerated,
     ImportMnemonic {
         mnemonic: SensitiveText,
@@ -509,7 +628,8 @@ enum WorkerCommand {
 
 enum WorkerEvent {
     Locked,
-    GenerationBegun(Result<SecretReveal, String>),
+    GenerationBegun(Result<GeneratedBackupReveal, String>),
+    GeneratedBackupChallengeBegun(Result<GeneratedBackupChallenge, String>),
     GeneratedConfirmed(Result<WalletSnapshot, String>),
     GeneratedCancelled(Result<(), String>),
     MnemonicImported(Result<WalletSnapshot, String>),
@@ -549,6 +669,7 @@ struct WorkerResponse {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PendingAction {
     BeginGenerate,
+    BeginGeneratedBackupChallenge,
     ConfirmGenerated,
     CancelGenerated,
     ImportMnemonic,
@@ -601,28 +722,21 @@ enum SetupMode {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SecretHoldAction {
+    BeginGeneratedBackupChallenge,
     ConfirmGeneratedBackup,
     ExportMnemonic,
     ExportAccountPrivateKey,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum RevealPurpose {
-    GeneratedBackup,
-    ReauthenticatedExport,
-}
-
 struct TimedSecretReveal {
     reveal: SecretReveal,
-    purpose: RevealPurpose,
     expires_at: Instant,
 }
 
 impl TimedSecretReveal {
-    fn new(reveal: SecretReveal, purpose: RevealPurpose, now: Instant) -> Option<Self> {
+    fn new(reveal: SecretReveal, now: Instant) -> Option<Self> {
         Some(Self {
             reveal,
-            purpose,
             expires_at: now.checked_add(SECRET_REVEAL_DURATION)?,
         })
     }
@@ -636,9 +750,39 @@ impl TimedSecretReveal {
     }
 }
 
+enum GeneratedBackupUiState {
+    Display(GeneratedBackupReveal),
+    Challenge {
+        challenge: GeneratedBackupChallenge,
+        words: [Zeroizing<String>; GENERATED_BACKUP_CHALLENGE_WORDS],
+        first_address: Zeroizing<String>,
+    },
+}
+
+impl GeneratedBackupUiState {
+    #[must_use]
+    const fn expires_at(&self) -> Instant {
+        match self {
+            Self::Display(reveal) => reveal.expires_at(),
+            Self::Challenge { challenge, .. } => challenge.expires_at(),
+        }
+    }
+
+    #[must_use]
+    fn is_expired(&self, now: Instant) -> bool {
+        now >= self.expires_at()
+    }
+
+    #[must_use]
+    fn remaining_seconds(&self, now: Instant) -> u64 {
+        self.expires_at().saturating_duration_since(now).as_secs()
+    }
+}
+
 impl PendingAction {
     const fn korean(self) -> &'static str {
         match self {
+            Self::BeginGeneratedBackupChallenge => "백업 확인 문제를 준비하는 중...",
             Self::BeginGenerate => "새 복구 문구를 안전하게 만드는 중...",
             Self::ConfirmGenerated => "백업 확인된 v2 지갑을 저장하는 중...",
             Self::CancelGenerated => "저장 전 복구 문구를 지우는 중...",
@@ -773,7 +917,10 @@ pub struct WalletApp {
     pending: Option<PendingAction>,
     hold: HoldToSend,
     secret_hold: HoldToSend,
+    generated_backup: Option<GeneratedBackupUiState>,
+    generated_backup_inputs_visible: bool,
     secret_reveal: Option<TimedSecretReveal>,
+    secret_text_state_purge_pending: bool,
     notice: Option<String>,
     error: Option<String>,
     last_transaction_hash: Option<String>,
@@ -821,7 +968,10 @@ impl WalletApp {
             pending: None,
             hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
+            generated_backup: None,
+            generated_backup_inputs_visible: false,
             secret_reveal: None,
+            secret_text_state_purge_pending: false,
             notice: None,
             error: None,
             last_transaction_hash: None,
@@ -861,7 +1011,10 @@ impl WalletApp {
             pending: None,
             hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
+            generated_backup: None,
+            generated_backup_inputs_visible: false,
             secret_reveal: None,
+            secret_text_state_purge_pending: false,
             notice: None,
             error: Some(safe_error(message.into())),
             last_transaction_hash: None,
@@ -886,6 +1039,7 @@ impl WalletApp {
             || self.pending.is_some()
             || self.snapshot.is_some()
             || self.prepared.is_some()
+            || self.generated_backup.is_some()
             || self.secret_reveal.is_some()
             || !self.password.is_empty()
             || !self.password_confirmation.is_empty()
@@ -894,7 +1048,27 @@ impl WalletApp {
             || !self.reauth_password.is_empty()
     }
 
+    fn generated_backup_ceremony_active(&self) -> bool {
+        self.generated_backup.is_some()
+            || matches!(
+                self.pending,
+                Some(
+                    PendingAction::BeginGenerate
+                        | PendingAction::BeginGeneratedBackupChallenge
+                        | PendingAction::ConfirmGenerated
+                        | PendingAction::CancelGenerated
+                )
+            )
+    }
+
+    fn purge_queued_secret_text_edit_state(&mut self, context: &egui::Context) {
+        if std::mem::take(&mut self.secret_text_state_purge_pending) {
+            purge_secret_text_edit_state(context);
+        }
+    }
+
     fn scrub_frontend_session(&mut self) {
+        self.secret_text_state_purge_pending = true;
         self.password.zeroize();
         self.password_confirmation.zeroize();
         self.old_password.zeroize();
@@ -931,6 +1105,8 @@ impl WalletApp {
         }
         self.prepared = None;
         self.pending = None;
+        self.generated_backup = None;
+        self.generated_backup_inputs_visible = false;
         self.secret_reveal = None;
         zeroize_optional_string(&mut self.notice);
         zeroize_optional_string(&mut self.error);
@@ -1009,6 +1185,21 @@ impl WalletApp {
     }
 
     fn send_command(&mut self, command: WorkerCommand, action: PendingAction) {
+        if matches!(
+            action,
+            PendingAction::BeginGenerate
+                | PendingAction::BeginGeneratedBackupChallenge
+                | PendingAction::ConfirmGenerated
+                | PendingAction::CancelGenerated
+                | PendingAction::ImportMnemonic
+                | PendingAction::ImportPrivateKey
+                | PendingAction::Open
+                | PendingAction::MigrateLegacy
+                | PendingAction::ExportMnemonic
+                | PendingAction::ExportAccountPrivateKey
+        ) {
+            self.secret_text_state_purge_pending = true;
+        }
         self.error = None;
         self.notice = None;
         if matches!(self.session_phase, SessionPhase::Locking(_)) {
@@ -1054,17 +1245,48 @@ impl WalletApp {
         );
     }
 
-    fn confirm_generated_wallet(&mut self) {
-        self.secret_reveal = None;
+    fn begin_generated_backup_challenge(&mut self) {
+        let Some(GeneratedBackupUiState::Display(reveal)) = self.generated_backup.take() else {
+            return;
+        };
+        // Drop and zeroize the full phrase and displayed address before asking
+        // the worker to mint the challenge metadata.
+        drop(reveal);
+        self.generated_backup_inputs_visible = false;
         self.secret_hold.reset();
         self.send_command(
-            WorkerCommand::ConfirmGenerated,
+            WorkerCommand::BeginGeneratedBackupChallenge,
+            PendingAction::BeginGeneratedBackupChallenge,
+        );
+    }
+
+    fn confirm_generated_wallet(&mut self) {
+        let Some(GeneratedBackupUiState::Challenge {
+            challenge: _,
+            words,
+            first_address,
+        }) = self.generated_backup.take()
+        else {
+            return;
+        };
+        self.generated_backup_inputs_visible = false;
+        let confirmation = GeneratedBackupConfirmation::new(
+            words.map(|mut word| SensitiveText::new(std::mem::take(&mut *word))),
+            SensitiveText::new({
+                let mut first_address = first_address;
+                std::mem::take(&mut *first_address)
+            }),
+        );
+        self.secret_hold.reset();
+        self.send_command(
+            WorkerCommand::ConfirmGenerated { confirmation },
             PendingAction::ConfirmGenerated,
         );
     }
 
     fn cancel_generated_wallet(&mut self) {
-        self.secret_reveal = None;
+        self.generated_backup = None;
+        self.generated_backup_inputs_visible = false;
         self.secret_hold.reset();
         self.send_command(
             WorkerCommand::CancelGenerated,
@@ -1167,7 +1389,8 @@ impl WalletApp {
                 WorkerCommand::ExportAccountPrivateKey { password },
                 PendingAction::ExportAccountPrivateKey,
             ),
-            SecretHoldAction::ConfirmGeneratedBackup => return,
+            SecretHoldAction::BeginGeneratedBackupChallenge
+            | SecretHoldAction::ConfirmGeneratedBackup => return,
         };
         self.secret_hold.reset();
         self.send_command(command, pending);
@@ -1182,19 +1405,44 @@ impl WalletApp {
             return false;
         }
         match action {
-            SecretHoldAction::ConfirmGeneratedBackup => {
-                let valid_backup = self.secret_reveal.as_ref().is_some_and(|reveal| {
-                    reveal.purpose == RevealPurpose::GeneratedBackup
-                        && !reveal.is_expired(Instant::now())
+            SecretHoldAction::BeginGeneratedBackupChallenge => {
+                let valid_backup = self.generated_backup.as_ref().is_some_and(|state| {
+                    matches!(state, GeneratedBackupUiState::Display(_))
+                        && !state.is_expired(Instant::now())
                 });
                 if !valid_backup {
+                    return false;
+                }
+                self.begin_generated_backup_challenge();
+                self.pending == Some(PendingAction::BeginGeneratedBackupChallenge)
+            }
+            SecretHoldAction::ConfirmGeneratedBackup => {
+                let valid_confirmation = self.generated_backup.as_ref().is_some_and(|state| {
+                    let GeneratedBackupUiState::Challenge {
+                        words,
+                        first_address,
+                        ..
+                    } = state
+                    else {
+                        return false;
+                    };
+                    !state.is_expired(Instant::now())
+                        && words
+                            .iter()
+                            .all(|word| valid_backup_word_shape(word.as_str()))
+                        && valid_backup_address_shape(first_address.as_str())
+                });
+                if !valid_confirmation {
                     return false;
                 }
                 self.confirm_generated_wallet();
                 self.pending == Some(PendingAction::ConfirmGenerated)
             }
             SecretHoldAction::ExportMnemonic | SecretHoldAction::ExportAccountPrivateKey => {
-                if self.prepared.is_some() || self.secret_reveal.is_some() {
+                if self.prepared.is_some()
+                    || self.generated_backup.is_some()
+                    || self.secret_reveal.is_some()
+                {
                     return false;
                 }
                 self.export_secret(action);
@@ -1204,21 +1452,31 @@ impl WalletApp {
     }
 
     fn expire_secret_reveal(&mut self, now: Instant) {
-        let expired_purpose = self
+        let expired = self
             .secret_reveal
             .as_ref()
-            .filter(|reveal| reveal.is_expired(now))
-            .map(|reveal| reveal.purpose);
-        if let Some(purpose) = expired_purpose {
+            .is_some_and(|reveal| reveal.is_expired(now));
+        if expired {
             self.secret_reveal = None;
             self.secret_hold.reset();
-            if purpose == RevealPurpose::GeneratedBackup && self.pending.is_none() {
+            self.notice = Some("비밀값 표시 시간이 끝나 메모리에서 지웠습니다.".to_owned());
+        }
+    }
+
+    fn expire_generated_backup(&mut self, now: Instant) {
+        let expired = self
+            .generated_backup
+            .as_ref()
+            .is_some_and(|state| state.is_expired(now));
+        if expired {
+            self.generated_backup = None;
+            self.generated_backup_inputs_visible = false;
+            self.secret_hold.reset();
+            if self.pending.is_none() {
                 self.send_command(
                     WorkerCommand::CancelGenerated,
                     PendingAction::CancelGenerated,
                 );
-            } else {
-                self.notice = Some("비밀값 표시 시간이 끝나 메모리에서 지웠습니다.".to_owned());
             }
         }
     }
@@ -1361,6 +1619,7 @@ impl WalletApp {
                 }
             };
             if response.epoch != self.session_epoch {
+                self.secret_text_state_purge_pending = true;
                 drop(response);
                 continue;
             }
@@ -1370,6 +1629,15 @@ impl WalletApp {
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         self.pending = None;
+        if matches!(
+            &event,
+            WorkerEvent::GenerationBegun(_)
+                | WorkerEvent::GeneratedBackupChallengeBegun(_)
+                | WorkerEvent::GeneratedConfirmed(_)
+                | WorkerEvent::GeneratedCancelled(_)
+        ) {
+            self.secret_text_state_purge_pending = true;
+        }
         match event {
             WorkerEvent::Locked => {
                 let reason = match self.session_phase {
@@ -1383,11 +1651,8 @@ impl WalletApp {
             }
             WorkerEvent::GenerationBegun(result) => match result {
                 Ok(reveal) => {
-                    self.secret_reveal = TimedSecretReveal::new(
-                        reveal,
-                        RevealPurpose::GeneratedBackup,
-                        Instant::now(),
-                    );
+                    self.generated_backup_inputs_visible = false;
+                    self.generated_backup = Some(GeneratedBackupUiState::Display(reveal));
                     self.secret_hold.reset();
                     self.notice = Some(
                         "복구 문구는 아직 저장되지 않았습니다. 적어 둔 뒤 2초 확인을 완료하세요."
@@ -1396,10 +1661,37 @@ impl WalletApp {
                 }
                 Err(error) => self.error = Some(safe_error(error)),
             },
+            WorkerEvent::GeneratedBackupChallengeBegun(result) => match result {
+                Ok(challenge) if Instant::now() < challenge.expires_at() => {
+                    self.generated_backup_inputs_visible = false;
+                    self.generated_backup = Some(GeneratedBackupUiState::Challenge {
+                        challenge,
+                        words: std::array::from_fn(|_| Zeroizing::new(String::new())),
+                        first_address: Zeroizing::new(String::new()),
+                    });
+                    self.notice = Some(
+                        "지정된 네 단어와 첫 번째 전체 주소를 직접 입력해 확인하세요.".to_owned(),
+                    );
+                }
+                Ok(_) => {
+                    self.generated_backup = None;
+                    self.generated_backup_inputs_visible = false;
+                    self.send_command(
+                        WorkerCommand::CancelGenerated,
+                        PendingAction::CancelGenerated,
+                    );
+                }
+                Err(error) => {
+                    self.generated_backup = None;
+                    self.generated_backup_inputs_visible = false;
+                    self.error = Some(safe_error(error));
+                }
+            },
             WorkerEvent::GeneratedConfirmed(result) => match result {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
-                    self.secret_reveal = None;
+                    self.generated_backup = None;
+                    self.generated_backup_inputs_visible = false;
                     self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
                     self.session_phase = SessionPhase::Unlocked;
@@ -1412,7 +1704,8 @@ impl WalletApp {
             },
             WorkerEvent::GeneratedCancelled(result) => match result {
                 Ok(()) => {
-                    self.secret_reveal = None;
+                    self.generated_backup = None;
+                    self.generated_backup_inputs_visible = false;
                     if self.snapshot.is_none() {
                         self.session_phase = SessionPhase::Locked;
                     }
@@ -1486,11 +1779,7 @@ impl WalletApp {
             | WorkerEvent::AccountPrivateKeyExported(result) => match result {
                 Ok(reveal) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
-                    self.secret_reveal = TimedSecretReveal::new(
-                        reveal,
-                        RevealPurpose::ReauthenticatedExport,
-                        Instant::now(),
-                    );
+                    self.secret_reveal = TimedSecretReveal::new(reveal, Instant::now());
                     self.notice =
                         Some("비밀값은 잠시만 표시되며 복사 기능을 제공하지 않습니다.".to_owned());
                 }
@@ -1616,10 +1905,7 @@ impl WalletApp {
             && self.commands.is_some()
             && self.pending.is_none()
             && self.prepared.is_none()
-            && !self
-                .secret_reveal
-                .as_ref()
-                .is_some_and(|reveal| reveal.purpose == RevealPurpose::GeneratedBackup);
+            && self.generated_backup.is_none();
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.heading("1. 테스트 지갑 준비");
         ui.label("v2 지갑을 만들거나 가져오고, 기존 v1/v2 지갑을 열거나 이전할 수 있습니다.");
@@ -1670,6 +1956,7 @@ impl WalletApp {
                 }
             });
             let mut edit = egui::TextEdit::multiline(&mut self.imported_secret)
+                .id(imported_secret_text_edit_id())
                 .hint_text(hint)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3);
@@ -1688,6 +1975,7 @@ impl WalletApp {
 
         if self.setup_mode == SetupMode::MigrateLegacy {
             let mut old_edit = egui::TextEdit::singleline(&mut self.old_password)
+                .id(old_password_text_edit_id())
                 .hint_text("기존 v1 비밀번호")
                 .desired_width(320.0);
             if !self.password_visible {
@@ -1716,6 +2004,7 @@ impl WalletApp {
 
         ui.horizontal(|ui| {
             let mut edit = egui::TextEdit::singleline(&mut self.password)
+                .id(password_text_edit_id())
                 .hint_text(if self.setup_mode == SetupMode::Open {
                     "현재 비밀번호"
                 } else {
@@ -1737,6 +2026,7 @@ impl WalletApp {
         });
         if self.setup_mode != SetupMode::Open {
             let mut edit = egui::TextEdit::singleline(&mut self.password_confirmation)
+                .id(password_confirmation_text_edit_id())
                 .hint_text("새 v2 비밀번호 다시 입력")
                 .desired_width(320.0);
             if !self.password_visible {
@@ -1851,11 +2141,13 @@ impl WalletApp {
                 }
             }
             let edit = egui::TextEdit::singleline(&mut self.reauth_password)
+                .id(reauth_password_text_edit_id())
                 .hint_text("현재 비밀번호 재입력")
                 .desired_width(320.0)
                 .password(true);
             let enabled = self.pending.is_none()
                 && self.prepared.is_none()
+                && self.generated_backup.is_none()
                 && self.secret_reveal.is_none();
             let _ = ui.add_enabled(enabled, edit);
             let action = match self.export_kind {
@@ -1869,7 +2161,8 @@ impl WalletApp {
                 SecretHoldAction::ExportAccountPrivateKey => {
                     "재인증 후 계정 0 개인 키 표시 — 2초 동안 누르기"
                 }
-                SecretHoldAction::ConfirmGeneratedBackup => unreachable!(),
+                SecretHoldAction::BeginGeneratedBackupChallenge
+                | SecretHoldAction::ConfirmGeneratedBackup => unreachable!(),
             };
             let hold_enabled = enabled && valid_password(&self.reauth_password);
             let response = ui.add_enabled(hold_enabled, secret_hold_button(label));
@@ -1896,12 +2189,171 @@ impl WalletApp {
         });
     }
 
+    fn generated_backup_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
+        let Some(state) = self.generated_backup.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        let remaining = state.remaining_seconds(now);
+        let live = !state.is_expired(now);
+        let palette = StatusPalette::from_visuals(ui.visuals());
+        let mut cancel = false;
+        let mut begin_outcome = None;
+        let mut confirm_outcome = None;
+
+        ui.separator();
+        ui.heading("생성 지갑 백업 확인");
+        ui.colored_label(
+            palette.warning,
+            format!("백엔드 확인 제한 시간: {remaining}초 남음"),
+        );
+        match state {
+            GeneratedBackupUiState::Display(reveal) => {
+                ui.strong("1단계: 복구 구문과 첫 번째 주소를 별도 매체에 기록하세요.");
+                egui::Grid::new("generated-backup-numbered-words")
+                    .num_columns(6)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        for (index, word) in numbered_backup_words(reveal.phrase()) {
+                            ui.label(RichText::new(format!("{index:>2}.")).monospace());
+                            let _ = ui.add(
+                                egui::Label::new(RichText::new(word).monospace().size(18.0))
+                                    .selectable(false),
+                            );
+                            if index % 3 == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                ui.label("첫 번째 파생 주소 (m/44'/60'/0'/0/0)");
+                let _ = ui.add(
+                    egui::Label::new(RichText::new(reveal.first_address()).monospace())
+                        .selectable(false)
+                        .wrap(),
+                );
+                ui.label(
+                    RichText::new("복사하지 말고 오프라인 백업에서 다시 읽어 입력해야 합니다.")
+                        .small()
+                        .color(palette.muted),
+                );
+                ui.horizontal(|ui| {
+                    cancel = ui
+                        .add_enabled(
+                            self.pending.is_none(),
+                            egui::Button::new("생성을 취소하고 지우기"),
+                        )
+                        .clicked();
+                    let enabled = self.pending.is_none() && live;
+                    let response = ui.add_enabled(
+                        enabled,
+                        secret_hold_button("기록 완료: 문제 단계로 이동 (2초 누르기)"),
+                    );
+                    begin_outcome = Some(
+                        self.secret_hold
+                            .update(now, hold_to_send_input(context, &response, enabled)),
+                    );
+                });
+                let progress = self.secret_hold.fraction(now);
+                let _ = ui.add(
+                    egui::ProgressBar::new(progress)
+                        .desired_width(300.0)
+                        .text(format!("{:.1} / 2.0초", progress * 2.0)),
+                );
+            }
+            GeneratedBackupUiState::Challenge {
+                challenge,
+                words,
+                first_address,
+            } => {
+                ui.checkbox(&mut self.generated_backup_inputs_visible, "입력 내용 표시");
+                ui.strong("2단계: 오프라인 백업만 보고 네 단어와 전체 주소를 입력하세요.");
+                let positions = challenge.positions();
+                for (index, (position, word)) in
+                    positions.into_iter().zip(words.iter_mut()).enumerate()
+                {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{position}번째 단어"));
+                        let _ = ui.add_enabled(
+                            self.pending.is_none(),
+                            egui::TextEdit::singleline(&mut **word)
+                                .id(generated_backup_word_text_edit_id(index))
+                                .password(!self.generated_backup_inputs_visible)
+                                .char_limit(8)
+                                .desired_width(220.0),
+                        );
+                    });
+                }
+                ui.label("첫 번째 파생 주소 전체");
+                let _ = ui.add_enabled(
+                    self.pending.is_none(),
+                    egui::TextEdit::singleline(&mut **first_address)
+                        .id(generated_backup_address_text_edit_id())
+                        .char_limit(42)
+                        .desired_width(500.0),
+                );
+                ui.label(
+                    RichText::new(
+                        "한 번이라도 일치하지 않으면 이 생성 시도는 폐기되며 파일을 만들지 않습니다.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+                ui.colored_label(palette.warning, GENERATED_BACKUP_ONE_ATTEMPT_WARNING);
+                let ready = words
+                    .iter()
+                    .all(|word| valid_backup_word_shape(word.as_str()))
+                    && valid_backup_address_shape(first_address.as_str());
+                ui.horizontal(|ui| {
+                    cancel = ui
+                        .add_enabled(
+                            self.pending.is_none(),
+                            egui::Button::new("생성을 취소하고 지우기"),
+                        )
+                        .clicked();
+                    let confirm_enabled = self.pending.is_none() && live && ready;
+                    let response = ui.add_enabled(
+                        confirm_enabled,
+                        secret_hold_button("백업 확인 후 v2 지갑 저장 — 2초 누르기"),
+                    );
+                    confirm_outcome = Some(
+                        self.secret_hold
+                            .update(now, hold_to_send_input(context, &response, confirm_enabled)),
+                    );
+                });
+                let progress = self.secret_hold.fraction(now);
+                let _ = ui.add(
+                    egui::ProgressBar::new(progress)
+                        .desired_width(300.0)
+                        .text(format!("{:.1} / 2.0초", progress * 2.0)),
+                );
+            }
+        }
+
+        if cancel {
+            self.cancel_generated_wallet();
+        } else if let Some(outcome) = begin_outcome {
+            let _ = self.handle_secret_hold_outcome(
+                outcome,
+                SecretHoldAction::BeginGeneratedBackupChallenge,
+            );
+            if matches!(outcome, HoldOutcome::Holding(_)) {
+                context.request_repaint_after(Duration::from_millis(16));
+            }
+        } else if let Some(outcome) = confirm_outcome {
+            let _ =
+                self.handle_secret_hold_outcome(outcome, SecretHoldAction::ConfirmGeneratedBackup);
+            if matches!(outcome, HoldOutcome::Holding(_)) {
+                context.request_repaint_after(Duration::from_millis(16));
+            }
+        }
+        context.request_repaint_after(Duration::from_millis(100));
+    }
+
     fn secret_reveal_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
         let Some(reveal) = self.secret_reveal.as_ref() else {
             return;
         };
         let now = Instant::now();
-        let purpose = reveal.purpose;
         let kind = reveal.reveal.kind();
         let remaining = reveal.remaining_seconds(now);
         let label = match kind {
@@ -1926,40 +2378,7 @@ impl WalletApp {
                 .small()
                 .color(palette.muted),
         );
-        if purpose == RevealPurpose::GeneratedBackup {
-            ui.label("종이나 오프라인 매체에 정확히 적은 뒤 아래 확인을 계속 누르세요.");
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        self.pending.is_none(),
-                        egui::Button::new("저장하지 않고 지우기"),
-                    )
-                    .clicked()
-                {
-                    self.cancel_generated_wallet();
-                    return;
-                }
-                let enabled = self.pending.is_none() && remaining > 0;
-                let response = ui.add_enabled(
-                    enabled,
-                    secret_hold_button("백업 확인 후 v2 저장 — 2초 동안 누르기"),
-                );
-                let outcome = self
-                    .secret_hold
-                    .update(now, hold_to_send_input(context, &response, enabled));
-                let _ = self
-                    .handle_secret_hold_outcome(outcome, SecretHoldAction::ConfirmGeneratedBackup);
-                if matches!(outcome, HoldOutcome::Holding(_)) {
-                    context.request_repaint_after(Duration::from_millis(16));
-                }
-            });
-            let progress = self.secret_hold.fraction(now);
-            let _ = ui.add(
-                egui::ProgressBar::new(progress)
-                    .desired_width(300.0)
-                    .text(format!("{:.1} / 2.0초", progress * 2.0)),
-            );
-        } else if ui.button("지금 지우기").clicked() {
+        if ui.button("지금 지우기").clicked() {
             self.secret_reveal = None;
             self.secret_hold.reset();
         }
@@ -1990,6 +2409,7 @@ impl WalletApp {
             let _ = ui.add_enabled(
                 mutation_enabled,
                 egui::TextEdit::singleline(&mut self.custom_token_address)
+                    .id(custom_token_address_text_edit_id())
                     .hint_text("0x로 시작하는 토큰 컨트랙트 주소")
                     .desired_width(500.0),
             );
@@ -2090,6 +2510,7 @@ impl WalletApp {
             let _ = ui.add_enabled(
                 preparing_allowed,
                 egui::TextEdit::singleline(&mut self.recipient)
+                    .id(recipient_text_edit_id())
                     .hint_text("0x로 시작하는 주소")
                     .desired_width(f32::INFINITY),
             );
@@ -2101,6 +2522,7 @@ impl WalletApp {
                 let _ = ui.add_enabled(
                     preparing_allowed,
                     egui::TextEdit::singleline(&mut self.amount_eth)
+                        .id(amount_eth_text_edit_id())
                         .hint_text("예: 0.001")
                         .desired_width(180.0),
                 );
@@ -2145,6 +2567,7 @@ impl WalletApp {
                         let _ = ui.add_enabled(
                             preparing_allowed,
                             egui::TextEdit::singleline(&mut self.custom_priority_fee_gwei)
+                                .id(custom_priority_fee_text_edit_id())
                                 .hint_text("예: 1.5")
                                 .desired_width(140.0),
                         );
@@ -2155,6 +2578,7 @@ impl WalletApp {
                         let _ = ui.add_enabled(
                             preparing_allowed,
                             egui::TextEdit::singleline(&mut self.custom_max_fee_gwei)
+                                .id(custom_max_fee_text_edit_id())
                                 .hint_text("예: 3")
                                 .desired_width(140.0),
                         );
@@ -2456,6 +2880,12 @@ impl eframe::App for WalletApp {
         self.process_events();
         self.observe_automatic_lock(context, now);
         self.expire_secret_reveal(now);
+        self.expire_generated_backup(now);
+        self.purge_queued_secret_text_edit_state(context);
+        let backup_ceremony_active = self.generated_backup_ceremony_active();
+        context.input_mut(|input| {
+            filter_generated_backup_clipboard_events(&mut input.events, backup_ceremony_active);
+        });
         egui::TopBottomPanel::top("testnet_warning").show(context, |ui| {
             let palette = StatusPalette::from_visuals(ui.visuals());
             ui.vertical_centered(|ui| {
@@ -2475,6 +2905,7 @@ impl eframe::App for WalletApp {
                     self.wallet_setup(ui);
                     self.account_panel(ui);
                     self.secret_management_panel(context, ui);
+                    self.generated_backup_panel(context, ui);
                     self.secret_reveal_panel(context, ui);
                     self.custom_token_panel(ui);
                     self.send_panel(context, ui);
@@ -2504,6 +2935,7 @@ impl eframe::App for WalletApp {
                 );
             });
         });
+        self.purge_queued_secret_text_edit_state(context);
     }
 }
 
@@ -2569,8 +3001,11 @@ fn execute_worker_command(
             password,
             password_confirmation,
         )),
-        WorkerCommand::ConfirmGenerated => {
-            WorkerEvent::GeneratedConfirmed(backend.confirm_generated_wallet())
+        WorkerCommand::BeginGeneratedBackupChallenge => {
+            WorkerEvent::GeneratedBackupChallengeBegun(backend.begin_generated_backup_challenge())
+        }
+        WorkerCommand::ConfirmGenerated { confirmation } => {
+            WorkerEvent::GeneratedConfirmed(backend.confirm_generated_wallet(confirmation, permit))
         }
         WorkerCommand::CancelGenerated => {
             WorkerEvent::GeneratedCancelled(backend.cancel_generated_wallet())
@@ -2686,7 +3121,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         pending: None,
         hold: HoldToSend::default(),
         secret_hold: HoldToSend::default(),
+        generated_backup: None,
+        generated_backup_inputs_visible: false,
         secret_reveal: None,
+        secret_text_state_purge_pending: false,
         notice: None,
         error: None,
         last_transaction_hash: None,
@@ -2710,13 +3148,37 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         )
     })?;
     if app.pending.is_some()
-        || !app.secret_reveal.as_ref().is_some_and(|reveal| {
-            reveal.purpose == RevealPurpose::GeneratedBackup
-                && reveal.reveal.kind() == SecretRevealKind::Mnemonic
-        })
+        || !matches!(
+            app.generated_backup,
+            Some(GeneratedBackupUiState::Display(_))
+        )
     {
         return Err(());
     }
+    if !app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::BeginGeneratedBackupChallenge,
+    ) || app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::BeginGeneratedBackupChallenge,
+    ) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::BeginGeneratedBackupChallenge)
+    })?;
+    let Some(GeneratedBackupUiState::Challenge {
+        words,
+        first_address,
+        ..
+    }) = app.generated_backup.as_mut()
+    else {
+        return Err(());
+    };
+    for word in words {
+        word.push_str("marker");
+    }
+    first_address.push_str("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     if !app.handle_secret_hold_outcome(
         HoldOutcome::Triggered,
         SecretHoldAction::ConfirmGeneratedBackup,
@@ -2727,9 +3189,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
-        matches!(command, WorkerCommand::ConfirmGenerated)
+        matches!(command, WorkerCommand::ConfirmGenerated { .. })
     })?;
     if app.pending.is_some()
+        || app.generated_backup.is_some()
         || app.secret_reveal.is_some()
         || app.snapshot.as_ref().map(|snapshot| snapshot.wallet_kind)
             != Some(WalletKind::V2Mnemonic { word_count: 12 })
@@ -2746,10 +3209,11 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::ExportMnemonic { .. })
     })?;
-    if !app.secret_reveal.as_ref().is_some_and(|reveal| {
-        reveal.purpose == RevealPurpose::ReauthenticatedExport
-            && reveal.reveal.kind() == SecretRevealKind::Mnemonic
-    }) {
+    if !app
+        .secret_reveal
+        .as_ref()
+        .is_some_and(|reveal| reveal.reveal.kind() == SecretRevealKind::Mnemonic)
+    {
         return Err(());
     }
     app.secret_reveal = None;
@@ -2764,10 +3228,11 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::ExportAccountPrivateKey { .. })
     })?;
-    if !app.secret_reveal.as_ref().is_some_and(|reveal| {
-        reveal.purpose == RevealPurpose::ReauthenticatedExport
-            && reveal.reveal.kind() == SecretRevealKind::AccountPrivateKey
-    }) {
+    if !app
+        .secret_reveal
+        .as_ref()
+        .is_some_and(|reveal| reveal.reveal.kind() == SecretRevealKind::AccountPrivateKey)
+    {
         return Err(());
     }
     app.secret_reveal = None;
@@ -2983,7 +3448,6 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     app.pending = Some(PendingAction::Refresh);
     app.secret_reveal = TimedSecretReveal::new(
         headless_reveal(SecretRevealKind::AccountPrivateKey),
-        RevealPurpose::ReauthenticatedExport,
         Instant::now(),
     );
     let previous_epoch = app.session_epoch;
@@ -3036,6 +3500,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     if backend.calls
         != [
             "begin-generate-12",
+            "begin-generated-challenge",
             "confirm-generated",
             "export-mnemonic",
             "export-private-key",
@@ -3064,7 +3529,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 58,
+        transitions_checked: 63,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -3153,6 +3618,14 @@ fn headless_reveal(kind: SecretRevealKind) -> SecretReveal {
     SecretReveal::new(kind, Zeroizing::new("headless-secret-marker".to_owned()))
 }
 
+fn headless_generated_backup_reveal() -> GeneratedBackupReveal {
+    GeneratedBackupReveal::new(
+        Zeroizing::new("headless backup marker".to_owned()),
+        Zeroizing::new("headless account marker".to_owned()),
+        Instant::now() + Duration::from_secs(120),
+    )
+}
+
 fn headless_token_snapshot() -> CustomTokenSnapshot {
     CustomTokenSnapshot {
         contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
@@ -3179,15 +3652,27 @@ impl WalletBackend for HeadlessBackend {
         words: NewMnemonicWords,
         _password: SensitiveText,
         _password_confirmation: SensitiveText,
-    ) -> Result<SecretReveal, String> {
+    ) -> Result<GeneratedBackupReveal, String> {
         self.calls.push(match words {
             NewMnemonicWords::Twelve => "begin-generate-12",
             NewMnemonicWords::TwentyFour => "begin-generate-24",
         });
-        Ok(headless_reveal(SecretRevealKind::Mnemonic))
+        Ok(headless_generated_backup_reveal())
     }
 
-    fn confirm_generated_wallet(&mut self) -> Result<WalletSnapshot, String> {
+    fn begin_generated_backup_challenge(&mut self) -> Result<GeneratedBackupChallenge, String> {
+        self.calls.push("begin-generated-challenge");
+        Ok(GeneratedBackupChallenge::new(
+            [1, 2, 3, 4],
+            Instant::now() + Duration::from_secs(120),
+        ))
+    }
+
+    fn confirm_generated_wallet(
+        &mut self,
+        _confirmation: GeneratedBackupConfirmation,
+        _permit: &SessionPermit<'_>,
+    ) -> Result<WalletSnapshot, String> {
         self.calls.push("confirm-generated");
         Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
     }
@@ -3326,6 +3811,125 @@ fn valid_password(password: &str) -> bool {
     password.len() >= MINIMUM_PASSWORD_BYTES
 }
 
+fn password_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-secret-password")
+}
+
+fn password_confirmation_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-secret-password-confirmation")
+}
+
+fn old_password_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-secret-old-password")
+}
+
+fn imported_secret_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-secret-import")
+}
+
+fn reauth_password_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-secret-reauth-password")
+}
+
+fn generated_backup_word_text_edit_id(index: usize) -> egui::Id {
+    egui::Id::new(("sepolia-demo-generated-backup-word", index))
+}
+
+fn generated_backup_address_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-generated-backup-address")
+}
+
+fn custom_token_address_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-custom-token-address")
+}
+
+fn recipient_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-transfer-recipient")
+}
+
+fn amount_eth_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-transfer-amount")
+}
+
+fn custom_priority_fee_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-transfer-priority-fee")
+}
+
+fn custom_max_fee_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-transfer-max-fee")
+}
+
+fn secret_text_edit_ids() -> [egui::Id; 15] {
+    [
+        password_text_edit_id(),
+        password_confirmation_text_edit_id(),
+        old_password_text_edit_id(),
+        imported_secret_text_edit_id(),
+        reauth_password_text_edit_id(),
+        generated_backup_word_text_edit_id(0),
+        generated_backup_word_text_edit_id(1),
+        generated_backup_word_text_edit_id(2),
+        generated_backup_word_text_edit_id(3),
+        generated_backup_address_text_edit_id(),
+        custom_token_address_text_edit_id(),
+        recipient_text_edit_id(),
+        amount_eth_text_edit_id(),
+        custom_priority_fee_text_edit_id(),
+        custom_max_fee_text_edit_id(),
+    ]
+}
+
+fn purge_secret_text_edit_state(context: &egui::Context) {
+    let ids = secret_text_edit_ids();
+    context.memory_mut(|memory| {
+        for id in ids {
+            memory.surrender_focus(id);
+        }
+    });
+    for id in ids {
+        if let Some(mut state) = egui::widgets::text_edit::TextEditState::load(context, id) {
+            state.clear_undoer();
+        }
+        context.data_mut(|data| {
+            data.remove::<egui::widgets::text_edit::TextEditState>(id);
+        });
+    }
+}
+
+fn numbered_backup_words(phrase: &str) -> impl Iterator<Item = (usize, &str)> {
+    phrase
+        .split_ascii_whitespace()
+        .enumerate()
+        .map(|(index, word)| (index + 1, word))
+}
+
+fn valid_backup_word_shape(word: &str) -> bool {
+    !word.is_empty() && word.len() <= 8 && word.bytes().all(|byte| byte.is_ascii_lowercase())
+}
+
+fn valid_backup_address_shape(address: &str) -> bool {
+    address.len() == 42
+        && address.starts_with("0x")
+        && address.as_bytes()[2..].iter().all(u8::is_ascii_hexdigit)
+}
+
+fn filter_generated_backup_clipboard_events(events: &mut Vec<egui::Event>, active: bool) {
+    if active {
+        events.retain_mut(retain_generated_backup_event);
+    }
+}
+
+fn retain_generated_backup_event(event: &mut egui::Event) -> bool {
+    match event {
+        egui::Event::Copy | egui::Event::Cut => false,
+        egui::Event::Paste(text) => {
+            text.zeroize();
+            false
+        }
+        _ => true,
+    }
+}
+
 fn valid_recipient_shape(recipient: &str) -> bool {
     recipient.len() == 42
         && recipient.starts_with("0x")
@@ -3380,6 +3984,7 @@ fn valid_gwei_shape(value: &str, allow_zero: bool) -> bool {
 const GENERIC_BACKEND_ERROR: &str = "작업을 완료하지 못했습니다. 입력과 네트워크를 확인해 주세요.";
 
 const ALLOWED_BACKEND_ERRORS: &[&str] = &[
+    "백업 확인에 실패했습니다. 지갑은 저장되지 않았습니다.",
     "지갑 저장소를 준비하지 못했습니다.",
     "이미 Sepolia 테스트 지갑이 있습니다.",
     "저장된 Sepolia 테스트 지갑이 없습니다.",
@@ -3489,6 +4094,36 @@ mod tests {
         let rect = response.rect;
         let _ = context.end_pass();
         (rect, outcome)
+    }
+
+    fn run_secret_text_frame(
+        context: &egui::Context,
+        id: egui::Id,
+        text: &mut String,
+        request_focus: bool,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) {
+        context.begin_pass(hold_frame_input(time, events));
+        let response = egui::CentralPanel::default()
+            .show(context, |ui| {
+                ui.add(egui::TextEdit::singleline(text).id(id).password(true))
+            })
+            .inner;
+        if request_focus {
+            response.request_focus();
+        }
+        let _ = context.end_pass();
+    }
+
+    fn undo_key_event() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: Some(egui::Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        }
     }
 
     const fn pressed_hold_input(enabled: bool) -> HoldInput {
@@ -3964,6 +4599,92 @@ mod tests {
     }
 
     #[test]
+    fn generated_backup_dtos_and_worker_envelopes_keep_secret_trait_boundaries() {
+        fn assert_clone_copy<T: Clone + Copy>() {}
+        fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let (_, tail) = source.split_once(start).expect("source start marker");
+            let (body, _) = tail.split_once(end).expect("source end marker");
+            body
+        }
+        fn declaration<'a>(source: &'a str, marker: &str) -> &'a str {
+            let marker_offset = source.find(marker).expect("declaration marker");
+            let start = source[..marker_offset]
+                .rfind("\n\n")
+                .map_or(0, |offset| offset + 2);
+            let end = source[marker_offset..]
+                .find("\n}\n")
+                .map(|offset| marker_offset + offset + 3)
+                .expect("declaration end");
+            &source[start..end]
+        }
+
+        assert_clone_copy::<super::GeneratedBackupChallenge>();
+        let source = include_str!("ui.rs");
+        let reveal_body = section(
+            source,
+            "pub struct GeneratedBackupReveal",
+            "impl GeneratedBackupReveal",
+        );
+        let confirmation_body = section(
+            source,
+            "pub struct GeneratedBackupConfirmation",
+            "impl GeneratedBackupConfirmation",
+        );
+        for secret_dto in [
+            declaration(source, "pub struct GeneratedBackupReveal"),
+            declaration(source, "pub struct GeneratedBackupConfirmation"),
+        ] {
+            assert!(!secret_dto.contains("derive("));
+            assert!(!secret_dto.contains("Serialize"));
+        }
+        assert!(reveal_body.matches("Zeroizing<String>").count() >= 2);
+        assert!(confirmation_body.matches("SensitiveText").count() >= 2);
+
+        let challenge_declaration = declaration(source, "pub struct GeneratedBackupChallenge");
+        let challenge_body = section(
+            source,
+            "pub struct GeneratedBackupChallenge",
+            "impl GeneratedBackupChallenge",
+        );
+        assert!(challenge_declaration.contains("#[derive(Clone, Copy, Eq, PartialEq)]"));
+        assert!(challenge_body.contains("positions:"));
+        assert!(challenge_body.contains("expires_at:"));
+        for forbidden in [
+            "phrase",
+            "mnemonic",
+            "expected",
+            "first_address",
+            "SensitiveText",
+            "Zeroizing",
+            "Serialize",
+            "Debug",
+        ] {
+            assert!(!challenge_body.contains(forbidden));
+        }
+
+        let command = declaration(source, "enum WorkerCommand");
+        let event = declaration(source, "enum WorkerEvent");
+        let response = declaration(source, "struct WorkerResponse");
+        for envelope in [command, event, response] {
+            assert!(!envelope.contains("#[derive(Clone"));
+            assert!(!envelope.contains("Debug"));
+            assert!(!envelope.contains("Serialize"));
+        }
+        for type_name in [
+            "GeneratedBackupReveal",
+            "GeneratedBackupConfirmation",
+            "WorkerCommand",
+            "WorkerEvent",
+            "WorkerResponse",
+        ] {
+            assert!(!source.contains(&format!("impl Clone for {type_name}")));
+            assert!(!source.contains(&format!("impl Copy for {type_name}")));
+            assert!(!source.contains(&format!("impl Debug for {type_name}")));
+            assert!(!source.contains(&format!("impl serde::Serialize for {type_name}")));
+        }
+    }
+
+    #[test]
     fn custom_token_unavailable_reason_crosses_the_same_error_allowlist() {
         let tokens = sanitize_custom_tokens(vec![CustomTokenSnapshot {
             contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
@@ -4083,7 +4804,10 @@ mod tests {
             pending: None,
             hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
+            generated_backup: None,
+            generated_backup_inputs_visible: false,
             secret_reveal: None,
+            secret_text_state_purge_pending: false,
             notice: None,
             error: None,
             last_transaction_hash: None,
@@ -4129,30 +4853,300 @@ mod tests {
     }
 
     #[test]
-    fn generated_reveal_expiry_dispatches_one_cancel_and_drops_the_reveal() {
+    fn numbered_backup_words_preserve_all_twenty_four_ordinals_and_warning_is_one_attempt() {
+        let phrase = (1..=24)
+            .map(|index| format!("word{index:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let numbered = super::numbered_backup_words(&phrase).collect::<Vec<_>>();
+        assert_eq!(numbered.len(), 24);
+        assert!(
+            numbered
+                .iter()
+                .enumerate()
+                .all(|(index, (ordinal, word))| *ordinal == index + 1
+                    && *word == format!("word{:02}", index + 1))
+        );
+        assert!(super::GENERATED_BACKUP_ONE_ATTEMPT_WARNING.contains("단 한 번"));
+        assert!(super::GENERATED_BACKUP_ONE_ATTEMPT_WARNING.contains("저장되지"));
+    }
+
+    #[test]
+    fn display_is_dropped_before_challenge_request_and_deadline_is_carried_forward() {
         let (commands, command_receiver) = std::sync::mpsc::channel();
         let (_event_sender, events) = std::sync::mpsc::channel();
         let mut app = test_app(commands, events);
-        let start = Instant::now();
-        let reveal = super::SecretReveal::new(
-            super::SecretRevealKind::Mnemonic,
-            zeroize::Zeroizing::new("headless secret marker".to_owned()),
-        );
-        app.secret_reveal =
-            super::TimedSecretReveal::new(reveal, super::RevealPurpose::GeneratedBackup, start);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        app.generated_backup = Some(super::GeneratedBackupUiState::Display(
+            super::GeneratedBackupReveal::new(
+                zeroize::Zeroizing::new("headless-display-marker".to_owned()),
+                zeroize::Zeroizing::new("0x0000000000000000000000000000000000000000".to_owned()),
+                deadline,
+            ),
+        ));
 
-        app.expire_secret_reveal(start + super::SECRET_REVEAL_DURATION);
-        assert!(app.secret_reveal.is_none());
-        assert!(app.pending == Some(super::PendingAction::CancelGenerated));
+        app.begin_generated_backup_challenge();
+        assert!(app.generated_backup.is_none());
+        assert!(app.secret_text_state_purge_pending);
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(super::WorkerRequest {
-                command: WorkerCommand::CancelGenerated,
+                command: WorkerCommand::BeginGeneratedBackupChallenge,
                 ..
             })
         ));
-        app.expire_secret_reveal(start + super::SECRET_REVEAL_DURATION + Duration::from_secs(1));
+        app.apply_worker_event(WorkerEvent::GeneratedBackupChallengeBegun(Ok(
+            super::GeneratedBackupChallenge::new([2, 5, 8, 11], deadline),
+        )));
+        let Some(super::GeneratedBackupUiState::Challenge {
+            challenge,
+            words,
+            first_address,
+        }) = app.generated_backup.as_ref()
+        else {
+            panic!("challenge state required");
+        };
+        assert_eq!(challenge.expires_at(), deadline);
+        assert!(words.iter().all(|word| word.is_empty()));
+        assert!(first_address.is_empty());
+        assert!(!app.generated_backup_inputs_visible);
+    }
+
+    #[test]
+    fn generated_backup_clipboard_filter_scrubs_paste_before_removing_it() {
+        let mut paste = egui::Event::Paste("owned-paste-marker".to_owned());
+        assert!(!super::retain_generated_backup_event(&mut paste));
+        assert!(matches!(&paste, egui::Event::Paste(value) if value.is_empty()));
+
+        let mut active = vec![
+            egui::Event::Copy,
+            egui::Event::Cut,
+            egui::Event::Paste("second-owned-marker".to_owned()),
+            egui::Event::Text("ordinary-input".to_owned()),
+        ];
+        super::filter_generated_backup_clipboard_events(&mut active, true);
+        assert_eq!(active.len(), 1);
+        assert!(matches!(active.first(), Some(egui::Event::Text(_))));
+
+        let mut inactive = vec![egui::Event::Paste("inactive-marker".to_owned())];
+        super::filter_generated_backup_clipboard_events(&mut inactive, false);
+        assert_eq!(inactive.len(), 1);
+    }
+
+    #[test]
+    fn final_backup_hold_dispatches_confirmation_exactly_once() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.generated_backup = Some(super::GeneratedBackupUiState::Challenge {
+            challenge: super::GeneratedBackupChallenge::new(
+                [1, 2, 3, 4],
+                Instant::now() + Duration::from_secs(120),
+            ),
+            words: std::array::from_fn(|_| zeroize::Zeroizing::new("marker".to_owned())),
+            first_address: zeroize::Zeroizing::new(
+                "0x0000000000000000000000000000000000000000".to_owned(),
+            ),
+        });
+
+        assert!(app.handle_secret_hold_outcome(
+            HoldOutcome::Triggered,
+            super::SecretHoldAction::ConfirmGeneratedBackup,
+        ));
+        assert!(!app.handle_secret_hold_outcome(
+            HoldOutcome::Triggered,
+            super::SecretHoldAction::ConfirmGeneratedBackup,
+        ));
+        assert!(app.generated_backup.is_none());
+        assert!(!app.generated_backup_inputs_visible);
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::ConfirmGenerated { .. },
+                ..
+            })
+        ));
         assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn generated_backup_display_and_challenge_expire_at_the_exact_shared_deadline() {
+        for challenge_stage in [false, true] {
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            let start = Instant::now();
+            let deadline = start + Duration::from_secs(120);
+            app.generated_backup = Some(if challenge_stage {
+                super::GeneratedBackupUiState::Challenge {
+                    challenge: super::GeneratedBackupChallenge::new([1, 2, 3, 4], deadline),
+                    words: std::array::from_fn(|_| {
+                        zeroize::Zeroizing::new("headless-input-marker".to_owned())
+                    }),
+                    first_address: zeroize::Zeroizing::new(
+                        "0x0000000000000000000000000000000000000000".to_owned(),
+                    ),
+                }
+            } else {
+                super::GeneratedBackupUiState::Display(super::GeneratedBackupReveal::new(
+                    zeroize::Zeroizing::new("headless-display-marker".to_owned()),
+                    zeroize::Zeroizing::new(
+                        "0x0000000000000000000000000000000000000000".to_owned(),
+                    ),
+                    deadline,
+                ))
+            });
+            app.generated_backup_inputs_visible = true;
+
+            app.expire_generated_backup(deadline - Duration::from_nanos(1));
+            assert!(app.generated_backup.is_some());
+            assert!(command_receiver.try_recv().is_err());
+
+            app.expire_generated_backup(deadline);
+            assert!(app.generated_backup.is_none());
+            assert!(!app.generated_backup_inputs_visible);
+            assert!(app.secret_text_state_purge_pending);
+            assert!(app.pending == Some(super::PendingAction::CancelGenerated));
+            assert!(matches!(
+                command_receiver.try_recv(),
+                Ok(super::WorkerRequest {
+                    command: WorkerCommand::CancelGenerated,
+                    ..
+                })
+            ));
+            app.expire_generated_backup(deadline + Duration::from_secs(1));
+            assert!(command_receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn challenge_text_undo_cannot_resurrect_after_cancel_confirm_or_lock() {
+        for transition in 0..3 {
+            let context = egui::Context::default();
+            let (commands, _command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            app.generated_backup = Some(super::GeneratedBackupUiState::Challenge {
+                challenge: super::GeneratedBackupChallenge::new(
+                    [1, 2, 3, 4],
+                    Instant::now() + Duration::from_secs(120),
+                ),
+                words: std::array::from_fn(|index| {
+                    zeroize::Zeroizing::new(if index == 0 {
+                        String::new()
+                    } else {
+                        "marker".to_owned()
+                    })
+                }),
+                first_address: zeroize::Zeroizing::new(
+                    "0x0000000000000000000000000000000000000000".to_owned(),
+                ),
+            });
+            let id = super::generated_backup_word_text_edit_id(0);
+            let Some(super::GeneratedBackupUiState::Challenge { words, .. }) =
+                app.generated_backup.as_mut()
+            else {
+                panic!("challenge state required");
+            };
+            run_secret_text_frame(&context, id, &mut words[0], true, 0.0, Vec::new());
+            run_secret_text_frame(
+                &context,
+                id,
+                &mut words[0],
+                false,
+                0.1,
+                vec![egui::Event::Text("undomark".to_owned())],
+            );
+            run_secret_text_frame(&context, id, &mut words[0], false, 1.2, Vec::new());
+            assert_eq!(words[0].len(), 8);
+
+            match transition {
+                0 => app.cancel_generated_wallet(),
+                1 => assert!(app.handle_secret_hold_outcome(
+                    HoldOutcome::Triggered,
+                    super::SecretHoldAction::ConfirmGeneratedBackup,
+                )),
+                2 => app.request_lock(super::LockReason::Explicit),
+                _ => unreachable!(),
+            }
+            app.purge_queued_secret_text_edit_state(&context);
+            assert!(egui::widgets::text_edit::TextEditState::load(&context, id).is_none());
+
+            let mut recreated = String::new();
+            run_secret_text_frame(&context, id, &mut recreated, true, 2.0, Vec::new());
+            run_secret_text_frame(
+                &context,
+                id,
+                &mut recreated,
+                false,
+                2.1,
+                vec![undo_key_event()],
+            );
+            assert!(recreated.is_empty());
+        }
+    }
+
+    #[test]
+    fn session_scrub_purges_all_fifteen_explicit_text_states_and_financial_undo() {
+        let context = egui::Context::default();
+        let ids = super::secret_text_edit_ids();
+        let mut unique = std::collections::HashSet::new();
+        assert_eq!(ids.len(), 15);
+        assert!(ids.iter().all(|id| unique.insert(*id)));
+        for id in ids {
+            egui::widgets::text_edit::TextEditState::default().store(&context, id);
+        }
+        super::purge_secret_text_edit_state(&context);
+        assert!(
+            ids.iter().all(|id| {
+                egui::widgets::text_edit::TextEditState::load(&context, *id).is_none()
+            })
+        );
+
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let amount_id = super::amount_eth_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            3.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            3.1,
+            vec![egui::Event::Text("12345678".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            4.2,
+            Vec::new(),
+        );
+        assert_eq!(app.amount_eth.len(), 8);
+        app.request_lock(super::LockReason::Explicit);
+        app.purge_queued_secret_text_edit_state(&context);
+        assert!(app.amount_eth.is_empty());
+
+        let mut recreated = String::new();
+        run_secret_text_frame(&context, amount_id, &mut recreated, true, 5.0, Vec::new());
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut recreated,
+            false,
+            5.1,
+            vec![undo_key_event()],
+        );
+        assert!(recreated.is_empty());
     }
 
     #[test]
@@ -4482,8 +5476,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 58);
-        assert_eq!(evidence.backend_routes_checked, 22);
+        assert_eq!(evidence.transitions_checked, 63);
+        assert_eq!(evidence.backend_routes_checked, 23);
         Ok(())
     }
 }

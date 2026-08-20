@@ -140,7 +140,12 @@ requireInvariant(
   /^publish\s*=\s*false$/mu.test(sepoliaDemoManifest) && /^\[workspace\]$/mu.test(sepoliaDemoManifest),
   "Sepolia demo must remain non-publishable and independently locked",
 );
-for (const productionSecretCrate of ["secret-core", "key-agent", "platform-windows"]) {
+for (const productionSecretCrate of [
+  "secret-core",
+  "key-agent",
+  "platform-windows",
+  "secret-input-ui",
+]) {
   requireInvariant(
     !hasDependency(sepoliaDemoManifest, productionSecretCrate),
     `Sepolia demo must not weaken ${productionSecretCrate} boundaries`,
@@ -166,11 +171,19 @@ requireInvariant(
     /pub struct SecretReveal\s*\{[\s\S]*?text:\s*Zeroizing<String>[\s\S]*?\}/u.test(
       sepoliaDemoUi,
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Debug)[^\]]*\)\]\s*pub struct (?:SensitiveText|SecretReveal)/u.test(
+    /pub struct GeneratedBackupReveal\s*\{[\s\S]*?phrase:\s*Zeroizing<String>[\s\S]*?first_address:\s*Zeroizing<String>[\s\S]*?\}/u.test(
       sepoliaDemoUi,
     ) &&
-    !/impl\s+(?:Clone|Debug)\s+for\s+(?:SensitiveText|SecretReveal)/u.test(sepoliaDemoUi),
-  "Sepolia secret input/reveal wrappers must stay zeroizing, non-Clone, and non-Debug",
+    /pub struct GeneratedBackupConfirmation\s*\{[\s\S]*?words:\s*\[SensitiveText;[\s\S]*?first_address:\s*SensitiveText[\s\S]*?\}/u.test(
+      sepoliaDemoUi,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*pub struct (?:SensitiveText|SecretReveal|GeneratedBackupReveal|GeneratedBackupConfirmation)/u.test(
+      sepoliaDemoUi,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Debug|Serialize)\s+for\s+(?:SensitiveText|SecretReveal|GeneratedBackupReveal|GeneratedBackupConfirmation)/u.test(
+      sepoliaDemoUi,
+    ),
+  "Sepolia secret input/reveal/confirmation wrappers must stay zeroizing and move-only",
 );
 requireInvariant(
   sepoliaDemoUi.includes(
@@ -179,6 +192,53 @@ requireInvariant(
     sepoliaDemoUi.includes(".selectable(false)") &&
     !/copy_text\s*\([^)]*(?:secret|reveal|mnemonic|private_key)/isu.test(sepoliaDemoUi),
   "Sepolia secret reveal must stay short-lived, non-selectable, and clipboard-free",
+);
+
+const generatedChallengeBody =
+  /pub struct GeneratedBackupChallenge\s*\{(?<body>[\s\S]*?)\n\}/u.exec(sepoliaDemoUi)
+    ?.groups?.body ?? "";
+const generatedConfirmationBody =
+  /fn confirm_generated\([\s\S]*?(?=\n    fn ensure_generated_confirmation_live)/u.exec(
+    sepoliaDemoBackend,
+  )?.[0] ?? "";
+requireInvariant(
+  sepoliaDemoBackend.includes(
+    "const GENERATED_BACKUP_TTL: Duration = Duration::from_secs(120)",
+    ) &&
+    sepoliaDemoBackend.includes("enum PendingGeneratedStage") &&
+    sepoliaDemoBackend.includes("Display") &&
+    /Challenge\s*\{\s*positions:\s*\[u8;/u.test(sepoliaDemoBackend) &&
+    sepoliaDemoBackend.includes("random_backup_challenge_positions") &&
+    sepoliaDemoBackend.includes("const MAX_RANDOM_SAMPLES: usize = 256") &&
+    generatedChallengeBody.includes("positions:") &&
+    generatedChallengeBody.includes("expires_at:") &&
+    !/(?:phrase|mnemonic|expected|first_address|SensitiveText|Zeroizing|Serialize|Debug)/u.test(
+      generatedChallengeBody,
+    ) &&
+    sepoliaDemoUi.includes("BeginGeneratedBackupChallenge") &&
+    sepoliaDemoUi.includes("confirmation: GeneratedBackupConfirmation") &&
+    sepoliaDemoUi.includes("permit: &SessionPermit<'_>") &&
+    (generatedConfirmationBody.match(/ensure_generated_confirmation_live\(/gu) ?? [])
+      .length === 5 &&
+    generatedConfirmationBody.indexOf("verify_generated_backup") <
+      generatedConfirmationBody.indexOf("seal_vault_v2") &&
+    generatedConfirmationBody.indexOf("seal_vault_v2") <
+      generatedConfirmationBody.indexOf("open_vault_v2") &&
+    generatedConfirmationBody.indexOf("open_vault_v2") <
+      generatedConfirmationBody.indexOf("write_new_file") &&
+    sepoliaDemoUi.includes("events.retain_mut(retain_generated_backup_event)") &&
+    /Event::Paste\(text\)[\s\S]*?text\.zeroize\(\)[\s\S]*?false/u.test(
+      sepoliaDemoUi,
+    ) &&
+    sepoliaDemoUi.includes("fn secret_text_edit_ids() -> [egui::Id; 15]") &&
+    sepoliaDemoUi.includes("state.clear_undoer()") &&
+    sepoliaDemoUi.includes(
+      "data.remove::<egui::widgets::text_edit::TextEditState>(id)",
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Debug|Serialize)[^\]]*\)\]\s*(?:enum WorkerCommand|enum WorkerEvent|struct WorkerResponse)/u.test(
+      sepoliaDemoUi,
+    ),
+  "Sepolia generated-backup challenge lost deadline, move-only DTO, permit, clipboard, undo, or no-write-before-verification guards",
 );
 requireInvariant(
   sepoliaDemoBackend.includes("V2(OpenedVaultV2)") &&
