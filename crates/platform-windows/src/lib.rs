@@ -46,6 +46,13 @@ mod anchor_registry;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
+// This one-shot, secretless native-host/Broker transport proof remains
+// deliberately dormant. Exact native-host mapped-image identity, signed and
+// immutable installation/registration, and composition with `broker::ipc`
+// are still release-blocking and no production entrypoint can reach it.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod broker_channel;
 // Exact image-file authentication and suspended-process ownership remain
 // crate-private until the supervisor can bind the resulting capability to the
 // private Broker channel and protected-settings lease.
