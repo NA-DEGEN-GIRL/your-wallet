@@ -249,6 +249,91 @@ requireInvariant(
   "Sepolia v2 unlock/account-0/pending-quarantine management boundary changed",
 );
 
+// Sepolia authenticated saved ERC-20 transfer invariants (demo-only).
+const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
+const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
+const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
+const preparedTransferBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)enum PreparedTransfer\s*\{/u,
+);
+const prepareSavedErc20Block = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "prepare_saved_erc20_transfer_inner",
+);
+const confirmSavedErc20Block = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "confirm_saved_erc20_transfer",
+);
+const signSavedErc20Block = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "sign_erc20_type_two",
+);
+const retryPendingBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "retry_pending_with_permit",
+);
+requireInvariant(
+  preparedTransferBlock.includes("Native(PreparedNativeTransfer)") &&
+    preparedTransferBlock.includes("SavedErc20(PreparedErc20Transfer)") &&
+    prepareSavedErc20Block.includes("permit: &SessionPermit<'_>") &&
+    prepareSavedErc20Block.includes("load_token_store(&context)") &&
+    prepareSavedErc20Block.includes("verify_token_store_baseline(") &&
+    (prepareSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? []).length === 2 &&
+    prepareSavedErc20Block.indexOf("estimate_erc20_transfer_gas(") <
+      prepareSavedErc20Block.indexOf("erc20_transfer_preflight(") &&
+    confirmSavedErc20Block.includes("permit: &SessionPermit<'_>") &&
+    (confirmSavedErc20Block.match(/verify_token_store_baseline\(/gu) ?? []).length === 2 &&
+    (confirmSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? []).length === 2 &&
+    confirmSavedErc20Block.indexOf("estimate_erc20_transfer_gas(") <
+      confirmSavedErc20Block.indexOf("erc20_transfer_preflight(") &&
+    signSavedErc20Block.includes("erc20::transfer_call_data") &&
+    signSavedErc20Block.includes("rlp_bytes(&contract)") &&
+    signSavedErc20Block.includes("rlp_word(Word::ZERO)") &&
+    signSavedErc20Block.includes("rlp_list(&[])") &&
+    !/\bcalldata\s*:/u.test(signSavedErc20Block),
+  "saved ERC-20 must stay distinct, authenticated, bookended, estimate-before-exact-preflight, and internally calldata-bound",
+);
+requireInvariant(
+  retryPendingBlock.includes("read_pending(&self.pending_path)") &&
+    retryPendingBlock.includes("guarded_broadcast(") &&
+    !/(?:pending_nonce|fee_quote|latest_base_fee|estimate_erc20|sign_erc20|account_private_key)/u.test(
+      retryPendingBlock,
+    ) &&
+    sepoliaDemoUiProduction.includes("let CustomTokenState::Verified") &&
+    sepoliaDemoUiProduction.includes("clear_transfer_amount_after_asset_change(") &&
+    sepoliaDemoUiProduction.includes("zeroize_custom_token_snapshots(&mut self.custom_tokens)") &&
+    sepoliaDemoUiProduction.includes("확인하고 전송 — 2초 동안 누르기"),
+  "saved ERC-20 UI/retry path lost verified-only selection, shared hold, stale scrub, or exact-byte no-resign recovery",
+);
+
+const exactErc20PreflightBlock = rustFunctionBlock(
+  sepoliaDemoRpcProduction,
+  "erc20_transfer_preflight",
+);
+const guardedRpcSendBlock = rustFunctionBlock(
+  sepoliaDemoRpcProduction,
+  "send_raw_transaction",
+);
+const guardedPermitIndex = guardedRpcSendBlock.indexOf("if !permit.is_current()");
+requireInvariant(
+  exactErc20PreflightBlock.includes("value: \"0x0\"") &&
+    exactErc20PreflightBlock.includes("input: encode_prefixed_hex(&calldata)") &&
+    exactErc20PreflightBlock.includes("transaction_type: \"0x2\"") &&
+    exactErc20PreflightBlock.includes("nonce: encode_quantity(nonce)") &&
+    exactErc20PreflightBlock.includes("gas: encode_quantity(gas_limit)") &&
+    exactErc20PreflightBlock.includes("access_list: &[]") &&
+    !/\bdata\s*:/u.test(exactErc20PreflightBlock) &&
+    !/gas_price/u.test(exactErc20PreflightBlock) &&
+    guardedRpcSendBlock.includes("permit: &SessionPermit<'_>") &&
+    guardedRpcSendBlock.indexOf("self.verify_sepolia()?") !== -1 &&
+    guardedPermitIndex > guardedRpcSendBlock.indexOf("self.verify_sepolia()?") &&
+    guardedRpcSendBlock.indexOf("RpcMethod::SendRawTransaction") > guardedPermitIndex &&
+    (sepoliaDemoRpcProduction.match(/pub fn send_raw_transaction\s*\(/gu) ?? []).length === 1 &&
+    !/pub fn (?:unguarded_|raw_)?broadcast/u.test(sepoliaDemoRpcProduction),
+  "typed ERC-20 preflight or the sole post-reverify concrete-permit broadcast guard changed",
+);
+
 const noNetworkManifests = [
   "crates/approval-wire/Cargo.toml",
   "crates/secret-core/Cargo.toml",

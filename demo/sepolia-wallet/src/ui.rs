@@ -333,6 +333,45 @@ pub struct TransferPreview {
     pub quote_valid_for_seconds: String,
 }
 
+/// Exact backend-normalized saved ERC-20 transfer values shown before signing.
+///
+/// This deliberately has no `Debug` implementation. The contract, recipient,
+/// amount, and fee values are public transaction metadata, but do not belong in
+/// diagnostics or crash output.
+#[derive(Clone, Eq, PartialEq)]
+pub struct Erc20TransferPreview {
+    /// Full saved contract address reopened from the authenticated sidecar.
+    pub contract_address: String,
+    /// Strictly bounded symbol authenticated against the saved metadata.
+    pub symbol: Option<String>,
+    /// Exact decimal count authenticated against the saved metadata.
+    pub decimals: u8,
+    /// Exact normalized recipient encoded into `transfer(address,uint256)`.
+    pub recipient: String,
+    /// Exact normalized human-readable token amount.
+    pub amount: String,
+    /// Exact pending nonce as an unsigned decimal integer.
+    pub nonce: String,
+    /// Korean label for the backend-normalized fee selection.
+    pub fee_mode_ko: String,
+    /// Raw pending-state gas estimate returned for the exact token call.
+    pub estimated_gas: String,
+    /// Ceil-20%-buffered gas limit frozen for signing, capped at 500,000.
+    pub gas_limit: String,
+    /// Base fee observed when the quote was prepared, in gwei.
+    pub quoted_base_fee_per_gas_gwei: String,
+    /// Maximum priority fee per gas in gwei.
+    pub max_priority_fee_per_gas_gwei: String,
+    /// Maximum total fee per gas in gwei.
+    pub max_fee_per_gas_gwei: String,
+    /// Network fee estimated from the observed base fee, in ETH.
+    pub estimated_network_fee_eth: String,
+    /// Maximum ETH network fee for the frozen token gas limit.
+    pub max_network_fee_eth: String,
+    /// Conservative whole seconds remaining when backend preparation ended.
+    pub quote_valid_for_seconds: String,
+}
+
 /// Revocable authority for one epoch-bound signing or rebroadcast operation.
 ///
 /// Private fields and a worker-only production constructor prevent another
@@ -529,6 +568,20 @@ pub trait WalletBackend: Send + 'static {
         fee_selection: FeeSelection,
     ) -> Result<TransferPreview, String>;
 
+    /// Validate one authenticated saved token and freeze an exact ERC-20
+    /// transfer without signing. UI-provided metadata is never accepted.
+    fn prepare_saved_erc20_transfer(
+        &mut self,
+        contract_address: &str,
+        recipient: &str,
+        amount: &str,
+        fee_selection: FeeSelection,
+        permit: &SessionPermit<'_>,
+    ) -> Result<Erc20TransferPreview, String> {
+        let _ = (contract_address, recipient, amount, fee_selection, permit);
+        Err("저장된 ERC-20 전송 기능을 사용할 수 없습니다.".to_owned())
+    }
+
     /// Sign and submit only the currently prepared transfer while `permit`
     /// remains current at every irreversible boundary.
     fn confirm_prepared(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String>;
@@ -621,6 +674,12 @@ enum WorkerCommand {
         amount_eth: String,
         fee_selection: FeeSelection,
     },
+    PrepareSavedErc20Transfer {
+        contract_address: String,
+        recipient: String,
+        amount: String,
+        fee_selection: FeeSelection,
+    },
     ConfirmPrepared,
     CancelPrepared,
     RetryPending,
@@ -643,6 +702,7 @@ enum WorkerEvent {
     CustomTokensRefreshed(Result<Vec<CustomTokenSnapshot>, String>),
     CustomTokenRemoved(Result<Vec<CustomTokenSnapshot>, String>),
     TransferPrepared(Box<Result<TransferPreview, String>>),
+    SavedErc20TransferPrepared(Box<Result<Erc20TransferPreview, String>>),
     PreparedConfirmed(Result<SendReceipt, String>),
     PreparedCancelled(Result<(), String>),
     Retried(Result<SendReceipt, String>),
@@ -708,6 +768,23 @@ enum FeeMode {
     Recommended,
     Faster,
     Custom,
+}
+
+/// UI-only selection. A contract string is merely a request identifier; the
+/// backend must reopen the authenticated sidecar and resolve it again.
+#[derive(Clone, Default, Eq, PartialEq)]
+enum TransferAssetChoice {
+    #[default]
+    Native,
+    SavedErc20 {
+        contract_address: String,
+    },
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum PreparedPreview {
+    Native(TransferPreview),
+    SavedErc20(Erc20TransferPreview),
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -908,12 +985,13 @@ pub struct WalletApp {
     snapshot: Option<WalletSnapshot>,
     custom_token_address: String,
     custom_tokens: Vec<CustomTokenSnapshot>,
+    transfer_asset: TransferAssetChoice,
     recipient: String,
     amount_eth: String,
     fee_mode: FeeMode,
     custom_priority_fee_gwei: String,
     custom_max_fee_gwei: String,
-    prepared: Option<TransferPreview>,
+    prepared: Option<PreparedPreview>,
     pending: Option<PendingAction>,
     hold: HoldToSend,
     secret_hold: HoldToSend,
@@ -959,6 +1037,7 @@ impl WalletApp {
             snapshot: None,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: FeeMode::Recommended,
@@ -1002,6 +1081,7 @@ impl WalletApp {
             snapshot: None,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: FeeMode::Recommended,
@@ -1100,8 +1180,10 @@ impl WalletApp {
             }
         }
         self.custom_tokens.clear();
+        zeroize_transfer_asset_choice(&mut self.transfer_asset);
+        self.transfer_asset = TransferAssetChoice::Native;
         if let Some(preview) = self.prepared.as_mut() {
-            zeroize_transfer_preview(preview);
+            zeroize_prepared_preview(preview);
         }
         self.prepared = None;
         self.pending = None;
@@ -1529,7 +1611,7 @@ impl WalletApp {
             return;
         }
         let recipient = self.recipient.trim().to_owned();
-        let amount_eth = self.amount_eth.trim().to_owned();
+        let amount = self.amount_eth.trim().to_owned();
         let fee_selection = match self.fee_mode {
             FeeMode::Recommended => FeeSelection::Recommended,
             FeeMode::Faster => FeeSelection::Faster,
@@ -1539,14 +1621,40 @@ impl WalletApp {
             },
         };
         self.hold.reset();
-        self.send_command(
-            WorkerCommand::PrepareTransfer {
-                recipient,
-                amount_eth,
-                fee_selection,
-            },
-            PendingAction::PrepareTransfer,
-        );
+        match self.transfer_asset.clone() {
+            TransferAssetChoice::Native => self.send_command(
+                WorkerCommand::PrepareTransfer {
+                    recipient,
+                    amount_eth: amount,
+                    fee_selection,
+                },
+                PendingAction::PrepareTransfer,
+            ),
+            TransferAssetChoice::SavedErc20 { contract_address } => {
+                if verified_token_by_contract(&self.custom_tokens, &contract_address).is_none() {
+                    zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
+                    self.error =
+                        Some("저장된 토큰을 다시 검증한 뒤 전송 자산을 선택해 주세요.".to_owned());
+                    return;
+                }
+                self.send_command(
+                    WorkerCommand::PrepareSavedErc20Transfer {
+                        contract_address,
+                        recipient,
+                        amount,
+                        fee_selection,
+                    },
+                    PendingAction::PrepareTransfer,
+                );
+            }
+        }
     }
 
     fn confirm_prepared(&mut self) {
@@ -1798,38 +1906,80 @@ impl WalletApp {
             WorkerEvent::CustomTokenAdded(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.custom_token_address.clear();
                     self.notice =
                         Some("커스텀 토큰을 검증하고 암호화 목록에 저장했습니다.".to_owned());
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.error = Some(safe_error(error));
                 }
             },
             WorkerEvent::CustomTokensRefreshed(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.notice = Some("저장된 커스텀 토큰을 다시 검증했습니다.".to_owned());
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.error = Some(safe_error(error));
                 }
             },
             WorkerEvent::CustomTokenRemoved(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.notice = Some("커스텀 토큰을 암호화 목록에서 제거했습니다.".to_owned());
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
                     self.error = Some(safe_error(error));
                 }
             },
             WorkerEvent::TransferPrepared(result) => match *result {
                 Ok(preview) => {
-                    self.prepared = Some(preview);
+                    self.prepared = Some(PreparedPreview::Native(preview));
                     self.notice = None;
                     self.error = None;
                     self.hold.reset();
@@ -1839,19 +1989,59 @@ impl WalletApp {
                     self.error = Some(safe_error(error));
                 }
             },
+            WorkerEvent::SavedErc20TransferPrepared(result) => match *result {
+                Ok(preview) => {
+                    self.prepared = Some(PreparedPreview::SavedErc20(preview));
+                    self.notice = None;
+                    self.error = None;
+                    self.hold.reset();
+                }
+                Err(error) => {
+                    zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
+                    self.error = Some(safe_error(error));
+                }
+            },
             WorkerEvent::PreparedConfirmed(result) => match result {
                 Ok(receipt) => {
-                    self.prepared = None;
+                    let was_erc20 = matches!(self.prepared, Some(PreparedPreview::SavedErc20(_)));
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    zeroize_transfer_asset_choice(&mut self.transfer_asset);
+                    self.transfer_asset = TransferAssetChoice::Native;
                     self.last_transaction_hash = Some(receipt.transaction_hash);
-                    self.recipient.clear();
-                    self.amount_eth.clear();
+                    self.recipient.zeroize();
+                    self.amount_eth.zeroize();
+                    self.secret_text_state_purge_pending = true;
+                    mark_snapshot_balance_stale(self.snapshot.as_mut());
+                    if was_erc20 {
+                        zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    }
                     self.notice = Some(
                         "Sepolia 테스트 전송을 제출했습니다. 반영까지 잠시 걸릴 수 있습니다."
                             .to_owned(),
                     );
                 }
                 Err(error) => {
-                    self.prepared = None;
+                    let was_erc20 = matches!(self.prepared, Some(PreparedPreview::SavedErc20(_)));
+                    mark_snapshot_balance_stale(self.snapshot.as_mut());
+                    if was_erc20 {
+                        zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                        reset_transfer_selection_after_token_change(
+                            &mut self.transfer_asset,
+                            &mut self.prepared,
+                            &mut self.hold,
+                            &mut self.amount_eth,
+                            &mut self.secret_text_state_purge_pending,
+                        );
+                    } else {
+                        clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    }
                     self.error = Some(safe_error(error));
                 }
             },
@@ -1865,10 +2055,23 @@ impl WalletApp {
             WorkerEvent::Retried(result) => match result {
                 Ok(receipt) => {
                     self.last_transaction_hash = Some(receipt.transaction_hash);
+                    mark_snapshot_balance_stale(self.snapshot.as_mut());
+                    zeroize_custom_token_snapshots(&mut self.custom_tokens);
                     self.notice =
-                        Some("저장된 이전 Sepolia 거래를 그대로 다시 제출했습니다.".to_owned());
+                        Some("저장된 이전 Sepolia 거래를 그대로 다시 제출했습니다. 잔액을 다시 조회해 주세요.".to_owned());
                 }
-                Err(error) => self.error = Some(safe_error(error)),
+                Err(error) => {
+                    mark_snapshot_balance_stale(self.snapshot.as_mut());
+                    zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    reset_transfer_selection_after_token_change(
+                        &mut self.transfer_asset,
+                        &mut self.prepared,
+                        &mut self.hold,
+                        &mut self.amount_eth,
+                        &mut self.secret_text_state_purge_pending,
+                    );
+                    self.error = Some(safe_error(error));
+                }
             },
         }
     }
@@ -2436,9 +2639,11 @@ impl WalletApp {
                 self.refresh_custom_tokens();
             }
             ui.label(
-                RichText::new("최대 32개 · 토큰 전송은 아직 지원하지 않습니다.")
-                    .small()
-                    .color(palette.muted),
+                RichText::new(
+                    "최대 32개 · 저장 후 다시 검증된 ERC-20만 전송 자산으로 선택할 수 있습니다.",
+                )
+                .small()
+                .color(palette.muted),
             );
         });
 
@@ -2488,7 +2693,7 @@ impl WalletApp {
         }
         ui.label(
             RichText::new(
-                "이 데모의 토큰 목록 generation은 파일 일관성 값이며 하드웨어 롤백 방지 앵커가 아닙니다.",
+                "토큰 목록 generation은 롤백 방지 앵커가 아닙니다. 과거의 유효한 목록 파일을 복원하면 제거했던 토큰이 다시 나타날 수 있으므로 전체 주소와 재검증 결과를 확인하세요.",
             )
             .small()
             .color(palette.muted),
@@ -2501,10 +2706,65 @@ impl WalletApp {
         }
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
-        ui.heading("4. 테스트 ETH 보내기");
+        ui.heading("4. 테스트 자산 보내기");
         let preparing_allowed = self.prepared.is_none() && self.pending.is_none();
         if self.prepared.is_none() {
-            ui.label("먼저 받는 주소와 금액을 입력해 전송 내용을 준비하세요.");
+            ui.label("Sepolia ETH 또는 저장 후 다시 검증된 ERC-20을 선택하세요.");
+            ui.add_space(6.0);
+            ui.label(RichText::new("전송 자산").strong());
+            let selected_label = transfer_asset_label(&self.transfer_asset, &self.custom_tokens);
+            let mut previous_asset = self.transfer_asset.clone();
+            let _ = ui.add_enabled_ui(preparing_allowed, |ui| {
+                egui::ComboBox::from_id_salt("saved_transfer_asset")
+                    .selected_text(selected_label)
+                    .width(360.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.transfer_asset,
+                            TransferAssetChoice::Native,
+                            "Sepolia ETH",
+                        );
+                        for token in &self.custom_tokens {
+                            let CustomTokenState::Verified {
+                                symbol, decimals, ..
+                            } = &token.state
+                            else {
+                                continue;
+                            };
+                            let symbol = symbol.as_deref().unwrap_or("심볼 없음");
+                            ui.selectable_value(
+                                &mut self.transfer_asset,
+                                TransferAssetChoice::SavedErc20 {
+                                    contract_address: token.contract_address.clone(),
+                                },
+                                format!(
+                                    "{symbol} · decimals {decimals} · {}",
+                                    token.contract_address
+                                ),
+                            );
+                        }
+                    });
+            });
+            if previous_asset != self.transfer_asset {
+                zeroize_transfer_asset_choice(&mut previous_asset);
+                clear_transfer_amount_after_asset_change(
+                    &mut self.prepared,
+                    &mut self.hold,
+                    &mut self.amount_eth,
+                    &mut self.secret_text_state_purge_pending,
+                );
+            }
+            if let TransferAssetChoice::SavedErc20 { contract_address } = &self.transfer_asset {
+                ui.label(RichText::new("선택한 저장 컨트랙트").strong());
+                ui.label(RichText::new(contract_address).monospace());
+                ui.label(
+                    RichText::new(
+                        "표시 정보는 선택 보조용입니다. 준비 시 인증된 토큰 파일과 Sepolia 응답을 backend가 처음부터 다시 검증합니다.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+            }
             ui.add_space(6.0);
             ui.label("받는 주소");
             let _ = ui.add_enabled(
@@ -2526,12 +2786,20 @@ impl WalletApp {
                         .hint_text("예: 0.001")
                         .desired_width(180.0),
                 );
-                ui.label("Sepolia ETH");
+                ui.label(transfer_amount_unit(
+                    &self.transfer_asset,
+                    &self.custom_tokens,
+                ));
             });
-            if !self.amount_eth.trim().is_empty() && !valid_amount_shape(self.amount_eth.trim()) {
+            let amount_valid = transfer_amount_shape_is_valid(
+                self.amount_eth.trim(),
+                &self.transfer_asset,
+                &self.custom_tokens,
+            );
+            if !self.amount_eth.trim().is_empty() && !amount_valid {
                 ui.colored_label(
                     palette.error,
-                    "0보다 큰 금액을 소수점 아래 최대 18자리로 입력해 주세요.",
+                    "0보다 큰 금액을 선택한 자산의 decimals 범위 안에서 입력해 주세요.",
                 );
             }
 
@@ -2596,14 +2864,21 @@ impl WalletApp {
                     }
                 }
             }
-            ui.label(
-                RichText::new("일반 ETH 전송만 지원하며 가스 한도는 21,000으로 고정됩니다.")
-                    .small()
-                    .color(palette.muted),
-            );
+            ui.label(match &self.transfer_asset {
+                TransferAssetChoice::Native => RichText::new(
+                    "일반 ETH 전송의 가스 한도는 21,000으로 고정됩니다.",
+                )
+                .small()
+                .color(palette.muted),
+                TransferAssetChoice::SavedErc20 { .. } => RichText::new(
+                    "ERC-20은 exact transfer 호출을 사전 실행하고, 추정 가스에 20%를 올림해 최대 500,000 안에서 고정합니다. 토큰과 수수료용 ETH 잔액을 모두 확인합니다.",
+                )
+                .small()
+                .color(palette.muted),
+            });
             ui.add_space(8.0);
             let valid_input = valid_recipient_shape(self.recipient.trim())
-                && valid_amount_shape(self.amount_eth.trim())
+                && amount_valid
                 && match self.fee_mode {
                     FeeMode::Recommended | FeeMode::Faster => true,
                     FeeMode::Custom => {
@@ -2631,7 +2906,12 @@ impl WalletApp {
                 RichText::new("아래 내용 그대로 서명·전송됩니다. 전부 확인하세요.").strong(),
             );
             ui.add_space(8.0);
-            ui.group(|ui| render_transfer_preview(ui, &preview));
+            ui.group(|ui| match &preview {
+                PreparedPreview::Native(preview) => render_transfer_preview(ui, preview),
+                PreparedPreview::SavedErc20(preview) => {
+                    render_erc20_transfer_preview(ui, preview);
+                }
+            });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
@@ -2719,7 +2999,7 @@ fn hold_to_send_input(
 }
 
 fn confirmation_enabled(
-    prepared: Option<&TransferPreview>,
+    prepared: Option<&PreparedPreview>,
     pending: Option<PendingAction>,
 ) -> bool {
     prepared.is_some() && pending.is_none()
@@ -2779,25 +3059,145 @@ fn zeroize_optional_string(value: &mut Option<String>) {
     *value = None;
 }
 
-fn zeroize_transfer_preview(preview: &mut TransferPreview) {
-    preview.recipient.zeroize();
-    preview.amount_eth.zeroize();
-    preview.nonce.zeroize();
-    preview.fee_mode_ko.zeroize();
-    preview.gas_limit.zeroize();
-    preview.quoted_base_fee_per_gas_gwei.zeroize();
-    preview.max_priority_fee_per_gas_gwei.zeroize();
-    preview.max_fee_per_gas_gwei.zeroize();
-    preview.estimated_network_fee_eth.zeroize();
-    preview.max_network_fee_eth.zeroize();
-    preview.max_total_eth.zeroize();
-    preview.estimated_total_eth.zeroize();
-    preview.quote_valid_for_seconds.zeroize();
+fn zeroize_prepared_preview(preview: &mut PreparedPreview) {
+    match preview {
+        PreparedPreview::Native(preview) => {
+            preview.recipient.zeroize();
+            preview.amount_eth.zeroize();
+            preview.nonce.zeroize();
+            preview.fee_mode_ko.zeroize();
+            preview.gas_limit.zeroize();
+            preview.quoted_base_fee_per_gas_gwei.zeroize();
+            preview.max_priority_fee_per_gas_gwei.zeroize();
+            preview.max_fee_per_gas_gwei.zeroize();
+            preview.estimated_network_fee_eth.zeroize();
+            preview.max_network_fee_eth.zeroize();
+            preview.max_total_eth.zeroize();
+            preview.estimated_total_eth.zeroize();
+            preview.quote_valid_for_seconds.zeroize();
+        }
+        PreparedPreview::SavedErc20(preview) => {
+            preview.contract_address.zeroize();
+            if let Some(symbol) = preview.symbol.as_mut() {
+                symbol.zeroize();
+            }
+            preview.recipient.zeroize();
+            preview.amount.zeroize();
+            preview.nonce.zeroize();
+            preview.fee_mode_ko.zeroize();
+            preview.estimated_gas.zeroize();
+            preview.gas_limit.zeroize();
+            preview.quoted_base_fee_per_gas_gwei.zeroize();
+            preview.max_priority_fee_per_gas_gwei.zeroize();
+            preview.max_fee_per_gas_gwei.zeroize();
+            preview.estimated_network_fee_eth.zeroize();
+            preview.max_network_fee_eth.zeroize();
+            preview.quote_valid_for_seconds.zeroize();
+        }
+    }
 }
 
-fn clear_prepared_state(prepared: &mut Option<TransferPreview>, hold: &mut HoldToSend) {
+fn clear_prepared_state(prepared: &mut Option<PreparedPreview>, hold: &mut HoldToSend) {
+    if let Some(preview) = prepared.as_mut() {
+        zeroize_prepared_preview(preview);
+    }
     *prepared = None;
     hold.reset();
+}
+
+fn zeroize_transfer_asset_choice(choice: &mut TransferAssetChoice) {
+    if let TransferAssetChoice::SavedErc20 { contract_address } = choice {
+        contract_address.zeroize();
+    }
+}
+
+fn reset_transfer_selection_after_token_change(
+    choice: &mut TransferAssetChoice,
+    prepared: &mut Option<PreparedPreview>,
+    hold: &mut HoldToSend,
+    amount: &mut String,
+    secret_text_state_purge_pending: &mut bool,
+) {
+    zeroize_transfer_asset_choice(choice);
+    *choice = TransferAssetChoice::Native;
+    clear_transfer_amount_after_asset_change(
+        prepared,
+        hold,
+        amount,
+        secret_text_state_purge_pending,
+    );
+}
+
+fn clear_transfer_amount_after_asset_change(
+    prepared: &mut Option<PreparedPreview>,
+    hold: &mut HoldToSend,
+    amount: &mut String,
+    secret_text_state_purge_pending: &mut bool,
+) {
+    amount.zeroize();
+    *secret_text_state_purge_pending = true;
+    clear_prepared_state(prepared, hold);
+}
+
+fn verified_token_by_contract<'a>(
+    tokens: &'a [CustomTokenSnapshot],
+    contract_address: &str,
+) -> Option<(&'a Option<String>, u8)> {
+    tokens.iter().find_map(|token| {
+        if token.contract_address != contract_address {
+            return None;
+        }
+        match &token.state {
+            CustomTokenState::Verified {
+                symbol, decimals, ..
+            } => Some((symbol, *decimals)),
+            CustomTokenState::Unavailable { .. } => None,
+        }
+    })
+}
+
+fn transfer_asset_label(choice: &TransferAssetChoice, tokens: &[CustomTokenSnapshot]) -> String {
+    match choice {
+        TransferAssetChoice::Native => "Sepolia ETH".to_owned(),
+        TransferAssetChoice::SavedErc20 { contract_address } => {
+            match verified_token_by_contract(tokens, contract_address) {
+                Some((symbol, decimals)) => format!(
+                    "{} · decimals {decimals}",
+                    symbol.as_deref().unwrap_or("심볼 없음")
+                ),
+                None => "다시 검증이 필요한 저장 토큰".to_owned(),
+            }
+        }
+    }
+}
+
+fn transfer_amount_unit<'a>(
+    choice: &'a TransferAssetChoice,
+    tokens: &'a [CustomTokenSnapshot],
+) -> &'a str {
+    match choice {
+        TransferAssetChoice::Native => "Sepolia ETH",
+        TransferAssetChoice::SavedErc20 { contract_address } => {
+            verified_token_by_contract(tokens, contract_address)
+                .and_then(|(symbol, _)| symbol.as_deref())
+                .unwrap_or("토큰")
+        }
+    }
+}
+
+fn transfer_amount_shape_is_valid(
+    amount: &str,
+    choice: &TransferAssetChoice,
+    tokens: &[CustomTokenSnapshot],
+) -> bool {
+    match choice {
+        TransferAssetChoice::Native => valid_amount_shape(amount),
+        TransferAssetChoice::SavedErc20 { contract_address } => {
+            verified_token_by_contract(tokens, contract_address).is_some_and(|(_, decimals)| {
+                valid_decimal_amount_shape(amount, usize::from(decimals), 128)
+            })
+        }
+    }
 }
 
 fn sanitize_custom_tokens(mut tokens: Vec<CustomTokenSnapshot>) -> Vec<CustomTokenSnapshot> {
@@ -2807,6 +3207,31 @@ fn sanitize_custom_tokens(mut tokens: Vec<CustomTokenSnapshot>) -> Vec<CustomTok
         }
     }
     tokens
+}
+
+fn zeroize_custom_token_snapshots(tokens: &mut Vec<CustomTokenSnapshot>) {
+    for token in tokens.iter_mut() {
+        token.contract_address.zeroize();
+        match &mut token.state {
+            CustomTokenState::Verified {
+                symbol, balance, ..
+            } => {
+                if let Some(symbol) = symbol.as_mut() {
+                    symbol.zeroize();
+                }
+                balance.zeroize();
+            }
+            CustomTokenState::Unavailable { reason_ko } => reason_ko.zeroize(),
+        }
+    }
+    tokens.clear();
+}
+
+fn mark_snapshot_balance_stale(snapshot: Option<&mut WalletSnapshot>) {
+    if let Some(snapshot) = snapshot {
+        snapshot.balance_eth.zeroize();
+        snapshot.balance_eth = "다시 조회 필요".to_owned();
+    }
 }
 
 fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 13] {
@@ -2863,6 +3288,73 @@ fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
         )
         .small()
         .color(palette.muted),
+    );
+}
+
+fn render_erc20_transfer_preview(ui: &mut egui::Ui, preview: &Erc20TransferPreview) {
+    let symbol = preview.symbol.as_deref().unwrap_or("심볼 없음");
+    let fields = [
+        ("자산 종류", "저장·검증된 ERC-20"),
+        ("토큰 컨트랙트", preview.contract_address.as_str()),
+        ("컨트랙트 제공 심볼", symbol),
+        ("decimals", ""),
+        ("받는 주소", preview.recipient.as_str()),
+        ("보낼 토큰 수량", preview.amount.as_str()),
+        ("nonce", preview.nonce.as_str()),
+        ("수수료 방식", preview.fee_mode_ko.as_str()),
+        ("RPC 추정 가스", preview.estimated_gas.as_str()),
+        ("20% 올림 후 가스 한도", preview.gas_limit.as_str()),
+        (
+            "현재 기준 기본 수수료 / gas (gwei)",
+            preview.quoted_base_fee_per_gas_gwei.as_str(),
+        ),
+        (
+            "최대 우선 수수료 / gas (gwei)",
+            preview.max_priority_fee_per_gas_gwei.as_str(),
+        ),
+        (
+            "최대 수수료 / gas (gwei)",
+            preview.max_fee_per_gas_gwei.as_str(),
+        ),
+        (
+            "현재 기준 예상 네트워크 수수료 (Sepolia ETH)",
+            preview.estimated_network_fee_eth.as_str(),
+        ),
+        (
+            "최대 네트워크 수수료 (Sepolia ETH)",
+            preview.max_network_fee_eth.as_str(),
+        ),
+        (
+            "준비 완료 시점 남은 견적 유효 시간 (초)",
+            preview.quote_valid_for_seconds.as_str(),
+        ),
+    ];
+    for (label, value) in fields {
+        ui.label(RichText::new(label).strong());
+        let value = if label == "decimals" {
+            preview.decimals.to_string()
+        } else {
+            value.to_owned()
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(value).monospace().size(18.0));
+        });
+        ui.add_space(7.0);
+    }
+    let palette = StatusPalette::from_visuals(ui.visuals());
+    ui.label(
+        RichText::new(
+            "컨트랙트, 받는 주소, 토큰 수량, 68-byte transfer calldata, 가스·EIP-1559 값이 이 미리보기에 고정됩니다. 토큰 수량과 수수료용 ETH는 서로 다른 잔액입니다.",
+        )
+        .small()
+        .color(palette.muted),
+    );
+    ui.label(
+        RichText::new(
+            "표시 수량은 transfer 호출에 넣는 정확한 인자입니다. 전송 수수료형·리베이스·악성 토큰의 실제 수령량이나 잔액 변화는 보장하지 않으며, 프록시 구현 변경과 사전 실행 이후 채굴 전 상태 변경도 막지 못합니다.",
+        )
+        .small()
+        .color(palette.warning),
     );
 }
 
@@ -3065,6 +3557,20 @@ fn execute_worker_command(
             &amount_eth,
             fee_selection,
         ))),
+        WorkerCommand::PrepareSavedErc20Transfer {
+            contract_address,
+            recipient,
+            amount,
+            fee_selection,
+        } => {
+            WorkerEvent::SavedErc20TransferPrepared(Box::new(backend.prepare_saved_erc20_transfer(
+                &contract_address,
+                &recipient,
+                &amount,
+                fee_selection,
+                permit,
+            )))
+        }
         WorkerCommand::ConfirmPrepared => {
             WorkerEvent::PreparedConfirmed(backend.confirm_prepared(permit))
         }
@@ -3112,6 +3618,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         snapshot: None,
         custom_token_address: String::new(),
         custom_tokens: Vec::new(),
+        transfer_asset: TransferAssetChoice::Native,
         recipient: RECIPIENT_SENTINEL.to_owned(),
         amount_eth: AMOUNT_SENTINEL.to_owned(),
         fee_mode: FeeMode::Recommended,
@@ -3293,6 +3800,52 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     if app.custom_tokens != [headless_token_snapshot()] {
         return Err(());
     }
+
+    app.transfer_asset = TransferAssetChoice::SavedErc20 {
+        contract_address: TOKEN_CONTRACT_SENTINEL.to_owned(),
+    };
+    app.recipient = RECIPIENT_SENTINEL.to_owned();
+    app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.fee_mode = FeeMode::Recommended;
+    app.prepare_transfer();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::PrepareSavedErc20Transfer {
+                contract_address,
+                recipient,
+                amount,
+                fee_selection: FeeSelection::Recommended,
+            } if contract_address == TOKEN_CONTRACT_SENTINEL
+                && recipient == RECIPIENT_SENTINEL
+                && amount == AMOUNT_SENTINEL
+        )
+    })?;
+    if app.prepared.as_ref() != Some(&PreparedPreview::SavedErc20(headless_erc20_preview())) {
+        return Err(());
+    }
+    if !app.handle_hold_outcome(HoldOutcome::Triggered)
+        || app.handle_hold_outcome(HoldOutcome::Triggered)
+    {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ConfirmPrepared)
+    })?;
+    if app.prepared.is_some()
+        || app.transfer_asset != TransferAssetChoice::Native
+        || !app.amount_eth.is_empty()
+        || !app.custom_tokens.is_empty()
+    {
+        return Err(());
+    }
+    app.refresh_custom_tokens();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::RefreshCustomTokens)
+    })?;
+    if app.custom_tokens != [headless_token_snapshot()] {
+        return Err(());
+    }
     app.remove_custom_token(TOKEN_CONTRACT_SENTINEL.to_owned());
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(
@@ -3319,6 +3872,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         return Err(());
     }
 
+    app.recipient = RECIPIENT_SENTINEL.to_owned();
+    app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.fee_mode = FeeMode::Recommended;
     app.prepare_transfer();
     if app.pending != Some(PendingAction::PrepareTransfer) {
         return Err(());
@@ -3334,7 +3890,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         )
     })?;
     if app.pending.is_some()
-        || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Recommended))
+        || app.prepared.as_ref()
+            != Some(&PreparedPreview::Native(headless_preview(
+                FeeMode::Recommended,
+            )))
     {
         return Err(());
     }
@@ -3373,7 +3932,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             }
         )
     })?;
-    if app.pending.is_some() || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Faster)) {
+    if app.pending.is_some()
+        || app.prepared.as_ref()
+            != Some(&PreparedPreview::Native(headless_preview(FeeMode::Faster)))
+    {
         return Err(());
     }
 
@@ -3408,7 +3970,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
                 && max_fee_per_gas_gwei == "0003.500000000"
         )
     })?;
-    if app.pending.is_some() || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Custom)) {
+    if app.pending.is_some()
+        || app.prepared.as_ref()
+            != Some(&PreparedPreview::Native(headless_preview(FeeMode::Custom)))
+    {
         return Err(());
     }
     app.cancel_prepared();
@@ -3444,7 +4009,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     app.amount_eth = AMOUNT_SENTINEL.to_owned();
     app.custom_priority_fee_gwei = "1".to_owned();
     app.custom_max_fee_gwei = "3".to_owned();
-    app.prepared = Some(headless_preview(FeeMode::Recommended));
+    app.prepared = Some(PreparedPreview::Native(headless_preview(
+        FeeMode::Recommended,
+    )));
     app.pending = Some(PendingAction::Refresh);
     app.secret_reveal = TimedSecretReveal::new(
         headless_reveal(SecretRevealKind::AccountPrivateKey),
@@ -3511,6 +4078,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "token-refresh",
             "token-add",
             "token-refresh",
+            "prepare-token",
+            "confirm",
+            "token-refresh",
             "token-remove",
             "begin-generate-12",
             "cancel-generated",
@@ -3529,7 +4099,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 63,
+        transitions_checked: 74,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -3597,6 +4167,26 @@ fn headless_preview(mode: FeeMode) -> TransferPreview {
         max_network_fee_eth: maximum_network.to_owned(),
         estimated_total_eth: estimated_total.to_owned(),
         max_total_eth: maximum_total.to_owned(),
+        quote_valid_for_seconds: "60".to_owned(),
+    }
+}
+
+fn headless_erc20_preview() -> Erc20TransferPreview {
+    Erc20TransferPreview {
+        contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
+        symbol: Some("TOK".to_owned()),
+        decimals: 18,
+        recipient: "headless-recipient".to_owned(),
+        amount: "1.25".to_owned(),
+        nonce: "headless-nonce".to_owned(),
+        fee_mode_ko: "추천".to_owned(),
+        estimated_gas: "50000".to_owned(),
+        gas_limit: "60000".to_owned(),
+        quoted_base_fee_per_gas_gwei: "1".to_owned(),
+        max_priority_fee_per_gas_gwei: "1".to_owned(),
+        max_fee_per_gas_gwei: "3".to_owned(),
+        estimated_network_fee_eth: "0.0001".to_owned(),
+        max_network_fee_eth: "0.00018".to_owned(),
         quote_valid_for_seconds: "60".to_owned(),
     }
 }
@@ -3787,6 +4377,25 @@ impl WalletBackend for HeadlessBackend {
         Ok(headless_preview(mode))
     }
 
+    fn prepare_saved_erc20_transfer(
+        &mut self,
+        contract_address: &str,
+        recipient: &str,
+        amount: &str,
+        fee_selection: FeeSelection,
+        _permit: &SessionPermit<'_>,
+    ) -> Result<Erc20TransferPreview, String> {
+        if contract_address != "0x1111111111111111111111111111111111111111"
+            || recipient != "headless-recipient"
+            || amount != "headless-amount"
+            || fee_selection != FeeSelection::Recommended
+        {
+            return Err("headless ERC20 input mismatch".to_owned());
+        }
+        self.calls.push("prepare-token");
+        Ok(headless_erc20_preview())
+    }
+
     fn confirm_prepared(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.calls.push("confirm");
         Ok(SendReceipt {
@@ -3938,7 +4547,15 @@ fn valid_recipient_shape(recipient: &str) -> bool {
 }
 
 fn valid_amount_shape(amount: &str) -> bool {
-    if amount.is_empty() || !amount.bytes().any(|byte| matches!(byte, b'1'..=b'9')) {
+    valid_decimal_amount_shape(amount, 18, 128)
+}
+
+fn valid_decimal_amount_shape(amount: &str, decimals: usize, maximum_bytes: usize) -> bool {
+    if amount.is_empty()
+        || amount.len() > maximum_bytes
+        || amount.trim() != amount
+        || !amount.bytes().any(|byte| matches!(byte, b'1'..=b'9'))
+    {
         return false;
     }
     let mut parts = amount.split('.');
@@ -3953,7 +4570,9 @@ fn valid_amount_shape(amount: &str) -> bool {
         return false;
     }
     fraction.is_none_or(|digits| {
-        !digits.is_empty() && digits.len() <= 18 && digits.bytes().all(|byte| byte.is_ascii_digit())
+        !digits.is_empty()
+            && digits.len() <= decimals
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
     })
 }
 
@@ -4006,7 +4625,10 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.",
     "이미 추가한 토큰 컨트랙트입니다.",
     "커스텀 토큰은 최대 32개까지 추가할 수 있습니다.",
-    "삭제할 토큰 컨트랙트를 찾지 못했습니다.",
+    "인증된 목록에서 해당 저장 토큰 컨트랙트를 찾지 못했습니다.",
+    "토큰 컨트랙트가 정확한 transfer 사전 실행을 거부했습니다.",
+    "토큰 전송 가스 추정값이 허용 범위를 벗어났습니다.",
+    "보낼 토큰 잔액이 부족합니다.",
     "인증된 토큰 목록이 손상되었거나 현재 v2 지갑과 일치하지 않습니다.",
     "인증된 토큰 목록을 안전하게 저장하지 못했습니다.",
     "다른 토큰 목록 작업이 끝나거나 준비된 전송을 취소한 뒤 다시 시도해 주세요.",
@@ -4030,7 +4652,7 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "수수료 정보가 만료되었습니다. 전송 내용을 다시 준비해 주세요.",
     "현재 기본 수수료가 준비한 최대 수수료와 맞지 않습니다. 다시 준비해 주세요.",
     "계정의 전송 순서가 바뀌었습니다. 전송 내용을 다시 준비해 주세요.",
-    "이 데모는 가스 한도 21,000인 일반 ETH 전송만 지원합니다.",
+    "일반 ETH 전송은 가스 추정값이 정확히 21,000이어야 합니다.",
     "수수료를 포함한 Sepolia 잔액이 부족합니다.",
     "거래 전송 상태가 불확실합니다. 잠시 후 잔액을 확인해 주세요.",
     "Sepolia 노드의 거래 확인값이 일치하지 않습니다.",
@@ -4054,12 +4676,13 @@ pub(crate) fn safe_error(mut error: String) -> String {
 mod tests {
     use super::{
         ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState, FeeSelection,
-        GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt,
-        StatusPalette, TransferPreview, WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent,
-        automatic_lock_reason, clear_prepared_state, confirmation_enabled, execute_worker_command,
-        execute_worker_request, hold_to_send_button, hold_to_send_input, preview_fields,
-        run_headless_smoke, safe_error, sanitize_custom_tokens, valid_amount_shape,
-        valid_gwei_shape, valid_password, valid_recipient_shape,
+        GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome, HoldToSend, PreparedPreview,
+        SEND_HOLD_DURATION, SendReceipt, StatusPalette, TransferAssetChoice, TransferPreview,
+        WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent, automatic_lock_reason,
+        clear_prepared_state, confirmation_enabled, execute_worker_command, execute_worker_request,
+        hold_to_send_button, hold_to_send_input, preview_fields, run_headless_smoke, safe_error,
+        sanitize_custom_tokens, valid_amount_shape, valid_gwei_shape, valid_password,
+        valid_recipient_shape,
     };
     use eframe::egui;
     use std::time::{Duration, Instant};
@@ -4795,6 +5418,7 @@ mod tests {
             })),
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: super::FeeMode::Recommended,
@@ -4837,7 +5461,7 @@ mod tests {
         let (commands, command_receiver) = std::sync::mpsc::channel();
         let (_event_sender, events) = std::sync::mpsc::channel();
         let mut app = test_app(commands, events);
-        app.prepared = Some(exact_preview());
+        app.prepared = Some(PreparedPreview::Native(exact_preview()));
 
         assert!(!app.handle_hold_outcome(HoldOutcome::Idle));
         assert!(app.handle_hold_outcome(HoldOutcome::Triggered));
@@ -5150,12 +5774,379 @@ mod tests {
     }
 
     #[test]
+    fn asset_identity_changes_purge_amount_and_egui_undo_for_token_or_native() {
+        let context = egui::Context::default();
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let amount_id = super::amount_eth_text_edit_id();
+        let token_a = super::headless_token_snapshot();
+        let token_b = CustomTokenSnapshot {
+            contract_address: "0x2222222222222222222222222222222222222222".to_owned(),
+            state: CustomTokenState::Verified {
+                symbol: Some("OTHER".to_owned()),
+                decimals: 6,
+                balance: "9.5".to_owned(),
+            },
+        };
+        app.custom_tokens = vec![token_a.clone(), token_b.clone()];
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: token_a.contract_address,
+        };
+
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            0.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            0.1,
+            vec![egui::Event::Text("1.25".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            1.2,
+            Vec::new(),
+        );
+        assert_eq!(app.amount_eth, "1.25");
+
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: token_b.contract_address,
+        };
+        super::clear_transfer_amount_after_asset_change(
+            &mut app.prepared,
+            &mut app.hold,
+            &mut app.amount_eth,
+            &mut app.secret_text_state_purge_pending,
+        );
+        app.purge_queued_secret_text_edit_state(&context);
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            2.0,
+            vec![undo_key_event()],
+        );
+        assert!(
+            app.amount_eth.is_empty(),
+            "token A amount must not survive token B selection"
+        );
+
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            3.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            3.1,
+            vec![egui::Event::Text("250000".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            4.2,
+            Vec::new(),
+        );
+        assert_eq!(app.amount_eth, "250000");
+
+        app.transfer_asset = TransferAssetChoice::Native;
+        super::clear_transfer_amount_after_asset_change(
+            &mut app.prepared,
+            &mut app.hold,
+            &mut app.amount_eth,
+            &mut app.secret_text_state_purge_pending,
+        );
+        app.purge_queued_secret_text_edit_state(&context);
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            5.0,
+            vec![undo_key_event()],
+        );
+        assert!(
+            app.amount_eth.is_empty(),
+            "token amount must not survive native selection"
+        );
+    }
+
+    #[test]
+    fn token_refresh_forces_native_empty_amount_and_clears_preview_and_hold() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let token = super::headless_token_snapshot();
+        app.custom_tokens = vec![token.clone()];
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: token.contract_address.clone(),
+        };
+        app.amount_eth = "7.5".to_owned();
+        app.prepared = Some(PreparedPreview::SavedErc20(super::headless_erc20_preview()));
+        let started_at = Instant::now();
+        assert!(matches!(
+            app.hold.update(started_at, pressed_hold_input(true)),
+            HoldOutcome::Holding(_)
+        ));
+
+        app.apply_worker_event(WorkerEvent::CustomTokensRefreshed(Ok(vec![token])));
+
+        assert!(app.transfer_asset == TransferAssetChoice::Native);
+        assert!(app.amount_eth.is_empty());
+        assert!(app.prepared.is_none());
+        assert!(app.hold.started_at.is_none());
+        assert!(app.secret_text_state_purge_pending);
+    }
+
+    #[test]
+    fn erc20_success_purges_amount_undo_and_invalidates_token_and_eth_snapshots() {
+        let context = egui::Context::default();
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let token = super::headless_token_snapshot();
+        app.custom_tokens = vec![token.clone()];
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: token.contract_address,
+        };
+        app.prepared = Some(PreparedPreview::SavedErc20(super::headless_erc20_preview()));
+        app.recipient = "0x3333333333333333333333333333333333333333".to_owned();
+        let amount_id = super::amount_eth_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            0.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            0.1,
+            vec![egui::Event::Text("12.5".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            1.2,
+            Vec::new(),
+        );
+
+        app.apply_worker_event(WorkerEvent::PreparedConfirmed(Ok(SendReceipt {
+            transaction_hash: "confirmed-token-transaction".to_owned(),
+        })));
+        app.purge_queued_secret_text_edit_state(&context);
+
+        assert!(app.transfer_asset == TransferAssetChoice::Native);
+        assert!(app.prepared.is_none());
+        assert!(app.recipient.is_empty());
+        assert!(app.amount_eth.is_empty());
+        assert!(app.custom_tokens.is_empty());
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some("다시 조회 필요")
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            2.0,
+            vec![undo_key_event()],
+        );
+        assert!(
+            app.amount_eth.is_empty(),
+            "sent token amount must not be restorable"
+        );
+    }
+
+    #[test]
+    fn erc20_prepare_or_confirm_failure_discards_stale_token_state() {
+        for confirm_failure in [false, true] {
+            let (commands, _command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            let token = super::headless_token_snapshot();
+            app.custom_tokens = vec![token.clone()];
+            app.transfer_asset = TransferAssetChoice::SavedErc20 {
+                contract_address: token.contract_address,
+            };
+            app.amount_eth = "4.5".to_owned();
+            if confirm_failure {
+                app.prepared = Some(PreparedPreview::SavedErc20(super::headless_erc20_preview()));
+                app.apply_worker_event(WorkerEvent::PreparedConfirmed(Err(
+                    "준비된 거래의 안전 검증에 실패했습니다.".to_owned(),
+                )));
+            } else {
+                app.apply_worker_event(WorkerEvent::SavedErc20TransferPrepared(Box::new(Err(
+                    "토큰 컨트랙트 정보가 준비 중 변경되었습니다.".to_owned(),
+                ))));
+            }
+            assert!(app.custom_tokens.is_empty());
+            assert!(app.transfer_asset == TransferAssetChoice::Native);
+            assert!(app.amount_eth.is_empty());
+            assert!(app.prepared.is_none());
+            assert!(app.hold.started_at.is_none());
+            assert!(app.secret_text_state_purge_pending);
+            if confirm_failure {
+                assert_eq!(
+                    app.snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.balance_eth.as_str()),
+                    Some("다시 조회 필요")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_confirm_failure_invalidates_eth_snapshot_and_preserves_ui_categories() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let prior_notice = "기존 안내는 오류 범주와 별개입니다.";
+        let broadcast_unknown = "거래 전송 상태가 불확실합니다. 잠시 후 잔액을 확인해 주세요.";
+        app.notice = Some(prior_notice.to_owned());
+        app.prepared = Some(PreparedPreview::Native(exact_preview()));
+
+        app.apply_worker_event(WorkerEvent::PreparedConfirmed(Err(
+            broadcast_unknown.to_owned()
+        )));
+
+        assert!(app.prepared.is_none());
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some("다시 조회 필요")
+        );
+        assert_eq!(app.notice.as_deref(), Some(prior_notice));
+        assert_eq!(app.error.as_deref(), Some(broadcast_unknown));
+    }
+
+    #[test]
+    fn exact_pending_retry_success_invalidates_all_rendered_balances() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.custom_tokens = vec![super::headless_token_snapshot()];
+
+        app.apply_worker_event(WorkerEvent::Retried(Ok(SendReceipt {
+            transaction_hash: "retried-transaction".to_owned(),
+        })));
+
+        assert!(app.custom_tokens.is_empty());
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some("다시 조회 필요")
+        );
+    }
+
+    #[test]
+    fn exact_pending_retry_failure_invalidates_all_balances_asset_and_amount_undo() {
+        let context = egui::Context::default();
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let token = super::headless_token_snapshot();
+        app.custom_tokens = vec![token.clone()];
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: token.contract_address,
+        };
+        let prior_notice = "기존 retry 안내입니다.";
+        let broadcast_unknown = "거래 전송 상태가 불확실합니다. 잠시 후 잔액을 확인해 주세요.";
+        app.notice = Some(prior_notice.to_owned());
+        let amount_id = super::amount_eth_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            0.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            0.1,
+            vec![egui::Event::Text("3.25".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            1.2,
+            Vec::new(),
+        );
+
+        app.apply_worker_event(WorkerEvent::Retried(Err(broadcast_unknown.to_owned())));
+
+        assert!(app.transfer_asset == TransferAssetChoice::Native);
+        assert!(app.custom_tokens.is_empty());
+        assert!(app.amount_eth.is_empty());
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some("다시 조회 필요")
+        );
+        assert_eq!(app.notice.as_deref(), Some(prior_notice));
+        assert_eq!(app.error.as_deref(), Some(broadcast_unknown));
+        assert!(app.secret_text_state_purge_pending);
+        app.purge_queued_secret_text_edit_state(&context);
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            2.0,
+            vec![undo_key_event()],
+        );
+        assert!(
+            app.amount_eth.is_empty(),
+            "failed retry amount must not be restorable under native ETH"
+        );
+    }
+
+    #[test]
     fn secret_export_handler_is_exactly_once_while_pending() {
         let (commands, command_receiver) = std::sync::mpsc::channel();
         let (_event_sender, events) = std::sync::mpsc::channel();
         let mut app = test_app(commands, events);
         app.reauth_password = "headless export password".to_owned();
-        app.prepared = Some(exact_preview());
+        app.prepared = Some(PreparedPreview::Native(exact_preview()));
         assert!(!app.handle_secret_hold_outcome(
             HoldOutcome::Triggered,
             super::SecretHoldAction::ExportMnemonic,
@@ -5188,7 +6179,7 @@ mod tests {
         app.snapshot = Some(super::headless_snapshot(super::WalletKind::V2Mnemonic {
             word_count: 12,
         }));
-        app.prepared = Some(exact_preview());
+        app.prepared = Some(PreparedPreview::Native(exact_preview()));
         app.apply_worker_event(WorkerEvent::Opened(Err(
             "비밀번호가 틀렸거나 지갑 파일이 손상되었습니다.".to_owned(),
         )));
@@ -5210,7 +6201,7 @@ mod tests {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
         let _ = hold.update(start, pressed_hold_input(true));
-        let mut prepared = Some(exact_preview());
+        let mut prepared = Some(PreparedPreview::Native(exact_preview()));
         clear_prepared_state(&mut prepared, &mut hold);
         assert!(prepared.is_none());
         assert_eq!(hold.fraction(start + Duration::from_secs(1)), 0.0);
@@ -5476,8 +6467,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 63);
-        assert_eq!(evidence.backend_routes_checked, 23);
+        assert_eq!(evidence.transitions_checked, 74);
+        assert_eq!(evidence.backend_routes_checked, 26);
         Ok(())
     }
 }

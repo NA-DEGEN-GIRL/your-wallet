@@ -35,15 +35,18 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
    복사한 주소로 무료 테스트 ETH를 받습니다. Faucet마다 로그인이나 사용량
    제한이 있을 수 있습니다.
 8. 앱으로 돌아와 `새로고침`을 눌러 Sepolia ETH 잔액을 확인합니다.
-9. 받는 Sepolia 주소와 보낼 금액을 입력하고 가스 수수료를 `추천`, `빠르게`,
-   `직접 입력` 중에서 고른 뒤 `전송 내용 준비`를 누릅니다. 처음에는 `추천`을
-   사용하면 됩니다.
+9. `Sepolia ETH` 또는 저장 후 다시 검증된 ERC-20을 전송 자산으로 고르고, 받는
+   Sepolia 주소와 보낼 금액을 입력합니다. ERC-20은 먼저 아래의 `검증 후 추가`와
+   `저장된 토큰 다시 검증`을 거쳐야 선택할 수 있습니다. 가스 수수료를 `추천`,
+   `빠르게`, `직접 입력` 중에서 고른 뒤 `전송 내용 준비`를 누릅니다. 처음에는
+   `추천`을 사용하면 됩니다.
 10. 앱이 확정해서 보여 주는 항목을 전부 확인합니다.
 
    - 받는 주소
-   - 보낼 금액
+   - 보낼 ETH 또는 정규화된 토큰 수량
+   - ERC-20이면 전체 토큰 컨트랙트 주소, 심볼, decimals
    - nonce
-   - 수수료 방식과 고정 가스 한도 `21,000`
+   - 수수료 방식과 가스 한도: ETH는 `21,000`, ERC-20은 RPC 추정값과 20% 올림값
    - 견적 시점의 기본 수수료
    - 최대 우선 수수료 / gas
    - 최대 수수료 / gas
@@ -68,8 +71,8 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
 - 새 영어 복구 문구 생성과 영어 복구 문구/개인 키 가져오기를 지원하지만,
   비밀값은 짧게 한 번만 표시하며 클립보드 복사 기능은 제공하지 않습니다.
 - Chrome 확장 프로그램이나 dApp과 연결되지 않습니다.
-- 검증한 커스텀 ERC-20 토큰을 목록에 추가하고 잔액을 볼 수 있지만, 토큰 전송,
-  임의 컨트랙트 호출, 메시지 서명은 지원하지 않습니다.
+- 검증해 저장한 커스텀 ERC-20의 표준 `transfer(address,uint256)`만 전송할 수
+  있습니다. 임의 컨트랙트 호출, 임의 calldata, 메시지 서명은 지원하지 않습니다.
 - 네트워크를 바꾸거나 RPC 주소를 직접 입력할 수 없습니다.
 
 새 지갑은 운영체제 난수로 만든 영어 복구 문구와 정확한 계정 메타데이터를 v2
@@ -129,7 +132,11 @@ egui의 일반 String, renderer, allocator, IME, 접근성 계층 또는 OS 메�
 ## 전송 화면이 두 단계인 이유
 
 `전송 내용 준비`는 아직 서명하거나 전송하지 않습니다. Sepolia에서 nonce,
-잔액, 수수료를 확인한 뒤 정확한 전송 내용을 고정해 보여 주기만 합니다.
+잔액, 수수료를 확인한 뒤 정확한 전송 내용을 고정해 보여 주기만 합니다. ERC-20은
+UI가 들고 있던 심볼·decimals·잔액을 신뢰하지 않고, 새로 연 인증 토큰 목록에서
+전체 컨트랙트 주소를 다시 찾은 뒤 직접 bytecode 해시·decimals·symbol을 처음과
+끝에서 확인합니다. 토큰 잔액과 최대 네트워크 수수료를 낼 보류 상태 ETH 잔액도
+각각 확인합니다.
 
 그다음 화면에서 모든 항목을 확인하고 2초 동안 버튼을 눌러야만, 준비해 둔
 동일한 내용을 서명하고 전송합니다. 미리보기의 문자열이나 처음 입력한 값을
@@ -139,11 +146,21 @@ egui의 일반 String, renderer, allocator, IME, 접근성 계층 또는 OS 메�
 준비 완료 시점에 실제로 남은 시간을 소수점 이하를 버려 보수적으로 표시합니다.
 2초 확인 버튼을 끝까지 누를 시간을 보장하기 위해 남은 시간이 온전한 3초보다
 짧으면 미리보기를 만들지 않고 다시 준비하라고 안내합니다.
-확인할 때 Sepolia 네트워크, 고정한
-nonce, 현재 기본 수수료, 보류 거래를 반영한 잔액, 일반 ETH 전송의 가스 사용량
-`21,000`을 다시 확인합니다. 하나라도 달라졌거나 확인 도중 견적이 만료되면
-수수료나 nonce를 몰래 바꾸어 서명하지 않고, 미리보기를 없앤 뒤 다시 준비하라고
-안내합니다.
+확인할 때 Sepolia 네트워크, 고정한 nonce, 현재 기본 수수료, 보류 거래를 반영한
+잔액과 가스 추정값을 다시 확인합니다. ETH는 가스가 정확히 `21,000`이어야 하고,
+ERC-20은 같은 nonce·EIP-1559 수수료·고정 gas·value 0·빈 access list와 정확한
+68-byte `transfer` calldata로 `eth_call`을 다시 실행합니다. 저장 토큰 파일의 exact
+바이트와 generation, 직접 bytecode 해시·decimals·symbol도 다시 bookend합니다.
+하나라도 달라졌거나 확인 도중 견적이 만료되면 수수료나 nonce를 몰래 바꾸어
+서명하지 않고, 미리보기를 없앤 뒤 다시 준비하라고 안내합니다.
+
+이 bookend는 여러 RPC 사이에서 직접 bytecode·metadata·일반적인 파일 변경이 섞인
+미리보기를 만드는 위험을 줄일 뿐 원자적 온체인 스냅샷은 아닙니다. bytecode가 같은
+EIP-1967류 프록시의 implementation/storage 변경을 알 수 없고, 마지막 사전 실행 뒤
+채굴 전 상태가 바뀌는 것도 막지 못합니다. 미리보기의 토큰 수량은 calldata에 넣는
+정확한 인자이지 전송 수수료형·리베이스·악성 토큰의 실제 수령량이나 owner 잔액
+변화를 보장하는 값이 아닙니다. `eth_call`의 empty/canonical true 결과 역시 미래의
+state diff를 보장하지 않습니다.
 
 전송 결과를 확인하지 못한 채 네트워크가 끊기면 새 거래를 만들지 마세요.
 화면 아래의 `전송 중 네트워크가 끊겼나요?`를 열고
@@ -168,10 +185,11 @@ nonce, 현재 기본 수수료, 보류 거래를 반영한 잔액, 일반 ETH �
 예상값과 달라질 수 있지만 최대값을 넘지 않으며, 사용하지 않은 최대 금액은
 청구되지 않습니다.
 
-이 데모는 데이터가 없는 일반 ETH 전송만 지원합니다. 준비할 때와 확인할 때
-Sepolia 노드의 가스 추정값이 정확히 `21,000`인지 확인하며, 컨트랙트 실행처럼
-더 많은 가스가 필요한 전송은 서명하지 않습니다. 가스 한도는 직접 바꿀 수
-없습니다.
+일반 ETH 전송은 데이터가 없어야 하며 준비할 때와 확인할 때 Sepolia 노드의 가스
+추정값이 정확히 `21,000`인지 확인합니다. 저장·재검증된 ERC-20 전송은 RPC 추정
+가스가 `21,000..=416,666`이고 `u64`에 정확히 들어올 때만 20%를 올림해
+`25,200..=500,000`으로 고정합니다. 확인 때 추정값이 달라지면 서명하지 않습니다.
+사용자가 가스 한도를 직접 바꾸거나 임의 calldata를 넣는 기능은 없습니다.
 
 이미 서명되어 보류 중인 거래에는 새 수수료 방식을 적용할 수 없습니다.
 `이전 거래 그대로 다시 전송`은 저장된 서명 거래의 같은 바이트만 재전송하며,
@@ -201,12 +219,22 @@ v2 지갑을 연 뒤 `커스텀 ERC-20 토큰`에서 Sepolia 토큰 컨트랙트
 파일입니다. 임시 파일을 완전히 기록하고 flush한 뒤 원자적으로 교체하고, 설치된
 바이트를 다시 열어 검증합니다. 다만 이 데모의 token generation은 하드웨어
 롤백 방지 앵커가 아니라 파일 일관성 값입니다. 같은 사용자가 과거의 유효한
-`tokens-v1.bin`을 되돌리면 이전 목록이 다시 보이거나 최신 항목이 사라진 사실을
-완전히 탐지하지 못합니다. 표시되는 토큰은 매번 온체인 정보를 재검증하지만,
-이 제한 때문에 메인넷 자산 관리용으로 사용하면 안 됩니다.
+`tokens-v1.bin`을 준비 전에 되돌리면 최신 항목이 사라지거나 과거에 제거한 토큰이
+다시 저장·선택·전송 가능한 목록으로 나타날 수 있습니다. 이때도 전체 주소를
+표시하고 live code/metadata/balance/preflight를 다시 확인하지만, 이미 설치된 과거
+인증 blob이라는 사실 자체는 탐지하지 못합니다. 준비가 끝난 뒤의 일반적인 exact
+바이트/generation 변경은 미리보기 baseline과 달라 확인을 거부하지만, 동일한 blob
+복원은 새 롤백 사건으로 구별할 수 없습니다. 이 제한 때문에 메인넷 자산 관리용으로
+사용하면 안 됩니다.
 
-현재 커스텀 토큰은 추가·조회·새로고침·삭제만 지원합니다. 토큰 전송 버튼은
-제공하지 않으며, 일반 ETH 전송의 고정 가스 `21,000` 경로와 섞지 않습니다.
+전송 자산 선택에는 현재 조회가 `Verified`인 저장 토큰만 나타납니다. backend는
+선택된 전체 주소를 fresh authenticated sidecar에서 다시 resolve하고, 정확한 token
+amount와 ETH 수수료 잔액, 동적 가스, exact typed preflight를 통과한 뒤에만 미리보기를
+만듭니다. signer는 contract를 `to`, ETH value를 0으로 하고 내부에서 만든 정확한
+68-byte `transfer(address,uint256)` calldata만 넣는 EIP-1559 type-2 거래를 만듭니다.
+토큰/ETH 자산 전환, 토큰 목록 변경, 잠금, ERC-20 준비·확인 실패 또는 전송 성공 때
+금액과 egui undo 상태를 지워 다른 decimals나 ETH 단위로 이전 숫자가 되살아나지 않게
+합니다.
 
 ## 로컬 저장 시 적용한 보강
 
@@ -252,7 +280,7 @@ cargo build --release --locked --manifest-path demo/sepolia-wallet/Cargo.toml
 열지 않고 마우스나 키보드를 움직이지 않습니다.
 
 ```powershell
-# 가장 빠른 확인: 가짜 백엔드로 지갑 관리, 비밀값 hold, 세 수수료 방식과 전송 흐름 검사
+# 가장 빠른 확인: 가짜 백엔드로 지갑 관리, 비밀값 hold, 세 수수료 방식과 ETH/ERC-20 전송 흐름 검사
 cargo run --quiet --locked --manifest-path demo/sepolia-wallet/Cargo.toml -- --headless smoke
 
 # 실제 네트워크 확인: 고정 Sepolia chain ID와 genesis 검사
@@ -282,14 +310,18 @@ record인 `pending-v1.bin`의 transaction은 잠금 후에도 보존한다. 그�
 수 있다. confirm과 retry에는 더 좁은 revocation guard를 적용한다. confirm은 각
 blocking 사전검증 RPC
 반환 직후와 서명 직전, 서명 후 pending record 쓰기 전, pending record를 쓴 후 RPC
-send 직전, send 반환 후 record 삭제 전에 epoch를 다시 확인한다. retry도 pending
-record를 읽은 뒤, chain 검증 뒤 send 직전, send 반환 후 삭제 전에 확인한다. 따라서
-마지막 pre-send check 전에 감지된 잠금은 새 broadcast를 만들지 않는다.
+send 직전, send 반환 후 record 삭제 전에 epoch를 다시 확인한다. `SepoliaRpc`의
+유일한 send API도 내부 chain ID/genesis 재검증을 모두 마친 뒤 실제
+`eth_sendRawTransaction` transport 호출 바로 전에 같은 concrete SessionPermit을 다시
+확인한다. retry도 pending record를 읽은 뒤, chain 검증 뒤와 guarded RPC 내부
+재검증 뒤 send 직전, send 반환 후 삭제 전에 확인한다. 따라서 guarded transport
+check 전에 감지된 잠금은 새 broadcast를 만들지 않는다.
 post-write/pre-send 또는 post-send/pre-delete check가 잠금을 관찰하면 이미 기록된
 `pending-v1.bin`을 보존한다.
 
-마지막 pre-send check가 이 demo의 외부 side-effect commit point다. 그 check를 통과한
-직후부터 실제 transport send가 시작되는 사이 또는 send가 실행 중일 때 잠금이
+RPC 내부의 마지막 guarded pre-transport check가 이 demo의 외부 side-effect commit
+point다. 그 check를 통과한 직후부터 실제 transport send가 시작되는 사이 또는
+send가 실행 중일 때 잠금이
 경합하면 transaction 전파 자체는 취소할 수 없다. 다만 send 반환 직후의
 post-send check가 epoch 변경을 관찰하면 성공 hash가 일치해도 `pending-v1.bin`을
 삭제하지 않고 stale UI 응답을 폐기한다. 이 check가 통과한 직후와 실제 파일 삭제
@@ -299,8 +331,9 @@ post-send check가 epoch 변경을 관찰하면 성공 hash가 일치해도 `pen
 구독하지 않는다. OS session-lock 감지, 취소 가능한 signer/RPC 작업, GUI framework
 내부 text cache까지 포함한 물리적 memory zeroization은 production hardening 범위다.
 
-`smoke` 검사는 생성/가져오기/열기/이전/내보내기 명령 경계와 복구 백업·내보내기
-2초 hold도 확인하지만 지갑 파일을 만들거나 읽지 않고, 네트워크에도 연결하지 않습니다.
+`smoke` 검사는 생성/가져오기/열기/이전/내보내기 명령 경계, 저장 토큰의
+선택·준비·2초 확인·새로고침·삭제, 복구 백업·내보내기 2초 hold도 확인하지만 지갑
+파일을 만들거나 읽지 않고, 네트워크에도 연결하지 않습니다.
 주소·비밀번호·키·경로도 출력하지 않습니다. 결과는 짧은 JSON 한 줄이며 성공하면
 종료 코드 `0`, 실패하면 `0`이 아닌 코드가 나옵니다. `rpc`와 `all`만 실제 Sepolia
 네트워크에 연결합니다. 기존 `--check-rpc`도 `--headless rpc`와 같은 방식으로
@@ -323,9 +356,9 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 
 ## 확인된 테스트 결과
 
-2026년 8월 20일 기준:
+2026년 8월 21일 기준:
 
-- Sepolia 실행판 테스트 129개 통과
+- Sepolia 실행판 테스트 172개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
 - 프로덕션 Rust 테스트 511개 실행 통과

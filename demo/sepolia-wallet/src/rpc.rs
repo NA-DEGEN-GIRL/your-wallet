@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::erc20::{
     TokenAmount, balance_of_call_data, decimals_call_data, symbol_call_data, transfer_call_data,
 };
+use crate::ui::SessionPermit;
 
 /// Ethereum Sepolia's EIP-155 chain identifier.
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
@@ -240,6 +241,9 @@ pub enum RpcError {
     ChainNotVerified,
     /// The raw transaction was empty, oversized, or not a type-2 envelope.
     RawTransactionRejected,
+    /// The worker session was revoked after final chain verification and
+    /// before the irreversible broadcast transport call.
+    SessionRevoked,
     /// A fee computation overflowed 256 bits.
     NumericOverflow,
 }
@@ -259,6 +263,7 @@ impl fmt::Debug for RpcError {
             Self::ChainMismatch => "RpcError::ChainMismatch",
             Self::ChainNotVerified => "RpcError::ChainNotVerified",
             Self::RawTransactionRejected => "RpcError::RawTransactionRejected",
+            Self::SessionRevoked => "RpcError::SessionRevoked",
             Self::NumericOverflow => "RpcError::NumericOverflow",
         })
     }
@@ -279,6 +284,7 @@ impl fmt::Display for RpcError {
             Self::ChainMismatch => "RPC endpoint is not the pinned Sepolia chain",
             Self::ChainNotVerified => "Sepolia RPC identity has not been verified",
             Self::RawTransactionRejected => "signed transaction violated the demo policy",
+            Self::SessionRevoked => "wallet session was revoked before broadcast",
             Self::NumericOverflow => "Sepolia fee calculation overflowed",
         })
     }
@@ -484,8 +490,12 @@ impl SepoliaRpc {
         self.contract_call_exact(None, contract, &balance_of_call_data(*owner.as_bytes()))
     }
 
-    /// Simulate the exact pending-state ERC-20 `transfer(recipient, amount)`
-    /// from the selected account. The caller strictly decodes the return word.
+    /// Simulate the exact signer-visible pending-state ERC-20 transfer.
+    ///
+    /// Calldata is built locally and the request binds zero native value, type
+    /// 2, nonce, frozen gas limit, both EIP-1559 fee fields, and an empty access
+    /// list. No generic/raw calldata seam is exposed.
+    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn erc20_transfer_preflight(
         &self,
@@ -493,12 +503,27 @@ impl SepoliaRpc {
         contract: Address20,
         recipient: Address20,
         amount: TokenAmount,
+        nonce: Quantity256,
+        gas_limit: Quantity256,
+        max_priority_fee_per_gas: Quantity256,
+        max_fee_per_gas: Quantity256,
     ) -> Result<ContractCallResult, RpcError> {
-        self.contract_call_exact(
-            Some(sender),
-            contract,
-            &transfer_call_data(*recipient.as_bytes(), amount),
-        )
+        self.require_verified()?;
+        let calldata = transfer_call_data(*recipient.as_bytes(), amount);
+        let call = ExactTokenTransferCall {
+            from: encode_prefixed_hex(sender.as_bytes()),
+            to: encode_prefixed_hex(contract.as_bytes()),
+            value: "0x0",
+            input: encode_prefixed_hex(&calldata),
+            transaction_type: "0x2",
+            nonce: encode_quantity(nonce),
+            gas: encode_quantity(gas_limit),
+            max_priority_fee_per_gas: encode_quantity(max_priority_fee_per_gas),
+            max_fee_per_gas: encode_quantity(max_fee_per_gas),
+            access_list: &[],
+        };
+        let result: String = self.call(RpcMethod::Call, json!([call, "pending"]))?;
+        decode_bounded_hex(&result, MAX_CONTRACT_CALL_RESULT_BYTES).map(ContractCallResult)
     }
 
     fn contract_call_exact(
@@ -554,6 +579,7 @@ impl SepoliaRpc {
     pub fn send_raw_transaction(
         &self,
         signed_transaction: &[u8],
+        permit: &SessionPermit<'_>,
     ) -> Result<TransactionHash, RpcError> {
         if signed_transaction.is_empty()
             || signed_transaction.len() > MAX_RAW_TRANSACTION_BYTES
@@ -566,6 +592,13 @@ impl SepoliaRpc {
         // cannot make two HTTPS calls atomic, but it sharply narrows stale or
         // accidentally changed endpoint state before the irreversible action.
         self.verify_sepolia()?;
+        // The guard deliberately lives inside this sole broadcast API, after
+        // all blocking chain/genesis verification and immediately before the
+        // transport call. After it succeeds, that call is the external commit
+        // point and cannot be recalled by a later session revocation.
+        if !permit.is_current() {
+            return Err(RpcError::SessionRevoked);
+        }
         let returned_hash: String = self.call(
             RpcMethod::SendRawTransaction,
             json!([encode_prefixed_hex(signed_transaction)]),
@@ -823,6 +856,23 @@ struct TokenTransferEstimate {
     max_fee_per_gas: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct ExactTokenTransferCall {
+    from: String,
+    to: String,
+    value: &'static str,
+    input: String,
+    #[serde(rename = "type")]
+    transaction_type: &'static str,
+    nonce: String,
+    gas: String,
+    max_priority_fee_per_gas: String,
+    max_fee_per_gas: String,
+    access_list: &'static [(); 0],
+}
+
 fn parse_quantity(text: &str) -> Result<Quantity256, RpcError> {
     let digits = text.strip_prefix("0x").ok_or(RpcError::InvalidResponse)?;
     if digits.is_empty() || digits.len() > 64 || (digits.len() > 1 && digits.starts_with('0')) {
@@ -928,6 +978,7 @@ fn encode_prefixed_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex};
 
     use serde_json::{Value, json};
@@ -935,6 +986,7 @@ mod tests {
     use crate::erc20::{
         TokenAmount, balance_of_call_data, decimals_call_data, symbol_call_data, transfer_call_data,
     };
+    use crate::ui::SessionPermit;
 
     use super::{
         Address20, FeeQuote, GLOBAL_TIMEOUT, HttpTransport, MAX_RESPONSE_BYTES, Quantity256,
@@ -1218,6 +1270,10 @@ mod tests {
                 address,
                 address,
                 TokenAmount::from_be_bytes([1; 32]),
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
             ),
             Err(RpcError::ChainNotVerified)
         );
@@ -1390,8 +1446,17 @@ mod tests {
         let result = rpc.erc20_balance_of(contract, sender)?;
         assert_eq!(result.as_bytes(), &[0x12, 0x34]);
         assert_eq!(
-            rpc.erc20_transfer_preflight(sender, contract, recipient, amount)?
-                .as_bytes(),
+            rpc.erc20_transfer_preflight(
+                sender,
+                contract,
+                recipient,
+                amount,
+                parse_quantity("0x5")?,
+                parse_quantity("0xea60")?,
+                parse_quantity("0xa")?,
+                parse_quantity("0xd2")?,
+            )?
+            .as_bytes(),
             &expected_true
         );
         assert_eq!(
@@ -1437,9 +1502,18 @@ mod tests {
             json!([{
                 "from": encode_prefixed_hex(sender.as_bytes()),
                 "to": encode_prefixed_hex(contract.as_bytes()),
-                "input": encode_prefixed_hex(&transfer)
+                "value": "0x0",
+                "input": encode_prefixed_hex(&transfer),
+                "type": "0x2",
+                "nonce": "0x5",
+                "gas": "0xea60",
+                "maxPriorityFeePerGas": "0xa",
+                "maxFeePerGas": "0xd2",
+                "accessList": []
             }, "pending"])
         );
+        assert!(preflight["params"][0].get("data").is_none());
+        assert!(preflight["params"][0].get("gasPrice").is_none());
 
         let estimate: Value =
             serde_json::from_slice(&requests[5]).map_err(|_| RpcError::Transport)?;
@@ -1797,13 +1871,15 @@ mod tests {
 
     #[test]
     fn send_reverifies_chain_and_accepts_only_type_two() -> Result<(), RpcError> {
+        let active_epoch = AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
         let rpc = SepoliaRpc::with_transport(MockTransport::default());
         assert_eq!(
-            rpc.send_raw_transaction(&[]),
+            rpc.send_raw_transaction(&[], &permit),
             Err(RpcError::RawTransactionRejected)
         );
         assert_eq!(
-            rpc.send_raw_transaction(&[0x01, 0xc0]),
+            rpc.send_raw_transaction(&[0x01, 0xc0], &permit),
             Err(RpcError::RawTransactionRejected)
         );
 
@@ -1812,8 +1888,38 @@ mod tests {
             .into_iter()
             .chain([Ok(success(json!(encode_prefixed_hex(&returned))))]);
         let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
-        let hash = rpc.send_raw_transaction(&[0x02, 0xc0])?;
+        let hash = rpc.send_raw_transaction(&[0x02, 0xc0], &permit)?;
         assert_eq!(hash.as_bytes(), &returned);
+        Ok(())
+    }
+
+    #[test]
+    fn revocation_after_final_chain_reverify_prevents_broadcast_transport() -> Result<(), RpcError>
+    {
+        let returned = [0x77; 32];
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!(encode_prefixed_hex(&returned))))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        let active_epoch = AtomicU64::new(0);
+        let permit = SessionPermit::revoke_on_check(0, &active_epoch, 1);
+
+        assert_eq!(
+            rpc.send_raw_transaction(&[0x02, 0xc0], &permit),
+            Err(RpcError::SessionRevoked)
+        );
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        assert_eq!(requests.len(), 2, "only chain/genesis verification may run");
+        for request in requests.iter() {
+            let request: Value =
+                serde_json::from_slice(request).map_err(|_| RpcError::Transport)?;
+            assert_ne!(request["method"], "eth_sendRawTransaction");
+        }
         Ok(())
     }
 

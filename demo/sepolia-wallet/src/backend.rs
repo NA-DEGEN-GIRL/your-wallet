@@ -2,7 +2,8 @@
 //!
 //! This module is deliberately independent from the production vault and
 //! authorization formats. It supports one fixed testnet, a v2 mnemonic/raw-key
-//! vault with a guarded legacy-v1 migration path, and native EIP-1559 transfers.
+//! vault with a guarded legacy-v1 migration path, native EIP-1559 transfers,
+//! and exact `transfer(address,uint256)` calls for authenticated saved ERC-20s.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -40,10 +41,10 @@ use crate::erc20::{self, TokenAmount};
 use crate::rpc;
 use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
 use crate::ui::{
-    CustomTokenSnapshot, CustomTokenState, FeeSelection, GeneratedBackupChallenge,
-    GeneratedBackupConfirmation, GeneratedBackupReveal, NewMnemonicWords, SecretReveal,
-    SecretRevealKind, SendReceipt, SensitiveText, SessionPermit, TransferPreview, WalletBackend,
-    WalletKind, WalletSnapshot,
+    CustomTokenSnapshot, CustomTokenState, Erc20TransferPreview, FeeSelection,
+    GeneratedBackupChallenge, GeneratedBackupConfirmation, GeneratedBackupReveal, NewMnemonicWords,
+    SecretReveal, SecretRevealKind, SendReceipt, SensitiveText, SessionPermit, TransferPreview,
+    WalletBackend, WalletKind, WalletSnapshot,
 };
 use crate::vault_v2::{
     OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
@@ -55,6 +56,8 @@ use crate::wallet_secret::{
 };
 
 const NATIVE_TRANSFER_GAS: u64 = 21_000;
+const MIN_ERC20_TRANSFER_GAS_LIMIT: u64 = 25_200;
+const MAX_ERC20_TRANSFER_GAS_LIMIT: u64 = 500_000;
 const MAX_TRANSFER_WEI: u64 = 10_000_000_000_000_000_000;
 const MAX_PRIORITY_FEE_PER_GAS: u64 = 10_000_000_000;
 const MAX_FEE_PER_GAS: u64 = 100_000_000_000;
@@ -157,7 +160,12 @@ impl UnlockedWallet {
 ///
 /// This value is neither `Clone` nor public. Confirmation consumes it before
 /// any private-key operation, so edited UI strings cannot alter signed fields.
-struct PreparedTransfer {
+enum PreparedTransfer {
+    Native(PreparedNativeTransfer),
+    SavedErc20(PreparedErc20Transfer),
+}
+
+struct PreparedNativeTransfer {
     sender: [u8; 20],
     recipient: [u8; 20],
     value: Word,
@@ -170,6 +178,26 @@ struct PreparedTransfer {
     maximum_network_fee: Word,
     estimated_spend: Word,
     maximum_spend: Word,
+    quote_expires_at: Instant,
+}
+
+/// Exact saved-token transfer facts frozen after authenticated sidecar and
+/// full pending-chain bookends. This is neither `Clone` nor public.
+struct PreparedErc20Transfer {
+    sender: [u8; 20],
+    recipient: [u8; 20],
+    contract: [u8; 20],
+    amount: TokenAmount,
+    saved_entry: TokenEntry,
+    token_store_baseline: TokenStoreBaseline,
+    nonce: Word,
+    estimated_gas: u64,
+    gas_limit: Word,
+    quoted_base_fee: Word,
+    priority_fee: Word,
+    maximum_fee: Word,
+    estimated_network_fee: Word,
+    maximum_network_fee: Word,
     quote_expires_at: Instant,
 }
 
@@ -310,6 +338,12 @@ trait MonotonicClock: Send {
     fn now(&self) -> Instant;
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SendRawError {
+    SessionRevoked,
+    BroadcastUnknown,
+}
+
 struct SystemClock;
 
 impl MonotonicClock for SystemClock {
@@ -335,7 +369,11 @@ trait RpcAccess: Send {
         priority_fee: Word,
         maximum_fee: Word,
     ) -> Result<Word, ()>;
-    fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()>;
+    fn send_raw_transaction(
+        &self,
+        signed: &[u8],
+        permit: &SessionPermit<'_>,
+    ) -> Result<[u8; 32], SendRawError>;
     fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
         let _ = contract;
         Err(())
@@ -350,6 +388,52 @@ trait RpcAccess: Send {
     }
     fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
         let _ = (contract, owner);
+        Err(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn erc20_transfer_preflight(
+        &self,
+        sender: [u8; 20],
+        contract: [u8; 20],
+        recipient: [u8; 20],
+        amount: TokenAmount,
+        nonce: Word,
+        gas_limit: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Vec<u8>, ()> {
+        let _ = (
+            sender,
+            contract,
+            recipient,
+            amount,
+            nonce,
+            gas_limit,
+            priority_fee,
+            maximum_fee,
+        );
+        Err(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn estimate_erc20_transfer_gas(
+        &self,
+        sender: [u8; 20],
+        contract: [u8; 20],
+        recipient: [u8; 20],
+        amount: TokenAmount,
+        nonce: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Word, ()> {
+        let _ = (
+            sender,
+            contract,
+            recipient,
+            amount,
+            nonce,
+            priority_fee,
+            maximum_fee,
+        );
         Err(())
     }
 }
@@ -941,6 +1025,33 @@ impl DemoBackend {
         })
     }
 
+    fn verify_token_store_baseline(
+        &self,
+        context: &TokenContext,
+        baseline: &TokenStoreBaseline,
+        expected_entry: &TokenEntry,
+        permit: Option<&SessionPermit<'_>>,
+    ) -> Result<(), BackendError> {
+        let current = read_token_store_file(&self.token_store_path)?;
+        ensure_optional_session_current(permit)?;
+        if current.as_deref() != baseline.bytes.as_deref() {
+            return Err(BackendError::TokenStoreChanged);
+        }
+        let bytes = current.as_deref().ok_or(BackendError::TokenStoreChanged)?;
+        let reopened = TokenStore::open(bytes, &context.key, &context.vault_id)
+            .map_err(map_token_store_error)?;
+        ensure_optional_session_current(permit)?;
+        if reopened.generation() != baseline.generation
+            || !reopened
+                .entries()
+                .iter()
+                .any(|entry| entry == expected_entry)
+        {
+            return Err(BackendError::TokenStoreChanged);
+        }
+        Ok(())
+    }
+
     fn persist_token_store(
         &self,
         context: &TokenContext,
@@ -986,13 +1097,25 @@ impl DemoBackend {
         owner: [u8; 20],
         expected: Option<&TokenEntry>,
     ) -> Result<ValidatedToken, BackendError> {
+        self.inspect_token_with_permit(contract, owner, expected, None)
+    }
+
+    fn inspect_token_with_permit(
+        &self,
+        contract: [u8; 20],
+        owner: [u8; 20],
+        expected: Option<&TokenEntry>,
+        permit: Option<&SessionPermit<'_>>,
+    ) -> Result<ValidatedToken, BackendError> {
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let code = self
             .rpc
             .contract_code(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         if code.is_empty() {
             return Err(BackendError::TokenContractEmpty);
         }
@@ -1005,12 +1128,14 @@ impl DemoBackend {
             .rpc
             .erc20_decimals(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let decimals = erc20::decode_decimals(decimals_result.as_slice())
             .map_err(|_| BackendError::TokenMetadataInvalid)?;
         let symbol_result = self
             .rpc
             .erc20_symbol(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let symbol = erc20::decode_symbol(symbol_result.as_slice())
             .map_err(|_| BackendError::TokenMetadataInvalid)?
             .map(|value| value.as_str().to_owned());
@@ -1024,16 +1149,20 @@ impl DemoBackend {
             .rpc
             .erc20_balance_of(contract, owner)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let balance = erc20::decode_balance(balance_result.as_slice())
             .map_err(|_| BackendError::TokenMetadataInvalid)?;
 
-        // Bookend the mutable chain reads. A proxy upgrade or metadata change
-        // while the calls are in flight must not produce a hybrid trusted
+        // Bookend the mutable chain reads. Direct bytecode or decoded metadata
+        // drift while the calls are in flight must not produce a hybrid trusted
         // snapshot. Balance is intentionally not required to remain stable.
+        // An implementation/storage change behind byte-identical proxy code is
+        // outside this evidence and remains a documented limitation.
         let final_code = self
             .rpc
             .contract_code(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let final_code_hash: [u8; 32] = Sha256::digest(final_code.as_slice()).into();
         if final_code.is_empty() || final_code_hash != code_hash {
             return Err(BackendError::TokenCodeChanged);
@@ -1042,12 +1171,14 @@ impl DemoBackend {
             .rpc
             .erc20_decimals(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let final_decimals = erc20::decode_decimals(final_decimals_result.as_slice())
             .map_err(|_| BackendError::TokenMetadataInvalid)?;
         let final_symbol_result = self
             .rpc
             .erc20_symbol(contract)
             .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        ensure_optional_session_current(permit)?;
         let final_symbol = erc20::decode_symbol(final_symbol_result.as_slice())
             .map_err(|_| BackendError::TokenMetadataInvalid)?
             .map(|value| value.as_str().to_owned());
@@ -1062,6 +1193,7 @@ impl DemoBackend {
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_optional_session_current(permit)?;
         Ok(ValidatedToken {
             contract,
             decimals: final_decimals,
@@ -1280,7 +1412,7 @@ impl DemoBackend {
             max_total_eth: format_ether(maximum_spend),
             quote_valid_for_seconds: remaining_quote_seconds.to_string(),
         };
-        self.prepared = Some(PreparedTransfer {
+        self.prepared = Some(PreparedTransfer::Native(PreparedNativeTransfer {
             sender,
             recipient,
             value,
@@ -1294,7 +1426,185 @@ impl DemoBackend {
             estimated_spend,
             maximum_spend,
             quote_expires_at,
-        });
+        }));
+        Ok(preview)
+    }
+
+    fn prepare_saved_erc20_transfer_inner(
+        &mut self,
+        contract_address: &str,
+        recipient: &str,
+        amount_text: &str,
+        fee_selection: FeeSelection,
+        permit: &SessionPermit<'_>,
+    ) -> Result<Erc20TransferPreview, BackendError> {
+        ensure_session_current(permit)?;
+        // Failed re-preparation must never leave an older signer-ready value.
+        self.prepared = None;
+        if self.pending_broadcast_exists() {
+            ensure_session_current(permit)?;
+            return Err(BackendError::PendingExists);
+        }
+        ensure_session_current(permit)?;
+        let (sender, _, _) = self
+            .unlocked
+            .as_ref()
+            .ok_or(BackendError::Locked)?
+            .validated_metadata()?;
+        let context = self.token_context()?;
+        if context.owner != sender {
+            return Err(BackendError::PreparedInvalid);
+        }
+        let contract = parse_address(contract_address)
+            .map_err(|_| BackendError::TokenContractAddressInvalid)?;
+        let recipient = parse_address(recipient)?;
+
+        // The UI contract is only a lookup key. Resolve all authoritative token
+        // metadata from a freshly authenticated sidecar.
+        let loaded = self.load_token_store(&context)?;
+        ensure_session_current(permit)?;
+        let saved_entry = loaded
+            .store
+            .entries()
+            .iter()
+            .find(|entry| entry.contract() == &contract)
+            .cloned()
+            .ok_or(BackendError::TokenNotFound)?;
+        let initial =
+            self.inspect_token_with_permit(contract, sender, Some(&saved_entry), Some(permit))?;
+        let amount = erc20::parse_token_amount(amount_text, saved_entry.decimals())
+            .map_err(|_| BackendError::InvalidAmount)?;
+        if amount > initial.balance {
+            return Err(BackendError::InsufficientTokenBalance);
+        }
+
+        let nonce = self
+            .rpc
+            .pending_nonce(sender)
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
+        let quote = self
+            .rpc
+            .fee_quote()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
+        let fee_plan = resolve_fee_plan(fee_selection, quote)?;
+        let quote_expires_at = self
+            .clock
+            .now()
+            .checked_add(FEE_QUOTE_TTL)
+            .ok_or(BackendError::PreparedInvalid)?;
+
+        let estimated_gas_word = self
+            .rpc
+            .estimate_erc20_transfer_gas(
+                sender,
+                contract,
+                recipient,
+                amount,
+                nonce,
+                fee_plan.priority_fee,
+                fee_plan.maximum_fee,
+            )
+            .map_err(|()| BackendError::TokenGasEstimateInvalid)?;
+        ensure_session_current(permit)?;
+        let estimated_gas = estimated_gas_word
+            .to_u64()
+            .ok_or(BackendError::TokenGasEstimateInvalid)?;
+        let gas_limit = erc20::token_gas_limit(estimated_gas)
+            .map(Word::from_u64)
+            .map_err(|_| BackendError::TokenGasEstimateInvalid)?;
+        let preflight = self
+            .rpc
+            .erc20_transfer_preflight(
+                sender,
+                contract,
+                recipient,
+                amount,
+                nonce,
+                gas_limit,
+                fee_plan.priority_fee,
+                fee_plan.maximum_fee,
+            )
+            .map_err(|()| BackendError::TokenTransferRejected)?;
+        ensure_session_current(permit)?;
+        erc20::validate_transfer_result(preflight.as_slice())
+            .map_err(|_| BackendError::TokenTransferRejected)?;
+        let estimated_gas_price = fee_plan
+            .quoted_base_fee
+            .checked_add(fee_plan.priority_fee)
+            .ok_or(BackendError::FeeLimit)?;
+        let estimated_network_fee = estimated_gas_price
+            .checked_mul_u64(estimated_gas)
+            .ok_or(BackendError::FeeLimit)?;
+        let maximum_network_fee = fee_plan
+            .maximum_fee
+            .checked_mul_u64(gas_limit.to_u64().ok_or(BackendError::PreparedInvalid)?)
+            .ok_or(BackendError::FeeLimit)?;
+        let native_balance = self
+            .rpc
+            .pending_balance(sender)
+            .map_err(|()| BackendError::BalanceUnavailable)?;
+        ensure_session_current(permit)?;
+        if maximum_network_fee > native_balance {
+            return Err(BackendError::InsufficientBalance);
+        }
+
+        // Full chain and sidecar bookends surround nonce, balances, preflight,
+        // and estimate. They reject ordinary sidecar changes and direct
+        // bytecode/metadata drift rather than claiming atomic chain state or
+        // visibility into a byte-identical proxy implementation upgrade.
+        let final_token =
+            self.inspect_token_with_permit(contract, sender, Some(&saved_entry), Some(permit))?;
+        if final_token.code_hash != initial.code_hash
+            || final_token.decimals != initial.decimals
+            || final_token.symbol != initial.symbol
+            || amount > final_token.balance
+        {
+            return Err(BackendError::TokenMetadataChanged);
+        }
+        self.verify_token_store_baseline(&context, &loaded.baseline, &saved_entry, Some(permit))?;
+        ensure_quote_live(self.clock.as_ref(), quote_expires_at)?;
+        // Final permit check immediately before freezing signer-ready state.
+        ensure_session_current(permit)?;
+        let remaining_quote_seconds =
+            conservative_remaining_quote_seconds(self.clock.as_ref(), quote_expires_at)?;
+        let normalized_amount = erc20::format_token_amount(amount, saved_entry.decimals())
+            .map_err(|_| BackendError::InvalidAmount)?;
+        let preview = Erc20TransferPreview {
+            contract_address: checksum_address(contract),
+            symbol: saved_entry.symbol().map(str::to_owned),
+            decimals: saved_entry.decimals(),
+            recipient: checksum_address(recipient),
+            amount: normalized_amount,
+            nonce: decimal_string(nonce),
+            fee_mode_ko: fee_plan.mode_label.to_owned(),
+            estimated_gas: estimated_gas.to_string(),
+            gas_limit: decimal_string(gas_limit),
+            quoted_base_fee_per_gas_gwei: format_gwei(fee_plan.quoted_base_fee),
+            max_priority_fee_per_gas_gwei: format_gwei(fee_plan.priority_fee),
+            max_fee_per_gas_gwei: format_gwei(fee_plan.maximum_fee),
+            estimated_network_fee_eth: format_ether(estimated_network_fee),
+            max_network_fee_eth: format_ether(maximum_network_fee),
+            quote_valid_for_seconds: remaining_quote_seconds.to_string(),
+        };
+        self.prepared = Some(PreparedTransfer::SavedErc20(PreparedErc20Transfer {
+            sender,
+            recipient,
+            contract,
+            amount,
+            saved_entry,
+            token_store_baseline: loaded.baseline,
+            nonce,
+            estimated_gas,
+            gas_limit,
+            quoted_base_fee: fee_plan.quoted_base_fee,
+            priority_fee: fee_plan.priority_fee,
+            maximum_fee: fee_plan.maximum_fee,
+            estimated_network_fee,
+            maximum_network_fee,
+            quote_expires_at,
+        }));
         Ok(preview)
     }
 
@@ -1303,7 +1613,9 @@ impl DemoBackend {
         permit: &SessionPermit<'_>,
     ) -> Result<SendReceipt, BackendError> {
         ensure_session_current(permit)?;
-        if self.pending_broadcast_exists() {
+        let pending_exists = self.pending_broadcast_exists();
+        ensure_session_current(permit)?;
+        if pending_exists {
             self.prepared = None;
             return Err(BackendError::PendingExists);
         }
@@ -1311,6 +1623,12 @@ impl DemoBackend {
             .prepared
             .take()
             .ok_or(BackendError::NoPreparedTransfer)?;
+        let prepared = match prepared {
+            PreparedTransfer::Native(prepared) => prepared,
+            PreparedTransfer::SavedErc20(prepared) => {
+                return self.confirm_saved_erc20_transfer(prepared, permit);
+            }
+        };
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
         let (wallet_address, _, _) = wallet.validated_metadata()?;
         let expected_estimated_gas_price =
@@ -1436,16 +1754,202 @@ impl DemoBackend {
         // before the externally visible RPC send. Revocation leaves the exact
         // signed record durable for authenticated recovery.
         ensure_session_current(permit)?;
-        let returned_hash = self
-            .rpc
-            .send_raw_transaction(signed.bytes.as_slice())
-            .map_err(|()| BackendError::BroadcastUnknown)?;
+        let returned_hash = guarded_broadcast(self.rpc.as_ref(), signed.bytes.as_slice(), permit)?;
         if returned_hash != signed.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
         // A lock racing with the transport call cannot undo its external side
         // effect. Check immediately before deletion and preserve the pending
         // record instead of claiming local resolution when send went stale.
+        ensure_session_current(permit)?;
+        remove_pending(&self.pending_path)?;
+        self.last_balance = None;
+        Ok(SendReceipt {
+            transaction_hash: fixed_hex(&returned_hash),
+        })
+    }
+
+    fn confirm_saved_erc20_transfer(
+        &mut self,
+        prepared: PreparedErc20Transfer,
+        permit: &SessionPermit<'_>,
+    ) -> Result<SendReceipt, BackendError> {
+        ensure_session_current(permit)?;
+        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let (wallet_address, _, _) = wallet.validated_metadata()?;
+        let expected_gas_limit = erc20::token_gas_limit(prepared.estimated_gas)
+            .map(Word::from_u64)
+            .map_err(|_| BackendError::PreparedInvalid)?;
+        let gas_limit_u64 = prepared
+            .gas_limit
+            .to_u64()
+            .ok_or(BackendError::PreparedInvalid)?;
+        let expected_estimated_fee = prepared
+            .quoted_base_fee
+            .checked_add(prepared.priority_fee)
+            .and_then(|price| price.checked_mul_u64(prepared.estimated_gas));
+        if wallet_address != prepared.sender
+            || prepared.recipient == [0; 20]
+            || prepared.contract == [0; 20]
+            || prepared.amount.is_zero()
+            || prepared.saved_entry.contract() != &prepared.contract
+            || prepared.saved_entry.code_hash() == &[0; 32]
+            || prepared.gas_limit != expected_gas_limit
+            || validate_fee_values(
+                prepared.quoted_base_fee,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .is_err()
+            || expected_estimated_fee != Some(prepared.estimated_network_fee)
+            || prepared.maximum_fee.checked_mul_u64(gas_limit_u64)
+                != Some(prepared.maximum_network_fee)
+        {
+            return Err(BackendError::PreparedInvalid);
+        }
+        ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
+        let context = self.token_context()?;
+        if context.owner != prepared.sender {
+            return Err(BackendError::PreparedInvalid);
+        }
+
+        // Initial authenticated sidecar + full contract identity bookend.
+        self.verify_token_store_baseline(
+            &context,
+            &prepared.token_store_baseline,
+            &prepared.saved_entry,
+            Some(permit),
+        )?;
+        let initial = self.inspect_token_with_permit(
+            prepared.contract,
+            prepared.sender,
+            Some(&prepared.saved_entry),
+            Some(permit),
+        )?;
+        if prepared.amount > initial.balance {
+            return Err(BackendError::InsufficientTokenBalance);
+        }
+
+        let current_nonce = self
+            .rpc
+            .pending_nonce(prepared.sender)
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
+        if current_nonce != prepared.nonce {
+            return Err(BackendError::AccountChanged);
+        }
+        let current_base_fee = self
+            .rpc
+            .latest_base_fee()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
+        if validate_fee_values(
+            current_base_fee,
+            prepared.priority_fee,
+            prepared.maximum_fee,
+        )
+        .is_err()
+        {
+            return Err(BackendError::QuoteChanged);
+        }
+        let native_balance = self
+            .rpc
+            .pending_balance(prepared.sender)
+            .map_err(|()| BackendError::BalanceUnavailable)?;
+        ensure_session_current(permit)?;
+        if prepared.maximum_network_fee > native_balance {
+            return Err(BackendError::InsufficientBalance);
+        }
+        let estimated_gas = self
+            .rpc
+            .estimate_erc20_transfer_gas(
+                prepared.sender,
+                prepared.contract,
+                prepared.recipient,
+                prepared.amount,
+                prepared.nonce,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .map_err(|()| BackendError::TokenGasEstimateInvalid)?;
+        ensure_session_current(permit)?;
+        if estimated_gas.to_u64() != Some(prepared.estimated_gas) {
+            return Err(BackendError::TokenGasEstimateInvalid);
+        }
+        let preflight = self
+            .rpc
+            .erc20_transfer_preflight(
+                prepared.sender,
+                prepared.contract,
+                prepared.recipient,
+                prepared.amount,
+                prepared.nonce,
+                prepared.gas_limit,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .map_err(|()| BackendError::TokenTransferRejected)?;
+        ensure_session_current(permit)?;
+        erc20::validate_transfer_result(preflight.as_slice())
+            .map_err(|_| BackendError::TokenTransferRejected)?;
+
+        // Final chain and sidecar bookends immediately before signing.
+        let final_token = self.inspect_token_with_permit(
+            prepared.contract,
+            prepared.sender,
+            Some(&prepared.saved_entry),
+            Some(permit),
+        )?;
+        if final_token.code_hash != initial.code_hash
+            || final_token.decimals != initial.decimals
+            || final_token.symbol != initial.symbol
+            || prepared.amount > final_token.balance
+        {
+            return Err(BackendError::TokenMetadataChanged);
+        }
+        self.verify_token_store_baseline(
+            &context,
+            &prepared.token_store_baseline,
+            &prepared.saved_entry,
+            Some(permit),
+        )?;
+        ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
+        ensure_session_current(permit)?;
+        #[cfg(test)]
+        {
+            self.sign_attempts += 1;
+        }
+        let signed = match wallet {
+            UnlockedWallet::LegacyV1 { .. } => return Err(BackendError::TokenRequiresV2),
+            UnlockedWallet::V2(opened) => {
+                let account_signer = opened
+                    .wallet()
+                    .account_private_key(0)
+                    .map_err(map_secret_error)?;
+                sign_erc20_type_two(
+                    account_signer.as_bytes(),
+                    prepared.sender,
+                    prepared.contract,
+                    prepared.recipient,
+                    prepared.amount,
+                    prepared.nonce,
+                    prepared.gas_limit,
+                    prepared.priority_fee,
+                    prepared.maximum_fee,
+                )?
+            }
+        };
+        ensure_session_current(permit)?;
+        write_new_pending(
+            &self.pending_path,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )?;
+        ensure_session_current(permit)?;
+        let returned_hash = guarded_broadcast(self.rpc.as_ref(), signed.bytes.as_slice(), permit)?;
+        if returned_hash != signed.transaction_hash {
+            return Err(BackendError::HashMismatch);
+        }
         ensure_session_current(permit)?;
         remove_pending(&self.pending_path)?;
         self.last_balance = None;
@@ -1482,10 +1986,11 @@ impl DemoBackend {
         // Final local commit point before rebroadcasting the already-signed
         // bytes retained in the pending record.
         ensure_session_current(permit)?;
-        let returned_hash = self
-            .rpc
-            .send_raw_transaction(pending.raw_transaction.as_slice())
-            .map_err(|()| BackendError::BroadcastUnknown)?;
+        let returned_hash = guarded_broadcast(
+            self.rpc.as_ref(),
+            pending.raw_transaction.as_slice(),
+            permit,
+        )?;
         if returned_hash != pending.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
@@ -1621,6 +2126,24 @@ impl WalletBackend for DemoBackend {
             .map_err(error_text)
     }
 
+    fn prepare_saved_erc20_transfer(
+        &mut self,
+        contract_address: &str,
+        recipient: &str,
+        amount: &str,
+        fee_selection: FeeSelection,
+        permit: &SessionPermit<'_>,
+    ) -> Result<Erc20TransferPreview, String> {
+        self.prepare_saved_erc20_transfer_inner(
+            contract_address,
+            recipient,
+            amount,
+            fee_selection,
+            permit,
+        )
+        .map_err(error_text)
+    }
+
     fn confirm_prepared(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.confirm_prepared_with_permit(permit)
             .map_err(error_text)
@@ -1711,11 +2234,18 @@ impl RpcAccess for LiveRpc {
             .map_err(|_| ())
     }
 
-    fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
+    fn send_raw_transaction(
+        &self,
+        signed: &[u8],
+        permit: &SessionPermit<'_>,
+    ) -> Result<[u8; 32], SendRawError> {
         self.0
-            .send_raw_transaction(signed)
+            .send_raw_transaction(signed, permit)
             .map(|hash| *hash.as_bytes())
-            .map_err(|_| ())
+            .map_err(|error| match error {
+                rpc::RpcError::SessionRevoked => SendRawError::SessionRevoked,
+                _ => SendRawError::BroadcastUnknown,
+            })
     }
 
     fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
@@ -1745,6 +2275,56 @@ impl RpcAccess for LiveRpc {
             .map(|result| result.as_bytes().to_vec())
             .map_err(|_| ())
     }
+
+    fn erc20_transfer_preflight(
+        &self,
+        sender: [u8; 20],
+        contract: [u8; 20],
+        recipient: [u8; 20],
+        amount: TokenAmount,
+        nonce: Word,
+        gas_limit: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Vec<u8>, ()> {
+        self.0
+            .erc20_transfer_preflight(
+                rpc::Address20::new(sender),
+                rpc::Address20::new(contract),
+                rpc::Address20::new(recipient),
+                amount,
+                rpc::Quantity256::from_be_bytes(*nonce.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*gas_limit.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*priority_fee.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*maximum_fee.as_be_bytes()),
+            )
+            .map(|result| result.as_bytes().to_vec())
+            .map_err(|_| ())
+    }
+
+    fn estimate_erc20_transfer_gas(
+        &self,
+        sender: [u8; 20],
+        contract: [u8; 20],
+        recipient: [u8; 20],
+        amount: TokenAmount,
+        nonce: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Word, ()> {
+        self.0
+            .estimate_erc20_transfer_gas(
+                rpc::Address20::new(sender),
+                rpc::Address20::new(contract),
+                rpc::Address20::new(recipient),
+                amount,
+                rpc::Quantity256::from_be_bytes(*nonce.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*priority_fee.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*maximum_fee.as_be_bytes()),
+            )
+            .map(|value| Word::from_be_bytes(*value.as_be_bytes()))
+            .map_err(|_| ())
+    }
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -1765,6 +2345,13 @@ impl Word {
 
     const fn as_be_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    fn to_u64(self) -> Option<u64> {
+        if self.0[..24].iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        Some(u64::from_be_bytes(self.0[24..].try_into().ok()?))
     }
 
     fn is_zero(self) -> bool {
@@ -1824,7 +2411,7 @@ impl Word {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum BackendError {
     StorageUnavailable,
     AlreadyExists,
@@ -1856,6 +2443,9 @@ enum BackendError {
     TokenMetadataInvalid,
     TokenCodeChanged,
     TokenMetadataChanged,
+    TokenTransferRejected,
+    TokenGasEstimateInvalid,
+    InsufficientTokenBalance,
     TokenDuplicate,
     TokenCapacity,
     TokenNotFound,
@@ -1917,6 +2507,9 @@ impl std::fmt::Debug for BackendError {
             Self::TokenMetadataInvalid => "BackendError::TokenMetadataInvalid",
             Self::TokenCodeChanged => "BackendError::TokenCodeChanged",
             Self::TokenMetadataChanged => "BackendError::TokenMetadataChanged",
+            Self::TokenTransferRejected => "BackendError::TokenTransferRejected",
+            Self::TokenGasEstimateInvalid => "BackendError::TokenGasEstimateInvalid",
+            Self::InsufficientTokenBalance => "BackendError::InsufficientTokenBalance",
             Self::TokenDuplicate => "BackendError::TokenDuplicate",
             Self::TokenCapacity => "BackendError::TokenCapacity",
             Self::TokenNotFound => "BackendError::TokenNotFound",
@@ -1952,6 +2545,25 @@ fn ensure_session_current(permit: &SessionPermit<'_>) -> Result<(), BackendError
         .is_current()
         .then_some(())
         .ok_or(BackendError::Locked)
+}
+
+fn guarded_broadcast(
+    rpc: &dyn RpcAccess,
+    signed: &[u8],
+    permit: &SessionPermit<'_>,
+) -> Result<[u8; 32], BackendError> {
+    match rpc.send_raw_transaction(signed, permit) {
+        Ok(hash) => Ok(hash),
+        Err(SendRawError::SessionRevoked) => Err(BackendError::Locked),
+        Err(SendRawError::BroadcastUnknown) => Err(BackendError::BroadcastUnknown),
+    }
+}
+
+fn ensure_optional_session_current(permit: Option<&SessionPermit<'_>>) -> Result<(), BackendError> {
+    match permit {
+        Some(permit) => ensure_session_current(permit),
+        None => Ok(()),
+    }
 }
 
 fn error_text(error: BackendError) -> String {
@@ -2026,11 +2638,22 @@ fn error_text(error: BackendError) -> String {
         BackendError::TokenMetadataChanged => {
             "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.".to_owned()
         }
+        BackendError::TokenTransferRejected => {
+            "토큰 컨트랙트가 정확한 transfer 사전 실행을 거부했습니다.".to_owned()
+        }
+        BackendError::TokenGasEstimateInvalid => {
+            "토큰 전송 가스 추정값이 허용 범위를 벗어났습니다.".to_owned()
+        }
+        BackendError::InsufficientTokenBalance => {
+            "보낼 토큰 잔액이 부족합니다.".to_owned()
+        }
         BackendError::TokenDuplicate => "이미 추가한 토큰 컨트랙트입니다.".to_owned(),
         BackendError::TokenCapacity => {
             "커스텀 토큰은 최대 32개까지 추가할 수 있습니다.".to_owned()
         }
-        BackendError::TokenNotFound => "삭제할 토큰 컨트랙트를 찾지 못했습니다.".to_owned(),
+        BackendError::TokenNotFound => {
+            "인증된 목록에서 해당 저장 토큰 컨트랙트를 찾지 못했습니다.".to_owned()
+        }
         BackendError::TokenStoreInvalid => {
             "인증된 토큰 목록이 손상되었거나 현재 v2 지갑과 일치하지 않습니다.".to_owned()
         }
@@ -2073,7 +2696,7 @@ fn error_text(error: BackendError) -> String {
             "계정의 전송 순서가 바뀌었습니다. 전송 내용을 다시 준비해 주세요.".to_owned()
         }
         BackendError::UnsupportedTransfer => {
-            "이 데모는 가스 한도 21,000인 일반 ETH 전송만 지원합니다.".to_owned()
+            "일반 ETH 전송은 가스 추정값이 정확히 21,000이어야 합니다.".to_owned()
         }
         BackendError::InsufficientBalance => {
             "수수료를 포함한 Sepolia 잔액이 부족합니다.".to_owned()
@@ -3335,6 +3958,99 @@ fn sign_native_type_two(
     })
 }
 
+/// Sign exactly one ERC-20 `transfer(address,uint256)` type-2 transaction.
+///
+/// No caller can provide arbitrary calldata: the fixed 68-byte ABI payload is
+/// constructed here from the already-validated recipient and amount, with the
+/// contract as `to` and zero native value.
+#[allow(clippy::too_many_arguments)]
+fn sign_erc20_type_two(
+    signing_material: &[u8; 32],
+    expected_sender: [u8; 20],
+    contract: [u8; 20],
+    recipient: [u8; 20],
+    amount: TokenAmount,
+    nonce: Word,
+    gas_limit: Word,
+    priority_fee: Word,
+    maximum_fee: Word,
+) -> Result<SignedTransaction, BackendError> {
+    validate_fee_quote(priority_fee, maximum_fee)?;
+    let gas_limit_u64 = gas_limit.to_u64().ok_or(BackendError::PreparedInvalid)?;
+    if contract == [0; 20]
+        || recipient == [0; 20]
+        || amount.is_zero()
+        || !(MIN_ERC20_TRANSFER_GAS_LIMIT..=MAX_ERC20_TRANSFER_GAS_LIMIT).contains(&gas_limit_u64)
+    {
+        return Err(BackendError::PreparedInvalid);
+    }
+    let calldata = erc20::transfer_call_data(recipient, amount);
+    let chain_id = Word::from_u64(rpc::SEPOLIA_CHAIN_ID);
+    let unsigned_payload = rlp_list(&[
+        rlp_word(chain_id),
+        rlp_word(nonce),
+        rlp_word(priority_fee),
+        rlp_word(maximum_fee),
+        rlp_word(gas_limit),
+        rlp_bytes(&contract),
+        rlp_word(Word::ZERO),
+        rlp_bytes(&calldata),
+        rlp_list(&[]),
+    ]);
+    let mut unsigned = Zeroizing::new(Vec::with_capacity(unsigned_payload.len() + 1));
+    unsigned.push(2);
+    unsigned.extend_from_slice(&unsigned_payload);
+    let mut prehash = keccak32(unsigned.as_slice());
+    let secret = SecretKey::from_byte_array(*signing_material)
+        .map_err(|_| BackendError::CryptographicFailure)?;
+    let signature = Secp256k1::new().sign_ecdsa_recoverable(Message::from_digest(prehash), &secret);
+    let (recovery_id, mut compact) = signature.serialize_compact();
+    let y_parity =
+        u8::try_from(i32::from(recovery_id)).map_err(|_| BackendError::CryptographicFailure)?;
+    if y_parity > 1 {
+        prehash.zeroize();
+        compact.zeroize();
+        return Err(BackendError::CryptographicFailure);
+    }
+
+    let signed_payload = rlp_list(&[
+        rlp_word(chain_id),
+        rlp_word(nonce),
+        rlp_word(priority_fee),
+        rlp_word(maximum_fee),
+        rlp_word(gas_limit),
+        rlp_bytes(&contract),
+        rlp_word(Word::ZERO),
+        rlp_bytes(&calldata),
+        rlp_list(&[]),
+        rlp_integer(&[y_parity]),
+        rlp_integer(&compact[..32]),
+        rlp_integer(&compact[32..]),
+    ]);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(signed_payload.len() + 1));
+    bytes.push(2);
+    bytes.extend_from_slice(&signed_payload);
+    let recoverable = RecoverableSignature::from_compact(
+        &compact,
+        RecoveryId::try_from(i32::from(y_parity))
+            .map_err(|_| BackendError::CryptographicFailure)?,
+    )
+    .map_err(|_| BackendError::CryptographicFailure)?;
+    let recovered = Secp256k1::new()
+        .recover_ecdsa(Message::from_digest(prehash), &recoverable)
+        .map_err(|_| BackendError::CryptographicFailure)?;
+    prehash.zeroize();
+    compact.zeroize();
+    if address_from_public_key(&recovered) != expected_sender {
+        return Err(BackendError::CryptographicFailure);
+    }
+    let transaction_hash = keccak32(bytes.as_slice());
+    Ok(SignedTransaction {
+        bytes,
+        transaction_hash,
+    })
+}
+
 fn rlp_word(value: Word) -> Vec<u8> {
     rlp_integer(value.as_be_bytes())
 }
@@ -3462,9 +4178,16 @@ mod tests {
             Ok(self.estimated_gas)
         }
 
-        fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
+        fn send_raw_transaction(
+            &self,
+            signed: &[u8],
+            permit: &SessionPermit<'_>,
+        ) -> Result<[u8; 32], SendRawError> {
+            if !permit.is_current() {
+                return Err(SendRawError::SessionRevoked);
+            }
             if self.send_fails {
-                Err(())
+                Err(SendRawError::BroadcastUnknown)
             } else {
                 Ok(self.returned_hash.unwrap_or_else(|| keccak32(signed)))
             }
@@ -3497,6 +4220,22 @@ mod tests {
         query_calls: usize,
         replace_on_query: Option<(usize, [u8; 20], TokenFixture)>,
         contracts: HashMap<[u8; 20], TokenFixture>,
+        native_balance: Word,
+        nonce: Word,
+        base_fee: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+        token_estimated_gas: Word,
+        transfer_result: Vec<u8>,
+        preflight_calls: usize,
+        estimate_calls: usize,
+        nonce_calls: usize,
+        quote_calls: usize,
+        base_fee_calls: usize,
+        native_balance_calls: usize,
+        preflight_fields: Vec<TokenPreflightObservation>,
+        sent: Vec<Vec<u8>>,
+        send_fails: bool,
     }
 
     #[derive(Clone)]
@@ -3505,6 +4244,18 @@ mod tests {
         decimals: Vec<u8>,
         symbol: Vec<u8>,
         balance: Vec<u8>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct TokenPreflightObservation {
+        sender: [u8; 20],
+        contract: [u8; 20],
+        recipient: [u8; 20],
+        amount: TokenAmount,
+        nonce: Word,
+        gas_limit: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
     }
 
     impl TokenRpc {
@@ -3518,6 +4269,22 @@ mod tests {
                     query_calls: 0,
                     replace_on_query: None,
                     contracts: HashMap::new(),
+                    native_balance: Word::from_u64(2_000_000_000_000_000_000),
+                    nonce: Word::from_u64(7),
+                    base_fee: Word::from_u64(500_000_000),
+                    priority_fee: Word::from_u64(1_000_000_000),
+                    maximum_fee: Word::from_u64(2_000_000_000),
+                    token_estimated_gas: Word::from_u64(50_000),
+                    transfer_result: abi_u8(1),
+                    preflight_calls: 0,
+                    estimate_calls: 0,
+                    nonce_calls: 0,
+                    quote_calls: 0,
+                    base_fee_calls: 0,
+                    native_balance_calls: 0,
+                    preflight_fields: Vec::new(),
+                    sent: Vec::new(),
+                    send_fails: false,
                 })),
             }
         }
@@ -3572,23 +4339,35 @@ mod tests {
         }
 
         fn balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
-            Ok(Word::ZERO)
+            Ok(self.state.lock().map_err(|_| ())?.native_balance)
         }
 
         fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
-            Ok(Word::ZERO)
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.native_balance_calls += 1;
+            Ok(state.native_balance)
         }
 
         fn pending_nonce(&self, _address: [u8; 20]) -> Result<Word, ()> {
-            Ok(Word::ZERO)
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.nonce_calls += 1;
+            Ok(state.nonce)
         }
 
         fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
-            Err(())
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.quote_calls += 1;
+            Ok(NetworkFeeQuote {
+                base_fee: state.base_fee,
+                recommended_priority_fee: state.priority_fee,
+                recommended_maximum_fee: state.maximum_fee,
+            })
         }
 
         fn latest_base_fee(&self) -> Result<Word, ()> {
-            Err(())
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.base_fee_calls += 1;
+            Ok(state.base_fee)
         }
 
         fn estimate_native_transfer_gas(
@@ -3603,8 +4382,24 @@ mod tests {
             Err(())
         }
 
-        fn send_raw_transaction(&self, _signed: &[u8]) -> Result<[u8; 32], ()> {
-            Err(())
+        fn send_raw_transaction(
+            &self,
+            signed: &[u8],
+            permit: &SessionPermit<'_>,
+        ) -> Result<[u8; 32], SendRawError> {
+            if !permit.is_current() {
+                return Err(SendRawError::SessionRevoked);
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| SendRawError::BroadcastUnknown)?;
+            state.sent.push(signed.to_vec());
+            if state.send_fails {
+                Err(SendRawError::BroadcastUnknown)
+            } else {
+                Ok(keccak32(signed))
+            }
         }
 
         fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
@@ -3621,6 +4416,47 @@ mod tests {
 
         fn erc20_balance_of(&self, contract: [u8; 20], _owner: [u8; 20]) -> Result<Vec<u8>, ()> {
             self.response(contract, |fixture| fixture.balance.as_slice())
+        }
+
+        fn erc20_transfer_preflight(
+            &self,
+            sender: [u8; 20],
+            contract: [u8; 20],
+            recipient: [u8; 20],
+            amount: TokenAmount,
+            nonce: Word,
+            gas_limit: Word,
+            priority_fee: Word,
+            maximum_fee: Word,
+        ) -> Result<Vec<u8>, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.preflight_calls += 1;
+            state.preflight_fields.push(TokenPreflightObservation {
+                sender,
+                contract,
+                recipient,
+                amount,
+                nonce,
+                gas_limit,
+                priority_fee,
+                maximum_fee,
+            });
+            Ok(state.transfer_result.clone())
+        }
+
+        fn estimate_erc20_transfer_gas(
+            &self,
+            _sender: [u8; 20],
+            _contract: [u8; 20],
+            _recipient: [u8; 20],
+            _amount: TokenAmount,
+            _nonce: Word,
+            _priority_fee: Word,
+            _maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.estimate_calls += 1;
+            Ok(state.token_estimated_gas)
         }
     }
 
@@ -3829,8 +4665,18 @@ mod tests {
             Ok(gas)
         }
 
-        fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
-            let mut state = self.state.lock().map_err(|_| ())?;
+        fn send_raw_transaction(
+            &self,
+            signed: &[u8],
+            permit: &SessionPermit<'_>,
+        ) -> Result<[u8; 32], SendRawError> {
+            if !permit.is_current() {
+                return Err(SendRawError::SessionRevoked);
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| SendRawError::BroadcastUnknown)?;
             state.sent.push(signed.to_vec());
             if let Some(path) = state.pending_path_to_require.clone() {
                 state.send_observed_pending = path.is_file();
@@ -3840,7 +4686,7 @@ mod tests {
                 });
             }
             if state.send_fails {
-                Err(())
+                Err(SendRawError::BroadcastUnknown)
             } else {
                 Ok(keccak32(signed))
             }
@@ -3900,8 +4746,12 @@ mod tests {
             )
         }
 
-        fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
-            self.native.send_raw_transaction(signed)
+        fn send_raw_transaction(
+            &self,
+            signed: &[u8],
+            permit: &SessionPermit<'_>,
+        ) -> Result<[u8; 32], SendRawError> {
+            self.native.send_raw_transaction(signed, permit)
         }
 
         fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
@@ -3968,6 +4818,13 @@ mod tests {
             )
             .expect("prepare mutable backend transfer");
         (backend, rpc, clock)
+    }
+
+    fn native_prepared(backend: &DemoBackend) -> &PreparedNativeTransfer {
+        match backend.prepared.as_ref().expect("prepared transfer") {
+            PreparedTransfer::Native(prepared) => prepared,
+            PreparedTransfer::SavedErc20(_) => panic!("test expected native prepared transfer"),
+        }
     }
 
     fn temporary_vault() -> PathBuf {
@@ -4066,6 +4923,36 @@ mod tests {
                 sensitive(TEST_PASSWORD),
             )
             .expect("create v2 token test wallet");
+        backend
+    }
+
+    fn saved_token_backend(rpc: TokenRpc, contract: [u8; 20], key_marker: u8) -> DemoBackend {
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = token_backend(rpc, key_marker);
+        backend
+            .add_custom_token_inner(&checksum_address(contract))
+            .expect("persist saved token fixture");
+        backend
+    }
+
+    fn saved_token_backend_with_clock(
+        rpc: TokenRpc,
+        contract: [u8; 20],
+        key_marker: u8,
+        clock: TestClock,
+    ) -> DemoBackend {
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = DemoBackend::with_rpc_and_clock(temporary_vault(), rpc, clock);
+        backend
+            .import_private_key(
+                sensitive(&fixed_hex(&[key_marker; KEY_BYTES])),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("create v2 timed token test wallet");
+        backend
+            .add_custom_token_inner(&checksum_address(contract))
+            .expect("persist timed saved token fixture");
         backend
     }
 
@@ -4875,7 +5762,7 @@ mod tests {
         );
         assert!(!backend.pending_broadcast_exists());
 
-        let prepared = backend.prepared.as_ref().expect("prepared object");
+        let prepared = native_prepared(&backend);
         let expected = sign_native_type_two(
             backend
                 .unlocked
@@ -4948,13 +5835,7 @@ mod tests {
         assert_eq!(faster_preview.max_network_fee_eth, "0.000063");
         assert_eq!(faster_preview.estimated_total_eth, "0.2500525");
         assert_eq!(faster_preview.max_total_eth, "0.250063");
-        assert!(
-            faster
-                .prepared
-                .as_ref()
-                .map(|prepared| prepared.priority_fee)
-                == Some(Word::from_u64(2_000_000_000))
-        );
+        assert!(native_prepared(&faster).priority_fee == Word::from_u64(2_000_000_000));
         remove_test_backend_files(&faster);
 
         let custom_rpc = MutableRpc::new();
@@ -5852,7 +6733,7 @@ mod tests {
         ));
         fs::remove_file(&backend.pending_path).expect("remove pending fixture");
 
-        backend.prepared = Some(PreparedTransfer {
+        backend.prepared = Some(PreparedTransfer::Native(PreparedNativeTransfer {
             sender: [1; 20],
             recipient: [2; 20],
             value: Word::ZERO,
@@ -5866,7 +6747,7 @@ mod tests {
             estimated_spend: Word::ZERO,
             maximum_spend: Word::ZERO,
             quote_expires_at: Instant::now(),
-        });
+        }));
         assert!(matches!(
             backend.add_custom_token_inner(&checksum_address(contract)),
             Err(BackendError::TokenMutationBlocked)
@@ -5884,6 +6765,436 @@ mod tests {
     }
 
     #[test]
+    fn saved_erc20_prepare_preview_confirm_freezes_exact_fields() {
+        let rpc = TokenRpc::new();
+        let contract = [0x62; 20];
+        let recipient = [0x63; 20];
+        let mut backend = saved_token_backend(rpc.clone(), contract, 9);
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let preview = backend
+            .prepare_saved_erc20_transfer_inner(
+                &checksum_address(contract),
+                &checksum_address(recipient),
+                "1.25",
+                FeeSelection::Recommended,
+                &permit,
+            )
+            .expect("prepare authenticated saved token transfer");
+        assert!(preview.contract_address == checksum_address(contract));
+        assert!(preview.recipient == checksum_address(recipient));
+        assert!(preview.symbol.as_deref() == Some("TOK"));
+        assert_eq!(preview.decimals, 2);
+        assert_eq!(preview.amount, "1.25");
+        assert_eq!(preview.estimated_gas, "50000");
+        assert_eq!(preview.gas_limit, "60000");
+
+        let prepared = match backend.prepared.as_ref().expect("token prepared") {
+            PreparedTransfer::SavedErc20(prepared) => prepared,
+            PreparedTransfer::Native(_) => panic!("expected saved token transfer"),
+        };
+        let expected_raw = {
+            let UnlockedWallet::V2(opened) = backend.unlocked.as_ref().expect("v2 unlocked") else {
+                panic!("token transfer requires v2")
+            };
+            let account_material = opened
+                .wallet()
+                .account_private_key(0)
+                .expect("account zero signing material");
+            sign_erc20_type_two(
+                account_material.as_bytes(),
+                prepared.sender,
+                prepared.contract,
+                prepared.recipient,
+                prepared.amount,
+                prepared.nonce,
+                prepared.gas_limit,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .expect("deterministic token signing")
+            .bytes
+            .to_vec()
+        };
+        {
+            let state = rpc.state.lock().expect("token RPC observation lock");
+            let observed = state
+                .preflight_fields
+                .last()
+                .copied()
+                .expect("exact preflight observation");
+            assert!(observed.sender == prepared.sender);
+            assert!(observed.contract == contract);
+            assert!(observed.recipient == recipient);
+            assert!(observed.amount == prepared.amount);
+            assert!(observed.nonce == prepared.nonce);
+            assert!(observed.gas_limit == Word::from_u64(60_000));
+            assert!(observed.priority_fee == prepared.priority_fee);
+            assert!(observed.maximum_fee == prepared.maximum_fee);
+        }
+
+        let receipt = backend
+            .confirm_prepared_with_permit(&permit)
+            .expect("confirm exact token transfer");
+        let state = rpc.state.lock().expect("confirmed token RPC lock");
+        assert_eq!(state.preflight_calls, 2);
+        assert_eq!(state.estimate_calls, 2);
+        assert_eq!(state.sent.len(), 1);
+        assert!(state.sent[0] == expected_raw);
+        assert!(receipt.transaction_hash == fixed_hex(&keccak32(&expected_raw)));
+        drop(state);
+        assert!(!backend.pending_broadcast_exists());
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn exact_token_preflight_false_or_malformed_never_reaches_signing() {
+        for rejected_result in [abi_u8(0), vec![1_u8]] {
+            let rpc = TokenRpc::new();
+            let contract = [0x64; 20];
+            let mut backend = saved_token_backend(rpc.clone(), contract, 10);
+            rpc.update(|state| state.transfer_result = rejected_result);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+            assert!(matches!(
+                backend.prepare_saved_erc20_transfer_inner(
+                    &checksum_address(contract),
+                    "0x6565656565656565656565656565656565656565",
+                    "1",
+                    FeeSelection::Recommended,
+                    &permit,
+                ),
+                Err(BackendError::TokenTransferRejected)
+            ));
+            assert!(backend.prepared.is_none());
+            assert_eq!(backend.sign_attempts, 0);
+            let state = rpc.state.lock().expect("rejected token RPC lock");
+            assert_eq!(state.estimate_calls, 1);
+            assert_eq!(state.preflight_calls, 1);
+            assert!(state.sent.is_empty());
+            drop(state);
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn saved_erc20_confirm_consumes_preview_on_authenticated_sidecar_or_identity_drift() {
+        for drift in 0..3 {
+            let rpc = TokenRpc::new();
+            let contract = [0x68 + drift; 20];
+            let recipient = [0x70; 20];
+            let mut backend = saved_token_backend(rpc.clone(), contract, 20 + drift);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+            backend
+                .prepare_saved_erc20_transfer_inner(
+                    &checksum_address(contract),
+                    &checksum_address(recipient),
+                    "1",
+                    FeeSelection::Recommended,
+                    &permit,
+                )
+                .expect("prepare drift fixture");
+
+            let expected = match drift {
+                0 => {
+                    let context = backend.token_context().expect("token context");
+                    let mut replacement = backend
+                        .load_token_store(&context)
+                        .expect("load sidecar baseline")
+                        .store;
+                    replacement
+                        .add(
+                            TokenEntry::new([0x79; 20], 2, Some("TOK".to_owned()), [0x55; 32])
+                                .expect("valid competing entry"),
+                        )
+                        .expect("advance authenticated sidecar generation");
+                    let sealed = replacement
+                        .seal(&context.key)
+                        .expect("seal authenticated replacement");
+                    write_atomic_token_store(&backend.token_store_path, sealed.as_slice())
+                        .expect("install authenticated replacement");
+                    BackendError::TokenStoreChanged
+                }
+                1 => {
+                    rpc.update(|state| {
+                        state
+                            .contracts
+                            .get_mut(&contract)
+                            .expect("code drift fixture")
+                            .code
+                            .push(0x01);
+                    });
+                    BackendError::TokenCodeChanged
+                }
+                2 => {
+                    rpc.update(|state| {
+                        state
+                            .contracts
+                            .get_mut(&contract)
+                            .expect("metadata drift fixture")
+                            .decimals = abi_u8(3);
+                    });
+                    BackendError::TokenMetadataChanged
+                }
+                _ => unreachable!(),
+            };
+
+            let result = backend.confirm_prepared_with_permit(&permit);
+            assert!(matches!(result, Err(error) if error == expected));
+            assert!(
+                backend.prepared.is_none(),
+                "confirm must consume every preview"
+            );
+            assert_eq!(backend.sign_attempts, 0);
+            assert!(!backend.pending_broadcast_exists());
+            assert!(rpc.state.lock().expect("drift RPC lock").sent.is_empty());
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn saved_erc20_confirm_rejects_balance_nonce_fee_estimate_and_inclusive_ttl_drift() {
+        for drift in 0..6 {
+            let rpc = TokenRpc::new();
+            let contract = [0x72 + drift; 20];
+            let recipient = [0x78; 20];
+            let clock = TestClock::new(Instant::now());
+            let mut backend =
+                saved_token_backend_with_clock(rpc.clone(), contract, 30 + drift, clock.clone());
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+            backend
+                .prepare_saved_erc20_transfer_inner(
+                    &checksum_address(contract),
+                    &checksum_address(recipient),
+                    "1",
+                    FeeSelection::Recommended,
+                    &permit,
+                )
+                .expect("prepare dynamic drift fixture");
+
+            let expected = match drift {
+                0 => {
+                    rpc.update(|state| {
+                        state
+                            .contracts
+                            .get_mut(&contract)
+                            .expect("token balance fixture")
+                            .balance = abi_u8(0);
+                    });
+                    BackendError::InsufficientTokenBalance
+                }
+                1 => {
+                    rpc.update(|state| state.native_balance = Word::ZERO);
+                    BackendError::InsufficientBalance
+                }
+                2 => {
+                    rpc.update(|state| state.nonce = Word::from_u64(8));
+                    BackendError::AccountChanged
+                }
+                3 => {
+                    rpc.update(|state| state.token_estimated_gas = Word::from_u64(50_001));
+                    BackendError::TokenGasEstimateInvalid
+                }
+                4 => {
+                    rpc.update(|state| state.base_fee = Word::from_u64(1_500_000_000));
+                    BackendError::QuoteChanged
+                }
+                5 => {
+                    clock.advance(FEE_QUOTE_TTL);
+                    BackendError::QuoteExpired
+                }
+                _ => unreachable!(),
+            };
+
+            let result = backend.confirm_prepared_with_permit(&permit);
+            assert!(matches!(result, Err(error) if error == expected));
+            assert!(
+                backend.prepared.is_none(),
+                "confirm must consume every preview"
+            );
+            assert_eq!(backend.sign_attempts, 0);
+            assert!(!backend.pending_broadcast_exists());
+            assert!(
+                rpc.state
+                    .lock()
+                    .expect("dynamic drift RPC lock")
+                    .sent
+                    .is_empty()
+            );
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn saved_erc20_gas_estimate_bounds_and_u64_fit_are_exact() {
+        for (estimate, expected_limit) in [
+            (Word::from_u64(20_999), None),
+            (Word::from_u64(21_000), Some("25200")),
+            (Word::from_u64(416_666), Some("500000")),
+            (Word::from_u64(416_667), None),
+            (Word::from_be_bytes([0xff; 32]), None),
+        ] {
+            let rpc = TokenRpc::new();
+            let contract = [0x7a; 20];
+            let mut backend = saved_token_backend(rpc.clone(), contract, 40);
+            rpc.update(|state| state.token_estimated_gas = estimate);
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::current_for_test(0, &active_epoch);
+            let result = backend.prepare_saved_erc20_transfer_inner(
+                &checksum_address(contract),
+                &checksum_address([0x7b; 20]),
+                "1",
+                FeeSelection::Recommended,
+                &permit,
+            );
+            match expected_limit {
+                Some(expected_limit) => {
+                    let preview = result.expect("accepted bounded token gas estimate");
+                    assert_eq!(preview.gas_limit, expected_limit);
+                    backend.cancel_prepared_inner();
+                }
+                None => {
+                    match result {
+                        Err(BackendError::TokenGasEstimateInvalid) => {}
+                        Err(error) => panic!("unexpected gas-boundary error: {error:?}"),
+                        Ok(_) => panic!("out-of-policy gas estimate was accepted"),
+                    }
+                    assert!(backend.prepared.is_none());
+                }
+            }
+            assert_eq!(backend.sign_attempts, 0);
+            assert!(
+                rpc.state
+                    .lock()
+                    .expect("gas boundary RPC lock")
+                    .sent
+                    .is_empty()
+            );
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn saved_erc20_confirm_permit_checkpoints_bound_sign_write_send_and_delete() {
+        // Critical confirm checks: 19 is post-exact-preflight; 31 is the final
+        // pre-sign check; 32 is post-sign/pre-write; 33 is post-write; 34 is
+        // the guarded RPC post-reverify/pre-transport check; and 35 is
+        // post-send/pre-delete. Every error consumes the prepared preview.
+        for (revoke_on_check, expected_signs, expected_pending, expected_sends) in [
+            (19, 0, false, 0),
+            (31, 0, false, 0),
+            (32, 1, false, 0),
+            (33, 1, true, 0),
+            (34, 1, true, 0),
+            (35, 1, true, 1),
+        ] {
+            let rpc = TokenRpc::new();
+            let contract = [0x7c; 20];
+            let mut backend = saved_token_backend(rpc.clone(), contract, 50);
+            let prepare_epoch = std::sync::atomic::AtomicU64::new(0);
+            let prepare_permit = SessionPermit::current_for_test(0, &prepare_epoch);
+            backend
+                .prepare_saved_erc20_transfer_inner(
+                    &checksum_address(contract),
+                    &checksum_address([0x7d; 20]),
+                    "1",
+                    FeeSelection::Recommended,
+                    &prepare_permit,
+                )
+                .expect("prepare permit-checkpoint token transfer");
+            let confirm_epoch = std::sync::atomic::AtomicU64::new(0);
+            let confirm_permit = SessionPermit::revoke_on_check(0, &confirm_epoch, revoke_on_check);
+
+            assert!(matches!(
+                backend.confirm_prepared_with_permit(&confirm_permit),
+                Err(BackendError::Locked)
+            ));
+            assert!(backend.prepared.is_none());
+            assert_eq!(
+                backend.sign_attempts, expected_signs,
+                "sign count at permit check {revoke_on_check}"
+            );
+            assert_eq!(
+                backend.pending_broadcast_exists(),
+                expected_pending,
+                "pending state at permit check {revoke_on_check}"
+            );
+            assert_eq!(
+                rpc.state.lock().expect("token permit RPC lock").sent.len(),
+                expected_sends,
+                "send count at permit check {revoke_on_check}"
+            );
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn ambiguous_erc20_broadcast_retries_exact_pending_bytes_without_resigning() {
+        let rpc = TokenRpc::new();
+        let contract = [0x66; 20];
+        let mut backend = saved_token_backend(rpc.clone(), contract, 11);
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        backend
+            .prepare_saved_erc20_transfer_inner(
+                &checksum_address(contract),
+                "0x6767676767676767676767676767676767676767",
+                "1",
+                FeeSelection::Recommended,
+                &permit,
+            )
+            .expect("prepare ambiguous token transfer");
+        rpc.update(|state| state.send_fails = true);
+        assert!(matches!(
+            backend.confirm_prepared_with_permit(&permit),
+            Err(BackendError::BroadcastUnknown)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        assert_eq!(backend.sign_attempts, 1);
+        let (first_raw, query_counts) = {
+            let state = rpc.state.lock().expect("ambiguous token RPC lock");
+            (
+                state.sent[0].clone(),
+                (
+                    state.query_calls,
+                    state.preflight_calls,
+                    state.estimate_calls,
+                    state.nonce_calls,
+                    state.quote_calls,
+                    state.base_fee_calls,
+                    state.native_balance_calls,
+                ),
+            )
+        };
+        rpc.update(|state| state.send_fails = false);
+        let receipt = backend
+            .retry_pending_inner()
+            .expect("retry exact token pending bytes");
+        assert_eq!(backend.sign_attempts, 1);
+        let state = rpc.state.lock().expect("retried token RPC lock");
+        assert_eq!(state.sent.len(), 2);
+        assert!(state.sent[0] == first_raw && state.sent[1] == first_raw);
+        assert!(
+            query_counts
+                == (
+                    state.query_calls,
+                    state.preflight_calls,
+                    state.estimate_calls,
+                    state.nonce_calls,
+                    state.quote_calls,
+                    state.base_fee_calls,
+                    state.native_balance_calls,
+                )
+        );
+        assert!(receipt.transaction_hash == fixed_hex(&keccak32(&first_raw)));
+        drop(state);
+        assert!(!backend.pending_broadcast_exists());
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
     fn token_errors_are_category_only_and_cross_the_ui_allowlist() {
         let errors = [
             BackendError::TokenRequiresV2,
@@ -5893,6 +7204,9 @@ mod tests {
             BackendError::TokenMetadataInvalid,
             BackendError::TokenCodeChanged,
             BackendError::TokenMetadataChanged,
+            BackendError::TokenTransferRejected,
+            BackendError::TokenGasEstimateInvalid,
+            BackendError::InsufficientTokenBalance,
             BackendError::TokenDuplicate,
             BackendError::TokenCapacity,
             BackendError::TokenNotFound,
@@ -5949,6 +7263,9 @@ mod tests {
             BackendError::TokenMetadataInvalid,
             BackendError::TokenCodeChanged,
             BackendError::TokenMetadataChanged,
+            BackendError::TokenTransferRejected,
+            BackendError::TokenGasEstimateInvalid,
+            BackendError::InsufficientTokenBalance,
             BackendError::TokenDuplicate,
             BackendError::TokenCapacity,
             BackendError::TokenNotFound,
@@ -6172,7 +7489,7 @@ mod tests {
     #[test]
     fn confirm_never_reprices_and_persists_before_mock_broadcast() {
         let (mut backend, rpc, _) = prepared_mutable_backend();
-        let prepared = backend.prepared.as_ref().expect("prepared transfer");
+        let prepared = native_prepared(&backend);
         let expected = sign_native_type_two(
             backend
                 .unlocked
@@ -6213,15 +7530,16 @@ mod tests {
 
     #[test]
     fn confirm_revocation_checkpoints_bound_signing_pending_and_broadcast() {
-        // Checks are: entry; after verify, nonce, base-fee, balance and
-        // estimate RPCs; pre-sign; pre-pending-write;
-        // post-pending-write/pre-send; and post-send/pre-delete.
+        // Checks are: entry; after pending-file metadata; after verify, nonce, base-fee, balance and
+        // estimate RPCs; pre-sign; pre-pending-write; post-pending-write;
+        // guarded RPC post-reverify/pre-transport; and post-send/pre-delete.
         for (revoke_on_check, expected_signs, expected_pending, expected_sends) in [
-            (2, 0, false, 0),
-            (7, 0, false, 0),
-            (8, 1, false, 0),
-            (9, 1, true, 0),
-            (10, 1, true, 1),
+            (3, 0, false, 0),
+            (8, 0, false, 0),
+            (9, 1, false, 0),
+            (10, 1, true, 0),
+            (11, 1, true, 0),
+            (12, 1, true, 1),
         ] {
             let (mut backend, rpc, _) = prepared_mutable_backend();
             let active_epoch = std::sync::atomic::AtomicU64::new(0);
@@ -6235,7 +7553,7 @@ mod tests {
             assert_eq!(backend.pending_broadcast_exists(), expected_pending);
             let state = rpc.state.lock().expect("revoked confirm RPC lock");
             assert_eq!(state.sent.len(), expected_sends);
-            if revoke_on_check == 2 {
+            if revoke_on_check == 3 {
                 assert_eq!(state.verify_calls, 2);
                 assert_eq!(state.nonce_calls, 1);
                 assert_eq!(state.base_fee_calls, 0);
@@ -6261,9 +7579,10 @@ mod tests {
             state.sent.clear();
         });
 
-        // Retry checks are: entry, post-read, post-verify/pre-send, and
-        // post-send/pre-delete. Revocation at the pre-send boundary emits no
-        // new broadcast and retains the exact signed record.
+        // Retry checks are: entry, post-read, post-verify/pre-send, guarded RPC
+        // post-reverify/pre-transport, and post-send/pre-delete. Revocation at
+        // either pre-send boundary emits no new broadcast and retains the exact
+        // signed record.
         let pre_send_epoch = std::sync::atomic::AtomicU64::new(0);
         let pre_send_permit = SessionPermit::revoke_on_check(0, &pre_send_epoch, 3);
         assert!(matches!(
@@ -6279,11 +7598,26 @@ mod tests {
                 .is_empty()
         );
 
+        let guarded_send_epoch = std::sync::atomic::AtomicU64::new(0);
+        let guarded_send_permit = SessionPermit::revoke_on_check(0, &guarded_send_epoch, 4);
+        assert!(matches!(
+            backend.retry_pending_with_permit(&guarded_send_permit),
+            Err(BackendError::Locked)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        assert!(
+            rpc.state
+                .lock()
+                .expect("guarded-send retry RPC lock")
+                .sent
+                .is_empty()
+        );
+
         // If revoke races with the transport after the final pre-send check,
         // the external send may occur, but the local recovery record must not
         // be deleted even after a matching response.
         let post_send_epoch = std::sync::atomic::AtomicU64::new(0);
-        let post_send_permit = SessionPermit::revoke_on_check(0, &post_send_epoch, 4);
+        let post_send_permit = SessionPermit::revoke_on_check(0, &post_send_epoch, 5);
         assert!(matches!(
             backend.retry_pending_with_permit(&post_send_permit),
             Err(BackendError::Locked)
@@ -6374,6 +7708,159 @@ mod tests {
         if let Some(parent) = vault.parent() {
             let _ = fs::remove_dir(parent);
         }
+    }
+
+    #[test]
+    fn erc20_signer_golden_decodes_exact_type_two_fields() {
+        fn header(input: &[u8]) -> (bool, usize, usize, usize) {
+            let first = input[0];
+            match first {
+                0x00..=0x7f => (false, 0, 1, 1),
+                0x80..=0xb7 => {
+                    let length = usize::from(first - 0x80);
+                    (false, 1, length, 1 + length)
+                }
+                0xb8..=0xbf => {
+                    let length_bytes = usize::from(first - 0xb7);
+                    let length = input[1..=length_bytes]
+                        .iter()
+                        .fold(0_usize, |value, byte| (value << 8) | usize::from(*byte));
+                    (false, 1 + length_bytes, length, 1 + length_bytes + length)
+                }
+                0xc0..=0xf7 => {
+                    let length = usize::from(first - 0xc0);
+                    (true, 1, length, 1 + length)
+                }
+                0xf8..=0xff => {
+                    let length_bytes = usize::from(first - 0xf7);
+                    let length = input[1..=length_bytes]
+                        .iter()
+                        .fold(0_usize, |value, byte| (value << 8) | usize::from(*byte));
+                    (true, 1 + length_bytes, length, 1 + length_bytes + length)
+                }
+            }
+        }
+
+        fn golden_length(short: u8, long: u8, length: usize) -> Vec<u8> {
+            if length <= 55 {
+                return vec![short + u8::try_from(length).expect("short golden RLP length")];
+            }
+            let encoded = length.to_be_bytes();
+            let first = encoded
+                .iter()
+                .position(|byte| *byte != 0)
+                .expect("nonzero golden RLP length");
+            let significant = &encoded[first..];
+            let mut output =
+                vec![long + u8::try_from(significant.len()).expect("golden RLP length-of-length")];
+            output.extend_from_slice(significant);
+            output
+        }
+
+        fn golden_bytes(bytes: &[u8]) -> Vec<u8> {
+            if bytes.len() == 1 && bytes[0] < 0x80 {
+                return bytes.to_vec();
+            }
+            let mut output = golden_length(0x80, 0xb7, bytes.len());
+            output.extend_from_slice(bytes);
+            output
+        }
+
+        fn golden_list(items: &[Vec<u8>]) -> Vec<u8> {
+            let length = items.iter().map(Vec::len).sum();
+            let mut output = golden_length(0xc0, 0xf7, length);
+            for item in items {
+                output.extend_from_slice(item);
+            }
+            output
+        }
+
+        let signing_material = [0x12; 32];
+        let sender = address_from_private_key(&signing_material).expect("derive golden sender");
+        let contract = [0x34; 20];
+        let recipient = [0x56; 20];
+        let mut amount_bytes = [0_u8; 32];
+        amount_bytes[30..].copy_from_slice(&0x1234_u16.to_be_bytes());
+        let amount = TokenAmount::from_be_bytes(amount_bytes);
+        let signed = sign_erc20_type_two(
+            &signing_material,
+            sender,
+            contract,
+            recipient,
+            amount,
+            Word::from_u64(7),
+            Word::from_u64(60_000),
+            Word::from_u64(1_000_000_000),
+            Word::from_u64(2_000_000_000),
+        )
+        .expect("sign exact ERC20 golden transaction");
+        assert_eq!(signed.bytes.first(), Some(&2));
+        let encoded_list = &signed.bytes[1..];
+        let (is_list, payload_start, payload_length, total) = header(encoded_list);
+        assert!(is_list && total == encoded_list.len());
+        let payload = &encoded_list[payload_start..payload_start + payload_length];
+        let mut fields = Vec::new();
+        let mut offset = 0;
+        while offset < payload.len() {
+            let (field_is_list, start, length, consumed) = header(&payload[offset..]);
+            fields.push((
+                field_is_list,
+                payload[offset + start..offset + start + length].to_vec(),
+            ));
+            offset += consumed;
+        }
+        assert_eq!(fields.len(), 12);
+        assert!(fields[0].1 == vec![0xaa, 0x36, 0xa7]);
+        assert!(fields[1].1 == vec![7]);
+        assert!(fields[2].1 == vec![0x3b, 0x9a, 0xca, 0x00]);
+        assert!(fields[3].1 == vec![0x77, 0x35, 0x94, 0x00]);
+        assert!(fields[4].1 == vec![0xea, 0x60]);
+        assert!(fields[5].1 == contract);
+        assert!(!fields[6].0 && fields[6].1.is_empty());
+        let mut expected_calldata = [0_u8; 68];
+        expected_calldata[..4].copy_from_slice(&[0xa9, 0x05, 0x9c, 0xbb]);
+        expected_calldata[16..36].copy_from_slice(&recipient);
+        expected_calldata[36..].copy_from_slice(&amount_bytes);
+        assert!(fields[7].1 == expected_calldata);
+        assert!(fields[7].1.len() == 68);
+        assert!(fields[8].0 && fields[8].1.is_empty());
+        assert!(!fields[9].0 && fields[9].1.len() <= 1);
+        assert!(!fields[10].0 && !fields[10].1.is_empty() && fields[10].1.len() <= 32);
+        assert!(!fields[11].0 && !fields[11].1.is_empty() && fields[11].1.len() <= 32);
+
+        // Rebuild the unsigned type-2 preimage and recover the sender only
+        // from independently decoded fields and a separate local RLP encoder.
+        let unsigned_fields = fields[..9]
+            .iter()
+            .map(|(is_list, bytes)| {
+                if *is_list {
+                    assert!(bytes.is_empty(), "only the empty access list is accepted");
+                    golden_list(&[])
+                } else {
+                    golden_bytes(bytes)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut unsigned = vec![2_u8];
+        unsigned.extend_from_slice(&golden_list(&unsigned_fields));
+        let decoded_prehash: [u8; 32] = Keccak256::digest(&unsigned).into();
+        let y_parity = fields[9].1.first().copied().unwrap_or(0);
+        assert!(y_parity <= 1);
+        let mut decoded_signature = [0_u8; 64];
+        decoded_signature[32 - fields[10].1.len()..32].copy_from_slice(&fields[10].1);
+        decoded_signature[64 - fields[11].1.len()..].copy_from_slice(&fields[11].1);
+        let recoverable = RecoverableSignature::from_compact(
+            &decoded_signature,
+            RecoveryId::try_from(i32::from(y_parity)).expect("decoded recovery id"),
+        )
+        .expect("decoded compact signature");
+        let recovered = Secp256k1::new()
+            .recover_ecdsa(Message::from_digest(decoded_prehash), &recoverable)
+            .expect("recover decoded golden sender");
+        let serialized = recovered.serialize_uncompressed();
+        let recovered_hash = Keccak256::digest(&serialized[1..]);
+        assert_eq!(&recovered_hash[12..], sender);
+        assert!(signed.transaction_hash == keccak32(signed.bytes.as_slice()));
     }
 
     #[test]
