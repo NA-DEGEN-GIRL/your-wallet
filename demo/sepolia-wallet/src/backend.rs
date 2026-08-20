@@ -6,7 +6,7 @@
 //! and exact `transfer(address,uint256)` calls for authenticated saved ERC-20s.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,10 +28,11 @@ use sha3::{Digest as _, Keccak256};
 use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FlushFileBuffers, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    MoveFileExW, OPEN_EXISTING,
+    CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileDispositionInfo, FlushFileBuffers, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW, OPEN_EXISTING, SetFileInformationByHandle,
 };
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -43,8 +44,9 @@ use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
 use crate::ui::{
     CustomTokenSnapshot, CustomTokenState, Erc20TransferPreview, FeeSelection,
     GeneratedBackupChallenge, GeneratedBackupConfirmation, GeneratedBackupReveal, NewMnemonicWords,
-    SecretReveal, SecretRevealKind, SendReceipt, SensitiveText, SessionPermit, TransferPreview,
-    WalletBackend, WalletKind, WalletSnapshot,
+    PendingBroadcastPreview, SecretReveal, SecretRevealKind, SendReceipt, SensitiveText,
+    SessionPermit, TransferPreview, WalletAccountSnapshot, WalletBackend, WalletKind,
+    WalletSnapshot,
 };
 use crate::vault_v2::{
     OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
@@ -109,9 +111,11 @@ pub struct DemoBackend {
     token_store_path: PathBuf,
     rpc: Box<dyn RpcAccess>,
     unlocked: Option<UnlockedWallet>,
+    selected_account_index: u8,
     pending_generation: Option<PendingGeneratedWallet>,
-    last_balance: Option<Word>,
+    last_balance: Option<AccountBalance>,
     prepared: Option<PreparedTransfer>,
+    prepared_pending_retry: Option<PreparedPendingRetry>,
     clock: Box<dyn MonotonicClock>,
     #[cfg(test)]
     sign_attempts: usize,
@@ -123,6 +127,15 @@ enum UnlockedWallet {
         address: [u8; 20],
     },
     V2(OpenedVaultV2),
+}
+
+/// One cached public balance bound to the exact selected account identity.
+/// Keeping the index and address prevents a successful account switch from
+/// rendering a value observed for the prior account.
+struct AccountBalance {
+    account_index: u8,
+    address: [u8; 20],
+    value: Word,
 }
 
 struct PendingGeneratedWallet {
@@ -147,6 +160,42 @@ impl UnlockedWallet {
         }
     }
 
+    fn account_address(&self, index: u8) -> Result<[u8; 20], BackendError> {
+        let (_, _, account_count) = self.validated_metadata()?;
+        if index >= account_count {
+            return Err(BackendError::UnsupportedAccount);
+        }
+        match self {
+            Self::LegacyV1 { address, .. } if index == 0 => Ok(*address),
+            Self::LegacyV1 { .. } => Err(BackendError::UnsupportedAccount),
+            Self::V2(opened) => {
+                let account = opened
+                    .wallet()
+                    .account(usize::from(index))
+                    .ok_or(BackendError::UnsupportedAccount)?;
+                let expected_index = u32::from(index);
+                if account.requested_index() != expected_index
+                    || account.actual_index() != expected_index
+                {
+                    return Err(BackendError::WalletMetadataInvalid);
+                }
+                Ok(*account.address().as_bytes())
+            }
+        }
+    }
+
+    fn account_snapshots(&self) -> Result<Vec<WalletAccountSnapshot>, BackendError> {
+        let (_, _, account_count) = self.validated_metadata()?;
+        let mut accounts = Vec::with_capacity(usize::from(account_count));
+        for index in 0..account_count {
+            accounts.push(WalletAccountSnapshot {
+                index,
+                address: checksum_address(self.account_address(index)?),
+            });
+        }
+        Ok(accounts)
+    }
+
     #[cfg(test)]
     fn legacy_private_key_for_test(&self) -> &[u8; KEY_BYTES] {
         match self {
@@ -165,7 +214,29 @@ enum PreparedTransfer {
     SavedErc20(PreparedErc20Transfer),
 }
 
+/// Exact pending-v1 bytes frozen only after canonical signature recovery and
+/// bounded-wallet attribution. It is move-only, non-Debug, and its byte buffer
+/// is zeroized when a lock, stale authorization, mismatch, or retry drops it.
+struct PreparedPendingRetry {
+    sender_account_index: u8,
+    sender: [u8; 20],
+    transaction_hash: [u8; 32],
+    raw_transaction: Zeroizing<Vec<u8>>,
+    lease: PendingFileLease,
+}
+
+impl PreparedPendingRetry {
+    fn preview(&self) -> PendingBroadcastPreview {
+        PendingBroadcastPreview {
+            sender_account_index: self.sender_account_index,
+            sender_address: checksum_address(self.sender),
+            transaction_hash: fixed_hex(&self.transaction_hash),
+        }
+    }
+}
+
 struct PreparedNativeTransfer {
+    account_index: u8,
     sender: [u8; 20],
     recipient: [u8; 20],
     value: Word,
@@ -184,6 +255,7 @@ struct PreparedNativeTransfer {
 /// Exact saved-token transfer facts frozen after authenticated sidecar and
 /// full pending-chain bookends. This is neither `Clone` nor public.
 struct PreparedErc20Transfer {
+    account_index: u8,
     sender: [u8; 20],
     recipient: [u8; 20],
     contract: [u8; 20],
@@ -221,6 +293,7 @@ struct FrozenFeePlan {
 /// This deliberately has no `Debug` implementation because it carries the
 /// domain-separated sidecar key.
 struct TokenContext {
+    account_index: u8,
     owner: [u8; 20],
     vault_id: [u8; 16],
     key: Zeroizing<[u8; 32]>,
@@ -458,9 +531,11 @@ impl DemoBackend {
             token_store_path,
             rpc: Box::new(LiveRpc(rpc)),
             unlocked: None,
+            selected_account_index: 0,
             pending_generation: None,
             last_balance: None,
             prepared: None,
+            prepared_pending_retry: None,
             clock: Box::new(SystemClock),
             #[cfg(test)]
             sign_attempts: 0,
@@ -479,9 +554,11 @@ impl DemoBackend {
             token_store_path,
             rpc: Box::new(rpc),
             unlocked: None,
+            selected_account_index: 0,
             pending_generation: None,
             last_balance: None,
             prepared: None,
+            prepared_pending_retry: None,
             clock: Box::new(SystemClock),
             sign_attempts: 0,
         }
@@ -518,8 +595,10 @@ impl DemoBackend {
     /// a mutable transfer preview.
     pub fn lock(&mut self) {
         drop(self.unlocked.take());
+        self.selected_account_index = 0;
         drop(self.pending_generation.take());
         self.prepared = None;
+        self.prepared_pending_retry = None;
         self.last_balance = None;
     }
 
@@ -529,8 +608,8 @@ impl DemoBackend {
     pub fn address(&self) -> Option<String> {
         self.unlocked
             .as_ref()
-            .and_then(|wallet| wallet.validated_metadata().ok())
-            .map(|(address, _, _)| checksum_address(address))
+            .and_then(|wallet| wallet.account_address(self.selected_account_index).ok())
+            .map(checksum_address)
     }
 
     /// Retries exactly the previously persisted signed transaction bytes.
@@ -542,18 +621,66 @@ impl DemoBackend {
         self.retry_pending_with_permit(permit).map_err(error_text)
     }
 
+    /// Strictly recover and attribute a durable type-2 sender, then freeze the
+    /// exact bytes for the UI's separate hold-to-retry confirmation.
+    pub fn inspect_pending_broadcast(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<PendingBroadcastPreview, String> {
+        self.prepare_pending_retry(Some(permit)).map_err(error_text)
+    }
+
     fn snapshot(&self) -> Result<WalletSnapshot, BackendError> {
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
-        let (address, wallet_kind, account_count) = wallet.validated_metadata()?;
+        let (_, wallet_kind, _) = wallet.validated_metadata()?;
+        let address = wallet.account_address(self.selected_account_index)?;
+        let accounts = wallet.account_snapshots()?;
         let balance_eth = self
             .last_balance
-            .map_or_else(|| "조회 전".to_owned(), format_ether);
+            .as_ref()
+            .filter(|balance| {
+                balance.account_index == self.selected_account_index && balance.address == address
+            })
+            .map_or_else(
+                || "조회 전".to_owned(),
+                |balance| format_ether(balance.value),
+            );
         Ok(WalletSnapshot {
-            address: checksum_address(address),
+            accounts,
+            selected_account_index: self.selected_account_index,
             balance_eth,
             wallet_kind,
-            account_count,
+            pending_broadcast: self
+                .prepared_pending_retry
+                .as_ref()
+                .map(PreparedPendingRetry::preview),
         })
+    }
+
+    fn selected_account(&self) -> Result<(u8, [u8; 20]), BackendError> {
+        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let address = wallet.account_address(self.selected_account_index)?;
+        Ok((self.selected_account_index, address))
+    }
+
+    fn select_account_inner(&mut self, index: u8) -> Result<WalletSnapshot, BackendError> {
+        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        wallet.account_address(index)?;
+        if index == self.selected_account_index {
+            return self.snapshot();
+        }
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if self.prepared.is_some() {
+            return Err(BackendError::AccountSwitchBlocked);
+        }
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        self.selected_account_index = index;
+        self.last_balance = None;
+        self.snapshot()
     }
 
     #[cfg(test)]
@@ -573,14 +700,21 @@ impl DemoBackend {
             private_key,
             address,
         });
-        self.last_balance = Some(Word::ZERO);
+        self.selected_account_index = 0;
+        self.last_balance = Some(AccountBalance {
+            account_index: 0,
+            address,
+            value: Word::ZERO,
+        });
         self.snapshot()
     }
 
     fn open(&mut self, password: &str) -> Result<WalletSnapshot, BackendError> {
         self.prepared = None;
+        self.prepared_pending_retry = None;
         self.pending_generation = None;
         self.unlocked = None;
+        self.selected_account_index = 0;
         self.last_balance = None;
         match fs::symlink_metadata(&self.vault_v2_path) {
             Ok(metadata) => {
@@ -604,6 +738,13 @@ impl DemoBackend {
                 });
             }
             Err(_) => return Err(BackendError::StorageUnavailable),
+        }
+        if self.pending_broadcast_exists()
+            && let Err(error) = self.prepare_pending_retry(None)
+        {
+            self.unlocked = None;
+            self.prepared_pending_retry = None;
+            return Err(error);
         }
         self.snapshot()
     }
@@ -722,7 +863,12 @@ impl DemoBackend {
         write_new_file(&self.vault_v2_path, sealed.as_bytes())?;
 
         self.unlocked = Some(UnlockedWallet::V2(opened));
-        self.last_balance = Some(Word::ZERO);
+        self.selected_account_index = 0;
+        self.last_balance = Some(AccountBalance {
+            account_index: 0,
+            address: original_metadata.0,
+            value: Word::ZERO,
+        });
         self.snapshot()
     }
 
@@ -833,6 +979,7 @@ impl DemoBackend {
             return Err(BackendError::MigrationCleanup);
         }
         self.unlocked = Some(UnlockedWallet::V2(opened));
+        self.selected_account_index = 0;
         self.last_balance = None;
         self.snapshot()
     }
@@ -862,18 +1009,33 @@ impl DemoBackend {
     ) -> Result<SecretReveal, BackendError> {
         self.prepared = None;
         self.ensure_secret_export_allowed()?;
+        let (selected_index, selected_address) = self.selected_account()?;
         let export = match self.unlocked.as_ref().ok_or(BackendError::Locked)? {
             UnlockedWallet::V2(_) => {
                 let opened = self.reopen_authenticated_v2(password)?;
+                let reopened_account = opened
+                    .wallet()
+                    .account(usize::from(selected_index))
+                    .ok_or(BackendError::UnsupportedAccount)?;
+                let expected_index = u32::from(selected_index);
+                if reopened_account.requested_index() != expected_index
+                    || reopened_account.actual_index() != expected_index
+                    || reopened_account.address().as_bytes() != &selected_address
+                {
+                    return Err(BackendError::WalletChanged);
+                }
                 opened
                     .wallet()
-                    .export_account_private_key(0)
+                    .export_account_private_key(u32::from(selected_index))
                     .map_err(map_secret_error)?
             }
             UnlockedWallet::LegacyV1 {
                 private_key,
                 address,
             } => {
+                if selected_index != 0 || selected_address != *address {
+                    return Err(BackendError::UnsupportedAccount);
+                }
                 let password = take_sensitive_zeroizing(password);
                 validate_password(password.as_str())?;
                 let bytes = read_vault(&self.vault_path)?;
@@ -892,7 +1054,7 @@ impl DemoBackend {
             }
         };
         self.ensure_secret_export_allowed()?;
-        secret_reveal(export)
+        account_private_key_reveal(export, selected_index, selected_address)
     }
 
     fn persist_new_v2(
@@ -902,7 +1064,7 @@ impl DemoBackend {
         origin: VaultOrigin,
     ) -> Result<WalletSnapshot, BackendError> {
         self.ensure_management_mutation_allowed()?;
-        validated_wallet_metadata(&wallet)?;
+        let (account_zero, _, _) = validated_wallet_metadata(&wallet)?;
         let metadata = confirmed_metadata(origin)?;
         let sealed = seal_vault_v2(&wallet, &password, metadata).map_err(map_vault_error)?;
         let opened = open_vault_v2(sealed.as_bytes(), &password).map_err(map_vault_error)?;
@@ -910,7 +1072,12 @@ impl DemoBackend {
         self.ensure_management_mutation_allowed()?;
         write_new_file(&self.vault_v2_path, sealed.as_bytes())?;
         self.unlocked = Some(UnlockedWallet::V2(opened));
-        self.last_balance = Some(Word::ZERO);
+        self.selected_account_index = 0;
+        self.last_balance = Some(AccountBalance {
+            account_index: 0,
+            address: account_zero,
+            value: Word::ZERO,
+        });
         self.snapshot()
     }
 
@@ -958,11 +1125,7 @@ impl DemoBackend {
 
     fn refresh_snapshot(&mut self) -> Result<WalletSnapshot, BackendError> {
         self.prepared = None;
-        let (address, _, _) = self
-            .unlocked
-            .as_ref()
-            .ok_or(BackendError::Locked)?
-            .validated_metadata()?;
+        let (account_index, address) = self.selected_account()?;
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
@@ -970,7 +1133,11 @@ impl DemoBackend {
             .rpc
             .balance(address)
             .map_err(|()| BackendError::BalanceUnavailable)?;
-        self.last_balance = Some(balance);
+        self.last_balance = Some(AccountBalance {
+            account_index,
+            address,
+            value: balance,
+        });
         self.snapshot()
     }
 
@@ -979,9 +1146,18 @@ impl DemoBackend {
         let UnlockedWallet::V2(opened) = wallet else {
             return Err(BackendError::TokenRequiresV2);
         };
-        let (owner, _, _) = validated_wallet_metadata(opened.wallet())?;
+        validated_wallet_metadata(opened.wallet())?;
+        let owner = opened
+            .wallet()
+            .account(usize::from(self.selected_account_index))
+            .ok_or(BackendError::UnsupportedAccount)?;
+        let expected_index = u32::from(self.selected_account_index);
+        if owner.requested_index() != expected_index || owner.actual_index() != expected_index {
+            return Err(BackendError::WalletMetadataInvalid);
+        }
         Ok(TokenContext {
-            owner,
+            account_index: self.selected_account_index,
+            owner: *owner.address().as_bytes(),
             vault_id: *opened.vault_id(),
             key: opened.derive_token_store_key(),
         })
@@ -1324,11 +1500,11 @@ impl DemoBackend {
         // A second preparation invalidates the first before any fallible work.
         // Failed re-preparation therefore cannot leave a stale confirmation.
         self.prepared = None;
-        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        self.unlocked.as_ref().ok_or(BackendError::Locked)?;
         if self.pending_broadcast_exists() {
             return Err(BackendError::PendingExists);
         }
-        let (sender, _, _) = wallet.validated_metadata()?;
+        let (account_index, sender) = self.selected_account()?;
         let recipient = parse_address(recipient)?;
         let value = parse_ether(amount_eth)?;
         if value.is_zero() {
@@ -1398,6 +1574,8 @@ impl DemoBackend {
             conservative_remaining_quote_seconds(self.clock.as_ref(), quote_expires_at)?;
 
         let preview = TransferPreview {
+            sender_account_index: account_index,
+            sender_address: checksum_address(sender),
             recipient: checksum_address(recipient),
             amount_eth: format_ether(value),
             nonce: decimal_string(nonce),
@@ -1413,6 +1591,7 @@ impl DemoBackend {
             quote_valid_for_seconds: remaining_quote_seconds.to_string(),
         };
         self.prepared = Some(PreparedTransfer::Native(PreparedNativeTransfer {
+            account_index,
             sender,
             recipient,
             value,
@@ -1446,13 +1625,9 @@ impl DemoBackend {
             return Err(BackendError::PendingExists);
         }
         ensure_session_current(permit)?;
-        let (sender, _, _) = self
-            .unlocked
-            .as_ref()
-            .ok_or(BackendError::Locked)?
-            .validated_metadata()?;
+        let (account_index, sender) = self.selected_account()?;
         let context = self.token_context()?;
-        if context.owner != sender {
+        if context.account_index != account_index || context.owner != sender {
             return Err(BackendError::PreparedInvalid);
         }
         let contract = parse_address(contract_address)
@@ -1572,6 +1747,8 @@ impl DemoBackend {
         let normalized_amount = erc20::format_token_amount(amount, saved_entry.decimals())
             .map_err(|_| BackendError::InvalidAmount)?;
         let preview = Erc20TransferPreview {
+            sender_account_index: account_index,
+            sender_address: checksum_address(sender),
             contract_address: checksum_address(contract),
             symbol: saved_entry.symbol().map(str::to_owned),
             decimals: saved_entry.decimals(),
@@ -1589,6 +1766,7 @@ impl DemoBackend {
             quote_valid_for_seconds: remaining_quote_seconds.to_string(),
         };
         self.prepared = Some(PreparedTransfer::SavedErc20(PreparedErc20Transfer {
+            account_index,
             sender,
             recipient,
             contract,
@@ -1630,10 +1808,11 @@ impl DemoBackend {
             }
         };
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
-        let (wallet_address, _, _) = wallet.validated_metadata()?;
+        let wallet_address = wallet.account_address(prepared.account_index)?;
         let expected_estimated_gas_price =
             prepared.quoted_base_fee.checked_add(prepared.priority_fee);
-        if wallet_address != prepared.sender
+        if self.selected_account_index != prepared.account_index
+            || wallet_address != prepared.sender
             || prepared.recipient == [0; 20]
             || prepared.value.is_zero()
             || prepared.value > Word::from_u64(MAX_TRANSFER_WEI)
@@ -1728,7 +1907,7 @@ impl DemoBackend {
             UnlockedWallet::V2(opened) => {
                 let private_key = opened
                     .wallet()
-                    .account_private_key(0)
+                    .account_private_key(u32::from(prepared.account_index))
                     .map_err(map_secret_error)?;
                 sign_native_type_two(
                     private_key.as_bytes(),
@@ -1750,6 +1929,12 @@ impl DemoBackend {
             signed.transaction_hash,
             signed.bytes.as_slice(),
         )?;
+        let mut pending_lease = PendingFileLease::open(&self.pending_path)?;
+        verify_pending_lease(
+            &mut pending_lease,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )?;
         // This is both the post-write check and the final local commit point
         // before the externally visible RPC send. Revocation leaves the exact
         // signed record durable for authenticated recovery.
@@ -1762,7 +1947,12 @@ impl DemoBackend {
         // effect. Check immediately before deletion and preserve the pending
         // record instead of claiming local resolution when send went stale.
         ensure_session_current(permit)?;
-        remove_pending(&self.pending_path)?;
+        verify_pending_lease(
+            &mut pending_lease,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )?;
+        pending_lease.delete_exact(&self.pending_path)?;
         self.last_balance = None;
         Ok(SendReceipt {
             transaction_hash: fixed_hex(&returned_hash),
@@ -1776,7 +1966,7 @@ impl DemoBackend {
     ) -> Result<SendReceipt, BackendError> {
         ensure_session_current(permit)?;
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
-        let (wallet_address, _, _) = wallet.validated_metadata()?;
+        let wallet_address = wallet.account_address(prepared.account_index)?;
         let expected_gas_limit = erc20::token_gas_limit(prepared.estimated_gas)
             .map(Word::from_u64)
             .map_err(|_| BackendError::PreparedInvalid)?;
@@ -1788,7 +1978,8 @@ impl DemoBackend {
             .quoted_base_fee
             .checked_add(prepared.priority_fee)
             .and_then(|price| price.checked_mul_u64(prepared.estimated_gas));
-        if wallet_address != prepared.sender
+        if self.selected_account_index != prepared.account_index
+            || wallet_address != prepared.sender
             || prepared.recipient == [0; 20]
             || prepared.contract == [0; 20]
             || prepared.amount.is_zero()
@@ -1809,7 +2000,7 @@ impl DemoBackend {
         }
         ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
         let context = self.token_context()?;
-        if context.owner != prepared.sender {
+        if context.account_index != prepared.account_index || context.owner != prepared.sender {
             return Err(BackendError::PreparedInvalid);
         }
 
@@ -1924,7 +2115,7 @@ impl DemoBackend {
             UnlockedWallet::V2(opened) => {
                 let account_signer = opened
                     .wallet()
-                    .account_private_key(0)
+                    .account_private_key(u32::from(prepared.account_index))
                     .map_err(map_secret_error)?;
                 sign_erc20_type_two(
                     account_signer.as_bytes(),
@@ -1945,13 +2136,24 @@ impl DemoBackend {
             signed.transaction_hash,
             signed.bytes.as_slice(),
         )?;
+        let mut pending_lease = PendingFileLease::open(&self.pending_path)?;
+        verify_pending_lease(
+            &mut pending_lease,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )?;
         ensure_session_current(permit)?;
         let returned_hash = guarded_broadcast(self.rpc.as_ref(), signed.bytes.as_slice(), permit)?;
         if returned_hash != signed.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
         ensure_session_current(permit)?;
-        remove_pending(&self.pending_path)?;
+        verify_pending_lease(
+            &mut pending_lease,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )?;
+        pending_lease.delete_exact(&self.pending_path)?;
         self.last_balance = None;
         Ok(SendReceipt {
             transaction_hash: fixed_hex(&returned_hash),
@@ -1969,36 +2171,111 @@ impl DemoBackend {
         self.prepared = None;
     }
 
+    fn prepare_pending_retry(
+        &mut self,
+        permit: Option<&SessionPermit<'_>>,
+    ) -> Result<PendingBroadcastPreview, BackendError> {
+        ensure_optional_session_current(permit)?;
+        if self.unlocked.is_none() {
+            return Err(BackendError::Locked);
+        }
+        if self.prepared.is_some() {
+            return Err(BackendError::AccountSwitchBlocked);
+        }
+        self.prepared_pending_retry = None;
+        let mut lease = PendingFileLease::open(&self.pending_path)?;
+        let pending = lease.read_record()?;
+        ensure_optional_session_current(permit)?;
+        let (sender_account_index, sender) =
+            self.attribute_pending_sender(pending.raw_transaction.as_slice())?;
+        ensure_optional_session_current(permit)?;
+        let prepared = PreparedPendingRetry {
+            sender_account_index,
+            sender,
+            transaction_hash: pending.transaction_hash,
+            raw_transaction: pending.raw_transaction,
+            lease,
+        };
+        let preview = prepared.preview();
+        self.prepared_pending_retry = Some(prepared);
+        Ok(preview)
+    }
+
+    fn attribute_pending_sender(
+        &self,
+        raw_transaction: &[u8],
+    ) -> Result<(u8, [u8; 20]), BackendError> {
+        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let recovered = recover_signed_type_two_sender(raw_transaction)?;
+        let (_, _, account_count) = wallet.validated_metadata()?;
+        let mut matched = None;
+        for index in 0..account_count {
+            if wallet.account_address(index)? == recovered {
+                if matched.is_some() {
+                    return Err(BackendError::PendingAccountMismatch);
+                }
+                matched = Some(index);
+            }
+        }
+        matched
+            .map(|index| (index, recovered))
+            .ok_or(BackendError::PendingAccountMismatch)
+    }
+
+    fn verify_frozen_pending(
+        &self,
+        prepared: &mut PreparedPendingRetry,
+        permit: &SessionPermit<'_>,
+    ) -> Result<(), BackendError> {
+        ensure_session_current(permit)?;
+        let current = prepared.lease.read_record()?;
+        if current.transaction_hash != prepared.transaction_hash
+            || current.raw_transaction.as_slice() != prepared.raw_transaction.as_slice()
+        {
+            return Err(BackendError::PendingChanged);
+        }
+        let (account_index, sender) =
+            self.attribute_pending_sender(current.raw_transaction.as_slice())?;
+        if account_index != prepared.sender_account_index || sender != prepared.sender {
+            return Err(BackendError::PendingChanged);
+        }
+        ensure_session_current(permit)
+    }
+
     fn retry_pending_with_permit(
         &mut self,
         permit: &SessionPermit<'_>,
     ) -> Result<SendReceipt, BackendError> {
         ensure_session_current(permit)?;
-        self.prepared = None;
         if self.unlocked.is_none() {
             return Err(BackendError::Locked);
         }
-        let pending = read_pending(&self.pending_path)?;
-        ensure_session_current(permit)?;
+        if self.prepared.is_some() {
+            return Err(BackendError::AccountSwitchBlocked);
+        }
+        let mut prepared = self
+            .prepared_pending_retry
+            .take()
+            .ok_or(BackendError::NoPreparedPending)?;
+        self.verify_frozen_pending(&mut prepared, permit)?;
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
-        // Final local commit point before rebroadcasting the already-signed
-        // bytes retained in the pending record.
-        ensure_session_current(permit)?;
+        // Reopen and compare the durable record at the final local commit
+        // point. Only the independently frozen bytes are ever broadcast.
+        self.verify_frozen_pending(&mut prepared, permit)?;
         let returned_hash = guarded_broadcast(
             self.rpc.as_ref(),
-            pending.raw_transaction.as_slice(),
+            prepared.raw_transaction.as_slice(),
             permit,
         )?;
-        if returned_hash != pending.transaction_hash {
+        if returned_hash != prepared.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
-        // Check immediately before deletion. If revocation raced with send,
-        // keep the recovery record even after a matching response so a stale
-        // UI result cannot erase recovery state.
-        ensure_session_current(permit)?;
-        remove_pending(&self.pending_path)?;
+        // A matching node response cannot authorize deleting a record that
+        // was replaced while the request was in flight.
+        self.verify_frozen_pending(&mut prepared, permit)?;
+        prepared.lease.delete_exact(&self.pending_path)?;
         self.last_balance = None;
         Ok(SendReceipt {
             transaction_hash: fixed_hex(&returned_hash),
@@ -2009,6 +2286,7 @@ impl DemoBackend {
     fn retry_pending_inner(&mut self) -> Result<SendReceipt, BackendError> {
         let active_epoch = std::sync::atomic::AtomicU64::new(0);
         let permit = SessionPermit::current_for_test(0, &active_epoch);
+        self.prepare_pending_retry(Some(&permit))?;
         self.retry_pending_with_permit(&permit)
     }
 }
@@ -2068,6 +2346,10 @@ impl WalletBackend for DemoBackend {
 
     fn lock_wallet(&mut self) {
         self.lock();
+    }
+
+    fn select_account(&mut self, index: u8) -> Result<WalletSnapshot, String> {
+        self.select_account_inner(index).map_err(error_text)
     }
 
     fn migrate_legacy_wallet(
@@ -2152,6 +2434,13 @@ impl WalletBackend for DemoBackend {
     fn cancel_prepared(&mut self) -> Result<(), String> {
         self.cancel_prepared_inner();
         Ok(())
+    }
+
+    fn inspect_pending_broadcast(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<PendingBroadcastPreview, String> {
+        DemoBackend::inspect_pending_broadcast(self, permit)
     }
 
     fn retry_pending(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
@@ -2434,6 +2723,8 @@ enum BackendError {
     RandomnessUnavailable,
     CryptographicFailure,
     Locked,
+    UnsupportedAccount,
+    AccountSwitchBlocked,
     RpcUnavailable,
     BalanceUnavailable,
     TokenRequiresV2,
@@ -2469,7 +2760,10 @@ enum BackendError {
     HashMismatch,
     PendingExists,
     PendingInvalid,
+    PendingAccountMismatch,
+    PendingChanged,
     PendingCleanup,
+    NoPreparedPending,
     NoPreparedTransfer,
     PreparedInvalid,
 }
@@ -2498,6 +2792,8 @@ impl std::fmt::Debug for BackendError {
             Self::RandomnessUnavailable => "BackendError::RandomnessUnavailable",
             Self::CryptographicFailure => "BackendError::CryptographicFailure",
             Self::Locked => "BackendError::Locked",
+            Self::UnsupportedAccount => "BackendError::UnsupportedAccount",
+            Self::AccountSwitchBlocked => "BackendError::AccountSwitchBlocked",
             Self::RpcUnavailable => "BackendError::RpcUnavailable",
             Self::BalanceUnavailable => "BackendError::BalanceUnavailable",
             Self::TokenRequiresV2 => "BackendError::TokenRequiresV2",
@@ -2533,7 +2829,10 @@ impl std::fmt::Debug for BackendError {
             Self::HashMismatch => "BackendError::HashMismatch",
             Self::PendingExists => "BackendError::PendingExists",
             Self::PendingInvalid => "BackendError::PendingInvalid",
+            Self::PendingAccountMismatch => "BackendError::PendingAccountMismatch",
+            Self::PendingChanged => "BackendError::PendingChanged",
             Self::PendingCleanup => "BackendError::PendingCleanup",
+            Self::NoPreparedPending => "BackendError::NoPreparedPending",
             Self::NoPreparedTransfer => "BackendError::NoPreparedTransfer",
             Self::PreparedInvalid => "BackendError::PreparedInvalid",
         })
@@ -2614,6 +2913,10 @@ fn error_text(error: BackendError) -> String {
             "안전한 키 처리를 완료하지 못했습니다.".to_owned()
         }
         BackendError::Locked => "먼저 Sepolia 테스트 지갑을 열어 주세요.".to_owned(),
+        BackendError::UnsupportedAccount => "선택할 수 없는 계정입니다.".to_owned(),
+        BackendError::AccountSwitchBlocked => {
+            "준비한 전송을 취소한 뒤 계정을 바꿔 주세요.".to_owned()
+        }
         BackendError::RpcUnavailable => "Sepolia 연결을 확인하지 못했습니다.".to_owned(),
         BackendError::BalanceUnavailable => "Sepolia 잔액을 확인하지 못했습니다.".to_owned(),
         BackendError::TokenRequiresV2 => {
@@ -2709,8 +3012,17 @@ fn error_text(error: BackendError) -> String {
             "이전 거래의 전송 상태를 먼저 확인하거나 같은 거래를 다시 전송해 주세요.".to_owned()
         }
         BackendError::PendingInvalid => "보류 중인 거래 기록이 손상되었습니다.".to_owned(),
+        BackendError::PendingAccountMismatch => {
+            "보류 거래의 서명 계정을 현재 지갑에서 확인하지 못했습니다.".to_owned()
+        }
+        BackendError::PendingChanged => {
+            "확인한 뒤 보류 거래 기록이 달라졌습니다. 다시 확인해 주세요.".to_owned()
+        }
         BackendError::PendingCleanup => {
             "거래는 확인됐지만 보류 기록을 정리하지 못했습니다.".to_owned()
+        }
+        BackendError::NoPreparedPending => {
+            "보류 거래의 서명 계정을 먼저 확인해 주세요.".to_owned()
         }
         BackendError::NoPreparedTransfer => "먼저 거래 내용을 미리 확인해 주세요.".to_owned(),
         BackendError::PreparedInvalid => "준비된 거래의 안전 검증에 실패했습니다.".to_owned(),
@@ -2793,11 +3105,26 @@ fn validated_wallet_metadata(
 
 fn secret_reveal(export: SecretExport) -> Result<SecretReveal, BackendError> {
     let (kind, text) = export.into_zeroizing_text();
-    let kind = match kind {
-        SecretExportKind::Mnemonic => SecretRevealKind::Mnemonic,
-        SecretExportKind::AccountPrivateKey => SecretRevealKind::AccountPrivateKey,
-    };
-    Ok(SecretReveal::new(kind, text))
+    if kind != SecretExportKind::Mnemonic {
+        return Err(BackendError::WalletMetadataInvalid);
+    }
+    Ok(SecretReveal::new(SecretRevealKind::Mnemonic, text))
+}
+
+fn account_private_key_reveal(
+    export: SecretExport,
+    account_index: u8,
+    account_address: [u8; 20],
+) -> Result<SecretReveal, BackendError> {
+    let (kind, text) = export.into_zeroizing_text();
+    if kind != SecretExportKind::AccountPrivateKey || account_index > 1 {
+        return Err(BackendError::WalletMetadataInvalid);
+    }
+    Ok(SecretReveal::new_account_private_key(
+        account_index,
+        Zeroizing::new(checksum_address(account_address)),
+        text,
+    ))
 }
 
 fn generated_backup_reveal(
@@ -3485,9 +3812,156 @@ impl DurableParentDirectory {
     }
 }
 
+/// Pins the exact pending file object from attribution through retry. On
+/// Windows, denying every share mode prevents another process from reading,
+/// modifying, renaming, or deleting the record while authorization is live.
+struct PendingFileLease {
+    file: File,
+    #[cfg(not(windows))]
+    _process_lease: PendingProcessLease,
+}
+
+#[cfg(not(windows))]
+static PENDING_PROCESS_LEASED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(windows))]
+struct PendingProcessLease;
+
+#[cfg(not(windows))]
+impl Drop for PendingProcessLease {
+    fn drop(&mut self) {
+        PENDING_PROCESS_LEASED.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl PendingFileLease {
+    #[cfg(windows)]
+    fn open(path: &Path) -> Result<Self, BackendError> {
+        use std::os::windows::ffi::OsStrExt;
+
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(BackendError::PendingInvalid);
+        }
+        wide.push(0);
+        // SAFETY: `wide` is live and NUL terminated. DELETE access plus a zero
+        // share mode pins this exact object and later permits handle-based
+        // delete-pending without a close/reopen or path deletion gap.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                FILE_READ_DATA.0 | FILE_READ_ATTRIBUTES.0 | DELETE.0,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+        }
+        .map_err(|_| BackendError::PendingInvalid)?;
+        // SAFETY: the returned handle is owned and transferred exactly once.
+        let file = unsafe { File::from_raw_handle(handle.0 as RawHandle) };
+        let metadata = file.metadata().map_err(|_| BackendError::PendingInvalid)?;
+        if !metadata.file_type().is_file()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        {
+            return Err(BackendError::PendingInvalid);
+        }
+        Ok(Self { file })
+    }
+
+    #[cfg(not(windows))]
+    fn open(path: &Path) -> Result<Self, BackendError> {
+        // Development/test compatibility only. The supported Windows release
+        // proves cross-process exact-object pinning with a zero-share handle;
+        // this process-local fallback is not production evidence.
+        PENDING_PROCESS_LEASED
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Acquire,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .map_err(|_| BackendError::PendingChanged)?;
+        let process_lease = PendingProcessLease;
+        let metadata = fs::symlink_metadata(path).map_err(|_| BackendError::PendingInvalid)?;
+        if !metadata.file_type().is_file() {
+            return Err(BackendError::PendingInvalid);
+        }
+        let file = File::open(path).map_err(|_| BackendError::PendingInvalid)?;
+        Ok(Self {
+            file,
+            _process_lease: process_lease,
+        })
+    }
+
+    fn read_record(&mut self) -> Result<PendingRecord, BackendError> {
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| BackendError::PendingInvalid)?;
+        read_pending_file(&mut self.file)
+    }
+
+    #[cfg(windows)]
+    fn delete_exact(self, path: &Path) -> Result<(), BackendError> {
+        let parent = path.parent().ok_or(BackendError::PendingCleanup)?;
+        let parent_directory =
+            DurableParentDirectory::open(parent).map_err(|_| BackendError::PendingCleanup)?;
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: `disposition` has the exact documented layout and remains
+        // live for the call; `self.file` owns a live DELETE-capable handle.
+        unsafe {
+            SetFileInformationByHandle(
+                HANDLE(self.file.as_raw_handle()),
+                FileDispositionInfo,
+                std::ptr::from_ref(&disposition).cast(),
+                u32::try_from(std::mem::size_of::<FILE_DISPOSITION_INFO>())
+                    .map_err(|_| BackendError::PendingCleanup)?,
+            )
+        }
+        .map_err(|_| BackendError::PendingCleanup)?;
+        drop(self.file);
+        parent_directory
+            .flush()
+            .map_err(|_| BackendError::PendingCleanup)?;
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(_) | Err(_) => Err(BackendError::PendingCleanup),
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn delete_exact(self, path: &Path) -> Result<(), BackendError> {
+        // Development/test compatibility only; see `open` above.
+        let parent = path.parent().ok_or(BackendError::PendingCleanup)?;
+        let parent_directory =
+            DurableParentDirectory::open(parent).map_err(|_| BackendError::PendingCleanup)?;
+        fs::remove_file(path).map_err(|_| BackendError::PendingCleanup)?;
+        drop(self.file);
+        parent_directory
+            .flush()
+            .map_err(|_| BackendError::PendingCleanup)
+    }
+}
+
 struct PendingRecord {
     transaction_hash: [u8; 32],
     raw_transaction: Zeroizing<Vec<u8>>,
+}
+
+fn verify_pending_lease(
+    lease: &mut PendingFileLease,
+    expected_hash: [u8; 32],
+    expected_raw: &[u8],
+) -> Result<(), BackendError> {
+    let record = lease.read_record()?;
+    if record.transaction_hash == expected_hash && record.raw_transaction.as_slice() == expected_raw
+    {
+        Ok(())
+    } else {
+        Err(BackendError::PendingChanged)
+    }
 }
 
 fn write_new_pending(
@@ -3520,8 +3994,18 @@ fn write_new_pending(
     })
 }
 
+#[cfg(test)]
 fn read_pending(path: &Path) -> Result<PendingRecord, BackendError> {
-    let file = File::open(path).map_err(|_| BackendError::PendingInvalid)?;
+    let mut lease = PendingFileLease::open(path)?;
+    lease.read_record()
+}
+
+#[cfg(test)]
+fn remove_pending(path: &Path) -> Result<(), BackendError> {
+    PendingFileLease::open(path)?.delete_exact(path)
+}
+
+fn read_pending_file(file: &mut File) -> Result<PendingRecord, BackendError> {
     let length = usize::try_from(
         file.metadata()
             .map_err(|_| BackendError::PendingInvalid)?
@@ -3566,19 +4050,6 @@ fn read_pending(path: &Path) -> Result<PendingRecord, BackendError> {
         transaction_hash,
         raw_transaction,
     })
-}
-
-fn remove_pending(path: &Path) -> Result<(), BackendError> {
-    let parent = path.parent().ok_or(BackendError::PendingCleanup)?;
-    // Acquire and validate the exact directory before deleting the only durable
-    // copy. Keeping this handle open prevents replacement between deletion and
-    // the durability barrier.
-    let parent_directory =
-        DurableParentDirectory::open(parent).map_err(|_| BackendError::PendingCleanup)?;
-    fs::remove_file(path).map_err(|_| BackendError::PendingCleanup)?;
-    parent_directory
-        .flush()
-        .map_err(|_| BackendError::PendingCleanup)
 }
 
 fn sibling_pending_path(vault_path: &Path) -> Result<PathBuf, String> {
@@ -3874,6 +4345,214 @@ fn hash_nibble(hash: &[u8], index: usize) -> u8 {
 struct SignedTransaction {
     bytes: Zeroizing<Vec<u8>>,
     transaction_hash: [u8; 32],
+}
+
+#[derive(Clone, Copy)]
+struct DecodedRlpItem<'a> {
+    encoded: &'a [u8],
+    payload: &'a [u8],
+    is_list: bool,
+}
+
+fn recover_signed_type_two_sender(raw: &[u8]) -> Result<[u8; 20], BackendError> {
+    if !(2..=MAX_PENDING_RAW_BYTES).contains(&raw.len()) || raw.first() != Some(&2) {
+        return Err(BackendError::PendingInvalid);
+    }
+    let (top, consumed) = decode_canonical_rlp_item(&raw[1..], 0)?;
+    if !top.is_list || consumed != raw.len() - 1 {
+        return Err(BackendError::PendingInvalid);
+    }
+
+    let empty = DecodedRlpItem {
+        encoded: &top.payload[..0],
+        payload: &top.payload[..0],
+        is_list: false,
+    };
+    let mut fields = [empty; 12];
+    let mut cursor = 0;
+    for field in &mut fields {
+        let (decoded, next) = decode_canonical_rlp_item(top.payload, cursor)?;
+        *field = decoded;
+        cursor = next;
+    }
+    if cursor != top.payload.len() {
+        return Err(BackendError::PendingInvalid);
+    }
+
+    let chain_id = canonical_rlp_word(fields[0])?;
+    let _nonce = canonical_rlp_word(fields[1])?;
+    let priority_fee = canonical_rlp_word(fields[2])?;
+    let maximum_fee = canonical_rlp_word(fields[3])?;
+    let gas_limit = canonical_rlp_word(fields[4])?;
+    if chain_id != Word::from_u64(rpc::SEPOLIA_CHAIN_ID) {
+        return Err(BackendError::PendingInvalid);
+    }
+    validate_fee_quote(priority_fee, maximum_fee).map_err(|_| BackendError::PendingInvalid)?;
+    if fields[5].is_list || fields[5].payload.len() != 20 || fields[5].payload == [0_u8; 20] {
+        return Err(BackendError::PendingInvalid);
+    }
+    let value = canonical_rlp_word(fields[6])?;
+    if fields[7].is_list || !fields[8].is_list || !fields[8].payload.is_empty() {
+        return Err(BackendError::PendingInvalid);
+    }
+    let gas_limit_u64 = gas_limit.to_u64().ok_or(BackendError::PendingInvalid)?;
+    let supported_native = fields[7].payload.is_empty()
+        && gas_limit_u64 == NATIVE_TRANSFER_GAS
+        && !value.is_zero()
+        && value <= Word::from_u64(MAX_TRANSFER_WEI);
+    let supported_erc20 = fields[7].payload.len() == 68
+        && fields[7].payload.get(..4) == Some(erc20::TRANSFER_SELECTOR.as_slice())
+        && fields[7].payload.get(4..16) == Some(&[0_u8; 12][..])
+        && fields[7].payload.get(16..36) != Some(&[0_u8; 20][..])
+        && fields[7].payload.get(36..68) != Some(&[0_u8; 32][..])
+        && value.is_zero()
+        && (MIN_ERC20_TRANSFER_GAS_LIMIT..=MAX_ERC20_TRANSFER_GAS_LIMIT).contains(&gas_limit_u64);
+    if !supported_native && !supported_erc20 {
+        return Err(BackendError::PendingInvalid);
+    }
+
+    let y_parity = canonical_rlp_word(fields[9])?
+        .to_u64()
+        .filter(|value| *value <= 1)
+        .ok_or(BackendError::PendingInvalid)? as u8;
+    let r = canonical_rlp_nonzero_scalar(fields[10])?;
+    let s = canonical_rlp_nonzero_scalar(fields[11])?;
+    const HALF_CURVE_ORDER: [u8; 32] = [
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b,
+        0x20, 0xa0,
+    ];
+    if s > HALF_CURVE_ORDER {
+        return Err(BackendError::PendingInvalid);
+    }
+
+    let unsigned_items = fields[..9]
+        .iter()
+        .map(|field| field.encoded.to_vec())
+        .collect::<Vec<_>>();
+    let unsigned_payload = rlp_list(&unsigned_items);
+    let mut unsigned = Zeroizing::new(Vec::with_capacity(unsigned_payload.len() + 1));
+    unsigned.push(2);
+    unsigned.extend_from_slice(&unsigned_payload);
+    let mut prehash = keccak32(unsigned.as_slice());
+    let mut compact = Zeroizing::new([0_u8; 64]);
+    compact[..32].copy_from_slice(&r);
+    compact[32..].copy_from_slice(&s);
+    let recoverable = RecoverableSignature::from_compact(
+        compact.as_slice(),
+        RecoveryId::try_from(i32::from(y_parity)).map_err(|_| BackendError::PendingInvalid)?,
+    )
+    .map_err(|_| BackendError::PendingInvalid)?;
+    let recovered = Secp256k1::new()
+        .recover_ecdsa(Message::from_digest(prehash), &recoverable)
+        .map_err(|_| BackendError::PendingInvalid)?;
+    prehash.zeroize();
+    Ok(address_from_public_key(&recovered))
+}
+
+fn decode_canonical_rlp_item(
+    input: &[u8],
+    offset: usize,
+) -> Result<(DecodedRlpItem<'_>, usize), BackendError> {
+    let prefix = *input.get(offset).ok_or(BackendError::PendingInvalid)?;
+    if prefix <= 0x7f {
+        let end = offset.checked_add(1).ok_or(BackendError::PendingInvalid)?;
+        return Ok((
+            DecodedRlpItem {
+                encoded: input.get(offset..end).ok_or(BackendError::PendingInvalid)?,
+                payload: input.get(offset..end).ok_or(BackendError::PendingInvalid)?,
+                is_list: false,
+            },
+            end,
+        ));
+    }
+    let (is_list, header_length, payload_length) = match prefix {
+        0x00..=0x7f => return Err(BackendError::PendingInvalid),
+        0x80..=0xb7 => (false, 1, usize::from(prefix - 0x80)),
+        0xb8..=0xbf => {
+            let length_bytes = usize::from(prefix - 0xb7);
+            (
+                false,
+                1 + length_bytes,
+                decode_long_rlp_length(input, offset, length_bytes)?,
+            )
+        }
+        0xc0..=0xf7 => (true, 1, usize::from(prefix - 0xc0)),
+        0xf8..=0xff => {
+            let length_bytes = usize::from(prefix - 0xf7);
+            (
+                true,
+                1 + length_bytes,
+                decode_long_rlp_length(input, offset, length_bytes)?,
+            )
+        }
+    };
+    let payload_start = offset
+        .checked_add(header_length)
+        .ok_or(BackendError::PendingInvalid)?;
+    let end = payload_start
+        .checked_add(payload_length)
+        .ok_or(BackendError::PendingInvalid)?;
+    let payload = input
+        .get(payload_start..end)
+        .ok_or(BackendError::PendingInvalid)?;
+    if !is_list && payload_length == 1 && payload[0] < 0x80 {
+        return Err(BackendError::PendingInvalid);
+    }
+    Ok((
+        DecodedRlpItem {
+            encoded: input.get(offset..end).ok_or(BackendError::PendingInvalid)?,
+            payload,
+            is_list,
+        },
+        end,
+    ))
+}
+
+fn decode_long_rlp_length(
+    input: &[u8],
+    offset: usize,
+    length_bytes: usize,
+) -> Result<usize, BackendError> {
+    if length_bytes == 0 || length_bytes > std::mem::size_of::<usize>() {
+        return Err(BackendError::PendingInvalid);
+    }
+    let start = offset.checked_add(1).ok_or(BackendError::PendingInvalid)?;
+    let end = start
+        .checked_add(length_bytes)
+        .ok_or(BackendError::PendingInvalid)?;
+    let encoded = input.get(start..end).ok_or(BackendError::PendingInvalid)?;
+    if encoded.first() == Some(&0) {
+        return Err(BackendError::PendingInvalid);
+    }
+    let mut length = 0_usize;
+    for byte in encoded {
+        length = length
+            .checked_mul(256)
+            .and_then(|value| value.checked_add(usize::from(*byte)))
+            .ok_or(BackendError::PendingInvalid)?;
+    }
+    if length <= 55 {
+        return Err(BackendError::PendingInvalid);
+    }
+    Ok(length)
+}
+
+fn canonical_rlp_word(item: DecodedRlpItem<'_>) -> Result<Word, BackendError> {
+    if item.is_list || item.payload.len() > 32 || item.payload.first() == Some(&0) {
+        return Err(BackendError::PendingInvalid);
+    }
+    let mut bytes = [0_u8; 32];
+    bytes[32 - item.payload.len()..].copy_from_slice(item.payload);
+    Ok(Word::from_be_bytes(bytes))
+}
+
+fn canonical_rlp_nonzero_scalar(item: DecodedRlpItem<'_>) -> Result<[u8; 32], BackendError> {
+    let value = canonical_rlp_word(item)?;
+    if value.is_zero() {
+        return Err(BackendError::PendingInvalid);
+    }
+    Ok(*value.as_be_bytes())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4233,6 +4912,8 @@ mod tests {
         quote_calls: usize,
         base_fee_calls: usize,
         native_balance_calls: usize,
+        balance_owners: Vec<[u8; 20]>,
+        estimate_senders: Vec<[u8; 20]>,
         preflight_fields: Vec<TokenPreflightObservation>,
         sent: Vec<Vec<u8>>,
         send_fails: bool,
@@ -4282,6 +4963,8 @@ mod tests {
                     quote_calls: 0,
                     base_fee_calls: 0,
                     native_balance_calls: 0,
+                    balance_owners: Vec::new(),
+                    estimate_senders: Vec::new(),
                     preflight_fields: Vec::new(),
                     sent: Vec::new(),
                     send_fails: false,
@@ -4414,7 +5097,12 @@ mod tests {
             self.response(contract, |fixture| fixture.symbol.as_slice())
         }
 
-        fn erc20_balance_of(&self, contract: [u8; 20], _owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+        fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.state
+                .lock()
+                .map_err(|_| ())?
+                .balance_owners
+                .push(owner);
             self.response(contract, |fixture| fixture.balance.as_slice())
         }
 
@@ -4446,7 +5134,7 @@ mod tests {
 
         fn estimate_erc20_transfer_gas(
             &self,
-            _sender: [u8; 20],
+            sender: [u8; 20],
             _contract: [u8; 20],
             _recipient: [u8; 20],
             _amount: TokenAmount,
@@ -4456,6 +5144,7 @@ mod tests {
         ) -> Result<Word, ()> {
             let mut state = self.state.lock().map_err(|_| ())?;
             state.estimate_calls += 1;
+            state.estimate_senders.push(sender);
             Ok(state.token_estimated_gas)
         }
     }
@@ -4561,11 +5250,16 @@ mod tests {
         base_fee_calls: usize,
         balance_calls: usize,
         estimate_calls: usize,
+        balance_addresses: Vec<[u8; 20]>,
+        pending_balance_addresses: Vec<[u8; 20]>,
+        nonce_addresses: Vec<[u8; 20]>,
+        estimate_senders: Vec<[u8; 20]>,
         sent: Vec<Vec<u8>>,
         send_fails: bool,
         pending_path_to_require: Option<PathBuf>,
         send_observed_pending: bool,
         send_observed_exact_pending: bool,
+        revoke_epoch_after_send: Option<Arc<std::sync::atomic::AtomicU64>>,
         expire_clock_on_estimate_call: Option<(TestClock, usize, Duration)>,
     }
 
@@ -4586,11 +5280,16 @@ mod tests {
                     base_fee_calls: 0,
                     balance_calls: 0,
                     estimate_calls: 0,
+                    balance_addresses: Vec::new(),
+                    pending_balance_addresses: Vec::new(),
+                    nonce_addresses: Vec::new(),
+                    estimate_senders: Vec::new(),
                     sent: Vec::new(),
                     send_fails: false,
                     pending_path_to_require: None,
                     send_observed_pending: false,
                     send_observed_exact_pending: false,
+                    revoke_epoch_after_send: None,
                     expire_clock_on_estimate_call: None,
                 })),
             }
@@ -4608,19 +5307,23 @@ mod tests {
             state.verify_ok.then_some(()).ok_or(())
         }
 
-        fn balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
-            Ok(self.state.lock().map_err(|_| ())?.balance)
-        }
-
-        fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+        fn balance(&self, address: [u8; 20]) -> Result<Word, ()> {
             let mut state = self.state.lock().map_err(|_| ())?;
-            state.balance_calls += 1;
+            state.balance_addresses.push(address);
             Ok(state.balance)
         }
 
-        fn pending_nonce(&self, _address: [u8; 20]) -> Result<Word, ()> {
+        fn pending_balance(&self, address: [u8; 20]) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.balance_calls += 1;
+            state.pending_balance_addresses.push(address);
+            Ok(state.balance)
+        }
+
+        fn pending_nonce(&self, address: [u8; 20]) -> Result<Word, ()> {
             let mut state = self.state.lock().map_err(|_| ())?;
             state.nonce_calls += 1;
+            state.nonce_addresses.push(address);
             Ok(state.nonce)
         }
 
@@ -4642,7 +5345,7 @@ mod tests {
 
         fn estimate_native_transfer_gas(
             &self,
-            _sender: [u8; 20],
+            sender: [u8; 20],
             _recipient: [u8; 20],
             _value: Word,
             _nonce: Word,
@@ -4652,6 +5355,7 @@ mod tests {
             let (gas, expiration) = {
                 let mut state = self.state.lock().map_err(|_| ())?;
                 state.estimate_calls += 1;
+                state.estimate_senders.push(sender);
                 let expiration = state
                     .expire_clock_on_estimate_call
                     .as_ref()
@@ -4680,16 +5384,31 @@ mod tests {
             state.sent.push(signed.to_vec());
             if let Some(path) = state.pending_path_to_require.clone() {
                 state.send_observed_pending = path.is_file();
-                state.send_observed_exact_pending = read_pending(&path).is_ok_and(|pending| {
-                    pending.transaction_hash == keccak32(signed)
-                        && pending.raw_transaction.as_slice() == signed
-                });
+                state.send_observed_exact_pending = read_pending(&path).map_or_else(
+                    |_| {
+                        // Production holds a zero-share exact-file lease from
+                        // its own successful readback through transport. A
+                        // second open failing while the path exists is the
+                        // expected Windows proof that replacement is blocked.
+                        path.is_file()
+                    },
+                    |pending| {
+                        pending.transaction_hash == keccak32(signed)
+                            && pending.raw_transaction.as_slice() == signed
+                    },
+                );
             }
-            if state.send_fails {
+            let result = if state.send_fails {
                 Err(SendRawError::BroadcastUnknown)
             } else {
                 Ok(keccak32(signed))
+            };
+            let revoke_epoch_after_send = state.revoke_epoch_after_send.clone();
+            drop(state);
+            if let Some(epoch) = revoke_epoch_after_send {
+                epoch.store(1, std::sync::atomic::Ordering::SeqCst);
             }
+            result
         }
     }
 
@@ -4769,6 +5488,50 @@ mod tests {
         fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
             self.tokens.erc20_balance_of(contract, owner)
         }
+
+        fn erc20_transfer_preflight(
+            &self,
+            sender: [u8; 20],
+            contract: [u8; 20],
+            recipient: [u8; 20],
+            amount: TokenAmount,
+            nonce: Word,
+            gas_limit: Word,
+            priority_fee: Word,
+            maximum_fee: Word,
+        ) -> Result<Vec<u8>, ()> {
+            self.tokens.erc20_transfer_preflight(
+                sender,
+                contract,
+                recipient,
+                amount,
+                nonce,
+                gas_limit,
+                priority_fee,
+                maximum_fee,
+            )
+        }
+
+        fn estimate_erc20_transfer_gas(
+            &self,
+            sender: [u8; 20],
+            contract: [u8; 20],
+            recipient: [u8; 20],
+            amount: TokenAmount,
+            nonce: Word,
+            priority_fee: Word,
+            maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            self.tokens.estimate_erc20_transfer_gas(
+                sender,
+                contract,
+                recipient,
+                amount,
+                nonce,
+                priority_fee,
+                maximum_fee,
+            )
+        }
     }
 
     fn unlocked_backend(rpc: MutableRpc, clock: TestClock) -> DemoBackend {
@@ -4783,7 +5546,11 @@ mod tests {
             private_key,
             address,
         });
-        backend.last_balance = Some(Word::ZERO);
+        backend.last_balance = Some(AccountBalance {
+            account_index: 0,
+            address,
+            value: Word::ZERO,
+        });
         backend
     }
 
@@ -4840,6 +5607,35 @@ mod tests {
 
     fn sensitive(value: &str) -> SensitiveText {
         SensitiveText::new(value.to_owned())
+    }
+
+    fn snapshot_address(snapshot: &WalletSnapshot) -> &str {
+        snapshot
+            .selected_account()
+            .expect("snapshot must contain its selected account")
+            .address
+            .as_str()
+    }
+
+    fn signed_type_two_fields(raw: &[u8]) -> Vec<Vec<u8>> {
+        let (top, consumed) =
+            decode_canonical_rlp_item(&raw[1..], 0).expect("decode signed type-two list fixture");
+        assert!(top.is_list && consumed == raw.len() - 1);
+        let mut fields = Vec::new();
+        let mut cursor = 0;
+        while cursor < top.payload.len() {
+            let (field, next) = decode_canonical_rlp_item(top.payload, cursor)
+                .expect("decode signed type-two field fixture");
+            fields.push(field.encoded.to_vec());
+            cursor = next;
+        }
+        fields
+    }
+
+    fn rebuild_signed_type_two(fields: &[Vec<u8>]) -> Vec<u8> {
+        let mut raw = vec![2];
+        raw.extend_from_slice(&rlp_list(fields));
+        raw
     }
 
     fn empty_generated_confirmation() -> GeneratedBackupConfirmation {
@@ -4912,6 +5708,22 @@ mod tests {
 
     fn v2_backend(clock: TestClock) -> DemoBackend {
         DemoBackend::with_rpc_and_clock(temporary_vault(), test_rpc(), clock)
+    }
+
+    fn import_generated_mnemonic(backend: &mut DemoBackend) -> WalletSnapshot {
+        let generated = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)
+            .expect("generate bounded mnemonic fixture");
+        let (_, mut phrase) = generated
+            .export_mnemonic()
+            .expect("export bounded mnemonic fixture")
+            .into_zeroizing_text();
+        backend
+            .import_mnemonic(
+                SensitiveText::new(std::mem::take(&mut *phrase)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import bounded mnemonic fixture")
     }
 
     fn token_backend(rpc: TokenRpc, key_marker: u8) -> DemoBackend {
@@ -5008,17 +5820,19 @@ mod tests {
                         word_count: expected_words,
                     }
             );
-            assert_eq!(snapshot.account_count, 2);
+            assert_eq!(snapshot.accounts.len(), 2);
+            assert_eq!(snapshot.selected_account_index, 0);
             assert!(backend.vault_v2_path.is_file());
             assert!(!backend.vault_path.exists());
             assert!(backend.pending_generation.is_none());
             assert!(matches!(backend.unlocked, Some(UnlockedWallet::V2(_))));
 
-            let expected_address = snapshot.address;
+            let expected_address = snapshot_address(&snapshot).to_owned();
             backend.lock();
             let reopened = backend.open(TEST_PASSWORD).expect("reopen generated v2");
-            assert_eq!(reopened.address, expected_address);
-            assert_eq!(reopened.account_count, 2);
+            assert_eq!(snapshot_address(&reopened), expected_address);
+            assert_eq!(reopened.accounts.len(), 2);
+            assert_eq!(reopened.selected_account_index, 0);
             remove_test_backend_files(&backend);
         }
     }
@@ -5431,7 +6245,7 @@ mod tests {
                 sensitive(TEST_PASSWORD),
             )
             .expect("import mnemonic");
-        assert_eq!(snapshot.account_count, 2);
+        assert_eq!(snapshot.accounts.len(), 2);
         assert!(matches!(
             snapshot.wallet_kind,
             WalletKind::V2Mnemonic { word_count: 12 }
@@ -5455,7 +6269,7 @@ mod tests {
             )
             .expect("import raw key");
         assert!(snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
-        assert_eq!(snapshot.account_count, 1);
+        assert_eq!(snapshot.accounts.len(), 1);
         assert!(matches!(
             raw_backend.export_mnemonic_inner(sensitive(TEST_PASSWORD)),
             Err(BackendError::MnemonicUnavailable)
@@ -5466,6 +6280,322 @@ mod tests {
                 .is_ok()
         );
         remove_test_backend_files(&raw_backend);
+    }
+
+    #[test]
+    fn mnemonic_account_switch_is_session_only_and_binds_exports_tokens_and_signers() {
+        let native_rpc = MutableRpc::new();
+        let token_rpc = TokenRpc::new();
+        let contract = [0x6a; 20];
+        token_rpc.insert(contract, token_fixture(1));
+        let rpc = LifecycleRpc {
+            native: native_rpc.clone(),
+            tokens: token_rpc.clone(),
+        };
+        let mut backend = DemoBackend::with_rpc(temporary_vault(), rpc);
+        let initial = import_generated_mnemonic(&mut backend);
+        let account_zero = initial.accounts[0].address.clone();
+        let account_one = initial.accounts[1].address.clone();
+        assert!(account_zero != account_one && initial.selected_account_index == 0);
+        backend
+            .add_custom_token_inner(&checksum_address(contract))
+            .expect("persist account-switch token fixture");
+        let vault_before = fs::read(&backend.vault_v2_path).expect("read vault before switch");
+        let tokens_before =
+            fs::read(&backend.token_store_path).expect("read token store before switch");
+
+        let selected = backend
+            .select_account_inner(1)
+            .expect("select bounded account one");
+        assert_eq!(selected.selected_account_index, 1);
+        assert_eq!(snapshot_address(&selected), account_one);
+        assert_eq!(selected.balance_eth, "조회 전");
+        assert!(selected.pending_broadcast.is_none());
+        let account_one_bytes = parse_address(&account_one).expect("parse account-one address");
+        let refreshed = backend
+            .refresh_snapshot()
+            .expect("refresh selected account-one native balance");
+        assert_eq!(refreshed.selected_account_index, 1);
+        assert_eq!(snapshot_address(&refreshed), account_one);
+        assert_ne!(refreshed.balance_eth, "조회 전");
+        assert_eq!(
+            native_rpc
+                .state
+                .lock()
+                .expect("account-one native refresh RPC lock")
+                .balance_addresses
+                .last()
+                .copied(),
+            Some(account_one_bytes)
+        );
+        let refreshed_tokens = backend
+            .refresh_custom_tokens_inner()
+            .expect("refresh selected account-one token balance");
+        assert_eq!(refreshed_tokens.len(), 1);
+        assert_eq!(
+            token_rpc
+                .state
+                .lock()
+                .expect("account-one token refresh RPC lock")
+                .balance_owners
+                .last()
+                .copied(),
+            Some(account_one_bytes)
+        );
+        assert!(matches!(
+            backend.select_account_inner(2),
+            Err(BackendError::UnsupportedAccount)
+        ));
+        assert_eq!(backend.selected_account_index, 1);
+
+        let expected_private_key = match backend.unlocked.as_ref().expect("unlocked mnemonic") {
+            UnlockedWallet::V2(opened) => {
+                let export = opened
+                    .wallet()
+                    .export_account_private_key(1)
+                    .expect("export expected account-one key");
+                let (_, text) = export.into_zeroizing_text();
+                text
+            }
+            UnlockedWallet::LegacyV1 { .. } => panic!("expected v2 mnemonic"),
+        };
+        let reveal = backend
+            .export_account_private_key_inner(sensitive(TEST_PASSWORD))
+            .expect("reauthenticate selected account-one export");
+        assert_eq!(reveal.account_binding(), Some((1, account_one.as_str())));
+        assert_eq!(
+            reveal.expose_secret_for_test(),
+            expected_private_key.as_str()
+        );
+        drop(reveal);
+
+        let native = backend
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
+            .expect("prepare account-one native transfer");
+        assert_eq!(native.sender_account_index, 1);
+        assert_eq!(native.sender_address, account_one);
+        {
+            let state = native_rpc
+                .state
+                .lock()
+                .expect("account-one native prepare RPC lock");
+            assert_eq!(
+                state.pending_balance_addresses.last().copied(),
+                Some(account_one_bytes)
+            );
+            assert_eq!(
+                state.estimate_senders.last().copied(),
+                Some(account_one_bytes)
+            );
+        }
+        assert!(matches!(
+            backend.select_account_inner(0),
+            Err(BackendError::AccountSwitchBlocked)
+        ));
+        assert_eq!(backend.selected_account_index, 1);
+        assert_eq!(native_prepared(&backend).account_index, 1);
+        backend.cancel_prepared_inner();
+
+        backend
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
+            .expect("reprepare account-one native transfer");
+        backend
+            .confirm_prepared_inner()
+            .expect("sign exact account-one native transfer");
+        assert_eq!(backend.sign_attempts, 1);
+
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let token = backend
+            .prepare_saved_erc20_transfer_inner(
+                &checksum_address(contract),
+                "0x6767676767676767676767676767676767676767",
+                "1",
+                FeeSelection::Recommended,
+                &permit,
+            )
+            .expect("prepare selected account-one token transfer");
+        assert_eq!(token.sender_account_index, 1);
+        assert_eq!(token.sender_address, account_one);
+        let sign_attempts = backend.sign_attempts;
+        backend.selected_account_index = 0;
+        assert!(matches!(
+            backend.confirm_prepared_with_permit(&permit),
+            Err(BackendError::PreparedInvalid)
+        ));
+        assert_eq!(backend.sign_attempts, sign_attempts);
+        backend
+            .select_account_inner(1)
+            .expect("restore account one after adversarial mutation");
+        backend
+            .prepare_saved_erc20_transfer_inner(
+                &checksum_address(contract),
+                "0x6767676767676767676767676767676767676767",
+                "1",
+                FeeSelection::Recommended,
+                &permit,
+            )
+            .expect("reprepare exact account-one token transfer");
+        backend
+            .confirm_prepared_with_permit(&permit)
+            .expect("sign exact account-one token transfer");
+        assert_eq!(backend.sign_attempts, sign_attempts + 1);
+        let observation = token_rpc
+            .state
+            .lock()
+            .expect("account-one token RPC lock")
+            .preflight_fields
+            .last()
+            .copied()
+            .expect("account-one token preflight");
+        assert_eq!(checksum_address(observation.sender), account_one);
+        assert_eq!(
+            token_rpc
+                .state
+                .lock()
+                .expect("account-one token estimate RPC lock")
+                .estimate_senders
+                .last()
+                .copied(),
+            Some(account_one_bytes)
+        );
+        {
+            let state = native_rpc.state.lock().expect("account-one nonce RPC lock");
+            assert!(state.nonce_addresses.len() >= 4);
+            assert!(
+                state
+                    .nonce_addresses
+                    .iter()
+                    .all(|address| *address == account_one_bytes)
+            );
+        }
+
+        assert_eq!(
+            fs::read(&backend.vault_v2_path).expect("read vault after switches"),
+            vault_before
+        );
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("read token store after switches"),
+            tokens_before
+        );
+        backend.lock();
+        let reopened = backend
+            .open(TEST_PASSWORD)
+            .expect("reopen defaults to account zero");
+        assert_eq!(reopened.selected_account_index, 0);
+        assert_eq!(snapshot_address(&reopened), account_zero);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn raw_and_legacy_wallets_reject_account_one_without_changing_selection() {
+        let mut raw = v2_backend(TestClock::new(Instant::now()));
+        raw.import_private_key(
+            SensitiveText::new("22".repeat(KEY_BYTES)),
+            sensitive(TEST_PASSWORD),
+            sensitive(TEST_PASSWORD),
+        )
+        .expect("import raw account-zero fixture");
+        assert!(matches!(
+            raw.select_account_inner(1),
+            Err(BackendError::UnsupportedAccount)
+        ));
+        assert_eq!(raw.selected_account_index, 0);
+        remove_test_backend_files(&raw);
+
+        let mut legacy = DemoBackend::with_rpc(temporary_vault(), test_rpc());
+        write_legacy_fixture(&legacy, TEST_PASSWORD, 0x31);
+        legacy
+            .open(TEST_PASSWORD)
+            .expect("open legacy account-zero fixture");
+        assert!(matches!(
+            legacy.select_account_inner(1),
+            Err(BackendError::UnsupportedAccount)
+        ));
+        assert_eq!(legacy.selected_account_index, 0);
+        remove_test_backend_files(&legacy);
+    }
+
+    #[test]
+    fn account_one_ambiguous_restart_discloses_sender_before_exact_retry() {
+        let rpc = MutableRpc::new();
+        let vault = temporary_vault();
+        let mut backend = DemoBackend::with_rpc(vault.clone(), rpc.clone());
+        let initial = import_generated_mnemonic(&mut backend);
+        let account_one = initial.accounts[1].address.clone();
+        backend.select_account_inner(1).expect("select account one");
+        backend
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
+            .expect("prepare ambiguous account-one transfer");
+        rpc.update(|state| state.send_fails = true);
+        assert!(matches!(
+            backend.confirm_prepared_inner(),
+            Err(BackendError::BroadcastUnknown)
+        ));
+        let exact_raw = rpc
+            .state
+            .lock()
+            .expect("ambiguous account-one RPC lock")
+            .sent[0]
+            .clone();
+        backend.lock();
+        drop(backend);
+
+        let mut restarted = DemoBackend::with_rpc(vault, rpc.clone());
+        let opened = restarted
+            .open(TEST_PASSWORD)
+            .expect("reopen and attribute account-one pending");
+        assert_eq!(opened.selected_account_index, 0);
+        let pending = opened
+            .pending_broadcast
+            .as_ref()
+            .expect("pending attribution is disclosed on open");
+        assert_eq!(pending.sender_account_index, 1);
+        assert_eq!(pending.sender_address, account_one);
+        assert_eq!(pending.transaction_hash, fixed_hex(&keccak32(&exact_raw)));
+
+        restarted.lock();
+        assert!(restarted.prepared_pending_retry.is_none());
+        assert!(restarted.pending_broadcast_exists());
+        let durable = fs::read(&restarted.pending_path).expect("lock releases only the lease");
+        assert!(!durable.is_empty());
+        let reopened = restarted
+            .open(TEST_PASSWORD)
+            .expect("reopen creates a fresh exact pending lease");
+        assert_eq!(reopened.selected_account_index, 0);
+        assert_eq!(
+            reopened
+                .pending_broadcast
+                .as_ref()
+                .map(|preview| preview.sender_account_index),
+            Some(1)
+        );
+        rpc.update(|state| state.send_fails = false);
+        let epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &epoch);
+        restarted
+            .retry_pending_with_permit(&permit)
+            .expect("retry frozen account-one bytes");
+        assert_eq!(restarted.sign_attempts, 0);
+        let state = rpc.state.lock().expect("retried account-one RPC lock");
+        assert_eq!(state.sent.len(), 2);
+        assert_eq!(state.sent[0], exact_raw);
+        assert_eq!(state.sent[1], exact_raw);
+        drop(state);
+        assert!(!restarted.pending_broadcast_exists());
+        remove_test_backend_files(&restarted);
     }
 
     #[test]
@@ -5489,7 +6619,7 @@ mod tests {
             Err(BackendError::VaultAuthentication)
         ));
         let reopened = backend.open(TEST_PASSWORD).expect("open preferred v2");
-        assert_eq!(reopened.address, snapshot.address);
+        assert_eq!(snapshot_address(&reopened), snapshot_address(&snapshot));
         assert!(matches!(
             backend.export_mnemonic_inner(sensitive(legacy_password)),
             Err(BackendError::VaultAuthentication)
@@ -5525,19 +6655,16 @@ mod tests {
                 sensitive("new migration password"),
             )
             .expect("migrate legacy v1");
-        assert_eq!(snapshot.address, expected);
+        assert_eq!(snapshot_address(&snapshot), expected);
         assert!(snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
-        assert_eq!(snapshot.account_count, 1);
+        assert_eq!(snapshot.accounts.len(), 1);
         assert!(backend.vault_v2_path.is_file());
         assert!(!backend.vault_path.exists());
         backend.lock();
-        assert_eq!(
-            backend
-                .open("new migration password")
-                .expect("open migrated v2")
-                .address,
-            expected
-        );
+        let reopened = backend
+            .open("new migration password")
+            .expect("open migrated v2");
+        assert_eq!(snapshot_address(&reopened), expected);
         remove_test_backend_files(&backend);
     }
 
@@ -5651,7 +6778,7 @@ mod tests {
         let vault = temporary_vault();
         let mut backend = DemoBackend::with_rpc(vault.clone(), test_rpc());
         let created = backend.create(TEST_PASSWORD).expect("create wallet");
-        assert!(created.address.starts_with("0x"));
+        assert!(snapshot_address(&created).starts_with("0x"));
         assert_eq!(created.balance_eth, "0");
         assert!(matches!(
             backend.create(TEST_PASSWORD),
@@ -5659,7 +6786,7 @@ mod tests {
         ));
         backend.lock();
         let reopened = backend.open(TEST_PASSWORD).expect("reopen wallet");
-        assert_eq!(reopened.address, created.address);
+        assert_eq!(snapshot_address(&reopened), snapshot_address(&created));
         let _ = fs::remove_file(&vault);
         if let Some(parent) = vault.parent() {
             let _ = fs::remove_dir(parent);
@@ -5804,7 +6931,10 @@ mod tests {
         assert_eq!(receipt.transaction_hash, fixed_hex(&expected));
         assert!(receipt.transaction_hash.starts_with("0x"));
         assert_eq!(receipt.transaction_hash.len(), 66);
-        assert_eq!(backend.address().as_deref(), Some(created.address.as_str()));
+        assert_eq!(
+            backend.address().as_deref(),
+            Some(snapshot_address(&created))
+        );
         assert!(backend.prepared.is_none());
         assert_eq!(
             recipient_input,
@@ -5978,9 +7108,9 @@ mod tests {
                 sensitive(TEST_PASSWORD),
             )
             .expect("import and persist known v2 account zero");
-        assert!(imported_snapshot.address == expected_address);
+        assert!(snapshot_address(&imported_snapshot) == expected_address);
         assert!(imported_snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
-        assert_eq!(imported_snapshot.account_count, 1);
+        assert_eq!(imported_snapshot.accounts.len(), 1);
         assert!(imported.vault_v2_path.is_file());
         assert!(!path_may_exist(&imported.vault_path));
         let persisted_vault = fs::read(&imported.vault_v2_path).expect("read persisted v2 vault");
@@ -6002,7 +7132,7 @@ mod tests {
         let reopened_snapshot = restarted
             .open(TEST_PASSWORD)
             .expect("reopen persisted v2 wallet");
-        assert!(reopened_snapshot.address == expected_address);
+        assert!(snapshot_address(&reopened_snapshot) == expected_address);
         let account_zero_export = restarted
             .export_account_private_key_inner(sensitive(TEST_PASSWORD))
             .expect("reauthenticate and export account zero");
@@ -6055,7 +7185,7 @@ mod tests {
         let final_snapshot = final_restart
             .open(TEST_PASSWORD)
             .expect("reopen wallet and authenticated token sidecar");
-        assert!(final_snapshot.address == expected_address);
+        assert!(snapshot_address(&final_snapshot) == expected_address);
         let refreshed = final_restart
             .refresh_custom_tokens_inner()
             .expect("refresh persisted token after process restart");
@@ -6621,6 +7751,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create CAS directory");
         let backend = DemoBackend::with_rpc(vault, test_rpc());
         let context = TokenContext {
+            account_index: 0,
             owner: [1; 20],
             vault_id: [2; 16],
             key: Zeroizing::new([3; 32]),
@@ -6734,6 +7865,7 @@ mod tests {
         fs::remove_file(&backend.pending_path).expect("remove pending fixture");
 
         backend.prepared = Some(PreparedTransfer::Native(PreparedNativeTransfer {
+            account_index: 0,
             sender: [1; 20],
             recipient: [2; 20],
             value: Word::ZERO,
@@ -7579,12 +8711,19 @@ mod tests {
             state.sent.clear();
         });
 
-        // Retry checks are: entry, post-read, post-verify/pre-send, guarded RPC
-        // post-reverify/pre-transport, and post-send/pre-delete. Revocation at
-        // either pre-send boundary emits no new broadcast and retains the exact
-        // signed record.
+        // The named pre-send checkpoints remain intentionally distinct: the
+        // first exact-record verification exits at check 3, while the RPC
+        // transport itself performs check 6 after the second exact-record
+        // verification. Revocation at either boundary emits no new broadcast
+        // and retains the exact signed record.
+        const FIRST_EXACT_VERIFY_EXIT: usize = 3;
+        const RPC_TRANSPORT_ENTRY: usize = 6;
+        backend
+            .prepare_pending_retry(None)
+            .expect("attribute pending before revoked retry");
         let pre_send_epoch = std::sync::atomic::AtomicU64::new(0);
-        let pre_send_permit = SessionPermit::revoke_on_check(0, &pre_send_epoch, 3);
+        let pre_send_permit =
+            SessionPermit::revoke_on_check(0, &pre_send_epoch, FIRST_EXACT_VERIFY_EXIT);
         assert!(matches!(
             backend.retry_pending_with_permit(&pre_send_permit),
             Err(BackendError::Locked)
@@ -7598,8 +8737,12 @@ mod tests {
                 .is_empty()
         );
 
+        backend
+            .prepare_pending_retry(None)
+            .expect("reattribute pending before guarded retry");
         let guarded_send_epoch = std::sync::atomic::AtomicU64::new(0);
-        let guarded_send_permit = SessionPermit::revoke_on_check(0, &guarded_send_epoch, 4);
+        let guarded_send_permit =
+            SessionPermit::revoke_on_check(0, &guarded_send_epoch, RPC_TRANSPORT_ENTRY);
         assert!(matches!(
             backend.retry_pending_with_permit(&guarded_send_permit),
             Err(BackendError::Locked)
@@ -7613,11 +8756,16 @@ mod tests {
                 .is_empty()
         );
 
-        // If revoke races with the transport after the final pre-send check,
-        // the external send may occur, but the local recovery record must not
-        // be deleted even after a matching response.
-        let post_send_epoch = std::sync::atomic::AtomicU64::new(0);
-        let post_send_permit = SessionPermit::revoke_on_check(0, &post_send_epoch, 5);
+        // A named transport hook now revokes immediately after recording the
+        // external send and before returning the matching response. This is
+        // independent of how many exact-file checks precede transport: the
+        // local recovery record must not be deleted after that committed send.
+        backend
+            .prepare_pending_retry(None)
+            .expect("reattribute pending before post-send retry");
+        let post_send_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        rpc.update(|state| state.revoke_epoch_after_send = Some(post_send_epoch.clone()));
+        let post_send_permit = SessionPermit::current_for_test(0, post_send_epoch.as_ref());
         assert!(matches!(
             backend.retry_pending_with_permit(&post_send_permit),
             Err(BackendError::Locked)
@@ -7867,6 +9015,267 @@ mod tests {
     fn zero_y_parity_uses_canonical_rlp_empty_integer() {
         assert_eq!(rlp_integer(&[0]), vec![0x80]);
         assert_eq!(rlp_integer(&[1]), vec![0x01]);
+    }
+
+    #[test]
+    fn pending_type_two_recovery_accepts_bounded_signers_and_rejects_every_canonicality_axis() {
+        let recipient = [0x45; 20];
+        let mut valid_transactions = Vec::new();
+        for key_marker in [0x12, 0x13] {
+            let key = [key_marker; 32];
+            let sender = address_from_private_key(&key).expect("derive native pending signer");
+            let signed = sign_native_type_two(
+                &key,
+                sender,
+                recipient,
+                Word::from_u64(1_000_000_000_000_000),
+                Word::from_u64(7),
+                Word::from_u64(NATIVE_TRANSFER_GAS),
+                Word::from_u64(1_000_000_000),
+                Word::from_u64(2_000_000_000),
+            )
+            .expect("sign valid bounded native pending fixture");
+            assert_eq!(
+                recover_signed_type_two_sender(signed.bytes.as_slice())
+                    .expect("recover valid native pending sender"),
+                sender
+            );
+            valid_transactions.push(signed.bytes.to_vec());
+
+            let amount = TokenAmount::from_be_bytes({
+                let mut bytes = [0_u8; 32];
+                bytes[31] = 1;
+                bytes
+            });
+            let token = sign_erc20_type_two(
+                &key,
+                sender,
+                [0x46; 20],
+                recipient,
+                amount,
+                Word::from_u64(8),
+                Word::from_u64(60_000),
+                Word::from_u64(1_000_000_000),
+                Word::from_u64(2_000_000_000),
+            )
+            .expect("sign valid bounded ERC20 pending fixture");
+            assert_eq!(
+                recover_signed_type_two_sender(token.bytes.as_slice())
+                    .expect("recover valid ERC20 pending sender"),
+                sender
+            );
+        }
+
+        let valid = valid_transactions.remove(0);
+        let fields = signed_type_two_fields(&valid);
+        assert_eq!(fields.len(), 12);
+        let mut invalid = Vec::new();
+        invalid.push(("truncated", valid[..valid.len() - 1].to_vec()));
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        invalid.push(("trailing", trailing));
+        let mut thirteen = fields.clone();
+        thirteen.push(rlp_integer(&[]));
+        invalid.push(("thirteenth field", rebuild_signed_type_two(&thirteen)));
+
+        let mut noncanonical_single = fields.clone();
+        noncanonical_single[1] = vec![0x81, 0x07];
+        invalid.push((
+            "noncanonical single byte",
+            rebuild_signed_type_two(&noncanonical_single),
+        ));
+        let mut noncanonical_long = fields.clone();
+        noncanonical_long[5] = {
+            let mut encoded = vec![0xb8, 20];
+            encoded.extend_from_slice(&recipient);
+            encoded
+        };
+        invalid.push((
+            "noncanonical long length",
+            rebuild_signed_type_two(&noncanonical_long),
+        ));
+        let mut leading_zero = fields.clone();
+        leading_zero[2] = rlp_bytes(&[0, 1]);
+        invalid.push((
+            "leading-zero integer",
+            rebuild_signed_type_two(&leading_zero),
+        ));
+        let mut wrong_chain = fields.clone();
+        wrong_chain[0] = rlp_word(Word::from_u64(1));
+        invalid.push(("wrong chain", rebuild_signed_type_two(&wrong_chain)));
+        let mut nonempty_access = fields.clone();
+        nonempty_access[8] = rlp_list(&[rlp_list(&[])]);
+        invalid.push((
+            "nonempty access list",
+            rebuild_signed_type_two(&nonempty_access),
+        ));
+        let mut unsupported_data = fields.clone();
+        unsupported_data[7] = rlp_bytes(&[1]);
+        invalid.push((
+            "unsupported calldata",
+            rebuild_signed_type_two(&unsupported_data),
+        ));
+        let mut wrong_gas = fields.clone();
+        wrong_gas[4] = rlp_word(Word::from_u64(NATIVE_TRANSFER_GAS + 1));
+        invalid.push(("unsupported gas", rebuild_signed_type_two(&wrong_gas)));
+        let mut zero_value = fields.clone();
+        zero_value[6] = rlp_word(Word::ZERO);
+        invalid.push(("unsupported value", rebuild_signed_type_two(&zero_value)));
+        let mut bad_y = fields.clone();
+        bad_y[9] = rlp_integer(&[2]);
+        invalid.push(("y parity two", rebuild_signed_type_two(&bad_y)));
+        let mut zero_r = fields.clone();
+        zero_r[10] = rlp_integer(&[]);
+        invalid.push(("zero r", rebuild_signed_type_two(&zero_r)));
+        let mut zero_s = fields.clone();
+        zero_s[11] = rlp_integer(&[]);
+        invalid.push(("zero s", rebuild_signed_type_two(&zero_s)));
+        let mut out_of_range_r = fields.clone();
+        out_of_range_r[10] = rlp_integer(&[0xff; 32]);
+        invalid.push(("out-of-range r", rebuild_signed_type_two(&out_of_range_r)));
+        let mut high_s = fields;
+        high_s[11] = rlp_integer(&[
+            0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46,
+            0x68, 0x1b, 0x20, 0xa1,
+        ]);
+        invalid.push(("high s", rebuild_signed_type_two(&high_s)));
+
+        for (case, raw) in invalid {
+            assert!(
+                matches!(
+                    recover_signed_type_two_sender(&raw),
+                    Err(BackendError::PendingInvalid)
+                ),
+                "invalid pending axis must fail closed: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_open_rejects_foreign_or_tampered_raw_and_exact_lease_blocks_replacement() {
+        let local_key = [0x21; 32];
+        let foreign_key = [0x22; 32];
+        let foreign_sender =
+            address_from_private_key(&foreign_key).expect("derive foreign pending signer");
+        let foreign = sign_native_type_two(
+            &foreign_key,
+            foreign_sender,
+            [0x45; 20],
+            Word::from_u64(1_000_000_000_000_000),
+            Word::from_u64(7),
+            Word::from_u64(NATIVE_TRANSFER_GAS),
+            Word::from_u64(1_000_000_000),
+            Word::from_u64(2_000_000_000),
+        )
+        .expect("sign foreign pending fixture");
+        let mut foreign_backend = DemoBackend::with_rpc(temporary_vault(), test_rpc());
+        foreign_backend
+            .import_private_key(
+                sensitive(&fixed_hex(&local_key)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import local pending wallet");
+        write_new_pending(
+            &foreign_backend.pending_path,
+            foreign.transaction_hash,
+            foreign.bytes.as_slice(),
+        )
+        .expect("persist foreign signed pending fixture");
+        foreign_backend.lock();
+        assert!(matches!(
+            foreign_backend.open(TEST_PASSWORD),
+            Err(BackendError::PendingAccountMismatch)
+        ));
+        assert!(foreign_backend.unlocked.is_none());
+        assert!(foreign_backend.pending_broadcast_exists());
+        remove_test_backend_files(&foreign_backend);
+
+        let local_sender = address_from_private_key(&local_key).expect("derive local signer");
+        let signed = sign_native_type_two(
+            &local_key,
+            local_sender,
+            [0x45; 20],
+            Word::from_u64(1_000_000_000_000_000),
+            Word::from_u64(7),
+            Word::from_u64(NATIVE_TRANSFER_GAS),
+            Word::from_u64(1_000_000_000),
+            Word::from_u64(2_000_000_000),
+        )
+        .expect("sign local pending fixture");
+        let mut tampered_backend = DemoBackend::with_rpc(temporary_vault(), test_rpc());
+        tampered_backend
+            .import_private_key(
+                sensitive(&fixed_hex(&local_key)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import tampered pending wallet");
+        let mut tampered = signed.bytes.to_vec();
+        tampered.push(0);
+        write_new_pending(
+            &tampered_backend.pending_path,
+            keccak32(&tampered),
+            &tampered,
+        )
+        .expect("persist hash-consistent tampered pending fixture");
+        tampered_backend.lock();
+        assert!(matches!(
+            tampered_backend.open(TEST_PASSWORD),
+            Err(BackendError::PendingInvalid)
+        ));
+        assert!(tampered_backend.unlocked.is_none());
+        remove_test_backend_files(&tampered_backend);
+
+        let mut leased = DemoBackend::with_rpc(temporary_vault(), test_rpc());
+        leased
+            .import_private_key(
+                sensitive(&fixed_hex(&local_key)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import exact-lease pending wallet");
+        write_new_pending(
+            &leased.pending_path,
+            signed.transaction_hash,
+            signed.bytes.as_slice(),
+        )
+        .expect("persist exact-lease pending fixture");
+        leased.lock();
+        let opened = leased
+            .open(TEST_PASSWORD)
+            .expect("open and pin exact pending object");
+        assert_eq!(
+            opened
+                .pending_broadcast
+                .as_ref()
+                .map(|preview| preview.sender_account_index),
+            Some(0)
+        );
+        #[cfg(windows)]
+        {
+            assert!(fs::remove_file(&leased.pending_path).is_err());
+            assert!(
+                OpenOptions::new()
+                    .write(true)
+                    .open(&leased.pending_path)
+                    .is_err()
+            );
+            let replacement = leased
+                .pending_path
+                .with_file_name("pending-replacement.bin");
+            fs::write(&replacement, b"replacement").expect("write replacement probe");
+            assert!(fs::rename(&replacement, &leased.pending_path).is_err());
+            let _ = fs::remove_file(replacement);
+        }
+        let epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &epoch);
+        leased
+            .retry_pending_with_permit(&permit)
+            .expect("delete only held exact object after matching retry");
+        assert!(!leased.pending_broadcast_exists());
+        remove_test_backend_files(&leased);
     }
 
     #[test]

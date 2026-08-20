@@ -50,20 +50,66 @@ impl StatusPalette {
     }
 }
 
-/// Public values the backend may return after creating, opening, or refreshing.
+/// One backend-validated public account identity available in this vault.
+///
+/// Deliberately does not implement `Debug`: a full address is identifying
+/// metadata and must not enter diagnostics accidentally.
+#[derive(Clone, Eq, PartialEq)]
+pub struct WalletAccountSnapshot {
+    /// Exact managed BIP-44 position. This demo accepts only zero and one.
+    pub index: u8,
+    /// Full checksummed Sepolia account address.
+    pub address: String,
+}
+
+/// Public values the backend may return after creating, opening, refreshing,
+/// or selecting one of the already authenticated accounts.
 ///
 /// Deliberately does not implement `Debug`: full wallet addresses must not
 /// accidentally enter logs or crash diagnostics.
 #[derive(Clone, Eq, PartialEq)]
 pub struct WalletSnapshot {
-    /// Full checksummed or lowercase hexadecimal Sepolia account address.
-    pub address: String,
+    /// Exact bounded list validated from the authenticated vault.
+    pub accounts: Vec<WalletAccountSnapshot>,
+    /// Account whose address, balances, exports, and new transfers are active.
+    pub selected_account_index: u8,
     /// Human-readable Sepolia ETH balance without a ticker suffix.
     pub balance_eth: String,
     /// Authenticated local vault/source category.
     pub wallet_kind: WalletKind,
-    /// Number of account metadata records validated by the backend.
-    pub account_count: u8,
+    /// A durable signed transaction attributed by recovering its exact
+    /// type-2 signature. Its sender can differ from the session selection
+    /// after reopening because account selection is intentionally not saved.
+    pub pending_broadcast: Option<PendingBroadcastPreview>,
+}
+
+impl WalletSnapshot {
+    pub(crate) fn selected_account(&self) -> Option<&WalletAccountSnapshot> {
+        self.accounts
+            .iter()
+            .find(|account| account.index == self.selected_account_index)
+    }
+
+    fn is_well_formed(&self) -> bool {
+        let expected_count = match self.wallet_kind {
+            WalletKind::V2Mnemonic { .. } => 2,
+            WalletKind::LegacyV1RawPrivateKey | WalletKind::V2RawPrivateKey => 1,
+        };
+        let accounts_are_valid = self.accounts.len() == expected_count
+            && self.accounts.iter().enumerate().all(|(position, account)| {
+                usize::from(account.index) == position
+                    && valid_recipient_shape(account.address.as_str())
+            })
+            && self.selected_account().is_some()
+            && (self.accounts.len() != 2 || self.accounts[0].address != self.accounts[1].address);
+        let pending_is_valid = self.pending_broadcast.as_ref().is_none_or(|pending| {
+            self.accounts.iter().any(|account| {
+                account.index == pending.sender_account_index
+                    && account.address == pending.sender_address
+            }) && valid_full_hash(&pending.transaction_hash)
+        });
+        accounts_are_valid && pending_is_valid
+    }
 }
 
 /// One saved custom ERC-20 contract and its current Sepolia validation state.
@@ -87,7 +133,7 @@ pub enum CustomTokenState {
         symbol: Option<String>,
         /// Exact, strictly decoded ERC-20 decimal count.
         decimals: u8,
-        /// Account-0 balance formatted with the verified decimal count.
+        /// Selected-account balance formatted with the verified decimal count.
         balance: String,
     },
     /// Trusted metadata and balance are intentionally omitted after failure.
@@ -123,7 +169,7 @@ pub enum NewMnemonicWords {
 pub enum SecretRevealKind {
     /// English BIP-39 recovery phrase.
     Mnemonic,
-    /// Lowercase hexadecimal account-0 private key.
+    /// Lowercase hexadecimal private key for the current bounded account.
     AccountPrivateKey,
 }
 
@@ -250,13 +296,34 @@ impl GeneratedBackupConfirmation {
 /// short-lived reveal state.
 pub struct SecretReveal {
     kind: SecretRevealKind,
+    account_index: Option<u8>,
+    account_address: Option<Zeroizing<String>>,
     text: Zeroizing<String>,
 }
 
 impl SecretReveal {
     #[must_use]
     pub(crate) const fn new(kind: SecretRevealKind, text: Zeroizing<String>) -> Self {
-        Self { kind, text }
+        Self {
+            kind,
+            account_index: None,
+            account_address: None,
+            text,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new_account_private_key(
+        account_index: u8,
+        account_address: Zeroizing<String>,
+        text: Zeroizing<String>,
+    ) -> Self {
+        Self {
+            kind: SecretRevealKind::AccountPrivateKey,
+            account_index: Some(account_index),
+            account_address: Some(account_address),
+            text,
+        }
     }
 
     #[must_use]
@@ -265,7 +332,29 @@ impl SecretReveal {
     }
 
     #[must_use]
+    pub(crate) fn account_binding(&self) -> Option<(u8, &str)> {
+        Some((self.account_index?, self.account_address.as_ref()?.as_str()))
+    }
+
+    #[must_use]
+    fn is_well_formed(&self) -> bool {
+        match self.kind {
+            SecretRevealKind::Mnemonic => {
+                self.account_index.is_none() && self.account_address.is_none()
+            }
+            SecretRevealKind::AccountPrivateKey => self
+                .account_binding()
+                .is_some_and(|(index, address)| index <= 1 && valid_recipient_shape(address)),
+        }
+    }
+
+    #[must_use]
     fn expose_secret(&self) -> &str {
+        self.text.as_str()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expose_secret_for_test(&self) -> &str {
         self.text.as_str()
     }
 }
@@ -277,6 +366,20 @@ impl SecretReveal {
 #[derive(Clone, Eq, PartialEq)]
 pub struct SendReceipt {
     /// Transaction hash returned only after the backend verifies it.
+    pub transaction_hash: String,
+}
+
+/// Exact durable-pending attribution shown before byte-for-byte rebroadcast.
+///
+/// This deliberately has no `Debug` implementation. The sender and hash are
+/// public chain metadata but do not belong in routine diagnostics.
+#[derive(Clone, Eq, PartialEq)]
+pub struct PendingBroadcastPreview {
+    /// Bounded vault account whose public key matches the recovered signature.
+    pub sender_account_index: u8,
+    /// Full checksummed sender recovered from the signed transaction.
+    pub sender_address: String,
+    /// Hash recomputed over the exact bytes retained in `pending-v1.bin`.
     pub transaction_hash: String,
 }
 
@@ -305,6 +408,10 @@ pub enum FeeSelection {
 /// public transaction metadata that is unnecessary in diagnostics.
 #[derive(Clone, Eq, PartialEq)]
 pub struct TransferPreview {
+    /// Exact backend-selected account index used for signing.
+    pub sender_account_index: u8,
+    /// Full checksummed sender address derived for that selected account.
+    pub sender_address: String,
     /// Exact normalized recipient.
     pub recipient: String,
     /// Exact normalized native value in Sepolia ETH.
@@ -340,6 +447,10 @@ pub struct TransferPreview {
 /// diagnostics or crash output.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Erc20TransferPreview {
+    /// Exact backend-selected account index used for signing.
+    pub sender_account_index: u8,
+    /// Full checksummed sender address derived for that selected account.
+    pub sender_address: String,
     /// Full saved contract address reopened from the authenticated sidecar.
     pub contract_address: String,
     /// Strictly bounded symbol authenticated against the saved metadata.
@@ -506,6 +617,13 @@ pub trait WalletBackend: Send + 'static {
     /// record must be preserved for exact retry after reauthentication.
     fn lock_wallet(&mut self);
 
+    /// Select one account already authenticated in the open vault. This is a
+    /// session-only choice and must never persist or derive an unbounded path.
+    fn select_account(&mut self, index: u8) -> Result<WalletSnapshot, String> {
+        let _ = index;
+        Err("계정 전환 기능을 사용할 수 없습니다.".to_owned())
+    }
+
     /// Reauthenticate a v1 raw-key vault and migrate it to v2 without changing
     /// account 0.
     fn migrate_legacy_wallet(
@@ -525,7 +643,8 @@ pub trait WalletBackend: Send + 'static {
         Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
     }
 
-    /// Reauthenticate and return only account 0's private key.
+    /// Reauthenticate and return only the currently selected account's private
+    /// key. Raw-key wallets can select only account zero.
     fn export_account_private_key(
         &mut self,
         password: SensitiveText,
@@ -589,8 +708,20 @@ pub trait WalletBackend: Send + 'static {
     /// Invalidate the currently prepared transfer without signing.
     fn cancel_prepared(&mut self) -> Result<(), String>;
 
+    /// Read and strictly attribute the durable signed transaction, freezing
+    /// its exact bytes for a separately confirmed retry. No network call or
+    /// signature occurs here.
+    fn inspect_pending_broadcast(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<PendingBroadcastPreview, String> {
+        let _ = permit;
+        Err("보류 거래 확인 기능을 사용할 수 없습니다.".to_owned())
+    }
+
     /// Retry only the exact signed transaction durably retained after an
-    /// ambiguous prior broadcast. This must never create a fresh signature.
+    /// ambiguous prior broadcast and already frozen by inspection. This must
+    /// never create a fresh signature.
     fn retry_pending(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String>;
 }
 
@@ -650,6 +781,9 @@ enum WorkerCommand {
     Open {
         password: Zeroizing<String>,
     },
+    SelectAccount {
+        index: u8,
+    },
     MigrateLegacy {
         old_password: SensitiveText,
         new_password: SensitiveText,
@@ -682,6 +816,7 @@ enum WorkerCommand {
     },
     ConfirmPrepared,
     CancelPrepared,
+    InspectPendingBroadcast,
     RetryPending,
 }
 
@@ -694,6 +829,7 @@ enum WorkerEvent {
     MnemonicImported(Result<WalletSnapshot, String>),
     PrivateKeyImported(Result<WalletSnapshot, String>),
     Opened(Result<WalletSnapshot, String>),
+    AccountSelected(Result<WalletSnapshot, String>),
     LegacyMigrated(Result<WalletSnapshot, String>),
     MnemonicExported(Result<SecretReveal, String>),
     AccountPrivateKeyExported(Result<SecretReveal, String>),
@@ -705,6 +841,7 @@ enum WorkerEvent {
     SavedErc20TransferPrepared(Box<Result<Erc20TransferPreview, String>>),
     PreparedConfirmed(Result<SendReceipt, String>),
     PreparedCancelled(Result<(), String>),
+    PendingBroadcastInspected(Result<PendingBroadcastPreview, String>),
     Retried(Result<SendReceipt, String>),
 }
 
@@ -735,6 +872,7 @@ enum PendingAction {
     ImportMnemonic,
     ImportPrivateKey,
     Open,
+    SelectAccount,
     MigrateLegacy,
     ExportMnemonic,
     ExportAccountPrivateKey,
@@ -745,6 +883,7 @@ enum PendingAction {
     PrepareTransfer,
     ConfirmPrepared,
     CancelPrepared,
+    InspectPendingBroadcast,
     RetryPending,
 }
 
@@ -812,6 +951,9 @@ struct TimedSecretReveal {
 
 impl TimedSecretReveal {
     fn new(reveal: SecretReveal, now: Instant) -> Option<Self> {
+        if !reveal.is_well_formed() {
+            return None;
+        }
         Some(Self {
             reveal,
             expires_at: now.checked_add(SECRET_REVEAL_DURATION)?,
@@ -866,6 +1008,7 @@ impl PendingAction {
             Self::ImportMnemonic => "복구 문구를 검증하고 v2 지갑을 저장하는 중...",
             Self::ImportPrivateKey => "개인 키를 검증하고 v2 지갑을 저장하는 중...",
             Self::Open => "테스트 지갑을 여는 중...",
+            Self::SelectAccount => "계정을 전환하는 중...",
             Self::MigrateLegacy => "v1 개인 키 지갑을 v2로 이전하는 중...",
             Self::ExportMnemonic => "비밀번호를 확인하고 복구 문구를 준비하는 중...",
             Self::ExportAccountPrivateKey => "비밀번호를 확인하고 계정 키를 준비하는 중...",
@@ -876,6 +1019,7 @@ impl PendingAction {
             Self::PrepareTransfer => "nonce와 최대 수수료를 확인하는 중...",
             Self::ConfirmPrepared => "확인한 테스트 전송을 서명하고 제출하는 중...",
             Self::CancelPrepared => "준비된 전송을 취소하는 중...",
+            Self::InspectPendingBroadcast => "보류 거래의 서명 계정을 확인하는 중...",
             Self::RetryPending => "저장된 이전 거래를 그대로 다시 전송하는 중...",
         }
     }
@@ -994,6 +1138,7 @@ pub struct WalletApp {
     prepared: Option<PreparedPreview>,
     pending: Option<PendingAction>,
     hold: HoldToSend,
+    pending_retry_hold: HoldToSend,
     secret_hold: HoldToSend,
     generated_backup: Option<GeneratedBackupUiState>,
     generated_backup_inputs_visible: bool,
@@ -1046,6 +1191,7 @@ impl WalletApp {
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
+            pending_retry_hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
             generated_backup: None,
             generated_backup_inputs_visible: false,
@@ -1090,6 +1236,7 @@ impl WalletApp {
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
+            pending_retry_hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
             generated_backup: None,
             generated_backup_inputs_visible: false,
@@ -1161,8 +1308,7 @@ impl WalletApp {
         self.custom_max_fee_gwei.zeroize();
 
         if let Some(snapshot) = self.snapshot.as_mut() {
-            snapshot.address.zeroize();
-            snapshot.balance_eth.zeroize();
+            zeroize_wallet_snapshot(snapshot);
         }
         self.snapshot = None;
         for token in &mut self.custom_tokens {
@@ -1200,6 +1346,7 @@ impl WalletApp {
         self.export_kind = SecretRevealKind::Mnemonic;
         self.fee_mode = FeeMode::Recommended;
         self.hold.reset();
+        self.pending_retry_hold.reset();
         self.secret_hold.reset();
     }
 
@@ -1570,6 +1717,52 @@ impl WalletApp {
         self.send_command(WorkerCommand::Refresh, PendingAction::Refresh);
     }
 
+    fn select_account(&mut self, index: u8) {
+        if !self.require_unlocked_action() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        if snapshot.selected_account_index == index {
+            return;
+        }
+        if self.pending.is_some() {
+            self.error = Some("다른 작업이 끝난 뒤 계정을 바꿔 주세요.".to_owned());
+            return;
+        }
+        if self.prepared.is_some() {
+            self.error = Some("준비한 전송을 취소한 뒤 계정을 바꿔 주세요.".to_owned());
+            return;
+        }
+        if self.secret_reveal.is_some() {
+            self.error = Some("표시 중인 비밀값을 닫은 뒤 계정을 바꿔 주세요.".to_owned());
+            return;
+        }
+        if self.generated_backup.is_some() {
+            self.error = Some("복구 문구 백업 확인을 마친 뒤 계정을 바꿔 주세요.".to_owned());
+            return;
+        }
+        if snapshot.pending_broadcast.is_some() {
+            self.error = Some(
+                "보류 거래를 확인하거나 같은 거래를 다시 제출한 뒤 계정을 바꿔 주세요.".to_owned(),
+            );
+            return;
+        }
+        if !snapshot
+            .accounts
+            .iter()
+            .any(|account| account.index == index)
+        {
+            self.error = Some("선택할 수 없는 계정입니다.".to_owned());
+            return;
+        }
+        self.send_command(
+            WorkerCommand::SelectAccount { index },
+            PendingAction::SelectAccount,
+        );
+    }
+
     fn add_custom_token(&mut self) {
         if !self.require_unlocked_action() {
             return;
@@ -1696,13 +1889,49 @@ impl WalletApp {
         self.send_command(WorkerCommand::CancelPrepared, PendingAction::CancelPrepared);
     }
 
-    fn retry_pending(&mut self) {
+    fn inspect_pending_broadcast(&mut self) {
         if !self.require_unlocked_action() {
-            self.hold.reset();
+            self.pending_retry_hold.reset();
             return;
         }
-        self.hold.reset();
+        if self.prepared.is_some() {
+            self.error = Some("준비한 전송을 취소한 뒤 보류 거래를 확인해 주세요.".to_owned());
+            return;
+        }
+        self.pending_retry_hold.reset();
+        self.send_command(
+            WorkerCommand::InspectPendingBroadcast,
+            PendingAction::InspectPendingBroadcast,
+        );
+    }
+
+    fn retry_pending(&mut self) {
+        if !self.require_unlocked_action() {
+            self.pending_retry_hold.reset();
+            return;
+        }
+        let has_attributed_preview = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+            .is_some_and(|preview| {
+                pending_preview_matches_snapshot(preview, self.snapshot.as_ref())
+            });
+        if !has_attributed_preview {
+            self.error = Some("보류 거래의 서명 계정을 먼저 확인해 주세요.".to_owned());
+            self.pending_retry_hold.reset();
+            return;
+        }
+        self.pending_retry_hold.reset();
         self.send_command(WorkerCommand::RetryPending, PendingAction::RetryPending);
+    }
+
+    fn handle_pending_retry_hold_outcome(&mut self, outcome: HoldOutcome) -> bool {
+        if !matches!(outcome, HoldOutcome::Triggered) || self.pending.is_some() {
+            return false;
+        }
+        self.retry_pending();
+        self.pending == Some(PendingAction::RetryPending)
     }
 
     fn process_events(&mut self) {
@@ -1736,7 +1965,7 @@ impl WalletApp {
     }
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
-        self.pending = None;
+        let completed_action = self.pending.take();
         if matches!(
             &event,
             WorkerEvent::GenerationBegun(_)
@@ -1863,6 +2092,58 @@ impl WalletApp {
                     self.error = Some(safe_error(error));
                 }
             },
+            WorkerEvent::AccountSelected(result) => match result {
+                Ok(mut snapshot) => {
+                    let identity_matches = self.snapshot.as_ref().is_some_and(|current| {
+                        current.wallet_kind == snapshot.wallet_kind
+                            && current.accounts == snapshot.accounts
+                            && current.pending_broadcast.is_none()
+                            && snapshot.pending_broadcast.is_none()
+                            && current.selected_account_index != snapshot.selected_account_index
+                    });
+                    if !snapshot.is_well_formed() || !identity_matches {
+                        zeroize_wallet_snapshot(&mut snapshot);
+                        self.error = Some(
+                            "계정 전환 결과가 열린 지갑과 일치하지 않습니다. 지갑을 잠근 뒤 다시 열어 주세요."
+                                .to_owned(),
+                        );
+                        return;
+                    }
+                    let selected_index = snapshot.selected_account_index;
+                    if let Some(current) = self.snapshot.as_mut() {
+                        zeroize_wallet_snapshot(current);
+                    }
+                    self.snapshot = Some(snapshot);
+                    zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    zeroize_transfer_asset_choice(&mut self.transfer_asset);
+                    self.transfer_asset = TransferAssetChoice::Native;
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.recipient.zeroize();
+                    self.amount_eth.zeroize();
+                    self.custom_priority_fee_gwei.zeroize();
+                    self.custom_max_fee_gwei.zeroize();
+                    self.custom_token_address.zeroize();
+                    self.reauth_password.zeroize();
+                    self.export_kind =
+                        match self.snapshot.as_ref().map(|snapshot| snapshot.wallet_kind) {
+                            Some(WalletKind::V2Mnemonic { .. }) => SecretRevealKind::Mnemonic,
+                            Some(
+                                WalletKind::LegacyV1RawPrivateKey | WalletKind::V2RawPrivateKey,
+                            )
+                            | None => SecretRevealKind::AccountPrivateKey,
+                        };
+                    self.secret_reveal = None;
+                    self.secret_hold.reset();
+                    self.pending_retry_hold.reset();
+                    zeroize_optional_string(&mut self.last_transaction_hash);
+                    self.secret_text_state_purge_pending = true;
+                    self.error = None;
+                    self.notice = Some(format!(
+                        "계정 {selected_index}로 전환했습니다. ETH와 저장 토큰 잔액을 다시 조회해 주세요."
+                    ));
+                }
+                Err(error) => self.error = Some(safe_error(error)),
+            },
             WorkerEvent::LegacyMigrated(result) => match result {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
@@ -1883,13 +2164,69 @@ impl WalletApp {
                     self.error = Some(safe_error(error));
                 }
             },
-            WorkerEvent::MnemonicExported(result)
-            | WorkerEvent::AccountPrivateKeyExported(result) => match result {
-                Ok(reveal) => {
+            WorkerEvent::MnemonicExported(result) => match result {
+                Ok(reveal)
+                    if completed_action == Some(PendingAction::ExportMnemonic)
+                        && reveal.kind() == SecretRevealKind::Mnemonic
+                        && reveal.is_well_formed()
+                        && self.snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot.is_well_formed()
+                                && matches!(snapshot.wallet_kind, WalletKind::V2Mnemonic { .. })
+                        }) =>
+                {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.secret_reveal = TimedSecretReveal::new(reveal, Instant::now());
-                    self.notice =
-                        Some("비밀값은 잠시만 표시되며 복사 기능을 제공하지 않습니다.".to_owned());
+                    if self.secret_reveal.is_some() {
+                        self.notice = Some(
+                            "비밀값은 잠시만 표시되며 복사 기능을 제공하지 않습니다.".to_owned(),
+                        );
+                    } else {
+                        self.error = Some(secret_export_mismatch_error().to_owned());
+                    }
+                }
+                Ok(reveal) => {
+                    drop(reveal);
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = None;
+                    self.secret_hold.reset();
+                    self.error = Some(secret_export_mismatch_error().to_owned());
+                }
+                Err(error) => {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.error = Some(safe_error(error));
+                }
+            },
+            WorkerEvent::AccountPrivateKeyExported(result) => match result {
+                Ok(reveal)
+                    if completed_action == Some(PendingAction::ExportAccountPrivateKey)
+                        && reveal.kind() == SecretRevealKind::AccountPrivateKey
+                        && reveal.is_well_formed()
+                        && self.snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot.is_well_formed()
+                                && snapshot.selected_account().is_some_and(|selected| {
+                                    reveal.account_binding().is_some_and(|(index, address)| {
+                                        index == selected.index
+                                            && address == selected.address.as_str()
+                                    })
+                                })
+                        }) =>
+                {
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = TimedSecretReveal::new(reveal, Instant::now());
+                    if self.secret_reveal.is_some() {
+                        self.notice = Some(
+                            "비밀값은 잠시만 표시되며 복사 기능을 제공하지 않습니다.".to_owned(),
+                        );
+                    } else {
+                        self.error = Some(secret_export_mismatch_error().to_owned());
+                    }
+                }
+                Ok(reveal) => {
+                    drop(reveal);
+                    clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.secret_reveal = None;
+                    self.secret_hold.reset();
+                    self.error = Some(secret_export_mismatch_error().to_owned());
                 }
                 Err(error) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
@@ -1979,6 +2316,20 @@ impl WalletApp {
             },
             WorkerEvent::TransferPrepared(result) => match *result {
                 Ok(preview) => {
+                    if !sender_matches_snapshot(
+                        self.snapshot.as_ref(),
+                        preview.sender_account_index,
+                        preview.sender_address.as_str(),
+                    ) {
+                        let mut preview = PreparedPreview::Native(preview);
+                        zeroize_prepared_preview(&mut preview);
+                        self.prepared = None;
+                        self.error = Some(
+                            "전송의 보내는 계정이 현재 선택 계정과 일치하지 않습니다. 다시 준비해 주세요."
+                                .to_owned(),
+                        );
+                        return;
+                    }
                     self.prepared = Some(PreparedPreview::Native(preview));
                     self.notice = None;
                     self.error = None;
@@ -1991,6 +2342,21 @@ impl WalletApp {
             },
             WorkerEvent::SavedErc20TransferPrepared(result) => match *result {
                 Ok(preview) => {
+                    if !sender_matches_snapshot(
+                        self.snapshot.as_ref(),
+                        preview.sender_account_index,
+                        preview.sender_address.as_str(),
+                    ) {
+                        zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                        let mut preview = PreparedPreview::SavedErc20(preview);
+                        zeroize_prepared_preview(&mut preview);
+                        self.prepared = None;
+                        self.error = Some(
+                            "전송의 보내는 계정이 현재 선택 계정과 일치하지 않습니다. 다시 준비해 주세요."
+                                .to_owned(),
+                        );
+                        return;
+                    }
                     self.prepared = Some(PreparedPreview::SavedErc20(preview));
                     self.notice = None;
                     self.error = None;
@@ -2028,6 +2394,9 @@ impl WalletApp {
                     );
                 }
                 Err(error) => {
+                    let broadcast_unknown =
+                        error == "거래 전송 상태가 불확실합니다. 잠시 후 잔액을 확인해 주세요.";
+                    let safe = safe_error(error);
                     let was_erc20 = matches!(self.prepared, Some(PreparedPreview::SavedErc20(_)));
                     mark_snapshot_balance_stale(self.snapshot.as_mut());
                     if was_erc20 {
@@ -2042,7 +2411,12 @@ impl WalletApp {
                     } else {
                         clear_prepared_state(&mut self.prepared, &mut self.hold);
                     }
-                    self.error = Some(safe_error(error));
+                    if broadcast_unknown {
+                        let prior_notice = self.notice.take();
+                        self.inspect_pending_broadcast();
+                        self.notice = prior_notice;
+                    }
+                    self.error = Some(safe);
                 }
             },
             WorkerEvent::PreparedCancelled(result) => match result {
@@ -2052,8 +2426,49 @@ impl WalletApp {
                 }
                 Err(error) => self.error = Some(safe_error(error)),
             },
+            WorkerEvent::PendingBroadcastInspected(result) => match result {
+                Ok(mut preview) => {
+                    if !pending_preview_matches_snapshot(&preview, self.snapshot.as_ref()) {
+                        zeroize_pending_broadcast_preview(&mut preview);
+                        clear_snapshot_pending_broadcast(self.snapshot.as_mut());
+                        self.pending_retry_hold.reset();
+                        self.error = Some(
+                            "보류 거래의 서명 계정이 열린 지갑과 일치하지 않습니다.".to_owned(),
+                        );
+                        return;
+                    }
+                    let selected = self
+                        .snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.selected_account_index);
+                    let sender_index = preview.sender_account_index;
+                    if let Some(snapshot) = self.snapshot.as_mut() {
+                        if let Some(existing) = snapshot.pending_broadcast.as_mut() {
+                            zeroize_pending_broadcast_preview(existing);
+                        }
+                        snapshot.pending_broadcast = Some(preview);
+                    }
+                    self.pending_retry_hold.reset();
+                    self.notice = Some(if selected == Some(sender_index) {
+                        format!(
+                            "보류 거래의 서명자는 현재 계정 {sender_index}입니다. 아래 전체 주소와 해시를 확인해 주세요."
+                        )
+                    } else {
+                        format!(
+                            "주의: 보류 거래는 현재 선택과 다른 계정 {sender_index}이 서명했습니다. 아래 전체 주소와 해시를 확인해 주세요."
+                        )
+                    });
+                }
+                Err(error) => {
+                    clear_snapshot_pending_broadcast(self.snapshot.as_mut());
+                    self.pending_retry_hold.reset();
+                    self.error = Some(safe_error(error));
+                }
+            },
             WorkerEvent::Retried(result) => match result {
                 Ok(receipt) => {
+                    clear_snapshot_pending_broadcast(self.snapshot.as_mut());
+                    self.pending_retry_hold.reset();
                     self.last_transaction_hash = Some(receipt.transaction_hash);
                     mark_snapshot_balance_stale(self.snapshot.as_mut());
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
@@ -2061,6 +2476,8 @@ impl WalletApp {
                         Some("저장된 이전 Sepolia 거래를 그대로 다시 제출했습니다. 잔액을 다시 조회해 주세요.".to_owned());
                 }
                 Err(error) => {
+                    clear_snapshot_pending_broadcast(self.snapshot.as_mut());
+                    self.pending_retry_hold.reset();
                     mark_snapshot_balance_stale(self.snapshot.as_mut());
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
                     reset_transfer_selection_after_token_change(
@@ -2268,6 +2685,14 @@ impl WalletApp {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
         };
+        let Some(selected_account) = snapshot.selected_account().cloned() else {
+            ui.colored_label(
+                StatusPalette::from_visuals(ui.visuals()).error,
+                "선택된 계정 정보가 올바르지 않습니다. 지갑을 잠근 뒤 다시 열어 주세요.",
+            );
+            return;
+        };
+        let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
         ui.heading("2. 내 Sepolia 계정");
         let kind_label = match snapshot.wallet_kind {
@@ -2276,17 +2701,67 @@ impl WalletApp {
             WalletKind::V2RawPrivateKey => "v2 개인 키 지갑",
         };
         ui.label(format!(
-            "지갑 형식: {kind_label} · 전송 계정: 0 · 검증된 계정 메타데이터: {}개",
-            snapshot.account_count
+            "지갑 형식: {kind_label} · 검증된 계정 메타데이터: {}개",
+            snapshot.accounts.len()
         ));
         if let WalletKind::V2Mnemonic { word_count } = snapshot.wallet_kind {
             ui.label(format!("복구 문구: 영어 {word_count}단어"));
         }
+        ui.add_space(6.0);
+        ui.label(RichText::new("사용할 계정").strong());
+        let mut requested_index = snapshot.selected_account_index;
+        let selection_allowed = self.pending.is_none()
+            && self.prepared.is_none()
+            && self.secret_reveal.is_none()
+            && self.generated_backup.is_none()
+            && snapshot.pending_broadcast.is_none();
+        if snapshot.accounts.len() > 1 {
+            let selected_label = format!(
+                "계정 {} · {}",
+                selected_account.index, selected_account.address
+            );
+            let _ = ui.add_enabled_ui(selection_allowed, |ui| {
+                egui::ComboBox::from_id_salt("verified_wallet_account")
+                    .selected_text(selected_label)
+                    .width(590.0)
+                    .show_ui(ui, |ui| {
+                        for account in &snapshot.accounts {
+                            ui.selectable_value(
+                                &mut requested_index,
+                                account.index,
+                                format!("계정 {} · {}", account.index, account.address),
+                            );
+                        }
+                    });
+            });
+        } else {
+            ui.label(format!(
+                "계정 {} · {}",
+                selected_account.index, selected_account.address
+            ));
+        }
+        ui.label(
+            RichText::new(
+                "선택한 계정은 주소 받기, ETH·토큰 잔액, 개인 키 내보내기, 모든 ETH/ERC-20 전송에 적용됩니다.",
+            )
+            .small()
+            .color(palette.muted),
+        );
+        if snapshot.pending_broadcast.is_some() {
+            ui.colored_label(
+                palette.warning,
+                "보류 거래의 서명 계정을 확인·처리하는 동안에는 계정을 바꿀 수 없습니다.",
+            );
+        }
+        if requested_index != snapshot.selected_account_index {
+            self.select_account(requested_index);
+        }
+        ui.add_space(6.0);
         ui.label("주소");
         ui.horizontal_wrapped(|ui| {
-            ui.monospace(&snapshot.address);
+            ui.monospace(&selected_account.address);
             if ui.button("주소 복사").clicked() {
-                ui.ctx().copy_text(snapshot.address.clone());
+                ui.ctx().copy_text(selected_account.address.clone());
                 self.notice = Some("주소를 복사했습니다.".to_owned());
             }
         });
@@ -2310,6 +2785,7 @@ impl WalletApp {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
         };
+        let selected_account_index = snapshot.selected_account_index;
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.add_space(10.0);
         ui.collapsing("지갑 비밀값 내보내기", |ui| {
@@ -2328,9 +2804,16 @@ impl WalletApp {
                         ui.selectable_value(
                             &mut self.export_kind,
                             SecretRevealKind::AccountPrivateKey,
-                            "계정 0 개인 키",
+                            format!("계정 {selected_account_index} 개인 키"),
                         );
                     });
+                    ui.label(
+                        RichText::new(format!(
+                            "복구 문구는 두 계정을 모두 복구하지만, 개인 키는 현재 선택한 계정 {selected_account_index} 하나만 복구합니다."
+                        ))
+                        .small()
+                        .color(palette.muted),
+                    );
                 }
                 WalletKind::LegacyV1RawPrivateKey => {
                     self.export_kind = SecretRevealKind::AccountPrivateKey;
@@ -2362,7 +2845,11 @@ impl WalletApp {
             let label = match action {
                 SecretHoldAction::ExportMnemonic => "재인증 후 복구 문구 표시 — 2초 동안 누르기",
                 SecretHoldAction::ExportAccountPrivateKey => {
-                    "재인증 후 계정 0 개인 키 표시 — 2초 동안 누르기"
+                    if selected_account_index == 1 {
+                        "재인증 후 계정 1 개인 키 표시 — 2초 동안 누르기"
+                    } else {
+                        "재인증 후 계정 0 개인 키 표시 — 2초 동안 누르기"
+                    }
                 }
                 SecretHoldAction::BeginGeneratedBackupChallenge
                 | SecretHoldAction::ConfirmGeneratedBackup => unreachable!(),
@@ -2557,11 +3044,9 @@ impl WalletApp {
             return;
         };
         let now = Instant::now();
-        let kind = reveal.reveal.kind();
         let remaining = reveal.remaining_seconds(now);
-        let label = match kind {
-            SecretRevealKind::Mnemonic => "영어 복구 문구",
-            SecretRevealKind::AccountPrivateKey => "계정 0 개인 키",
+        let Some(label) = secret_reveal_label(&reveal.reveal) else {
+            return;
         };
         let secret = reveal.reveal.expose_secret();
         let palette = StatusPalette::from_visuals(ui.visuals());
@@ -2592,6 +3077,7 @@ impl WalletApp {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
+        let selected_account_index = snapshot.selected_account_index;
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
         ui.heading("3. 커스텀 ERC-20 토큰");
@@ -2670,7 +3156,7 @@ impl WalletApp {
                         let display_symbol = symbol.as_deref().unwrap_or("심볼 없음");
                         ui.label(format!("컨트랙트 제공 심볼: {display_symbol}"));
                         ui.label(format!("decimals: {decimals}"));
-                        ui.label(format!("계정 0 잔액: {balance}"));
+                        ui.label(custom_token_balance_label(selected_account_index, balance));
                     }
                     CustomTokenState::Unavailable { reason_ko } => {
                         ui.colored_label(palette.error, reason_ko);
@@ -2957,14 +3443,68 @@ impl WalletApp {
             ui.label(
                 "새 거래를 만들지 않고, 디스크에 보관된 이전 거래가 있을 때만 같은 바이트를 다시 전송합니다.",
             );
-            if ui
-                .add_enabled(
-                    self.pending.is_none() && self.prepared.is_none(),
-                    egui::Button::new("이전 거래 그대로 다시 전송"),
-                )
-                .clicked()
-            {
-                self.retry_pending();
+            let attributed = self
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+                .cloned();
+            if let Some(preview) = attributed {
+                let selected_index = self
+                    .snapshot
+                    .as_ref()
+                    .map_or(0, |snapshot| snapshot.selected_account_index);
+                let warning = if selected_index == preview.sender_account_index {
+                    format!(
+                        "이 보류 거래는 현재 선택한 계정 {}이 이미 서명했습니다.",
+                        preview.sender_account_index
+                    )
+                } else {
+                    format!(
+                        "주의: 현재 선택은 계정 {selected_index}이지만, 이 보류 거래의 서명자는 계정 {}입니다.",
+                        preview.sender_account_index
+                    )
+                };
+                ui.colored_label(palette.warning, RichText::new(warning).strong());
+                ui.label(format!("서명된 보내는 계정: 계정 {}", preview.sender_account_index));
+                ui.label("서명에서 복구한 전체 주소");
+                ui.monospace(preview.sender_address.as_str());
+                ui.label("동결한 거래 해시");
+                ui.monospace(preview.transaction_hash.as_str());
+                ui.label(
+                    RichText::new(
+                        "아래 확인은 새 거래나 새 서명을 만들지 않고, 위 거래의 동일한 바이트만 다시 제출합니다.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+                let enabled = self.pending.is_none() && self.prepared.is_none();
+                let response = ui.add_enabled(enabled, pending_retry_hold_button());
+                let now = Instant::now();
+                let outcome = self.pending_retry_hold.update(
+                    now,
+                    hold_to_send_input(context, &response, enabled),
+                );
+                let _ = self.handle_pending_retry_hold_outcome(outcome);
+                if matches!(outcome, HoldOutcome::Holding(_)) {
+                    context.request_repaint_after(Duration::from_millis(16));
+                }
+                let progress = self.pending_retry_hold.fraction(now);
+                let _ = ui.add(
+                    egui::ProgressBar::new(progress)
+                        .desired_width(300.0)
+                        .text(format!("{:.1} / 2.0초", progress * 2.0)),
+                );
+            } else {
+                self.pending_retry_hold.reset();
+                if ui
+                    .add_enabled(
+                        self.pending.is_none() && self.prepared.is_none(),
+                        egui::Button::new("보류 거래의 서명 계정 확인"),
+                    )
+                    .clicked()
+                {
+                    self.inspect_pending_broadcast();
+                }
             }
         });
     }
@@ -2974,6 +3514,12 @@ fn hold_to_send_button() -> egui::Button<'static> {
     egui::Button::new("확인하고 전송 — 2초 동안 누르기")
         .sense(egui::Sense::drag())
         .min_size(egui::vec2(300.0, 48.0))
+}
+
+fn pending_retry_hold_button() -> egui::Button<'static> {
+    egui::Button::new("같은 서명 거래 다시 제출 — 2초 동안 누르기")
+        .sense(egui::Sense::drag())
+        .min_size(egui::vec2(320.0, 48.0))
 }
 
 fn secret_hold_button(label: &'static str) -> egui::Button<'static> {
@@ -3059,9 +3605,35 @@ fn zeroize_optional_string(value: &mut Option<String>) {
     *value = None;
 }
 
+fn zeroize_wallet_snapshot(snapshot: &mut WalletSnapshot) {
+    for account in &mut snapshot.accounts {
+        account.address.zeroize();
+    }
+    snapshot.accounts.clear();
+    snapshot.balance_eth.zeroize();
+    snapshot.selected_account_index = 0;
+    clear_snapshot_pending_broadcast(Some(snapshot));
+}
+
+fn zeroize_pending_broadcast_preview(preview: &mut PendingBroadcastPreview) {
+    preview.sender_account_index = 0;
+    preview.sender_address.zeroize();
+    preview.transaction_hash.zeroize();
+}
+
+fn clear_snapshot_pending_broadcast(snapshot: Option<&mut WalletSnapshot>) {
+    if let Some(snapshot) = snapshot {
+        if let Some(preview) = snapshot.pending_broadcast.as_mut() {
+            zeroize_pending_broadcast_preview(preview);
+        }
+        snapshot.pending_broadcast = None;
+    }
+}
+
 fn zeroize_prepared_preview(preview: &mut PreparedPreview) {
     match preview {
         PreparedPreview::Native(preview) => {
+            preview.sender_address.zeroize();
             preview.recipient.zeroize();
             preview.amount_eth.zeroize();
             preview.nonce.zeroize();
@@ -3077,6 +3649,7 @@ fn zeroize_prepared_preview(preview: &mut PreparedPreview) {
             preview.quote_valid_for_seconds.zeroize();
         }
         PreparedPreview::SavedErc20(preview) => {
+            preview.sender_address.zeroize();
             preview.contract_address.zeroize();
             if let Some(symbol) = preview.symbol.as_mut() {
                 symbol.zeroize();
@@ -3234,8 +3807,36 @@ fn mark_snapshot_balance_stale(snapshot: Option<&mut WalletSnapshot>) {
     }
 }
 
-fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 13] {
+fn sender_matches_snapshot(
+    snapshot: Option<&WalletSnapshot>,
+    account_index: u8,
+    sender_address: &str,
+) -> bool {
+    snapshot.is_some_and(|snapshot| {
+        snapshot.selected_account_index == account_index
+            && snapshot.selected_account().is_some_and(|account| {
+                account.index == account_index && account.address == sender_address
+            })
+    })
+}
+
+fn pending_preview_matches_snapshot(
+    preview: &PendingBroadcastPreview,
+    snapshot: Option<&WalletSnapshot>,
+) -> bool {
+    valid_full_hash(&preview.transaction_hash)
+        && snapshot.is_some_and(|snapshot| {
+            snapshot.accounts.iter().any(|account| {
+                account.index == preview.sender_account_index
+                    && account.address == preview.sender_address
+            })
+        })
+}
+
+fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 15] {
     [
+        ("보내는 계정", ""),
+        ("보내는 주소", preview.sender_address.as_str()),
         ("받는 주소", preview.recipient.as_str()),
         ("보낼 금액 (Sepolia ETH)", preview.amount_eth.as_str()),
         ("nonce", preview.nonce.as_str()),
@@ -3276,6 +3877,11 @@ fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 13] {
 fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
     for (label, value) in preview_fields(preview) {
         ui.label(RichText::new(label).strong());
+        let value = if label == "보내는 계정" {
+            format!("계정 {}", preview.sender_account_index)
+        } else {
+            value.to_owned()
+        };
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(value).monospace().size(18.0));
         });
@@ -3294,6 +3900,8 @@ fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
 fn render_erc20_transfer_preview(ui: &mut egui::Ui, preview: &Erc20TransferPreview) {
     let symbol = preview.symbol.as_deref().unwrap_or("심볼 없음");
     let fields = [
+        ("보내는 계정", ""),
+        ("보내는 주소", preview.sender_address.as_str()),
         ("자산 종류", "저장·검증된 ERC-20"),
         ("토큰 컨트랙트", preview.contract_address.as_str()),
         ("컨트랙트 제공 심볼", symbol),
@@ -3331,7 +3939,9 @@ fn render_erc20_transfer_preview(ui: &mut egui::Ui, preview: &Erc20TransferPrevi
     ];
     for (label, value) in fields {
         ui.label(RichText::new(label).strong());
-        let value = if label == "decimals" {
+        let value = if label == "보내는 계정" {
+            format!("계정 {}", preview.sender_account_index)
+        } else if label == "decimals" {
             preview.decimals.to_string()
         } else {
             value.to_owned()
@@ -3523,6 +4133,9 @@ fn execute_worker_command(
         WorkerCommand::Open { password } => {
             WorkerEvent::Opened(backend.open_wallet(password.as_str()))
         }
+        WorkerCommand::SelectAccount { index } => {
+            WorkerEvent::AccountSelected(backend.select_account(index))
+        }
         WorkerCommand::MigrateLegacy {
             old_password,
             new_password,
@@ -3575,6 +4188,9 @@ fn execute_worker_command(
             WorkerEvent::PreparedConfirmed(backend.confirm_prepared(permit))
         }
         WorkerCommand::CancelPrepared => WorkerEvent::PreparedCancelled(backend.cancel_prepared()),
+        WorkerCommand::InspectPendingBroadcast => {
+            WorkerEvent::PendingBroadcastInspected(backend.inspect_pending_broadcast(permit))
+        }
         WorkerCommand::RetryPending => WorkerEvent::Retried(backend.retry_pending(permit)),
     }
 }
@@ -3627,6 +4243,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         prepared: None,
         pending: None,
         hold: HoldToSend::default(),
+        pending_retry_hold: HoldToSend::default(),
         secret_hold: HoldToSend::default(),
         generated_backup: None,
         generated_backup_inputs_visible: false,
@@ -3781,6 +4398,75 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         return Err(());
     }
 
+    app.recipient = RECIPIENT_SENTINEL.to_owned();
+    app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.custom_priority_fee_gwei = "1".to_owned();
+    app.custom_max_fee_gwei = "3".to_owned();
+    app.custom_token_address = TOKEN_CONTRACT_SENTINEL.to_owned();
+    app.transfer_asset = TransferAssetChoice::SavedErc20 {
+        contract_address: TOKEN_CONTRACT_SENTINEL.to_owned(),
+    };
+    app.last_transaction_hash = Some("headless-prior-account-hash".to_owned());
+    app.secret_text_state_purge_pending = false;
+    app.select_account(1);
+    if app.pending != Some(PendingAction::SelectAccount) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::SelectAccount { index: 1 })
+    })?;
+    if app.pending.is_some()
+        || app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.selected_account_index)
+            != Some(1)
+        || app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.balance_eth.as_str())
+            != Some("조회 전")
+        || !app.custom_tokens.is_empty()
+        || app.transfer_asset != TransferAssetChoice::Native
+        || !app.recipient.is_empty()
+        || !app.amount_eth.is_empty()
+        || !app.custom_priority_fee_gwei.is_empty()
+        || !app.custom_max_fee_gwei.is_empty()
+        || !app.custom_token_address.is_empty()
+        || app.last_transaction_hash.is_some()
+        || !app.secret_text_state_purge_pending
+    {
+        return Err(());
+    }
+
+    app.reauth_password = "headless-vault-pass".to_owned();
+    if !app.handle_secret_hold_outcome(
+        HoldOutcome::Triggered,
+        SecretHoldAction::ExportAccountPrivateKey,
+    ) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::ExportAccountPrivateKey { .. })
+    })?;
+    let account_one_reveal_matches = app.secret_reveal.as_ref().is_some_and(|timed| {
+        timed
+            .reveal
+            .account_binding()
+            .is_some_and(|(index, address)| {
+                index == 1
+                    && app.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot
+                            .selected_account()
+                            .is_some_and(|selected| address == selected.address.as_str())
+                    })
+            })
+    });
+    if !account_one_reveal_matches {
+        return Err(());
+    }
+    app.secret_reveal = None;
+
     app.custom_token_address = TOKEN_CONTRACT_SENTINEL.to_owned();
     app.add_custom_token();
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
@@ -3821,7 +4507,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
                 && amount == AMOUNT_SENTINEL
         )
     })?;
-    if app.prepared.as_ref() != Some(&PreparedPreview::SavedErc20(headless_erc20_preview())) {
+    if app.prepared.as_ref() != Some(&PreparedPreview::SavedErc20(headless_erc20_preview_for(1))) {
         return Err(());
     }
     if !app.handle_hold_outcome(HoldOutcome::Triggered)
@@ -3891,8 +4577,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     })?;
     if app.pending.is_some()
         || app.prepared.as_ref()
-            != Some(&PreparedPreview::Native(headless_preview(
+            != Some(&PreparedPreview::Native(headless_preview_for(
                 FeeMode::Recommended,
+                1,
             )))
     {
         return Err(());
@@ -3934,7 +4621,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     })?;
     if app.pending.is_some()
         || app.prepared.as_ref()
-            != Some(&PreparedPreview::Native(headless_preview(FeeMode::Faster)))
+            != Some(&PreparedPreview::Native(headless_preview_for(
+                FeeMode::Faster,
+                1,
+            )))
     {
         return Err(());
     }
@@ -3972,7 +4662,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     })?;
     if app.pending.is_some()
         || app.prepared.as_ref()
-            != Some(&PreparedPreview::Native(headless_preview(FeeMode::Custom)))
+            != Some(&PreparedPreview::Native(headless_preview_for(
+                FeeMode::Custom,
+                1,
+            )))
     {
         return Err(());
     }
@@ -3987,8 +4680,23 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         return Err(());
     }
 
-    app.retry_pending();
-    if app.pending != Some(PendingAction::RetryPending) {
+    app.inspect_pending_broadcast();
+    if app.pending != Some(PendingAction::InspectPendingBroadcast) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::InspectPendingBroadcast)
+    })?;
+    if app.pending.is_some()
+        || app
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+            .map(|preview| preview.sender_account_index)
+            != Some(1)
+        || !app.handle_pending_retry_hold_outcome(HoldOutcome::Triggered)
+        || app.pending != Some(PendingAction::RetryPending)
+    {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
@@ -4009,8 +4717,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     app.amount_eth = AMOUNT_SENTINEL.to_owned();
     app.custom_priority_fee_gwei = "1".to_owned();
     app.custom_max_fee_gwei = "3".to_owned();
-    app.prepared = Some(PreparedPreview::Native(headless_preview(
+    app.prepared = Some(PreparedPreview::Native(headless_preview_for(
         FeeMode::Recommended,
+        1,
     )));
     app.pending = Some(PendingAction::Refresh);
     app.secret_reveal = TimedSecretReveal::new(
@@ -4076,6 +4785,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "migrate",
             "open",
             "token-refresh",
+            "select-account-1",
+            "export-private-key",
             "token-add",
             "token-refresh",
             "prepare-token",
@@ -4090,6 +4801,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "cancel",
             "prepare-custom",
             "cancel",
+            "inspect-pending",
             "retry",
             "lock",
         ]
@@ -4099,7 +4811,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 74,
+        transitions_checked: 93,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -4155,6 +4867,8 @@ fn headless_preview(mode: FeeMode) -> TransferPreview {
         ),
     };
     TransferPreview {
+        sender_account_index: 0,
+        sender_address: "0x1111111111111111111111111111111111111111".to_owned(),
         recipient: "headless-recipient".to_owned(),
         amount_eth: "0.001".to_owned(),
         nonce: "headless-nonce".to_owned(),
@@ -4171,8 +4885,22 @@ fn headless_preview(mode: FeeMode) -> TransferPreview {
     }
 }
 
+fn headless_preview_for(mode: FeeMode, account_index: u8) -> TransferPreview {
+    let mut preview = headless_preview(mode);
+    preview.sender_account_index = account_index;
+    preview.sender_address = match account_index {
+        0 => "0x1111111111111111111111111111111111111111",
+        1 => "0x2222222222222222222222222222222222222222",
+        _ => "0x3333333333333333333333333333333333333333",
+    }
+    .to_owned();
+    preview
+}
+
 fn headless_erc20_preview() -> Erc20TransferPreview {
     Erc20TransferPreview {
+        sender_account_index: 0,
+        sender_address: "0x1111111111111111111111111111111111111111".to_owned(),
         contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
         symbol: Some("TOK".to_owned()),
         decimals: 18,
@@ -4191,21 +4919,58 @@ fn headless_erc20_preview() -> Erc20TransferPreview {
     }
 }
 
+fn headless_erc20_preview_for(account_index: u8) -> Erc20TransferPreview {
+    let mut preview = headless_erc20_preview();
+    preview.sender_account_index = account_index;
+    preview.sender_address = match account_index {
+        0 => "0x1111111111111111111111111111111111111111",
+        1 => "0x2222222222222222222222222222222222222222",
+        _ => "0x3333333333333333333333333333333333333333",
+    }
+    .to_owned();
+    preview
+}
+
 fn headless_snapshot(wallet_kind: WalletKind) -> WalletSnapshot {
+    let mut accounts = vec![WalletAccountSnapshot {
+        index: 0,
+        address: "0x1111111111111111111111111111111111111111".to_owned(),
+    }];
+    if matches!(wallet_kind, WalletKind::V2Mnemonic { .. }) {
+        accounts.push(WalletAccountSnapshot {
+            index: 1,
+            address: "0x2222222222222222222222222222222222222222".to_owned(),
+        });
+    }
     WalletSnapshot {
-        address: "headless-account".to_owned(),
+        accounts,
+        selected_account_index: 0,
         balance_eth: "headless-balance".to_owned(),
-        account_count: if matches!(wallet_kind, WalletKind::V2Mnemonic { .. }) {
-            2
-        } else {
-            1
-        },
         wallet_kind,
+        pending_broadcast: None,
     }
 }
 
 fn headless_reveal(kind: SecretRevealKind) -> SecretReveal {
-    SecretReveal::new(kind, Zeroizing::new("headless-secret-marker".to_owned()))
+    match kind {
+        SecretRevealKind::Mnemonic => {
+            SecretReveal::new(kind, Zeroizing::new("headless-secret-marker".to_owned()))
+        }
+        SecretRevealKind::AccountPrivateKey => headless_account_private_key_reveal(0),
+    }
+}
+
+fn headless_account_private_key_reveal(account_index: u8) -> SecretReveal {
+    let address = match account_index {
+        0 => "0x1111111111111111111111111111111111111111",
+        1 => "0x2222222222222222222222222222222222222222",
+        _ => "0x3333333333333333333333333333333333333333",
+    };
+    SecretReveal::new_account_private_key(
+        account_index,
+        Zeroizing::new(address.to_owned()),
+        Zeroizing::new("headless-secret-marker".to_owned()),
+    )
 }
 
 fn headless_generated_backup_reveal() -> GeneratedBackupReveal {
@@ -4230,11 +4995,13 @@ fn headless_token_snapshot() -> CustomTokenSnapshot {
 #[derive(Default)]
 struct HeadlessBackend {
     calls: Vec<&'static str>,
+    selected_account_index: u8,
 }
 
 impl WalletBackend for HeadlessBackend {
     fn lock_wallet(&mut self) {
         self.calls.push("lock");
+        self.selected_account_index = 0;
     }
 
     fn begin_generate_wallet(
@@ -4294,7 +5061,20 @@ impl WalletBackend for HeadlessBackend {
 
     fn open_wallet(&mut self, _password: &str) -> Result<WalletSnapshot, String> {
         self.calls.push("open");
+        self.selected_account_index = 0;
         Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
+    }
+
+    fn select_account(&mut self, index: u8) -> Result<WalletSnapshot, String> {
+        if index != 1 {
+            return Err("headless account mismatch".to_owned());
+        }
+        self.calls.push("select-account-1");
+        self.selected_account_index = index;
+        let mut snapshot = headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.selected_account_index = 1;
+        snapshot.balance_eth = "조회 전".to_owned();
+        Ok(snapshot)
     }
 
     fn migrate_legacy_wallet(
@@ -4317,7 +5097,9 @@ impl WalletBackend for HeadlessBackend {
         _password: SensitiveText,
     ) -> Result<SecretReveal, String> {
         self.calls.push("export-private-key");
-        Ok(headless_reveal(SecretRevealKind::AccountPrivateKey))
+        Ok(headless_account_private_key_reveal(
+            self.selected_account_index,
+        ))
     }
 
     fn refresh(&mut self) -> Result<WalletSnapshot, String> {
@@ -4374,7 +5156,7 @@ impl WalletBackend for HeadlessBackend {
             FeeSelection::Custom { .. } => return Err("headless fee mismatch".to_owned()),
         };
         self.calls.push(call);
-        Ok(headless_preview(mode))
+        Ok(headless_preview_for(mode, self.selected_account_index))
     }
 
     fn prepare_saved_erc20_transfer(
@@ -4393,7 +5175,7 @@ impl WalletBackend for HeadlessBackend {
             return Err("headless ERC20 input mismatch".to_owned());
         }
         self.calls.push("prepare-token");
-        Ok(headless_erc20_preview())
+        Ok(headless_erc20_preview_for(self.selected_account_index))
     }
 
     fn confirm_prepared(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
@@ -4406,6 +5188,18 @@ impl WalletBackend for HeadlessBackend {
     fn cancel_prepared(&mut self) -> Result<(), String> {
         self.calls.push("cancel");
         Ok(())
+    }
+
+    fn inspect_pending_broadcast(
+        &mut self,
+        _permit: &SessionPermit<'_>,
+    ) -> Result<PendingBroadcastPreview, String> {
+        self.calls.push("inspect-pending");
+        Ok(PendingBroadcastPreview {
+            sender_account_index: 1,
+            sender_address: "0x2222222222222222222222222222222222222222".to_owned(),
+            transaction_hash: format!("0x{}", "ab".repeat(32)),
+        })
     }
 
     fn retry_pending(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
@@ -4512,6 +5306,24 @@ fn numbered_backup_words(phrase: &str) -> impl Iterator<Item = (usize, &str)> {
         .map(|(index, word)| (index + 1, word))
 }
 
+fn secret_reveal_label(reveal: &SecretReveal) -> Option<String> {
+    match reveal.kind() {
+        SecretRevealKind::Mnemonic => Some("영어 복구 문구".to_owned()),
+        SecretRevealKind::AccountPrivateKey => {
+            let (index, address) = reveal.account_binding()?;
+            Some(format!("계정 {index} 개인 키 · 전체 주소 {address}"))
+        }
+    }
+}
+
+const fn secret_export_mismatch_error() -> &'static str {
+    "비밀값 내보내기 결과가 현재 요청 및 선택 계정과 일치하지 않습니다. 지갑을 잠근 뒤 다시 열어 주세요."
+}
+
+fn custom_token_balance_label(selected_account_index: u8, balance: &str) -> String {
+    format!("계정 {selected_account_index} 잔액: {balance}")
+}
+
 fn valid_backup_word_shape(word: &str) -> bool {
     !word.is_empty() && word.len() <= 8 && word.bytes().all(|byte| byte.is_ascii_lowercase())
 }
@@ -4544,6 +5356,14 @@ fn valid_recipient_shape(recipient: &str) -> bool {
         && recipient.starts_with("0x")
         && recipient.as_bytes()[2..].iter().all(u8::is_ascii_hexdigit)
         && recipient.as_bytes()[2..].iter().any(|byte| *byte != b'0')
+}
+
+fn valid_full_hash(hash: &str) -> bool {
+    hash.len() == 66
+        && hash.starts_with("0x")
+        && hash.as_bytes()[2..]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn valid_amount_shape(amount: &str) -> bool {
@@ -4640,6 +5460,8 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "이 지갑은 복구 문구로 만든 지갑이 아니어서 복구 문구를 내보낼 수 없습니다. v1 지갑은 먼저 v2로 이전해도 원래 개인 키 지갑으로 유지됩니다.",
     "안전한 키 처리를 완료하지 못했습니다.",
     "먼저 Sepolia 테스트 지갑을 열어 주세요.",
+    "선택할 수 없는 계정입니다.",
+    "준비한 전송을 취소한 뒤 계정을 바꿔 주세요.",
     "Sepolia 연결을 확인하지 못했습니다.",
     "Sepolia 잔액을 확인하지 못했습니다.",
     "받는 주소가 올바르지 않습니다.",
@@ -4658,7 +5480,10 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "Sepolia 노드의 거래 확인값이 일치하지 않습니다.",
     "이전 거래의 전송 상태를 먼저 확인하거나 같은 거래를 다시 전송해 주세요.",
     "보류 중인 거래 기록이 손상되었습니다.",
+    "보류 거래의 서명 계정을 현재 지갑에서 확인하지 못했습니다.",
+    "확인한 뒤 보류 거래 기록이 달라졌습니다. 다시 확인해 주세요.",
     "거래는 확인됐지만 보류 기록을 정리하지 못했습니다.",
+    "보류 거래의 서명 계정을 먼저 확인해 주세요.",
     "먼저 거래 내용을 미리 확인해 주세요.",
     "준비된 거래의 안전 검증에 실패했습니다.",
 ];
@@ -4676,15 +5501,18 @@ pub(crate) fn safe_error(mut error: String) -> String {
 mod tests {
     use super::{
         ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState, FeeSelection,
-        GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome, HoldToSend, PreparedPreview,
-        SEND_HOLD_DURATION, SendReceipt, StatusPalette, TransferAssetChoice, TransferPreview,
-        WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent, automatic_lock_reason,
-        clear_prepared_state, confirmation_enabled, execute_worker_command, execute_worker_request,
-        hold_to_send_button, hold_to_send_input, preview_fields, run_headless_smoke, safe_error,
-        sanitize_custom_tokens, valid_amount_shape, valid_gwei_shape, valid_password,
-        valid_recipient_shape,
+        GENERIC_BACKEND_ERROR, GeneratedBackupUiState, HoldInput, HoldOutcome, HoldToSend,
+        PendingAction, PendingBroadcastPreview, PreparedPreview, SEND_HOLD_DURATION,
+        SecretRevealKind, SendReceipt, StatusPalette, TimedSecretReveal, TransferAssetChoice,
+        TransferPreview, WalletBackend, WalletKind, WalletSnapshot, WorkerCommand, WorkerEvent,
+        WorkerRequest, WorkerResponse, automatic_lock_reason, clear_prepared_state,
+        clear_snapshot_pending_broadcast, confirmation_enabled, execute_worker_command,
+        execute_worker_request, hold_to_send_button, hold_to_send_input, preview_fields,
+        run_headless_smoke, safe_error, sanitize_custom_tokens, valid_amount_shape,
+        valid_gwei_shape, valid_password, valid_recipient_shape, zeroize_prepared_preview,
     };
     use eframe::egui;
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     fn hold_frame_input(time: f64, events: Vec<egui::Event>) -> egui::RawInput {
@@ -4737,6 +5565,35 @@ mod tests {
             response.request_focus();
         }
         let _ = context.end_pass();
+    }
+
+    fn collect_rendered_text(shape: &egui::Shape, rendered: &mut String) {
+        match shape {
+            egui::Shape::Text(text) => {
+                rendered.push_str(text.galley.job.text.as_str());
+                rendered.push('\n');
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_rendered_text(shape, rendered);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rendered_panel_text(
+        context: &egui::Context,
+        mut render: impl FnMut(&egui::Context, &mut egui::Ui),
+    ) -> String {
+        let output = context.run(hold_frame_input(0.0, Vec::new()), |context| {
+            egui::CentralPanel::default().show(context, |ui| render(context, ui));
+        });
+        let mut rendered = String::new();
+        for clipped in output.shapes {
+            collect_rendered_text(&clipped.shape, &mut rendered);
+        }
+        rendered
     }
 
     fn undo_key_event() -> egui::Event {
@@ -5364,6 +6221,8 @@ mod tests {
 
     fn exact_preview() -> TransferPreview {
         TransferPreview {
+            sender_account_index: 0,
+            sender_address: "0x2222222222222222222222222222222222222222".to_owned(),
             recipient: "0x1111111111111111111111111111111111111111".to_owned(),
             amount_eth: "0.001".to_owned(),
             nonce: "17".to_owned(),
@@ -5427,6 +6286,7 @@ mod tests {
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
+            pending_retry_hold: HoldToSend::default(),
             secret_hold: HoldToSend::default(),
             generated_backup: None,
             generated_backup_inputs_visible: false,
@@ -5771,6 +6631,407 @@ mod tests {
             vec![undo_key_event()],
         );
         assert!(recreated.is_empty());
+    }
+
+    #[test]
+    fn account_switch_scrubs_all_account_context_and_actual_egui_undo() {
+        let context = egui::Context::default();
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.custom_tokens = vec![super::headless_token_snapshot()];
+        app.transfer_asset = TransferAssetChoice::SavedErc20 {
+            contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
+        };
+        app.recipient = "0x3333333333333333333333333333333333333333".to_owned();
+        app.custom_priority_fee_gwei = "1.25".to_owned();
+        app.custom_max_fee_gwei = "3.5".to_owned();
+        app.custom_token_address = "0x4444444444444444444444444444444444444444".to_owned();
+        app.last_transaction_hash = Some(format!("0x{}", "ab".repeat(32)));
+        app.export_kind = SecretRevealKind::AccountPrivateKey;
+        app.secret_reveal = TimedSecretReveal::new(
+            super::headless_reveal(SecretRevealKind::AccountPrivateKey),
+            Instant::now(),
+        );
+
+        let amount_id = super::amount_eth_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            true,
+            0.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            0.1,
+            vec![egui::Event::Text("12.5".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            amount_id,
+            &mut app.amount_eth,
+            false,
+            1.2,
+            Vec::new(),
+        );
+        let reauth_id = super::reauth_password_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            reauth_id,
+            &mut app.reauth_password,
+            true,
+            2.0,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            reauth_id,
+            &mut app.reauth_password,
+            false,
+            2.1,
+            vec![egui::Event::Text("account-zero-reauth".to_owned())],
+        );
+        run_secret_text_frame(
+            &context,
+            reauth_id,
+            &mut app.reauth_password,
+            false,
+            3.2,
+            Vec::new(),
+        );
+
+        let mut switched = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        switched.selected_account_index = 1;
+        switched.balance_eth = "조회 전".to_owned();
+        app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)));
+        app.purge_queued_secret_text_edit_state(&context);
+
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.selected_account_index),
+            Some(1)
+        );
+        assert!(app.custom_tokens.is_empty());
+        assert!(app.transfer_asset == TransferAssetChoice::Native);
+        assert!(app.recipient.is_empty());
+        assert!(app.amount_eth.is_empty());
+        assert!(app.custom_priority_fee_gwei.is_empty());
+        assert!(app.custom_max_fee_gwei.is_empty());
+        assert!(app.custom_token_address.is_empty());
+        assert!(app.reauth_password.is_empty());
+        assert!(app.last_transaction_hash.is_none());
+        assert!(app.secret_reveal.is_none());
+        assert!(app.export_kind == SecretRevealKind::Mnemonic);
+
+        for id in [amount_id, reauth_id] {
+            let mut recreated = String::new();
+            run_secret_text_frame(&context, id, &mut recreated, true, 4.0, Vec::new());
+            run_secret_text_frame(
+                &context,
+                id,
+                &mut recreated,
+                false,
+                4.1,
+                vec![undo_key_event()],
+            );
+            assert!(recreated.is_empty(), "account switch undo must be empty");
+        }
+    }
+
+    #[test]
+    fn account_one_token_balance_and_private_key_reveal_render_exact_bound_labels() {
+        let context = egui::Context::default();
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.selected_account_index = 1;
+        let account_one = snapshot.accounts[1].address.clone();
+        app.snapshot = Some(snapshot);
+        app.custom_tokens = vec![super::headless_token_snapshot()];
+        app.secret_reveal = TimedSecretReveal::new(
+            super::headless_account_private_key_reveal(1),
+            Instant::now(),
+        );
+
+        let rendered = rendered_panel_text(&context, |context, ui| {
+            app.secret_reveal_panel(context, ui);
+            app.custom_token_panel(ui);
+        });
+        assert!(rendered.contains("계정 1 개인 키"));
+        assert!(rendered.contains(&format!("전체 주소 {account_one}")));
+        assert!(rendered.contains("계정 1 잔액:"));
+        assert!(!rendered.contains("계정 0 개인 키"));
+        assert!(!rendered.contains("계정 0 잔액:"));
+
+        assert!(
+            TimedSecretReveal::new(
+                super::SecretReveal::new(
+                    SecretRevealKind::AccountPrivateKey,
+                    zeroize::Zeroizing::new("unbound-private-key-marker".to_owned()),
+                ),
+                Instant::now(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn secret_export_events_require_exact_pending_purpose_kind_and_selected_binding() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.selected_account_index = 1;
+        let account_zero = snapshot.accounts[0].address.clone();
+        app.snapshot = Some(snapshot);
+
+        app.pending = Some(PendingAction::ExportAccountPrivateKey);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::headless_account_private_key_reveal(0),
+        )));
+        assert!(app.secret_reveal.is_none());
+        assert_eq!(
+            app.error.as_deref(),
+            Some(super::secret_export_mismatch_error())
+        );
+
+        app.error = None;
+        app.pending = Some(PendingAction::ExportAccountPrivateKey);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::SecretReveal::new_account_private_key(
+                1,
+                zeroize::Zeroizing::new(account_zero),
+                zeroize::Zeroizing::new("wrong-address-key-marker".to_owned()),
+            ),
+        )));
+        assert!(app.secret_reveal.is_none());
+        assert_eq!(
+            app.error.as_deref(),
+            Some(super::secret_export_mismatch_error())
+        );
+
+        app.error = None;
+        app.pending = Some(PendingAction::ExportAccountPrivateKey);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::SecretReveal::new(
+                SecretRevealKind::Mnemonic,
+                zeroize::Zeroizing::new("wrong-kind-marker".to_owned()),
+            ),
+        )));
+        assert!(app.secret_reveal.is_none());
+
+        app.error = None;
+        app.pending = Some(PendingAction::ExportMnemonic);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::headless_account_private_key_reveal(1),
+        )));
+        assert!(app.secret_reveal.is_none());
+
+        app.error = None;
+        app.pending = None;
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::headless_account_private_key_reveal(1),
+        )));
+        assert!(app.secret_reveal.is_none());
+
+        app.error = None;
+        app.snapshot
+            .as_mut()
+            .expect("private-key binding snapshot")
+            .selected_account_index = 0;
+        app.pending = Some(PendingAction::ExportAccountPrivateKey);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::headless_account_private_key_reveal(1),
+        )));
+        assert!(app.secret_reveal.is_none());
+
+        app.error = None;
+        app.snapshot
+            .as_mut()
+            .expect("private-key success snapshot")
+            .selected_account_index = 1;
+        app.pending = Some(PendingAction::ExportAccountPrivateKey);
+        app.apply_worker_event(WorkerEvent::AccountPrivateKeyExported(Ok(
+            super::headless_account_private_key_reveal(1),
+        )));
+        assert!(app.error.is_none());
+        assert!(app.secret_reveal.as_ref().is_some_and(|timed| {
+            timed
+                .reveal
+                .account_binding()
+                .is_some_and(|(index, _)| index == 1)
+        }));
+
+        app.secret_reveal = None;
+        app.pending = Some(PendingAction::ExportMnemonic);
+        app.apply_worker_event(WorkerEvent::MnemonicExported(Ok(super::headless_reveal(
+            SecretRevealKind::Mnemonic,
+        ))));
+        assert!(app.secret_reveal.as_ref().is_some_and(|timed| {
+            timed.reveal.kind() == SecretRevealKind::Mnemonic
+                && timed.reveal.account_binding().is_none()
+        }));
+    }
+
+    #[test]
+    fn account_selection_blocks_every_unsafe_ui_state_and_stale_result() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+
+        app.prepared = Some(PreparedPreview::Native(exact_preview()));
+        app.select_account(1);
+        assert!(command_receiver.try_recv().is_err());
+        app.prepared = None;
+        app.pending = Some(PendingAction::Refresh);
+        app.select_account(1);
+        assert!(command_receiver.try_recv().is_err());
+        app.pending = None;
+        app.secret_reveal = TimedSecretReveal::new(
+            super::headless_reveal(SecretRevealKind::AccountPrivateKey),
+            Instant::now(),
+        );
+        app.select_account(1);
+        assert!(command_receiver.try_recv().is_err());
+        app.secret_reveal = None;
+        app.generated_backup = Some(GeneratedBackupUiState::Display(
+            super::headless_generated_backup_reveal(),
+        ));
+        app.select_account(1);
+        assert!(command_receiver.try_recv().is_err());
+        app.generated_backup = None;
+        app.snapshot
+            .as_mut()
+            .expect("account selection snapshot")
+            .pending_broadcast = Some(PendingBroadcastPreview {
+            sender_account_index: 0,
+            sender_address: "0x1111111111111111111111111111111111111111".to_owned(),
+            transaction_hash: format!("0x{}", "ab".repeat(32)),
+        });
+        app.select_account(1);
+        assert!(command_receiver.try_recv().is_err());
+        clear_snapshot_pending_broadcast(app.snapshot.as_mut());
+
+        app.select_account(1);
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(WorkerRequest {
+                command: WorkerCommand::SelectAccount { index: 1 },
+                ..
+            })
+        ));
+        app.session_epoch = 1;
+        app.active_epoch.store(1, Ordering::SeqCst);
+        let mut stale = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        stale.selected_account_index = 1;
+        event_sender
+            .send(WorkerResponse {
+                epoch: 0,
+                event: WorkerEvent::AccountSelected(Ok(stale)),
+            })
+            .expect("queue stale account-selected result");
+        app.process_events();
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.selected_account_index),
+            Some(0)
+        );
+        event_sender
+            .send(WorkerResponse {
+                epoch: 0,
+                event: WorkerEvent::AccountPrivateKeyExported(Ok(
+                    super::headless_account_private_key_reveal(1),
+                )),
+            })
+            .expect("queue stale account-one private-key reveal");
+        app.process_events();
+        assert!(app.secret_reveal.is_none());
+        assert!(app.secret_text_state_purge_pending);
+    }
+
+    #[test]
+    fn pending_attribution_requires_separate_hold_and_clears_on_retry() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let preview = PendingBroadcastPreview {
+            sender_account_index: 1,
+            sender_address: "0x2222222222222222222222222222222222222222".to_owned(),
+            transaction_hash: format!("0x{}", "ab".repeat(32)),
+        };
+        app.apply_worker_event(WorkerEvent::PendingBroadcastInspected(Ok(preview)));
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("현재 선택과 다른 계정 1"))
+        );
+        assert!(app.handle_pending_retry_hold_outcome(HoldOutcome::Triggered));
+        assert!(!app.handle_pending_retry_hold_outcome(HoldOutcome::Triggered));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(WorkerRequest {
+                command: WorkerCommand::RetryPending,
+                ..
+            })
+        ));
+        app.apply_worker_event(WorkerEvent::Retried(Ok(SendReceipt {
+            transaction_hash: format!("0x{}", "cd".repeat(32)),
+        })));
+        assert!(
+            app.snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+                .is_none()
+        );
+        assert!(app.pending_retry_hold.started_at.is_none());
+
+        app.apply_worker_event(WorkerEvent::PendingBroadcastInspected(Ok(
+            PendingBroadcastPreview {
+                sender_account_index: 1,
+                sender_address: "0x3333333333333333333333333333333333333333".to_owned(),
+                transaction_hash: "not-a-full-hash".to_owned(),
+            },
+        )));
+        assert!(
+            app.snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+                .is_none()
+        );
+        assert!(app.error.is_some());
+    }
+
+    #[test]
+    fn preview_scrubber_clears_every_native_and_token_string() {
+        let mut native = PreparedPreview::Native(exact_preview());
+        zeroize_prepared_preview(&mut native);
+        let PreparedPreview::Native(native) = native else {
+            unreachable!();
+        };
+        assert!(native.sender_address.is_empty());
+        assert!(native.recipient.is_empty());
+        assert!(native.amount_eth.is_empty());
+        assert!(native.max_fee_per_gas_gwei.is_empty());
+
+        let mut token = PreparedPreview::SavedErc20(super::headless_erc20_preview());
+        zeroize_prepared_preview(&mut token);
+        let PreparedPreview::SavedErc20(token) = token else {
+            unreachable!();
+        };
+        assert!(token.sender_address.is_empty());
+        assert!(token.contract_address.is_empty());
+        assert!(token.symbol.as_deref().is_none_or(str::is_empty));
+        assert!(token.recipient.is_empty());
+        assert!(token.amount.is_empty());
+        assert!(token.max_fee_per_gas_gwei.is_empty());
     }
 
     #[test]
@@ -6213,6 +7474,8 @@ mod tests {
         assert_eq!(
             preview_fields(&preview),
             [
+                ("보내는 계정", ""),
+                ("보내는 주소", preview.sender_address.as_str()),
                 ("받는 주소", preview.recipient.as_str()),
                 ("보낼 금액 (Sepolia ETH)", preview.amount_eth.as_str()),
                 ("nonce", preview.nonce.as_str()),
@@ -6467,8 +7730,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 74);
-        assert_eq!(evidence.backend_routes_checked, 26);
+        assert_eq!(evidence.transitions_checked, 93);
+        assert_eq!(evidence.backend_routes_checked, 29);
         Ok(())
     }
 }
