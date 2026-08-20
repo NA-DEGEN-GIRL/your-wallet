@@ -70,6 +70,12 @@ impl Quantity256 {
     /// The zero quantity.
     pub const ZERO: Self = Self([0; 32]);
 
+    /// Construct an RPC quantity from exact big-endian bytes.
+    #[must_use]
+    pub const fn from_be_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Borrow the exact big-endian bytes.
     #[must_use]
     pub const fn as_be_bytes(&self) -> &[u8; 32] {
@@ -85,6 +91,23 @@ impl Quantity256 {
             carry = sum >> 8;
         }
         (carry == 0).then_some(Self(output))
+    }
+
+    fn checked_sub(self, other: Self) -> Option<Self> {
+        let mut output = [0_u8; 32];
+        let mut borrow = 0_u16;
+        for index in (0..32).rev() {
+            let minuend = u16::from(self.0[index]);
+            let subtrahend = u16::from(other.0[index]) + borrow;
+            if minuend >= subtrahend {
+                output[index] = (minuend - subtrahend) as u8;
+                borrow = 0;
+            } else {
+                output[index] = (minuend + 256 - subtrahend) as u8;
+                borrow = 1;
+            }
+        }
+        (borrow == 0).then_some(Self(output))
     }
 }
 
@@ -116,11 +139,13 @@ impl fmt::Debug for TransactionHash {
 /// Conservative EIP-1559 fee inputs derived from the endpoint.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct FeeQuote {
-    /// Suggested priority fee, or zero when the endpoint supports only the
-    /// legacy gas-price method.
+    /// Latest observed EIP-1559 base fee.
+    pub base_fee_per_gas: Quantity256,
+    /// Suggested priority fee. When the priority-fee method is unavailable,
+    /// this is the positive difference between the legacy gas price and base
+    /// fee, or zero if that gas price is not above base fee.
     pub max_priority_fee_per_gas: Quantity256,
-    /// Maximum fee per gas. For the preferred path this is `2 * base fee +
-    /// priority fee`; the legacy fallback uses the returned gas price.
+    /// Maximum fee per gas, always `2 * base fee + priority fee`.
     pub max_fee_per_gas: Quantity256,
 }
 
@@ -149,6 +174,8 @@ pub enum RpcError {
     InvalidResponse,
     /// The endpoint returned a JSON-RPC error object.
     RemoteRejected,
+    /// The endpoint returned the JSON-RPC method-not-found code (`-32601`).
+    MethodUnavailable,
     /// The observed chain ID or genesis hash was not exactly Sepolia.
     ChainMismatch,
     /// A read was attempted before a successful chain verification.
@@ -170,6 +197,7 @@ impl fmt::Debug for RpcError {
             Self::ResponseTooLarge => "RpcError::ResponseTooLarge",
             Self::InvalidResponse => "RpcError::InvalidResponse",
             Self::RemoteRejected => "RpcError::RemoteRejected",
+            Self::MethodUnavailable => "RpcError::MethodUnavailable",
             Self::ChainMismatch => "RpcError::ChainMismatch",
             Self::ChainNotVerified => "RpcError::ChainNotVerified",
             Self::RawTransactionRejected => "RpcError::RawTransactionRejected",
@@ -189,6 +217,7 @@ impl fmt::Display for RpcError {
             Self::ResponseTooLarge => "Sepolia RPC response exceeded its safety limit",
             Self::InvalidResponse => "Sepolia RPC response was invalid",
             Self::RemoteRejected => "Sepolia RPC rejected the request",
+            Self::MethodUnavailable => "Sepolia RPC method is unavailable",
             Self::ChainMismatch => "RPC endpoint is not the pinned Sepolia chain",
             Self::ChainNotVerified => "Sepolia RPC identity has not been verified",
             Self::RawTransactionRejected => "signed transaction violated the demo policy",
@@ -273,6 +302,16 @@ impl SepoliaRpc {
         parse_quantity(&result)
     }
 
+    /// Read the pending balance for one account after chain verification.
+    pub fn pending_balance(&self, address: Address20) -> Result<Quantity256, RpcError> {
+        self.require_verified()?;
+        let result: String = self.call(
+            RpcMethod::Balance,
+            json!([encode_prefixed_hex(address.as_bytes()), "pending"]),
+        )?;
+        parse_quantity(&result)
+    }
+
     /// Read the pending nonce for one account after chain verification.
     pub fn pending_nonce(&self, address: Address20) -> Result<Quantity256, RpcError> {
         self.require_verified()?;
@@ -283,35 +322,75 @@ impl SepoliaRpc {
         parse_quantity(&result)
     }
 
-    /// Obtain conservative EIP-1559 fee inputs.
-    pub fn fee_quote(&self) -> Result<FeeQuote, RpcError> {
+    /// Read the latest observed EIP-1559 base fee after chain verification.
+    pub fn latest_base_fee(&self) -> Result<Quantity256, RpcError> {
         self.require_verified()?;
         let latest: LatestBlock = self.call(RpcMethod::BlockByNumber, json!(["latest", false]))?;
-        let base_fee = parse_quantity(&latest.base_fee_per_gas)?;
+        parse_quantity(&latest.base_fee_per_gas)
+    }
+
+    /// Obtain conservative EIP-1559 fee inputs.
+    pub fn fee_quote(&self) -> Result<FeeQuote, RpcError> {
+        let base_fee = self.latest_base_fee()?;
+        let doubled_base = base_fee
+            .checked_add(base_fee)
+            .ok_or(RpcError::NumericOverflow)?;
 
         match self.call::<String>(RpcMethod::MaxPriorityFee, json!([])) {
             Ok(priority_text) => {
                 let priority = parse_quantity(&priority_text)?;
-                let doubled_base = base_fee
-                    .checked_add(base_fee)
-                    .ok_or(RpcError::NumericOverflow)?;
                 let maximum = doubled_base
                     .checked_add(priority)
                     .ok_or(RpcError::NumericOverflow)?;
                 Ok(FeeQuote {
+                    base_fee_per_gas: base_fee,
                     max_priority_fee_per_gas: priority,
                     max_fee_per_gas: maximum,
                 })
             }
-            Err(RpcError::RemoteRejected) => {
+            Err(RpcError::MethodUnavailable) => {
                 let gas_price: String = self.call(RpcMethod::GasPrice, json!([]))?;
+                let gas_price = parse_quantity(&gas_price)?;
+                let priority = gas_price.checked_sub(base_fee).unwrap_or(Quantity256::ZERO);
+                let maximum = doubled_base
+                    .checked_add(priority)
+                    .ok_or(RpcError::NumericOverflow)?;
                 Ok(FeeQuote {
-                    max_priority_fee_per_gas: Quantity256::ZERO,
-                    max_fee_per_gas: parse_quantity(&gas_price)?,
+                    base_fee_per_gas: base_fee,
+                    max_priority_fee_per_gas: priority,
+                    max_fee_per_gas: maximum,
                 })
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Estimate gas for exactly one pending, unsigned EIP-1559 native transfer.
+    /// The request deliberately omits `gas`; callers must separately enforce
+    /// the demo's fixed 21,000-gas policy against the returned quantity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn estimate_native_transfer_gas(
+        &self,
+        sender: Address20,
+        recipient: Address20,
+        value: Quantity256,
+        nonce: Quantity256,
+        max_priority_fee_per_gas: Quantity256,
+        max_fee_per_gas: Quantity256,
+    ) -> Result<Quantity256, RpcError> {
+        self.require_verified()?;
+        let transaction = NativeTransferEstimate {
+            from: encode_prefixed_hex(sender.as_bytes()),
+            to: encode_prefixed_hex(recipient.as_bytes()),
+            value: encode_quantity(value),
+            input: "0x",
+            transaction_type: "0x2",
+            nonce: encode_quantity(nonce),
+            max_priority_fee_per_gas: encode_quantity(max_priority_fee_per_gas),
+            max_fee_per_gas: encode_quantity(max_fee_per_gas),
+        };
+        let result: String = self.call(RpcMethod::EstimateGas, json!([transaction, "pending"]))?;
+        parse_quantity(&result)
     }
 
     /// Reverify the chain immediately before submitting a small type-2 signed
@@ -370,6 +449,7 @@ impl SepoliaRpc {
         }
         match (envelope.result, envelope.error) {
             (Some(result), None) => Ok(result),
+            (None, Some(error)) if error.code == -32_601 => Err(RpcError::MethodUnavailable),
             (None, Some(_)) => Err(RpcError::RemoteRejected),
             _ => Err(RpcError::InvalidResponse),
         }
@@ -487,6 +567,7 @@ enum RpcMethod {
     PendingNonce,
     MaxPriorityFee,
     GasPrice,
+    EstimateGas,
     SendRawTransaction,
 }
 
@@ -499,6 +580,7 @@ impl RpcMethod {
             Self::PendingNonce => "eth_getTransactionCount",
             Self::MaxPriorityFee => "eth_maxPriorityFeePerGas",
             Self::GasPrice => "eth_gasPrice",
+            Self::EstimateGas => "eth_estimateGas",
             Self::SendRawTransaction => "eth_sendRawTransaction",
         }
     }
@@ -524,8 +606,7 @@ struct RpcEnvelope<T> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoteError {
-    #[serde(rename = "code")]
-    _code: i64,
+    code: i64,
     #[serde(rename = "message")]
     _message: String,
     #[serde(rename = "data")]
@@ -541,6 +622,20 @@ struct GenesisBlock {
 struct LatestBlock {
     #[serde(rename = "baseFeePerGas")]
     base_fee_per_gas: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeTransferEstimate {
+    from: String,
+    to: String,
+    value: String,
+    input: &'static str,
+    #[serde(rename = "type")]
+    transaction_type: &'static str,
+    nonce: String,
+    max_priority_fee_per_gas: String,
+    max_fee_per_gas: String,
 }
 
 fn parse_quantity(text: &str) -> Result<Quantity256, RpcError> {
@@ -563,6 +658,27 @@ fn parse_quantity(text: &str) -> Result<Quantity256, RpcError> {
         }
     }
     Ok(Quantity256(output))
+}
+
+fn encode_quantity(quantity: Quantity256) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = quantity.as_be_bytes();
+    let Some(first_index) = bytes.iter().position(|byte| *byte != 0) else {
+        return "0x0".to_owned();
+    };
+
+    let first = bytes[first_index];
+    let mut output = String::with_capacity(2 + (bytes.len() - first_index).saturating_mul(2));
+    output.push_str("0x");
+    if first >> 4 != 0 {
+        output.push(char::from(HEX[usize::from(first >> 4)]));
+    }
+    output.push(char::from(HEX[usize::from(first & 0x0f)]));
+    for byte in &bytes[first_index + 1..] {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn decode_fixed_hex<const BYTES: usize>(text: &str) -> Result<[u8; BYTES], RpcError> {
@@ -609,7 +725,7 @@ mod tests {
     use super::{
         Address20, FeeQuote, GLOBAL_TIMEOUT, HttpTransport, MAX_RESPONSE_BYTES, Quantity256,
         RpcError, SEPOLIA_CHAIN_ID_QUANTITY, SEPOLIA_GENESIS_HASH, SepoliaRpc, Transport,
-        encode_prefixed_hex, parse_quantity,
+        encode_prefixed_hex, encode_quantity, parse_quantity,
     };
 
     type MockResponses = Arc<Mutex<VecDeque<Result<Vec<u8>, RpcError>>>>;
@@ -675,8 +791,12 @@ mod tests {
     fn quantities_are_canonical_and_bounded() -> Result<(), RpcError> {
         assert_eq!(parse_quantity("0x0")?, Quantity256::ZERO);
         assert_eq!(parse_quantity("0x1234")?.as_be_bytes()[30..], [0x12, 0x34]);
+        assert_eq!(encode_quantity(Quantity256::ZERO), "0x0");
+        assert_eq!(encode_quantity(parse_quantity("0x1")?), "0x1");
+        assert_eq!(encode_quantity(parse_quantity("0x1234")?), "0x1234");
         let maximum = format!("0x{}", "f".repeat(64));
         assert_eq!(parse_quantity(&maximum)?.as_be_bytes(), &[0xff; 32]);
+        assert_eq!(encode_quantity(parse_quantity(&maximum)?), maximum);
 
         for invalid in ["", "0x", "0x00", "0x01", "0X1", "0xgg"] {
             assert_eq!(parse_quantity(invalid), Err(RpcError::InvalidResponse));
@@ -693,6 +813,7 @@ mod tests {
         let address = Address20::new([0x41; 20]);
         let quantity = Quantity256([0x42; 32]);
         let quote = FeeQuote {
+            base_fee_per_gas: quantity,
             max_priority_fee_per_gas: quantity,
             max_fee_per_gas: quantity,
         };
@@ -836,6 +957,7 @@ mod tests {
             RpcMethod::PendingNonce.as_str(),
             RpcMethod::MaxPriorityFee.as_str(),
             RpcMethod::GasPrice.as_str(),
+            RpcMethod::EstimateGas.as_str(),
             RpcMethod::SendRawTransaction.as_str(),
         ];
         assert_eq!(
@@ -847,6 +969,7 @@ mod tests {
                 "eth_getTransactionCount",
                 "eth_maxPriorityFeePerGas",
                 "eth_gasPrice",
+                "eth_estimateGas",
                 "eth_sendRawTransaction",
             ]
         );
@@ -857,8 +980,140 @@ mod tests {
         let rpc = SepoliaRpc::with_transport(MockTransport::default());
         let address = Address20::new([0x11; 20]);
         assert_eq!(rpc.balance(address), Err(RpcError::ChainNotVerified));
+        assert_eq!(
+            rpc.pending_balance(address),
+            Err(RpcError::ChainNotVerified)
+        );
         assert_eq!(rpc.pending_nonce(address), Err(RpcError::ChainNotVerified));
+        assert_eq!(rpc.latest_base_fee(), Err(RpcError::ChainNotVerified));
         assert_eq!(rpc.fee_quote(), Err(RpcError::ChainNotVerified));
+        assert_eq!(
+            rpc.estimate_native_transfer_gas(
+                address,
+                address,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+            ),
+            Err(RpcError::ChainNotVerified)
+        );
+    }
+
+    #[test]
+    fn pending_balance_and_latest_base_fee_use_exact_tags() -> Result<(), RpcError> {
+        let address = Address20::new([0x11; 20]);
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x2a")))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.pending_balance(address)?, parse_quantity("0x2a")?);
+
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        let request: Value =
+            serde_json::from_slice(&requests[2]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(request["method"], "eth_getBalance");
+        assert_eq!(
+            request["params"],
+            json!([encode_prefixed_hex(address.as_bytes()), "pending"])
+        );
+        drop(requests);
+
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!({"baseFeePerGas": "0x64"})))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.latest_base_fee()?, parse_quantity("0x64")?);
+
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        let request: Value =
+            serde_json::from_slice(&requests[2]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(request["method"], "eth_getBlockByNumber");
+        assert_eq!(request["params"], json!(["latest", false]));
+        Ok(())
+    }
+
+    #[test]
+    fn native_transfer_estimate_is_typed_exact_pending_and_has_no_gas_field() -> Result<(), RpcError>
+    {
+        let sender = Address20::new([0x11; 20]);
+        let recipient = Address20::new([0x22; 20]);
+        let value = parse_quantity("0x1234")?;
+        let nonce = parse_quantity("0x5")?;
+        let priority = parse_quantity("0xa")?;
+        let maximum = parse_quantity("0xd2")?;
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x5208")))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(
+            rpc.estimate_native_transfer_gas(sender, recipient, value, nonce, priority, maximum,)?,
+            parse_quantity("0x5208")?
+        );
+
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        let request: Value =
+            serde_json::from_slice(&requests[2]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(request["method"], "eth_estimateGas");
+        assert_eq!(
+            request["params"],
+            json!([
+                {
+                    "from": encode_prefixed_hex(sender.as_bytes()),
+                    "to": encode_prefixed_hex(recipient.as_bytes()),
+                    "value": "0x1234",
+                    "input": "0x",
+                    "type": "0x2",
+                    "nonce": "0x5",
+                    "maxPriorityFeePerGas": "0xa",
+                    "maxFeePerGas": "0xd2"
+                },
+                "pending"
+            ])
+        );
+        assert!(request["params"][0].get("gas").is_none());
+        assert!(request["params"][0].get("data").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn native_transfer_estimate_result_is_a_strict_quantity() -> Result<(), RpcError> {
+        let address = Address20::new([0x11; 20]);
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x05208")))]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(
+            rpc.estimate_native_transfer_gas(
+                address,
+                address,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+            ),
+            Err(RpcError::InvalidResponse)
+        );
+        Ok(())
     }
 
     #[test]
@@ -895,6 +1150,34 @@ mod tests {
     }
 
     #[test]
+    fn only_method_not_found_gets_payload_free_unavailable_category() {
+        let marker = "private-method-marker";
+        let rpc = SepoliaRpc::with_transport(MockTransport::new([Ok(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32601, "message": marker, "data": {"detail": marker}}
+        }))]));
+        let error = rpc
+            .call::<String>(super::RpcMethod::MaxPriorityFee, json!([]))
+            .expect_err("method-not-found must be classified");
+        assert_eq!(error, RpcError::MethodUnavailable);
+        assert!(!format!("{error:?}").contains(marker));
+        assert!(!error.to_string().contains(marker));
+
+        for code in [-32_600, -32_000, -32_602, 1] {
+            let rpc = SepoliaRpc::with_transport(MockTransport::new([Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": code, "message": "rejected"}
+            }))]));
+            assert_eq!(
+                rpc.call::<String>(super::RpcMethod::MaxPriorityFee, json!([])),
+                Err(RpcError::RemoteRejected)
+            );
+        }
+    }
+
+    #[test]
     fn bounded_response_is_enforced_even_for_mock_transports() {
         let rpc =
             SepoliaRpc::with_transport(MockTransport::raw(vec![b' '; MAX_RESPONSE_BYTES + 1]));
@@ -913,13 +1196,15 @@ mod tests {
         let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
         rpc.verify_sepolia()?;
         let quote = rpc.fee_quote()?;
+        assert_eq!(quote.base_fee_per_gas.as_be_bytes()[31], 100);
         assert_eq!(quote.max_priority_fee_per_gas.as_be_bytes()[31], 10);
         assert_eq!(quote.max_fee_per_gas.as_be_bytes()[31], 210);
         Ok(())
     }
 
     #[test]
-    fn fee_quote_has_a_bounded_legacy_fallback() -> Result<(), RpcError> {
+    fn fee_quote_legacy_fallback_derives_tip_and_same_conservative_maximum() -> Result<(), RpcError>
+    {
         let responses = verification_responses().into_iter().chain([
             Ok(success(json!({"baseFeePerGas": "0x64"}))),
             Ok(json!({
@@ -932,8 +1217,146 @@ mod tests {
         let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
         rpc.verify_sepolia()?;
         let quote = rpc.fee_quote()?;
+        assert_eq!(quote.base_fee_per_gas.as_be_bytes()[31], 100);
+        assert_eq!(quote.max_priority_fee_per_gas.as_be_bytes()[31], 100);
+        assert_eq!(quote.max_fee_per_gas.as_be_bytes()[30..], [0x01, 0x2c]);
+        Ok(())
+    }
+
+    #[test]
+    fn fee_quote_legacy_tip_saturates_at_zero_below_base_fee() -> Result<(), RpcError> {
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": "0x64"}))),
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32601, "message": "unsupported"}
+            })),
+            Ok(success(json!("0x32"))),
+        ]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        let quote = rpc.fee_quote()?;
+        assert_eq!(quote.base_fee_per_gas.as_be_bytes()[31], 100);
         assert_eq!(quote.max_priority_fee_per_gas, Quantity256::ZERO);
         assert_eq!(quote.max_fee_per_gas.as_be_bytes()[31], 200);
+        Ok(())
+    }
+
+    #[test]
+    fn fee_quote_never_falls_back_for_other_remote_or_transport_errors() -> Result<(), RpcError> {
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": "0x64"}))),
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32000, "message": "rejected"}
+            })),
+            Ok(success(json!("0xc8"))),
+        ]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::RemoteRejected));
+        assert_eq!(
+            observation
+                .requests
+                .lock()
+                .map_err(|_| RpcError::Transport)?
+                .len(),
+            4
+        );
+
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": "0x64"}))),
+            Err(RpcError::Timeout),
+            Ok(success(json!("0xc8"))),
+        ]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::Timeout));
+        assert_eq!(
+            observation
+                .requests
+                .lock()
+                .map_err(|_| RpcError::Transport)?
+                .len(),
+            4
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fee_quote_rejects_noncanonical_priority_and_fallback_gas_price() -> Result<(), RpcError> {
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": "0x64"}))),
+            Ok(success(json!("0x00"))),
+        ]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::InvalidResponse));
+
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": "0x64"}))),
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32601, "message": "unsupported"}
+            })),
+            Ok(success(json!("0x00"))),
+        ]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::InvalidResponse));
+        Ok(())
+    }
+
+    #[test]
+    fn fee_quote_checked_arithmetic_rejects_all_overflow_paths() -> Result<(), RpcError> {
+        let maximum = format!("0x{}", "f".repeat(64));
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!({"baseFeePerGas": maximum})))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::NumericOverflow));
+        assert_eq!(
+            observation
+                .requests
+                .lock()
+                .map_err(|_| RpcError::Transport)?
+                .len(),
+            3
+        );
+
+        let half_maximum = format!("0x7{}", "f".repeat(63));
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": half_maximum}))),
+            Ok(success(json!("0x2"))),
+        ]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::NumericOverflow));
+
+        let half_maximum = format!("0x7{}", "f".repeat(63));
+        let maximum = format!("0x{}", "f".repeat(64));
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!({"baseFeePerGas": half_maximum}))),
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32601, "message": "unsupported"}
+            })),
+            Ok(success(json!(maximum))),
+        ]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.fee_quote(), Err(RpcError::NumericOverflow));
         Ok(())
     }
 

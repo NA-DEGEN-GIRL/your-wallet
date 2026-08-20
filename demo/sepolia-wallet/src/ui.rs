@@ -63,6 +63,25 @@ pub struct SendReceipt {
     pub transaction_hash: String,
 }
 
+/// Fee policy selected before a transfer preview is prepared.
+///
+/// Custom strings are untrusted UI input. The backend parses them with exact
+/// integer arithmetic and freezes only normalized wei values.
+#[derive(Clone, Eq, PartialEq)]
+pub enum FeeSelection {
+    /// Use the Sepolia node's recommended EIP-1559 priority fee.
+    Recommended,
+    /// Raise the recommended priority fee within the demo safety caps.
+    Faster,
+    /// Use explicit EIP-1559 fee caps entered in gwei.
+    Custom {
+        /// Maximum priority fee per gas in decimal gwei.
+        max_priority_fee_per_gas_gwei: String,
+        /// Maximum total fee per gas in decimal gwei.
+        max_fee_per_gas_gwei: String,
+    },
+}
+
 /// Exact backend-normalized transfer values shown before any signing occurs.
 ///
 /// This deliberately has no `Debug` implementation because it contains full
@@ -75,14 +94,26 @@ pub struct TransferPreview {
     pub amount_eth: String,
     /// Exact pending nonce as an unsigned decimal integer.
     pub nonce: String,
+    /// Korean label for the backend-normalized fee selection.
+    pub fee_mode_ko: String,
+    /// Fixed gas limit for this native transfer.
+    pub gas_limit: String,
+    /// Base fee observed when the quote was prepared, in gwei.
+    pub quoted_base_fee_per_gas_gwei: String,
     /// Maximum priority fee per gas in gwei.
     pub max_priority_fee_per_gas_gwei: String,
     /// Maximum total fee per gas in gwei.
     pub max_fee_per_gas_gwei: String,
+    /// Network fee estimated from the observed base fee, in ETH.
+    pub estimated_network_fee_eth: String,
     /// Maximum network fee for the fixed native transfer gas limit, in ETH.
     pub max_network_fee_eth: String,
     /// Maximum value plus network fee, in ETH.
     pub max_total_eth: String,
+    /// Value plus the network fee estimated at preparation time, in ETH.
+    pub estimated_total_eth: String,
+    /// Conservative whole seconds remaining when backend preparation ended.
+    pub quote_valid_for_seconds: String,
 }
 
 /// Secret/network backend used by the standalone testnet demo.
@@ -105,6 +136,7 @@ pub trait WalletBackend: Send + 'static {
         &mut self,
         recipient: &str,
         amount_eth: &str,
+        fee_selection: FeeSelection,
     ) -> Result<TransferPreview, String>;
 
     /// Sign and submit only the currently prepared transfer.
@@ -160,6 +192,7 @@ enum WorkerCommand {
     PrepareTransfer {
         recipient: String,
         amount_eth: String,
+        fee_selection: FeeSelection,
     },
     ConfirmPrepared,
     CancelPrepared,
@@ -170,7 +203,7 @@ enum WorkerEvent {
     Created(Result<WalletSnapshot, String>),
     Opened(Result<WalletSnapshot, String>),
     Refreshed(Result<WalletSnapshot, String>),
-    TransferPrepared(Result<TransferPreview, String>),
+    TransferPrepared(Box<Result<TransferPreview, String>>),
     PreparedConfirmed(Result<SendReceipt, String>),
     PreparedCancelled(Result<(), String>),
     Retried(Result<SendReceipt, String>),
@@ -185,6 +218,14 @@ enum PendingAction {
     ConfirmPrepared,
     CancelPrepared,
     RetryPending,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum FeeMode {
+    #[default]
+    Recommended,
+    Faster,
+    Custom,
 }
 
 impl PendingAction {
@@ -293,6 +334,9 @@ pub struct WalletApp {
     snapshot: Option<WalletSnapshot>,
     recipient: String,
     amount_eth: String,
+    fee_mode: FeeMode,
+    custom_priority_fee_gwei: String,
+    custom_max_fee_gwei: String,
     prepared: Option<TransferPreview>,
     pending: Option<PendingAction>,
     hold: HoldToSend,
@@ -316,6 +360,9 @@ impl WalletApp {
             snapshot: None,
             recipient: String::new(),
             amount_eth: String::new(),
+            fee_mode: FeeMode::Recommended,
+            custom_priority_fee_gwei: String::new(),
+            custom_max_fee_gwei: String::new(),
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
@@ -337,11 +384,14 @@ impl WalletApp {
             snapshot: None,
             recipient: String::new(),
             amount_eth: String::new(),
+            fee_mode: FeeMode::Recommended,
+            custom_priority_fee_gwei: String::new(),
+            custom_max_fee_gwei: String::new(),
             prepared: None,
             pending: None,
             hold: HoldToSend::default(),
             notice: None,
-            error: Some(message.into()),
+            error: Some(safe_error(message.into())),
             last_transaction_hash: None,
         }
     }
@@ -387,11 +437,20 @@ impl WalletApp {
     fn prepare_transfer(&mut self) {
         let recipient = self.recipient.trim().to_owned();
         let amount_eth = self.amount_eth.trim().to_owned();
+        let fee_selection = match self.fee_mode {
+            FeeMode::Recommended => FeeSelection::Recommended,
+            FeeMode::Faster => FeeSelection::Faster,
+            FeeMode::Custom => FeeSelection::Custom {
+                max_priority_fee_per_gas_gwei: self.custom_priority_fee_gwei.clone(),
+                max_fee_per_gas_gwei: self.custom_max_fee_gwei.clone(),
+            },
+        };
         self.hold.reset();
         self.send_command(
             WorkerCommand::PrepareTransfer {
                 recipient,
                 amount_eth,
+                fee_selection,
             },
             PendingAction::PrepareTransfer,
         );
@@ -408,6 +467,16 @@ impl WalletApp {
             WorkerCommand::ConfirmPrepared,
             PendingAction::ConfirmPrepared,
         );
+    }
+
+    fn handle_hold_outcome(&mut self, outcome: HoldOutcome) -> bool {
+        if !matches!(outcome, HoldOutcome::Triggered)
+            || !confirmation_enabled(self.prepared.as_ref(), self.pending)
+        {
+            return false;
+        }
+        self.confirm_prepared();
+        self.pending == Some(PendingAction::ConfirmPrepared)
     }
 
     fn cancel_prepared(&mut self) {
@@ -472,7 +541,7 @@ impl WalletApp {
                 }
                 Err(error) => self.error = Some(safe_error(error)),
             },
-            WorkerEvent::TransferPrepared(result) => match result {
+            WorkerEvent::TransferPrepared(result) => match *result {
                 Ok(preview) => {
                     self.prepared = Some(preview);
                     self.notice = None;
@@ -630,9 +699,81 @@ impl WalletApp {
                     "0보다 큰 금액을 소수점 아래 최대 18자리로 입력해 주세요.",
                 );
             }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new("가스 수수료").strong());
+            ui.horizontal(|ui| {
+                let _ = ui.add_enabled_ui(preparing_allowed, |ui| {
+                    ui.selectable_value(&mut self.fee_mode, FeeMode::Recommended, "추천");
+                    ui.selectable_value(&mut self.fee_mode, FeeMode::Faster, "빠르게");
+                    ui.selectable_value(&mut self.fee_mode, FeeMode::Custom, "직접 입력");
+                });
+            });
+            match self.fee_mode {
+                FeeMode::Recommended => {
+                    ui.label(
+                        RichText::new("Sepolia 노드가 제안한 우선 수수료를 사용합니다.")
+                            .small()
+                            .color(palette.muted),
+                    );
+                }
+                FeeMode::Faster => {
+                    ui.label(
+                        RichText::new(
+                            "추천 우선 수수료를 안전 한도 안에서 높입니다. 더 빠른 포함을 보장하지 않습니다.",
+                        )
+                        .small()
+                        .color(palette.muted),
+                    );
+                }
+                FeeMode::Custom => {
+                    ui.horizontal(|ui| {
+                        ui.label("최대 우선 수수료");
+                        let _ = ui.add_enabled(
+                            preparing_allowed,
+                            egui::TextEdit::singleline(&mut self.custom_priority_fee_gwei)
+                                .hint_text("예: 1.5")
+                                .desired_width(140.0),
+                        );
+                        ui.label("Gwei");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("최대 수수료");
+                        let _ = ui.add_enabled(
+                            preparing_allowed,
+                            egui::TextEdit::singleline(&mut self.custom_max_fee_gwei)
+                                .hint_text("예: 3")
+                                .desired_width(140.0),
+                        );
+                        ui.label("Gwei");
+                    });
+                    let priority_valid = valid_gwei_shape(&self.custom_priority_fee_gwei, true);
+                    let maximum_valid = valid_gwei_shape(&self.custom_max_fee_gwei, false);
+                    if (!self.custom_priority_fee_gwei.is_empty() && !priority_valid)
+                        || (!self.custom_max_fee_gwei.is_empty() && !maximum_valid)
+                    {
+                        ui.colored_label(
+                            palette.error,
+                            "Gwei 값은 부호 없이 소수점 아래 최대 9자리로 입력해 주세요.",
+                        );
+                    }
+                }
+            }
+            ui.label(
+                RichText::new("일반 ETH 전송만 지원하며 가스 한도는 21,000으로 고정됩니다.")
+                    .small()
+                    .color(palette.muted),
+            );
             ui.add_space(8.0);
             let valid_input = valid_recipient_shape(self.recipient.trim())
-                && valid_amount_shape(self.amount_eth.trim());
+                && valid_amount_shape(self.amount_eth.trim())
+                && match self.fee_mode {
+                    FeeMode::Recommended | FeeMode::Faster => true,
+                    FeeMode::Custom => {
+                        valid_gwei_shape(&self.custom_priority_fee_gwei, true)
+                            && valid_gwei_shape(&self.custom_max_fee_gwei, false)
+                    }
+                };
             if ui
                 .add_enabled(
                     preparing_allowed && valid_input,
@@ -669,9 +810,8 @@ impl WalletApp {
                 let outcome = self
                     .hold
                     .update(now, hold_to_send_input(context, &response, confirm_enabled));
-                if matches!(outcome, HoldOutcome::Triggered) {
-                    self.confirm_prepared();
-                } else if matches!(outcome, HoldOutcome::Holding(_)) {
+                let _ = self.handle_hold_outcome(outcome);
+                if matches!(outcome, HoldOutcome::Holding(_)) {
                     context.request_repaint_after(Duration::from_millis(16));
                 }
             });
@@ -747,11 +887,17 @@ fn clear_prepared_state(prepared: &mut Option<TransferPreview>, hold: &mut HoldT
     hold.reset();
 }
 
-fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 7] {
+fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 13] {
     [
         ("받는 주소", preview.recipient.as_str()),
         ("보낼 금액 (Sepolia ETH)", preview.amount_eth.as_str()),
         ("nonce", preview.nonce.as_str()),
+        ("수수료 방식", preview.fee_mode_ko.as_str()),
+        ("가스 한도", preview.gas_limit.as_str()),
+        (
+            "현재 기준 기본 수수료 / gas (gwei)",
+            preview.quoted_base_fee_per_gas_gwei.as_str(),
+        ),
         (
             "최대 우선 수수료 / gas (gwei)",
             preview.max_priority_fee_per_gas_gwei.as_str(),
@@ -761,10 +907,22 @@ fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 7] {
             preview.max_fee_per_gas_gwei.as_str(),
         ),
         (
+            "현재 기준 예상 네트워크 수수료 (Sepolia ETH)",
+            preview.estimated_network_fee_eth.as_str(),
+        ),
+        (
             "최대 네트워크 수수료 (Sepolia ETH)",
             preview.max_network_fee_eth.as_str(),
         ),
+        (
+            "현재 기준 예상 총액 (Sepolia ETH)",
+            preview.estimated_total_eth.as_str(),
+        ),
         ("최대 총지출 (Sepolia ETH)", preview.max_total_eth.as_str()),
+        (
+            "준비 완료 시점 남은 견적 유효 시간 (초)",
+            preview.quote_valid_for_seconds.as_str(),
+        ),
     ]
 }
 
@@ -776,6 +934,14 @@ fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
         });
         ui.add_space(7.0);
     }
+    let palette = StatusPalette::from_visuals(ui.visuals());
+    ui.label(
+        RichText::new(
+            "실제 수수료는 포함 블록에 따라 달라질 수 있지만 최대 수수료를 넘지 않습니다. 사용하지 않은 최대 금액은 청구되지 않습니다.",
+        )
+        .small()
+        .color(palette.muted),
+    );
 }
 
 impl Drop for WalletApp {
@@ -859,7 +1025,12 @@ fn execute_worker_command(backend: &mut dyn WalletBackend, command: WorkerComman
         WorkerCommand::PrepareTransfer {
             recipient,
             amount_eth,
-        } => WorkerEvent::TransferPrepared(backend.prepare_transfer(&recipient, &amount_eth)),
+            fee_selection,
+        } => WorkerEvent::TransferPrepared(Box::new(backend.prepare_transfer(
+            &recipient,
+            &amount_eth,
+            fee_selection,
+        ))),
         WorkerCommand::ConfirmPrepared => {
             WorkerEvent::PreparedConfirmed(backend.confirm_prepared())
         }
@@ -893,6 +1064,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         snapshot: None,
         recipient: RECIPIENT_SENTINEL.to_owned(),
         amount_eth: AMOUNT_SENTINEL.to_owned(),
+        fee_mode: FeeMode::Recommended,
+        custom_priority_fee_gwei: String::new(),
+        custom_max_fee_gwei: String::new(),
         prepared: None,
         pending: None,
         hold: HoldToSend::default(),
@@ -911,16 +1085,21 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             command,
             WorkerCommand::PrepareTransfer {
                 recipient,
-                amount_eth
+                amount_eth,
+                fee_selection: FeeSelection::Recommended,
             } if recipient == RECIPIENT_SENTINEL && amount_eth == AMOUNT_SENTINEL
         )
     })?;
-    if app.pending.is_some() || app.prepared.as_ref() != Some(&headless_preview()) {
+    if app.pending.is_some()
+        || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Recommended))
+    {
         return Err(());
     }
 
-    app.confirm_prepared();
-    if app.pending != Some(PendingAction::ConfirmPrepared) {
+    if !app.handle_hold_outcome(HoldOutcome::Triggered)
+        || app.handle_hold_outcome(HoldOutcome::Triggered)
+        || app.pending != Some(PendingAction::ConfirmPrepared)
+    {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
@@ -937,17 +1116,58 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
 
     app.recipient = RECIPIENT_SENTINEL.to_owned();
     app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.fee_mode = FeeMode::Faster;
     app.prepare_transfer();
     if app.pending != Some(PendingAction::PrepareTransfer) {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
-        matches!(command, WorkerCommand::PrepareTransfer { .. })
+        matches!(
+            command,
+            WorkerCommand::PrepareTransfer {
+                fee_selection: FeeSelection::Faster,
+                ..
+            }
+        )
     })?;
-    if app.pending.is_some() || app.prepared.is_none() {
+    if app.pending.is_some() || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Faster)) {
         return Err(());
     }
 
+    app.cancel_prepared();
+    if app.pending != Some(PendingAction::CancelPrepared) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::CancelPrepared)
+    })?;
+    if app.pending.is_some() || app.prepared.is_some() {
+        return Err(());
+    }
+
+    app.fee_mode = FeeMode::Custom;
+    app.custom_priority_fee_gwei = "0001.250000000".to_owned();
+    app.custom_max_fee_gwei = "0003.500000000".to_owned();
+    app.prepare_transfer();
+    if app.pending != Some(PendingAction::PrepareTransfer) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::PrepareTransfer {
+                fee_selection: FeeSelection::Custom {
+                    max_priority_fee_per_gas_gwei,
+                    max_fee_per_gas_gwei,
+                },
+                ..
+            } if max_priority_fee_per_gas_gwei == "0001.250000000"
+                && max_fee_per_gas_gwei == "0003.500000000"
+        )
+    })?;
+    if app.pending.is_some() || app.prepared.as_ref() != Some(&headless_preview(FeeMode::Custom)) {
+        return Err(());
+    }
     app.cancel_prepared();
     if app.pending != Some(PendingAction::CancelPrepared) {
         return Err(());
@@ -968,14 +1188,23 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     })?;
     if app.pending.is_some()
         || app.last_transaction_hash.as_deref() != Some("headless-retried")
-        || backend.calls != ["prepare", "confirm", "prepare", "cancel", "retry"]
+        || backend.calls
+            != [
+                "prepare-recommended",
+                "confirm",
+                "prepare-faster",
+                "cancel",
+                "prepare-custom",
+                "cancel",
+                "retry",
+            ]
         || command_receiver.try_recv().is_ok()
     {
         return Err(());
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 10,
+        transitions_checked: 14,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -995,15 +1224,52 @@ fn route_headless_command(
     Ok(())
 }
 
-fn headless_preview() -> TransferPreview {
+fn headless_preview(mode: FeeMode) -> TransferPreview {
+    let (
+        mode_label,
+        priority,
+        maximum,
+        estimated_network,
+        maximum_network,
+        estimated_total,
+        maximum_total,
+    ) = match mode {
+        FeeMode::Recommended => (
+            "추천", "1", "3", "0.000042", "0.000063", "0.001042", "0.001063",
+        ),
+        FeeMode::Faster => (
+            "빠르게",
+            "2",
+            "4",
+            "0.000063",
+            "0.000084",
+            "0.001063",
+            "0.001084",
+        ),
+        FeeMode::Custom => (
+            "직접 입력",
+            "1.25",
+            "3.5",
+            "0.00004725",
+            "0.0000735",
+            "0.00104725",
+            "0.0010735",
+        ),
+    };
     TransferPreview {
         recipient: "headless-recipient".to_owned(),
-        amount_eth: "headless-amount".to_owned(),
+        amount_eth: "0.001".to_owned(),
         nonce: "headless-nonce".to_owned(),
-        max_priority_fee_per_gas_gwei: "headless-priority-fee".to_owned(),
-        max_fee_per_gas_gwei: "headless-max-fee".to_owned(),
-        max_network_fee_eth: "headless-network-fee".to_owned(),
-        max_total_eth: "headless-total".to_owned(),
+        fee_mode_ko: mode_label.to_owned(),
+        gas_limit: "21000".to_owned(),
+        quoted_base_fee_per_gas_gwei: "1".to_owned(),
+        max_priority_fee_per_gas_gwei: priority.to_owned(),
+        max_fee_per_gas_gwei: maximum.to_owned(),
+        estimated_network_fee_eth: estimated_network.to_owned(),
+        max_network_fee_eth: maximum_network.to_owned(),
+        estimated_total_eth: estimated_total.to_owned(),
+        max_total_eth: maximum_total.to_owned(),
+        quote_valid_for_seconds: "60".to_owned(),
     }
 }
 
@@ -1029,12 +1295,26 @@ impl WalletBackend for HeadlessBackend {
         &mut self,
         recipient: &str,
         amount_eth: &str,
+        fee_selection: FeeSelection,
     ) -> Result<TransferPreview, String> {
         if recipient != "headless-recipient" || amount_eth != "headless-amount" {
             return Err("headless input mismatch".to_owned());
         }
-        self.calls.push("prepare");
-        Ok(headless_preview())
+        let (call, mode) = match fee_selection {
+            FeeSelection::Recommended => ("prepare-recommended", FeeMode::Recommended),
+            FeeSelection::Faster => ("prepare-faster", FeeMode::Faster),
+            FeeSelection::Custom {
+                max_priority_fee_per_gas_gwei,
+                max_fee_per_gas_gwei,
+            } if max_priority_fee_per_gas_gwei == "0001.250000000"
+                && max_fee_per_gas_gwei == "0003.500000000" =>
+            {
+                ("prepare-custom", FeeMode::Custom)
+            }
+            FeeSelection::Custom { .. } => return Err("headless fee mismatch".to_owned()),
+        };
+        self.calls.push(call);
+        Ok(headless_preview(mode))
     }
 
     fn confirm_prepared(&mut self) -> Result<SendReceipt, String> {
@@ -1088,26 +1368,82 @@ fn valid_amount_shape(amount: &str) -> bool {
     })
 }
 
-fn safe_error(error: String) -> String {
-    const MAX_SAFE_ERROR_CHARS: usize = 160;
-    if error.is_empty()
-        || error.chars().count() > MAX_SAFE_ERROR_CHARS
-        || error.chars().any(char::is_control)
+fn valid_gwei_shape(value: &str, allow_zero: bool) -> bool {
+    if value.is_empty()
+        || value.len() > 32
+        || value.trim() != value
+        || (!allow_zero && !value.bytes().any(|byte| matches!(byte, b'1'..=b'9')))
     {
-        "작업을 완료하지 못했습니다. 입력과 네트워크를 확인해 주세요.".to_owned()
-    } else {
+        return false;
+    }
+    let mut parts = value.split('.');
+    let Some(whole) = parts.next() else {
+        return false;
+    };
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    fraction.is_none_or(|digits| {
+        !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+const GENERIC_BACKEND_ERROR: &str = "작업을 완료하지 못했습니다. 입력과 네트워크를 확인해 주세요.";
+
+const ALLOWED_BACKEND_ERRORS: &[&str] = &[
+    "지갑 저장소를 준비하지 못했습니다.",
+    "이미 Sepolia 테스트 지갑이 있습니다.",
+    "저장된 Sepolia 테스트 지갑이 없습니다.",
+    "비밀번호 형식이 올바르지 않습니다.",
+    "비밀번호가 틀렸거나 지갑 파일이 손상되었습니다.",
+    "지갑 파일 형식이 올바르지 않습니다.",
+    "안전한 키 처리를 완료하지 못했습니다.",
+    "먼저 Sepolia 테스트 지갑을 열어 주세요.",
+    "Sepolia 연결을 확인하지 못했습니다.",
+    "Sepolia 잔액을 확인하지 못했습니다.",
+    "받는 주소가 올바르지 않습니다.",
+    "보낼 금액이 올바르지 않습니다.",
+    "한 번에 최대 10 Sepolia ETH까지만 보낼 수 있습니다.",
+    "직접 입력한 Gwei 수수료 형식이 올바르지 않습니다.",
+    "최대 수수료는 0보다 크고 현재 기본 수수료와 최대 우선 수수료의 합 이상이어야 합니다.",
+    "현재 수수료가 데모 안전 한도를 넘었습니다.",
+    "현재 추천값에서는 빠른 수수료를 안전 한도 안에서 만들 수 없습니다. 추천 또는 직접 입력을 사용해 주세요.",
+    "수수료 정보가 만료되었습니다. 전송 내용을 다시 준비해 주세요.",
+    "현재 기본 수수료가 준비한 최대 수수료와 맞지 않습니다. 다시 준비해 주세요.",
+    "계정의 전송 순서가 바뀌었습니다. 전송 내용을 다시 준비해 주세요.",
+    "이 데모는 가스 한도 21,000인 일반 ETH 전송만 지원합니다.",
+    "수수료를 포함한 Sepolia 잔액이 부족합니다.",
+    "거래 전송 상태가 불확실합니다. 잠시 후 잔액을 확인해 주세요.",
+    "Sepolia 노드의 거래 확인값이 일치하지 않습니다.",
+    "이전 거래의 전송 상태를 먼저 확인하거나 같은 거래를 다시 전송해 주세요.",
+    "보류 중인 거래 기록이 손상되었습니다.",
+    "거래는 확인됐지만 보류 기록을 정리하지 못했습니다.",
+    "먼저 거래 내용을 미리 확인해 주세요.",
+    "준비된 거래의 안전 검증에 실패했습니다.",
+];
+
+pub(crate) fn safe_error(mut error: String) -> String {
+    if ALLOWED_BACKEND_ERRORS.contains(&error.as_str()) {
         error
+    } else {
+        error.zeroize();
+        GENERIC_BACKEND_ERROR.to_owned()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HoldInput, HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt, StatusPalette,
-        TransferPreview, WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent,
-        clear_prepared_state, confirmation_enabled, execute_worker_command, hold_to_send_button,
-        hold_to_send_input, preview_fields, run_headless_smoke, safe_error, valid_amount_shape,
-        valid_password, valid_recipient_shape,
+        ALLOWED_BACKEND_ERRORS, FeeSelection, GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome,
+        HoldToSend, SEND_HOLD_DURATION, SendReceipt, StatusPalette, TransferPreview, WalletBackend,
+        WalletSnapshot, WorkerCommand, WorkerEvent, clear_prepared_state, confirmation_enabled,
+        execute_worker_command, hold_to_send_button, hold_to_send_input, preview_fields,
+        run_headless_smoke, safe_error, valid_amount_shape, valid_gwei_shape, valid_password,
+        valid_recipient_shape,
     };
     use eframe::egui;
     use std::time::{Duration, Instant};
@@ -1451,10 +1787,29 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_backend_error_is_replaced() {
-        assert_eq!(safe_error("네트워크 오류".to_owned()), "네트워크 오류");
-        assert!(!safe_error("bad\nsecret".to_owned()).contains("secret"));
-        assert!(!safe_error("x".repeat(161)).contains(&"x".repeat(161)));
+    fn backend_error_boundary_is_an_exact_fail_closed_allowlist() {
+        for allowed in ALLOWED_BACKEND_ERRORS {
+            assert_eq!(safe_error((*allowed).to_owned()), *allowed);
+        }
+
+        let rejected = [
+            "short-password-marker".to_owned(),
+            "token-marker-123".to_owned(),
+            format!("0x{}", "11".repeat(20)),
+            format!("{}{}", "https://", "example.invalid/private"),
+            "임의의 새로운 오류입니다.".to_owned(),
+            "복구 기능 오류가 발생했습니다.".to_owned(),
+            "토큰 전송 오류가 발생했습니다.".to_owned(),
+            format!("{}!", ALLOWED_BACKEND_ERRORS[0]),
+            "bad\nsecret".to_owned(),
+            "x".repeat(161),
+        ];
+        for value in rejected {
+            assert_eq!(safe_error(value), GENERIC_BACKEND_ERROR);
+        }
+
+        let unavailable = super::WalletApp::unavailable("short-password-marker");
+        assert_eq!(unavailable.error.as_deref(), Some(GENERIC_BACKEND_ERROR));
     }
 
     #[test]
@@ -1472,6 +1827,14 @@ mod tests {
         assert!(!valid_amount_shape("0"));
         assert!(!valid_amount_shape("1e-3"));
         assert!(!valid_amount_shape("0.0000000000000000001"));
+
+        assert!(valid_gwei_shape("0", true));
+        assert!(valid_gwei_shape("1.000000001", false));
+        assert!(valid_gwei_shape("0001.250000000", false));
+        assert!(!valid_gwei_shape("0", false));
+        assert!(!valid_gwei_shape("1e2", false));
+        assert!(!valid_gwei_shape("1.0000000001", false));
+        assert!(!valid_gwei_shape(&"1".repeat(33), false));
     }
 
     fn exact_preview() -> TransferPreview {
@@ -1479,11 +1842,29 @@ mod tests {
             recipient: "0x1111111111111111111111111111111111111111".to_owned(),
             amount_eth: "0.001".to_owned(),
             nonce: "17".to_owned(),
+            fee_mode_ko: "직접 입력".to_owned(),
+            gas_limit: "21000".to_owned(),
+            quoted_base_fee_per_gas_gwei: "1".to_owned(),
             max_priority_fee_per_gas_gwei: "1.25".to_owned(),
             max_fee_per_gas_gwei: "3.5".to_owned(),
+            estimated_network_fee_eth: "0.00004725".to_owned(),
             max_network_fee_eth: "0.0000735".to_owned(),
+            estimated_total_eth: "0.00104725".to_owned(),
             max_total_eth: "0.0010735".to_owned(),
+            quote_valid_for_seconds: "60".to_owned(),
         }
+    }
+
+    fn faster_preview() -> TransferPreview {
+        let mut preview = exact_preview();
+        preview.fee_mode_ko = "빠르게".to_owned();
+        preview.max_priority_fee_per_gas_gwei = "2".to_owned();
+        preview.max_fee_per_gas_gwei = "4".to_owned();
+        preview.estimated_network_fee_eth = "0.000063".to_owned();
+        preview.max_network_fee_eth = "0.000084".to_owned();
+        preview.estimated_total_eth = "0.001063".to_owned();
+        preview.max_total_eth = "0.001084".to_owned();
+        preview
     }
 
     #[test]
@@ -1502,6 +1883,39 @@ mod tests {
             ),
             HoldOutcome::Idle
         );
+    }
+
+    #[test]
+    fn triggered_hold_dispatches_confirm_exactly_once_and_blocks_while_pending() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = super::WalletApp {
+            commands: Some(commands),
+            events,
+            password: String::new(),
+            password_visible: false,
+            snapshot: None,
+            recipient: String::new(),
+            amount_eth: String::new(),
+            fee_mode: super::FeeMode::Recommended,
+            custom_priority_fee_gwei: String::new(),
+            custom_max_fee_gwei: String::new(),
+            prepared: Some(exact_preview()),
+            pending: None,
+            hold: HoldToSend::default(),
+            notice: None,
+            error: None,
+            last_transaction_hash: None,
+        };
+
+        assert!(!app.handle_hold_outcome(HoldOutcome::Idle));
+        assert!(app.handle_hold_outcome(HoldOutcome::Triggered));
+        assert!(!app.handle_hold_outcome(HoldOutcome::Triggered));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(WorkerCommand::ConfirmPrepared)
+        ));
+        assert!(command_receiver.try_recv().is_err());
     }
 
     #[test]
@@ -1524,6 +1938,12 @@ mod tests {
                 ("받는 주소", preview.recipient.as_str()),
                 ("보낼 금액 (Sepolia ETH)", preview.amount_eth.as_str()),
                 ("nonce", preview.nonce.as_str()),
+                ("수수료 방식", preview.fee_mode_ko.as_str()),
+                ("가스 한도", preview.gas_limit.as_str()),
+                (
+                    "현재 기준 기본 수수료 / gas (gwei)",
+                    preview.quoted_base_fee_per_gas_gwei.as_str()
+                ),
                 (
                     "최대 우선 수수료 / gas (gwei)",
                     preview.max_priority_fee_per_gas_gwei.as_str()
@@ -1533,10 +1953,22 @@ mod tests {
                     preview.max_fee_per_gas_gwei.as_str()
                 ),
                 (
+                    "현재 기준 예상 네트워크 수수료 (Sepolia ETH)",
+                    preview.estimated_network_fee_eth.as_str()
+                ),
+                (
                     "최대 네트워크 수수료 (Sepolia ETH)",
                     preview.max_network_fee_eth.as_str()
                 ),
+                (
+                    "현재 기준 예상 총액 (Sepolia ETH)",
+                    preview.estimated_total_eth.as_str()
+                ),
                 ("최대 총지출 (Sepolia ETH)", preview.max_total_eth.as_str()),
+                (
+                    "준비 완료 시점 남은 견적 유효 시간 (초)",
+                    preview.quote_valid_for_seconds.as_str()
+                ),
             ]
         );
     }
@@ -1566,11 +1998,13 @@ mod tests {
             &mut self,
             recipient: &str,
             amount_eth: &str,
+            fee_selection: FeeSelection,
         ) -> Result<TransferPreview, String> {
             assert_eq!(recipient, "exact recipient");
             assert_eq!(amount_eth, "exact amount");
+            assert!(fee_selection == FeeSelection::Faster);
             self.calls.push("prepare");
-            Ok(exact_preview())
+            Ok(faster_preview())
         }
 
         fn confirm_prepared(&mut self) -> Result<SendReceipt, String> {
@@ -1596,16 +2030,19 @@ mod tests {
     #[test]
     fn worker_routes_prepare_confirm_cancel_and_retry_exactly() {
         let mut backend = RecordingBackend::default();
-        assert!(matches!(
-            execute_worker_command(
-                &mut backend,
-                WorkerCommand::PrepareTransfer {
-                    recipient: "exact recipient".to_owned(),
-                    amount_eth: "exact amount".to_owned(),
-                }
-            ),
-            WorkerEvent::TransferPrepared(Ok(_))
-        ));
+        let event = execute_worker_command(
+            &mut backend,
+            WorkerCommand::PrepareTransfer {
+                recipient: "exact recipient".to_owned(),
+                amount_eth: "exact amount".to_owned(),
+                fee_selection: FeeSelection::Faster,
+            },
+        );
+        let WorkerEvent::TransferPrepared(result) = event else {
+            panic!("prepare command must produce a preview event");
+        };
+        let preview = (*result).expect("faster preview");
+        assert!(preview == faster_preview());
         assert!(matches!(
             execute_worker_command(&mut backend, WorkerCommand::ConfirmPrepared),
             WorkerEvent::PreparedConfirmed(Ok(_))
@@ -1624,8 +2061,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 10);
-        assert_eq!(evidence.backend_routes_checked, 5);
+        assert_eq!(evidence.transitions_checked, 14);
+        assert_eq!(evidence.backend_routes_checked, 7);
         Ok(())
     }
 }

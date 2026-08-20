@@ -196,6 +196,7 @@ const fn rpc_failure_code(error: RpcError) -> &'static str {
         RpcError::RequestTooLarge => "rpc_request_bound",
         RpcError::ResponseTooLarge => "rpc_response_bound",
         RpcError::InvalidResponse => "rpc_invalid_response",
+        RpcError::MethodUnavailable => "rpc_method_unavailable",
         RpcError::RemoteRejected => "rpc_remote_rejected",
         RpcError::ChainMismatch => "rpc_chain_mismatch",
         RpcError::ChainNotVerified => "rpc_not_verified",
@@ -213,8 +214,8 @@ mod tests {
     fn smoke_report_is_stable_and_explicitly_window_free() {
         let report = run(HeadlessCheck::Smoke);
         assert!(report.succeeded());
-        assert_eq!(report.transitions_checked, 10);
-        assert_eq!(report.backend_routes_checked, 5);
+        assert_eq!(report.transitions_checked, 14);
+        assert_eq!(report.backend_routes_checked, 7);
         assert!(!report.gui_started);
         assert!(!report.mouse_or_keyboard_automation_used);
         assert!(!report.network_used);
@@ -240,6 +241,10 @@ mod tests {
         assert_eq!(
             rpc_failure_code(RpcError::InvalidResponse),
             "rpc_invalid_response"
+        );
+        assert_eq!(
+            rpc_failure_code(RpcError::MethodUnavailable),
+            "rpc_method_unavailable"
         );
     }
 }

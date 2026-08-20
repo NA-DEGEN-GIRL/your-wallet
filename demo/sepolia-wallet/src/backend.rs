@@ -7,6 +7,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -34,12 +35,15 @@ use windows::core::PCWSTR;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::rpc;
-use crate::ui::{SendReceipt, TransferPreview, WalletBackend, WalletSnapshot};
+use crate::ui::{FeeSelection, SendReceipt, TransferPreview, WalletBackend, WalletSnapshot};
 
 const NATIVE_TRANSFER_GAS: u64 = 21_000;
 const MAX_TRANSFER_WEI: u64 = 10_000_000_000_000_000_000;
 const MAX_PRIORITY_FEE_PER_GAS: u64 = 10_000_000_000;
 const MAX_FEE_PER_GAS: u64 = 100_000_000_000;
+const FEE_QUOTE_TTL: Duration = Duration::from_secs(60);
+const MIN_CONFIRMABLE_QUOTE_SECONDS: u64 = 3;
+const MAX_GWEI_INPUT_BYTES: usize = 32;
 
 const VAULT_MAGIC: &[u8; 8] = b"YWSPV001";
 const VAULT_VERSION: u16 = 1;
@@ -78,6 +82,9 @@ pub struct DemoBackend {
     unlocked: Option<UnlockedWallet>,
     last_balance: Option<Word>,
     prepared: Option<PreparedTransfer>,
+    clock: Box<dyn MonotonicClock>,
+    #[cfg(test)]
+    sign_attempts: usize,
 }
 
 struct UnlockedWallet {
@@ -94,17 +101,61 @@ struct PreparedTransfer {
     recipient: [u8; 20],
     value: Word,
     nonce: Word,
+    gas_limit: Word,
+    quoted_base_fee: Word,
     priority_fee: Word,
     maximum_fee: Word,
+    estimated_network_fee: Word,
     maximum_network_fee: Word,
+    estimated_spend: Word,
     maximum_spend: Word,
+    quote_expires_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct NetworkFeeQuote {
+    base_fee: Word,
+    recommended_priority_fee: Word,
+    recommended_maximum_fee: Word,
+}
+
+#[derive(Clone, Copy)]
+struct FrozenFeePlan {
+    mode_label: &'static str,
+    quoted_base_fee: Word,
+    priority_fee: Word,
+    maximum_fee: Word,
+}
+
+trait MonotonicClock: Send {
+    fn now(&self) -> Instant;
+}
+
+struct SystemClock;
+
+impl MonotonicClock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 trait RpcAccess: Send {
     fn verify_sepolia(&self) -> Result<(), ()>;
     fn balance(&self, address: [u8; 20]) -> Result<Word, ()>;
+    fn pending_balance(&self, address: [u8; 20]) -> Result<Word, ()>;
     fn pending_nonce(&self, address: [u8; 20]) -> Result<Word, ()>;
-    fn fee_quote(&self) -> Result<(Word, Word), ()>;
+    fn fee_quote(&self) -> Result<NetworkFeeQuote, ()>;
+    fn latest_base_fee(&self) -> Result<Word, ()>;
+    #[allow(clippy::too_many_arguments)]
+    fn estimate_native_transfer_gas(
+        &self,
+        sender: [u8; 20],
+        recipient: [u8; 20],
+        value: Word,
+        nonce: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Word, ()>;
     fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()>;
 }
 
@@ -126,6 +177,9 @@ impl DemoBackend {
             unlocked: None,
             last_balance: None,
             prepared: None,
+            clock: Box::new(SystemClock),
+            #[cfg(test)]
+            sign_attempts: 0,
         })
     }
 
@@ -139,7 +193,20 @@ impl DemoBackend {
             unlocked: None,
             last_balance: None,
             prepared: None,
+            clock: Box::new(SystemClock),
+            sign_attempts: 0,
         }
+    }
+
+    #[cfg(test)]
+    fn with_rpc_and_clock(
+        vault_path: PathBuf,
+        rpc: impl RpcAccess + 'static,
+        clock: impl MonotonicClock + 'static,
+    ) -> Self {
+        let mut backend = Self::with_rpc(vault_path, rpc);
+        backend.clock = Box::new(clock);
+        backend
     }
 
     /// Returns whether the separate disposable testnet vault exists.
@@ -244,6 +311,7 @@ impl DemoBackend {
         &mut self,
         recipient: &str,
         amount_eth: &str,
+        fee_selection: FeeSelection,
     ) -> Result<TransferPreview, BackendError> {
         // A second preparation invalidates the first before any fallible work.
         // Failed re-preparation therefore cannot leave a stale confirmation.
@@ -269,17 +337,48 @@ impl DemoBackend {
             .rpc
             .pending_nonce(sender)
             .map_err(|()| BackendError::RpcUnavailable)?;
-        let (priority_fee, maximum_fee) = self
+        let quote = self
             .rpc
             .fee_quote()
             .map_err(|()| BackendError::RpcUnavailable)?;
-        validate_fee_quote(priority_fee, maximum_fee)?;
+        let fee_plan = resolve_fee_plan(fee_selection, quote)?;
+        let quote_expires_at = self
+            .clock
+            .now()
+            .checked_add(FEE_QUOTE_TTL)
+            .ok_or(BackendError::PreparedInvalid)?;
+        let gas_limit = Word::from_u64(NATIVE_TRANSFER_GAS);
+        let estimated_gas = self
+            .rpc
+            .estimate_native_transfer_gas(
+                sender,
+                recipient,
+                value,
+                nonce,
+                fee_plan.priority_fee,
+                fee_plan.maximum_fee,
+            )
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        if estimated_gas != gas_limit {
+            return Err(BackendError::UnsupportedTransfer);
+        }
         let balance = self
             .rpc
-            .balance(sender)
+            .pending_balance(sender)
             .map_err(|()| BackendError::BalanceUnavailable)?;
-        let maximum_network_fee = maximum_fee
+        let estimated_gas_price = fee_plan
+            .quoted_base_fee
+            .checked_add(fee_plan.priority_fee)
+            .ok_or(BackendError::FeeLimit)?;
+        let estimated_network_fee = estimated_gas_price
             .checked_mul_u64(NATIVE_TRANSFER_GAS)
+            .ok_or(BackendError::FeeLimit)?;
+        let maximum_network_fee = fee_plan
+            .maximum_fee
+            .checked_mul_u64(NATIVE_TRANSFER_GAS)
+            .ok_or(BackendError::FeeLimit)?;
+        let estimated_spend = value
+            .checked_add(estimated_network_fee)
             .ok_or(BackendError::FeeLimit)?;
         let maximum_spend = value
             .checked_add(maximum_network_fee)
@@ -287,25 +386,38 @@ impl DemoBackend {
         if maximum_spend > balance {
             return Err(BackendError::InsufficientBalance);
         }
+        let remaining_quote_seconds =
+            conservative_remaining_quote_seconds(self.clock.as_ref(), quote_expires_at)?;
 
         let preview = TransferPreview {
             recipient: checksum_address(recipient),
             amount_eth: format_ether(value),
             nonce: decimal_string(nonce),
-            max_priority_fee_per_gas_gwei: format_gwei(priority_fee),
-            max_fee_per_gas_gwei: format_gwei(maximum_fee),
+            fee_mode_ko: fee_plan.mode_label.to_owned(),
+            gas_limit: NATIVE_TRANSFER_GAS.to_string(),
+            quoted_base_fee_per_gas_gwei: format_gwei(fee_plan.quoted_base_fee),
+            max_priority_fee_per_gas_gwei: format_gwei(fee_plan.priority_fee),
+            max_fee_per_gas_gwei: format_gwei(fee_plan.maximum_fee),
+            estimated_network_fee_eth: format_ether(estimated_network_fee),
             max_network_fee_eth: format_ether(maximum_network_fee),
+            estimated_total_eth: format_ether(estimated_spend),
             max_total_eth: format_ether(maximum_spend),
+            quote_valid_for_seconds: remaining_quote_seconds.to_string(),
         };
         self.prepared = Some(PreparedTransfer {
             sender,
             recipient,
             value,
             nonce,
-            priority_fee,
-            maximum_fee,
+            gas_limit,
+            quoted_base_fee: fee_plan.quoted_base_fee,
+            priority_fee: fee_plan.priority_fee,
+            maximum_fee: fee_plan.maximum_fee,
+            estimated_network_fee,
             maximum_network_fee,
+            estimated_spend,
             maximum_spend,
+            quote_expires_at,
         });
         Ok(preview)
     }
@@ -320,27 +432,88 @@ impl DemoBackend {
             .take()
             .ok_or(BackendError::NoPreparedTransfer)?;
         let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let expected_estimated_gas_price =
+            prepared.quoted_base_fee.checked_add(prepared.priority_fee);
         if wallet.address != prepared.sender
             || prepared.recipient == [0; 20]
             || prepared.value.is_zero()
             || prepared.value > Word::from_u64(MAX_TRANSFER_WEI)
-            || validate_fee_quote(prepared.priority_fee, prepared.maximum_fee).is_err()
+            || prepared.gas_limit != Word::from_u64(NATIVE_TRANSFER_GAS)
+            || validate_fee_values(
+                prepared.quoted_base_fee,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .is_err()
+            || expected_estimated_gas_price
+                .and_then(|price| price.checked_mul_u64(NATIVE_TRANSFER_GAS))
+                != Some(prepared.estimated_network_fee)
             || prepared.maximum_fee.checked_mul_u64(NATIVE_TRANSFER_GAS)
                 != Some(prepared.maximum_network_fee)
+            || prepared.value.checked_add(prepared.estimated_network_fee)
+                != Some(prepared.estimated_spend)
             || prepared.value.checked_add(prepared.maximum_network_fee)
                 != Some(prepared.maximum_spend)
         {
             return Err(BackendError::PreparedInvalid);
         }
+        ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        let current_nonce = self
+            .rpc
+            .pending_nonce(prepared.sender)
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        if current_nonce != prepared.nonce {
+            return Err(BackendError::AccountChanged);
+        }
+        let current_base_fee = self
+            .rpc
+            .latest_base_fee()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        if validate_fee_values(
+            current_base_fee,
+            prepared.priority_fee,
+            prepared.maximum_fee,
+        )
+        .is_err()
+        {
+            return Err(BackendError::QuoteChanged);
+        }
+        let balance = self
+            .rpc
+            .pending_balance(prepared.sender)
+            .map_err(|()| BackendError::BalanceUnavailable)?;
+        if prepared.maximum_spend > balance {
+            return Err(BackendError::InsufficientBalance);
+        }
+        let estimated_gas = self
+            .rpc
+            .estimate_native_transfer_gas(
+                prepared.sender,
+                prepared.recipient,
+                prepared.value,
+                prepared.nonce,
+                prepared.priority_fee,
+                prepared.maximum_fee,
+            )
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        if estimated_gas != prepared.gas_limit {
+            return Err(BackendError::UnsupportedTransfer);
+        }
+        ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
+        #[cfg(test)]
+        {
+            self.sign_attempts += 1;
+        }
         let signed = sign_native_type_two(
             &wallet.private_key,
             prepared.sender,
             prepared.recipient,
             prepared.value,
             prepared.nonce,
+            prepared.gas_limit,
             prepared.priority_fee,
             prepared.maximum_fee,
         )?;
@@ -408,8 +581,9 @@ impl WalletBackend for DemoBackend {
         &mut self,
         recipient: &str,
         amount_eth: &str,
+        fee_selection: FeeSelection,
     ) -> Result<TransferPreview, String> {
-        self.prepare_transfer_inner(recipient, amount_eth)
+        self.prepare_transfer_inner(recipient, amount_eth, fee_selection)
             .map_err(error_text)
     }
 
@@ -446,6 +620,13 @@ impl RpcAccess for LiveRpc {
             .map_err(|_| ())
     }
 
+    fn pending_balance(&self, address: [u8; 20]) -> Result<Word, ()> {
+        self.0
+            .pending_balance(rpc::Address20::new(address))
+            .map(|value| Word::from_be_bytes(*value.as_be_bytes()))
+            .map_err(|_| ())
+    }
+
     fn pending_nonce(&self, address: [u8; 20]) -> Result<Word, ()> {
         self.0
             .pending_nonce(rpc::Address20::new(address))
@@ -453,15 +634,45 @@ impl RpcAccess for LiveRpc {
             .map_err(|_| ())
     }
 
-    fn fee_quote(&self) -> Result<(Word, Word), ()> {
+    fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
         self.0
             .fee_quote()
-            .map(|quote| {
-                (
-                    Word::from_be_bytes(*quote.max_priority_fee_per_gas.as_be_bytes()),
-                    Word::from_be_bytes(*quote.max_fee_per_gas.as_be_bytes()),
-                )
+            .map(|quote| NetworkFeeQuote {
+                base_fee: Word::from_be_bytes(*quote.base_fee_per_gas.as_be_bytes()),
+                recommended_priority_fee: Word::from_be_bytes(
+                    *quote.max_priority_fee_per_gas.as_be_bytes(),
+                ),
+                recommended_maximum_fee: Word::from_be_bytes(*quote.max_fee_per_gas.as_be_bytes()),
             })
+            .map_err(|_| ())
+    }
+
+    fn latest_base_fee(&self) -> Result<Word, ()> {
+        self.0
+            .latest_base_fee()
+            .map(|value| Word::from_be_bytes(*value.as_be_bytes()))
+            .map_err(|_| ())
+    }
+
+    fn estimate_native_transfer_gas(
+        &self,
+        sender: [u8; 20],
+        recipient: [u8; 20],
+        value: Word,
+        nonce: Word,
+        priority_fee: Word,
+        maximum_fee: Word,
+    ) -> Result<Word, ()> {
+        self.0
+            .estimate_native_transfer_gas(
+                rpc::Address20::new(sender),
+                rpc::Address20::new(recipient),
+                rpc::Quantity256::from_be_bytes(*value.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*nonce.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*priority_fee.as_be_bytes()),
+                rpc::Quantity256::from_be_bytes(*maximum_fee.as_be_bytes()),
+            )
+            .map(|value| Word::from_be_bytes(*value.as_be_bytes()))
             .map_err(|_| ())
     }
 
@@ -566,7 +777,14 @@ enum BackendError {
     InvalidAddress,
     InvalidAmount,
     AmountLimit,
+    InvalidFeeInput,
+    FeeCombination,
     FeeLimit,
+    FasterUnavailable,
+    QuoteExpired,
+    QuoteChanged,
+    AccountChanged,
+    UnsupportedTransfer,
     InsufficientBalance,
     BroadcastUnknown,
     HashMismatch,
@@ -594,7 +812,14 @@ impl std::fmt::Debug for BackendError {
             Self::InvalidAddress => "BackendError::InvalidAddress",
             Self::InvalidAmount => "BackendError::InvalidAmount",
             Self::AmountLimit => "BackendError::AmountLimit",
+            Self::InvalidFeeInput => "BackendError::InvalidFeeInput",
+            Self::FeeCombination => "BackendError::FeeCombination",
             Self::FeeLimit => "BackendError::FeeLimit",
+            Self::FasterUnavailable => "BackendError::FasterUnavailable",
+            Self::QuoteExpired => "BackendError::QuoteExpired",
+            Self::QuoteChanged => "BackendError::QuoteChanged",
+            Self::AccountChanged => "BackendError::AccountChanged",
+            Self::UnsupportedTransfer => "BackendError::UnsupportedTransfer",
             Self::InsufficientBalance => "BackendError::InsufficientBalance",
             Self::BroadcastUnknown => "BackendError::BroadcastUnknown",
             Self::HashMismatch => "BackendError::HashMismatch",
@@ -628,7 +853,31 @@ fn error_text(error: BackendError) -> String {
         BackendError::AmountLimit => {
             "한 번에 최대 10 Sepolia ETH까지만 보낼 수 있습니다.".to_owned()
         }
+        BackendError::InvalidFeeInput => {
+            "직접 입력한 Gwei 수수료 형식이 올바르지 않습니다.".to_owned()
+        }
+        BackendError::FeeCombination => {
+            "최대 수수료는 0보다 크고 현재 기본 수수료와 최대 우선 수수료의 합 이상이어야 합니다."
+                .to_owned()
+        }
         BackendError::FeeLimit => "현재 수수료가 데모 안전 한도를 넘었습니다.".to_owned(),
+        BackendError::FasterUnavailable => {
+            "현재 추천값에서는 빠른 수수료를 안전 한도 안에서 만들 수 없습니다. 추천 또는 직접 입력을 사용해 주세요."
+                .to_owned()
+        }
+        BackendError::QuoteExpired => {
+            "수수료 정보가 만료되었습니다. 전송 내용을 다시 준비해 주세요.".to_owned()
+        }
+        BackendError::QuoteChanged => {
+            "현재 기본 수수료가 준비한 최대 수수료와 맞지 않습니다. 다시 준비해 주세요."
+                .to_owned()
+        }
+        BackendError::AccountChanged => {
+            "계정의 전송 순서가 바뀌었습니다. 전송 내용을 다시 준비해 주세요.".to_owned()
+        }
+        BackendError::UnsupportedTransfer => {
+            "이 데모는 가스 한도 21,000인 일반 ETH 전송만 지원합니다.".to_owned()
+        }
         BackendError::InsufficientBalance => {
             "수수료를 포함한 Sepolia 잔액이 부족합니다.".to_owned()
         }
@@ -1098,6 +1347,121 @@ fn sibling_pending_path(vault_path: &Path) -> Result<PathBuf, String> {
     Ok(vault_path.with_file_name("pending-v1.bin"))
 }
 
+fn resolve_fee_plan(
+    selection: FeeSelection,
+    quote: NetworkFeeQuote,
+) -> Result<FrozenFeePlan, BackendError> {
+    validate_fee_values(
+        quote.base_fee,
+        quote.recommended_priority_fee,
+        quote.recommended_maximum_fee,
+    )?;
+    let (mode_label, priority_fee, maximum_fee) = match selection {
+        FeeSelection::Recommended => (
+            "추천",
+            quote.recommended_priority_fee,
+            quote.recommended_maximum_fee,
+        ),
+        FeeSelection::Faster => {
+            let doubled = quote
+                .recommended_priority_fee
+                .checked_mul_u64(2)
+                .ok_or(BackendError::FasterUnavailable)?;
+            let priority = std::cmp::min(doubled, Word::from_u64(MAX_PRIORITY_FEE_PER_GAS));
+            if priority <= quote.recommended_priority_fee {
+                return Err(BackendError::FasterUnavailable);
+            }
+            let maximum = quote
+                .base_fee
+                .checked_mul_u64(2)
+                .and_then(|base| base.checked_add(priority))
+                .ok_or(BackendError::FasterUnavailable)?;
+            if validate_fee_values(quote.base_fee, priority, maximum).is_err() {
+                return Err(BackendError::FasterUnavailable);
+            }
+            ("빠르게", priority, maximum)
+        }
+        FeeSelection::Custom {
+            max_priority_fee_per_gas_gwei,
+            max_fee_per_gas_gwei,
+        } => {
+            let priority = parse_gwei(&max_priority_fee_per_gas_gwei)?;
+            let maximum = parse_gwei(&max_fee_per_gas_gwei)?;
+            validate_fee_values(quote.base_fee, priority, maximum)?;
+            ("직접 입력", priority, maximum)
+        }
+    };
+    validate_fee_values(quote.base_fee, priority_fee, maximum_fee)?;
+    Ok(FrozenFeePlan {
+        mode_label,
+        quoted_base_fee: quote.base_fee,
+        priority_fee,
+        maximum_fee,
+    })
+}
+
+fn ensure_quote_live(clock: &dyn MonotonicClock, expires_at: Instant) -> Result<(), BackendError> {
+    if clock.now() < expires_at {
+        Ok(())
+    } else {
+        Err(BackendError::QuoteExpired)
+    }
+}
+
+fn conservative_remaining_quote_seconds(
+    clock: &dyn MonotonicClock,
+    expires_at: Instant,
+) -> Result<u64, BackendError> {
+    let whole_seconds = expires_at.saturating_duration_since(clock.now()).as_secs();
+    if whole_seconds < MIN_CONFIRMABLE_QUOTE_SECONDS {
+        Err(BackendError::QuoteExpired)
+    } else {
+        Ok(whole_seconds)
+    }
+}
+
+fn parse_gwei(value: &str) -> Result<Word, BackendError> {
+    if value.is_empty()
+        || value.len() > MAX_GWEI_INPUT_BYTES
+        || value.trim() != value
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'+' | b'-' | b'e' | b'E'))
+    {
+        return Err(BackendError::InvalidFeeInput);
+    }
+    let mut split = value.split('.');
+    let integer = split.next().ok_or(BackendError::InvalidFeeInput)?;
+    let fraction = split.next();
+    if split.next().is_some()
+        || integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(BackendError::InvalidFeeInput);
+    }
+    let fraction = fraction.unwrap_or("");
+    if fraction.len() > 9
+        || fraction.bytes().any(|byte| !byte.is_ascii_digit())
+        || value.ends_with('.')
+    {
+        return Err(BackendError::InvalidFeeInput);
+    }
+
+    let mut output = Word::ZERO;
+    for digit in integer.bytes().chain(fraction.bytes()) {
+        output = output
+            .checked_mul_small(10)
+            .and_then(|word| word.checked_add_small(digit - b'0'))
+            .ok_or(BackendError::InvalidFeeInput)?;
+    }
+    for _ in fraction.len()..9 {
+        output = output
+            .checked_mul_small(10)
+            .ok_or(BackendError::InvalidFeeInput)?;
+    }
+    Ok(output)
+}
+
 fn parse_ether(value: &str) -> Result<Word, BackendError> {
     if value.is_empty()
         || value.trim() != value
@@ -1178,12 +1542,28 @@ fn decimal_string(mut value: Word) -> String {
 }
 
 fn validate_fee_quote(priority_fee: Word, maximum_fee: Word) -> Result<(), BackendError> {
-    if maximum_fee.is_zero()
-        || maximum_fee < priority_fee
-        || priority_fee > Word::from_u64(MAX_PRIORITY_FEE_PER_GAS)
+    if maximum_fee.is_zero() || maximum_fee < priority_fee {
+        return Err(BackendError::FeeCombination);
+    }
+    if priority_fee > Word::from_u64(MAX_PRIORITY_FEE_PER_GAS)
         || maximum_fee > Word::from_u64(MAX_FEE_PER_GAS)
     {
         return Err(BackendError::FeeLimit);
+    }
+    Ok(())
+}
+
+fn validate_fee_values(
+    base_fee: Word,
+    priority_fee: Word,
+    maximum_fee: Word,
+) -> Result<(), BackendError> {
+    validate_fee_quote(priority_fee, maximum_fee)?;
+    let estimated_price = base_fee
+        .checked_add(priority_fee)
+        .ok_or(BackendError::FeeLimit)?;
+    if maximum_fee < estimated_price {
+        return Err(BackendError::FeeCombination);
     }
     Ok(())
 }
@@ -1255,12 +1635,15 @@ fn sign_native_type_two(
     recipient: [u8; 20],
     value: Word,
     nonce: Word,
+    gas_limit: Word,
     priority_fee: Word,
     maximum_fee: Word,
 ) -> Result<SignedTransaction, BackendError> {
     validate_fee_quote(priority_fee, maximum_fee)?;
+    if gas_limit != Word::from_u64(NATIVE_TRANSFER_GAS) {
+        return Err(BackendError::PreparedInvalid);
+    }
     let chain_id = Word::from_u64(rpc::SEPOLIA_CHAIN_ID);
-    let gas_limit = Word::from_u64(NATIVE_TRANSFER_GAS);
     let unsigned_payload = rlp_list(&[
         rlp_word(chain_id),
         rlp_word(nonce),
@@ -1397,14 +1780,17 @@ fn hex_without_prefix(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     const TEST_PASSWORD: &str = "correct demo password";
 
     struct TestRpc {
         balance: Word,
         nonce: Word,
+        base_fee: Word,
         priority: Word,
         maximum: Word,
+        estimated_gas: Word,
         returned_hash: Option<[u8; 32]>,
         send_fails: bool,
     }
@@ -1418,12 +1804,36 @@ mod tests {
             Ok(self.balance)
         }
 
+        fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            Ok(self.balance)
+        }
+
         fn pending_nonce(&self, _address: [u8; 20]) -> Result<Word, ()> {
             Ok(self.nonce)
         }
 
-        fn fee_quote(&self) -> Result<(Word, Word), ()> {
-            Ok((self.priority, self.maximum))
+        fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
+            Ok(NetworkFeeQuote {
+                base_fee: self.base_fee,
+                recommended_priority_fee: self.priority,
+                recommended_maximum_fee: self.maximum,
+            })
+        }
+
+        fn latest_base_fee(&self) -> Result<Word, ()> {
+            Ok(self.base_fee)
+        }
+
+        fn estimate_native_transfer_gas(
+            &self,
+            _sender: [u8; 20],
+            _recipient: [u8; 20],
+            _value: Word,
+            _nonce: Word,
+            _priority_fee: Word,
+            _maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            Ok(self.estimated_gas)
         }
 
         fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
@@ -1439,11 +1849,210 @@ mod tests {
         TestRpc {
             balance: Word::from_u64(2_000_000_000_000_000_000),
             nonce: Word::from_u64(7),
+            base_fee: Word::from_u64(500_000_000),
             priority: Word::from_u64(1_000_000_000),
             maximum: Word::from_u64(2_000_000_000),
+            estimated_gas: Word::from_u64(NATIVE_TRANSFER_GAS),
             returned_hash: None,
             send_fails: false,
         }
+    }
+
+    #[derive(Clone)]
+    struct TestClock {
+        now: Arc<Mutex<Instant>>,
+    }
+
+    impl TestClock {
+        fn new(now: Instant) -> Self {
+            Self {
+                now: Arc::new(Mutex::new(now)),
+            }
+        }
+
+        fn advance(&self, duration: Duration) {
+            let mut now = self.now.lock().expect("test clock lock");
+            *now = now.checked_add(duration).expect("test clock range");
+        }
+    }
+
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> Instant {
+            *self.now.lock().expect("test clock lock")
+        }
+    }
+
+    #[derive(Clone)]
+    struct MutableRpc {
+        state: Arc<Mutex<MutableRpcState>>,
+    }
+
+    struct MutableRpcState {
+        verify_ok: bool,
+        balance: Word,
+        nonce: Word,
+        base_fee: Word,
+        priority: Word,
+        maximum: Word,
+        estimated_gas: Word,
+        verify_calls: usize,
+        nonce_calls: usize,
+        quote_calls: usize,
+        base_fee_calls: usize,
+        balance_calls: usize,
+        estimate_calls: usize,
+        sent: Vec<Vec<u8>>,
+        send_fails: bool,
+        pending_path_to_require: Option<PathBuf>,
+        send_observed_pending: bool,
+        expire_clock_on_estimate_call: Option<(TestClock, usize, Duration)>,
+    }
+
+    impl MutableRpc {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(Mutex::new(MutableRpcState {
+                    verify_ok: true,
+                    balance: Word::from_u64(2_000_000_000_000_000_000),
+                    nonce: Word::from_u64(7),
+                    base_fee: Word::from_u64(500_000_000),
+                    priority: Word::from_u64(1_000_000_000),
+                    maximum: Word::from_u64(2_000_000_000),
+                    estimated_gas: Word::from_u64(NATIVE_TRANSFER_GAS),
+                    verify_calls: 0,
+                    nonce_calls: 0,
+                    quote_calls: 0,
+                    base_fee_calls: 0,
+                    balance_calls: 0,
+                    estimate_calls: 0,
+                    sent: Vec::new(),
+                    send_fails: false,
+                    pending_path_to_require: None,
+                    send_observed_pending: false,
+                    expire_clock_on_estimate_call: None,
+                })),
+            }
+        }
+
+        fn update(&self, update: impl FnOnce(&mut MutableRpcState)) {
+            update(&mut self.state.lock().expect("mutable RPC lock"));
+        }
+    }
+
+    impl RpcAccess for MutableRpc {
+        fn verify_sepolia(&self) -> Result<(), ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.verify_calls += 1;
+            state.verify_ok.then_some(()).ok_or(())
+        }
+
+        fn balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            Ok(self.state.lock().map_err(|_| ())?.balance)
+        }
+
+        fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.balance_calls += 1;
+            Ok(state.balance)
+        }
+
+        fn pending_nonce(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.nonce_calls += 1;
+            Ok(state.nonce)
+        }
+
+        fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.quote_calls += 1;
+            Ok(NetworkFeeQuote {
+                base_fee: state.base_fee,
+                recommended_priority_fee: state.priority,
+                recommended_maximum_fee: state.maximum,
+            })
+        }
+
+        fn latest_base_fee(&self) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.base_fee_calls += 1;
+            Ok(state.base_fee)
+        }
+
+        fn estimate_native_transfer_gas(
+            &self,
+            _sender: [u8; 20],
+            _recipient: [u8; 20],
+            _value: Word,
+            _nonce: Word,
+            _priority_fee: Word,
+            _maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            let (gas, expiration) = {
+                let mut state = self.state.lock().map_err(|_| ())?;
+                state.estimate_calls += 1;
+                let expiration = state
+                    .expire_clock_on_estimate_call
+                    .as_ref()
+                    .filter(|(_, call, _)| *call == state.estimate_calls)
+                    .cloned();
+                (state.estimated_gas, expiration)
+            };
+            if let Some((clock, _, duration)) = expiration {
+                clock.advance(duration);
+            }
+            Ok(gas)
+        }
+
+        fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.sent.push(signed.to_vec());
+            if let Some(path) = &state.pending_path_to_require {
+                state.send_observed_pending = path.is_file();
+            }
+            if state.send_fails {
+                Err(())
+            } else {
+                Ok(keccak32(signed))
+            }
+        }
+    }
+
+    fn unlocked_backend(rpc: MutableRpc, clock: TestClock) -> DemoBackend {
+        let vault = temporary_vault();
+        if let Some(parent) = vault.parent() {
+            fs::create_dir_all(parent).expect("create test backend directory");
+        }
+        let private_key = Zeroizing::new([7_u8; KEY_BYTES]);
+        let address = address_from_private_key(&private_key).expect("derive test address");
+        let mut backend = DemoBackend::with_rpc_and_clock(vault, rpc, clock);
+        backend.unlocked = Some(UnlockedWallet {
+            private_key,
+            address,
+        });
+        backend.last_balance = Some(Word::ZERO);
+        backend
+    }
+
+    fn remove_test_backend_files(backend: &DemoBackend) {
+        let _ = fs::remove_file(&backend.pending_path);
+        let _ = fs::remove_file(&backend.vault_path);
+        if let Some(parent) = backend.vault_path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+
+    fn prepared_mutable_backend() -> (DemoBackend, MutableRpc, TestClock) {
+        let rpc = MutableRpc::new();
+        let clock = TestClock::new(Instant::now());
+        let mut backend = unlocked_backend(rpc.clone(), clock.clone());
+        backend
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
+            .expect("prepare mutable backend transfer");
+        (backend, rpc, clock)
     }
 
     fn temporary_vault() -> PathBuf {
@@ -1586,15 +2195,27 @@ mod tests {
         let mut recipient_input = "0x1111111111111111111111111111111111111111".to_owned();
         let mut amount_input = "0.25".to_owned();
         let mut preview = backend
-            .prepare_transfer_inner(&recipient_input, &amount_input)
+            .prepare_transfer_inner(&recipient_input, &amount_input, FeeSelection::Recommended)
             .expect("prepare native transfer");
         assert_eq!(preview.recipient, checksum_address([0x11; 20]));
         assert_eq!(preview.amount_eth, "0.25");
         assert_eq!(preview.nonce, "7");
+        assert_eq!(preview.fee_mode_ko, "추천");
+        assert_eq!(preview.gas_limit, "21000");
+        assert_eq!(preview.quoted_base_fee_per_gas_gwei, "0.5");
         assert_eq!(preview.max_priority_fee_per_gas_gwei, "1");
         assert_eq!(preview.max_fee_per_gas_gwei, "2");
+        assert_eq!(preview.estimated_network_fee_eth, "0.0000315");
         assert_eq!(preview.max_network_fee_eth, "0.000042");
+        assert_eq!(preview.estimated_total_eth, "0.2500315");
         assert_eq!(preview.max_total_eth, "0.250042");
+        let remaining_seconds = preview
+            .quote_valid_for_seconds
+            .parse::<u64>()
+            .expect("remaining quote seconds");
+        assert!(
+            (MIN_CONFIRMABLE_QUOTE_SECONDS..=FEE_QUOTE_TTL.as_secs()).contains(&remaining_seconds)
+        );
         assert!(!backend.pending_broadcast_exists());
 
         let prepared = backend.prepared.as_ref().expect("prepared object");
@@ -1608,6 +2229,7 @@ mod tests {
             prepared.recipient,
             prepared.value,
             prepared.nonce,
+            prepared.gas_limit,
             prepared.priority_fee,
             prepared.maximum_fee,
         )
@@ -1621,10 +2243,16 @@ mod tests {
         preview.recipient = checksum_address([0x22; 20]);
         preview.amount_eth = "1".to_owned();
         preview.nonce = "999".to_owned();
+        preview.fee_mode_ko = "직접 입력".to_owned();
+        preview.gas_limit = "999".to_owned();
+        preview.quoted_base_fee_per_gas_gwei = "99".to_owned();
         preview.max_priority_fee_per_gas_gwei = "9".to_owned();
         preview.max_fee_per_gas_gwei = "99".to_owned();
+        preview.estimated_network_fee_eth = "8".to_owned();
         preview.max_network_fee_eth = "9".to_owned();
+        preview.estimated_total_eth = "9".to_owned();
         preview.max_total_eth = "10".to_owned();
+        preview.quote_valid_for_seconds = "999".to_owned();
         assert_eq!(preview.nonce, "999");
         let receipt = backend
             .confirm_prepared_inner()
@@ -1646,6 +2274,458 @@ mod tests {
     }
 
     #[test]
+    fn faster_and_custom_modes_freeze_exact_integer_fees_and_costs() {
+        let recipient = "0x1111111111111111111111111111111111111111";
+
+        let faster_rpc = MutableRpc::new();
+        let faster_clock = TestClock::new(Instant::now());
+        let mut faster = unlocked_backend(faster_rpc, faster_clock);
+        let faster_preview = faster
+            .prepare_transfer_inner(recipient, "0.25", FeeSelection::Faster)
+            .expect("prepare faster transfer");
+        assert_eq!(faster_preview.fee_mode_ko, "빠르게");
+        assert_eq!(faster_preview.quoted_base_fee_per_gas_gwei, "0.5");
+        assert_eq!(faster_preview.max_priority_fee_per_gas_gwei, "2");
+        assert_eq!(faster_preview.max_fee_per_gas_gwei, "3");
+        assert_eq!(faster_preview.estimated_network_fee_eth, "0.0000525");
+        assert_eq!(faster_preview.max_network_fee_eth, "0.000063");
+        assert_eq!(faster_preview.estimated_total_eth, "0.2500525");
+        assert_eq!(faster_preview.max_total_eth, "0.250063");
+        assert!(
+            faster
+                .prepared
+                .as_ref()
+                .map(|prepared| prepared.priority_fee)
+                == Some(Word::from_u64(2_000_000_000))
+        );
+        remove_test_backend_files(&faster);
+
+        let custom_rpc = MutableRpc::new();
+        let custom_clock = TestClock::new(Instant::now());
+        let mut custom = unlocked_backend(custom_rpc, custom_clock);
+        let custom_preview = custom
+            .prepare_transfer_inner(
+                recipient,
+                "0.25",
+                FeeSelection::Custom {
+                    max_priority_fee_per_gas_gwei: "1.25".to_owned(),
+                    max_fee_per_gas_gwei: "3.5".to_owned(),
+                },
+            )
+            .expect("prepare custom transfer");
+        assert_eq!(custom_preview.fee_mode_ko, "직접 입력");
+        assert_eq!(custom_preview.max_priority_fee_per_gas_gwei, "1.25");
+        assert_eq!(custom_preview.max_fee_per_gas_gwei, "3.5");
+        assert_eq!(custom_preview.estimated_network_fee_eth, "0.00003675");
+        assert_eq!(custom_preview.max_network_fee_eth, "0.0000735");
+        assert_eq!(custom_preview.estimated_total_eth, "0.25003675");
+        assert_eq!(custom_preview.max_total_eth, "0.2500735");
+        assert_eq!(custom_preview.gas_limit, "21000");
+        remove_test_backend_files(&custom);
+    }
+
+    #[test]
+    fn custom_gwei_parser_and_fee_caps_are_exact() {
+        assert!(parse_gwei("0").expect("zero gwei") == Word::ZERO);
+        assert!(
+            parse_gwei("1.000000001").expect("one wei precision") == Word::from_u64(1_000_000_001)
+        );
+        assert!(
+            parse_gwei("0001.250000000").expect("leading zero normalization")
+                == Word::from_u64(1_250_000_000)
+        );
+        assert!(
+            parse_gwei("100").expect("maximum fee cap shape") == Word::from_u64(MAX_FEE_PER_GAS)
+        );
+        for invalid in [
+            "",
+            ".1",
+            "1.",
+            " 1",
+            "1 ",
+            "+1",
+            "-1",
+            "1e2",
+            "1,0",
+            "1\n",
+            "1.0000000001",
+            "111111111111111111111111111111111",
+        ] {
+            assert!(parse_gwei(invalid).is_err(), "invalid Gwei shape");
+        }
+
+        let quote = NetworkFeeQuote {
+            base_fee: Word::from_u64(1_000_000_000),
+            recommended_priority_fee: Word::from_u64(1_000_000_000),
+            recommended_maximum_fee: Word::from_u64(3_000_000_000),
+        };
+        assert!(
+            resolve_fee_plan(
+                FeeSelection::Custom {
+                    max_priority_fee_per_gas_gwei: "10".to_owned(),
+                    max_fee_per_gas_gwei: "100".to_owned(),
+                },
+                quote,
+            )
+            .is_ok()
+        );
+        for (priority, maximum) in [("10.000000001", "100"), ("10", "100.000000001")] {
+            assert!(matches!(
+                resolve_fee_plan(
+                    FeeSelection::Custom {
+                        max_priority_fee_per_gas_gwei: priority.to_owned(),
+                        max_fee_per_gas_gwei: maximum.to_owned(),
+                    },
+                    quote,
+                ),
+                Err(BackendError::FeeLimit)
+            ));
+        }
+        for (priority, maximum) in [("2", "1"), ("1", "1.5")] {
+            assert!(matches!(
+                resolve_fee_plan(
+                    FeeSelection::Custom {
+                        max_priority_fee_per_gas_gwei: priority.to_owned(),
+                        max_fee_per_gas_gwei: maximum.to_owned(),
+                    },
+                    quote,
+                ),
+                Err(BackendError::FeeCombination)
+            ));
+        }
+
+        let zero_tip_quote = NetworkFeeQuote {
+            base_fee: Word::from_u64(1_000_000_000),
+            recommended_priority_fee: Word::ZERO,
+            recommended_maximum_fee: Word::from_u64(2_000_000_000),
+        };
+        assert!(matches!(
+            resolve_fee_plan(FeeSelection::Faster, zero_tip_quote),
+            Err(BackendError::FasterUnavailable)
+        ));
+        let capped_tip_quote = NetworkFeeQuote {
+            base_fee: Word::from_u64(1_000_000_000),
+            recommended_priority_fee: Word::from_u64(MAX_PRIORITY_FEE_PER_GAS),
+            recommended_maximum_fee: Word::from_u64(12_000_000_000),
+        };
+        assert!(matches!(
+            resolve_fee_plan(FeeSelection::Faster, capped_tip_quote),
+            Err(BackendError::FasterUnavailable)
+        ));
+    }
+
+    #[test]
+    fn every_backend_error_mapping_crosses_the_ui_allowlist_exactly() {
+        let errors = [
+            BackendError::StorageUnavailable,
+            BackendError::AlreadyExists,
+            BackendError::NotFound,
+            BackendError::InvalidPassword,
+            BackendError::VaultAuthentication,
+            BackendError::VaultInvalid,
+            BackendError::RandomnessUnavailable,
+            BackendError::CryptographicFailure,
+            BackendError::Locked,
+            BackendError::RpcUnavailable,
+            BackendError::BalanceUnavailable,
+            BackendError::InvalidAddress,
+            BackendError::InvalidAmount,
+            BackendError::AmountLimit,
+            BackendError::InvalidFeeInput,
+            BackendError::FeeCombination,
+            BackendError::FeeLimit,
+            BackendError::FasterUnavailable,
+            BackendError::QuoteExpired,
+            BackendError::QuoteChanged,
+            BackendError::AccountChanged,
+            BackendError::UnsupportedTransfer,
+            BackendError::InsufficientBalance,
+            BackendError::BroadcastUnknown,
+            BackendError::HashMismatch,
+            BackendError::PendingExists,
+            BackendError::PendingInvalid,
+            BackendError::PendingCleanup,
+            BackendError::NoPreparedTransfer,
+            BackendError::PreparedInvalid,
+        ];
+        for error in errors {
+            let mapped = error_text(error);
+            assert_eq!(crate::ui::safe_error(mapped.clone()), mapped, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn prepare_displays_conservative_remaining_seconds_and_requires_hold_margin() {
+        let recipient = "0x1111111111111111111111111111111111111111";
+
+        let elapsed_rpc = MutableRpc::new();
+        let elapsed_clock = TestClock::new(Instant::now());
+        elapsed_rpc.update(|state| {
+            state.expire_clock_on_estimate_call =
+                Some((elapsed_clock.clone(), 1, Duration::from_millis(7_500)));
+        });
+        let mut elapsed_backend = unlocked_backend(elapsed_rpc, elapsed_clock);
+        let preview = elapsed_backend
+            .prepare_transfer_inner(recipient, "0.25", FeeSelection::Recommended)
+            .expect("prepare with elapsed RPC time");
+        assert_eq!(preview.quote_valid_for_seconds, "52");
+        remove_test_backend_files(&elapsed_backend);
+
+        let three_second_rpc = MutableRpc::new();
+        let three_second_clock = TestClock::new(Instant::now());
+        three_second_rpc.update(|state| {
+            state.expire_clock_on_estimate_call =
+                Some((three_second_clock.clone(), 1, Duration::from_secs(57)));
+        });
+        let mut three_second_backend = unlocked_backend(three_second_rpc, three_second_clock);
+        let preview = three_second_backend
+            .prepare_transfer_inner(recipient, "0.25", FeeSelection::Recommended)
+            .expect("three full remaining seconds leave room for the two-second hold");
+        assert_eq!(preview.quote_valid_for_seconds, "3");
+        remove_test_backend_files(&three_second_backend);
+
+        for elapsed in [Duration::from_secs(58), FEE_QUOTE_TTL] {
+            let rpc = MutableRpc::new();
+            let clock = TestClock::new(Instant::now());
+            rpc.update(|state| {
+                state.expire_clock_on_estimate_call = Some((clock.clone(), 1, elapsed));
+            });
+            let mut backend = unlocked_backend(rpc.clone(), clock);
+            assert!(matches!(
+                backend.prepare_transfer_inner(recipient, "0.25", FeeSelection::Recommended,),
+                Err(BackendError::QuoteExpired)
+            ));
+            assert!(backend.prepared.is_none());
+            assert_eq!(backend.sign_attempts, 0);
+            assert!(!backend.pending_broadcast_exists());
+            let state = rpc.state.lock().expect("expired prepare RPC lock");
+            assert_eq!(state.estimate_calls, 1);
+            assert_eq!(state.balance_calls, 1);
+            assert!(state.sent.is_empty());
+            drop(state);
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn quote_ttl_is_backend_owned_strict_and_checked_again_before_signing() {
+        let (mut live_backend, live_rpc, live_clock) = prepared_mutable_backend();
+        live_clock.advance(
+            FEE_QUOTE_TTL
+                .checked_sub(Duration::from_nanos(1))
+                .expect("positive TTL"),
+        );
+        live_backend
+            .confirm_prepared_inner()
+            .expect("quote remains live just before deadline");
+        assert_eq!(live_backend.sign_attempts, 1);
+        assert_eq!(live_rpc.state.lock().expect("live RPC lock").sent.len(), 1);
+        remove_test_backend_files(&live_backend);
+
+        let (mut expired_backend, expired_rpc, expired_clock) = prepared_mutable_backend();
+        expired_clock.advance(FEE_QUOTE_TTL);
+        assert!(matches!(
+            expired_backend.confirm_prepared_inner(),
+            Err(BackendError::QuoteExpired)
+        ));
+        assert!(expired_backend.prepared.is_none());
+        assert_eq!(expired_backend.sign_attempts, 0);
+        assert!(!expired_backend.pending_broadcast_exists());
+        let expired_state = expired_rpc.state.lock().expect("expired RPC lock");
+        assert_eq!(expired_state.verify_calls, 1);
+        assert!(expired_state.sent.is_empty());
+        drop(expired_state);
+        remove_test_backend_files(&expired_backend);
+
+        let (mut final_backend, final_rpc, final_clock) = prepared_mutable_backend();
+        final_rpc.update(|state| {
+            state.expire_clock_on_estimate_call = Some((final_clock.clone(), 2, FEE_QUOTE_TTL));
+        });
+        assert!(matches!(
+            final_backend.confirm_prepared_inner(),
+            Err(BackendError::QuoteExpired)
+        ));
+        assert!(final_backend.prepared.is_none());
+        assert_eq!(final_backend.sign_attempts, 0);
+        assert!(!final_backend.pending_broadcast_exists());
+        let final_state = final_rpc.state.lock().expect("final TTL RPC lock");
+        assert_eq!(final_state.estimate_calls, 2);
+        assert!(final_state.sent.is_empty());
+        drop(final_state);
+        remove_test_backend_files(&final_backend);
+    }
+
+    #[test]
+    fn confirm_consumes_prepared_state_on_every_frozen_state_recheck_failure() {
+        let (mut chain_backend, chain_rpc, _) = prepared_mutable_backend();
+        chain_rpc.update(|state| state.verify_ok = false);
+        assert!(matches!(
+            chain_backend.confirm_prepared_inner(),
+            Err(BackendError::RpcUnavailable)
+        ));
+        assert!(chain_backend.prepared.is_none());
+        assert_eq!(chain_backend.sign_attempts, 0);
+        assert!(!chain_backend.pending_broadcast_exists());
+        remove_test_backend_files(&chain_backend);
+
+        let (mut nonce_backend, nonce_rpc, _) = prepared_mutable_backend();
+        nonce_rpc.update(|state| state.nonce = Word::from_u64(8));
+        assert!(matches!(
+            nonce_backend.confirm_prepared_inner(),
+            Err(BackendError::AccountChanged)
+        ));
+        assert!(nonce_backend.prepared.is_none());
+        assert_eq!(nonce_backend.sign_attempts, 0);
+        assert!(!nonce_backend.pending_broadcast_exists());
+        remove_test_backend_files(&nonce_backend);
+
+        let (mut base_backend, base_rpc, _) = prepared_mutable_backend();
+        base_rpc.update(|state| state.base_fee = Word::from_u64(1_500_000_000));
+        assert!(matches!(
+            base_backend.confirm_prepared_inner(),
+            Err(BackendError::QuoteChanged)
+        ));
+        assert!(base_backend.prepared.is_none());
+        assert_eq!(base_backend.sign_attempts, 0);
+        assert!(!base_backend.pending_broadcast_exists());
+        remove_test_backend_files(&base_backend);
+
+        let (mut balance_backend, balance_rpc, _) = prepared_mutable_backend();
+        balance_rpc.update(|state| state.balance = Word::from_u64(1));
+        assert!(matches!(
+            balance_backend.confirm_prepared_inner(),
+            Err(BackendError::InsufficientBalance)
+        ));
+        assert!(balance_backend.prepared.is_none());
+        assert_eq!(balance_backend.sign_attempts, 0);
+        assert!(!balance_backend.pending_broadcast_exists());
+        remove_test_backend_files(&balance_backend);
+
+        let (mut gas_backend, gas_rpc, _) = prepared_mutable_backend();
+        gas_rpc.update(|state| state.estimated_gas = Word::from_u64(21_001));
+        assert!(matches!(
+            gas_backend.confirm_prepared_inner(),
+            Err(BackendError::UnsupportedTransfer)
+        ));
+        assert!(gas_backend.prepared.is_none());
+        assert_eq!(gas_backend.sign_attempts, 0);
+        assert!(!gas_backend.pending_broadcast_exists());
+        let gas_state = gas_rpc.state.lock().expect("gas RPC lock");
+        assert!(gas_state.sent.is_empty());
+        drop(gas_state);
+        remove_test_backend_files(&gas_backend);
+    }
+
+    #[test]
+    fn prepare_rejects_any_native_transfer_estimate_other_than_exact_21000() {
+        let rpc = MutableRpc::new();
+        rpc.update(|state| state.estimated_gas = Word::from_u64(21_001));
+        let clock = TestClock::new(Instant::now());
+        let mut backend = unlocked_backend(rpc.clone(), clock);
+        assert!(matches!(
+            backend.prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            ),
+            Err(BackendError::UnsupportedTransfer)
+        ));
+        assert!(backend.prepared.is_none());
+        assert_eq!(backend.sign_attempts, 0);
+        assert!(!backend.pending_broadcast_exists());
+        let state = rpc.state.lock().expect("prepare gas RPC lock");
+        assert_eq!(state.estimate_calls, 1);
+        assert_eq!(state.balance_calls, 0);
+        assert!(state.sent.is_empty());
+        drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn confirm_never_reprices_and_persists_before_mock_broadcast() {
+        let (mut backend, rpc, _) = prepared_mutable_backend();
+        let prepared = backend.prepared.as_ref().expect("prepared transfer");
+        let expected = sign_native_type_two(
+            &backend
+                .unlocked
+                .as_ref()
+                .expect("unlocked wallet")
+                .private_key,
+            prepared.sender,
+            prepared.recipient,
+            prepared.value,
+            prepared.nonce,
+            prepared.gas_limit,
+            prepared.priority_fee,
+            prepared.maximum_fee,
+        )
+        .expect("expected frozen signature")
+        .transaction_hash;
+        let pending_path = backend.pending_path.clone();
+        rpc.update(|state| {
+            state.priority = Word::from_u64(9_000_000_000);
+            state.maximum = Word::from_u64(99_000_000_000);
+            state.pending_path_to_require = Some(pending_path);
+        });
+
+        let receipt = backend
+            .confirm_prepared_inner()
+            .expect("confirm frozen transfer");
+        assert_eq!(receipt.transaction_hash, fixed_hex(&expected));
+        assert_eq!(backend.sign_attempts, 1);
+        let state = rpc.state.lock().expect("no repricing RPC lock");
+        assert_eq!(state.quote_calls, 1);
+        assert_eq!(state.nonce_calls, 2);
+        assert_eq!(state.estimate_calls, 2);
+        assert_eq!(state.sent.len(), 1);
+        assert!(state.send_observed_pending);
+        drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn ambiguous_pending_retry_reuses_exact_bytes_without_quote_nonce_or_signing() {
+        let (mut backend, rpc, _) = prepared_mutable_backend();
+        let pending_path = backend.pending_path.clone();
+        rpc.update(|state| {
+            state.send_fails = true;
+            state.pending_path_to_require = Some(pending_path);
+        });
+        assert!(matches!(
+            backend.confirm_prepared_inner(),
+            Err(BackendError::BroadcastUnknown)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        assert_eq!(backend.sign_attempts, 1);
+        let (raw, quote_calls, nonce_calls, estimate_calls) = {
+            let state = rpc.state.lock().expect("first pending RPC lock");
+            assert_eq!(state.sent.len(), 1);
+            assert!(state.send_observed_pending);
+            (
+                state.sent[0].clone(),
+                state.quote_calls,
+                state.nonce_calls,
+                state.estimate_calls,
+            )
+        };
+        rpc.update(|state| state.send_fails = false);
+
+        backend
+            .retry_pending_inner()
+            .expect("retry exact persisted bytes");
+        assert_eq!(backend.sign_attempts, 1);
+        let state = rpc.state.lock().expect("retry pending RPC lock");
+        assert_eq!(state.sent.len(), 2);
+        assert_eq!(state.sent[1], raw);
+        assert_eq!(state.quote_calls, quote_calls);
+        assert_eq!(state.nonce_calls, nonce_calls);
+        assert_eq!(state.estimate_calls, estimate_calls);
+        drop(state);
+        assert!(!backend.pending_broadcast_exists());
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
     fn ambiguous_broadcast_blocks_new_signing_and_exact_retry_clears_it() {
         let vault = temporary_vault();
         let pending = vault.with_file_name("pending-v1.bin");
@@ -1655,7 +2735,7 @@ mod tests {
         backend.create(TEST_PASSWORD).expect("create wallet");
         let recipient = "0x1111111111111111111111111111111111111111";
         backend
-            .prepare_transfer_inner(recipient, "0.25")
+            .prepare_transfer_inner(recipient, "0.25", FeeSelection::Recommended)
             .expect("prepare transfer");
         assert!(matches!(
             backend.confirm_prepared_inner(),
@@ -1663,7 +2743,7 @@ mod tests {
         ));
         assert!(backend.pending_broadcast_exists());
         assert!(matches!(
-            backend.prepare_transfer_inner(recipient, "0.25"),
+            backend.prepare_transfer_inner(recipient, "0.25", FeeSelection::Recommended),
             Err(BackendError::PendingExists)
         ));
         drop(backend);
@@ -1697,7 +2777,11 @@ mod tests {
         let mut backend = DemoBackend::with_rpc(vault.clone(), test_rpc());
         backend.create(TEST_PASSWORD).expect("create wallet");
         backend
-            .prepare_transfer_inner("0x1111111111111111111111111111111111111111", "0.25")
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
             .expect("prepare transfer");
         backend.cancel_prepared_inner();
         assert!(matches!(
@@ -1706,9 +2790,17 @@ mod tests {
         ));
 
         backend
-            .prepare_transfer_inner("0x1111111111111111111111111111111111111111", "0.25")
+            .prepare_transfer_inner(
+                "0x1111111111111111111111111111111111111111",
+                "0.25",
+                FeeSelection::Recommended,
+            )
             .expect("prepare again");
-        assert!(backend.prepare_transfer_inner("invalid", "1").is_err());
+        assert!(
+            backend
+                .prepare_transfer_inner("invalid", "1", FeeSelection::Recommended)
+                .is_err()
+        );
         assert!(backend.prepared.is_none());
         assert!(matches!(
             backend.confirm_prepared_inner(),
