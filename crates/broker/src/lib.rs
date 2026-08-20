@@ -6,6 +6,9 @@
 mod params;
 mod transport;
 
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+pub mod ipc;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -40,7 +43,8 @@ pub const MAX_PERMISSION_GRANTS_PER_ORIGIN: usize = 64;
 pub const MAX_PERMISSION_ORIGINS: usize = 256;
 
 pub use transport::{
-    AuthorizedDispatch, BrokerTarget, TransportBroker, TransportCancellation, TransportRequest,
+    AuthorizedDispatch, BrokerTarget, TransportBroker, TransportCancellation,
+    TransportCancellationOutcome, TransportRequest,
 };
 
 /// Route asserted by the extension and independently recomputed by the broker.
@@ -514,6 +518,13 @@ struct PendingRequest {
     request_sequence: u64,
 }
 
+#[derive(Clone)]
+struct CompletedRequest {
+    session_id: SessionId,
+    activation_nonce: ActivationNonce,
+    request_sequence: u64,
+}
+
 impl fmt::Debug for PendingRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -557,7 +568,7 @@ pub struct SessionRouter {
     session_id: Option<[u8; 32]>,
     next_sequence: u64,
     pending: BTreeMap<[u8; 16], PendingRequest>,
-    completed: BTreeSet<[u8; 16]>,
+    completed: BTreeMap<[u8; 16], CompletedRequest>,
     pending_by_origin: BTreeMap<OriginScope, usize>,
     pending_by_document: BTreeMap<DocumentScope, usize>,
 }
@@ -618,7 +629,7 @@ impl SessionRouter {
         }
         if self.session_id != Some(session_id)
             || admission.context.sequence != self.next_sequence
-            || self.completed.contains(&request_id)
+            || self.completed.contains_key(&request_id)
             || self.pending.contains_key(&request_id)
         {
             return Err(BrokerError::Replay);
@@ -692,8 +703,8 @@ impl SessionRouter {
 
     /// Cancel one request. A later backend response will be discarded.
     pub fn cancel(&mut self, request_id: [u8; 16]) {
-        if self.take_pending(request_id).is_some() {
-            self.completed.insert(request_id);
+        if let Some(pending) = self.take_pending(request_id) {
+            self.remember_completed(request_id, &pending);
         }
     }
 
@@ -707,7 +718,7 @@ impl SessionRouter {
         if request_id.iter().all(|byte| *byte == 0) || self.session_id != Some(session_id) {
             return Err(BrokerError::Malformed);
         }
-        if self.completed.contains(&request_id) || self.pending.contains_key(&request_id) {
+        if self.completed.contains_key(&request_id) || self.pending.contains_key(&request_id) {
             return Err(BrokerError::Replay);
         }
         let document = BrowserDocumentKey::from_context(admission.context)?;
@@ -747,18 +758,57 @@ impl SessionRouter {
         request_id: [u8; 16],
         request_sequence: u64,
         activation_nonce: ActivationNonce,
-    ) -> bool {
-        let matches = self.pending.get(&request_id).is_some_and(|pending| {
-            pending.document.activation_nonce == activation_nonce
+    ) -> Option<TransportCancellationOutcome> {
+        if self.pending.get(&request_id).is_some_and(|pending| {
+            self.matches_cancellation(pending, request_sequence, activation_nonce)
+        }) {
+            self.cancel(request_id);
+            return Some(TransportCancellationOutcome::Cancelled);
+        }
+        self.completed.get(&request_id).and_then(|completed| {
+            (completed.activation_nonce == activation_nonce
                 && self
                     .session_id
-                    .is_some_and(|session| pending.document.session_id == SessionId::new(session))
-                && pending.request_sequence == request_sequence
-        });
-        if matches {
-            self.cancel(request_id);
+                    .is_some_and(|session| completed.session_id == SessionId::new(session))
+                && completed.request_sequence == request_sequence)
+                .then_some(TransportCancellationOutcome::AlreadyCompleted)
+        })
+    }
+
+    #[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+    fn remember_unavailable(
+        &mut self,
+        session_id: SessionId,
+        activation_nonce: ActivationNonce,
+        request_id: [u8; 16],
+        request_sequence: u64,
+    ) -> Result<(), BrokerError> {
+        if request_id.iter().all(|byte| *byte == 0)
+            || activation_nonce.as_bytes().iter().all(|byte| *byte == 0)
+            || self.session_id != Some(*session_id.as_bytes())
+        {
+            return Err(BrokerError::Malformed);
         }
-        matches
+        if self.completed.contains_key(&request_id) || self.pending.contains_key(&request_id) {
+            return Err(BrokerError::Replay);
+        }
+        let tracked = self
+            .pending
+            .len()
+            .checked_add(self.completed.len())
+            .ok_or(BrokerError::StateCapacityExceeded)?;
+        if tracked >= MAX_TRACKED_REQUESTS_PER_SESSION {
+            return Err(BrokerError::StateCapacityExceeded);
+        }
+        self.completed.insert(
+            request_id,
+            CompletedRequest {
+                session_id,
+                activation_nonce,
+                request_sequence,
+            },
+        );
+        Ok(())
     }
 
     /// Cancel every request tied to an exact document/activation lifetime.
@@ -790,7 +840,7 @@ impl SessionRouter {
         let pending = self
             .take_pending(request_id)
             .ok_or(BrokerError::ContextChanged)?;
-        self.completed.insert(request_id);
+        self.remember_completed(request_id, &pending);
         if pending.deadline <= now || pending.document != *current_document {
             return Err(BrokerError::ContextChanged);
         }
@@ -808,6 +858,30 @@ impl SessionRouter {
             &pending.document.document_scope(),
         );
         Some(pending)
+    }
+
+    fn matches_cancellation(
+        &self,
+        pending: &PendingRequest,
+        request_sequence: u64,
+        activation_nonce: ActivationNonce,
+    ) -> bool {
+        pending.document.activation_nonce == activation_nonce
+            && self
+                .session_id
+                .is_some_and(|session| pending.document.session_id == SessionId::new(session))
+            && pending.request_sequence == request_sequence
+    }
+
+    fn remember_completed(&mut self, request_id: [u8; 16], pending: &PendingRequest) {
+        self.completed.insert(
+            request_id,
+            CompletedRequest {
+                session_id: pending.document.session_id,
+                activation_nonce: pending.document.activation_nonce,
+                request_sequence: pending.request_sequence,
+            },
+        );
     }
 
     /// Returns the number of currently pending requests.

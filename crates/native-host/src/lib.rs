@@ -14,12 +14,18 @@ use thiserror::Error;
 
 mod wire;
 
+#[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
+mod contract_bridge;
+
 pub use wire::{
     BrokerEndpoint, BrokerEndpointError, DispatchOutcome, DownstreamExecutor, ExecutionOutcome,
     ExtensionEnvelope, NativeHostDispatcher, NativeRpcError, ProtocolError, RuntimeSummary,
     UnattestedOutcome, parse_extension_envelope, run_persistent_stream,
     run_release_disabled_stream, run_unattested_once,
 };
+
+#[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
+pub use contract_bridge::{ContractBridgeError, run_broker_contract_test_stream};
 
 /// Failure to put the Chrome native-messaging pipe into binary mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -103,7 +109,7 @@ pub enum FrameError {
     RootNotObject,
     /// Underlying I/O failed for a reason other than an incomplete frame.
     #[error("native-messaging I/O failed")]
-    Io(#[source] io::Error),
+    Io,
 }
 
 impl fmt::Debug for FrameError {
@@ -119,7 +125,7 @@ impl fmt::Debug for FrameError {
             Self::ExcessiveNodes => "FrameError::ExcessiveNodes",
             Self::ExcessiveContainerItems => "FrameError::ExcessiveContainerItems",
             Self::RootNotObject => "FrameError::RootNotObject",
-            Self::Io(_) => "FrameError::Io([REDACTED])",
+            Self::Io => "FrameError::Io([REDACTED])",
         })
     }
 }
@@ -136,7 +142,7 @@ pub fn read_frame(reader: &mut impl Read) -> Result<Option<Value>, FrameError> {
     let mut length_bytes = [0_u8; 4];
     let first = reader
         .read(&mut length_bytes[..1])
-        .map_err(FrameError::Io)?;
+        .map_err(|_| FrameError::Io)?;
     if first == 0 {
         return Ok(None);
     }
@@ -177,7 +183,7 @@ pub fn write_frame(writer: &mut impl Write, value: &Value) -> Result<(), FrameEr
         .write_all(&length.to_ne_bytes())
         .and_then(|()| writer.write_all(&payload))
         .and_then(|()| writer.flush())
-        .map_err(FrameError::Io)
+        .map_err(|_| FrameError::Io)
 }
 
 /// Parse one strict JSON object with duplicate-key and structural-limit rejection.
@@ -207,7 +213,7 @@ fn read_exact_or_truncated(reader: &mut impl Read, buffer: &mut [u8]) -> Result<
         if error.kind() == io::ErrorKind::UnexpectedEof {
             FrameError::Truncated
         } else {
-            FrameError::Io(error)
+            FrameError::Io
         }
     })
 }
@@ -438,11 +444,10 @@ mod tests {
 
     #[test]
     fn frame_error_formatting_never_repeats_io_details() {
-        let error = FrameError::Io(std::io::Error::other("private-local-path-marker"));
+        let error = FrameError::Io;
         assert_eq!(format!("{error:?}"), "FrameError::Io([REDACTED])");
         assert_eq!(error.to_string(), "native-messaging I/O failed");
-        assert!(!format!("{error:?}").contains("private-local-path-marker"));
-        assert!(!error.to_string().contains("private-local-path-marker"));
+        assert!(std::error::Error::source(&error).is_none());
     }
 
     #[test]

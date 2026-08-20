@@ -9,7 +9,11 @@ await import("../src/background-core.js");
 
 const shared = globalThis.__YOUR_WALLET_SHARED__;
 const { ContentBridge } = globalThis.__YOUR_WALLET_CONTENT_CORE__;
-const { BackgroundRouter, deriveSenderContext } = globalThis.__YOUR_WALLET_BACKGROUND_CORE__;
+const {
+  BackgroundRouter,
+  MAX_NATIVE_CONNECTION_ATTEMPTS,
+  deriveSenderContext
+} = globalThis.__YOUR_WALLET_BACKGROUND_CORE__;
 
 const PROFILE_ID = "a".repeat(64);
 const SESSION_ID = "b".repeat(64);
@@ -34,7 +38,13 @@ const REQUEST_IDS = Object.freeze({
   "content-large": "0d".repeat(16),
   "content-normal": "0e".repeat(16),
   "content-1": "0f".repeat(16),
-  "content-duplicate": "10".repeat(16)
+  "content-duplicate": "10".repeat(16),
+  "sequence-gap": "11".repeat(16),
+  "stale-session": "12".repeat(16),
+  "clock-invalid": "13".repeat(16),
+  "clock-valid": "14".repeat(16),
+  "cancel-reason": "15".repeat(16),
+  "rpc-error-invalid": "16".repeat(16)
 });
 
 function requestId(label) {
@@ -107,14 +117,14 @@ class FakeNative {
   };
 }
 
-function makeRouter(fakeNative = new FakeNative()) {
+function makeRouter(fakeNative = new FakeNative(), now = () => 1_700_000_000_000) {
   let nonceCounter = 12;
   const router = new BackgroundRouter({
     profileInstallId: PROFILE_ID,
     sessionId: SESSION_ID,
     extensionId: EXTENSION_ID,
     randomHex: () => (nonceCounter++).toString(16).padStart(64, "0"),
-    now: () => 1_700_000_000_000,
+    now,
     nativeFactory: fakeNative.factory
   });
   return { fakeNative, router };
@@ -126,13 +136,18 @@ function nativeSuccess(nativeRequest, result, sequence = 1) {
     version: shared.PROTOCOL_VERSION,
     role: "native-host",
     kind: "response",
-    sessionId: SESSION_ID,
+    sessionId: nativeRequest.sessionId,
     sequence,
     requestSequence: nativeRequest.sequence,
     activationNonce: nativeRequest.activationNonce,
     requestId: nativeRequest.requestId,
     result
   };
+}
+
+function nativeError(nativeRequest, error, sequence = 1) {
+  const { result: _result, ...envelope } = nativeSuccess(nativeRequest, null, sequence);
+  return { ...envelope, error };
 }
 
 test("strict schemas reject context injection and non-JSON parameters", () => {
@@ -275,6 +290,66 @@ test("a replay after completion never creates a second response", () => {
   assert.equal(delivered.filter((message) => message.kind === "response" && message.id === requestId("replay-1")).length, 1);
 });
 
+test("native response sequences are exact and a skipped value closes the connection", () => {
+  const { fakeNative, router } = makeRouter();
+  const delivered = [];
+  const handle = router.attachContent({ sender: sender(), postMessage: (message) => delivered.push(message) });
+  assert.equal(handle.receive(contentRequest(handle.activationNonce, "sequence-gap")), true);
+  const nativeRequest = fakeNative.connections[0].sent[0];
+
+  fakeNative.connections[0].onMessage(nativeSuccess(nativeRequest, "0xaa36a7", 2));
+  assert.equal(delivered.some((message) => (
+    message.kind === "response" && message.id === requestId("sequence-gap")
+  )), false);
+  assert.equal(delivered.some((message) => message.kind === "disconnect"), true);
+  assert.equal(fakeNative.connections[0].closed, true);
+});
+
+test("native RPC errors require a JS-safe code and non-empty bounded message", () => {
+  for (const error of [
+    { code: Number.MAX_SAFE_INTEGER + 1, message: "unavailable" },
+    { code: 4900, message: "" }
+  ]) {
+    const { fakeNative, router } = makeRouter();
+    const delivered = [];
+    const handle = router.attachContent({
+      sender: sender(),
+      postMessage: (message) => delivered.push(message)
+    });
+    assert.equal(handle.receive(contentRequest(handle.activationNonce, "rpc-error-invalid")), true);
+    const nativeRequest = fakeNative.connections[0].sent[0];
+
+    fakeNative.connections[0].onMessage(nativeError(nativeRequest, error));
+    assert.equal(fakeNative.connections[0].closed, true);
+    assert.equal(delivered.some((message) => (
+      message.kind === "response" && message.id === requestId("rpc-error-invalid")
+    )), false);
+  }
+});
+
+test("a locally rejected request does not consume the native sequence", () => {
+  let clockCalls = 0;
+  const { fakeNative, router } = makeRouter(new FakeNative(), () => {
+    clockCalls += 1;
+    return clockCalls === 1 ? Number.NaN : 1_700_000_000_000;
+  });
+  const delivered = [];
+  const handle = router.attachContent({
+    sender: sender(),
+    postMessage: (message) => delivered.push(message)
+  });
+
+  assert.equal(handle.receive(contentRequest(handle.activationNonce, "clock-invalid")), false);
+  assert.equal(fakeNative.connections[0].sent.length, 0);
+  assert.equal(handle.receive(contentRequest(handle.activationNonce, "clock-valid")), true);
+  assert.equal(fakeNative.connections[0].sent[0].sequence, 1);
+  assert.equal(delivered.some((message) => (
+    message.kind === "response"
+      && message.id === requestId("clock-invalid")
+      && message.error?.code === -32603
+  )), true);
+});
+
 test("content disconnect cancels native work and suppresses late responses", () => {
   const { fakeNative, router } = makeRouter();
   const delivered = [];
@@ -288,6 +363,17 @@ test("content disconnect cancels native work and suppresses late responses", () 
   )), true);
   fakeNative.connections[0].onMessage(nativeSuccess(nativeRequest, "0x1"));
   assert.equal(delivered.some((message) => message.kind === "response" && message.id === requestId("navigation-1")), false);
+});
+
+test("content disconnect normalizes cancel reasons to the native wire grammar", () => {
+  const { fakeNative, router } = makeRouter();
+  const handle = router.attachContent({ sender: sender(), postMessage: () => {} });
+  assert.equal(handle.receive(contentRequest(handle.activationNonce, "cancel-reason")), true);
+
+  handle.disconnect("contains spaces");
+  const cancellation = fakeNative.connections[0].sent.find((message) => message.kind === "cancel");
+  assert.equal(cancellation.reason, "invalid-cancel-reason");
+  assert.equal(cancellation.sequence, 2);
 });
 
 test("native disconnect and reconnect cancel every pending document", () => {
@@ -313,8 +399,47 @@ test("native disconnect and reconnect cancel every pending document", () => {
   const third = router.attachContent({ sender: { ...sender("https://three.example/"), documentId: "document-19" }, postMessage: (message) => thirdMessages.push(message) });
   third.receive(contentRequest(third.activationNonce, "third-1"));
   assert.equal(fakeNative.connections[1].sent[0].sequence, 1);
-  fakeNative.connections[1].onDisconnect();
-  assert.equal(thirdMessages.some((message) => message.kind === "disconnect"), true);
+  assert.notEqual(fakeNative.connections[1].sent[0].sessionId, fakeNative.connections[0].sent[0].sessionId);
+  fakeNative.connections[1].onMessage(nativeSuccess(fakeNative.connections[1].sent[0], "0xaa36a7"));
+  assert.equal(thirdMessages.some((message) => (
+    message.kind === "response" && message.result === "0xaa36a7"
+  )), true);
+});
+
+test("a response from the prior native session cannot complete reconnected work", () => {
+  const { fakeNative, router } = makeRouter();
+  const firstMessages = [];
+  const first = router.attachContent({ sender: sender(), postMessage: (message) => firstMessages.push(message) });
+  first.receive(contentRequest(first.activationNonce, "first-1"));
+  const oldSession = fakeNative.connections[0].sent[0].sessionId;
+  router.reconnectNative();
+
+  const nextMessages = [];
+  const next = router.attachContent({
+    sender: { ...sender(), documentId: "document-stale-session" },
+    postMessage: (message) => nextMessages.push(message)
+  });
+  next.receive(contentRequest(next.activationNonce, "stale-session"));
+  const reconnectedRequest = fakeNative.connections[1].sent[0];
+  assert.notEqual(reconnectedRequest.sessionId, oldSession);
+  fakeNative.connections[1].onMessage({
+    ...nativeSuccess(reconnectedRequest, "0xaa36a7"),
+    sessionId: oldSession
+  });
+  assert.equal(nextMessages.some((message) => message.kind === "response"), false);
+  assert.equal(nextMessages.some((message) => message.kind === "disconnect"), true);
+});
+
+test("native connection attempts have a fixed worker-lifetime ceiling", () => {
+  const { fakeNative, router } = makeRouter();
+  const handle = router.attachContent({ sender: sender(), postMessage: () => {} });
+  handle.receive(contentRequest(handle.activationNonce, "first-1"));
+  for (let count = 1; count < MAX_NATIVE_CONNECTION_ATTEMPTS; count += 1) {
+    router.reconnectNative();
+  }
+  assert.equal(fakeNative.connections.length, MAX_NATIVE_CONNECTION_ATTEMPTS);
+  assert.throws(() => router.reconnectNative(), /attempt limit/u);
+  assert.equal(fakeNative.connections.length, MAX_NATIVE_CONNECTION_ATTEMPTS);
 });
 
 test("oversized content and native messages fail closed", () => {

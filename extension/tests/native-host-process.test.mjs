@@ -12,6 +12,7 @@ const { BackgroundRouter } = globalThis.__YOUR_WALLET_BACKGROUND_CORE__;
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const cargoExecutable = process.platform === "win32" ? "cargo.exe" : "cargo";
 const nativeHostExecutable = process.platform === "win32" ? "native-host.exe" : "native-host";
+const brokerExecutable = process.platform === "win32" ? "broker.exe" : "broker";
 const MAX_FRAME_BYTES = 1_048_576;
 
 class MessageQueue {
@@ -92,6 +93,70 @@ async function buildNativeHost() {
   return path.join(metadata.target_directory, "debug", nativeHostExecutable);
 }
 
+async function buildBrokerContractPair() {
+  const metadataBytes = await runCargo([
+    "metadata", "--offline", "--format-version", "1", "--no-deps"
+  ], true);
+  let metadata;
+  try {
+    metadata = JSON.parse(metadataBytes.toString("utf8"));
+  } catch (_error) {
+    throw new Error("Cargo metadata was invalid for the headless Broker contract test.");
+  }
+  if (typeof metadata.target_directory !== "string" || metadata.target_directory.length === 0) {
+    throw new Error("Cargo metadata omitted the headless Broker contract target directory.");
+  }
+  const targetDirectory = path.join(metadata.target_directory, "broker-ipc-contract-test");
+  await runCargo([
+    "build", "--offline", "--locked",
+    "--target-dir", targetDirectory,
+    "-p", "native-host", "-p", "broker",
+    "--features", "native-host/broker-ipc-contract-test-hook,broker/ipc-contract-test-hook"
+  ], false);
+  return Object.freeze({
+    nativeHost: path.join(targetDirectory, "debug", nativeHostExecutable),
+    broker: path.join(targetDirectory, "debug", brokerExecutable)
+  });
+}
+
+async function buildReleaseFeaturePair() {
+  const metadataBytes = await runCargo([
+    "metadata", "--offline", "--format-version", "1", "--no-deps"
+  ], true);
+  let metadata;
+  try {
+    metadata = JSON.parse(metadataBytes.toString("utf8"));
+  } catch (_error) {
+    throw new Error("Cargo metadata was invalid for the release feature gate.");
+  }
+  if (typeof metadata.target_directory !== "string" || metadata.target_directory.length === 0) {
+    throw new Error("Cargo metadata omitted the release feature target directory.");
+  }
+  const targetDirectory = path.join(metadata.target_directory, "release-feature-gate");
+  await runCargo([
+    "build", "--release", "--offline", "--locked",
+    "--target-dir", targetDirectory,
+    "-p", "native-host", "-p", "broker", "--all-features"
+  ], false);
+  return Object.freeze({
+    nativeHost: path.join(targetDirectory, "release", nativeHostExecutable),
+    broker: path.join(targetDirectory, "release", brokerExecutable)
+  });
+}
+
+function runClosedProcess(executable) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, [], {
+      cwd: repositoryRoot,
+      env: {},
+      stdio: "ignore",
+      windowsHide: true
+    });
+    child.once("error", () => reject(new Error("The release gate executable could not start.")));
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+}
+
 function encodeFrame(message) {
   const payload = Buffer.from(JSON.stringify(message), "utf8");
   assert.ok(payload.length > 0 && payload.length <= MAX_FRAME_BYTES);
@@ -100,9 +165,10 @@ function encodeFrame(message) {
   return Buffer.concat([length, payload]);
 }
 
-function connectNativeHost(executable, onMessage, onDisconnect) {
+function connectNativeHost(executable, onMessage, onDisconnect, env = process.env) {
   const child = spawn(executable, [], {
     cwd: repositoryRoot,
+    env,
     stdio: ["pipe", "pipe", "ignore"],
     windowsHide: true
   });
@@ -205,4 +271,248 @@ test("BackgroundRouter keeps one real release-disabled native-host stream alive"
   router.shutdown();
   const termination = await nativeProcess.closed;
   assert.deepEqual(termination, { code: 78, signal: null });
+});
+
+test("release all-feature binaries keep both subprocess hooks disabled", {
+  timeout: 300_000
+}, async (context) => {
+  const executables = await buildReleaseFeaturePair();
+  assert.deepEqual(await runClosedProcess(executables.broker), { code: 78, signal: null });
+
+  const delivered = new MessageQueue();
+  let nativeProcess = null;
+  const router = new BackgroundRouter({
+    profileInstallId: "a".repeat(64),
+    sessionId: "b".repeat(64),
+    extensionId: "abcdefghijklmnopabcdefghijklmnop",
+    randomHex: (() => {
+      let nonce = 70;
+      return () => (nonce++).toString(16).padStart(64, "0");
+    })(),
+    now: () => 1_700_000_000_000,
+    nativeFactory: ({ onMessage, onDisconnect }) => {
+      nativeProcess = connectNativeHost(
+        executables.nativeHost,
+        onMessage,
+        onDisconnect,
+        {}
+      );
+      return nativeProcess.transport;
+    }
+  });
+  context.after(() => {
+    if (nativeProcess?.child.exitCode === null) {
+      nativeProcess.child.stdin.destroy();
+      nativeProcess.child.kill();
+    }
+  });
+  const handle = router.attachContent({
+    sender: {
+      tab: { id: 17, incognito: false },
+      frameId: 0,
+      documentId: "document-release-feature-gate",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/release-feature-gate"
+    },
+    postMessage: (message) => delivered.push(message)
+  });
+  assert.equal((await delivered.next()).kind, "activated");
+  assert.equal(handle.receive({
+    namespace: shared.NAMESPACE,
+    version: shared.PROTOCOL_VERSION,
+    kind: "request",
+    activationNonce: handle.activationNonce,
+    id: "21".repeat(16),
+    method: "eth_chainId",
+    params: []
+  }), true);
+  const response = await delivered.next();
+  assert.equal(response.error.code, 4900);
+  router.shutdown();
+  assert.deepEqual(await nativeProcess.closed, { code: 78, signal: null });
+});
+
+test("BackgroundRouter reaches the debug-only secretless Broker over real subprocess IPC", {
+  timeout: 120_000
+}, async (context) => {
+  const executables = await buildBrokerContractPair();
+  const delivered = new MessageQueue();
+  const nativeProcesses = [];
+
+  const router = new BackgroundRouter({
+    profileInstallId: "a".repeat(64),
+    sessionId: "b".repeat(64),
+    extensionId: "abcdefghijklmnopabcdefghijklmnop",
+    randomHex: (() => {
+      let nonce = 40;
+      return () => (nonce++).toString(16).padStart(64, "0");
+    })(),
+    now: () => Date.now(),
+    nativeFactory: ({ onMessage, onDisconnect }) => {
+      const requests = [];
+      const responses = [];
+      const nativeProcess = connectNativeHost(executables.nativeHost, (message) => {
+        responses.push(message);
+        onMessage(message);
+      }, onDisconnect);
+      nativeProcess.requests = requests;
+      nativeProcess.responses = responses;
+      nativeProcesses.push(nativeProcess);
+      return Object.freeze({
+        send: (message) => {
+          requests.push(message);
+          return nativeProcess.transport.send(message);
+        },
+        disconnect: nativeProcess.transport.disconnect
+      });
+    }
+  });
+
+  context.after(() => {
+    for (const nativeProcess of nativeProcesses) {
+      if (nativeProcess.child.exitCode === null) {
+        nativeProcess.child.stdin.destroy();
+        nativeProcess.child.kill();
+      }
+    }
+  });
+
+  const handle = router.attachContent({
+    sender: {
+      tab: { id: 17, incognito: false },
+      frameId: 0,
+      documentId: "document-broker-contract",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/broker-contract"
+    },
+    postMessage: (message) => delivered.push(message)
+  });
+  assert.equal((await delivered.next()).kind, "activated");
+
+  const requests = [
+    { id: "31".repeat(16), method: "eth_chainId", params: [] },
+    { id: "32".repeat(16), method: "personal_sign", params: ["0x", "0x0000000000000000000000000000000000000000"] },
+    { id: "33".repeat(16), method: "eth_chainId", params: [] }
+  ];
+  for (const request of requests) {
+    assert.equal(handle.receive({
+      namespace: shared.NAMESPACE,
+      version: shared.PROTOCOL_VERSION,
+      kind: "request",
+      activationNonce: handle.activationNonce,
+      ...request
+    }), true);
+    const response = await delivered.next();
+    assert.equal(response.kind, "response");
+    assert.equal(response.id, request.id);
+    if (request.method === "eth_chainId") {
+      assert.equal(response.result, "0xaa36a7");
+    } else {
+      assert.equal(response.error.code, 4900);
+    }
+  }
+
+  const firstProcess = nativeProcesses[0];
+  assert.equal(nativeProcesses.length, 1);
+  assert.deepEqual(firstProcess.responses.map((response) => response.sequence), [1, 2, 3]);
+  assert.deepEqual(firstProcess.responses.map((response) => response.requestSequence), [1, 2, 3]);
+
+  const cancelledMessages = [];
+  const cancelled = router.attachContent({
+    sender: {
+      tab: { id: 18, incognito: false },
+      frameId: 0,
+      documentId: "document-cancelled-contract",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/cancelled-contract"
+    },
+    postMessage: (message) => cancelledMessages.push(message)
+  });
+  assert.equal(cancelled.receive({
+    namespace: shared.NAMESPACE,
+    version: shared.PROTOCOL_VERSION,
+    kind: "request",
+    activationNonce: cancelled.activationNonce,
+    id: "34".repeat(16),
+    method: "eth_chainId",
+    params: []
+  }), true);
+  cancelled.disconnect("navigation");
+
+  const afterCancel = new MessageQueue();
+  const afterCancelHandle = router.attachContent({
+    sender: {
+      tab: { id: 19, incognito: false },
+      frameId: 0,
+      documentId: "document-after-cancel",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/after-cancel"
+    },
+    postMessage: (message) => afterCancel.push(message)
+  });
+  assert.equal((await afterCancel.next()).kind, "activated");
+  assert.equal(afterCancelHandle.receive({
+    namespace: shared.NAMESPACE,
+    version: shared.PROTOCOL_VERSION,
+    kind: "request",
+    activationNonce: afterCancelHandle.activationNonce,
+    id: "35".repeat(16),
+    method: "eth_chainId",
+    params: []
+  }), true);
+  const afterCancelResponse = await afterCancel.next();
+  assert.equal(afterCancelResponse.result, "0xaa36a7");
+  assert.equal(cancelledMessages.some((message) => (
+    message.kind === "response" && message.id === "34".repeat(16)
+  )), false);
+  assert.deepEqual(firstProcess.requests.map((message) => message.sequence), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(firstProcess.requests.map((message) => message.kind), [
+    "request", "request", "request", "request", "cancel", "request"
+  ]);
+  assert.equal(firstProcess.requests[4].requestSequence, 4);
+  assert.deepEqual(firstProcess.responses.map((response) => response.sequence), [1, 2, 3, 4, 5]);
+  assert.deepEqual(firstProcess.responses.map((response) => response.requestSequence), [1, 2, 3, 4, 6]);
+
+  const firstSession = firstProcess.requests[0].sessionId;
+  router.reconnectNative();
+  assert.equal(nativeProcesses.length, 2);
+  const firstTermination = await firstProcess.closed;
+  assert.deepEqual(firstTermination, { code: 78, signal: null });
+
+  const reconnected = new MessageQueue();
+  const reconnectedHandle = router.attachContent({
+    sender: {
+      tab: { id: 20, incognito: false },
+      frameId: 0,
+      documentId: "document-reconnected-contract",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/reconnected-contract"
+    },
+    postMessage: (message) => reconnected.push(message)
+  });
+  assert.equal((await reconnected.next()).kind, "activated");
+  assert.equal(reconnectedHandle.receive({
+    namespace: shared.NAMESPACE,
+    version: shared.PROTOCOL_VERSION,
+    kind: "request",
+    activationNonce: reconnectedHandle.activationNonce,
+    id: "36".repeat(16),
+    method: "eth_chainId",
+    params: []
+  }), true);
+  const reconnectedResponse = await reconnected.next();
+  assert.equal(reconnectedResponse.result, "0xaa36a7");
+  const secondProcess = nativeProcesses[1];
+  assert.equal(secondProcess.requests[0].sequence, 1);
+  assert.notEqual(secondProcess.requests[0].sessionId, firstSession);
+  assert.deepEqual(secondProcess.responses.map((response) => response.sequence), [1]);
+
+  router.shutdown();
+  const secondTermination = await secondProcess.closed;
+  assert.deepEqual(secondTermination, { code: 78, signal: null });
 });

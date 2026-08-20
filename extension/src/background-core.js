@@ -16,9 +16,11 @@
   const MAX_ACTIVE_DOCUMENTS = 128;
   const MAX_GLOBAL_PENDING = 1_024;
   const MAX_PENDING_PER_DOCUMENT = 64;
+  const MAX_NATIVE_CONNECTION_ATTEMPTS = 4_096;
   const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
   const PROFILE_ID_PATTERN = /^[0-9a-f]{64}$/u;
   const EXTENSION_ID_PATTERN = /^[a-p]{32}$/u;
+  const CANCEL_REASON_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
   class BackgroundRouter {
     constructor({ profileInstallId, sessionId, extensionId, randomHex, now, nativeFactory }) {
@@ -40,6 +42,7 @@
       this.pending = new Map();
       this.nativeConnection = null;
       this.nativeEpoch = 0;
+      this.nativeConnectionAttempts = 0;
       this.lastNativeSequence = 0;
       this.outboundSequence = 0;
       this.issuedPortNonces = new Set([profileInstallId, sessionId]);
@@ -150,7 +153,6 @@
         return false;
       }
 
-      const sequence = this.nextOutboundSequence();
       const issuedAtUnixMs = this.now();
       if (!Number.isSafeInteger(issuedAtUnixMs) || issuedAtUnixMs < 0) {
         this.respondError(state, request.id, -32603, "Wallet clock is unavailable.");
@@ -159,6 +161,13 @@
       const deadlineUnixMs = issuedAtUnixMs + REQUEST_DEADLINE_MS;
       if (!Number.isSafeInteger(deadlineUnixMs)) {
         this.respondError(state, request.id, -32603, "Wallet request deadline overflowed.");
+        return false;
+      }
+      let sequence;
+      try {
+        sequence = this.nextOutboundSequenceCandidate();
+      } catch (_error) {
+        this.respondError(state, request.id, 4900, "Native wallet service is unavailable.");
         return false;
       }
       const nativeRequest = {
@@ -181,6 +190,7 @@
         this.respondError(state, request.id, -32600, "Request exceeds the native wallet message limit.");
         return false;
       }
+      this.outboundSequence = sequence;
       const pendingKey = requestKey(state.activationNonce, request.id);
       const pending = { state, id: request.id, sequence, deadlineUnixMs };
       state.pendingIds.add(request.id);
@@ -211,6 +221,13 @@
 
     openNativeConnection(cancelReason) {
       this.cancelAllPending(cancelReason);
+      if (this.nativeConnectionAttempts >= MAX_NATIVE_CONNECTION_ATTEMPTS) {
+        throw new Error("Native connection attempt limit reached.");
+      }
+      if (this.nativeConnectionAttempts !== 0) {
+        this.sessionId = this.issuePortNonce();
+      }
+      this.nativeConnectionAttempts += 1;
       const epoch = this.nativeEpoch + 1;
       this.nativeEpoch = epoch;
       this.lastNativeSequence = 0;
@@ -257,7 +274,7 @@
         || value.role !== "native-host"
         || value.sessionId !== this.sessionId
         || !Number.isSafeInteger(value.sequence)
-        || value.sequence <= this.lastNativeSequence) {
+        || value.sequence !== this.lastNativeSequence + 1) {
         this.dropNativeConnection("invalid-native-envelope");
         return false;
       }
@@ -375,12 +392,13 @@
       if (!state.live) {
         return;
       }
+      const cancellationReason = normalizeCancelReason(reason);
       for (const id of state.pendingIds) {
         const key = requestKey(state.activationNonce, id);
         const pending = this.pending.get(key);
         this.pending.delete(key);
         if (pending) {
-          this.sendNativeCancellation(pending, reason);
+          this.sendNativeCancellation(pending, cancellationReason);
         }
       }
       state.pendingIds.clear();
@@ -390,7 +408,7 @@
           version: shared.PROTOCOL_VERSION,
           kind: "disconnect",
           activationNonce: state.activationNonce,
-          error: shared.rpcError(4900, "Wallet connection closed.", { reason })
+          error: shared.rpcError(4900, "Wallet connection closed.", { reason: cancellationReason })
         });
       }
       state.live = false;
@@ -400,6 +418,7 @@
     }
 
     cancelAllPending(reason) {
+      const cancellationReason = normalizeCancelReason(reason);
       const affected = new Set();
       for (const pending of this.pending.values()) {
         affected.add(pending.state);
@@ -413,7 +432,9 @@
             version: shared.PROTOCOL_VERSION,
             kind: "disconnect",
             activationNonce: state.activationNonce,
-            error: shared.rpcError(4900, "Native wallet connection closed.", { reason })
+            error: shared.rpcError(4900, "Native wallet connection closed.", {
+              reason: cancellationReason
+            })
           });
           state.live = false;
           this.activations.delete(state.activationNonce);
@@ -428,21 +449,24 @@
         return;
       }
       try {
+        const sequence = this.nextOutboundSequenceCandidate();
         const message = {
           namespace: shared.NAMESPACE,
           version: shared.PROTOCOL_VERSION,
           role: "extension",
           kind: "cancel",
           sessionId: this.sessionId,
-          sequence: this.nextOutboundSequence(),
+          sequence,
           activationNonce: pending.state.activationNonce,
           requestId: pending.id,
           requestSequence: pending.sequence,
-          reason
+          reason: normalizeCancelReason(reason)
         };
         if (!shared.fitsMessageLimit(message)) {
+          this.dropNativeConnection("native-cancel-invalid");
           return;
         }
+        this.outboundSequence = sequence;
         this.nativeConnection.send(message);
       } catch (_error) {
         if (this.nativeConnection !== null) {
@@ -466,13 +490,12 @@
       }
     }
 
-    nextOutboundSequence() {
+    nextOutboundSequenceCandidate() {
       if (this.outboundSequence >= Number.MAX_SAFE_INTEGER) {
         this.dropNativeConnection("sequence-exhausted");
         throw new Error("Native message sequence exhausted.");
       }
-      this.outboundSequence += 1;
-      return this.outboundSequence;
+      return this.outboundSequence + 1;
     }
 
     issuePortNonce() {
@@ -492,6 +515,12 @@
       }
       this.dropNativeConnection("worker-shutdown");
     }
+  }
+
+  function normalizeCancelReason(reason) {
+    return typeof reason === "string" && CANCEL_REASON_PATTERN.test(reason)
+      ? reason
+      : "invalid-cancel-reason";
   }
 
   function deriveSenderContext(configuration) {
@@ -556,8 +585,9 @@
 
   function validRpcError(value) {
     return shared.hasExactKeys(value, ["code", "message"], ["data"])
-      && Number.isInteger(value.code)
+      && Number.isSafeInteger(value.code)
       && typeof value.message === "string"
+      && value.message.length > 0
       && value.message.length <= 512
       && (!Object.prototype.hasOwnProperty.call(value, "data") || shared.isJsonValue(value.data));
   }
@@ -574,6 +604,7 @@
       MAX_ACTIVE_DOCUMENTS,
       MAX_GLOBAL_PENDING,
       MAX_PENDING_PER_DOCUMENT,
+      MAX_NATIVE_CONNECTION_ATTEMPTS,
       deriveSenderContext,
       validRpcError
     })

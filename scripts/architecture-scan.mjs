@@ -1686,6 +1686,171 @@ requireInvariant(
   "native host release-disabled paths must retain false attestation and stable provider code 4900",
 );
 
+// Debug subprocess contract: this is deliberately disjoint from the Sepolia
+// wallet-management/token invariants above and from the release attestation
+// composition. It may prove protocol shape only; it must never become a release
+// Broker bootstrap or carry an unavailable request body.
+const brokerManifestForContract = await text("crates/broker/Cargo.toml");
+const nativeManifestForContract = await text("crates/native-host/Cargo.toml");
+const brokerMainForContract = await text("crates/broker/src/main.rs");
+const brokerLibraryForContract = await text("crates/broker/src/lib.rs");
+const brokerTransportForContract = await text("crates/broker/src/transport.rs");
+const brokerIpcContract = await text("crates/broker/src/ipc.rs");
+const nativeLibraryForContract = await text("crates/native-host/src/lib.rs");
+const nativeContractBridge = await text("crates/native-host/src/contract_bridge.rs");
+const extensionBackgroundContract = await text("extension/src/background-core.js");
+const nativeProcessContractTest = await text("extension/tests/native-host-process.test.mjs");
+requireInvariant(
+  brokerManifestForContract.includes(
+    'ipc-contract-test-hook = ["dep:getrandom"]',
+  ) &&
+    brokerManifestForContract.includes(
+      "getrandom = { workspace = true, optional = true }",
+    ) &&
+    nativeManifestForContract.includes(
+      'broker-ipc-contract-test-hook = ["broker/ipc-contract-test-hook", "dep:getrandom"]',
+    ) &&
+    nativeManifestForContract.includes(
+      "getrandom = { workspace = true, optional = true }",
+    ),
+  "debug Broker subprocess randomness must remain optional and feature-scoped",
+);
+for (const [source, feature] of [
+  [brokerMainForContract, "ipc-contract-test-hook"],
+  [nativeMain, "broker-ipc-contract-test-hook"],
+]) {
+  requireInvariant(
+    source.includes(
+      `#[cfg(all(feature = "${feature}", debug_assertions))]`,
+    ) &&
+      source.includes(
+        `#[cfg(not(all(feature = "${feature}", debug_assertions)))]`,
+      ) &&
+      !/(?:e?println!|dbg!)/u.test(source),
+    `${feature} must remain debug-assertion gated, release-disabled, and silent`,
+  );
+}
+requireInvariant(
+  brokerLibraryForContract.includes(
+    '#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]',
+  ) &&
+    brokerMainForContract.includes("std::process::exit(78);") &&
+    nativeMain.includes("native_host::run_release_disabled_stream") &&
+    nativeMain.includes("std::process::exit(PRIVATE_BROKER_UNAVAILABLE);"),
+  "default and release Broker/native-host entrypoints must retain exit-78 gating",
+);
+requireInvariant(
+  /#\[cfg\(any\(test,\s*all\(feature = "ipc-contract-test-hook", debug_assertions\)\)\)\]\s*#\[derive\([^\]]+\)\]\s*pub\(crate\) enum SecretlessLocalOutcome/u.test(
+    brokerTransportForContract,
+  ) &&
+    /#\[cfg\(any\(test,\s*all\(feature = "ipc-contract-test-hook", debug_assertions\)\)\)\]\s*pub\(crate\) fn execute_secretless_local/u.test(
+      brokerTransportForContract,
+    ) &&
+    !brokerLibraryForContract.includes("SecretlessLocalOutcome"),
+  "Broker local chain-ID success must remain crate-private and absent outside tests or the debug feature gate",
+);
+requireInvariant(
+  nativeMain.includes("std::env::current_exe()") &&
+    nativeMain.includes("executable.set_file_name(") &&
+    nativeMain.includes("std::fs::symlink_metadata(&executable)") &&
+    nativeMain.includes("metadata.file_type().is_file()") &&
+    nativeMain.includes("struct BrokerChildGuard") &&
+    nativeMain.includes("impl Drop for BrokerChildGuard") &&
+    nativeMain.includes("self.0.kill()") &&
+    nativeMain.includes("self.0.wait()") &&
+    nativeMain.includes(".env_clear()") &&
+    !nativeMain.includes("YOUR_WALLET_BROKER_CONTRACT_EXE") &&
+    !nativeProcessContractTest.includes("YOUR_WALLET_BROKER_CONTRACT_EXE"),
+  "debug native host must select only its regular-file Broker sibling and reap it on every exit or unwind",
+);
+requireInvariant(
+  brokerIpcContract.includes("BrokerIpcError::Io") &&
+    nativeLibraryForContract.includes("FrameError::Io") &&
+    !/Io\s*\(\s*#\[source\]|Io\s*\(\s*(?:std::)?io::Error/u.test(
+      `${brokerIpcContract}\n${nativeLibraryForContract}`,
+    ) &&
+    brokerIpcContract.includes("std::error::Error::source(&error).is_none()") &&
+    nativeLibraryForContract.includes("std::error::Error::source(&error).is_none()"),
+  "native and Broker transport errors must retain only a stable I/O category with no raw source chain",
+);
+const unavailableWireBlock =
+  /struct\s+UnavailableRequestWire\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    brokerIpcContract,
+  )?.groups?.body ?? "";
+const unavailableMethodBlock =
+  /enum\s+UnavailableMethodWire\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    brokerIpcContract,
+  )?.groups?.body ?? "";
+requireInvariant(
+  brokerIpcContract.includes("MAX_BROKER_IPC_FRAME_BYTES: usize = 8_192") &&
+    brokerIpcContract.includes("MAX_BROKER_IPC_COMMANDS: u64 = 4_096") &&
+    brokerIpcContract.includes(
+      "summary.commands >= MAX_BROKER_IPC_COMMANDS",
+    ) &&
+    brokerIpcContract.includes(
+      "server_accepts_exact_command_lifetime_and_rejects_the_next_frame_before_dispatch",
+    ) &&
+    brokerIpcContract.includes("BrokerIpcClient::connect") &&
+    brokerIpcContract.includes("pub fn run_secretless_server") &&
+    brokerIpcContract.includes("ClientBodyWire::Unavailable") &&
+    brokerIpcContract.includes("complete_unavailable(transport)") &&
+    unavailableWireBlock.includes("session_id: FixedHex<32>") &&
+    unavailableWireBlock.includes("request_sequence: u64") &&
+    unavailableWireBlock.includes("activation_nonce: FixedHex<32>") &&
+    unavailableWireBlock.includes("request_id: FixedHex<16>") &&
+    unavailableWireBlock.includes("method: UnavailableMethodWire") &&
+    !/(?:params|message|account|address|origin|method_name|serde_json::Value)/u.test(
+      unavailableWireBlock,
+    ) &&
+    unavailableMethodBlock.includes("PersonalSign") &&
+    unavailableMethodBlock.includes("SendTransaction") &&
+    !/\bChainId\b/u.test(unavailableMethodBlock),
+  "debug unavailable IPC must retain exact frame/session bounds, enum-only correlation, and no chainId replacement",
+);
+requireInvariant(
+  nativeContractBridge.includes('request.method_name() == "eth_chainId"') &&
+    nativeContractBridge.includes("broker.complete_unavailable(") &&
+    nativeContractBridge.includes("TransportCancellationOutcome::AlreadyCompleted") &&
+    nativeContractBridge.includes("return Err(ProtocolError::SessionSequence.into())") &&
+    !/(?:KeyAgent|DownstreamExecutor|eth_sendRawTransaction|http::|https::)/u.test(
+      nativeContractBridge,
+    ),
+  "debug native contract must remain chainId-only, completion-bound, and network/signing-free",
+);
+requireInvariant(
+  extensionBackgroundContract.includes(
+    "const MAX_NATIVE_CONNECTION_ATTEMPTS = 4_096",
+  ) &&
+    extensionBackgroundContract.includes(
+      "this.sessionId = this.issuePortNonce()",
+    ) &&
+    extensionBackgroundContract.includes(
+      "value.sequence !== this.lastNativeSequence + 1",
+    ) &&
+    extensionBackgroundContract.includes("this.outboundSequence = 0") &&
+    extensionBackgroundContract.includes(
+      "sequence = this.nextOutboundSequenceCandidate()",
+    ) &&
+    extensionBackgroundContract.includes("this.outboundSequence = sequence") &&
+    extensionBackgroundContract.includes("normalizeCancelReason(reason)") &&
+    extensionBackgroundContract.includes("Number.isSafeInteger(value.code)") &&
+    extensionBackgroundContract.includes("value.message.length > 0"),
+  "extension reconnect must rotate sessions, reset request sequence, reject response gaps, avoid local sequence holes, normalize cancel reasons, enforce exact RPC errors, and remain bounded",
+);
+requireInvariant(
+  nativeProcessContractTest.includes('"--offline", "--locked"') &&
+    nativeProcessContractTest.includes('"--release"') &&
+    nativeProcessContractTest.includes('"--all-features"') &&
+    nativeProcessContractTest.includes("windowsHide: true") &&
+    nativeProcessContractTest.includes("cancelled.disconnect(\"navigation\")") &&
+    nativeProcessContractTest.includes("router.reconnectNative()") &&
+    nativeProcessContractTest.includes("{ code: 78, signal: null }") &&
+    !/(?:puppeteer|playwright|selenium|launchPersistentContext)/iu.test(
+      nativeProcessContractTest,
+    ),
+  "real bridge evidence must stay offline, headless, cancel/reconnect aware, and release-exit-78 checked",
+);
+
 const approvalChannel = await text("crates/platform-windows/src/approval_channel.rs");
 requireInvariant(
   /pub\s+struct\s+VerifiedApprovalResponse\s*\{\s*decision\s*:/su.test(approvalChannel) &&

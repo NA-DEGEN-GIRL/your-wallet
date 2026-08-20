@@ -5,8 +5,14 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Real subprocess bridge used only by debug-profile headless contract tests.
+broker-ipc-contract-test-hook = ["broker/ipc-contract-test-hook", "dep:getrandom"]
+
 [dependencies]
 broker = { path = "../broker" }
+getrandom = { workspace = true, optional = true }
 platform-windows = { path = "../platform-windows" }
 serde.workspace = true
 serde_json.workspace = true

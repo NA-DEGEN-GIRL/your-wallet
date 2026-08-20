@@ -21,6 +21,68 @@ sealed admission and does not allocate or flush the success/error response
 until the executor returns completion. The default executable cannot reach that
 seam, does not add broker IPC, and does not enable release attestation.
 
+### Debug-only subprocess contract
+
+An explicit `broker-ipc-contract-test-hook` Cargo feature can connect the native
+host to a real Broker subprocess only when `debug_assertions` is also enabled.
+The Broker has a separate `ipc-contract-test-hook` with the same double gate.
+Ordinary builds, release builds with no features, and release builds with every
+feature enabled all compile the disabled entrypoints: the Broker exits 78
+immediately, while the native host emits only stable 4900 responses and exits 78
+at EOF or the first terminal error. The hook is not release attestation and
+cannot be selected by a release binary.
+
+The debug native host derives the regular-file `broker` sibling in the same
+build directory as its own executable; no environment variable or caller path
+can select another program. It launches that child with hidden stdio, an empty
+inherited environment, and unwind-safe kill/wait cleanup, and performs no
+browser, GUI, wallet RPC, signing, Key Agent, or secret operation. The Broker's
+local execution API is crate-private and absent unless tests or the debug hook
+compile it. The internal stream uses a fixed 8,192-byte big-endian length
+prefix and exact JSON structs. A version-1 hello
+binds literal native-host/Broker roles, a nonzero client nonce, a nonzero server
+nonce, and internal sequence 1. Every later command and response must preserve
+both nonces and advance its own internal sequence by exactly one; malformed,
+duplicate, skipped, cross-role, cross-nonce, or cross-session input terminates
+the connection without resynchronization. The hello is outside Broker's
+independent lifetime count: exactly 4,096 post-handshake commands may be
+dispatched, and the next complete frame fails before Broker state mutation or a
+response.
+
+Only three post-handshake command forms exist:
+
+- `eth_chainId` carries the already strict version-1 request with an empty
+  parameter array and the permission route. Broker owns admission, the Sepolia
+  chain-ID result, and completion before acknowledging it.
+- `unavailable` carries only the nonzero session ID, extension request sequence,
+  activation nonce, request ID, a fresh request nonce, and one closed enum for an
+  allowlisted non-chain-ID method. It cannot carry raw JSON parameters, message
+  bytes, accounts, addresses, origins, or an arbitrary method string. Broker
+  consumes the shared extension sequence, records the correlation as completed,
+  and returns an exact acknowledgement before the native host emits stable 4900.
+- `cancel` carries the exact original request sequence and correlation plus a
+  fresh cancellation nonce. In this synchronous secretless hook, the request is
+  already complete; Broker must return `already-completed`. The acknowledgement
+  stays internal and Chrome receives no cancellation response.
+
+The three sequence domains are intentionally distinct: extension requests and
+cancellations share one exact sequence, native responses use a separate exact
+response-only sequence, and Broker IPC commands/responses use their own exact
+handshake-relative sequences. This prevents a locally unavailable request or a
+response-free cancellation from creating a gap before a later chain-ID request.
+On reconnect the extension samples a new session ID, resets connection-local
+sequences to one, and rejects any response from the old session. A real headless
+test covers chain ID, parameter-free unavailable completion, late cancellation,
+continued use of the same two subprocesses, old-process exit 78, session
+rotation, and a successful chain-ID request on the new subprocess pair.
+
+This is contract-path evidence only. The nonces prevent accidental stream
+mix-up; they do not authenticate a process running as the same user. A sibling
+path is still not an authenticated or attested bootstrap. Windows
+endpoint SID/DACL policy, remote-client rejection, held executable identity,
+signed installation evidence, and the release-attested downstream composition
+remain stop-ship.
+
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
 held-child identity, and one-shot transcript. The parent-side Secret Input API

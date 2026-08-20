@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Secret/network-free subprocess used only by debug-profile bridge contract tests.
+ipc-contract-test-hook = ["dep:getrandom"]
+
 [dependencies]
+getrandom = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

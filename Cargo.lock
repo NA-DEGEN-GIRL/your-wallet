@@ -264,6 +264,7 @@ name = "broker"
 version = "0.1.0"
 dependencies = [
  "chain-registry",
+ "getrandom 0.3.3",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
@@ -1454,6 +1455,7 @@ name = "native-host"
 version = "0.1.0"
 dependencies = [
  "broker",
+ "getrandom 0.3.3",
  "platform-windows",
  "serde",
  "serde_json",

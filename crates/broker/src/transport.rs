@@ -4,8 +4,12 @@ use core::fmt;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+use wallet_model::SessionId;
 use wallet_model::{ActivationNonce, Address20, BrowserContext, U256};
 
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+use crate::BrowserDocumentKey;
 use crate::{
     Admission, BrokerError, PermissionKey, PermissionStore, ProviderMethod, ProviderRoute,
     SessionRouter,
@@ -96,6 +100,76 @@ pub struct TransportCancellation {
     pub request_id: [u8; 16],
     /// Original request transport sequence.
     pub request_sequence: u64,
+}
+
+/// Correlation-only completion for a request deliberately unavailable at the
+/// debug native-host boundary.
+///
+/// No JSON parameters, message bytes, account, address, origin, or arbitrary
+/// method string can be represented by this type.
+#[derive(Clone, Copy)]
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+pub(crate) struct TransportUnavailable {
+    session_id: [u8; 32],
+    sequence: u64,
+    activation_nonce: ActivationNonce,
+    request_id: [u8; 16],
+    method: ProviderMethod,
+}
+
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+impl fmt::Debug for TransportUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransportUnavailable")
+            .field("session_id", &"[REDACTED]")
+            .field("sequence", &"[REDACTED]")
+            .field("activation_nonce", &"[REDACTED]")
+            .field("request_id", &"[REDACTED]")
+            .field("method", &self.method)
+            .finish()
+    }
+}
+
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+impl TransportUnavailable {
+    pub(crate) const fn new(
+        session_id: [u8; 32],
+        sequence: u64,
+        activation_nonce: ActivationNonce,
+        request_id: [u8; 16],
+        method: ProviderMethod,
+    ) -> Self {
+        Self {
+            session_id,
+            sequence,
+            activation_nonce,
+            request_id,
+            method,
+        }
+    }
+
+    pub(crate) const fn session_id(&self) -> [u8; 32] {
+        self.session_id
+    }
+}
+
+/// Result of consuming one exactly bound transport cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportCancellationOutcome {
+    /// A still-pending request was cancelled.
+    Cancelled,
+    /// The exact request had already completed; the late cancellation was
+    /// consumed idempotently and did not affect another request.
+    AlreadyCompleted,
+}
+
+/// Broker-owned output of the deliberately tiny secretless local subset.
+#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SecretlessLocalOutcome {
+    /// The Broker-selected chain identifier.
+    ChainId(U256),
 }
 
 impl fmt::Debug for TransportCancellation {
@@ -328,16 +402,94 @@ impl TransportBroker {
     ///
     /// Returns replay/context errors for the wrong session, wire sequence, or
     /// request lifetime.
-    pub fn cancel(&mut self, cancellation: TransportCancellation) -> Result<(), BrokerError> {
+    pub fn cancel(
+        &mut self,
+        cancellation: TransportCancellation,
+    ) -> Result<TransportCancellationOutcome, BrokerError> {
         self.consume_wire_sequence(cancellation.session_id, cancellation.sequence)?;
-        if !self.router.cancel_bound(
-            cancellation.request_id,
-            cancellation.request_sequence,
-            cancellation.activation_nonce,
-        ) {
+        self.router
+            .cancel_bound(
+                cancellation.request_id,
+                cancellation.request_sequence,
+                cancellation.activation_nonce,
+            )
+            .ok_or(BrokerError::ContextChanged)
+    }
+
+    /// Consume and remember one correlation-only debug-unavailable request.
+    ///
+    /// This keeps every extension request and cancellation on the same strict
+    /// sequence even when no operation is admitted and no raw parameters cross
+    /// the subprocess contract hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns a replay, context, capacity, or malformed error for a mismatched
+    /// session/sequence, reused request identifier, or `eth_chainId`, which must
+    /// use the typed local execution path instead.
+    #[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+    pub(crate) fn complete_unavailable(
+        &mut self,
+        unavailable: TransportUnavailable,
+    ) -> Result<(), BrokerError> {
+        if unavailable.method == ProviderMethod::ChainId {
+            return Err(BrokerError::Malformed);
+        }
+        self.consume_wire_sequence(unavailable.session_id, unavailable.sequence)?;
+        self.router.remember_unavailable(
+            SessionId::new(unavailable.session_id),
+            unavailable.activation_nonce,
+            unavailable.request_id,
+            unavailable.sequence,
+        )
+    }
+
+    /// Execute the deliberately tiny, secret-free local provider subset.
+    ///
+    /// The response is owned by the Broker so an external executor cannot turn
+    /// a locally admitted permission route into account disclosure. This first
+    /// bridge slice implements only `eth_chainId`; it performs no network,
+    /// signing, permission mutation, or Key Agent operation. Every admitted
+    /// request is completed before this method returns, including unsupported
+    /// local methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns the normal admission/completion error, or
+    /// [`BrokerError::UnsupportedMethod`] for every method except
+    /// `eth_chainId`.
+    #[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]
+    pub(crate) fn execute_secretless_local(
+        &mut self,
+        request: &TransportRequest,
+        admitted_at: Instant,
+        completed_at: Instant,
+        now_unix_ms: u64,
+    ) -> Result<SecretlessLocalOutcome, BrokerError> {
+        let admission = self.admit(request, admitted_at, now_unix_ms)?;
+        let document = BrowserDocumentKey::from_context(admission.context())?;
+        let request_id = *admission.request_id();
+        let admitted_method = admission.method();
+        let admitted_target = admission.target();
+        let result = if admitted_target == BrokerTarget::LocalPermission
+            && admitted_method == ProviderMethod::ChainId
+        {
+            Ok(SecretlessLocalOutcome::ChainId(self.active_chain))
+        } else {
+            Err(BrokerError::UnsupportedMethod)
+        };
+
+        let completed_method = self.router.complete(request_id, &document, completed_at)?;
+        if completed_method != admitted_method {
             return Err(BrokerError::ContextChanged);
         }
-        Ok(())
+        result
+    }
+
+    /// Return the number of requests still pending in this transport session.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.router.pending_len()
     }
 
     /// Grant the exact active account/chain to a validated document origin.
@@ -421,8 +573,11 @@ mod tests {
         ProfileInstallId, RequestId, SessionId, U256,
     };
 
-    use super::{BrokerTarget, TransportBroker, TransportCancellation, TransportRequest};
-    use crate::{BrokerError, PermissionStore, ProviderRoute};
+    use super::{
+        BrokerTarget, SecretlessLocalOutcome, TransportBroker, TransportCancellation,
+        TransportCancellationOutcome, TransportRequest, TransportUnavailable,
+    };
+    use crate::{BrokerError, PermissionStore, ProviderMethod, ProviderRoute};
 
     fn context(sequence: u64, request: u8) -> Result<BrowserContext, Box<dyn std::error::Error>> {
         Ok(BrowserContext {
@@ -542,6 +697,139 @@ mod tests {
             }),
             Err(BrokerError::ContextChanged)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn secretless_local_chain_id_completes_before_return_and_late_cancel_is_idempotent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let account = Address20::new([0x11; 20]);
+        let mut broker = TransportBroker::new(
+            PermissionStore::default(),
+            account,
+            U256::from_u64(11_155_111),
+        );
+        broker.begin_session([2; 32])?;
+        let request_context = context(1, 7)?;
+        let request = TransportRequest::new(
+            request_context.clone(),
+            "eth_chainId".to_owned(),
+            json!([]),
+            ProviderRoute::Permission,
+        )?;
+        let now = Instant::now();
+        assert_eq!(
+            broker.execute_secretless_local(&request, now, now, 1_700_000_000_000,)?,
+            SecretlessLocalOutcome::ChainId(U256::from_u64(11_155_111))
+        );
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            broker.cancel(TransportCancellation {
+                session_id: [2; 32],
+                sequence: 2,
+                activation_nonce: request_context.activation_nonce,
+                request_id: [7; 16],
+                request_sequence: 1,
+            })?,
+            TransportCancellationOutcome::AlreadyCompleted
+        );
+        assert_eq!(broker.pending_len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_completion_consumes_sequence_and_binds_late_cancel() -> Result<(), BrokerError> {
+        let mut broker = TransportBroker::new(
+            PermissionStore::default(),
+            Address20::new([0x11; 20]),
+            U256::from_u64(11_155_111),
+        );
+        broker.begin_session([2; 32])?;
+        broker.complete_unavailable(TransportUnavailable::new(
+            [2; 32],
+            1,
+            ActivationNonce::new([3; 32]),
+            [7; 16],
+            ProviderMethod::PersonalSign,
+        ))?;
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            broker.cancel(TransportCancellation {
+                session_id: [2; 32],
+                sequence: 2,
+                activation_nonce: ActivationNonce::new([3; 32]),
+                request_id: [7; 16],
+                request_sequence: 1,
+            })?,
+            TransportCancellationOutcome::AlreadyCompleted
+        );
+        assert_eq!(
+            broker.complete_unavailable(TransportUnavailable::new(
+                [2; 32],
+                3,
+                ActivationNonce::new([3; 32]),
+                [7; 16],
+                ProviderMethod::PersonalSign,
+            )),
+            Err(BrokerError::Replay)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_completion_cannot_replace_typed_chain_id_execution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut broker = TransportBroker::new(
+            PermissionStore::default(),
+            Address20::new([0x11; 20]),
+            U256::from_u64(11_155_111),
+        );
+        broker.begin_session([2; 32])?;
+        assert_eq!(
+            broker.complete_unavailable(TransportUnavailable::new(
+                [2; 32],
+                1,
+                ActivationNonce::new([3; 32]),
+                [7; 16],
+                ProviderMethod::ChainId,
+            )),
+            Err(BrokerError::Malformed)
+        );
+        let request = TransportRequest::new(
+            context(1, 7)?,
+            "eth_chainId".to_owned(),
+            json!([]),
+            ProviderRoute::Permission,
+        )?;
+        let now = Instant::now();
+        assert_eq!(
+            broker.execute_secretless_local(&request, now, now, 1_700_000_000_000)?,
+            SecretlessLocalOutcome::ChainId(U256::from_u64(11_155_111))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn secretless_local_rejects_account_queries_without_leaking_pending_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut broker = TransportBroker::new(
+            PermissionStore::default(),
+            Address20::new([0x11; 20]),
+            U256::from_u64(11_155_111),
+        );
+        broker.begin_session([2; 32])?;
+        let request = TransportRequest::new(
+            context(1, 8)?,
+            "eth_accounts".to_owned(),
+            json!([]),
+            ProviderRoute::Permission,
+        )?;
+        let now = Instant::now();
+        assert_eq!(
+            broker.execute_secretless_local(&request, now, now, 1_700_000_000_000),
+            Err(crate::BrokerError::UnsupportedMethod)
+        );
+        assert_eq!(broker.pending_len(), 0);
         Ok(())
     }
 

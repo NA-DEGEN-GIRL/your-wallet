@@ -252,7 +252,9 @@ impl BrokerEndpoint for TransportBroker {
     }
 
     fn cancel(&mut self, cancellation: TransportCancellation) -> Result<(), BrokerEndpointError> {
-        Self::cancel(self, cancellation).map_err(Into::into)
+        Self::cancel(self, cancellation)
+            .map(|_| ())
+            .map_err(Into::into)
     }
 }
 
@@ -735,6 +737,27 @@ fn unavailable_response(request: &TransportRequest, sequence: u64) -> Result<Val
         data: None,
     };
     encode_execution_response(binding, sequence, ExecutionOutcome::Error(error))
+}
+
+#[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
+pub fn encode_contract_chain_id_response(
+    request: &TransportRequest,
+    sequence: u64,
+    chain_id: wallet_model::U256,
+) -> Result<Value, ProtocolError> {
+    encode_execution_response(
+        ResponseBinding::from_context(request.context()),
+        sequence,
+        ExecutionOutcome::success(Value::String(chain_id.to_canonical_quantity())),
+    )
+}
+
+#[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
+pub fn encode_contract_unavailable_response(
+    request: &TransportRequest,
+    sequence: u64,
+) -> Result<Value, ProtocolError> {
+    unavailable_response(request, sequence)
 }
 
 #[derive(Clone, Copy)]
@@ -1257,12 +1280,10 @@ mod tests {
         assert!(dispatcher_debug.contains("[REDACTED]"));
         assert!(!dispatcher_debug.contains("CountingEndpoint"));
 
-        let framing_error = ProtocolError::Framing(crate::FrameError::Io(std::io::Error::other(
-            "private-local-path-marker",
-        )));
+        let framing_error = ProtocolError::Framing(crate::FrameError::Io);
         let error_debug = format!("{framing_error:?}");
         assert!(error_debug.contains("ProtocolError::Framing"));
-        assert!(!error_debug.contains("private-local-path-marker"));
+        assert!(!error_debug.contains("std::io"));
         Ok(())
     }
 
