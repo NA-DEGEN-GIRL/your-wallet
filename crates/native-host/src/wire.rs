@@ -256,6 +256,40 @@ impl BrokerEndpoint for TransportBroker {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ReleaseDisabledBrokerEndpoint;
+
+impl BrokerEndpoint for ReleaseDisabledBrokerEndpoint {
+    fn begin_session(&mut self, _session_id: [u8; 32]) -> Result<(), BrokerEndpointError> {
+        Err(BrokerEndpointError::Unavailable)
+    }
+
+    fn admit(
+        &mut self,
+        _request: &TransportRequest,
+        _now_unix_ms: u64,
+    ) -> Result<AuthorizedDispatch, BrokerEndpointError> {
+        Err(BrokerEndpointError::Unavailable)
+    }
+
+    fn cancel(&mut self, _cancellation: TransportCancellation) -> Result<(), BrokerEndpointError> {
+        Err(BrokerEndpointError::Unavailable)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReleaseDisabledExecutor;
+
+impl DownstreamExecutor for ReleaseDisabledExecutor {
+    fn execute_to_completion(&mut self, _admission: AuthorizedDispatch) -> ExecutionOutcome {
+        ExecutionOutcome::error(NativeRpcError {
+            code: UNAVAILABLE_CODE,
+            message: UNAVAILABLE_MESSAGE.to_owned(),
+            data: None,
+        })
+    }
+}
+
 /// Stateful in-memory dispatcher. It never contacts an endpoint unless the
 /// immutable release-attestation gate is enabled.
 pub struct NativeHostDispatcher<Endpoint> {
@@ -444,6 +478,38 @@ where
         executor,
         now_unix_ms,
         MAX_FRAMES_PER_STREAM,
+    )
+}
+
+/// Process the production executable's persistent stream while release
+/// attestation remains disabled.
+///
+/// This selects the same bounded dispatcher and sequencing path that an
+/// eventual attested broker composition must use, but constructs only a false
+/// [`ReleaseAttestation`]. Consequently every valid request receives the
+/// stable provider-unavailable response, cancellations remain response-free,
+/// and neither the broker endpoint nor the downstream executor is reachable.
+/// The caller still owns the process exit policy after clean EOF or failure.
+///
+/// # Errors
+///
+/// Returns on the first framing, envelope, sequence, response-encoding, or
+/// stream-limit error. No broker or executor error is reachable through this
+/// release-disabled composition.
+pub fn run_release_disabled_stream(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<RuntimeSummary, ProtocolError> {
+    let mut dispatcher =
+        NativeHostDispatcher::new(ReleaseDisabledBrokerEndpoint, ReleaseAttestation::default());
+    let mut executor = ReleaseDisabledExecutor;
+    let mut unused_clock = || Ok(0);
+    run_persistent_stream(
+        reader,
+        writer,
+        &mut dispatcher,
+        &mut executor,
+        &mut unused_clock,
     )
 }
 
@@ -966,7 +1032,7 @@ mod tests {
         BrokerEndpoint, BrokerEndpointError, DispatchOutcome, DownstreamExecutor, ExecutionOutcome,
         ExtensionEnvelope, NativeHostDispatcher, NativeRpcError, ProtocolError, UnattestedOutcome,
         parse_extension_envelope, run_persistent_stream, run_persistent_stream_with_limit,
-        run_unattested_once,
+        run_release_disabled_stream, run_unattested_once,
     };
     use crate::{read_frame, write_frame};
 
@@ -1065,6 +1131,41 @@ mod tests {
         let actual = read_frame(&mut Cursor::new(output))?.ok_or("missing response")?;
         let expected: Value = serde_json::from_str(RESPONSE_GOLDEN)?;
         assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn release_disabled_executable_stream_keeps_one_bounded_connection_alive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut input = Vec::new();
+        write_frame(&mut input, &sequenced_request(1, 1)?)?;
+        write_frame(&mut input, &sequenced_request(2, 2)?)?;
+
+        let mut output = Vec::new();
+        let summary = run_release_disabled_stream(&mut Cursor::new(input), &mut output)?;
+        assert_eq!(summary.frames_read(), 2);
+        assert_eq!(summary.responses_written(), 2);
+        assert_eq!(summary.cancellations(), 0);
+
+        let mut responses = Cursor::new(output);
+        for (outbound_sequence, request_sequence, request_byte) in [(1, 1, 1_u8), (2, 2, 2_u8)] {
+            let response = read_frame(&mut responses)?.ok_or("missing unavailable response")?;
+            assert_eq!(response.get("sequence"), Some(&json!(outbound_sequence)));
+            assert_eq!(
+                response.get("requestSequence"),
+                Some(&json!(request_sequence))
+            );
+            assert_eq!(
+                response.get("requestId"),
+                Some(&json!(format!("{request_byte:02x}").repeat(16)))
+            );
+            assert_eq!(response.pointer("/error/code"), Some(&json!(4_900)));
+            assert_eq!(
+                response.pointer("/error/message"),
+                Some(&json!("Private wallet broker is unavailable."))
+            );
+        }
+        assert!(read_frame(&mut responses)?.is_none());
         Ok(())
     }
 

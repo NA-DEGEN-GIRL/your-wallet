@@ -202,10 +202,10 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 - Sepolia 실행판 테스트 65개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
-- 프로덕션 Rust 테스트 510개 실행 통과
+- 프로덕션 Rust 테스트 511개 실행 통과
 - 부모 커널 테스트 전용 headless 자식 fixture 3개는 직접 실행하지 않도록 의도적으로 제외
 - 위 Rust 테스트와 별도로 보안용 컴파일 실패 테스트 23개 통과
-- Chrome 확장 프로그램 테스트 23개 통과
+- Chrome 확장 프로그램 테스트 24개 통과
 - 릴리스 정책·검증기 테스트 34개 통과
 - 개인정보 스캔과 보안 아키텍처 불변조건 검사 통과
 
@@ -215,7 +215,10 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 보안 잠금은 그대로 유지됩니다.
 
 - Broker, Key Agent, 승인 UI, 비밀 입력 UI는 종료 코드 `78`로 닫혀 있습니다.
-- Native Host는 `4900 Wallet unavailable`을 반환하고 종료합니다.
+- Native Host는 하나의 제한된 연결을 유지하며 각 유효 요청에
+  `4900 Wallet unavailable`을 반환하고, 입력 종료나 첫 프로토콜 오류 뒤 종료 코드
+  `78`로 닫힙니다. 현재 실행 경로의 릴리스 증명은 항상 비활성이라 Broker나 후속
+  실행기는 호출되지 않습니다.
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.

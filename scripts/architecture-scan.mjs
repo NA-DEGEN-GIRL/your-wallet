@@ -1639,16 +1639,23 @@ for (const helper of [
 const nativeMain = await text("crates/native-host/src/main.rs");
 requireInvariant(
   nativeMain.includes("const PRIVATE_BROKER_UNAVAILABLE: i32 = 78;") &&
-    nativeMain.includes("native_host::run_unattested_once") &&
+    nativeMain.includes("native_host::run_release_disabled_stream") &&
     nativeMain.includes("std::process::exit(PRIVATE_BROKER_UNAVAILABLE);"),
-  "native host main must retain its unattested response path and exit 78",
+  "native host main must retain its release-disabled persistent path and exit 78",
 );
 const nativeWireForActivation = await text("crates/native-host/src/wire.rs");
 requireInvariant(
   nativeWireForActivation.includes("const UNAVAILABLE_CODE: i64 = 4_900;") &&
     nativeWireForActivation.includes("code: UNAVAILABLE_CODE") &&
+    nativeWireForActivation.includes("pub fn run_release_disabled_stream") &&
+    /pub fn run_release_disabled_stream[\s\S]*?NativeHostDispatcher::new\(\s*ReleaseDisabledBrokerEndpoint,\s*ReleaseAttestation::default\(\)\s*\)/u.test(
+      nativeWireForActivation,
+    ) &&
+    /impl BrokerEndpoint for ReleaseDisabledBrokerEndpoint[\s\S]*?Err\(BrokerEndpointError::Unavailable\)/u.test(
+      nativeWireForActivation,
+    ) &&
     nativeWireForActivation.includes("pub fn run_unattested_once"),
-  "native host unattested path must retain stable provider code 4900",
+  "native host release-disabled paths must retain false attestation and stable provider code 4900",
 );
 
 const approvalChannel = await text("crates/platform-windows/src/approval_channel.rs");

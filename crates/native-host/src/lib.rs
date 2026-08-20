@@ -17,7 +17,8 @@ mod wire;
 pub use wire::{
     BrokerEndpoint, BrokerEndpointError, DispatchOutcome, DownstreamExecutor, ExecutionOutcome,
     ExtensionEnvelope, NativeHostDispatcher, NativeRpcError, ProtocolError, RuntimeSummary,
-    UnattestedOutcome, parse_extension_envelope, run_persistent_stream, run_unattested_once,
+    UnattestedOutcome, parse_extension_envelope, run_persistent_stream,
+    run_release_disabled_stream, run_unattested_once,
 };
 
 /// Failure to put the Chrome native-messaging pipe into binary mode.

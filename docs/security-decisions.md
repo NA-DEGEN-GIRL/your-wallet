@@ -6,8 +6,9 @@ security review.
 
 **Current release status: STOP-SHIP.** `broker`, `key-agent`, and default builds
 of `approval-ui` and `secret-input-ui` exit with code 78 immediately.
-`native-host` validates one bounded frame, returns error 4900 for a valid
-request, then exits 78. The UI helpers have opt-in inherited-stream runtime
+`native-host` validates one bounded persistent stream, returns error 4900 for
+each valid request without reaching a Broker, then exits 78 on EOF or the first
+terminal error. The UI helpers have opt-in inherited-stream runtime
 entry points for contract testing, but `COMPILED_RELEASE_POLICY` is `None`, so
 no ordinary build can complete restricted launch or reach signing. Activating
 the helpers through exact signed-artifact attestation and the end-to-end suite
