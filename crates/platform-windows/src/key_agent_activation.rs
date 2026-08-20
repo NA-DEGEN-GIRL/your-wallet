@@ -10,10 +10,17 @@
 #![allow(dead_code)]
 
 use core::fmt;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::{attestation::ReleaseAttestation, helper::VerifiedHelper};
+use crate::{
+    attestation::ReleaseAttestation,
+    helper::VerifiedHelper,
+    key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute},
+    pipe::PreparedKeyAgentInheritance,
+};
 
 const FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS: u32 = 5_000;
 
@@ -41,6 +48,12 @@ pub(crate) enum KeyAgentActivationError {
     /// Windows could not create the process in the required suspended state.
     #[error("suspended Key Agent creation failed")]
     ProcessCreation,
+    /// The inherited private-channel creation attributes could not be bound.
+    #[error("Key Agent private-channel creation policy failed")]
+    PrivateChannelPolicy,
+    /// The process was not proven to be the sole member of the exact root Job.
+    #[error("Key Agent root Job binding verification failed")]
+    RootJobPolicy,
     /// The fresh activation worker could not be created or did not return.
     #[error("dedicated Key Agent activation worker failed")]
     ActivationWorker,
@@ -177,6 +190,45 @@ impl HeldKeyAgentActivation {
     pub(crate) fn is_detached_and_suspended(&self) -> bool {
         self.process.is_detached_and_suspended()
     }
+
+    #[cfg(test)]
+    pub(crate) fn duplicate_process_observation(
+        &self,
+    ) -> Result<KeyAgentProcessObservation, KeyAgentActivationError> {
+        self.process
+            .duplicate_process_observation()
+            .map(KeyAgentProcessObservation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_member_of_root_job_for_test(
+        &self,
+        root_job: &KeyAgentRootJob,
+    ) -> Result<bool, KeyAgentActivationError> {
+        self.process.is_member_of_root_job_for_test(root_job)
+    }
+}
+
+/// Test-only, observation-only duplicate of the exact activated process.
+///
+/// This capability exposes no handle, process identifier, termination, suspend,
+/// resume, or duplication operation. It exists only so integrated kernel tests
+/// can prove that dropping the dormant aggregate synchronously kills the child.
+#[cfg(test)]
+pub(crate) struct KeyAgentProcessObservation(sys::TestProcessObservation);
+
+#[cfg(test)]
+impl KeyAgentProcessObservation {
+    pub(crate) fn rejected_exit_code(&self) -> Result<u32, KeyAgentActivationError> {
+        self.0.rejected_exit_code()
+    }
+}
+
+#[cfg(test)]
+impl fmt::Debug for KeyAgentProcessObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentProcessObservation([OBSERVATION-ONLY HANDLE])")
+    }
 }
 
 impl fmt::Debug for HeldKeyAgentActivation {
@@ -200,11 +252,28 @@ impl Drop for HeldKeyAgentActivation {
     }
 }
 
-/// Creates and authenticates one exact Key Agent and returns it suspended.
-pub(crate) fn activate_key_agent(
+/// Opaque pre-spawn proof that the pinned artifact passed every release gate.
+///
+/// Construction performs the complete role -> release evidence -> manifest
+/// allowlist -> absolute-path sequence before a worker, Job, pipe, or process
+/// is created. The held [`VerifiedHelper`] remains pinned through exact-image
+/// authentication. This capability is non-cloneable and has no artifact or
+/// raw-handle accessor.
+pub(crate) struct PreflightKeyAgentArtifact {
+    artifact: VerifiedHelper,
+}
+
+impl fmt::Debug for PreflightKeyAgentArtifact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreflightKeyAgentArtifact([PINNED VERIFIED ARTIFACT])")
+    }
+}
+
+/// Performs all release gates before any activation resource is allocated.
+pub(crate) fn preflight_key_agent_activation(
     attestation: ReleaseAttestation,
     artifact: VerifiedHelper,
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+) -> Result<PreflightKeyAgentArtifact, KeyAgentActivationError> {
     if !artifact.is_key_agent() {
         return Err(KeyAgentActivationError::WrongRole);
     }
@@ -218,45 +287,88 @@ pub(crate) fn activate_key_agent(
         return Err(KeyAgentActivationError::InvalidPath);
     }
 
-    run_on_fresh_debug_thread(move || activate_key_agent_on_debug_thread(artifact))
+    Ok(PreflightKeyAgentArtifact { artifact })
 }
 
-/// Runs the complete debugger relationship on one newly-created OS thread.
+/// One-shot proof that code is running on the activation-owned fresh OS thread.
+///
+/// The constructor and field are module-private. The `Rc` marker makes the
+/// token `!Send + !Sync`; it is created only after the worker starts and is
+/// consumed by the single process-creation operation, so callers cannot forge,
+/// transfer, return, or reuse the debugger-thread authority.
+pub(crate) struct FreshKeyAgentDebugThread {
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl fmt::Debug for FreshKeyAgentDebugThread {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FreshKeyAgentDebugThread([ONE-SHOT WORKER PROOF])")
+    }
+}
+
+/// Runs one closure on a newly-created Key Agent debugger OS thread.
 ///
 /// Win32 associates `WaitForDebugEventEx`, `ContinueDebugEvent`, and debugger
 /// detach with the thread that called `CreateProcessW`. A caller thread may
 /// already own unrelated debuggees, so using it would let their queued events
 /// contaminate this one-event authentication protocol. `std::thread::spawn`
-/// creates a fresh OS thread; this worker creates exactly one debuggee, consumes
-/// exactly its first event, detaches it, and only then transfers the detached
-/// suspended capability back through `JoinHandle`.
-fn run_on_fresh_debug_thread<F>(
-    worker: F,
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError>
+/// creates a fresh OS thread and constructs the unforgeable one-shot token only
+/// inside it. Only a `Send + 'static` result can cross the join boundary.
+pub(crate) fn run_on_fresh_key_agent_debug_thread<T, E, F>(worker: F) -> Result<T, E>
 where
-    F: FnOnce() -> Result<HeldKeyAgentActivation, KeyAgentActivationError> + Send + 'static,
+    T: Send + 'static,
+    E: From<KeyAgentActivationError> + Send + 'static,
+    F: FnOnce(FreshKeyAgentDebugThread) -> Result<T, E> + Send + 'static,
 {
     let worker = std::thread::Builder::new()
         .name("key-agent-activation".to_owned())
-        .spawn(worker)
-        .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+        .spawn(move || {
+            worker(FreshKeyAgentDebugThread {
+                _not_send_or_sync: PhantomData,
+            })
+        })
+        .map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))?;
     worker
         .join()
-        .map_err(|_| KeyAgentActivationError::ActivationWorker)?
+        .map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))?
 }
 
-fn activate_key_agent_on_debug_thread(
-    artifact: VerifiedHelper,
+/// Creates and exact-image authenticates one preflighted Key Agent.
+///
+/// The one-shot debugger-thread token and both lifetime-bound creation
+/// capabilities must have been constructed inside the same fresh worker. The
+/// returned process remains detached with one proven suspend count. This
+/// function exposes neither a raw handle nor a resume/start operation.
+pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
+    fresh_thread: FreshKeyAgentDebugThread,
+    preflighted: PreflightKeyAgentArtifact,
+    inheritance: &PreparedKeyAgentInheritance<'_>,
+    root_job: &KeyAgentRootJob,
+    root_job_attribute: &KeyAgentRootJobAttribute<'_>,
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+    let PreflightKeyAgentArtifact { artifact } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
-    activate_key_agent_on_debug_thread_with_identity(artifact, artifact_identity)
+    activate_preflighted_key_agent_on_fresh_worker_with_identity(
+        fresh_thread,
+        artifact,
+        artifact_identity,
+        inheritance,
+        root_job,
+        root_job_attribute,
+    )
 }
 
-fn activate_key_agent_on_debug_thread_with_identity(
+fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
+    _fresh_thread: FreshKeyAgentDebugThread,
     artifact: VerifiedHelper,
     artifact_identity: ExactFileObjectIdentity,
+    inheritance: &PreparedKeyAgentInheritance<'_>,
+    root_job: &KeyAgentRootJob,
+    root_job_attribute: &KeyAgentRootJobAttribute<'_>,
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
-    let mut process = sys::SuspendedDebuggee::create(&artifact)?;
+    verify_empty_root_job(root_job)?;
+    let mut process =
+        sys::SuspendedDebuggee::create(&artifact, inheritance, root_job, root_job_attribute)?;
     let first_event = match process
         .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)
     {
@@ -264,6 +376,9 @@ fn activate_key_agent_on_debug_thread_with_identity(
         Err(error) => return fail_after_cleanup(&mut process, error),
     };
     if let Err(error) = process.detach_still_suspended() {
+        return fail_after_cleanup(&mut process, error);
+    }
+    if let Err(error) = verify_bound_root_process(root_job, process.process_handle()) {
         return fail_after_cleanup(&mut process, error);
     }
     let process = process.into_detached()?;
@@ -274,6 +389,39 @@ fn activate_key_agent_on_debug_thread_with_identity(
         artifact_identity,
         creation_time: first_event.creation_time,
     })
+}
+
+fn verify_empty_root_job(root_job: &KeyAgentRootJob) -> Result<(), KeyAgentActivationError> {
+    root_job
+        .verify_effective_limits()
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+    (root_job
+        .active_process_count()
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?
+        == 0)
+        .then_some(())
+        .ok_or(KeyAgentActivationError::RootJobPolicy)
+}
+
+fn verify_bound_root_process(
+    root_job: &KeyAgentRootJob,
+    process: std::os::windows::io::BorrowedHandle<'_>,
+) -> Result<(), KeyAgentActivationError> {
+    root_job
+        .recheck_supervisor_context()
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+    root_job
+        .verify_effective_limits()
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+    let is_member = root_job
+        .contains_process(process)
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+    let active_processes = root_job
+        .active_process_count()
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+    (is_member && active_processes == 1)
+        .then_some(())
+        .ok_or(KeyAgentActivationError::RootJobPolicy)
 }
 
 fn fail_after_cleanup<T>(
@@ -295,8 +443,9 @@ mod sys {
     use core::mem::{size_of, size_of_val};
     use core::ptr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, BorrowedHandle};
     #[cfg(test)]
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
     use windows::Win32::Foundation::{
         CloseHandle, DBG_CONTINUE, ERROR_SEM_TIMEOUT, FILETIME, GetLastError, HANDLE,
@@ -315,16 +464,186 @@ mod sys {
     use windows::Win32::System::Threading::GetCurrentProcess;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS,
-        GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId, PROCESS_INFORMATION,
-        ResumeThread, STARTUPINFOW, SuspendThread, TerminateProcess, WaitForSingleObject,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+        GetProcessId, GetProcessTimes, GetThreadId, InitializeProcThreadAttributeList,
+        LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread, TerminateProcess,
+        UpdateProcThreadAttribute, WaitForSingleObject,
     };
     use windows::core::{PCWSTR, PWSTR};
 
     use super::{ExactFileObjectIdentity, KeyAgentActivationError, LaunchPhase, LaunchTransition};
     use crate::helper::VerifiedHelper;
+    use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
+    use crate::pipe::PreparedKeyAgentInheritance;
 
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
+
+    /// Initialized two-slot process-creation policy retained through one call.
+    ///
+    /// The backing words, the exact three-HANDLE array, the prepared pipe
+    /// capability, and the stable Job-HANDLE attribute all outlive
+    /// `CreateProcessW`. Drop deletes the native list before any retained
+    /// storage or borrow is released.
+    struct KeyAgentCreationAttributes<'resources, 'pipes, 'job> {
+        pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
+        words: Vec<usize>,
+        inherited_handles: Box<[HANDLE; 3]>,
+        _inheritance: &'resources PreparedKeyAgentInheritance<'pipes>,
+        root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>,
+    }
+
+    impl<'resources, 'pipes, 'job> KeyAgentCreationAttributes<'resources, 'pipes, 'job> {
+        fn new(
+            inheritance: &'resources PreparedKeyAgentInheritance<'pipes>,
+            root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>,
+        ) -> Result<Self, KeyAgentActivationError> {
+            let mut bytes = 0_usize;
+            // SAFETY: the documented sizing call uses a null attribute list and
+            // initializes `bytes`; its expected false result is not an error.
+            let _ = unsafe { InitializeProcThreadAttributeList(None, 2, None, &raw mut bytes) };
+            if bytes == 0 {
+                return Err(KeyAgentActivationError::PrivateChannelPolicy);
+            }
+            let word_size = size_of::<usize>();
+            let word_count = bytes
+                .checked_add(word_size - 1)
+                .and_then(|rounded| rounded.checked_div(word_size))
+                .ok_or(KeyAgentActivationError::PrivateChannelPolicy)?;
+            let mut words = vec![0_usize; word_count];
+            let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());
+            // SAFETY: `words` is aligned writable storage of at least `bytes`
+            // and cannot reallocate while this wrapper is alive.
+            unsafe { InitializeProcThreadAttributeList(Some(pointer), 2, None, &raw mut bytes) }
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+
+            let inherited_handles = Box::new([
+                windows_handle(inheritance.stdin()),
+                windows_handle(inheritance.stdout()),
+                windows_handle(inheritance.stderr()),
+            ]);
+            let attributes = Self {
+                pointer,
+                words,
+                inherited_handles,
+                _inheritance: inheritance,
+                root_job_attribute,
+            };
+            attributes.install_handle_list()?;
+            // SAFETY: this initialized list has its second free slot, and this
+            // wrapper retains the stable lifetime-bound Job attribute until its
+            // Drop deletes the list.
+            unsafe {
+                attributes
+                    .root_job_attribute
+                    .install_into(attributes.pointer)
+            }
+            .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            Ok(attributes)
+        }
+
+        fn install_handle_list(&self) -> Result<(), KeyAgentActivationError> {
+            // SAFETY: the list is live with one free slot. The boxed array has
+            // a stable address and all three values remain valid/inheritable
+            // through CreateProcess because `_inheritance` is retained.
+            unsafe {
+                UpdateProcThreadAttribute(
+                    self.pointer,
+                    0,
+                    usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)
+                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?,
+                    Some(self.inherited_handles.as_ptr().cast::<c_void>()),
+                    size_of_val(self.inherited_handles.as_ref()),
+                    None,
+                    None,
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)
+        }
+
+        const fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.pointer
+        }
+
+        const fn stdin(&self) -> HANDLE {
+            self.inherited_handles[0]
+        }
+
+        const fn stdout(&self) -> HANDLE {
+            self.inherited_handles[1]
+        }
+
+        const fn stderr(&self) -> HANDLE {
+            self.inherited_handles[2]
+        }
+
+        #[cfg(test)]
+        const fn explicit_handle_count(&self) -> usize {
+            self.inherited_handles.len()
+        }
+    }
+
+    impl Drop for KeyAgentCreationAttributes<'_, '_, '_> {
+        fn drop(&mut self) {
+            debug_assert!(!self.words.is_empty());
+            // SAFETY: initialization succeeded, and this exact list is deleted
+            // once before its backing storage and borrowed attributes drop.
+            unsafe { DeleteProcThreadAttributeList(self.pointer) };
+        }
+    }
+
+    fn create_suspended_debuggee_process(
+        artifact: &VerifiedHelper,
+        inheritance: &PreparedKeyAgentInheritance<'_>,
+        root_job: &KeyAgentRootJob,
+        root_job_attribute: &KeyAgentRootJobAttribute<'_>,
+        command_line: Option<&mut [u16]>,
+    ) -> Result<PROCESS_INFORMATION, KeyAgentActivationError> {
+        let application: Vec<u16> = artifact
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain(core::iter::once(0))
+            .collect();
+        let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>())
+            .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = attributes.stdin();
+        startup.StartupInfo.hStdOutput = attributes.stdout();
+        startup.StartupInfo.hStdError = attributes.stderr();
+        startup.lpAttributeList = attributes.pointer();
+        let mut information = PROCESS_INFORMATION::default();
+        let command_line = command_line.map(|buffer| PWSTR(buffer.as_mut_ptr()));
+        root_job
+            .recheck_supervisor_context()
+            .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+        // SAFETY: the verified absolute path is NUL terminated and retained for
+        // the call. Production supplies no command line; the test-only buffer is
+        // writable and retained. `attributes` is a live initialized two-slot
+        // list containing exactly HANDLE_LIST(3) and JOB_LIST(1); the three
+        // listed stdio handles are the only inheritable handles. The flags keep
+        // creation both headless and suspended before user-mode entry.
+        unsafe {
+            CreateProcessW(
+                PCWSTR(application.as_ptr()),
+                command_line,
+                None,
+                None,
+                true,
+                key_agent_creation_flags(),
+                None,
+                PCWSTR::null(),
+                ptr::from_ref(&startup.StartupInfo),
+                &raw mut information,
+            )
+            .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
+        }
+        Ok(information)
+    }
+
     pub(super) struct SuspendedDebuggee {
         process: OwnedWinHandle,
         primary_thread: OwnedWinHandle,
@@ -341,55 +660,46 @@ mod sys {
     }
 
     impl SuspendedDebuggee {
-        pub(super) fn create(artifact: &VerifiedHelper) -> Result<Self, KeyAgentActivationError> {
-            Self::create_inner(artifact, None)
+        pub(super) fn create(
+            artifact: &VerifiedHelper,
+            inheritance: &PreparedKeyAgentInheritance<'_>,
+            root_job: &KeyAgentRootJob,
+            root_job_attribute: &KeyAgentRootJobAttribute<'_>,
+        ) -> Result<Self, KeyAgentActivationError> {
+            Self::create_inner(artifact, inheritance, root_job, root_job_attribute, None)
         }
 
         #[cfg(test)]
         pub(super) fn create_with_test_command_line(
             artifact: &VerifiedHelper,
+            inheritance: &PreparedKeyAgentInheritance<'_>,
+            root_job: &KeyAgentRootJob,
+            root_job_attribute: &KeyAgentRootJobAttribute<'_>,
             command_line: &mut [u16],
         ) -> Result<Self, KeyAgentActivationError> {
-            Self::create_inner(artifact, Some(command_line))
+            Self::create_inner(
+                artifact,
+                inheritance,
+                root_job,
+                root_job_attribute,
+                Some(command_line),
+            )
         }
 
         fn create_inner(
             artifact: &VerifiedHelper,
+            inheritance: &PreparedKeyAgentInheritance<'_>,
+            root_job: &KeyAgentRootJob,
+            root_job_attribute: &KeyAgentRootJobAttribute<'_>,
             command_line: Option<&mut [u16]>,
         ) -> Result<Self, KeyAgentActivationError> {
-            let application: Vec<u16> = artifact
-                .path()
-                .as_os_str()
-                .encode_wide()
-                .chain(core::iter::once(0))
-                .collect();
-            let startup = STARTUPINFOW {
-                cb: u32::try_from(size_of::<STARTUPINFOW>())
-                    .map_err(|_| KeyAgentActivationError::ProcessCreation)?,
-                ..STARTUPINFOW::default()
-            };
-            let mut information = PROCESS_INFORMATION::default();
-            let command_line = command_line.map(|buffer| PWSTR(buffer.as_mut_ptr()));
-            // SAFETY: the verified absolute path is NUL terminated and retained
-            // for the call. Production supplies no command line; the test-only
-            // buffer is writable and retained for the call. No handles are
-            // inherited. CREATE_NO_WINDOW prevents a console surface, and
-            // CREATE_SUSPENDED prevents user-mode entry at process creation.
-            unsafe {
-                CreateProcessW(
-                    PCWSTR(application.as_ptr()),
-                    command_line,
-                    None,
-                    None,
-                    false,
-                    key_agent_creation_flags(),
-                    None,
-                    PCWSTR::null(),
-                    ptr::from_ref(&startup),
-                    &raw mut information,
-                )
-                .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
-            }
+            let information = create_suspended_debuggee_process(
+                artifact,
+                inheritance,
+                root_job,
+                root_job_attribute,
+                command_line,
+            )?;
 
             let (process, primary_thread) = match (
                 OwnedWinHandle::new(information.hProcess),
@@ -445,12 +755,6 @@ mod sys {
                 return Err(KeyAgentActivationError::ProcessIdentityMismatch);
             }
 
-            // SAFETY: the child primary thread is different from the caller and
-            // was returned with suspend/resume access. CREATE_SUSPENDED provides
-            // exactly one count. Consuming it is necessary for Windows to
-            // generate the CREATE_PROCESS debug event; Microsoft documents that
-            // event as occurring before any user-mode execution.
-            let previous_suspend_count = unsafe { ResumeThread(primary_thread.raw()) };
             let mut created = Self {
                 process,
                 primary_thread,
@@ -458,20 +762,41 @@ mod sys {
                 thread_id: actual_thread_id,
                 pending_event: None,
                 phase: LaunchPhase::AwaitingCreateEvent,
-                proven_suspend_count: 0,
+                proven_suspend_count: 1,
                 cleanup_exit_code: None,
             };
+            if let Err(error) = super::verify_bound_root_process(root_job, created.process_handle())
+            {
+                created
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(error);
+            }
+
+            // SAFETY: the child primary thread is different from the caller and
+            // was returned with suspend/resume access. CREATE_SUSPENDED provides
+            // exactly one count. Consuming it is necessary for Windows to
+            // generate the CREATE_PROCESS debug event; Microsoft documents that
+            // event as occurring before any user-mode execution.
+            let previous_suspend_count = unsafe { ResumeThread(created.primary_thread.raw()) };
             if previous_suspend_count != 1 {
                 created
                     .abort()
                     .map_err(|_| KeyAgentActivationError::Cleanup)?;
                 return Err(KeyAgentActivationError::SuspensionMismatch);
             }
+            created.proven_suspend_count = 0;
             Ok(created)
         }
 
         pub(super) const fn process_id(&self) -> u32 {
             self.process_id
+        }
+
+        pub(super) fn process_handle(&self) -> BorrowedHandle<'_> {
+            // SAFETY: `self` uniquely owns this live process handle and the
+            // returned borrow cannot outlive `self`.
+            unsafe { BorrowedHandle::borrow_raw(self.process.raw().0) }
         }
 
         pub(super) fn is_detached_and_suspended(&self) -> bool {
@@ -737,6 +1062,16 @@ mod sys {
         ) -> Result<TestProcessObservation, KeyAgentActivationError> {
             self.0.duplicate_process_observation()
         }
+
+        #[cfg(test)]
+        pub(super) fn is_member_of_root_job_for_test(
+            &self,
+            root_job: &KeyAgentRootJob,
+        ) -> Result<bool, KeyAgentActivationError> {
+            root_job
+                .contains_process(self.0.process_handle())
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+        }
     }
 
     impl fmt::Debug for DetachedSuspendedDebuggee {
@@ -856,7 +1191,11 @@ mod sys {
     }
 
     fn key_agent_creation_flags() -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
-        CREATE_SUSPENDED | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW
+        CREATE_SUSPENDED
+            | DEBUG_PROCESS
+            | DEBUG_ONLY_THIS_PROCESS
+            | CREATE_NO_WINDOW
+            | EXTENDED_STARTUPINFO_PRESENT
     }
 
     #[cfg(test)]
@@ -867,6 +1206,19 @@ mod sys {
     #[cfg(test)]
     pub(super) const fn rejected_process_exit_code_for_test() -> u32 {
         REJECTED_PROCESS_EXIT_CODE
+    }
+
+    #[cfg(test)]
+    pub(super) fn creation_attribute_handle_count_for_test(
+        inheritance: &PreparedKeyAgentInheritance<'_>,
+        root_job_attribute: &KeyAgentRootJobAttribute<'_>,
+    ) -> Result<usize, KeyAgentActivationError> {
+        let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute)?;
+        Ok(attributes.explicit_handle_count())
+    }
+
+    fn windows_handle(handle: BorrowedHandle<'_>) -> HANDLE {
+        HANDLE(handle.as_raw_handle())
     }
 
     struct OwnedWinHandle(HANDLE);
@@ -911,16 +1263,60 @@ mod tests {
 
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS,
+        EXTENDED_STARTUPINFO_PRESENT,
     };
 
     use super::{
-        ExactFileObjectIdentity, HeldKeyAgentActivation, KeyAgentActivationError, LaunchPhase,
-        LaunchTransition, activate_key_agent, activate_key_agent_on_debug_thread_with_identity,
-        fail_after_cleanup, run_on_fresh_debug_thread, sys,
+        ExactFileObjectIdentity, FreshKeyAgentDebugThread, HeldKeyAgentActivation,
+        KeyAgentActivationError, LaunchPhase, LaunchTransition, PreflightKeyAgentArtifact,
+        activate_preflighted_key_agent_on_fresh_worker,
+        activate_preflighted_key_agent_on_fresh_worker_with_identity, fail_after_cleanup,
+        preflight_key_agent_activation, run_on_fresh_key_agent_debug_thread, sys,
     };
-    use crate::{attestation::ReleaseAttestation, helper::VerifiedHelper};
+    use crate::{
+        attestation::ReleaseAttestation, helper::VerifiedHelper,
+        key_agent_root_job::KeyAgentRootJob, pipe::PrivateKeyAgentPipes,
+    };
 
     fn require_send<T: Send>() {}
+
+    fn test_root_job() -> Result<KeyAgentRootJob, KeyAgentActivationError> {
+        KeyAgentRootJob::create_for_kernel_test()
+            .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+    }
+
+    fn activate_for_test<R, F>(
+        attestation: ReleaseAttestation,
+        artifact: VerifiedHelper,
+        inspect: F,
+    ) -> Result<R, KeyAgentActivationError>
+    where
+        R: Send + 'static,
+        F: FnOnce(HeldKeyAgentActivation, &KeyAgentRootJob) -> Result<R, KeyAgentActivationError>
+            + Send
+            + 'static,
+    {
+        let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+        run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+            let root_job = test_root_job()?;
+            let pipes = PrivateKeyAgentPipes::create()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let inheritance = pipes
+                .prepare_child_inheritance()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let root_job_attribute = root_job
+                .creation_attribute()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            let activation = activate_preflighted_key_agent_on_fresh_worker(
+                fresh_thread,
+                preflighted,
+                &inheritance,
+                &root_job,
+                &root_job_attribute,
+            )?;
+            inspect(activation, &root_job)
+        })
+    }
 
     trait AmbiguousIfSend<A> {
         fn marker() {}
@@ -1064,10 +1460,17 @@ mod tests {
     }
 
     #[test]
-    fn detached_type_state_is_send_only_after_debugger_detach() {
+    fn authority_and_detached_type_states_have_exact_transfer_traits() {
+        require_send::<PreflightKeyAgentArtifact>();
         require_send::<sys::DetachedSuspendedDebuggee>();
         require_send::<HeldKeyAgentActivation>();
 
+        let _ = <FreshKeyAgentDebugThread as AmbiguousIfSend<_>>::marker;
+        let _ = <FreshKeyAgentDebugThread as AmbiguousIfSync<_>>::marker;
+        let _ = <FreshKeyAgentDebugThread as AmbiguousIfClone<_>>::marker;
+        let _ = <FreshKeyAgentDebugThread as AmbiguousIfCopy<_>>::marker;
+        let _ = <PreflightKeyAgentArtifact as AmbiguousIfClone<_>>::marker;
+        let _ = <PreflightKeyAgentArtifact as AmbiguousIfCopy<_>>::marker;
         let _ = <sys::SuspendedDebuggee as AmbiguousIfSend<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfSync<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfClone<_>>::marker;
@@ -1076,9 +1479,27 @@ mod tests {
 
     #[test]
     fn process_creation_flags_are_exact_and_do_not_debug_descendants() {
-        let expected =
-            (CREATE_SUSPENDED | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW).0;
+        let expected = (CREATE_SUSPENDED
+            | DEBUG_PROCESS
+            | DEBUG_ONLY_THIS_PROCESS
+            | CREATE_NO_WINDOW
+            | EXTENDED_STARTUPINFO_PRESENT)
+            .0;
         assert_eq!(sys::key_agent_creation_flag_bits_for_test(), expected);
+    }
+
+    #[test]
+    fn startup_attribute_list_has_exactly_three_explicit_stdio_handles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root_job = test_root_job()?;
+        let pipes = PrivateKeyAgentPipes::create()?;
+        let inheritance = pipes.prepare_child_inheritance()?;
+        let root_job_attribute = root_job.creation_attribute()?;
+        assert_eq!(
+            sys::creation_attribute_handle_count_for_test(&inheritance, &root_job_attribute)?,
+            3
+        );
+        Ok(())
     }
 
     #[test]
@@ -1087,7 +1508,7 @@ mod tests {
         let wrong = VerifiedHelper::for_secret_input_channel_test()?;
         let attestation = attestation_for(&wrong);
         assert!(matches!(
-            activate_key_agent(attestation, wrong),
+            preflight_key_agent_activation(attestation, wrong),
             Err(KeyAgentActivationError::WrongRole)
         ));
         Ok(())
@@ -1098,7 +1519,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         assert!(matches!(
-            activate_key_agent(ReleaseAttestation::default(), artifact),
+            preflight_key_agent_activation(ReleaseAttestation::default(), artifact),
             Err(KeyAgentActivationError::ReleaseNotAttested)
         ));
         Ok(())
@@ -1110,17 +1531,36 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[0] ^= 1;
-        let mut process = sys::SuspendedDebuggee::create(&artifact)?;
-        assert!(matches!(
-            process.authenticate_first_event(wrong_identity, 5_000),
-            Err(KeyAgentActivationError::MappedImageMismatch)
-        ));
-        process.abort()?;
-        assert!(process.is_aborted());
-        assert_eq!(
-            process.cleanup_exit_code(),
-            Some(sys::rejected_process_exit_code_for_test())
-        );
+        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |_fresh_thread| {
+                let root_job = test_root_job()?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let inheritance = pipes
+                    .prepare_child_inheritance()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let mut process = sys::SuspendedDebuggee::create(
+                    &artifact,
+                    &inheritance,
+                    &root_job,
+                    &root_job_attribute,
+                )?;
+                assert!(matches!(
+                    process.authenticate_first_event(wrong_identity, 5_000),
+                    Err(KeyAgentActivationError::MappedImageMismatch)
+                ));
+                process.abort()?;
+                assert!(process.is_aborted());
+                assert_eq!(
+                    process.cleanup_exit_code(),
+                    Some(sys::rejected_process_exit_code_for_test())
+                );
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -1128,18 +1568,37 @@ mod tests {
     fn timeout_cleanup_terminates_without_dispatching_the_first_event()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
-        let mut process = sys::SuspendedDebuggee::create(&artifact)?;
-        let timeout_result: Result<(), KeyAgentActivationError> =
-            fail_after_cleanup(&mut process, KeyAgentActivationError::DebugEventTimeout);
-        assert_eq!(
-            timeout_result,
-            Err(KeyAgentActivationError::DebugEventTimeout)
-        );
-        assert!(process.is_aborted());
-        assert_eq!(
-            process.cleanup_exit_code(),
-            Some(sys::rejected_process_exit_code_for_test())
-        );
+        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |_fresh_thread| {
+                let root_job = test_root_job()?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let inheritance = pipes
+                    .prepare_child_inheritance()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let mut process = sys::SuspendedDebuggee::create(
+                    &artifact,
+                    &inheritance,
+                    &root_job,
+                    &root_job_attribute,
+                )?;
+                let timeout_result: Result<(), KeyAgentActivationError> =
+                    fail_after_cleanup(&mut process, KeyAgentActivationError::DebugEventTimeout);
+                assert_eq!(
+                    timeout_result,
+                    Err(KeyAgentActivationError::DebugEventTimeout)
+                );
+                assert!(process.is_aborted());
+                assert_eq!(
+                    process.cleanup_exit_code(),
+                    Some(sys::rejected_process_exit_code_for_test())
+                );
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -1148,21 +1607,36 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let attestation = attestation_for(&artifact);
-        let activation = activate_key_agent(attestation, artifact)?;
-        assert!(activation.process_id() != 0);
-        assert!(activation.creation_time() != 0);
-        assert!(activation.is_detached_and_suspended());
-        let rendered = format!("{activation:?}");
-        assert!(rendered.contains("HeldKeyAgentActivation"));
-        assert!(rendered.contains("[FILE_ID_INFO]"));
-        assert!(!rendered.contains(&activation.process_id().to_string()));
-        assert!(!rendered.contains(&activation.creation_time().to_string()));
-        let observation = activation.process.duplicate_process_observation()?;
-        drop(activation);
-        assert_eq!(
-            observation.rejected_exit_code()?,
-            sys::rejected_process_exit_code_for_test()
-        );
+        activate_for_test(attestation, artifact, |activation, root_job| {
+            assert!(activation.process_id() != 0);
+            assert!(activation.creation_time() != 0);
+            assert!(activation.is_detached_and_suspended());
+            assert!(activation.is_member_of_root_job_for_test(root_job)?);
+            assert_eq!(
+                root_job
+                    .active_process_count()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
+                1
+            );
+            let rendered = format!("{activation:?}");
+            assert!(rendered.contains("HeldKeyAgentActivation"));
+            assert!(rendered.contains("[FILE_ID_INFO]"));
+            assert!(!rendered.contains(&activation.process_id().to_string()));
+            assert!(!rendered.contains(&activation.creation_time().to_string()));
+            let observation = activation.process.duplicate_process_observation()?;
+            drop(activation);
+            assert_eq!(
+                observation.rejected_exit_code()?,
+                sys::rejected_process_exit_code_for_test()
+            );
+            assert_eq!(
+                root_job
+                    .active_process_count()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
+                0
+            );
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1171,12 +1645,28 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let caller_artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let caller_identity = sys::exact_file_identity(caller_artifact.raw_handle())?;
-        let mut caller_debuggee = sys::SuspendedDebuggee::create(&caller_artifact)?;
+        let caller_root_job = test_root_job()?;
+        let caller_pipes = PrivateKeyAgentPipes::create()?;
+        let caller_inheritance = caller_pipes.prepare_child_inheritance()?;
+        let caller_root_job_attribute = caller_root_job.creation_attribute()?;
+        let mut caller_debuggee = sys::SuspendedDebuggee::create(
+            &caller_artifact,
+            &caller_inheritance,
+            &caller_root_job,
+            &caller_root_job_attribute,
+        )?;
 
         let activation_artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let activation_attestation = attestation_for(&activation_artifact);
-        let activation = activate_key_agent(activation_attestation, activation_artifact)?;
-        assert!(activation.is_detached_and_suspended());
+        activate_for_test(
+            activation_attestation,
+            activation_artifact,
+            |activation, _root_job| {
+                assert!(activation.is_detached_and_suspended());
+                drop(activation);
+                Ok(())
+            },
+        )?;
 
         let caller_event = caller_debuggee.authenticate_first_event(caller_identity, 5_000)?;
         assert_ne!(caller_event.creation_time, 0);
@@ -1185,7 +1675,6 @@ mod tests {
             caller_debuggee.cleanup_exit_code(),
             Some(sys::rejected_process_exit_code_for_test())
         );
-        drop(activation);
         Ok(())
     }
 
@@ -1200,12 +1689,30 @@ mod tests {
         let first_barrier = Arc::clone(&barrier);
         let first_worker = std::thread::spawn(move || {
             first_barrier.wait();
-            activate_key_agent(first_attestation, first_artifact)
+            activate_for_test(
+                first_attestation,
+                first_artifact,
+                |activation, _root_job| {
+                    let process_id = activation.process_id();
+                    assert!(activation.is_detached_and_suspended());
+                    drop(activation);
+                    Ok(process_id)
+                },
+            )
         });
         let second_barrier = Arc::clone(&barrier);
         let second_worker = std::thread::spawn(move || {
             second_barrier.wait();
-            activate_key_agent(second_attestation, second_artifact)
+            activate_for_test(
+                second_attestation,
+                second_artifact,
+                |activation, _root_job| {
+                    let process_id = activation.process_id();
+                    assert!(activation.is_detached_and_suspended());
+                    drop(activation);
+                    Ok(process_id)
+                },
+            )
         });
         barrier.wait();
 
@@ -1215,11 +1722,52 @@ mod tests {
         let second = second_worker
             .join()
             .map_err(|_| std::io::Error::other("second activation caller panicked"))??;
-        assert_ne!(first.process_id(), second.process_id());
-        assert!(first.is_detached_and_suspended());
-        assert!(second.is_detached_and_suspended());
-        drop(first);
-        drop(second);
+        assert_ne!(first, second);
+        Ok(())
+    }
+
+    #[test]
+    fn mismatched_job_attribute_is_rejected_and_process_is_cleaned_up()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |fresh_thread| {
+                let assigned_job = test_root_job()?;
+                let checked_job = test_root_job()?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let inheritance = pipes
+                    .prepare_child_inheritance()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let mismatched_attribute = assigned_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                assert!(matches!(
+                    activate_preflighted_key_agent_on_fresh_worker(
+                        fresh_thread,
+                        preflighted,
+                        &inheritance,
+                        &checked_job,
+                        &mismatched_attribute,
+                    ),
+                    Err(KeyAgentActivationError::RootJobPolicy)
+                ));
+                assert_eq!(
+                    assigned_job
+                        .active_process_count()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
+                    0
+                );
+                assert_eq!(
+                    checked_job
+                        .active_process_count()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
+                    0
+                );
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -1228,8 +1776,26 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[3] ^= 1;
-        let result = run_on_fresh_debug_thread(move || {
-            activate_key_agent_on_debug_thread_with_identity(artifact, wrong_identity)
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        let result = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+            let root_job = test_root_job()?;
+            let pipes = PrivateKeyAgentPipes::create()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let inheritance = pipes
+                .prepare_child_inheritance()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let root_job_attribute = root_job
+                .creation_attribute()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            let PreflightKeyAgentArtifact { artifact } = preflighted;
+            activate_preflighted_key_agent_on_fresh_worker_with_identity(
+                fresh_thread,
+                artifact,
+                wrong_identity,
+                &inheritance,
+                &root_job,
+                &root_job_attribute,
+            )
         });
         assert!(matches!(
             result,
@@ -1243,14 +1809,30 @@ mod tests {
     {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
-        let result = run_on_fresh_debug_thread(move || {
-            let process = sys::SuspendedDebuggee::create(&artifact)?;
-            let observation = process.duplicate_process_observation()?;
-            observation_sender
-                .send(observation)
-                .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
-            std::panic::resume_unwind(Box::new("intentional activation worker test unwind"));
-        });
+        let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |_fresh_thread| {
+                let root_job = test_root_job()?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let inheritance = pipes
+                    .prepare_child_inheritance()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let process = sys::SuspendedDebuggee::create(
+                    &artifact,
+                    &inheritance,
+                    &root_job,
+                    &root_job_attribute,
+                )?;
+                let observation = process.duplicate_process_observation()?;
+                observation_sender
+                    .send(observation)
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                std::panic::resume_unwind(Box::new("intentional activation worker test unwind"));
+            },
+        );
         assert!(matches!(
             result,
             Err(KeyAgentActivationError::ActivationWorker)
@@ -1280,17 +1862,36 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[7] ^= 1;
-        let mut process =
-            sys::SuspendedDebuggee::create_with_test_command_line(&artifact, &mut command_line)?;
-        assert!(matches!(
-            process.authenticate_first_event(wrong_identity, 5_000),
-            Err(KeyAgentActivationError::MappedImageMismatch)
-        ));
-        process.abort()?;
-        assert_eq!(
-            process.cleanup_exit_code(),
-            Some(sys::rejected_process_exit_code_for_test())
-        );
+        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |_fresh_thread| {
+                let root_job = test_root_job()?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let inheritance = pipes
+                    .prepare_child_inheritance()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
+                    &artifact,
+                    &inheritance,
+                    &root_job,
+                    &root_job_attribute,
+                    &mut command_line,
+                )?;
+                assert!(matches!(
+                    process.authenticate_first_event(wrong_identity, 5_000),
+                    Err(KeyAgentActivationError::MappedImageMismatch)
+                ));
+                process.abort()?;
+                assert_eq!(
+                    process.cleanup_exit_code(),
+                    Some(sys::rejected_process_exit_code_for_test())
+                );
+                Ok(())
+            },
+        )?;
         assert!(!sentinel.path().exists());
         Ok(())
     }

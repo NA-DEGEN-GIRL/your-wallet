@@ -207,21 +207,20 @@ impl VerifiedHelper {
     /// Returns whether the verified release manifest names the exact Key Agent
     /// role. Only the dormant supervisor activation boundary may use this
     /// narrower role proof.
-    #[allow(dead_code)] // Used only by the intentionally dormant activation seam.
     pub(crate) const fn is_key_agent(&self) -> bool {
         matches!(self.role, HelperRole::KeyAgent)
     }
 
     /// Returns whether the verified manifest names the one exact approval
-    /// frontend role. The generic restricted launcher may accept several helper
-    /// roles, so the approval-channel boundary must make this narrower check.
+    /// frontend role. The public restricted-launch entry point uses this role
+    /// proof to derive its dedicated LPAC profile.
     pub(crate) const fn is_approval_frontend(&self) -> bool {
         matches!(self.role, HelperRole::ApprovalFrontend)
     }
 
     /// Returns whether the verified release manifest names the one exact
-    /// secret-input frontend role.
-    #[allow(dead_code)] // Used only by the intentionally dormant private arming seam.
+    /// secret-input frontend role. The private secret/recovery launch entry point
+    /// uses this role proof to derive its dedicated LPAC profile.
     pub(crate) const fn is_secret_input_frontend(&self) -> bool {
         matches!(self.role, HelperRole::SecretInputFrontend)
     }

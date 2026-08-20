@@ -1,9 +1,10 @@
 //! Restricted one-shot helper launcher.
 //!
-//! The low-level Win32 launcher uses a persistent, revision-bound LPAC profile
-//! with zero capability SIDs, opts out of `ALL APPLICATION PACKAGES`, supplies an
-//! explicit inherited-handle list and minimal environment, starts suspended,
-//! verifies the resulting `AppContainer` token, and assigns a kill-on-close
+//! The low-level Win32 launcher uses separate persistent, revision-bound LPAC
+//! profiles for the manifest-derived Approval and Secret Input roles. Both have
+//! zero capability SIDs, opt out of `ALL APPLICATION PACKAGES`, receive an
+//! explicit inherited-handle list and minimal environment, start suspended,
+//! verify the resulting `AppContainer` token, and enter a kill-on-close
 //! single-process job before resume. There is deliberately no unsandboxed
 //! fallback. Public launch also remains disabled until release evidence for the
 //! exact signed artifact is compiled into [`ReleaseAttestation`].
@@ -40,6 +41,34 @@ impl NoNetworkLpacProfile {
     }
 }
 
+/// LPAC role proof derived exclusively from [`VerifiedHelper`]'s authenticated
+/// release-manifest role. It is deliberately private: callers select a launch
+/// entry point, never an `AppContainer` identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VerifiedLpacRole {
+    ApprovalFrontend,
+    SecretInputFrontend,
+}
+
+impl VerifiedLpacRole {
+    fn from_helper(helper: &VerifiedHelper) -> Result<Self, LaunchError> {
+        if helper.is_approval_frontend() {
+            return Ok(Self::ApprovalFrontend);
+        }
+        if helper.is_secret_input_frontend() {
+            return Ok(Self::SecretInputFrontend);
+        }
+        if helper.is_key_agent() {
+            return Err(LaunchError::KeyAgentRequiresSupervisorActivation);
+        }
+        Err(LaunchError::HelperRoleNotAllowed)
+    }
+
+    const fn inherits_parent_proof(self) -> bool {
+        matches!(self, Self::SecretInputFrontend)
+    }
+}
+
 /// Errors from explicit handle selection or restricted process creation.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum LaunchError {
@@ -53,6 +82,10 @@ pub enum LaunchError {
     /// seam that authenticates the mapped image before user-mode execution.
     #[error("Key Agent requires private supervisor activation")]
     KeyAgentRequiresSupervisorActivation,
+    /// The verified manifest role is not accepted by the selected launch entry
+    /// point.
+    #[error("verified helper role is not allowed by this launch entry point")]
+    HelperRoleNotAllowed,
     /// The helper manifest is not one of the three exact release-bound helpers.
     #[error("helper manifest is absent from the compiled release allowlist")]
     HelperManifestNotAllowed,
@@ -180,15 +213,28 @@ impl RestrictedLauncher {
         Ok(())
     }
 
-    fn require_allowed_one_shot_helper(self, helper: &VerifiedHelper) -> Result<(), LaunchError> {
-        // The release allowlist contains all signing-TCB artifacts, including
-        // key-agent.exe. It is not an authority to select their launch topology.
-        // Reject the Key Agent before release evaluation or any Win32 side effect;
-        // only key_agent_activation may create that role.
-        if helper.is_key_agent() {
-            return Err(LaunchError::KeyAgentRequiresSupervisorActivation);
+    fn require_approval_frontend(
+        self,
+        helper: &VerifiedHelper,
+    ) -> Result<VerifiedLpacRole, LaunchError> {
+        let role = VerifiedLpacRole::from_helper(helper)?;
+        if role != VerifiedLpacRole::ApprovalFrontend {
+            return Err(LaunchError::HelperRoleNotAllowed);
         }
-        self.require_allowed_helper(helper.manifest_digest())
+        self.require_allowed_helper(helper.manifest_digest())?;
+        Ok(role)
+    }
+
+    fn require_secret_input_frontend(
+        self,
+        helper: &VerifiedHelper,
+    ) -> Result<VerifiedLpacRole, LaunchError> {
+        let role = VerifiedLpacRole::from_helper(helper)?;
+        if role != VerifiedLpacRole::SecretInputFrontend {
+            return Err(LaunchError::HelperRoleNotAllowed);
+        }
+        self.require_allowed_helper(helper.manifest_digest())?;
+        Ok(role)
     }
 
     /// Launches a verified helper with only the selected handles inherited.
@@ -199,20 +245,21 @@ impl RestrictedLauncher {
     ///
     /// # Errors
     ///
-    /// Returns [`LaunchError::KeyAgentRequiresSupervisorActivation`] for the
-    /// manifest-derived Key Agent role, before release evaluation or process
-    /// creation. Returns [`LaunchError::ReleaseNotAttested`] until all release
-    /// evidence is bound. Profile, current-directory, operating-system, or
-    /// post-creation token verification failures all fail closed before the
-    /// child is resumed.
+    /// Returns [`LaunchError::HelperRoleNotAllowed`] unless the manifest-derived
+    /// role is exactly Approval Frontend. The Key Agent receives the narrower
+    /// [`LaunchError::KeyAgentRequiresSupervisorActivation`]. Both errors occur
+    /// before release evaluation or process creation. Returns
+    /// [`LaunchError::ReleaseNotAttested`] until all release evidence is bound.
+    /// Profile, current-directory, operating-system, or post-creation token
+    /// verification failures all fail closed before the child is resumed.
     #[cfg(windows)]
     pub fn spawn(
         self,
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
     ) -> Result<LaunchedHelper, LaunchError> {
-        self.require_allowed_one_shot_helper(helper)?;
-        sys::launch(helper, handles, self.profile, false)
+        let role = self.require_approval_frontend(helper)?;
+        sys::launch(helper, handles, self.profile, role)
     }
 
     /// Launches Secret Input with two additional, least-privilege proof handles
@@ -224,13 +271,17 @@ impl RestrictedLauncher {
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
     ) -> Result<LaunchedHelper, LaunchError> {
-        self.require_allowed_one_shot_helper(helper)?;
-        sys::launch(helper, handles, self.profile, true)
+        let role = self.require_secret_input_frontend(helper)?;
+        sys::launch(helper, handles, self.profile, role)
     }
 
     /// Refuses launch on non-Windows platforms.
     #[cfg(not(windows))]
-    pub fn spawn(self, _helper: &VerifiedHelper) -> Result<LaunchedHelper, LaunchError> {
+    pub fn spawn(self, helper: &VerifiedHelper) -> Result<LaunchedHelper, LaunchError> {
+        let role = VerifiedLpacRole::from_helper(helper)?;
+        if role != VerifiedLpacRole::ApprovalFrontend {
+            return Err(LaunchError::HelperRoleNotAllowed);
+        }
         Err(LaunchError::UnsupportedPlatform)
     }
 }
@@ -239,8 +290,9 @@ impl RestrictedLauncher {
 ///
 /// While owned by [`LaunchedHelper`], its private process handle keeps the exact
 /// process object selected. The file and manifest identities bind that selection
-/// to the already verified helper artifact; the profile revision binds the
-/// sandbox contract used at creation.
+/// to the already verified helper artifact and its manifest-derived role; the
+/// role plus profile revision deterministically bind the sandbox identity used
+/// at creation.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct HeldProcessIdentity {
     process_id: u32,
@@ -486,13 +538,17 @@ mod sys {
 
     use super::{
         HeldProcessIdentity, InheritedParentProof, InheritedStdio, LaunchError, LaunchedHelper,
-        NoNetworkLpacProfile, VerifiedHelper,
+        NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
     };
 
-    const PROFILE_V1_NAME: &str = "YourWallet.SecurityHelper.LPAC.v1";
-    const PROFILE_DISPLAY_NAME: &str = "Your Wallet isolated helper";
-    const PROFILE_DESCRIPTION: &str =
-        "Persistent no-network LPAC identity for one-shot Your Wallet helpers";
+    const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
+    const APPROVAL_PROFILE_DISPLAY_NAME: &str = "Your Wallet approval frontend";
+    const APPROVAL_PROFILE_DESCRIPTION: &str =
+        "Persistent no-network LPAC identity for Your Wallet approval prompts";
+    const SECRET_INPUT_PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.v1";
+    const SECRET_INPUT_PROFILE_DISPLAY_NAME: &str = "Your Wallet secret input frontend";
+    const SECRET_INPUT_PROFILE_DESCRIPTION: &str =
+        "Persistent no-network LPAC identity for Your Wallet secret input";
     const ATTRIBUTE_COUNT: u32 = 5;
     const CAPABILITY_COUNT: u32 = 0;
     const MAX_SYSTEM_PATH_UNITS: usize = 32_768;
@@ -547,11 +603,14 @@ mod sys {
     struct OwnedAppContainerSid(PSID);
 
     impl OwnedAppContainerSid {
-        fn open_or_create(profile: NoNetworkLpacProfile) -> Result<Self, LaunchError> {
-            let name = profile_name(profile)?;
-            let name_wide = wide_nul_str(name);
-            let display_wide = wide_nul_str(PROFILE_DISPLAY_NAME);
-            let description_wide = wide_nul_str(PROFILE_DESCRIPTION);
+        fn open_or_create(
+            profile: NoNetworkLpacProfile,
+            role: VerifiedLpacRole,
+        ) -> Result<Self, LaunchError> {
+            let metadata = profile_metadata(profile, role)?;
+            let name_wide = wide_nul_str(metadata.name);
+            let display_wide = wide_nul_str(metadata.display_name);
+            let description_wide = wide_nul_str(metadata.description);
 
             // SAFETY: all strings are NUL terminated and there are deliberately no
             // capability SIDs. The returned SID is owned and freed with FreeSid.
@@ -664,11 +723,12 @@ mod sys {
         fn for_lpac(
             handles: Box<[HANDLE]>,
             profile: NoNetworkLpacProfile,
+            role: VerifiedLpacRole,
         ) -> Result<Self, LaunchError> {
             if handles.is_empty() {
                 return Err(LaunchError::InvalidHandle);
             }
-            let profile_sid = OwnedAppContainerSid::open_or_create(profile)?;
+            let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;
             let values = Box::new(AttributeValues::new(handles, profile_sid.raw()));
             let mut bytes = 0_usize;
             // SAFETY: the documented sizing call uses a null list and initializes
@@ -813,11 +873,38 @@ mod sys {
             .collect()
     }
 
-    fn profile_name(profile: NoNetworkLpacProfile) -> Result<&'static str, LaunchError> {
-        match profile.revision() {
-            1 => Ok(PROFILE_V1_NAME),
+    #[derive(Clone, Copy)]
+    struct ProfileMetadata {
+        name: &'static str,
+        display_name: &'static str,
+        description: &'static str,
+    }
+
+    fn profile_metadata(
+        profile: NoNetworkLpacProfile,
+        role: VerifiedLpacRole,
+    ) -> Result<ProfileMetadata, LaunchError> {
+        match (profile.revision(), role) {
+            (1, VerifiedLpacRole::ApprovalFrontend) => Ok(ProfileMetadata {
+                name: APPROVAL_PROFILE_V1_NAME,
+                display_name: APPROVAL_PROFILE_DISPLAY_NAME,
+                description: APPROVAL_PROFILE_DESCRIPTION,
+            }),
+            (1, VerifiedLpacRole::SecretInputFrontend) => Ok(ProfileMetadata {
+                name: SECRET_INPUT_PROFILE_V1_NAME,
+                display_name: SECRET_INPUT_PROFILE_DISPLAY_NAME,
+                description: SECRET_INPUT_PROFILE_DESCRIPTION,
+            }),
             _ => Err(LaunchError::InvalidProfile),
         }
+    }
+
+    #[cfg(test)]
+    fn profile_name(
+        profile: NoNetworkLpacProfile,
+        role: VerifiedLpacRole,
+    ) -> Result<&'static str, LaunchError> {
+        Ok(profile_metadata(profile, role)?.name)
     }
 
     fn wide_nul_str(value: &str) -> Vec<u16> {
@@ -1184,7 +1271,7 @@ mod sys {
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
         profile: NoNetworkLpacProfile,
-        inherit_parent_proof: bool,
+        role: VerifiedLpacRole,
     ) -> Result<LaunchedHelper, LaunchError> {
         // Keep the identity-pinned executable file live through CreateProcessW.
         let _verified_file_handle = helper.raw_handle();
@@ -1213,7 +1300,7 @@ mod sys {
         let standard_input = map_duplicate(handles.input)?;
         let standard_output = map_duplicate(handles.output)?;
         let standard_error = map_duplicate(handles.error)?;
-        let parent_proof = if inherit_parent_proof {
+        let parent_proof = if role.inherits_parent_proof() {
             let sources = current_parent_proof_sources()?;
             let process = duplicate_inheritable(sources.process.raw())?;
             let image = duplicate_inheritable(sources.image.raw())?;
@@ -1229,7 +1316,7 @@ mod sys {
             None
         };
         let inherited_raw: Vec<HANDLE> = duplicates.iter().map(OwnedWinHandle::raw).collect();
-        let attributes = AttributeList::for_lpac(inherited_raw.into_boxed_slice(), profile)?;
+        let attributes = AttributeList::for_lpac(inherited_raw.into_boxed_slice(), profile, role)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb =
             u32::try_from(size_of::<STARTUPINFOEXW>()).map_err(|_| LaunchError::OperatingSystem)?;
@@ -1344,10 +1431,35 @@ mod sys {
     }
 
     #[cfg(test)]
-    pub(super) fn profile_name_for_test(
+    pub(super) fn approval_profile_name_for_test(
         profile: NoNetworkLpacProfile,
     ) -> Result<&'static str, LaunchError> {
-        profile_name(profile)
+        profile_name(profile, VerifiedLpacRole::ApprovalFrontend)
+    }
+
+    #[cfg(test)]
+    pub(super) fn secret_input_profile_name_for_test(
+        profile: NoNetworkLpacProfile,
+    ) -> Result<&'static str, LaunchError> {
+        profile_name(profile, VerifiedLpacRole::SecretInputFrontend)
+    }
+
+    #[cfg(test)]
+    pub(super) fn profiles_have_distinct_sids_for_test(
+        profile: NoNetworkLpacProfile,
+    ) -> Result<bool, LaunchError> {
+        let approval_name =
+            wide_nul_str(profile_name(profile, VerifiedLpacRole::ApprovalFrontend)?);
+        let secret_input_name = wide_nul_str(profile_name(
+            profile,
+            VerifiedLpacRole::SecretInputFrontend,
+        )?);
+        let approval = OwnedAppContainerSid::derive(&approval_name)?;
+        let secret_input = OwnedAppContainerSid::derive(&secret_input_name)?;
+        // SAFETY: both wrappers contain valid live SIDs. EqualSid returns
+        // success only when they identify the same principal; distinct
+        // role-bound profile names must not do so.
+        Ok(unsafe { EqualSid(approval.raw(), secret_input.raw()) }.is_err())
     }
 
     #[cfg(test)]
@@ -1471,19 +1583,40 @@ mod tests {
     }
 
     #[test]
-    fn profile_name_is_deterministic_and_revision_bound() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn profile_names_are_role_separated_deterministic_and_revision_bound()
+    -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            sys::profile_name_for_test(NoNetworkLpacProfile::v1())?,
-            "YourWallet.SecurityHelper.LPAC.v1"
+            sys::approval_profile_name_for_test(NoNetworkLpacProfile::v1())?,
+            "YourWallet.ApprovalFrontend.LPAC.v1"
+        );
+        assert_eq!(
+            sys::secret_input_profile_name_for_test(NoNetworkLpacProfile::v1())?,
+            "YourWallet.SecretInputFrontend.LPAC.v1"
+        );
+        assert_ne!(
+            sys::approval_profile_name_for_test(NoNetworkLpacProfile::v1())?,
+            sys::secret_input_profile_name_for_test(NoNetworkLpacProfile::v1())?
         );
         let unknown = NoNetworkLpacProfile {
             profile_revision: 2,
         };
         assert!(matches!(
-            sys::profile_name_for_test(unknown),
+            sys::approval_profile_name_for_test(unknown),
             Err(LaunchError::InvalidProfile)
         ));
+        assert!(matches!(
+            sys::secret_input_profile_name_for_test(unknown),
+            Err(LaunchError::InvalidProfile)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn role_separated_profile_names_derive_distinct_kernel_sids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(sys::profiles_have_distinct_sids_for_test(
+            NoNetworkLpacProfile::v1()
+        )?);
         Ok(())
     }
 
@@ -1575,8 +1708,57 @@ mod tests {
             Err(LaunchError::KeyAgentRequiresSupervisorActivation)
         ));
         assert!(matches!(
+            development.spawn_secret_input(&key_agent, &stdio),
+            Err(LaunchError::KeyAgentRequiresSupervisorActivation)
+        ));
+        assert!(matches!(
             launcher.spawn(&key_agent, &stdio),
             Err(LaunchError::KeyAgentRequiresSupervisorActivation)
+        ));
+        assert!(matches!(
+            launcher.spawn_secret_input(&key_agent, &stdio),
+            Err(LaunchError::KeyAgentRequiresSupervisorActivation)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn launch_entry_points_reject_cross_role_and_other_before_release_or_win32()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let approval = VerifiedHelper::for_approval_channel_test(true)?;
+        let secret_input = VerifiedHelper::for_secret_input_channel_test()?;
+        let other = VerifiedHelper::for_approval_channel_test(false)?;
+        let launcher =
+            RestrictedLauncher::new(ReleaseAttestation::default(), NoNetworkLpacProfile::v1());
+        let (read, write) = anonymous_pipe()?;
+        let stdio = InheritedStdio::new(read.as_handle(), write.as_handle(), write.as_handle())?;
+
+        assert!(matches!(
+            launcher.spawn(&secret_input, &stdio),
+            Err(LaunchError::HelperRoleNotAllowed)
+        ));
+        assert!(matches!(
+            launcher.spawn(&other, &stdio),
+            Err(LaunchError::HelperRoleNotAllowed)
+        ));
+        assert!(matches!(
+            launcher.spawn_secret_input(&approval, &stdio),
+            Err(LaunchError::HelperRoleNotAllowed)
+        ));
+        assert!(matches!(
+            launcher.spawn_secret_input(&other, &stdio),
+            Err(LaunchError::HelperRoleNotAllowed)
+        ));
+
+        // The exact roles advance to the still-disabled release gate, proving
+        // the role checks do not accidentally reject their intended frontend.
+        assert!(matches!(
+            launcher.spawn(&approval, &stdio),
+            Err(LaunchError::ReleaseNotAttested)
+        ));
+        assert!(matches!(
+            launcher.spawn_secret_input(&secret_input, &stdio),
+            Err(LaunchError::ReleaseNotAttested)
         ));
         Ok(())
     }

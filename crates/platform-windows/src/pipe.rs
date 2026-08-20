@@ -5,6 +5,8 @@
 //! as the same user in the same logon session.
 
 use core::fmt;
+#[cfg(windows)]
+use core::marker::PhantomData;
 
 #[cfg(windows)]
 use std::os::windows::io::{AsHandle as _, BorrowedHandle};
@@ -330,6 +332,241 @@ impl fmt::Debug for SecretResponseReader {
     }
 }
 
+/// Persistent private pipe sources reserved for the dormant Key Agent supervisor.
+///
+/// Every handle stored here is non-inheritable. Immediately around one exact
+/// `STARTUPINFOEX` launch, [`Self::prepare_child_inheritance`] creates three
+/// short-lived inheritable handles for stdin, stdout, and an independent null
+/// stderr sink. The borrowed lifetime prevents those duplicates from outliving
+/// this owner, and consuming the owner closes both persistent child sources.
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+pub(crate) struct PrivateKeyAgentPipes {
+    parent_request: sys::OwnedWinHandle,
+    child_request_source: sys::OwnedWinHandle,
+    parent_response: sys::OwnedWinHandle,
+    child_response_source: sys::OwnedWinHandle,
+}
+
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+impl PrivateKeyAgentPipes {
+    pub(crate) fn create() -> Result<Self, PipeError> {
+        let request_name = SensitivePipeName::generate("key-agent-request")?;
+        let response_name = SensitivePipeName::generate("key-agent-response")?;
+        let security = sys::PipeSecurity::for_current_logon()?;
+        let (parent_request, child_request_source) = sys::create_child_server_pipe(
+            &request_name,
+            &security,
+            sys::PipeDirection::ParentWrites,
+        )?;
+        let (parent_response, child_response_source) = sys::create_child_server_pipe(
+            &response_name,
+            &security,
+            sys::PipeDirection::ParentReads,
+        )?;
+        sys::validate_key_agent_persistent_pipe_handles(
+            &parent_request,
+            &child_request_source,
+            &parent_response,
+            &child_response_source,
+        )?;
+        Ok(Self {
+            parent_request,
+            child_request_source,
+            parent_response,
+            child_response_source,
+        })
+    }
+
+    pub(crate) fn prepare_child_inheritance(
+        &self,
+    ) -> Result<PreparedKeyAgentInheritance<'_>, PipeError> {
+        let stdin = sys::duplicate_inheritable(&self.child_request_source)?;
+        let stdout = sys::duplicate_inheritable(&self.child_response_source)?;
+        let stderr = sys::create_inheritable_null_sink()?;
+        sys::validate_prepared_key_agent_inheritance(
+            &self.child_request_source,
+            &self.child_response_source,
+            &stdin,
+            &stdout,
+            &stderr,
+        )?;
+        Ok(PreparedKeyAgentInheritance {
+            stdin,
+            stdout,
+            stderr,
+            owner: PhantomData,
+        })
+    }
+
+    pub(crate) fn into_parent(self) -> (KeyAgentRequestWriter, KeyAgentResponseReader) {
+        let Self {
+            parent_request,
+            child_request_source,
+            parent_response,
+            child_response_source,
+        } = self;
+        drop(child_request_source);
+        drop(child_response_source);
+        (
+            KeyAgentRequestWriter(parent_request),
+            KeyAgentResponseReader(parent_response),
+        )
+    }
+
+    #[cfg(test)]
+    fn into_test_parts(
+        self,
+    ) -> (
+        KeyAgentRequestWriter,
+        sys::OwnedWinHandle,
+        KeyAgentResponseReader,
+        sys::OwnedWinHandle,
+    ) {
+        (
+            KeyAgentRequestWriter(self.parent_request),
+            self.child_request_source,
+            KeyAgentResponseReader(self.parent_response),
+            self.child_response_source,
+        )
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for PrivateKeyAgentPipes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrivateKeyAgentPipes")
+            .field("parent_request", &"[HANDLE]")
+            .field("child_request_source", &"[HANDLE]")
+            .field("parent_response", &"[HANDLE]")
+            .field("child_response_source", &"[HANDLE]")
+            .finish()
+    }
+}
+
+/// Short-lived inherited stdio handles for one exact Key Agent activation.
+///
+/// The three handles are distinct kernel objects and are the complete explicit
+/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Stderr is a write-only null-device sink,
+/// so diagnostics can neither persist nor corrupt the trusted stdout response.
+/// Dropping this type closes all three inheritable duplicates.
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+#[must_use = "inheritable handles must be retained only through the exact process creation call"]
+pub(crate) struct PreparedKeyAgentInheritance<'pipes> {
+    stdin: sys::OwnedWinHandle,
+    stdout: sys::OwnedWinHandle,
+    stderr: sys::OwnedWinHandle,
+    owner: PhantomData<&'pipes PrivateKeyAgentPipes>,
+}
+
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+impl PreparedKeyAgentInheritance<'_> {
+    pub(crate) fn stdin(&self) -> BorrowedHandle<'_> {
+        self.stdin.as_handle()
+    }
+
+    pub(crate) fn stdout(&self) -> BorrowedHandle<'_> {
+        self.stdout.as_handle()
+    }
+
+    pub(crate) fn stderr(&self) -> BorrowedHandle<'_> {
+        self.stderr.as_handle()
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for PreparedKeyAgentInheritance<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedKeyAgentInheritance")
+            .field("stdin", &"[BORROWED HANDLE]")
+            .field("stdout", &"[BORROWED HANDLE]")
+            .field("stderr", &"[BORROWED HANDLE]")
+            .finish()
+    }
+}
+
+/// Parent's one-shot, hard-bounded Key Agent request writer.
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+pub(crate) struct KeyAgentRequestWriter(sys::OwnedWinHandle);
+
+// SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, has no
+// borrowed or thread-affine state, is non-cloneable, and exposes only a
+// consuming one-shot write. Windows permits the owned HANDLE to be used and
+// closed by a different thread. This narrow transfer permission deliberately
+// does not apply to `OwnedWinHandle`, prepared inheritable handles, or pipe
+// owners that still retain child sources.
+#[allow(unsafe_code)]
+unsafe impl Send for KeyAgentRequestWriter {}
+
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+impl KeyAgentRequestWriter {
+    pub(crate) fn write_bounded(self, bytes: &[u8], deadline: Instant) -> Result<(), PipeError> {
+        if bytes.len() > PIPE_BUFFER_BYTES as usize {
+            return Err(PipeError::FrameTooLarge);
+        }
+        sys::write_all_before(self.0.raw(), bytes, deadline)
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for KeyAgentRequestWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentRequestWriter([HANDLE])")
+    }
+}
+
+/// Parent's one-shot, hard-bounded Key Agent response reader.
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+pub(crate) struct KeyAgentResponseReader(sys::OwnedWinHandle);
+
+// SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, has no
+// borrowed or thread-affine state, is non-cloneable, and exposes only a
+// consuming one-shot read. Windows permits the owned HANDLE to be used and
+// closed by a different thread. This narrow transfer permission deliberately
+// does not apply to `OwnedWinHandle`, prepared inheritable handles, or pipe
+// owners that still retain child sources.
+#[allow(unsafe_code)]
+unsafe impl Send for KeyAgentResponseReader {}
+
+#[cfg(windows)]
+#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+impl KeyAgentResponseReader {
+    pub(crate) fn read_bounded_to_end(
+        self,
+        maximum_bytes: usize,
+        deadline: Instant,
+    ) -> Result<Zeroizing<Vec<u8>>, PipeError> {
+        if maximum_bytes > PIPE_BUFFER_BYTES as usize {
+            return Err(PipeError::FrameTooLarge);
+        }
+        sys::read_bounded_to_end_before(self.0.raw(), maximum_bytes, deadline)
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for KeyAgentResponseReader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentResponseReader([HANDLE])")
+    }
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn key_agent_parent_endpoints_are_noninheritable_for_test(
+    writer: &KeyAgentRequestWriter,
+    reader: &KeyAgentResponseReader,
+) -> Result<bool, PipeError> {
+    Ok(!sys::handle_inheritable_for_test(&writer.0)?
+        && !sys::handle_inheritable_for_test(&reader.0)?)
+}
+
 /// The exact process and session permitted to connect to a one-shot pipe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedPeer {
@@ -499,8 +736,10 @@ mod sys {
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED,
-        GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_TIMEOUT,
+        CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle,
+        ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_READ,
+        GENERIC_WRITE, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL, LocalFree,
+        WAIT_TIMEOUT,
     };
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -512,7 +751,8 @@ mod sys {
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-        FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_INBOUND,
+        FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE, FILE_TYPE_CHAR,
+        FILE_TYPE_PIPE, GetFileType, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_INBOUND,
         PIPE_ACCESS_OUTBOUND, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     };
     use windows::Win32::System::IO::{
@@ -762,6 +1002,137 @@ mod sys {
         }
         .map_err(|_| PipeError::OperatingSystem)?;
         Ok((OwnedWinHandle(parent_client), child_server))
+    }
+
+    /// Creates one inheritable duplicate with exactly the source access mask.
+    /// The persistent source remains non-inheritable.
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn duplicate_inheritable(
+        source: &OwnedWinHandle,
+    ) -> Result<OwnedWinHandle, PipeError> {
+        duplicate_with_inheritance(source, true)
+    }
+
+    fn duplicate_with_inheritance(
+        source: &OwnedWinHandle,
+        inheritable: bool,
+    ) -> Result<OwnedWinHandle, PipeError> {
+        let mut duplicate = HANDLE::default();
+        // SAFETY: the source is owned and live. Both process pseudo-handles name
+        // this process, and the requested inheritance bit applies only to the
+        // returned duplicate.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source.raw(),
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                0,
+                inheritable,
+                DUPLICATE_SAME_ACCESS,
+            )
+            .map_err(|_| PipeError::OperatingSystem)?;
+        }
+        Ok(OwnedWinHandle(duplicate))
+    }
+
+    /// Opens the Windows null device write-only and returns only an inheritable
+    /// duplicate. The non-inheritable source closes before this function returns.
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn create_inheritable_null_sink() -> Result<OwnedWinHandle, PipeError> {
+        const NULL_DEVICE: [u16; 8] = [
+            b'\\' as u16,
+            b'\\' as u16,
+            b'.' as u16,
+            b'\\' as u16,
+            b'N' as u16,
+            b'U' as u16,
+            b'L' as u16,
+            0,
+        ];
+        // SAFETY: the constant device name is NUL terminated. The exact access is
+        // write-only, and no security attributes means this source cannot inherit.
+        let source = unsafe {
+            CreateFileW(
+                PCWSTR(NULL_DEVICE.as_ptr()),
+                GENERIC_WRITE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+        .map(OwnedWinHandle)
+        .map_err(|_| PipeError::OperatingSystem)?;
+        duplicate_inheritable(&source)
+    }
+
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn validate_key_agent_persistent_pipe_handles(
+        parent_request: &OwnedWinHandle,
+        child_request_source: &OwnedWinHandle,
+        parent_response: &OwnedWinHandle,
+        child_response_source: &OwnedWinHandle,
+    ) -> Result<(), PipeError> {
+        if handle_is_inheritable(parent_request.raw())?
+            || handle_is_inheritable(child_request_source.raw())?
+            || handle_is_inheritable(parent_response.raw())?
+            || handle_is_inheritable(child_response_source.raw())?
+        {
+            return Err(PipeError::OperatingSystem);
+        }
+        if same_kernel_object(child_request_source, child_response_source)
+            || !handle_has_file_type(child_request_source, FILE_TYPE_PIPE)
+            || !handle_has_file_type(child_response_source, FILE_TYPE_PIPE)
+        {
+            return Err(PipeError::OperatingSystem);
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn validate_prepared_key_agent_inheritance(
+        child_request_source: &OwnedWinHandle,
+        child_response_source: &OwnedWinHandle,
+        stdin: &OwnedWinHandle,
+        stdout: &OwnedWinHandle,
+        stderr: &OwnedWinHandle,
+    ) -> Result<(), PipeError> {
+        if !handle_is_inheritable(stdin.raw())?
+            || !handle_is_inheritable(stdout.raw())?
+            || !handle_is_inheritable(stderr.raw())?
+            || !same_kernel_object(child_request_source, stdin)
+            || !same_kernel_object(child_response_source, stdout)
+            || same_kernel_object(stdin, stdout)
+            || same_kernel_object(stdin, stderr)
+            || same_kernel_object(stdout, stderr)
+            || !handle_has_file_type(stdin, FILE_TYPE_PIPE)
+            || !handle_has_file_type(stdout, FILE_TYPE_PIPE)
+            || !handle_has_file_type(stderr, FILE_TYPE_CHAR)
+        {
+            return Err(PipeError::OperatingSystem);
+        }
+        Ok(())
+    }
+
+    fn same_kernel_object(first: &OwnedWinHandle, second: &OwnedWinHandle) -> bool {
+        // SAFETY: callers first retain live owned handles. TRUE means the exact
+        // same underlying kernel object, even when numeric handle values differ.
+        unsafe { CompareObjectHandles(first.raw(), second.raw()) }.as_bool()
+    }
+
+    fn handle_has_file_type(handle: &OwnedWinHandle, expected: FILE_TYPE) -> bool {
+        // SAFETY: the wrapper owns a live handle for this scalar kernel query.
+        (unsafe { GetFileType(handle.raw()) }) == expected
+    }
+
+    fn handle_is_inheritable(handle: HANDLE) -> Result<bool, PipeError> {
+        let mut flags = 0_u32;
+        // SAFETY: the caller retains ownership of a live handle for this query.
+        unsafe { GetHandleInformation(handle, &raw mut flags) }
+            .map_err(|_| PipeError::OperatingSystem)?;
+        Ok(flags & HANDLE_FLAG_INHERIT.0 != 0)
     }
 
     fn finish_client_connection(server: HANDLE) -> Result<(), PipeError> {
@@ -1208,6 +1579,48 @@ mod sys {
     }
 
     #[cfg(test)]
+    pub(super) fn handle_inheritable_for_test(handle: &OwnedWinHandle) -> Result<bool, PipeError> {
+        handle_is_inheritable(handle.raw())
+    }
+
+    #[cfg(test)]
+    pub(super) fn same_kernel_object_for_test(
+        first: &OwnedWinHandle,
+        second: &OwnedWinHandle,
+    ) -> bool {
+        // SAFETY: both test handles are owned and remain live for this query.
+        unsafe { CompareObjectHandles(first.raw(), second.raw()) }.as_bool()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn raw_handle_for_test(handle: &OwnedWinHandle) -> HANDLE {
+        handle.raw()
+    }
+
+    #[cfg(test)]
+    pub(super) fn duplicate_noninheritable_for_test(
+        handle: &OwnedWinHandle,
+    ) -> Result<OwnedWinHandle, PipeError> {
+        duplicate_with_inheritance(handle, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn raw_handle_names_same_object_for_test(
+        expected: &OwnedWinHandle,
+        candidate: HANDLE,
+    ) -> bool {
+        let mut flags = 0_u32;
+        // SAFETY: this deliberately probes a captured numeric handle value. A
+        // closed value fails here; a concurrently reused value is compared with
+        // the retained exact-object observer below instead of treated as live.
+        if unsafe { GetHandleInformation(candidate, &raw mut flags) }.is_err() {
+            return false;
+        }
+        // SAFETY: `expected` remains owned and the candidate was just proven live.
+        unsafe { CompareObjectHandles(expected.raw(), candidate) }.as_bool()
+    }
+
+    #[cfg(test)]
     pub(super) const fn open_mode_for_test() -> u32 {
         PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_FIRST_PIPE_INSTANCE.0
     }
@@ -1325,14 +1738,15 @@ mod sys {
 #[cfg(all(test, windows))]
 mod tests {
     use std::collections::HashSet;
+    use std::os::windows::io::AsRawHandle as _;
     use std::time::{Duration, Instant};
 
     use windows::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
     use windows::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
 
     use super::{
-        PipeError, PrivateApprovalPipes, PrivatePipeServer, PrivateSecretInputPipes,
-        SensitivePipeName, sys,
+        PIPE_BUFFER_BYTES, PipeError, PrivateApprovalPipes, PrivateKeyAgentPipes,
+        PrivatePipeServer, PrivateSecretInputPipes, SensitivePipeName, sys,
     };
 
     #[test]
@@ -1384,6 +1798,277 @@ mod tests {
             sys::open_mode_for_test() & FILE_FLAG_FIRST_PIPE_INSTANCE.0,
             0
         );
+    }
+
+    #[test]
+    fn key_agent_persistent_lifetime_has_zero_inheritable_handles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateKeyAgentPipes::create()?;
+        assert_eq!(
+            format!("{pipes:?}"),
+            "PrivateKeyAgentPipes { parent_request: \"[HANDLE]\", child_request_source: \"[HANDLE]\", parent_response: \"[HANDLE]\", child_response_source: \"[HANDLE]\" }"
+        );
+        let inheritable = [
+            sys::handle_inheritable_for_test(&pipes.parent_request)?,
+            sys::handle_inheritable_for_test(&pipes.child_request_source)?,
+            sys::handle_inheritable_for_test(&pipes.parent_response)?,
+            sys::handle_inheritable_for_test(&pipes.child_response_source)?,
+        ];
+        assert_eq!(inheritable.into_iter().filter(|flag| *flag).count(), 0);
+        assert!(!sys::same_kernel_object_for_test(
+            &pipes.child_request_source,
+            &pipes.child_response_source
+        ));
+        let request_peer = sys::child_server_client_for_test(&pipes.child_request_source)?;
+        let response_peer = sys::child_server_client_for_test(&pipes.child_response_source)?;
+        assert_eq!(request_peer, response_peer);
+        assert_eq!(request_peer.0, std::process::id());
+        assert_eq!(request_peer.1, sys::current_session_for_test()?);
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_prepared_stdio_is_exactly_three_distinct_inheritable_objects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateKeyAgentPipes::create()?;
+        let prepared = pipes.prepare_child_inheritance()?;
+        assert_eq!(
+            format!("{prepared:?}"),
+            "PreparedKeyAgentInheritance { stdin: \"[BORROWED HANDLE]\", stdout: \"[BORROWED HANDLE]\", stderr: \"[BORROWED HANDLE]\" }"
+        );
+        assert!(sys::handle_inheritable_for_test(&prepared.stdin)?);
+        assert!(sys::handle_inheritable_for_test(&prepared.stdout)?);
+        assert!(sys::handle_inheritable_for_test(&prepared.stderr)?);
+        assert!(sys::same_kernel_object_for_test(
+            &pipes.child_request_source,
+            &prepared.stdin
+        ));
+        assert!(sys::same_kernel_object_for_test(
+            &pipes.child_response_source,
+            &prepared.stdout
+        ));
+        assert!(!sys::same_kernel_object_for_test(
+            &prepared.stdin,
+            &prepared.stdout
+        ));
+        assert!(!sys::same_kernel_object_for_test(
+            &prepared.stdin,
+            &prepared.stderr
+        ));
+        assert!(!sys::same_kernel_object_for_test(
+            &prepared.stdout,
+            &prepared.stderr
+        ));
+
+        let stdin = prepared.stdin().as_raw_handle() as usize;
+        let stdout = prepared.stdout().as_raw_handle() as usize;
+        let stderr = prepared.stderr().as_raw_handle() as usize;
+        assert_ne!(stdin, stdout);
+        assert_ne!(stdin, stderr);
+        assert_ne!(stdout, stderr);
+        let explicit_handle_list = [stdin, stdout, stderr];
+        assert_eq!(explicit_handle_list.len(), 3);
+        assert_eq!(
+            explicit_handle_list
+                .into_iter()
+                .collect::<HashSet<_>>()
+                .len(),
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_prepared_and_persistent_handle_drops_close_exact_scopes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateKeyAgentPipes::create()?;
+        let prepared = pipes.prepare_child_inheritance()?;
+        let stdin = sys::raw_handle_for_test(&prepared.stdin);
+        let stdout = sys::raw_handle_for_test(&prepared.stdout);
+        let stderr = sys::raw_handle_for_test(&prepared.stderr);
+        let stderr_observer = sys::duplicate_noninheritable_for_test(&prepared.stderr)?;
+        assert!(sys::raw_handle_names_same_object_for_test(
+            &pipes.child_request_source,
+            stdin
+        ));
+        assert!(sys::raw_handle_names_same_object_for_test(
+            &pipes.child_response_source,
+            stdout
+        ));
+        assert!(sys::raw_handle_names_same_object_for_test(
+            &stderr_observer,
+            stderr
+        ));
+        drop(prepared);
+        assert!(!sys::raw_handle_names_same_object_for_test(
+            &pipes.child_request_source,
+            stdin
+        ));
+        assert!(!sys::raw_handle_names_same_object_for_test(
+            &pipes.child_response_source,
+            stdout
+        ));
+        assert!(!sys::raw_handle_names_same_object_for_test(
+            &stderr_observer,
+            stderr
+        ));
+        assert!(!sys::handle_inheritable_for_test(&stderr_observer)?);
+        drop(stderr_observer);
+
+        let (writer, reader) = pipes.into_parent();
+        assert!(matches!(
+            writer.write_bounded(b"closed child input", future_deadline()?),
+            Err(PipeError::UnexpectedEnd | PipeError::OperatingSystem)
+        ));
+        assert!(
+            reader
+                .read_bounded_to_end(1, future_deadline()?)?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_prepared_stdio_has_exact_directions_and_isolated_stderr()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateKeyAgentPipes::create()?;
+        let prepared = pipes.prepare_child_inheritance()?;
+
+        let request = [0x42_u8; 64];
+        sys::write_all_before(pipes.parent_request.raw(), &request, future_deadline()?)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&prepared.stdin, request.len())?,
+            request
+        );
+        assert_eq!(
+            sys::write_child_for_test(&prepared.stdin, b"wrong direction"),
+            Err(PipeError::OperatingSystem)
+        );
+        assert_eq!(
+            sys::read_child_exact_for_test(&prepared.stdout, 1),
+            Err(PipeError::OperatingSystem)
+        );
+        assert_eq!(
+            sys::read_child_exact_for_test(&prepared.stderr, 1),
+            Err(PipeError::OperatingSystem)
+        );
+
+        let diagnostic = b"must be discarded outside the response stream";
+        sys::write_child_for_test(&prepared.stderr, diagnostic)?;
+        let response = [0x57_u8; 64];
+        sys::write_child_for_test(&prepared.stdout, &response)?;
+        drop(prepared);
+
+        let (writer, child_request_source, reader, child_response_source) = pipes.into_test_parts();
+        drop(writer);
+        drop(child_request_source);
+        drop(child_response_source);
+        assert_eq!(
+            reader
+                .read_bounded_to_end(response.len(), future_deadline()?)?
+                .as_slice(),
+            response
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_parent_endpoints_are_overlapped_bounded_and_eof_delimited()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (writer, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        let request = [0x42_u8; 64];
+        writer.write_bounded(&request, future_deadline()?)?;
+        assert_eq!(sys::read_child_to_end_for_test(&child_request)?, request);
+        drop(child_request);
+
+        let response = [0x57_u8; 64];
+        sys::write_child_for_test(&child_response, &response)?;
+        drop(child_response);
+        assert_eq!(
+            reader
+                .read_bounded_to_end(response.len(), future_deadline()?)?
+                .as_slice(),
+            response
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_parent_endpoints_transfer_once_to_a_fresh_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::KeyAgentRequestWriter>();
+        assert_send::<super::KeyAgentResponseReader>();
+
+        let (writer, reader) = PrivateKeyAgentPipes::create()?.into_parent();
+        let worker = std::thread::spawn(move || -> Result<(), PipeError> {
+            let write_deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or(PipeError::DeadlineElapsed)?;
+            assert!(matches!(
+                writer.write_bounded(b"closed child input", write_deadline),
+                Err(PipeError::UnexpectedEnd | PipeError::OperatingSystem)
+            ));
+            let read_deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or(PipeError::DeadlineElapsed)?;
+            assert!(reader.read_bounded_to_end(1, read_deadline)?.is_empty());
+            Ok(())
+        });
+        worker
+            .join()
+            .map_err(|_| "Key Agent endpoint transfer worker panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_parent_transport_rejects_both_hard_and_caller_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (writer, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        let oversized_request = vec![0_u8; PIPE_BUFFER_BYTES as usize + 1];
+        assert_eq!(
+            writer.write_bounded(&oversized_request, future_deadline()?),
+            Err(PipeError::FrameTooLarge)
+        );
+        drop(child_request);
+
+        sys::write_child_for_test(&child_response, &[0x33; 65])?;
+        drop(child_response);
+        assert_eq!(
+            reader.read_bounded_to_end(64, future_deadline()?),
+            Err(PipeError::FrameTooLarge)
+        );
+
+        let (_, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        drop(child_request);
+        drop(child_response);
+        assert_eq!(
+            reader.read_bounded_to_end(PIPE_BUFFER_BYTES as usize + 1, future_deadline()?),
+            Err(PipeError::FrameTooLarge)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_overlapped_response_read_cancels_and_drains_at_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        drop(child_request);
+        let started = Instant::now();
+        let deadline = started
+            .checked_add(Duration::from_millis(20))
+            .ok_or("monotonic deadline overflow")?;
+        assert_eq!(
+            reader.read_bounded_to_end(64, deadline),
+            Err(PipeError::DeadlineElapsed)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(child_response);
+        Ok(())
     }
 
     fn future_deadline() -> Result<Instant, Box<dyn std::error::Error>> {

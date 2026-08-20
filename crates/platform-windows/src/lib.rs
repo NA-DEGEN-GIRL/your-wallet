@@ -24,6 +24,18 @@
 //! use platform_windows::key_agent_activation::activate_key_agent;
 //! ```
 //!
+//! The fully bound dormant supervisor aggregate is private as well. External
+//! crates cannot obtain its Job, parent pipe endpoints, startup lease, or held
+//! process, and there is no resume operation:
+//!
+//! ```compile_fail
+//! use platform_windows::key_agent_supervisor::BoundDormantKeyAgent;
+//! ```
+//!
+//! ```compile_fail
+//! use platform_windows::key_agent_supervisor::bind_dormant_key_agent;
+//! ```
+//!
 //! The public one-shot helper launcher also rejects the manifest-derived Key
 //! Agent role; an allowlisted Key Agent cannot use that resumed-process path.
 
@@ -39,6 +51,14 @@ pub mod helper;
 // private Broker channel and protected-settings lease.
 #[cfg(windows)]
 mod key_agent_activation;
+#[cfg(windows)]
+mod key_agent_root_job;
+// The startup lease, private parent channel, root Job, and exact-image
+// activation are one dormant aggregate with no resume path. Protected-settings
+// authorization, the Broker protocol, and a distinct Key Agent LPAC/storage
+// policy remain intentionally unbound and release-blocking.
+#[cfg(windows)]
+mod key_agent_supervisor;
 pub mod launch;
 pub mod pipe;
 // Recovery display/confirmation remain dormant until the Key Agent adapter can

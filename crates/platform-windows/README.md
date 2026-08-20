@@ -45,11 +45,19 @@ Implemented:
   from a live protected-settings lease. Tests exercise only codecs, kernel pipe
   transfer, replay/cross-stage/timeout failures, and the disabled release gate;
   they never launch a visible recovery window;
-- a persistent revision-bound LPAC profile, zero capability SIDs, an explicit
-  `ALL APPLICATION PACKAGES` opt-out, child-process prohibition, an exact
-  inherited named-pipe handle list, a two-variable system environment, a
-  non-user-writable/reparse-free System32 working directory, suspended token
-  verification, process mitigations, and a single-process kill-on-close job;
+- separate persistent, deterministic revision-v1 LPAC profiles for the exact
+  manifest-derived Approval Frontend and Secret Input Frontend roles. Their
+  profile names and derived SIDs differ, so the helpers do not share an
+  AppContainer profile directory or per-profile registry state. Callers cannot
+  select a role: the public entry point accepts only Approval Frontend and the
+  crate-private secret/recovery entry point accepts only Secret Input Frontend,
+  with cross-role, Other, and Key Agent artifacts rejected before release-policy
+  evaluation or Win32 process/profile calls. Both profiles have zero capability
+  SIDs, an explicit `ALL APPLICATION PACKAGES` opt-out, child-process
+  prohibition, an exact inherited named-pipe handle list, a two-variable system
+  environment, a non-user-writable/reparse-free System32 working directory,
+  suspended token verification, process mitigations, and a single-process
+  kill-on-close job;
 - helper verification for absolute install-root containment, reparse traversal,
   current-token writable parents, held file identity, SHA-256, file version,
   Authenticode trust, and pinned leaf-certificate SHA-256;
@@ -63,10 +71,31 @@ Implemented:
   non-clone detached capability. The public generic restricted launcher rejects
   the manifest-derived Key Agent role before release evaluation or process
   creation, so the shared artifact allowlist cannot bypass this seam. The
-  capability exposes no raw handle and has no resume API;
-  drop
-  synchronously terminates and waits for the exact process. The module remains
-  private and cannot arm a release while `COMPILED_RELEASE_POLICY` is `None`;
+  activation-owned fresh worker now also creates the exact two-process
+  kill-on-close root Job and private Key Agent pipes. One `STARTUPINFOEXW` call
+  receives exactly three short-lived inherited stdio handles plus one Job-list
+  handle; the short-lived handles are dropped before the worker returns. The
+  resulting crate-private aggregate uniquely owns the detached suspended
+  process, root Job, two parent endpoints, and internally timed one-shot startup
+  lease. It is non-clone, `!Sync`, exposes no raw handle, has no resume API, and drop
+  synchronously terminates the exact process tree. A distinct Key Agent LPAC,
+  Key Agent-only storage ACL, authenticated Broker/startup exchange, and
+  protected-settings lease remain unbound. The module cannot arm a release
+  while `COMPILED_RELEASE_POLICY` is `None`;
+
+  **STOP-SHIP (English):** Before arming this dormant path, the standalone
+  supervisor must be single-instance and process-wide single-flight for Key
+  Agent bind/arm. It must perform no other inheriting child creation while the
+  three ephemeral `HANDLE_FLAG_INHERIT` duplicates exist. All production
+  process creation must use one sealed coordinator, or Key Agent creation must
+  run in a dedicated launcher process; a module-local mutex is insufficient.
+
+  **릴리스 차단 조건 (한국어):** 이 휴면 경로를 활성화하기 전에 독립 supervisor는
+  단일 인스턴스여야 하며 Key Agent bind/arm을 프로세스 전역 single-flight로
+  직렬화해야 합니다. 세 개의 임시 `HANDLE_FLAG_INHERIT` 중복 핸들이 존재하는
+  동안 다른 상속형 자식 프로세스를 생성하면 안 됩니다. 모든 운영 프로세스
+  생성은 하나의 sealed coordinator를 거치거나 Key Agent 생성을 전용 launcher
+  process로 격리해야 하며, 모듈 내부 mutex만으로는 충분하지 않습니다.
 - an HMAC-authenticated, bounded dual-slot generation store for already-encrypted
   vault/nonce/journal/local-settings records, with a stable class discriminant,
   a strict per-class ciphertext-format matrix, generation CAS, previous-digest chaining,
@@ -145,12 +174,25 @@ Stop-ship before any signing-capable release:
    timeout and forced termination, capture resistance before first paint, and
    secret-zeroization behavior. Headless codec and pipe tests do not substitute
    for this signed-artifact release evidence.
-10. Bind the detached Key Agent activation capability to the exact private Broker
-    channel, restricted profile/job, bootstrap nonces, and protected-settings
-    lease. Repeat caller-event contamination, concurrent activation, worker
-    panic/error cleanup, timeout, image mismatch, and pre-user-mode sentinel
-    tests against the exact signed `key-agent.exe`; headless test-harness evidence
-    is necessary but not sufficient for release attestation.
+10. Extend the dormant aggregate (which now owns the exact private startup pipes,
+    root Job, suspended image proof, and one-shot startup lease) with the
+    authenticated Broker protocol, distinct restricted Key Agent profile,
+    exact nonce exchange, and protected-settings lease. Repeat caller-event
+    contamination, concurrent activation, worker panic/error cleanup, timeout,
+    image mismatch, post-return supervisor Job assignment, and pre-user-mode
+    sentinel tests against the exact signed `key-agent.exe`; headless
+    test-harness evidence is necessary but not sufficient for release
+    attestation.
+11. Keep zero-capability Key Agent LPAC activation and profile provisioning
+    **STOP-SHIP** until a distinct Key Agent profile is provisioned by an
+    installer/supervisor boundary, its profile SID receives narrowly scoped
+    storage access without granting either frontend profile access, and helper
+    trust/profile setup no longer depends on file, certificate-store, registry,
+    or profile APIs unavailable inside that LPAC. The current TokenUser-only
+    persistent-storage DACL does not authorize an AppContainer token. Do not add
+    `registryRead`, reuse either frontend profile for the Key Agent, grant either
+    frontend profile vault/settings access, or activate the dormant Key Agent to
+    work around these blockers.
 
 The implementation follows Microsoft's [AppContainer launch
 contract](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer):

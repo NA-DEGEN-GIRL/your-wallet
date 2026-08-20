@@ -54,7 +54,7 @@ use super::{
 use crate::recovery::MAX_RECOVERY_REQUEST_BYTES;
 use crate::{MAX_REQUEST_BYTES, SecretInputError};
 
-const PROFILE_V1_NAME: &str = "YourWallet.SecurityHelper.LPAC.v1";
+const PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.v1";
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
 const MAX_PATH_UNITS: usize = 32_768;
 
@@ -693,11 +693,16 @@ fn wide_nul(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPILED_PARENT_POLICY, normalize_path};
+    use super::{COMPILED_PARENT_POLICY, PROFILE_V1_NAME, normalize_path};
 
     #[test]
     fn ordinary_build_has_no_parent_trust_policy() {
         assert!(COMPILED_PARENT_POLICY.is_none());
+    }
+
+    #[test]
+    fn secret_input_profile_identity_is_revision_bound_and_stable() {
+        assert_eq!(PROFILE_V1_NAME, "YourWallet.SecretInputFrontend.LPAC.v1");
     }
 
     #[test]

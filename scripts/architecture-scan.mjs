@@ -1021,12 +1021,48 @@ requireInvariant(
 const keyAgentActivation = withoutBottomTestModule(
   await text("crates/platform-windows/src/key_agent_activation.rs"),
 );
+const keyAgentRootJobSource = await text(
+  "crates/platform-windows/src/key_agent_root_job.rs",
+);
+const keyAgentPipeSource = await text("crates/platform-windows/src/pipe.rs");
+const keyAgentPipeProduction = withoutBottomTestModule(keyAgentPipeSource);
+const keyAgentSupervisor = withoutBottomTestModule(
+  await text("crates/platform-windows/src/key_agent_supervisor.rs"),
+);
+const platformWindowsProductionFiles = await rustProductionSources(
+  "crates/platform-windows/src",
+);
 const platformWindowsLib = await text("crates/platform-windows/src/lib.rs");
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
 );
 const activationArchitecture = await text("docs/architecture.md");
 const activationReadme = await text("crates/platform-windows/README.md");
+const productionProcessCreationSites = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    [
+      ...file.source.matchAll(
+        /\b(CreateProcess(?:AsUser|WithToken|WithLogon)?[WA]?|ShellExecute(?:Ex)?[WA]?|WinExec)\s*\(|\b((?:std::process::)?Command::new)\s*\(/gu,
+      ),
+    ].map((match) => ({
+      path: file.path,
+      api: match[1] ?? match[2],
+    })),
+);
+requireInvariant(
+  JSON.stringify(productionProcessCreationSites) ===
+    JSON.stringify([
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        api: "CreateProcessW",
+      },
+      {
+        path: "crates/platform-windows/src/launch.rs",
+        api: "CreateProcessW",
+      },
+    ]),
+  "production Windows process creation must remain confined to the reviewed dormant activation and restricted launcher call sites",
+);
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+key_agent_activation\b/u.test(platformWindowsLib) &&
@@ -1036,20 +1072,139 @@ requireInvariant(
     ) &&
     platformWindowsLib.includes(
       "use platform_windows::key_agent_activation::activate_key_agent;",
+    ) &&
+    platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_supervisor;") &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_supervisor\b/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_supervisor/u.test(platformWindowsLib) &&
+    platformWindowsLib.includes(
+      "use platform_windows::key_agent_supervisor::BoundDormantKeyAgent;",
+    ) &&
+    platformWindowsLib.includes(
+      "use platform_windows::key_agent_supervisor::bind_dormant_key_agent;",
     ),
-  "Key Agent activation module and capability must remain externally private",
+  "Key Agent activation and bound supervisor capabilities must remain externally private",
+);
+const keyAgentRequestWriterImpl = rustItemBlock(
+  keyAgentPipeProduction,
+  /impl\s+KeyAgentRequestWriter\s*\{/u,
+);
+const keyAgentResponseReaderImpl = rustItemBlock(
+  keyAgentPipeProduction,
+  /impl\s+KeyAgentResponseReader\s*\{/u,
+);
+const keyAgentRequestWriterMethods = [...keyAgentRequestWriterImpl.matchAll(
+  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+)].map((match) => match[1]);
+const keyAgentResponseReaderMethods = [...keyAgentResponseReaderImpl.matchAll(
+  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+)].map((match) => match[1]);
+requireInvariant(
+  keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentRequestWriter {}") &&
+    keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentResponseReader {}") &&
+    keyAgentPipeProduction.includes(
+      "Windows permits the owned HANDLE to be used and",
+    ) &&
+    !/unsafe\s+impl\s+Sync\s+for\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+      keyAgentPipeProduction,
+    ) &&
+    !/unsafe\s+impl\s+Send\s+for\s+(?:OwnedWinHandle|PrivateKeyAgentPipes|PreparedKeyAgentInheritance)\b/u.test(
+      keyAgentPipeProduction,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+      keyAgentPipeProduction,
+    ) &&
+    !/impl\s+(?:Clone|Copy)\s+for\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+      keyAgentPipeProduction,
+    ) &&
+    JSON.stringify(keyAgentRequestWriterMethods) === JSON.stringify(["write_bounded"]) &&
+    JSON.stringify(keyAgentResponseReaderMethods) ===
+      JSON.stringify(["read_bounded_to_end"]) &&
+    keyAgentPipeSource.includes(
+      "fn key_agent_parent_endpoints_transfer_once_to_a_fresh_thread()",
+    ),
+  "only the unique consuming Key Agent parent endpoints may cross one worker boundary",
+);
+const boundDormantBlock =
+  /pub\(crate\)\s+struct\s+BoundDormantKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    keyAgentSupervisor,
+  )?.groups?.body ?? "";
+const bindDormantFunction = rustFunctionBlock(
+  keyAgentSupervisor,
+  "bind_dormant_key_agent",
+);
+const issueSupervisorLease = rustFunctionBlock(keyAgentSupervisor, "issue");
+const consumeSupervisorLease = rustFunctionBlock(
+  keyAgentSupervisor,
+  "verify_and_consume",
+);
+const ensureSupervisorLeaseLive = rustFunctionBlock(
+  keyAgentSupervisor,
+  "ensure_live",
+);
+const boundDormantOrder = [
+  "preflight_key_agent_activation(attestation, artifact)?",
+  "SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?",
+  "run_on_fresh_key_agent_debug_thread(move |fresh_thread|",
+  "let root_job = KeyAgentRootJob::create()?",
+  "let pipes = PrivateKeyAgentPipes::create()?",
+  "let inheritance = pipes.prepare_child_inheritance()?",
+  "let root_job_attribute = root_job.creation_attribute()?",
+  "activate_preflighted_key_agent_on_fresh_worker(",
+  "drop(root_job_attribute)",
+  "drop(inheritance)",
+  "root_job.recheck_supervisor_context()?",
+  "root_job.verify_effective_limits()?",
+  "root_job.active_process_count()? != 1",
+  "let (request_writer, response_reader) = pipes.into_parent()",
+  "Ok(BoundDormantKeyAgent {",
+].map((marker) => bindDormantFunction.indexOf(marker));
+requireInvariant(
+  boundDormantBlock.includes("activation: HeldKeyAgentActivation") &&
+    boundDormantBlock.includes("root_job: KeyAgentRootJob") &&
+    boundDormantBlock.includes("request_writer: KeyAgentRequestWriter") &&
+    boundDormantBlock.includes("response_reader: KeyAgentResponseReader") &&
+    boundDormantBlock.includes("startup_lease: SupervisorActivationLease") &&
+    boundDormantBlock.includes("not_sync: PhantomData<Cell<()>>") &&
+    !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(boundDormantBlock) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+BoundDormantKeyAgent/u.test(
+      keyAgentSupervisor,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Sync)\s+for\s+BoundDormantKeyAgent\b/u.test(
+      keyAgentSupervisor,
+    ) &&
+    keyAgentSupervisor.includes("impl fmt::Debug for BoundDormantKeyAgent") &&
+    !/impl\s+BoundDormantKeyAgent\s*\{[\s\S]*?fn\s+(?:resume|start|raw|handle|pipe_name|duplicate)\b/u.test(
+      keyAgentSupervisor,
+    ) &&
+    boundDormantOrder.every((position) => position !== -1) &&
+    boundDormantOrder
+      .slice(1)
+      .every((position, index) => position > boundDormantOrder[index]) &&
+    !/fn\s+bind_dormant_key_agent\s*\([^)]*\b(?:Instant|Duration)\b/su.test(
+      bindDormantFunction,
+    ) &&
+    bindDormantFunction.match(/startup_lease\.ensure_live\(\)\?/gu)?.length === 2 &&
+    bindDormantFunction.indexOf("startup_lease.ensure_live()?") <
+      bindDormantFunction.indexOf("let root_job = KeyAgentRootJob::create()?") &&
+    bindDormantFunction.lastIndexOf("startup_lease.ensure_live()?") >
+      bindDormantFunction.indexOf(
+        "let (request_writer, response_reader) = pipes.into_parent()",
+      ) &&
+    issueSupervisorLease.includes("Instant::now()") &&
+    issueSupervisorLease.includes("requested_lifetime.min(MAX_STARTUP_LIFETIME)") &&
+    /fn\s+verify_and_consume\s*\(\s*self,/su.test(consumeSupervisorLease) &&
+    consumeSupervisorLease.includes("self.ensure_live()?") &&
+    ensureSupervisorLeaseLive.includes("Instant::now()") &&
+    !/fn\s+ensure_live\s*\([^)]*\bInstant\b/su.test(ensureSupervisorLeaseLive),
+  "the bound dormant Key Agent must atomically own one internally timed, non-clone, no-resume supervisor attempt",
 );
 const heldActivationBlock =
   /pub\(crate\)\s+struct\s+HeldKeyAgentActivation\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
     keyAgentActivation,
   )?.groups?.body ?? "";
-const heldActivationImplStart = keyAgentActivation.indexOf("impl HeldKeyAgentActivation {");
-const heldActivationImplEnd = keyAgentActivation.indexOf(
-  "impl fmt::Debug for HeldKeyAgentActivation",
-);
-const heldActivationImpl = keyAgentActivation.slice(
-  heldActivationImplStart,
-  heldActivationImplEnd,
+const heldActivationImpl = rustItemBlock(
+  keyAgentActivation,
+  /impl\s+HeldKeyAgentActivation\s*\{/u,
 );
 const heldActivationMethods = [...heldActivationImpl.matchAll(
   /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
@@ -1063,7 +1218,15 @@ requireInvariant(
         "creation_time",
         "artifact_identity",
         "is_detached_and_suspended",
+        "duplicate_process_observation",
+        "is_member_of_root_job_for_test",
       ]) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+duplicate_process_observation/u.test(
+      heldActivationImpl,
+    ) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+is_member_of_root_job_for_test/u.test(
+      heldActivationImpl,
+    ) &&
     /impl\s+Drop\s+for\s+HeldKeyAgentActivation[\s\S]*?self\.process\.abort\(\)/u.test(
       keyAgentActivation,
     ) &&
@@ -1072,67 +1235,263 @@ requireInvariant(
     ),
   "held Key Agent activation must remain opaque, non-clone, detached-only, and drop-aborting",
 );
+const preflightActivation = rustFunctionBlock(
+  keyAgentActivation,
+  "preflight_key_agent_activation",
+);
+const preflightArtifactBlock =
+  /pub\(crate\)\s+struct\s+PreflightKeyAgentArtifact\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    keyAgentActivation,
+  )?.groups?.body ?? "";
 const activationGatePositions = [
   "if !artifact.is_key_agent()",
   "if !attestation.signing_enabled()",
   "if !attestation.allows_helper_manifest(artifact.manifest_digest())",
   "if !artifact.path().is_absolute()",
-  "run_on_fresh_debug_thread(move || activate_key_agent_on_debug_thread(artifact))",
-].map((marker) => keyAgentActivation.indexOf(marker));
+  "Ok(PreflightKeyAgentArtifact { artifact })",
+].map((marker) => preflightActivation.indexOf(marker));
 requireInvariant(
   activationGatePositions.every((position) => position !== -1) &&
     activationGatePositions
       .slice(1)
-      .every((position, index) => position > activationGatePositions[index]),
+      .every((position, index) => position > activationGatePositions[index]) &&
+    preflightArtifactBlock.includes("artifact: VerifiedHelper") &&
+    !/\bpub(?:\([^)]*\))?\s+artifact\s*:/u.test(preflightArtifactBlock) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+PreflightKeyAgentArtifact/u.test(
+      keyAgentActivation,
+    ) &&
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|raw_handle)\b/u.test(
+      keyAgentActivation,
+    ) &&
+    bindDormantFunction.indexOf(
+      "preflight_key_agent_activation(attestation, artifact)?",
+    ) < bindDormantFunction.indexOf("run_on_fresh_key_agent_debug_thread("),
   "Key Agent role, release, manifest, and path gates must precede worker creation",
 );
-const genericKeyAgentGatePositions = [
-  "if helper.is_key_agent()",
-  "return Err(LaunchError::KeyAgentRequiresSupervisorActivation);",
-  "self.require_allowed_helper(helper.manifest_digest())",
-].map((marker) => restrictedLauncherProduction.indexOf(marker));
+requireInvariant(
+  /#\[cfg\(test\)\]\s*supervisor_context_bypass_for_kernel_test:\s*bool/u.test(
+    keyAgentRootJobSource,
+  ) &&
+    /#\[cfg\(test\)\][\s\S]{0,180}pub\(crate\)\s+fn\s+create_for_kernel_test/u.test(
+      keyAgentRootJobSource,
+    ) &&
+    /pub\(crate\)\s+fn\s+create\(\)[\s\S]*?sys::verify_supervisor_context\(\)\?/u.test(
+      keyAgentRootJobSource,
+    ) &&
+    /#\[cfg\(test\)\]\s*if\s+self\.supervisor_context_bypass_for_kernel_test/u.test(
+      keyAgentRootJobSource,
+    ),
+  "only the cfg(test) root-Job constructor may bypass the outer test-runner Job; production must live-check",
+);
+const derivedLpacRole = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "from_helper",
+);
+const approvalRoleGate = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "require_approval_frontend",
+);
+const secretInputRoleGate = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "require_secret_input_frontend",
+);
 const publicGenericSpawn = rustFunctionBlock(restrictedLauncherProduction, "spawn");
 const privateSecretSpawn = rustFunctionBlock(
   restrictedLauncherProduction,
   "spawn_secret_input",
 );
+const lowLevelLpacLaunch = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "launch",
+);
+const lpacAttributeConstruction = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "for_lpac",
+);
+const lpacProfileOpen = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "open_or_create",
+);
+const lpacProfileMetadata = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "profile_metadata",
+);
+const approvalGatePositions = [
+  "VerifiedLpacRole::from_helper(helper)?",
+  "role != VerifiedLpacRole::ApprovalFrontend",
+  "self.require_allowed_helper(helper.manifest_digest())?",
+].map((marker) => approvalRoleGate.indexOf(marker));
+const secretInputGatePositions = [
+  "VerifiedLpacRole::from_helper(helper)?",
+  "role != VerifiedLpacRole::SecretInputFrontend",
+  "self.require_allowed_helper(helper.manifest_digest())?",
+].map((marker) => secretInputRoleGate.indexOf(marker));
 requireInvariant(
-  restrictedLauncherProduction.includes(
-    "KeyAgentRequiresSupervisorActivation",
-  ) &&
-    genericKeyAgentGatePositions.every((position) => position !== -1) &&
-    genericKeyAgentGatePositions
+  /(?:^|\n)enum\s+VerifiedLpacRole\s*\{/u.test(restrictedLauncherProduction) &&
+    !/(?:^|\n)pub(?:\([^)]*\))?\s+enum\s+VerifiedLpacRole\s*\{/u.test(
+      restrictedLauncherProduction,
+    ) &&
+    derivedLpacRole.includes("if helper.is_approval_frontend()") &&
+    derivedLpacRole.includes("if helper.is_secret_input_frontend()") &&
+    derivedLpacRole.includes("if helper.is_key_agent()") &&
+    derivedLpacRole.includes(
+      "Err(LaunchError::HelperRoleNotAllowed)",
+    ) &&
+    derivedLpacRole.includes(
+      "Err(LaunchError::KeyAgentRequiresSupervisorActivation)",
+    ) &&
+    approvalGatePositions.every((position) => position !== -1) &&
+    approvalGatePositions
       .slice(1)
-      .every((position, index) => position > genericKeyAgentGatePositions[index]) &&
-    restrictedLauncherProduction.match(
-      /self\.require_allowed_one_shot_helper\(helper\)\?;/gu,
-    )?.length === 2 &&
+      .every((position, index) => position > approvalGatePositions[index]) &&
+    secretInputGatePositions.every((position) => position !== -1) &&
+    secretInputGatePositions
+      .slice(1)
+      .every((position, index) => position > secretInputGatePositions[index]) &&
     restrictedLauncherProduction.match(/sys::launch\(helper,/gu)?.length === 2 &&
-    publicGenericSpawn.indexOf("self.require_allowed_one_shot_helper(helper)?;") <
-      publicGenericSpawn.indexOf("sys::launch(helper, handles, self.profile, false)") &&
-    privateSecretSpawn.indexOf("self.require_allowed_one_shot_helper(helper)?;") <
-      privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, true)"),
-  "generic restricted launch paths must reject the Key Agent before allowlist evaluation and Win32 launch",
+    publicGenericSpawn.indexOf("self.require_approval_frontend(helper)?") <
+      publicGenericSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
+    privateSecretSpawn.indexOf("self.require_secret_input_frontend(helper)?") <
+      privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
+    lowLevelLpacLaunch.includes("role: VerifiedLpacRole") &&
+    lowLevelLpacLaunch.includes("if role.inherits_parent_proof()") &&
+    lowLevelLpacLaunch.includes(
+      "AttributeList::for_lpac(inherited_raw.into_boxed_slice(), profile, role)",
+    ) &&
+    lpacAttributeConstruction.includes(
+      "OwnedAppContainerSid::open_or_create(profile, role)?",
+    ) &&
+    lpacProfileOpen.includes("profile_metadata(profile, role)?") &&
+    lpacProfileMetadata.includes(
+      "(1, VerifiedLpacRole::ApprovalFrontend)",
+    ) &&
+    lpacProfileMetadata.includes(
+      "(1, VerifiedLpacRole::SecretInputFrontend)",
+    ) &&
+    restrictedLauncherProduction.includes(
+      '"YourWallet.ApprovalFrontend.LPAC.v1"',
+    ) &&
+    restrictedLauncherProduction.includes(
+      '"YourWallet.SecretInputFrontend.LPAC.v1"',
+    ) &&
+    secretBootstrapWindows.includes(
+      'const PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.v1";',
+    ) &&
+    !restrictedLauncherProduction.includes(
+      '"YourWallet.SecurityHelper.LPAC.v1"',
+    ) &&
+    !secretBootstrapWindows.includes('"YourWallet.SecurityHelper.LPAC.v1"'),
+  "restricted launch must derive distinct stable LPAC identities from the exact manifest role, reject cross-role/Key Agent/Other helpers before release and Win32, and bind Secret Input bootstrap to its own SID",
+);
+const freshDebugRunner = rustFunctionBlock(
+  keyAgentActivation,
+  "run_on_fresh_key_agent_debug_thread",
+);
+const freshWorkerActivation = rustFunctionBlock(
+  keyAgentActivation,
+  "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+);
+const freshWorkerEntry = rustFunctionBlock(
+  keyAgentActivation,
+  "activate_preflighted_key_agent_on_fresh_worker",
 );
 const debugWorkerPositions = [
-  "let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;",
-  "let mut process = sys::SuspendedDebuggee::create(&artifact)?;",
+  "verify_empty_root_job(root_job)?",
+  "sys::SuspendedDebuggee::create(",
   ".authenticate_first_event(",
   "process.detach_still_suspended()",
+  "verify_bound_root_process(root_job, process.process_handle())",
   "let process = process.into_detached()?;",
   "Ok(HeldKeyAgentActivation {",
-].map((marker) => keyAgentActivation.indexOf(marker));
+].map((marker) => freshWorkerActivation.indexOf(marker));
 requireInvariant(
-  keyAgentActivation.includes("std::thread::Builder::new()") &&
-    keyAgentActivation.includes(".spawn(worker)") &&
-    keyAgentActivation.includes(".join()") &&
-    keyAgentActivation.match(/KeyAgentActivationError::ActivationWorker/gu)?.length === 2 &&
+  freshDebugRunner.includes("std::thread::Builder::new()") &&
+    freshDebugRunner.includes(".spawn(move ||") &&
+    freshDebugRunner.includes(".join()") &&
+    freshDebugRunner.match(/KeyAgentActivationError::ActivationWorker/gu)?.length === 2 &&
+    /pub\(crate\)\s+struct\s+FreshKeyAgentDebugThread\s*\{\s*_not_send_or_sync:\s*PhantomData<Rc<\(\)>>/su.test(
+      keyAgentActivation,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+FreshKeyAgentDebugThread/u.test(
+      keyAgentActivation,
+    ) &&
+    freshDebugRunner.includes("FnOnce(FreshKeyAgentDebugThread)") &&
+    freshWorkerEntry.includes("fresh_thread: FreshKeyAgentDebugThread") &&
+    freshWorkerEntry.includes("let PreflightKeyAgentArtifact { artifact } = preflighted;") &&
+    freshWorkerEntry.indexOf("let artifact_identity = sys::exact_file_identity") <
+      freshWorkerEntry.indexOf(
+        "activate_preflighted_key_agent_on_fresh_worker_with_identity(",
+      ) &&
+    freshWorkerActivation.includes("_fresh_thread: FreshKeyAgentDebugThread") &&
     debugWorkerPositions.every((position) => position !== -1) &&
     debugWorkerPositions
       .slice(1)
       .every((position, index) => position > debugWorkerPositions[index]) &&
-    keyAgentActivation.match(/run_on_fresh_debug_thread\(/gu)?.length === 1,
-  "one fresh OS worker must own the complete Key Agent debug-event lifecycle",
+    bindDormantFunction.match(/run_on_fresh_key_agent_debug_thread\(/gu)?.length === 1,
+  "one unforgeable consumed fresh-worker proof must own the complete Key Agent debug-event lifecycle",
+);
+const keyAgentCreationAttributeBlock =
+  /struct\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'job>\s*\{(?<body>[\s\S]*?)\n\s*\}/u.exec(
+    keyAgentActivation,
+  )?.groups?.body ?? "";
+const keyAgentCreationAttributeImpl = rustItemBlock(
+  keyAgentActivation,
+  /impl<'resources,\s*'pipes,\s*'job>\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'job>\s*\{/u,
+);
+const keyAgentCreateProcess = rustFunctionBlock(
+  keyAgentActivation,
+  "create_suspended_debuggee_process",
+);
+const keyAgentCreationFlags = rustFunctionBlock(
+  keyAgentActivation,
+  "key_agent_creation_flags",
+);
+const verifyBoundRootProcess = rustFunctionBlock(
+  keyAgentActivation,
+  "verify_bound_root_process",
+);
+requireInvariant(
+  keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
+    keyAgentCreationAttributeBlock.includes(
+      "_inheritance: &'resources PreparedKeyAgentInheritance<'pipes>",
+    ) &&
+    keyAgentCreationAttributeBlock.includes(
+      "root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>",
+    ) &&
+    keyAgentCreationAttributeImpl.match(
+      /InitializeProcThreadAttributeList\([^\n]*,\s*2,\s*None,/gu,
+    )?.length === 2 &&
+    keyAgentCreationAttributeImpl.includes(
+      "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
+    ) &&
+    keyAgentCreationAttributeImpl.includes(".install_into(attributes.pointer)") &&
+    keyAgentActivation.includes(
+      "impl Drop for KeyAgentCreationAttributes<'_, '_, '_>",
+    ) &&
+    keyAgentActivation.includes("DeleteProcThreadAttributeList(self.pointer)") &&
+    keyAgentCreateProcess.includes("let mut startup = STARTUPINFOEXW::default();") &&
+    keyAgentCreateProcess.includes("startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;") &&
+    keyAgentCreateProcess.includes("startup.StartupInfo.hStdInput = attributes.stdin();") &&
+    keyAgentCreateProcess.includes("startup.StartupInfo.hStdOutput = attributes.stdout();") &&
+    keyAgentCreateProcess.includes("startup.StartupInfo.hStdError = attributes.stderr();") &&
+    keyAgentCreateProcess.includes("startup.lpAttributeList = attributes.pointer();") &&
+    keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") !== -1 &&
+    keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") <
+      keyAgentCreateProcess.indexOf("CreateProcessW(") &&
+    /CreateProcessW\([\s\S]*?true,\s*key_agent_creation_flags\(\),/u.test(
+      keyAgentCreateProcess,
+    ) &&
+    keyAgentCreationFlags.includes("CREATE_SUSPENDED") &&
+    keyAgentCreationFlags.includes("DEBUG_PROCESS") &&
+    keyAgentCreationFlags.includes("DEBUG_ONLY_THIS_PROCESS") &&
+    keyAgentCreationFlags.includes("CREATE_NO_WINDOW") &&
+    keyAgentCreationFlags.includes("EXTENDED_STARTUPINFO_PRESENT") &&
+    verifyBoundRootProcess.includes(".recheck_supervisor_context()") &&
+    verifyBoundRootProcess.includes(".contains_process(process)") &&
+    verifyBoundRootProcess.includes("active_processes == 1") &&
+    !keyAgentActivation.includes("PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES") &&
+    !keyAgentActivation.includes("SECURITY_CAPABILITIES"),
+  "dormant Key Agent creation must atomically bind exactly three stdio handles and one root Job without claiming LPAC",
 );
 const detachedImplStart = keyAgentActivation.indexOf("impl DetachedSuspendedDebuggee {");
 const detachedImplEnd = keyAgentActivation.indexOf(
@@ -1165,7 +1524,14 @@ requireInvariant(
         "is_detached_and_suspended",
         "abort",
         "duplicate_process_observation",
+        "is_member_of_root_job_for_test",
       ]) &&
+    /#\[cfg\(test\)\]\s*pub\(super\)\s+fn\s+duplicate_process_observation/u.test(
+      detachedImpl,
+    ) &&
+    /#\[cfg\(test\)\]\s*pub\(super\)\s+fn\s+is_member_of_root_job_for_test/u.test(
+      detachedImpl,
+    ) &&
     !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedSuspendedDebuggee/u.test(
       keyAgentActivation,
     ) &&
@@ -1194,10 +1560,31 @@ requireInvariant(
   activationArchitecture.includes("### Key Agent activation invariant (STOP-SHIP)") &&
     activationArchitecture.includes("fresh dedicated OS thread") &&
     activationArchitecture.includes("all-zero or all-`FF`") &&
+    activationArchitecture.includes(
+      "Zero-capability Key Agent LPAC/profile provisioning, storage authorization, and",
+    ) &&
+    activationArchitecture.includes("Do not add `registryRead`") &&
     /fresh dedicated\s+debugger OS thread/u.test(activationReadme) &&
     activationReadme.includes("all-zero and all-`FF`") &&
-    activationReadme.includes("no resume API"),
-  "Key Agent activation limitations and type-state proof must remain documented",
+    activationReadme.includes("no resume API") &&
+    activationReadme.includes(
+      "Keep zero-capability Key Agent LPAC activation and profile provisioning",
+    ) &&
+    activationReadme.includes("Do not add") &&
+    activationReadme.includes("`registryRead`") &&
+    activationArchitecture.includes("**STOP-SHIP (English):**") &&
+    activationArchitecture.includes("**릴리스 차단 조건 (한국어):**") &&
+    activationArchitecture.includes("process-wide single-flight") &&
+    activationArchitecture.includes("다른 상속형 자식 프로세스") &&
+    activationArchitecture.includes("sealed coordinator") &&
+    activationArchitecture.includes("dedicated launcher process") &&
+    activationReadme.includes("**STOP-SHIP (English):**") &&
+    activationReadme.includes("**릴리스 차단 조건 (한국어):**") &&
+    activationReadme.includes("process-wide single-flight") &&
+    activationReadme.includes("다른 상속형 자식 프로세스") &&
+    activationReadme.includes("sealed coordinator") &&
+    activationReadme.includes("dedicated launcher process"),
+  "Key Agent activation limitations, LPAC/storage blockers, and type-state proof must remain documented",
 );
 
 for (const mainPath of [
