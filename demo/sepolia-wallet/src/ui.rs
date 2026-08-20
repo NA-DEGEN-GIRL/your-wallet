@@ -13,6 +13,34 @@ use zeroize::{Zeroize, Zeroizing};
 const MINIMUM_PASSWORD_BYTES: usize = 12;
 const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StatusPalette {
+    warning: Color32,
+    error: Color32,
+    success: Color32,
+    muted: Color32,
+}
+
+impl StatusPalette {
+    fn from_visuals(visuals: &egui::Visuals) -> Self {
+        if visuals.dark_mode {
+            Self {
+                warning: Color32::from_rgb(255, 209, 102),
+                error: Color32::from_rgb(255, 138, 128),
+                success: Color32::from_rgb(126, 231, 135),
+                muted: Color32::from_rgb(184, 189, 199),
+            }
+        } else {
+            Self {
+                warning: Color32::from_rgb(122, 75, 0),
+                error: Color32::from_rgb(180, 35, 24),
+                success: Color32::from_rgb(20, 108, 46),
+                muted: Color32::from_rgb(85, 91, 102),
+            }
+        }
+    }
+}
+
 /// Public values the backend may return after creating, opening, or refreshing.
 ///
 /// Deliberately does not implement `Debug`: full wallet addresses must not
@@ -180,19 +208,53 @@ enum HoldOutcome {
     Triggered,
 }
 
+#[derive(Clone, Copy)]
+struct HoldInput {
+    enabled: bool,
+    primary_pressed_on_button: bool,
+    primary_down: bool,
+    pointer_inside: bool,
+    focused: bool,
+    escape_pressed: bool,
+}
+
 #[derive(Default)]
 struct HoldToSend {
     started_at: Option<Instant>,
     fired: bool,
+    release_required: bool,
 }
 
 impl HoldToSend {
-    fn update(&mut self, now: Instant, held: bool, enabled: bool) -> HoldOutcome {
-        if !enabled || !held {
+    fn update(&mut self, now: Instant, input: HoldInput) -> HoldOutcome {
+        if !input.primary_down {
             self.reset();
             return HoldOutcome::Idle;
         }
-        let started_at = *self.started_at.get_or_insert(now);
+
+        if self.release_required {
+            return HoldOutcome::Idle;
+        }
+
+        if !input.enabled || !input.focused || input.escape_pressed {
+            self.cancel_current_press();
+            return HoldOutcome::Idle;
+        }
+
+        if self.started_at.is_some() && !input.pointer_inside {
+            self.cancel_current_press();
+            return HoldOutcome::Idle;
+        }
+
+        let started_at = if let Some(started_at) = self.started_at {
+            started_at
+        } else if input.primary_pressed_on_button && input.pointer_inside {
+            self.started_at = Some(now);
+            now
+        } else {
+            self.cancel_current_press();
+            return HoldOutcome::Idle;
+        };
         let elapsed = now.saturating_duration_since(started_at);
         if elapsed >= SEND_HOLD_DURATION && !self.fired {
             self.fired = true;
@@ -204,6 +266,13 @@ impl HoldToSend {
     fn reset(&mut self) {
         self.started_at = None;
         self.fired = false;
+        self.release_required = false;
+    }
+
+    fn cancel_current_press(&mut self) {
+        self.started_at = None;
+        self.fired = false;
+        self.release_required = true;
     }
 
     fn fraction(&self, now: Instant) -> f32 {
@@ -451,6 +520,7 @@ impl WalletApp {
 
     fn wallet_setup(&mut self, ui: &mut egui::Ui) {
         let setup_enabled = self.pending.is_none() && self.prepared.is_none();
+        let palette = StatusPalette::from_visuals(ui.visuals());
         ui.heading("1. 테스트 지갑 준비");
         ui.label("처음이면 새 지갑을 만들고, 이미 만들었다면 같은 비밀번호로 열어 주세요.");
         ui.add_space(8.0);
@@ -474,7 +544,7 @@ impl WalletApp {
         ui.label(
             RichText::new("지갑 파일 또는 비밀번호를 잃으면 복구할 수 없습니다.")
                 .small()
-                .color(Color32::GRAY),
+                .color(palette.muted),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -527,6 +597,7 @@ impl WalletApp {
         if self.snapshot.is_none() {
             return;
         }
+        let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
         ui.heading("3. 테스트 ETH 보내기");
         let preparing_allowed = self.prepared.is_none() && self.pending.is_none();
@@ -541,7 +612,7 @@ impl WalletApp {
                     .desired_width(f32::INFINITY),
             );
             if !self.recipient.trim().is_empty() && !valid_recipient_shape(self.recipient.trim()) {
-                ui.colored_label(Color32::LIGHT_RED, "받는 주소 형식을 확인해 주세요.");
+                ui.colored_label(palette.error, "받는 주소 형식을 확인해 주세요.");
             }
             ui.label("보낼 금액");
             ui.horizontal(|ui| {
@@ -555,7 +626,7 @@ impl WalletApp {
             });
             if !self.amount_eth.trim().is_empty() && !valid_amount_shape(self.amount_eth.trim()) {
                 ui.colored_label(
-                    Color32::LIGHT_RED,
+                    palette.error,
                     "0보다 큰 금액을 소수점 아래 최대 18자리로 입력해 주세요.",
                 );
             }
@@ -578,7 +649,7 @@ impl WalletApp {
                 return;
             };
             ui.colored_label(
-                Color32::YELLOW,
+                palette.warning,
                 RichText::new("아래 내용 그대로 서명·전송됩니다. 전부 확인하세요.").strong(),
             );
             ui.add_space(8.0);
@@ -593,15 +664,11 @@ impl WalletApp {
                 }
 
                 let confirm_enabled = confirmation_enabled(self.prepared.as_ref(), self.pending);
-                let response = ui.add_enabled(
-                    confirm_enabled,
-                    egui::Button::new("확인하고 전송 — 2초 동안 누르기")
-                        .min_size(egui::vec2(300.0, 48.0)),
-                );
+                let response = ui.add_enabled(confirm_enabled, hold_to_send_button());
                 let now = Instant::now();
-                let outcome =
-                    self.hold
-                        .update(now, response.is_pointer_button_down_on(), confirm_enabled);
+                let outcome = self
+                    .hold
+                    .update(now, hold_to_send_input(context, &response, confirm_enabled));
                 if matches!(outcome, HoldOutcome::Triggered) {
                     self.confirm_prepared();
                 } else if matches!(outcome, HoldOutcome::Holding(_)) {
@@ -610,13 +677,11 @@ impl WalletApp {
             });
             let now = Instant::now();
             let progress = self.hold.fraction(now);
-            if progress > 0.0 {
-                let _ = ui.add(
-                    egui::ProgressBar::new(progress)
-                        .desired_width(300.0)
-                        .text(format!("{:.1} / 2.0초", progress * 2.0)),
-                );
-            }
+            let _ = ui.add(
+                egui::ProgressBar::new(progress)
+                    .desired_width(300.0)
+                    .text(format!("{:.1} / 2.0초", progress * 2.0)),
+            );
         }
 
         if let Some(hash) = &self.last_transaction_hash {
@@ -646,6 +711,28 @@ impl WalletApp {
             }
         });
     }
+}
+
+fn hold_to_send_button() -> egui::Button<'static> {
+    egui::Button::new("확인하고 전송 — 2초 동안 누르기")
+        .sense(egui::Sense::drag())
+        .min_size(egui::vec2(300.0, 48.0))
+}
+
+fn hold_to_send_input(
+    context: &egui::Context,
+    response: &egui::Response,
+    enabled: bool,
+) -> HoldInput {
+    let pointer_inside = response.contains_pointer();
+    context.input(|input| HoldInput {
+        enabled,
+        primary_pressed_on_button: input.pointer.primary_pressed() && pointer_inside,
+        primary_down: input.pointer.primary_down(),
+        pointer_inside,
+        focused: input.focused,
+        escape_pressed: input.key_pressed(egui::Key::Escape),
+    })
 }
 
 fn confirmation_enabled(
@@ -701,14 +788,16 @@ impl eframe::App for WalletApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_events();
         egui::TopBottomPanel::top("testnet_warning").show(context, |ui| {
+            let palette = StatusPalette::from_visuals(ui.visuals());
             ui.vertical_centered(|ui| {
-                ui.heading(RichText::new("SEPOLIA 테스트넷 전용 지갑").color(Color32::YELLOW));
+                ui.heading(RichText::new("SEPOLIA 테스트넷 전용 지갑").color(palette.warning));
                 ui.strong("실제 ETH나 실제 가치가 있는 자산을 절대 보내지 마세요.");
                 ui.label("고정 네트워크: Ethereum Sepolia · Chain ID 11155111");
             });
         });
 
         egui::CentralPanel::default().show(context, |ui| {
+            let palette = StatusPalette::from_visuals(ui.visuals());
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_max_width(820.0);
                 ui.add_space(8.0);
@@ -724,11 +813,11 @@ impl eframe::App for WalletApp {
                 }
                 if let Some(notice) = &self.notice {
                     ui.add_space(12.0);
-                    ui.colored_label(Color32::LIGHT_GREEN, notice);
+                    ui.colored_label(palette.success, notice);
                 }
                 if let Some(error) = &self.error {
                     ui.add_space(12.0);
-                    ui.colored_label(Color32::LIGHT_RED, error);
+                    ui.colored_label(palette.error, error);
                 }
                 ui.add_space(18.0);
                 ui.label(
@@ -736,7 +825,7 @@ impl eframe::App for WalletApp {
                         "키는 로컬 암호화 파일에만 저장됩니다. 개발용 단일 PC 테스트판이며 메인넷·토큰·브라우저 연결은 지원하지 않습니다.",
                     )
                     .small()
-                    .color(Color32::GRAY),
+                    .color(palette.muted),
                 );
             });
         });
@@ -1014,12 +1103,87 @@ fn safe_error(error: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt, TransferPreview, WalletBackend,
-        WalletSnapshot, WorkerCommand, WorkerEvent, clear_prepared_state, confirmation_enabled,
-        execute_worker_command, preview_fields, run_headless_smoke, safe_error, valid_amount_shape,
+        HoldInput, HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt, StatusPalette,
+        TransferPreview, WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent,
+        clear_prepared_state, confirmation_enabled, execute_worker_command, hold_to_send_button,
+        hold_to_send_input, preview_fields, run_headless_smoke, safe_error, valid_amount_shape,
         valid_password, valid_recipient_shape,
     };
+    use eframe::egui;
     use std::time::{Duration, Instant};
+
+    fn hold_frame_input(time: f64, events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(640.0, 480.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn run_hold_button_frame(
+        context: &egui::Context,
+        hold: &mut HoldToSend,
+        epoch: Instant,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> (egui::Rect, HoldOutcome) {
+        context.begin_pass(hold_frame_input(time, events));
+        let response = egui::CentralPanel::default()
+            .show(context, |ui| ui.add_enabled(true, hold_to_send_button()))
+            .inner;
+        let outcome = hold.update(
+            epoch + Duration::from_secs_f64(time),
+            hold_to_send_input(context, &response, true),
+        );
+        let rect = response.rect;
+        let _ = context.end_pass();
+        (rect, outcome)
+    }
+
+    const fn pressed_hold_input(enabled: bool) -> HoldInput {
+        HoldInput {
+            enabled,
+            primary_pressed_on_button: true,
+            primary_down: true,
+            pointer_inside: true,
+            focused: true,
+            escape_pressed: false,
+        }
+    }
+
+    const fn continuing_hold_input(enabled: bool) -> HoldInput {
+        HoldInput {
+            primary_pressed_on_button: false,
+            ..pressed_hold_input(enabled)
+        }
+    }
+
+    fn linear_srgb_component(component: u8) -> f64 {
+        let component = f64::from(component) / 255.0;
+        if component <= 0.040_45 {
+            component / 12.92
+        } else {
+            ((component + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: egui::Color32) -> f64 {
+        0.2126 * linear_srgb_component(color.r())
+            + 0.7152 * linear_srgb_component(color.g())
+            + 0.0722 * linear_srgb_component(color.b())
+    }
+
+    fn contrast_ratio(left: egui::Color32, right: egui::Color32) -> f64 {
+        let left = relative_luminance(left);
+        let right = relative_luminance(right);
+        let lighter = left.max(right);
+        let darker = left.min(right);
+        (lighter + 0.05) / (darker + 0.05)
+    }
 
     #[test]
     fn password_requires_twelve_utf8_bytes() {
@@ -1029,40 +1193,261 @@ mod tests {
     }
 
     #[test]
+    fn status_palette_meets_text_contrast_on_light_and_dark_panels() {
+        for (theme, visuals) in [
+            ("light", egui::Visuals::light()),
+            ("dark", egui::Visuals::dark()),
+        ] {
+            let palette = StatusPalette::from_visuals(&visuals);
+            for (role, color) in [
+                ("warning", palette.warning),
+                ("error", palette.error),
+                ("success", palette.success),
+                ("muted", palette.muted),
+            ] {
+                assert_eq!(color.a(), 255, "{theme} {role} must be opaque");
+                let ratio = contrast_ratio(color, visuals.panel_fill);
+                assert!(
+                    ratio >= 4.5,
+                    "{theme} {role} contrast {ratio:.3} is below 4.5:1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn production_ui_uses_no_fixed_status_color_aliases() {
+        let production = include_str!("ui.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production prefix must exist");
+        for fixed_color in [
+            "Color32::YELLOW",
+            "Color32::LIGHT_RED",
+            "Color32::LIGHT_GREEN",
+            "Color32::GRAY",
+        ] {
+            assert!(
+                !production.contains(fixed_color),
+                "production UI must not use fixed status color {fixed_color}"
+            );
+        }
+    }
+
+    #[test]
     fn hold_must_be_continuous_for_two_seconds() {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
         assert_eq!(
-            hold.update(start, true, true),
+            hold.update(start, pressed_hold_input(true)),
             HoldOutcome::Holding(Duration::ZERO)
         );
         assert!(matches!(
-            hold.update(start + Duration::from_millis(1_999), true, true),
+            hold.update(
+                start + Duration::from_millis(1_999),
+                continuing_hold_input(true)
+            ),
             HoldOutcome::Holding(_)
         ));
         assert_eq!(
-            hold.update(start + SEND_HOLD_DURATION, true, true),
+            hold.update(start + SEND_HOLD_DURATION, continuing_hold_input(true)),
             HoldOutcome::Triggered
         );
         assert!(matches!(
-            hold.update(start + Duration::from_millis(2_100), true, true),
+            hold.update(
+                start + Duration::from_millis(2_100),
+                continuing_hold_input(true)
+            ),
             HoldOutcome::Holding(_)
         ));
+    }
+
+    #[test]
+    fn hold_button_survives_egui_click_timeout_and_resets_on_release() {
+        let context = egui::Context::default();
+        let epoch = Instant::now();
+        let mut hold = HoldToSend::default();
+
+        let (button_rect, outcome) =
+            run_hold_button_frame(&context, &mut hold, epoch, 0.0, Vec::new());
+        assert_eq!(outcome, HoldOutcome::Idle);
+        let pointer = button_rect.center();
+
+        let (_, outcome) = run_hold_button_frame(
+            &context,
+            &mut hold,
+            epoch,
+            0.1,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(outcome, HoldOutcome::Holding(Duration::ZERO));
+
+        let (_, outcome) = run_hold_button_frame(&context, &mut hold, epoch, 1.0, Vec::new());
+        assert!(matches!(outcome, HoldOutcome::Holding(_)));
+
+        let (_, outcome) = run_hold_button_frame(&context, &mut hold, epoch, 2.2, Vec::new());
+        assert_eq!(outcome, HoldOutcome::Triggered);
+
+        let (_, outcome) = run_hold_button_frame(
+            &context,
+            &mut hold,
+            epoch,
+            2.3,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(outcome, HoldOutcome::Idle);
+        assert_eq!(hold.fraction(epoch + Duration::from_secs_f64(2.3)), 0.0);
+    }
+
+    #[test]
+    fn touch_hold_survives_egui_long_touch_timeout() {
+        let context = egui::Context::default();
+        let epoch = Instant::now();
+        let mut hold = HoldToSend::default();
+
+        let (button_rect, outcome) =
+            run_hold_button_frame(&context, &mut hold, epoch, 0.0, Vec::new());
+        assert_eq!(outcome, HoldOutcome::Idle);
+        let pointer = button_rect.center();
+        let device_id = egui::TouchDeviceId(1);
+        let touch_id = egui::TouchId(1);
+
+        let (_, outcome) = run_hold_button_frame(
+            &context,
+            &mut hold,
+            epoch,
+            0.1,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Touch {
+                    device_id,
+                    id: touch_id,
+                    phase: egui::TouchPhase::Start,
+                    pos: pointer,
+                    force: None,
+                },
+            ],
+        );
+        assert_eq!(outcome, HoldOutcome::Holding(Duration::ZERO));
+
+        let (_, outcome) = run_hold_button_frame(&context, &mut hold, epoch, 1.0, Vec::new());
+        assert!(matches!(outcome, HoldOutcome::Holding(_)));
+
+        let (_, outcome) = run_hold_button_frame(&context, &mut hold, epoch, 2.2, Vec::new());
+        assert_eq!(outcome, HoldOutcome::Triggered);
+
+        let (_, outcome) = run_hold_button_frame(
+            &context,
+            &mut hold,
+            epoch,
+            2.3,
+            vec![
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Touch {
+                    device_id,
+                    id: touch_id,
+                    phase: egui::TouchPhase::End,
+                    pos: pointer,
+                    force: None,
+                },
+                egui::Event::PointerGone,
+            ],
+        );
+        assert_eq!(outcome, HoldOutcome::Idle);
     }
 
     #[test]
     fn releasing_early_resets_hold() {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
-        let _ = hold.update(start, true, true);
+        let _ = hold.update(start, pressed_hold_input(true));
         assert_eq!(
-            hold.update(start + Duration::from_secs(1), false, true),
+            hold.update(
+                start + Duration::from_secs(1),
+                HoldInput {
+                    primary_down: false,
+                    ..continuing_hold_input(true)
+                }
+            ),
             HoldOutcome::Idle
         );
         assert_eq!(
-            hold.update(start + Duration::from_secs(3), true, true),
+            hold.update(start + Duration::from_secs(3), pressed_hold_input(true)),
             HoldOutcome::Holding(Duration::ZERO)
         );
+    }
+
+    #[test]
+    fn cancelled_hold_cannot_rearm_until_primary_release() {
+        let start = Instant::now();
+        let cancellations = [
+            HoldInput {
+                pointer_inside: false,
+                ..continuing_hold_input(true)
+            },
+            HoldInput {
+                focused: false,
+                ..continuing_hold_input(true)
+            },
+            HoldInput {
+                escape_pressed: true,
+                ..continuing_hold_input(true)
+            },
+        ];
+
+        for cancellation in cancellations {
+            let mut hold = HoldToSend::default();
+            assert!(matches!(
+                hold.update(start, pressed_hold_input(true)),
+                HoldOutcome::Holding(_)
+            ));
+            assert_eq!(
+                hold.update(start + Duration::from_millis(500), cancellation),
+                HoldOutcome::Idle
+            );
+            assert_eq!(
+                hold.update(start + Duration::from_secs(1), pressed_hold_input(true)),
+                HoldOutcome::Idle
+            );
+            assert_eq!(
+                hold.update(
+                    start + Duration::from_millis(1_100),
+                    HoldInput {
+                        primary_down: false,
+                        ..continuing_hold_input(true)
+                    }
+                ),
+                HoldOutcome::Idle
+            );
+            assert_eq!(
+                hold.update(
+                    start + Duration::from_millis(1_200),
+                    pressed_hold_input(true)
+                ),
+                HoldOutcome::Holding(Duration::ZERO)
+            );
+        }
     }
 
     #[test]
@@ -1107,14 +1492,13 @@ mod tests {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
         assert_eq!(
-            hold.update(start, true, confirmation_enabled(None, None)),
+            hold.update(start, pressed_hold_input(confirmation_enabled(None, None))),
             HoldOutcome::Idle
         );
         assert_eq!(
             hold.update(
                 start + SEND_HOLD_DURATION,
-                true,
-                confirmation_enabled(None, None)
+                continuing_hold_input(confirmation_enabled(None, None))
             ),
             HoldOutcome::Idle
         );
@@ -1124,7 +1508,7 @@ mod tests {
     fn cancel_clears_preview_and_hold() {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
-        let _ = hold.update(start, true, true);
+        let _ = hold.update(start, pressed_hold_input(true));
         let mut prepared = Some(exact_preview());
         clear_prepared_state(&mut prepared, &mut hold);
         assert!(prepared.is_none());
