@@ -9,6 +9,11 @@ rust-version.workspace = true
 default = []
 # Secret/network-free subprocess used only by debug-profile bridge contract tests.
 ipc-contract-test-hook = ["dep:getrandom"]
+windows-broker-channel-contract-test-hook = [
+    "ipc-contract-test-hook",
+    "dep:platform-windows",
+    "platform-windows/broker-channel-contract-test-hook",
+]
 
 [dependencies]
 getrandom = { workspace = true, optional = true }
@@ -18,6 +23,7 @@ thiserror.workspace = true
 chain-registry = { path = "../chain-registry" }
 wallet-model = { path = "../wallet-model" }
 wallet-protocol = { path = "../wallet-protocol" }
+platform-windows = { path = "../platform-windows", optional = true }
 
 [lints]
 workspace = true

@@ -17,6 +17,13 @@ mod wire;
 #[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
 mod contract_bridge;
 
+#[cfg(all(
+    windows,
+    feature = "windows-broker-channel-contract-test-hook",
+    debug_assertions
+))]
+mod windows_broker_bridge;
+
 pub use wire::{
     BrokerEndpoint, BrokerEndpointError, DispatchOutcome, DownstreamExecutor, ExecutionOutcome,
     ExtensionEnvelope, NativeHostDispatcher, NativeRpcError, ProtocolError, RuntimeSummary,
@@ -25,7 +32,16 @@ pub use wire::{
 };
 
 #[cfg(all(feature = "broker-ipc-contract-test-hook", debug_assertions))]
-pub use contract_bridge::{ContractBridgeError, run_broker_contract_test_stream};
+pub use contract_bridge::{
+    ContractBridgeError, run_broker_contract_test_payloads, run_broker_contract_test_stream,
+};
+
+#[cfg(all(
+    windows,
+    feature = "windows-broker-channel-contract-test-hook",
+    debug_assertions
+))]
+pub use windows_broker_bridge::run_windows_broker_contract_test_stream;
 
 /// Failure to put the Chrome native-messaging pipe into binary mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

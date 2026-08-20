@@ -46,13 +46,26 @@ mod anchor_registry;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
-// This one-shot, secretless native-host/Broker transport proof remains
-// deliberately dormant. Exact native-host mapped-image identity, signed and
-// immutable installation/registration, and composition with `broker::ipc`
-// are still release-blocking and no production entrypoint can reach it.
+// This persistent secretless native-host/Broker transport is composed only by
+// the Windows debug feature with the exact Broker supervisor and payload-only
+// `broker::ipc` adapters. Chrome-launched native-host provenance, signed and
+// immutable installation/registration, stable extension identity, and release
+// attestation remain blocking; default and release entrypoints cannot reach it.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod broker_channel;
+#[cfg(all(
+    windows,
+    feature = "broker-channel-contract-test-hook",
+    debug_assertions
+))]
+mod broker_supervisor;
+#[cfg(all(
+    windows,
+    feature = "broker-channel-contract-test-hook",
+    debug_assertions
+))]
+mod exact_image;
 // Exact image-file authentication and suspended-process ownership remain
 // crate-private until the supervisor can bind the resulting capability to the
 // private Broker channel and protected-settings lease.
@@ -85,4 +98,13 @@ pub use approval_channel::{
 };
 #[cfg(windows)]
 pub use approval_channel::{PendingApproval, launch_approval_frontend};
+#[cfg(all(
+    windows,
+    feature = "broker-channel-contract-test-hook",
+    debug_assertions
+))]
+pub use broker_supervisor::{
+    DormantBrokerError, DormantBrokerPayloadChannel, connect_inherited_native_host_channel,
+    launch_dormant_broker_channel,
+};
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

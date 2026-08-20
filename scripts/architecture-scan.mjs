@@ -128,10 +128,13 @@ for (const manifestPath of publicBoundaryManifests) {
 }
 
 const rootManifest = await text("Cargo.toml");
+const rootReadme = await text("README.md");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
 const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
+const sepoliaDemoVaultV2 = await text("demo/sepolia-wallet/src/vault_v2.rs");
+const sepoliaDemoTokenStore = await text("demo/sepolia-wallet/src/token_store.rs");
 requireInvariant(
   !rootManifest.includes("demo/sepolia-wallet"),
   "Sepolia demo must remain outside the production workspace",
@@ -242,17 +245,178 @@ requireInvariant(
 );
 requireInvariant(
   sepoliaDemoBackend.includes("V2(OpenedVaultV2)") &&
-    sepoliaDemoBackend.includes(".account_private_key(0)") &&
+    sepoliaDemoBackend.includes("selected_account_index: u8") &&
     sepoliaDemoBackend.includes("pending_generation: Option<PendingGeneratedWallet>") &&
     sepoliaDemoBackend.includes("self.ensure_management_mutation_allowed()?") &&
     sepoliaDemoBackend.includes("path_may_exist(&self.pending_path)"),
-  "Sepolia v2 unlock/account-0/pending-quarantine management boundary changed",
+  "Sepolia v2 unlock/bounded-account/pending-quarantine management boundary changed",
 );
 
 // Sepolia authenticated saved ERC-20 transfer invariants (demo-only).
 const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
 const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
+
+// Sepolia bounded account switching is authenticated, session-only, and
+// bound independently at every prepare/confirm/export/pending boundary.
+const selectAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "select_account_inner",
+);
+const walletSnapshotBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "snapshot",
+);
+const openWalletBlock = rustFunctionBlock(sepoliaDemoBackendProduction, "open");
+const lockWalletBlock = rustFunctionBlock(sepoliaDemoBackendProduction, "lock");
+const prepareNativeAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "prepare_transfer_inner",
+);
+const confirmAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "confirm_prepared_with_permit",
+);
+const exportSelectedAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "export_account_private_key_inner",
+);
+const tokenAccountContextBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "token_context",
+);
+const preparePendingAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "prepare_pending_retry",
+);
+const retryPendingAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "retry_pending_with_permit",
+);
+const recoverPendingSenderBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "recover_signed_type_two_sender",
+);
+const pendingLeaseBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)struct PendingFileLease\s*\{/u,
+);
+const pendingWriteBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "write_new_pending",
+);
+const accountSelectedUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::AccountSelected\(result\)\s*=>\s*match result\s*\{/u,
+);
+const accountPrivateKeyRevealBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "account_private_key_reveal",
+);
+const secretRevealItem = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)pub struct SecretReveal\s*\{/u,
+);
+const mnemonicExportUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::MnemonicExported\(result\)\s*=>\s*match result\s*\{/u,
+);
+const privateKeyExportUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::AccountPrivateKeyExported\(result\)\s*=>\s*match result\s*\{/u,
+);
+requireInvariant(
+  sepoliaDemoBackendProduction.includes("selected_account_index: u8") &&
+    sepoliaDemoBackendProduction.includes("fn account_snapshots(&self)") &&
+    sepoliaDemoBackendProduction.includes("wallet.account_count() != 2") &&
+    sepoliaDemoBackendProduction.includes("wallet.account(2).is_some()") &&
+    selectAccountBlock.includes("wallet.account_address(index)?") &&
+    selectAccountBlock.includes("self.pending_broadcast_exists()") &&
+    selectAccountBlock.includes("self.prepared.is_some()") &&
+    selectAccountBlock.includes("self.pending_generation.is_some()") &&
+    selectAccountBlock.includes("self.selected_account_index = index") &&
+    selectAccountBlock.includes("self.last_balance = None") &&
+    !/(?:write_new_file|seal_vault|token_store|fs::write)/u.test(selectAccountBlock) &&
+    lockWalletBlock.includes("self.selected_account_index = 0") &&
+    openWalletBlock.includes("self.selected_account_index = 0") &&
+    walletSnapshotBlock.includes("selected_account_index: self.selected_account_index") &&
+    walletSnapshotBlock.includes("pending_broadcast:") &&
+    !sepoliaDemoVaultV2.includes("selected_account_index") &&
+    !sepoliaDemoTokenStore.includes("selected_account_index") &&
+    !pendingWriteBlock.includes("account_index"),
+  "Sepolia account 0/1 selection must remain bounded, session-only, reset-on-lock/open, and absent from vault/token/pending formats",
+);
+requireInvariant(
+  sepoliaDemoUiProduction.includes("pub struct WalletAccountSnapshot") &&
+    sepoliaDemoUiProduction.includes("pub selected_account_index: u8") &&
+    sepoliaDemoUiProduction.includes("pub sender_account_index: u8") &&
+    sepoliaDemoBackendProduction.includes("account_index: u8") &&
+    prepareNativeAccountBlock.includes("let (account_index, sender) = self.selected_account()?") &&
+    confirmAccountBlock.includes("self.selected_account_index != prepared.account_index") &&
+    confirmAccountBlock.includes("wallet.account_address(prepared.account_index)?") &&
+    confirmAccountBlock.includes("account_private_key(u32::from(prepared.account_index))") &&
+    exportSelectedAccountBlock.includes("let (selected_index, selected_address)") &&
+    exportSelectedAccountBlock.includes("let expected_index = u32::from(selected_index)") &&
+    exportSelectedAccountBlock.includes("requested_index() != expected_index") &&
+    exportSelectedAccountBlock.includes("export_account_private_key(u32::from(selected_index))") &&
+    exportSelectedAccountBlock.includes(
+      "account_private_key_reveal(export, selected_index, selected_address)",
+    ) &&
+    tokenAccountContextBlock.includes("account_index: self.selected_account_index") &&
+    accountSelectedUiBlock.includes("self.reauth_password.zeroize()") &&
+    accountSelectedUiBlock.includes("self.secret_text_state_purge_pending = true") &&
+    accountSelectedUiBlock.includes("zeroize_custom_token_snapshots") &&
+    accountSelectedUiBlock.includes("zeroize_optional_string(&mut self.last_transaction_hash)"),
+  "Sepolia selected account identity must stay visible and independently rebound for balance, token, signer, export, and UI scrub paths",
+);
+requireInvariant(
+  secretRevealItem.includes("account_index: Option<u8>") &&
+    secretRevealItem.includes("account_address: Option<Zeroizing<String>>") &&
+    accountPrivateKeyRevealBlock.includes("account_index > 1") &&
+    accountPrivateKeyRevealBlock.includes("checksum_address(account_address)") &&
+    mnemonicExportUiBlock.includes(
+      "completed_action == Some(PendingAction::ExportMnemonic)",
+    ) &&
+    mnemonicExportUiBlock.includes("reveal.kind() == SecretRevealKind::Mnemonic") &&
+    privateKeyExportUiBlock.includes(
+      "completed_action == Some(PendingAction::ExportAccountPrivateKey)",
+    ) &&
+    privateKeyExportUiBlock.includes(
+      "reveal.kind() == SecretRevealKind::AccountPrivateKey",
+    ) &&
+    privateKeyExportUiBlock.includes("index == selected.index") &&
+    privateKeyExportUiBlock.includes("address == selected.address.as_str()") &&
+    sepoliaDemoUiProduction.includes(
+      'format!("계정 {index} 개인 키 · 전체 주소 {address}")',
+    ) &&
+    sepoliaDemoUiProduction.includes(
+      'format!("계정 {selected_account_index} 잔액: {balance}")',
+    ) &&
+    !sepoliaDemoUiProduction.includes('"계정 0 개인 키"') &&
+    !sepoliaDemoUiProduction.includes('"계정 0 잔액:'),
+  "Sepolia secret export purpose/account binding and selected-account balance labels must remain exact and non-hardcoded",
+);
+requireInvariant(
+  preparePendingAccountBlock.includes("self.attribute_pending_sender") &&
+    preparePendingAccountBlock.includes("lease.read_record()") &&
+    retryPendingAccountBlock.includes("self.verify_frozen_pending(&mut prepared, permit)") &&
+    retryPendingAccountBlock.includes("prepared.raw_transaction.as_slice()") &&
+    retryPendingAccountBlock.includes("prepared.lease.delete_exact") &&
+    pendingLeaseBlock.includes("file: File") &&
+    sepoliaDemoBackendProduction.includes("FILE_SHARE_MODE(0)") &&
+    sepoliaDemoBackendProduction.includes("SetFileInformationByHandle") &&
+    sepoliaDemoBackendProduction.includes("#[cfg(not(windows))]") &&
+    sepoliaDemoBackendProduction.includes("not production evidence") &&
+    rootReadme.includes("비-Windows 빌드 경로는") &&
+    rootReadme.includes("릴리스 경로로 지원하지 않습니다") &&
+    recoverPendingSenderBlock.includes("fields = [empty; 12]") &&
+    recoverPendingSenderBlock.includes("rpc::SEPOLIA_CHAIN_ID") &&
+    recoverPendingSenderBlock.includes("HALF_CURVE_ORDER") &&
+    recoverPendingSenderBlock.includes("recover_ecdsa") &&
+    sepoliaDemoUiProduction.includes("같은 서명 거래 다시 제출 — 2초 동안 누르기"),
+  "Sepolia pending retry must recover a canonical bounded sender, freeze exact bytes under an exact-object lease, disclose it, and require a separate hold",
+);
+
 const preparedTransferBlock = rustItemBlock(
   sepoliaDemoBackendProduction,
   /(?:^|\n)enum PreparedTransfer\s*\{/u,
@@ -295,7 +459,9 @@ requireInvariant(
   "saved ERC-20 must stay distinct, authenticated, bookended, estimate-before-exact-preflight, and internally calldata-bound",
 );
 requireInvariant(
-  retryPendingBlock.includes("read_pending(&self.pending_path)") &&
+  retryPendingBlock.includes("self.verify_frozen_pending(&mut prepared, permit)") &&
+    retryPendingBlock.includes("prepared.raw_transaction.as_slice()") &&
+    retryPendingBlock.includes("prepared.lease.delete_exact") &&
     retryPendingBlock.includes("guarded_broadcast(") &&
     !/(?:pending_nonce|fee_quote|latest_base_fee|estimate_erc20|sign_erc20|account_private_key)/u.test(
       retryPendingBlock,
@@ -1226,6 +1392,10 @@ requireInvariant(
   JSON.stringify(productionProcessCreationSites) ===
     JSON.stringify([
       {
+        path: "crates/platform-windows/src/broker_supervisor.rs",
+        api: "CreateProcessW",
+      },
+      {
         path: "crates/platform-windows/src/key_agent_activation.rs",
         api: "CreateProcessW",
       },
@@ -1234,7 +1404,7 @@ requireInvariant(
         api: "CreateProcessW",
       },
     ]),
-  "production Windows process creation must remain confined to the reviewed dormant activation and restricted launcher call sites",
+  "production Windows process creation must remain confined to the reviewed debug Broker supervisor, dormant Key Agent activation, and restricted launcher call sites",
 );
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
@@ -1845,6 +2015,31 @@ const nativeLibraryForContract = await text("crates/native-host/src/lib.rs");
 const nativeContractBridge = await text("crates/native-host/src/contract_bridge.rs");
 const extensionBackgroundContract = await text("extension/src/background-core.js");
 const nativeProcessContractTest = await text("extension/tests/native-host-process.test.mjs");
+const platformManifestForWindowsBroker = await text(
+  "crates/platform-windows/Cargo.toml",
+);
+const brokerChannelProduction = withoutBottomTestModule(
+  await text("crates/platform-windows/src/broker_channel.rs"),
+);
+const brokerSupervisor = await text(
+  "crates/platform-windows/src/broker_supervisor.rs",
+);
+const brokerSupervisorProduction = withoutBottomTestModule(brokerSupervisor);
+const exactBrokerImage = await text(
+  "crates/platform-windows/src/exact_image.rs",
+);
+const exactBrokerImageProduction = withoutBottomTestModule(exactBrokerImage);
+const nativeWindowsBrokerBridge = await text(
+  "crates/native-host/src/windows_broker_bridge.rs",
+);
+const brokerProtocolContract = await text("docs/protocol-contract.md");
+const nativeHostContractReadme = await text("extension/native-host/README.md");
+const brokerContractProductionFiles = await rustProductionSources(
+  "crates/broker/src",
+);
+const nativeContractProductionFiles = await rustProductionSources(
+  "crates/native-host/src",
+);
 requireInvariant(
   brokerManifestForContract.includes(
     'ipc-contract-test-hook = ["dep:getrandom"]',
@@ -1860,21 +2055,575 @@ requireInvariant(
     ),
   "debug Broker subprocess randomness must remain optional and feature-scoped",
 );
-for (const [source, feature] of [
-  [brokerMainForContract, "ipc-contract-test-hook"],
-  [nativeMain, "broker-ipc-contract-test-hook"],
+
+// Dormant Windows composition: every exported module and entrypoint must
+// require Windows AND its explicit feature AND debug assertions. This keeps
+// the APIs absent from default builds and from all-feature release builds.
+const brokerSupervisorExports =
+  /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub use broker_supervisor::\{(?<body>[^}]*)\};/u.exec(
+    platformWindowsLib,
+  )?.groups?.body ?? "";
+const nativeWindowsBridgeExports =
+  /#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub use windows_broker_bridge::(?<body>[^;]+);/u.exec(
+    nativeLibraryForContract,
+  )?.groups?.body ?? "";
+requireInvariant(
+  /^default\s*=\s*\[\]$/mu.test(platformManifestForWindowsBroker) &&
+    /^broker-channel-contract-test-hook\s*=\s*\[\]$/mu.test(
+      platformManifestForWindowsBroker,
+    ) &&
+    /^windows-broker-channel-contract-test-hook\s*=\s*\[\s*"ipc-contract-test-hook",\s*"dep:platform-windows",\s*"platform-windows\/broker-channel-contract-test-hook",?\s*\]$/mu.test(
+      brokerManifestForContract,
+    ) &&
+    /^windows-broker-channel-contract-test-hook\s*=\s*\[\s*"broker-ipc-contract-test-hook",\s*"broker\/windows-broker-channel-contract-test-hook",\s*"platform-windows\/broker-channel-contract-test-hook",?\s*\]$/mu.test(
+      nativeManifestForContract,
+    ),
+  "Windows Broker composition features must remain opt-in and transitively bind the same platform debug feature",
+);
+requireInvariant(
+  /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*mod broker_supervisor;/u.test(
+    platformWindowsLib,
+  ) &&
+    /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*mod exact_image;/u.test(
+      platformWindowsLib,
+    ) &&
+    brokerSupervisorExports.includes("DormantBrokerPayloadChannel") &&
+    brokerSupervisorExports.includes("connect_inherited_native_host_channel") &&
+    brokerSupervisorExports.includes("launch_dormant_broker_channel") &&
+    (platformWindowsLib.match(/\bbroker_supervisor\b/gu) ?? []).length === 2 &&
+    (platformWindowsLib.match(/\bexact_image\b/gu) ?? []).length === 1 &&
+    /#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*mod windows_broker_bridge;/u.test(
+      nativeLibraryForContract,
+    ) &&
+    nativeWindowsBridgeExports.includes(
+      "run_windows_broker_contract_test_stream",
+    ) &&
+    (nativeLibraryForContract.match(/\bwindows_broker_bridge\b/gu) ?? [])
+      .length === 2,
+  "Windows Broker supervisor, exact-image proof, and Native Host bridge APIs must be absent outside the Windows debug feature gate",
+);
+const brokerDisabledMain = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)#\[cfg\(not\(any\([\s\S]*?feature = "ipc-contract-test-hook"[\s\S]*?feature = "windows-broker-channel-contract-test-hook"[\s\S]*?debug_assertions[\s\S]*?\)\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const brokerLegacyMain = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)#\[cfg\(all\(\s*feature = "ipc-contract-test-hook",\s*debug_assertions,\s*not\(all\(windows, feature = "windows-broker-channel-contract-test-hook"\)\)\s*\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const brokerWindowsMain = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const brokerLegacyServerEntry = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)#\[cfg\(all\(\s*feature = "ipc-contract-test-hook",\s*debug_assertions,\s*not\(all\(windows, feature = "windows-broker-channel-contract-test-hook"\)\)\s*\)\)\]\s*fn run_contract_server\s*\(\s*\)/u,
+);
+const brokerWindowsServerEntry = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*fn run_windows_contract_server\s*\(\s*\)/u,
+);
+const nativeDisabledMain = rustItemBlock(
+  nativeMain,
+  /(?:^|\n)#\[cfg\(not\(all\(feature = "broker-ipc-contract-test-hook", debug_assertions\)\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const nativeLegacyMain = rustItemBlock(
+  nativeMain,
+  /(?:^|\n)#\[cfg\(all\(\s*feature = "broker-ipc-contract-test-hook",\s*debug_assertions,\s*not\(all\(windows, feature = "windows-broker-channel-contract-test-hook"\)\)\s*\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const nativeWindowsMain = rustItemBlock(
+  nativeMain,
+  /(?:^|\n)#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*fn main\s*\(\s*\)/u,
+);
+const nativeLegacyProcessEntry = rustItemBlock(
+  nativeMain,
+  /(?:^|\n)#\[cfg\(all\(\s*feature = "broker-ipc-contract-test-hook",\s*debug_assertions,\s*not\(all\(windows, feature = "windows-broker-channel-contract-test-hook"\)\)\s*\)\)\]\s*fn run_contract_process\s*\(\s*\)/u,
+);
+const nativeWindowsProcessEntry = rustItemBlock(
+  nativeMain,
+  /(?:^|\n)#\[cfg\(all\(\s*windows,\s*feature = "windows-broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*fn run_windows_contract_process\s*\(\s*\)/u,
+);
+const brokerNativeMainBlocks = [
+  brokerDisabledMain,
+  brokerLegacyMain,
+  brokerWindowsMain,
+  brokerLegacyServerEntry,
+  brokerWindowsServerEntry,
+  nativeDisabledMain,
+  nativeLegacyMain,
+  nativeWindowsMain,
+  nativeLegacyProcessEntry,
+  nativeWindowsProcessEntry,
+];
+requireInvariant(
+  brokerNativeMainBlocks.every(
+    (block) => block.length > 0 && !/(?:e?println!|dbg!)/u.test(block),
+  ) &&
+    brokerDisabledMain.includes("std::process::exit(78);") &&
+    !/\brun_(?:contract|windows_contract)_server\s*\(/u.test(
+      brokerDisabledMain,
+    ) &&
+    brokerLegacyMain.includes("run_contract_server()") &&
+    !brokerLegacyMain.includes("run_windows_contract_server()") &&
+    brokerWindowsMain.includes("run_windows_contract_server()") &&
+    !brokerWindowsMain.includes("run_contract_server()") &&
+    nativeDisabledMain.includes("native_host::run_release_disabled_stream") &&
+    nativeDisabledMain.includes(
+      "std::process::exit(PRIVATE_BROKER_UNAVAILABLE);",
+    ) &&
+    !/\brun_(?:contract|windows_contract)_process\s*\(/u.test(
+      nativeDisabledMain,
+    ) &&
+    nativeLegacyMain.includes("run_contract_process()") &&
+    !nativeLegacyMain.includes("run_windows_contract_process()") &&
+    nativeWindowsMain.includes("run_windows_contract_process()") &&
+    !nativeWindowsMain.includes("run_contract_process()"),
+  "legacy stdio, Windows Broker, and default/release mains must remain mutually exclusive, feature-and-debug gated, silent, and fail-closed",
+);
+requireInvariant(
+  nativeProcessContractTest.includes(
+    'test("release all-feature binaries keep both subprocess hooks disabled"',
+  ) &&
+    nativeProcessContractTest.includes(
+      '"build", "--release", "--offline", "--locked"',
+    ) &&
+    nativeProcessContractTest.includes(
+      '"-p", "native-host", "-p", "broker", "--all-features"',
+    ) &&
+    nativeProcessContractTest.includes(
+      "assert.deepEqual(await runClosedProcess(executables.broker), { code: 78, signal: null })",
+    ) &&
+    nativeProcessContractTest.includes("response.error.code, 4900") &&
+    nativeProcessContractTest.includes(
+      "assert.deepEqual(await nativeProcess.closed, { code: 78, signal: null })",
+    ) &&
+    nativeProcessContractTest.includes(
+      'test("Windows native host reaches the exact hidden Broker channel without stdio composition"',
+    ) &&
+    nativeProcessContractTest.includes(
+      "native-host/windows-broker-channel-contract-test-hook,broker/windows-broker-channel-contract-test-hook",
+    ),
+  "real subprocess evidence must retain the Windows debug composition and default/release all-feature negative behavior",
+);
+
+// The Windows pipe owns its one BE frame. Broker IPC owns only the closed JSON
+// payload state machine; its legacy stdio wrapper is the sole separate framing
+// adapter and delegates immediately to the same payload APIs.
+const brokerChannelWriteFrame = rustFunctionBlock(
+  brokerChannelProduction,
+  "write_frame_after_prefix",
+);
+const brokerChannelReadFrame = rustFunctionBlock(
+  brokerChannelProduction,
+  "read_frame_or_eof",
+);
+const brokerPayloadTrait = rustItemBlock(
+  brokerIpcContract,
+  /(?:^|\n)pub trait BrokerIpcPayloads\s*\{/u,
+);
+const brokerSplitFramingAdapter = rustItemBlock(
+  brokerIpcContract,
+  /(?:^|\n)impl<Reader, Writer> BrokerIpcPayloads for SplitFramedPayloads<'_, Reader, Writer>\s*/u,
+);
+const brokerStdioServer = rustFunctionBlock(
+  brokerIpcContract,
+  "run_secretless_server",
+);
+const brokerPayloadServer = rustFunctionBlock(
+  brokerIpcContract,
+  "run_secretless_server_payloads",
+);
+const brokerReadFramedPayload = rustFunctionBlock(
+  brokerIpcContract,
+  "read_framed_payload",
+);
+const brokerWriteFramedPayload = rustFunctionBlock(
+  brokerIpcContract,
+  "write_framed_payload",
+);
+const brokerWindowsServer = rustFunctionBlock(
+  brokerMainForContract,
+  "run_windows_contract_server",
+);
+const nativeWindowsProcess = rustFunctionBlock(
+  nativeMain,
+  "run_windows_contract_process",
+);
+const supervisorWritePayload = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "write_payload",
+);
+const supervisorReadPayload = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "read_payload",
+);
+requireInvariant(
+  brokerChannelProduction.includes(
+    "const MAX_BROKER_FRAME_BYTES: usize = 8_192;",
+  ) &&
+    brokerChannelWriteFrame.includes("length.to_be_bytes()") &&
+    brokerChannelReadFrame.includes("u32::from_be_bytes(prefix)") &&
+    !/(?:to|from)_le_bytes/u.test(brokerChannelProduction) &&
+    brokerIpcContract.includes(
+      "pub const MAX_BROKER_IPC_FRAME_BYTES: usize = 8_192;",
+    ) &&
+    brokerReadFramedPayload.includes("u32::from_be_bytes(length_bytes)") &&
+    brokerWriteFramedPayload.includes("length.to_be_bytes()") &&
+    !/(?:to|from)_le_bytes/u.test(brokerIpcContract),
+  "Windows and stdio Broker framing must remain four-byte big-endian with the exact 8192-byte payload bound",
+);
+requireInvariant(
+  brokerPayloadTrait.includes(
+    "fn read_payload(&mut self) -> Result<Option<Vec<u8>>, BrokerIpcError>;",
+  ) &&
+    brokerPayloadTrait.includes(
+      "fn write_payload(&mut self, payload: &[u8]) -> Result<(), BrokerIpcError>;",
+    ) &&
+    brokerSplitFramingAdapter.includes("read_framed_payload(self.reader)") &&
+    brokerSplitFramingAdapter.includes(
+      "write_framed_payload(self.writer, payload)",
+    ) &&
+    brokerStdioServer.includes("SplitFramedPayloads { reader, writer }") &&
+    brokerStdioServer.includes("run_secretless_server_payloads(") &&
+    brokerPayloadServer.includes("read_required_payload_value(payloads)") &&
+    brokerPayloadServer.includes("write_payload_value(") &&
+    brokerPayloadServer.includes("payloads,") &&
+    !/(?:read|write)_framed_payload|to_be_bytes|from_be_bytes/u.test(
+      brokerPayloadServer,
+    ) &&
+    supervisorWritePayload.includes("channel.write_frame(payload, deadline)") &&
+    supervisorReadPayload.includes("channel.read_frame_or_eof(deadline)") &&
+    brokerWindowsServer.includes("run_secretless_server_payloads(") &&
+    !/\brun_secretless_server\s*\(/u.test(brokerWindowsServer) &&
+    nativeWindowsBrokerBridge.includes(
+      "run_broker_contract_test_payloads(native_reader, native_writer, &mut payloads, random_nonce)",
+    ) &&
+    !/(?:read|write)_framed_payload|to_be_bytes|from_be_bytes/u.test(
+      [
+        brokerSupervisorProduction,
+        nativeWindowsBrokerBridge,
+        nativeContractBridge,
+      ].join("\n"),
+    ) &&
+    !nativeWindowsProcess.includes("Command::new"),
+  "Windows composition must have one channel framing owner and reuse Broker IPC only as a payload-state machine",
+);
+
+const dormantBrokerFacadeReferences = [
+  ...platformWindowsProductionFiles,
+  ...brokerContractProductionFiles,
+  ...nativeContractProductionFiles,
+]
+  .filter((file) => file.source.includes("DormantBrokerPayloadChannel"))
+  .map((file) => file.path)
+  .sort((left, right) => left.localeCompare(right, "en"));
+const brokerWindowsPayloadAdapter = rustItemBlock(
+  brokerMainForContract,
+  /(?:^|\n)\s*impl BrokerIpcPayloads for WindowsPayloads\s*\{/u,
+);
+const nativeWindowsPayloadAdapter = rustItemBlock(
+  nativeWindowsBrokerBridge,
+  /(?:^|\n)impl BrokerIpcPayloads for WindowsBrokerPayloads\s*\{/u,
+);
+requireInvariant(
+  JSON.stringify(dormantBrokerFacadeReferences) ===
+    JSON.stringify([
+      "crates/broker/src/main.rs",
+      "crates/native-host/src/windows_broker_bridge.rs",
+      "crates/platform-windows/src/broker_supervisor.rs",
+      "crates/platform-windows/src/lib.rs",
+    ]) &&
+    (brokerWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length === 1 &&
+    (brokerWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length === 1 &&
+    (nativeWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length === 1 &&
+    (nativeWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length === 1 &&
+    brokerSupervisorProduction.includes(
+      "cross-crate `BrokerIpcPayloads` adapters must supply framing-free JSON",
+    ),
+  "debug raw Broker payload facade must remain release-absent and confined to the two typed payload adapters",
+);
+
+// The debug creator may run only at its one reviewed callsite and must prove
+// the simultaneously held Broker image before releasing user mode. No PID
+// reopen is accepted in either the channel peer binding or supervisor.
+const launchBrokerPath = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "launch_broker_path",
+);
+const launchBrokerApplicationWithAfterCreate = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "launch_broker_application_with_after_create",
+);
+const launchBrokerApplicationWrapper = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "launch_broker_application",
+);
+const panicAfterBrokerCreate = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "panic_after_create_for_test",
+);
+const authenticateBrokerImage = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "authenticate_first_event",
+);
+const brokerCreationFlags = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "creation_flags",
+);
+const brokerCreationFlagNames = [
+  ...brokerCreationFlags.matchAll(
+    /\b(?:CREATE_[A-Z_]+|DEBUG_[A-Z_]+|EXTENDED_STARTUPINFO_PRESENT)\b/gu,
+  ),
+].map((match) => match[0]);
+const brokerCreationAttributesDefinition = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*struct CreationAttributes<'resources>\s*\{/u,
+);
+const brokerCreationAttributesImplementation = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl<'resources> CreationAttributes<'resources>\s*\{/u,
+);
+const brokerInheritedNullStdio = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl InheritedNullStdio\s*\{/u,
+);
+const brokerChildKernelContract = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "assert_child_kernel_contract",
+);
+const brokerInheritableSentinel = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl InheritableSentinel\s*\{/u,
+);
+const brokerDebugWaitClassifier = rustFunctionBlock(
+  brokerSupervisorProduction,
+  "classify_debug_wait_failure",
+);
+const brokerJobImplementation = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl BrokerJob\s*\{/u,
+);
+const brokerProcessObservationImplementation = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl ProcessObservation\s*\{/u,
+);
+const duplicateBrokerProcessObservation = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)    fn duplicate_process_observation\s*\(/u,
+);
+const exactFileIdentityDefinition = rustItemBlock(
+  exactBrokerImageProduction,
+  /(?:^|\n)struct ExactFileIdentity\s*\{/u,
+);
+const exactFileIdentityNew = rustFunctionBlock(
+  exactBrokerImageProduction,
+  "new",
+);
+const exactMappedImageAuthentication = rustFunctionBlock(
+  exactBrokerImageProduction,
+  "authenticate_mapped_image",
+);
+requireInvariant(
+  launchBrokerPath.includes("PinnedBrokerImage::hold(broker_path)") &&
+    exactBrokerImageProduction.includes(
+      "VerifiedHelper::hold_dormant_broker(path)",
+    ) &&
+    exactBrokerImageProduction.includes("FILE_ID_INFO") &&
+    exactBrokerImageProduction.includes("GetFileInformationByHandleEx(") &&
+    /#\[derive\(Clone, Copy, Eq, PartialEq\)\]\s*struct ExactFileIdentity/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    exactFileIdentityDefinition.includes("volume_serial_number: u64") &&
+    exactFileIdentityDefinition.includes("file_id: [u8; 16]") &&
+    exactFileIdentityNew.includes("volume_serial_number == 0") &&
+    exactFileIdentityNew.includes("file_id == [0; 16]") &&
+    exactFileIdentityNew.includes("file_id == [u8::MAX; 16]") &&
+    exactMappedImageAuthentication.includes(
+      "sys::exact_file_identity(mapped_image)? == self.identity",
+    ) &&
+    exactBrokerImage.includes(
+      "exact_file_identity_rejects_zero_volume_and_sentinel_file_ids",
+    ) &&
+    exactBrokerImage.includes(
+      "exact_file_identity_equality_binds_volume_and_all_128_file_id_bits",
+    ) &&
+    exactBrokerImage.includes("for index in [0_usize, 8, 15]") &&
+    authenticateBrokerImage.includes("CREATE_PROCESS_DEBUG_EVENT") &&
+    authenticateBrokerImage.includes(
+      "image.authenticate_mapped_image(event_file.raw())",
+    ) &&
+    JSON.stringify(brokerCreationFlagNames) ===
+      JSON.stringify([
+        "CREATE_SUSPENDED",
+        "DEBUG_PROCESS",
+        "DEBUG_ONLY_THIS_PROCESS",
+        "CREATE_NO_WINDOW",
+        "CREATE_UNICODE_ENVIRONMENT",
+        "EXTENDED_STARTUPINFO_PRESENT",
+      ]) &&
+    brokerCreationAttributesDefinition.includes(
+      "inherited_handles: Box<[HANDLE; 2]>",
+    ) &&
+    brokerCreationAttributesDefinition.includes("job_handle: Box<[HANDLE; 1]>") &&
+    brokerCreationAttributesImplementation.includes(
+      "InitializeProcThreadAttributeList(None, 2",
+    ) &&
+    brokerCreationAttributesImplementation.includes(
+      "InitializeProcThreadAttributeList(Some(pointer), 2",
+    ) &&
+    (brokerCreationAttributesImplementation.match(
+      /InitializeProcThreadAttributeList\(/gu,
+    ) ?? []).length === 2 &&
+    brokerCreationAttributesImplementation.includes(
+      "Box::new([parent.raw(), stdio.raw()])",
+    ) &&
+    brokerCreationAttributesImplementation.includes("Box::new([job.raw()])") &&
+    brokerCreationAttributesImplementation.includes(
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+    ) &&
+    brokerCreationAttributesImplementation.includes(
+      "PROC_THREAD_ATTRIBUTE_JOB_LIST",
+    ) &&
+    brokerInheritedNullStdio.includes("PCWSTR(NULL_DEVICE.as_ptr())") &&
+    brokerInheritedNullStdio.includes("GENERIC_READ.0 | GENERIC_WRITE.0") &&
+    brokerInheritedNullStdio.includes("FILE_SHARE_READ | FILE_SHARE_WRITE") &&
+    brokerInheritedNullStdio.includes("HANDLE_FLAG_INHERIT") &&
+    brokerInheritedNullStdio.includes("file_type != FILE_TYPE_CHAR") &&
+    launchBrokerApplicationWrapper.includes(
+      "launch_broker_application_with_after_create(",
+    ) &&
+    launchBrokerApplicationWrapper.includes("|_debuggee| {}") &&
+    /#\[cfg\(test\)\]\s*pub\(super\) fn panic_after_create_for_test/u.test(
+      brokerSupervisorProduction,
+    ) &&
+    panicAfterBrokerCreate.includes(
+      "launch_broker_application_with_after_create(",
+    ) &&
+    panicAfterBrokerCreate.includes("std::panic::resume_unwind") &&
+    launchBrokerApplicationWithAfterCreate.includes("CreateProcessW(") &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "startup.StartupInfo.hStdInput = inherited_stdio.raw()",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "startup.StartupInfo.hStdOutput = inherited_stdio.raw()",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "startup.StartupInfo.hStdError = inherited_stdio.raw()",
+    ) &&
+    (launchBrokerApplicationWithAfterCreate.match(/\bSTARTF_[A-Z_]+\b/gu) ?? [])
+      .length === 1 &&
+    /CreateProcessW\([\s\S]*?true,\s*creation_flags\(\),/u.test(
+      launchBrokerApplicationWithAfterCreate,
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "debuggee.authenticate_first_event",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "debuggee.detach_while_suspended",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes("job.verify_exact_member") &&
+    launchBrokerApplicationWithAfterCreate.includes("debuggee.start_user_mode") &&
+    launchBrokerApplicationWithAfterCreate.indexOf("Debuggee::new(information)") <
+      launchBrokerApplicationWithAfterCreate.indexOf("after_create(&debuggee)") &&
+    launchBrokerApplicationWithAfterCreate.indexOf("after_create(&debuggee)") <
+      launchBrokerApplicationWithAfterCreate.indexOf(
+        "debuggee.release_creation_suspend",
+      ) &&
+    launchBrokerApplicationWithAfterCreate.indexOf(
+      "debuggee.authenticate_first_event",
+    ) <
+      launchBrokerApplicationWithAfterCreate.indexOf(
+        "debuggee.detach_while_suspended",
+      ) &&
+    launchBrokerApplicationWithAfterCreate.indexOf(
+      "debuggee.detach_while_suspended",
+    ) < launchBrokerApplicationWithAfterCreate.indexOf("job.verify_exact_member") &&
+    launchBrokerApplicationWithAfterCreate.indexOf("job.verify_exact_member") <
+      launchBrokerApplicationWithAfterCreate.indexOf("debuggee.start_user_mode") &&
+    brokerChildKernelContract.includes("SetEvent(unrelated)") &&
+    brokerChildKernelContract.includes(
+      "[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]",
+    ) &&
+    brokerChildKernelContract.includes("expected != handle") &&
+    brokerChildKernelContract.includes("file_type != FILE_TYPE_CHAR") &&
+    brokerInheritableSentinel.includes("WaitForSingleObject(self.0.raw(), 0)") &&
+    brokerInheritableSentinel.includes("== WAIT_TIMEOUT") &&
+    (brokerSupervisor.match(/unrelated_sentinel\.assert_not_signaled\(\)\?/gu) ?? [])
+      .length === 2 &&
+    !/QueryInformationJobObject\(\s*None/u.test(brokerSupervisorProduction) &&
+    !/false\s*&&/u.test(brokerSupervisor) &&
+    authenticateBrokerImage.includes("GetLastError()") &&
+    authenticateBrokerImage.includes("ERROR_SEM_TIMEOUT") &&
+    authenticateBrokerImage.includes("classify_debug_wait_failure") &&
+    brokerDebugWaitClassifier.includes("timed_out && Instant::now() >= deadline") &&
+    brokerDebugWaitClassifier.includes("DormantBrokerError::Deadline") &&
+    brokerDebugWaitClassifier.includes("DormantBrokerError::ProcessProof") &&
+    brokerSupervisorProduction.includes("JOB_OBJECT_LIMIT_ACTIVE_PROCESS") &&
+    brokerSupervisorProduction.includes("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE") &&
+    brokerJobImplementation.includes("ActiveProcessLimit = 1") &&
+    brokerJobImplementation.includes("IsProcessInJob(") &&
+    brokerJobImplementation.includes("accounting.ActiveProcesses != 1") &&
+    brokerJobImplementation.includes("QueryInformationJobObject(") &&
+    brokerJobImplementation.includes("Some(self.raw())") &&
+    brokerSupervisorProduction.includes(
+      "unsafe impl Send for ProcessObservation {}",
+    ) &&
+    !brokerSupervisorProduction.includes(
+      "unsafe impl Sync for ProcessObservation",
+    ) &&
+    duplicateBrokerProcessObservation.includes("PROCESS_SYNCHRONIZE.0") &&
+    duplicateBrokerProcessObservation.includes("false,") &&
+    !/\bfn\s+raw\b/u.test(brokerProcessObservationImplementation) &&
+    brokerSupervisor.includes(
+      "panic_after_create_terminates_and_reaps_the_exact_child",
+    ) &&
+    brokerSupervisor.includes(
+      "debug_wait_timeout_maps_to_deadline_only_at_absolute_expiry",
+    ) &&
+    !/\bOpenProcess\s*\(/u.test(
+      [brokerChannelProduction, brokerSupervisorProduction].join("\n"),
+    ),
+  "debug Broker creation must retain full FILE_ID_INFO identity, exact NUL/parent and Job attributes, pre-user-mode ordering, kernel probes, deadlines, cleanup, and no PID reopen",
+);
+const brokerChannelModuleDocs = brokerChannelProduction.slice(
+  0,
+  brokerChannelProduction.indexOf("use core::fmt;"),
+);
+requireInvariant(
+  brokerChannelModuleDocs.includes("persistent, secretless, process-bound multi-frame") &&
+    brokerChannelModuleDocs.includes("broker_supervisor") &&
+    brokerChannelModuleDocs.includes("payload-only `broker::ipc` adapters") &&
+    !/(?:one-shot|unimplemented|future exact launcher|constructor intentionally does not exist)/iu.test(
+      brokerChannelModuleDocs,
+    ) &&
+    !platformWindowsLib.includes(
+      "This one-shot, secretless native-host/Broker transport proof",
+    ) &&
+    !platformWindowsLib.includes(
+      "composition with `broker::ipc` are still release-blocking",
+    ),
+  "platform Broker module docs must describe the current persistent debug composition rather than stale future/one-shot blockers",
+);
+for (const [document, label] of [
+  [architectureDocument, "architecture"],
+  [brokerProtocolContract, "protocol contract"],
+  [nativeHostContractReadme, "native-host README"],
 ]) {
   requireInvariant(
-    source.includes(
-      `#[cfg(all(feature = "${feature}", debug_assertions))]`,
+    /HANDLE_LIST[^\n]*\[restricted\s+parent\s+process,\s*shared\s+read\/write\s+NUL\]/u.test(
+      document,
     ) &&
-      source.includes(
-        `#[cfg(not(all(feature = "${feature}", debug_assertions)))]`,
+      document.includes("STARTF_USESTDHANDLES") &&
+      /(?:stdin, stdout, and stderr[\s\S]{0,100}same NUL|same NUL[\s\S]{0,100}stdin, stdout, and stderr)/u.test(
+        document,
       ) &&
-      !/(?:e?println!|dbg!)/u.test(source),
-    `${feature} must remain debug-assertion gated, release-disabled, and silent`,
+      /JOB_LIST[^\n]*\[job\]/u.test(document),
+    `${label} must retain the exact parent/NUL HANDLE_LIST, shared NUL standard streams, and one-Job JOB_LIST contract`,
   );
 }
+
 requireInvariant(
   brokerLibraryForContract.includes(
     '#[cfg(any(test, all(feature = "ipc-contract-test-hook", debug_assertions)))]',

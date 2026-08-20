@@ -32,14 +32,14 @@ immediately, while the native host emits only stable 4900 responses and exits 78
 at EOF or the first terminal error. The hook is not release attestation and
 cannot be selected by a release binary.
 
-The debug native host derives the regular-file `broker` sibling in the same
-build directory as its own executable; no environment variable or caller path
-can select another program. It launches that child with hidden stdio, an empty
-inherited environment, and unwind-safe kill/wait cleanup, and performs no
+The original debug native host derives the regular-file `broker` sibling in the
+same build directory as its own executable; no environment variable or caller
+path can select another program. It launches that child with hidden stdio, an
+empty inherited environment, and unwind-safe kill/wait cleanup, and performs no
 browser, GUI, wallet RPC, signing, Key Agent, or secret operation. The Broker's
 local execution API is crate-private and absent unless tests or the debug hook
-compile it. The internal stream uses a fixed 8,192-byte big-endian length
-prefix and exact JSON structs. A version-1 hello
+compile it. The stdio adapter owns a four-byte big-endian length prefix and an
+8,192-byte JSON-payload ceiling. A version-1 hello
 binds literal native-host/Broker roles, a nonzero client nonce, a nonzero server
 nonce, and internal sequence 1. Every later command and response must preserve
 both nonces and advance its own internal sequence by exactly one; malformed,
@@ -76,12 +76,39 @@ test covers chain ID, parameter-free unavailable completion, late cancellation,
 continued use of the same two subprocesses, old-process exit 78, session
 rotation, and a successful chain-ID request on the new subprocess pair.
 
-This is contract-path evidence only. The nonces prevent accidental stream
-mix-up; they do not authenticate a process running as the same user. A sibling
-path is still not an authenticated or attested bootstrap. Windows
-endpoint SID/DACL policy, remote-client rejection, held executable identity,
-signed installation evidence, and the release-attested downstream composition
-remain stop-ship.
+The separate Windows-only `windows-broker-channel-contract-test-hook` composes
+the same closed typed state machine with the dormant authenticated channel. It
+also requires debug assertions; enabling every feature in a release build still
+selects the disabled 4900/exit-78 native host and exit-78 Broker. The Windows
+channel is the only framing owner: it writes the same four-byte big-endian
+prefix around one exact JSON payload of at most 8,192 bytes, while Broker IPC
+consumes payloads only. The legacy stdio adapter remains its own single framing
+owner, so neither composition can double-frame.
+
+Before any Broker user-mode code runs, a fresh debugger thread compares the
+simultaneously held `broker.exe` artifact with the first
+`CREATE_PROCESS_DEBUG_EVENT.hFile` using the volume serial and all 128
+`FILE_ID_INFO` bits. Zero, all-zero, and all-`FF` identities fail closed. Process
+creation uses `HANDLE_LIST = [restricted parent process, shared read/write
+NUL]`, with stdin, stdout, and stderr all set to that same NUL handle through
+`STARTF_USESTDHANDLES`. Its separate `JOB_LIST = [job]` names the retained
+one-process kill-on-close Job. It also uses a hidden window policy and a minimal
+two-variable Unicode environment. The named pipe has one protected
+current-logon DACL entry, rejects remote clients and a second server instance,
+and binds both ends to retained process objects plus the pipe-reported process
+and session identities. It never reopens a process from a PID. Partial frames,
+deadline expiry, peer exit, replay, and the frame/4,096-command limits are
+terminal. Hidden process tests cover exact 8,192-byte framing, mapped-image
+mismatch before user mode, hung-child Job cleanup, and an actual
+native-host-to-Broker chain-ID/unavailable exchange.
+
+This remains contract-path evidence, not release attestation. Chrome launches
+the native host, so this slice cannot independently prove that the running
+native-host image is the expected signed file before it handles Chrome stdio.
+An immutable signed install, protected native-messaging registration, a stable
+release extension ID, and end-to-end signed artifact evidence are external
+blockers. The debug-held Broker is not an Authenticode release allowlist. RPC,
+accounts, signing, and Key Agent access remain unrepresentable and unavailable.
 
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,

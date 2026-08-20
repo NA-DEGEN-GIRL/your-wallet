@@ -52,8 +52,38 @@ browser or GUI and without performing a wallet network request:
 - a release build with all features enabled, proving the hook is still absent,
   the Broker exits 78, and the native host stays on the 4900/exit-78 path.
 
-This is protocol-path evidence only. The handshake nonces are not process
-authentication, and the same-build sibling path is not trusted bootstrap.
-Authenticated Windows Broker IPC, exact executable identity, SID/DACL and
-remote-client rejection, signed installation/registration evidence, and the
-release-attested downstream composition remain stop-ship requirements.
+A second Windows-only development hook is gated by both
+`windows-broker-channel-contract-test-hook` and debug assertions. It does not
+use Broker stdio. The platform supervisor holds the sibling `broker.exe`
+without write/delete sharing, launches it hidden and suspended on a fresh
+debugger thread, and compares the first pre-user-mode
+`CREATE_PROCESS_DEBUG_EVENT.hFile` with that held artifact by volume serial and
+all 128 `FILE_ID_INFO` bits. Its exact `HANDLE_LIST` is `[restricted parent
+process, shared read/write NUL]`; `STARTF_USESTDHANDLES` assigns that same NUL
+handle to stdin, stdout, and stderr. Its exact `JOB_LIST` is `[job]`, naming the
+retained one-process kill-on-close Job, and its environment has only two
+variables. The process, Job, and held artifact remain owned until the channel
+closes; a hung child is terminated and reaped.
+
+That private named pipe has one protected current-logon DACL entry, rejects
+remote clients and second instances, and binds both ends to retained process
+objects plus pipe-reported process/session identity. It never reopens a PID.
+The Windows channel is the sole owner of its four-byte big-endian prefix and
+8,192-byte JSON payload ceiling. Broker IPC consumes payloads only; the legacy
+stdio adapter remains a separate single framing owner. The same closed typed
+state permits only chain ID, correlation-only unavailable completion, and exact
+cancellation. It still cannot represent accounts, wallet RPC, network access,
+signing, or a Key Agent operation.
+
+The Windows process test builds the two real debug binaries in one isolated
+target directory, reaches chain ID and typed unavailable over the exact hidden
+channel, then observes native-host exit 78. Platform subprocess tests separately
+cover the exact 8,192-byte boundary, mapped-file mismatch before user mode,
+partial/deadline closure, and hung-child Job cleanup. Release with all features
+still proves both hooks absent.
+
+This is protocol-path evidence only. It proves the launched Broker child, not
+the already-running native host that Chrome started. An immutable signed
+installation, protected native-messaging registration, stable release extension
+ID, and end-to-end signed-artifact evidence remain stop-ship. The debug artifact
+hold is not Authenticode release attestation.

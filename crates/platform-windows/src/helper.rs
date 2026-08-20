@@ -23,6 +23,7 @@ const MANIFEST_DOMAIN: &[u8] = b"your-wallet/helper-manifest/v1\0";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HelperRole {
     KeyAgent,
+    Broker,
     ApprovalFrontend,
     SecretInputFrontend,
     Other,
@@ -32,6 +33,8 @@ impl HelperRole {
     fn from_release_file_name(file_name: &str) -> Self {
         if file_name.eq_ignore_ascii_case("key-agent.exe") {
             Self::KeyAgent
+        } else if file_name.eq_ignore_ascii_case("broker.exe") {
+            Self::Broker
         } else if file_name.eq_ignore_ascii_case("approval-ui.exe") {
             Self::ApprovalFrontend
         } else if file_name.eq_ignore_ascii_case("secret-input-ui.exe") {
@@ -211,6 +214,16 @@ impl VerifiedHelper {
         matches!(self.role, HelperRole::KeyAgent)
     }
 
+    /// Returns whether this held debug-only artifact is the exact Broker role.
+    #[cfg(all(
+        windows,
+        feature = "broker-channel-contract-test-hook",
+        debug_assertions
+    ))]
+    pub(crate) const fn is_broker(&self) -> bool {
+        matches!(self.role, HelperRole::Broker)
+    }
+
     /// Returns whether the verified manifest names the one exact approval
     /// frontend role. The public restricted-launch entry point uses this role
     /// proof to derive its dedicated LPAC profile.
@@ -234,6 +247,19 @@ impl VerifiedHelper {
         use std::os::windows::io::AsRawHandle;
 
         windows::Win32::Foundation::HANDLE(self.file.as_raw_handle())
+    }
+
+    /// Holds the sibling debug Broker executable without write/delete sharing.
+    ///
+    /// This is intentionally unavailable in release builds and is not release
+    /// attestation. The exact mapped-image event must still match this handle.
+    #[cfg(all(
+        windows,
+        feature = "broker-channel-contract-test-hook",
+        debug_assertions
+    ))]
+    pub(crate) fn hold_dormant_broker(candidate: &Path) -> Result<Self, HelperError> {
+        sys::hold_dormant_broker(candidate)
     }
 
     #[cfg(all(test, windows))]
@@ -400,6 +426,10 @@ mod debug_tests {
             HelperRole::ApprovalFrontend
         );
         assert_eq!(
+            HelperRole::from_release_file_name("broker.exe"),
+            HelperRole::Broker
+        );
+        assert_eq!(
             HelperRole::from_release_file_name("secret-input-ui.exe"),
             HelperRole::SecretInputFrontend
         );
@@ -486,6 +516,41 @@ mod sys {
     use windows::core::PCWSTR;
 
     use super::{FileIdentity, HelperError, HelperRole, HelperVerifier, VerifiedHelper};
+
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    pub(super) fn hold_dormant_broker(candidate: &Path) -> Result<VerifiedHelper, HelperError> {
+        if !candidate.is_absolute()
+            || candidate.file_name().and_then(|name| name.to_str()) != Some("broker.exe")
+        {
+            return Err(HelperError::WrongFileName);
+        }
+        let canonical = fs::canonicalize(candidate).map_err(|_| HelperError::OperatingSystem)?;
+        if canonical.file_name().and_then(|name| name.to_str()) != Some("broker.exe") {
+            return Err(HelperError::WrongFileName);
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN).0)
+            .open(&canonical)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        if !file
+            .metadata()
+            .map_err(|_| HelperError::OperatingSystem)?
+            .is_file()
+        {
+            return Err(HelperError::NotRegularFile);
+        }
+        let identity = file_identity(&file)?;
+        let artifact_digest = hash_file(&mut file)?;
+        Ok(VerifiedHelper {
+            path: canonical,
+            file,
+            identity,
+            manifest_digest: artifact_digest,
+            role: HelperRole::Broker,
+        })
+    }
 
     pub(super) fn verify(
         verifier: &HelperVerifier,

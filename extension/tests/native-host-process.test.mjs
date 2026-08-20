@@ -119,6 +119,33 @@ async function buildBrokerContractPair() {
   });
 }
 
+async function buildWindowsBrokerChannelPair() {
+  const metadataBytes = await runCargo([
+    "metadata", "--offline", "--format-version", "1", "--no-deps"
+  ], true);
+  let metadata;
+  try {
+    metadata = JSON.parse(metadataBytes.toString("utf8"));
+  } catch (_error) {
+    throw new Error("Cargo metadata was invalid for the Windows Broker channel test.");
+  }
+  if (typeof metadata.target_directory !== "string" || metadata.target_directory.length === 0) {
+    throw new Error("Cargo metadata omitted the Windows Broker channel target directory.");
+  }
+  const targetDirectory = path.join(metadata.target_directory, "windows-broker-channel-contract-test");
+  await runCargo([
+    "build", "--offline", "--locked",
+    "--target-dir", targetDirectory,
+    "-p", "native-host", "-p", "broker",
+    "--features",
+    "native-host/windows-broker-channel-contract-test-hook,broker/windows-broker-channel-contract-test-hook"
+  ], false);
+  return Object.freeze({
+    nativeHost: path.join(targetDirectory, "debug", nativeHostExecutable),
+    broker: path.join(targetDirectory, "debug", brokerExecutable)
+  });
+}
+
 async function buildReleaseFeaturePair() {
   const metadataBytes = await runCargo([
     "metadata", "--offline", "--format-version", "1", "--no-deps"
@@ -515,4 +542,75 @@ test("BackgroundRouter reaches the debug-only secretless Broker over real subpro
   router.shutdown();
   const secondTermination = await secondProcess.closed;
   assert.deepEqual(secondTermination, { code: 78, signal: null });
+});
+
+test("Windows native host reaches the exact hidden Broker channel without stdio composition", {
+  timeout: 180_000,
+  skip: process.platform !== "win32"
+}, async (context) => {
+  const executables = await buildWindowsBrokerChannelPair();
+  const delivered = new MessageQueue();
+  let nativeProcess = null;
+  const router = new BackgroundRouter({
+    profileInstallId: "a".repeat(64),
+    sessionId: "b".repeat(64),
+    extensionId: "abcdefghijklmnopabcdefghijklmnop",
+    randomHex: (() => {
+      let nonce = 90;
+      return () => (nonce++).toString(16).padStart(64, "0");
+    })(),
+    now: () => Date.now(),
+    nativeFactory: ({ onMessage, onDisconnect }) => {
+      nativeProcess = connectNativeHost(executables.nativeHost, onMessage, onDisconnect);
+      return nativeProcess.transport;
+    }
+  });
+
+  context.after(() => {
+    if (nativeProcess?.child.exitCode === null) {
+      nativeProcess.child.stdin.destroy();
+      nativeProcess.child.kill();
+    }
+  });
+
+  const handle = router.attachContent({
+    sender: {
+      tab: { id: 41, incognito: false },
+      frameId: 0,
+      documentId: "document-windows-broker-channel",
+      documentLifecycle: "active",
+      origin: "https://dapp.example",
+      url: "https://dapp.example/windows-broker-channel"
+    },
+    postMessage: (message) => delivered.push(message)
+  });
+  assert.equal((await delivered.next()).kind, "activated");
+
+  for (const request of [
+    { id: "41".repeat(16), method: "eth_chainId", params: [] },
+    {
+      id: "42".repeat(16),
+      method: "personal_sign",
+      params: ["0x", "0x0000000000000000000000000000000000000000"]
+    }
+  ]) {
+    assert.equal(handle.receive({
+      namespace: shared.NAMESPACE,
+      version: shared.PROTOCOL_VERSION,
+      kind: "request",
+      activationNonce: handle.activationNonce,
+      ...request
+    }), true);
+    const response = await delivered.next();
+    assert.equal(response.kind, "response");
+    assert.equal(response.id, request.id);
+    if (request.method === "eth_chainId") {
+      assert.equal(response.result, "0xaa36a7");
+    } else {
+      assert.equal(response.error.code, 4900);
+    }
+  }
+
+  router.shutdown();
+  assert.deepEqual(await nativeProcess.closed, { code: 78, signal: null });
 });

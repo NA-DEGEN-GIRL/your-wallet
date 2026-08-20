@@ -114,6 +114,28 @@ impl BrokerIpcSummary {
     }
 }
 
+/// Exact JSON-payload transport used by the typed Broker state machine.
+///
+/// Implementations own all byte-stream framing. Each successful read returns
+/// exactly one JSON payload without a length prefix, and each write receives
+/// exactly one JSON payload without a length prefix. This prevents a composed
+/// Windows channel and the existing stdio adapter from double-framing data.
+pub trait BrokerIpcPayloads {
+    /// Read one complete bounded JSON payload, or clean end-of-stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transport error without attempting resynchronization.
+    fn read_payload(&mut self) -> Result<Option<Vec<u8>>, BrokerIpcError>;
+
+    /// Write one complete bounded JSON payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transport error without retrying a partial frame.
+    fn write_payload(&mut self, payload: &[u8]) -> Result<(), BrokerIpcError>;
+}
+
 /// Stateful client codec for one native-host/Broker connection.
 pub struct BrokerIpcClient {
     client_nonce: FixedHex<32>,
@@ -139,6 +161,19 @@ impl BrokerIpcClient {
         writer: &mut impl Write,
         client_nonce: [u8; 32],
     ) -> Result<Self, BrokerIpcError> {
+        let mut payloads = SplitFramedPayloads { reader, writer };
+        Self::connect_payloads(&mut payloads, client_nonce)
+    }
+
+    /// Perform the exact two-nonce role handshake over payload-only transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded schema, nonce, role, sequence, or transport error.
+    pub fn connect_payloads(
+        payloads: &mut impl BrokerIpcPayloads,
+        client_nonce: [u8; 32],
+    ) -> Result<Self, BrokerIpcError> {
         let client_nonce = nonzero(FixedHex(client_nonce))?;
         let hello = ClientFrameWire {
             namespace: Namespace::YourWalletBroker,
@@ -148,8 +183,8 @@ impl BrokerIpcClient {
             sequence: 1,
             body: ClientBodyWire::Hello,
         };
-        write_frame(writer, &hello)?;
-        let response: ServerFrameWire = read_required_frame(reader)?;
+        write_payload_value(payloads, &hello)?;
+        let response: ServerFrameWire = read_required_payload_value(payloads)?;
         let ServerBodyWire::Hello { server_nonce } = response.body else {
             return Err(BrokerIpcError::Binding);
         };
@@ -183,6 +218,21 @@ impl BrokerIpcClient {
         request: &TransportRequest,
         request_nonce: [u8; 32],
     ) -> Result<U256, BrokerIpcError> {
+        let mut payloads = SplitFramedPayloads { reader, writer };
+        self.execute_chain_id_payloads(&mut payloads, request, request_nonce)
+    }
+
+    /// Send one exact `eth_chainId` request over payload-only transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any binding, sequence, schema, or transport failure.
+    pub fn execute_chain_id_payloads(
+        &mut self,
+        payloads: &mut impl BrokerIpcPayloads,
+        request: &TransportRequest,
+        request_nonce: [u8; 32],
+    ) -> Result<U256, BrokerIpcError> {
         let request_nonce = nonzero(FixedHex(request_nonce))?;
         let request_wire = LocalRequestWire::from_transport(request)?;
         let binding = ResponseBindingWire::from_context(request.context());
@@ -199,9 +249,9 @@ impl BrokerIpcClient {
                 request: request_wire,
             },
         };
-        write_frame(writer, &frame)?;
+        write_payload_value(payloads, &frame)?;
 
-        let response = self.read_bound_response(reader)?;
+        let response = self.read_bound_payload_response(payloads)?;
         let ServerBodyWire::ChainId {
             server_nonce,
             request_nonce: returned_nonce,
@@ -238,13 +288,28 @@ impl BrokerIpcClient {
         request: &TransportRequest,
         request_nonce: [u8; 32],
     ) -> Result<(), BrokerIpcError> {
+        let mut payloads = SplitFramedPayloads { reader, writer };
+        self.complete_unavailable_payloads(&mut payloads, request, request_nonce)
+    }
+
+    /// Complete one allowlisted unavailable request over payload-only transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any binding, sequence, schema, or transport failure.
+    pub fn complete_unavailable_payloads(
+        &mut self,
+        payloads: &mut impl BrokerIpcPayloads,
+        request: &TransportRequest,
+        request_nonce: [u8; 32],
+    ) -> Result<(), BrokerIpcError> {
         let request_nonce = nonzero(FixedHex(request_nonce))?;
         let unavailable = UnavailableRequestWire::from_transport(request)?;
         let binding = ResponseBindingWire::from_context(request.context());
         let method = unavailable.method;
         let sequence = self.take_outbound_sequence()?;
-        write_frame(
-            writer,
+        write_payload_value(
+            payloads,
             &ClientFrameWire {
                 namespace: Namespace::YourWalletBroker,
                 version: PROTOCOL_VERSION,
@@ -259,7 +324,7 @@ impl BrokerIpcClient {
             },
         )?;
 
-        let response = self.read_bound_response(reader)?;
+        let response = self.read_bound_payload_response(payloads)?;
         let ServerBodyWire::Unavailable {
             server_nonce,
             request_nonce: returned_nonce,
@@ -293,6 +358,21 @@ impl BrokerIpcClient {
         cancellation: TransportCancellation,
         cancellation_nonce: [u8; 32],
     ) -> Result<TransportCancellationOutcome, BrokerIpcError> {
+        let mut payloads = SplitFramedPayloads { reader, writer };
+        self.cancel_payloads(&mut payloads, cancellation, cancellation_nonce)
+    }
+
+    /// Send one exactly bound cancellation over payload-only transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any binding, sequence, schema, or transport failure.
+    pub fn cancel_payloads(
+        &mut self,
+        payloads: &mut impl BrokerIpcPayloads,
+        cancellation: TransportCancellation,
+        cancellation_nonce: [u8; 32],
+    ) -> Result<TransportCancellationOutcome, BrokerIpcError> {
         let cancellation_nonce = nonzero(FixedHex(cancellation_nonce))?;
         let binding = CancellationBindingWire::from_transport(cancellation);
         let sequence = self.take_outbound_sequence()?;
@@ -308,9 +388,9 @@ impl BrokerIpcClient {
                 cancellation: binding,
             },
         };
-        write_frame(writer, &frame)?;
+        write_payload_value(payloads, &frame)?;
 
-        let response = self.read_bound_response(reader)?;
+        let response = self.read_bound_payload_response(payloads)?;
         let ServerBodyWire::Cancelled {
             server_nonce,
             cancellation_nonce: returned_nonce,
@@ -334,11 +414,11 @@ impl BrokerIpcClient {
         })
     }
 
-    fn read_bound_response(
+    fn read_bound_payload_response(
         &mut self,
-        reader: &mut impl Read,
+        payloads: &mut impl BrokerIpcPayloads,
     ) -> Result<ServerFrameWire, BrokerIpcError> {
-        let response: ServerFrameWire = read_required_frame(reader)?;
+        let response: ServerFrameWire = read_required_payload_value(payloads)?;
         if response.namespace != Namespace::YourWalletBroker
             || response.version != PROTOCOL_VERSION
             || response.role != ServerRole::Broker
@@ -380,7 +460,30 @@ pub fn run_secretless_server<Clock>(
 where
     Clock: FnMut() -> Result<(Instant, u64), BrokerIpcError>,
 {
-    let hello: ClientFrameWire = read_required_frame(reader)?;
+    let mut payloads = SplitFramedPayloads { reader, writer };
+    run_secretless_server_payloads(&mut payloads, broker, server_nonce, clock)
+}
+
+/// Run one bounded, secretless Broker IPC session over payload-only transport.
+///
+/// The payload transport is the sole framing owner. The typed state machine
+/// accepts only the closed version-1 hello, chain-id, unavailable, and cancel
+/// schemas; it has no account, RPC, or signing representation.
+///
+/// # Errors
+///
+/// Returns on the first payload, handshake, sequence, binding, clock, or Broker
+/// policy failure. No resynchronization is attempted.
+pub fn run_secretless_server_payloads<Clock>(
+    payloads: &mut impl BrokerIpcPayloads,
+    broker: &mut TransportBroker,
+    server_nonce: [u8; 32],
+    clock: &mut Clock,
+) -> Result<BrokerIpcSummary, BrokerIpcError>
+where
+    Clock: FnMut() -> Result<(Instant, u64), BrokerIpcError>,
+{
+    let hello: ClientFrameWire = read_required_payload_value(payloads)?;
     if hello.namespace != Namespace::YourWalletBroker
         || hello.version != PROTOCOL_VERSION
         || hello.role != ClientRole::NativeHost
@@ -391,8 +494,8 @@ where
     }
     let client_nonce = nonzero(hello.client_nonce)?;
     let server_nonce = nonzero(FixedHex(server_nonce))?;
-    write_frame(
-        writer,
+    write_payload_value(
+        payloads,
         &ServerFrameWire {
             namespace: Namespace::YourWalletBroker,
             version: PROTOCOL_VERSION,
@@ -408,7 +511,7 @@ where
     let mut extension_session = None;
     let mut summary = BrokerIpcSummary::default();
     loop {
-        let Some(frame): Option<ClientFrameWire> = read_frame(reader)? else {
+        let Some(frame): Option<ClientFrameWire> = read_payload_value(payloads)? else {
             return Ok(summary);
         };
         if summary.commands >= MAX_BROKER_IPC_COMMANDS {
@@ -435,8 +538,8 @@ where
         )?;
         let response_sequence = next_server_sequence;
         next_server_sequence = advance_sequence(next_server_sequence)?;
-        write_frame(
-            writer,
+        write_payload_value(
+            payloads,
             &ServerFrameWire {
                 namespace: Namespace::YourWalletBroker,
                 version: PROTOCOL_VERSION,
@@ -591,15 +694,72 @@ fn nonzero<const LENGTH: usize>(
     }
 }
 
+struct SplitFramedPayloads<'a, Reader, Writer> {
+    reader: &'a mut Reader,
+    writer: &'a mut Writer,
+}
+
+impl<Reader, Writer> BrokerIpcPayloads for SplitFramedPayloads<'_, Reader, Writer>
+where
+    Reader: Read,
+    Writer: Write,
+{
+    fn read_payload(&mut self) -> Result<Option<Vec<u8>>, BrokerIpcError> {
+        read_framed_payload(self.reader)
+    }
+
+    fn write_payload(&mut self, payload: &[u8]) -> Result<(), BrokerIpcError> {
+        write_framed_payload(self.writer, payload)
+    }
+}
+
+fn read_required_payload_value<T: for<'de> Deserialize<'de>>(
+    payloads: &mut impl BrokerIpcPayloads,
+) -> Result<T, BrokerIpcError> {
+    read_payload_value(payloads)?.ok_or(BrokerIpcError::Truncated)
+}
+
+fn read_payload_value<T: for<'de> Deserialize<'de>>(
+    payloads: &mut impl BrokerIpcPayloads,
+) -> Result<Option<T>, BrokerIpcError> {
+    let Some(payload) = payloads.read_payload()? else {
+        return Ok(None);
+    };
+    validate_payload_length(payload.len())?;
+    serde_json::from_slice(&payload)
+        .map(Some)
+        .map_err(|_| BrokerIpcError::Malformed)
+}
+
+fn write_payload_value<T: Serialize>(
+    payloads: &mut impl BrokerIpcPayloads,
+    value: &T,
+) -> Result<(), BrokerIpcError> {
+    let payload = serde_json::to_vec(value).map_err(|_| BrokerIpcError::Malformed)?;
+    validate_payload_length(payload.len())?;
+    payloads.write_payload(&payload)
+}
+
+#[cfg(test)]
 fn read_required_frame<T: for<'de> Deserialize<'de>>(
     reader: &mut impl Read,
 ) -> Result<T, BrokerIpcError> {
     read_frame(reader)?.ok_or(BrokerIpcError::Truncated)
 }
 
+#[cfg(test)]
 fn read_frame<T: for<'de> Deserialize<'de>>(
     reader: &mut impl Read,
 ) -> Result<Option<T>, BrokerIpcError> {
+    let Some(payload) = read_framed_payload(reader)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&payload)
+        .map(Some)
+        .map_err(|_| BrokerIpcError::Malformed)
+}
+
+fn read_framed_payload(reader: &mut impl Read) -> Result<Option<Vec<u8>>, BrokerIpcError> {
     let mut length_bytes = [0_u8; 4];
     let first = reader
         .read(&mut length_bytes[..1])
@@ -610,31 +770,37 @@ fn read_frame<T: for<'de> Deserialize<'de>>(
     read_exact(reader, &mut length_bytes[1..])?;
     let length =
         usize::try_from(u32::from_be_bytes(length_bytes)).map_err(|_| BrokerIpcError::Oversized)?;
-    if length == 0 || length > MAX_BROKER_IPC_FRAME_BYTES {
-        return Err(BrokerIpcError::Oversized);
-    }
+    validate_payload_length(length)?;
     let mut payload = Vec::new();
     payload
         .try_reserve_exact(length)
         .map_err(|_| BrokerIpcError::Allocation)?;
     payload.resize(length, 0);
     read_exact(reader, &mut payload)?;
-    serde_json::from_slice(&payload)
-        .map(Some)
-        .map_err(|_| BrokerIpcError::Malformed)
+    Ok(Some(payload))
 }
 
+#[cfg(test)]
 fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<(), BrokerIpcError> {
     let payload = serde_json::to_vec(value).map_err(|_| BrokerIpcError::Malformed)?;
-    if payload.is_empty() || payload.len() > MAX_BROKER_IPC_FRAME_BYTES {
-        return Err(BrokerIpcError::Oversized);
-    }
+    write_framed_payload(writer, &payload)
+}
+
+fn write_framed_payload(writer: &mut impl Write, payload: &[u8]) -> Result<(), BrokerIpcError> {
+    validate_payload_length(payload.len())?;
     let length = u32::try_from(payload.len()).map_err(|_| BrokerIpcError::Oversized)?;
     writer
         .write_all(&length.to_be_bytes())
-        .and_then(|()| writer.write_all(&payload))
+        .and_then(|()| writer.write_all(payload))
         .and_then(|()| writer.flush())
         .map_err(|_| BrokerIpcError::Io)
+}
+
+fn validate_payload_length(length: usize) -> Result<(), BrokerIpcError> {
+    if length == 0 || length > MAX_BROKER_IPC_FRAME_BYTES {
+        return Err(BrokerIpcError::Oversized);
+    }
+    Ok(())
 }
 
 fn read_exact(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), BrokerIpcError> {
@@ -1233,6 +1399,7 @@ impl From<BrokerError> for BrokerIpcError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::io::Cursor;
     use std::time::Instant;
 
@@ -1244,9 +1411,9 @@ mod tests {
     };
 
     use super::{
-        BrokerIpcClient, BrokerIpcError, ClientBodyWire, ClientFrameWire, FixedHex,
-        MAX_BROKER_IPC_COMMANDS, MAX_BROKER_IPC_FRAME_BYTES, Namespace, ServerBodyWire,
-        ServerFrameWire, run_secretless_server, write_frame,
+        BrokerIpcClient, BrokerIpcError, BrokerIpcPayloads, ClientBodyWire, ClientFrameWire,
+        FixedHex, MAX_BROKER_IPC_COMMANDS, MAX_BROKER_IPC_FRAME_BYTES, Namespace, ServerBodyWire,
+        ServerFrameWire, run_secretless_server, run_secretless_server_payloads, write_frame,
     };
     use crate::{
         PermissionStore, ProviderRoute, TransportBroker, TransportCancellation, TransportRequest,
@@ -1314,6 +1481,73 @@ mod tests {
             sequence,
             body,
         }
+    }
+
+    #[derive(Default)]
+    struct MemoryPayloads {
+        reads: VecDeque<Vec<u8>>,
+        writes: Vec<Vec<u8>>,
+    }
+
+    impl BrokerIpcPayloads for MemoryPayloads {
+        fn read_payload(&mut self) -> Result<Option<Vec<u8>>, BrokerIpcError> {
+            Ok(self.reads.pop_front())
+        }
+
+        fn write_payload(&mut self, payload: &[u8]) -> Result<(), BrokerIpcError> {
+            self.writes.push(payload.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn payload_state_machine_emits_exact_json_without_a_second_prefix_and_enforces_8192()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let hello = serde_json::to_vec(&client_frame(1, ClientBodyWire::Hello))?;
+        let mut payloads = MemoryPayloads {
+            reads: VecDeque::from([hello]),
+            writes: Vec::new(),
+        };
+        let mut broker = TransportBroker::new(
+            PermissionStore::default(),
+            Address20::new([1; 20]),
+            U256::from_u64(11_155_111),
+        );
+        let summary =
+            run_secretless_server_payloads(&mut payloads, &mut broker, [8; 32], &mut || {
+                Ok((Instant::now(), 1_700_000_000_000))
+            })?;
+        assert_eq!(summary.commands(), 0);
+        assert_eq!(payloads.writes.len(), 1);
+        let response = &payloads.writes[0];
+        assert_eq!(response.first(), Some(&b'{'));
+        let decoded: ServerFrameWire = serde_json::from_slice(response)?;
+        assert_eq!(decoded.sequence, 1);
+        assert!(matches!(decoded.body, ServerBodyWire::Hello { .. }));
+
+        let mut exact_limit = MemoryPayloads {
+            reads: VecDeque::from([vec![b' '; MAX_BROKER_IPC_FRAME_BYTES]]),
+            writes: Vec::new(),
+        };
+        assert!(matches!(
+            run_secretless_server_payloads(&mut exact_limit, &mut broker, [8; 32], &mut || Ok((
+                Instant::now(),
+                1_700_000_000_000
+            )),),
+            Err(BrokerIpcError::Malformed)
+        ));
+        let mut oversized = MemoryPayloads {
+            reads: VecDeque::from([vec![b' '; MAX_BROKER_IPC_FRAME_BYTES + 1]]),
+            writes: Vec::new(),
+        };
+        assert!(matches!(
+            run_secretless_server_payloads(&mut oversized, &mut broker, [8; 32], &mut || Ok((
+                Instant::now(),
+                1_700_000_000_000
+            )),),
+            Err(BrokerIpcError::Oversized)
+        ));
+        Ok(())
     }
 
     fn assert_unavailable_has_no_raw_request_data(

@@ -9,9 +9,10 @@ use core::fmt;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 
-use broker::TransportCancellationOutcome;
-use broker::ipc::{BrokerIpcClient, BrokerIpcError};
+use broker::ipc::{BrokerIpcClient, BrokerIpcError, BrokerIpcPayloads};
+use broker::{TransportCancellation, TransportCancellationOutcome, TransportRequest};
 use thiserror::Error;
+use wallet_model::U256;
 
 use crate::wire::{
     ExtensionEnvelope, ProtocolError, encode_contract_chain_id_response,
@@ -106,7 +107,143 @@ pub fn run_broker_contract_test_stream<Random>(
 where
     Random: FnMut() -> Result<[u8; 32], ContractBridgeError>,
 {
-    let mut broker = BrokerIpcClient::connect(broker_reader, broker_writer, random_nonce()?)?;
+    let client = BrokerIpcClient::connect(broker_reader, broker_writer, random_nonce()?)?;
+    let mut broker = StreamBroker {
+        client,
+        reader: broker_reader,
+        writer: broker_writer,
+    };
+    run_contract_bridge(native_reader, native_writer, &mut broker, random_nonce)
+}
+
+/// Drives the same closed typed bridge over a transport-owned payload channel.
+///
+/// # Errors
+///
+/// Returns on the first native frame, typed Broker payload, sequence, nonce, or
+/// output error. No fallback to stdio, network, accounts, or signing exists.
+pub fn run_broker_contract_test_payloads<Random>(
+    native_reader: &mut impl Read,
+    native_writer: &mut impl Write,
+    broker_payloads: &mut impl BrokerIpcPayloads,
+    random_nonce: &mut Random,
+) -> Result<(), ContractBridgeError>
+where
+    Random: FnMut() -> Result<[u8; 32], ContractBridgeError>,
+{
+    let client = BrokerIpcClient::connect_payloads(broker_payloads, random_nonce()?)?;
+    let mut broker = PayloadBroker {
+        client,
+        payloads: broker_payloads,
+    };
+    run_contract_bridge(native_reader, native_writer, &mut broker, random_nonce)
+}
+
+trait ContractBroker {
+    fn execute_chain_id(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<U256, BrokerIpcError>;
+
+    fn complete_unavailable(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<(), BrokerIpcError>;
+
+    fn cancel(
+        &mut self,
+        cancellation: TransportCancellation,
+        nonce: [u8; 32],
+    ) -> Result<TransportCancellationOutcome, BrokerIpcError>;
+}
+
+struct StreamBroker<'a, Reader, Writer> {
+    client: BrokerIpcClient,
+    reader: &'a mut Reader,
+    writer: &'a mut Writer,
+}
+
+impl<Reader, Writer> ContractBroker for StreamBroker<'_, Reader, Writer>
+where
+    Reader: Read,
+    Writer: Write,
+{
+    fn execute_chain_id(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<U256, BrokerIpcError> {
+        self.client
+            .execute_chain_id(self.reader, self.writer, request, nonce)
+    }
+
+    fn complete_unavailable(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<(), BrokerIpcError> {
+        self.client
+            .complete_unavailable(self.reader, self.writer, request, nonce)
+    }
+
+    fn cancel(
+        &mut self,
+        cancellation: TransportCancellation,
+        nonce: [u8; 32],
+    ) -> Result<TransportCancellationOutcome, BrokerIpcError> {
+        self.client
+            .cancel(self.reader, self.writer, cancellation, nonce)
+    }
+}
+
+struct PayloadBroker<'a, Payloads> {
+    client: BrokerIpcClient,
+    payloads: &'a mut Payloads,
+}
+
+impl<Payloads> ContractBroker for PayloadBroker<'_, Payloads>
+where
+    Payloads: BrokerIpcPayloads,
+{
+    fn execute_chain_id(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<U256, BrokerIpcError> {
+        self.client
+            .execute_chain_id_payloads(self.payloads, request, nonce)
+    }
+
+    fn complete_unavailable(
+        &mut self,
+        request: &TransportRequest,
+        nonce: [u8; 32],
+    ) -> Result<(), BrokerIpcError> {
+        self.client
+            .complete_unavailable_payloads(self.payloads, request, nonce)
+    }
+
+    fn cancel(
+        &mut self,
+        cancellation: TransportCancellation,
+        nonce: [u8; 32],
+    ) -> Result<TransportCancellationOutcome, BrokerIpcError> {
+        self.client
+            .cancel_payloads(self.payloads, cancellation, nonce)
+    }
+}
+
+fn run_contract_bridge<Random>(
+    native_reader: &mut impl Read,
+    native_writer: &mut impl Write,
+    broker: &mut impl ContractBroker,
+    random_nonce: &mut Random,
+) -> Result<(), ContractBridgeError>
+where
+    Random: FnMut() -> Result<[u8; 32], ContractBridgeError>,
+{
     let mut native_sequence = NativeSequence::new();
     let mut broker_completed = BTreeSet::new();
     let mut frames = 0_u64;
@@ -125,20 +262,10 @@ where
                 native_sequence.observe(*context.session_id.as_bytes(), context.sequence)?;
                 let response_sequence = native_sequence.take_outbound()?;
                 let response = if request.method_name() == "eth_chainId" {
-                    let chain_id = broker.execute_chain_id(
-                        broker_reader,
-                        broker_writer,
-                        &request,
-                        random_nonce()?,
-                    )?;
+                    let chain_id = broker.execute_chain_id(&request, random_nonce()?)?;
                     encode_contract_chain_id_response(&request, response_sequence, chain_id)?
                 } else {
-                    broker.complete_unavailable(
-                        broker_reader,
-                        broker_writer,
-                        &request,
-                        random_nonce()?,
-                    )?;
+                    broker.complete_unavailable(&request, random_nonce()?)?;
                     encode_contract_unavailable_response(&request, response_sequence)?
                 };
                 let inserted = broker_completed.insert((
@@ -162,8 +289,7 @@ where
                 if !broker_completed.remove(&key) {
                     return Err(ProtocolError::SessionSequence.into());
                 }
-                let disposition =
-                    broker.cancel(broker_reader, broker_writer, cancellation, random_nonce()?)?;
+                let disposition = broker.cancel(cancellation, random_nonce()?)?;
                 if disposition != TransportCancellationOutcome::AlreadyCompleted {
                     return Err(BrokerIpcError::Binding.into());
                 }

@@ -9,6 +9,11 @@ rust-version.workspace = true
 default = []
 # Real subprocess bridge used only by debug-profile headless contract tests.
 broker-ipc-contract-test-hook = ["broker/ipc-contract-test-hook", "dep:getrandom"]
+windows-broker-channel-contract-test-hook = [
+    "broker-ipc-contract-test-hook",
+    "broker/windows-broker-channel-contract-test-hook",
+    "platform-windows/broker-channel-contract-test-hook",
+]
 
 [dependencies]
 broker = { path = "../broker" }

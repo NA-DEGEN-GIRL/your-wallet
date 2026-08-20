@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Dormant, network-free Windows Broker composition used only by debug tests.
+broker-channel-contract-test-hook = []
+
 [dependencies]
 approval-wire = { path = "../approval-wire" }
 getrandom.workspace = true

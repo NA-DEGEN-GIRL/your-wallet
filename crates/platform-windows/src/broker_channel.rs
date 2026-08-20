@@ -1,20 +1,24 @@
 //! Dormant Windows-only native-host/Broker channel proof.
 //!
-//! This module proves only a one-shot, secretless, process-bound transport. It
-//! is intentionally crate-private and no production entrypoint constructs it.
-//! The following remain STOP-SHIP before activation:
+//! This module owns the persistent, secretless, process-bound multi-frame
+//! transport. It is intentionally crate-private. The debug-only
+//! `broker_supervisor` composes it with a simultaneously held Broker artifact,
+//! pre-user-mode mapped-image proof, retained process/Job cleanup, and
+//! payload-only `broker::ipc` adapters. That closed composition represents only
+//! chain ID, unavailable, and cancellation; default and release entrypoints do
+//! not construct it.
 //!
-//! - exact mapped-image identity for the Chrome-launched native host;
-//! - an exact, retained Broker child image and lifecycle proof;
-//! - signed, immutable installation plus native-messaging registration;
-//! - direct composition with `broker::ipc`'s nonce, sequence, 4,096-command,
-//!   and typed schema contract (this crate deliberately has no `broker`
-//!   dependency);
-//! - any signing or Key Agent route.
+//! The following remain STOP-SHIP before release activation:
 //!
-//! The transport implemented here matches only the Broker codec's four-byte
-//! little-endian length prefix and 8 KiB payload ceiling. It never accepts a
-//! raw handle or an externally supplied pipe name in production builds.
+//! - exact mapped-image provenance for the Chrome-launched native host;
+//! - a signed, immutable installation, native-messaging registration, and
+//!   stable extension ID;
+//! - release attestation and production hardening for the composed boundary;
+//! - every external RPC, account, signing, or Key Agent route.
+//!
+//! This transport owns the Broker codec's four-byte big-endian length prefix
+//! and exact 8,192-byte JSON payload ceiling. Its debug facade exposes payloads,
+//! not raw handles or an arbitrary externally supplied pipe name.
 
 use core::fmt;
 use std::time::Instant;
@@ -76,16 +80,22 @@ impl std::error::Error for BrokerChannelError {}
 
 /// Exact retained process object expected at the other end of the pipe.
 ///
-/// No production constructor accepts a PID or session number. A future exact
-/// launcher must move its already-held, restricted process handle into this
-/// token. That constructor intentionally does not exist while exact image and
-/// launcher composition remain STOP-SHIP.
+/// No constructor accepts a PID or session number. The debug-only exact Broker
+/// supervisor derives this token from an already-held, restricted process
+/// handle for both channel peers; default and release APIs cannot construct it.
 pub(crate) struct ExpectedBrokerPeer {
     process: sys::OwnedHandle,
     identity: sys::ProcessIdentity,
 }
 
 impl ExpectedBrokerPeer {
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    pub(crate) fn from_process_handle(
+        process: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> Result<Self, BrokerChannelError> {
+        sys::expected_peer_from_process_handle(process)
+    }
+
     #[cfg(test)]
     fn from_child_for_test(child: &std::process::Child) -> Result<Self, BrokerChannelError> {
         sys::expected_peer_from_child_for_test(child)
@@ -121,9 +131,23 @@ impl BrokerEndpointCapability {
         Ok(VerifiedBrokerChannel { pipe, peer })
     }
 
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    pub(crate) fn into_environment_value(self) -> std::ffi::OsString {
+        self.name.into_environment_value()
+    }
+
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    pub(crate) fn from_environment_value(
+        value: &std::ffi::OsStr,
+    ) -> Result<Self, BrokerChannelError> {
+        Ok(Self {
+            name: sys::SecretPipeName::from_environment_value(value)?,
+        })
+    }
+
     #[cfg(test)]
     fn into_environment_value_for_test(self) -> std::ffi::OsString {
-        self.name.into_environment_value_for_test()
+        self.name.into_environment_value()
     }
 
     #[cfg(test)]
@@ -131,7 +155,7 @@ impl BrokerEndpointCapability {
         value: &std::ffi::OsStr,
     ) -> Result<Self, BrokerChannelError> {
         Ok(Self {
-            name: sys::SecretPipeName::from_environment_value_for_test(value)?,
+            name: sys::SecretPipeName::from_environment_value(value)?,
         })
     }
 
@@ -237,7 +261,7 @@ impl VerifiedBrokerChannel {
             return Err(BrokerChannelError::FrameTooLarge);
         }
         let length = u32::try_from(payload.len()).map_err(|_| BrokerChannelError::FrameTooLarge)?;
-        sys::write_all(&self.pipe, &self.peer, &length.to_le_bytes(), deadline)?;
+        sys::write_all(&self.pipe, &self.peer, &length.to_be_bytes(), deadline)?;
         after_prefix();
         sys::write_all(&self.pipe, &self.peer, payload, deadline)?;
         Ok(self)
@@ -251,10 +275,24 @@ impl VerifiedBrokerChannel {
         self,
         deadline: Instant,
     ) -> Result<(Self, Vec<u8>), BrokerChannelError> {
+        match self.read_frame_or_eof(deadline)? {
+            (channel, Some(payload)) => Ok((channel, payload)),
+            (_channel, None) => Err(BrokerChannelError::UnexpectedEnd),
+        }
+    }
+
+    /// Reads one complete frame while distinguishing a clean boundary close
+    /// before the first prefix byte from a partial frame.
+    pub(crate) fn read_frame_or_eof(
+        self,
+        deadline: Instant,
+    ) -> Result<(Self, Option<Vec<u8>>), BrokerChannelError> {
         sys::check_deadline(deadline)?;
         let mut prefix = [0_u8; 4];
-        sys::read_exact(&self.pipe, &self.peer, &mut prefix, deadline)?;
-        let length = usize::try_from(u32::from_le_bytes(prefix))
+        if !sys::read_prefix_or_eof(&self.pipe, &self.peer, &mut prefix, deadline)? {
+            return Ok((self, None));
+        }
+        let length = usize::try_from(u32::from_be_bytes(prefix))
             .map_err(|_| BrokerChannelError::FrameTooLarge)?;
         if length == 0 {
             return Err(BrokerChannelError::InvalidFrame);
@@ -264,7 +302,7 @@ impl VerifiedBrokerChannel {
         }
         let mut payload = vec![0_u8; length];
         sys::read_exact(&self.pipe, &self.peer, &mut payload, deadline)?;
-        Ok((self, payload))
+        Ok((self, Some(payload)))
     }
 }
 
@@ -280,8 +318,13 @@ mod sys {
     use core::ffi::c_void;
     use core::mem::size_of;
     use core::ptr;
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    use std::os::windows::io::BorrowedHandle;
     #[cfg(test)]
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdOwnedHandle};
     use std::time::{Duration, Instant};
@@ -291,7 +334,10 @@ mod sys {
         ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     };
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     use windows::Win32::Foundation::{
         DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
     };
@@ -330,7 +376,10 @@ mod sys {
     use windows::Win32::System::Threading::{
         CreateEventW, GetCurrentProcess, GetProcessId, OpenProcessToken, WaitForSingleObject,
     };
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     use windows::Win32::System::Threading::{
         GetCurrentProcessId, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     };
@@ -396,8 +445,11 @@ mod sys {
             PCWSTR(self.utf16_with_nul.as_ptr())
         }
 
-        #[cfg(test)]
-        pub(super) fn into_environment_value_for_test(self) -> std::ffi::OsString {
+        #[cfg(any(
+            test,
+            all(feature = "broker-channel-contract-test-hook", debug_assertions)
+        ))]
+        pub(super) fn into_environment_value(self) -> std::ffi::OsString {
             let without_nul = self
                 .utf16_with_nul
                 .get(..self.utf16_with_nul.len().saturating_sub(1))
@@ -405,8 +457,11 @@ mod sys {
             std::ffi::OsString::from_wide(without_nul)
         }
 
-        #[cfg(test)]
-        pub(super) fn from_environment_value_for_test(
+        #[cfg(any(
+            test,
+            all(feature = "broker-channel-contract-test-hook", debug_assertions)
+        ))]
+        pub(super) fn from_environment_value(
             value: &std::ffi::OsStr,
         ) -> Result<Self, BrokerChannelError> {
             let mut utf16_with_nul: Vec<u16> = value.encode_wide().collect();
@@ -523,7 +578,10 @@ mod sys {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     pub(super) fn current_process_id() -> u32 {
         // SAFETY: this scalar query has no preconditions.
         unsafe { GetCurrentProcessId() }
@@ -532,6 +590,16 @@ mod sys {
     pub(super) fn current_identity() -> Result<ProcessIdentity, BrokerChannelError> {
         // SAFETY: the current-process pseudo-handle remains valid for this process.
         identity_for_handle(unsafe { GetCurrentProcess() })
+    }
+
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    pub(super) fn expected_peer_from_process_handle(
+        source: BorrowedHandle<'_>,
+    ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {
+        use std::os::windows::io::AsRawHandle;
+
+        let process = duplicate_restricted_process_handle(HANDLE(source.as_raw_handle()), false)?;
+        expected_peer_from_owned_handle(process)
     }
 
     #[cfg(test)]
@@ -581,7 +649,10 @@ mod sys {
         Ok(std::process::Stdio::from(owned))
     }
 
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     fn duplicate_restricted_process_handle(
         source: HANDLE,
         inheritable: bool,
@@ -620,7 +691,10 @@ mod sys {
         Ok(duplicate)
     }
 
-    #[cfg(test)]
+    #[cfg(any(
+        test,
+        all(feature = "broker-channel-contract-test-hook", debug_assertions)
+    ))]
     fn expected_peer_from_owned_handle(
         process: OwnedHandle,
     ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {
@@ -1010,6 +1084,25 @@ mod sys {
                 .ok_or(BrokerChannelError::OperatingSystemBoundary)?;
         }
         Ok(())
+    }
+
+    pub(super) fn read_prefix_or_eof(
+        pipe: &OwnedHandle,
+        peer: &PeerBinding,
+        prefix: &mut [u8; 4],
+        deadline: Instant,
+    ) -> Result<bool, BrokerChannelError> {
+        peer.revalidate()?;
+        check_deadline(deadline)?;
+        let first = match read_once(pipe.raw(), &mut prefix[..1], deadline) {
+            Ok(0) | Err(BrokerChannelError::UnexpectedEnd) => return Ok(false),
+            Ok(1) => 1,
+            Ok(_) => return Err(BrokerChannelError::OperatingSystemBoundary),
+            Err(error) => return Err(error),
+        };
+        debug_assert_eq!(first, 1);
+        read_exact(pipe, peer, &mut prefix[1..], deadline)?;
+        Ok(true)
     }
 
     fn write_once(
@@ -1732,12 +1825,12 @@ mod tests {
                 expect_peer_closed(&channel)?;
             }
             "zero-then-valid" => {
-                raw_write(&channel, &0_u32.to_le_bytes())?;
+                raw_write(&channel, &0_u32.to_be_bytes())?;
                 assert_later_valid_frame_is_rejected(&channel);
             }
             "oversized-then-valid" => {
                 let oversized = u32::try_from(MAX_BROKER_FRAME_BYTES + 1)?;
-                raw_write(&channel, &oversized.to_le_bytes())?;
+                raw_write(&channel, &oversized.to_be_bytes())?;
                 assert_later_valid_frame_is_rejected(&channel);
             }
             "partial-prefix" => {
@@ -1746,7 +1839,7 @@ mod tests {
                 assert!(raw_write(&channel, &[0_u8, 0_u8]).is_err());
             }
             "partial-payload" => {
-                raw_write(&channel, &4_u32.to_le_bytes())?;
+                raw_write(&channel, &4_u32.to_be_bytes())?;
                 raw_write(&channel, b"pa")?;
                 std::thread::sleep(Duration::from_millis(180));
                 assert!(raw_write(&channel, b"rt").is_err());
@@ -1759,7 +1852,7 @@ mod tests {
                     &mut prefix,
                     deadline_after(5_000)?,
                 )?;
-                assert_eq!(u32::from_le_bytes(prefix), 20);
+                assert_eq!(u32::from_be_bytes(prefix), 20);
             }
             _ => return Err("unknown Broker channel subprocess mode".into()),
         }
@@ -1823,7 +1916,7 @@ mod tests {
 
     fn assert_later_valid_frame_is_rejected(channel: &VerifiedBrokerChannel) {
         std::thread::sleep(Duration::from_millis(120));
-        let valid_prefix = 4_u32.to_le_bytes();
+        let valid_prefix = 4_u32.to_be_bytes();
         assert!(raw_write(channel, &valid_prefix).is_err());
     }
 
