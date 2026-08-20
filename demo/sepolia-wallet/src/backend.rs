@@ -3463,6 +3463,7 @@ mod tests {
         send_fails: bool,
         pending_path_to_require: Option<PathBuf>,
         send_observed_pending: bool,
+        send_observed_exact_pending: bool,
         expire_clock_on_estimate_call: Option<(TestClock, usize, Duration)>,
     }
 
@@ -3487,6 +3488,7 @@ mod tests {
                     send_fails: false,
                     pending_path_to_require: None,
                     send_observed_pending: false,
+                    send_observed_exact_pending: false,
                     expire_clock_on_estimate_call: None,
                 })),
             }
@@ -3564,14 +3566,92 @@ mod tests {
         fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
             let mut state = self.state.lock().map_err(|_| ())?;
             state.sent.push(signed.to_vec());
-            if let Some(path) = &state.pending_path_to_require {
+            if let Some(path) = state.pending_path_to_require.clone() {
                 state.send_observed_pending = path.is_file();
+                state.send_observed_exact_pending = read_pending(&path).is_ok_and(|pending| {
+                    pending.transaction_hash == keccak32(signed)
+                        && pending.raw_transaction.as_slice() == signed
+                });
             }
             if state.send_fails {
                 Err(())
             } else {
                 Ok(keccak32(signed))
             }
+        }
+    }
+
+    /// One deterministic, cloneable RPC surface used by the full backend
+    /// lifecycle regression. Native-transfer and ERC-20 calls intentionally
+    /// share the same process state across backend restarts.
+    #[derive(Clone)]
+    struct LifecycleRpc {
+        native: MutableRpc,
+        tokens: TokenRpc,
+    }
+
+    impl RpcAccess for LifecycleRpc {
+        fn verify_sepolia(&self) -> Result<(), ()> {
+            self.native.verify_sepolia()
+        }
+
+        fn balance(&self, address: [u8; 20]) -> Result<Word, ()> {
+            self.native.balance(address)
+        }
+
+        fn pending_balance(&self, address: [u8; 20]) -> Result<Word, ()> {
+            self.native.pending_balance(address)
+        }
+
+        fn pending_nonce(&self, address: [u8; 20]) -> Result<Word, ()> {
+            self.native.pending_nonce(address)
+        }
+
+        fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
+            self.native.fee_quote()
+        }
+
+        fn latest_base_fee(&self) -> Result<Word, ()> {
+            self.native.latest_base_fee()
+        }
+
+        fn estimate_native_transfer_gas(
+            &self,
+            sender: [u8; 20],
+            recipient: [u8; 20],
+            value: Word,
+            nonce: Word,
+            priority_fee: Word,
+            maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            self.native.estimate_native_transfer_gas(
+                sender,
+                recipient,
+                value,
+                nonce,
+                priority_fee,
+                maximum_fee,
+            )
+        }
+
+        fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()> {
+            self.native.send_raw_transaction(signed)
+        }
+
+        fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.tokens.contract_code(contract)
+        }
+
+        fn erc20_decimals(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.tokens.erc20_decimals(contract)
+        }
+
+        fn erc20_symbol(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.tokens.erc20_symbol(contract)
+        }
+
+        fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.tokens.erc20_balance_of(contract, owner)
         }
     }
 
@@ -4287,6 +4367,177 @@ mod tests {
             resolve_fee_plan(FeeSelection::Faster, capped_tip_quote),
             Err(BackendError::FasterUnavailable)
         ));
+    }
+
+    #[test]
+    fn headless_real_backend_lifecycle_persists_reopens_exports_tokens_and_sends() {
+        let native = MutableRpc::new();
+        let tokens = TokenRpc::new();
+        let contract = [0x41; 20];
+        tokens.insert(contract, token_fixture(1));
+        let rpc = LifecycleRpc {
+            native: native.clone(),
+            tokens,
+        };
+        let clock = TestClock::new(Instant::now());
+        let vault_path = temporary_vault();
+        let imported_key = [0x2a; KEY_BYTES];
+        let expected_address = checksum_address(
+            address_from_private_key(&imported_key).expect("derive imported account zero"),
+        );
+
+        let mut imported =
+            DemoBackend::with_rpc_and_clock(vault_path.clone(), rpc.clone(), clock.clone());
+        let imported_snapshot = imported
+            .import_private_key(
+                sensitive(&fixed_hex(&imported_key)),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("import and persist known v2 account zero");
+        assert!(imported_snapshot.address == expected_address);
+        assert!(imported_snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
+        assert_eq!(imported_snapshot.account_count, 1);
+        assert!(imported.vault_v2_path.is_file());
+        assert!(!path_may_exist(&imported.vault_path));
+        let persisted_vault = fs::read(&imported.vault_v2_path).expect("read persisted v2 vault");
+        assert!(!persisted_vault.is_empty());
+        drop(imported);
+
+        let mut restarted =
+            DemoBackend::with_rpc_and_clock(vault_path.clone(), rpc.clone(), clock.clone());
+        assert!(matches!(
+            restarted.open("incorrect demo password"),
+            Err(BackendError::VaultAuthentication)
+        ));
+        assert!(restarted.unlocked.is_none());
+        assert!(
+            fs::read(&restarted.vault_v2_path).expect("reread v2 vault after rejected password")
+                == persisted_vault
+        );
+
+        let reopened_snapshot = restarted
+            .open(TEST_PASSWORD)
+            .expect("reopen persisted v2 wallet");
+        assert!(reopened_snapshot.address == expected_address);
+        let account_zero_export = restarted
+            .export_account_private_key_inner(sensitive(TEST_PASSWORD))
+            .expect("reauthenticate and export account zero");
+        drop(account_zero_export);
+        let UnlockedWallet::V2(opened) = restarted
+            .unlocked
+            .as_ref()
+            .expect("v2 wallet remains unlocked after export")
+        else {
+            panic!("expected imported v2 wallet");
+        };
+        let account_zero = opened
+            .wallet()
+            .account_private_key(0)
+            .expect("load imported account zero");
+        assert!(account_zero.as_bytes() == &imported_key);
+        drop(account_zero);
+        let exact_export = opened
+            .wallet()
+            .export_account_private_key(0)
+            .expect("export exact account zero from reopened wallet");
+        let (export_kind, export_text) = exact_export.into_zeroizing_text();
+        assert!(export_kind == SecretExportKind::AccountPrivateKey);
+        assert!(export_text.as_str() == hex_without_prefix(&imported_key));
+        drop(export_text);
+
+        let contract_text = checksum_address(contract);
+        let added = restarted
+            .add_custom_token_inner(&contract_text)
+            .expect("validate and persist custom token");
+        assert_eq!(added.len(), 1);
+        assert!(added[0].contract_address == contract_text);
+        assert!(matches!(
+            &added[0].state,
+            CustomTokenState::Verified {
+                symbol,
+                decimals,
+                balance,
+            } if symbol.as_deref() == Some("TOK") && *decimals == 2 && balance == "12.35"
+        ));
+        assert!(restarted.token_store_path.is_file());
+        assert!(
+            !fs::read(&restarted.token_store_path)
+                .expect("read persisted authenticated token store")
+                .is_empty()
+        );
+        drop(restarted);
+
+        let mut final_restart = DemoBackend::with_rpc_and_clock(vault_path, rpc, clock.clone());
+        let final_snapshot = final_restart
+            .open(TEST_PASSWORD)
+            .expect("reopen wallet and authenticated token sidecar");
+        assert!(final_snapshot.address == expected_address);
+        let refreshed = final_restart
+            .refresh_custom_tokens_inner()
+            .expect("refresh persisted token after process restart");
+        assert!(refreshed == added);
+
+        let recipient = "0x1111111111111111111111111111111111111111";
+        let preview = final_restart
+            .prepare_transfer_inner(
+                recipient,
+                "0.25",
+                FeeSelection::Custom {
+                    max_priority_fee_per_gas_gwei: "1.25".to_owned(),
+                    max_fee_per_gas_gwei: "3.5".to_owned(),
+                },
+            )
+            .expect("prepare exact custom-fee native transfer");
+        assert_eq!(preview.max_priority_fee_per_gas_gwei, "1.25");
+        assert_eq!(preview.max_fee_per_gas_gwei, "3.5");
+        assert_eq!(preview.gas_limit, NATIVE_TRANSFER_GAS.to_string());
+        let pending_path = final_restart.pending_path.clone();
+        native.update(|state| {
+            state.pending_path_to_require = Some(pending_path);
+            state.send_observed_pending = false;
+            state.send_observed_exact_pending = false;
+        });
+
+        let receipt = final_restart
+            .confirm_prepared_inner()
+            .expect("sign, durably stage, and verify mock broadcast");
+        assert_eq!(final_restart.sign_attempts, 1);
+        let expected_transaction_hash = {
+            let state = native.state.lock().expect("lifecycle native RPC lock");
+            assert_eq!(state.sent.len(), 1);
+            assert!(state.send_observed_pending);
+            assert!(state.send_observed_exact_pending);
+            keccak32(&state.sent[0])
+        };
+        assert!(receipt.transaction_hash == fixed_hex(&expected_transaction_hash));
+        assert!(!final_restart.pending_broadcast_exists());
+        assert!(!path_may_exist(&final_restart.pending_path));
+
+        let v2_path = final_restart.vault_v2_path.clone();
+        drop(final_restart);
+        let mut corrupted_bytes = fs::read(&v2_path).expect("read v2 vault for corruption probe");
+        let last = corrupted_bytes
+            .len()
+            .checked_sub(1)
+            .expect("v2 vault is nonempty");
+        corrupted_bytes[last] ^= 1;
+        fs::write(&v2_path, corrupted_bytes).expect("install corrupted v2 fixture");
+
+        let mut corrupted = DemoBackend::with_rpc_and_clock(
+            v2_path.with_file_name("vault-v1.bin"),
+            LifecycleRpc {
+                native,
+                tokens: TokenRpc::new(),
+            },
+            clock,
+        );
+        assert!(matches!(
+            corrupted.open(TEST_PASSWORD),
+            Err(BackendError::VaultAuthentication)
+        ));
+        assert!(corrupted.unlocked.is_none());
+        remove_test_backend_files(&corrupted);
     }
 
     #[test]
