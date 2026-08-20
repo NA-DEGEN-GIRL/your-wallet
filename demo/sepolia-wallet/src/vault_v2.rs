@@ -55,6 +55,7 @@ const ORIGIN_IMPORTED_RAW_KEY: u8 = 3;
 const ORIGIN_MIGRATED_V1: u8 = 4;
 const VAULT_AEAD_INFO: &[u8] = b"your-wallet/sepolia-demo/v2/vault-aead-v1";
 const TOKEN_STORE_INFO: &[u8] = b"your-wallet/sepolia-demo/v2/token-store-v1";
+const ACTIVITY_STORE_INFO: &[u8] = b"your-wallet/sepolia-demo/v2/activity-store-v1";
 
 // Unit tests deliberately produce a test-only wire profile that advertises
 // the reduced KDF values it actually uses. Test vault bytes are not release
@@ -269,6 +270,7 @@ pub(crate) struct OpenedVaultV2 {
     metadata: VaultCreationMetadata,
     vault_id: [u8; VAULT_ID_BYTES],
     token_store_key: Zeroizing<[u8; 32]>,
+    activity_store_key: Zeroizing<[u8; 32]>,
 }
 
 impl OpenedVaultV2 {
@@ -295,6 +297,15 @@ impl OpenedVaultV2 {
     #[must_use]
     pub(crate) fn derive_token_store_key(&self) -> Zeroizing<[u8; 32]> {
         Zeroizing::new(*self.token_store_key)
+    }
+
+    /// Returns only the crate-private, domain-separated activity sidecar key.
+    ///
+    /// The owned zeroizing value is an ephemeral codec capability. It does not
+    /// expose the wallet secret, password-derived master, or vault AEAD key.
+    #[must_use]
+    pub(crate) fn derive_activity_store_key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(*self.activity_store_key)
     }
 
     pub(crate) fn into_wallet(self) -> WalletSecret {
@@ -324,6 +335,7 @@ impl fmt::Debug for VaultHeader {
 struct VaultKeys {
     aead_key: Zeroizing<[u8; 32]>,
     token_store_key: Zeroizing<[u8; 32]>,
+    activity_store_key: Zeroizing<[u8; 32]>,
 }
 
 impl fmt::Debug for VaultKeys {
@@ -431,6 +443,7 @@ fn open_vault_v2_inner(
         metadata,
         vault_id: header.vault_id,
         token_store_key: keys.token_store_key,
+        activity_store_key: keys.activity_store_key,
     })
 }
 
@@ -647,16 +660,23 @@ fn derive_vault_keys(
     let hkdf = Hkdf::<Sha256>::new(Some(vault_id), master.as_ref());
     let mut aead_key = Zeroizing::new([0_u8; 32]);
     let mut token_store_key = Zeroizing::new([0_u8; 32]);
+    let mut activity_store_key = Zeroizing::new([0_u8; 32]);
     hkdf.expand(VAULT_AEAD_INFO, aead_key.as_mut())
         .map_err(|_| VaultError::CryptographicFailure)?;
     hkdf.expand(TOKEN_STORE_INFO, token_store_key.as_mut())
         .map_err(|_| VaultError::CryptographicFailure)?;
-    if aead_key.as_ref() == token_store_key.as_ref() {
+    hkdf.expand(ACTIVITY_STORE_INFO, activity_store_key.as_mut())
+        .map_err(|_| VaultError::CryptographicFailure)?;
+    if aead_key.as_ref() == token_store_key.as_ref()
+        || aead_key.as_ref() == activity_store_key.as_ref()
+        || token_store_key.as_ref() == activity_store_key.as_ref()
+    {
         return Err(VaultError::CryptographicFailure);
     }
     Ok(VaultKeys {
         aead_key,
         token_store_key,
+        activity_store_key,
     })
 }
 
@@ -748,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn mnemonic_round_trip_recomputes_accounts_and_stable_token_capability()
+    fn mnemonic_round_trip_recomputes_accounts_and_stable_sidecar_capabilities()
     -> Result<(), VaultError> {
         let wallet = WalletSecret::import_mnemonic(SecretInput::new(ZERO_MNEMONIC.to_owned()))
             .map_err(|_| VaultError::InvalidMetadata)?;
@@ -764,8 +784,13 @@ mod tests {
         assert_eq!(opened.wallet().account(1), expected_accounts[1]);
         let first_key = opened.derive_token_store_key();
         let second_key = opened.derive_token_store_key();
+        let first_activity_key = opened.derive_activity_store_key();
+        let second_activity_key = opened.derive_activity_store_key();
         assert_eq!(first_key.as_ref(), second_key.as_ref());
+        assert_eq!(first_activity_key.as_ref(), second_activity_key.as_ref());
         assert_ne!(first_key.as_ref(), &[0_u8; 32]);
+        assert_ne!(first_activity_key.as_ref(), &[0_u8; 32]);
+        assert_ne!(first_key.as_ref(), first_activity_key.as_ref());
         assert_ne!(opened.vault_id(), &[0_u8; 16]);
         Ok(())
     }
@@ -916,7 +941,8 @@ mod tests {
     }
 
     #[test]
-    fn token_store_key_is_domain_separated_and_bound_to_vault_id() -> Result<(), VaultError> {
+    fn all_three_hkdf_keys_are_pairwise_separated_and_bound_to_vault_id() -> Result<(), VaultError>
+    {
         let password = VaultPassword::new(TEST_PASSWORD.to_owned())?;
         let salt = [0x22; 16];
         let first_id = [0x33; 16];
@@ -924,9 +950,18 @@ mod tests {
         let first = derive_vault_keys(&password, &salt, &first_id)?;
         let second = derive_vault_keys(&password, &salt, &second_id)?;
         assert_ne!(first.aead_key.as_ref(), first.token_store_key.as_ref());
+        assert_ne!(first.aead_key.as_ref(), first.activity_store_key.as_ref());
+        assert_ne!(
+            first.token_store_key.as_ref(),
+            first.activity_store_key.as_ref()
+        );
         assert_ne!(
             first.token_store_key.as_ref(),
             second.token_store_key.as_ref()
+        );
+        assert_ne!(
+            first.activity_store_key.as_ref(),
+            second.activity_store_key.as_ref()
         );
         Ok(())
     }

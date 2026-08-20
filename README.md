@@ -93,6 +93,7 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
 ```text
 %LOCALAPPDATA%\YourWallet\SepoliaDemo\vault-v2.bin
 %LOCALAPPDATA%\YourWallet\SepoliaDemo\tokens-v1.bin
+%LOCALAPPDATA%\YourWallet\SepoliaDemo\activity-v1.bin
 ```
 
 `vault-v1.bin`은 이전 실행판에서 만든 개인 키 지갑을 열고 이전하기 위해서만
@@ -208,6 +209,61 @@ state diff를 보장하지 않습니다.
 이미 서명되어 보류 중인 거래에는 새 수수료 방식을 적용할 수 없습니다.
 `이전 거래 그대로 다시 전송`은 저장된 서명 거래의 같은 바이트만 재전송하며,
 새 nonce·수수료·서명을 만들지 않습니다.
+
+## 거래 활동과 보류 거래 복구
+
+새 v2 전송은 최대 64개의 고정 크기 인증 활동 파일에 거래 hash, 보내는 계정,
+nonce, 수수료, 자산 식별자와 상태를 저장합니다. 상태는 `Submitted`, `Pending`,
+성공 또는 revert와 아직 최종이 아닌 깊이를 가진 `Included`, `Reorged`, 세 번의
+미관찰과 최소 64 head 진행 뒤의 `DroppedCandidate`, 그리고 latest nonce가 앞선
+`ReplacementSuspected`입니다. 이 이름들은 nonce 재사용 허가가 아닙니다. 보관된
+어떤 상태의 행도 같은 계정·보내는 주소·nonce에 다른 거래를 만들지 못하게 합니다.
+
+활동은 자동 조회하지 않습니다. 사용자가 각 행의 `이 행만 Sepolia에서 새로고침`을
+눌렀을 때만 앱에 고정된 RPC를 head 조회로 bookend하고, 거래·receipt·canonical
+block을 typed 응답으로 대조합니다. 전체 거래 hash, 보내는 주소, 받는 주소 또는
+토큰 컨트랙트 주소와 포함 block hash를 표시합니다. 저장된 ERC-20 symbol은 과거
+컨트랙트가 제공한 신뢰되지 않은 표시 이름입니다. 포함 깊이는 finality 선언이
+아니며 앱은 nonce를 자동으로 다시 사용하지 않습니다.
+
+서명 전에는 활동 capacity와 nonce 슬롯을 예약하고, exact `pending-v1.bin`을 잡은
+상태로 전송합니다. 노드가 받은 뒤 결과가 불확실해도 pending을 보존합니다. 성공
+hash가 확인되면 `Submitted` 행을 원자적으로 저장·폴더 flush·인증 readback한 뒤에만
+같은 열린 pending 객체를 삭제합니다. 재시작 때 이미 같은 거래가 노드나 활동
+파일에서 정확히 확인되면 다시 broadcast하지 않고 활동 저장과 pending 정리만
+idempotent하게 끝냅니다. v1 지갑에 기존 native pending이 있으면 서명자와 exact
+bytes를 account 0에 귀속한 lease를 유지한 채 v2로 이전하고 pending 자체는 그대로
+보존합니다. foreign signer, ERC-20, 변조 또는 교체는 이전 전에 거부합니다.
+
+`activity-v1.bin`의 generation은 외부 롤백 방지 앵커가 아닙니다. 현재 남아 있는
+행만 nonce 충돌을 막습니다. 과거의 유효한 파일 복원이나 삭제로 기록이 숨으면,
+그 부재는 nonce가 안전하다는 증거가 아니며 RPC nonce 회귀와 결합해 로컬 충돌
+감지를 무력화할 수 있습니다. 운영 환경에는 별도의 외부 단조 앵커가 필요합니다.
+또한 RPC의 최신 head가 활동에 저장된 high-water보다 낮으면 행과 generation을
+바꾸지 않고 head가 따라잡을 때까지 새로고침을 보류합니다. 이는 깊이 언더플로와
+잘못된 reorg 판정을 막지만 깊은 롤백 뒤 업데이트를 지연시킬 수 있습니다.
+단일 고정 TLS RPC는 head·header·receipt를 서로 맞춰 조작하거나 데이터를 숨길 수
+있습니다. canonical transaction 재구성은 관찰된 signed envelope의 로컬
+self-consistency만 증명하며 실제 전파·포함 여부에 대한 RPC의 정직성은 증명하지
+않습니다.
+
+충돌 복구용 고정 임시 파일 `activity-v1.tmp`와 `tokens-v1.tmp`가 이전 프로세스의
+중단으로 남으면, 다음 mutation lease가 Windows의 같은 열린 객체를 regular·
+non-reparse로 확인한 경우에만 삭제하고 부모 폴더를 flush합니다. 디렉터리, reparse,
+다른 프로세스가 잡은 객체는 덮어쓰지 않고 실패합니다. v1 이전은
+`vault-v2.migrating`에 먼저 쓰고 인증한 같은 handle을 최종 이름으로 설치하므로,
+설치 전 crash는 v1과 pending을 보존하고 다음 이전에서 임시 파일을 정리합니다.
+설치 후에는 완전한 v2를 우선 사용하며 v1 정리 실패를 별도 복구 상태로 취급합니다.
+반면 최종 `activity-v1.bin` 또는 `tokens-v1.bin`에 다른/과거 vault의 regular 파일,
+nonregular 객체, reparse가 있으면 자동 덮어쓰지 않습니다. 새 vault 활성화나 열기를
+실패시키므로 사용자가 원인을 확인한 뒤 의도적으로 수리하거나 제거해야 합니다.
+
+메모리 포렌식 한계도 남아 있습니다. master key와 최종 파생 출력은 `Zeroizing`으로
+소유하지만, `hkdf`/`hmac` 0.12 내부의 HMAC/PRK context는 `Zeroize` 또는
+`ZeroizeOnDrop`을 구현하지 않습니다. 따라서 password-equivalent 파생 context의
+stack 잔여를 완전히 지웠다고 보장하지 않습니다. 이 데모의 잠금은 소유한 secret
+buffer를 지우는 수준이며 process-memory forensic erase가 아닙니다. 운영 제품은
+격리된 Key Agent와 zeroizing KDF 구현 없이는 출시하면 안 됩니다(STOP-SHIP).
 
 ## 커스텀 ERC-20 토큰 추가
 
@@ -349,6 +405,7 @@ retry할 수 있다.
 
 `smoke` 검사는 생성/가져오기/열기/계정 전환/이전/내보내기 명령 경계, 저장 토큰의
 선택·준비·2초 확인·새로고침·삭제, 보류 거래 서명 계정 확인·별도 2초 retry,
+durable 활동 행 생성과 정확히 한 행만 새로고침하는 경계,
 복구 백업·내보내기 2초 hold도 확인하지만 지갑
 파일을 만들거나 읽지 않고, 네트워크에도 연결하지 않습니다.
 주소·비밀번호·키·경로도 출력하지 않습니다. 결과는 짧은 JSON 한 줄이며 성공하면
@@ -375,10 +432,10 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 
 2026년 8월 21일 기준:
 
-- Sepolia 실행판 테스트 183개 통과
+- Sepolia 실행판 테스트 229개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
-- 프로덕션 Rust 테스트 542개 실행 통과
+- 프로덕션 Rust 테스트 588개 실행 통과
 - 부모 커널 테스트 전용 headless 자식 fixture 6개는 직접 실행하지 않도록 의도적으로 제외
 - 위 Rust 테스트와 별도로 보안용 컴파일 실패 테스트 23개 통과
 - Chrome 확장 프로그램 테스트 33개 통과

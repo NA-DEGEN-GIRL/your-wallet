@@ -129,12 +129,17 @@ for (const manifestPath of publicBoundaryManifests) {
 
 const rootManifest = await text("Cargo.toml");
 const rootReadme = await text("README.md");
+const sepoliaArchitectureDoc = await text("docs/architecture.md");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
 const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
+const sepoliaDemoHeadless = await text("demo/sepolia-wallet/src/headless.rs");
 const sepoliaDemoVaultV2 = await text("demo/sepolia-wallet/src/vault_v2.rs");
 const sepoliaDemoTokenStore = await text("demo/sepolia-wallet/src/token_store.rs");
+const sepoliaDemoActivityStore = await text(
+  "demo/sepolia-wallet/src/activity_store.rs",
+);
 requireInvariant(
   !rootManifest.includes("demo/sepolia-wallet"),
   "Sepolia demo must remain outside the production workspace",
@@ -256,6 +261,7 @@ requireInvariant(
 const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
 const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
+const sepoliaDemoHeadlessProduction = withoutBottomTestModule(sepoliaDemoHeadless);
 
 // Sepolia bounded account switching is authenticated, session-only, and
 // bound independently at every prepare/confirm/export/pending boundary.
@@ -284,6 +290,10 @@ const exportSelectedAccountBlock = rustFunctionBlock(
 const tokenAccountContextBlock = rustFunctionBlock(
   sepoliaDemoBackendProduction,
   "token_context",
+);
+const tokenAccountContextForAccountBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "token_context_for_account",
 );
 const preparePendingAccountBlock = rustFunctionBlock(
   sepoliaDemoBackendProduction,
@@ -362,7 +372,14 @@ requireInvariant(
     exportSelectedAccountBlock.includes(
       "account_private_key_reveal(export, selected_index, selected_address)",
     ) &&
-    tokenAccountContextBlock.includes("account_index: self.selected_account_index") &&
+    tokenAccountContextBlock.includes(
+      "self.token_context_for_account(self.selected_account_index)",
+    ) &&
+    tokenAccountContextForAccountBlock.includes("account(usize::from(account_index))") &&
+    tokenAccountContextForAccountBlock.includes("requested_index() != expected_index") &&
+    tokenAccountContextForAccountBlock.includes("actual_index() != expected_index") &&
+    tokenAccountContextForAccountBlock.includes("account_index,") &&
+    tokenAccountContextForAccountBlock.includes("owner: *owner.address().as_bytes()") &&
     accountSelectedUiBlock.includes("self.reauth_password.zeroize()") &&
     accountSelectedUiBlock.includes("self.secret_text_state_purge_pending = true") &&
     accountSelectedUiBlock.includes("zeroize_custom_token_snapshots") &&
@@ -472,6 +489,467 @@ requireInvariant(
     sepoliaDemoUiProduction.includes("확인하고 전송 — 2초 동안 누르기"),
   "saved ERC-20 UI/retry path lost verified-only selection, shared hold, stale scrub, or exact-byte no-resign recovery",
 );
+
+// Sepolia durable transaction-activity invariants (demo-only). The activity
+// sidecar is v2-derived, bounded, and committed before an exact pending object
+// may be deleted. Refresh remains explicit and per-row.
+const activityLeaseBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)struct ActivityMutationLease<'a>\s*\{/u,
+);
+const activityLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl<'a> ActivityMutationLease<'a>\s*\{/u,
+);
+const tokenLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl<'a> TokenMutationLease<'a>\s*\{/u,
+);
+const newV2SidecarLeaseBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)struct NewV2SidecarNamespaceLease<'a>\s*\{/u,
+);
+const newV2SidecarLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl<'a> NewV2SidecarNamespaceLease<'a>\s*\{/u,
+);
+const durableNamespaceParentBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "open_or_create_durable_namespace_parent",
+);
+const activityContextBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "activity_context",
+);
+const loadActivityStoreBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "load_activity_store",
+);
+const persistActivityStoreBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "persist_activity_store",
+);
+const commitSubmittedActivityBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "commit_submitted_activity",
+);
+const readActivityStoreBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "read_activity_store_file",
+);
+const writeActivityStoreBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "write_atomic_activity_store",
+);
+const migrateLegacyActivityBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "migrate_legacy",
+);
+const refreshActivityBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "refresh_activity_inner",
+);
+const observeActivityBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "observe_activity",
+);
+const observedPendingBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "pending_transaction_is_observed",
+);
+const canonicalObservedTransactionBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "canonical_observed_type_two_bytes",
+);
+const liveRpcImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl RpcAccess for LiveRpc\s*\{/u,
+);
+const legacyMigrationLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl LegacyVaultMigrationLease\s*\{/u,
+);
+const createdV2MigrationLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl CreatedV2VaultMigrationLease\s*\{/u,
+);
+const createdV2MigrationLeaseDropBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl Drop for CreatedV2VaultMigrationLease\s*\{/u,
+);
+const accountSelectedEventBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::AccountSelected\(result\)\s*=>\s*match result\s*\{/u,
+);
+const refreshedEventBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::Refreshed\(result\)\s*=>\s*match result\s*\{/u,
+);
+const activityPanelBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "activity_panel",
+);
+requireInvariant(
+  sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_CAPACITY: usize = 64") &&
+    sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_FILE_BYTES") &&
+    sepoliaDemoActivityStore.includes("pub(crate) enum ActivityStatus") &&
+    sepoliaDemoActivityStore.includes("DroppedCandidate") &&
+    sepoliaDemoActivityStore.includes("ReplacementSuspected") &&
+    sepoliaDemoActivityStore.includes("pub(crate) fn ensure_nonce_available(") &&
+    sepoliaDemoActivityStore.includes("pub(crate) fn can_upsert(") &&
+    sepoliaDemoActivityStore.includes("pub(crate) fn upsert_submitted(") &&
+    sepoliaDemoActivityStore.includes("pub(crate) fn transition(") &&
+    sepoliaDemoActivityStore.includes("ActivityStoreError::NonceConflict"),
+  "Sepolia activity codec lost its fixed capacity, closed states, transition API, or nonce-slot conflict invariant",
+);
+requireInvariant(
+  activityContextBlock.includes("UnlockedWallet::V2(opened)") &&
+    activityContextBlock.includes("ActivityRequiresV2") &&
+    activityContextBlock.includes("opened.derive_activity_store_key()") &&
+    !/(?:private_key|mnemonic|LegacyV1)/u.test(activityContextBlock) &&
+    loadActivityStoreBlock.includes("ActivityStore::open(") &&
+    loadActivityStoreBlock.includes("wallet.account_address(entry.identity().account_index())?") &&
+    loadActivityStoreBlock.includes("*entry.identity().sender()") &&
+    loadActivityStoreBlock.includes("ActivityIdentityMismatch"),
+  "Sepolia activity context must remain v2-key-derived and every authenticated row must bind sender to account 0/1",
+);
+requireInvariant(
+  activityLeaseBlock.includes("_process_guard: MutexGuard") &&
+    activityLeaseBlock.includes("activity_store_path: PathBuf") &&
+    activityLeaseBlock.includes("_lock_file: File") &&
+    activityLeaseBlock.includes("_parent_directory: DurableParentDirectory") &&
+    activityLeaseImplBlock.includes("ACTIVITY_STORE_PROCESS_LOCK") &&
+    activityLeaseImplBlock.includes("ActivityMutationBlocked") &&
+    activityLeaseImplBlock.includes(".share_mode(0)") &&
+    activityLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
+    activityLeaseImplBlock.includes("!metadata.file_type().is_file()") &&
+    activityLeaseImplBlock.includes("FILE_ATTRIBUTE_REPARSE_POINT") &&
+    activityLeaseImplBlock.includes("activity_store_temporary_path(activity_store_path)") &&
+    activityLeaseImplBlock.includes("reconcile_orphan_activity_temporary") &&
+    activityLeaseImplBlock.includes("parent_directory") &&
+    activityLeaseImplBlock.includes(".flush()"),
+  "Sepolia activity mutations must retain the process lock, persistent Windows no-share sibling, and exact parent directory",
+);
+requireInvariant(
+  tokenLeaseImplBlock.includes("TOKEN_STORE_PROCESS_LOCK") &&
+    tokenLeaseImplBlock.includes(".share_mode(0)") &&
+    tokenLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
+    tokenLeaseImplBlock.includes("token_store_temporary_path(token_store_path)") &&
+    tokenLeaseImplBlock.includes("reconcile_orphan_token_temporary") &&
+    newV2SidecarLeaseBlock.indexOf("_token_lease: TokenMutationLease") <
+      newV2SidecarLeaseBlock.indexOf("_activity_lease: ActivityMutationLease") &&
+    newV2SidecarLeaseImplBlock.indexOf("TokenMutationLease::acquire") <
+      newV2SidecarLeaseImplBlock.indexOf("ActivityMutationLease::acquire") &&
+    newV2SidecarLeaseImplBlock.includes("lease.verify_absent()?") &&
+    newV2SidecarLeaseImplBlock.includes("read_token_store_file") &&
+    newV2SidecarLeaseImplBlock.includes("read_activity_store_file") &&
+    durableNamespaceParentBlock.includes("for component in [application_root, parent]") &&
+    durableNamespaceParentBlock.includes("DurableParentDirectory::open(trusted_base)") &&
+    durableNamespaceParentBlock.includes("DurableParentDirectory::open(component)") &&
+    durableNamespaceParentBlock.includes("created.flush()?") &&
+    durableNamespaceParentBlock.includes("current_directory.flush()?"),
+  "Sepolia new-v2 namespace must reconcile both fixed temps, acquire token before activity, and durably pin every fixed parent level",
+);
+requireInvariant(
+  readActivityStoreBlock.includes("fs::symlink_metadata(path)") &&
+    readActivityStoreBlock.includes("ACTIVITY_FILE_BYTES") &&
+    readActivityStoreBlock.includes("!metadata.file_type().is_file()") &&
+    readActivityStoreBlock.includes("FILE_ATTRIBUTE_REPARSE_POINT") &&
+    writeActivityStoreBlock.includes("fs::symlink_metadata(path)") &&
+    writeActivityStoreBlock.includes(
+      "activity_lease: &ActivityMutationLease<'_>",
+    ) &&
+    writeActivityStoreBlock.includes("activity_lease.activity_store_path != path") &&
+    writeActivityStoreBlock.includes(".create_new(true)") &&
+    writeActivityStoreBlock.includes("file.sync_all()") &&
+    writeActivityStoreBlock.includes("verify_exact_activity_store_readback(&temporary, bytes)") &&
+    writeActivityStoreBlock.includes("atomic_replace_activity_store(&temporary, path)") &&
+    writeActivityStoreBlock.includes("parent_directory") &&
+    writeActivityStoreBlock.includes(".flush()") &&
+    persistActivityStoreBlock.includes("current.as_deref() != baseline.bytes.as_deref()") &&
+    persistActivityStoreBlock.includes(
+      "activity_lease: &ActivityMutationLease<'_>",
+    ) &&
+    /write_atomic_activity_store\(\s*activity_lease,\s*&self\.activity_store_path/u.test(
+      persistActivityStoreBlock,
+    ) &&
+    commitSubmittedActivityBlock.includes(
+      "activity_lease: &ActivityMutationLease<'_>",
+    ) &&
+    commitSubmittedActivityBlock.includes("self.persist_activity_store(") &&
+    commitSubmittedActivityBlock.includes("activity_lease,") &&
+    persistActivityStoreBlock.includes("reopened.generation() != baseline.generation") &&
+    persistActivityStoreBlock.indexOf("store.seal(&context.key)") <
+      persistActivityStoreBlock.indexOf("write_atomic_activity_store(") &&
+    persistActivityStoreBlock.indexOf("write_atomic_activity_store(") <
+      persistActivityStoreBlock.indexOf("verify_exact_activity_store_readback(") &&
+    persistActivityStoreBlock.indexOf("verify_exact_activity_store_readback(") <
+      persistActivityStoreBlock.lastIndexOf("ActivityStore::open(") &&
+    persistActivityStoreBlock.includes("entry.identity() != expected_identity"),
+  "Sepolia activity persistence lost nonregular/reparse rejection, same-dir exclusive replace, CAS, flush, or authenticated exact readback",
+);
+const nativeActivityLeaseIndex = confirmAccountBlock.indexOf(
+  "ActivityMutationLease::acquire",
+);
+const nativeActivityLoadIndex = confirmAccountBlock.indexOf("load_activity_store(");
+const nativeCapacityIndex = confirmAccountBlock.indexOf(
+  "entries().len() >= ACTIVITY_CAPACITY",
+);
+const nativeNonceIndex = confirmAccountBlock.indexOf("ensure_nonce_available(");
+const nativeSignIndex = confirmAccountBlock.indexOf("self.sign_attempts += 1");
+const nativePendingIndex = confirmAccountBlock.indexOf("write_new_pending(");
+const nativeSendIndex = confirmAccountBlock.indexOf("guarded_broadcast(");
+const nativeCommitIndex = confirmAccountBlock.indexOf("commit_submitted_activity(");
+const nativeDeleteIndex = confirmAccountBlock.indexOf("pending_lease.delete_exact(");
+const erc20ActivityLeaseIndex = confirmSavedErc20Block.indexOf(
+  "ActivityMutationLease::acquire",
+);
+const erc20ActivityLoadIndex = confirmSavedErc20Block.indexOf("load_activity_store(");
+const erc20CapacityIndex = confirmSavedErc20Block.indexOf(
+  "entries().len() >= ACTIVITY_CAPACITY",
+);
+const erc20NonceIndex = confirmSavedErc20Block.indexOf("ensure_nonce_available(");
+const erc20SignIndex = confirmSavedErc20Block.indexOf("self.sign_attempts += 1");
+const erc20PendingIndex = confirmSavedErc20Block.indexOf("write_new_pending(");
+const erc20SendIndex = confirmSavedErc20Block.indexOf("guarded_broadcast(");
+const erc20CommitIndex = confirmSavedErc20Block.indexOf("commit_submitted_activity(");
+const erc20DeleteIndex = confirmSavedErc20Block.indexOf("pending_lease.delete_exact(");
+requireInvariant(
+  [
+    nativeActivityLeaseIndex,
+    nativeActivityLoadIndex,
+    nativeCapacityIndex,
+    nativeNonceIndex,
+    nativeSignIndex,
+    nativePendingIndex,
+    nativeSendIndex,
+    nativeCommitIndex,
+    nativeDeleteIndex,
+  ].every((index) => index >= 0) &&
+    nativeActivityLeaseIndex < nativeActivityLoadIndex &&
+    nativeActivityLoadIndex < nativeCapacityIndex &&
+    nativeCapacityIndex < nativeNonceIndex &&
+    nativeNonceIndex < nativeSignIndex &&
+    nativeSignIndex < nativePendingIndex &&
+    nativePendingIndex < nativeSendIndex &&
+    nativeSendIndex < nativeCommitIndex &&
+    nativeCommitIndex < nativeDeleteIndex &&
+    [
+      erc20ActivityLeaseIndex,
+      erc20ActivityLoadIndex,
+      erc20CapacityIndex,
+      erc20NonceIndex,
+      erc20SignIndex,
+      erc20PendingIndex,
+      erc20SendIndex,
+      erc20CommitIndex,
+      erc20DeleteIndex,
+    ].every((index) => index >= 0) &&
+    erc20ActivityLeaseIndex < erc20ActivityLoadIndex &&
+    erc20ActivityLoadIndex < erc20CapacityIndex &&
+    erc20CapacityIndex < erc20NonceIndex &&
+    erc20NonceIndex < erc20SignIndex &&
+    erc20SignIndex < erc20PendingIndex &&
+    erc20PendingIndex < erc20SendIndex &&
+    erc20SendIndex < erc20CommitIndex &&
+    erc20CommitIndex < erc20DeleteIndex,
+  "Sepolia native/ERC-20 send must reserve capacity and nonce before signing, then durably commit activity before exact pending deletion",
+);
+requireInvariant(
+  retryPendingBlock.indexOf("ActivityMutationLease::acquire") <
+      retryPendingBlock.indexOf("load_activity_store(") &&
+    retryPendingBlock.indexOf("load_activity_store(") <
+      retryPendingBlock.indexOf("can_upsert(&identity)") &&
+    retryPendingBlock.indexOf("can_upsert(&identity)") <
+      retryPendingBlock.indexOf("pending_transaction_is_observed(") &&
+    retryPendingBlock.indexOf("pending_transaction_is_observed(") <
+      retryPendingBlock.indexOf("guarded_broadcast(") &&
+    /find\(identity\.transaction_hash\(\)\)[\s\S]*?delete_exact[\s\S]*?broadcast_performed:\s*false/u.test(
+      retryPendingBlock,
+    ) &&
+    /pending_transaction_is_observed[\s\S]*?commit_submitted_activity[\s\S]*?delete_exact[\s\S]*?broadcast_performed:\s*false/u.test(
+      retryPendingBlock,
+    ) &&
+    /guarded_broadcast[\s\S]*?commit_submitted_activity[\s\S]*?verify_frozen_pending[\s\S]*?delete_exact/u.test(
+      retryPendingBlock,
+    ) &&
+    observedPendingBlock.indexOf("activity_head()") <
+      observedPendingBlock.indexOf("activity_transaction(") &&
+    observedPendingBlock.indexOf("activity_transaction(") <
+      observedPendingBlock.lastIndexOf("activity_head()") &&
+    observedPendingBlock.includes("activity_transaction_matches_identity") &&
+    observedPendingBlock.includes("None => Ok(false)"),
+  "Sepolia retry must reserve the exact identity, observe before its sole resend, and commit activity before cleanup",
+);
+requireInvariant(
+  sepoliaDemoRpcProduction.includes("pub y_parity: u8") &&
+    sepoliaDemoRpcProduction.includes("pub r: Quantity256") &&
+    sepoliaDemoRpcProduction.includes("pub s: Quantity256") &&
+    (sepoliaDemoBackendProduction.match(/\.transaction_by_hash\(/gu) ?? []).length === 1 &&
+    liveRpcImplBlock.includes(".transaction_by_hash(") &&
+    liveRpcImplBlock.includes("y_parity: transaction.y_parity") &&
+    liveRpcImplBlock.includes("r: Word::from_be_bytes") &&
+    liveRpcImplBlock.includes("s: Word::from_be_bytes") &&
+    liveRpcImplBlock.includes("canonical_observed_type_two_bytes(&transaction)") &&
+    canonicalObservedTransactionBlock.includes("transaction.y_parity > 1") &&
+    canonicalObservedTransactionBlock.includes("transaction.r.is_zero()") &&
+    canonicalObservedTransactionBlock.includes("transaction.s.is_zero()") &&
+    canonicalObservedTransactionBlock.includes("rpc::SEPOLIA_CHAIN_ID") &&
+    canonicalObservedTransactionBlock.includes("rlp_list(&[])") &&
+    canonicalObservedTransactionBlock.includes("MAX_PENDING_RAW_BYTES") &&
+    canonicalObservedTransactionBlock.includes("keccak32(raw.as_slice()) != transaction.hash") &&
+    canonicalObservedTransactionBlock.includes("recover_signed_type_two_sender(raw.as_slice())") &&
+    observedPendingBlock.includes("expected_raw: &[u8]") &&
+    observedPendingBlock.includes("canonical_observed_type_two_bytes(&transaction)?") &&
+    observedPendingBlock.includes("canonical.as_slice() != expected_raw"),
+  "Sepolia raw transaction observations must have one reviewed RPC consumer and locally prove canonical hash, low-S sender recovery, and pending byte identity",
+);
+requireInvariant(
+  migrateLegacyActivityBlock.includes("NewV2SidecarNamespaceLease::acquire(") &&
+    migrateLegacyActivityBlock.includes("PendingFileLease::open(&self.pending_path)") &&
+    migrateLegacyActivityBlock.includes("recover_signed_type_two_sender(") &&
+    migrateLegacyActivityBlock.includes("recovered != legacy_address") &&
+    migrateLegacyActivityBlock.includes("DecodedPendingTransfer::Native") &&
+    (migrateLegacyActivityBlock.match(/verify_pending_lease\(/gu) ?? []).length >= 3 &&
+    migrateLegacyActivityBlock.includes("else if self.pending_broadcast_exists()") &&
+    migrateLegacyActivityBlock.includes("LegacyVaultMigrationLease::open(&self.vault_path)") &&
+    migrateLegacyActivityBlock.includes("CreatedV2VaultMigrationLease::create(") &&
+    migrateLegacyActivityBlock.indexOf("CreatedV2VaultMigrationLease::create(") <
+      migrateLegacyActivityBlock.indexOf("sidecar_namespace_lease.verify_absent()?") &&
+    migrateLegacyActivityBlock.indexOf("sidecar_namespace_lease.verify_absent()?") <
+      migrateLegacyActivityBlock.indexOf("persisted_v2_lease.install_exact(") &&
+    migrateLegacyActivityBlock.indexOf("persisted_v2_lease.install_exact(") <
+      migrateLegacyActivityBlock.lastIndexOf("verify_pending_lease(") &&
+    migrateLegacyActivityBlock.lastIndexOf("verify_pending_lease(") <
+      migrateLegacyActivityBlock.indexOf("persisted_v2_lease.mark_committed()?") &&
+    migrateLegacyActivityBlock.indexOf("persisted_v2_lease.mark_committed()?") <
+      migrateLegacyActivityBlock.indexOf("legacy_lease.delete_exact(&self.vault_path)") &&
+    migrateLegacyActivityBlock.indexOf("legacy_lease.delete_exact(&self.vault_path)") <
+      migrateLegacyActivityBlock.indexOf("self.unlocked = Some(UnlockedWallet::V2(opened))") &&
+    migrateLegacyActivityBlock.indexOf("self.snapshot_or_lock()") <
+      migrateLegacyActivityBlock.indexOf("drop(persisted_v2_lease)") &&
+    migrateLegacyActivityBlock.indexOf("drop(persisted_v2_lease)") <
+      migrateLegacyActivityBlock.indexOf("drop(legacy_lease)") &&
+    legacyMigrationLeaseImplBlock.includes("FILE_SHARE_MODE(0)") &&
+    legacyMigrationLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
+    legacyMigrationLeaseImplBlock.includes("SetFileInformationByHandle(") &&
+    legacyMigrationLeaseImplBlock.includes("FileDispositionInfo") &&
+    createdV2MigrationLeaseImplBlock.includes("vault_v2_migration_temporary_path(path)") &&
+    createdV2MigrationLeaseImplBlock.includes("reconcile_orphan_v2_migration_temporary") &&
+    createdV2MigrationLeaseImplBlock.includes(".create_new(true)") &&
+    createdV2MigrationLeaseImplBlock.includes(".share_mode(0)") &&
+    createdV2MigrationLeaseImplBlock.includes("FileRenameInfo") &&
+    createdV2MigrationLeaseImplBlock.includes("ReplaceIfExists = false") &&
+    createdV2MigrationLeaseImplBlock.includes("self.parent_directory.flush()?") &&
+    createdV2MigrationLeaseImplBlock.includes("self.committed = true") &&
+    createdV2MigrationLeaseDropBlock.includes("let _ = self.abort()") &&
+    migrateLegacyActivityBlock.includes(
+      "self.prepared_pending_retry = prepared_pending_retry",
+    ) &&
+    !/(?:guarded_broadcast|send_raw_transaction|write_new_file|remove_legacy_vault)/u.test(
+      migrateLegacyActivityBlock,
+    ),
+  "Sepolia legacy migration must pin exact v1/pending/v2 objects, install the authenticated migrating handle before commit, and delete only the held v1 handle",
+);
+requireInvariant(
+  refreshActivityBlock.includes("ActivityMutationLease::acquire") &&
+    refreshActivityBlock.includes("entry.identity().account_index() != self.selected_account_index") &&
+    refreshActivityBlock.includes("account_address(self.selected_account_index)?") &&
+    refreshActivityBlock.includes("self.observe_activity(entry, permit)?") &&
+    refreshActivityBlock.includes(".transition(&hash, next_status, next_observations)") &&
+    observeActivityBlock.indexOf("activity_head()") <
+      observeActivityBlock.indexOf("activity_transaction(") &&
+    observeActivityBlock.indexOf("activity_transaction(") <
+      observeActivityBlock.indexOf("activity_receipt(") &&
+    observeActivityBlock.indexOf("activity_receipt(") <
+      observeActivityBlock.indexOf("latest_nonce(") &&
+    observeActivityBlock.indexOf("latest_nonce(") <
+      observeActivityBlock.lastIndexOf("activity_head()") &&
+    observeActivityBlock.includes("head_before != head_after") &&
+    observeActivityBlock.includes("activity_transaction_matches_identity") &&
+    observeActivityBlock.includes("activity_receipt_matches_identity") &&
+    observeActivityBlock.includes("transaction.transaction_index != Some(receipt.transaction_index)") &&
+    observeActivityBlock.includes("former_reorg_proven") &&
+    observeActivityBlock.includes("record_present(head_before.number)") &&
+    observeActivityBlock.includes("record_missing(head_before.number)") &&
+    observeActivityBlock.includes("observations.dropped_candidate_ready()") &&
+    observeActivityBlock.includes("ActivityStatus::ReplacementSuspected") &&
+    observeActivityBlock.includes("entry.status()"),
+  "Sepolia activity refresh must stay manual-row scoped, stable-head bookended, immutable/tx-index exact, and fail closed on ambiguous reorg evidence",
+);
+requireInvariant(
+  activityPanelBlock.includes("이 행만 Sepolia에서 새로고침") &&
+    activityPanelBlock.includes("고정된 Sepolia RPC") &&
+    activityPanelBlock.includes("자동 새로고침이나 nonce 자동 재사용은 하지 않습니다") &&
+    activityPanelBlock.includes("외부 단조 앵커") &&
+    activityPanelBlock.includes("저장된 high-water보다 낮으면") &&
+    activityPanelBlock.includes("전체 거래 해시") &&
+    activityPanelBlock.includes("신뢰하지 않는 과거 컨트랙트 라벨") &&
+    (sepoliaDemoUiProduction.match(/self\.refresh_activity_row\(/gu) ?? []).length === 1 &&
+    sepoliaDemoUiProduction.includes("WorkerCommand::RefreshActivity { transaction_hash }") &&
+    sepoliaDemoUiProduction.includes("same_activity_identity(prior, &refreshed)") &&
+    sepoliaDemoUiProduction.includes("zeroize_activity_snapshot") &&
+    sepoliaDemoHeadlessProduction.includes("ui::run_headless_smoke()") &&
+    rootReadme.includes("activity-v1.bin") &&
+    /현재 남아 있는\s*행만 nonce 충돌을 막습니다/u.test(rootReadme) &&
+    rootReadme.includes("head가 따라잡을 때까지 새로고침을 보류합니다"),
+  "Sepolia activity UI/docs lost exact identifiers, per-row fixed-RPC refresh, scrubbing, rollback honesty, or high-water delay disclosure",
+);
+requireInvariant(
+  sepoliaDemoUiProduction.includes("BackendStateInvalidated") &&
+    sepoliaDemoUiProduction.includes("fn invalidate_frontend_after_backend_error(") &&
+    sepoliaDemoUiProduction.includes(
+      "self.request_lock(LockReason::BackendStateInvalidated)",
+    ) &&
+    accountSelectedEventBlock.includes("invalidate_frontend_after_backend_error") &&
+    refreshedEventBlock.includes("invalidate_frontend_after_backend_error") &&
+    sepoliaDemoUi.includes(
+      "fn account_select_or_refresh_backend_invalidation_scrubs_and_locks_frontend()",
+    ) &&
+    rootReadme.includes("activity-v1.tmp") &&
+    rootReadme.includes("tokens-v1.tmp") &&
+    rootReadme.includes("vault-v2.migrating") &&
+    rootReadme.includes("HMAC/PRK context") &&
+    rootReadme.includes("ZeroizeOnDrop") &&
+    rootReadme.includes("격리된 Key Agent") &&
+    rootReadme.includes("canonical transaction 재구성") &&
+    rootReadme.includes("실제 전파·포함 여부") &&
+    sepoliaArchitectureDoc.includes("token-then-activity namespaces") &&
+    sepoliaArchitectureDoc.includes("exact same-directory `vault-v2.migrating` handle") &&
+    sepoliaArchitectureDoc.includes("HMAC/PRK context implements neither") &&
+    sepoliaArchitectureDoc.includes("single fixed TLS RPC remains a trust boundary") &&
+    sepoliaArchitectureDoc.includes("local envelope self-consistency") &&
+    sepoliaArchitectureDoc.includes("isolated Key Agent and a zeroizing KDF implementation"),
+  "Sepolia backend-invalidated UI lock/scrub and durable-temp/memory-forensics residuals must remain explicit",
+);
+for (const requiredActivityTest of [
+  "legacy_migration_preserves_exact_native_pending_for_v2_restart_retry",
+  "legacy_migration_rejects_foreign_signer_and_valid_erc20_before_v2_write",
+  "accepted_broadcast_then_activity_commit_failure_retries_by_observation_without_resend",
+  "committed_activity_with_leftover_pending_cleans_exact_file_without_network",
+  "retry_nonce_collision_preserves_exact_pending_before_node_lookup_or_resend",
+  "occupied_activity_nonce_slot_rejects_before_sign_pending_or_send",
+  "occupied_activity_nonce_slot_rejects_saved_erc20_before_sign_pending_or_send",
+  "full_activity_store_rejects_native_and_saved_erc20_before_signing",
+  "authenticated_activity_sender_must_bind_to_vault_account_index",
+  "manual_activity_refresh_reduces_missing_inclusion_reorg_and_reappearance_safely",
+  "observed_type_two_requires_canonical_hash_signature_and_recovered_sender",
+  "account_one_erc20_restart_observes_exact_pending_without_rebroadcast",
+  "activity_orphan_temp_is_reconciled_before_sign_and_nonregular_temp_fails_closed",
+  "token_orphan_temp_is_reconciled_before_new_v2_or_token_mutation",
+  "fresh_v2_parent_is_created_durably_and_invalid_parent_fails_before_vault_write",
+  "migration_temp_crash_recovery_pins_install_and_preserves_pending_until_commit",
+  "windows_migration_leases_pin_v1_temp_and_installed_v2_exact_objects",
+  "windows_activity_lock_and_temp_are_exclusive_reparse_safe_and_recoverable",
+  "stale_or_nonregular_sidecars_block_legacy_migration_before_vault_mutation",
+  "confirm_revocation_checkpoints_bound_signing_pending_and_broadcast",
+  "saved_erc20_confirm_permit_checkpoints_bound_sign_write_send_and_delete",
+]) {
+  requireInvariant(
+    sepoliaDemoBackend.includes(`fn ${requiredActivityTest}()`),
+    `Sepolia activity regression evidence missing: ${requiredActivityTest}`,
+  );
+}
 
 const exactErc20PreflightBlock = rustFunctionBlock(
   sepoliaDemoRpcProduction,

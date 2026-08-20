@@ -1,5 +1,6 @@
 //! Double-clickable standalone Ethereum Sepolia development wallet.
 
+mod activity_store;
 mod backend;
 mod erc20;
 mod headless;

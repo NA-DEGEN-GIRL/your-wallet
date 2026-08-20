@@ -81,6 +81,9 @@ pub struct WalletSnapshot {
     /// type-2 signature. Its sender can differ from the session selection
     /// after reopening because account selection is intentionally not saved.
     pub pending_broadcast: Option<PendingBroadcastPreview>,
+    /// Durable transaction activity for the selected account only. Rows from
+    /// the other bounded account never cross this snapshot boundary.
+    pub activity: Vec<TransactionActivitySnapshot>,
 }
 
 impl WalletSnapshot {
@@ -108,7 +111,22 @@ impl WalletSnapshot {
                     && account.address == pending.sender_address
             }) && valid_full_hash(&pending.transaction_hash)
         });
-        accounts_are_valid && pending_is_valid
+        let activity_is_valid = self.activity.len() <= 64
+            && self.activity.iter().all(|entry| {
+                entry.is_well_formed()
+                    && entry.sender_account_index == self.selected_account_index
+                    && self.accounts.iter().any(|account| {
+                        account.index == entry.sender_account_index
+                            && account.address == entry.sender_address
+                    })
+            })
+            && self.activity.iter().enumerate().all(|(index, entry)| {
+                self.activity[..index].iter().all(|prior| {
+                    prior.submission_sequence != entry.submission_sequence
+                        && prior.transaction_hash != entry.transaction_hash
+                })
+            });
+        accounts_are_valid && pending_is_valid && activity_is_valid
     }
 }
 
@@ -367,6 +385,166 @@ impl SecretReveal {
 pub struct SendReceipt {
     /// Transaction hash returned only after the backend verifies it.
     pub transaction_hash: String,
+    /// Exact durable row authenticated by readback before UI success.
+    pub activity: Option<TransactionActivitySnapshot>,
+    /// False only when a previously committed row allowed an orphan pending
+    /// file to be cleaned without sending the transaction again.
+    pub broadcast_performed: bool,
+}
+
+/// One durable, selected-account transaction-activity row.
+///
+/// It deliberately has no `Debug` implementation. Every full identifier is
+/// rendered to the user, but none belongs in routine diagnostics.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TransactionActivitySnapshot {
+    /// Positive, vault-local insertion order used only for stable sorting.
+    pub submission_sequence: u64,
+    /// Full locally verified transaction hash.
+    pub transaction_hash: String,
+    /// Bounded account index that signed this transaction.
+    pub sender_account_index: u8,
+    /// Full checksummed sender address.
+    pub sender_address: String,
+    /// Exact transaction nonce in decimal.
+    pub nonce: String,
+    /// Exact transaction gas limit in decimal.
+    pub gas_limit: String,
+    /// Exact EIP-1559 priority-fee cap in gwei.
+    pub max_priority_fee_per_gas_gwei: String,
+    /// Exact EIP-1559 total-fee cap in gwei.
+    pub max_fee_per_gas_gwei: String,
+    /// Immutable native/ERC-20 transfer identity.
+    pub transfer: ActivityTransferSnapshot,
+    /// Latest durable observation state. No state authorizes nonce reuse.
+    pub status: ActivityStatusSnapshot,
+}
+
+impl TransactionActivitySnapshot {
+    fn is_well_formed(&self) -> bool {
+        self.submission_sequence != 0
+            && self.sender_account_index <= 1
+            && valid_full_hash(&self.transaction_hash)
+            && valid_recipient_shape(&self.sender_address)
+            && valid_activity_quantity(&self.nonce)
+            && valid_activity_quantity(&self.gas_limit)
+            && valid_activity_decimal(&self.max_priority_fee_per_gas_gwei)
+            && valid_activity_decimal(&self.max_fee_per_gas_gwei)
+            && self.transfer.is_well_formed()
+            && self.status.is_well_formed()
+    }
+}
+
+/// Immutable asset-specific activity identity.
+#[derive(Clone, Eq, PartialEq)]
+pub enum ActivityTransferSnapshot {
+    Native {
+        /// Full checksummed recipient address.
+        recipient_address: String,
+        /// Exact native value in Sepolia ETH.
+        value_eth: String,
+    },
+    SavedErc20 {
+        /// Full saved token contract address.
+        contract_address: String,
+        /// Full recipient encoded in the exact transfer calldata.
+        recipient_address: String,
+        /// Exact uint256 amount, before decimal formatting.
+        raw_amount: String,
+        /// Historical decimal count committed with the transaction.
+        decimals: u8,
+        /// Historical formatted amount derived from the committed raw amount.
+        amount: String,
+        /// Untrusted historical contract label. The UI never treats this as
+        /// the asset identity and always renders the full contract address.
+        historical_symbol: Option<String>,
+    },
+}
+
+impl ActivityTransferSnapshot {
+    fn is_well_formed(&self) -> bool {
+        match self {
+            Self::Native {
+                recipient_address,
+                value_eth,
+            } => valid_recipient_shape(recipient_address) && valid_activity_decimal(value_eth),
+            Self::SavedErc20 {
+                contract_address,
+                recipient_address,
+                raw_amount,
+                decimals,
+                amount,
+                historical_symbol,
+            } => {
+                valid_recipient_shape(contract_address)
+                    && valid_recipient_shape(recipient_address)
+                    && valid_activity_quantity(raw_amount)
+                    && *decimals <= 77
+                    && valid_activity_decimal(amount)
+                    && historical_symbol.as_ref().is_none_or(|symbol| {
+                        !symbol.is_empty()
+                            && symbol.len() <= 16
+                            && symbol.bytes().all(|byte| byte.is_ascii_graphic())
+                    })
+            }
+        }
+    }
+}
+
+/// Receipt outcome attached to an included activity row.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ActivityInclusionOutcome {
+    Success,
+    Revert,
+}
+
+/// Exact inclusion anchor and the head at which its non-final depth was seen.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ActivityInclusionSnapshot {
+    pub outcome: ActivityInclusionOutcome,
+    pub block_number: u64,
+    pub block_hash: String,
+    pub observed_head_number: u64,
+    pub observed_head_hash: String,
+    pub depth: u64,
+}
+
+impl ActivityInclusionSnapshot {
+    fn is_well_formed(&self) -> bool {
+        valid_full_hash(&self.block_hash)
+            && valid_full_hash(&self.observed_head_hash)
+            && self.observed_head_number >= self.block_number
+            && self.depth
+                == self
+                    .observed_head_number
+                    .checked_sub(self.block_number)
+                    .and_then(|distance| distance.checked_add(1))
+                    .unwrap_or(0)
+    }
+}
+
+/// Durable observation state. Included depth is deliberately described as
+/// non-final; dropped/replacement states never permit automatic nonce reuse.
+#[derive(Clone, Eq, PartialEq)]
+pub enum ActivityStatusSnapshot {
+    Submitted,
+    Pending,
+    Included(ActivityInclusionSnapshot),
+    Reorged(ActivityInclusionSnapshot),
+    DroppedCandidate,
+    ReplacementSuspected,
+}
+
+impl ActivityStatusSnapshot {
+    fn is_well_formed(&self) -> bool {
+        match self {
+            Self::Included(inclusion) | Self::Reorged(inclusion) => inclusion.is_well_formed(),
+            Self::Submitted
+            | Self::Pending
+            | Self::DroppedCandidate
+            | Self::ReplacementSuspected => true,
+        }
+    }
 }
 
 /// Exact durable-pending attribution shown before byte-for-byte rebroadcast.
@@ -656,6 +834,18 @@ pub trait WalletBackend: Send + 'static {
     /// Refresh the selected public address and Sepolia ETH balance.
     fn refresh(&mut self) -> Result<WalletSnapshot, String>;
 
+    /// Manually refresh exactly one durable activity row. Implementations
+    /// must bookend typed RPC reads, preserve immutable identity, and recheck
+    /// the session immediately before any durable status mutation.
+    fn refresh_activity(
+        &mut self,
+        transaction_hash: &str,
+        permit: &SessionPermit<'_>,
+    ) -> Result<TransactionActivitySnapshot, String> {
+        let _ = (transaction_hash, permit);
+        Err("거래 활동 새로고침 기능을 사용할 수 없습니다.".to_owned())
+    }
+
     /// Add one full custom ERC-20 contract address to an unlocked v2 wallet.
     fn add_custom_token(
         &mut self,
@@ -796,6 +986,9 @@ enum WorkerCommand {
         password: SensitiveText,
     },
     Refresh,
+    RefreshActivity {
+        transaction_hash: String,
+    },
     AddCustomToken {
         contract_address: String,
     },
@@ -834,6 +1027,10 @@ enum WorkerEvent {
     MnemonicExported(Result<SecretReveal, String>),
     AccountPrivateKeyExported(Result<SecretReveal, String>),
     Refreshed(Result<WalletSnapshot, String>),
+    ActivityRefreshed {
+        transaction_hash: String,
+        result: Result<TransactionActivitySnapshot, String>,
+    },
     CustomTokenAdded(Result<Vec<CustomTokenSnapshot>, String>),
     CustomTokensRefreshed(Result<Vec<CustomTokenSnapshot>, String>),
     CustomTokenRemoved(Result<Vec<CustomTokenSnapshot>, String>),
@@ -877,6 +1074,7 @@ enum PendingAction {
     ExportMnemonic,
     ExportAccountPrivateKey,
     Refresh,
+    RefreshActivity,
     AddCustomToken,
     RefreshCustomTokens,
     RemoveCustomToken,
@@ -892,6 +1090,7 @@ enum LockReason {
     Explicit,
     Inactivity,
     FocusLost,
+    BackendStateInvalidated,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1001,6 +1200,7 @@ impl GeneratedBackupUiState {
 impl PendingAction {
     const fn korean(self) -> &'static str {
         match self {
+            Self::RefreshActivity => "선택한 거래 활동을 Sepolia에서 확인하는 중...",
             Self::BeginGeneratedBackupChallenge => "백업 확인 문제를 준비하는 중...",
             Self::BeginGenerate => "새 복구 문구를 안전하게 만드는 중...",
             Self::ConfirmGenerated => "백업 확인된 v2 지갑을 저장하는 중...",
@@ -1147,6 +1347,7 @@ pub struct WalletApp {
     notice: Option<String>,
     error: Option<String>,
     last_transaction_hash: Option<String>,
+    activity_refresh_target: Option<String>,
 }
 
 impl WalletApp {
@@ -1200,6 +1401,7 @@ impl WalletApp {
             notice: None,
             error: None,
             last_transaction_hash: None,
+            activity_refresh_target: None,
         }
     }
 
@@ -1245,6 +1447,7 @@ impl WalletApp {
             notice: None,
             error: Some(safe_error(message.into())),
             last_transaction_hash: None,
+            activity_refresh_target: None,
         }
     }
 
@@ -1339,6 +1542,7 @@ impl WalletApp {
         zeroize_optional_string(&mut self.notice);
         zeroize_optional_string(&mut self.error);
         zeroize_optional_string(&mut self.last_transaction_hash);
+        zeroize_optional_string(&mut self.activity_refresh_target);
 
         self.password_visible = false;
         self.imported_secret_visible = false;
@@ -1382,6 +1586,14 @@ impl WalletApp {
             self.session_phase = SessionPhase::Locked;
             self.error = Some("잠금 작업 스레드가 종료되어 지갑을 다시 열 수 없습니다.".to_owned());
         }
+    }
+
+    fn invalidate_frontend_after_backend_error(&mut self, error: String) {
+        let error = safe_error(error);
+        self.request_lock(LockReason::BackendStateInvalidated);
+        self.error = Some(format!(
+            "백엔드 상태를 확인할 수 없어 화면의 세션 정보를 지우고 지갑을 잠갔습니다. {error}"
+        ));
     }
 
     fn observe_automatic_lock(&mut self, context: &egui::Context, now: Instant) {
@@ -1715,6 +1927,32 @@ impl WalletApp {
             return;
         }
         self.send_command(WorkerCommand::Refresh, PendingAction::Refresh);
+    }
+
+    fn refresh_activity_row(&mut self, transaction_hash: String) {
+        if !self.require_unlocked_action() || self.pending.is_some() {
+            return;
+        }
+        let valid_target = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.activity.iter().any(|entry| {
+                entry.transaction_hash == transaction_hash
+                    && entry.sender_account_index == snapshot.selected_account_index
+                    && entry.is_well_formed()
+            })
+        });
+        if !valid_target {
+            self.error = Some("선택한 거래 활동 행이 현재 계정과 일치하지 않습니다.".to_owned());
+            return;
+        }
+        zeroize_optional_string(&mut self.activity_refresh_target);
+        self.activity_refresh_target = Some(transaction_hash.clone());
+        self.send_command(
+            WorkerCommand::RefreshActivity { transaction_hash },
+            PendingAction::RefreshActivity,
+        );
+        if self.pending != Some(PendingAction::RefreshActivity) {
+            zeroize_optional_string(&mut self.activity_refresh_target);
+        }
     }
 
     fn select_account(&mut self, index: u8) {
@@ -2103,9 +2341,8 @@ impl WalletApp {
                     });
                     if !snapshot.is_well_formed() || !identity_matches {
                         zeroize_wallet_snapshot(&mut snapshot);
-                        self.error = Some(
-                            "계정 전환 결과가 열린 지갑과 일치하지 않습니다. 지갑을 잠근 뒤 다시 열어 주세요."
-                                .to_owned(),
+                        self.invalidate_frontend_after_backend_error(
+                            "계정 전환 결과가 열린 지갑과 일치하지 않습니다.".to_owned(),
                         );
                         return;
                     }
@@ -2142,7 +2379,7 @@ impl WalletApp {
                         "계정 {selected_index}로 전환했습니다. ETH와 저장 토큰 잔액을 다시 조회해 주세요."
                     ));
                 }
-                Err(error) => self.error = Some(safe_error(error)),
+                Err(error) => self.invalidate_frontend_after_backend_error(error),
             },
             WorkerEvent::LegacyMigrated(result) => match result {
                 Ok(snapshot) => {
@@ -2238,8 +2475,64 @@ impl WalletApp {
                     self.snapshot = Some(snapshot);
                     self.notice = Some("Sepolia 잔액을 새로 확인했습니다.".to_owned());
                 }
-                Err(error) => self.error = Some(safe_error(error)),
+                Err(error) => self.invalidate_frontend_after_backend_error(error),
             },
+            WorkerEvent::ActivityRefreshed {
+                mut transaction_hash,
+                result,
+            } => {
+                let mut expected_hash = self.activity_refresh_target.take();
+                let request_matches = completed_action == Some(PendingAction::RefreshActivity)
+                    && expected_hash.as_deref() == Some(transaction_hash.as_str());
+                match result {
+                    Ok(mut refreshed) if request_matches => {
+                        let replacement = self.snapshot.as_ref().and_then(|snapshot| {
+                            snapshot
+                                .activity
+                                .iter()
+                                .position(|entry| entry.transaction_hash == transaction_hash)
+                                .filter(|index| {
+                                    let prior = &snapshot.activity[*index];
+                                    refreshed.is_well_formed()
+                                        && refreshed.sender_account_index
+                                            == snapshot.selected_account_index
+                                        && same_activity_identity(prior, &refreshed)
+                                })
+                        });
+                        if let (Some(index), Some(snapshot)) = (replacement, self.snapshot.as_mut())
+                        {
+                            zeroize_activity_snapshot(&mut snapshot.activity[index]);
+                            snapshot.activity[index] = refreshed;
+                            self.notice = Some(
+                                "선택한 거래의 상태를 고정 Sepolia RPC에서 새로 확인했습니다."
+                                    .to_owned(),
+                            );
+                        } else {
+                            zeroize_activity_snapshot(&mut refreshed);
+                            self.error = Some(
+                                "거래 활동 새로고침 결과가 기존 불변 거래 정보와 일치하지 않습니다."
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    Ok(mut refreshed) => {
+                        zeroize_activity_snapshot(&mut refreshed);
+                        self.error = Some(
+                            "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다.".to_owned(),
+                        );
+                    }
+                    Err(error) if request_matches => self.error = Some(safe_error(error)),
+                    Err(_) => {
+                        self.error = Some(
+                            "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다.".to_owned(),
+                        );
+                    }
+                }
+                transaction_hash.zeroize();
+                if let Some(hash) = expected_hash.as_mut() {
+                    hash.zeroize();
+                }
+            }
             WorkerEvent::CustomTokenAdded(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
@@ -2375,7 +2668,34 @@ impl WalletApp {
                 }
             },
             WorkerEvent::PreparedConfirmed(result) => match result {
-                Ok(receipt) => {
+                Ok(mut receipt) => {
+                    let activity = receipt.activity.as_ref();
+                    let receipt_matches = self.prepared.as_ref().is_some_and(|prepared| {
+                        receipt.broadcast_performed
+                            && activity.is_some_and(|activity| {
+                                receipt.transaction_hash == activity.transaction_hash
+                                    && receipt_matches_prepared(
+                                        activity,
+                                        prepared,
+                                        self.snapshot.as_ref(),
+                                    )
+                            })
+                    });
+                    let activity_installed = receipt_matches
+                        && receipt.activity.clone().is_some_and(|activity| {
+                            self.snapshot.as_mut().is_some_and(|snapshot| {
+                                upsert_activity_snapshot(snapshot, activity)
+                            })
+                        });
+                    if !activity_installed {
+                        zeroize_send_receipt(&mut receipt);
+                        clear_prepared_state(&mut self.prepared, &mut self.hold);
+                        self.error = Some(
+                            "전송 결과가 준비한 거래 또는 현재 계정의 활동 기록과 일치하지 않습니다."
+                                .to_owned(),
+                        );
+                        return;
+                    }
                     let was_erc20 = matches!(self.prepared, Some(PreparedPreview::SavedErc20(_)));
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     zeroize_transfer_asset_choice(&mut self.transfer_asset);
@@ -2466,12 +2786,49 @@ impl WalletApp {
                 }
             },
             WorkerEvent::Retried(result) => match result {
-                Ok(receipt) => {
+                Ok(mut receipt) => {
+                    let activity = receipt.activity.as_ref();
+                    let pending_matches = self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.pending_broadcast.as_ref())
+                        .is_some_and(|pending| {
+                            activity.is_some_and(|activity| {
+                                receipt.transaction_hash == activity.transaction_hash
+                                    && receipt.transaction_hash == pending.transaction_hash
+                                    && activity.sender_account_index == pending.sender_account_index
+                                    && activity.sender_address == pending.sender_address
+                            })
+                        });
+                    let activity_installed = pending_matches
+                        && receipt.activity.clone().is_some_and(|activity| {
+                            self.snapshot.as_mut().is_some_and(|snapshot| {
+                                upsert_activity_snapshot(snapshot, activity)
+                            })
+                        });
+                    if !activity_installed {
+                        zeroize_send_receipt(&mut receipt);
+                        clear_snapshot_pending_broadcast(self.snapshot.as_mut());
+                        self.pending_retry_hold.reset();
+                        self.error = Some(
+                            "보류 거래 결과가 확인한 거래 또는 현재 계정의 활동 기록과 일치하지 않습니다."
+                                .to_owned(),
+                        );
+                        return;
+                    }
+                    let broadcast_performed = receipt.broadcast_performed;
                     clear_snapshot_pending_broadcast(self.snapshot.as_mut());
                     self.pending_retry_hold.reset();
                     self.last_transaction_hash = Some(receipt.transaction_hash);
                     mark_snapshot_balance_stale(self.snapshot.as_mut());
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    if !broadcast_performed {
+                        self.notice = Some(
+                            "이미 내구 기록된 거래를 다시 전송하지 않고 남아 있던 보류 파일만 정리했습니다."
+                                .to_owned(),
+                        );
+                        return;
+                    }
                     self.notice =
                         Some("저장된 이전 Sepolia 거래를 그대로 다시 제출했습니다. 잔액을 다시 조회해 주세요.".to_owned());
                 }
@@ -3186,11 +3543,140 @@ impl WalletApp {
         );
     }
 
+    fn activity_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let selected_account_index = snapshot.selected_account_index;
+        let wallet_kind = snapshot.wallet_kind;
+        let activity = snapshot.activity.clone();
+        let refresh_enabled =
+            self.pending.is_none() && self.prepared.is_none() && self.secret_reveal.is_none();
+        let palette = StatusPalette::from_visuals(ui.visuals());
+
+        ui.separator();
+        ui.heading("4. 거래 활동");
+        ui.label(
+            RichText::new(
+                "각 행의 ‘이 행만 새로고침’은 앱에 고정된 Sepolia RPC만 조회합니다. 자동 새로고침이나 nonce 자동 재사용은 하지 않습니다.",
+            )
+            .small()
+            .color(palette.muted),
+        );
+        ui.colored_label(
+            palette.warning,
+            "인증된 활동 파일의 generation은 외부 롤백 앵커가 아닙니다. 남아 있는 행은 어떤 상태에서도 nonce 재사용을 막지만, 과거 파일 복원·삭제로 숨겨진 기록은 안전 증거가 아니며 로컬 충돌 감지를 무력화할 수 있습니다. 운영 환경에는 외부 단조 앵커가 필요합니다.",
+        );
+        ui.label(
+            RichText::new(
+                "RPC가 보고한 최신 head가 이 활동 파일에 저장된 high-water보다 낮으면, 깊이 계산 언더플로와 잘못된 reorg 판정을 막기 위해 행을 바꾸지 않고 head가 따라잡을 때까지 새로고침을 보류합니다. 깊은 롤백 뒤에는 업데이트가 지연될 수 있습니다.",
+            )
+            .small()
+            .color(palette.muted),
+        );
+        if matches!(wallet_kind, WalletKind::LegacyV1RawPrivateKey) {
+            ui.colored_label(
+                palette.warning,
+                "v1 지갑에는 새 거래 활동을 만들 수 없습니다. 기존 보류 거래를 그대로 보존한 채 v2로 이전한 뒤 다시 열어 주세요.",
+            );
+            return;
+        }
+        if activity.is_empty() {
+            ui.label(
+                RichText::new("선택한 계정의 저장된 거래 활동이 없습니다.")
+                    .small()
+                    .color(palette.muted),
+            );
+            return;
+        }
+
+        for row in activity
+            .into_iter()
+            .filter(|row| row.sender_account_index == selected_account_index)
+        {
+            let transaction_hash = row.transaction_hash.clone();
+            ui.add_space(6.0);
+            ui.group(|ui| {
+                ui.label(RichText::new(activity_status_label(&row.status)).strong());
+                ui.label("전체 거래 해시");
+                ui.monospace(&row.transaction_hash);
+                ui.label(format!("보낸 계정: 계정 {}", row.sender_account_index));
+                ui.label("전체 보낸 주소");
+                ui.monospace(&row.sender_address);
+                ui.label(format!("nonce: {}", row.nonce));
+                ui.label(format!("gas limit: {}", row.gas_limit));
+                ui.label(format!(
+                    "최대 우선 수수료 / gas: {} gwei",
+                    row.max_priority_fee_per_gas_gwei
+                ));
+                ui.label(format!(
+                    "최대 수수료 / gas: {} gwei",
+                    row.max_fee_per_gas_gwei
+                ));
+                match &row.transfer {
+                    ActivityTransferSnapshot::Native {
+                        recipient_address,
+                        value_eth,
+                    } => {
+                        ui.label(format!("Sepolia ETH: {value_eth}"));
+                        ui.label("전체 받는 주소");
+                        ui.monospace(recipient_address);
+                    }
+                    ActivityTransferSnapshot::SavedErc20 {
+                        contract_address,
+                        recipient_address,
+                        raw_amount,
+                        decimals,
+                        amount,
+                        historical_symbol,
+                    } => {
+                        ui.label("저장 ERC-20 전체 컨트랙트 주소");
+                        ui.monospace(contract_address);
+                        ui.label("전체 받는 주소");
+                        ui.monospace(recipient_address);
+                        ui.label(format!("원시 수량: {raw_amount}"));
+                        ui.label(format!("기록 당시 decimals: {decimals}"));
+                        ui.label(format!("기록 당시 표시 수량: {amount}"));
+                        if let Some(symbol) = historical_symbol {
+                            ui.colored_label(
+                                palette.warning,
+                                format!(
+                                    "신뢰하지 않는 과거 컨트랙트 라벨: {symbol} (자산 식별자는 위 전체 컨트랙트 주소입니다)"
+                                ),
+                            );
+                        }
+                    }
+                }
+                render_activity_inclusion(ui, &row.status);
+                if ui
+                    .add_enabled(
+                        refresh_enabled,
+                        egui::Button::new("이 행만 Sepolia에서 새로고침"),
+                    )
+                    .clicked()
+                {
+                    self.refresh_activity_row(transaction_hash.clone());
+                }
+            });
+        }
+    }
+
     fn send_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
         if self.snapshot.is_none() {
             return;
         }
         let palette = StatusPalette::from_visuals(ui.visuals());
+        if self.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(snapshot.wallet_kind, WalletKind::LegacyV1RawPrivateKey)
+        }) {
+            ui.separator();
+            ui.heading("5. 테스트넷 자산 보내기");
+            ui.colored_label(
+                palette.warning,
+                "v1 지갑은 새 거래를 서명하거나 전송할 수 없습니다. 먼저 ‘v1 → v2 이전’을 완료하세요. 기존 보류 거래는 이전 중 삭제하거나 전송하지 않습니다.",
+            );
+            return;
+        }
         ui.separator();
         ui.heading("4. 테스트 자산 보내기");
         let preparing_allowed = self.prepared.is_none() && self.pending.is_none();
@@ -3595,6 +4081,9 @@ const fn lock_notice(reason: LockReason) -> &'static str {
         LockReason::FocusLost => {
             "창의 포커스를 잃어 지갑을 잠갔습니다. 다시 열려면 비밀번호를 입력하세요."
         }
+        LockReason::BackendStateInvalidated => {
+            "백엔드 상태를 확인할 수 없어 지갑을 잠갔습니다. 다시 열어 주세요."
+        }
     }
 }
 
@@ -3613,6 +4102,184 @@ fn zeroize_wallet_snapshot(snapshot: &mut WalletSnapshot) {
     snapshot.balance_eth.zeroize();
     snapshot.selected_account_index = 0;
     clear_snapshot_pending_broadcast(Some(snapshot));
+    for activity in &mut snapshot.activity {
+        zeroize_activity_snapshot(activity);
+    }
+    snapshot.activity.clear();
+}
+
+fn zeroize_send_receipt(receipt: &mut SendReceipt) {
+    receipt.transaction_hash.zeroize();
+    if let Some(activity) = receipt.activity.as_mut() {
+        zeroize_activity_snapshot(activity);
+    }
+    receipt.activity = None;
+    receipt.broadcast_performed = false;
+}
+
+fn zeroize_activity_snapshot(activity: &mut TransactionActivitySnapshot) {
+    activity.submission_sequence = 0;
+    activity.transaction_hash.zeroize();
+    activity.sender_account_index = 0;
+    activity.sender_address.zeroize();
+    activity.nonce.zeroize();
+    activity.gas_limit.zeroize();
+    activity.max_priority_fee_per_gas_gwei.zeroize();
+    activity.max_fee_per_gas_gwei.zeroize();
+    match &mut activity.transfer {
+        ActivityTransferSnapshot::Native {
+            recipient_address,
+            value_eth,
+        } => {
+            recipient_address.zeroize();
+            value_eth.zeroize();
+        }
+        ActivityTransferSnapshot::SavedErc20 {
+            contract_address,
+            recipient_address,
+            raw_amount,
+            amount,
+            historical_symbol,
+            ..
+        } => {
+            contract_address.zeroize();
+            recipient_address.zeroize();
+            raw_amount.zeroize();
+            amount.zeroize();
+            if let Some(symbol) = historical_symbol.as_mut() {
+                symbol.zeroize();
+            }
+        }
+    }
+    match &mut activity.status {
+        ActivityStatusSnapshot::Included(inclusion)
+        | ActivityStatusSnapshot::Reorged(inclusion) => {
+            inclusion.block_hash.zeroize();
+            inclusion.observed_head_hash.zeroize();
+        }
+        ActivityStatusSnapshot::Submitted
+        | ActivityStatusSnapshot::Pending
+        | ActivityStatusSnapshot::DroppedCandidate
+        | ActivityStatusSnapshot::ReplacementSuspected => {}
+    }
+}
+
+fn same_activity_identity(
+    left: &TransactionActivitySnapshot,
+    right: &TransactionActivitySnapshot,
+) -> bool {
+    left.submission_sequence == right.submission_sequence
+        && left.transaction_hash == right.transaction_hash
+        && left.sender_account_index == right.sender_account_index
+        && left.sender_address == right.sender_address
+        && left.nonce == right.nonce
+        && left.gas_limit == right.gas_limit
+        && left.max_priority_fee_per_gas_gwei == right.max_priority_fee_per_gas_gwei
+        && left.max_fee_per_gas_gwei == right.max_fee_per_gas_gwei
+        && left.transfer == right.transfer
+}
+
+fn receipt_matches_prepared(
+    activity: &TransactionActivitySnapshot,
+    prepared: &PreparedPreview,
+    snapshot: Option<&WalletSnapshot>,
+) -> bool {
+    if !activity.is_well_formed()
+        || !matches!(activity.status, ActivityStatusSnapshot::Submitted)
+        || !sender_matches_snapshot(
+            snapshot,
+            activity.sender_account_index,
+            activity.sender_address.as_str(),
+        )
+    {
+        return false;
+    }
+    match (prepared, &activity.transfer) {
+        (
+            PreparedPreview::Native(preview),
+            ActivityTransferSnapshot::Native {
+                recipient_address,
+                value_eth,
+            },
+        ) => {
+            activity.sender_account_index == preview.sender_account_index
+                && activity.sender_address == preview.sender_address
+                && activity.nonce == preview.nonce
+                && activity.gas_limit == preview.gas_limit
+                && activity.max_priority_fee_per_gas_gwei == preview.max_priority_fee_per_gas_gwei
+                && activity.max_fee_per_gas_gwei == preview.max_fee_per_gas_gwei
+                && recipient_address == &preview.recipient
+                && value_eth == &preview.amount_eth
+        }
+        (
+            PreparedPreview::SavedErc20(preview),
+            ActivityTransferSnapshot::SavedErc20 {
+                contract_address,
+                recipient_address,
+                decimals,
+                amount,
+                historical_symbol,
+                ..
+            },
+        ) => {
+            activity.sender_account_index == preview.sender_account_index
+                && activity.sender_address == preview.sender_address
+                && activity.nonce == preview.nonce
+                && activity.gas_limit == preview.gas_limit
+                && activity.max_priority_fee_per_gas_gwei == preview.max_priority_fee_per_gas_gwei
+                && activity.max_fee_per_gas_gwei == preview.max_fee_per_gas_gwei
+                && contract_address == &preview.contract_address
+                && recipient_address == &preview.recipient
+                && *decimals == preview.decimals
+                && amount == &preview.amount
+                && historical_symbol == &preview.symbol
+        }
+        (PreparedPreview::Native(_), ActivityTransferSnapshot::SavedErc20 { .. })
+        | (PreparedPreview::SavedErc20(_), ActivityTransferSnapshot::Native { .. }) => false,
+    }
+}
+
+fn upsert_activity_snapshot(
+    snapshot: &mut WalletSnapshot,
+    mut activity: TransactionActivitySnapshot,
+) -> bool {
+    if !activity.is_well_formed()
+        || activity.sender_account_index != snapshot.selected_account_index
+        || !snapshot.accounts.iter().any(|account| {
+            account.index == activity.sender_account_index
+                && account.address == activity.sender_address
+        })
+    {
+        zeroize_activity_snapshot(&mut activity);
+        return false;
+    }
+    if let Some(index) = snapshot
+        .activity
+        .iter()
+        .position(|entry| entry.transaction_hash == activity.transaction_hash)
+    {
+        if !same_activity_identity(&snapshot.activity[index], &activity) {
+            zeroize_activity_snapshot(&mut activity);
+            return false;
+        }
+        zeroize_activity_snapshot(&mut snapshot.activity[index]);
+        snapshot.activity[index] = activity;
+        return true;
+    }
+    if snapshot.activity.len() >= 64
+        || snapshot
+            .activity
+            .iter()
+            .any(|entry| entry.submission_sequence == activity.submission_sequence)
+    {
+        zeroize_activity_snapshot(&mut activity);
+        return false;
+    }
+    snapshot.activity.push(activity);
+    snapshot
+        .activity
+        .sort_by_key(|entry| std::cmp::Reverse(entry.submission_sequence));
+    true
 }
 
 fn zeroize_pending_broadcast_preview(preview: &mut PendingBroadcastPreview) {
@@ -3874,6 +4541,50 @@ fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 15] {
     ]
 }
 
+fn activity_status_label(status: &ActivityStatusSnapshot) -> String {
+    match status {
+        ActivityStatusSnapshot::Submitted => "Submitted · 제출 기록 완료".to_owned(),
+        ActivityStatusSnapshot::Pending => "Pending · 포함 미확정 / 관찰 대기".to_owned(),
+        ActivityStatusSnapshot::Included(inclusion) => format!(
+            "Included({}) · depth {} · 최종 확정 아님",
+            match inclusion.outcome {
+                ActivityInclusionOutcome::Success => "success",
+                ActivityInclusionOutcome::Revert => "revert",
+            },
+            inclusion.depth
+        ),
+        ActivityStatusSnapshot::Reorged(_) => {
+            "Reorged · 이전 포함 블록이 현재 정규 체인과 다름".to_owned()
+        }
+        ActivityStatusSnapshot::DroppedCandidate => {
+            "DroppedCandidate · 3회 이상 누락 및 64 head 진행 후보".to_owned()
+        }
+        ActivityStatusSnapshot::ReplacementSuspected => {
+            "ReplacementSuspected · 계정 nonce 진행 감지".to_owned()
+        }
+    }
+}
+
+fn render_activity_inclusion(ui: &mut egui::Ui, status: &ActivityStatusSnapshot) {
+    let inclusion = match status {
+        ActivityStatusSnapshot::Included(inclusion)
+        | ActivityStatusSnapshot::Reorged(inclusion) => inclusion,
+        ActivityStatusSnapshot::Submitted
+        | ActivityStatusSnapshot::Pending
+        | ActivityStatusSnapshot::DroppedCandidate
+        | ActivityStatusSnapshot::ReplacementSuspected => return,
+    };
+    ui.label(format!("포함 블록 번호: {}", inclusion.block_number));
+    ui.label("전체 포함 블록 해시");
+    ui.monospace(&inclusion.block_hash);
+    ui.label(format!(
+        "관찰 head 번호: {} · depth: {} (최종 확정 아님)",
+        inclusion.observed_head_number, inclusion.depth
+    ));
+    ui.label("전체 관찰 head 해시");
+    ui.monospace(&inclusion.observed_head_hash);
+}
+
 fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
     for (label, value) in preview_fields(preview) {
         ui.label(RichText::new(label).strong());
@@ -4010,6 +4721,7 @@ impl eframe::App for WalletApp {
                     self.generated_backup_panel(context, ui);
                     self.secret_reveal_panel(context, ui);
                     self.custom_token_panel(ui);
+                    self.activity_panel(ui);
                     self.send_panel(context, ui);
                 }
 
@@ -4152,6 +4864,13 @@ fn execute_worker_command(
             WorkerEvent::AccountPrivateKeyExported(backend.export_account_private_key(password))
         }
         WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh()),
+        WorkerCommand::RefreshActivity { transaction_hash } => {
+            let result = backend.refresh_activity(&transaction_hash, permit);
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash,
+                result,
+            }
+        }
         WorkerCommand::AddCustomToken { contract_address } => {
             WorkerEvent::CustomTokenAdded(backend.add_custom_token(&contract_address))
         }
@@ -4252,6 +4971,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         notice: None,
         error: None,
         last_transaction_hash: None,
+        activity_refresh_target: None,
     };
     let mut backend = HeadlessBackend::default();
 
@@ -4598,7 +5318,30 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.prepared.is_some()
         || !app.recipient.is_empty()
         || !app.amount_eth.is_empty()
-        || app.last_transaction_hash.as_deref() != Some("headless-confirmed")
+        || app.last_transaction_hash.as_deref() != Some(format!("0x{}", "bb".repeat(32)).as_str())
+    {
+        return Err(());
+    }
+
+    let native_activity_hash = format!("0x{}", "bb".repeat(32));
+    app.refresh_activity_row(native_activity_hash.clone());
+    if app.pending != Some(PendingAction::RefreshActivity) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::RefreshActivity { transaction_hash }
+                if transaction_hash == &native_activity_hash
+        )
+    })?;
+    if app.pending.is_some()
+        || !app.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.activity.iter().any(|activity| {
+                activity.transaction_hash == native_activity_hash
+                    && matches!(activity.status, ActivityStatusSnapshot::Pending)
+            })
+        })
     {
         return Err(());
     }
@@ -4702,7 +5445,9 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::RetryPending)
     })?;
-    if app.pending.is_some() || app.last_transaction_hash.as_deref() != Some("headless-retried") {
+    if app.pending.is_some()
+        || app.last_transaction_hash.as_deref() != Some(format!("0x{}", "ab".repeat(32)).as_str())
+    {
         return Err(());
     }
 
@@ -4797,6 +5542,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "cancel-generated",
             "prepare-recommended",
             "confirm",
+            "activity-refresh-row",
             "prepare-faster",
             "cancel",
             "prepare-custom",
@@ -4811,7 +5557,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 93,
+        transitions_checked: 96,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -4869,9 +5615,9 @@ fn headless_preview(mode: FeeMode) -> TransferPreview {
     TransferPreview {
         sender_account_index: 0,
         sender_address: "0x1111111111111111111111111111111111111111".to_owned(),
-        recipient: "headless-recipient".to_owned(),
+        recipient: "0x3333333333333333333333333333333333333333".to_owned(),
         amount_eth: "0.001".to_owned(),
-        nonce: "headless-nonce".to_owned(),
+        nonce: "7".to_owned(),
         fee_mode_ko: mode_label.to_owned(),
         gas_limit: "21000".to_owned(),
         quoted_base_fee_per_gas_gwei: "1".to_owned(),
@@ -4904,9 +5650,9 @@ fn headless_erc20_preview() -> Erc20TransferPreview {
         contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
         symbol: Some("TOK".to_owned()),
         decimals: 18,
-        recipient: "headless-recipient".to_owned(),
+        recipient: "0x3333333333333333333333333333333333333333".to_owned(),
         amount: "1.25".to_owned(),
-        nonce: "headless-nonce".to_owned(),
+        nonce: "8".to_owned(),
         fee_mode_ko: "추천".to_owned(),
         estimated_gas: "50000".to_owned(),
         gas_limit: "60000".to_owned(),
@@ -4948,6 +5694,7 @@ fn headless_snapshot(wallet_kind: WalletKind) -> WalletSnapshot {
         balance_eth: "headless-balance".to_owned(),
         wallet_kind,
         pending_broadcast: None,
+        activity: Vec::new(),
     }
 }
 
@@ -4992,10 +5739,60 @@ fn headless_token_snapshot() -> CustomTokenSnapshot {
     }
 }
 
+fn headless_native_activity(
+    account_index: u8,
+    status: ActivityStatusSnapshot,
+) -> TransactionActivitySnapshot {
+    let preview = headless_preview_for(FeeMode::Recommended, account_index);
+    TransactionActivitySnapshot {
+        submission_sequence: 2,
+        transaction_hash: format!("0x{}", "bb".repeat(32)),
+        sender_account_index: account_index,
+        sender_address: preview.sender_address,
+        nonce: preview.nonce,
+        gas_limit: preview.gas_limit,
+        max_priority_fee_per_gas_gwei: preview.max_priority_fee_per_gas_gwei,
+        max_fee_per_gas_gwei: preview.max_fee_per_gas_gwei,
+        transfer: ActivityTransferSnapshot::Native {
+            recipient_address: preview.recipient,
+            value_eth: preview.amount_eth,
+        },
+        status,
+    }
+}
+
+fn headless_erc20_activity(
+    account_index: u8,
+    status: ActivityStatusSnapshot,
+) -> TransactionActivitySnapshot {
+    let preview = headless_erc20_preview_for(account_index);
+    TransactionActivitySnapshot {
+        submission_sequence: 1,
+        transaction_hash: format!("0x{}", "aa".repeat(32)),
+        sender_account_index: account_index,
+        sender_address: preview.sender_address,
+        nonce: preview.nonce,
+        gas_limit: preview.gas_limit,
+        max_priority_fee_per_gas_gwei: preview.max_priority_fee_per_gas_gwei,
+        max_fee_per_gas_gwei: preview.max_fee_per_gas_gwei,
+        transfer: ActivityTransferSnapshot::SavedErc20 {
+            contract_address: preview.contract_address,
+            recipient_address: preview.recipient,
+            raw_amount: "1250000000000000000".to_owned(),
+            decimals: preview.decimals,
+            amount: preview.amount,
+            historical_symbol: preview.symbol,
+        },
+        status,
+    }
+}
+
 #[derive(Default)]
 struct HeadlessBackend {
     calls: Vec<&'static str>,
     selected_account_index: u8,
+    prepared_activity: Option<TransactionActivitySnapshot>,
+    activity: Vec<TransactionActivitySnapshot>,
 }
 
 impl WalletBackend for HeadlessBackend {
@@ -5156,7 +5953,12 @@ impl WalletBackend for HeadlessBackend {
             FeeSelection::Custom { .. } => return Err("headless fee mismatch".to_owned()),
         };
         self.calls.push(call);
-        Ok(headless_preview_for(mode, self.selected_account_index))
+        let preview = headless_preview_for(mode, self.selected_account_index);
+        self.prepared_activity = Some(headless_native_activity(
+            self.selected_account_index,
+            ActivityStatusSnapshot::Submitted,
+        ));
+        Ok(preview)
     }
 
     fn prepare_saved_erc20_transfer(
@@ -5175,19 +5977,50 @@ impl WalletBackend for HeadlessBackend {
             return Err("headless ERC20 input mismatch".to_owned());
         }
         self.calls.push("prepare-token");
-        Ok(headless_erc20_preview_for(self.selected_account_index))
+        let preview = headless_erc20_preview_for(self.selected_account_index);
+        self.prepared_activity = Some(headless_erc20_activity(
+            self.selected_account_index,
+            ActivityStatusSnapshot::Submitted,
+        ));
+        Ok(preview)
     }
 
     fn confirm_prepared(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.calls.push("confirm");
+        let activity = self
+            .prepared_activity
+            .take()
+            .ok_or_else(|| "headless activity missing".to_owned())?;
+        let transaction_hash = activity.transaction_hash.clone();
+        self.activity
+            .retain(|entry| entry.transaction_hash != transaction_hash);
+        self.activity.push(activity.clone());
         Ok(SendReceipt {
-            transaction_hash: "headless-confirmed".to_owned(),
+            transaction_hash,
+            activity: Some(activity),
+            broadcast_performed: true,
         })
     }
 
     fn cancel_prepared(&mut self) -> Result<(), String> {
         self.calls.push("cancel");
+        self.prepared_activity = None;
         Ok(())
+    }
+
+    fn refresh_activity(
+        &mut self,
+        transaction_hash: &str,
+        _permit: &SessionPermit<'_>,
+    ) -> Result<TransactionActivitySnapshot, String> {
+        self.calls.push("activity-refresh-row");
+        let entry = self
+            .activity
+            .iter_mut()
+            .find(|entry| entry.transaction_hash == transaction_hash)
+            .ok_or_else(|| "headless activity mismatch".to_owned())?;
+        entry.status = ActivityStatusSnapshot::Pending;
+        Ok(entry.clone())
     }
 
     fn inspect_pending_broadcast(
@@ -5204,8 +6037,13 @@ impl WalletBackend for HeadlessBackend {
 
     fn retry_pending(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.calls.push("retry");
+        let mut activity = headless_native_activity(1, ActivityStatusSnapshot::Submitted);
+        activity.submission_sequence = 3;
+        activity.transaction_hash = format!("0x{}", "ab".repeat(32));
         Ok(SendReceipt {
-            transaction_hash: "headless-retried".to_owned(),
+            transaction_hash: activity.transaction_hash.clone(),
+            activity: Some(activity),
+            broadcast_performed: true,
         })
     }
 }
@@ -5364,6 +6202,36 @@ fn valid_full_hash(hash: &str) -> bool {
         && hash.as_bytes()[2..]
             .iter()
             .all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_activity_quantity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 78
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+fn valid_activity_decimal(value: &str) -> bool {
+    if value.is_empty() || value.len() > 80 {
+        return false;
+    }
+    let mut parts = value.split('.');
+    let Some(integer) = parts.next() else {
+        return false;
+    };
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || !valid_activity_quantity(integer)
+        || fraction.is_some_and(|fraction| {
+            fraction.is_empty()
+                || fraction.len() > 77
+                || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+                || fraction.ends_with('0')
+        })
+    {
+        return false;
+    }
+    true
 }
 
 fn valid_amount_shape(amount: &str) -> bool {
@@ -6295,6 +7163,7 @@ mod tests {
             notice: None,
             error: None,
             last_transaction_hash: None,
+            activity_refresh_target: None,
         }
     }
 
@@ -6984,6 +7853,8 @@ mod tests {
         ));
         app.apply_worker_event(WorkerEvent::Retried(Ok(SendReceipt {
             transaction_hash: format!("0x{}", "cd".repeat(32)),
+            activity: None,
+            broadcast_performed: true,
         })));
         assert!(
             app.snapshot
@@ -7218,8 +8089,12 @@ mod tests {
             Vec::new(),
         );
 
+        let activity = super::headless_erc20_activity(0, super::ActivityStatusSnapshot::Submitted);
+        let transaction_hash = activity.transaction_hash.clone();
         app.apply_worker_event(WorkerEvent::PreparedConfirmed(Ok(SendReceipt {
-            transaction_hash: "confirmed-token-transaction".to_owned(),
+            transaction_hash,
+            activity: Some(activity),
+            broadcast_performed: true,
         })));
         app.purge_queued_secret_text_edit_state(&context);
 
@@ -7318,9 +8193,21 @@ mod tests {
         let (_event_sender, events) = std::sync::mpsc::channel();
         let mut app = test_app(commands, events);
         app.custom_tokens = vec![super::headless_token_snapshot()];
+        let activity = super::headless_native_activity(0, super::ActivityStatusSnapshot::Submitted);
+        let transaction_hash = activity.transaction_hash.clone();
+        app.snapshot
+            .as_mut()
+            .expect("headless wallet snapshot")
+            .pending_broadcast = Some(PendingBroadcastPreview {
+            sender_account_index: activity.sender_account_index,
+            sender_address: activity.sender_address.clone(),
+            transaction_hash: transaction_hash.clone(),
+        });
 
         app.apply_worker_event(WorkerEvent::Retried(Ok(SendReceipt {
-            transaction_hash: "retried-transaction".to_owned(),
+            transaction_hash,
+            activity: Some(activity),
+            broadcast_performed: true,
         })));
 
         assert!(app.custom_tokens.is_empty());
@@ -7458,6 +8345,56 @@ mod tests {
     }
 
     #[test]
+    fn account_select_or_refresh_backend_invalidation_scrubs_and_locks_frontend() {
+        for account_select in [true, false] {
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            app.recipient = "recipient-marker".to_owned();
+            app.amount_eth = "1.25".to_owned();
+            app.custom_priority_fee_gwei = "2".to_owned();
+            app.custom_max_fee_gwei = "3".to_owned();
+            app.custom_token_address = "token-marker".to_owned();
+            app.last_transaction_hash = Some("transaction-marker".to_owned());
+            app.activity_refresh_target = Some("activity-marker".to_owned());
+            app.prepared = Some(PreparedPreview::Native(exact_preview()));
+            app.apply_worker_event(if account_select {
+                WorkerEvent::AccountSelected(Err("backend snapshot invalidated".to_owned()))
+            } else {
+                WorkerEvent::Refreshed(Err("backend snapshot invalidated".to_owned()))
+            });
+
+            assert!(matches!(
+                app.session_phase,
+                super::SessionPhase::Locking(super::LockReason::BackendStateInvalidated)
+            ));
+            assert!(app.snapshot.is_none());
+            assert!(app.prepared.is_none());
+            assert!(app.pending.is_none());
+            assert!(app.recipient.is_empty());
+            assert!(app.amount_eth.is_empty());
+            assert!(app.custom_priority_fee_gwei.is_empty());
+            assert!(app.custom_max_fee_gwei.is_empty());
+            assert!(app.custom_token_address.is_empty());
+            assert!(app.last_transaction_hash.is_none());
+            assert!(app.activity_refresh_target.is_none());
+            assert!(app.secret_reveal.is_none());
+            assert!(app.generated_backup.is_none());
+            assert!(matches!(app.transfer_asset, TransferAssetChoice::Native));
+            assert!(matches!(
+                command_receiver.try_recv(),
+                Ok(super::WorkerRequest {
+                    epoch: 1,
+                    command: WorkerCommand::Lock,
+                })
+            ));
+
+            app.apply_worker_event(WorkerEvent::Locked);
+            assert!(matches!(app.session_phase, super::SessionPhase::Locked));
+        }
+    }
+
+    #[test]
     fn cancel_clears_preview_and_hold() {
         let start = Instant::now();
         let mut hold = HoldToSend::default();
@@ -7580,6 +8517,8 @@ mod tests {
             }
             Ok(SendReceipt {
                 transaction_hash: "exact hash".to_owned(),
+                activity: None,
+                broadcast_performed: true,
             })
         }
 
@@ -7595,6 +8534,8 @@ mod tests {
             self.calls.push("retry");
             Ok(SendReceipt {
                 transaction_hash: "retry hash".to_owned(),
+                activity: None,
+                broadcast_performed: true,
             })
         }
     }
@@ -7730,8 +8671,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 93);
-        assert_eq!(evidence.backend_routes_checked, 29);
+        assert_eq!(evidence.transitions_checked, 96);
+        assert_eq!(evidence.backend_routes_checked, 30);
         Ok(())
     }
 }

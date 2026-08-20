@@ -19,6 +19,81 @@ invariants, not a claim that the current binaries establish every boundary.
 | Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived Key Agent role and release allowlist before creating a fresh dedicated OS thread. That one thread owns `CreateProcessW`, the first debug event, mapped-image authentication, continuation, and debugger detach. The simultaneously held verifier handle and debug-event image handle must match by volume serial plus all 128 `FILE_ID_INFO` bits; zero volume and all-zero or all-`FF` non-unique IDs fail closed. Only a successful detach plus an exact one-count suspend probe can construct the non-clone detached capability. Both restricted-launch entry points reject the Key Agent role before release evaluation or process creation, so the shared artifact allowlist is not launch-role authority. The detached capability exposes no raw handle or resume operation and terminates/waits the exact process on drop. The module remains private and `COMPILED_RELEASE_POLICY` is `None`; zero-capability Key Agent LPAC provisioning, a Key Agent-only storage ACL, registry-independent helper/profile trust setup, Broker channel, profile/job, protected-settings lease, and signed-artifact evidence are not connected. |
 | Device key protection | The crate-private model generates epoch-1 installation bundles with six pairwise-distinct role secrets and releases them only through role-typed views after an anchored open. Rotation preserves the installation ID, advances the key epoch exactly once, rekeys every role, and remains pending until opaque external evidence binds the exact predecessor commitment to the exact new canonical signed envelope at a strictly newer shared-anchor generation. RSA-3072 OAEP-SHA-256/empty-label and low-S P-256 P1363 identities hash one canonical RFC 5280 SPKI form; CNG blobs are adapter-internal inputs only. The raw identity constructors and sealing markers are private to the key-material module, and the architecture gate scans every production Rust source under `key-agent` for an unreviewed PCP implementation. No production PCP or rollback-anchor adapter exists, so this path remains fail-closed and release-blocking. |
 
+### Sepolia demo durable activity boundary
+
+The standalone Sepolia demo keeps a bounded 64-row, fixed-size authenticated
+`activity-v1.bin` sidecar derived only from an opened v2 vault. Every decoded
+row is rebound to authenticated account 0 or 1. A process-local mutex and a
+Windows persistent sibling no-share lock serialize mutation. The writer holds
+the exact parent directory, checks a generation baseline, creates a same-dir
+temporary file exclusively, flushes it, atomically replaces the destination,
+flushes the directory, and authenticates an exact readback. Nonregular and
+reparse objects fail closed.
+
+New v1 sends are disabled. A new v2 send holds one activity mutation lease from
+the pre-sign capacity and `(account index, sender, nonce)` reservation through
+signing, exact pending creation, guarded broadcast, and durable `Submitted`
+commit. Only after the installed activity row exactly matches the immutable
+transaction identity may the still-open exact pending handle delete that
+object. An uncertain commit preserves pending. On retry, an already committed
+exact row is cleanup-only. Otherwise an exact typed transaction-by-hash lookup
+precedes the sole rebroadcast: an exact node observation commits activity and
+cleans pending without sending, `null` may authorize one retry of the same raw
+bytes, and mismatch or observation failure preserves pending. No activity
+status, including reorg/drop/replacement suspicion, authorizes nonce reuse.
+
+A legacy v1 native pending is migrated without broadcasting or deleting it.
+Migration holds its exact lease, verifies the canonical signed bytes/hash,
+recovers the legacy account-0 sender, rejects ERC-20/foreign/tampered records,
+bookends the namespace, installs and authenticates v2, removes v1 durably, and
+transfers the held pending into the v2 retry path. This same-user namespace
+protocol does not constitute an OS-wide rollback/creation-prevention service;
+production still needs a trusted single-owner storage boundary.
+
+Activity refresh is manual and per-row against the fixed Sepolia RPC. Stable
+head bookends surround typed transaction, receipt, canonical-block, and latest
+nonce observations. Immutable sender/to/value/input/gas/fees/nonce/hash and
+transaction-index anchors must agree. Included success/revert depth is not
+finality. A single null or contradictory anchor does not mutate state; three
+misses spanning at least 64 heads may mark `DroppedCandidate`, and an advanced
+latest nonce may mark `ReplacementSuspected`. A stored high-water above the
+observed head also leaves the exact row and generation unchanged until the RPC
+head catches up. This avoids depth underflow and false reorgs, but can delay
+updates after a deep rollback.
+
+The activity generation is consistency metadata, not an external monotonic
+rollback anchor. Every retained row blocks a conflicting nonce slot, but a
+deleted or rolled-back valid file can hide ownership; missing history is not
+safety evidence. A production design requires an external monotonic anchor and
+must not infer nonce reuse from this sidecar's absence.
+
+The fixed `activity-v1.tmp` and `tokens-v1.tmp` names are reconciled only while
+their corresponding mutation lease is held. Windows opens the exact orphan with
+no sharing and DELETE access, rejects nonregular/reparse/contended objects, then
+deletes that same handle and flushes the parent. Brand-new v2 flows pin the
+token-then-activity namespaces, re-open and flush both fixed application
+directory levels even when they already exist after a crash, and refuse any
+pre-existing final sidecar. A wrong-vault, stale, nonregular, or reparse final
+sidecar is deliberately not overwritten: open/new-vault activation remains
+locked until deliberate manual repair. Legacy migration writes and authenticates
+the exact same-directory `vault-v2.migrating` handle, atomically installs that
+handle only after final v1/pending/sidecar bookends, rechecks pending once more,
+marks v2 committed, and only then deletes the exact held v1 object. A pre-install
+crash leaves v1/pending plus a safely reconcilable temp; a post-install cleanup
+failure retains the complete v2 and never falls back to v1.
+
+The single fixed TLS RPC remains a trust boundary: it can hide data or fabricate
+mutually consistent head/header/receipt views. Canonical signed-transaction
+reconstruction proves only local envelope self-consistency; it does not prove
+honest propagation or inclusion reporting by that endpoint.
+
+Memory erasure is explicitly incomplete. Owned master/output arrays use
+`Zeroizing`, but the `hkdf`/`hmac` 0.12 HMAC/PRK context implements neither
+`Zeroize` nor `ZeroizeOnDrop`; password-equivalent derived context can therefore
+remain in stack/process remnants. Demo lock scrubs owned secret buffers but is
+not a process-memory forensic-erasure guarantee. Production release is
+STOP-SHIP without an isolated Key Agent and a zeroizing KDF implementation.
+
 ### Dormant Windows Broker composition
 
 The Windows composition is reachable only with
