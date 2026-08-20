@@ -3,6 +3,9 @@
 //! The file is fixed-size, accepts at most 32 contracts, and is encrypted with
 //! a key derived independently by the v2 vault. It contains public metadata,
 //! but authentication prevents accidental cross-vault or cross-network reuse.
+//! The generation detects in-process update/order mistakes; it is not a
+//! rollback-resistant counter. Callers must revalidate contract code and ABI
+//! metadata before use, and must always display the full contract address.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -71,7 +74,7 @@ impl TokenEntry {
         symbol: Option<String>,
         code_hash: [u8; 32],
     ) -> Result<Self, TokenStoreError> {
-        if contract == [0; 20] || decimals > 36 {
+        if contract == [0; 20] || decimals > 36 || code_hash == [0; 32] {
             return Err(TokenStoreError::InvalidInput);
         }
         if let Some(symbol) = symbol.as_deref() {
@@ -130,6 +133,7 @@ impl TokenStore {
         &self.vault_id
     }
 
+    /// Authenticated file-version consistency value, not a rollback anchor.
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
     }
@@ -575,6 +579,10 @@ mod tests {
                 Err(TokenStoreError::InvalidInput)
             );
         }
+        assert_eq!(
+            TokenEntry::new([1; 20], 18, Some("TOK".to_owned()), [0; 32]),
+            Err(TokenStoreError::InvalidInput)
+        );
         assert_eq!(format!("{:?}", entry(1)), "TokenEntry([REDACTED])");
     }
 

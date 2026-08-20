@@ -4,6 +4,8 @@
 //! still verify the pinned Sepolia chain before obtaining the byte strings that
 //! are decoded here.
 
+#![cfg_attr(not(test), allow(dead_code))]
+
 use core::fmt;
 
 const ABI_WORD_BYTES: usize = 32;
