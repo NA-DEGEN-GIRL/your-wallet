@@ -4,7 +4,11 @@
 //! work is sent to one backend worker so Argon2 and network calls cannot freeze
 //! the `egui` event loop.
 
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+    mpsc::{self, Receiver, Sender, TryRecvError},
+};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
@@ -13,6 +17,7 @@ use zeroize::{Zeroize, Zeroizing};
 const MINIMUM_PASSWORD_BYTES: usize = 12;
 const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
 const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20);
+const INACTIVITY_LOCK_DURATION: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StatusPalette {
@@ -223,6 +228,66 @@ pub struct TransferPreview {
     pub quote_valid_for_seconds: String,
 }
 
+/// Revocable authority for one epoch-bound signing or rebroadcast operation.
+///
+/// Private fields and a worker-only production constructor prevent another
+/// backend from manufacturing an always-current production permit. Callers
+/// must make a fresh `is_current` check at every irreversible boundary.
+pub struct SessionPermit<'a> {
+    expected_epoch: u64,
+    active_epoch: &'a AtomicU64,
+    #[cfg(test)]
+    revoke_on_check: Option<usize>,
+    #[cfg(test)]
+    check_count: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a> SessionPermit<'a> {
+    fn for_worker(expected_epoch: u64, active_epoch: &'a AtomicU64) -> Self {
+        Self {
+            expected_epoch,
+            active_epoch,
+            #[cfg(test)]
+            revoke_on_check: None,
+            #[cfg(test)]
+            check_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Return whether this request still belongs to the active session.
+    #[must_use]
+    pub(crate) fn is_current(&self) -> bool {
+        #[cfg(test)]
+        {
+            let check = self.check_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.revoke_on_check == Some(check) {
+                self.active_epoch
+                    .store(self.expected_epoch.wrapping_add(1), Ordering::SeqCst);
+            }
+        }
+        self.active_epoch.load(Ordering::SeqCst) == self.expected_epoch
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_for_test(expected_epoch: u64, active_epoch: &'a AtomicU64) -> Self {
+        Self::for_worker(expected_epoch, active_epoch)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revoke_on_check(
+        expected_epoch: u64,
+        active_epoch: &'a AtomicU64,
+        revoke_on_check: usize,
+    ) -> Self {
+        Self {
+            expected_epoch,
+            active_epoch,
+            revoke_on_check: Some(revoke_on_check),
+            check_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Secret/network backend used by the standalone testnet demo.
 ///
 /// Implementations must return only short, category-level Korean errors. They
@@ -277,6 +342,14 @@ pub trait WalletBackend: Send + 'static {
     /// Open the existing local v2 vault, or a legacy v1 vault when no v2 file
     /// exists. A failing v2 open never falls back to v1.
     fn open_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String>;
+
+    /// Immediately revoke the unlocked in-memory session.
+    ///
+    /// This operation must be infallible and idempotent. Implementations must
+    /// drop unlocked key material, an unconfirmed generated wallet, cached
+    /// balances, and any prepared transfer. A durable signed pending-broadcast
+    /// record must be preserved for exact retry after reauthentication.
+    fn lock_wallet(&mut self);
 
     /// Reauthenticate a v1 raw-key vault and migrate it to v2 without changing
     /// account 0.
@@ -340,15 +413,16 @@ pub trait WalletBackend: Send + 'static {
         fee_selection: FeeSelection,
     ) -> Result<TransferPreview, String>;
 
-    /// Sign and submit only the currently prepared transfer.
-    fn confirm_prepared(&mut self) -> Result<SendReceipt, String>;
+    /// Sign and submit only the currently prepared transfer while `permit`
+    /// remains current at every irreversible boundary.
+    fn confirm_prepared(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String>;
 
     /// Invalidate the currently prepared transfer without signing.
     fn cancel_prepared(&mut self) -> Result<(), String>;
 
     /// Retry only the exact signed transaction durably retained after an
     /// ambiguous prior broadcast. This must never create a fresh signature.
-    fn retry_pending(&mut self) -> Result<SendReceipt, String>;
+    fn retry_pending(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String>;
 }
 
 /// Prefer the Windows Korean system font so Hangul does not render as boxes.
@@ -383,6 +457,7 @@ pub fn install_korean_font(context: &egui::Context) {
 }
 
 enum WorkerCommand {
+    Lock,
     BeginGenerate {
         words: NewMnemonicWords,
         password: SensitiveText,
@@ -433,6 +508,7 @@ enum WorkerCommand {
 }
 
 enum WorkerEvent {
+    Locked,
     GenerationBegun(Result<SecretReveal, String>),
     GeneratedConfirmed(Result<WalletSnapshot, String>),
     GeneratedCancelled(Result<(), String>),
@@ -450,6 +526,24 @@ enum WorkerEvent {
     PreparedConfirmed(Result<SendReceipt, String>),
     PreparedCancelled(Result<(), String>),
     Retried(Result<SendReceipt, String>),
+}
+
+/// Epoch-bound request sent to the single backend worker.
+///
+/// A lock publishes a new epoch before enqueuing its request. The worker drops
+/// requests from older epochs without invoking their backend operation.
+struct WorkerRequest {
+    epoch: u64,
+    command: WorkerCommand,
+}
+
+/// Epoch-bound result returned by the backend worker.
+///
+/// Dropping a stale response also drops and zeroizes any contained
+/// `SecretReveal` before it can reach the UI reducer.
+struct WorkerResponse {
+    epoch: u64,
+    event: WorkerEvent,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -471,6 +565,20 @@ enum PendingAction {
     ConfirmPrepared,
     CancelPrepared,
     RetryPending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LockReason {
+    Explicit,
+    Inactivity,
+    FocusLost,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionPhase {
+    Locked,
+    Locking(LockReason),
+    Unlocked,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -637,8 +745,12 @@ impl HoldToSend {
 
 /// Standalone Sepolia development-wallet application.
 pub struct WalletApp {
-    commands: Option<Sender<WorkerCommand>>,
-    events: Receiver<WorkerEvent>,
+    commands: Option<Sender<WorkerRequest>>,
+    events: Receiver<WorkerResponse>,
+    active_epoch: Arc<AtomicU64>,
+    session_epoch: u64,
+    session_phase: SessionPhase,
+    last_activity_at: Instant,
     setup_mode: SetupMode,
     mnemonic_words: NewMnemonicWords,
     export_kind: SecretRevealKind,
@@ -673,10 +785,20 @@ impl WalletApp {
     pub fn new(backend: Box<dyn WalletBackend>) -> Self {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
-        spawn_worker(backend, command_receiver, event_sender);
+        let active_epoch = Arc::new(AtomicU64::new(0));
+        spawn_worker(
+            backend,
+            command_receiver,
+            event_sender,
+            Arc::clone(&active_epoch),
+        );
         Self {
             commands: Some(command_sender),
             events: event_receiver,
+            active_epoch,
+            session_epoch: 0,
+            session_phase: SessionPhase::Locked,
+            last_activity_at: Instant::now(),
             setup_mode: SetupMode::Open,
             mnemonic_words: NewMnemonicWords::Twelve,
             export_kind: SecretRevealKind::Mnemonic,
@@ -713,6 +835,10 @@ impl WalletApp {
         Self {
             commands: None,
             events: receiver,
+            active_epoch: Arc::new(AtomicU64::new(0)),
+            session_epoch: 0,
+            session_phase: SessionPhase::Locked,
+            last_activity_at: Instant::now(),
             setup_mode: SetupMode::Open,
             mnemonic_words: NewMnemonicWords::Twelve,
             export_kind: SecretRevealKind::Mnemonic,
@@ -742,13 +868,161 @@ impl WalletApp {
         }
     }
 
+    fn is_unlocked(&self) -> bool {
+        self.session_phase == SessionPhase::Unlocked && self.snapshot.is_some()
+    }
+
+    fn require_unlocked_action(&mut self) -> bool {
+        if self.is_unlocked() {
+            true
+        } else {
+            self.error = Some("먼저 지갑을 다시 열어 주세요.".to_owned());
+            false
+        }
+    }
+
+    fn has_sensitive_session_state(&self) -> bool {
+        self.session_phase != SessionPhase::Locked
+            || self.pending.is_some()
+            || self.snapshot.is_some()
+            || self.prepared.is_some()
+            || self.secret_reveal.is_some()
+            || !self.password.is_empty()
+            || !self.password_confirmation.is_empty()
+            || !self.old_password.is_empty()
+            || !self.imported_secret.is_empty()
+            || !self.reauth_password.is_empty()
+    }
+
+    fn scrub_frontend_session(&mut self) {
+        self.password.zeroize();
+        self.password_confirmation.zeroize();
+        self.old_password.zeroize();
+        self.imported_secret.zeroize();
+        self.reauth_password.zeroize();
+        self.custom_token_address.zeroize();
+        self.recipient.zeroize();
+        self.amount_eth.zeroize();
+        self.custom_priority_fee_gwei.zeroize();
+        self.custom_max_fee_gwei.zeroize();
+
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.address.zeroize();
+            snapshot.balance_eth.zeroize();
+        }
+        self.snapshot = None;
+        for token in &mut self.custom_tokens {
+            token.contract_address.zeroize();
+            match &mut token.state {
+                CustomTokenState::Verified {
+                    symbol, balance, ..
+                } => {
+                    if let Some(symbol) = symbol.as_mut() {
+                        symbol.zeroize();
+                    }
+                    balance.zeroize();
+                }
+                CustomTokenState::Unavailable { reason_ko } => reason_ko.zeroize(),
+            }
+        }
+        self.custom_tokens.clear();
+        if let Some(preview) = self.prepared.as_mut() {
+            zeroize_transfer_preview(preview);
+        }
+        self.prepared = None;
+        self.pending = None;
+        self.secret_reveal = None;
+        zeroize_optional_string(&mut self.notice);
+        zeroize_optional_string(&mut self.error);
+        zeroize_optional_string(&mut self.last_transaction_hash);
+
+        self.password_visible = false;
+        self.imported_secret_visible = false;
+        self.setup_mode = SetupMode::Open;
+        self.export_kind = SecretRevealKind::Mnemonic;
+        self.fee_mode = FeeMode::Recommended;
+        self.hold.reset();
+        self.secret_hold.reset();
+    }
+
+    fn request_lock(&mut self, reason: LockReason) {
+        if matches!(self.session_phase, SessionPhase::Locking(_)) {
+            return;
+        }
+        let Some(next_epoch) = self.session_epoch.checked_add(1) else {
+            self.active_epoch.store(u64::MAX, Ordering::SeqCst);
+            self.scrub_frontend_session();
+            self.commands = None;
+            self.session_phase = SessionPhase::Locked;
+            self.error =
+                Some("잠금 세션을 안전하게 갱신할 수 없어 지갑을 사용할 수 없습니다.".to_owned());
+            return;
+        };
+
+        self.session_epoch = next_epoch;
+        self.active_epoch.store(next_epoch, Ordering::SeqCst);
+        self.scrub_frontend_session();
+        self.session_phase = SessionPhase::Locking(reason);
+
+        let accepted = self.commands.as_ref().is_some_and(|sender| {
+            sender
+                .send(WorkerRequest {
+                    epoch: next_epoch,
+                    command: WorkerCommand::Lock,
+                })
+                .is_ok()
+        });
+        if !accepted {
+            self.commands = None;
+            self.session_phase = SessionPhase::Locked;
+            self.error = Some("잠금 작업 스레드가 종료되어 지갑을 다시 열 수 없습니다.".to_owned());
+        }
+    }
+
+    fn observe_automatic_lock(&mut self, context: &egui::Context, now: Instant) {
+        let (focused, user_activity) = context.input(|input| {
+            (
+                input.focused,
+                input.events.iter().any(is_user_activity_event),
+            )
+        });
+        if focused && user_activity {
+            self.last_activity_at = now;
+        }
+
+        let sensitive = self.has_sensitive_session_state();
+        if let Some(reason) = automatic_lock_reason(
+            sensitive,
+            self.session_phase,
+            self.last_activity_at,
+            now,
+            focused,
+        ) {
+            self.request_lock(reason);
+            return;
+        }
+        if sensitive && focused {
+            let remaining = INACTIVITY_LOCK_DURATION
+                .saturating_sub(now.saturating_duration_since(self.last_activity_at));
+            context.request_repaint_after(remaining.min(Duration::from_secs(1)));
+        }
+    }
+
     fn send_command(&mut self, command: WorkerCommand, action: PendingAction) {
         self.error = None;
         self.notice = None;
-        let accepted = self
-            .commands
-            .as_ref()
-            .is_some_and(|sender| sender.send(command).is_ok());
+        if matches!(self.session_phase, SessionPhase::Locking(_)) {
+            self.error = Some("지갑을 잠그는 중입니다.".to_owned());
+            return;
+        }
+        let accepted = self.commands.as_ref().is_some_and(|sender| {
+            sender
+                .send(WorkerRequest {
+                    epoch: self.session_epoch,
+                    command,
+                })
+                .is_ok()
+        });
         if accepted {
             self.pending = Some(action);
         } else {
@@ -874,6 +1148,10 @@ impl WalletApp {
     }
 
     fn export_secret(&mut self, action: SecretHoldAction) {
+        if !self.require_unlocked_action() {
+            self.secret_hold.reset();
+            return;
+        }
         if !valid_password(&self.reauth_password) {
             self.error = Some("내보내려면 현재 비밀번호를 다시 입력해 주세요.".to_owned());
             self.secret_hold.reset();
@@ -946,10 +1224,16 @@ impl WalletApp {
     }
 
     fn refresh(&mut self) {
+        if !self.require_unlocked_action() {
+            return;
+        }
         self.send_command(WorkerCommand::Refresh, PendingAction::Refresh);
     }
 
     fn add_custom_token(&mut self) {
+        if !self.require_unlocked_action() {
+            return;
+        }
         let contract_address = self.custom_token_address.trim().to_owned();
         if !valid_recipient_shape(&contract_address) {
             self.error = Some("토큰 컨트랙트 주소 형식을 확인해 주세요.".to_owned());
@@ -962,6 +1246,9 @@ impl WalletApp {
     }
 
     fn refresh_custom_tokens(&mut self) {
+        if !self.require_unlocked_action() {
+            return;
+        }
         self.send_command(
             WorkerCommand::RefreshCustomTokens,
             PendingAction::RefreshCustomTokens,
@@ -969,6 +1256,9 @@ impl WalletApp {
     }
 
     fn remove_custom_token(&mut self, contract_address: String) {
+        if !self.require_unlocked_action() {
+            return;
+        }
         self.send_command(
             WorkerCommand::RemoveCustomToken { contract_address },
             PendingAction::RemoveCustomToken,
@@ -976,6 +1266,10 @@ impl WalletApp {
     }
 
     fn prepare_transfer(&mut self) {
+        if !self.require_unlocked_action() {
+            self.hold.reset();
+            return;
+        }
         let recipient = self.recipient.trim().to_owned();
         let amount_eth = self.amount_eth.trim().to_owned();
         let fee_selection = match self.fee_mode {
@@ -998,6 +1292,10 @@ impl WalletApp {
     }
 
     fn confirm_prepared(&mut self) {
+        if !self.require_unlocked_action() {
+            self.hold.reset();
+            return;
+        }
         if self.prepared.is_none() {
             self.error = Some("먼저 전송 내용을 준비해 주세요.".to_owned());
             self.hold.reset();
@@ -1021,6 +1319,10 @@ impl WalletApp {
     }
 
     fn cancel_prepared(&mut self) {
+        if !self.require_unlocked_action() {
+            self.hold.reset();
+            return;
+        }
         if self.prepared.is_none() {
             return;
         }
@@ -1029,19 +1331,28 @@ impl WalletApp {
     }
 
     fn retry_pending(&mut self) {
+        if !self.require_unlocked_action() {
+            self.hold.reset();
+            return;
+        }
         self.hold.reset();
         self.send_command(WorkerCommand::RetryPending, PendingAction::RetryPending);
     }
 
     fn process_events(&mut self) {
         loop {
-            let event = match self.events.try_recv() {
-                Ok(event) => event,
+            let response = match self.events.try_recv() {
+                Ok(response) => response,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    if self.commands.is_some() && self.pending.is_some() {
+                    if self.commands.is_some()
+                        && (self.pending.is_some()
+                            || matches!(self.session_phase, SessionPhase::Locking(_)))
+                    {
                         self.pending = None;
                         self.commands = None;
+                        self.scrub_frontend_session();
+                        self.session_phase = SessionPhase::Locked;
                         self.error = Some(
                             "지갑 백엔드가 중단되었습니다. 앱을 다시 실행해 주세요.".to_owned(),
                         );
@@ -1049,13 +1360,27 @@ impl WalletApp {
                     break;
                 }
             };
-            self.apply_worker_event(event);
+            if response.epoch != self.session_epoch {
+                drop(response);
+                continue;
+            }
+            self.apply_worker_event(response.event);
         }
     }
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         self.pending = None;
         match event {
+            WorkerEvent::Locked => {
+                let reason = match self.session_phase {
+                    SessionPhase::Locking(reason) => reason,
+                    SessionPhase::Locked | SessionPhase::Unlocked => LockReason::Explicit,
+                };
+                self.scrub_frontend_session();
+                self.session_phase = SessionPhase::Locked;
+                self.last_activity_at = Instant::now();
+                self.notice = Some(lock_notice(reason).to_owned());
+            }
             WorkerEvent::GenerationBegun(result) => match result {
                 Ok(reveal) => {
                     self.secret_reveal = TimedSecretReveal::new(
@@ -1077,6 +1402,8 @@ impl WalletApp {
                     self.secret_reveal = None;
                     self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
+                    self.session_phase = SessionPhase::Unlocked;
+                    self.last_activity_at = Instant::now();
                     self.notice = Some(
                         "복구 문구 백업을 확인하고 새 v2 테스트 지갑을 저장했습니다.".to_owned(),
                     );
@@ -1086,6 +1413,9 @@ impl WalletApp {
             WorkerEvent::GeneratedCancelled(result) => match result {
                 Ok(()) => {
                     self.secret_reveal = None;
+                    if self.snapshot.is_none() {
+                        self.session_phase = SessionPhase::Locked;
+                    }
                     self.notice =
                         Some("저장하지 않은 복구 문구를 메모리에서 지웠습니다.".to_owned());
                 }
@@ -1097,6 +1427,8 @@ impl WalletApp {
                         clear_prepared_state(&mut self.prepared, &mut self.hold);
                         self.custom_tokens.clear();
                         self.snapshot = Some(snapshot);
+                        self.session_phase = SessionPhase::Unlocked;
+                        self.last_activity_at = Instant::now();
                         self.notice =
                             Some("가져온 비밀값을 v2 테스트 지갑으로 저장했습니다.".to_owned());
                     }
@@ -1110,6 +1442,8 @@ impl WalletApp {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
+                    self.session_phase = SessionPhase::Unlocked;
+                    self.last_activity_at = Instant::now();
                     if load_custom_tokens {
                         self.send_command(
                             WorkerCommand::RefreshCustomTokens,
@@ -1124,6 +1458,7 @@ impl WalletApp {
                     self.secret_reveal = None;
                     self.custom_tokens.clear();
                     self.snapshot = None;
+                    self.session_phase = SessionPhase::Locked;
                     self.error = Some(safe_error(error));
                 }
             },
@@ -1132,6 +1467,8 @@ impl WalletApp {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
+                    self.session_phase = SessionPhase::Unlocked;
+                    self.last_activity_at = Instant::now();
                     self.notice = Some(
                         "계정 주소를 유지한 채 v1 개인 키 지갑을 v2로 이전했습니다.".to_owned(),
                     );
@@ -1141,6 +1478,7 @@ impl WalletApp {
                     self.secret_reveal = None;
                     self.custom_tokens.clear();
                     self.snapshot = None;
+                    self.session_phase = SessionPhase::Locked;
                     self.error = Some(safe_error(error));
                 }
             },
@@ -1246,8 +1584,37 @@ impl WalletApp {
         }
     }
 
+    fn session_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        match self.session_phase {
+            SessionPhase::Locking(_) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.strong("지갑의 메모리 세션을 잠그는 중입니다…");
+                });
+                true
+            }
+            SessionPhase::Unlocked => {
+                let clicked = ui.button("지갑 잠그기").clicked();
+                if clicked {
+                    self.request_lock(LockReason::Explicit);
+                }
+                clicked
+            }
+            SessionPhase::Locked if self.has_sensitive_session_state() => {
+                let clicked = ui.button("민감한 입력을 지우고 잠그기").clicked();
+                if clicked {
+                    self.request_lock(LockReason::Explicit);
+                }
+                clicked
+            }
+            SessionPhase::Locked => false,
+        }
+    }
+
     fn wallet_setup(&mut self, ui: &mut egui::Ui) {
-        let setup_enabled = self.pending.is_none()
+        let setup_enabled = self.session_phase == SessionPhase::Locked
+            && self.commands.is_some()
+            && self.pending.is_none()
             && self.prepared.is_none()
             && !self
                 .secret_reveal
@@ -1934,6 +2301,76 @@ fn confirmation_enabled(
     prepared.is_some() && pending.is_none()
 }
 
+fn automatic_lock_reason(
+    has_sensitive_state: bool,
+    phase: SessionPhase,
+    last_activity_at: Instant,
+    now: Instant,
+    focused: bool,
+) -> Option<LockReason> {
+    if !has_sensitive_state || matches!(phase, SessionPhase::Locking(_)) {
+        return None;
+    }
+    if !focused {
+        return Some(LockReason::FocusLost);
+    }
+    (now.saturating_duration_since(last_activity_at) >= INACTIVITY_LOCK_DURATION)
+        .then_some(LockReason::Inactivity)
+}
+
+fn is_user_activity_event(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_)
+            | egui::Event::Text(_)
+            | egui::Event::Key { pressed: true, .. }
+            | egui::Event::PointerMoved(_)
+            | egui::Event::MouseMoved(_)
+            | egui::Event::PointerButton { .. }
+            | egui::Event::Zoom(_)
+            | egui::Event::Ime(_)
+            | egui::Event::Touch { .. }
+            | egui::Event::MouseWheel { .. }
+    )
+}
+
+const fn lock_notice(reason: LockReason) -> &'static str {
+    match reason {
+        LockReason::Explicit => "지갑을 잠갔습니다. 다시 열려면 비밀번호를 입력하세요.",
+        LockReason::Inactivity => {
+            "5분 동안 입력이 없어 지갑을 잠갔습니다. 다시 열려면 비밀번호를 입력하세요."
+        }
+        LockReason::FocusLost => {
+            "창의 포커스를 잃어 지갑을 잠갔습니다. 다시 열려면 비밀번호를 입력하세요."
+        }
+    }
+}
+
+fn zeroize_optional_string(value: &mut Option<String>) {
+    if let Some(value) = value.as_mut() {
+        value.zeroize();
+    }
+    *value = None;
+}
+
+fn zeroize_transfer_preview(preview: &mut TransferPreview) {
+    preview.recipient.zeroize();
+    preview.amount_eth.zeroize();
+    preview.nonce.zeroize();
+    preview.fee_mode_ko.zeroize();
+    preview.gas_limit.zeroize();
+    preview.quoted_base_fee_per_gas_gwei.zeroize();
+    preview.max_priority_fee_per_gas_gwei.zeroize();
+    preview.max_fee_per_gas_gwei.zeroize();
+    preview.estimated_network_fee_eth.zeroize();
+    preview.max_network_fee_eth.zeroize();
+    preview.max_total_eth.zeroize();
+    preview.estimated_total_eth.zeroize();
+    preview.quote_valid_for_seconds.zeroize();
+}
+
 fn clear_prepared_state(prepared: &mut Option<TransferPreview>, hold: &mut HoldToSend) {
     *prepared = None;
     hold.reset();
@@ -2007,18 +2444,18 @@ fn render_transfer_preview(ui: &mut egui::Ui, preview: &TransferPreview) {
 
 impl Drop for WalletApp {
     fn drop(&mut self) {
-        self.password.zeroize();
-        self.password_confirmation.zeroize();
-        self.old_password.zeroize();
-        self.imported_secret.zeroize();
-        self.reauth_password.zeroize();
+        self.active_epoch.store(u64::MAX, Ordering::SeqCst);
+        self.scrub_frontend_session();
     }
 }
 
 impl eframe::App for WalletApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
+        self.observe_automatic_lock(context, now);
         self.process_events();
-        self.expire_secret_reveal(Instant::now());
+        self.observe_automatic_lock(context, now);
+        self.expire_secret_reveal(now);
         egui::TopBottomPanel::top("testnet_warning").show(context, |ui| {
             let palette = StatusPalette::from_visuals(ui.visuals());
             ui.vertical_centered(|ui| {
@@ -2033,12 +2470,15 @@ impl eframe::App for WalletApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_max_width(820.0);
                 ui.add_space(8.0);
-                self.wallet_setup(ui);
-                self.account_panel(ui);
-                self.secret_management_panel(context, ui);
-                self.secret_reveal_panel(context, ui);
-                self.custom_token_panel(ui);
-                self.send_panel(context, ui);
+                let lock_screen = self.session_controls(ui);
+                if !lock_screen {
+                    self.wallet_setup(ui);
+                    self.account_panel(ui);
+                    self.secret_management_panel(context, ui);
+                    self.secret_reveal_panel(context, ui);
+                    self.custom_token_panel(ui);
+                    self.send_panel(context, ui);
+                }
 
                 if let Some(action) = self.pending {
                     ui.add_space(12.0);
@@ -2069,21 +2509,57 @@ impl eframe::App for WalletApp {
 
 fn spawn_worker(
     mut backend: Box<dyn WalletBackend>,
-    commands: Receiver<WorkerCommand>,
-    events: Sender<WorkerEvent>,
+    commands: Receiver<WorkerRequest>,
+    events: Sender<WorkerResponse>,
+    active_epoch: Arc<AtomicU64>,
 ) {
     std::thread::spawn(move || {
-        while let Ok(command) = commands.recv() {
-            let event = execute_worker_command(backend.as_mut(), command);
-            if events.send(event).is_err() {
+        while let Ok(request) = commands.recv() {
+            let Some(response) =
+                execute_worker_request(backend.as_mut(), request, active_epoch.as_ref())
+            else {
+                continue;
+            };
+            if events.send(response).is_err() {
                 break;
             }
         }
+        backend.lock_wallet();
     });
 }
 
-fn execute_worker_command(backend: &mut dyn WalletBackend, command: WorkerCommand) -> WorkerEvent {
+fn execute_worker_request(
+    backend: &mut dyn WalletBackend,
+    request: WorkerRequest,
+    active_epoch: &AtomicU64,
+) -> Option<WorkerResponse> {
+    if request.epoch != active_epoch.load(Ordering::SeqCst) {
+        backend.lock_wallet();
+        drop(request);
+        return None;
+    }
+
+    let epoch = request.epoch;
+    let permit = SessionPermit::for_worker(epoch, active_epoch);
+    let event = execute_worker_command(backend, request.command, &permit);
+    if epoch != active_epoch.load(Ordering::SeqCst) {
+        backend.lock_wallet();
+        drop(event);
+        return None;
+    }
+    Some(WorkerResponse { epoch, event })
+}
+
+fn execute_worker_command(
+    backend: &mut dyn WalletBackend,
+    command: WorkerCommand,
+    permit: &SessionPermit<'_>,
+) -> WorkerEvent {
     match command {
+        WorkerCommand::Lock => {
+            backend.lock_wallet();
+            WorkerEvent::Locked
+        }
         WorkerCommand::BeginGenerate {
             words,
             password,
@@ -2155,10 +2631,10 @@ fn execute_worker_command(backend: &mut dyn WalletBackend, command: WorkerComman
             fee_selection,
         ))),
         WorkerCommand::ConfirmPrepared => {
-            WorkerEvent::PreparedConfirmed(backend.confirm_prepared())
+            WorkerEvent::PreparedConfirmed(backend.confirm_prepared(permit))
         }
         WorkerCommand::CancelPrepared => WorkerEvent::PreparedCancelled(backend.cancel_prepared()),
-        WorkerCommand::RetryPending => WorkerEvent::Retried(backend.retry_pending()),
+        WorkerCommand::RetryPending => WorkerEvent::Retried(backend.retry_pending(permit)),
     }
 }
 
@@ -2180,9 +2656,14 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
 
     let (command_sender, command_receiver) = mpsc::channel();
     let (_unused_event_sender, event_receiver) = mpsc::channel();
+    let active_epoch = Arc::new(AtomicU64::new(0));
     let mut app = WalletApp {
         commands: Some(command_sender),
         events: event_receiver,
+        active_epoch,
+        session_epoch: 0,
+        session_phase: SessionPhase::Locked,
+        last_activity_at: Instant::now(),
         setup_mode: SetupMode::Open,
         mnemonic_words: NewMnemonicWords::Twelve,
         export_kind: SecretRevealKind::Mnemonic,
@@ -2483,55 +2964,126 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::RetryPending)
     })?;
-    if app.pending.is_some()
-        || app.last_transaction_hash.as_deref() != Some("headless-retried")
-        || backend.calls
-            != [
-                "begin-generate-12",
-                "confirm-generated",
-                "export-mnemonic",
-                "export-private-key",
-                "import-mnemonic",
-                "import-private-key",
-                "migrate",
-                "open",
-                "token-refresh",
-                "token-add",
-                "token-refresh",
-                "token-remove",
-                "begin-generate-12",
-                "cancel-generated",
-                "prepare-recommended",
-                "confirm",
-                "prepare-faster",
-                "cancel",
-                "prepare-custom",
-                "cancel",
-                "retry",
-            ]
+    if app.pending.is_some() || app.last_transaction_hash.as_deref() != Some("headless-retried") {
+        return Err(());
+    }
+
+    app.password = "headless-lock-password".to_owned();
+    app.password_confirmation = "headless-lock-password".to_owned();
+    app.old_password = "headless-old-password".to_owned();
+    app.imported_secret = "headless-import-secret".to_owned();
+    app.reauth_password = "headless-reauth-password".to_owned();
+    app.custom_token_address = TOKEN_CONTRACT_SENTINEL.to_owned();
+    app.custom_tokens = vec![headless_token_snapshot()];
+    app.recipient = RECIPIENT_SENTINEL.to_owned();
+    app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.custom_priority_fee_gwei = "1".to_owned();
+    app.custom_max_fee_gwei = "3".to_owned();
+    app.prepared = Some(headless_preview(FeeMode::Recommended));
+    app.pending = Some(PendingAction::Refresh);
+    app.secret_reveal = TimedSecretReveal::new(
+        headless_reveal(SecretRevealKind::AccountPrivateKey),
+        RevealPurpose::ReauthenticatedExport,
+        Instant::now(),
+    );
+    let previous_epoch = app.session_epoch;
+    app.request_lock(LockReason::Explicit);
+    if app.session_epoch != previous_epoch + 1
+        || !matches!(
+            app.session_phase,
+            SessionPhase::Locking(LockReason::Explicit)
+        )
+        || app.pending.is_some()
+        || app.snapshot.is_some()
+        || app.prepared.is_some()
+        || app.secret_reveal.is_some()
+        || !app.custom_tokens.is_empty()
+        || !app.password.is_empty()
+        || !app.password_confirmation.is_empty()
+        || !app.old_password.is_empty()
+        || !app.imported_secret.is_empty()
+        || !app.reauth_password.is_empty()
+        || !app.recipient.is_empty()
+        || !app.amount_eth.is_empty()
+        || app.last_transaction_hash.is_some()
+    {
+        return Err(());
+    }
+
+    // A valid unlock attempt while the backend lock is awaiting its ACK must
+    // be dropped locally and must not enqueue a second worker request.
+    app.password = "headless-lock-password".to_owned();
+    app.open_wallet();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Lock)
+    })?;
+    if app.session_phase != SessionPhase::Locked || app.snapshot.is_some() {
+        return Err(());
+    }
+
+    // Locked handlers must not route export, token, transfer, or retry work.
+    app.reauth_password = "headless-lock-password".to_owned();
+    if app.handle_secret_hold_outcome(HoldOutcome::Triggered, SecretHoldAction::ExportMnemonic) {
+        return Err(());
+    }
+    app.custom_token_address = TOKEN_CONTRACT_SENTINEL.to_owned();
+    app.add_custom_token();
+    app.recipient = RECIPIENT_SENTINEL.to_owned();
+    app.amount_eth = AMOUNT_SENTINEL.to_owned();
+    app.prepare_transfer();
+    app.retry_pending();
+
+    if backend.calls
+        != [
+            "begin-generate-12",
+            "confirm-generated",
+            "export-mnemonic",
+            "export-private-key",
+            "import-mnemonic",
+            "import-private-key",
+            "migrate",
+            "open",
+            "token-refresh",
+            "token-add",
+            "token-refresh",
+            "token-remove",
+            "begin-generate-12",
+            "cancel-generated",
+            "prepare-recommended",
+            "confirm",
+            "prepare-faster",
+            "cancel",
+            "prepare-custom",
+            "cancel",
+            "retry",
+            "lock",
+        ]
         || command_receiver.try_recv().is_ok()
     {
         return Err(());
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 42,
+        transitions_checked: 58,
         backend_routes_checked: backend.calls.len(),
     })
 }
 
 fn route_headless_command(
     app: &mut WalletApp,
-    command_receiver: &Receiver<WorkerCommand>,
+    command_receiver: &Receiver<WorkerRequest>,
     backend: &mut dyn WalletBackend,
     expected: impl FnOnce(&WorkerCommand) -> bool,
 ) -> Result<(), ()> {
-    let command = command_receiver.try_recv().map_err(|_| ())?;
-    if !expected(&command) {
+    let request = command_receiver.try_recv().map_err(|_| ())?;
+    if request.epoch != app.session_epoch || !expected(&request.command) {
         return Err(());
     }
-    let event = execute_worker_command(backend, command);
-    app.apply_worker_event(event);
+    let response = execute_worker_request(backend, request, app.active_epoch.as_ref()).ok_or(())?;
+    if response.epoch != app.session_epoch {
+        return Err(());
+    }
+    app.apply_worker_event(response.event);
     Ok(())
 }
 
@@ -2618,6 +3170,10 @@ struct HeadlessBackend {
 }
 
 impl WalletBackend for HeadlessBackend {
+    fn lock_wallet(&mut self) {
+        self.calls.push("lock");
+    }
+
     fn begin_generate_wallet(
         &mut self,
         words: NewMnemonicWords,
@@ -2746,7 +3302,7 @@ impl WalletBackend for HeadlessBackend {
         Ok(headless_preview(mode))
     }
 
-    fn confirm_prepared(&mut self) -> Result<SendReceipt, String> {
+    fn confirm_prepared(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.calls.push("confirm");
         Ok(SendReceipt {
             transaction_hash: "headless-confirmed".to_owned(),
@@ -2758,7 +3314,7 @@ impl WalletBackend for HeadlessBackend {
         Ok(())
     }
 
-    fn retry_pending(&mut self) -> Result<SendReceipt, String> {
+    fn retry_pending(&mut self, _permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
         self.calls.push("retry");
         Ok(SendReceipt {
             transaction_hash: "headless-retried".to_owned(),
@@ -2895,9 +3451,10 @@ mod tests {
         ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState, FeeSelection,
         GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt,
         StatusPalette, TransferPreview, WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent,
-        clear_prepared_state, confirmation_enabled, execute_worker_command, hold_to_send_button,
-        hold_to_send_input, preview_fields, run_headless_smoke, safe_error, sanitize_custom_tokens,
-        valid_amount_shape, valid_gwei_shape, valid_password, valid_recipient_shape,
+        automatic_lock_reason, clear_prepared_state, confirmation_enabled, execute_worker_command,
+        execute_worker_request, hold_to_send_button, hold_to_send_input, preview_fields,
+        run_headless_smoke, safe_error, sanitize_custom_tokens, valid_amount_shape,
+        valid_gwei_shape, valid_password, valid_recipient_shape,
     };
     use eframe::egui;
     use std::time::{Duration, Instant};
@@ -2983,6 +3540,101 @@ mod tests {
     }
 
     #[test]
+    fn automatic_lock_policy_is_focus_first_and_timeout_inclusive() {
+        let start = Instant::now();
+        assert_eq!(
+            automatic_lock_reason(
+                false,
+                super::SessionPhase::Locked,
+                start,
+                start + super::INACTIVITY_LOCK_DURATION,
+                false,
+            ),
+            None,
+            "a pristine first frame must not enqueue a pointless lock"
+        );
+        assert_eq!(
+            automatic_lock_reason(
+                true,
+                super::SessionPhase::Unlocked,
+                start,
+                start + Duration::from_secs(1),
+                false,
+            ),
+            Some(super::LockReason::FocusLost)
+        );
+        assert_eq!(
+            automatic_lock_reason(
+                true,
+                super::SessionPhase::Unlocked,
+                start,
+                start + super::INACTIVITY_LOCK_DURATION - Duration::from_nanos(1),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            automatic_lock_reason(
+                true,
+                super::SessionPhase::Unlocked,
+                start,
+                start + super::INACTIVITY_LOCK_DURATION,
+                true,
+            ),
+            Some(super::LockReason::Inactivity)
+        );
+        assert_eq!(
+            automatic_lock_reason(
+                true,
+                super::SessionPhase::Locking(super::LockReason::Explicit),
+                start,
+                start + super::INACTIVITY_LOCK_DURATION,
+                false,
+            ),
+            None,
+            "locking must be idempotent even if focus remains lost"
+        );
+    }
+
+    #[test]
+    fn first_unfocused_frame_is_idle_but_same_frame_unlock_is_immediately_relocked() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.scrub_frontend_session();
+        app.session_phase = super::SessionPhase::Locked;
+        let now = Instant::now();
+        app.last_activity_at = now;
+
+        let context = egui::Context::default();
+        context.begin_pass(egui::RawInput {
+            focused: false,
+            ..Default::default()
+        });
+        app.observe_automatic_lock(&context, now);
+        assert!(command_receiver.try_recv().is_err());
+
+        app.apply_worker_event(WorkerEvent::Opened(Ok(super::headless_snapshot(
+            super::WalletKind::LegacyV1RawPrivateKey,
+        ))));
+        app.observe_automatic_lock(&context, now);
+        let _ = context.end_pass();
+
+        assert!(matches!(
+            app.session_phase,
+            super::SessionPhase::Locking(super::LockReason::FocusLost)
+        ));
+        assert!(app.snapshot.is_none());
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                epoch: 1,
+                command: WorkerCommand::Lock,
+            })
+        ));
+    }
+
+    #[test]
     fn status_palette_meets_text_contrast_on_light_and_dark_panels() {
         for (theme, visuals) in [
             ("light", egui::Visuals::light()),
@@ -3007,8 +3659,9 @@ mod tests {
 
     #[test]
     fn production_ui_uses_no_fixed_status_color_aliases() {
-        let production = include_str!("ui.rs")
-            .split("#[cfg(test)]")
+        let source = include_str!("ui.rs").replace("\r\n", "\n");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production prefix must exist");
         for fixed_color in [
@@ -3022,6 +3675,50 @@ mod tests {
                 "production UI must not use fixed status color {fixed_color}"
             );
         }
+    }
+
+    #[test]
+    fn production_session_permit_has_no_constructible_always_current_bypass() {
+        let ui_source = include_str!("ui.rs").replace("\r\n", "\n");
+        let ui_production = ui_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("UI production prefix");
+        assert_eq!(
+            ui_production.matches("impl<'a> SessionPermit<'a>").count(),
+            1
+        );
+        assert_eq!(ui_production.matches("fn for_worker(").count(), 1);
+        assert!(!ui_production.contains("pub(crate) fn for_worker("));
+        assert!(ui_production.contains("#[cfg(test)]\n    pub(crate) fn current_for_test("));
+        assert!(ui_production.contains("#[cfg(test)]\n    pub(crate) fn revoke_on_check("));
+
+        let backend_source = include_str!("backend.rs").replace("\r\n", "\n");
+        let backend_production = backend_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("backend production prefix");
+        assert_eq!(
+            backend_production
+                .matches("fn confirm_prepared_with_permit(")
+                .count(),
+            1
+        );
+        assert_eq!(
+            backend_production
+                .matches("fn retry_pending_with_permit(")
+                .count(),
+            1
+        );
+        assert_eq!(
+            backend_production.matches("pub fn retry_pending(").count(),
+            1
+        );
+        assert!(!backend_production.contains("pub fn retry_pending(&mut self)"));
+        assert!(
+            backend_production.contains("#[cfg(test)]\n    fn confirm_prepared_inner(&mut self)")
+        );
+        assert!(backend_production.contains("#[cfg(test)]\n    fn retry_pending_inner(&mut self)"));
     }
 
     #[test]
@@ -3352,12 +4049,16 @@ mod tests {
     }
 
     fn test_app(
-        commands: std::sync::mpsc::Sender<WorkerCommand>,
-        events: std::sync::mpsc::Receiver<WorkerEvent>,
+        commands: std::sync::mpsc::Sender<super::WorkerRequest>,
+        events: std::sync::mpsc::Receiver<super::WorkerResponse>,
     ) -> super::WalletApp {
         super::WalletApp {
             commands: Some(commands),
             events,
+            active_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            session_epoch: 0,
+            session_phase: super::SessionPhase::Unlocked,
+            last_activity_at: Instant::now(),
             setup_mode: super::SetupMode::Open,
             mnemonic_words: super::NewMnemonicWords::Twelve,
             export_kind: super::SecretRevealKind::Mnemonic,
@@ -3368,7 +4069,9 @@ mod tests {
             password_visible: false,
             imported_secret_visible: false,
             reauth_password: String::new(),
-            snapshot: None,
+            snapshot: Some(super::headless_snapshot(super::WalletKind::V2Mnemonic {
+                word_count: 12,
+            })),
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             recipient: String::new(),
@@ -3417,7 +4120,10 @@ mod tests {
         assert!(!app.handle_hold_outcome(HoldOutcome::Triggered));
         assert!(matches!(
             command_receiver.try_recv(),
-            Ok(WorkerCommand::ConfirmPrepared)
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::ConfirmPrepared,
+                ..
+            })
         ));
         assert!(command_receiver.try_recv().is_err());
     }
@@ -3440,7 +4146,10 @@ mod tests {
         assert!(app.pending == Some(super::PendingAction::CancelGenerated));
         assert!(matches!(
             command_receiver.try_recv(),
-            Ok(WorkerCommand::CancelGenerated)
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::CancelGenerated,
+                ..
+            })
         ));
         app.expire_secret_reveal(start + super::SECRET_REVEAL_DURATION + Duration::from_secs(1));
         assert!(command_receiver.try_recv().is_err());
@@ -3469,7 +4178,10 @@ mod tests {
         ));
         assert!(matches!(
             command_receiver.try_recv(),
-            Ok(WorkerCommand::ExportMnemonic { .. })
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::ExportMnemonic { .. },
+                ..
+            })
         ));
         assert!(command_receiver.try_recv().is_err());
     }
@@ -3557,12 +4269,39 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         calls: Vec<&'static str>,
+        revoke_during_open: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+        revoke_during_export: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+        revoke_during_confirm: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     }
 
     impl WalletBackend for RecordingBackend {
+        fn lock_wallet(&mut self) {
+            self.calls.push("lock");
+        }
+
         fn open_wallet(&mut self, _input: &str) -> Result<WalletSnapshot, String> {
             self.calls.push("open");
-            Err("unused".to_owned())
+            if let Some(epoch) = &self.revoke_during_open {
+                epoch.store(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(super::headless_snapshot(
+                    super::WalletKind::LegacyV1RawPrivateKey,
+                ))
+            } else {
+                Err("unused".to_owned())
+            }
+        }
+
+        fn export_mnemonic(
+            &mut self,
+            _password: super::SensitiveText,
+        ) -> Result<super::SecretReveal, String> {
+            self.calls.push("export");
+            if let Some(epoch) = &self.revoke_during_export {
+                epoch.store(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(super::headless_reveal(super::SecretRevealKind::Mnemonic))
+            } else {
+                Err("unused".to_owned())
+            }
         }
 
         fn refresh(&mut self) -> Result<WalletSnapshot, String> {
@@ -3583,8 +4322,14 @@ mod tests {
             Ok(faster_preview())
         }
 
-        fn confirm_prepared(&mut self) -> Result<SendReceipt, String> {
+        fn confirm_prepared(
+            &mut self,
+            _permit: &super::SessionPermit<'_>,
+        ) -> Result<SendReceipt, String> {
             self.calls.push("confirm");
+            if let Some(epoch) = &self.revoke_during_confirm {
+                epoch.store(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(SendReceipt {
                 transaction_hash: "exact hash".to_owned(),
             })
@@ -3595,7 +4340,10 @@ mod tests {
             Ok(())
         }
 
-        fn retry_pending(&mut self) -> Result<SendReceipt, String> {
+        fn retry_pending(
+            &mut self,
+            _permit: &super::SessionPermit<'_>,
+        ) -> Result<SendReceipt, String> {
             self.calls.push("retry");
             Ok(SendReceipt {
                 transaction_hash: "retry hash".to_owned(),
@@ -3606,6 +4354,8 @@ mod tests {
     #[test]
     fn worker_routes_prepare_confirm_cancel_and_retry_exactly() {
         let mut backend = RecordingBackend::default();
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = super::SessionPermit::for_worker(0, &active_epoch);
         let event = execute_worker_command(
             &mut backend,
             WorkerCommand::PrepareTransfer {
@@ -3613,6 +4363,7 @@ mod tests {
                 amount_eth: "exact amount".to_owned(),
                 fee_selection: FeeSelection::Faster,
             },
+            &permit,
         );
         let WorkerEvent::TransferPrepared(result) = event else {
             panic!("prepare command must produce a preview event");
@@ -3620,25 +4371,119 @@ mod tests {
         let preview = (*result).expect("faster preview");
         assert!(preview == faster_preview());
         assert!(matches!(
-            execute_worker_command(&mut backend, WorkerCommand::ConfirmPrepared),
+            execute_worker_command(&mut backend, WorkerCommand::ConfirmPrepared, &permit),
             WorkerEvent::PreparedConfirmed(Ok(_))
         ));
         assert!(matches!(
-            execute_worker_command(&mut backend, WorkerCommand::CancelPrepared),
+            execute_worker_command(&mut backend, WorkerCommand::CancelPrepared, &permit),
             WorkerEvent::PreparedCancelled(Ok(()))
         ));
         assert!(matches!(
-            execute_worker_command(&mut backend, WorkerCommand::RetryPending),
+            execute_worker_command(&mut backend, WorkerCommand::RetryPending, &permit),
             WorkerEvent::Retried(Ok(_))
         ));
         assert_eq!(backend.calls, ["prepare", "confirm", "cancel", "retry"]);
     }
 
     #[test]
+    fn worker_drops_queued_stale_commands_before_backend_execution() {
+        let active_epoch = std::sync::atomic::AtomicU64::new(1);
+        let mut backend = RecordingBackend::default();
+        let response = execute_worker_request(
+            &mut backend,
+            super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::ConfirmPrepared,
+            },
+            &active_epoch,
+        );
+        assert!(response.is_none());
+        assert_eq!(backend.calls, ["lock"]);
+    }
+
+    #[test]
+    fn worker_drops_open_secret_and_confirm_results_revoked_during_execution() {
+        let open_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut open_backend = RecordingBackend {
+            revoke_during_open: Some(std::sync::Arc::clone(&open_epoch)),
+            ..Default::default()
+        };
+        let response = execute_worker_request(
+            &mut open_backend,
+            super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::Open {
+                    password: zeroize::Zeroizing::new("headless-open-password".to_owned()),
+                },
+            },
+            open_epoch.as_ref(),
+        );
+        assert!(response.is_none());
+        assert_eq!(open_backend.calls, ["open", "lock"]);
+
+        let export_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut export_backend = RecordingBackend {
+            revoke_during_export: Some(std::sync::Arc::clone(&export_epoch)),
+            ..Default::default()
+        };
+        let response = execute_worker_request(
+            &mut export_backend,
+            super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::ExportMnemonic {
+                    password: super::SensitiveText::new("headless-export-password".to_owned()),
+                },
+            },
+            export_epoch.as_ref(),
+        );
+        assert!(response.is_none());
+        assert_eq!(export_backend.calls, ["export", "lock"]);
+
+        let confirm_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut confirm_backend = RecordingBackend {
+            revoke_during_confirm: Some(std::sync::Arc::clone(&confirm_epoch)),
+            ..Default::default()
+        };
+        let response = execute_worker_request(
+            &mut confirm_backend,
+            super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::ConfirmPrepared,
+            },
+            confirm_epoch.as_ref(),
+        );
+        assert!(response.is_none());
+        assert_eq!(confirm_backend.calls, ["confirm", "lock"]);
+    }
+
+    #[test]
+    fn ui_reducer_ignores_a_stale_unlocked_response() {
+        let (commands, _command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.scrub_frontend_session();
+        app.session_epoch = 1;
+        app.active_epoch
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        app.session_phase = super::SessionPhase::Locked;
+        event_sender
+            .send(super::WorkerResponse {
+                epoch: 0,
+                event: WorkerEvent::Opened(Ok(super::headless_snapshot(
+                    super::WalletKind::LegacyV1RawPrivateKey,
+                ))),
+            })
+            .expect("send stale response");
+        app.process_events();
+        assert!(app.snapshot.is_none());
+        assert_eq!(app.session_phase, super::SessionPhase::Locked);
+    }
+
+    #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 42);
-        assert_eq!(evidence.backend_routes_checked, 21);
+        assert_eq!(evidence.transitions_checked, 58);
+        assert_eq!(evidence.backend_routes_checked, 22);
         Ok(())
     }
 }

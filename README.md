@@ -228,6 +228,43 @@ cargo run --quiet --locked --manifest-path demo/sepolia-wallet/Cargo.toml -- --h
 cargo run --quiet --locked --manifest-path demo/sepolia-wallet/Cargo.toml -- --headless all
 ```
 
+## Sepolia demo 잠금 정책
+
+Sepolia GUI demo는 명시적인 `지갑 잠그기`, 5분간 입력이 없을 때의 자동 잠금,
+창이 focus를 잃을 때의 즉시 잠금을 지원한다. 잠금이 시작되면 비밀번호, mnemonic,
+private key, export 재인증 값, transfer/custom-token 입력, 준비된 transaction 및
+화면의 pending/reveal 상태를 즉시 지우고 모든 token/transfer/export 동작을 막는다.
+worker의 `Lock` 응답을 받기 전에는 vault를 다시 열 수 없다.
+
+각 worker 요청과 응답에는 session epoch가 붙는다. 잠금으로 epoch가 바뀌면 아직
+실행되지 않은 이전 요청은 실행하지 않고, 이미 실행 중이던 이전 요청의 결과도 UI에
+반영하지 않는다. backend 잠금은 반복 호출해도 안전하며 unlocked key material과
+미확정 wallet generation, 준비된 transaction을 제거한다. 다만 이미 서명된 pending
+record인 `pending-v1.bin`의 transaction은 잠금 후에도 보존한다. 그래야 재시작
+후 broadcast 상태를 조회하거나 안전하게 재시도할 수 있다.
+
+이미 backend에서 실행을 시작한 vault/export/custom-token store 같은 동기 작업은
+강제로 중단하거나 되돌릴 수 없으므로 잠금과 동시에 진행 중이던 파일 쓰기가 끝날
+수 있다. confirm과 retry에는 더 좁은 revocation guard를 적용한다. confirm은 각
+blocking 사전검증 RPC
+반환 직후와 서명 직전, 서명 후 pending record 쓰기 전, pending record를 쓴 후 RPC
+send 직전, send 반환 후 record 삭제 전에 epoch를 다시 확인한다. retry도 pending
+record를 읽은 뒤, chain 검증 뒤 send 직전, send 반환 후 삭제 전에 확인한다. 따라서
+마지막 pre-send check 전에 감지된 잠금은 새 broadcast를 만들지 않는다.
+post-write/pre-send 또는 post-send/pre-delete check가 잠금을 관찰하면 이미 기록된
+`pending-v1.bin`을 보존한다.
+
+마지막 pre-send check가 이 demo의 외부 side-effect commit point다. 그 check를 통과한
+직후부터 실제 transport send가 시작되는 사이 또는 send가 실행 중일 때 잠금이
+경합하면 transaction 전파 자체는 취소할 수 없다. 다만 send 반환 직후의
+post-send check가 epoch 변경을 관찰하면 성공 hash가 일치해도 `pending-v1.bin`을
+삭제하지 않고 stale UI 응답을 폐기한다. 이 check가 통과한 직후와 실제 파일 삭제
+사이에 잠금이 경합하면 삭제가 먼저 끝날 수 있다. pending record가 남아 있다면
+재인증 후 동일한 signed bytes의 상태를 복구하거나 exact retry할 수 있다.
+또한 현재 demo는 eframe의 focus 상태를 사용하며 Windows session-lock 알림을 직접
+구독하지 않는다. OS session-lock 감지, 취소 가능한 signer/RPC 작업, GUI framework
+내부 text cache까지 포함한 물리적 memory zeroization은 production hardening 범위다.
+
 `smoke` 검사는 생성/가져오기/열기/이전/내보내기 명령 경계와 복구 백업·내보내기
 2초 hold도 확인하지만 지갑 파일을 만들거나 읽지 않고, 네트워크에도 연결하지 않습니다.
 주소·비밀번호·키·경로도 출력하지 않습니다. 결과는 짧은 JSON 한 줄이며 성공하면

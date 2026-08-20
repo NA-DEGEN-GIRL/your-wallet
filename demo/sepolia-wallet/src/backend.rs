@@ -41,8 +41,8 @@ use crate::rpc;
 use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
 use crate::ui::{
     CustomTokenSnapshot, CustomTokenState, FeeSelection, NewMnemonicWords, SecretReveal,
-    SecretRevealKind, SendReceipt, SensitiveText, TransferPreview, WalletBackend, WalletKind,
-    WalletSnapshot,
+    SecretRevealKind, SendReceipt, SensitiveText, SessionPermit, TransferPreview, WalletBackend,
+    WalletKind, WalletSnapshot,
 };
 use crate::vault_v2::{
     OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
@@ -416,12 +416,15 @@ impl DemoBackend {
         path_may_exist(&self.pending_path)
     }
 
-    /// Immediately forgets the unlocked key and cached balance.
-    #[cfg(test)]
+    /// Immediately forgets every in-memory session capability.
+    ///
+    /// The signed pending-broadcast file is intentionally preserved: it is an
+    /// already-authorized transaction recovery record, not an unlocked key or
+    /// a mutable transfer preview.
     pub fn lock(&mut self) {
+        drop(self.unlocked.take());
+        drop(self.pending_generation.take());
         self.prepared = None;
-        self.pending_generation = None;
-        self.unlocked = None;
         self.last_balance = None;
     }
 
@@ -440,8 +443,8 @@ impl DemoBackend {
     /// This never creates a new signature or nonce. The pending record remains
     /// on every error or hash mismatch and is deleted only after an exact hash
     /// match from the pinned Sepolia endpoint.
-    pub fn retry_pending(&mut self) -> Result<SendReceipt, String> {
-        self.retry_pending_inner().map_err(error_text)
+    pub fn retry_pending(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
+        self.retry_pending_with_permit(permit).map_err(error_text)
     }
 
     fn snapshot(&self) -> Result<WalletSnapshot, BackendError> {
@@ -1210,7 +1213,11 @@ impl DemoBackend {
         Ok(preview)
     }
 
-    fn confirm_prepared_inner(&mut self) -> Result<SendReceipt, BackendError> {
+    fn confirm_prepared_with_permit(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<SendReceipt, BackendError> {
+        ensure_session_current(permit)?;
         if self.pending_broadcast_exists() {
             self.prepared = None;
             return Err(BackendError::PendingExists);
@@ -1250,10 +1257,12 @@ impl DemoBackend {
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
         let current_nonce = self
             .rpc
             .pending_nonce(prepared.sender)
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
         if current_nonce != prepared.nonce {
             return Err(BackendError::AccountChanged);
         }
@@ -1261,6 +1270,7 @@ impl DemoBackend {
             .rpc
             .latest_base_fee()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
         if validate_fee_values(
             current_base_fee,
             prepared.priority_fee,
@@ -1274,6 +1284,7 @@ impl DemoBackend {
             .rpc
             .pending_balance(prepared.sender)
             .map_err(|()| BackendError::BalanceUnavailable)?;
+        ensure_session_current(permit)?;
         if prepared.maximum_spend > balance {
             return Err(BackendError::InsufficientBalance);
         }
@@ -1288,10 +1299,14 @@ impl DemoBackend {
                 prepared.maximum_fee,
             )
             .map_err(|()| BackendError::RpcUnavailable)?;
+        ensure_session_current(permit)?;
         if estimated_gas != prepared.gas_limit {
             return Err(BackendError::UnsupportedTransfer);
         }
         ensure_quote_live(self.clock.as_ref(), prepared.quote_expires_at)?;
+        // Revocation during any preflight RPC must stop before a signature is
+        // created. This is the first irreversible capability boundary.
+        ensure_session_current(permit)?;
         #[cfg(test)]
         {
             self.sign_attempts += 1;
@@ -1324,11 +1339,18 @@ impl DemoBackend {
                 )?
             }
         };
+        // A signature created concurrently with revocation must not be made
+        // durable unless this request is still current.
+        ensure_session_current(permit)?;
         write_new_pending(
             &self.pending_path,
             signed.transaction_hash,
             signed.bytes.as_slice(),
         )?;
+        // This is both the post-write check and the final local commit point
+        // before the externally visible RPC send. Revocation leaves the exact
+        // signed record durable for authenticated recovery.
+        ensure_session_current(permit)?;
         let returned_hash = self
             .rpc
             .send_raw_transaction(signed.bytes.as_slice())
@@ -1336,6 +1358,10 @@ impl DemoBackend {
         if returned_hash != signed.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
+        // A lock racing with the transport call cannot undo its external side
+        // effect. Check immediately before deletion and preserve the pending
+        // record instead of claiming local resolution when send went stale.
+        ensure_session_current(permit)?;
         remove_pending(&self.pending_path)?;
         self.last_balance = None;
         Ok(SendReceipt {
@@ -1343,19 +1369,34 @@ impl DemoBackend {
         })
     }
 
+    #[cfg(test)]
+    fn confirm_prepared_inner(&mut self) -> Result<SendReceipt, BackendError> {
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        self.confirm_prepared_with_permit(&permit)
+    }
+
     fn cancel_prepared_inner(&mut self) {
         self.prepared = None;
     }
 
-    fn retry_pending_inner(&mut self) -> Result<SendReceipt, BackendError> {
+    fn retry_pending_with_permit(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<SendReceipt, BackendError> {
+        ensure_session_current(permit)?;
         self.prepared = None;
         if self.unlocked.is_none() {
             return Err(BackendError::Locked);
         }
         let pending = read_pending(&self.pending_path)?;
+        ensure_session_current(permit)?;
         self.rpc
             .verify_sepolia()
             .map_err(|()| BackendError::RpcUnavailable)?;
+        // Final local commit point before rebroadcasting the already-signed
+        // bytes retained in the pending record.
+        ensure_session_current(permit)?;
         let returned_hash = self
             .rpc
             .send_raw_transaction(pending.raw_transaction.as_slice())
@@ -1363,11 +1404,22 @@ impl DemoBackend {
         if returned_hash != pending.transaction_hash {
             return Err(BackendError::HashMismatch);
         }
+        // Check immediately before deletion. If revocation raced with send,
+        // keep the recovery record even after a matching response so a stale
+        // UI result cannot erase recovery state.
+        ensure_session_current(permit)?;
         remove_pending(&self.pending_path)?;
         self.last_balance = None;
         Ok(SendReceipt {
             transaction_hash: fixed_hex(&returned_hash),
         })
+    }
+
+    #[cfg(test)]
+    fn retry_pending_inner(&mut self) -> Result<SendReceipt, BackendError> {
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        self.retry_pending_with_permit(&permit)
     }
 }
 
@@ -1413,6 +1465,10 @@ impl WalletBackend for DemoBackend {
 
     fn open_wallet(&mut self, password: &str) -> Result<WalletSnapshot, String> {
         self.open(password).map_err(error_text)
+    }
+
+    fn lock_wallet(&mut self) {
+        self.lock();
     }
 
     fn migrate_legacy_wallet(
@@ -1471,8 +1527,9 @@ impl WalletBackend for DemoBackend {
             .map_err(error_text)
     }
 
-    fn confirm_prepared(&mut self) -> Result<SendReceipt, String> {
-        self.confirm_prepared_inner().map_err(error_text)
+    fn confirm_prepared(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
+        self.confirm_prepared_with_permit(permit)
+            .map_err(error_text)
     }
 
     fn cancel_prepared(&mut self) -> Result<(), String> {
@@ -1480,8 +1537,8 @@ impl WalletBackend for DemoBackend {
         Ok(())
     }
 
-    fn retry_pending(&mut self) -> Result<SendReceipt, String> {
-        DemoBackend::retry_pending(self)
+    fn retry_pending(&mut self, permit: &SessionPermit<'_>) -> Result<SendReceipt, String> {
+        DemoBackend::retry_pending(self, permit)
     }
 }
 
@@ -1792,6 +1849,13 @@ impl std::fmt::Debug for BackendError {
             Self::PreparedInvalid => "BackendError::PreparedInvalid",
         })
     }
+}
+
+fn ensure_session_current(permit: &SessionPermit<'_>) -> Result<(), BackendError> {
+    permit
+        .is_current()
+        .then_some(())
+        .ok_or(BackendError::Locked)
 }
 
 fn error_text(error: BackendError) -> String {
@@ -3826,6 +3890,66 @@ mod tests {
     }
 
     #[test]
+    fn lock_is_idempotent_drops_session_state_and_preserves_signed_pending_record() {
+        let (mut backend, _rpc, _clock) = prepared_mutable_backend();
+        let pending_record = b"signed pending preservation sentinel";
+        write_new_file(&backend.pending_path, pending_record)
+            .expect("write signed pending sentinel");
+        assert!(backend.unlocked.is_some());
+        assert!(backend.prepared.is_some());
+        assert!(backend.last_balance.is_some());
+
+        backend.lock();
+        backend.lock();
+        assert!(backend.unlocked.is_none());
+        assert!(backend.pending_generation.is_none());
+        assert!(backend.prepared.is_none());
+        assert!(backend.last_balance.is_none());
+        assert!(backend.pending_path.is_file());
+        assert!(backend.pending_broadcast_exists());
+        assert_eq!(
+            fs::read(&backend.pending_path).expect("read preserved pending record"),
+            pending_record
+        );
+        assert!(matches!(
+            backend.refresh_snapshot(),
+            Err(BackendError::Locked)
+        ));
+        assert!(matches!(
+            backend.refresh_custom_tokens_inner(),
+            Err(BackendError::Locked)
+        ));
+        assert!(matches!(
+            backend.retry_pending_inner(),
+            Err(BackendError::Locked)
+        ));
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn lock_cancels_unconfirmed_generated_wallet_without_writing_a_vault() {
+        let mut backend = v2_backend(TestClock::new(Instant::now()));
+        drop(
+            backend
+                .begin_generate(
+                    NewMnemonicWords::Twelve,
+                    sensitive(TEST_PASSWORD),
+                    sensitive(TEST_PASSWORD),
+                )
+                .expect("begin generated wallet before lock"),
+        );
+        assert!(backend.pending_generation.is_some());
+        backend.lock();
+        assert!(backend.pending_generation.is_none());
+        assert!(matches!(
+            backend.confirm_generated(),
+            Err(BackendError::NoPendingGeneration)
+        ));
+        assert!(!backend.vault_v2_path.exists());
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
     fn mnemonic_and_raw_import_validate_metadata_and_never_overwrite() {
         let generated = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)
             .expect("generate import fixture");
@@ -5505,6 +5629,95 @@ mod tests {
         assert_eq!(state.sent.len(), 1);
         assert!(state.send_observed_pending);
         drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn confirm_revocation_checkpoints_bound_signing_pending_and_broadcast() {
+        // Checks are: entry; after verify, nonce, base-fee, balance and
+        // estimate RPCs; pre-sign; pre-pending-write;
+        // post-pending-write/pre-send; and post-send/pre-delete.
+        for (revoke_on_check, expected_signs, expected_pending, expected_sends) in [
+            (2, 0, false, 0),
+            (7, 0, false, 0),
+            (8, 1, false, 0),
+            (9, 1, true, 0),
+            (10, 1, true, 1),
+        ] {
+            let (mut backend, rpc, _) = prepared_mutable_backend();
+            let active_epoch = std::sync::atomic::AtomicU64::new(0);
+            let permit = SessionPermit::revoke_on_check(0, &active_epoch, revoke_on_check);
+
+            assert!(matches!(
+                backend.confirm_prepared_with_permit(&permit),
+                Err(BackendError::Locked)
+            ));
+            assert_eq!(backend.sign_attempts, expected_signs);
+            assert_eq!(backend.pending_broadcast_exists(), expected_pending);
+            let state = rpc.state.lock().expect("revoked confirm RPC lock");
+            assert_eq!(state.sent.len(), expected_sends);
+            if revoke_on_check == 2 {
+                assert_eq!(state.verify_calls, 2);
+                assert_eq!(state.nonce_calls, 1);
+                assert_eq!(state.base_fee_calls, 0);
+                assert_eq!(state.balance_calls, 1);
+                assert_eq!(state.estimate_calls, 1);
+            }
+            drop(state);
+            remove_test_backend_files(&backend);
+        }
+    }
+
+    #[test]
+    fn retry_revocation_before_and_after_send_preserves_pending_record() {
+        let (mut backend, rpc, _) = prepared_mutable_backend();
+        rpc.update(|state| state.send_fails = true);
+        assert!(matches!(
+            backend.confirm_prepared_inner(),
+            Err(BackendError::BroadcastUnknown)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        rpc.update(|state| {
+            state.send_fails = false;
+            state.sent.clear();
+        });
+
+        // Retry checks are: entry, post-read, post-verify/pre-send, and
+        // post-send/pre-delete. Revocation at the pre-send boundary emits no
+        // new broadcast and retains the exact signed record.
+        let pre_send_epoch = std::sync::atomic::AtomicU64::new(0);
+        let pre_send_permit = SessionPermit::revoke_on_check(0, &pre_send_epoch, 3);
+        assert!(matches!(
+            backend.retry_pending_with_permit(&pre_send_permit),
+            Err(BackendError::Locked)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        assert!(
+            rpc.state
+                .lock()
+                .expect("pre-send retry RPC lock")
+                .sent
+                .is_empty()
+        );
+
+        // If revoke races with the transport after the final pre-send check,
+        // the external send may occur, but the local recovery record must not
+        // be deleted even after a matching response.
+        let post_send_epoch = std::sync::atomic::AtomicU64::new(0);
+        let post_send_permit = SessionPermit::revoke_on_check(0, &post_send_epoch, 4);
+        assert!(matches!(
+            backend.retry_pending_with_permit(&post_send_permit),
+            Err(BackendError::Locked)
+        ));
+        assert!(backend.pending_broadcast_exists());
+        assert_eq!(
+            rpc.state
+                .lock()
+                .expect("post-send retry RPC lock")
+                .sent
+                .len(),
+            1
+        );
         remove_test_backend_files(&backend);
     }
 

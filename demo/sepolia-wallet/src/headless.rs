@@ -214,8 +214,8 @@ mod tests {
     fn smoke_report_is_stable_and_explicitly_window_free() {
         let report = run(HeadlessCheck::Smoke);
         assert!(report.succeeded());
-        assert_eq!(report.transitions_checked, 42);
-        assert_eq!(report.backend_routes_checked, 21);
+        assert_eq!(report.transitions_checked, 58);
+        assert_eq!(report.backend_routes_checked, 22);
         assert!(!report.gui_started);
         assert!(!report.mouse_or_keyboard_automation_used);
         assert!(!report.network_used);
