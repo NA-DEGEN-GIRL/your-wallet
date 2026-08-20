@@ -1,0 +1,74 @@
+name: release-evidence-policy
+
+on:
+  workflow_dispatch:
+    inputs:
+      cargo_audit_version:
+        description: Exact reviewed cargo-audit semantic version
+        required: true
+        type: string
+      cargo_audit_binary_sha256:
+        description: SHA-256 of the reviewed cargo-audit executable
+        required: true
+        type: string
+      rustsec_db_commit:
+        description: Immutable RustSec advisory-db commit
+        required: true
+        type: string
+      rustsec_db_tree_sha256:
+        description: SHA-256 of the canonical RustSec database snapshot
+        required: true
+        type: string
+      osv_scanner_version:
+        description: Exact reviewed OSV Scanner semantic version
+        required: true
+        type: string
+      osv_scanner_binary_sha256:
+        description: SHA-256 of the reviewed OSV Scanner executable
+        required: true
+        type: string
+      osv_db_snapshot_id:
+        description: Whole-second UTC ID of the immutable OSV snapshot
+        required: true
+        type: string
+      osv_db_snapshot_sha256:
+        description: SHA-256 of the immutable OSV database snapshot
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  policy-only:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      CARGO_AUDIT_VERSION: ${{ inputs.cargo_audit_version }}
+      CARGO_AUDIT_BINARY_SHA256: ${{ inputs.cargo_audit_binary_sha256 }}
+      RUSTSEC_DB_COMMIT: ${{ inputs.rustsec_db_commit }}
+      RUSTSEC_DB_TREE_SHA256: ${{ inputs.rustsec_db_tree_sha256 }}
+      OSV_SCANNER_VERSION: ${{ inputs.osv_scanner_version }}
+      OSV_SCANNER_BINARY_SHA256: ${{ inputs.osv_scanner_binary_sha256 }}
+      OSV_DB_SNAPSHOT_ID: ${{ inputs.osv_db_snapshot_id }}
+      OSV_DB_SNAPSHOT_SHA256: ${{ inputs.osv_db_snapshot_sha256 }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate immutable advisory inputs without printing them
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:CARGO_AUDIT_VERSION -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw "cargo-audit version is not exact" }
+          if ($env:OSV_SCANNER_VERSION -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw "OSV Scanner version is not exact" }
+          foreach ($hash in @($env:CARGO_AUDIT_BINARY_SHA256, $env:RUSTSEC_DB_TREE_SHA256, $env:OSV_SCANNER_BINARY_SHA256, $env:OSV_DB_SNAPSHOT_SHA256)) {
+            if ($hash -notmatch '^[0-9a-f]{64}$') { throw "advisory hash input is invalid" }
+          }
+          if ($env:RUSTSEC_DB_COMMIT -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw "RustSec commit input is invalid" }
+          if ($env:OSV_DB_SNAPSHOT_ID -notmatch '^20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$') { throw "OSV snapshot ID is invalid" }
+      - name: Run check-only release policy tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/check.ps1 all
+      - name: Refuse automatic release promotion
+        shell: pwsh
+        run: Write-Output "POLICY_INPUTS_VALIDATED_NOT_RELEASE_ELIGIBLE"

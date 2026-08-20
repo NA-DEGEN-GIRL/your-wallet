@@ -1,0 +1,26 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-check:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Select pinned Rust toolchain
+        shell: pwsh
+        run: rustup show active-toolchain
+      - name: Run repository gate
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 check
+      - name: Run check-only release policy tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/check.ps1 all

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Your Wallet Private Canary",
+  "version": "0.1.0",
+  "description": "Self-only native wallet bridge for the Your Wallet private canary.",
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed",
+  "permissions": [
+    "nativeMessaging",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "src/provider-main.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "src/shared.js",
+        "src/content-core.js",
+        "src/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "namespace": "your-wallet",
+  "version": 1,
+  "role": "extension",
+  "kind": "request",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": 1,
+  "deadlineUnixMs": 1700000120000,
+  "profileInstallId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "activationNonce": "000000000000000000000000000000000000000000000000000000000000000c",
+  "requestId": "01010101010101010101010101010101",
+  "method": "eth_chainId",
+  "params": [],
+  "route": "permission",
+  "context": {
+    "browserFamily": "chrome",
+    "extensionId": "abcdefghijklmnopabcdefghijklmnop",
+    "tabId": 17,
+    "frameId": 0,
+    "documentId": "document-17",
+    "topOrigin": "https://dapp.example",
+    "frameOrigin": "https://dapp.example",
+    "documentLifecycle": "active",
+    "channelNonce": "000000000000000000000000000000000000000000000000000000000000000d"
+  }
+}

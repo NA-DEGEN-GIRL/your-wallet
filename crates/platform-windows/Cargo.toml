@@ -1,0 +1,46 @@
+[package]
+name = "platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+approval-wire = { path = "../approval-wire" }
+getrandom.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+secret-input-ui = { path = "../secret-input-ui" }
+subtle.workspace = true
+thiserror.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_Isolation",
+    "Win32_Security_WinTrust",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_ProcessStatus",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_WindowsProgramming",
+] }
+zeroize.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+print_stderr = "deny"

@@ -1,0 +1,30 @@
+[package]
+name = "secret-core"
+description = "Secret-bearing primitives for the Your Wallet key agent"
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+argon2.workspace = true
+bip39.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+ripemd.workspace = true
+secp256k1.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+zeroize.workspace = true
+wallet-model = { path = "../wallet-model" }
+wallet-protocol = { path = "../wallet-protocol" }
+
+[lints]
+workspace = true

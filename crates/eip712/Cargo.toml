@@ -1,0 +1,17 @@
+[package]
+name = "wallet-eip712"
+description = "Strict, bounded EIP-712 v4 validation and hashing"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+wallet-model = { path = "../wallet-model" }
+
+[lints]
+workspace = true

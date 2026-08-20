@@ -1,0 +1,9 @@
+{
+  "name": "com.your_wallet.native",
+  "description": "Your Wallet private canary native host",
+  "path": "__ABSOLUTE_NATIVE_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}
