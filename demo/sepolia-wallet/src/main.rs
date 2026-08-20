@@ -1,9 +1,14 @@
 //! Double-clickable standalone Ethereum Sepolia development wallet.
 
 mod backend;
+#[cfg(test)]
+mod erc20;
 mod headless;
 mod rpc;
+mod token_store;
 mod ui;
+mod vault_v2;
+mod wallet_secret;
 
 use std::ffi::OsString;
 

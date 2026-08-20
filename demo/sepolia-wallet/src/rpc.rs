@@ -31,6 +31,12 @@ const JSON_RPC_ID: u64 = 1;
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_RAW_TRANSACTION_BYTES: usize = 512;
+#[cfg_attr(not(test), allow(dead_code))]
+const MAX_CONTRACT_CODE_BYTES: usize = 64 * 1024;
+#[cfg_attr(not(test), allow(dead_code))]
+const MAX_CONTRACT_CALL_RESULT_BYTES: usize = 4 * 1024;
+#[cfg_attr(not(test), allow(dead_code))]
+const MAX_CONTRACT_CALL_INPUT_BYTES: usize = 512;
 const GLOBAL_TIMEOUT: Duration = Duration::from_secs(12);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(4);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -59,6 +65,56 @@ impl Address20 {
 impl fmt::Debug for Address20 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Address20([REDACTED])")
+    }
+}
+
+/// Bounded bytecode returned by `eth_getCode` for one pinned-Sepolia address.
+///
+/// The bytes are deliberately opaque to callers except for an empty-code check
+/// and a borrowed view used by the token policy. They are never rendered in
+/// diagnostics.
+#[derive(Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct ContractCode(Vec<u8>);
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ContractCode {
+    /// Whether the address had no code in the pending state.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Borrow the bounded bytecode for a local hash or exact comparison.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ContractCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContractCode([REDACTED])")
+    }
+}
+
+/// Bounded bytes returned by one allowlisted read-only `eth_call`.
+#[derive(Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct ContractCallResult(Vec<u8>);
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ContractCallResult {
+    /// Borrow the bounded ABI result for strict local decoding.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ContractCallResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContractCallResult([REDACTED])")
     }
 }
 
@@ -393,6 +449,71 @@ impl SepoliaRpc {
         parse_quantity(&result)
     }
 
+    /// Read the pending-state code for one prospective token contract.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn contract_code(&self, contract: Address20) -> Result<ContractCode, RpcError> {
+        self.require_verified()?;
+        let result: String = self.call(
+            RpcMethod::GetCode,
+            json!([encode_prefixed_hex(contract.as_bytes()), "pending"]),
+        )?;
+        decode_bounded_hex(&result, MAX_CONTRACT_CODE_BYTES).map(ContractCode)
+    }
+
+    /// Execute one bounded, read-only pending-state contract call.
+    ///
+    /// This is not a general-purpose RPC escape hatch: the caller can provide
+    /// only a destination, optional sender, and at most 512 bytes of calldata.
+    /// The endpoint, method, block tag, and response bound remain fixed here.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn contract_call(
+        &self,
+        sender: Option<Address20>,
+        contract: Address20,
+        calldata: &[u8],
+    ) -> Result<ContractCallResult, RpcError> {
+        self.require_verified()?;
+        if calldata.len() > MAX_CONTRACT_CALL_INPUT_BYTES {
+            return Err(RpcError::RequestTooLarge);
+        }
+        let call = ContractCall {
+            from: sender.map(|address| encode_prefixed_hex(address.as_bytes())),
+            to: encode_prefixed_hex(contract.as_bytes()),
+            input: encode_prefixed_hex(calldata),
+        };
+        let result: String = self.call(RpcMethod::Call, json!([call, "pending"]))?;
+        decode_bounded_hex(&result, MAX_CONTRACT_CALL_RESULT_BYTES).map(ContractCallResult)
+    }
+
+    /// Estimate pending-state gas for exactly one unsigned ERC-20 transfer.
+    /// The fixed 68-byte calldata must already have been produced by the local
+    /// strict ABI encoder. The request omits `gas`, and always sends zero ETH.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn estimate_erc20_transfer_gas(
+        &self,
+        sender: Address20,
+        contract: Address20,
+        transfer_calldata: &[u8; 68],
+        nonce: Quantity256,
+        max_priority_fee_per_gas: Quantity256,
+        max_fee_per_gas: Quantity256,
+    ) -> Result<Quantity256, RpcError> {
+        self.require_verified()?;
+        let transaction = TokenTransferEstimate {
+            from: encode_prefixed_hex(sender.as_bytes()),
+            to: encode_prefixed_hex(contract.as_bytes()),
+            value: "0x0",
+            input: encode_prefixed_hex(transfer_calldata),
+            transaction_type: "0x2",
+            nonce: encode_quantity(nonce),
+            max_priority_fee_per_gas: encode_quantity(max_priority_fee_per_gas),
+            max_fee_per_gas: encode_quantity(max_fee_per_gas),
+        };
+        let result: String = self.call(RpcMethod::EstimateGas, json!([transaction, "pending"]))?;
+        parse_quantity(&result)
+    }
+
     /// Reverify the chain immediately before submitting a small type-2 signed
     /// transaction. The backend must compare the returned hash to its local
     /// Keccak-256 hash before reporting success.
@@ -568,6 +689,10 @@ enum RpcMethod {
     MaxPriorityFee,
     GasPrice,
     EstimateGas,
+    #[cfg_attr(not(test), allow(dead_code))]
+    GetCode,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Call,
     SendRawTransaction,
 }
 
@@ -581,6 +706,8 @@ impl RpcMethod {
             Self::MaxPriorityFee => "eth_maxPriorityFeePerGas",
             Self::GasPrice => "eth_gasPrice",
             Self::EstimateGas => "eth_estimateGas",
+            Self::GetCode => "eth_getCode",
+            Self::Call => "eth_call",
             Self::SendRawTransaction => "eth_sendRawTransaction",
         }
     }
@@ -631,6 +758,30 @@ struct NativeTransferEstimate {
     to: String,
     value: String,
     input: &'static str,
+    #[serde(rename = "type")]
+    transaction_type: &'static str,
+    nonce: String,
+    max_priority_fee_per_gas: String,
+    max_fee_per_gas: String,
+}
+
+#[derive(Serialize)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct ContractCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    to: String,
+    input: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(not(test), allow(dead_code))]
+struct TokenTransferEstimate {
+    from: String,
+    to: String,
+    value: &'static str,
+    input: String,
     #[serde(rename = "type")]
     transaction_type: &'static str,
     nonce: String,
@@ -693,6 +844,31 @@ fn decode_fixed_hex<const BYTES: usize>(text: &str) -> Result<[u8; BYTES], RpcEr
         output[index] = (high << 4) | low;
     }
     Ok(output)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn decode_bounded_hex(text: &str, maximum_bytes: usize) -> Result<Vec<u8>, RpcError> {
+    let digits = text.strip_prefix("0x").ok_or(RpcError::InvalidResponse)?;
+    if !digits.len().is_multiple_of(2) || digits.len() > maximum_bytes.saturating_mul(2) {
+        return Err(RpcError::InvalidResponse);
+    }
+
+    let mut output = Vec::with_capacity(digits.len() / 2);
+    for pair in digits.as_bytes().chunks_exact(2) {
+        let high = strict_lower_hex_nibble(pair[0]).ok_or(RpcError::InvalidResponse)?;
+        let low = strict_lower_hex_nibble(pair[1]).ok_or(RpcError::InvalidResponse)?;
+        output.push((high << 4) | low);
+    }
+    Ok(output)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn strict_lower_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn hex_nibble(value: u8) -> Option<u8> {
@@ -958,6 +1134,8 @@ mod tests {
             RpcMethod::MaxPriorityFee.as_str(),
             RpcMethod::GasPrice.as_str(),
             RpcMethod::EstimateGas.as_str(),
+            RpcMethod::GetCode.as_str(),
+            RpcMethod::Call.as_str(),
             RpcMethod::SendRawTransaction.as_str(),
         ];
         assert_eq!(
@@ -970,6 +1148,8 @@ mod tests {
                 "eth_maxPriorityFeePerGas",
                 "eth_gasPrice",
                 "eth_estimateGas",
+                "eth_getCode",
+                "eth_call",
                 "eth_sendRawTransaction",
             ]
         );
@@ -987,11 +1167,27 @@ mod tests {
         assert_eq!(rpc.pending_nonce(address), Err(RpcError::ChainNotVerified));
         assert_eq!(rpc.latest_base_fee(), Err(RpcError::ChainNotVerified));
         assert_eq!(rpc.fee_quote(), Err(RpcError::ChainNotVerified));
+        assert_eq!(rpc.contract_code(address), Err(RpcError::ChainNotVerified));
+        assert_eq!(
+            rpc.contract_call(None, address, &[0x31, 0x3c, 0xe5, 0x67]),
+            Err(RpcError::ChainNotVerified)
+        );
         assert_eq!(
             rpc.estimate_native_transfer_gas(
                 address,
                 address,
                 Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+                Quantity256::ZERO,
+            ),
+            Err(RpcError::ChainNotVerified)
+        );
+        assert_eq!(
+            rpc.estimate_erc20_transfer_gas(
+                address,
+                address,
+                &[0; 68],
                 Quantity256::ZERO,
                 Quantity256::ZERO,
                 Quantity256::ZERO,
@@ -1113,6 +1309,175 @@ mod tests {
             ),
             Err(RpcError::InvalidResponse)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn token_reads_and_estimate_use_exact_pending_typed_requests() -> Result<(), RpcError> {
+        let sender = Address20::new([0x11; 20]);
+        let contract = Address20::new([0x22; 20]);
+        let mut transfer = [0_u8; 68];
+        transfer[..4].copy_from_slice(&[0xa9, 0x05, 0x9c, 0xbb]);
+        transfer[35] = 0x33;
+        transfer[67] = 0x2a;
+        let responses = verification_responses().into_iter().chain([
+            Ok(success(json!("0x6001"))),
+            Ok(success(json!("0x1234"))),
+            Ok(success(json!("0xc350"))),
+        ]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+
+        let code = rpc.contract_code(contract)?;
+        assert_eq!(code.as_bytes(), &[0x60, 0x01]);
+        let result = rpc.contract_call(Some(sender), contract, &[0x70, 0xa0, 0x82, 0x31, 0x44])?;
+        assert_eq!(result.as_bytes(), &[0x12, 0x34]);
+        assert_eq!(
+            rpc.estimate_erc20_transfer_gas(
+                sender,
+                contract,
+                &transfer,
+                parse_quantity("0x5")?,
+                parse_quantity("0xa")?,
+                parse_quantity("0xd2")?,
+            )?,
+            parse_quantity("0xc350")?
+        );
+
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        let get_code: Value =
+            serde_json::from_slice(&requests[2]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(get_code["method"], "eth_getCode");
+        assert_eq!(
+            get_code["params"],
+            json!([encode_prefixed_hex(contract.as_bytes()), "pending"])
+        );
+
+        let call: Value = serde_json::from_slice(&requests[3]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(call["method"], "eth_call");
+        assert_eq!(
+            call["params"],
+            json!([{
+                "from": encode_prefixed_hex(sender.as_bytes()),
+                "to": encode_prefixed_hex(contract.as_bytes()),
+                "input": "0x70a0823144"
+            }, "pending"])
+        );
+
+        let estimate: Value =
+            serde_json::from_slice(&requests[4]).map_err(|_| RpcError::Transport)?;
+        assert_eq!(estimate["method"], "eth_estimateGas");
+        assert_eq!(
+            estimate["params"],
+            json!([{
+                "from": encode_prefixed_hex(sender.as_bytes()),
+                "to": encode_prefixed_hex(contract.as_bytes()),
+                "value": "0x0",
+                "input": encode_prefixed_hex(&transfer),
+                "type": "0x2",
+                "nonce": "0x5",
+                "maxPriorityFeePerGas": "0xa",
+                "maxFeePerGas": "0xd2"
+            }, "pending"])
+        );
+        assert!(estimate["params"][0].get("gas").is_none());
+        assert!(estimate["params"][0].get("data").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn contract_call_without_sender_omits_from_and_rejects_large_input() -> Result<(), RpcError> {
+        let contract = Address20::new([0x22; 20]);
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x")))]);
+        let transport = MockTransport::new(responses);
+        let observation = transport.clone();
+        let rpc = SepoliaRpc::with_transport(transport);
+        rpc.verify_sepolia()?;
+        assert!(
+            rpc.contract_call(None, contract, &[])?
+                .as_bytes()
+                .is_empty()
+        );
+
+        let requests = observation
+            .requests
+            .lock()
+            .map_err(|_| RpcError::Transport)?;
+        let call: Value = serde_json::from_slice(&requests[2]).map_err(|_| RpcError::Transport)?;
+        assert!(call["params"][0].get("from").is_none());
+        drop(requests);
+
+        assert_eq!(
+            rpc.contract_call(
+                None,
+                contract,
+                &[0; super::MAX_CONTRACT_CALL_INPUT_BYTES + 1]
+            ),
+            Err(RpcError::RequestTooLarge)
+        );
+        assert_eq!(
+            observation
+                .requests
+                .lock()
+                .map_err(|_| RpcError::Transport)?
+                .len(),
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_contract_hex_is_canonical_and_allocation_bounded() -> Result<(), RpcError> {
+        assert!(super::decode_bounded_hex("0x", 0)?.is_empty());
+        assert_eq!(super::decode_bounded_hex("0x00ff", 2)?, [0x00, 0xff]);
+        for invalid in ["", "0X00", "0x0", "0xGG", "0xAA"] {
+            assert_eq!(
+                super::decode_bounded_hex(invalid, 16),
+                Err(RpcError::InvalidResponse)
+            );
+        }
+        assert_eq!(
+            super::decode_bounded_hex("0x0001", 1),
+            Err(RpcError::InvalidResponse)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contract_results_are_bounded_and_debug_redacted() -> Result<(), RpcError> {
+        let contract = Address20::new([0x22; 20]);
+        let oversized = format!("0x{}", "aa".repeat(super::MAX_CONTRACT_CODE_BYTES + 1));
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!(oversized)))]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        assert_eq!(rpc.contract_code(contract), Err(RpcError::InvalidResponse));
+
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x")))]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        let code = rpc.contract_code(contract)?;
+        assert!(code.is_empty());
+        assert_eq!(format!("{code:?}"), "ContractCode([REDACTED])");
+
+        let responses = verification_responses()
+            .into_iter()
+            .chain([Ok(success(json!("0x746f6b656e")))]);
+        let rpc = SepoliaRpc::with_transport(MockTransport::new(responses));
+        rpc.verify_sepolia()?;
+        let result = rpc.contract_call(None, contract, &[0x95, 0xd8, 0x9b, 0x41])?;
+        assert_eq!(format!("{result:?}"), "ContractCallResult([REDACTED])");
+        assert!(!format!("{result:?}").contains("token"));
         Ok(())
     }
 
