@@ -124,7 +124,7 @@ fn run_smoke() -> HeadlessReport {
     match ui::run_headless_smoke() {
         Ok(evidence) => HeadlessReport::success(
             "smoke",
-            "창 없이 지갑 관리와 송금 화면 흐름을 확인했습니다.",
+            "창 없이 지갑 관리, 커스텀 토큰, 송금 화면 흐름을 확인했습니다.",
             false,
             evidence.transitions_checked,
             evidence.backend_routes_checked,
@@ -214,8 +214,8 @@ mod tests {
     fn smoke_report_is_stable_and_explicitly_window_free() {
         let report = run(HeadlessCheck::Smoke);
         assert!(report.succeeded());
-        assert_eq!(report.transitions_checked, 34);
-        assert_eq!(report.backend_routes_checked, 17);
+        assert_eq!(report.transitions_checked, 42);
+        assert_eq!(report.backend_routes_checked, 21);
         assert!(!report.gui_started);
         assert!(!report.mouse_or_keyboard_automation_used);
         assert!(!report.network_used);

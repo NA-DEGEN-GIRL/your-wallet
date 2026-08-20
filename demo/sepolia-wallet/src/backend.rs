@@ -7,6 +7,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
@@ -23,21 +24,25 @@ use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 use sha2::Sha256;
 use sha3::{Digest as _, Keccak256};
 #[cfg(windows)]
-use windows::Win32::Foundation::{GENERIC_WRITE, HANDLE};
+use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FlushFileBuffers, OPEN_EXISTING,
+    FILE_SHARE_WRITE, FlushFileBuffers, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW, OPEN_EXISTING,
 };
 #[cfg(windows)]
 use windows::core::PCWSTR;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::erc20::{self, TokenAmount};
 use crate::rpc;
+use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
 use crate::ui::{
-    FeeSelection, NewMnemonicWords, SecretReveal, SecretRevealKind, SendReceipt, SensitiveText,
-    TransferPreview, WalletBackend, WalletKind, WalletSnapshot,
+    CustomTokenSnapshot, CustomTokenState, FeeSelection, NewMnemonicWords, SecretReveal,
+    SecretRevealKind, SendReceipt, SensitiveText, TransferPreview, WalletBackend, WalletKind,
+    WalletSnapshot,
 };
 use crate::vault_v2::{
     OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
@@ -83,6 +88,8 @@ const PENDING_VERSION: u16 = 1;
 const PENDING_HEADER_BYTES: usize = 56;
 const PENDING_HEADER_BYTES_U16: u16 = 56;
 const MAX_PENDING_RAW_BYTES: usize = 512;
+const MAX_TOKEN_STORE_BYTES: usize = 4_096;
+static TOKEN_STORE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
 /// Concrete backend used by the native UI.
 ///
@@ -93,6 +100,7 @@ pub struct DemoBackend {
     vault_path: PathBuf,
     vault_v2_path: PathBuf,
     pending_path: PathBuf,
+    token_store_path: PathBuf,
     rpc: Box<dyn RpcAccess>,
     unlocked: Option<UnlockedWallet>,
     pending_generation: Option<PendingGeneratedWallet>,
@@ -169,6 +177,124 @@ struct FrozenFeePlan {
     maximum_fee: Word,
 }
 
+/// Ephemeral v2-only context for the authenticated token sidecar.
+///
+/// This deliberately has no `Debug` implementation because it carries the
+/// domain-separated sidecar key.
+struct TokenContext {
+    owner: [u8; 20],
+    vault_id: [u8; 16],
+    key: Zeroizing<[u8; 32]>,
+}
+
+/// One freshly validated token response. Public UI strings are created only
+/// after every field has passed the strict local policy.
+struct ValidatedToken {
+    contract: [u8; 20],
+    decimals: u8,
+    symbol: Option<String>,
+    code_hash: [u8; 32],
+    balance: TokenAmount,
+}
+
+/// Authenticated token store plus the exact bytes observed at mutation start.
+/// `baseline.bytes` is `None` only while the sidecar does not yet exist.
+struct LoadedTokenStore {
+    store: TokenStore,
+    baseline: TokenStoreBaseline,
+}
+
+/// Compare-and-swap witness captured while the mutation lease is held.
+///
+/// The bytes prevent a same-generation, different-content writer from being
+/// overwritten. The authenticated generation independently proves that one
+/// public add/remove operation advances the store exactly once.
+struct TokenStoreBaseline {
+    bytes: Option<Vec<u8>>,
+    generation: u64,
+}
+
+/// Serializes the complete token mutation transaction.
+///
+/// Every process uses the in-process mutex. On Windows (the supported desktop
+/// target), the persistent empty sibling lock file is also opened with no share
+/// permissions and its handle plus the exact parent-directory handle stay live
+/// from baseline load through the final CAS/replace/readback. A crash releases
+/// the handle automatically; the empty regular lock file intentionally stays.
+///
+/// This is a cooperative wallet-process concurrency lease, not a security
+/// boundary against another same-user process that deliberately ignores it.
+/// AEAD plus exact installed readback makes arbitrary corruption fail closed on
+/// this operation or the next open/refresh, but a captured valid old blob can
+/// still be rolled back, and an uncooperative compare-to-replace race cannot be
+/// excluded without an external ACL/hardware-backed monotonic anchor.
+struct TokenMutationLease<'a> {
+    _process_guard: MutexGuard<'a, ()>,
+    #[cfg(windows)]
+    _lock_file: File,
+    #[cfg(windows)]
+    _parent_directory: DurableParentDirectory,
+}
+
+impl<'a> TokenMutationLease<'a> {
+    fn acquire(token_store_path: &Path) -> Result<Self, BackendError> {
+        let process_guard = TOKEN_STORE_PROCESS_LOCK
+            .lock()
+            .map_err(|_| BackendError::TokenStoreStorage)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            let parent = token_store_path
+                .parent()
+                .ok_or(BackendError::TokenStoreStorage)?;
+            let parent_directory = DurableParentDirectory::open(parent)
+                .map_err(|_| BackendError::TokenStoreStorage)?;
+            let lock_path = token_store_lock_path(token_store_path)?;
+            let lock_file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+                .open(lock_path)
+                .map_err(|_| BackendError::TokenMutationBlocked)?;
+            let metadata = lock_file
+                .metadata()
+                .map_err(|_| BackendError::TokenStoreStorage)?;
+            if !metadata.file_type().is_file()
+                || metadata.len() != 0
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+            {
+                return Err(BackendError::TokenStoreInvalid);
+            }
+            lock_file
+                .sync_all()
+                .map_err(|_| BackendError::TokenStoreStorage)?;
+            parent_directory
+                .flush()
+                .map_err(|_| BackendError::TokenStoreStorage)?;
+            Ok(Self {
+                _process_guard: process_guard,
+                _lock_file: lock_file,
+                _parent_directory: parent_directory,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            // Non-Windows builds are test/development conveniences. The
+            // process mutex plus exact-byte CAS prevents same-process lost
+            // updates and detects cross-process changes before replacement.
+            // The supported Windows desktop path additionally holds the
+            // no-share sibling lease above for the entire transaction.
+            let _ = token_store_path;
+            Ok(Self {
+                _process_guard: process_guard,
+            })
+        }
+    }
+}
+
 trait MonotonicClock: Send {
     fn now(&self) -> Instant;
 }
@@ -199,6 +325,22 @@ trait RpcAccess: Send {
         maximum_fee: Word,
     ) -> Result<Word, ()>;
     fn send_raw_transaction(&self, signed: &[u8]) -> Result<[u8; 32], ()>;
+    fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        let _ = contract;
+        Err(())
+    }
+    fn erc20_decimals(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        let _ = contract;
+        Err(())
+    }
+    fn erc20_symbol(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        let _ = contract;
+        Err(())
+    }
+    fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+        let _ = (contract, owner);
+        Err(())
+    }
 }
 
 impl DemoBackend {
@@ -212,11 +354,13 @@ impl DemoBackend {
         let vault_path = vault_directory.join("vault-v1.bin");
         let vault_v2_path = vault_directory.join("vault-v2.bin");
         let pending_path = sibling_pending_path(&vault_path)?;
+        let token_store_path = sibling_token_store_path(&vault_v2_path)?;
         let rpc = rpc::SepoliaRpc::new();
         Ok(Self {
             vault_path,
             vault_v2_path,
             pending_path,
+            token_store_path,
             rpc: Box::new(LiveRpc(rpc)),
             unlocked: None,
             pending_generation: None,
@@ -232,10 +376,12 @@ impl DemoBackend {
     fn with_rpc(vault_path: PathBuf, rpc: impl RpcAccess + 'static) -> Self {
         let pending_path = vault_path.with_file_name("pending-v1.bin");
         let vault_v2_path = vault_path.with_file_name("vault-v2.bin");
+        let token_store_path = vault_path.with_file_name("tokens-v1.bin");
         Self {
             vault_path,
             vault_v2_path,
             pending_path,
+            token_store_path,
             rpc: Box::new(rpc),
             unlocked: None,
             pending_generation: None,
@@ -656,6 +802,299 @@ impl DemoBackend {
         self.snapshot()
     }
 
+    fn token_context(&self) -> Result<TokenContext, BackendError> {
+        let wallet = self.unlocked.as_ref().ok_or(BackendError::Locked)?;
+        let UnlockedWallet::V2(opened) = wallet else {
+            return Err(BackendError::TokenRequiresV2);
+        };
+        let (owner, _, _) = validated_wallet_metadata(opened.wallet())?;
+        Ok(TokenContext {
+            owner,
+            vault_id: *opened.vault_id(),
+            key: opened.derive_token_store_key(),
+        })
+    }
+
+    fn ensure_token_mutation_allowed(&self) -> Result<(), BackendError> {
+        if self.pending_broadcast_exists() {
+            return Err(BackendError::PendingExists);
+        }
+        if self.prepared.is_some() {
+            return Err(BackendError::TokenMutationBlocked);
+        }
+        if self.pending_generation.is_some() {
+            return Err(BackendError::GenerationPending);
+        }
+        Ok(())
+    }
+
+    fn load_token_store(&self, context: &TokenContext) -> Result<LoadedTokenStore, BackendError> {
+        let bytes = match read_token_store_file(&self.token_store_path)? {
+            Some(bytes) => bytes,
+            None => {
+                return Ok(LoadedTokenStore {
+                    store: TokenStore::empty(context.vault_id).map_err(map_token_store_error)?,
+                    baseline: TokenStoreBaseline {
+                        bytes: None,
+                        generation: 0,
+                    },
+                });
+            }
+        };
+        let store = TokenStore::open(bytes.as_slice(), &context.key, &context.vault_id)
+            .map_err(map_token_store_error)?;
+        let generation = store.generation();
+        Ok(LoadedTokenStore {
+            store,
+            baseline: TokenStoreBaseline {
+                bytes: Some(bytes),
+                generation,
+            },
+        })
+    }
+
+    fn persist_token_store(
+        &self,
+        context: &TokenContext,
+        store: &TokenStore,
+        baseline: &TokenStoreBaseline,
+    ) -> Result<(), BackendError> {
+        let expected_generation = baseline
+            .generation
+            .checked_add(1)
+            .ok_or(BackendError::TokenStoreInvalid)?;
+        if store.vault_id() != &context.vault_id
+            || store.generation() != expected_generation
+            || (baseline.bytes.is_none() != (baseline.generation == 0))
+        {
+            return Err(BackendError::TokenStoreInvalid);
+        }
+        let sealed = store.seal(&context.key).map_err(map_token_store_error)?;
+        let current = read_token_store_file(&self.token_store_path)?;
+        if current.as_deref() != baseline.bytes.as_deref() {
+            return Err(BackendError::TokenStoreChanged);
+        }
+        if let Some(current) = current.as_deref() {
+            let reopened = TokenStore::open(current, &context.key, &context.vault_id)
+                .map_err(map_token_store_error)?;
+            if reopened.generation() != baseline.generation {
+                return Err(BackendError::TokenStoreChanged);
+            }
+        }
+        write_atomic_token_store(&self.token_store_path, sealed.as_slice())?;
+        let readback =
+            verify_exact_token_store_readback(&self.token_store_path, sealed.as_slice())?;
+        let reopened = TokenStore::open(readback.as_slice(), &context.key, &context.vault_id)
+            .map_err(map_token_store_error)?;
+        if reopened.generation() != store.generation() || reopened.entries() != store.entries() {
+            return Err(BackendError::TokenStoreInvalid);
+        }
+        Ok(())
+    }
+
+    fn inspect_token(
+        &self,
+        contract: [u8; 20],
+        owner: [u8; 20],
+        expected: Option<&TokenEntry>,
+    ) -> Result<ValidatedToken, BackendError> {
+        self.rpc
+            .verify_sepolia()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        let code = self
+            .rpc
+            .contract_code(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        if code.is_empty() {
+            return Err(BackendError::TokenContractEmpty);
+        }
+        let code_hash: [u8; 32] = Sha256::digest(code.as_slice()).into();
+        if expected.is_some_and(|entry| entry.code_hash() != &code_hash) {
+            return Err(BackendError::TokenCodeChanged);
+        }
+
+        let decimals_result = self
+            .rpc
+            .erc20_decimals(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let decimals = erc20::decode_decimals(decimals_result.as_slice())
+            .map_err(|_| BackendError::TokenMetadataInvalid)?;
+        let symbol_result = self
+            .rpc
+            .erc20_symbol(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let symbol = erc20::decode_symbol(symbol_result.as_slice())
+            .map_err(|_| BackendError::TokenMetadataInvalid)?
+            .map(|value| value.as_str().to_owned());
+        if expected.is_some_and(|entry| {
+            entry.decimals() != decimals || entry.symbol() != symbol.as_deref()
+        }) {
+            return Err(BackendError::TokenMetadataChanged);
+        }
+
+        let balance_result = self
+            .rpc
+            .erc20_balance_of(contract, owner)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let balance = erc20::decode_balance(balance_result.as_slice())
+            .map_err(|_| BackendError::TokenMetadataInvalid)?;
+
+        // Bookend the mutable chain reads. A proxy upgrade or metadata change
+        // while the calls are in flight must not produce a hybrid trusted
+        // snapshot. Balance is intentionally not required to remain stable.
+        let final_code = self
+            .rpc
+            .contract_code(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let final_code_hash: [u8; 32] = Sha256::digest(final_code.as_slice()).into();
+        if final_code.is_empty() || final_code_hash != code_hash {
+            return Err(BackendError::TokenCodeChanged);
+        }
+        let final_decimals_result = self
+            .rpc
+            .erc20_decimals(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let final_decimals = erc20::decode_decimals(final_decimals_result.as_slice())
+            .map_err(|_| BackendError::TokenMetadataInvalid)?;
+        let final_symbol_result = self
+            .rpc
+            .erc20_symbol(contract)
+            .map_err(|()| BackendError::TokenQueryUnavailable)?;
+        let final_symbol = erc20::decode_symbol(final_symbol_result.as_slice())
+            .map_err(|_| BackendError::TokenMetadataInvalid)?
+            .map(|value| value.as_str().to_owned());
+        if final_decimals != decimals || final_symbol != symbol {
+            return Err(BackendError::TokenMetadataChanged);
+        }
+        if expected.is_some_and(|entry| {
+            entry.decimals() != final_decimals || entry.symbol() != final_symbol.as_deref()
+        }) {
+            return Err(BackendError::TokenMetadataChanged);
+        }
+        self.rpc
+            .verify_sepolia()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        Ok(ValidatedToken {
+            contract,
+            decimals: final_decimals,
+            symbol: final_symbol,
+            code_hash,
+            balance,
+        })
+    }
+
+    fn token_views(&self, context: &TokenContext, store: &TokenStore) -> Vec<CustomTokenSnapshot> {
+        store
+            .entries()
+            .iter()
+            .map(|entry| {
+                let contract_address = checksum_address(*entry.contract());
+                match self.inspect_token(*entry.contract(), context.owner, Some(entry)) {
+                    Ok(validated) => {
+                        match erc20::format_token_amount(validated.balance, validated.decimals) {
+                            Ok(balance) => CustomTokenSnapshot {
+                                contract_address,
+                                state: CustomTokenState::Verified {
+                                    symbol: validated.symbol,
+                                    decimals: validated.decimals,
+                                    balance,
+                                },
+                            },
+                            Err(_) => CustomTokenSnapshot {
+                                contract_address,
+                                state: CustomTokenState::Unavailable {
+                                    reason_ko: error_text(BackendError::TokenMetadataInvalid),
+                                },
+                            },
+                        }
+                    }
+                    Err(error) => CustomTokenSnapshot {
+                        contract_address,
+                        state: CustomTokenState::Unavailable {
+                            reason_ko: error_text(error),
+                        },
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn refresh_custom_tokens_inner(&self) -> Result<Vec<CustomTokenSnapshot>, BackendError> {
+        let context = self.token_context()?;
+        self.rpc
+            .verify_sepolia()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        let loaded = self.load_token_store(&context)?;
+        Ok(self.token_views(&context, &loaded.store))
+    }
+
+    fn add_custom_token_inner(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, BackendError> {
+        self.ensure_token_mutation_allowed()?;
+        let context = self.token_context()?;
+        let contract = parse_address(contract_address)
+            .map_err(|_| BackendError::TokenContractAddressInvalid)?;
+        let _lease = TokenMutationLease::acquire(&self.token_store_path)?;
+        self.rpc
+            .verify_sepolia()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        let mut loaded = self.load_token_store(&context)?;
+        if loaded
+            .store
+            .entries()
+            .iter()
+            .any(|entry| entry.contract() == &contract)
+        {
+            return Err(BackendError::TokenDuplicate);
+        }
+        let validated = self.inspect_token(contract, context.owner, None)?;
+        let entry = TokenEntry::new(
+            validated.contract,
+            validated.decimals,
+            validated.symbol,
+            validated.code_hash,
+        )
+        .map_err(map_token_store_error)?;
+        loaded.store.add(entry).map_err(map_token_store_error)?;
+        let committed_entry = loaded
+            .store
+            .entries()
+            .iter()
+            .find(|entry| entry.contract() == &contract)
+            .ok_or(BackendError::TokenStoreInvalid)?;
+        // Revalidate the exact identity immediately before committing. The
+        // post-commit view performs the same check again before exposing any
+        // metadata or balance to the UI.
+        self.inspect_token(contract, context.owner, Some(committed_entry))?;
+        self.ensure_token_mutation_allowed()?;
+        self.persist_token_store(&context, &loaded.store, &loaded.baseline)?;
+        Ok(self.token_views(&context, &loaded.store))
+    }
+
+    fn remove_custom_token_inner(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, BackendError> {
+        self.ensure_token_mutation_allowed()?;
+        let context = self.token_context()?;
+        let contract = parse_address(contract_address)
+            .map_err(|_| BackendError::TokenContractAddressInvalid)?;
+        let _lease = TokenMutationLease::acquire(&self.token_store_path)?;
+        self.rpc
+            .verify_sepolia()
+            .map_err(|()| BackendError::RpcUnavailable)?;
+        let mut loaded = self.load_token_store(&context)?;
+        loaded
+            .store
+            .remove(contract)
+            .map_err(map_token_store_error)?;
+        self.ensure_token_mutation_allowed()?;
+        self.persist_token_store(&context, &loaded.store, &loaded.baseline)?;
+        Ok(self.token_views(&context, &loaded.store))
+    }
+
     fn prepare_transfer_inner(
         &mut self,
         recipient: &str,
@@ -1002,6 +1441,26 @@ impl WalletBackend for DemoBackend {
         self.refresh_snapshot().map_err(error_text)
     }
 
+    fn add_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        self.add_custom_token_inner(contract_address)
+            .map_err(error_text)
+    }
+
+    fn refresh_custom_tokens(&mut self) -> Result<Vec<CustomTokenSnapshot>, String> {
+        self.refresh_custom_tokens_inner().map_err(error_text)
+    }
+
+    fn remove_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        self.remove_custom_token_inner(contract_address)
+            .map_err(error_text)
+    }
+
     fn prepare_transfer(
         &mut self,
         recipient: &str,
@@ -1107,6 +1566,34 @@ impl RpcAccess for LiveRpc {
             .map(|hash| *hash.as_bytes())
             .map_err(|_| ())
     }
+
+    fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        self.0
+            .contract_code(rpc::Address20::new(contract))
+            .map(|code| code.as_bytes().to_vec())
+            .map_err(|_| ())
+    }
+
+    fn erc20_decimals(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        self.0
+            .erc20_decimals(rpc::Address20::new(contract))
+            .map(|result| result.as_bytes().to_vec())
+            .map_err(|_| ())
+    }
+
+    fn erc20_symbol(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+        self.0
+            .erc20_symbol(rpc::Address20::new(contract))
+            .map(|result| result.as_bytes().to_vec())
+            .map_err(|_| ())
+    }
+
+    fn erc20_balance_of(&self, contract: [u8; 20], owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+        self.0
+            .erc20_balance_of(rpc::Address20::new(contract), rpc::Address20::new(owner))
+            .map(|result| result.as_bytes().to_vec())
+            .map_err(|_| ())
+    }
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -1210,6 +1697,20 @@ enum BackendError {
     Locked,
     RpcUnavailable,
     BalanceUnavailable,
+    TokenRequiresV2,
+    TokenContractAddressInvalid,
+    TokenContractEmpty,
+    TokenQueryUnavailable,
+    TokenMetadataInvalid,
+    TokenCodeChanged,
+    TokenMetadataChanged,
+    TokenDuplicate,
+    TokenCapacity,
+    TokenNotFound,
+    TokenStoreInvalid,
+    TokenStoreStorage,
+    TokenStoreChanged,
+    TokenMutationBlocked,
     InvalidAddress,
     InvalidAmount,
     AmountLimit,
@@ -1256,6 +1757,20 @@ impl std::fmt::Debug for BackendError {
             Self::Locked => "BackendError::Locked",
             Self::RpcUnavailable => "BackendError::RpcUnavailable",
             Self::BalanceUnavailable => "BackendError::BalanceUnavailable",
+            Self::TokenRequiresV2 => "BackendError::TokenRequiresV2",
+            Self::TokenContractAddressInvalid => "BackendError::TokenContractAddressInvalid",
+            Self::TokenContractEmpty => "BackendError::TokenContractEmpty",
+            Self::TokenQueryUnavailable => "BackendError::TokenQueryUnavailable",
+            Self::TokenMetadataInvalid => "BackendError::TokenMetadataInvalid",
+            Self::TokenCodeChanged => "BackendError::TokenCodeChanged",
+            Self::TokenMetadataChanged => "BackendError::TokenMetadataChanged",
+            Self::TokenDuplicate => "BackendError::TokenDuplicate",
+            Self::TokenCapacity => "BackendError::TokenCapacity",
+            Self::TokenNotFound => "BackendError::TokenNotFound",
+            Self::TokenStoreInvalid => "BackendError::TokenStoreInvalid",
+            Self::TokenStoreStorage => "BackendError::TokenStoreStorage",
+            Self::TokenStoreChanged => "BackendError::TokenStoreChanged",
+            Self::TokenMutationBlocked => "BackendError::TokenMutationBlocked",
             Self::InvalidAddress => "BackendError::InvalidAddress",
             Self::InvalidAmount => "BackendError::InvalidAmount",
             Self::AmountLimit => "BackendError::AmountLimit",
@@ -1326,6 +1841,47 @@ fn error_text(error: BackendError) -> String {
         BackendError::Locked => "먼저 Sepolia 테스트 지갑을 열어 주세요.".to_owned(),
         BackendError::RpcUnavailable => "Sepolia 연결을 확인하지 못했습니다.".to_owned(),
         BackendError::BalanceUnavailable => "Sepolia 잔액을 확인하지 못했습니다.".to_owned(),
+        BackendError::TokenRequiresV2 => {
+            "커스텀 토큰은 v2 지갑에서만 사용할 수 있습니다. v1 지갑을 먼저 이전해 주세요."
+                .to_owned()
+        }
+        BackendError::TokenContractAddressInvalid => {
+            "토큰 컨트랙트 주소 형식이나 체크섬을 확인해 주세요.".to_owned()
+        }
+        BackendError::TokenContractEmpty => {
+            "해당 Sepolia 주소에서 컨트랙트 코드를 찾지 못했습니다.".to_owned()
+        }
+        BackendError::TokenQueryUnavailable => {
+            "토큰 컨트랙트 정보를 확인하지 못했습니다.".to_owned()
+        }
+        BackendError::TokenMetadataInvalid => {
+            "토큰 컨트랙트의 표준 메타데이터 응답이 올바르지 않습니다.".to_owned()
+        }
+        BackendError::TokenCodeChanged => {
+            "저장 후 토큰 컨트랙트 코드가 달라져 메타데이터와 잔액을 숨겼습니다.".to_owned()
+        }
+        BackendError::TokenMetadataChanged => {
+            "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.".to_owned()
+        }
+        BackendError::TokenDuplicate => "이미 추가한 토큰 컨트랙트입니다.".to_owned(),
+        BackendError::TokenCapacity => {
+            "커스텀 토큰은 최대 32개까지 추가할 수 있습니다.".to_owned()
+        }
+        BackendError::TokenNotFound => "삭제할 토큰 컨트랙트를 찾지 못했습니다.".to_owned(),
+        BackendError::TokenStoreInvalid => {
+            "인증된 토큰 목록이 손상되었거나 현재 v2 지갑과 일치하지 않습니다.".to_owned()
+        }
+        BackendError::TokenStoreStorage => {
+            "인증된 토큰 목록을 안전하게 저장하지 못했습니다.".to_owned()
+        }
+        BackendError::TokenStoreChanged => {
+            "토큰 목록이 다른 작업에서 변경되었습니다. 새로고침한 뒤 다시 시도해 주세요."
+                .to_owned()
+        }
+        BackendError::TokenMutationBlocked => {
+            "다른 토큰 목록 작업이 끝나거나 준비된 전송을 취소한 뒤 다시 시도해 주세요."
+                .to_owned()
+        }
         BackendError::InvalidAddress => "받는 주소가 올바르지 않습니다.".to_owned(),
         BackendError::InvalidAmount => "보낼 금액이 올바르지 않습니다.".to_owned(),
         BackendError::AmountLimit => {
@@ -1478,6 +2034,20 @@ const fn map_vault_error(error: VaultError) -> BackendError {
         VaultError::RandomnessUnavailable => BackendError::RandomnessUnavailable,
         VaultError::CryptographicFailure => BackendError::CryptographicFailure,
         VaultError::AuthenticationFailed => BackendError::VaultAuthentication,
+    }
+}
+
+const fn map_token_store_error(error: TokenStoreError) -> BackendError {
+    match error {
+        TokenStoreError::Full => BackendError::TokenCapacity,
+        TokenStoreError::Duplicate => BackendError::TokenDuplicate,
+        TokenStoreError::NotFound => BackendError::TokenNotFound,
+        TokenStoreError::RandomnessUnavailable => BackendError::RandomnessUnavailable,
+        TokenStoreError::AuthenticationFailed | TokenStoreError::InvalidRecord => {
+            BackendError::TokenStoreInvalid
+        }
+        TokenStoreError::InvalidInput => BackendError::TokenMetadataInvalid,
+        TokenStoreError::GenerationOverflow => BackendError::TokenStoreInvalid,
     }
 }
 
@@ -1744,6 +2314,190 @@ fn read_v2_vault(path: &Path) -> Result<Zeroizing<Vec<u8>>, BackendError> {
     Ok(bytes)
 }
 
+fn read_token_store_file(path: &Path) -> Result<Option<Vec<u8>>, BackendError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(BackendError::TokenStoreStorage),
+    };
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    let length = usize::try_from(metadata.len()).map_err(|_| BackendError::TokenStoreInvalid)?;
+    if length > MAX_TOKEN_STORE_BYTES {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    let file = open_token_store_for_read(path)?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|_| BackendError::TokenStoreStorage)?;
+    if !opened_metadata.file_type().is_file()
+        || usize::try_from(opened_metadata.len()).ok() != Some(length)
+    {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    let mut bytes = Vec::with_capacity(length);
+    file.take((MAX_TOKEN_STORE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| BackendError::TokenStoreStorage)?;
+    if bytes.len() != length {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    Ok(Some(bytes))
+}
+
+fn verify_exact_token_store_readback(
+    path: &Path,
+    expected: &[u8],
+) -> Result<Vec<u8>, BackendError> {
+    let actual = read_token_store_file(path)
+        .map_err(|_| BackendError::TokenStoreStorage)?
+        .ok_or(BackendError::TokenStoreStorage)?;
+    if actual.as_slice() != expected {
+        return Err(BackendError::TokenStoreStorage);
+    }
+    Ok(actual)
+}
+
+#[cfg(windows)]
+fn open_token_store_for_read(path: &Path) -> Result<File, BackendError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(BackendError::TokenStoreStorage);
+    }
+    wide.push(0);
+    // SAFETY: the NUL-terminated path remains live for the call. Opening the
+    // final component itself prevents a reparse-point swap from being followed,
+    // and omitting write/delete sharing pins these exact bytes for the read.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            GENERIC_READ.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+    .map_err(|_| BackendError::TokenStoreStorage)?;
+    // SAFETY: transfer the one successful owned handle into `File` exactly once.
+    let file = unsafe { File::from_raw_handle(handle.0 as RawHandle) };
+    let metadata = file
+        .metadata()
+        .map_err(|_| BackendError::TokenStoreStorage)?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    Ok(file)
+}
+
+#[cfg(not(windows))]
+fn open_token_store_for_read(path: &Path) -> Result<File, BackendError> {
+    File::open(path).map_err(|_| BackendError::TokenStoreStorage)
+}
+
+fn write_atomic_token_store(path: &Path, bytes: &[u8]) -> Result<(), BackendError> {
+    if bytes.is_empty() || bytes.len() > MAX_TOKEN_STORE_BYTES {
+        return Err(BackendError::TokenStoreInvalid);
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(BackendError::TokenStoreInvalid);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(BackendError::TokenStoreStorage),
+    }
+
+    let parent = path.parent().ok_or(BackendError::TokenStoreStorage)?;
+    let parent_directory =
+        DurableParentDirectory::open(parent).map_err(|_| BackendError::TokenStoreStorage)?;
+    let temporary = token_store_temporary_path(path)?;
+    if path_may_exist(&temporary) {
+        return Err(BackendError::TokenStoreStorage);
+    }
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|_| BackendError::TokenStoreStorage)?;
+    let write_result = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| BackendError::TokenStoreStorage);
+    drop(file);
+    if let Err(error) = write_result {
+        if fs::remove_file(&temporary).is_ok() {
+            let _ = parent_directory.flush();
+        }
+        return Err(error);
+    }
+    if let Err(error) = verify_exact_token_store_readback(&temporary, bytes) {
+        if fs::remove_file(&temporary).is_ok() {
+            let _ = parent_directory.flush();
+        }
+        return Err(error);
+    }
+    if let Err(error) = atomic_replace_token_store(&temporary, path) {
+        if fs::remove_file(&temporary).is_ok() {
+            let _ = parent_directory.flush();
+        }
+        return Err(error);
+    }
+    parent_directory
+        .flush()
+        .map_err(|_| BackendError::TokenStoreStorage)
+}
+
+fn token_store_temporary_path(path: &Path) -> Result<PathBuf, BackendError> {
+    if path.file_name().is_none() {
+        return Err(BackendError::TokenStoreStorage);
+    }
+    Ok(path.with_file_name("tokens-v1.tmp"))
+}
+
+fn token_store_lock_path(path: &Path) -> Result<PathBuf, BackendError> {
+    if path.file_name().is_none() {
+        return Err(BackendError::TokenStoreStorage);
+    }
+    Ok(path.with_file_name("tokens-v1.lock"))
+}
+
+#[cfg(windows)]
+fn atomic_replace_token_store(temporary: &Path, target: &Path) -> Result<(), BackendError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    fn wide(path: &Path) -> Result<Vec<u16>, BackendError> {
+        let mut value: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if value.contains(&0) {
+            return Err(BackendError::TokenStoreStorage);
+        }
+        value.push(0);
+        Ok(value)
+    }
+
+    let temporary = wide(temporary)?;
+    let target = wide(target)?;
+    // SAFETY: both NUL-terminated paths remain live for this call and are
+    // sibling names beneath the already-held, non-reparse parent directory.
+    unsafe {
+        MoveFileExW(
+            PCWSTR(temporary.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|_| BackendError::TokenStoreStorage)
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_token_store(temporary: &Path, target: &Path) -> Result<(), BackendError> {
+    fs::rename(temporary, target).map_err(|_| BackendError::TokenStoreStorage)
+}
+
 fn remove_legacy_vault(path: &Path) -> Result<(), BackendError> {
     let parent = path.parent().ok_or(BackendError::StorageUnavailable)?;
     let parent_directory = DurableParentDirectory::open(parent)?;
@@ -1976,6 +2730,13 @@ fn sibling_pending_path(vault_path: &Path) -> Result<PathBuf, String> {
         return Err(error_text(BackendError::StorageUnavailable));
     }
     Ok(vault_path.with_file_name("pending-v1.bin"))
+}
+
+fn sibling_token_store_path(vault_v2_path: &Path) -> Result<PathBuf, String> {
+    if vault_v2_path.file_name().is_none() {
+        return Err(error_text(BackendError::TokenStoreStorage));
+    }
+    Ok(vault_v2_path.with_file_name("tokens-v1.bin"))
 }
 
 fn resolve_fee_plan(
@@ -2411,6 +3172,7 @@ fn hex_without_prefix(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     const TEST_PASSWORD: &str = "correct demo password";
@@ -2486,6 +3248,171 @@ mod tests {
             estimated_gas: Word::from_u64(NATIVE_TRANSFER_GAS),
             returned_hash: None,
             send_fails: false,
+        }
+    }
+
+    #[derive(Clone)]
+    struct TokenRpc {
+        state: Arc<Mutex<TokenRpcState>>,
+    }
+
+    struct TokenRpcState {
+        verify_ok: bool,
+        verify_calls: usize,
+        fail_verify_on_call: Option<usize>,
+        query_fails: bool,
+        query_calls: usize,
+        replace_on_query: Option<(usize, [u8; 20], TokenFixture)>,
+        contracts: HashMap<[u8; 20], TokenFixture>,
+    }
+
+    #[derive(Clone)]
+    struct TokenFixture {
+        code: Vec<u8>,
+        decimals: Vec<u8>,
+        symbol: Vec<u8>,
+        balance: Vec<u8>,
+    }
+
+    impl TokenRpc {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TokenRpcState {
+                    verify_ok: true,
+                    verify_calls: 0,
+                    fail_verify_on_call: None,
+                    query_fails: false,
+                    query_calls: 0,
+                    replace_on_query: None,
+                    contracts: HashMap::new(),
+                })),
+            }
+        }
+
+        fn insert(&self, contract: [u8; 20], fixture: TokenFixture) {
+            self.state
+                .lock()
+                .expect("token RPC lock")
+                .contracts
+                .insert(contract, fixture);
+        }
+
+        fn update(&self, update: impl FnOnce(&mut TokenRpcState)) {
+            update(&mut self.state.lock().expect("token RPC lock"));
+        }
+
+        fn response(
+            &self,
+            contract: [u8; 20],
+            select: impl FnOnce(&TokenFixture) -> &[u8],
+        ) -> Result<Vec<u8>, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            if state.query_fails {
+                return Err(());
+            }
+            state.query_calls = state.query_calls.checked_add(1).ok_or(())?;
+            let replacement = state
+                .replace_on_query
+                .as_ref()
+                .filter(|(call, _, _)| *call == state.query_calls)
+                .cloned();
+            if let Some((_, replacement_contract, fixture)) = replacement {
+                state.replace_on_query = None;
+                state.contracts.insert(replacement_contract, fixture);
+            }
+            state
+                .contracts
+                .get(&contract)
+                .map(select)
+                .map(<[u8]>::to_vec)
+                .ok_or(())
+        }
+    }
+
+    impl RpcAccess for TokenRpc {
+        fn verify_sepolia(&self) -> Result<(), ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.verify_calls = state.verify_calls.checked_add(1).ok_or(())?;
+            (state.verify_ok && state.fail_verify_on_call != Some(state.verify_calls))
+                .then_some(())
+                .ok_or(())
+        }
+
+        fn balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            Ok(Word::ZERO)
+        }
+
+        fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            Ok(Word::ZERO)
+        }
+
+        fn pending_nonce(&self, _address: [u8; 20]) -> Result<Word, ()> {
+            Ok(Word::ZERO)
+        }
+
+        fn fee_quote(&self) -> Result<NetworkFeeQuote, ()> {
+            Err(())
+        }
+
+        fn latest_base_fee(&self) -> Result<Word, ()> {
+            Err(())
+        }
+
+        fn estimate_native_transfer_gas(
+            &self,
+            _sender: [u8; 20],
+            _recipient: [u8; 20],
+            _value: Word,
+            _nonce: Word,
+            _priority_fee: Word,
+            _maximum_fee: Word,
+        ) -> Result<Word, ()> {
+            Err(())
+        }
+
+        fn send_raw_transaction(&self, _signed: &[u8]) -> Result<[u8; 32], ()> {
+            Err(())
+        }
+
+        fn contract_code(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.response(contract, |fixture| fixture.code.as_slice())
+        }
+
+        fn erc20_decimals(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.response(contract, |fixture| fixture.decimals.as_slice())
+        }
+
+        fn erc20_symbol(&self, contract: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.response(contract, |fixture| fixture.symbol.as_slice())
+        }
+
+        fn erc20_balance_of(&self, contract: [u8; 20], _owner: [u8; 20]) -> Result<Vec<u8>, ()> {
+            self.response(contract, |fixture| fixture.balance.as_slice())
+        }
+    }
+
+    fn abi_u8(value: u8) -> Vec<u8> {
+        let mut word = vec![0_u8; 32];
+        word[31] = value;
+        word
+    }
+
+    fn abi_symbol(value: &str) -> Vec<u8> {
+        let mut output = vec![0_u8; 96];
+        output[31] = 32;
+        output[63] = u8::try_from(value.len()).expect("bounded test symbol");
+        output[64..64 + value.len()].copy_from_slice(value.as_bytes());
+        output
+    }
+
+    fn token_fixture(marker: u8) -> TokenFixture {
+        let mut balance = vec![0_u8; 32];
+        balance[30..].copy_from_slice(&(1_234_u16 + u16::from(marker)).to_be_bytes());
+        TokenFixture {
+            code: vec![0x60, marker, 0x60, 0x00],
+            decimals: abi_u8(2),
+            symbol: abi_symbol("TOK"),
+            balance,
         }
     }
 
@@ -2668,6 +3595,16 @@ mod tests {
         let _ = fs::remove_file(&backend.pending_path);
         let _ = fs::remove_file(&backend.vault_path);
         let _ = fs::remove_file(&backend.vault_v2_path);
+        let _ = fs::remove_file(&backend.token_store_path);
+        let _ = fs::remove_dir(&backend.token_store_path);
+        if let Ok(temporary) = token_store_temporary_path(&backend.token_store_path) {
+            let _ = fs::remove_file(&temporary);
+            let _ = fs::remove_dir(&temporary);
+        }
+        if let Ok(lock) = token_store_lock_path(&backend.token_store_path) {
+            let _ = fs::remove_file(&lock);
+            let _ = fs::remove_dir(&lock);
+        }
         if let Some(parent) = backend.vault_path.parent() {
             let _ = fs::remove_dir(parent);
         }
@@ -2704,6 +3641,18 @@ mod tests {
 
     fn v2_backend(clock: TestClock) -> DemoBackend {
         DemoBackend::with_rpc_and_clock(temporary_vault(), test_rpc(), clock)
+    }
+
+    fn token_backend(rpc: TokenRpc, key_marker: u8) -> DemoBackend {
+        let mut backend = DemoBackend::with_rpc(temporary_vault(), rpc);
+        backend
+            .import_private_key(
+                sensitive(&fixed_hex(&[key_marker; KEY_BYTES])),
+                sensitive(TEST_PASSWORD),
+                sensitive(TEST_PASSWORD),
+            )
+            .expect("create v2 token test wallet");
+        backend
     }
 
     fn write_legacy_fixture(backend: &DemoBackend, password: &str, key_byte: u8) -> [u8; 20] {
@@ -3341,6 +4290,680 @@ mod tests {
     }
 
     #[test]
+    fn custom_tokens_add_refresh_remove_and_restart_with_authenticated_sidecar() {
+        let rpc = TokenRpc::new();
+        let contract = [0x11; 20];
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = token_backend(rpc.clone(), 7);
+        let vault_path = backend.vault_path.clone();
+        let contract_text = checksum_address(contract);
+
+        let added = backend
+            .add_custom_token_inner(&contract_text)
+            .expect("add validated token");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].contract_address, contract_text);
+        match &added[0].state {
+            CustomTokenState::Verified {
+                symbol,
+                decimals,
+                balance,
+            } => {
+                assert_eq!(symbol.as_deref(), Some("TOK"));
+                assert_eq!(*decimals, 2);
+                assert_eq!(balance, "12.35");
+            }
+            CustomTokenState::Unavailable { .. } => panic!("token unexpectedly unavailable"),
+        }
+        assert!(backend.token_store_path.is_file());
+        assert!(!path_may_exist(
+            &token_store_temporary_path(&backend.token_store_path).expect("temporary path")
+        ));
+
+        let mut restarted = DemoBackend::with_rpc(vault_path.clone(), rpc.clone());
+        restarted
+            .open(TEST_PASSWORD)
+            .expect("reopen exact v2 wallet");
+        let refreshed = restarted
+            .refresh_custom_tokens_inner()
+            .expect("refresh authenticated token store");
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].contract_address, contract_text);
+
+        let removed = restarted
+            .remove_custom_token_inner(&contract_text)
+            .expect("remove exact token");
+        assert!(removed.is_empty());
+        let context = restarted.token_context().expect("v2 token context");
+        let empty = restarted
+            .load_token_store(&context)
+            .expect("authenticated empty store");
+        assert!(empty.store.entries().is_empty());
+        assert_eq!(empty.store.generation(), 2);
+
+        let mut second_restart = DemoBackend::with_rpc(vault_path, rpc);
+        second_restart
+            .open(TEST_PASSWORD)
+            .expect("reopen after removal");
+        assert!(
+            second_restart
+                .refresh_custom_tokens_inner()
+                .expect("refresh empty store after restart")
+                .is_empty()
+        );
+        remove_test_backend_files(&second_restart);
+    }
+
+    #[test]
+    fn token_store_tamper_wrong_vault_and_rollback_behavior_are_explicit() {
+        let rpc = TokenRpc::new();
+        let first_contract = [0x21; 20];
+        let second_contract = [0x22; 20];
+        rpc.insert(first_contract, token_fixture(1));
+        rpc.insert(second_contract, token_fixture(2));
+        let mut backend = token_backend(rpc.clone(), 7);
+        backend
+            .add_custom_token_inner(&checksum_address(first_contract))
+            .expect("add first token");
+        let generation_one = fs::read(&backend.token_store_path).expect("read generation one");
+
+        let mut tampered = generation_one.clone();
+        let last = tampered.last_mut().expect("nonempty store");
+        *last ^= 1;
+        fs::write(&backend.token_store_path, &tampered).expect("tamper token fixture");
+        assert!(matches!(
+            backend.refresh_custom_tokens_inner(),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(second_contract)),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("read refused overwrite"),
+            tampered
+        );
+        fs::write(&backend.token_store_path, &generation_one).expect("restore valid store");
+
+        let mut other = token_backend(rpc.clone(), 8);
+        let other_store_path = other.token_store_path.clone();
+        other.token_store_path = backend.token_store_path.clone();
+        assert!(matches!(
+            other.refresh_custom_tokens_inner(),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        other.token_store_path = other_store_path;
+
+        backend
+            .add_custom_token_inner(&checksum_address(second_contract))
+            .expect("advance token-store generation");
+        fs::write(&backend.token_store_path, &generation_one)
+            .expect("simulate authenticated rollback");
+        let rolled_back = backend
+            .refresh_custom_tokens_inner()
+            .expect("generation is consistency-only, not an external rollback anchor");
+        assert_eq!(rolled_back.len(), 1);
+        assert_eq!(
+            rolled_back[0].contract_address,
+            checksum_address(first_contract)
+        );
+        assert!(matches!(
+            rolled_back[0].state,
+            CustomTokenState::Verified { .. }
+        ));
+
+        remove_test_backend_files(&other);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn saved_token_runtime_drift_omits_all_metadata_and_balance() {
+        let rpc = TokenRpc::new();
+        let contract = [0x31; 20];
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = token_backend(rpc.clone(), 7);
+        backend
+            .add_custom_token_inner(&checksum_address(contract))
+            .expect("add stable token");
+
+        let assert_unavailable = |backend: &DemoBackend, expected: BackendError| {
+            let views = backend
+                .refresh_custom_tokens_inner()
+                .expect("store itself remains authenticated");
+            assert_eq!(views.len(), 1);
+            assert_eq!(views[0].contract_address, checksum_address(contract));
+            match &views[0].state {
+                CustomTokenState::Unavailable { reason_ko } => {
+                    assert_eq!(reason_ko, &error_text(expected));
+                }
+                CustomTokenState::Verified { .. } => panic!("drifted token remained trusted"),
+            }
+        };
+
+        rpc.update(|state| {
+            state
+                .contracts
+                .get_mut(&contract)
+                .expect("fixture")
+                .code
+                .push(1);
+        });
+        assert_unavailable(&backend, BackendError::TokenCodeChanged);
+
+        rpc.insert(contract, token_fixture(1));
+        rpc.update(|state| {
+            state
+                .contracts
+                .get_mut(&contract)
+                .expect("fixture")
+                .decimals = abi_u8(3);
+        });
+        assert_unavailable(&backend, BackendError::TokenMetadataChanged);
+
+        rpc.insert(contract, token_fixture(1));
+        rpc.update(|state| {
+            state.contracts.get_mut(&contract).expect("fixture").symbol = abi_symbol("NEW");
+        });
+        assert_unavailable(&backend, BackendError::TokenMetadataChanged);
+
+        rpc.insert(contract, token_fixture(1));
+        rpc.update(|state| {
+            state.contracts.get_mut(&contract).expect("fixture").balance = vec![0; 31];
+        });
+        assert_unavailable(&backend, BackendError::TokenMetadataInvalid);
+
+        rpc.update(|state| state.query_fails = true);
+        assert_unavailable(&backend, BackendError::TokenQueryUnavailable);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_contract_input_empty_code_duplicate_and_capacity_fail_closed() {
+        let rpc = TokenRpc::new();
+        let empty_contract = [0x41; 20];
+        let valid_contract = [0x42; 20];
+        let mut empty = token_fixture(1);
+        empty.code.clear();
+        rpc.insert(empty_contract, empty);
+        rpc.insert(valid_contract, token_fixture(2));
+        let mut backend = token_backend(rpc.clone(), 7);
+
+        for invalid in [
+            "",
+            "0X4242424242424242424242424242424242424242",
+            "4242424242424242424242424242424242424242",
+            "0x0000000000000000000000000000000000000000",
+            "0x424242424242424242424242424242424242424g",
+        ] {
+            assert!(matches!(
+                backend.add_custom_token_inner(invalid),
+                Err(BackendError::TokenContractAddressInvalid)
+            ));
+        }
+        let mut bad_checksum = checksum_address([0xab; 20]);
+        let index = bad_checksum
+            .bytes()
+            .enumerate()
+            .skip(2)
+            .find(|(_, byte)| byte.is_ascii_alphabetic())
+            .map(|(index, _)| index)
+            .expect("checksummed address has a letter");
+        let replacement = if bad_checksum.as_bytes()[index].is_ascii_lowercase() {
+            bad_checksum.as_bytes()[index].to_ascii_uppercase()
+        } else {
+            bad_checksum.as_bytes()[index].to_ascii_lowercase()
+        };
+        // SAFETY: replacement remains one ASCII hexadecimal byte.
+        unsafe { bad_checksum.as_bytes_mut()[index] = replacement };
+        assert!(matches!(
+            backend.add_custom_token_inner(&bad_checksum),
+            Err(BackendError::TokenContractAddressInvalid)
+        ));
+
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(empty_contract)),
+            Err(BackendError::TokenContractEmpty)
+        ));
+        backend
+            .add_custom_token_inner(&checksum_address(valid_contract))
+            .expect("add valid token");
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(valid_contract)),
+            Err(BackendError::TokenDuplicate)
+        ));
+
+        let context = backend.token_context().expect("v2 context");
+        let mut full = TokenStore::empty(context.vault_id).expect("empty token store");
+        for marker in 1_u8..=32 {
+            let mut contract = [marker; 20];
+            contract[0] = 0x55;
+            full.add(
+                TokenEntry::new(contract, 2, Some("TOK".to_owned()), [marker; 32])
+                    .expect("valid capacity entry"),
+            )
+            .expect("fill capacity");
+        }
+        let full_bytes = full.seal(&context.key).expect("seal full fixture");
+        write_atomic_token_store(&backend.token_store_path, full_bytes.as_slice())
+            .expect("install full fixture");
+        let overflow_contract = [0x77; 20];
+        rpc.insert(overflow_contract, token_fixture(3));
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(overflow_contract)),
+            Err(BackendError::TokenCapacity)
+        ));
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_store_exact_bytes_and_generation_form_one_step_cas() {
+        let rpc = TokenRpc::new();
+        let first_contract = [0x71; 20];
+        let second_contract = [0x72; 20];
+        rpc.insert(first_contract, token_fixture(1));
+        rpc.insert(second_contract, token_fixture(2));
+        let mut backend = token_backend(rpc, 7);
+        backend
+            .add_custom_token_inner(&checksum_address(first_contract))
+            .expect("create generation one");
+
+        let context = backend.token_context().expect("v2 token context");
+        let mut loaded = backend
+            .load_token_store(&context)
+            .expect("capture exact generation-one baseline");
+        assert_eq!(loaded.baseline.generation, 1);
+        let baseline_bytes = loaded
+            .baseline
+            .bytes
+            .as_ref()
+            .expect("existing baseline")
+            .clone();
+        loaded
+            .store
+            .add(
+                TokenEntry::new(second_contract, 2, Some("TOK".to_owned()), [2; 32])
+                    .expect("second entry"),
+            )
+            .expect("advance exactly once");
+
+        // Re-sealing the same authenticated state gives a distinct byte string
+        // with the same generation. Exact-byte CAS must still reject it.
+        let same_state =
+            TokenStore::open(baseline_bytes.as_slice(), &context.key, &context.vault_id)
+                .expect("open baseline for alternate sealing");
+        let alternate_bytes = same_state
+            .seal(&context.key)
+            .expect("seal same logical generation with a fresh nonce");
+        assert_ne!(alternate_bytes, baseline_bytes);
+        write_atomic_token_store(&backend.token_store_path, alternate_bytes.as_slice())
+            .expect("install same-generation competing bytes");
+        assert!(matches!(
+            backend.persist_token_store(&context, &loaded.store, &loaded.baseline),
+            Err(BackendError::TokenStoreChanged)
+        ));
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("read competing bytes"),
+            alternate_bytes
+        );
+
+        // Restoring the exact baseline makes the one-step mutation valid.
+        write_atomic_token_store(&backend.token_store_path, baseline_bytes.as_slice())
+            .expect("restore exact baseline");
+        backend
+            .persist_token_store(&context, &loaded.store, &loaded.baseline)
+            .expect("commit exact baseline plus one generation");
+        let generation_two = fs::read(&backend.token_store_path).expect("read generation two");
+
+        // A caller may not batch two logical mutations behind one captured
+        // baseline even if the resulting store is otherwise authenticated.
+        let mut skipped = backend
+            .load_token_store(&context)
+            .expect("capture generation two");
+        skipped
+            .store
+            .add(
+                TokenEntry::new([0x73; 20], 2, Some("TOK".to_owned()), [3; 32])
+                    .expect("third entry"),
+            )
+            .expect("advance to generation three");
+        skipped
+            .store
+            .add(
+                TokenEntry::new([0x74; 20], 2, Some("TOK".to_owned()), [4; 32])
+                    .expect("fourth entry"),
+            )
+            .expect("skip to generation four");
+        assert!(matches!(
+            backend.persist_token_store(&context, &skipped.store, &skipped.baseline),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("read unchanged generation two"),
+            generation_two
+        );
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_add_rejects_code_or_metadata_drift_during_one_inspection() {
+        let rpc = TokenRpc::new();
+        let contract = [0x75; 20];
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = token_backend(rpc.clone(), 7);
+
+        let mut upgraded = token_fixture(1);
+        upgraded.code.push(0x01);
+        rpc.update(|state| {
+            state.query_calls = 0;
+            state.replace_on_query = Some((5, contract, upgraded));
+        });
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(contract)),
+            Err(BackendError::TokenCodeChanged)
+        ));
+        assert!(!path_may_exist(&backend.token_store_path));
+
+        rpc.insert(contract, token_fixture(1));
+        let mut changed_metadata = token_fixture(1);
+        changed_metadata.decimals = abi_u8(3);
+        rpc.update(|state| {
+            state.query_calls = 0;
+            state.replace_on_query = Some((6, contract, changed_metadata));
+        });
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(contract)),
+            Err(BackendError::TokenMetadataChanged)
+        ));
+        assert!(!path_may_exist(&backend.token_store_path));
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_add_rechecks_chain_identity_after_contract_reads() {
+        let rpc = TokenRpc::new();
+        let contract = [0x76; 20];
+        rpc.insert(contract, token_fixture(1));
+        rpc.update(|state| {
+            state.verify_calls = 0;
+            // add gate, inspection start, inspection end
+            state.fail_verify_on_call = Some(3);
+        });
+        let mut backend = token_backend(rpc, 7);
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(contract)),
+            Err(BackendError::RpcUnavailable)
+        ));
+        assert!(!path_may_exist(&backend.token_store_path));
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_store_nonregular_path_and_atomic_temp_failure_never_overwrite() {
+        let rpc = TokenRpc::new();
+        let first_contract = [0x51; 20];
+        let second_contract = [0x52; 20];
+        rpc.insert(first_contract, token_fixture(1));
+        rpc.insert(second_contract, token_fixture(2));
+        let mut backend = token_backend(rpc, 7);
+
+        fs::create_dir(&backend.token_store_path).expect("create nonregular token path");
+        assert!(matches!(
+            backend.refresh_custom_tokens_inner(),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(first_contract)),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert!(backend.token_store_path.is_dir());
+        fs::remove_dir(&backend.token_store_path).expect("remove nonregular token path");
+
+        backend
+            .add_custom_token_inner(&checksum_address(first_contract))
+            .expect("create first atomic store");
+        let committed = fs::read(&backend.token_store_path).expect("read committed store");
+        let temporary =
+            token_store_temporary_path(&backend.token_store_path).expect("temporary path");
+        fs::create_dir(&temporary).expect("block atomic temporary name");
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(second_contract)),
+            Err(BackendError::TokenStoreStorage)
+        ));
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("read unchanged store"),
+            committed
+        );
+        assert!(temporary.is_dir());
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn token_store_atomic_replace_has_exact_temp_and_installed_readback() {
+        let root = temporary_vault()
+            .parent()
+            .expect("temporary test parent")
+            .to_path_buf();
+        fs::create_dir_all(&root).expect("create atomic-readback directory");
+        let path = root.join("tokens-v1.bin");
+        let first = vec![0x11; 128];
+        let second = vec![0x22; 128];
+
+        write_atomic_token_store(&path, first.as_slice()).expect("first atomic install");
+        assert_eq!(
+            verify_exact_token_store_readback(&path, first.as_slice())
+                .expect("verify first installed bytes"),
+            first
+        );
+        write_atomic_token_store(&path, second.as_slice()).expect("atomic replacement");
+        assert_eq!(
+            verify_exact_token_store_readback(&path, second.as_slice())
+                .expect("verify replacement bytes"),
+            second
+        );
+        assert!(!path_may_exist(
+            &token_store_temporary_path(&path).expect("temporary path")
+        ));
+
+        let mut corrupted = second.clone();
+        corrupted[0] ^= 1;
+        fs::write(&path, &corrupted).expect("simulate post-install corruption");
+        assert!(matches!(
+            verify_exact_token_store_readback(&path, second.as_slice()),
+            Err(BackendError::TokenStoreStorage)
+        ));
+        assert_eq!(
+            fs::read(&path).expect("read detected corruption"),
+            corrupted
+        );
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn token_store_cas_rejects_competing_creation_or_deletion() {
+        let vault = temporary_vault();
+        let root = vault.parent().expect("temporary test parent").to_path_buf();
+        fs::create_dir_all(&root).expect("create CAS directory");
+        let backend = DemoBackend::with_rpc(vault, test_rpc());
+        let context = TokenContext {
+            owner: [1; 20],
+            vault_id: [2; 16],
+            key: Zeroizing::new([3; 32]),
+        };
+
+        let mut creation_candidate =
+            TokenStore::empty(context.vault_id).expect("empty creation candidate");
+        creation_candidate
+            .add(TokenEntry::new([4; 20], 2, None, [5; 32]).expect("creation candidate entry"))
+            .expect("generation one candidate");
+        let absent = TokenStoreBaseline {
+            bytes: None,
+            generation: 0,
+        };
+        fs::write(&backend.token_store_path, b"competing creator")
+            .expect("install competing creation");
+        assert!(matches!(
+            backend.persist_token_store(&context, &creation_candidate, &absent),
+            Err(BackendError::TokenStoreChanged)
+        ));
+        assert_eq!(
+            fs::read(&backend.token_store_path).expect("competing creation preserved"),
+            b"competing creator"
+        );
+
+        fs::remove_file(&backend.token_store_path).expect("remove competing creation");
+        let generation_one = creation_candidate
+            .seal(&context.key)
+            .expect("seal generation-one baseline");
+        write_atomic_token_store(&backend.token_store_path, generation_one.as_slice())
+            .expect("install generation-one baseline");
+        let mut loaded = backend
+            .load_token_store(&context)
+            .expect("capture existing baseline");
+        loaded
+            .store
+            .add(TokenEntry::new([6; 20], 2, None, [7; 32]).expect("deletion-race entry"))
+            .expect("advance to generation two");
+        fs::remove_file(&backend.token_store_path).expect("simulate competing deletion");
+        assert!(matches!(
+            backend.persist_token_store(&context, &loaded.store, &loaded.baseline),
+            Err(BackendError::TokenStoreChanged)
+        ));
+        assert!(!path_may_exist(&backend.token_store_path));
+        remove_test_backend_files(&backend);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_token_lock_is_exclusive_persistent_and_not_a_stale_marker() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let vault = temporary_vault();
+        let root = vault.parent().expect("temporary test parent").to_path_buf();
+        fs::create_dir_all(&root).expect("create lock-test directory");
+        let token_path = root.join("tokens-v1.bin");
+        let lock_path = token_store_lock_path(&token_path).expect("lock path");
+
+        // A previous process may have crashed after creating the persistent
+        // empty inode. The absence of an owning handle means it is immediately
+        // reusable and must never be interpreted as a stale lock marker.
+        File::create(&lock_path).expect("create prior empty lock marker");
+        let first = TokenMutationLease::acquire(&token_path)
+            .expect("acquire pre-existing persistent lock file");
+        let metadata = fs::symlink_metadata(&lock_path).expect("lock metadata");
+        assert!(metadata.file_type().is_file());
+        assert_eq!(metadata.len(), 0);
+
+        let competing = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&lock_path);
+        assert!(
+            competing.is_err(),
+            "exclusive lease allowed a second handle"
+        );
+        drop(first);
+
+        let second = TokenMutationLease::acquire(&token_path)
+            .expect("reacquire immediately after prior owner exits");
+        drop(second);
+        assert!(lock_path.is_file(), "persistent lock inode disappeared");
+        assert_eq!(
+            fs::metadata(&lock_path)
+                .expect("persistent lock metadata")
+                .len(),
+            0
+        );
+
+        fs::write(&lock_path, b"not an ownership token").expect("corrupt lock record");
+        assert!(matches!(
+            TokenMutationLease::acquire(&token_path),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn token_mutations_block_pending_prepared_and_legacy_wallets() {
+        let rpc = TokenRpc::new();
+        let contract = [0x61; 20];
+        rpc.insert(contract, token_fixture(1));
+        let mut backend = token_backend(rpc, 7);
+        write_new_file(&backend.pending_path, b"pending marker").expect("pending fixture");
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(contract)),
+            Err(BackendError::PendingExists)
+        ));
+        fs::remove_file(&backend.pending_path).expect("remove pending fixture");
+
+        backend.prepared = Some(PreparedTransfer {
+            sender: [1; 20],
+            recipient: [2; 20],
+            value: Word::ZERO,
+            nonce: Word::ZERO,
+            gas_limit: Word::ZERO,
+            quoted_base_fee: Word::ZERO,
+            priority_fee: Word::ZERO,
+            maximum_fee: Word::ZERO,
+            estimated_network_fee: Word::ZERO,
+            maximum_network_fee: Word::ZERO,
+            estimated_spend: Word::ZERO,
+            maximum_spend: Word::ZERO,
+            quote_expires_at: Instant::now(),
+        });
+        assert!(matches!(
+            backend.add_custom_token_inner(&checksum_address(contract)),
+            Err(BackendError::TokenMutationBlocked)
+        ));
+        backend.prepared = None;
+        remove_test_backend_files(&backend);
+
+        let mutable_rpc = MutableRpc::new();
+        let legacy = unlocked_backend(mutable_rpc, TestClock::new(Instant::now()));
+        assert!(matches!(
+            legacy.refresh_custom_tokens_inner(),
+            Err(BackendError::TokenRequiresV2)
+        ));
+        remove_test_backend_files(&legacy);
+    }
+
+    #[test]
+    fn token_errors_are_category_only_and_cross_the_ui_allowlist() {
+        let errors = [
+            BackendError::TokenRequiresV2,
+            BackendError::TokenContractAddressInvalid,
+            BackendError::TokenContractEmpty,
+            BackendError::TokenQueryUnavailable,
+            BackendError::TokenMetadataInvalid,
+            BackendError::TokenCodeChanged,
+            BackendError::TokenMetadataChanged,
+            BackendError::TokenDuplicate,
+            BackendError::TokenCapacity,
+            BackendError::TokenNotFound,
+            BackendError::TokenStoreInvalid,
+            BackendError::TokenStoreStorage,
+            BackendError::TokenStoreChanged,
+            BackendError::TokenMutationBlocked,
+        ];
+        for error in errors {
+            let mapped = error_text(error);
+            assert_eq!(crate::ui::safe_error(mapped.clone()), mapped, "{error:?}");
+            for forbidden in [
+                "0x1111111111111111111111111111111111111111",
+                "TOK",
+                "12.35",
+                "https://",
+                "eth_call",
+            ] {
+                assert!(!mapped.contains(forbidden), "{error:?}");
+            }
+        }
+    }
+
+    #[test]
     fn every_backend_error_mapping_crosses_the_ui_allowlist_exactly() {
         let errors = [
             BackendError::StorageUnavailable,
@@ -3365,6 +4988,20 @@ mod tests {
             BackendError::Locked,
             BackendError::RpcUnavailable,
             BackendError::BalanceUnavailable,
+            BackendError::TokenRequiresV2,
+            BackendError::TokenContractAddressInvalid,
+            BackendError::TokenContractEmpty,
+            BackendError::TokenQueryUnavailable,
+            BackendError::TokenMetadataInvalid,
+            BackendError::TokenCodeChanged,
+            BackendError::TokenMetadataChanged,
+            BackendError::TokenDuplicate,
+            BackendError::TokenCapacity,
+            BackendError::TokenNotFound,
+            BackendError::TokenStoreInvalid,
+            BackendError::TokenStoreStorage,
+            BackendError::TokenStoreChanged,
+            BackendError::TokenMutationBlocked,
             BackendError::InvalidAddress,
             BackendError::InvalidAmount,
             BackendError::AmountLimit,

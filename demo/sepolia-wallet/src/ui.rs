@@ -58,6 +58,37 @@ pub struct WalletSnapshot {
     pub account_count: u8,
 }
 
+/// One saved custom ERC-20 contract and its current Sepolia validation state.
+///
+/// Deliberately does not implement `Debug`: full contract addresses and token
+/// balances are useful in the UI, but unnecessary in diagnostics.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CustomTokenSnapshot {
+    /// Full checksummed contract address. The UI must always show this value.
+    pub contract_address: String,
+    /// Current runtime validation result for the saved contract.
+    pub state: CustomTokenState,
+}
+
+/// Runtime-validated public metadata for one saved custom token.
+#[derive(Clone, Eq, PartialEq)]
+pub enum CustomTokenState {
+    /// Code hash and exact ABI metadata still match the authenticated record.
+    Verified {
+        /// Untrusted, strictly bounded ASCII symbol returned by the contract.
+        symbol: Option<String>,
+        /// Exact, strictly decoded ERC-20 decimal count.
+        decimals: u8,
+        /// Account-0 balance formatted with the verified decimal count.
+        balance: String,
+    },
+    /// Trusted metadata and balance are intentionally omitted after failure.
+    Unavailable {
+        /// Short category-only Korean explanation without raw RPC data.
+        reason_ko: String,
+    },
+}
+
 /// Non-secret source/format metadata for the currently unlocked wallet.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum WalletKind {
@@ -278,6 +309,29 @@ pub trait WalletBackend: Send + 'static {
     /// Refresh the selected public address and Sepolia ETH balance.
     fn refresh(&mut self) -> Result<WalletSnapshot, String>;
 
+    /// Add one full custom ERC-20 contract address to an unlocked v2 wallet.
+    fn add_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        let _ = contract_address;
+        Err("커스텀 토큰 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Revalidate every saved token against the pinned Sepolia endpoint.
+    fn refresh_custom_tokens(&mut self) -> Result<Vec<CustomTokenSnapshot>, String> {
+        Err("커스텀 토큰 기능을 사용할 수 없습니다.".to_owned())
+    }
+
+    /// Remove one exact saved contract from the authenticated v2 sidecar.
+    fn remove_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        let _ = contract_address;
+        Err("커스텀 토큰 기능을 사용할 수 없습니다.".to_owned())
+    }
+
     /// Validate inputs and freeze exact Sepolia transfer facts without signing.
     fn prepare_transfer(
         &mut self,
@@ -361,6 +415,13 @@ enum WorkerCommand {
         password: SensitiveText,
     },
     Refresh,
+    AddCustomToken {
+        contract_address: String,
+    },
+    RefreshCustomTokens,
+    RemoveCustomToken {
+        contract_address: String,
+    },
     PrepareTransfer {
         recipient: String,
         amount_eth: String,
@@ -382,6 +443,9 @@ enum WorkerEvent {
     MnemonicExported(Result<SecretReveal, String>),
     AccountPrivateKeyExported(Result<SecretReveal, String>),
     Refreshed(Result<WalletSnapshot, String>),
+    CustomTokenAdded(Result<Vec<CustomTokenSnapshot>, String>),
+    CustomTokensRefreshed(Result<Vec<CustomTokenSnapshot>, String>),
+    CustomTokenRemoved(Result<Vec<CustomTokenSnapshot>, String>),
     TransferPrepared(Box<Result<TransferPreview, String>>),
     PreparedConfirmed(Result<SendReceipt, String>),
     PreparedCancelled(Result<(), String>),
@@ -400,6 +464,9 @@ enum PendingAction {
     ExportMnemonic,
     ExportAccountPrivateKey,
     Refresh,
+    AddCustomToken,
+    RefreshCustomTokens,
+    RemoveCustomToken,
     PrepareTransfer,
     ConfirmPrepared,
     CancelPrepared,
@@ -474,6 +541,9 @@ impl PendingAction {
             Self::ExportMnemonic => "비밀번호를 확인하고 복구 문구를 준비하는 중...",
             Self::ExportAccountPrivateKey => "비밀번호를 확인하고 계정 키를 준비하는 중...",
             Self::Refresh => "Sepolia 잔액을 확인하는 중...",
+            Self::AddCustomToken => "토큰 컨트랙트를 검증하고 저장하는 중...",
+            Self::RefreshCustomTokens => "저장된 토큰을 Sepolia에서 다시 검증하는 중...",
+            Self::RemoveCustomToken => "저장된 토큰을 제거하는 중...",
             Self::PrepareTransfer => "nonce와 최대 수수료를 확인하는 중...",
             Self::ConfirmPrepared => "확인한 테스트 전송을 서명하고 제출하는 중...",
             Self::CancelPrepared => "준비된 전송을 취소하는 중...",
@@ -580,6 +650,8 @@ pub struct WalletApp {
     imported_secret_visible: bool,
     reauth_password: String,
     snapshot: Option<WalletSnapshot>,
+    custom_token_address: String,
+    custom_tokens: Vec<CustomTokenSnapshot>,
     recipient: String,
     amount_eth: String,
     fee_mode: FeeMode,
@@ -616,6 +688,8 @@ impl WalletApp {
             imported_secret_visible: false,
             reauth_password: String::new(),
             snapshot: None,
+            custom_token_address: String::new(),
+            custom_tokens: Vec::new(),
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: FeeMode::Recommended,
@@ -650,6 +724,8 @@ impl WalletApp {
             imported_secret_visible: false,
             reauth_password: String::new(),
             snapshot: None,
+            custom_token_address: String::new(),
+            custom_tokens: Vec::new(),
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: FeeMode::Recommended,
@@ -873,6 +949,32 @@ impl WalletApp {
         self.send_command(WorkerCommand::Refresh, PendingAction::Refresh);
     }
 
+    fn add_custom_token(&mut self) {
+        let contract_address = self.custom_token_address.trim().to_owned();
+        if !valid_recipient_shape(&contract_address) {
+            self.error = Some("토큰 컨트랙트 주소 형식을 확인해 주세요.".to_owned());
+            return;
+        }
+        self.send_command(
+            WorkerCommand::AddCustomToken { contract_address },
+            PendingAction::AddCustomToken,
+        );
+    }
+
+    fn refresh_custom_tokens(&mut self) {
+        self.send_command(
+            WorkerCommand::RefreshCustomTokens,
+            PendingAction::RefreshCustomTokens,
+        );
+    }
+
+    fn remove_custom_token(&mut self, contract_address: String) {
+        self.send_command(
+            WorkerCommand::RemoveCustomToken { contract_address },
+            PendingAction::RemoveCustomToken,
+        );
+    }
+
     fn prepare_transfer(&mut self) {
         let recipient = self.recipient.trim().to_owned();
         let amount_eth = self.amount_eth.trim().to_owned();
@@ -973,6 +1075,7 @@ impl WalletApp {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.secret_reveal = None;
+                    self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
                     self.notice = Some(
                         "복구 문구 백업을 확인하고 새 v2 테스트 지갑을 저장했습니다.".to_owned(),
@@ -992,6 +1095,7 @@ impl WalletApp {
                 match result {
                     Ok(snapshot) => {
                         clear_prepared_state(&mut self.prepared, &mut self.hold);
+                        self.custom_tokens.clear();
                         self.snapshot = Some(snapshot);
                         self.notice =
                             Some("가져온 비밀값을 v2 테스트 지갑으로 저장했습니다.".to_owned());
@@ -1001,13 +1105,24 @@ impl WalletApp {
             }
             WorkerEvent::Opened(result) => match result {
                 Ok(snapshot) => {
+                    let load_custom_tokens =
+                        !matches!(snapshot.wallet_kind, WalletKind::LegacyV1RawPrivateKey);
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
-                    self.notice = Some("테스트 지갑을 열었습니다.".to_owned());
+                    if load_custom_tokens {
+                        self.send_command(
+                            WorkerCommand::RefreshCustomTokens,
+                            PendingAction::RefreshCustomTokens,
+                        );
+                    } else {
+                        self.notice = Some("테스트 지갑을 열었습니다.".to_owned());
+                    }
                 }
                 Err(error) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.secret_reveal = None;
+                    self.custom_tokens.clear();
                     self.snapshot = None;
                     self.error = Some(safe_error(error));
                 }
@@ -1015,6 +1130,7 @@ impl WalletApp {
             WorkerEvent::LegacyMigrated(result) => match result {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
+                    self.custom_tokens.clear();
                     self.snapshot = Some(snapshot);
                     self.notice = Some(
                         "계정 주소를 유지한 채 v1 개인 키 지갑을 v2로 이전했습니다.".to_owned(),
@@ -1023,6 +1139,7 @@ impl WalletApp {
                 Err(error) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.secret_reveal = None;
+                    self.custom_tokens.clear();
                     self.snapshot = None;
                     self.error = Some(safe_error(error));
                 }
@@ -1050,6 +1167,38 @@ impl WalletApp {
                     self.notice = Some("Sepolia 잔액을 새로 확인했습니다.".to_owned());
                 }
                 Err(error) => self.error = Some(safe_error(error)),
+            },
+            WorkerEvent::CustomTokenAdded(result) => match result {
+                Ok(tokens) => {
+                    self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.custom_token_address.clear();
+                    self.notice =
+                        Some("커스텀 토큰을 검증하고 암호화 목록에 저장했습니다.".to_owned());
+                }
+                Err(error) => {
+                    self.custom_tokens.clear();
+                    self.error = Some(safe_error(error));
+                }
+            },
+            WorkerEvent::CustomTokensRefreshed(result) => match result {
+                Ok(tokens) => {
+                    self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.notice = Some("저장된 커스텀 토큰을 다시 검증했습니다.".to_owned());
+                }
+                Err(error) => {
+                    self.custom_tokens.clear();
+                    self.error = Some(safe_error(error));
+                }
+            },
+            WorkerEvent::CustomTokenRemoved(result) => match result {
+                Ok(tokens) => {
+                    self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.notice = Some("커스텀 토큰을 암호화 목록에서 제거했습니다.".to_owned());
+                }
+                Err(error) => {
+                    self.custom_tokens.clear();
+                    self.error = Some(safe_error(error));
+                }
             },
             WorkerEvent::TransferPrepared(result) => match *result {
                 Ok(preview) => {
@@ -1450,13 +1599,122 @@ impl WalletApp {
         context.request_repaint_after(Duration::from_millis(100));
     }
 
+    fn custom_token_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let palette = StatusPalette::from_visuals(ui.visuals());
+        ui.separator();
+        ui.heading("3. 커스텀 ERC-20 토큰");
+        if matches!(snapshot.wallet_kind, WalletKind::LegacyV1RawPrivateKey) {
+            ui.colored_label(
+                palette.warning,
+                "커스텀 토큰 목록은 v2 지갑에서만 사용할 수 있습니다. 먼저 v1 → v2 이전을 완료하세요.",
+            );
+            return;
+        }
+
+        ui.label(
+            "Sepolia 토큰 컨트랙트의 전체 주소를 추가합니다. 저장된 메타데이터는 매 조회 때 온체인 코드와 다시 대조합니다.",
+        );
+        let mutation_enabled =
+            self.pending.is_none() && self.prepared.is_none() && self.secret_reveal.is_none();
+        ui.horizontal(|ui| {
+            let _ = ui.add_enabled(
+                mutation_enabled,
+                egui::TextEdit::singleline(&mut self.custom_token_address)
+                    .hint_text("0x로 시작하는 토큰 컨트랙트 주소")
+                    .desired_width(500.0),
+            );
+            if ui
+                .add_enabled(
+                    mutation_enabled && valid_recipient_shape(self.custom_token_address.trim()),
+                    egui::Button::new("검증 후 추가"),
+                )
+                .clicked()
+            {
+                self.add_custom_token();
+            }
+        });
+        if !self.custom_token_address.trim().is_empty()
+            && !valid_recipient_shape(self.custom_token_address.trim())
+        {
+            ui.colored_label(palette.error, "토큰 컨트랙트 주소 형식을 확인해 주세요.");
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(mutation_enabled, egui::Button::new("저장된 토큰 다시 검증"))
+                .clicked()
+            {
+                self.refresh_custom_tokens();
+            }
+            ui.label(
+                RichText::new("최대 32개 · 토큰 전송은 아직 지원하지 않습니다.")
+                    .small()
+                    .color(palette.muted),
+            );
+        });
+
+        if self.custom_tokens.is_empty() {
+            ui.label(
+                RichText::new("저장된 커스텀 토큰이 없습니다.")
+                    .small()
+                    .color(palette.muted),
+            );
+            return;
+        }
+
+        for token in self.custom_tokens.clone() {
+            ui.add_space(6.0);
+            ui.group(|ui| {
+                ui.label(RichText::new("컨트랙트 주소").strong());
+                ui.label(RichText::new(&token.contract_address).monospace());
+                match &token.state {
+                    CustomTokenState::Verified {
+                        symbol,
+                        decimals,
+                        balance,
+                    } => {
+                        let display_symbol = symbol.as_deref().unwrap_or("심볼 없음");
+                        ui.label(format!("컨트랙트 제공 심볼: {display_symbol}"));
+                        ui.label(format!("decimals: {decimals}"));
+                        ui.label(format!("계정 0 잔액: {balance}"));
+                    }
+                    CustomTokenState::Unavailable { reason_ko } => {
+                        ui.colored_label(palette.error, reason_ko);
+                        ui.label(
+                            RichText::new(
+                                "검증에 실패해 저장된 심볼·decimals·잔액을 표시하지 않습니다.",
+                            )
+                            .small()
+                            .color(palette.muted),
+                        );
+                    }
+                }
+                if ui
+                    .add_enabled(mutation_enabled, egui::Button::new("목록에서 제거"))
+                    .clicked()
+                {
+                    self.remove_custom_token(token.contract_address.clone());
+                }
+            });
+        }
+        ui.label(
+            RichText::new(
+                "이 데모의 토큰 목록 generation은 파일 일관성 값이며 하드웨어 롤백 방지 앵커가 아닙니다.",
+            )
+            .small()
+            .color(palette.muted),
+        );
+    }
+
     fn send_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
         if self.snapshot.is_none() {
             return;
         }
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
-        ui.heading("3. 테스트 ETH 보내기");
+        ui.heading("4. 테스트 ETH 보내기");
         let preparing_allowed = self.prepared.is_none() && self.pending.is_none();
         if self.prepared.is_none() {
             ui.label("먼저 받는 주소와 금액을 입력해 전송 내용을 준비하세요.");
@@ -1681,6 +1939,15 @@ fn clear_prepared_state(prepared: &mut Option<TransferPreview>, hold: &mut HoldT
     hold.reset();
 }
 
+fn sanitize_custom_tokens(mut tokens: Vec<CustomTokenSnapshot>) -> Vec<CustomTokenSnapshot> {
+    for token in &mut tokens {
+        if let CustomTokenState::Unavailable { reason_ko } = &mut token.state {
+            *reason_ko = safe_error(std::mem::take(reason_ko));
+        }
+    }
+    tokens
+}
+
 fn preview_fields(preview: &TransferPreview) -> [(&'static str, &str); 13] {
     [
         ("받는 주소", preview.recipient.as_str()),
@@ -1770,6 +2037,7 @@ impl eframe::App for WalletApp {
                 self.account_panel(ui);
                 self.secret_management_panel(context, ui);
                 self.secret_reveal_panel(context, ui);
+                self.custom_token_panel(ui);
                 self.send_panel(context, ui);
 
                 if let Some(action) = self.pending {
@@ -1868,6 +2136,15 @@ fn execute_worker_command(backend: &mut dyn WalletBackend, command: WorkerComman
             WorkerEvent::AccountPrivateKeyExported(backend.export_account_private_key(password))
         }
         WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh()),
+        WorkerCommand::AddCustomToken { contract_address } => {
+            WorkerEvent::CustomTokenAdded(backend.add_custom_token(&contract_address))
+        }
+        WorkerCommand::RefreshCustomTokens => {
+            WorkerEvent::CustomTokensRefreshed(backend.refresh_custom_tokens())
+        }
+        WorkerCommand::RemoveCustomToken { contract_address } => {
+            WorkerEvent::CustomTokenRemoved(backend.remove_custom_token(&contract_address))
+        }
         WorkerCommand::PrepareTransfer {
             recipient,
             amount_eth,
@@ -1899,6 +2176,7 @@ pub(crate) struct HeadlessSmokeEvidence {
 pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     const RECIPIENT_SENTINEL: &str = "headless-recipient";
     const AMOUNT_SENTINEL: &str = "headless-amount";
+    const TOKEN_CONTRACT_SENTINEL: &str = "0x1111111111111111111111111111111111111111";
 
     let (command_sender, command_receiver) = mpsc::channel();
     let (_unused_event_sender, event_receiver) = mpsc::channel();
@@ -1916,6 +2194,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         imported_secret_visible: false,
         reauth_password: String::new(),
         snapshot: None,
+        custom_token_address: String::new(),
+        custom_tokens: Vec::new(),
         recipient: RECIPIENT_SENTINEL.to_owned(),
         amount_eth: AMOUNT_SENTINEL.to_owned(),
         fee_mode: FeeMode::Recommended,
@@ -2038,6 +2318,46 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::Open { .. })
     })?;
+    if app.pending != Some(PendingAction::RefreshCustomTokens) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::RefreshCustomTokens)
+    })?;
+    if app.pending.is_some() || app.custom_tokens != [headless_token_snapshot()] {
+        return Err(());
+    }
+
+    app.custom_token_address = TOKEN_CONTRACT_SENTINEL.to_owned();
+    app.add_custom_token();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::AddCustomToken { contract_address }
+                if contract_address == TOKEN_CONTRACT_SENTINEL
+        )
+    })?;
+    if app.custom_tokens != [headless_token_snapshot()] || !app.custom_token_address.is_empty() {
+        return Err(());
+    }
+    app.refresh_custom_tokens();
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::RefreshCustomTokens)
+    })?;
+    if app.custom_tokens != [headless_token_snapshot()] {
+        return Err(());
+    }
+    app.remove_custom_token(TOKEN_CONTRACT_SENTINEL.to_owned());
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(
+            command,
+            WorkerCommand::RemoveCustomToken { contract_address }
+                if contract_address == TOKEN_CONTRACT_SENTINEL
+        )
+    })?;
+    if !app.custom_tokens.is_empty() {
+        return Err(());
+    }
 
     app.password = "headless-vault-pass".to_owned();
     app.password_confirmation = "headless-vault-pass".to_owned();
@@ -2175,6 +2495,10 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
                 "import-private-key",
                 "migrate",
                 "open",
+                "token-refresh",
+                "token-add",
+                "token-refresh",
+                "token-remove",
                 "begin-generate-12",
                 "cancel-generated",
                 "prepare-recommended",
@@ -2191,7 +2515,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 34,
+        transitions_checked: 42,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -2277,6 +2601,17 @@ fn headless_reveal(kind: SecretRevealKind) -> SecretReveal {
     SecretReveal::new(kind, Zeroizing::new("headless-secret-marker".to_owned()))
 }
 
+fn headless_token_snapshot() -> CustomTokenSnapshot {
+    CustomTokenSnapshot {
+        contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
+        state: CustomTokenState::Verified {
+            symbol: Some("TOK".to_owned()),
+            decimals: 18,
+            balance: "12.5".to_owned(),
+        },
+    }
+}
+
 #[derive(Default)]
 struct HeadlessBackend {
     calls: Vec<&'static str>,
@@ -2356,6 +2691,33 @@ impl WalletBackend for HeadlessBackend {
 
     fn refresh(&mut self) -> Result<WalletSnapshot, String> {
         Err("headless operation rejected".to_owned())
+    }
+
+    fn add_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        if contract_address != "0x1111111111111111111111111111111111111111" {
+            return Err("headless token mismatch".to_owned());
+        }
+        self.calls.push("token-add");
+        Ok(vec![headless_token_snapshot()])
+    }
+
+    fn refresh_custom_tokens(&mut self) -> Result<Vec<CustomTokenSnapshot>, String> {
+        self.calls.push("token-refresh");
+        Ok(vec![headless_token_snapshot()])
+    }
+
+    fn remove_custom_token(
+        &mut self,
+        contract_address: &str,
+    ) -> Result<Vec<CustomTokenSnapshot>, String> {
+        if contract_address != "0x1111111111111111111111111111111111111111" {
+            return Err("headless token mismatch".to_owned());
+        }
+        self.calls.push("token-remove");
+        Ok(Vec::new())
     }
 
     fn prepare_transfer(
@@ -2474,6 +2836,20 @@ const ALLOWED_BACKEND_ERRORS: &[&str] = &[
     "개인 키는 0x 접두사 선택과 정확한 64자리 16진수여야 합니다.",
     "지갑 계정 메타데이터 안전 검증에 실패했습니다.",
     "열린 지갑과 현재 저장된 지갑이 일치하지 않습니다.",
+    "커스텀 토큰은 v2 지갑에서만 사용할 수 있습니다. v1 지갑을 먼저 이전해 주세요.",
+    "토큰 컨트랙트 주소 형식이나 체크섬을 확인해 주세요.",
+    "해당 Sepolia 주소에서 컨트랙트 코드를 찾지 못했습니다.",
+    "토큰 컨트랙트 정보를 확인하지 못했습니다.",
+    "토큰 컨트랙트의 표준 메타데이터 응답이 올바르지 않습니다.",
+    "저장 후 토큰 컨트랙트 코드가 달라져 메타데이터와 잔액을 숨겼습니다.",
+    "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.",
+    "이미 추가한 토큰 컨트랙트입니다.",
+    "커스텀 토큰은 최대 32개까지 추가할 수 있습니다.",
+    "삭제할 토큰 컨트랙트를 찾지 못했습니다.",
+    "인증된 토큰 목록이 손상되었거나 현재 v2 지갑과 일치하지 않습니다.",
+    "인증된 토큰 목록을 안전하게 저장하지 못했습니다.",
+    "다른 토큰 목록 작업이 끝나거나 준비된 전송을 취소한 뒤 다시 시도해 주세요.",
+    "토큰 목록이 다른 작업에서 변경되었습니다. 새로고침한 뒤 다시 시도해 주세요.",
     "먼저 표시된 복구 문구의 백업을 확인하거나 취소해 주세요.",
     "확인할 새 복구 문구가 없습니다. 다시 생성해 주세요.",
     "복구 문구 확인 시간이 끝났습니다. 새 지갑 생성을 다시 시작해 주세요.",
@@ -2516,12 +2892,12 @@ pub(crate) fn safe_error(mut error: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALLOWED_BACKEND_ERRORS, FeeSelection, GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome,
-        HoldToSend, SEND_HOLD_DURATION, SendReceipt, StatusPalette, TransferPreview, WalletBackend,
-        WalletSnapshot, WorkerCommand, WorkerEvent, clear_prepared_state, confirmation_enabled,
-        execute_worker_command, hold_to_send_button, hold_to_send_input, preview_fields,
-        run_headless_smoke, safe_error, valid_amount_shape, valid_gwei_shape, valid_password,
-        valid_recipient_shape,
+        ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState, FeeSelection,
+        GENERIC_BACKEND_ERROR, HoldInput, HoldOutcome, HoldToSend, SEND_HOLD_DURATION, SendReceipt,
+        StatusPalette, TransferPreview, WalletBackend, WalletSnapshot, WorkerCommand, WorkerEvent,
+        clear_prepared_state, confirmation_enabled, execute_worker_command, hold_to_send_button,
+        hold_to_send_input, preview_fields, run_headless_smoke, safe_error, sanitize_custom_tokens,
+        valid_amount_shape, valid_gwei_shape, valid_password, valid_recipient_shape,
     };
     use eframe::egui;
     use std::time::{Duration, Instant};
@@ -2891,6 +3267,36 @@ mod tests {
     }
 
     #[test]
+    fn custom_token_unavailable_reason_crosses_the_same_error_allowlist() {
+        let tokens = sanitize_custom_tokens(vec![CustomTokenSnapshot {
+            contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
+            state: CustomTokenState::Unavailable {
+                reason_ko: "raw-rpc-token-marker".to_owned(),
+            },
+        }]);
+        let CustomTokenState::Unavailable { reason_ko } = &tokens[0].state else {
+            panic!("expected unavailable token state");
+        };
+        assert_eq!(reason_ko, GENERIC_BACKEND_ERROR);
+        assert_eq!(tokens[0].contract_address.len(), 42);
+    }
+
+    #[test]
+    fn failed_token_refresh_clears_previously_rendered_metadata() {
+        let (command_sender, _command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, event_receiver) = std::sync::mpsc::channel();
+        let mut app = test_app(command_sender, event_receiver);
+        app.custom_tokens = vec![super::headless_token_snapshot()];
+        app.pending = Some(super::PendingAction::RefreshCustomTokens);
+        app.apply_worker_event(WorkerEvent::CustomTokensRefreshed(Err(
+            "raw-rpc-token-marker".to_owned(),
+        )));
+        assert!(app.custom_tokens.is_empty());
+        assert!(app.pending.is_none());
+        assert_eq!(app.error.as_deref(), Some(GENERIC_BACKEND_ERROR));
+    }
+
+    #[test]
     fn send_input_shape_is_conservative() {
         assert!(valid_recipient_shape(
             "0x1111111111111111111111111111111111111111"
@@ -2963,6 +3369,8 @@ mod tests {
             imported_secret_visible: false,
             reauth_password: String::new(),
             snapshot: None,
+            custom_token_address: String::new(),
+            custom_tokens: Vec::new(),
             recipient: String::new(),
             amount_eth: String::new(),
             fee_mode: super::FeeMode::Recommended,
@@ -3229,8 +3637,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 34);
-        assert_eq!(evidence.backend_routes_checked, 17);
+        assert_eq!(evidence.transitions_checked, 42);
+        assert_eq!(evidence.backend_routes_checked, 21);
         Ok(())
     }
 }
