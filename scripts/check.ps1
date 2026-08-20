@@ -62,6 +62,7 @@ function Invoke-Typecheck {
 }
 
 function Invoke-Tests {
+    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
     Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--all-targets", "--all-features")
     Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--doc", "--all-features")
     Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked")

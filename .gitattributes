@@ -7,6 +7,11 @@
 *.json text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+# These Windows launcher files are byte-level interfaces. Preserve their exact
+# BOM/ASCII and CRLF bytes in both the Git blob and checked-out worktree.
+RUN-SEPOLIA-WALLET.cmd -text whitespace=cr-at-eol
+scripts/run-sepolia-wallet.ps1 -text whitespace=cr-at-eol
+scripts/launcher-contract.test.ps1 -text whitespace=cr-at-eol
 *.yml text eol=lf
 *.yaml text eol=lf
 *.lock text eol=lf

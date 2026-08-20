@@ -91,13 +91,22 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
 
 ## 실행 스크립트가 하는 일
 
-`RUN-SEPOLIA-WALLET.cmd`는 다음 두 단계만 수행합니다.
+`RUN-SEPOLIA-WALLET.cmd`는 Windows 코드 페이지와 무관한 ASCII 실행 파일이며,
+UTF-8 한글 안내를 담당하는 PowerShell 실행기로 안전하게 넘긴 뒤 다음 두 단계만
+수행합니다.
 
 1. 잠금 파일에 기록된 정확한 의존성으로 Sepolia 앱을 릴리스 빌드합니다.
 2. 빌드에 성공한 실행 파일을 엽니다.
 
 Rust/Cargo가 설치되어 있지 않으면 스크립트가 설치 필요 메시지를 보여 줍니다.
 자동으로 프로그램이나 지갑 키를 설치하지는 않습니다.
+
+한글이 깨지거나 창이 바로 닫히는 문제가 있으면 저장소 폴더의 파일을 수정하지
+말고 아래 명령으로 같은 실행기를 직접 열어 오류를 확인하세요.
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/run-sepolia-wallet.ps1
+```
 
 PowerShell에서 직접 빌드하고 실행하려면 다음 명령을 사용하세요.
 
