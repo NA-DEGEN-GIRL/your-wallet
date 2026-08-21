@@ -501,6 +501,9 @@ export function validateManifest(manifest, previousManifest) {
   }
   if (previousManifest === undefined || previousManifest === null) fail("a non-initial release requires the exact previous manifest");
   const previous = validateCore(previousManifest);
+  if (current.top.extension.id !== previous.top.extension.id) {
+    fail("stable extension identity changed across release lineage");
+  }
   const expectedSequence = (BigInt(previous.top.sequence) + 1n).toString();
   requireExact(current.top.sequence, expectedSequence, "manifest.sequence");
   requireExact(current.top.lineage.previousSequence, previous.top.sequence, "manifest.lineage.previousSequence");
@@ -949,6 +952,18 @@ export function verifyExpectedReleaseKeyId(validated, expectedReleaseKeyId) {
   );
 }
 
+export function verifyExpectedExtensionId(validated, expectedExtensionId) {
+  requireString(
+    expectedExtensionId,
+    "independently pinned extension identifier",
+    EXTENSION_ID_RE,
+    32,
+  );
+  if (validated.top.extension.id !== expectedExtensionId) {
+    fail("independently pinned extension identifier mismatch");
+  }
+}
+
 export function verifyExpectedReviewerKeyId(actualReviewerKeyId, expectedReviewerKeyId) {
   requireString(
     expectedReviewerKeyId,
@@ -1060,16 +1075,17 @@ async function runCli() {
     const expectedPreviousManifestSha256 = values.get("--expected-previous-manifest-sha256");
     if (previousPath && !expectedPreviousManifestSha256) fail("non-initial verification requires --expected-previous-manifest-sha256 from the offline checkpoint");
     if (!previousPath && expectedPreviousManifestSha256) fail("initial verification must not supply --expected-previous-manifest-sha256");
-    if (values.size !== (previousPath ? 9 : 7)) {
-      fail("verify requires --manifest, --signature, --public-key, --bundle-root, --expected-release-key-id, --expected-reviewer-key-id, --expected-signer-certificate-sha256, and paired --previous/--expected-previous-manifest-sha256 for non-initial releases");
+    if (values.size !== (previousPath ? 10 : 8)) {
+      fail("verify requires --manifest, --signature, --public-key, --bundle-root, --expected-release-key-id, --expected-extension-id, --expected-reviewer-key-id, --expected-signer-certificate-sha256, and paired --previous/--expected-previous-manifest-sha256 for non-initial releases");
     }
-    const bundleRoot = requireArgument(values, "--bundle-root");
     verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id"));
+    verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id"));
     verifyExpectedSignerCertificateSha256(
       validated,
       requireArgument(values, "--expected-signer-certificate-sha256"),
     );
     verifyExpectedPreviousManifestSha256(validated, expectedPreviousManifestSha256);
+    const bundleRoot = requireArgument(values, "--bundle-root");
     await verifyBundleFiles(validated, bundleRoot);
     await verifyEvidenceAttestations(
       validated,

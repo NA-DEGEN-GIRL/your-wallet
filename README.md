@@ -511,7 +511,7 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 - 부모 커널 테스트 전용 headless 자식 fixture 6개는 직접 실행하지 않도록 의도적으로 제외
 - 위 Rust 테스트와 별도로 보안용 컴파일 실패 테스트 23개 통과
 - Chrome 확장 프로그램 테스트 33개 통과
-- 릴리스 정책·검증기 테스트 34개 통과
+- 릴리스 정책·검증기 테스트 39개 통과
 - 개인정보 스캔과 보안 아키텍처 불변조건 검사 통과
 
 ## 왜 메인넷은 여전히 잠겨 있나요?

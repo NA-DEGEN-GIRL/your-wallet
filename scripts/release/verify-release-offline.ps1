@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleasePublicKey,
     [Parameter(Mandatory = $true)][string]$BundleRoot,
     [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReleaseKeyIdSha256,
+    [Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId,
     [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReviewerKeyIdSha256,
     [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedSignerCertificateSha256,
     [Parameter(Mandatory = $false)][string]$PreviousManifest,
@@ -56,6 +57,7 @@ try {
         "--public-key", $releasePublicKeyPath,
         "--bundle-root", $bundle,
         "--expected-release-key-id", $ExpectedReleaseKeyIdSha256,
+        "--expected-extension-id", $ExpectedExtensionId,
         "--expected-reviewer-key-id", $ExpectedReviewerKeyIdSha256,
         "--expected-signer-certificate-sha256", $ExpectedSignerCertificateSha256
     )

@@ -12,6 +12,7 @@ import {
   parseStrictJson,
   sha256Hex,
   validateManifest,
+  verifyExpectedExtensionId,
   verifyExpectedReleaseKeyId,
   verifyExpectedPreviousManifestSha256,
   verifyExpectedReviewerKeyId,
@@ -185,6 +186,27 @@ test("release verification requires an independently pinned release key id", () 
   );
 });
 
+test("release verification requires an independently pinned stable extension id", () => {
+  const manifest = initialManifest();
+  const validated = validateManifest(manifest);
+  assert.doesNotThrow(() =>
+    verifyExpectedExtensionId(validated, manifest.extension.id),
+  );
+  const alternate = "b".repeat(32);
+  assert.throws(
+    () => verifyExpectedExtensionId(validated, alternate),
+    (error) => {
+      assert.match(error.message, /independently pinned extension identifier mismatch/u);
+      assert.doesNotMatch(error.message, new RegExp(`${manifest.extension.id}|${alternate}`, "u"));
+      return true;
+    },
+  );
+  assert.throws(
+    () => verifyExpectedExtensionId(validated, "A".repeat(32)),
+    /independently pinned extension identifier has an invalid format/u,
+  );
+});
+
 test("release verification requires an independently pinned reviewer key id", () => {
   const pinned = digest("reviewer-public-key");
   assert.doesNotThrow(() => verifyExpectedReviewerKeyId(pinned, pinned));
@@ -289,6 +311,16 @@ test("successor requires the exact prior canonical manifest", () => {
   otherPrevious.source.treeSha256 = digest("different-source-tree");
   otherPrevious.evidence.sourceArchive.sha256 = otherPrevious.source.treeSha256;
   assert.throws(() => validateManifest(current, otherPrevious), /previousManifestSha256/u);
+});
+
+test("successor cannot rotate the stable extension identity", () => {
+  const previous = initialManifest();
+  const current = successor(previous);
+  current.extension.id = "b".repeat(32);
+  assert.throws(
+    () => validateManifest(current, previous),
+    /stable extension identity changed across release lineage/u,
+  );
 });
 
 test("version rollback and version reuse are rejected", () => {

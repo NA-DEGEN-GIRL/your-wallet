@@ -23,6 +23,7 @@ import {
   validateManifest,
   verifyBundleFiles,
   verifyEvidenceAttestations,
+  verifyExpectedExtensionId,
   verifyExpectedSignerCertificateSha256,
 } from "./release-manifest.mjs";
 
@@ -378,6 +379,64 @@ async function createSyntheticBundle() {
   };
 }
 
+async function rebindSyntheticExtensionIdentity(fixture, extensionId) {
+  fixture.manifest.extension.id = extensionId;
+  fixture.nativeHostManifest = {
+    ...fixture.nativeHostManifest,
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  };
+  await replaceJson(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.nativeHostManifest,
+    fixture.nativeHostManifest,
+  );
+  const nativeHostManifestRecord = await fileRecord(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.nativeHostManifest,
+  );
+  fixture.manifest.evidence.nativeHostManifest = nativeHostManifestRecord;
+
+  for (const key of ["installerAclNegative", "nativeHostRegistration"]) {
+    const relativePath = REQUIRED_EVIDENCE_PATHS[key];
+    const absolutePath = path.join(fixture.root, ...relativePath.split("/"));
+    const evidence = JSON.parse(await readFile(absolutePath, "utf8"));
+    evidence.extensionId = extensionId;
+    evidence.nativeHostManifestSha256 = nativeHostManifestRecord.sha256;
+    await replaceJson(fixture.root, relativePath, evidence);
+    fixture.manifest.evidence[key] = await fileRecord(fixture.root, relativePath);
+  }
+}
+
+async function createVerifyCliInvocation(fixture, expectedExtensionId = EXTENSION_ID) {
+  const inputs = await mkdtemp(path.join(os.tmpdir(), "your-wallet-release-cli-"));
+  const manifestPath = path.join(inputs, "release-manifest.json");
+  const signaturePath = path.join(inputs, "release-manifest.sig");
+  const publicKeyPath = path.join(inputs, "release-public-key.pem");
+  const manifestBytes = Buffer.from(canonicalEncode(fixture.manifest), "utf8");
+  await writeFile(manifestPath, manifestBytes, { flag: "wx" });
+  await writeFile(
+    signaturePath,
+    signBytes(null, manifestBytes, fixture.releasePrivateKey).toString("base64"),
+    { flag: "wx" },
+  );
+  await writeFile(publicKeyPath, fixture.releasePublicKeyPem, { flag: "wx" });
+  return {
+    arguments: [
+      path.resolve("scripts/release/release-manifest.mjs"),
+      "verify",
+      "--manifest", manifestPath,
+      "--signature", signaturePath,
+      "--public-key", publicKeyPath,
+      "--bundle-root", fixture.root,
+      "--expected-release-key-id", fixture.manifest.signing.keyIdSha256,
+      "--expected-extension-id", expectedExtensionId,
+      "--expected-reviewer-key-id", fixture.reviewerKeyIdSha256,
+      "--expected-signer-certificate-sha256", fixture.signerCertificateSha256,
+    ],
+    inputs,
+  };
+}
+
 async function verifySyntheticBundle(fixture) {
   const validated = validateManifest(fixture.manifest);
   verifyExpectedSignerCertificateSha256(validated, fixture.signerCertificateSha256);
@@ -401,37 +460,124 @@ test("synthetic final bundle verifies with canonical path-ordered Authenticode e
 
 test("verify CLI accepts the exact initial-release arity and cryptographic bindings", async () => {
   const fixture = await createSyntheticBundle();
-  const inputs = await mkdtemp(path.join(os.tmpdir(), "your-wallet-release-cli-"));
+  const invocation = await createVerifyCliInvocation(fixture);
   try {
-    const manifestPath = path.join(inputs, "release-manifest.json");
-    const signaturePath = path.join(inputs, "release-manifest.sig");
-    const publicKeyPath = path.join(inputs, "release-public-key.pem");
-    const manifestBytes = Buffer.from(canonicalEncode(fixture.manifest), "utf8");
-    await writeFile(manifestPath, manifestBytes, { flag: "wx" });
-    await writeFile(
-      signaturePath,
-      signBytes(null, manifestBytes, fixture.releasePrivateKey).toString("base64"),
-      { flag: "wx" },
-    );
-    await writeFile(publicKeyPath, fixture.releasePublicKeyPem, { flag: "wx" });
-    const verifierPath = path.resolve("scripts/release/release-manifest.mjs");
-    const { stdout } = await execFileAsync(process.execPath, [
-      verifierPath,
-      "verify",
-      "--manifest", manifestPath,
-      "--signature", signaturePath,
-      "--public-key", publicKeyPath,
-      "--bundle-root", fixture.root,
-      "--expected-release-key-id", fixture.manifest.signing.keyIdSha256,
-      "--expected-reviewer-key-id", fixture.reviewerKeyIdSha256,
-      "--expected-signer-certificate-sha256", fixture.signerCertificateSha256,
-    ]);
+    const { stdout } = await execFileAsync(process.execPath, invocation.arguments);
     assert.equal(stdout, "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\n");
   } finally {
     await Promise.all([
       rm(fixture.root, { force: true, recursive: true }),
-      rm(inputs, { force: true, recursive: true }),
+      rm(invocation.inputs, { force: true, recursive: true }),
     ]);
+  }
+});
+
+test("verify CLI rejects missing and extra extension-pin arguments", async () => {
+  const fixture = await createSyntheticBundle();
+  const invocation = await createVerifyCliInvocation(fixture);
+  try {
+    const extensionArgument = invocation.arguments.indexOf("--expected-extension-id");
+    assert.notEqual(extensionArgument, -1);
+    const missing = [...invocation.arguments];
+    missing.splice(extensionArgument, 2);
+    await assert.rejects(
+      () => execFileAsync(process.execPath, missing),
+      (error) => {
+        assert.match(error.stderr, /verify requires .*--expected-extension-id/u);
+        return true;
+      },
+    );
+
+    const extra = [...invocation.arguments, "--candidate-extension-id", "c".repeat(32)];
+    await assert.rejects(
+      () => execFileAsync(process.execPath, extra),
+      (error) => {
+        assert.match(error.stderr, /verify requires .*--expected-extension-id/u);
+        return true;
+      },
+    );
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { force: true, recursive: true }),
+      rm(invocation.inputs, { force: true, recursive: true }),
+    ]);
+  }
+});
+
+test("verify CLI rejects a self-consistent signed attacker-selected extension id without echo", async () => {
+  const fixture = await createSyntheticBundle();
+  const attackerExtensionId = "b".repeat(32);
+  await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId);
+  const validated = validateManifest(fixture.manifest);
+  verifyExpectedExtensionId(validated, attackerExtensionId);
+  await assert.doesNotReject(() => verifySyntheticBundle(fixture));
+  const invocation = await createVerifyCliInvocation(fixture, EXTENSION_ID);
+  try {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, invocation.arguments),
+      (error) => {
+        assert.equal(
+          error.stderr,
+          "RELEASE_INELIGIBLE: independently pinned extension identifier mismatch\n",
+        );
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { force: true, recursive: true }),
+      rm(invocation.inputs, { force: true, recursive: true }),
+    ]);
+  }
+});
+
+test("offline wrapper requires a case-sensitive pin and withholds both child passes", async () => {
+  const [wrapper, common] = await Promise.all([
+    readFile("scripts/release/verify-release-offline.ps1", "utf8"),
+    readFile("scripts/release/common.ps1", "utf8"),
+  ]);
+  const validation = '[ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId';
+  assert.ok(wrapper.includes(validation));
+  assert.equal(
+    wrapper.match(/"--expected-extension-id", \$ExpectedExtensionId/gu)?.length,
+    1,
+  );
+  assert.equal(
+    wrapper.match(/\[void\]\(Invoke-ReleaseCommand -Executable "node" -CommandArguments \$verifyArguments -WorkingDirectory \$bundle\)/gu)?.length,
+    2,
+  );
+  assert.equal(
+    wrapper.match(/Write-Output "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION"/gu)?.length,
+    1,
+  );
+  assert.ok(common.includes("output withheld; inspect locally with privacy redaction"));
+
+  const probeRoot = await mkdtemp(path.join(os.tmpdir(), "your-wallet-extension-pin-"));
+  const probe = path.join(probeRoot, "validate-extension-id.ps1");
+  try {
+    await writeFile(probe, `param(${validation})\nWrite-Output "accepted"\n`, { flag: "wx" });
+    const accepted = await execFileAsync("powershell", [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", probe,
+      "-ExpectedExtensionId", EXTENSION_ID,
+    ]);
+    assert.equal(accepted.stdout.trim(), "accepted");
+    await assert.rejects(
+      () => execFileAsync("powershell", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", probe,
+        "-ExpectedExtensionId", "A".repeat(32),
+      ]),
+      (error) => {
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+  } finally {
+    await rm(probeRoot, { force: true, recursive: true });
   }
 });
 

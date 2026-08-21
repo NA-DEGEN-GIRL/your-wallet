@@ -5266,6 +5266,58 @@ requireStableDisplay(approvalUi, "ApprovalError", "approval channel I/O failed")
 requireStableDisplay(secretInput, "SecretInputError", "secret-input channel I/O failed");
 
 const releaseVerifier = await text("scripts/release/verify-release-offline.ps1");
+const releaseManifestVerifier = await text("scripts/release/release-manifest.mjs");
+const releaseManifestTests = await text("scripts/release/release-manifest.test.mjs");
+const releaseVerifierIntegrationTests = await text(
+  "scripts/release/release-verifier-integration.test.mjs",
+);
+const releaseExtensionAuditTests = await text(
+  "scripts/release/audit-extension.test.mjs",
+);
+const releaseInventoryTests = await text(
+  "scripts/release/generate-inventories.test.mjs",
+);
+const releaseSecurity = await text("docs/release-security.md");
+const validateReleaseManifestBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function validateManifest\s*\(/u,
+);
+const verifyExpectedExtensionIdBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function verifyExpectedExtensionId\s*\(/u,
+);
+const runReleaseManifestCliBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)async function runCli\s*\(/u,
+);
+const extensionPinUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("release verification requires an independently pinned stable extension id"/u,
+);
+const extensionLineageUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("successor cannot rotate the stable extension identity"/u,
+);
+const extensionPinAttackerIntegrationTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("verify CLI rejects a self-consistent signed attacker-selected extension id without echo"/u,
+);
+const rebindSyntheticExtensionIdentityBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)async function rebindSyntheticExtensionIdentity\s*\(/u,
+);
+const extensionPinSuccessIntegrationTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("verify CLI accepts the exact initial-release arity and cryptographic bindings"/u,
+);
+const extensionPinArityIntegrationTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("verify CLI rejects missing and extra extension-pin arguments"/u,
+);
+const extensionPinWrapperIntegrationTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("offline wrapper requires a case-sensitive pin and withholds both child passes"/u,
+);
 for (const pinnedInput of [
   "ExpectedReleaseKeyIdSha256",
   "ExpectedReviewerKeyIdSha256",
@@ -5277,9 +5329,169 @@ for (const pinnedInput of [
   );
 }
 requireInvariant(
+  releaseVerifier.includes(
+    '[Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId',
+  ) &&
+    (releaseVerifier.match(/\$ExpectedExtensionId\b/gu) ?? []).length === 2 &&
+    (releaseVerifier.match(/\bExpectedExtensionId\b/gu) ?? []).length === 2 &&
+    (releaseVerifier.match(/"--expected-extension-id"/gu) ?? []).length === 1 &&
+    releaseVerifier.includes('"--expected-extension-id", $ExpectedExtensionId') &&
+    (releaseVerifier.match(/\$verifyArguments\b/gu) ?? []).length === 4 &&
+    (releaseVerifier.match(/\bverifyArguments\b/gu) ?? []).length === 4 &&
+    !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
+      releaseVerifier,
+    ),
+  "offline release verification must accept one exact lowercase external extension-ID pin and retain one immutable two-pass argument list",
+);
+requireInvariant(
   (releaseVerifier.match(/Invoke-ReleaseCommand\s+-Executable\s+"node"\s+-CommandArguments\s+\$verifyArguments/gu) ?? [])
     .length === 2,
   "offline release verification must rehash and reverify after Authenticode inspection",
+);
+const normalizedValidateReleaseManifest = validateReleaseManifestBlock
+  .replace(/\s+/gu, " ")
+  .trim();
+requireInvariant(
+  normalizedValidateReleaseManifest ===
+    'export function validateManifest(manifest, previousManifest) { const current = validateCore(manifest); if (current.top.sequence === "1") { if (previousManifest !== undefined && previousManifest !== null) fail("initial release must not be verified with a previous manifest"); return current; } if (previousManifest === undefined || previousManifest === null) fail("a non-initial release requires the exact previous manifest"); const previous = validateCore(previousManifest); if (current.top.extension.id !== previous.top.extension.id) { fail("stable extension identity changed across release lineage"); } const expectedSequence = (BigInt(previous.top.sequence) + 1n).toString(); requireExact(current.top.sequence, expectedSequence, "manifest.sequence"); requireExact(current.top.lineage.previousSequence, previous.top.sequence, "manifest.lineage.previousSequence"); requireExact(current.top.lineage.previousVersion, previous.top.version, "manifest.lineage.previousVersion"); const previousHash = sha256Hex(Buffer.from(canonicalEncode(previous.top), "utf8")); requireExact(current.top.lineage.previousManifestSha256, previousHash, "manifest.lineage.previousManifestSha256"); if (compareSemver(current.top.version, previous.top.version) <= 0) fail("release version rollback or reuse is forbidden"); return current; }',
+  "successor validation must retain the same stable extension identity before accepting sequence, hash, or version lineage",
+);
+requireInvariant(
+  verifyExpectedExtensionIdBlock.replace(/\s+/gu, " ").trim() ===
+    'export function verifyExpectedExtensionId(validated, expectedExtensionId) { requireString( expectedExtensionId, "independently pinned extension identifier", EXTENSION_ID_RE, 32, ); if (validated.top.extension.id !== expectedExtensionId) { fail("independently pinned extension identifier mismatch"); } }' &&
+    releaseManifestVerifier.includes('const EXTENSION_ID_RE = /^[a-p]{32}$/u;') &&
+    (releaseManifestVerifier.match(/\bverifyExpectedExtensionId\b/gu) ?? []).length === 2 &&
+    (releaseManifestVerifier.match(/\bvalidateManifest\b/gu) ?? []).length === 2 &&
+    !/\b(?:eval|Function)\s*\(|globalThis\s*\[/u.test(releaseManifestVerifier),
+  "the final Node verifier must compare one exact lowercase candidate extension ID with one independent pin without echoing either value",
+);
+const extensionPinCliOrder = [
+  'const validated = validateManifest(manifest, previous)',
+  'verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id"))',
+  'verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id"))',
+  "verifyExpectedSignerCertificateSha256(",
+  "verifyExpectedPreviousManifestSha256(validated, expectedPreviousManifestSha256)",
+  'const bundleRoot = requireArgument(values, "--bundle-root")',
+  "await verifyBundleFiles(validated, bundleRoot)",
+  "await verifyEvidenceAttestations(",
+  "await verifyDetachedManifestSignature(",
+  'process.stdout.write("CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\\n")',
+].map((marker) => runReleaseManifestCliBlock.indexOf(marker));
+requireInvariant(
+  extensionPinCliOrder.every((position) => position !== -1) &&
+    extensionPinCliOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    runReleaseManifestCliBlock.includes("values.size !== (previousPath ? 10 : 8)") &&
+    runReleaseManifestCliBlock.includes(
+      "--expected-release-key-id, --expected-extension-id, --expected-reviewer-key-id",
+    ),
+  "extension identity must be pinned immediately after the release key and before bundle, evidence, or signature acceptance",
+);
+requireInvariant(
+  extensionPinUnitTestBlock.includes(
+    "verifyExpectedExtensionId(validated, manifest.extension.id)",
+  ) &&
+    extensionPinUnitTestBlock.includes('const alternate = "b".repeat(32)') &&
+    extensionPinUnitTestBlock.includes("assert.doesNotMatch(error.message") &&
+    extensionPinUnitTestBlock.includes('verifyExpectedExtensionId(validated, "A".repeat(32))') &&
+    extensionLineageUnitTestBlock.includes('current.extension.id = "b".repeat(32)') &&
+    extensionLineageUnitTestBlock.includes(
+      "stable extension identity changed across release lineage",
+    ),
+  "unit evidence must cover exact extension pinning, case rejection, no-value diagnostics, and successor continuity",
+);
+requireInvariant(
+  extensionPinSuccessIntegrationTestBlock.includes(
+    "const invocation = await createVerifyCliInvocation(fixture)",
+  ) &&
+    extensionPinSuccessIntegrationTestBlock.includes(
+      "const { stdout } = await execFileAsync(process.execPath, invocation.arguments)",
+    ) &&
+    extensionPinSuccessIntegrationTestBlock.includes(
+      'assert.equal(stdout, "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\\n")',
+    ) &&
+    extensionPinArityIntegrationTestBlock.includes(
+      'invocation.arguments.indexOf("--expected-extension-id")',
+    ) &&
+    extensionPinArityIntegrationTestBlock.includes("missing.splice(extensionArgument, 2)") &&
+    extensionPinArityIntegrationTestBlock.includes(
+      'const extra = [...invocation.arguments, "--candidate-extension-id", "c".repeat(32)]',
+    ) &&
+    (extensionPinArityIntegrationTestBlock.match(/await assert\.rejects\s*\(/gu) ?? [])
+      .length === 2,
+  "integration evidence must preserve exact success output and reject both missing and surplus extension-pin arguments",
+);
+requireInvariant(
+  rebindSyntheticExtensionIdentityBlock.includes(
+    "fixture.manifest.extension.id = extensionId",
+  ) &&
+    rebindSyntheticExtensionIdentityBlock.includes(
+      "allowed_origins: [`chrome-extension://${extensionId}/`]",
+    ) &&
+    rebindSyntheticExtensionIdentityBlock.includes(
+      'for (const key of ["installerAclNegative", "nativeHostRegistration"])',
+    ) &&
+    rebindSyntheticExtensionIdentityBlock.includes("evidence.extensionId = extensionId") &&
+    rebindSyntheticExtensionIdentityBlock.includes(
+      "evidence.nativeHostManifestSha256 = nativeHostManifestRecord.sha256",
+    ) &&
+    rebindSyntheticExtensionIdentityBlock.includes(
+      "fixture.manifest.evidence[key] = await fileRecord(fixture.root, relativePath)",
+    ),
+  "alternate-ID evidence must rebind the signed manifest, native origin, installer ACL, registration, and exact evidence digests before the external pin rejects it",
+);
+requireInvariant(
+  extensionPinAttackerIntegrationTestBlock.includes(
+    "await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId)",
+  ) &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      "verifyExpectedExtensionId(validated, attackerExtensionId)",
+    ) &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      "await assert.doesNotReject(() => verifySyntheticBundle(fixture))",
+    ) &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      "const invocation = await createVerifyCliInvocation(fixture, EXTENSION_ID)",
+    ) &&
+    extensionPinAttackerIntegrationTestBlock
+      .replace(/\s+/gu, " ")
+      .includes(
+        'assert.equal( error.stderr, "RELEASE_INELIGIBLE: independently pinned extension identifier mismatch\\n", )',
+      ) &&
+    extensionPinAttackerIntegrationTestBlock.includes('assert.equal(error.stdout, "")') &&
+    extensionPinWrapperIntegrationTestBlock.includes("RegexOptions]::CultureInvariant") &&
+    extensionPinWrapperIntegrationTestBlock.includes('"A".repeat(32)') &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "output withheld; inspect locally with privacy redaction",
+    ),
+  "integration evidence must reject an internally self-consistent signed alternate ID and prove the case-sensitive two-pass wrapper stays silent",
+);
+requireInvariant(
+  releaseSecurity.includes("independently sourced `ExpectedExtensionId`") &&
+    releaseSecurity.includes("A mismatch is rejected before bundle/evidence reads") &&
+    releaseSecurity.includes("Every successor manifest must retain") &&
+    releaseSecurity.includes(
+      "-ExpectedExtensionId <independently pinned 32-lowercase-a-through-p>",
+    ) &&
+    releaseSecurity.includes("same immutable expected-ID argument") &&
+    releaseSecurity.includes("stable extension ID") &&
+    releaseSecurity.includes("no stable production extension ID") &&
+    rootReadme.includes("릴리스 정책·검증기 테스트 39개 통과"),
+  "release documentation must distinguish the mandatory external extension-ID pin from the still-absent production identity and ceremony",
+);
+const releasePolicyTestCount = [
+  releaseExtensionAuditTests,
+  releaseInventoryTests,
+  releaseManifestTests,
+  releaseVerifierIntegrationTests,
+].reduce(
+  (count, source) => count + (source.match(/(?:^|\n)test\s*\(/gu) ?? []).length,
+  0,
+);
+requireInvariant(
+  releasePolicyTestCount === 39,
+  "the documented release-policy and verifier evidence total must match the four executed Node suites",
 );
 
 process.stdout.write("architecture scan passed\n");
