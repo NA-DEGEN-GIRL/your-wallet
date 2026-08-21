@@ -16,11 +16,14 @@ const QUIET_ZONE_MODULES: u32 = 4;
 const PREFERRED_MODULE_POINTS: f32 = 8.0;
 const MIN_MODULE_PIXELS: u32 = 6;
 const ALIGNMENT_SLACK_PIXELS: u32 = 1;
+pub(crate) const MAX_ETH_AMOUNT_INPUT_BYTES: usize = 79;
+const ETH_DECIMALS: u8 = 18;
 
 /// A category-only receive-QR failure that never contains an address or URI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReceiveQrError {
     InvalidAddress,
+    InvalidAmount,
     Encoding,
     InvalidLayout,
 }
@@ -132,6 +135,25 @@ impl ReceiveQr {
             return Err(ReceiveQrError::InvalidAddress);
         }
         let payment_uri = Zeroizing::new(format!("ethereum:{address}@{SEPOLIA_CHAIN_ID}"));
+        Self::encode(payment_uri)
+    }
+
+    pub(crate) fn new_with_native_eth_amount(
+        address: &str,
+        amount_eth: &str,
+    ) -> Result<Self, ReceiveQrError> {
+        if !is_exact_eip55_address(address) {
+            return Err(ReceiveQrError::InvalidAddress);
+        }
+        let value_wei = canonical_wei(amount_eth)?;
+        let payment_uri = Zeroizing::new(format!(
+            "ethereum:{address}@{SEPOLIA_CHAIN_ID}?value={}",
+            value_wei.as_str()
+        ));
+        Self::encode(payment_uri)
+    }
+
+    fn encode(payment_uri: Zeroizing<String>) -> Result<Self, ReceiveQrError> {
         let code = QrCode::encode_text(payment_uri.as_str(), QrCodeEcc::Medium)
             .map_err(|_| ReceiveQrError::Encoding)?;
         Ok(Self { payment_uri, code })
@@ -196,6 +218,17 @@ impl ReceiveQr {
             clip_rect,
         })
     }
+}
+
+fn canonical_wei(amount_eth: &str) -> Result<Zeroizing<String>, ReceiveQrError> {
+    if amount_eth.len() > MAX_ETH_AMOUNT_INPUT_BYTES {
+        return Err(ReceiveQrError::InvalidAmount);
+    }
+    let amount = crate::erc20::parse_token_amount(amount_eth, ETH_DECIMALS)
+        .map_err(|_| ReceiveQrError::InvalidAmount)?;
+    crate::erc20::format_token_amount(amount, 0)
+        .map(Zeroizing::new)
+        .map_err(|_| ReceiveQrError::InvalidAmount)
 }
 
 fn is_exact_eip55_address(address: &str) -> bool {
@@ -275,6 +308,93 @@ mod tests {
         assert_eq!(
             ReceiveQr::new("0x0000000000000000000000000000000000000000").err(),
             Some(ReceiveQrError::InvalidAddress)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_eth_amount_is_canonical_integer_wei_and_uint256_bounded() {
+        const MAXIMUM_WEI: &str =
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+        const MAXIMUM_ETH: &str =
+            "115792089237316195423570985008687907853269984665640564039457.584007913129639935";
+        const OVERFLOW_ETH: &str =
+            "115792089237316195423570985008687907853269984665640564039457.584007913129639936";
+
+        for (amount_eth, expected_wei) in [
+            ("0.000000000000000001", "1"),
+            ("0.1", "100000000000000000"),
+            ("1", "1000000000000000000"),
+            ("1.2300", "1230000000000000000"),
+            ("0001", "1000000000000000000"),
+            (MAXIMUM_ETH, MAXIMUM_WEI),
+        ] {
+            let qr = ReceiveQr::new_with_native_eth_amount(CHECKSUMMED_ADDRESS, amount_eth)
+                .expect("valid native ETH receive amount");
+            assert_eq!(
+                qr.payment_uri(),
+                format!(
+                    "ethereum:{CHECKSUMMED_ADDRESS}@{}?value={expected_wei}",
+                    crate::rpc::SEPOLIA_CHAIN_ID
+                )
+            );
+        }
+
+        for invalid in [
+            "",
+            "0",
+            "0.0",
+            ".1",
+            "1.",
+            "+1",
+            "-1",
+            "1e2",
+            "1E2",
+            "1,2",
+            " 1",
+            "1 ",
+            "1.0000000000000000001",
+            "1.2.3",
+            OVERFLOW_ETH,
+        ] {
+            assert_eq!(
+                ReceiveQr::new_with_native_eth_amount(CHECKSUMMED_ADDRESS, invalid).err(),
+                Some(ReceiveQrError::InvalidAmount)
+            );
+        }
+        let overlong = "1".repeat(super::MAX_ETH_AMOUNT_INPUT_BYTES + 1);
+        assert_eq!(
+            ReceiveQr::new_with_native_eth_amount(CHECKSUMMED_ADDRESS, overlong.as_str()).err(),
+            Some(ReceiveQrError::InvalidAmount)
+        );
+    }
+
+    #[test]
+    fn native_eth_amount_uri_and_matrix_are_one_exact_payload() -> Result<(), ReceiveQrError> {
+        let qr = ReceiveQr::new_with_native_eth_amount(CHECKSUMMED_ADDRESS, "1.25")?;
+        assert_eq!(
+            qr.payment_uri(),
+            format!(
+                "ethereum:{CHECKSUMMED_ADDRESS}@{}?value=1250000000000000000",
+                crate::rpc::SEPOLIA_CHAIN_ID
+            )
+        );
+        assert_eq!(qr.code.size(), 41);
+
+        let payload_digest: [u8; 32] = Sha256::digest(qr.payment_uri().as_bytes()).into();
+        assert_eq!(
+            payload_digest,
+            [
+                189, 39, 255, 98, 163, 97, 226, 214, 226, 229, 58, 23, 149, 57, 211, 218, 105, 218,
+                200, 28, 198, 166, 119, 43, 108, 126, 115, 252, 107, 40, 213, 202,
+            ]
+        );
+        assert_eq!(
+            matrix_digest(&qr),
+            [
+                94, 55, 93, 190, 117, 50, 112, 133, 26, 214, 44, 165, 249, 37, 71, 21, 107, 173,
+                161, 224, 238, 85, 24, 21, 151, 175, 14, 53, 181, 181, 108, 183,
+            ]
         );
         Ok(())
     }
@@ -456,6 +576,40 @@ mod tests {
                 .contains(high_zoom_metrics.canvas.max)
         );
         assert!(high_zoom_output.textures_delta.set.is_empty());
+
+        let amount_qr = ReceiveQr::new_with_native_eth_amount(
+            CHECKSUMMED_ADDRESS,
+            "115792089237316195423570985008687907853269984665640564039457.584007913129639935",
+        )?;
+        let amount_context = egui::Context::default();
+        amount_context.set_pixels_per_point(0.5);
+        amount_context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::splat(2_000.0),
+            )),
+            ..Default::default()
+        });
+        egui::CentralPanel::default().show(&amount_context, |_ui| {});
+        let _ = amount_context.end_pass();
+        amount_context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::splat(2_000.0),
+            )),
+            ..Default::default()
+        });
+        let amount_metrics = egui::CentralPanel::default()
+            .show(&amount_context, |ui| amount_qr.paint(ui))
+            .inner?;
+        let amount_output = amount_context.end_pass();
+        assert!(amount_metrics.symbol_modules > 33);
+        assert!(amount_metrics.total_modules > amount_metrics.symbol_modules);
+        assert!(amount_metrics.module_pixels >= 6);
+        assert!(amount_metrics.dark_modules > 0);
+        assert!(amount_metrics.clip_rect.contains(amount_metrics.canvas.min));
+        assert!(amount_metrics.clip_rect.contains(amount_metrics.canvas.max));
+        assert!(amount_output.textures_delta.set.is_empty());
         Ok(())
     }
 }

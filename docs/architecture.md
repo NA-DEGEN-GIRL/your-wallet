@@ -130,12 +130,25 @@ STOP-SHIP without an isolated Key Agent and a zeroizing KDF implementation.
 
 The receive surface takes only `WalletSnapshot::selected_account()` and the
 frame-local constructor independently requires its strict EIP-55 checksum. The
-only encoded payload is `ethereum:<address>@11155111`; amount, query-string, and
-`pay-` variants are not representable. The ordinary plain-address copy remains
-available separately. QR reveal and URI copy are independent explicit actions,
-and the panel warns that the address, selected account index, and Sepolia chain
-ID are public identifying metadata that must be verified on the receiving
-device.
+default encoded payload remains exactly `ethereum:<address>@11155111`. An
+amount-bearing request exists only behind the user's explicit native-ETH amount
+toggle. It accepts a positive decimal ETH input with at most 18 fractional
+digits and within the full uint256 range, then canonicalizes it to integer wei
+with the existing strict amount parser/formatter and emits exactly
+`ethereum:<address>@11155111?value=<canonical-decimal-wei>`. Empty, zero,
+malformed, over-precision, overlong, and overflowing inputs fail with the
+category-only `InvalidAmount`; no URI, matrix, or URI-copy control is then
+created. `pay-` and every other query parameter remain unrepresentable. The
+ordinary plain-address copy stays available separately.
+
+QR reveal, the amount toggle, URI copy, and ordinary-address copy are separate
+explicit user actions. The selected address, account index, fixed Sepolia chain
+ID, and requested amount are public financial metadata. An
+amount-bearing EIP-681 URI is only a request: it is neither an enforced invoice
+nor proof of payment, and the payer may alter or ignore it. Receipt must be
+verified separately against the selected address and on-chain result. Copying a
+URI hands it to the OS clipboard, which may retain it after wallet lock or
+process exit.
 
 The demo pins `qrcodegen` exactly to 1.8.0 and builds the matrix only in the
 revealed frame. Rendering reserves an exact four-module white quiet zone and
@@ -147,10 +160,20 @@ a narrow panel, short viewport, or invalid scale therefore returns a category-
 only layout error rather than clipping any part of the symbol. No QR texture,
 cache, file, or network path exists.
 
-Receive reveal state is only a Boolean, never a cached matrix or URI. A valid
-account-selection request hides it before dispatch; successful selection hides
-it again while scrubbing the old account context; lock/session scrub also hides
-it. Thus no stale QR remains visible across account or session identity changes.
+Receive state retains only the reveal Boolean, the explicit amount-request
+Boolean, and a session-only `Zeroizing<String>` input; it never caches a matrix
+or URI. Address-only mode is the initialized default. Hiding the receive panel,
+turning the amount option off, a valid account-selection request, successful
+selection, and a live lock/session scrub all clear the option, zeroize the
+amount, and queue deletion of the stable egui text-edit state at the end of that
+frame so undo cannot resurrect it. `WalletApp::drop` independently zeroizes the
+owned input through
+the same frontend scrub. Normal process/context teardown discards egui memory,
+but Drop has no `egui::Context` with which to make a separate forensic or
+retained-context erasure guarantee. The optional request adds no worker command,
+backend/RPC call, storage or schema field, dependency, file access, or network
+path; invalid input therefore cannot escape through a fallback URI or copy
+action.
 
 ### Sepolia demo selected-overview hydration boundary
 

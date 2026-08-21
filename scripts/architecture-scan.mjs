@@ -134,6 +134,7 @@ const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
 const sepoliaDemoLock = await text("demo/sepolia-wallet/Cargo.lock");
 const sepoliaDemoMain = await text("demo/sepolia-wallet/src/main.rs");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
+const sepoliaDemoErc20 = await text("demo/sepolia-wallet/src/erc20.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
 const sepoliaDemoReceiveQr = await text("demo/sepolia-wallet/src/receive_qr.rs");
 const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
@@ -245,7 +246,7 @@ requireInvariant(
     /Event::Paste\(text\)[\s\S]*?text\.zeroize\(\)[\s\S]*?false/u.test(
       sepoliaDemoUi,
     ) &&
-    sepoliaDemoUi.includes("fn secret_text_edit_ids() -> [egui::Id; 15]") &&
+    sepoliaDemoUi.includes("fn secret_text_edit_ids() -> [egui::Id; 16]") &&
     sepoliaDemoUi.includes("state.clear_undoer()") &&
     sepoliaDemoUi.includes(
       "data.remove::<egui::widgets::text_edit::TextEditState>(id)",
@@ -266,6 +267,7 @@ requireInvariant(
 
 // Sepolia authenticated saved ERC-20 transfer invariants (demo-only).
 const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
+const sepoliaDemoErc20Production = withoutBottomTestModule(sepoliaDemoErc20);
 const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
 const sepoliaDemoReceiveQrProduction = withoutBottomTestModule(sepoliaDemoReceiveQr);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
@@ -351,6 +353,23 @@ const scrubFrontendSessionBlock = rustFunctionBlock(
   "scrub_frontend_session",
 );
 const accountPanelBlock = rustFunctionBlock(walletAppImplBlock, "account_panel");
+const walletAppNewBlock = rustFunctionBlock(walletAppImplBlock, "new");
+const walletAppUnavailableBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "unavailable",
+);
+const runHeadlessSmokeBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "run_headless_smoke",
+);
+const receiveWorkerCommandBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)enum WorkerCommand\s*\{/u,
+);
+const receiveWorkerEventBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)enum WorkerEvent\s*\{/u,
+);
 const receiveRevealBlock = rustItemBlock(
   accountPanelBlock,
   /(?:^|\n)\s*if self\.receive_qr_visible\s*\{\s*ui\.add_space\(6\.0\);/u,
@@ -364,12 +383,113 @@ const receiveQrImplBlock = rustItemBlock(
   sepoliaDemoReceiveQrProduction,
   /(?:^|\n)impl ReceiveQr\s*\{/u,
 );
+const receiveQrStructBlock = rustItemBlock(
+  sepoliaDemoReceiveQrProduction,
+  /(?:^|\n)pub\(crate\) struct ReceiveQr\s*\{/u,
+);
 const receiveQrConstructorBlock = rustFunctionBlock(receiveQrImplBlock, "new");
+const receiveQrAmountConstructorBlock = rustFunctionBlock(
+  receiveQrImplBlock,
+  "new_with_native_eth_amount",
+);
+const receiveQrEncodeBlock = rustFunctionBlock(receiveQrImplBlock, "encode");
 const receiveQrPaintBlock = rustFunctionBlock(receiveQrImplBlock, "paint");
+const receiveCanonicalWeiBlock = rustFunctionBlock(
+  sepoliaDemoReceiveQrProduction,
+  "canonical_wei",
+);
 const exactEip55Block = rustFunctionBlock(
   sepoliaDemoReceiveQrProduction,
   "is_exact_eip55_address",
 );
+const parseTokenAmountBlock = rustFunctionBlock(
+  sepoliaDemoErc20Production,
+  "parse_token_amount",
+);
+const formatTokenAmountBlock = rustFunctionBlock(
+  sepoliaDemoErc20Production,
+  "format_token_amount",
+);
+const clearReceiveAmountRequestBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "clear_receive_amount_request",
+);
+const clearReceiveRequestStateBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "clear_receive_request_state",
+);
+const hasSensitiveSessionStateBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "has_sensitive_session_state",
+);
+const purgeQueuedSecretTextEditStateBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "purge_queued_secret_text_edit_state",
+);
+const receiveAmountTextEditIdBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "receive_amount_text_edit_id",
+);
+const secretTextEditIdsBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "secret_text_edit_ids",
+);
+const purgeSecretTextEditStateBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "purge_secret_text_edit_state",
+);
+const walletAppDropBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl Drop for WalletApp\s*\{/u,
+);
+const walletAppEframeImplBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl eframe::App for WalletApp\s*\{/u,
+);
+const walletAppUpdateBlock = rustFunctionBlock(walletAppEframeImplBlock, "update");
+const receiveQrOkUiBlock = rustItemBlock(
+  receiveRevealBlock,
+  /(?:^|\n)\s*Ok\(qr\)\s*=>\s*\{/u,
+);
+const receiveQrInvalidAmountUiBlock = rustItemBlock(
+  receiveRevealBlock,
+  /(?:^|\n)\s*Err\(crate::receive_qr::ReceiveQrError::InvalidAmount\)\s*=>\s*\{/u,
+);
+const receiveAmountToggleOffBlock = rustItemBlock(
+  receiveRevealBlock,
+  /(?:^|\n)\s*if amount_toggle\.changed\(\) && !self\.receive_amount_requested\s*\{/u,
+);
+const receiveAmountInputUiBlock = rustItemBlock(
+  receiveRevealBlock,
+  /(?:^|\n)\s*if self\.receive_amount_requested\s*\{/u,
+);
+const receiveAmountBoundsTestBlock = rustFunctionBlock(
+  sepoliaDemoReceiveQr,
+  "native_eth_amount_is_canonical_integer_wei_and_uint256_bounded",
+);
+const receiveAmountGoldenTestBlock = rustFunctionBlock(
+  sepoliaDemoReceiveQr,
+  "native_eth_amount_uri_and_matrix_are_one_exact_payload",
+);
+const receiveSelectedAccountTestBlock = rustFunctionBlock(
+  sepoliaDemoUi,
+  "receive_qr_payload_follows_only_the_selected_account",
+);
+const receiveAmountPurgeTestBlock = rustFunctionBlock(
+  sepoliaDemoUi,
+  "receive_amount_hide_toggle_select_request_and_response_purge_actual_egui_undo",
+);
+const receiveAmountPanelTestBlock = rustFunctionBlock(
+  sepoliaDemoUi,
+  "receive_amount_panel_suppresses_invalid_and_copies_exact_valid_qr_payload",
+);
+const clearReceiveAmountRequestNormalized = clearReceiveAmountRequestBlock
+  .replace(/\s+/gu, " ")
+  .trim();
+const clearReceiveRequestStateNormalized = clearReceiveRequestStateBlock
+  .replace(/\s+/gu, " ")
+  .trim();
+const walletAppDropNormalized = walletAppDropBlock.replace(/\s+/gu, " ").trim();
 const accountPrivateKeyRevealBlock = rustFunctionBlock(
   sepoliaDemoBackendProduction,
   "account_private_key_reveal",
@@ -469,12 +589,29 @@ requireInvariant(
     receiveQrConstructorBlock.includes(
       'format!("ethereum:{address}@{SEPOLIA_CHAIN_ID}")',
     ) &&
-    receiveQrConstructorBlock.includes(
-      "QrCode::encode_text(payment_uri.as_str(), QrCodeEcc::Medium)",
-    ) &&
-    !/(?:push_str|insert_str|ethereum:pay-|\bamount\b|\bvalue\b)/u.test(
+    receiveQrConstructorBlock.includes("Self::encode(payment_uri)") &&
+    !/(?:\?|ethereum:pay-|canonical_wei|amount_eth|\bvalue\b|push_str|insert_str|\.push\(|\.extend\(|\+=|replace\()/u.test(
       receiveQrConstructorBlock,
     ) &&
+    receiveQrAmountConstructorBlock.includes(
+      "if !is_exact_eip55_address(address)",
+    ) &&
+    receiveQrAmountConstructorBlock.includes(
+      "let value_wei = canonical_wei(amount_eth)?",
+    ) &&
+    receiveQrAmountConstructorBlock.indexOf("is_exact_eip55_address(address)") <
+      receiveQrAmountConstructorBlock.indexOf("canonical_wei(amount_eth)") &&
+    /format!\(\s*"ethereum:\{address\}@\{SEPOLIA_CHAIN_ID\}\?value=\{\}",\s*value_wei\.as_str\(\)\s*\)/u.test(
+      receiveQrAmountConstructorBlock,
+    ) &&
+    receiveQrAmountConstructorBlock.includes("Self::encode(payment_uri)") &&
+    !/(?:ethereum:pay-|[?&](?:amount|gas|gasLimit|gasPrice|chainId)=|push_str|insert_str|\.push\(|\.extend\(|\+=|replace\()/u.test(
+      receiveQrAmountConstructorBlock,
+    ) &&
+    receiveQrEncodeBlock.includes(
+      "QrCode::encode_text(payment_uri.as_str(), QrCodeEcc::Medium)",
+    ) &&
+    receiveQrEncodeBlock.includes("Ok(Self { payment_uri, code })") &&
     exactEip55Block.includes('address.strip_prefix("0x")') &&
     exactEip55Block.includes("hex.len() != ADDRESS_HEX_BYTES") &&
     exactEip55Block.includes("byte.is_ascii_hexdigit()") &&
@@ -482,8 +619,47 @@ requireInvariant(
     exactEip55Block.includes("hex.to_ascii_lowercase()") &&
     exactEip55Block.includes("Keccak256::digest(lowercase.as_bytes())") &&
     exactEip55Block.includes("byte.is_ascii_uppercase() == (nibble >= 8)") &&
-    sepoliaDemoRpc.includes("pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111"),
-  "Sepolia Receive QR must remain strict selected-account EIP-55 with exact amount-free ethereum:<address>@11155111 payload",
+    sepoliaDemoRpcProduction.includes("pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111"),
+  "Sepolia Receive QR must retain strict EIP-55 and only the exact address-only or native-value Sepolia payload constructors",
+);
+requireInvariant(
+  sepoliaDemoReceiveQrProduction.includes(
+    "pub(crate) const MAX_ETH_AMOUNT_INPUT_BYTES: usize = 79",
+  ) &&
+    sepoliaDemoReceiveQrProduction.includes("const ETH_DECIMALS: u8 = 18") &&
+    /enum ReceiveQrError\s*\{[^}]*\bInvalidAmount\b/u.test(
+      sepoliaDemoReceiveQrProduction,
+    ) &&
+    receiveCanonicalWeiBlock.includes(
+      "amount_eth.len() > MAX_ETH_AMOUNT_INPUT_BYTES",
+    ) &&
+    receiveCanonicalWeiBlock.includes(
+      "crate::erc20::parse_token_amount(amount_eth, ETH_DECIMALS)",
+    ) &&
+    receiveCanonicalWeiBlock.includes(
+      "crate::erc20::format_token_amount(amount, 0)",
+    ) &&
+    receiveCanonicalWeiBlock.includes(".map(Zeroizing::new)") &&
+    (receiveCanonicalWeiBlock.match(/ReceiveQrError::InvalidAmount/gu) ?? [])
+      .length === 3 &&
+    parseTokenAmountBlock.includes("input.is_empty()") &&
+    parseTokenAmountBlock.includes("input.trim() != input") &&
+    parseTokenAmountBlock.includes("matches!(byte, b'+' | b'-' | b'e' | b'E' | b',')") &&
+    parseTokenAmountBlock.includes("let mut parts = input.split('.')") &&
+    parseTokenAmountBlock.includes("parts.next().is_some()") &&
+    parseTokenAmountBlock.includes("integer.is_empty()") &&
+    parseTokenAmountBlock.includes("byte.is_ascii_digit()") &&
+    parseTokenAmountBlock.includes("fraction.len() > usize::from(decimals)") &&
+    parseTokenAmountBlock.includes(
+      "fraction.bytes().any(|byte| !byte.is_ascii_digit())",
+    ) &&
+    parseTokenAmountBlock.includes("input.ends_with('.')") &&
+    parseTokenAmountBlock.includes(".checked_mul_small(10)") &&
+    parseTokenAmountBlock.includes(".checked_add_small(digit - b'0')") &&
+    parseTokenAmountBlock.includes("if output.is_zero()") &&
+    formatTokenAmountBlock.includes("if decimals == 0") &&
+    formatTokenAmountBlock.includes("return Ok(decimal)"),
+  "Sepolia Receive QR native amount must remain positive, <=18-decimal, uint256-bounded, category-only, and canonical integer wei",
 );
 requireInvariant(
   accountPanelBlock.includes("snapshot.selected_account().cloned()") &&
@@ -494,25 +670,233 @@ requireInvariant(
     /\.add_enabled\(\s*self\.pending\.is_none\(\),\s*egui::Button::new\(receive_button_text\),\s*\)\s*\.clicked\(\)/u.test(
       accountPanelBlock,
     ) &&
-    /if ui[\s\S]{0,320}?\.clicked\(\)\s*\{\s*self\.receive_qr_visible = !self\.receive_qr_visible;\s*\}/u.test(
+    /\.clicked\(\)\s*\{\s*if self\.receive_qr_visible\s*\{\s*self\.clear_receive_request_state\(\);\s*\}\s*else\s*\{\s*self\.receive_qr_visible = true;\s*\}\s*\}/u.test(
       accountPanelBlock,
     ) &&
-    receiveRevealBlock.includes(
-      "ReceiveQr::new(selected_account.address.as_str())",
+    receiveRevealBlock.includes("ui.toggle_value(") &&
+    receiveRevealBlock.includes("&mut self.receive_amount_requested") &&
+    receiveAmountToggleOffBlock.includes("self.clear_receive_amount_request()") &&
+    receiveAmountInputUiBlock.includes(
+      "egui::TextEdit::singleline(&mut *self.receive_amount_eth)",
+    ) &&
+    receiveAmountInputUiBlock.includes(".id(receive_amount_text_edit_id())") &&
+    receiveAmountInputUiBlock.includes(
+      ".char_limit(crate::receive_qr::MAX_ETH_AMOUNT_INPUT_BYTES)",
+    ) &&
+    receiveAmountInputUiBlock.includes("선택 계정 주소, 고정 Sepolia 체인, 요청 금액") &&
+    receiveAmountInputUiBlock.includes("운영체제 클립보드") &&
+    receiveAmountInputUiBlock.includes("강제 청구서나 입금 확인이 아닙니다") &&
+    receiveAmountInputUiBlock.includes("보내는 쪽이 금액을 바꾸거나 무시할 수 있으므로") &&
+    /let receive_qr = if self\.receive_amount_requested\s*\{\s*crate::receive_qr::ReceiveQr::new_with_native_eth_amount\(\s*selected_account\.address\.as_str\(\),\s*self\.receive_amount_eth\.as_str\(\),\s*\)\s*\}\s*else\s*\{\s*crate::receive_qr::ReceiveQr::new\(selected_account\.address\.as_str\(\)\)\s*\};/u.test(
+      receiveRevealBlock,
     ) &&
     receiveRevealBlock.includes("selected_account.index") &&
     receiveRevealBlock.includes("crate::rpc::SEPOLIA_CHAIN_ID") &&
     receiveRevealBlock.indexOf("palette.warning") <
-      receiveRevealBlock.indexOf("ReceiveQr::new") &&
+      receiveRevealBlock.indexOf("let receive_qr =") &&
+    receiveQrOkUiBlock.includes("qr.payment_uri()") &&
+    receiveQrOkUiBlock.includes("qr.paint(ui)") &&
+    receiveQrOkUiBlock.includes("운영체제 클립보드는 지갑 잠금 뒤에도 남을 수 있습니다") &&
     /if ui\.button\([^{}]*\)\.clicked\(\)\s*\{\s*ui\.ctx\(\)\.copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\);/u.test(
-      receiveRevealBlock,
+      receiveQrOkUiBlock,
     ) &&
-    (sepoliaDemoUiProduction.match(/ReceiveQr::new\(/gu) ?? []).length === 1 &&
-    selectAccountUiBlock.indexOf("self.receive_qr_visible = false") <
+    receiveQrInvalidAmountUiBlock.includes(
+      "0보다 크고 소수점 18자리 이하인 ETH 십진수만 입력할 수 있습니다",
+    ) &&
+    !/(?:payment_uri|copy_text|qr\.paint|receive_amount_eth|selected_account\.address)/u.test(
+      receiveQrInvalidAmountUiBlock,
+    ) &&
+    (receiveRevealBlock.match(/copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\)/gu) ?? [])
+      .length === 1 &&
+    (sepoliaDemoUiProduction.match(/ReceiveQr::new\(/gu) ?? []).length === 2 &&
+    (sepoliaDemoUiProduction.match(/ReceiveQr::new_with_native_eth_amount\(/gu) ?? [])
+      .length === 2,
+  "Sepolia Receive QR amount opt-in must stay explicit, selected-account-bound, publicly disclosed, and invalid-input fail-closed",
+);
+requireInvariant(
+  walletAppBlock.includes("receive_qr_visible: bool") &&
+    walletAppBlock.includes("receive_amount_requested: bool") &&
+    walletAppBlock.includes("receive_amount_eth: Zeroizing<String>") &&
+    !/pub(?:\([^)]*\))?\s+receive_(?:qr_visible|amount_requested|amount_eth)\b/u.test(
+      walletAppBlock,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*pub struct WalletApp/u.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Debug|fmt::Debug|(?:std|core)::fmt::Debug|Serialize|serde::Serialize)\s+for\s+WalletApp\b/u.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    !sepoliaDemoUiRuntime.includes("receive_amount_requested = true") &&
+    !/(?:receive_amount_eth\.clone\(|receive_amount_eth\.to_owned\(|clone\([^\r\n]*receive_amount_eth)/u.test(
+      sepoliaDemoUiRuntime,
+    ) &&
+    walletAppNewBlock.includes("receive_qr_visible: false") &&
+    walletAppNewBlock.includes("receive_amount_requested: false") &&
+    walletAppNewBlock.includes(
+      "receive_amount_eth: Zeroizing::new(String::new())",
+    ) &&
+    walletAppUnavailableBlock.includes("receive_qr_visible: false") &&
+    walletAppUnavailableBlock.includes("receive_amount_requested: false") &&
+    walletAppUnavailableBlock.includes(
+      "receive_amount_eth: Zeroizing::new(String::new())",
+    ) &&
+    runHeadlessSmokeBlock.includes("receive_qr_visible: false") &&
+    runHeadlessSmokeBlock.includes("receive_amount_requested: false") &&
+    runHeadlessSmokeBlock.includes(
+      "receive_amount_eth: Zeroizing::new(String::new())",
+    ) &&
+    hasSensitiveSessionStateBlock.includes("self.receive_amount_requested") &&
+    hasSensitiveSessionStateBlock.includes("!self.receive_amount_eth.is_empty()") &&
+    clearReceiveAmountRequestNormalized ===
+      "fn clear_receive_amount_request(&mut self) { self.receive_amount_requested = false; self.receive_amount_eth.zeroize(); self.secret_text_state_purge_pending = true; }" &&
+    clearReceiveRequestStateNormalized ===
+      "fn clear_receive_request_state(&mut self) { self.receive_qr_visible = false; self.clear_receive_amount_request(); }" &&
+    selectAccountUiBlock.indexOf("self.clear_receive_request_state()") <
       selectAccountUiBlock.indexOf("self.send_command(") &&
-    accountSelectedUiBlock.includes("self.receive_qr_visible = false") &&
-    scrubFrontendSessionBlock.includes("self.receive_qr_visible = false"),
-  "Sepolia Receive QR reveal/copy must stay explicit, selected-account-bound, public-metadata-warned, and hidden across selection and lock",
+    accountSelectedUiBlock.includes("self.clear_receive_request_state()") &&
+    scrubFrontendSessionBlock.includes("self.clear_receive_request_state()") &&
+    walletAppDropNormalized ===
+      "impl Drop for WalletApp { fn drop(&mut self) { self.active_epoch.store(u64::MAX, Ordering::SeqCst); self.scrub_frontend_session(); } }" &&
+    receiveAmountTextEditIdBlock.includes(
+      'egui::Id::new("sepolia-demo-receive-amount")',
+    ) &&
+    secretTextEditIdsBlock.includes("fn secret_text_edit_ids() -> [egui::Id; 16]") &&
+    (secretTextEditIdsBlock.match(/receive_amount_text_edit_id\(\)/gu) ?? [])
+      .length === 1 &&
+    purgeQueuedSecretTextEditStateBlock.includes(
+      "std::mem::take(&mut self.secret_text_state_purge_pending)",
+    ) &&
+    purgeQueuedSecretTextEditStateBlock.includes("purge_secret_text_edit_state(context)") &&
+    purgeSecretTextEditStateBlock.includes("state.clear_undoer()") &&
+    purgeSecretTextEditStateBlock.includes(
+      "data.remove::<egui::widgets::text_edit::TextEditState>(id)",
+    ) &&
+    (walletAppUpdateBlock.match(/self\.purge_queued_secret_text_edit_state\(context\)/gu) ?? [])
+      .length === 2,
+  "Sepolia Receive QR amount state must stay private, default-off, zeroizing, exact-ID purged on live frames, and owned-input-scrubbed on Drop",
+);
+requireInvariant(
+  !/(?:receive_amount|ReceiveAmount|new_with_native_eth_amount)/u.test(
+    `${sepoliaDemoBackendProduction}\n${sepoliaDemoRpcProduction}\n${sepoliaDemoVaultV2}\n${sepoliaDemoTokenStore}\n${sepoliaDemoActivityStore}\n${sepoliaDemoHeadlessProduction}`,
+  ) &&
+    !/(?:receive_amount|ReceiveAmount|ReceiveQr|payment_uri)/u.test(
+      `${receiveWorkerCommandBlock}\n${receiveWorkerEventBlock}`,
+    ) &&
+    !/(?:send_command|WorkerCommand|OpenUrl|open_url|hyperlink|Command::new|std::process|std::fs|OpenOptions|File::|std::net|TcpStream|UdpSocket|ureq::|reqwest|web_sys|tokio::|TextureHandle|load_texture)/u.test(
+      receiveRevealBlock,
+    ),
+  "Sepolia Receive QR amount opt-in must add no worker/backend/RPC/store/schema/headless route or file/network/texture side effect",
+);
+const receiveAmountGoldenTestNormalized = receiveAmountGoldenTestBlock
+  .replace(/\s+/gu, " ")
+  .trim();
+requireInvariant(
+  receiveAmountBoundsTestBlock.includes('("0.000000000000000001", "1")') &&
+    receiveAmountBoundsTestBlock.includes('("1.2300", "1230000000000000000")') &&
+    receiveAmountBoundsTestBlock.includes('("0001", "1000000000000000000")') &&
+    receiveAmountBoundsTestBlock.includes("(MAXIMUM_ETH, MAXIMUM_WEI)") &&
+    receiveAmountBoundsTestBlock.includes('"0"') &&
+    receiveAmountBoundsTestBlock.includes('"0.0"') &&
+    receiveAmountBoundsTestBlock.includes('".1"') &&
+    receiveAmountBoundsTestBlock.includes('"1."') &&
+    receiveAmountBoundsTestBlock.includes('"+1"') &&
+    receiveAmountBoundsTestBlock.includes('"-1"') &&
+    receiveAmountBoundsTestBlock.includes('"1e2"') &&
+    receiveAmountBoundsTestBlock.includes('"1,2"') &&
+    receiveAmountBoundsTestBlock.includes('"1.0000000000000000001"') &&
+    receiveAmountBoundsTestBlock.includes("OVERFLOW_ETH") &&
+    receiveAmountBoundsTestBlock.includes(
+      '"1".repeat(super::MAX_ETH_AMOUNT_INPUT_BYTES + 1)',
+    ) &&
+    receiveAmountGoldenTestBlock.includes(
+      '"ethereum:{CHECKSUMMED_ADDRESS}@{}?value=1250000000000000000"',
+    ) &&
+    receiveAmountGoldenTestBlock.includes("assert_eq!(qr.code.size(), 41)") &&
+    receiveAmountGoldenTestNormalized.includes(
+      "[ 189, 39, 255, 98, 163, 97, 226, 214, 226, 229, 58, 23, 149, 57, 211, 218, 105, 218, 200, 28, 198, 166, 119, 43, 108, 126, 115, 252, 107, 40, 213, 202, ]",
+    ) &&
+    receiveAmountGoldenTestNormalized.includes(
+      "[ 94, 55, 93, 190, 117, 50, 112, 133, 26, 214, 44, 165, 249, 37, 71, 21, 107, 173, 161, 224, 238, 85, 24, 21, 151, 175, 14, 53, 181, 181, 108, 183, ]",
+    ) &&
+    receiveSelectedAccountTestBlock.includes("for selected_index in [0, 1]") &&
+    receiveSelectedAccountTestBlock.includes(
+      "ReceiveQr::new(selected.address.as_str())",
+    ) &&
+    receiveSelectedAccountTestBlock.includes(
+      "ReceiveQr::new_with_native_eth_amount(\n                selected.address.as_str(),",
+    ) &&
+    receiveSelectedAccountTestBlock.includes(
+      '"ethereum:{}@{}?value=1250000000000000000"',
+    ) &&
+    (receiveSelectedAccountTestBlock.match(/!\w*qr\.payment_uri\(\)\.contains\(other\.address\.as_str\(\)\)/gu) ?? [])
+      .length === 2,
+  "Sepolia Receive QR amount tests must retain strict syntax/uint256 boundaries, canonical selected-account value, and exact URI/matrix goldens",
+);
+requireInvariant(
+  receiveAmountPurgeTestBlock.includes('"hide receive QR"') &&
+    receiveAmountPurgeTestBlock.includes('"turn amount request off"') &&
+    receiveAmountPurgeTestBlock.includes('"start account selection"') &&
+    receiveAmountPurgeTestBlock.includes('"install selected account"') &&
+    receiveAmountPurgeTestBlock.includes("0 => app.clear_receive_request_state()") &&
+    receiveAmountPurgeTestBlock.includes("1 => app.clear_receive_amount_request()") &&
+    receiveAmountPurgeTestBlock.includes("2 => app.select_account(1)") &&
+    receiveAmountPurgeTestBlock.includes(
+      "app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)))",
+    ) &&
+    receiveAmountPurgeTestBlock.includes("app.receive_amount_eth.is_empty()") &&
+    receiveAmountPurgeTestBlock.includes("app.secret_text_state_purge_pending") &&
+    receiveAmountPurgeTestBlock.includes(
+      "app.purge_queued_secret_text_edit_state(&context)",
+    ) &&
+    receiveAmountPurgeTestBlock.includes(
+      "TextEditState::load(&context, receive_amount_id)\n                    .is_none()",
+    ) &&
+    receiveAmountPurgeTestBlock.includes("WorkerCommand::SelectAccount { index: 1 }") &&
+    receiveAmountPurgeTestBlock.includes("command: WorkerCommand::Refresh") &&
+    receiveAmountPurgeTestBlock.includes("vec![undo_key_event()]") &&
+    receiveAmountPurgeTestBlock.includes("recreated.is_empty()") &&
+    receiveAmountPanelTestBlock.includes(
+      'invalid.receive_amount_eth = zeroize::Zeroizing::new("0".to_owned())',
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      'assert!(!rendered.contains("EIP-681 결제 URI"))',
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      'assert!(!rendered.contains("결제 URI 복사"))',
+    ) &&
+    receiveAmountPanelTestBlock.includes('assert!(!rendered.contains("ethereum:"))') &&
+    receiveAmountPanelTestBlock.includes("assert!(copy_button_rect.is_none())") &&
+    receiveAmountPanelTestBlock.includes("assert_eq!(qr_rectangles, 0)") &&
+    receiveAmountPanelTestBlock.includes(
+      "ReceiveQr::new_with_native_eth_amount(\n            selected.address.as_str(),",
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      "vec![egui::OutputCommand::CopyText(expected_uri.clone())]",
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      "assert!(!notice.contains(expected_uri.as_str()))",
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      "assert!(!notice.contains(selected.address.as_str()))",
+    ) &&
+    (receiveAmountPanelTestBlock.match(/command_receiver\.try_recv\(\)\.is_err\(\)/gu) ?? [])
+      .length === 4 &&
+    runHeadlessSmokeBlock.includes(
+      "let amount_request = crate::receive_qr::ReceiveQr::new_with_native_eth_amount(",
+    ) &&
+    runHeadlessSmokeBlock.includes(
+      '"ethereum:{}@{}?value=1250000000000000000"',
+    ) &&
+    runHeadlessSmokeBlock.includes("app.receive_amount_requested = true") &&
+    runHeadlessSmokeBlock.includes("app.select_account(1)") &&
+    runHeadlessSmokeBlock.includes("!app.receive_amount_eth.is_empty()") &&
+    runHeadlessSmokeBlock.includes("transitions_checked: 105") &&
+    runHeadlessSmokeBlock.includes("backend_routes_checked: backend.calls.len()") &&
+    sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 105)") &&
+    sepoliaDemoUi.includes("assert_eq!(evidence.backend_routes_checked, 37)") &&
+    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 105)") &&
+    sepoliaDemoHeadless.includes("assert_eq!(report.backend_routes_checked, 37)"),
+  "Sepolia Receive QR UI/headless evidence must retain invalid suppression, exact click-only copy, four live purge paths, no undo resurrection, and 105/37 accounting",
 );
 requireInvariant(
   sepoliaDemoReceiveQrProduction.includes("const QUIET_ZONE_MODULES: u32 = 4") &&
@@ -561,6 +945,17 @@ requireInvariant(
     !/\bpub\s+use\b[^\r\n]*\breceive_qr\b/u.test(
       `${sepoliaDemoMain}\n${sepoliaDemoUiProduction}`,
     ) &&
+    receiveQrStructBlock.includes("payment_uri: Zeroizing<String>") &&
+    receiveQrStructBlock.includes("code: QrCode") &&
+    !/(?:pub|pub\([^)]*\))\s+(?:payment_uri|code)\b/u.test(
+      receiveQrStructBlock,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*pub\(crate\) struct ReceiveQr/u.test(
+      sepoliaDemoReceiveQrProduction,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Debug|fmt::Debug|(?:std|core)::fmt::Debug|Serialize|serde::Serialize)\s+for\s+ReceiveQr\b/u.test(
+      sepoliaDemoReceiveQrProduction,
+    ) &&
     walletAppBlock.includes("receive_qr_visible: bool") &&
     !/(?:payment_uri|QrCode|ReceiveQr)/u.test(walletAppBlock) &&
     (sepoliaDemoReceiveQrProduction.match(/crate::rpc::/gu) ?? []).length === 1 &&
@@ -575,11 +970,48 @@ requireInvariant(
 requireInvariant(
   rootReadme.includes("## 받기 QR 계약 (Sepolia 실행판 한정)") &&
     rootReadme.includes("`ethereum:<address>@11155111`") &&
+    rootReadme.includes(
+      "`ethereum:<address>@11155111?value=<canonical-decimal-wei>`",
+    ) &&
+    /0보다\s+큰 Sepolia ETH 십진수를 입력했을 때만, 소수점 아래 최대 18자리와 uint256 범위를\s+검사/u.test(
+      rootReadme,
+    ) &&
+    /빈 값,\s+잘못된 형식, 0, 초과 정밀도, 범위 초과 값에서는 QR과 결제 URI 및 그 복사 버튼을\s+표시하지 않습니다/u.test(
+      rootReadme,
+    ) &&
+    rootReadme.includes("별도의 일반 주소 복사는 그대로 사용할 수 있으며") &&
+    rootReadme.includes("강제 청구서나 입금 영수증이 아니며") &&
+    rootReadme.includes("운영체제 클립보드가 지갑 잠금이나 종료 뒤에도 남을 수 있습니다") &&
+    rootReadme.includes("`Zeroizing` 버퍼") &&
+    rootReadme.includes("별도 포렌식 삭제를 보장하지는 않습니다") &&
+    /백엔드, RPC, 저장소,\s+스키마를 건드리거나 새 의존성을 추가하지 않고/u.test(
+      rootReadme,
+    ) &&
     rootReadme.includes("`qrcodegen =1.8.0`") &&
     rootReadme.includes("전체 QR이 현재 보이는 영역 안에 들어오지 않으면 그리지 않고") &&
-    rootReadme.includes("계정 전환 요청·성공과 잠금·세션 정리는 QR을 다시 숨깁니다") &&
     sepoliaArchitectureDoc.includes("### Sepolia demo receive QR boundary") &&
-    /the address,\s+selected account index,\s+and Sepolia chain\s+ID are public identifying metadata/u.test(
+    sepoliaArchitectureDoc.includes(
+      "`ethereum:<address>@11155111?value=<canonical-decimal-wei>`",
+    ) &&
+    /positive decimal ETH input with at most 18 fractional\s+digits and within the full uint256 range/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /no URI, matrix, or URI-copy control is then\s+created/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /selected address, account index, fixed Sepolia chain\s+ID, and requested amount are public financial metadata/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /neither an enforced invoice\s+nor proof of payment, and the payer may alter or ignore it/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /OS clipboard, which may retain it after wallet lock or\s+process exit/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /Drop has no `egui::Context` with which to make a separate forensic or\s+retained-context erasure guarantee/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /adds no worker command,\s+backend\/RPC call, storage or schema field, dependency, file access, or network\s+path/u.test(
       sepoliaArchitectureDoc,
     ) &&
     sepoliaArchitectureDoc.includes(
@@ -588,7 +1020,7 @@ requireInvariant(
     /No QR texture,\s+cache, file, or network path exists/u.test(
       sepoliaArchitectureDoc,
     ),
-  "Sepolia Receive QR documentation must retain exact payload, public-metadata warning, dependency, geometry, and fail-closed scope",
+  "Sepolia Receive QR documentation must retain address-only default, exact optional wei payload, invalid suppression, public/payment/clipboard caveats, lifecycle residual, dependency, and geometry scope",
 );
 
 // Sepolia selected-account overview hydration remains a one-shot, bounded,
@@ -1561,7 +1993,7 @@ const activityHashCopyChecks = [
       !/(?:hash|activity|transaction)\w*(?:copy|copied|clipboard|explorer|url)\w*\s*:/iu.test(
         walletAppBlock,
       ) &&
-      (walletAppBlock.match(/^[ \t]{4}[A-Za-z_]\w*\s*:/gmu) ?? []).length === 41,
+      (walletAppBlock.match(/^[ \t]{4}[A-Za-z_]\w*\s*:/gmu) ?? []).length === 43,
   ],
   [
     "click evidence",
@@ -1910,11 +2342,11 @@ requireInvariant(
     headlessSmokeBlock.includes("app.activity_refresh_batch.is_some()") &&
     headlessSmokeBlock.includes("app.activity_refresh_target.is_some()") &&
     headlessSmokeBlock.includes("notice.contains(\"2/2 응답 확인·화면 반영 완료\")") &&
-    headlessSmokeBlock.includes("transitions_checked: 101") &&
+    headlessSmokeBlock.includes("transitions_checked: 105") &&
     headlessSmokeBlock.includes("backend_routes_checked: backend.calls.len()") &&
-    sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 101)") &&
+    sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 105)") &&
     sepoliaDemoUi.includes("assert_eq!(evidence.backend_routes_checked, 37)") &&
-    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 101)") &&
+    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 105)") &&
     sepoliaDemoHeadless.includes("assert_eq!(report.backend_routes_checked, 37)") &&
     sepoliaDemoHeadlessProduction.includes("ui::run_headless_smoke()") &&
     rootReadme.includes("activity-v1.bin") &&

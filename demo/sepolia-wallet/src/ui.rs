@@ -1630,6 +1630,8 @@ pub struct WalletApp {
     reauth_password: String,
     snapshot: Option<WalletSnapshot>,
     receive_qr_visible: bool,
+    receive_amount_requested: bool,
+    receive_amount_eth: Zeroizing<String>,
     custom_token_address: String,
     custom_tokens: Vec<CustomTokenSnapshot>,
     token_rows_unavailable_owner: Option<WalletAccountSnapshot>,
@@ -1687,6 +1689,8 @@ impl WalletApp {
             reauth_password: String::new(),
             snapshot: None,
             receive_qr_visible: false,
+            receive_amount_requested: false,
+            receive_amount_eth: Zeroizing::new(String::new()),
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             token_rows_unavailable_owner: None,
@@ -1736,6 +1740,8 @@ impl WalletApp {
             reauth_password: String::new(),
             snapshot: None,
             receive_qr_visible: false,
+            receive_amount_requested: false,
+            receive_amount_eth: Zeroizing::new(String::new()),
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             token_rows_unavailable_owner: None,
@@ -1787,6 +1793,8 @@ impl WalletApp {
             || !self.old_password.is_empty()
             || !self.imported_secret.is_empty()
             || !self.reauth_password.is_empty()
+            || self.receive_amount_requested
+            || !self.receive_amount_eth.is_empty()
     }
 
     fn generated_backup_ceremony_active(&self) -> bool {
@@ -1806,6 +1814,17 @@ impl WalletApp {
         if std::mem::take(&mut self.secret_text_state_purge_pending) {
             purge_secret_text_edit_state(context);
         }
+    }
+
+    fn clear_receive_amount_request(&mut self) {
+        self.receive_amount_requested = false;
+        self.receive_amount_eth.zeroize();
+        self.secret_text_state_purge_pending = true;
+    }
+
+    fn clear_receive_request_state(&mut self) {
+        self.receive_qr_visible = false;
+        self.clear_receive_amount_request();
     }
 
     fn clear_token_rows_unavailable_owner(&mut self) {
@@ -1863,7 +1882,7 @@ impl WalletApp {
             zeroize_wallet_snapshot(snapshot);
         }
         self.snapshot = None;
-        self.receive_qr_visible = false;
+        self.clear_receive_request_state();
         for token in &mut self.custom_tokens {
             token.contract_address.zeroize();
             match &mut token.state {
@@ -2576,7 +2595,7 @@ impl WalletApp {
             self.error = Some("선택할 수 없는 계정입니다.".to_owned());
             return;
         }
-        self.receive_qr_visible = false;
+        self.clear_receive_request_state();
         self.clear_activity_refresh_state();
         self.send_command(
             WorkerCommand::SelectAccount { index },
@@ -2950,7 +2969,7 @@ impl WalletApp {
                         zeroize_wallet_snapshot(current);
                     }
                     self.snapshot = Some(snapshot);
-                    self.receive_qr_visible = false;
+                    self.clear_receive_request_state();
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
                     self.clear_token_rows_unavailable_owner();
                     zeroize_transfer_asset_choice(&mut self.transfer_asset);
@@ -3951,7 +3970,11 @@ impl WalletApp {
             )
             .clicked()
         {
-            self.receive_qr_visible = !self.receive_qr_visible;
+            if self.receive_qr_visible {
+                self.clear_receive_request_state();
+            } else {
+                self.receive_qr_visible = true;
+            }
         }
         if self.receive_qr_visible {
             ui.add_space(6.0);
@@ -3966,7 +3989,44 @@ impl WalletApp {
                     "QR과 결제 URI는 공개 주소를 노출합니다. 안전한 곳에서만 보여 주세요.",
                 );
 
-                match crate::receive_qr::ReceiveQr::new(selected_account.address.as_str()) {
+                let amount_toggle = ui.toggle_value(
+                    &mut self.receive_amount_requested,
+                    "받을 Sepolia ETH 금액 지정",
+                );
+                if amount_toggle.changed() && !self.receive_amount_requested {
+                    self.clear_receive_amount_request();
+                }
+                if self.receive_amount_requested {
+                    ui.colored_label(
+                        palette.warning,
+                        "선택 계정 주소, 고정 Sepolia 체인, 요청 금액은 화면의 URI와 QR에 공개되며 복사하면 운영체제 클립보드에 남습니다. 클립보드는 지갑 잠금 뒤에도 유지될 수 있습니다.",
+                    );
+                    ui.label(
+                        RichText::new(
+                            "EIP-681 금액은 강제 청구서나 입금 확인이 아닙니다. 보내는 쪽이 금액을 바꾸거나 무시할 수 있으므로 실제 입금은 별도로 확인하세요.",
+                        )
+                        .small()
+                        .color(palette.warning),
+                    );
+                    ui.label("요청할 Sepolia ETH 금액");
+                    let _ = ui.add(
+                        egui::TextEdit::singleline(&mut *self.receive_amount_eth)
+                            .id(receive_amount_text_edit_id())
+                            .char_limit(crate::receive_qr::MAX_ETH_AMOUNT_INPUT_BYTES)
+                            .hint_text("예: 0.001")
+                            .desired_width(240.0),
+                    );
+                }
+
+                let receive_qr = if self.receive_amount_requested {
+                    crate::receive_qr::ReceiveQr::new_with_native_eth_amount(
+                        selected_account.address.as_str(),
+                        self.receive_amount_eth.as_str(),
+                    )
+                } else {
+                    crate::receive_qr::ReceiveQr::new(selected_account.address.as_str())
+                };
+                match receive_qr {
                     Ok(qr) => {
                         ui.label("EIP-681 결제 URI");
                         ui.add(
@@ -3974,7 +4034,14 @@ impl WalletApp {
                         );
                         if ui.button("결제 URI 복사").clicked() {
                             ui.ctx().copy_text(qr.payment_uri().to_owned());
-                            self.notice = Some("결제 URI를 클립보드에 복사했습니다.".to_owned());
+                            self.notice = Some(
+                                if self.receive_amount_requested {
+                                    "금액 포함 결제 URI를 클립보드에 복사했습니다. 운영체제 클립보드는 지갑 잠금 뒤에도 남을 수 있습니다."
+                                } else {
+                                    "결제 URI를 클립보드에 복사했습니다. 운영체제 클립보드는 지갑 잠금 뒤에도 남을 수 있습니다."
+                                }
+                                .to_owned(),
+                            );
                         }
                         ui.add_space(6.0);
                         ui.vertical_centered(|ui| match qr.paint(ui) {
@@ -3996,6 +4063,7 @@ impl WalletApp {
                             }
                             Err(
                                 crate::receive_qr::ReceiveQrError::InvalidAddress
+                                | crate::receive_qr::ReceiveQrError::InvalidAmount
                                 | crate::receive_qr::ReceiveQrError::Encoding,
                             ) => {
                                 ui.colored_label(
@@ -4004,6 +4072,12 @@ impl WalletApp {
                                 );
                             }
                         });
+                    }
+                    Err(crate::receive_qr::ReceiveQrError::InvalidAmount) => {
+                        ui.colored_label(
+                            palette.error,
+                            "요청 금액을 확인하세요. 0보다 크고 소수점 18자리 이하인 ETH 십진수만 입력할 수 있습니다.",
+                        );
                     }
                     Err(
                         crate::receive_qr::ReceiveQrError::InvalidAddress
@@ -5987,6 +6061,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         reauth_password: String::new(),
         snapshot: None,
         receive_qr_visible: false,
+        receive_amount_requested: false,
+        receive_amount_eth: Zeroizing::new(String::new()),
         custom_token_address: String::new(),
         custom_tokens: Vec::new(),
         token_rows_unavailable_owner: None,
@@ -6204,10 +6280,47 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         contract_address: TOKEN_CONTRACT_SENTINEL.to_owned(),
     };
     app.last_transaction_hash = Some("headless-prior-account-hash".to_owned());
+    {
+        let selected = app
+            .snapshot
+            .as_ref()
+            .and_then(WalletSnapshot::selected_account)
+            .ok_or(())?;
+        let address_only =
+            crate::receive_qr::ReceiveQr::new(selected.address.as_str()).map_err(|_| ())?;
+        let amount_request = crate::receive_qr::ReceiveQr::new_with_native_eth_amount(
+            selected.address.as_str(),
+            "1.25",
+        )
+        .map_err(|_| ())?;
+        if address_only.payment_uri()
+            != format!(
+                "ethereum:{}@{}",
+                selected.address,
+                crate::rpc::SEPOLIA_CHAIN_ID
+            )
+            || amount_request.payment_uri()
+                != format!(
+                    "ethereum:{}@{}?value=1250000000000000000",
+                    selected.address,
+                    crate::rpc::SEPOLIA_CHAIN_ID
+                )
+            || command_receiver.try_recv().is_ok()
+        {
+            return Err(());
+        }
+    }
     app.secret_text_state_purge_pending = false;
     app.receive_qr_visible = true;
+    app.receive_amount_requested = true;
+    app.receive_amount_eth = Zeroizing::new("1.25".to_owned());
     app.select_account(1);
-    if app.pending != Some(PendingAction::SelectAccount) || app.receive_qr_visible {
+    if app.pending != Some(PendingAction::SelectAccount)
+        || app.receive_qr_visible
+        || app.receive_amount_requested
+        || !app.receive_amount_eth.is_empty()
+        || !app.secret_text_state_purge_pending
+    {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
@@ -6215,6 +6328,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     })?;
     if app.pending != Some(PendingAction::Refresh)
         || app.receive_qr_visible
+        || app.receive_amount_requested
+        || !app.receive_amount_eth.is_empty()
         || app
             .snapshot
             .as_ref()
@@ -6672,6 +6787,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         Instant::now(),
     );
     app.receive_qr_visible = true;
+    app.receive_amount_requested = true;
+    app.receive_amount_eth = Zeroizing::new("1.25".to_owned());
     let previous_epoch = app.session_epoch;
     app.request_lock(LockReason::Explicit);
     if app.session_epoch != previous_epoch + 1
@@ -6684,6 +6801,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.prepared.is_some()
         || app.secret_reveal.is_some()
         || app.receive_qr_visible
+        || app.receive_amount_requested
+        || !app.receive_amount_eth.is_empty()
         || !app.custom_tokens.is_empty()
         || !app.password.is_empty()
         || !app.password_confirmation.is_empty()
@@ -6766,7 +6885,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 101,
+        transitions_checked: 105,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -7345,6 +7464,10 @@ fn amount_eth_text_edit_id() -> egui::Id {
     egui::Id::new("sepolia-demo-transfer-amount")
 }
 
+fn receive_amount_text_edit_id() -> egui::Id {
+    egui::Id::new("sepolia-demo-receive-amount")
+}
+
 fn custom_priority_fee_text_edit_id() -> egui::Id {
     egui::Id::new("sepolia-demo-transfer-priority-fee")
 }
@@ -7353,7 +7476,7 @@ fn custom_max_fee_text_edit_id() -> egui::Id {
     egui::Id::new("sepolia-demo-transfer-max-fee")
 }
 
-fn secret_text_edit_ids() -> [egui::Id; 15] {
+fn secret_text_edit_ids() -> [egui::Id; 16] {
     [
         password_text_edit_id(),
         password_confirmation_text_edit_id(),
@@ -7368,6 +7491,7 @@ fn secret_text_edit_ids() -> [egui::Id; 15] {
         custom_token_address_text_edit_id(),
         recipient_text_edit_id(),
         amount_eth_text_edit_id(),
+        receive_amount_text_edit_id(),
         custom_priority_fee_text_edit_id(),
         custom_max_fee_text_edit_id(),
     ]
@@ -7766,6 +7890,70 @@ mod tests {
             collect_rendered_text(&clipped.shape, &mut rendered);
         }
         rendered
+    }
+
+    fn inspect_receive_panel_shape(
+        shape: &egui::Shape,
+        rendered: &mut String,
+        copy_button_rect: &mut Option<egui::Rect>,
+        qr_rectangles: &mut usize,
+    ) {
+        match shape {
+            egui::Shape::Text(text) => {
+                let value = text.galley.job.text.as_str();
+                rendered.push_str(value);
+                rendered.push('\n');
+                if value == "결제 URI 복사" {
+                    *copy_button_rect = Some(text.visual_bounding_rect());
+                }
+            }
+            egui::Shape::Rect(rect)
+                if rect.fill == egui::Color32::BLACK || rect.fill == egui::Color32::WHITE =>
+            {
+                *qr_rectangles += 1;
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    inspect_receive_panel_shape(shape, rendered, copy_button_rect, qr_rectangles);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_receive_panel_frame(
+        context: &egui::Context,
+        app: &mut super::WalletApp,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> (String, Option<egui::Rect>, usize, Vec<egui::OutputCommand>) {
+        let mut input = hold_frame_input(time, events);
+        input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1_200.0, 1_400.0),
+        ));
+        let output = context.run(input, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let _ = app.account_panel(ui);
+            });
+        });
+        let mut rendered = String::new();
+        let mut copy_button_rect = None;
+        let mut qr_rectangles = 0;
+        for clipped in &output.shapes {
+            inspect_receive_panel_shape(
+                &clipped.shape,
+                &mut rendered,
+                &mut copy_button_rect,
+                &mut qr_rectangles,
+            );
+        }
+        (
+            rendered,
+            copy_button_rect,
+            qr_rectangles,
+            output.platform_output.commands,
+        )
     }
 
     fn run_activity_hash_copy_frame(
@@ -8474,6 +8662,8 @@ mod tests {
                 word_count: 12,
             })),
             receive_qr_visible: false,
+            receive_amount_requested: false,
+            receive_amount_eth: zeroize::Zeroizing::new(String::new()),
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             token_rows_unavailable_owner: None,
@@ -9276,11 +9466,11 @@ mod tests {
     }
 
     #[test]
-    fn session_scrub_purges_all_fifteen_explicit_text_states_and_financial_undo() {
+    fn session_scrub_purges_all_sixteen_explicit_text_states_and_financial_undo() {
         let context = egui::Context::default();
         let ids = super::secret_text_edit_ids();
         let mut unique = std::collections::HashSet::new();
-        assert_eq!(ids.len(), 15);
+        assert_eq!(ids.len(), 16);
         assert!(ids.iter().all(|id| unique.insert(*id)));
         for id in ids {
             egui::widgets::text_edit::TextEditState::default().store(&context, id);
@@ -9322,22 +9512,45 @@ mod tests {
         );
         assert_eq!(app.amount_eth.len(), 8);
         app.receive_qr_visible = true;
+        app.receive_amount_requested = true;
+        let receive_amount_id = super::receive_amount_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            receive_amount_id,
+            &mut app.receive_amount_eth,
+            true,
+            4.3,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            receive_amount_id,
+            &mut app.receive_amount_eth,
+            false,
+            4.4,
+            vec![egui::Event::Text("1.25".to_owned())],
+        );
+        assert_eq!(app.receive_amount_eth.as_str(), "1.25");
         app.request_lock(super::LockReason::Explicit);
         app.purge_queued_secret_text_edit_state(&context);
         assert!(app.amount_eth.is_empty());
         assert!(!app.receive_qr_visible);
+        assert!(!app.receive_amount_requested);
+        assert!(app.receive_amount_eth.is_empty());
 
-        let mut recreated = String::new();
-        run_secret_text_frame(&context, amount_id, &mut recreated, true, 5.0, Vec::new());
-        run_secret_text_frame(
-            &context,
-            amount_id,
-            &mut recreated,
-            false,
-            5.1,
-            vec![undo_key_event()],
-        );
-        assert!(recreated.is_empty());
+        for id in [amount_id, receive_amount_id] {
+            let mut recreated = String::new();
+            run_secret_text_frame(&context, id, &mut recreated, true, 5.0, Vec::new());
+            run_secret_text_frame(
+                &context,
+                id,
+                &mut recreated,
+                false,
+                5.1,
+                vec![undo_key_event()],
+            );
+            assert!(recreated.is_empty());
+        }
     }
 
     #[test]
@@ -9415,6 +9628,24 @@ mod tests {
         let mut switched = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
         switched.selected_account_index = 1;
         app.receive_qr_visible = true;
+        app.receive_amount_requested = true;
+        let receive_amount_id = super::receive_amount_text_edit_id();
+        run_secret_text_frame(
+            &context,
+            receive_amount_id,
+            &mut app.receive_amount_eth,
+            true,
+            3.3,
+            Vec::new(),
+        );
+        run_secret_text_frame(
+            &context,
+            receive_amount_id,
+            &mut app.receive_amount_eth,
+            false,
+            3.4,
+            vec![egui::Event::Text("1.25".to_owned())],
+        );
         switched.balance_eth = "조회 전".to_owned();
         app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)));
         app.purge_queued_secret_text_edit_state(&context);
@@ -9436,9 +9667,11 @@ mod tests {
         assert!(app.last_transaction_hash.is_none());
         assert!(app.secret_reveal.is_none());
         assert!(!app.receive_qr_visible);
+        assert!(!app.receive_amount_requested);
+        assert!(app.receive_amount_eth.is_empty());
         assert!(app.export_kind == SecretRevealKind::Mnemonic);
 
-        for id in [amount_id, reauth_id] {
+        for id in [amount_id, reauth_id, receive_amount_id] {
             let mut recreated = String::new();
             run_secret_text_frame(&context, id, &mut recreated, true, 4.0, Vec::new());
             run_secret_text_frame(
@@ -9613,7 +9846,251 @@ mod tests {
                 )
             );
             assert!(!qr.payment_uri().contains(other.address.as_str()));
+
+            let amount_qr = crate::receive_qr::ReceiveQr::new_with_native_eth_amount(
+                selected.address.as_str(),
+                "1.25",
+            )
+            .expect("headless address and native ETH amount are a valid receive target");
+            assert_eq!(
+                amount_qr.payment_uri(),
+                format!(
+                    "ethereum:{}@{}?value=1250000000000000000",
+                    selected.address,
+                    crate::rpc::SEPOLIA_CHAIN_ID
+                )
+            );
+            assert!(!amount_qr.payment_uri().contains(other.address.as_str()));
         }
+    }
+
+    #[test]
+    fn receive_amount_hide_toggle_select_request_and_response_purge_actual_egui_undo() {
+        let transition_names = [
+            "hide receive QR",
+            "turn amount request off",
+            "start account selection",
+            "install selected account",
+        ];
+
+        for (transition, transition_name) in transition_names.into_iter().enumerate() {
+            let context = egui::Context::default();
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            app.receive_qr_visible = true;
+            app.receive_amount_requested = true;
+            let receive_amount_id = super::receive_amount_text_edit_id();
+            run_secret_text_frame(
+                &context,
+                receive_amount_id,
+                &mut app.receive_amount_eth,
+                true,
+                0.0,
+                Vec::new(),
+            );
+            run_secret_text_frame(
+                &context,
+                receive_amount_id,
+                &mut app.receive_amount_eth,
+                false,
+                0.1,
+                vec![egui::Event::Text("1.25".to_owned())],
+            );
+            run_secret_text_frame(
+                &context,
+                receive_amount_id,
+                &mut app.receive_amount_eth,
+                false,
+                1.2,
+                Vec::new(),
+            );
+            assert_eq!(app.receive_amount_eth.as_str(), "1.25");
+            assert!(
+                egui::widgets::text_edit::TextEditState::load(&context, receive_amount_id)
+                    .is_some()
+            );
+
+            match transition {
+                0 => app.clear_receive_request_state(),
+                1 => app.clear_receive_amount_request(),
+                2 => app.select_account(1),
+                3 => {
+                    app.pending = Some(PendingAction::SelectAccount);
+                    let mut switched = app
+                        .snapshot
+                        .as_ref()
+                        .expect("current account snapshot")
+                        .clone();
+                    switched.selected_account_index = 1;
+                    app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)));
+                }
+                _ => unreachable!("bounded transition table"),
+            }
+
+            assert!(
+                !app.receive_amount_requested,
+                "{transition_name} must disable amount requests"
+            );
+            assert!(
+                app.receive_amount_eth.is_empty(),
+                "{transition_name} must zeroize the owned amount"
+            );
+            assert_eq!(
+                app.receive_qr_visible,
+                transition == 1,
+                "only amount toggle-off keeps the address-only receive panel open"
+            );
+            assert!(app.secret_text_state_purge_pending);
+            app.purge_queued_secret_text_edit_state(&context);
+            assert!(
+                egui::widgets::text_edit::TextEditState::load(&context, receive_amount_id)
+                    .is_none(),
+                "{transition_name} must delete the exact receive TextEdit state"
+            );
+
+            let expected_command = command_receiver.try_recv();
+            match transition {
+                2 => assert!(matches!(
+                    expected_command,
+                    Ok(WorkerRequest {
+                        command: WorkerCommand::SelectAccount { index: 1 },
+                        ..
+                    })
+                )),
+                3 => assert!(matches!(
+                    expected_command,
+                    Ok(WorkerRequest {
+                        command: WorkerCommand::Refresh,
+                        ..
+                    })
+                )),
+                0 | 1 => assert!(expected_command.is_err()),
+                _ => unreachable!("bounded transition table"),
+            }
+            assert!(command_receiver.try_recv().is_err());
+
+            let mut recreated = String::new();
+            run_secret_text_frame(
+                &context,
+                receive_amount_id,
+                &mut recreated,
+                true,
+                2.0,
+                Vec::new(),
+            );
+            run_secret_text_frame(
+                &context,
+                receive_amount_id,
+                &mut recreated,
+                false,
+                2.1,
+                vec![undo_key_event()],
+            );
+            assert!(
+                recreated.is_empty(),
+                "{transition_name} must not resurrect amount text through Ctrl+Z"
+            );
+        }
+    }
+
+    #[test]
+    fn receive_amount_panel_suppresses_invalid_and_copies_exact_valid_qr_payload() {
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut invalid = test_app(commands, events);
+        invalid.receive_qr_visible = true;
+        invalid.receive_amount_requested = true;
+        invalid.receive_amount_eth = zeroize::Zeroizing::new("0".to_owned());
+
+        let (rendered, copy_button_rect, qr_rectangles, output_commands) =
+            run_receive_panel_frame(&context, &mut invalid, 0.0, Vec::new());
+        assert!(rendered.contains("선택 계정 주소, 고정 Sepolia 체인, 요청 금액"));
+        assert!(rendered.contains("운영체제 클립보드"));
+        assert!(rendered.contains("지갑 잠금 뒤에도 유지될 수 있습니다"));
+        assert!(rendered.contains("EIP-681 금액은 강제 청구서나 입금 확인이 아닙니다"));
+        assert!(rendered.contains("보내는 쪽이 금액을 바꾸거나 무시할 수 있으므로"));
+        assert!(rendered.contains("실제 입금은 별도로 확인하세요"));
+        assert!(rendered.contains("소수점 18자리 이하"));
+        assert!(!rendered.contains("EIP-681 결제 URI"));
+        assert!(!rendered.contains("결제 URI 복사"));
+        assert!(!rendered.contains("ethereum:"));
+        assert!(copy_button_rect.is_none());
+        assert_eq!(qr_rectangles, 0);
+        assert!(output_commands.is_empty());
+        assert!(invalid.notice.is_none());
+        assert!(invalid.error.is_none());
+        assert!(command_receiver.try_recv().is_err());
+
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut valid = test_app(commands, events);
+        valid.receive_qr_visible = true;
+        valid.receive_amount_requested = true;
+        valid.receive_amount_eth = zeroize::Zeroizing::new("1.25".to_owned());
+        let selected = valid
+            .snapshot
+            .as_ref()
+            .and_then(WalletSnapshot::selected_account)
+            .expect("selected account")
+            .clone();
+        let expected_qr = crate::receive_qr::ReceiveQr::new_with_native_eth_amount(
+            selected.address.as_str(),
+            "1.25",
+        )
+        .expect("valid selected-account amount request");
+        let expected_uri = expected_qr.payment_uri().to_owned();
+
+        let (rendered, copy_button_rect, qr_rectangles, output_commands) =
+            run_receive_panel_frame(&context, &mut valid, 0.0, Vec::new());
+        assert_eq!(rendered.matches(expected_uri.as_str()).count(), 1);
+        assert!(qr_rectangles > 100);
+        assert!(output_commands.is_empty());
+        assert!(valid.notice.is_none());
+        assert!(command_receiver.try_recv().is_err());
+
+        let pointer = copy_button_rect.expect("valid amount copy button").center();
+        let (_, _, _, output_commands) = run_receive_panel_frame(
+            &context,
+            &mut valid,
+            0.1,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(output_commands.is_empty());
+        assert!(command_receiver.try_recv().is_err());
+
+        let (_, _, _, output_commands) = run_receive_panel_frame(
+            &context,
+            &mut valid,
+            0.2,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(
+            output_commands,
+            vec![egui::OutputCommand::CopyText(expected_uri.clone())]
+        );
+        let notice = valid.notice.as_deref().expect("category-only copy notice");
+        assert!(notice.contains("클립보드"));
+        assert!(notice.contains("지갑 잠금 뒤에도"));
+        assert!(!notice.contains(expected_uri.as_str()));
+        assert!(!notice.contains(selected.address.as_str()));
+        assert!(!notice.contains("1.25"));
+        assert!(command_receiver.try_recv().is_err());
     }
 
     #[test]
@@ -9656,8 +10133,13 @@ mod tests {
         clear_snapshot_pending_broadcast(app.snapshot.as_mut());
 
         app.receive_qr_visible = true;
+        app.receive_amount_requested = true;
+        app.receive_amount_eth = zeroize::Zeroizing::new("1.25".to_owned());
         app.select_account(1);
         assert!(!app.receive_qr_visible);
+        assert!(!app.receive_amount_requested);
+        assert!(app.receive_amount_eth.is_empty());
+        assert!(app.secret_text_state_purge_pending);
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(WorkerRequest {
@@ -11235,7 +11717,7 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 101);
+        assert_eq!(evidence.transitions_checked, 105);
         assert_eq!(evidence.backend_routes_checked, 37);
         Ok(())
     }
