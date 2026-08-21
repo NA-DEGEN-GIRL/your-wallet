@@ -270,6 +270,13 @@ const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
 const sepoliaDemoReceiveQrProduction = withoutBottomTestModule(sepoliaDemoReceiveQr);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
 const sepoliaDemoHeadlessProduction = withoutBottomTestModule(sepoliaDemoHeadless);
+const sepoliaDemoUiHeadlessStart = sepoliaDemoUiProduction.indexOf(
+  "pub(crate) fn run_headless_smoke",
+);
+const sepoliaDemoUiRuntime =
+  sepoliaDemoUiHeadlessStart === -1
+    ? sepoliaDemoUiProduction
+    : sepoliaDemoUiProduction.slice(0, sepoliaDemoUiHeadlessStart);
 
 // Sepolia bounded account switching is authenticated, session-only, and
 // bound independently at every prepare/confirm/export/pending boundary.
@@ -583,6 +590,358 @@ requireInvariant(
     ),
   "Sepolia Receive QR documentation must retain exact payload, public-metadata warning, dependency, geometry, and fail-closed scope",
 );
+
+// Sepolia selected-account overview hydration remains a one-shot, bounded,
+// non-authoritative follow-up. It may observe authenticated token rows but may
+// not mutate their namespace, and its response can update only the exact local
+// account/session snapshot that initiated the request.
+const selectedOverviewBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)pub struct SelectedAccountOverview\s*\{/u,
+);
+const selectedOverviewImplBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl SelectedAccountOverview\s*\{/u,
+);
+const selectedOverviewValidationBlock = rustFunctionBlock(
+  selectedOverviewImplBlock,
+  "is_well_formed",
+);
+const runtimeBalanceValidationBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "valid_runtime_balance_shape",
+);
+const customTokenStateValidationBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "custom_token_state_is_well_formed",
+);
+const verifySepoliaBlock = rustFunctionBlock(
+  sepoliaDemoRpcProduction,
+  "verify_sepolia",
+);
+const tokenObservationLeaseBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)struct TokenObservationLease\s*<[^>]+>\s*\{/u,
+);
+const tokenObservationLeaseImplBlock = rustItemBlock(
+  sepoliaDemoBackendProduction,
+  /(?:^|\n)impl\s*<[^>]+>\s*TokenObservationLease\s*<[^>]+>\s*\{/u,
+);
+const tokenObservationAcquireBlock = rustFunctionBlock(
+  tokenObservationLeaseImplBlock,
+  "acquire",
+);
+const productionTokenObservationLockBlock =
+  /#\[cfg\(not\(test\)\)\]\s*let process_guard = match TOKEN_STORE_PROCESS_LOCK\.try_lock\(\)\s*\{[\s\S]*?\n\s*\};\s*#\[cfg\(test\)\]/u.exec(
+    tokenObservationAcquireBlock,
+  )?.[0] ?? "";
+const openTokenObservationFileBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "open_token_observation_file",
+);
+const refreshSelectedOverviewOuterBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "refresh_selected_overview",
+);
+const refreshSelectedOverviewBlock = rustFunctionBlock(
+  sepoliaDemoBackendProduction,
+  "refresh_selected_overview_inner",
+);
+const refreshOverviewUiBlock = rustFunctionBlock(walletAppImplBlock, "refresh");
+const refreshedOverviewUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::Refreshed\(result\)\s*=>\s*match result\s*\{/u,
+);
+const importedOverviewUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::MnemonicImported\(result\)\s*\|\s*WorkerEvent::PrivateKeyImported\(result\)\s*=>\s*\{/u,
+);
+const openedOverviewUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::Opened\(result\)\s*=>\s*match result\s*\{/u,
+);
+const migratedOverviewUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::LegacyMigrated\(result\)\s*=>\s*match result\s*\{/u,
+);
+const generatedConfirmedUiBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /WorkerEvent::GeneratedConfirmed\(result\)\s*=>\s*match result\s*\{/u,
+);
+const executeWorkerCommandBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "execute_worker_command",
+);
+const customTokenPanelBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "custom_token_panel",
+);
+requireInvariant(
+  sepoliaDemoUiProduction.includes(
+    "pub(crate) const AUTO_OVERVIEW_TOKEN_LIMIT: usize = 3",
+  ) &&
+    sepoliaDemoUiProduction.includes(
+      "const MAX_RUNTIME_BALANCE_BYTES: usize = 79",
+    ) &&
+    sepoliaDemoUiProduction.includes(
+      'pub(crate) const ACCOUNT_BALANCE_UNKNOWN: &str = "조회 전"',
+    ) &&
+    selectedOverviewBlock.includes("snapshot: WalletSnapshot") &&
+    selectedOverviewBlock.includes("token_owner_account_index: u8") &&
+    selectedOverviewBlock.includes("token_owner_address: String") &&
+    selectedOverviewBlock.includes("custom_tokens: Vec<CustomTokenSnapshot>") &&
+    selectedOverviewBlock.includes("token_rows_loaded: bool") &&
+    selectedOverviewBlock.includes("balance_refreshed: bool") &&
+    selectedOverviewBlock.includes("deferred_token_count: u8") &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*pub struct SelectedAccountOverview/u.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    !/(?:^|\n)\s*(?:unsafe\s+)?impl(?:\s*<[^>{}\r\n]*>)?\s+[^{}\r\n]+\s+for\s+[^{};\r\n]*\bSelectedAccountOverview\b/mu.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    !/\bpub(?:\([^)]*\))?\s+(?:snapshot|token_owner_account_index|token_owner_address|custom_tokens|token_rows_loaded|balance_refreshed|status|deferred_token_count)\s*:/u.test(
+      selectedOverviewBlock,
+    ) &&
+    selectedOverviewValidationBlock.includes("self.snapshot.is_well_formed()") &&
+    selectedOverviewValidationBlock.includes(
+      "account.index == self.token_owner_account_index",
+    ) &&
+    selectedOverviewValidationBlock.includes(
+      "account.address == self.token_owner_address",
+    ) &&
+    selectedOverviewValidationBlock.includes("self.custom_tokens.len() <= 32") &&
+    selectedOverviewValidationBlock.includes(
+      ".saturating_sub(AUTO_OVERVIEW_TOKEN_LIMIT)",
+    ) &&
+    selectedOverviewValidationBlock.includes(
+      "index >= AUTO_OVERVIEW_TOKEN_LIMIT",
+    ) &&
+    selectedOverviewValidationBlock.includes(
+      "self.snapshot.balance_eth == ACCOUNT_BALANCE_UNKNOWN",
+    ) &&
+    selectedOverviewValidationBlock.includes("WalletKind::LegacyV1RawPrivateKey") &&
+    runtimeBalanceValidationBlock.includes(
+      "amount.len() > MAX_RUNTIME_BALANCE_BYTES",
+    ) &&
+    customTokenStateValidationBlock.includes("*decimals <= 36") &&
+    customTokenStateValidationBlock.includes("symbol.len() <= 16") &&
+    customTokenStateValidationBlock.includes(
+      "OVERVIEW_TOKEN_UNAVAILABLE_ERRORS.contains(&reason_ko.as_str())",
+    ),
+  "Sepolia selected-overview DTO must remain move-only, exact-owner-bound, bounded, canonical, and category-only",
+);
+requireInvariant(
+  tokenObservationLeaseBlock.includes("_process_guard: MutexGuard") &&
+    tokenObservationLeaseBlock.includes("_lock_file: Option<File>") &&
+    tokenObservationLeaseBlock.includes("_store_file: Option<File>") &&
+    productionTokenObservationLockBlock.includes(
+      "TOKEN_STORE_PROCESS_LOCK.try_lock()",
+    ) &&
+    productionTokenObservationLockBlock.includes("TryLockError::WouldBlock") &&
+    productionTokenObservationLockBlock.includes("return Ok(None)") &&
+    productionTokenObservationLockBlock.includes("TryLockError::Poisoned") &&
+    productionTokenObservationLockBlock.includes(
+      "return Err(BackendError::TokenStoreStorage)",
+    ) &&
+    !productionTokenObservationLockBlock.includes(
+      "TOKEN_STORE_PROCESS_LOCK.lock()",
+    ) &&
+    tokenObservationAcquireBlock.includes("fs::symlink_metadata(&lock_path)") &&
+    tokenObservationAcquireBlock.includes("fs::symlink_metadata(token_store_path)") &&
+    tokenObservationAcquireBlock.includes("FILE_ATTRIBUTE_REPARSE_POINT") &&
+    tokenObservationAcquireBlock.includes("MAX_TOKEN_STORE_BYTES") &&
+    tokenObservationAcquireBlock.includes("TokenObservationOpenError::Contended") &&
+    tokenObservationAcquireBlock.includes("TokenObservationOpenError::NotFound") &&
+    tokenObservationAcquireBlock.includes("TokenObservationOpenError::Storage") &&
+    !/(?:create_new|\.write(?:_all)?\s*\(|remove_file|delete|reconcile_orphan|\.flush\s*\(|sync_all|temporary_path)/u.test(
+      tokenObservationAcquireBlock,
+    ) &&
+    openTokenObservationFileBlock.includes(".read(true)") &&
+    openTokenObservationFileBlock.includes(".share_mode(FILE_SHARE_READ.0)") &&
+    openTokenObservationFileBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
+    openTokenObservationFileBlock.includes("ERROR_SHARING_VIOLATION") &&
+    !/(?:\.write\(true\)|FILE_SHARE_WRITE|FILE_SHARE_DELETE)/u.test(
+      openTokenObservationFileBlock,
+    ),
+  "Sepolia token observation must stay non-mutating, contention-distinct, exact-object, regular, and reparse-safe",
+);
+const initialOverviewVerifyIndex = refreshSelectedOverviewBlock.indexOf(
+  "let chain_verified = self.rpc.verify_sepolia().is_ok()",
+);
+const overviewBalanceIndex = refreshSelectedOverviewBlock.indexOf(
+  "let balance = self.rpc.balance(address).ok()",
+);
+const overviewInspectIndex = refreshSelectedOverviewBlock.indexOf(
+  "self.inspect_token_with_permit(",
+);
+const finalOverviewPermitIndex = refreshSelectedOverviewBlock.indexOf(
+  "ensure_session_current(permit)?;\n            let final_chain_verified",
+);
+const finalOverviewVerifyIndex = refreshSelectedOverviewBlock.indexOf(
+  "let final_chain_verified = self.rpc.verify_sepolia().is_ok()",
+);
+const finalOverviewLoadIndex = refreshSelectedOverviewBlock.lastIndexOf(
+  "self.load_token_store(context)?",
+);
+const overviewCacheInstallIndex = refreshSelectedOverviewBlock.indexOf(
+  "self.last_balance = observed_balance.map",
+);
+requireInvariant(
+  refreshSelectedOverviewOuterBlock.includes(
+    "let result = self.refresh_selected_overview_inner(permit)",
+  ) &&
+    refreshSelectedOverviewOuterBlock.includes("if result.is_err()") &&
+    refreshSelectedOverviewOuterBlock.includes("self.lock()") &&
+    refreshSelectedOverviewBlock.includes("self.last_balance = None") &&
+    refreshSelectedOverviewBlock.includes("let local_snapshot = self.snapshot()?") &&
+    refreshSelectedOverviewBlock.includes(
+      "TokenObservationLease::acquire(&self.token_store_path)",
+    ) &&
+    refreshSelectedOverviewBlock.includes("position >= AUTO_OVERVIEW_TOKEN_LIMIT") &&
+    refreshSelectedOverviewBlock.includes("AUTO_OVERVIEW_DEFERRED_ERROR") &&
+    initialOverviewVerifyIndex !== -1 &&
+    overviewBalanceIndex > initialOverviewVerifyIndex &&
+    overviewInspectIndex > overviewBalanceIndex &&
+    finalOverviewPermitIndex > overviewInspectIndex &&
+    finalOverviewVerifyIndex > finalOverviewPermitIndex &&
+    finalOverviewLoadIndex > finalOverviewVerifyIndex &&
+    overviewCacheInstallIndex > finalOverviewLoadIndex &&
+    (refreshSelectedOverviewBlock.match(/self\.rpc\.verify_sepolia\(\)/gu) ?? [])
+      .length === 2 &&
+    refreshSelectedOverviewBlock.includes("observed_balance = None") &&
+    refreshSelectedOverviewBlock.includes(
+      "final_loaded.baseline.bytes != loaded.baseline.bytes",
+    ) &&
+    refreshSelectedOverviewBlock.includes(
+      "final_loaded.store.entries() != loaded.store.entries()",
+    ) &&
+    refreshSelectedOverviewBlock.includes(
+      "snapshot.pending_broadcast != local_snapshot.pending_broadcast",
+    ) &&
+    refreshSelectedOverviewBlock.includes(
+      "snapshot.activity != local_snapshot.activity",
+    ),
+  "Sepolia selected-overview hydration must retain permit, chain, token-baseline, local-identity bookends before cache installation",
+);
+requireInvariant(
+  refreshOverviewUiBlock.includes("if self.pending.is_some()") &&
+    refreshOverviewUiBlock.includes("mark_snapshot_balance_stale") &&
+    refreshOverviewUiBlock.includes(
+      "self.send_command(WorkerCommand::Refresh, PendingAction::Refresh)",
+    ) &&
+    importedOverviewUiBlock.includes("self.refresh()") &&
+    openedOverviewUiBlock.includes("self.refresh()") &&
+    accountSelectedUiBlock.includes("self.refresh()") &&
+    migratedOverviewUiBlock.includes("self.refresh()") &&
+    !generatedConfirmedUiBlock.includes("self.refresh()") &&
+    (sepoliaDemoUiProduction.match(/self\.refresh\(\);/gu) ?? []).length === 5 &&
+    executeWorkerCommandBlock.includes(
+      "WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh(permit))",
+    ) &&
+    refreshedOverviewUiBlock.includes(
+      "completed_action == Some(PendingAction::Refresh)",
+    ) &&
+    refreshedOverviewUiBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
+    refreshedOverviewUiBlock.includes(
+      "current.wallet_kind == overview.snapshot.wallet_kind",
+    ) &&
+    refreshedOverviewUiBlock.includes("current.accounts == overview.snapshot.accounts") &&
+    refreshedOverviewUiBlock.includes(
+      "current.pending_broadcast == overview.snapshot.pending_broadcast",
+    ) &&
+    refreshedOverviewUiBlock.includes("current.activity == overview.snapshot.activity") &&
+    refreshedOverviewUiBlock.includes(
+      "selected.index == overview.token_owner_account_index",
+    ) &&
+    refreshedOverviewUiBlock.includes(
+      "selected.address == overview.token_owner_address",
+    ) &&
+    refreshedOverviewUiBlock.includes("!overview.is_well_formed()") &&
+    refreshedOverviewUiBlock.includes("invalidate_frontend_after_backend_error") &&
+    !refreshedOverviewUiBlock.includes("self.refresh()") &&
+    !refreshedOverviewUiBlock.includes("WorkerCommand::Refresh") &&
+    (walletAppImplBlock.match(/\bWorkerCommand::Refresh\b/gu) ?? []).length === 1 &&
+    (executeWorkerCommandBlock.match(/\bWorkerCommand::Refresh\b/gu) ?? [])
+      .length === 1 &&
+    (sepoliaDemoUiRuntime.match(/\bWorkerCommand::Refresh\b/gu) ?? []).length ===
+      2 &&
+    (walletAppImplBlock.match(
+      /self\.send_command\(\s*WorkerCommand::Refresh\s*,\s*PendingAction::Refresh\s*,?\s*\)/gu,
+    ) ?? []).length === 1 &&
+    (sepoliaDemoUiRuntime.match(/\.\s*refresh\s*\(\s*\)/gu) ?? []).length ===
+      5 &&
+    !/(?:(?:\bSelf|\bWalletApp)|<(?:Self|WalletApp)>)::refresh\b/u.test(
+      sepoliaDemoUiRuntime,
+    ) &&
+    customTokenPanelBlock.includes("token_rows_warning") &&
+    customTokenPanelBlock.includes(
+      "목록이 비어 있어도 저장 토큰이 없다는 뜻이 아닙니다",
+    ) &&
+    customTokenPanelBlock.includes(
+      '"현재 안전하게 표시할 수 있는 저장 토큰 행이 없습니다."',
+    ),
+  "Sepolia selected-overview UI must remain exactly-once, non-looping, exact-response-bound, and honest about unobserved token rows",
+);
+requireInvariant(
+  rootReadme.includes("### 선택 계정 개요 조회 경계") &&
+    rootReadme.includes("ERC-20 최대 3개만 확인합니다") &&
+    rootReadme.includes("체인 identity 확인 subcall은 한 작업 안에서 최대") &&
+    rootReadme.includes("개요 작업 자체를 자동으로 다시 등록하거나 timer/polling") &&
+    rootReadme.includes("빈 목록을") &&
+    rootReadme.includes("단일 Sepolia RPC에 노출합니다") &&
+    sepoliaArchitectureDoc.includes(
+      "### Sepolia demo selected-overview hydration boundary",
+    ) &&
+    sepoliaArchitectureDoc.includes("With `N <= 3`") &&
+    sepoliaDemoRpcProduction.includes("const VERIFY_ATTEMPTS: usize = 3") &&
+    verifySepoliaBlock.includes("for attempt in 0..VERIFY_ATTEMPTS") &&
+    verifySepoliaBlock.includes("attempt + 1 < VERIFY_ATTEMPTS") &&
+    verifySepoliaBlock.includes("is_retryable_verification_error(error)") &&
+    verifySepoliaBlock.includes("std::thread::sleep(VERIFY_RETRY_DELAY)") &&
+    sepoliaArchitectureDoc.includes("exactly `5 + 11N` RPC") &&
+    sepoliaArchitectureDoc.includes("`13 + 19N`") &&
+    sepoliaArchitectureDoc.includes("at most 70 calls when `N = 3`") &&
+    sepoliaArchitectureDoc.includes(
+      "identity subcall retains its bounded three-attempt retry",
+    ) &&
+    sepoliaArchitectureDoc.includes(
+      "automatic re-enqueue of the overview request",
+    ) &&
+    /A\s+chain or balance RPC failure returns a category-only Partial result with\s+ETH/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /An individual token RPC failure marks only that token\s+Unavailable/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    /The observation\s+lease never creates/u.test(sepoliaArchitectureDoc) &&
+    sepoliaArchitectureDoc.includes(
+      "Final Sepolia verification discards every earlier network value",
+    ) &&
+    sepoliaArchitectureDoc.includes("single fixed TLS RPC"),
+  "Sepolia selected-overview docs must retain bounded cost, non-mutating observation, and fixed-RPC privacy/trust disclosure",
+);
+for (const requiredOverviewTest of [
+  "selected_overview_treats_witnessed_missing_store_as_authenticated_empty",
+  "selected_overview_accepts_pre_lock_store_without_creating_a_sentinel",
+  "selected_overview_queries_exact_first_three_and_defers_every_tail_row",
+  "selected_overview_network_failures_are_partial_and_never_restore_a_local_zero",
+  "selected_overview_final_chain_failure_discards_every_observed_value",
+  "selected_overview_revocation_stops_before_final_or_next_rpc_and_clears_cache",
+  "selected_overview_contention_is_non_mutating_partial_but_local_faults_are_fatal",
+  "selected_overview_authenticated_activity_drift_is_fatal_and_never_installs_balance",
+  "overview_dto_rejects_noncanonical_balances_tokens_status_and_legacy_rows",
+  "overview_reducer_installs_only_exact_bound_data_and_locks_on_forgery",
+  "overview_partial_preserves_same_owner_rows_warns_persistently_and_stays_unlocked",
+  "overview_partial_with_loaded_rows_is_nonfatal_and_uses_exact_unknown_marker",
+  "unlock_switch_triggers_are_exactly_once_generated_is_offline_and_manual_uses_overview",
+  "stale_epoch_overview_is_dropped_and_backend_err_scrubs_and_locks",
+]) {
+  requireInvariant(
+    sepoliaDemoBackend.includes(requiredOverviewTest) ||
+      sepoliaDemoUi.includes(requiredOverviewTest),
+    `Sepolia selected-overview regression evidence missing: ${requiredOverviewTest}`,
+  );
+}
 requireInvariant(
   preparePendingAccountBlock.includes("self.attribute_pending_sender") &&
     preparePendingAccountBlock.includes("lease.read_record()") &&

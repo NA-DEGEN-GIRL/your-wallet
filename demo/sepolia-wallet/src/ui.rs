@@ -19,6 +19,31 @@ const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
 const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20);
 const INACTIVITY_LOCK_DURATION: Duration = Duration::from_secs(5 * 60);
 const GENERATED_BACKUP_CHALLENGE_WORDS: usize = 4;
+pub(crate) const AUTO_OVERVIEW_TOKEN_LIMIT: usize = 3;
+const MAX_RUNTIME_BALANCE_BYTES: usize = 79;
+pub(crate) const ACCOUNT_BALANCE_UNKNOWN: &str = "조회 전";
+const ACCOUNT_BALANCE_STALE: &str = "다시 조회 필요";
+pub(crate) const AUTO_OVERVIEW_DEFERRED_ERROR: &str =
+    "자동 조회 한도를 넘은 저장 토큰입니다. 전체 새로고침을 직접 실행해 주세요.";
+pub(crate) const RPC_UNAVAILABLE_ERROR: &str = "Sepolia 연결을 확인하지 못했습니다.";
+pub(crate) const TOKEN_CONTRACT_EMPTY_ERROR: &str =
+    "해당 Sepolia 주소에서 컨트랙트 코드를 찾지 못했습니다.";
+pub(crate) const TOKEN_QUERY_UNAVAILABLE_ERROR: &str = "토큰 컨트랙트 정보를 확인하지 못했습니다.";
+pub(crate) const TOKEN_METADATA_INVALID_ERROR: &str =
+    "토큰 컨트랙트의 표준 메타데이터 응답이 올바르지 않습니다.";
+pub(crate) const TOKEN_CODE_CHANGED_ERROR: &str =
+    "저장 후 토큰 컨트랙트 코드가 달라져 메타데이터와 잔액을 숨겼습니다.";
+pub(crate) const TOKEN_METADATA_CHANGED_ERROR: &str =
+    "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.";
+const OVERVIEW_TOKEN_UNAVAILABLE_ERRORS: &[&str] = &[
+    AUTO_OVERVIEW_DEFERRED_ERROR,
+    RPC_UNAVAILABLE_ERROR,
+    TOKEN_CONTRACT_EMPTY_ERROR,
+    TOKEN_QUERY_UNAVAILABLE_ERROR,
+    TOKEN_METADATA_INVALID_ERROR,
+    TOKEN_CODE_CHANGED_ERROR,
+    TOKEN_METADATA_CHANGED_ERROR,
+];
 const GENERATED_BACKUP_ONE_ATTEMPT_WARNING: &str =
     "확인은 단 한 번만 가능합니다. 불일치하면 이 지갑은 저장되지 않습니다.";
 
@@ -159,6 +184,169 @@ pub enum CustomTokenState {
         /// Short category-only Korean explanation without raw RPC data.
         reason_ko: String,
     },
+}
+
+/// Network hydration for exactly one authenticated selected account.
+///
+/// This deliberately implements neither `Clone` nor `Debug`: the explicit
+/// owner binding and public balances must not enter routine diagnostics, and
+/// one worker result has exactly one reducer consumer.
+pub struct SelectedAccountOverview {
+    snapshot: WalletSnapshot,
+    token_owner_account_index: u8,
+    token_owner_address: String,
+    custom_tokens: Vec<CustomTokenSnapshot>,
+    token_rows_loaded: bool,
+    balance_refreshed: bool,
+    status: OverviewHydrationStatus,
+    deferred_token_count: u8,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum OverviewHydrationStatus {
+    Complete,
+    Partial,
+}
+
+impl SelectedAccountOverview {
+    pub(crate) fn new(
+        snapshot: WalletSnapshot,
+        token_owner_account_index: u8,
+        token_owner_address: String,
+        custom_tokens: Vec<CustomTokenSnapshot>,
+        token_rows_loaded: bool,
+        balance_refreshed: bool,
+        deferred_token_count: u8,
+    ) -> Self {
+        let has_unavailable_attempt = custom_tokens
+            .iter()
+            .take(AUTO_OVERVIEW_TOKEN_LIMIT)
+            .any(|token| matches!(token.state, CustomTokenState::Unavailable { .. }));
+        let status = if token_rows_loaded
+            && balance_refreshed
+            && !has_unavailable_attempt
+            && deferred_token_count == 0
+        {
+            OverviewHydrationStatus::Complete
+        } else {
+            OverviewHydrationStatus::Partial
+        };
+        Self {
+            snapshot,
+            token_owner_account_index,
+            token_owner_address,
+            custom_tokens,
+            token_rows_loaded,
+            balance_refreshed,
+            status,
+            deferred_token_count,
+        }
+    }
+
+    fn is_well_formed(&self) -> bool {
+        let owner_matches = self.snapshot.selected_account().is_some_and(|account| {
+            account.index == self.token_owner_account_index
+                && account.address == self.token_owner_address
+        });
+        let contracts_are_valid = self.custom_tokens.len() <= 32
+            && self.custom_tokens.iter().enumerate().all(|(index, token)| {
+                valid_recipient_shape(token.contract_address.as_str())
+                    && custom_token_state_is_well_formed(&token.state)
+                    && self.custom_tokens[..index]
+                        .iter()
+                        .all(|prior| prior.contract_address != token.contract_address)
+            });
+        let deferred_rows = usize::from(self.deferred_token_count);
+        let deferred_are_exact_trailing_rows = if self.token_rows_loaded {
+            let expected_deferred = self
+                .custom_tokens
+                .len()
+                .saturating_sub(AUTO_OVERVIEW_TOKEN_LIMIT);
+            deferred_rows == expected_deferred
+                && self.custom_tokens.iter().enumerate().all(|(index, token)| {
+                    let is_deferred = matches!(
+                        &token.state,
+                        CustomTokenState::Unavailable { reason_ko }
+                            if reason_ko == AUTO_OVERVIEW_DEFERRED_ERROR
+                    );
+                    is_deferred == (index >= AUTO_OVERVIEW_TOKEN_LIMIT)
+                })
+        } else {
+            self.custom_tokens.is_empty() && deferred_rows == 0
+        };
+        let has_unavailable_attempt = self
+            .custom_tokens
+            .iter()
+            .take(AUTO_OVERVIEW_TOKEN_LIMIT)
+            .any(|token| matches!(token.state, CustomTokenState::Unavailable { .. }));
+        let expected_status = if self.token_rows_loaded
+            && self.balance_refreshed
+            && !has_unavailable_attempt
+            && deferred_rows == 0
+        {
+            OverviewHydrationStatus::Complete
+        } else {
+            OverviewHydrationStatus::Partial
+        };
+        let balance_state_is_coherent = if self.balance_refreshed {
+            valid_runtime_balance_shape(self.snapshot.balance_eth.as_str(), 18)
+        } else {
+            self.snapshot.balance_eth == ACCOUNT_BALANCE_UNKNOWN
+        };
+        let wallet_token_shape_is_coherent = match self.snapshot.wallet_kind {
+            WalletKind::LegacyV1RawPrivateKey => {
+                self.token_rows_loaded
+                    && self.custom_tokens.is_empty()
+                    && self.deferred_token_count == 0
+            }
+            WalletKind::V2Mnemonic { .. } | WalletKind::V2RawPrivateKey => true,
+        };
+        self.snapshot.is_well_formed()
+            && owner_matches
+            && contracts_are_valid
+            && deferred_are_exact_trailing_rows
+            && balance_state_is_coherent
+            && wallet_token_shape_is_coherent
+            && self.status == expected_status
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> &WalletSnapshot {
+        &self.snapshot
+    }
+
+    #[cfg(test)]
+    pub(crate) fn custom_tokens(&self) -> &[CustomTokenSnapshot] {
+        self.custom_tokens.as_slice()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn token_rows_loaded(&self) -> bool {
+        self.token_rows_loaded
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn balance_refreshed(&self) -> bool {
+        self.balance_refreshed
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn status(&self) -> OverviewHydrationStatus {
+        self.status
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn deferred_token_count(&self) -> u8 {
+        self.deferred_token_count
+    }
+
+    #[cfg(test)]
+    pub(crate) fn token_owner(&self) -> (u8, &str) {
+        (
+            self.token_owner_account_index,
+            self.token_owner_address.as_str(),
+        )
+    }
 }
 
 /// Non-secret source/format metadata for the currently unlocked wallet.
@@ -831,8 +1019,10 @@ pub trait WalletBackend: Send + 'static {
         Err("지갑 관리 기능을 사용할 수 없습니다.".to_owned())
     }
 
-    /// Refresh the selected public address and Sepolia ETH balance.
-    fn refresh(&mut self) -> Result<WalletSnapshot, String>;
+    /// Hydrate the selected account's Sepolia ETH balance and a strictly
+    /// bounded prefix of its authenticated saved-token rows. Network failures
+    /// must return a bound partial result; only local/session invariants fail.
+    fn refresh(&mut self, permit: &SessionPermit<'_>) -> Result<SelectedAccountOverview, String>;
 
     /// Manually refresh exactly one durable activity row. Implementations
     /// must bookend typed RPC reads, preserve immutable identity, and recheck
@@ -1026,7 +1216,7 @@ enum WorkerEvent {
     LegacyMigrated(Result<WalletSnapshot, String>),
     MnemonicExported(Result<SecretReveal, String>),
     AccountPrivateKeyExported(Result<SecretReveal, String>),
-    Refreshed(Result<WalletSnapshot, String>),
+    Refreshed(Result<SelectedAccountOverview, String>),
     ActivityRefreshed {
         transaction_hash: String,
         result: Result<TransactionActivitySnapshot, String>,
@@ -1330,6 +1520,7 @@ pub struct WalletApp {
     receive_qr_visible: bool,
     custom_token_address: String,
     custom_tokens: Vec<CustomTokenSnapshot>,
+    token_rows_unavailable_owner: Option<WalletAccountSnapshot>,
     transfer_asset: TransferAssetChoice,
     recipient: String,
     amount_eth: String,
@@ -1385,6 +1576,7 @@ impl WalletApp {
             receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            token_rows_unavailable_owner: None,
             transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
@@ -1432,6 +1624,7 @@ impl WalletApp {
             receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            token_rows_unavailable_owner: None,
             transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
@@ -1500,6 +1693,22 @@ impl WalletApp {
         }
     }
 
+    fn clear_token_rows_unavailable_owner(&mut self) {
+        if let Some(owner) = self.token_rows_unavailable_owner.as_mut() {
+            owner.address.zeroize();
+        }
+        self.token_rows_unavailable_owner = None;
+    }
+
+    fn mark_token_rows_unavailable_for_selected_account(&mut self) {
+        self.clear_token_rows_unavailable_owner();
+        self.token_rows_unavailable_owner = self
+            .snapshot
+            .as_ref()
+            .and_then(WalletSnapshot::selected_account)
+            .cloned();
+    }
+
     fn scrub_frontend_session(&mut self) {
         self.secret_text_state_purge_pending = true;
         self.password.zeroize();
@@ -1533,6 +1742,7 @@ impl WalletApp {
             }
         }
         self.custom_tokens.clear();
+        self.clear_token_rows_unavailable_owner();
         zeroize_transfer_asset_choice(&mut self.transfer_asset);
         self.transfer_asset = TransferAssetChoice::Native;
         if let Some(preview) = self.prepared.as_mut() {
@@ -1930,6 +2140,18 @@ impl WalletApp {
         if !self.require_unlocked_action() {
             return;
         }
+        if self.pending.is_some() {
+            self.error = Some("다른 작업이 끝난 뒤 잔액을 새로고침해 주세요.".to_owned());
+            return;
+        }
+        mark_snapshot_balance_stale(self.snapshot.as_mut());
+        reset_transfer_selection_after_token_change(
+            &mut self.transfer_asset,
+            &mut self.prepared,
+            &mut self.hold,
+            &mut self.amount_eth,
+            &mut self.secret_text_state_purge_pending,
+        );
         self.send_command(WorkerCommand::Refresh, PendingAction::Refresh);
     }
 
@@ -2299,9 +2521,11 @@ impl WalletApp {
                     Ok(snapshot) => {
                         clear_prepared_state(&mut self.prepared, &mut self.hold);
                         self.custom_tokens.clear();
+                        self.clear_token_rows_unavailable_owner();
                         self.snapshot = Some(snapshot);
                         self.session_phase = SessionPhase::Unlocked;
                         self.last_activity_at = Instant::now();
+                        self.refresh();
                         self.notice =
                             Some("가져온 비밀값을 v2 테스트 지갑으로 저장했습니다.".to_owned());
                     }
@@ -2310,21 +2534,13 @@ impl WalletApp {
             }
             WorkerEvent::Opened(result) => match result {
                 Ok(snapshot) => {
-                    let load_custom_tokens =
-                        !matches!(snapshot.wallet_kind, WalletKind::LegacyV1RawPrivateKey);
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.custom_tokens.clear();
+                    self.clear_token_rows_unavailable_owner();
                     self.snapshot = Some(snapshot);
                     self.session_phase = SessionPhase::Unlocked;
                     self.last_activity_at = Instant::now();
-                    if load_custom_tokens {
-                        self.send_command(
-                            WorkerCommand::RefreshCustomTokens,
-                            PendingAction::RefreshCustomTokens,
-                        );
-                    } else {
-                        self.notice = Some("테스트 지갑을 열었습니다.".to_owned());
-                    }
+                    self.refresh();
                 }
                 Err(error) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
@@ -2358,6 +2574,7 @@ impl WalletApp {
                     self.snapshot = Some(snapshot);
                     self.receive_qr_visible = false;
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                    self.clear_token_rows_unavailable_owner();
                     zeroize_transfer_asset_choice(&mut self.transfer_asset);
                     self.transfer_asset = TransferAssetChoice::Native;
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
@@ -2384,6 +2601,7 @@ impl WalletApp {
                     self.notice = Some(format!(
                         "계정 {selected_index}로 전환했습니다. ETH와 저장 토큰 잔액을 다시 조회해 주세요."
                     ));
+                    self.refresh();
                 }
                 Err(error) => self.invalidate_frontend_after_backend_error(error),
             },
@@ -2391,12 +2609,14 @@ impl WalletApp {
                 Ok(snapshot) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
                     self.custom_tokens.clear();
+                    self.clear_token_rows_unavailable_owner();
                     self.snapshot = Some(snapshot);
                     self.session_phase = SessionPhase::Unlocked;
                     self.last_activity_at = Instant::now();
                     self.notice = Some(
                         "계정 주소를 유지한 채 v1 개인 키 지갑을 v2로 이전했습니다.".to_owned(),
                     );
+                    self.refresh();
                 }
                 Err(error) => {
                     clear_prepared_state(&mut self.prepared, &mut self.hold);
@@ -2477,9 +2697,67 @@ impl WalletApp {
                 }
             },
             WorkerEvent::Refreshed(result) => match result {
-                Ok(snapshot) => {
-                    self.snapshot = Some(snapshot);
-                    self.notice = Some("Sepolia 잔액을 새로 확인했습니다.".to_owned());
+                Ok(mut overview) => {
+                    let identity_matches = completed_action == Some(PendingAction::Refresh)
+                        && self.session_phase == SessionPhase::Unlocked
+                        && self.snapshot.as_ref().is_some_and(|current| {
+                            current.wallet_kind == overview.snapshot.wallet_kind
+                                && current.accounts == overview.snapshot.accounts
+                                && current.selected_account_index
+                                    == overview.snapshot.selected_account_index
+                                && current.pending_broadcast == overview.snapshot.pending_broadcast
+                                && current.activity == overview.snapshot.activity
+                                && current.selected_account().is_some_and(|selected| {
+                                    selected.index == overview.token_owner_account_index
+                                        && selected.address == overview.token_owner_address
+                                })
+                        });
+                    if !overview.is_well_formed() || !identity_matches {
+                        zeroize_selected_account_overview(&mut overview);
+                        self.invalidate_frontend_after_backend_error(
+                            "잔액 조회 결과가 현재 선택 계정과 일치하지 않습니다.".to_owned(),
+                        );
+                        return;
+                    }
+
+                    let token_rows_loaded = overview.token_rows_loaded;
+                    let balance_refreshed = overview.balance_refreshed;
+                    let status = overview.status;
+                    let deferred_token_count = overview.deferred_token_count;
+                    if let Some(current) = self.snapshot.as_mut() {
+                        zeroize_wallet_snapshot(current);
+                    }
+                    self.snapshot = Some(overview.snapshot);
+                    if token_rows_loaded {
+                        zeroize_custom_token_snapshots(&mut self.custom_tokens);
+                        self.custom_tokens = sanitize_custom_tokens(overview.custom_tokens);
+                        self.clear_token_rows_unavailable_owner();
+                    } else {
+                        zeroize_custom_token_snapshots(&mut overview.custom_tokens);
+                        self.mark_token_rows_unavailable_for_selected_account();
+                    }
+                    overview.token_owner_address.zeroize();
+                    self.notice = Some(match (
+                        status,
+                        token_rows_loaded,
+                        balance_refreshed,
+                        deferred_token_count,
+                    ) {
+                        (OverviewHydrationStatus::Complete, true, true, 0) => {
+                            "선택 계정의 Sepolia ETH와 저장 토큰 잔액을 확인했습니다.".to_owned()
+                        }
+                        (_, false, _, _) => {
+                            "토큰 목록을 다른 작업이 사용 중입니다. 기존 목록은 유지하며 다시 검증이 필요합니다."
+                                .to_owned()
+                        }
+                        (_, true, _, deferred) if deferred > 0 => format!(
+                            "자동 조회 한도로 저장 토큰 {deferred}개를 보류했습니다. 전체 토큰 새로고침을 직접 실행할 수 있습니다."
+                        ),
+                        _ => {
+                            "일부 Sepolia 잔액을 확인하지 못했습니다. 지갑은 열린 상태로 유지됩니다."
+                                .to_owned()
+                        }
+                    });
                 }
                 Err(error) => self.invalidate_frontend_after_backend_error(error),
             },
@@ -2542,6 +2820,7 @@ impl WalletApp {
             WorkerEvent::CustomTokenAdded(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.clear_token_rows_unavailable_owner();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -2555,6 +2834,7 @@ impl WalletApp {
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    self.mark_token_rows_unavailable_for_selected_account();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -2568,6 +2848,7 @@ impl WalletApp {
             WorkerEvent::CustomTokensRefreshed(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.clear_token_rows_unavailable_owner();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -2579,6 +2860,7 @@ impl WalletApp {
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    self.mark_token_rows_unavailable_for_selected_account();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -2592,6 +2874,7 @@ impl WalletApp {
             WorkerEvent::CustomTokenRemoved(result) => match result {
                 Ok(tokens) => {
                     self.custom_tokens = sanitize_custom_tokens(tokens);
+                    self.clear_token_rows_unavailable_owner();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -2603,6 +2886,7 @@ impl WalletApp {
                 }
                 Err(error) => {
                     self.custom_tokens.clear();
+                    self.mark_token_rows_unavailable_for_selected_account();
                     reset_transfer_selection_after_token_change(
                         &mut self.transfer_asset,
                         &mut self.prepared,
@@ -3521,6 +3805,14 @@ impl WalletApp {
             return;
         };
         let selected_account_index = snapshot.selected_account_index;
+        let token_rows_warning = self
+            .token_rows_unavailable_owner
+            .as_ref()
+            .is_some_and(|owner| {
+                snapshot.selected_account().is_some_and(|selected| {
+                    owner.index == selected.index && owner.address == selected.address
+                })
+            });
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
         ui.heading("3. 커스텀 ERC-20 토큰");
@@ -3576,12 +3868,20 @@ impl WalletApp {
             );
         });
 
-        if self.custom_tokens.is_empty() {
-            ui.label(
-                RichText::new("저장된 커스텀 토큰이 없습니다.")
-                    .small()
-                    .color(palette.muted),
+        if token_rows_warning {
+            ui.colored_label(
+                palette.warning,
+                "저장 토큰 목록을 안전하게 관찰하지 못했습니다. 표시 중인 행은 이전 값일 수 있으며, 목록이 비어 있어도 저장 토큰이 없다는 뜻이 아닙니다. 다른 토큰 작업이 끝난 뒤 전체 새로고침을 실행해 주세요.",
             );
+        }
+
+        if self.custom_tokens.is_empty() {
+            let empty_label = if token_rows_warning {
+                "현재 안전하게 표시할 수 있는 저장 토큰 행이 없습니다."
+            } else {
+                "저장된 커스텀 토큰이 없습니다."
+            };
+            ui.label(RichText::new(empty_label).small().color(palette.muted));
             return;
         }
 
@@ -4553,10 +4853,20 @@ fn zeroize_custom_token_snapshots(tokens: &mut Vec<CustomTokenSnapshot>) {
     tokens.clear();
 }
 
+fn zeroize_selected_account_overview(overview: &mut SelectedAccountOverview) {
+    zeroize_wallet_snapshot(&mut overview.snapshot);
+    overview.token_owner_address.zeroize();
+    zeroize_custom_token_snapshots(&mut overview.custom_tokens);
+    overview.deferred_token_count = 0;
+    overview.balance_refreshed = false;
+    overview.token_rows_loaded = false;
+    overview.status = OverviewHydrationStatus::Partial;
+}
+
 fn mark_snapshot_balance_stale(snapshot: Option<&mut WalletSnapshot>) {
     if let Some(snapshot) = snapshot {
         snapshot.balance_eth.zeroize();
-        snapshot.balance_eth = "다시 조회 필요".to_owned();
+        snapshot.balance_eth = ACCOUNT_BALANCE_STALE.to_owned();
     }
 }
 
@@ -4949,7 +5259,7 @@ fn execute_worker_command(
         WorkerCommand::ExportAccountPrivateKey { password } => {
             WorkerEvent::AccountPrivateKeyExported(backend.export_account_private_key(password))
         }
-        WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh()),
+        WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh(permit)),
         WorkerCommand::RefreshActivity { transaction_hash } => {
             let result = backend.refresh_activity(&transaction_hash, permit);
             WorkerEvent::ActivityRefreshed {
@@ -5040,6 +5350,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         receive_qr_visible: false,
         custom_token_address: String::new(),
         custom_tokens: Vec::new(),
+        token_rows_unavailable_owner: None,
         transfer_asset: TransferAssetChoice::Native,
         recipient: RECIPIENT_SENTINEL.to_owned(),
         amount_eth: AMOUNT_SENTINEL.to_owned(),
@@ -5127,6 +5438,12 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.secret_reveal.is_some()
         || app.snapshot.as_ref().map(|snapshot| snapshot.wallet_kind)
             != Some(WalletKind::V2Mnemonic { word_count: 12 })
+        || app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.balance_eth.as_str())
+            != Some(ACCOUNT_BALANCE_UNKNOWN)
+        || command_receiver.try_recv().is_ok()
     {
         return Err(());
     }
@@ -5175,6 +5492,21 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::ImportMnemonic { .. })
     })?;
+    if app.pending != Some(PendingAction::Refresh) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Refresh)
+    })?;
+    if app.pending.is_some()
+        || app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.balance_eth.as_str())
+            != Some("12.5")
+    {
+        return Err(());
+    }
     app.imported_secret = "headless private key marker".to_owned();
     app.password = "headless-import-pass".to_owned();
     app.password_confirmation = "headless-import-pass".to_owned();
@@ -5182,6 +5514,15 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::ImportPrivateKey { .. })
     })?;
+    if app.pending != Some(PendingAction::Refresh) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Refresh)
+    })?;
+    if app.pending.is_some() {
+        return Err(());
+    }
 
     app.old_password = "headless-legacy-pass".to_owned();
     app.password = "headless-migrate-pass".to_owned();
@@ -5190,16 +5531,25 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::MigrateLegacy { .. })
     })?;
+    if app.pending != Some(PendingAction::Refresh) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Refresh)
+    })?;
+    if app.pending.is_some() {
+        return Err(());
+    }
     app.password = "headless-open-pass".to_owned();
     app.open_wallet();
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::Open { .. })
     })?;
-    if app.pending != Some(PendingAction::RefreshCustomTokens) {
+    if app.pending != Some(PendingAction::Refresh) {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
-        matches!(command, WorkerCommand::RefreshCustomTokens)
+        matches!(command, WorkerCommand::Refresh)
     })?;
     if app.pending.is_some() || app.custom_tokens != [headless_token_snapshot()] {
         return Err(());
@@ -5223,7 +5573,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::SelectAccount { index: 1 })
     })?;
-    if app.pending.is_some()
+    if app.pending != Some(PendingAction::Refresh)
         || app.receive_qr_visible
         || app
             .snapshot
@@ -5234,7 +5584,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.balance_eth.as_str())
-            != Some("조회 전")
+            != Some(ACCOUNT_BALANCE_STALE)
         || !app.custom_tokens.is_empty()
         || app.transfer_asset != TransferAssetChoice::Native
         || !app.recipient.is_empty()
@@ -5245,6 +5595,32 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.last_transaction_hash.is_some()
         || !app.secret_text_state_purge_pending
     {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Refresh)
+    })?;
+    if app.pending.is_some()
+        || app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.balance_eth.as_str())
+            != Some("12.5")
+        || app.custom_tokens != [headless_token_snapshot()]
+    {
+        return Err(());
+    }
+
+    // The explicit native-balance action shares the same bound overview
+    // route and must not fall back to the all-token refresh command.
+    app.refresh();
+    if app.pending != Some(PendingAction::Refresh) {
+        return Err(());
+    }
+    route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
+        matches!(command, WorkerCommand::Refresh)
+    })?;
+    if app.pending.is_some() {
         return Err(());
     }
 
@@ -5617,11 +5993,16 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "export-mnemonic",
             "export-private-key",
             "import-mnemonic",
+            "overview-refresh",
             "import-private-key",
+            "overview-refresh",
             "migrate",
+            "overview-refresh",
             "open",
-            "token-refresh",
+            "overview-refresh",
             "select-account-1",
+            "overview-refresh",
+            "overview-refresh",
             "export-private-key",
             "token-add",
             "token-refresh",
@@ -5782,11 +6163,28 @@ fn headless_snapshot(wallet_kind: WalletKind) -> WalletSnapshot {
     WalletSnapshot {
         accounts,
         selected_account_index: 0,
-        balance_eth: "headless-balance".to_owned(),
+        balance_eth: ACCOUNT_BALANCE_UNKNOWN.to_owned(),
         wallet_kind,
         pending_broadcast: None,
         activity: Vec::new(),
     }
+}
+
+fn headless_overview_for(wallet_kind: WalletKind, account_index: u8) -> SelectedAccountOverview {
+    let mut snapshot = headless_snapshot(wallet_kind);
+    snapshot.selected_account_index = account_index;
+    snapshot.balance_eth = "12.5".to_owned();
+    let owner = snapshot
+        .selected_account()
+        .expect("bounded headless selected account")
+        .address
+        .clone();
+    let custom_tokens = if matches!(wallet_kind, WalletKind::LegacyV1RawPrivateKey) {
+        Vec::new()
+    } else {
+        vec![headless_token_snapshot()]
+    };
+    SelectedAccountOverview::new(snapshot, account_index, owner, custom_tokens, true, true, 0)
 }
 
 fn headless_reveal(kind: SecretRevealKind) -> SecretReveal {
@@ -5882,6 +6280,7 @@ fn headless_erc20_activity(
 struct HeadlessBackend {
     calls: Vec<&'static str>,
     selected_account_index: u8,
+    wallet_kind: Option<WalletKind>,
     prepared_activity: Option<TransactionActivitySnapshot>,
     activity: Vec<TransactionActivitySnapshot>,
 }
@@ -5890,6 +6289,7 @@ impl WalletBackend for HeadlessBackend {
     fn lock_wallet(&mut self) {
         self.calls.push("lock");
         self.selected_account_index = 0;
+        self.wallet_kind = None;
     }
 
     fn begin_generate_wallet(
@@ -5919,6 +6319,7 @@ impl WalletBackend for HeadlessBackend {
         _permit: &SessionPermit<'_>,
     ) -> Result<WalletSnapshot, String> {
         self.calls.push("confirm-generated");
+        self.wallet_kind = Some(WalletKind::V2Mnemonic { word_count: 12 });
         Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
     }
 
@@ -5934,6 +6335,8 @@ impl WalletBackend for HeadlessBackend {
         _password_confirmation: SensitiveText,
     ) -> Result<WalletSnapshot, String> {
         self.calls.push("import-mnemonic");
+        self.selected_account_index = 0;
+        self.wallet_kind = Some(WalletKind::V2Mnemonic { word_count: 12 });
         Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
     }
 
@@ -5944,12 +6347,15 @@ impl WalletBackend for HeadlessBackend {
         _password_confirmation: SensitiveText,
     ) -> Result<WalletSnapshot, String> {
         self.calls.push("import-private-key");
+        self.selected_account_index = 0;
+        self.wallet_kind = Some(WalletKind::V2RawPrivateKey);
         Ok(headless_snapshot(WalletKind::V2RawPrivateKey))
     }
 
     fn open_wallet(&mut self, _password: &str) -> Result<WalletSnapshot, String> {
         self.calls.push("open");
         self.selected_account_index = 0;
+        self.wallet_kind = Some(WalletKind::V2Mnemonic { word_count: 12 });
         Ok(headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }))
     }
 
@@ -5972,6 +6378,8 @@ impl WalletBackend for HeadlessBackend {
         _new_password_confirmation: SensitiveText,
     ) -> Result<WalletSnapshot, String> {
         self.calls.push("migrate");
+        self.selected_account_index = 0;
+        self.wallet_kind = Some(WalletKind::V2RawPrivateKey);
         Ok(headless_snapshot(WalletKind::V2RawPrivateKey))
     }
 
@@ -5990,8 +6398,15 @@ impl WalletBackend for HeadlessBackend {
         ))
     }
 
-    fn refresh(&mut self) -> Result<WalletSnapshot, String> {
-        Err("headless operation rejected".to_owned())
+    fn refresh(&mut self, _permit: &SessionPermit<'_>) -> Result<SelectedAccountOverview, String> {
+        self.calls.push("overview-refresh");
+        let wallet_kind = self
+            .wallet_kind
+            .ok_or_else(|| "headless wallet kind missing".to_owned())?;
+        Ok(headless_overview_for(
+            wallet_kind,
+            self.selected_account_index,
+        ))
     }
 
     fn add_custom_token(
@@ -6329,6 +6744,55 @@ fn valid_amount_shape(amount: &str) -> bool {
     valid_decimal_amount_shape(amount, 18, 128)
 }
 
+fn valid_runtime_balance_shape(amount: &str, decimals: usize) -> bool {
+    if amount.is_empty() || amount.len() > MAX_RUNTIME_BALANCE_BYTES || amount.trim() != amount {
+        return false;
+    }
+    let mut parts = amount.split('.');
+    let Some(whole) = parts.next() else {
+        return false;
+    };
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (whole.len() > 1 && whole.starts_with('0'))
+    {
+        return false;
+    }
+    fraction.is_none_or(|digits| {
+        decimals > 0
+            && !digits.is_empty()
+            && digits.len() <= decimals
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && !digits.ends_with('0')
+    })
+}
+
+fn custom_token_state_is_well_formed(state: &CustomTokenState) -> bool {
+    match state {
+        CustomTokenState::Verified {
+            symbol,
+            decimals,
+            balance,
+        } => {
+            *decimals <= 36
+                && symbol.as_ref().is_none_or(|symbol| {
+                    !symbol.is_empty()
+                        && symbol.len() <= 16
+                        && symbol.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'$' | b'+' | b'-' | b'.' | b'_')
+                        })
+                })
+                && valid_runtime_balance_shape(balance, usize::from(*decimals))
+        }
+        CustomTokenState::Unavailable { reason_ko } => {
+            OVERVIEW_TOKEN_UNAVAILABLE_ERRORS.contains(&reason_ko.as_str())
+        }
+    }
+}
+
 fn valid_decimal_amount_shape(amount: &str, decimals: usize, maximum_bytes: usize) -> bool {
     if amount.is_empty()
         || amount.len() > maximum_bytes
@@ -6382,6 +6846,7 @@ fn valid_gwei_shape(value: &str, allow_zero: bool) -> bool {
 const GENERIC_BACKEND_ERROR: &str = "작업을 완료하지 못했습니다. 입력과 네트워크를 확인해 주세요.";
 
 const ALLOWED_BACKEND_ERRORS: &[&str] = &[
+    AUTO_OVERVIEW_DEFERRED_ERROR,
     "백업 확인에 실패했습니다. 지갑은 저장되지 않았습니다.",
     "지갑 저장소를 준비하지 못했습니다.",
     "이미 Sepolia 테스트 지갑이 있습니다.",
@@ -6702,10 +7167,18 @@ mod tests {
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::Refresh,
+            })
+        ));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
                 epoch: 1,
                 command: WorkerCommand::Lock,
             })
         ));
+        assert!(command_receiver.try_recv().is_err());
     }
 
     #[test]
@@ -7237,6 +7710,7 @@ mod tests {
             receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
+            token_rows_unavailable_owner: None,
             transfer_asset: TransferAssetChoice::Native,
             recipient: String::new(),
             amount_eth: String::new(),
@@ -7257,6 +7731,469 @@ mod tests {
             last_transaction_hash: None,
             activity_refresh_target: None,
         }
+    }
+
+    fn selected_overview_fixture(
+        snapshot: WalletSnapshot,
+        custom_tokens: Vec<CustomTokenSnapshot>,
+        token_rows_loaded: bool,
+        balance_refreshed: bool,
+        status: super::OverviewHydrationStatus,
+        deferred_token_count: u8,
+    ) -> super::SelectedAccountOverview {
+        let selected = snapshot
+            .selected_account()
+            .expect("selected overview fixture owner");
+        let owner_index = selected.index;
+        let owner_address = selected.address.clone();
+        let mut overview = super::SelectedAccountOverview::new(
+            snapshot,
+            owner_index,
+            owner_address,
+            custom_tokens,
+            token_rows_loaded,
+            balance_refreshed,
+            deferred_token_count,
+        );
+        overview.status = status;
+        overview
+    }
+
+    fn complete_overview_fixture(snapshot: &WalletSnapshot) -> super::SelectedAccountOverview {
+        let mut hydrated = snapshot.clone();
+        hydrated.balance_eth = "12.5".to_owned();
+        let tokens = if matches!(hydrated.wallet_kind, WalletKind::LegacyV1RawPrivateKey) {
+            Vec::new()
+        } else {
+            vec![super::headless_token_snapshot()]
+        };
+        selected_overview_fixture(
+            hydrated,
+            tokens,
+            true,
+            true,
+            super::OverviewHydrationStatus::Complete,
+            0,
+        )
+    }
+
+    fn assert_overview_reducer_locks(
+        current: WalletSnapshot,
+        overview: super::SelectedAccountOverview,
+    ) {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.snapshot = Some(current);
+        app.custom_tokens = vec![super::headless_token_snapshot()];
+        app.mark_token_rows_unavailable_for_selected_account();
+        app.pending = Some(PendingAction::Refresh);
+        app.apply_worker_event(WorkerEvent::Refreshed(Ok(overview)));
+
+        assert!(matches!(
+            app.session_phase,
+            super::SessionPhase::Locking(super::LockReason::BackendStateInvalidated)
+        ));
+        assert!(app.snapshot.is_none());
+        assert!(app.custom_tokens.is_empty());
+        assert!(app.token_rows_unavailable_owner.is_none());
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::Lock,
+                ..
+            })
+        ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn overview_dto_rejects_noncanonical_balances_tokens_status_and_legacy_rows() {
+        let base = super::headless_snapshot(WalletKind::V2RawPrivateKey);
+        assert!(complete_overview_fixture(&base).is_well_formed());
+
+        let mut unknown = base.clone();
+        unknown.balance_eth = super::ACCOUNT_BALANCE_UNKNOWN.to_owned();
+        let unknown_overview = selected_overview_fixture(
+            unknown.clone(),
+            Vec::new(),
+            true,
+            false,
+            super::OverviewHydrationStatus::Partial,
+            0,
+        );
+        assert!(unknown_overview.is_well_formed());
+
+        let mut forged_unknown = unknown_overview;
+        forged_unknown.snapshot.balance_eth = "raw-provider-marker".repeat(20);
+        assert!(!forged_unknown.is_well_formed());
+
+        let mut impossible_eth = complete_overview_fixture(&base);
+        impossible_eth.snapshot.balance_eth = "9".repeat(100);
+        assert!(!impossible_eth.is_well_formed());
+
+        let mut impossible_token = complete_overview_fixture(&base);
+        let CustomTokenState::Verified { balance, .. } =
+            &mut impossible_token.custom_tokens[0].state
+        else {
+            unreachable!();
+        };
+        *balance = "8".repeat(100);
+        assert!(!impossible_token.is_well_formed());
+
+        let mut invalid_symbol = complete_overview_fixture(&base);
+        let CustomTokenState::Verified {
+            symbol, decimals, ..
+        } = &mut invalid_symbol.custom_tokens[0].state
+        else {
+            unreachable!();
+        };
+        *symbol = Some("TOO-LONG-SYMBOL-17".to_owned());
+        *decimals = 37;
+        assert!(!invalid_symbol.is_well_formed());
+
+        let mut wrong_category = complete_overview_fixture(&base);
+        wrong_category.custom_tokens[0].state = CustomTokenState::Unavailable {
+            reason_ko: "보낼 금액이 올바르지 않습니다.".to_owned(),
+        };
+        wrong_category.status = super::OverviewHydrationStatus::Partial;
+        assert!(ALLOWED_BACKEND_ERRORS.contains(&"보낼 금액이 올바르지 않습니다."));
+        assert!(!wrong_category.is_well_formed());
+
+        let mut duplicate = complete_overview_fixture(&base);
+        duplicate
+            .custom_tokens
+            .push(super::headless_token_snapshot());
+        duplicate.deferred_token_count = 0;
+        duplicate.status = super::OverviewHydrationStatus::Complete;
+        assert!(!duplicate.is_well_formed());
+
+        let mut deferred_tokens = Vec::new();
+        for marker in 1_u8..=4 {
+            deferred_tokens.push(CustomTokenSnapshot {
+                contract_address: format!("0x{}", format!("{marker:02x}").repeat(20)),
+                state: if marker <= 3 {
+                    CustomTokenState::Verified {
+                        symbol: Some("TOK".to_owned()),
+                        decimals: 18,
+                        balance: "1".to_owned(),
+                    }
+                } else {
+                    CustomTokenState::Unavailable {
+                        reason_ko: super::AUTO_OVERVIEW_DEFERRED_ERROR.to_owned(),
+                    }
+                },
+            });
+        }
+        let mut deferred_snapshot = base.clone();
+        deferred_snapshot.balance_eth = "12.5".to_owned();
+        let deferred = selected_overview_fixture(
+            deferred_snapshot,
+            deferred_tokens,
+            true,
+            true,
+            super::OverviewHydrationStatus::Partial,
+            1,
+        );
+        assert!(deferred.is_well_formed());
+        let mut wrong_deferred_count = deferred;
+        wrong_deferred_count.deferred_token_count = 0;
+        assert!(!wrong_deferred_count.is_well_formed());
+
+        let legacy = super::headless_snapshot(WalletKind::LegacyV1RawPrivateKey);
+        let mut forged_legacy = complete_overview_fixture(&legacy);
+        forged_legacy
+            .custom_tokens
+            .push(super::headless_token_snapshot());
+        assert!(!forged_legacy.is_well_formed());
+    }
+
+    #[test]
+    fn overview_reducer_installs_only_exact_bound_data_and_locks_on_forgery() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let current = app
+            .snapshot
+            .as_ref()
+            .expect("overview current snapshot")
+            .clone();
+        app.pending = Some(PendingAction::Refresh);
+        app.apply_worker_event(WorkerEvent::Refreshed(Ok(complete_overview_fixture(
+            &current,
+        ))));
+        assert!(app.session_phase == super::SessionPhase::Unlocked);
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some("12.5")
+        );
+        assert!(app.custom_tokens == [super::headless_token_snapshot()]);
+        assert!(app.token_rows_unavailable_owner.is_none());
+        assert!(command_receiver.try_recv().is_err());
+
+        let mut activity_current = current.clone();
+        activity_current.activity = vec![super::headless_native_activity(
+            0,
+            super::ActivityStatusSnapshot::Pending,
+        )];
+        let mut changed_activity = activity_current.clone();
+        changed_activity.activity.clear();
+        let changed_activity_overview = complete_overview_fixture(&changed_activity);
+        assert_overview_reducer_locks(activity_current, changed_activity_overview);
+
+        let mut wrong_owner = complete_overview_fixture(&current);
+        wrong_owner.token_owner_account_index = 1;
+        wrong_owner.token_owner_address = current.accounts[1].address.clone();
+        assert_overview_reducer_locks(current.clone(), wrong_owner);
+
+        let mut malformed = complete_overview_fixture(&current);
+        let CustomTokenState::Verified { balance, .. } = &mut malformed.custom_tokens[0].state
+        else {
+            unreachable!();
+        };
+        *balance = "7".repeat(100);
+        assert_overview_reducer_locks(current, malformed);
+    }
+
+    #[test]
+    fn overview_partial_preserves_same_owner_rows_warns_persistently_and_stays_unlocked() {
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let prior = super::headless_token_snapshot();
+        app.custom_tokens = vec![prior.clone()];
+        let mut partial_snapshot = app
+            .snapshot
+            .as_ref()
+            .expect("partial overview snapshot")
+            .clone();
+        partial_snapshot.balance_eth = super::ACCOUNT_BALANCE_UNKNOWN.to_owned();
+        let partial = selected_overview_fixture(
+            partial_snapshot,
+            Vec::new(),
+            false,
+            false,
+            super::OverviewHydrationStatus::Partial,
+            0,
+        );
+        app.pending = Some(PendingAction::Refresh);
+        app.apply_worker_event(WorkerEvent::Refreshed(Ok(partial)));
+
+        assert!(app.session_phase == super::SessionPhase::Unlocked);
+        assert!(app.custom_tokens == [prior]);
+        assert!(
+            app.token_rows_unavailable_owner
+                .as_ref()
+                .is_some_and(|owner| {
+                    app.snapshot
+                        .as_ref()
+                        .and_then(WalletSnapshot::selected_account)
+                        .is_some_and(|selected| owner == selected)
+                })
+        );
+        assert!(command_receiver.try_recv().is_err());
+
+        app.custom_tokens.clear();
+        let rendered = rendered_panel_text(&context, |_context, ui| app.custom_token_panel(ui));
+        assert!(rendered.contains("현재 안전하게 표시할 수 있는 저장 토큰 행이 없습니다."));
+        assert!(!rendered.contains("저장된 커스텀 토큰이 없습니다."));
+        assert!(rendered.contains("목록이 비어 있어도 저장 토큰이 없다는 뜻이 아닙니다."));
+
+        app.pending = Some(PendingAction::RefreshCustomTokens);
+        app.apply_worker_event(WorkerEvent::CustomTokensRefreshed(Ok(Vec::new())));
+        assert!(app.token_rows_unavailable_owner.is_none());
+
+        app.mark_token_rows_unavailable_for_selected_account();
+        app.request_lock(super::LockReason::Explicit);
+        assert!(app.token_rows_unavailable_owner.is_none());
+    }
+
+    #[test]
+    fn overview_partial_with_loaded_rows_is_nonfatal_and_uses_exact_unknown_marker() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = app
+            .snapshot
+            .as_ref()
+            .expect("network partial snapshot")
+            .clone();
+        snapshot.balance_eth = super::ACCOUNT_BALANCE_UNKNOWN.to_owned();
+        let partial_token = CustomTokenSnapshot {
+            contract_address: "0x1111111111111111111111111111111111111111".to_owned(),
+            state: CustomTokenState::Unavailable {
+                reason_ko: super::RPC_UNAVAILABLE_ERROR.to_owned(),
+            },
+        };
+        let overview = selected_overview_fixture(
+            snapshot,
+            vec![partial_token],
+            true,
+            false,
+            super::OverviewHydrationStatus::Partial,
+            0,
+        );
+        app.pending = Some(PendingAction::Refresh);
+        app.apply_worker_event(WorkerEvent::Refreshed(Ok(overview)));
+
+        assert!(app.session_phase == super::SessionPhase::Unlocked);
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some(super::ACCOUNT_BALANCE_UNKNOWN)
+        );
+        assert!(matches!(
+            &app.custom_tokens[0].state,
+            CustomTokenState::Unavailable { reason_ko }
+                if reason_ko == super::RPC_UNAVAILABLE_ERROR
+        ));
+        assert!(app.token_rows_unavailable_owner.is_none());
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn unlock_switch_triggers_are_exactly_once_generated_is_offline_and_manual_uses_overview() {
+        let followups = vec![
+            (
+                PendingAction::ImportMnemonic,
+                WorkerEvent::MnemonicImported(Ok(super::headless_snapshot(
+                    WalletKind::V2Mnemonic { word_count: 12 },
+                ))),
+            ),
+            (
+                PendingAction::ImportPrivateKey,
+                WorkerEvent::PrivateKeyImported(Ok(super::headless_snapshot(
+                    WalletKind::V2RawPrivateKey,
+                ))),
+            ),
+            (
+                PendingAction::Open,
+                WorkerEvent::Opened(Ok(super::headless_snapshot(WalletKind::V2RawPrivateKey))),
+            ),
+            (
+                PendingAction::MigrateLegacy,
+                WorkerEvent::LegacyMigrated(Ok(super::headless_snapshot(
+                    WalletKind::V2RawPrivateKey,
+                ))),
+            ),
+        ];
+        for (pending, event) in followups {
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            app.pending = Some(pending);
+            app.apply_worker_event(event);
+            assert!(app.pending == Some(PendingAction::Refresh));
+            assert_eq!(
+                app.snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.balance_eth.as_str()),
+                Some(super::ACCOUNT_BALANCE_STALE)
+            );
+            assert!(matches!(
+                command_receiver.try_recv(),
+                Ok(super::WorkerRequest {
+                    command: WorkerCommand::Refresh,
+                    ..
+                })
+            ));
+            assert!(command_receiver.try_recv().is_err());
+        }
+
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut selected_app = test_app(commands, events);
+        selected_app.pending = Some(PendingAction::SelectAccount);
+        let mut selected = selected_app
+            .snapshot
+            .as_ref()
+            .expect("switch trigger snapshot")
+            .clone();
+        selected.selected_account_index = 1;
+        selected.balance_eth = super::ACCOUNT_BALANCE_UNKNOWN.to_owned();
+        selected_app.apply_worker_event(WorkerEvent::AccountSelected(Ok(selected)));
+        assert!(selected_app.pending == Some(PendingAction::Refresh));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::Refresh,
+                ..
+            })
+        ));
+        assert!(command_receiver.try_recv().is_err());
+
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut generated = test_app(commands, events);
+        generated.pending = Some(PendingAction::ConfirmGenerated);
+        generated.apply_worker_event(WorkerEvent::GeneratedConfirmed(Ok(
+            super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 }),
+        )));
+        assert!(generated.pending.is_none());
+        assert_eq!(
+            generated
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_eth.as_str()),
+            Some(super::ACCOUNT_BALANCE_UNKNOWN)
+        );
+        assert!(command_receiver.try_recv().is_err());
+        generated.refresh();
+        assert!(generated.pending == Some(PendingAction::Refresh));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::Refresh,
+                ..
+            })
+        ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn stale_epoch_overview_is_dropped_and_backend_err_scrubs_and_locks() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let current = app
+            .snapshot
+            .as_ref()
+            .expect("stale overview current")
+            .clone();
+        app.pending = Some(PendingAction::Refresh);
+        app.session_epoch = 1;
+        app.active_epoch.store(1, Ordering::SeqCst);
+        event_sender
+            .send(super::WorkerResponse {
+                epoch: 0,
+                event: WorkerEvent::Refreshed(Ok(complete_overview_fixture(&current))),
+            })
+            .expect("queue stale overview");
+        app.process_events();
+        assert!(app.snapshot.as_ref() == Some(&current));
+        assert!(app.pending == Some(PendingAction::Refresh));
+        assert!(command_receiver.try_recv().is_err());
+
+        app.apply_worker_event(WorkerEvent::Refreshed(Err(
+            "인증된 토큰 목록이 손상되었거나 현재 v2 지갑과 일치하지 않습니다.".to_owned(),
+        )));
+        assert!(app.snapshot.is_none());
+        assert!(app.custom_tokens.is_empty());
+        assert!(matches!(
+            app.session_phase,
+            super::SessionPhase::Locking(super::LockReason::BackendStateInvalidated)
+        ));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                command: WorkerCommand::Lock,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -8614,7 +9551,10 @@ mod tests {
             }
         }
 
-        fn refresh(&mut self) -> Result<WalletSnapshot, String> {
+        fn refresh(
+            &mut self,
+            _permit: &super::SessionPermit<'_>,
+        ) -> Result<super::SelectedAccountOverview, String> {
             self.calls.push("refresh");
             Err("unused".to_owned())
         }
@@ -8797,7 +9737,7 @@ mod tests {
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
         assert_eq!(evidence.transitions_checked, 96);
-        assert_eq!(evidence.backend_routes_checked, 30);
+        assert_eq!(evidence.backend_routes_checked, 35);
         Ok(())
     }
 }

@@ -216,7 +216,7 @@ mod tests {
         let report = run(HeadlessCheck::Smoke);
         assert!(report.succeeded());
         assert_eq!(report.transitions_checked, 96);
-        assert_eq!(report.backend_routes_checked, 30);
+        assert_eq!(report.backend_routes_checked, 35);
         assert!(!report.gui_started);
         assert!(!report.mouse_or_keyboard_automation_used);
         assert!(!report.network_used);

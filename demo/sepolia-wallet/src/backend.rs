@@ -25,7 +25,10 @@ use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 use sha2::Sha256;
 use sha3::{Digest as _, Keccak256};
 #[cfg(windows)]
-use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE};
+use windows::Win32::Foundation::{
+    ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, GENERIC_READ,
+    GENERIC_WRITE, HANDLE,
+};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
@@ -47,13 +50,18 @@ use crate::activity_store::{
 use crate::erc20::{self, TokenAmount};
 use crate::rpc;
 use crate::token_store::{TokenEntry, TokenStore, TokenStoreError};
+#[cfg(test)]
+use crate::ui::OverviewHydrationStatus;
 use crate::ui::{
+    ACCOUNT_BALANCE_UNKNOWN, AUTO_OVERVIEW_DEFERRED_ERROR, AUTO_OVERVIEW_TOKEN_LIMIT,
     ActivityInclusionOutcome, ActivityInclusionSnapshot, ActivityStatusSnapshot,
     ActivityTransferSnapshot, CustomTokenSnapshot, CustomTokenState, Erc20TransferPreview,
     FeeSelection, GeneratedBackupChallenge, GeneratedBackupConfirmation, GeneratedBackupReveal,
-    NewMnemonicWords, PendingBroadcastPreview, SecretReveal, SecretRevealKind, SendReceipt,
-    SensitiveText, SessionPermit, TransactionActivitySnapshot, TransferPreview,
-    WalletAccountSnapshot, WalletBackend, WalletKind, WalletSnapshot,
+    NewMnemonicWords, PendingBroadcastPreview, RPC_UNAVAILABLE_ERROR, SecretReveal,
+    SecretRevealKind, SelectedAccountOverview, SendReceipt, SensitiveText, SessionPermit,
+    TOKEN_CODE_CHANGED_ERROR, TOKEN_CONTRACT_EMPTY_ERROR, TOKEN_METADATA_CHANGED_ERROR,
+    TOKEN_METADATA_INVALID_ERROR, TOKEN_QUERY_UNAVAILABLE_ERROR, TransactionActivitySnapshot,
+    TransferPreview, WalletAccountSnapshot, WalletBackend, WalletKind, WalletSnapshot,
 };
 use crate::vault_v2::{
     OpenedVaultV2, VaultCreationMetadata, VaultError, VaultOrigin, VaultPassword, open_vault_v2,
@@ -105,6 +113,16 @@ const PENDING_HEADER_BYTES_U16: u16 = 56;
 const MAX_PENDING_RAW_BYTES: usize = 512;
 const MAX_TOKEN_STORE_BYTES: usize = 4_096;
 static TOKEN_STORE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+std::thread_local! {
+    /// The test harness runs unrelated temporary wallets in parallel even
+    /// though the desktop app owns one backend. Tests block on the global
+    /// process mutex by default to avoid cross-fixture false contention; the
+    /// dedicated contention test opts back into production `try_lock` behavior.
+    static TOKEN_OBSERVATION_NONBLOCKING_FOR_TEST: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
 static ACTIVITY_STORE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(not(windows))]
 static LEGACY_MIGRATION_PROCESS_LOCK: Mutex<()> = Mutex::new(());
@@ -510,6 +528,194 @@ impl<'a> TokenMutationLease<'a> {
             })
         }
     }
+}
+
+/// Non-mutating witness for one optional saved-token observation.
+///
+/// Unlike `TokenMutationLease`, this never creates a sibling, reconciles a
+/// temporary file, flushes a directory, or otherwise changes disk state. On
+/// Windows it holds the pre-existing exact regular lock file and, when present,
+/// the exact token-store file without write/delete sharing. A missing store is
+/// valid generation-zero state while that lock witness is held. Process/share
+/// contention is represented by `None`; authenticated bytes that can be opened
+/// but fail validation remain fatal when `load_token_store` runs under it.
+struct TokenObservationLease<'a> {
+    _process_guard: MutexGuard<'a, ()>,
+    #[cfg(windows)]
+    _lock_file: Option<File>,
+    #[cfg(windows)]
+    _store_file: Option<File>,
+}
+
+impl<'a> TokenObservationLease<'a> {
+    fn acquire(token_store_path: &Path) -> Result<Option<Self>, BackendError> {
+        #[cfg(not(test))]
+        let process_guard = match TOKEN_STORE_PROCESS_LOCK.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(BackendError::TokenStoreStorage);
+            }
+        };
+        #[cfg(test)]
+        let process_guard = if TOKEN_OBSERVATION_NONBLOCKING_FOR_TEST.with(std::cell::Cell::get) {
+            match TOKEN_STORE_PROCESS_LOCK.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(BackendError::TokenStoreStorage);
+                }
+            }
+        } else {
+            TOKEN_STORE_PROCESS_LOCK
+                .lock()
+                .map_err(|_| BackendError::TokenStoreStorage)?
+        };
+
+        #[cfg(windows)]
+        {
+            let lock_path = token_store_lock_path(token_store_path)?;
+            let lock_file = match fs::symlink_metadata(&lock_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => return Err(BackendError::TokenStoreStorage),
+                Ok(path_metadata) => {
+                    if !path_metadata.file_type().is_file()
+                        || path_metadata.len() != 0
+                        || path_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                    {
+                        return Err(BackendError::TokenStoreInvalid);
+                    }
+                    let file = match open_token_observation_file(&lock_path) {
+                        Ok(file) => file,
+                        Err(TokenObservationOpenError::Contended) => return Ok(None),
+                        Err(TokenObservationOpenError::NotFound) => {
+                            return Err(BackendError::TokenStoreChanged);
+                        }
+                        Err(TokenObservationOpenError::Storage) => {
+                            return Err(BackendError::TokenStoreStorage);
+                        }
+                    };
+                    let opened_metadata = file
+                        .metadata()
+                        .map_err(|_| BackendError::TokenStoreStorage)?;
+                    if !opened_metadata.file_type().is_file()
+                        || opened_metadata.len() != 0
+                        || opened_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                    {
+                        return Err(BackendError::TokenStoreInvalid);
+                    }
+                    Some(file)
+                }
+            };
+
+            let store_file = match fs::symlink_metadata(token_store_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if lock_file.is_none() {
+                        return Ok(None);
+                    }
+                    None
+                }
+                Err(_) => return Err(BackendError::TokenStoreStorage),
+                Ok(path_metadata) => {
+                    if !path_metadata.file_type().is_file()
+                        || path_metadata.len() == 0
+                        || path_metadata.len() > MAX_TOKEN_STORE_BYTES as u64
+                        || path_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                    {
+                        return Err(BackendError::TokenStoreInvalid);
+                    }
+                    let file = match open_token_observation_file(token_store_path) {
+                        Ok(file) => file,
+                        Err(TokenObservationOpenError::Contended) => return Ok(None),
+                        Err(TokenObservationOpenError::NotFound) => {
+                            return Err(BackendError::TokenStoreChanged);
+                        }
+                        Err(TokenObservationOpenError::Storage) => {
+                            return Err(BackendError::TokenStoreStorage);
+                        }
+                    };
+                    let opened_metadata = file
+                        .metadata()
+                        .map_err(|_| BackendError::TokenStoreStorage)?;
+                    if !opened_metadata.file_type().is_file()
+                        || opened_metadata.len() != path_metadata.len()
+                        || opened_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                    {
+                        return Err(BackendError::TokenStoreInvalid);
+                    }
+                    Some(file)
+                }
+            };
+            Ok(Some(Self {
+                _process_guard: process_guard,
+                _lock_file: lock_file,
+                _store_file: store_file,
+            }))
+        }
+
+        #[cfg(not(windows))]
+        {
+            let lock_path = token_store_lock_path(token_store_path)?;
+            let lock_present = match fs::symlink_metadata(&lock_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => return Err(BackendError::TokenStoreStorage),
+                Ok(lock_metadata)
+                    if lock_metadata.file_type().is_file() && lock_metadata.len() == 0 =>
+                {
+                    true
+                }
+                Ok(_) => return Err(BackendError::TokenStoreInvalid),
+            };
+            let store_present = match fs::symlink_metadata(token_store_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => return Err(BackendError::TokenStoreStorage),
+                Ok(store_metadata)
+                    if store_metadata.file_type().is_file()
+                        && store_metadata.len() > 0
+                        && store_metadata.len() <= MAX_TOKEN_STORE_BYTES as u64 =>
+                {
+                    true
+                }
+                Ok(_) => return Err(BackendError::TokenStoreInvalid),
+            };
+            if !lock_present && !store_present {
+                return Ok(None);
+            }
+            Ok(Some(Self {
+                _process_guard: process_guard,
+            }))
+        }
+    }
+}
+
+#[cfg(windows)]
+enum TokenObservationOpenError {
+    NotFound,
+    Contended,
+    Storage,
+}
+
+#[cfg(windows)]
+fn open_token_observation_file(path: &Path) -> Result<File, TokenObservationOpenError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(code)
+                if code == ERROR_FILE_NOT_FOUND.0 as i32
+                    || code == ERROR_PATH_NOT_FOUND.0 as i32 =>
+            {
+                TokenObservationOpenError::NotFound
+            }
+            Some(code) if code == ERROR_SHARING_VIOLATION.0 as i32 => {
+                TokenObservationOpenError::Contended
+            }
+            _ => TokenObservationOpenError::Storage,
+        })
 }
 
 /// Holds both authenticated-sidecar namespaces while a brand-new v2 vault is
@@ -934,7 +1140,7 @@ impl DemoBackend {
                 balance.account_index == self.selected_account_index && balance.address == address
             })
             .map_or_else(
-                || "조회 전".to_owned(),
+                || ACCOUNT_BALANCE_UNKNOWN.to_owned(),
                 |balance| format_ether(balance.value),
             );
         let activity = self.activity_snapshots(self.selected_account_index)?;
@@ -1173,11 +1379,7 @@ impl DemoBackend {
 
         self.unlocked = Some(UnlockedWallet::V2(opened));
         self.selected_account_index = 0;
-        self.last_balance = Some(AccountBalance {
-            account_index: 0,
-            address: original_metadata.0,
-            value: Word::ZERO,
-        });
+        self.last_balance = None;
         let snapshot = self.snapshot_or_lock();
         drop(sidecar_namespace_lease);
         snapshot
@@ -1519,7 +1721,7 @@ impl DemoBackend {
         origin: VaultOrigin,
     ) -> Result<WalletSnapshot, BackendError> {
         self.ensure_management_mutation_allowed()?;
-        let (account_zero, _, _) = validated_wallet_metadata(&wallet)?;
+        validated_wallet_metadata(&wallet)?;
         let metadata = confirmed_metadata(origin)?;
         let sealed = seal_vault_v2(&wallet, &password, metadata).map_err(map_vault_error)?;
         let opened = open_vault_v2(sealed.as_bytes(), &password).map_err(map_vault_error)?;
@@ -1531,11 +1733,7 @@ impl DemoBackend {
         sidecar_namespace_lease.verify_absent()?;
         self.unlocked = Some(UnlockedWallet::V2(opened));
         self.selected_account_index = 0;
-        self.last_balance = Some(AccountBalance {
-            account_index: 0,
-            address: account_zero,
-            value: Word::ZERO,
-        });
+        self.last_balance = None;
         let snapshot = self.snapshot_or_lock();
         drop(sidecar_namespace_lease);
         snapshot
@@ -1589,22 +1787,200 @@ impl DemoBackend {
         Ok(reopened)
     }
 
-    fn refresh_snapshot(&mut self) -> Result<WalletSnapshot, BackendError> {
+    fn refresh_selected_overview(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<SelectedAccountOverview, BackendError> {
+        let result = self.refresh_selected_overview_inner(permit);
+        if result.is_err() {
+            self.lock();
+        }
+        result
+    }
+
+    fn refresh_selected_overview_inner(
+        &mut self,
+        permit: &SessionPermit<'_>,
+    ) -> Result<SelectedAccountOverview, BackendError> {
+        ensure_session_current(permit)?;
         self.prepared = None;
+        self.last_balance = None;
+
         let (account_index, address) = self.selected_account()?;
-        self.rpc
-            .verify_sepolia()
-            .map_err(|()| BackendError::RpcUnavailable)?;
-        let balance = self
-            .rpc
-            .balance(address)
-            .map_err(|()| BackendError::BalanceUnavailable)?;
-        self.last_balance = Some(AccountBalance {
+        let local_snapshot = self.snapshot()?;
+        let (token_state, token_rows_loaded) = match local_snapshot.wallet_kind {
+            WalletKind::LegacyV1RawPrivateKey => (None, true),
+            WalletKind::V2Mnemonic { .. } | WalletKind::V2RawPrivateKey => {
+                let context = self.token_context_for_account(account_index)?;
+                if context.account_index != account_index || context.owner != address {
+                    return Err(BackendError::AccountChanged);
+                }
+                match TokenObservationLease::acquire(&self.token_store_path) {
+                    Ok(Some(lease)) => {
+                        let loaded = self.load_token_store(&context)?;
+                        (Some((context, loaded, lease)), true)
+                    }
+                    Ok(None) => (None, false),
+                    Err(error) => return Err(error),
+                }
+            }
+        };
+        ensure_session_current(permit)?;
+
+        let chain_verified = self.rpc.verify_sepolia().is_ok();
+        ensure_session_current(permit)?;
+        let mut observed_balance = if chain_verified {
+            let balance = self.rpc.balance(address).ok();
+            ensure_session_current(permit)?;
+            balance
+        } else {
+            None
+        };
+
+        let mut custom_tokens = Vec::new();
+        let mut deferred_token_count = 0_u8;
+        if let Some((context, loaded, _lease)) = token_state.as_ref() {
+            custom_tokens.reserve(loaded.store.entries().len());
+            for (position, entry) in loaded.store.entries().iter().enumerate() {
+                let contract_address = checksum_address(*entry.contract());
+                if position >= AUTO_OVERVIEW_TOKEN_LIMIT {
+                    deferred_token_count = deferred_token_count
+                        .checked_add(1)
+                        .ok_or(BackendError::TokenStoreInvalid)?;
+                    custom_tokens.push(CustomTokenSnapshot {
+                        contract_address,
+                        state: CustomTokenState::Unavailable {
+                            reason_ko: AUTO_OVERVIEW_DEFERRED_ERROR.to_owned(),
+                        },
+                    });
+                    continue;
+                }
+                if !chain_verified {
+                    custom_tokens.push(CustomTokenSnapshot {
+                        contract_address,
+                        state: CustomTokenState::Unavailable {
+                            reason_ko: error_text(BackendError::RpcUnavailable),
+                        },
+                    });
+                    continue;
+                }
+
+                ensure_session_current(permit)?;
+                let inspected = self.inspect_token_with_permit(
+                    *entry.contract(),
+                    context.owner,
+                    Some(entry),
+                    Some(permit),
+                );
+                // A fallible RPC helper can return before its own trailing
+                // permit check. Recheck before classifying any remote failure
+                // as a non-fatal partial result or starting another RPC.
+                ensure_session_current(permit)?;
+                let state = match inspected {
+                    Ok(validated) => {
+                        match erc20::format_token_amount(validated.balance, validated.decimals) {
+                            Ok(balance) => CustomTokenState::Verified {
+                                symbol: validated.symbol,
+                                decimals: validated.decimals,
+                                balance,
+                            },
+                            Err(_) => CustomTokenState::Unavailable {
+                                reason_ko: error_text(BackendError::TokenMetadataInvalid),
+                            },
+                        }
+                    }
+                    Err(BackendError::Locked) => return Err(BackendError::Locked),
+                    Err(error) => CustomTokenState::Unavailable {
+                        reason_ko: error_text(error),
+                    },
+                };
+                custom_tokens.push(CustomTokenSnapshot {
+                    contract_address,
+                    state,
+                });
+            }
+        }
+
+        if chain_verified {
+            ensure_session_current(permit)?;
+            let final_chain_verified = self.rpc.verify_sepolia().is_ok();
+            ensure_session_current(permit)?;
+            if !final_chain_verified {
+                observed_balance = None;
+                for token in custom_tokens.iter_mut().take(AUTO_OVERVIEW_TOKEN_LIMIT) {
+                    token.state = CustomTokenState::Unavailable {
+                        reason_ko: error_text(BackendError::RpcUnavailable),
+                    };
+                }
+            }
+        }
+
+        ensure_session_current(permit)?;
+        if self.selected_account()? != (account_index, address) {
+            return Err(BackendError::AccountChanged);
+        }
+        if let Some((context, loaded, _lease)) = token_state.as_ref() {
+            if context.account_index != account_index || context.owner != address {
+                return Err(BackendError::AccountChanged);
+            }
+            let final_loaded = self.load_token_store(context)?;
+            ensure_session_current(permit)?;
+            if final_loaded.baseline.bytes != loaded.baseline.bytes
+                || final_loaded.baseline.generation != loaded.baseline.generation
+                || final_loaded.store.generation() != loaded.store.generation()
+                || final_loaded.store.entries() != loaded.store.entries()
+            {
+                return Err(BackendError::TokenStoreChanged);
+            }
+        }
+        // Revalidate every authenticated local component before installing a
+        // network value in the cache. A revoked permit never reaches this
+        // mutation, and every failure path leaves the balance absent.
+        let _ = self.snapshot()?;
+        ensure_session_current(permit)?;
+        self.last_balance = observed_balance.map(|value| AccountBalance {
             account_index,
             address,
-            value: balance,
+            value,
         });
-        self.snapshot_or_lock()
+        let snapshot = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.last_balance = None;
+                return Err(error);
+            }
+        };
+        if ensure_session_current(permit).is_err() {
+            self.last_balance = None;
+            return Err(BackendError::Locked);
+        }
+        if snapshot.wallet_kind != local_snapshot.wallet_kind
+            || snapshot.accounts != local_snapshot.accounts
+            || snapshot.selected_account_index != local_snapshot.selected_account_index
+            || snapshot.pending_broadcast != local_snapshot.pending_broadcast
+            || snapshot.selected_account_index != account_index
+            || snapshot
+                .selected_account()
+                .is_none_or(|selected| selected.address != checksum_address(address))
+        {
+            self.last_balance = None;
+            return Err(BackendError::AccountChanged);
+        }
+        if snapshot.activity != local_snapshot.activity {
+            self.last_balance = None;
+            return Err(BackendError::ActivityStoreChanged);
+        }
+
+        let balance_refreshed = observed_balance.is_some();
+        Ok(SelectedAccountOverview::new(
+            snapshot,
+            account_index,
+            checksum_address(address),
+            custom_tokens,
+            token_rows_loaded,
+            balance_refreshed,
+            deferred_token_count,
+        ))
     }
 
     fn refresh_activity_inner(
@@ -3485,8 +3861,8 @@ impl WalletBackend for DemoBackend {
             .map_err(error_text)
     }
 
-    fn refresh(&mut self) -> Result<WalletSnapshot, String> {
-        self.refresh_snapshot().map_err(error_text)
+    fn refresh(&mut self, permit: &SessionPermit<'_>) -> Result<SelectedAccountOverview, String> {
+        self.refresh_selected_overview(permit).map_err(error_text)
     }
 
     fn refresh_activity(
@@ -4143,7 +4519,7 @@ fn error_text(error: BackendError) -> String {
         BackendError::AccountSwitchBlocked => {
             "준비한 전송을 취소한 뒤 계정을 바꿔 주세요.".to_owned()
         }
-        BackendError::RpcUnavailable => "Sepolia 연결을 확인하지 못했습니다.".to_owned(),
+        BackendError::RpcUnavailable => RPC_UNAVAILABLE_ERROR.to_owned(),
         BackendError::BalanceUnavailable => "Sepolia 잔액을 확인하지 못했습니다.".to_owned(),
         BackendError::TokenRequiresV2 => {
             "커스텀 토큰은 v2 지갑에서만 사용할 수 있습니다. v1 지갑을 먼저 이전해 주세요."
@@ -4152,21 +4528,11 @@ fn error_text(error: BackendError) -> String {
         BackendError::TokenContractAddressInvalid => {
             "토큰 컨트랙트 주소 형식이나 체크섬을 확인해 주세요.".to_owned()
         }
-        BackendError::TokenContractEmpty => {
-            "해당 Sepolia 주소에서 컨트랙트 코드를 찾지 못했습니다.".to_owned()
-        }
-        BackendError::TokenQueryUnavailable => {
-            "토큰 컨트랙트 정보를 확인하지 못했습니다.".to_owned()
-        }
-        BackendError::TokenMetadataInvalid => {
-            "토큰 컨트랙트의 표준 메타데이터 응답이 올바르지 않습니다.".to_owned()
-        }
-        BackendError::TokenCodeChanged => {
-            "저장 후 토큰 컨트랙트 코드가 달라져 메타데이터와 잔액을 숨겼습니다.".to_owned()
-        }
-        BackendError::TokenMetadataChanged => {
-            "저장 후 토큰 메타데이터가 달라져 메타데이터와 잔액을 숨겼습니다.".to_owned()
-        }
+        BackendError::TokenContractEmpty => TOKEN_CONTRACT_EMPTY_ERROR.to_owned(),
+        BackendError::TokenQueryUnavailable => TOKEN_QUERY_UNAVAILABLE_ERROR.to_owned(),
+        BackendError::TokenMetadataInvalid => TOKEN_METADATA_INVALID_ERROR.to_owned(),
+        BackendError::TokenCodeChanged => TOKEN_CODE_CHANGED_ERROR.to_owned(),
+        BackendError::TokenMetadataChanged => TOKEN_METADATA_CHANGED_ERROR.to_owned(),
         BackendError::TokenTransferRejected => {
             "토큰 컨트랙트가 정확한 transfer 사전 실행을 거부했습니다.".to_owned()
         }
@@ -7218,6 +7584,33 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     const TEST_PASSWORD: &str = "correct demo password";
+    static SELECTED_OVERVIEW_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn selected_overview_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        SELECTED_OVERVIEW_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    struct NonblockingTokenObservationGuard;
+
+    impl NonblockingTokenObservationGuard {
+        fn enter() -> Self {
+            TOKEN_OBSERVATION_NONBLOCKING_FOR_TEST.with(|flag| {
+                assert!(
+                    !flag.replace(true),
+                    "nested nonblocking observation fixture"
+                );
+            });
+            Self
+        }
+    }
+
+    impl Drop for NonblockingTokenObservationGuard {
+        fn drop(&mut self) {
+            TOKEN_OBSERVATION_NONBLOCKING_FOR_TEST.with(|flag| flag.set(false));
+        }
+    }
 
     #[cfg(windows)]
     fn windows_file_identity(file: &File) -> (u64, [u8; 16]) {
@@ -7341,6 +7734,10 @@ mod tests {
         replace_on_query: Option<(usize, [u8; 20], TokenFixture)>,
         contracts: HashMap<[u8; 20], TokenFixture>,
         native_balance: Word,
+        balance_fails: bool,
+        balance_calls: usize,
+        balance_addresses: Vec<[u8; 20]>,
+        activity_write_on_balance: Option<(PathBuf, Vec<u8>)>,
         nonce: Word,
         base_fee: Word,
         priority_fee: Word,
@@ -7395,6 +7792,10 @@ mod tests {
                     replace_on_query: None,
                     contracts: HashMap::new(),
                     native_balance: Word::from_u64(2_000_000_000_000_000_000),
+                    balance_fails: false,
+                    balance_calls: 0,
+                    balance_addresses: Vec::new(),
+                    activity_write_on_balance: None,
                     nonce: Word::from_u64(7),
                     base_fee: Word::from_u64(500_000_000),
                     priority_fee: Word::from_u64(1_000_000_000),
@@ -7471,8 +7872,18 @@ mod tests {
                 .ok_or(())
         }
 
-        fn balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
-            Ok(self.state.lock().map_err(|_| ())?.native_balance)
+        fn balance(&self, address: [u8; 20]) -> Result<Word, ()> {
+            let mut state = self.state.lock().map_err(|_| ())?;
+            state.balance_calls = state.balance_calls.checked_add(1).ok_or(())?;
+            state.balance_addresses.push(address);
+            let balance_fails = state.balance_fails;
+            let balance = state.native_balance;
+            let activity_write = state.activity_write_on_balance.take();
+            drop(state);
+            if let Some((path, bytes)) = activity_write {
+                fs::write(path, bytes).map_err(|_| ())?;
+            }
+            (!balance_fails).then_some(balance).ok_or(())
         }
 
         fn pending_balance(&self, _address: [u8; 20]) -> Result<Word, ()> {
@@ -8700,6 +9111,44 @@ mod tests {
         backend
     }
 
+    fn saved_tokens_backend(
+        rpc: TokenRpc,
+        count: usize,
+        key_marker: u8,
+    ) -> (DemoBackend, Vec<[u8; 20]>) {
+        let mut backend = token_backend(rpc.clone(), key_marker);
+        let contracts = (0..count)
+            .map(|index| {
+                let marker = u8::try_from(index)
+                    .expect("bounded saved-token fixture")
+                    .checked_add(0x41)
+                    .expect("bounded saved-token marker");
+                let contract = [marker; 20];
+                rpc.insert(contract, token_fixture(marker));
+                backend
+                    .add_custom_token_inner(&checksum_address(contract))
+                    .expect("persist ordered saved-token fixture");
+                contract
+            })
+            .collect();
+        (backend, contracts)
+    }
+
+    fn reset_overview_rpc_observations(rpc: &TokenRpc) {
+        rpc.update(|state| {
+            state.verify_ok = true;
+            state.verify_calls = 0;
+            state.fail_verify_on_call = None;
+            state.query_fails = false;
+            state.query_calls = 0;
+            state.balance_fails = false;
+            state.balance_calls = 0;
+            state.balance_addresses.clear();
+            state.balance_owners.clear();
+            state.activity_write_on_balance = None;
+        });
+    }
+
     fn saved_token_backend_with_clock(
         rpc: TokenRpc,
         contract: [u8; 20],
@@ -8775,6 +9224,7 @@ mod tests {
             );
             assert_eq!(snapshot.accounts.len(), 2);
             assert_eq!(snapshot.selected_account_index, 0);
+            assert_eq!(snapshot.balance_eth, ACCOUNT_BALANCE_UNKNOWN);
             assert!(backend.vault_v2_path.is_file());
             assert!(!backend.vault_path.exists());
             assert!(backend.pending_generation.is_none());
@@ -8786,6 +9236,7 @@ mod tests {
             assert_eq!(snapshot_address(&reopened), expected_address);
             assert_eq!(reopened.accounts.len(), 2);
             assert_eq!(reopened.selected_account_index, 0);
+            assert_eq!(reopened.balance_eth, ACCOUNT_BALANCE_UNKNOWN);
             remove_test_backend_files(&backend);
         }
     }
@@ -9143,8 +9594,10 @@ mod tests {
             fs::read(&backend.pending_path).expect("read preserved pending record"),
             pending_record
         );
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
         assert!(matches!(
-            backend.refresh_snapshot(),
+            backend.refresh_selected_overview(&permit),
             Err(BackendError::Locked)
         ));
         assert!(matches!(
@@ -9199,6 +9652,7 @@ mod tests {
             )
             .expect("import mnemonic");
         assert_eq!(snapshot.accounts.len(), 2);
+        assert_eq!(snapshot.balance_eth, ACCOUNT_BALANCE_UNKNOWN);
         assert!(matches!(
             snapshot.wallet_kind,
             WalletKind::V2Mnemonic { word_count: 12 }
@@ -9223,6 +9677,7 @@ mod tests {
             .expect("import raw key");
         assert!(snapshot.wallet_kind == WalletKind::V2RawPrivateKey);
         assert_eq!(snapshot.accounts.len(), 1);
+        assert_eq!(snapshot.balance_eth, ACCOUNT_BALANCE_UNKNOWN);
         assert!(matches!(
             raw_backend.export_mnemonic_inner(sensitive(TEST_PASSWORD)),
             Err(BackendError::MnemonicUnavailable)
@@ -9233,6 +9688,343 @@ mod tests {
                 .is_ok()
         );
         remove_test_backend_files(&raw_backend);
+    }
+
+    #[test]
+    fn selected_overview_treats_witnessed_missing_store_as_authenticated_empty() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let mut backend = token_backend(rpc.clone(), 0x31);
+        let lock_path = token_store_lock_path(&backend.token_store_path).expect("token lock path");
+        assert!(lock_path.is_file());
+        assert!(!path_may_exist(&backend.token_store_path));
+        reset_overview_rpc_observations(&rpc);
+
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let overview = backend
+            .refresh_selected_overview(&permit)
+            .expect("hydrate witnessed empty token store");
+
+        assert!(overview.token_rows_loaded());
+        assert!(overview.custom_tokens().is_empty());
+        assert!(overview.balance_refreshed());
+        assert!(overview.status() == OverviewHydrationStatus::Complete);
+        assert_eq!(overview.deferred_token_count(), 0);
+        assert_eq!(overview.snapshot().balance_eth, "2");
+        let selected = overview
+            .snapshot()
+            .selected_account()
+            .expect("selected overview owner");
+        assert_eq!(
+            overview.token_owner(),
+            (selected.index, selected.address.as_str())
+        );
+        let state = rpc.state.lock().expect("empty overview RPC lock");
+        // Each verification represents the RPC client's two-call chain
+        // identity check, so this is the exact 5-HTTP-call empty overview.
+        assert_eq!(state.verify_calls, 2);
+        assert_eq!(state.balance_calls, 1);
+        assert_eq!(state.query_calls, 0);
+        assert_eq!(
+            state.balance_addresses,
+            [parse_address(&selected.address).unwrap()]
+        );
+        drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn selected_overview_accepts_pre_lock_store_without_creating_a_sentinel() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let contract = [0x52; 20];
+        let mut backend = saved_token_backend(rpc.clone(), contract, 0x32);
+        let lock_path = token_store_lock_path(&backend.token_store_path).expect("token lock path");
+        fs::remove_file(&lock_path).expect("remove compatibility lock witness");
+        reset_overview_rpc_observations(&rpc);
+
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let overview = backend
+            .refresh_selected_overview(&permit)
+            .expect("hydrate pre-lock token store");
+
+        assert!(overview.token_rows_loaded());
+        assert!(overview.status() == OverviewHydrationStatus::Complete);
+        assert_eq!(overview.custom_tokens().len(), 1);
+        assert!(!path_may_exist(&lock_path));
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn selected_overview_queries_exact_first_three_and_defers_every_tail_row() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let (mut backend, contracts) = saved_tokens_backend(rpc.clone(), 5, 0x33);
+        reset_overview_rpc_observations(&rpc);
+        let owner = backend.selected_account().expect("selected cap owner").1;
+
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let overview = backend
+            .refresh_selected_overview(&permit)
+            .expect("hydrate capped token overview");
+
+        assert!(overview.token_rows_loaded());
+        assert!(overview.balance_refreshed());
+        assert!(overview.status() == OverviewHydrationStatus::Partial);
+        assert_eq!(overview.deferred_token_count(), 2);
+        assert_eq!(overview.custom_tokens().len(), contracts.len());
+        for (index, token) in overview.custom_tokens().iter().enumerate() {
+            assert_eq!(token.contract_address, checksum_address(contracts[index]));
+            if index < AUTO_OVERVIEW_TOKEN_LIMIT {
+                assert!(matches!(token.state, CustomTokenState::Verified { .. }));
+            } else {
+                assert!(matches!(
+                    &token.state,
+                    CustomTokenState::Unavailable { reason_ko }
+                        if reason_ko == AUTO_OVERVIEW_DEFERRED_ERROR
+                ));
+            }
+        }
+        let state = rpc.state.lock().expect("capped overview RPC lock");
+        assert_eq!(state.verify_calls, 8);
+        assert_eq!(state.balance_calls, 1);
+        assert_eq!(state.query_calls, 7 * AUTO_OVERVIEW_TOKEN_LIMIT);
+        assert_eq!(state.balance_owners, vec![owner; AUTO_OVERVIEW_TOKEN_LIMIT]);
+        drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn selected_overview_network_failures_are_partial_and_never_restore_a_local_zero() {
+        let _serial = selected_overview_test_guard();
+        let contract = [0x53; 20];
+
+        let initial_rpc = TokenRpc::new();
+        let mut initial = saved_token_backend(initial_rpc.clone(), contract, 0x34);
+        reset_overview_rpc_observations(&initial_rpc);
+        initial_rpc.update(|state| state.verify_ok = false);
+        let initial_epoch = std::sync::atomic::AtomicU64::new(0);
+        let initial_permit = SessionPermit::current_for_test(0, &initial_epoch);
+        let initial_overview = initial
+            .refresh_selected_overview(&initial_permit)
+            .expect("initial chain failure remains partial");
+        assert!(!initial_overview.balance_refreshed());
+        assert_eq!(
+            initial_overview.snapshot().balance_eth,
+            ACCOUNT_BALANCE_UNKNOWN
+        );
+        assert!(initial_overview.status() == OverviewHydrationStatus::Partial);
+        assert!(matches!(
+            &initial_overview.custom_tokens()[0].state,
+            CustomTokenState::Unavailable { reason_ko } if reason_ko == RPC_UNAVAILABLE_ERROR
+        ));
+        assert!(initial.last_balance.is_none());
+        let state = initial_rpc.state.lock().expect("initial failure RPC lock");
+        assert_eq!(state.verify_calls, 1);
+        assert_eq!(state.balance_calls, 0);
+        assert_eq!(state.query_calls, 0);
+        drop(state);
+        remove_test_backend_files(&initial);
+
+        let balance_rpc = TokenRpc::new();
+        let mut balance = saved_token_backend(balance_rpc.clone(), contract, 0x35);
+        reset_overview_rpc_observations(&balance_rpc);
+        balance_rpc.update(|state| state.balance_fails = true);
+        let balance_epoch = std::sync::atomic::AtomicU64::new(0);
+        let balance_permit = SessionPermit::current_for_test(0, &balance_epoch);
+        let balance_overview = balance
+            .refresh_selected_overview(&balance_permit)
+            .expect("native balance failure continues token hydration");
+        assert!(!balance_overview.balance_refreshed());
+        assert_eq!(
+            balance_overview.snapshot().balance_eth,
+            ACCOUNT_BALANCE_UNKNOWN
+        );
+        assert!(matches!(
+            balance_overview.custom_tokens()[0].state,
+            CustomTokenState::Verified { .. }
+        ));
+        assert!(balance.last_balance.is_none());
+        let state = balance_rpc.state.lock().expect("balance failure RPC lock");
+        assert_eq!(state.balance_calls, 1);
+        assert_eq!(state.query_calls, 7);
+        drop(state);
+        remove_test_backend_files(&balance);
+
+        let token_rpc = TokenRpc::new();
+        let mut token = saved_token_backend(token_rpc.clone(), contract, 0x36);
+        reset_overview_rpc_observations(&token_rpc);
+        token_rpc.update(|state| state.query_fails = true);
+        let token_epoch = std::sync::atomic::AtomicU64::new(0);
+        let token_permit = SessionPermit::current_for_test(0, &token_epoch);
+        let token_overview = token
+            .refresh_selected_overview(&token_permit)
+            .expect("token query failure remains partial");
+        assert!(token_overview.balance_refreshed());
+        assert!(token_overview.status() == OverviewHydrationStatus::Partial);
+        assert!(matches!(
+            &token_overview.custom_tokens()[0].state,
+            CustomTokenState::Unavailable { reason_ko }
+                if reason_ko == TOKEN_QUERY_UNAVAILABLE_ERROR
+        ));
+        assert!(token.last_balance.is_some());
+        remove_test_backend_files(&token);
+    }
+
+    #[test]
+    fn selected_overview_final_chain_failure_discards_every_observed_value() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let contract = [0x54; 20];
+        let mut backend = saved_token_backend(rpc.clone(), contract, 0x37);
+        reset_overview_rpc_observations(&rpc);
+        rpc.update(|state| state.fail_verify_on_call = Some(4));
+
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let overview = backend
+            .refresh_selected_overview(&permit)
+            .expect("final chain failure remains partial");
+
+        assert!(!overview.balance_refreshed());
+        assert_eq!(overview.snapshot().balance_eth, ACCOUNT_BALANCE_UNKNOWN);
+        assert!(overview.status() == OverviewHydrationStatus::Partial);
+        assert!(matches!(
+            &overview.custom_tokens()[0].state,
+            CustomTokenState::Unavailable { reason_ko } if reason_ko == RPC_UNAVAILABLE_ERROR
+        ));
+        assert!(backend.last_balance.is_none());
+        let state = rpc.state.lock().expect("final failure RPC lock");
+        assert_eq!(state.verify_calls, 4);
+        assert_eq!(state.balance_calls, 1);
+        assert_eq!(state.query_calls, 7);
+        drop(state);
+        remove_test_backend_files(&backend);
+    }
+
+    #[test]
+    fn selected_overview_revocation_stops_before_final_or_next_rpc_and_clears_cache() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let contract = [0x55; 20];
+        let mut backend = saved_token_backend(rpc.clone(), contract, 0x38);
+        reset_overview_rpc_observations(&rpc);
+        rpc.update(|state| state.query_fails = true);
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::revoke_on_check(0, &active_epoch, 7);
+
+        assert!(matches!(
+            backend.refresh_selected_overview(&permit),
+            Err(BackendError::Locked)
+        ));
+        assert!(backend.unlocked.is_none());
+        assert!(backend.last_balance.is_none());
+        let state = rpc.state.lock().expect("revoked token RPC lock");
+        assert_eq!(state.verify_calls, 2);
+        assert_eq!(state.balance_calls, 1);
+        assert_eq!(state.query_calls, 0);
+        drop(state);
+        remove_test_backend_files(&backend);
+
+        let final_rpc = TokenRpc::new();
+        let mut final_backend = token_backend(final_rpc.clone(), 0x39);
+        reset_overview_rpc_observations(&final_rpc);
+        let final_epoch = std::sync::atomic::AtomicU64::new(0);
+        let final_permit = SessionPermit::revoke_on_check(0, &final_epoch, 5);
+        assert!(matches!(
+            final_backend.refresh_selected_overview(&final_permit),
+            Err(BackendError::Locked)
+        ));
+        let state = final_rpc.state.lock().expect("pre-final revoke RPC lock");
+        assert_eq!(state.verify_calls, 1);
+        assert_eq!(state.balance_calls, 1);
+        drop(state);
+        assert!(final_backend.unlocked.is_none());
+        assert!(final_backend.last_balance.is_none());
+        remove_test_backend_files(&final_backend);
+    }
+
+    #[test]
+    fn selected_overview_contention_is_non_mutating_partial_but_local_faults_are_fatal() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let mut contended = token_backend(rpc.clone(), 0x3a);
+        let lock_path =
+            token_store_lock_path(&contended.token_store_path).expect("token lock path");
+        let lock_before = fs::read(&lock_path).expect("read lock witness before observation");
+        reset_overview_rpc_observations(&rpc);
+        let nonblocking = NonblockingTokenObservationGuard::enter();
+        let mutation = TokenMutationLease::acquire(&contended.token_store_path)
+            .expect("hold cooperating mutation lease");
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        let overview = contended
+            .refresh_selected_overview(&permit)
+            .expect("contention remains non-fatal");
+        assert!(!overview.token_rows_loaded());
+        assert!(overview.custom_tokens().is_empty());
+        assert!(overview.status() == OverviewHydrationStatus::Partial);
+        assert!(!path_may_exist(&contended.token_store_path));
+        drop(mutation);
+        assert_eq!(
+            fs::read(&lock_path).expect("read unchanged lock witness"),
+            lock_before
+        );
+        drop(nonblocking);
+        remove_test_backend_files(&contended);
+
+        for (marker, bytes) in [
+            (0x3b, b"corrupt authenticated store".to_vec()),
+            (0x3c, vec![0_u8; MAX_TOKEN_STORE_BYTES + 1]),
+        ] {
+            let fault_rpc = TokenRpc::new();
+            let mut fault = token_backend(fault_rpc.clone(), marker);
+            fs::write(&fault.token_store_path, bytes).expect("write local token fault fixture");
+            reset_overview_rpc_observations(&fault_rpc);
+            let fault_epoch = std::sync::atomic::AtomicU64::new(0);
+            let fault_permit = SessionPermit::current_for_test(0, &fault_epoch);
+            assert!(fault.refresh_selected_overview(&fault_permit).is_err());
+            assert!(fault.unlocked.is_none());
+            let state = fault_rpc.state.lock().expect("local fault RPC lock");
+            assert_eq!(state.verify_calls, 0);
+            drop(state);
+            remove_test_backend_files(&fault);
+        }
+
+        let directory_rpc = TokenRpc::new();
+        let mut directory = token_backend(directory_rpc.clone(), 0x3d);
+        fs::create_dir(&directory.token_store_path).expect("create nonregular token store");
+        let directory_epoch = std::sync::atomic::AtomicU64::new(0);
+        let directory_permit = SessionPermit::current_for_test(0, &directory_epoch);
+        assert!(matches!(
+            directory.refresh_selected_overview(&directory_permit),
+            Err(BackendError::TokenStoreInvalid)
+        ));
+        assert!(directory.unlocked.is_none());
+        remove_test_backend_files(&directory);
+    }
+
+    #[test]
+    fn selected_overview_authenticated_activity_drift_is_fatal_and_never_installs_balance() {
+        let _serial = selected_overview_test_guard();
+        let rpc = TokenRpc::new();
+        let mut backend = token_backend(rpc.clone(), 0x3e);
+        reset_overview_rpc_observations(&rpc);
+        rpc.update(|state| {
+            state.activity_write_on_balance = Some((
+                backend.activity_store_path.clone(),
+                b"corrupt activity drift".to_vec(),
+            ));
+        });
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
+        assert!(backend.refresh_selected_overview(&permit).is_err());
+        assert!(backend.unlocked.is_none());
+        assert!(backend.last_balance.is_none());
+        remove_test_backend_files(&backend);
     }
 
     #[test]
@@ -9265,12 +10057,15 @@ mod tests {
         assert_eq!(selected.balance_eth, "조회 전");
         assert!(selected.pending_broadcast.is_none());
         let account_one_bytes = parse_address(&account_one).expect("parse account-one address");
+        let active_epoch = std::sync::atomic::AtomicU64::new(0);
+        let permit = SessionPermit::current_for_test(0, &active_epoch);
         let refreshed = backend
-            .refresh_snapshot()
-            .expect("refresh selected account-one native balance");
-        assert_eq!(refreshed.selected_account_index, 1);
-        assert_eq!(snapshot_address(&refreshed), account_one);
-        assert_ne!(refreshed.balance_eth, "조회 전");
+            .refresh_selected_overview(&permit)
+            .expect("refresh selected account-one overview");
+        let refreshed_snapshot = refreshed.snapshot();
+        assert_eq!(refreshed_snapshot.selected_account_index, 1);
+        assert_eq!(snapshot_address(refreshed_snapshot), account_one);
+        assert_ne!(refreshed_snapshot.balance_eth, "조회 전");
         assert_eq!(
             native_rpc
                 .state
@@ -9281,10 +10076,7 @@ mod tests {
                 .copied(),
             Some(account_one_bytes)
         );
-        let refreshed_tokens = backend
-            .refresh_custom_tokens_inner()
-            .expect("refresh selected account-one token balance");
-        assert_eq!(refreshed_tokens.len(), 1);
+        assert_eq!(refreshed.custom_tokens().len(), 1);
         assert_eq!(
             token_rpc
                 .state

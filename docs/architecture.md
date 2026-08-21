@@ -120,6 +120,48 @@ account-selection request hides it before dispatch; successful selection hides
 it again while scrubbing the old account context; lock/session scrub also hides
 it. Thus no stale QR remains visible across account or session identity changes.
 
+### Sepolia demo selected-overview hydration boundary
+
+Mnemonic/private-key import, wallet open, legacy migration, and account
+selection install their authenticated local snapshot first. Only after that
+authoritative transition succeeds does the UI enqueue one epoch-bound overview
+request for the exact selected account. Fresh generated-wallet confirmation is
+deliberately excluded: its balance remains `조회 전`, so offline creation never
+depends on an RPC. Manual refresh uses the same bounded request. The chain
+identity subcall retains its bounded three-attempt retry, but there is no timer,
+polling, automatic re-enqueue of the overview request, or other-account prefetch.
+
+The worker derives the exact account index and full address again. Its opaque,
+non-clone response binds the returned wallet snapshot and saved-token rows to
+that index, address, wallet kind, account list, pending record, and activity
+rows. The reducer accepts it only for the matching pending action and session,
+then requires every non-balance snapshot field to remain exact. A mismatch,
+authenticated local-sidecar failure, or revoked permit locks and scrubs. A
+chain or balance RPC failure returns a category-only Partial result with ETH
+explicitly unknown. An individual token RPC failure marks only that token
+Unavailable and may retain an independently verified ETH balance; both cases
+leave the wallet open.
+
+Automatic token hydration is bounded to the first three authenticated entries
+in stable store order. Every later saved contract remains visible as a deferred
+full-address row; the explicit full-token refresh retains the existing 32-entry
+path. With `N <= 3`, the no-retry complete path makes exactly `5 + 11N` RPC
+calls: the outer trust/balance bookends plus eleven calls per attempted token.
+Because each chain-identity verification currently permits three attempts, the
+retry-aware hard ceiling is `13 + 19N`, at most 70 calls when `N = 3`. The observation
+lease never creates, deletes, reconciles, or flushes a file. On Windows it pins
+the existing regular lock/store objects without write/delete sharing, and the
+backend compares the exact authenticated token baseline again before cache
+installation. True process/share contention is Partial and persistent in the
+UI; structural, reparse, read, authentication, or baseline drift is fatal.
+Final Sepolia verification discards every earlier network value if its bookend
+fails.
+
+This automatic follow-up exposes the selected full address, its timing, and up
+to three saved contract addresses to the single fixed TLS RPC. It proves bounded
+response and local-object consistency, not provider honesty, propagation, or
+chain finality.
+
 ### Dormant Windows Broker composition
 
 The Windows composition is reachable only with
