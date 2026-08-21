@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ELIGIBILITY_CLAIM,
   MANIFEST_SCHEMA,
@@ -20,10 +22,13 @@ import {
   validateManifest,
   verifyExpectedExtensionId,
   verifyExpectedReleaseKeyId,
+  verifyExpectedReleaseSequence,
   verifyExpectedPreviousManifestSha256,
   verifyExpectedReviewerKeyId,
   verifyExpectedSignerCertificateSha256,
 } from "./release-manifest.mjs";
+
+const RELEASE_MANIFEST_CLI = fileURLToPath(new URL("./release-manifest.mjs", import.meta.url));
 
 function digest(label) {
   return sha256Hex(Buffer.from(label, "utf8"));
@@ -159,6 +164,37 @@ function successor(previous, version = "0.1.1") {
   };
   current.lineage.previousManifestSha256 = sha256Hex(Buffer.from(canonicalEncode(previous), "utf8"));
   return current;
+}
+
+function verifyCliArguments(expectedReleaseSequence = "1") {
+  return [
+    "verify",
+    "--manifest", "unread-manifest.json",
+    "--signature", "unread-signature.sig",
+    "--public-key", "unread-public-key.pem",
+    "--bundle-root", "unread-bundle",
+    "--expected-release-key-id", "1".repeat(64),
+    "--expected-extension-id", "a".repeat(32),
+    "--expected-release-sequence", expectedReleaseSequence,
+    "--expected-reviewer-key-id", "2".repeat(64),
+    "--expected-signer-certificate-sha256", "3".repeat(64),
+  ];
+}
+
+function runReleaseManifestCli(argumentsList) {
+  return spawnSync(process.execPath, [RELEASE_MANIFEST_CLI, ...argumentsList], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function assertPreReadCliFailure(argumentsList, expectedMessage) {
+  const result = runReleaseManifestCli(argumentsList);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, `RELEASE_INELIGIBLE: ${expectedMessage}\n`);
+  assert.doesNotMatch(result.stderr, /unread-(?:manifest|signature|public-key|bundle)/u);
+  assert.doesNotMatch(result.stderr, /unexpected release verifier failure/u);
 }
 
 test("canonical encoding is independent of object insertion order", () => {
@@ -314,6 +350,76 @@ test("release verification requires an independently pinned stable extension id"
   assert.throws(
     () => verifyExpectedExtensionId(validated, "A".repeat(32)),
     /independently pinned extension identifier has an invalid format/u,
+  );
+});
+
+test("release sequence pin accepts exact initial and successor candidates", () => {
+  const initial = initialManifest();
+  const validatedInitial = validateManifest(initial);
+  assert.doesNotThrow(() => verifyExpectedReleaseSequence(validatedInitial, "1"));
+
+  const current = successor(initial);
+  const validatedSuccessor = validateManifest(current, initial);
+  assert.doesNotThrow(() => verifyExpectedReleaseSequence(validatedSuccessor, "2"));
+});
+
+test("release sequence pin rejects an old sequence-1 replay without echoing either value", () => {
+  const validated = validateManifest(initialManifest());
+  assert.throws(
+    () => verifyExpectedReleaseSequence(validated, "2"),
+    (error) => {
+      assert.equal(error.message, "independently pinned release sequence mismatch");
+      assert.doesNotMatch(error.message, /[12]/u);
+      return true;
+    },
+  );
+});
+
+test("release sequence pin rejects malformed and leading-zero values", () => {
+  const validated = validateManifest(initialManifest());
+  for (const malformed of ["0", "01", "+1", "1.0", "1".repeat(33), "latest", "1\n", "1\r\n", "1\u2028"]) {
+    assert.throws(
+      () => verifyExpectedReleaseSequence(validated, malformed),
+      /independently pinned release sequence has an invalid format/u,
+    );
+  }
+});
+
+test("verify CLI requires the external release sequence before reading candidate files", () => {
+  const argumentsList = verifyCliArguments();
+  const sequenceIndex = argumentsList.indexOf("--expected-release-sequence");
+  argumentsList.splice(sequenceIndex, 2);
+  assertPreReadCliFailure(
+    argumentsList,
+    "missing required argument --expected-release-sequence",
+  );
+});
+
+test("verify CLI rejects extra and malformed sequence arguments before reading candidate files", () => {
+  assertPreReadCliFailure(
+    [...verifyCliArguments(), "--unexpected", "value"],
+    "verify arguments do not match the exact initial or successor release shape",
+  );
+  for (const malformed of ["01", "latest"]) {
+    assertPreReadCliFailure(
+      verifyCliArguments(malformed),
+      "independently pinned release sequence has an invalid format",
+    );
+  }
+});
+
+test("verify CLI derives previous-input shape from the external release sequence before file reads", () => {
+  assertPreReadCliFailure(
+    verifyCliArguments("2"),
+    "successor verification requires --previous and --expected-previous-manifest-sha256 from the offline checkpoint",
+  );
+  assertPreReadCliFailure(
+    [
+      ...verifyCliArguments("1"),
+      "--previous", "unread-previous.json",
+      "--expected-previous-manifest-sha256", "4".repeat(64),
+    ],
+    "initial verification must not supply --previous or --expected-previous-manifest-sha256",
   );
 });
 

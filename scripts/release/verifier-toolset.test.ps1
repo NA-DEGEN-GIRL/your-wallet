@@ -387,6 +387,7 @@ if (
     [Console]::Error.Write("X86_VERIFIER_HOST_PREFLIGHT_ENVIRONMENT_INVALID`n")
     exit 90
 }
+
 . __COMMON_PATH_LITERAL__
 try {
     [void](Open-VerifiedReleaseToolset `
@@ -435,6 +436,67 @@ catch {
     }
 }
 
+function Assert-ReleaseSequenceBinderRejectsTerminalLineFeed {
+    $wrapperPath = Join-Path $PSScriptRoot "verify-release-offline.ps1"
+    $tokens = $null
+    $parseErrors = $null
+    $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $wrapperPath,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw "Offline release wrapper did not parse for the sequence-binder probe"
+    }
+    $functionAst = $wrapperAst.Find({
+        param($candidate)
+        $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            [string]::Equals(
+                $candidate.Name,
+                "Invoke-OfflineReleaseVerification",
+                [System.StringComparison]::Ordinal
+            )
+    }, $true)
+    if ($null -eq $functionAst) {
+        throw "Offline release wrapper function was unavailable for the sequence-binder probe"
+    }
+
+    . ([scriptblock]::Create($functionAst.Extent.Text))
+    $bindingRejected = $false
+    try {
+        Invoke-OfflineReleaseVerification `
+            -Manifest "unread-manifest.json" `
+            -Signature "unread-signature.sig" `
+            -ReleasePublicKey "unread-release-key.pem" `
+            -BundleRoot "unread-bundle" `
+            -ExpectedReleaseSequence ("2" + [char]10) `
+            -ExpectedReleaseKeyIdSha256 ("1" * 64) `
+            -ExpectedExtensionId ("a" * 32) `
+            -ExpectedReviewerKeyIdSha256 ("2" * 64) `
+            -ExpectedSignerCertificateSha256 ("3" * 64) `
+            -ExpectedVerifierToolsetSha256 ("4" * 64) `
+            -PreviousManifest "unread-previous.json" `
+            -ExpectedPreviousManifestSha256 ("5" * 64) `
+            -OperatorConfirmedNetworkIsolation
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -like "ParameterArgumentValidationError,*") {
+            $bindingRejected = $true
+        }
+        else {
+            throw "Terminal-linefeed release sequence reached the offline wrapper body"
+        }
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath "Function:Invoke-OfflineReleaseVerification" `
+            -ErrorAction SilentlyContinue
+    }
+    if (-not $bindingRejected) {
+        throw "Terminal-linefeed release sequence bypassed exact parameter validation"
+    }
+}
+
 function Invoke-ReviewWrapperRaw {
     param(
         [Parameter(Mandatory = $true)][string]$ToolsetRoot,
@@ -478,10 +540,10 @@ function Assert-FixedReviewWrapperFailure {
     }
 }
 
-function Invoke-InvalidOfflineWrapperRaw {
+function Invoke-OfflineWrapperRaw {
     param(
         [Parameter(Mandatory = $true)][string]$ToolsetRoot,
-        [Parameter(Mandatory = $true)][string]$PrivatePath
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$RawArguments
     )
 
     $powershellPath = Join-Path `
@@ -490,16 +552,35 @@ function Invoke-InvalidOfflineWrapperRaw {
     Invoke-TestRawProcess `
         -Executable $powershellPath `
         -WorkingDirectory $ToolsetRoot `
-        -Arguments @(
+        -Arguments (@(
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            (Join-Path $ToolsetRoot "scripts\release\verify-release-offline.ps1"),
-            "-UnknownPrivatePath",
-            $PrivatePath
-        ) `
+            (Join-Path $ToolsetRoot "scripts\release\verify-release-offline.ps1")
+        ) + @($RawArguments)) `
         -TimeoutMilliseconds 60000
+}
+
+function Assert-FixedOfflineWrapperFailure {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $false)][string[]]$PrivateValues = @()
+    )
+
+    $expectedError = "RELEASE_VERIFICATION_FAILED: offline release verification failed closed" + `
+        [System.Environment]::NewLine
+    if ($Result.ExitCode -ne 1 -or
+        -not [string]::Equals($Result.Stdout, "", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals($Result.Stderr, $expectedError, [System.StringComparison]::Ordinal)) {
+        throw "Final release wrapper did not fail with its one path-free line: $Label"
+    }
+    foreach ($privateValue in $PrivateValues) {
+        if (-not [string]::IsNullOrEmpty($privateValue) -and $Result.Stderr.Contains($privateValue)) {
+            throw "Final release wrapper disclosed a private input: $Label"
+        }
+    }
 }
 
 function Invoke-ProxyCompilation {
@@ -536,6 +617,7 @@ function Invoke-ProxyCompilation {
 
 try {
     Assert-X86VerifierHostPreflight
+    Assert-ReleaseSequenceBinderRejectsTerminalLineFeed
     Initialize-ReleaseToolsetProcessType
     $behaviorProxy = Join-Path $testRoot "compiled-behavior-node.exe"
     $canonicalSubject = '{"reviewedEvidenceSetSha256":"0000000000000000000000000000000000000000000000000000000000000000","schema":"your-wallet-reviewed-evidence-set-subject-v1"}'
@@ -551,6 +633,8 @@ using System.Threading;
 public static class VerifierBehaviorNode {
     private static readonly byte[] Canonical = new UTF8Encoding(false, true).GetBytes($canonicalSubjectLiteral + "\n");
     private static readonly string WrapperMode = "__WRAPPER_MODE__";
+    private static readonly string ReleaseCapturePath = "__RELEASE_CAPTURE_PATH__";
+    private static readonly string ReleaseSignerCertificateSha256 = "__RELEASE_SIGNER_CERTIFICATE_SHA256__";
 
     private static void Write(Stream stream, byte[] bytes) {
         stream.Write(bytes, 0, bytes.Length);
@@ -559,6 +643,63 @@ public static class VerifierBehaviorNode {
 
     private static byte[] Utf8(string value) {
         return new UTF8Encoding(false, true).GetBytes(value);
+    }
+
+    private static int RunReleaseContract(string[] arguments) {
+        if (
+            WrapperMode != "release-successor" ||
+            arguments.Length != 33 ||
+            arguments[10] != "verify" ||
+            arguments[11] != "--manifest" || !Path.IsPathRooted(arguments[12]) ||
+            arguments[13] != "--signature" || !Path.IsPathRooted(arguments[14]) ||
+            arguments[15] != "--public-key" || !Path.IsPathRooted(arguments[16]) ||
+            arguments[17] != "--bundle-root" || !Path.IsPathRooted(arguments[18]) ||
+            arguments[19] != "--expected-release-sequence" || arguments[20] != "2" ||
+            arguments[21] != "--expected-release-key-id" || arguments[22] != new string('1', 64) ||
+            arguments[23] != "--expected-extension-id" || arguments[24] != new string('a', 32) ||
+            arguments[25] != "--expected-reviewer-key-id" || arguments[26] != new string('2', 64) ||
+            arguments[27] != "--expected-signer-certificate-sha256" ||
+                arguments[28] != ReleaseSignerCertificateSha256 ||
+            arguments[29] != "--previous" || !Path.IsPathRooted(arguments[30]) ||
+            arguments[31] != "--expected-previous-manifest-sha256" ||
+                arguments[32] != new string('5', 64)
+        ) {
+            return 89;
+        }
+        int sequenceFlagCount = 0;
+        for (int index = 10; index < arguments.Length; index += 1) {
+            if (arguments[index] == "--expected-release-sequence") {
+                sequenceFlagCount += 1;
+            }
+        }
+        if (sequenceFlagCount != 1) {
+            return 88;
+        }
+
+        StringBuilder snapshot = new StringBuilder();
+        for (int index = 0; index < arguments.Length; index += 1) {
+            snapshot.Append(Convert.ToBase64String(Utf8(arguments[index])));
+            snapshot.Append('\n');
+        }
+        string firstCapture = "1\n" + snapshot.ToString();
+        if (!File.Exists(ReleaseCapturePath)) {
+            File.WriteAllText(ReleaseCapturePath, firstCapture, new UTF8Encoding(false, true));
+        } else {
+            string previousCapture = File.ReadAllText(ReleaseCapturePath, new UTF8Encoding(false, true));
+            if (!String.Equals(previousCapture, firstCapture, StringComparison.Ordinal)) {
+                return 87;
+            }
+            File.WriteAllText(
+                ReleaseCapturePath,
+                "2\n" + snapshot.ToString(),
+                new UTF8Encoding(false, true)
+            );
+        }
+        Write(
+            Console.OpenStandardOutput(),
+            Utf8("CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\n")
+        );
+        return 0;
     }
 
     private static int RunMode(string mode, string[] arguments, int argumentOffset) {
@@ -643,7 +784,7 @@ public static class VerifierBehaviorNode {
             arguments[2] != "--no-warnings" ||
             arguments[3] != "--experimental-vm-modules" ||
             arguments[4] != "-e" ||
-            arguments[6] != "review" ||
+            (arguments[6] != "review" && arguments[6] != "release") ||
             !Path.IsPathRooted(arguments[7]) ||
             !Path.IsPathRooted(arguments[8]) ||
             !Path.IsPathRooted(arguments[9]) ||
@@ -680,6 +821,9 @@ public static class VerifierBehaviorNode {
         }
         string mode = arguments[10];
         int offset = 11;
+        if (mode == "verify") {
+            return RunReleaseContract(arguments);
+        }
         if (mode == "--bundle-root") {
             mode = WrapperMode;
             offset = arguments.Length;
@@ -799,6 +943,41 @@ public static class VerifierBehaviorNode {
             -OutputAssembly $wrapperModeProxy
         $wrapperModeProxies[$wrapperMode] = $wrapperModeProxy
     }
+
+    $releaseCapturePath = Join-Path $testRoot "release-wrapper-argv.capture"
+    $releaseCaptureLiteral = $releaseCapturePath.Replace('\', '\\').Replace('"', '\"')
+    $releasePayloadSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+        -LiteralPath $systemPowerShell
+    if ($releasePayloadSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $releasePayloadSignature.SignerCertificate) {
+        throw "System PowerShell did not provide a valid signed payload fixture"
+    }
+    $releaseCertificateHasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $releaseCertificateBytes = $releaseCertificateHasher.ComputeHash(
+            $releasePayloadSignature.SignerCertificate.RawData
+        )
+    }
+    finally {
+        $releaseCertificateHasher.Dispose()
+    }
+    $releaseSignerCertificateSha256 = [System.BitConverter]::ToString(
+        $releaseCertificateBytes
+    ).Replace("-", "").ToLowerInvariant()
+    $releaseBehaviorProxy = Join-Path $testRoot "compiled-release-successor-node.exe"
+    $releaseBehaviorProxySource = $behaviorProxyTemplate.Replace(
+        "__WRAPPER_MODE__",
+        "release-successor"
+    ).Replace(
+        "__RELEASE_CAPTURE_PATH__",
+        $releaseCaptureLiteral
+    ).Replace(
+        "__RELEASE_SIGNER_CERTIFICATE_SHA256__",
+        $releaseSignerCertificateSha256
+    )
+    Invoke-ProxyCompilation `
+        -Source $releaseBehaviorProxySource `
+        -OutputAssembly $releaseBehaviorProxy
 
     $decoyMarker = Join-Path $testRoot "decoy-node-invoked.marker"
     $decoyMarkerLiteral = '"' + $decoyMarker.Replace('\', '\\').Replace('"', '\"') + '"'
@@ -1124,15 +1303,281 @@ public static class DecoyNode {
     [System.IO.Directory]::Move($proxyFixtureRoot, $movedAfterClose)
     [System.IO.Directory]::Move($movedAfterClose, $proxyFixtureRoot)
 
-    $offlineFailure = Invoke-InvalidOfflineWrapperRaw `
-        -ToolsetRoot $proxyFixtureRoot `
-        -PrivatePath (Join-Path $testRoot "private-release-input")
-    $expectedOfflineError = "RELEASE_VERIFICATION_FAILED: offline release verification failed closed" + `
-        [System.Environment]::NewLine
-    if ($offlineFailure.ExitCode -ne 1 -or
-        -not [string]::Equals($offlineFailure.Stdout, "", [System.StringComparison]::Ordinal) -or
-        -not [string]::Equals($offlineFailure.Stderr, $expectedOfflineError, [System.StringComparison]::Ordinal)) {
-        throw "Final release wrapper did not collapse argument failure to one path-free line"
+    $privateOfflineRoot = Join-Path $testRoot "private-release-input"
+    $privateManifest = Join-Path $privateOfflineRoot "manifest.json"
+    $privateSignature = Join-Path $privateOfflineRoot "manifest.sig"
+    $privatePublicKey = Join-Path $privateOfflineRoot "release-key.pem"
+    $privateBundle = Join-Path $privateOfflineRoot "bundle"
+    $privatePrevious = Join-Path $privateOfflineRoot "previous.json"
+    $offlineArgumentPrefix = @(
+        "-Manifest", $privateManifest,
+        "-Signature", $privateSignature,
+        "-ReleasePublicKey", $privatePublicKey,
+        "-BundleRoot", $privateBundle
+    )
+    $offlineArgumentSuffix = @(
+        "-ExpectedReleaseKeyIdSha256", ("1" * 64),
+        "-ExpectedExtensionId", ("a" * 32),
+        "-ExpectedReviewerKeyIdSha256", ("2" * 64),
+        "-ExpectedSignerCertificateSha256", ("3" * 64),
+        "-ExpectedVerifierToolsetSha256", $proxyFixtureHash,
+        "-OperatorConfirmedNetworkIsolation"
+    )
+    $validInitialArguments = $offlineArgumentPrefix + @(
+        "-ExpectedReleaseSequence", "1"
+    ) + $offlineArgumentSuffix
+    $offlineFailureCases = @(
+        [pscustomobject]@{
+            Label = "unknown raw argument"
+            Arguments = @("-UnknownPrivatePath", $privateOfflineRoot)
+        },
+        [pscustomobject]@{
+            Label = "missing release sequence"
+            Arguments = $offlineArgumentPrefix + $offlineArgumentSuffix
+        },
+        [pscustomobject]@{
+            Label = "wrong-case release sequence"
+            Arguments = $offlineArgumentPrefix + @(
+                "-expectedReleaseSequence", "1"
+            ) + $offlineArgumentSuffix
+        },
+        [pscustomobject]@{
+            Label = "duplicate release sequence"
+            Arguments = $validInitialArguments + @("-ExpectedReleaseSequence", "1")
+        },
+        [pscustomobject]@{
+            Label = "initial release with previous checkpoint"
+            Arguments = $validInitialArguments + @(
+                "-PreviousManifest", $privatePrevious,
+                "-ExpectedPreviousManifestSha256", ("5" * 64)
+            )
+        },
+        [pscustomobject]@{
+            Label = "successor release without previous checkpoint pair"
+            Arguments = $offlineArgumentPrefix + @(
+                "-ExpectedReleaseSequence", "2"
+            ) + $offlineArgumentSuffix
+        },
+        [pscustomobject]@{
+            Label = "successor release with only previous manifest"
+            Arguments = $offlineArgumentPrefix + @(
+                "-ExpectedReleaseSequence", "2"
+            ) + $offlineArgumentSuffix + @("-PreviousManifest", $privatePrevious)
+        },
+        [pscustomobject]@{
+            Label = "successor release with only previous hash"
+            Arguments = $offlineArgumentPrefix + @(
+                "-ExpectedReleaseSequence", "2"
+            ) + $offlineArgumentSuffix + @(
+                "-ExpectedPreviousManifestSha256", ("5" * 64)
+            )
+        }
+    )
+    foreach ($offlineFailureCase in $offlineFailureCases) {
+        $offlineFailure = Invoke-OfflineWrapperRaw `
+            -ToolsetRoot $proxyFixtureRoot `
+            -RawArguments $offlineFailureCase.Arguments
+        Assert-FixedOfflineWrapperFailure `
+            -Result $offlineFailure `
+            -Label $offlineFailureCase.Label `
+            -PrivateValues @(
+                $privateOfflineRoot,
+                $privateManifest,
+                $privateSignature,
+                $privatePublicKey,
+                $privateBundle,
+                $privatePrevious,
+                (Join-Path $proxyFixtureRoot "scripts\release\verify-release-offline.ps1")
+            )
+    }
+
+    $releaseToolsetRoot = Join-Path $testRoot "release-successor-toolset"
+    New-TestToolsetFixture `
+        -Root $releaseToolsetRoot `
+        -NodeSource $releaseBehaviorProxy `
+        -ReviewScriptContent "release-successor"
+    $releaseToolsetHash = Get-TestToolsetSha256 -Root $releaseToolsetRoot
+    $releaseBundleRoot = Join-Path $testRoot "release-successor-bundle"
+    $releasePayloadRoot = Join-Path $releaseBundleRoot "payload"
+    [void](New-Item -ItemType Directory -Path $releasePayloadRoot -Force)
+    foreach ($payloadName in @(
+        "approval-ui.exe",
+        "broker.exe",
+        "dashboard.exe",
+        "key-agent.exe",
+        "native-host.exe",
+        "secret-input-ui.exe",
+        "your-wallet-canary.msi"
+    )) {
+        Copy-Item `
+            -LiteralPath $systemPowerShell `
+            -Destination (Join-Path $releasePayloadRoot $payloadName)
+    }
+    $releaseInputRoot = Join-Path $testRoot "release-successor-inputs"
+    $releaseManifest = Join-Path $releaseInputRoot "release-manifest.json"
+    $releaseSignature = Join-Path $releaseInputRoot "release-manifest.sig"
+    $releasePublicKey = Join-Path $releaseInputRoot "release-public-key.pem"
+    $releasePreviousManifest = Join-Path $releaseInputRoot "previous-release-manifest.json"
+    Write-NewUtf8File -LiteralPath $releaseManifest -Content "manifest"
+    Write-NewUtf8File -LiteralPath $releaseSignature -Content "signature"
+    Write-NewUtf8File -LiteralPath $releasePublicKey -Content "public-key"
+    Write-NewUtf8File -LiteralPath $releasePreviousManifest -Content "previous-manifest"
+    [void](Protect-TestTree -Root $releaseToolsetRoot)
+    [void](Protect-TestTree -Root $releaseBundleRoot)
+    [void](Protect-TestTree -Root $releaseInputRoot)
+    try {
+        $releaseFixtureToolset = $null
+        $releaseFixtureLocks = $null
+        try {
+            $releaseFixtureToolset = Open-VerifiedReleaseToolset `
+                -ToolsetRoot $releaseToolsetRoot `
+                -ExpectedSha256 $releaseToolsetHash
+            $releaseFixtureLocks = Open-ReadOnlyReleaseTreeLocks `
+                -BundleRoot $releaseBundleRoot `
+                -AdditionalFiles @(
+                    $releaseManifest,
+                    $releaseSignature,
+                    $releasePublicKey,
+                    $releasePreviousManifest
+                )
+            Assert-ReleaseTreesDisjoint `
+                -LeftCanonicalRoot $releaseFixtureToolset.CanonicalVolumeRoot `
+                -RightCanonicalRoot $releaseFixtureLocks.CanonicalBundleRoot
+            Assert-NoReparseTree -LiteralPath $releaseFixtureLocks.CanonicalBundleRoot
+            Assert-ReleaseTreeEffectivelyReadOnly `
+                -BundleRoot $releaseFixtureLocks.CanonicalBundleRoot
+            $releaseFixtureInputs = @($releaseFixtureLocks.CanonicalAdditionalFiles)
+            $releaseFixtureResult = Invoke-ReleaseToolsetNode `
+                -Toolset $releaseFixtureToolset `
+                -ScriptRelativePath "scripts/release/release-manifest.mjs" `
+                -CommandArguments @(
+                    "verify",
+                    "--manifest", $releaseFixtureInputs[0],
+                    "--signature", $releaseFixtureInputs[1],
+                    "--public-key", $releaseFixtureInputs[2],
+                    "--bundle-root", $releaseFixtureLocks.CanonicalBundleRoot,
+                    "--expected-release-sequence", "2",
+                    "--expected-release-key-id", ("1" * 64),
+                    "--expected-extension-id", ("a" * 32),
+                    "--expected-reviewer-key-id", ("2" * 64),
+                    "--expected-signer-certificate-sha256", $releaseSignerCertificateSha256,
+                    "--previous", $releaseFixtureInputs[3],
+                    "--expected-previous-manifest-sha256", ("5" * 64)
+                )
+        }
+        finally {
+            if ($null -ne $releaseFixtureLocks) {
+                Close-ReadOnlyReleaseTreeLocks -LockSet $releaseFixtureLocks
+            }
+            if ($null -ne $releaseFixtureToolset) {
+                Close-VerifiedReleaseToolset -Toolset $releaseFixtureToolset
+            }
+        }
+        if ($releaseFixtureResult.ExitCode -ne 0 -or
+            -not [string]::Equals(
+                $releaseFixtureResult.Stdout,
+                "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [string]::Equals(
+                $releaseFixtureResult.Stderr,
+                "",
+                [System.StringComparison]::Ordinal
+            )) {
+            $directCaptureExists = [System.IO.File]::Exists($releaseCapturePath)
+            throw "Direct sealed successor proxy contract failed (exit=$($releaseFixtureResult.ExitCode), capture=$directCaptureExists)"
+        }
+        [System.IO.File]::Delete($releaseCapturePath)
+        $releaseSuccessorResult = Invoke-OfflineWrapperRaw `
+            -ToolsetRoot $releaseToolsetRoot `
+            -RawArguments @(
+                "-Manifest", $releaseManifest,
+                "-Signature", $releaseSignature,
+                "-ReleasePublicKey", $releasePublicKey,
+                "-BundleRoot", $releaseBundleRoot,
+                "-ExpectedReleaseSequence", "2",
+                "-ExpectedReleaseKeyIdSha256", ("1" * 64),
+                "-ExpectedExtensionId", ("a" * 32),
+                "-ExpectedReviewerKeyIdSha256", ("2" * 64),
+                "-ExpectedSignerCertificateSha256", $releaseSignerCertificateSha256,
+                "-ExpectedVerifierToolsetSha256", $releaseToolsetHash,
+                "-PreviousManifest", $releasePreviousManifest,
+                "-ExpectedPreviousManifestSha256", ("5" * 64),
+                "-OperatorConfirmedNetworkIsolation"
+            )
+    }
+    finally {
+        Unprotect-TestTree -Root $releaseInputRoot
+        Unprotect-TestTree -Root $releaseBundleRoot
+        Unprotect-TestTree -Root $releaseToolsetRoot
+    }
+    $expectedReleaseSuccessOutput = `
+        "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION`n"
+    if ($releaseSuccessorResult.ExitCode -ne 0 -or
+        -not [string]::Equals(
+            $releaseSuccessorResult.Stdout,
+            $expectedReleaseSuccessOutput,
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [string]::Equals(
+            $releaseSuccessorResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        )) {
+        $releaseStdoutExact = [string]::Equals(
+            $releaseSuccessorResult.Stdout,
+            $expectedReleaseSuccessOutput,
+            [System.StringComparison]::Ordinal
+        )
+        $releaseStderrEmpty = [string]::Equals(
+            $releaseSuccessorResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        )
+        $releaseCapturePass = if ([System.IO.File]::Exists($releaseCapturePath)) {
+            [System.IO.File]::ReadAllLines(
+                $releaseCapturePath,
+                [System.Text.UTF8Encoding]::new($false, $true)
+            )[0]
+        }
+        else {
+            "none"
+        }
+        throw "Final release wrapper rejected the exact successor checkpoint contract (exit=$($releaseSuccessorResult.ExitCode), stdoutExact=$releaseStdoutExact, stderrEmpty=$releaseStderrEmpty, capturePass=$releaseCapturePass)"
+    }
+    $releaseCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($releaseCaptureLines.Count -ne 34 -or
+        -not [string]::Equals($releaseCaptureLines[0], "2", [System.StringComparison]::Ordinal)) {
+        throw "Final release wrapper did not execute two immutable verifier passes"
+    }
+    $releaseCapturedArguments = @(
+        foreach ($encodedArgument in $releaseCaptureLines[1..33]) {
+            [System.Text.UTF8Encoding]::new($false, $true).GetString(
+                [System.Convert]::FromBase64String($encodedArgument)
+            )
+        }
+    )
+    $capturedSequenceFlags = @(
+        for ($index = 0; $index -lt $releaseCapturedArguments.Count; $index += 1) {
+            if ([string]::Equals(
+                $releaseCapturedArguments[$index],
+                "--expected-release-sequence",
+                [System.StringComparison]::Ordinal
+            )) {
+                $index
+            }
+        }
+    )
+    if ($capturedSequenceFlags.Count -ne 1 -or
+        -not [string]::Equals(
+            $releaseCapturedArguments[$capturedSequenceFlags[0] + 1],
+            "2",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Final release wrapper did not pass the pinned release sequence exactly once"
     }
 
     foreach ($attack in @(

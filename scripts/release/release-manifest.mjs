@@ -100,6 +100,7 @@ const MAX_JSON_NODES = 50_000;
 const SHA256_RE = /^[0-9a-f]{64}$/u;
 const COMMIT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const DECIMAL_RE = /^(?:0|[1-9][0-9]*)$/u;
+const RELEASE_SEQUENCE_RE = /^[1-9][0-9]{0,31}$/u;
 const EXTENSION_ID_RE = /^[a-p]{32}$/u;
 const NATIVE_HOST_RE = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/u;
 const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
@@ -450,7 +451,7 @@ function validateCore(manifest) {
   requireExact(top.profile, RELEASE_PROFILE, "manifest.profile");
   requireExact(top.eligibilityClaim, ELIGIBILITY_CLAIM, "manifest.eligibilityClaim");
   validateSemver(top.version, "manifest.version");
-  requireString(top.sequence, "manifest.sequence", /^[1-9][0-9]*$/u, 32);
+  requireString(top.sequence, "manifest.sequence", RELEASE_SEQUENCE_RE, 32);
 
   const advisoryPolicy = requireObject(top.advisoryPolicy, "manifest.advisoryPolicy", ["osv", "rustSec"]);
   const rustSec = requireObject(advisoryPolicy.rustSec, "manifest.advisoryPolicy.rustSec", ["databaseCommit", "databaseTreeSha256", "scanner", "scannerBinarySha256", "scannerVersion"]);
@@ -1059,6 +1060,20 @@ export function verifyExpectedExtensionId(validated, expectedExtensionId) {
   }
 }
 
+function validateExpectedReleaseSequence(expectedReleaseSequence) {
+  if (typeof expectedReleaseSequence !== "string" || !RELEASE_SEQUENCE_RE.test(expectedReleaseSequence)) {
+    fail("independently pinned release sequence has an invalid format");
+  }
+  return expectedReleaseSequence;
+}
+
+export function verifyExpectedReleaseSequence(validated, expectedReleaseSequence) {
+  validateExpectedReleaseSequence(expectedReleaseSequence);
+  if (validated.top.sequence !== expectedReleaseSequence) {
+    fail("independently pinned release sequence mismatch");
+  }
+}
+
 export function verifyExpectedReviewerKeyId(actualReviewerKeyId, expectedReviewerKeyId) {
   requireString(
     expectedReviewerKeyId,
@@ -1155,26 +1170,61 @@ async function runCli() {
     process.stdout.write(command === "canonicalize" ? "CANONICAL_CANDIDATE_WRITTEN_NOT_RELEASE_ELIGIBLE\n" : "CANONICAL_JSON_WRITTEN_NOT_SIGNED\n");
     return;
   }
-  if (command === "validate" || command === "verify") {
-    const requireCanonical = command === "verify";
+  if (command === "validate") {
+    const requireCanonical = false;
     const manifest = await readStrictJsonFile(requireArgument(values, "--manifest"), requireCanonical);
     const previousPath = values.get("--previous");
     const previous = previousPath ? await readStrictJsonFile(previousPath, requireCanonical) : undefined;
+    validateManifest(manifest, previous);
+    const expected = previousPath ? 2 : 1;
+    if (values.size !== expected) fail("validate accepts only --manifest and optional --previous");
+    process.stdout.write("STRUCTURALLY_VALID_CANDIDATE_NOT_RELEASE_ELIGIBLE\n");
+    return;
+  }
+  if (command === "verify") {
+    const expectedReleaseSequence = validateExpectedReleaseSequence(
+      requireArgument(values, "--expected-release-sequence"),
+    );
+    const initialRelease = expectedReleaseSequence === "1";
+    const hasPrevious = values.has("--previous");
+    const hasExpectedPrevious = values.has("--expected-previous-manifest-sha256");
+    if (initialRelease && (hasPrevious || hasExpectedPrevious)) {
+      fail("initial verification must not supply --previous or --expected-previous-manifest-sha256");
+    }
+    if (!initialRelease && (!hasPrevious || !hasExpectedPrevious)) {
+      fail("successor verification requires --previous and --expected-previous-manifest-sha256 from the offline checkpoint");
+    }
+    const requiredNames = [
+      "--manifest",
+      "--signature",
+      "--public-key",
+      "--bundle-root",
+      "--expected-release-key-id",
+      "--expected-extension-id",
+      "--expected-release-sequence",
+      "--expected-reviewer-key-id",
+      "--expected-signer-certificate-sha256",
+      ...(initialRelease ? [] : ["--previous", "--expected-previous-manifest-sha256"]),
+    ];
+    const expectedValueCount = initialRelease ? 9 : 11;
+    if (
+      requiredNames.length !== expectedValueCount ||
+      values.size !== expectedValueCount ||
+      requiredNames.some((name) => !values.has(name))
+    ) {
+      fail("verify arguments do not match the exact initial or successor release shape");
+    }
+    for (const name of requiredNames) requireArgument(values, name);
+
+    const requireCanonical = true;
+    const manifest = await readStrictJsonFile(values.get("--manifest"), requireCanonical);
+    const previousPath = values.get("--previous");
+    const previous = previousPath ? await readStrictJsonFile(previousPath, requireCanonical) : undefined;
     const validated = validateManifest(manifest, previous);
-    if (command === "validate") {
-      const expected = previousPath ? 2 : 1;
-      if (values.size !== expected) fail("validate accepts only --manifest and optional --previous");
-      process.stdout.write("STRUCTURALLY_VALID_CANDIDATE_NOT_RELEASE_ELIGIBLE\n");
-      return;
-    }
     const expectedPreviousManifestSha256 = values.get("--expected-previous-manifest-sha256");
-    if (previousPath && !expectedPreviousManifestSha256) fail("non-initial verification requires --expected-previous-manifest-sha256 from the offline checkpoint");
-    if (!previousPath && expectedPreviousManifestSha256) fail("initial verification must not supply --expected-previous-manifest-sha256");
-    if (values.size !== (previousPath ? 10 : 8)) {
-      fail("verify requires --manifest, --signature, --public-key, --bundle-root, --expected-release-key-id, --expected-extension-id, --expected-reviewer-key-id, --expected-signer-certificate-sha256, and paired --previous/--expected-previous-manifest-sha256 for non-initial releases");
-    }
     verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id"));
     verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id"));
+    verifyExpectedReleaseSequence(validated, expectedReleaseSequence);
     verifyExpectedSignerCertificateSha256(
       validated,
       requireArgument(values, "--expected-signer-certificate-sha256"),

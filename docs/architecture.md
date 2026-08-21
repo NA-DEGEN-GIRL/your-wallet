@@ -452,6 +452,22 @@ entry spelling to match exactly, including the root `evidence` entry. The same
 path pinning applies to the bundle and every external input in final offline
 verification.
 
+Final verification requires one rollback-resistant checkpoint-derived
+`ExpectedReleaseSequence` whose only accepted spelling is `[1-9][0-9]{0,31}`.
+Sequence `1` is valid only for a deliberately empty initial-release ledger; each
+successor value is the canonical increment of the last accepted sequence in the
+write-protected offline checkpoint. The PowerShell raw-argument
+binder treats it as an exact mandatory value: `1` forbids both previous-manifest
+arguments, while every greater value requires the previous manifest and its
+independent SHA-256 pin as a pair. PowerShell and Node enforce that shape and
+their exact initial/successor argument counts before any candidate file or tree
+is opened or read. Node then parses the candidate and compares its exact sequence
+with the external assertion immediately after the independent release-key and
+extension-ID pins, before the signer-certificate and previous-manifest hash pins
+and before any bundle or evidence read. A correctly signed old sequence-1 tree
+therefore cannot replay when the independent offline checkpoint expects a
+successor; no rejected sequence value is echoed.
+
 The runner bypasses function, alias, and `PATH` resolution. One fresh one-shot
 thread owns process creation, every debug event, image authentication,
 continuation, detach, and fail-closed debugger-thread exit. It creates the pinned

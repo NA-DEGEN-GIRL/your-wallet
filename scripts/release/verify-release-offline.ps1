@@ -8,6 +8,7 @@ function Invoke-OfflineReleaseVerification {
         [Parameter(Mandatory = $true)][string]$Signature,
         [Parameter(Mandatory = $true)][string]$ReleasePublicKey,
         [Parameter(Mandatory = $true)][string]$BundleRoot,
+        [Parameter(Mandatory = $true)][ValidatePattern("\A[1-9][0-9]{0,31}\z", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedReleaseSequence,
         [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReleaseKeyIdSha256,
         [Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId,
         [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReviewerKeyIdSha256,
@@ -25,10 +26,17 @@ if ($env:OS -ne "Windows_NT") {
     throw "Private Mainnet Canary release verification requires Windows"
 }
 
-$hasPreviousManifest = -not [string]::IsNullOrWhiteSpace($PreviousManifest)
-$hasPreviousHash = -not [string]::IsNullOrWhiteSpace($ExpectedPreviousManifestSha256)
-if ($hasPreviousManifest -ne $hasPreviousHash) {
-    throw "PreviousManifest and ExpectedPreviousManifestSha256 must be supplied together from the offline checkpoint"
+$hasPreviousManifest = $PSBoundParameters.ContainsKey("PreviousManifest")
+$hasPreviousHash = $PSBoundParameters.ContainsKey("ExpectedPreviousManifestSha256")
+$isInitialRelease = [string]::Equals($ExpectedReleaseSequence, "1", [System.StringComparison]::Ordinal)
+if ($isInitialRelease -and ($hasPreviousManifest -or $hasPreviousHash)) {
+    throw "Initial release verification must not supply a previous manifest checkpoint"
+}
+if (-not $isInitialRelease -and (-not $hasPreviousManifest -or -not $hasPreviousHash)) {
+    throw "Successor release verification requires the complete previous manifest checkpoint"
+}
+if ($hasPreviousManifest -and [string]::IsNullOrWhiteSpace($PreviousManifest)) {
+    throw "Previous manifest checkpoint path must not be empty"
 }
 
 $additionalInputs = @($Manifest, $Signature, $ReleasePublicKey)
@@ -65,6 +73,7 @@ try {
         "--signature", $signaturePath,
         "--public-key", $releasePublicKeyPath,
         "--bundle-root", $bundle,
+        "--expected-release-sequence", $ExpectedReleaseSequence,
         "--expected-release-key-id", $ExpectedReleaseKeyIdSha256,
         "--expected-extension-id", $ExpectedExtensionId,
         "--expected-reviewer-key-id", $ExpectedReviewerKeyIdSha256,
@@ -155,6 +164,7 @@ try {
             "Signature",
             "ReleasePublicKey",
             "BundleRoot",
+            "ExpectedReleaseSequence",
             "ExpectedReleaseKeyIdSha256",
             "ExpectedExtensionId",
             "ExpectedReviewerKeyIdSha256",

@@ -546,6 +546,7 @@ async function createVerifyCliInvocation(fixture, expectedExtensionId = EXTENSIO
       "--signature", signaturePath,
       "--public-key", publicKeyPath,
       "--bundle-root", fixture.root,
+      "--expected-release-sequence", fixture.manifest.sequence,
       "--expected-release-key-id", fixture.manifest.signing.keyIdSha256,
       "--expected-extension-id", expectedExtensionId,
       "--expected-reviewer-key-id", fixture.reviewerKeyIdSha256,
@@ -632,7 +633,11 @@ test("verify CLI rejects missing and extra extension-pin arguments", async () =>
     await assert.rejects(
       () => execFileAsync(process.execPath, missing),
       (error) => {
-        assert.match(error.stderr, /verify requires .*--expected-extension-id/u);
+        assert.equal(
+          error.stderr,
+          "RELEASE_INELIGIBLE: verify arguments do not match the exact initial or successor release shape\n",
+        );
+        assert.equal(error.stdout, "");
         return true;
       },
     );
@@ -641,7 +646,11 @@ test("verify CLI rejects missing and extra extension-pin arguments", async () =>
     await assert.rejects(
       () => execFileAsync(process.execPath, extra),
       (error) => {
-        assert.match(error.stderr, /verify requires .*--expected-extension-id/u);
+        assert.equal(
+          error.stderr,
+          "RELEASE_INELIGIBLE: verify arguments do not match the exact initial or successor release shape\n",
+        );
+        assert.equal(error.stdout, "");
         return true;
       },
     );
@@ -942,11 +951,18 @@ test("offline wrapper requires case-sensitive identity pins and a sealed verifie
     readFile("scripts/release/common.ps1", "utf8"),
   ]);
   const validation = '[ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId';
+  const sequenceValidation = '[ValidatePattern("\\A[1-9][0-9]{0,31}\\z", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedReleaseSequence';
   assert.ok(wrapper.includes(validation));
+  assert.ok(wrapper.includes(sequenceValidation));
   assert.equal(
     wrapper.match(/"--expected-extension-id", \$ExpectedExtensionId/gu)?.length,
     1,
   );
+  assert.equal(
+    wrapper.match(/"--expected-release-sequence", \$ExpectedReleaseSequence/gu)?.length,
+    1,
+  );
+  assert.equal(wrapper.match(/^\s*"ExpectedReleaseSequence",?\s*$/gmu)?.length, 1);
   assert.equal(
     wrapper.match(/Invoke-ReleaseToolsetNode/gu)?.length,
     2,
@@ -961,6 +977,16 @@ test("offline wrapper requires case-sensitive identity pins and a sealed verifie
   assert.ok(wrapper.includes("CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n"));
   assert.equal(wrapper.match(/\$firstPass\.(?:ExitCode|Stderr|Stdout)/gu)?.length, 3);
   assert.equal(wrapper.match(/\$secondPass\.(?:ExitCode|Stderr|Stdout)/gu)?.length, 3);
+  assert.equal(wrapper.match(/-CommandArguments \$verifyArguments/gu)?.length, 2);
+  const sequenceShapeGate = wrapper.indexOf("$isInitialRelease =");
+  const toolsetOpen = wrapper.indexOf("Open-VerifiedReleaseToolset");
+  const firstPass = wrapper.indexOf("$firstPass = Invoke-ReleaseToolsetNode");
+  const secondPass = wrapper.indexOf("$secondPass = Invoke-ReleaseToolsetNode");
+  assert.ok(sequenceShapeGate !== -1 && sequenceShapeGate < toolsetOpen);
+  assert.ok(firstPass !== -1 && secondPass > firstPass);
+  assert.doesNotMatch(wrapper.slice(firstPass, secondPass), /\$verifyArguments\s*(?:\+?=)/u);
+  assert.ok(wrapper.includes("Initial release verification must not supply a previous manifest checkpoint"));
+  assert.ok(wrapper.includes("Successor release verification requires the complete previous manifest checkpoint"));
   assert.ok(!wrapper.includes('Get-Command "node"'));
   assert.ok(!wrapper.includes('Invoke-ReleaseCommand -Executable "node"'));
   assert.ok(wrapper.includes("$bundle = $releaseLocks.CanonicalBundleRoot"));
@@ -1007,53 +1033,109 @@ test("offline wrapper requires case-sensitive identity pins and a sealed verifie
 
     const missingRoot = path.join(probeRoot, "private-missing-bundle");
     const wrapperPath = path.resolve("scripts/release/verify-release-offline.ps1");
-    await assert.rejects(
-      () => execFileAsync("powershell", [
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", wrapperPath,
-        "-Manifest", path.join(probeRoot, "private-missing-manifest.json"),
-        "-Signature", path.join(probeRoot, "private-missing-signature.bin"),
-        "-ReleasePublicKey", path.join(probeRoot, "private-missing-release-key.pem"),
-        "-BundleRoot", missingRoot,
-        "-ExpectedReleaseKeyIdSha256", "1".repeat(64),
-        "-ExpectedExtensionId", EXTENSION_ID,
-        "-ExpectedReviewerKeyIdSha256", "2".repeat(64),
-        "-ExpectedSignerCertificateSha256", "3".repeat(64),
-        "-ExpectedVerifierToolsetSha256", "4".repeat(64),
-        "-OperatorConfirmedNetworkIsolation",
-      ]),
-      (error) => {
-        const stderr = error.stderr.replace(/\r\n/gu, "\n");
-        assert.ok(error.stdout === "", "offline wrapper failure stdout must remain empty");
-        assert.ok(
-          stderr === "RELEASE_VERIFICATION_FAILED: offline release verification failed closed\n",
-          "offline wrapper failure stderr must be one fixed category line",
-        );
-        assert.ok(!stderr.includes(missingRoot), "offline wrapper must not disclose the supplied path");
-        assert.ok(!stderr.includes(wrapperPath), "offline wrapper must not disclose the script path");
-        return true;
-      },
-    );
-    await assert.rejects(
-      () => execFileAsync("powershell", [
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", wrapperPath,
-        "-UnknownPrivateParameter", probeRoot,
-      ], { timeout: 10_000 }),
-      (error) => {
-        const stderr = error.stderr.replace(/\r\n/gu, "\n");
-        assert.ok(error.stdout === "", "offline wrapper binding failure stdout must remain empty");
-        assert.ok(
-          stderr === "RELEASE_VERIFICATION_FAILED: offline release verification failed closed\n",
-          "offline wrapper binding failure stderr must be one fixed category line",
-        );
-        assert.ok(!stderr.includes(probeRoot), "offline wrapper must not disclose binding inputs");
-        assert.ok(!stderr.includes(wrapperPath), "offline wrapper must not disclose the script path");
-        return true;
-      },
-    );
+    const privateManifest = path.join(probeRoot, "private-missing-manifest.json");
+    const privateSignature = path.join(probeRoot, "private-missing-signature.bin");
+    const privatePublicKey = path.join(probeRoot, "private-missing-release-key.pem");
+    const privatePrevious = path.join(probeRoot, "private-missing-previous.json");
+    const argumentPrefix = [
+      "-Manifest", privateManifest,
+      "-Signature", privateSignature,
+      "-ReleasePublicKey", privatePublicKey,
+      "-BundleRoot", missingRoot,
+    ];
+    const argumentSuffix = [
+      "-ExpectedReleaseKeyIdSha256", "1".repeat(64),
+      "-ExpectedExtensionId", EXTENSION_ID,
+      "-ExpectedReviewerKeyIdSha256", "2".repeat(64),
+      "-ExpectedSignerCertificateSha256", "3".repeat(64),
+      "-ExpectedVerifierToolsetSha256", "4".repeat(64),
+      "-OperatorConfirmedNetworkIsolation",
+    ];
+    const validInitialArguments = [
+      ...argumentPrefix,
+      "-ExpectedReleaseSequence", "1",
+      ...argumentSuffix,
+    ];
+    const privateValues = [
+      probeRoot,
+      missingRoot,
+      privateManifest,
+      privateSignature,
+      privatePublicKey,
+      privatePrevious,
+      wrapperPath,
+    ];
+    const expectFixedWrapperFailure = async (label, rawArguments) => {
+      await assert.rejects(
+        () => execFileAsync("powershell", [
+          "-NoProfile",
+          "-ExecutionPolicy", "Bypass",
+          "-File", wrapperPath,
+          ...rawArguments,
+        ], { timeout: 20_000 }),
+        (error) => {
+          const stderr = error.stderr.replace(/\r\n/gu, "\n");
+          assert.equal(error.stdout, "", `${label}: stdout must remain empty`);
+          assert.equal(
+            stderr,
+            "RELEASE_VERIFICATION_FAILED: offline release verification failed closed\n",
+            `${label}: stderr must be one fixed category line`,
+          );
+          for (const privateValue of privateValues) {
+            assert.ok(!stderr.includes(privateValue), `${label}: private input was disclosed`);
+          }
+          return true;
+        },
+      );
+    };
+    const wrapperFailureCases = [
+      ["unknown raw argument", ["-UnknownPrivateParameter", probeRoot]],
+      ["missing release sequence", [...argumentPrefix, ...argumentSuffix]],
+      [
+        "wrong-case release sequence",
+        [...argumentPrefix, "-expectedReleaseSequence", "1", ...argumentSuffix],
+      ],
+      [
+        "duplicate release sequence",
+        [...validInitialArguments, "-ExpectedReleaseSequence", "1"],
+      ],
+      [
+        "culture-invariant release sequence grammar",
+        [...argumentPrefix, "-ExpectedReleaseSequence", "١", ...argumentSuffix],
+      ],
+      [
+        "terminal-linefeed release sequence grammar",
+        [...argumentPrefix, "-ExpectedReleaseSequence", "1\n", ...argumentSuffix],
+      ],
+      [
+        "initial release with previous checkpoint",
+        [
+          ...validInitialArguments,
+          "-PreviousManifest", privatePrevious,
+          "-ExpectedPreviousManifestSha256", "5".repeat(64),
+        ],
+      ],
+      [
+        "initial release with blank previous checkpoint",
+        [...validInitialArguments, "-PreviousManifest", " "],
+      ],
+      [
+        "successor release without previous checkpoint pair",
+        [...argumentPrefix, "-ExpectedReleaseSequence", "2", ...argumentSuffix],
+      ],
+      [
+        "successor release with incomplete previous checkpoint pair",
+        [
+          ...argumentPrefix,
+          "-ExpectedReleaseSequence", "2",
+          ...argumentSuffix,
+          "-PreviousManifest", privatePrevious,
+        ],
+      ],
+    ];
+    for (const [label, rawArguments] of wrapperFailureCases) {
+      await expectFixedWrapperFailure(label, rawArguments);
+    }
   } finally {
     await rm(probeRoot, { force: true, recursive: true });
   }

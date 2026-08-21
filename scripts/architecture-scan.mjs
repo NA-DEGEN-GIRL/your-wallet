@@ -5302,6 +5302,11 @@ const offlineReleaseVerificationBlock = rustItemBlock(
   releaseVerifier,
   /(?:^|\n)function Invoke-OfflineReleaseVerification\s*\{/u,
 );
+const offlineReleaseRequiredValueNamesBlock =
+  /-RequiredValueNames\s+@\((?<body>[\s\S]*?)\)\s*`/u.exec(releaseVerifier)?.groups?.body ?? "";
+const offlineReleaseRequiredValueNames = [
+  ...offlineReleaseRequiredValueNamesBlock.matchAll(/"(?<name>[A-Za-z][A-Za-z0-9]*)"/gu),
+].map((match) => match.groups.name);
 const validateReleaseManifestBlock = rustItemBlock(
   releaseManifestVerifier,
   /(?:^|\n)export function validateManifest\s*\(/u,
@@ -5318,6 +5323,14 @@ const verifyExpectedExtensionIdBlock = rustItemBlock(
   releaseManifestVerifier,
   /(?:^|\n)export function verifyExpectedExtensionId\s*\(/u,
 );
+const validateExpectedReleaseSequenceBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)function validateExpectedReleaseSequence\s*\(/u,
+);
+const verifyExpectedReleaseSequenceBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function verifyExpectedReleaseSequence\s*\(/u,
+);
 const runReleaseManifestCliBlock = rustItemBlock(
   releaseManifestVerifier,
   /(?:^|\n)async function runCli\s*\(/u,
@@ -5329,6 +5342,30 @@ const extensionPinUnitTestBlock = rustItemBlock(
 const extensionLineageUnitTestBlock = rustItemBlock(
   releaseManifestTests,
   /(?:^|\n)test\("successor cannot rotate the stable extension identity"/u,
+);
+const releaseSequenceSuccessUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("release sequence pin accepts exact initial and successor candidates"/u,
+);
+const releaseSequenceReplayUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("release sequence pin rejects an old sequence-1 replay without echoing either value"/u,
+);
+const releaseSequenceFormatUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("release sequence pin rejects malformed and leading-zero values"/u,
+);
+const releaseSequenceRequiredCliTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("verify CLI requires the external release sequence before reading candidate files"/u,
+);
+const releaseSequenceArityCliTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("verify CLI rejects extra and malformed sequence arguments before reading candidate files"/u,
+);
+const releaseSequencePairCliTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("verify CLI derives previous-input shape from the external release sequence before file reads"/u,
 );
 const extensionPinAttackerIntegrationTestBlock = rustItemBlock(
   releaseVerifierIntegrationTests,
@@ -5464,6 +5501,56 @@ for (const pinnedInput of [
     `offline release verification must require independently pinned ${pinnedInput}`,
   );
 }
+const offlineSequenceShapeOrder = [
+  '$hasPreviousManifest = $PSBoundParameters.ContainsKey("PreviousManifest")',
+  '$hasPreviousHash = $PSBoundParameters.ContainsKey("ExpectedPreviousManifestSha256")',
+  '$isInitialRelease = [string]::Equals($ExpectedReleaseSequence, "1", [System.StringComparison]::Ordinal)',
+  "if ($isInitialRelease -and ($hasPreviousManifest -or $hasPreviousHash))",
+  "if (-not $isInitialRelease -and (-not $hasPreviousManifest -or -not $hasPreviousHash))",
+  "if ($hasPreviousManifest -and [string]::IsNullOrWhiteSpace($PreviousManifest))",
+  "Open-VerifiedReleaseToolset",
+  "Open-ReadOnlyReleaseTreeLocks",
+].map((marker) => offlineReleaseVerificationBlock.indexOf(marker));
+requireInvariant(
+  JSON.stringify(offlineReleaseRequiredValueNames) === JSON.stringify([
+    "Manifest",
+    "Signature",
+    "ReleasePublicKey",
+    "BundleRoot",
+    "ExpectedReleaseSequence",
+    "ExpectedReleaseKeyIdSha256",
+    "ExpectedExtensionId",
+    "ExpectedReviewerKeyIdSha256",
+    "ExpectedSignerCertificateSha256",
+    "ExpectedVerifierToolsetSha256",
+  ]) &&
+    releaseVerifier.includes(
+      '-OptionalValueNames @("PreviousManifest", "ExpectedPreviousManifestSha256")',
+    ) &&
+    offlineReleaseVerificationBlock.includes(
+      '[Parameter(Mandatory = $true)][ValidatePattern("\\A[1-9][0-9]{0,31}\\z", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedReleaseSequence',
+    ) &&
+    (offlineReleaseVerificationBlock.match(/\$ExpectedReleaseSequence\b/gu) ?? []).length === 3 &&
+    (offlineReleaseVerificationBlock.match(/"--expected-release-sequence"/gu) ?? []).length === 1 &&
+    offlineReleaseVerificationBlock.includes(
+      '"--expected-release-sequence", $ExpectedReleaseSequence',
+    ) &&
+    offlineReleaseVerificationBlock.includes(
+      'throw "Initial release verification must not supply a previous manifest checkpoint"',
+    ) &&
+    offlineReleaseVerificationBlock.includes(
+      'throw "Successor release verification requires the complete previous manifest checkpoint"',
+    ) &&
+    offlineReleaseVerificationBlock.includes(
+      'throw "Previous manifest checkpoint path must not be empty"',
+    ) &&
+    offlineSequenceShapeOrder.every((position) => position !== -1) &&
+    offlineSequenceShapeOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2,
+  "offline release verification must require one canonical external sequence, derive exact initial/successor inputs before candidate reads, and pass one immutable sequence argument twice",
+);
 requireInvariant(
   offlineReleaseVerificationBlock.includes(
     '[Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId',
@@ -5756,14 +5843,88 @@ requireInvariant(
     'export function verifyExpectedExtensionId(validated, expectedExtensionId) { requireString( expectedExtensionId, "independently pinned extension identifier", EXTENSION_ID_RE, 32, ); if (validated.top.extension.id !== expectedExtensionId) { fail("independently pinned extension identifier mismatch"); } }' &&
     releaseManifestVerifier.includes('const EXTENSION_ID_RE = /^[a-p]{32}$/u;') &&
     (releaseManifestVerifier.match(/\bverifyExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (releaseManifestVerifier.match(/\bvalidateManifest\b/gu) ?? []).length === 2 &&
+    (releaseManifestVerifier.match(/\bvalidateManifest\b/gu) ?? []).length === 3 &&
     !/\b(?:eval|Function)\s*\(|globalThis\s*\[/u.test(releaseManifestVerifier),
   "the final Node verifier must compare one exact lowercase candidate extension ID with one independent pin without echoing either value",
 );
-const extensionPinCliOrder = [
+requireInvariant(
+  releaseManifestVerifier.includes("const RELEASE_SEQUENCE_RE = /^[1-9][0-9]{0,31}$/u;") &&
+    validateExpectedReleaseSequenceBlock.includes(
+      'typeof expectedReleaseSequence !== "string"',
+    ) &&
+    validateExpectedReleaseSequenceBlock.includes(
+      "!RELEASE_SEQUENCE_RE.test(expectedReleaseSequence)",
+    ) &&
+    validateExpectedReleaseSequenceBlock.includes(
+      'fail("independently pinned release sequence has an invalid format")',
+    ) &&
+    validateExpectedReleaseSequenceBlock.includes("return expectedReleaseSequence") &&
+    verifyExpectedReleaseSequenceBlock.includes(
+      "validateExpectedReleaseSequence(expectedReleaseSequence)",
+    ) &&
+    verifyExpectedReleaseSequenceBlock.includes(
+      "validated.top.sequence !== expectedReleaseSequence",
+    ) &&
+    verifyExpectedReleaseSequenceBlock.includes(
+      'fail("independently pinned release sequence mismatch")',
+    ) &&
+    (releaseManifestVerifier.match(/\bverifyExpectedReleaseSequence\b/gu) ?? []).length === 2 &&
+    (releaseManifestVerifier.match(/\bvalidateExpectedReleaseSequence\b/gu) ?? []).length === 3,
+  "the final Node verifier must export one exact canonical external-sequence comparison with fixed non-echoing failures",
+);
+const releaseVerifyCliStart = runReleaseManifestCliBlock.indexOf('if (command === "verify")');
+const releaseVerifyCliBlock = runReleaseManifestCliBlock.slice(releaseVerifyCliStart);
+const normalizedReleaseVerifyCliBlock = releaseVerifyCliBlock.replace(/\s+/gu, " ").trim();
+const releaseSequencePreReadOrder = [
+  "const expectedReleaseSequence = validateExpectedReleaseSequence(",
+  'requireArgument(values, "--expected-release-sequence")',
+  'const initialRelease = expectedReleaseSequence === "1"',
+  'const hasPrevious = values.has("--previous")',
+  'const hasExpectedPrevious = values.has("--expected-previous-manifest-sha256")',
+  "if (initialRelease && (hasPrevious || hasExpectedPrevious))",
+  "if (!initialRelease && (!hasPrevious || !hasExpectedPrevious))",
+  "const requiredNames = [",
+  "const expectedValueCount = initialRelease ? 9 : 11",
+  "requiredNames.length !== expectedValueCount",
+  "values.size !== expectedValueCount",
+  "for (const name of requiredNames) requireArgument(values, name)",
+  "const requireCanonical = true",
+  "const manifest = await readStrictJsonFile",
+].map((marker) => releaseVerifyCliBlock.indexOf(marker));
+const releaseSequenceFirstCandidateRead = releaseVerifyCliBlock.indexOf(
+  "const manifest = await readStrictJsonFile",
+);
+const releaseSequencePreReadPrefix = releaseVerifyCliBlock.slice(
+  0,
+  releaseSequenceFirstCandidateRead,
+);
+requireInvariant(
+  releaseVerifyCliStart !== -1 &&
+    releaseSequenceFirstCandidateRead !== -1 &&
+    releaseSequencePreReadOrder.every((position) => position !== -1) &&
+    releaseSequencePreReadOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    releaseVerifyCliBlock.includes(
+      'fail("initial verification must not supply --previous or --expected-previous-manifest-sha256")',
+    ) &&
+    releaseVerifyCliBlock.includes(
+      'fail("successor verification requires --previous and --expected-previous-manifest-sha256 from the offline checkpoint")',
+    ) &&
+    releaseVerifyCliBlock.includes('"--expected-release-sequence"') &&
+    releaseVerifyCliBlock.includes(
+      '...(initialRelease ? [] : ["--previous", "--expected-previous-manifest-sha256"])',
+    ) &&
+    !/\b(?:readFile|readStrictJsonFile|verifyBundleFiles|verifyEvidenceAttestations)\s*\(/u.test(
+      releaseSequencePreReadPrefix,
+    ),
+  "the Node CLI must validate the external sequence, exact 9/11-value arity, and previous-input shape before every candidate read",
+);
+const externalPinCliOrder = [
   'const validated = validateManifest(manifest, previous)',
   'verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id"))',
   'verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id"))',
+  "verifyExpectedReleaseSequence(validated, expectedReleaseSequence)",
   "verifyExpectedSignerCertificateSha256(",
   "verifyExpectedPreviousManifestSha256(validated, expectedPreviousManifestSha256)",
   'const bundleRoot = requireArgument(values, "--bundle-root")',
@@ -5771,17 +5932,17 @@ const extensionPinCliOrder = [
   "await verifyEvidenceAttestations(",
   "await verifyDetachedManifestSignature(",
   'process.stdout.write("CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\\n")',
-].map((marker) => runReleaseManifestCliBlock.indexOf(marker));
+].map((marker) => releaseVerifyCliBlock.indexOf(marker));
 requireInvariant(
-  extensionPinCliOrder.every((position) => position !== -1) &&
-    extensionPinCliOrder.every(
+  externalPinCliOrder.every((position) => position !== -1) &&
+    externalPinCliOrder.every(
       (position, index, positions) => index === 0 || positions[index - 1] < position,
     ) &&
-    runReleaseManifestCliBlock.includes("values.size !== (previousPath ? 10 : 8)") &&
-    runReleaseManifestCliBlock.includes(
-      "--expected-release-key-id, --expected-extension-id, --expected-reviewer-key-id",
+    releaseVerifyCliBlock.includes("const expectedValueCount = initialRelease ? 9 : 11") &&
+    normalizedReleaseVerifyCliBlock.includes(
+      'verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id")); verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id")); verifyExpectedReleaseSequence(validated, expectedReleaseSequence);',
     ),
-  "extension identity must be pinned immediately after the release key and before bundle, evidence, or signature acceptance",
+  "extension identity and external release sequence must be pinned immediately after the release key and before signer/previous hash pins, bundle/evidence reads, or signature acceptance",
 );
 requireInvariant(
   extensionPinUnitTestBlock.includes(
@@ -5795,6 +5956,57 @@ requireInvariant(
       "stable extension identity changed across release lineage",
     ),
   "unit evidence must cover exact extension pinning, case rejection, no-value diagnostics, and successor continuity",
+);
+requireInvariant(
+  releaseSequenceSuccessUnitTestBlock.includes(
+    'verifyExpectedReleaseSequence(validatedInitial, "1")',
+  ) &&
+    releaseSequenceSuccessUnitTestBlock.includes(
+      'verifyExpectedReleaseSequence(validatedSuccessor, "2")',
+    ) &&
+    releaseSequenceReplayUnitTestBlock.includes(
+      'verifyExpectedReleaseSequence(validated, "2")',
+    ) &&
+    releaseSequenceReplayUnitTestBlock.includes(
+      'assert.equal(error.message, "independently pinned release sequence mismatch")',
+    ) &&
+    releaseSequenceReplayUnitTestBlock.includes(
+      "assert.doesNotMatch(error.message, /[12]/u)",
+    ) &&
+    releaseSequenceFormatUnitTestBlock.includes(
+      '["0", "01", "+1", "1.0", "1".repeat(33), "latest", "1\\n", "1\\r\\n", "1\\u2028"]',
+    ) &&
+    releaseSequenceFormatUnitTestBlock.includes(
+      "independently pinned release sequence has an invalid format",
+    ),
+  "unit evidence must cover exact initial/successor sequence pins, canonical-decimal rejection, and non-echoing old-sequence replay denial",
+);
+requireInvariant(
+  releaseSequenceRequiredCliTestBlock.includes(
+    'argumentsList.indexOf("--expected-release-sequence")',
+  ) &&
+    releaseSequenceRequiredCliTestBlock.includes("argumentsList.splice(sequenceIndex, 2)") &&
+    releaseSequenceRequiredCliTestBlock.includes(
+      '"missing required argument --expected-release-sequence"',
+    ) &&
+    releaseSequenceArityCliTestBlock.includes(
+      '[...verifyCliArguments(), "--unexpected", "value"]',
+    ) &&
+    releaseSequenceArityCliTestBlock.includes('for (const malformed of ["01", "latest"])') &&
+    releaseSequencePairCliTestBlock.includes('verifyCliArguments("2")') &&
+    releaseSequencePairCliTestBlock.includes(
+      '"successor verification requires --previous and --expected-previous-manifest-sha256 from the offline checkpoint"',
+    ) &&
+    releaseSequencePairCliTestBlock.includes(
+      '...verifyCliArguments("1")',
+    ) &&
+    releaseSequencePairCliTestBlock.includes(
+      '"initial verification must not supply --previous or --expected-previous-manifest-sha256"',
+    ) &&
+    releaseManifestTests.includes(
+      "assert.doesNotMatch(result.stderr, /unread-(?:manifest|signature|public-key|bundle)/u)",
+    ),
+  "CLI evidence must reject missing, surplus, malformed, initial-pair, and successor-without-pair shapes before reading candidate paths",
 );
 requireInvariant(
   extensionPinSuccessIntegrationTestBlock.includes(
@@ -6196,6 +6408,14 @@ requireInvariant(
     releaseVerifierToolsetTests.includes('Name = "unapproved-static-import"') &&
     releaseVerifierToolsetTests.includes('Name = "unapproved-dynamic-import"') &&
     releaseVerifierToolsetTests.includes(
+      "function Assert-ReleaseSequenceBinderRejectsTerminalLineFeed",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      '$_.FullyQualifiedErrorId -like "ParameterArgumentValidationError,*"',
+    ) &&
+    (releaseVerifierToolsetTests.match(/Assert-ReleaseSequenceBinderRejectsTerminalLineFeed/gu) ?? [])
+      .length === 2 &&
+    releaseVerifierToolsetTests.includes(
       "Sealed VM loader accepted a forbidden source or import graph",
     ) &&
     releaseVerifierToolsetTests.includes("POWERSHELL_VERIFIER_TOOLSET_PASS"),
@@ -6361,16 +6581,44 @@ requireInvariant(
       '"-ExpectedVerifierToolsetSha256"',
     ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
-      '"-UnknownPrivateParameter", probeRoot',
+      '["unknown raw argument", ["-UnknownPrivateParameter", probeRoot]]',
     ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       "RELEASE_VERIFICATION_FAILED: offline release verification failed closed",
     ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
-      "!stderr.includes(wrapperPath)",
+      "const privateValues = [",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "for (const privateValue of privateValues)",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "assert.ok(!stderr.includes(privateValue)",
     ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       '"-ExpectedVerifierToolsetSha256", "4".repeat(64)',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes("const sequenceValidation =") &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      'wrapper.match(/"--expected-release-sequence", \\$ExpectedReleaseSequence/gu)?.length',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      'wrapper.match(/^\\s*"ExpectedReleaseSequence",?\\s*$/gmu)?.length',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "wrapper.match(/-CommandArguments \\$verifyArguments/gu)?.length",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "sequenceShapeGate !== -1 && sequenceShapeGate < toolsetOpen",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      '["missing release sequence", [...argumentPrefix, ...argumentSuffix]]',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      '"initial release with previous checkpoint"',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      '"successor release without previous checkpoint pair"',
     ),
   "review subject and offline wrapper evidence must prove deterministic success plus sealed-toolset, file-set, arity, preflight, and parameter-binding fail-closure without path disclosure",
 );
@@ -6423,7 +6671,21 @@ requireInvariant(
     sepoliaArchitectureDoc.includes("retargets") &&
     sepoliaArchitectureDoc.includes("still denies rename") &&
     sepoliaArchitectureDoc.includes("exact subject bytes to remain A plus one LF") &&
-    rootReadme.includes("릴리스 정책·검증기 테스트 54개 통과") &&
+    releaseSecurity.includes("`ExpectedReleaseSequence` is a mandatory external assertion") &&
+    releaseSecurity.includes("`[1-9][0-9]{0,31}`") &&
+    releaseSecurity.includes("an older, correctly signed sequence-1 bundle cannot be replayed") &&
+    sepoliaArchitectureDoc.includes(
+      "rollback-resistant checkpoint-derived\n`ExpectedReleaseSequence`",
+    ) &&
+    releaseSecurity.includes(
+      "must come only from the write-protected, rollback-resistant offline checkpoint",
+    ) &&
+    releaseSecurity.includes("never from the candidate bundle, a copied command") &&
+    sepoliaArchitectureDoc.includes("exact initial/successor argument counts before any candidate file or tree") &&
+    sepoliaArchitectureDoc.includes("correctly signed old sequence-1 tree") &&
+    rootReadme.includes("릴리스 정책·검증기 테스트 60개 통과") &&
+    rootReadme.includes("rollback-resistant offline checkpoint에서") &&
+    rootReadme.includes("유효하게 서명된 과거 sequence-1") &&
     rootReadme.includes("봉인된 Windows 검증 도구셋") &&
     rootReadme.includes("첫 디버그 생성 이벤트의 실제 이미지"),
   "release documentation must distinguish external identity/toolset pins and mapped-image/module-graph guarantees from still-absent production evidence",
@@ -6445,7 +6707,7 @@ requireInvariant(
     "release-manifest.test.mjs",
     "release-verifier-integration.test.mjs",
     "review-evidence-set.test.mjs",
-  ]) && releasePolicyTestCount === 54,
+  ]) && releasePolicyTestCount === 60,
   "the documented release-policy and verifier evidence total must match the five executed Node suites",
 );
 
