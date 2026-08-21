@@ -6,11 +6,17 @@ import {
   RELEASE_PROFILE,
   REQUIRED_ARTIFACT_PATHS,
   REQUIRED_ARTIFACT_ROLES,
+  REQUIRED_EVIDENCE_PATHS,
+  REVIEW_EVIDENCE_EXCLUDED_KEYS,
+  REQUIRED_REVIEW_SCOPE,
   REQUIRED_WINDOWS_NEGATIVE_TESTS,
   canonicalEncode,
   computeArtifactSetSha256,
+  computeManifestReviewedEvidenceSetSha256,
+  computeReviewedEvidenceSetSha256,
   parseStrictJson,
   sha256Hex,
+  validateIndependentReviewAttestation,
   validateManifest,
   verifyExpectedExtensionId,
   verifyExpectedReleaseKeyId,
@@ -160,6 +166,110 @@ test("canonical encoding is independent of object insertion order", () => {
   const right = parseStrictJson('{"m":[true,null,"v"],"a":{"x":"1","y":"2"},"z":"last"}');
   assert.equal(canonicalEncode(left), canonicalEncode(right));
   assert.equal(canonicalEncode(left), '{"a":{"x":"1","y":"2"},"m":[true,null,"v"],"z":"last"}');
+});
+
+test("independent review evidence commitment is exact, canonical, and non-circular", () => {
+  const manifest = initialManifest();
+  const baseline = computeManifestReviewedEvidenceSetSha256(
+    manifest.evidence,
+    manifest.windowsNegativeTests,
+  );
+  assert.match(baseline, /^[0-9a-f]{64}$/u);
+
+  const reviewedRecords = Object.entries(manifest.evidence)
+    .filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))
+    .map(([, record]) => record);
+  reviewedRecords.push(...manifest.windowsNegativeTests.map((item) => item.log));
+  const duplicate = [...reviewedRecords];
+  duplicate[1] = duplicate[0];
+  assert.throws(
+    () => computeReviewedEvidenceSetSha256(duplicate),
+    /duplicate Windows path/u,
+  );
+  assert.throws(
+    () => computeReviewedEvidenceSetSha256([...reviewedRecords, reviewedRecords[0]]),
+    /exact required file count/u,
+  );
+
+  const reordered = structuredClone(manifest);
+  reordered.windowsNegativeTests.reverse();
+  assert.equal(
+    computeManifestReviewedEvidenceSetSha256(reordered.evidence, reordered.windowsNegativeTests),
+    baseline,
+  );
+
+  const reviewPairChanged = structuredClone(manifest);
+  reviewPairChanged.evidence.reviewAttestation = fileRecord(REQUIRED_EVIDENCE_PATHS.reviewAttestation);
+  reviewPairChanged.evidence.reviewAttestation.sha256 = digest("replacement-review-attestation");
+  reviewPairChanged.evidence.reviewSignature.sha256 = digest("replacement-review-signature");
+  assert.equal(
+    computeManifestReviewedEvidenceSetSha256(
+      reviewPairChanged.evidence,
+      reviewPairChanged.windowsNegativeTests,
+    ),
+    baseline,
+  );
+
+  const publicKeyChanged = structuredClone(manifest);
+  publicKeyChanged.evidence.reviewPublicKey.sha256 = digest("replacement-review-public-key");
+  assert.notEqual(
+    computeManifestReviewedEvidenceSetSha256(
+      publicKeyChanged.evidence,
+      publicKeyChanged.windowsNegativeTests,
+    ),
+    baseline,
+  );
+
+  const missing = structuredClone(manifest);
+  missing.windowsNegativeTests.pop();
+  assert.throws(
+    () => computeManifestReviewedEvidenceSetSha256(missing.evidence, missing.windowsNegativeTests),
+    /exact required file count/u,
+  );
+
+  const caseAlias = structuredClone(manifest);
+  caseAlias.windowsNegativeTests[0].log.path = caseAlias.windowsNegativeTests[0].log.path.toUpperCase();
+  assert.throws(
+    () => computeManifestReviewedEvidenceSetSha256(caseAlias.evidence, caseAlias.windowsNegativeTests),
+    /must be below evidence|paths are not exact/u,
+  );
+});
+
+test("independent review attestation v2 binds the reviewed evidence set", () => {
+  const manifest = initialManifest();
+  const validated = validateManifest(manifest);
+  const attestation = {
+    artifactSetSha256: manifest.artifactSetSha256,
+    criticalOpen: "0",
+    highOpen: "0",
+    independenceAttestation: "pass",
+    profile: RELEASE_PROFILE,
+    reviewedEvidenceSetSha256: computeManifestReviewedEvidenceSetSha256(
+      manifest.evidence,
+      manifest.windowsNegativeTests,
+    ),
+    reviewerKeyIdSha256: digest("reviewer-public-key"),
+    schema: "your-wallet-independent-security-review-v2",
+    scope: REQUIRED_REVIEW_SCOPE,
+    sourceCommit: manifest.source.commit,
+    version: manifest.version,
+  };
+  assert.doesNotThrow(() => validateIndependentReviewAttestation(attestation, validated));
+
+  const stale = structuredClone(attestation);
+  stale.reviewedEvidenceSetSha256 = digest("stale-reviewed-evidence-set");
+  assert.throws(
+    () => validateIndependentReviewAttestation(stale, validated),
+    /evidence-set commitment mismatch/u,
+  );
+
+  const versionOne = structuredClone(attestation);
+  versionOne.schema = "your-wallet-independent-security-review-v1";
+  delete versionOne.reviewedEvidenceSetSha256;
+  assert.throws(
+    () => validateIndependentReviewAttestation(versionOne, validated),
+    /members must be exactly|schema must be/u,
+  );
 });
 
 test("strict parser rejects duplicate members before canonicalization", () => {

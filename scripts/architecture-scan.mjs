@@ -5266,8 +5266,19 @@ requireStableDisplay(approvalUi, "ApprovalError", "approval channel I/O failed")
 requireStableDisplay(secretInput, "SecretInputError", "secret-input channel I/O failed");
 
 const releaseVerifier = await text("scripts/release/verify-release-offline.ps1");
+const releaseCommon = await text("scripts/release/common.ps1");
+const releaseCommonTests = await text("scripts/release/common.test.ps1");
+const releaseCheck = await text("scripts/release/check.ps1");
 const releaseManifestVerifier = await text("scripts/release/release-manifest.mjs");
 const releaseManifestTests = await text("scripts/release/release-manifest.test.mjs");
+const releaseManifestAssembler = await text("scripts/release/assemble-manifest.mjs");
+const releaseReviewEvidenceSet = await text("scripts/release/review-evidence-set.mjs");
+const releaseReviewEvidenceSetWrapper = await text(
+  "scripts/release/review-evidence-set.ps1",
+);
+const releaseReviewEvidenceSetTests = await text(
+  "scripts/release/review-evidence-set.test.mjs",
+);
 const releaseVerifierIntegrationTests = await text(
   "scripts/release/release-verifier-integration.test.mjs",
 );
@@ -5277,10 +5288,25 @@ const releaseExtensionAuditTests = await text(
 const releaseInventoryTests = await text(
   "scripts/release/generate-inventories.test.mjs",
 );
+const releaseTestSuiteNames = (await readdir(resolve(root, "scripts/release")))
+  .filter((name) => name.endsWith(".test.mjs"))
+  .sort();
 const releaseSecurity = await text("docs/release-security.md");
+const offlineReleaseVerificationBlock = rustItemBlock(
+  releaseVerifier,
+  /(?:^|\n)function Invoke-OfflineReleaseVerification\s*\{/u,
+);
 const validateReleaseManifestBlock = rustItemBlock(
   releaseManifestVerifier,
   /(?:^|\n)export function validateManifest\s*\(/u,
+);
+const resolveExactReleasePathBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export async function resolveExactReleasePath\s*\(/u,
+);
+const assertNoReparseComponentsBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)async function assertNoReparseComponents\s*\(/u,
 );
 const verifyExpectedExtensionIdBlock = rustItemBlock(
   releaseManifestVerifier,
@@ -5318,35 +5344,255 @@ const extensionPinWrapperIntegrationTestBlock = rustItemBlock(
   releaseVerifierIntegrationTests,
   /(?:^|\n)test\("offline wrapper requires a case-sensitive pin and withholds both child passes"/u,
 );
+const computeReviewedEvidenceSetBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function computeReviewedEvidenceSetSha256\s*\(/u,
+);
+const computeManifestReviewedEvidenceSetBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function computeManifestReviewedEvidenceSetSha256\s*\(/u,
+);
+const validateIndependentReviewAttestationBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export function validateIndependentReviewAttestation\s*\(/u,
+);
+const verifyEvidenceAttestationsBlock = rustItemBlock(
+  releaseManifestVerifier,
+  /(?:^|\n)export async function verifyEvidenceAttestations\s*\(/u,
+);
+const assembleReleaseManifestRunBlock = rustItemBlock(
+  releaseManifestAssembler,
+  /(?:^|\n)async function run\s*\(/u,
+);
+const collectReviewedEvidenceSetSubjectBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)export async function collectReviewedEvidenceSetSubject\s*\(/u,
+);
+const reviewEvidenceSetTreeBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)async function verifyExactEvidenceTree\s*\(/u,
+);
+const reviewEvidenceSetPinnedFileBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)async function openPinnedFileRecord\s*\(/u,
+);
+const reviewEvidenceSetPinnedPathBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)async function verifyPinnedFilePath\s*\(/u,
+);
+const reviewEvidenceSetMetadataIdentityBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)function samePinnedMetadata\s*\(/u,
+);
+const reviewEvidenceSetSupportedIdentityBlock = rustItemBlock(
+  releaseReviewEvidenceSet,
+  /(?:^|\n)function hasSupportedPinnedIdentity\s*\(/u,
+);
+const reviewEvidenceDigestUnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("independent review evidence commitment is exact, canonical, and non-circular"/u,
+);
+const reviewAttestationV2UnitTestBlock = rustItemBlock(
+  releaseManifestTests,
+  /(?:^|\n)test\("independent review attestation v2 binds the reviewed evidence set"/u,
+);
+const reviewNativeReplacementTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("old reviewer signature rejects a release-signed native-host evidence replacement"/u,
+);
+const reviewRefreshedCommitmentOldSignatureTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("a refreshed v2 commitment cannot reuse the old reviewer signature under a fresh release signature"/u,
+);
+const reviewExternalRolePinsTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("verify CLI keeps release, Authenticode, and reviewer pins in distinct external roles"/u,
+);
+const reviewWindowsReplacementTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("old reviewer signature rejects a release-signed Windows-negative log replacement"/u,
+);
+const reviewAdvisoryReplacementTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("old reviewer signature rejects advisory evidence and policy replacement"/u,
+);
+const reviewV1RejectionTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("independent review attestation v1 fails closed even with a valid old-schema signature"/u,
+);
+const reviewAssemblyIntegrationTestBlock = rustItemBlock(
+  releaseVerifierIntegrationTests,
+  /(?:^|\n)test\("manifest assembly independently enforces review evidence-set v2 before output"/u,
+);
+const reviewSubjectSuccessTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)test\("review evidence-set subject is exact, deterministic, and read-only"/u,
+);
+const reviewSubjectFileSetTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)test\("review evidence-set command rejects missing, extra, and case-aliased files without path disclosure"/u,
+);
+const reviewSubjectHardlinkTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)test\("review evidence-set command rejects hard-linked evidence"/u,
+);
+const reviewSubjectArityTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)test\("review evidence-set command rejects missing and extra arguments"/u,
+);
+const reviewSubjectWrapperTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)test\("Windows review wrapper holds one offline read-only tree around the exact subject command"/u,
+);
+const reviewSubjectWrapperPrivacyTestBlock = rustItemBlock(
+  releaseReviewEvidenceSetTests,
+  /(?:^|\n)\s*async \(\) => \{\s*const privateParent = await mkdtemp\(path\.join\(os\.tmpdir\(\), "your-wallet-review-wrapper-private-"\)\)/u,
+);
 for (const pinnedInput of [
   "ExpectedReleaseKeyIdSha256",
   "ExpectedReviewerKeyIdSha256",
   "ExpectedSignerCertificateSha256",
 ]) {
   requireInvariant(
-    releaseVerifier.includes(`[Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$${pinnedInput}`),
+    offlineReleaseVerificationBlock.includes(`[Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$${pinnedInput}`),
     `offline release verification must require independently pinned ${pinnedInput}`,
   );
 }
 requireInvariant(
-  releaseVerifier.includes(
+  offlineReleaseVerificationBlock.includes(
     '[Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId',
   ) &&
-    (releaseVerifier.match(/\$ExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (releaseVerifier.match(/\bExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (releaseVerifier.match(/"--expected-extension-id"/gu) ?? []).length === 1 &&
-    releaseVerifier.includes('"--expected-extension-id", $ExpectedExtensionId') &&
-    (releaseVerifier.match(/\$verifyArguments\b/gu) ?? []).length === 4 &&
-    (releaseVerifier.match(/\bverifyArguments\b/gu) ?? []).length === 4 &&
+    (offlineReleaseVerificationBlock.match(/\$ExpectedExtensionId\b/gu) ?? []).length === 2 &&
+    (offlineReleaseVerificationBlock.match(/\bExpectedExtensionId\b/gu) ?? []).length === 2 &&
+    (offlineReleaseVerificationBlock.match(/"--expected-extension-id"/gu) ?? []).length === 1 &&
+    offlineReleaseVerificationBlock.includes('"--expected-extension-id", $ExpectedExtensionId') &&
+    (offlineReleaseVerificationBlock.match(/\$verifyArguments\b/gu) ?? []).length === 4 &&
+    (offlineReleaseVerificationBlock.match(/\bverifyArguments\b/gu) ?? []).length === 4 &&
     !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
       releaseVerifier,
     ),
   "offline release verification must accept one exact lowercase external extension-ID pin and retain one immutable two-pass argument list",
 );
 requireInvariant(
-  (releaseVerifier.match(/Invoke-ReleaseCommand\s+-Executable\s+"node"\s+-CommandArguments\s+\$verifyArguments/gu) ?? [])
+  (offlineReleaseVerificationBlock.match(/Invoke-ReleaseCommand\s+-Executable\s+"node"\s+-CommandArguments\s+\$verifyArguments/gu) ?? [])
     .length === 2,
   "offline release verification must rehash and reverify after Authenticode inspection",
+);
+requireInvariant(
+  releaseVerifier.includes("function Invoke-OfflineReleaseVerification") &&
+    releaseVerifier.includes("Invoke-OfflineReleaseVerification @boundArguments") &&
+    releaseVerifier.includes("ConvertFrom-ExactNamedArguments") &&
+    releaseVerifier.includes(
+      'RELEASE_VERIFICATION_FAILED: offline release verification failed closed',
+    ) &&
+    !/^\uFEFF?\[CmdletBinding\(\)\]/u.test(releaseVerifier) &&
+    !releaseVerifier.includes("Resolve-Path -LiteralPath $BundleRoot") &&
+    releaseVerifier.includes(
+      "Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot -AdditionalFiles $additionalInputs",
+    ) &&
+    releaseVerifier.includes("$bundle = $releaseLocks.CanonicalBundleRoot") &&
+    releaseVerifier.includes(
+      "$canonicalInputs = @($releaseLocks.CanonicalAdditionalFiles)",
+    ) &&
+    (releaseVerifier.match(/-WorkingDirectory \$PSScriptRoot/gu) ?? []).length === 2 &&
+    (releaseVerifier.match(/\$BundleRoot\b/gu) ?? []).length === 2 &&
+    releaseCommon.includes("GetFinalPathNameByHandleW") &&
+    releaseCommon.includes("private const uint VolumeNameGuid = 0x00000001") &&
+    releaseCommon.includes("FileInfoByHandleClass.FileIdInfo") &&
+    releaseCommon.includes("information.VolumeSerialNumber == UInt64.MaxValue") &&
+    releaseCommon.includes("information.FileId.LowPart == UInt64.MaxValue") &&
+    releaseCommon.includes("information.FileId.HighPart == UInt64.MaxValue") &&
+    releaseCommon.includes("Release paths must canonicalize to a local volume GUID") &&
+    releaseCommon.includes("Open-PinnedReleaseDirectoryPath") &&
+    releaseCommon.includes("Open-PinnedReleaseFilePath") &&
+    releaseCommon.includes(
+      "SameIdentity($bootstrap, $handles[$handles.Count - 1])",
+    ) &&
+    releaseCommon.includes("SameIdentity($bootstrap, $fileHandle)") &&
+    releaseCommon.includes("CanonicalBundleRoot = $canonicalRoot") &&
+    releaseCommon.includes("CanonicalAdditionalFiles = $canonicalAdditionalFiles.ToArray()") &&
+    releaseCommon.includes("function ConvertFrom-ExactNamedArguments") &&
+    releaseCommon.includes(
+      "Dictionary[string, object]]::new([System.StringComparer]::Ordinal)",
+    ) &&
+    releaseCommon.includes("Release command received a duplicate value argument") &&
+    releaseCommon.includes("Release command is missing a required argument") &&
+    !/\b(?:Invoke-Expression|iex)\b/iu.test(releaseCommon) &&
+    releaseCommonTests.includes("function Test-ExactReviewBinding") &&
+    releaseCommonTests.includes("Test-ExactReviewBinding @exactArguments") &&
+    releaseCommonTests.includes('"-bundleroot", "wrong-case"') &&
+    releaseCommonTests.includes('New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetA') &&
+    releaseCommonTests.includes('[System.IO.Directory]::Delete($aliasPath)') &&
+    releaseCommonTests.includes('New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetB') &&
+    releaseCommonTests.includes("$aliasLockSet.CanonicalBundleRoot") &&
+    releaseCommonTests.includes("$aliasLockSet.CanonicalAdditionalFiles") &&
+    releaseCommonTests.includes(
+      "$authenticodePathProbe = Get-AuthenticodeSignature -LiteralPath",
+    ) &&
+    releaseCommonTests.includes(
+      "Authenticode inspection did not accept the canonical volume-GUID path",
+    ),
+  "offline release paths must discard aliases only after canonical volume ancestry and full Win32 identity are pinned, with live junction-retarget evidence",
+);
+requireInvariant(
+  releaseManifestVerifier.includes(
+    "const WINDOWS_VOLUME_GUID_PATH_RE = /^\\\\\\\\\\?\\\\Volume\\{[0-9A-Fa-f]{8}-",
+  ) &&
+    resolveExactReleasePathBlock.includes('process.platform === "win32"') &&
+    resolveExactReleasePathBlock.includes("WINDOWS_VOLUME_GUID_PATH_RE.test(input)") &&
+    resolveExactReleasePathBlock.includes("path.win32.normalize(input) === input") &&
+    resolveExactReleasePathBlock.includes("const entries = await readdir(current)") &&
+    resolveExactReleasePathBlock.includes("entries.filter((entry) => entry === segment).length !== 1") &&
+    resolveExactReleasePathBlock.includes("return input") &&
+    resolveExactReleasePathBlock.includes("return realpath(input)") &&
+    (assertNoReparseComponentsBlock.match(/resolveExactReleasePath\(/gu) ?? []).length === 2 &&
+    (releaseReviewEvidenceSet.match(/resolveExactReleasePath\(/gu) ?? []).length === 3 &&
+    (releaseManifestAssembler.match(/resolveExactReleasePath\(/gu) ?? []).length === 2 &&
+    releaseCommonTests.includes(
+      "import{resolveExactReleasePath}from'./scripts/release/release-manifest.mjs'",
+    ) &&
+    releaseCommonTests.includes("await resolveExactReleasePath(process.argv[1])") &&
+    releaseCommonTests.includes("$subjectLocks.CanonicalBundleRoot") &&
+    releaseCommonTests.includes("$caseAliasCapitalized") &&
+    releaseCommonTests.includes("result.status===0||result.stdout!==''") &&
+    releaseCommonTests.includes("REVIEW_EVIDENCE_SET_FAILED: staged evidence set is not exact\\n"),
+  "the deterministic Node consumers must accept only normalized, exact-case local volume-GUID paths without re-resolving their pinned Windows alias, while retaining realpath elsewhere",
+);
+requireInvariant(
+  releaseCommonTests.includes("$wrapperJob = Start-Job -ScriptBlock") &&
+    releaseCommonTests.includes("function node {") &&
+    releaseCommonTests.includes('[System.IO.File]::WriteAllText($TaskReadyPath, "ready")') &&
+    releaseCommonTests.includes(
+      "while (-not [System.IO.File]::Exists($TaskContinuePath))",
+    ) &&
+    releaseCommonTests.includes(
+      "$output = @(& $ReviewWrapper -BundleRoot $ReviewRoot",
+    ) &&
+    releaseCommonTests.includes("if ([System.IO.File]::Exists($taskReadyPath))") &&
+    (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectRoot, \$subjectMoveProbe\)/gu) ?? [])
+      .length === 2 &&
+    (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectMoveProbe, \$subjectRoot\)/gu) ?? [])
+      .length === 2 &&
+    releaseCommonTests.includes(
+      "Review wrapper released canonical locks before its Node child completed",
+    ) &&
+    releaseCommonTests.includes('[System.IO.Directory]::Delete($subjectAlias)') &&
+    releaseCommonTests.includes(
+      'New-Item -ItemType Junction -Path $subjectAlias -Target $subjectReplacementParent',
+    ) &&
+    releaseCommonTests.includes(
+      '[System.IO.File]::WriteAllText($taskContinuePath, "continue")',
+    ) &&
+    releaseCommonTests.includes("$wrapperResult.Output.Trim()") &&
+    releaseCommonTests.includes("$subject.Stdout.Trim()") &&
+    releaseCommonTests.includes("$replacementSubject.Stdout.Trim()") &&
+    releaseCommonTests.includes(
+      "Review wrapper followed the replacement ancestor alias",
+    ) &&
+    releaseCheck.includes(
+      'Invoke-Checked -Executable "powershell" -CommandArguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "common.test.ps1"))',
+    ),
+  "the release gate must execute a real successful wrapper ceremony whose blocked Node child survives an ancestor junction retarget while remaining bound to canonical A",
 );
 const normalizedValidateReleaseManifest = validateReleaseManifestBlock
   .replace(/\s+/gu, " ")
@@ -5442,9 +5688,12 @@ requireInvariant(
   "alternate-ID evidence must rebind the signed manifest, native origin, installer ACL, registration, and exact evidence digests before the external pin rejects it",
 );
 requireInvariant(
-  extensionPinAttackerIntegrationTestBlock.includes(
-    "await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId)",
-  ) &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      "await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId)",
+    ) &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      "await reissueIndependentReview(fixture)",
+    ) &&
     extensionPinAttackerIntegrationTestBlock.includes(
       "verifyExpectedExtensionId(validated, attackerExtensionId)",
     ) &&
@@ -5468,6 +5717,387 @@ requireInvariant(
   "integration evidence must reject an internally self-consistent signed alternate ID and prove the case-sensitive two-pass wrapper stays silent",
 );
 requireInvariant(
+  releaseManifestVerifier.includes(
+    'export const INDEPENDENT_REVIEW_SCHEMA = "your-wallet-independent-security-review-v2";',
+  ) &&
+    releaseManifestVerifier.includes(
+      'export const REVIEW_EVIDENCE_SUBJECT_SCHEMA = "your-wallet-reviewed-evidence-set-subject-v1";',
+    ) &&
+    /export const REVIEW_EVIDENCE_EXCLUDED_KEYS = Object\.freeze\(\[\s*"reviewAttestation",\s*"reviewSignature",\s*\]\);/u.test(
+      releaseManifestVerifier,
+    ) &&
+    releaseManifestVerifier.includes(
+      ".filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))",
+    ) &&
+    releaseManifestVerifier.includes(
+      "...REQUIRED_WINDOWS_NEGATIVE_TESTS.map((id) => `evidence/windows-negative/${id}.json`)",
+    ) &&
+    !releaseManifestVerifier.includes("your-wallet-independent-security-review-v1") &&
+    !releaseManifestAssembler.includes("your-wallet-independent-security-review-v1") &&
+    !releaseReviewEvidenceSet.includes("your-wallet-independent-security-review-v1"),
+  "independent review v2 must exclude only its attestation/signature cycle while retaining every other evidence path and all Windows logs",
+);
+requireInvariant(
+  computeReviewedEvidenceSetBlock.includes(
+    "reviewedRecords.length !== REQUIRED_REVIEWED_EVIDENCE_PATHS.length",
+  ) &&
+    computeReviewedEvidenceSetBlock.includes("validateFileRecord(") &&
+    computeReviewedEvidenceSetBlock.includes("record.path.toLowerCase()") &&
+    computeReviewedEvidenceSetBlock.includes(
+      "reviewed evidence set contains a duplicate Windows path",
+    ) &&
+    computeReviewedEvidenceSetBlock.includes("record.path !== expectedPath") &&
+    computeReviewedEvidenceSetBlock.includes(
+      "return { bytes: record.bytes, path: record.path, sha256: record.sha256 }",
+    ) &&
+    computeReviewedEvidenceSetBlock.includes(
+      'return sha256Hex(Buffer.from(canonicalEncode(summaries), "utf8"))',
+    ) &&
+    computeManifestReviewedEvidenceSetBlock.includes(
+      "const manifestEvidence = validateEvidence(evidence)",
+    ) &&
+    computeManifestReviewedEvidenceSetBlock.includes(
+      ".filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))",
+    ) &&
+    computeManifestReviewedEvidenceSetBlock.includes(
+      "for (const test of tests) records.push(test?.log)",
+    ) &&
+    computeManifestReviewedEvidenceSetBlock.includes(
+      "return computeReviewedEvidenceSetSha256(records)",
+    ),
+  "the reviewed evidence commitment must canonicalize the exact case-sensitive path set, lengths, and hashes without trusting caller order",
+);
+const normalizedReviewAttestationValidator = validateIndependentReviewAttestationBlock
+  .replace(/\s+/gu, " ")
+  .trim();
+requireInvariant(
+  normalizedReviewAttestationValidator.includes(
+    '"independenceAttestation", "reviewedEvidenceSetSha256", "reviewerKeyIdSha256", "scope",',
+  ) &&
+    normalizedReviewAttestationValidator.includes(
+      "INDEPENDENT_REVIEW_SCHEMA, current,",
+    ) &&
+    normalizedReviewAttestationValidator.includes(
+      "computeManifestReviewedEvidenceSetSha256( current.evidence, current.top.windowsNegativeTests, )",
+    ) &&
+    normalizedReviewAttestationValidator.includes(
+      'if (review.reviewedEvidenceSetSha256 !== expectedEvidenceSetSha256) { fail("independent review evidence-set commitment mismatch"); }',
+    ) &&
+    normalizedReviewAttestationValidator.includes(
+      "canonicalEncode(scope) !== canonicalEncode(REQUIRED_REVIEW_SCOPE)",
+    ),
+  "review attestation v2 must bind the exact manifest evidence commitment and canonical scope before it can be signed or accepted",
+);
+const reviewVerificationOrder = [
+  "validateIndependentReviewAttestation(",
+  "readCanonicalEvidenceJson(",
+  "verifyExpectedReviewerKeyId(",
+  "readVerifiedRecord(bundleRoot, evidence.reviewSignature)",
+  "readVerifiedRecord(bundleRoot, evidence.reviewPublicKey)",
+  "verifyEd25519Bytes(",
+].map((marker) => verifyEvidenceAttestationsBlock.indexOf(marker));
+const reviewAssemblyOrder = [
+  "const validated = validateManifest(manifest, previous)",
+  "validateIndependentReviewAttestation(review, validated)",
+  "await writeFile(outputPath, canonicalEncode(manifest)",
+].map((marker) => assembleReleaseManifestRunBlock.indexOf(marker));
+requireInvariant(
+  reviewVerificationOrder.every((position) => position !== -1) &&
+    reviewVerificationOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    reviewAssemblyOrder.every((position) => position !== -1) &&
+    reviewAssemblyOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    assembleReleaseManifestRunBlock.includes(
+      'if (key === "reviewAttestation" && value.text !== canonicalEncode(value.value))',
+    ) &&
+    assembleReleaseManifestRunBlock.includes(
+      "independent review attestation must contain the exact canonical signed bytes",
+    ),
+  "assembly and final verification must independently recompute review v2 binding before output or reviewer-signature acceptance",
+);
+requireInvariant(
+  reviewEvidenceSetTreeBlock.includes(
+    "REQUIRED_REVIEWED_EVIDENCE_PATHS.map((item) => [item.toLowerCase(), item])",
+  ) &&
+    reviewEvidenceSetTreeBlock.includes(
+      "expectedFiles.get(windowsPathKey) !== relativePath",
+    ) &&
+    reviewEvidenceSetTreeBlock.includes(
+      "expectedDirs.get(windowsPathKey) !== relativePath",
+    ) &&
+    reviewEvidenceSetTreeBlock.includes("status.isSymbolicLink()") &&
+    reviewEvidenceSetTreeBlock.includes("status.nlink !== 1") &&
+    reviewEvidenceSetTreeBlock.includes("seenFiles.size !== expectedFiles.size") &&
+    reviewEvidenceSetPinnedFileBlock.includes('const handle = await open(resolved, "r")') &&
+    reviewEvidenceSetPinnedFileBlock.includes('handle.stat({ bigint: true })') &&
+    (reviewEvidenceSetPinnedFileBlock.match(/handle\.stat\(\{ bigint: true \}\)/gu) ?? [])
+      .length === 2 &&
+    reviewEvidenceSetPinnedFileBlock.includes("!hasSupportedPinnedIdentity(before)") &&
+    reviewEvidenceSetPinnedFileBlock.includes(
+      "!samePinnedMetadata(before, after) || bytes !== after.size",
+    ) &&
+    reviewEvidenceSetPinnedFileBlock.includes("await handle.close()") &&
+    reviewEvidenceSetPinnedPathBlock.includes('const pathHandle = await open(resolved, "r")') &&
+    reviewEvidenceSetPinnedPathBlock.includes('pathHandle.stat({ bigint: true })') &&
+    reviewEvidenceSetPinnedPathBlock.includes('pinned.handle.stat({ bigint: true })') &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "!hasSupportedPinnedIdentity(pathHandleStatus)",
+    ) &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "!samePinnedMetadata(pinned.metadata, pinnedHandleStatus)",
+    ) &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "!samePinnedMetadata(pinnedHandleStatus, pathHandleStatus)",
+    ) &&
+    reviewEvidenceSetPinnedPathBlock.includes("await pathHandle.close()") &&
+    reviewEvidenceSetMetadataIdentityBlock.includes(
+      "left.dev === right.dev",
+    ) &&
+    reviewEvidenceSetMetadataIdentityBlock.includes(
+      "left.ino === right.ino",
+    ) &&
+    reviewEvidenceSetMetadataIdentityBlock.includes(
+      "left.ctimeNs === right.ctimeNs",
+    ) &&
+    reviewEvidenceSetSupportedIdentityBlock.replace(/\s+/gu, " ").trim() ===
+      "function hasSupportedPinnedIdentity(status) { return status.ino !== 0n && status.ino !== UINT64_MAX; }" &&
+    releaseReviewEvidenceSet.includes("const UINT64_MAX = (1n << 64n) - 1n;") &&
+    !releaseReviewEvidenceSet.includes("samePinnedPathIdentity") &&
+    !reviewEvidenceSetSupportedIdentityBlock.includes("status.dev !== 0n") &&
+    !reviewEvidenceSetSupportedIdentityBlock.includes("status.dev !== UINT64_MAX") &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "!pathHandleStatus.isFile()",
+    ) &&
+    (collectReviewedEvidenceSetSubjectBlock.match(/await verifyExactEvidenceTree\(bundleReal\)/gu) ?? [])
+      .length === 2 &&
+    collectReviewedEvidenceSetSubjectBlock.includes(
+      "for (const relativePath of REQUIRED_REVIEWED_EVIDENCE_PATHS)",
+    ) &&
+    collectReviewedEvidenceSetSubjectBlock.includes(
+      "pinnedFiles.push(await openPinnedFileRecord(bundleReal, relativePath))",
+    ) &&
+    collectReviewedEvidenceSetSubjectBlock.includes(
+      "for (const pinned of pinnedFiles) await verifyPinnedFilePath(bundleReal, pinned)",
+    ) &&
+    collectReviewedEvidenceSetSubjectBlock.includes(
+      "await Promise.all(pinnedFiles.map((pinned) => pinned.handle.close()))",
+    ) &&
+    collectReviewedEvidenceSetSubjectBlock.includes(
+      "pinnedFiles.map((pinned) => pinned.record)",
+    ) &&
+    !/\b(?:writeFile|appendFile|rename|rm|unlink|mkdir|copyFile|fetch|exec|spawn)\b/u.test(
+      releaseReviewEvidenceSet,
+    ) &&
+    !releaseReviewEvidenceSet.includes('"--manifest"') &&
+    releaseReviewEvidenceSet.includes(
+      'process.stdout.write(`${canonicalEncode(subject)}\\n`)',
+    ) &&
+    releaseReviewEvidenceSet.includes(
+      "REVIEW_EVIDENCE_SET_FAILED: ${message}",
+    ),
+  "the reviewer subject command must read only an exact non-reparse non-hard-linked staging set, pin each file through hashing, and never trust a candidate manifest",
+);
+requireInvariant(
+  releaseReviewEvidenceSetWrapper.includes(
+    "[Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation",
+  ) &&
+    releaseReviewEvidenceSetWrapper.includes(
+      'if ($env:OS -ne "Windows_NT")',
+    ) &&
+    (releaseReviewEvidenceSetWrapper.match(/Assert-NoReparseTree -LiteralPath \$bundle/gu) ?? [])
+      .length === 2 &&
+    (releaseReviewEvidenceSetWrapper.match(/Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \$bundle/gu) ?? [])
+      .length === 2 &&
+    (releaseReviewEvidenceSetWrapper.match(/Open-ReadOnlyReleaseTreeLocks -BundleRoot \$BundleRoot/gu) ?? [])
+      .length === 1 &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "$bundle = $releaseLocks.CanonicalBundleRoot",
+    ) &&
+    !releaseReviewEvidenceSetWrapper.includes(
+      "Resolve-Path -LiteralPath $BundleRoot",
+    ) &&
+    (releaseReviewEvidenceSetWrapper.match(/\$BundleRoot\b/gu) ?? []).length === 2 &&
+    releaseReviewEvidenceSetWrapper.includes("function Invoke-ReviewEvidenceSetCeremony") &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "Invoke-ReviewEvidenceSetCeremony @boundArguments",
+    ) &&
+    releaseReviewEvidenceSetWrapper.includes("ConvertFrom-ExactNamedArguments") &&
+    !/^\uFEFF?\[CmdletBinding\(\)\]/u.test(releaseReviewEvidenceSetWrapper) &&
+    (releaseReviewEvidenceSetWrapper.match(/review-evidence-set\.mjs/gu) ?? []).length === 1 &&
+    (releaseReviewEvidenceSetWrapper.match(/"--bundle-root"/gu) ?? []).length === 1 &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "if (-not [string]::IsNullOrEmpty($result.Stderr))",
+    ) &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "your-wallet-reviewed-evidence-set-subject-v1",
+    ) &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "[System.Text.RegularExpressions.RegexOptions]::CultureInvariant",
+    ) &&
+    !releaseReviewEvidenceSetWrapper.includes("-match") &&
+    !releaseReviewEvidenceSetWrapper.includes("-notmatch") &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "REVIEW_EVIDENCE_SET_FAILED: offline review evidence ceremony failed closed",
+    ) &&
+    releaseReviewEvidenceSetWrapper.includes("-WorkingDirectory $PSScriptRoot") &&
+    releaseReviewEvidenceSetWrapper.includes("Write-Output $result.Stdout") &&
+    (releaseReviewEvidenceSetWrapper.match(/Close-ReadOnlyReleaseTreeLocks -LockSet \$releaseLocks/gu) ?? [])
+      .length === 1 &&
+    !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
+      releaseReviewEvidenceSetWrapper,
+    ),
+  "the Windows reviewer wrapper must hold one offline no-write/no-delete staging tree around exactly one canonical subject calculation",
+);
+requireInvariant(
+  reviewEvidenceDigestUnitTestBlock.includes("reordered.windowsNegativeTests.reverse()") &&
+    reviewEvidenceDigestUnitTestBlock.includes("duplicate[1] = duplicate[0]") &&
+    reviewEvidenceDigestUnitTestBlock.includes("[...reviewedRecords, reviewedRecords[0]]") &&
+    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-attestation") &&
+    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-signature") &&
+    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-public-key") &&
+    reviewEvidenceDigestUnitTestBlock.includes("assert.notEqual(") &&
+    reviewEvidenceDigestUnitTestBlock.includes("missing.windowsNegativeTests.pop()") &&
+    reviewEvidenceDigestUnitTestBlock.includes(".toUpperCase()") &&
+    reviewAttestationV2UnitTestBlock.includes(
+      'schema: "your-wallet-independent-security-review-v2"',
+    ) &&
+    reviewAttestationV2UnitTestBlock.includes("stale-reviewed-evidence-set") &&
+    reviewAttestationV2UnitTestBlock.includes(
+      'versionOne.schema = "your-wallet-independent-security-review-v1"',
+    ),
+  "unit evidence must cover canonical order, the exact non-circular exclusion, public-key inclusion, path fail-closure, stale binding, and v1 refusal",
+);
+requireInvariant(
+  reviewNativeReplacementTestBlock.includes(
+    "await replaceNativeHostDescriptionAndBindings(fixture)",
+  ) &&
+    reviewNativeReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
+    reviewWindowsReplacementTestBlock.includes(
+      "await replaceWindowsNegativeLog(fixture)",
+    ) &&
+    reviewWindowsReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
+    reviewAdvisoryReplacementTestBlock.includes(
+      "await replaceOsvEvidenceAndPolicy(fixture)",
+    ) &&
+    reviewAdvisoryReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
+    reviewAdvisoryReplacementTestBlock.includes("await reissueIndependentReview(fixture)") &&
+    reviewAdvisoryReplacementTestBlock.includes(
+      'assert.equal(stdout, "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\\n")',
+    ) &&
+    reviewV1RejectionTestBlock.includes(
+      'versionOne.schema = "your-wallet-independent-security-review-v1"',
+    ) &&
+    reviewV1RejectionTestBlock.includes("delete versionOne.reviewedEvidenceSetSha256") &&
+    reviewV1RejectionTestBlock.includes("fixture.reviewerPrivateKey") &&
+    reviewAssemblyIntegrationTestBlock.includes(
+      "const first = await createAssembleCliInvocation(fixture)",
+    ) &&
+    reviewAssemblyIntegrationTestBlock.includes(
+      'assert.equal(await readFile(first.outputPath, "utf8"), canonicalEncode(fixture.manifest))',
+    ) &&
+    reviewAssemblyIntegrationTestBlock.includes(
+      "await replaceNativeHostDescriptionAndBindings(fixture)",
+    ) &&
+    reviewAssemblyIntegrationTestBlock.includes(
+      '"MANIFEST_ASSEMBLY_FAILED: independent review evidence-set commitment mismatch\\n"',
+    ) &&
+    reviewAssemblyIntegrationTestBlock.includes(
+      'assert.rejects(() => stat(second.outputPath), { code: "ENOENT" })',
+    ),
+  "integration evidence must reject release-key-only evidence substitutions and old review signatures while accepting a newly reviewed exact set",
+);
+requireInvariant(
+  reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+    "const oldReviewSignature = await readFile(",
+  ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "await replaceNativeHostDescriptionAndBindings(fixture)",
+    ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "reviewedEvidenceSetSha256: computeReviewedEvidenceSetSha256(reviewedEvidenceRecords)",
+    ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "fixture.manifest.evidence.reviewAttestation = await fileRecord(",
+    ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "assert.deepEqual(",
+    ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "await createVerifyCliInvocation(fixture)",
+    ) &&
+    reviewRefreshedCommitmentOldSignatureTestBlock.includes(
+      "RELEASE_INELIGIBLE: independent review attestation signature is invalid",
+    ) &&
+    reviewExternalRolePinsTestBlock.includes('"--expected-release-key-id"') &&
+    reviewExternalRolePinsTestBlock.includes(
+      '"--expected-signer-certificate-sha256"',
+    ) &&
+    reviewExternalRolePinsTestBlock.includes('"--expected-reviewer-key-id"') &&
+    reviewExternalRolePinsTestBlock.includes(
+      "fixture.reviewerPrivateKey = fixture.releasePrivateKey",
+    ) &&
+    reviewExternalRolePinsTestBlock.includes(
+      "fixture.reviewerKeyIdSha256 = fixture.manifest.signing.keyIdSha256",
+    ) &&
+    reviewExternalRolePinsTestBlock.includes(
+      "independent reviewer key must differ from the release-manifest key",
+    ),
+  "behavioral evidence must reach old-review-signature verification and keep all external trust pins plus self-review separation wired at the CLI boundary",
+);
+requireInvariant(
+  reviewSubjectSuccessTestBlock.includes("const before = await metadataSnapshot(stage.root)") &&
+    reviewSubjectSuccessTestBlock.includes("assert.deepEqual(after, before)") &&
+    reviewSubjectSuccessTestBlock.includes("computeReviewedEvidenceSetSha256(stage.records)") &&
+    reviewSubjectSuccessTestBlock.includes("assert.equal(cli.stderr, \"\")") &&
+    reviewSubjectFileSetTestBlock.includes("await unlink(") &&
+    reviewSubjectFileSetTestBlock.includes('"evidence", "unreviewed.txt"') &&
+    reviewSubjectFileSetTestBlock.includes("path.basename(canonicalCargoLockPath).toLowerCase()") &&
+    reviewSubjectFileSetTestBlock.includes(
+      "for (const root of [missing.root, extra.root, caseAlias.root])",
+    ) &&
+    reviewSubjectFileSetTestBlock.includes(
+      '"REVIEW_EVIDENCE_SET_FAILED: staged evidence set is not exact\\n"',
+    ) &&
+    reviewSubjectHardlinkTestBlock.includes("await link(source, target)") &&
+    reviewSubjectHardlinkTestBlock.includes("/hard-linked file/u") &&
+    reviewSubjectArityTestBlock.includes('["--bundle-root", ".", "--output", "ignored"]') &&
+    reviewSubjectWrapperTestBlock.includes(
+      "Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot",
+    ) &&
+    reviewSubjectWrapperTestBlock.includes(
+      "$bundle = $releaseLocks.CanonicalBundleRoot",
+    ) &&
+    reviewSubjectWrapperTestBlock.includes(
+      "Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks",
+    ) &&
+    reviewSubjectWrapperTestBlock.includes(
+      "Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \\$bundle",
+    ) &&
+    reviewSubjectWrapperPrivacyTestBlock.includes(
+      '"-UnknownPrivateParameter", privateParent',
+    ) &&
+    reviewSubjectWrapperPrivacyTestBlock.includes('["-BundleRoot"]') &&
+    reviewSubjectWrapperPrivacyTestBlock.includes(
+      "REVIEW_EVIDENCE_SET_FAILED: offline review evidence ceremony failed closed",
+    ) &&
+    reviewSubjectWrapperPrivacyTestBlock.includes(
+      "!stderr.includes(privateParent)",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      '"-UnknownPrivateParameter", probeRoot',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "RELEASE_VERIFICATION_FAILED: offline release verification failed closed",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "!stderr.includes(wrapperPath)",
+    ),
+  "review subject and offline wrapper evidence must prove deterministic success plus file-set, arity, preflight, and parameter-binding fail-closure without path disclosure",
+);
+requireInvariant(
   releaseSecurity.includes("independently sourced `ExpectedExtensionId`") &&
     releaseSecurity.includes("A mismatch is rejected before bundle/evidence reads") &&
     releaseSecurity.includes("Every successor manifest must retain") &&
@@ -5477,7 +6107,29 @@ requireInvariant(
     releaseSecurity.includes("same immutable expected-ID argument") &&
     releaseSecurity.includes("stable extension ID") &&
     releaseSecurity.includes("no stable production extension ID") &&
-    rootReadme.includes("릴리스 정책·검증기 테스트 39개 통과"),
+    releaseSecurity.includes("your-wallet-independent-security-review-v2") &&
+    releaseSecurity.includes("reviewedEvidenceSetSha256") &&
+    releaseSecurity.includes("Do not copy a digest out of the candidate manifest") &&
+    releaseSecurity.includes("review-evidence-set.ps1") &&
+    releaseSecurity.includes("review-evidence-set.mjs --bundle-root") &&
+    releaseSecurity.includes("no write/delete sharing") &&
+    releaseSecurity.includes("handle-derived local volume-GUID path") &&
+    releaseSecurity.includes("The original path alias is then discarded") &&
+    releaseSecurity.includes("full canonical ancestor chain") &&
+    releaseSecurity.includes("one fixed wrapper error line without path disclosure") &&
+    releaseSecurity.includes("ancestor junction is retargeted from tree A") &&
+    releaseSecurity.includes("rename probe proves the canonical root is still locked") &&
+    releaseSecurity.includes("merely re-signing the release manifest is insufficient") &&
+    sepoliaArchitectureDoc.includes("The independent-review attestation is schema v2") &&
+    sepoliaArchitectureDoc.includes("excluding only the review attestation and its") &&
+    sepoliaArchitectureDoc.includes("v1 or stale attestations fail closed") &&
+    sepoliaArchitectureDoc.includes("handle-derived local volume-GUID path") &&
+    sepoliaArchitectureDoc.includes("complete 128-bit") &&
+    sepoliaArchitectureDoc.includes("fixed category lines without path disclosure") &&
+    sepoliaArchitectureDoc.includes("retargets") &&
+    sepoliaArchitectureDoc.includes("still denies rename") &&
+    sepoliaArchitectureDoc.includes("emitted subject to remain exactly A") &&
+    rootReadme.includes("릴리스 정책·검증기 테스트 54개 통과"),
   "release documentation must distinguish the mandatory external extension-ID pin from the still-absent production identity and ceremony",
 );
 const releasePolicyTestCount = [
@@ -5485,13 +6137,20 @@ const releasePolicyTestCount = [
   releaseInventoryTests,
   releaseManifestTests,
   releaseVerifierIntegrationTests,
+  releaseReviewEvidenceSetTests,
 ].reduce(
   (count, source) => count + (source.match(/(?:^|\n)test\s*\(/gu) ?? []).length,
   0,
 );
 requireInvariant(
-  releasePolicyTestCount === 39,
-  "the documented release-policy and verifier evidence total must match the four executed Node suites",
+  JSON.stringify(releaseTestSuiteNames) === JSON.stringify([
+    "audit-extension.test.mjs",
+    "generate-inventories.test.mjs",
+    "release-manifest.test.mjs",
+    "release-verifier-integration.test.mjs",
+    "review-evidence-set.test.mjs",
+  ]) && releasePolicyTestCount === 54,
+  "the documented release-policy and verifier evidence total must match the five executed Node suites",
 );
 
 process.stdout.write("architecture scan passed\n");

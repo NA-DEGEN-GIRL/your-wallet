@@ -1,4 +1,4 @@
-import { readFile, realpath, lstat, writeFile } from "node:fs/promises";
+import { readFile, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,9 @@ import {
   decodeUtf8,
   ed25519PublicKeyIdSha256,
   parseStrictJson,
+  resolveExactReleasePath,
   sha256Hex,
+  validateIndependentReviewAttestation,
   validateManifest,
 } from "./release-manifest.mjs";
 
@@ -48,7 +50,7 @@ async function safeFile(bundleReal, relativePath) {
     const status = await lstat(current);
     if (status.isSymbolicLink()) fail(`bundle input traverses a symbolic link: ${relativePath}`);
   }
-  const resolved = await realpath(current);
+  const resolved = await resolveExactReleasePath(current);
   const relative = path.relative(bundleReal, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) fail(`bundle input escapes its root: ${relativePath}`);
   const status = await lstat(resolved);
@@ -63,7 +65,12 @@ async function fileRecord(bundleReal, relativePath) {
 
 async function jsonRecord(bundleReal, relativePath) {
   const file = await safeFile(bundleReal, relativePath);
-  return { record: { bytes: file.status.size.toString(), path: relativePath, sha256: sha256Hex(file.bytes) }, value: parseStrictJson(decodeUtf8(file.bytes, relativePath)) };
+  const text = decodeUtf8(file.bytes, relativePath);
+  return {
+    record: { bytes: file.status.size.toString(), path: relativePath, sha256: sha256Hex(file.bytes) },
+    text,
+    value: parseStrictJson(text),
+  };
 }
 
 function parseArgs(argv) {
@@ -90,7 +97,7 @@ async function run() {
   const bundleRoot = required(args, "--bundle-root");
   const bundleStatus = await lstat(bundleRoot);
   if (!bundleStatus.isDirectory() || bundleStatus.isSymbolicLink()) fail("bundle root must be a real directory");
-  const bundleReal = await realpath(bundleRoot);
+  const bundleReal = await resolveExactReleasePath(bundleRoot);
   const outputPath = required(args, "--output");
   const sourceCommit = required(args, "--source-commit");
   const version = required(args, "--version");
@@ -112,6 +119,9 @@ async function run() {
   for (const [key, relativePath] of Object.entries(FILE_LAYOUT.evidence)) {
     if (relativePath.endsWith(".json")) {
       const value = await jsonRecord(bundleReal, relativePath);
+      if (key === "reviewAttestation" && value.text !== canonicalEncode(value.value)) {
+        fail("independent review attestation must contain the exact canonical signed bytes");
+      }
       evidence[key] = value.record;
       evidenceJson[key] = value.value;
     } else {
@@ -260,7 +270,8 @@ async function run() {
     windowsNegativeTests,
   };
 
-  validateManifest(manifest, previous);
+  const validated = validateManifest(manifest, previous);
+  validateIndependentReviewAttestation(review, validated);
   await writeFile(outputPath, canonicalEncode(manifest), { encoding: "utf8", flag: "wx" });
   process.stdout.write("UNSIGNED_CANONICAL_MANIFEST_WRITTEN_NOT_RELEASE_ELIGIBLE\n");
 }

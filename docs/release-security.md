@@ -116,7 +116,7 @@ The script invokes Windows Authenticode verification for every EXE and the MSI, 
 
 ## Mandatory external evidence
 
-All JSON evidence uses printable ASCII, string-encoded integers, strict unique keys, and the exact schema consumed by `release-manifest.mjs`. Evidence files are hashed into the release manifest. The final verifier reparses their contents and checks their bindings; a file with a correct name but unrelated content is rejected.
+All JSON evidence uses printable ASCII, string-encoded integers, strict unique keys, and the exact schema consumed by `release-manifest.mjs`. Evidence files are hashed into the release manifest. The final verifier reparses their contents and checks their bindings; a file with a correct name but unrelated content is rejected. The independently signed review additionally commits to the byte length, exact path, and SHA-256 of every evidence file and every Windows-negative log except the review attestation and its detached signature. Those two exclusions are the only way to avoid a signature cycle; `review-public-key.pem` remains inside the reviewed set.
 
 ### Exact Windows negative tests
 
@@ -172,7 +172,7 @@ The exact tool versions, binary hashes, and database identifiers/hashes are rele
 
 The independent reviewer uses a signing key distinct from the release-manifest key. The public key is `review-public-key.pem`; `review-attestation.sig` is canonical base64 for the raw 64-byte Ed25519 signature over the exact bytes of `review-attestation.json`.
 
-The attestation schema is `your-wallet-independent-security-review-v1` and includes the release profile/version, source commit, final artifact-set hash, reviewer public-key ID, `independenceAttestation: "pass"`, and zero open Critical/High findings. Its `scope` array must have this exact order:
+The attestation schema is `your-wallet-independent-security-review-v2` and includes the release profile/version, source commit, final artifact-set hash, exact `reviewedEvidenceSetSha256`, reviewer public-key ID, `independenceAttestation: "pass"`, and zero open Critical/High findings. `reviewedEvidenceSetSha256` is the SHA-256 of the canonical, exact-path-ordered array of `{bytes,path,sha256}` records for every mandatory evidence file other than `review-attestation.json` and `review-attestation.sig`, plus all 17 Windows-negative logs. A v1 attestation fails closed. Its `scope` array must have this exact order:
 
 1. `browser-origin-document-lifetime`
 2. `canonical-encoding`
@@ -187,7 +187,17 @@ The attestation schema is `your-wallet-independent-security-review-v1` and inclu
 11. `secret-input-memory`
 12. `vault-derivation-signing`
 
-The reviewer can calculate a public-key ID and canonicalize the unsigned attestation without exposing a private key:
+Before creating either `review-attestation.json` or `review-attestation.sig`, stage every other mandatory evidence file, all 17 Windows-negative logs, and `review-public-key.pem` on the reviewer's separately controlled, read-only tree. Do not copy a digest out of the candidate manifest. The read-only subject command walks that exact evidence subtree itself, rejects missing, extra, case-aliased, reparse, non-regular, or hard-linked files, pins each opened file while hashing it, and prints one canonical JSON subject. It neither reads a candidate manifest nor claims release eligibility:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/review-evidence-set.ps1 `
+  -BundleRoot .\release-bundle `
+  -OperatorConfirmedNetworkIsolation
+```
+
+The Windows wrapper requires the entire staging tree to be effectively read-only and non-reparse. It parses the raw command line into an exact, case-sensitive, duplicate-free named-argument dictionary inside its protected failure boundary, then opens the requested root, derives a local volume-GUID path from that handle, locks every canonical ancestor from the volume root down with no delete sharing, and requires the bootstrap root and canonical root to match by non-sentinel volume serial plus the complete 128-bit `FILE_ID_INFO`. The original path alias is then discarded. It retains those directory handles and every read-only file handle with no write/delete sharing across the calculation, invokes `review-evidence-set.mjs --bundle-root` exactly once with only the pinned volume-GUID path, and the Node core enumerates each volume-path parent to require the requested on-disk spelling exactly before it walks the evidence tree. It repeats the tree checks and releases the handles only after emitting the validated canonical subject. A junction, mount alias, drive alias, UNC path, unsupported filesystem identity, ancestor retarget, or case-only `evidence` alias therefore fails closed or cannot redirect the subject calculation. The release gate exercises this behaviorally: it rejects a volume-GUID tree whose root entry is spelled `Evidence`; a successful wrapper ceremony is then paused at its actual Node child, a live rename probe proves the canonical root is still locked, its ancestor junction is retargeted from tree A to different valid tree B, and the emitted subject must still equal A. The Node command remains the deterministic core and test surface, but running it alone does not establish the Windows share-mode, volume-identity, or offline-ceremony guarantees. Unknown, missing, duplicate, or wrong-case parameters and all later wrapper failures emit only one fixed category line and never echo the supplied or resolved path.
+
+The reviewer copies the command's exact `reviewedEvidenceSetSha256` into the v2 draft, verifies the final artifact-set/source/version inputs independently, and only then canonicalizes and signs. The reviewer can calculate a public-key ID and canonicalize the unsigned attestation without exposing a private key:
 
 ```powershell
 node scripts/release/release-manifest.mjs key-id --public-key .\review-public-key.pem
@@ -196,7 +206,7 @@ node scripts/release/release-manifest.mjs canonicalize-json `
   --output .\review-attestation.json
 ```
 
-The signature is produced externally. Self-review, a reviewer key equal to the release key, omitted scope, or any open Critical/High finding is an unconditional refusal.
+The signature is produced externally. After adding only the resulting canonical attestation and detached signature, assembly independently recomputes the same evidence-set commitment from its freshly hashed file records and refuses a mismatch. Final verification recomputes it again after byte-for-byte bundle verification and before accepting the reviewer signature. Replacing a native-host/installer record, advisory report or policy-bound record, reviewer public key, or Windows-negative log therefore requires a new independent review signature; merely re-signing the release manifest is insufficient. Self-review, a reviewer key equal to the release key, omitted scope, stale evidence-set commitment, or any open Critical/High finding is an unconditional refusal.
 
 ### Installer and native-host registration
 
@@ -220,7 +230,7 @@ These are evidence of a performed recovery exercise, not a key generator. The ex
 
 ## Manifest assembly, external signing, and verification
 
-Calculate release and reviewer key IDs from public keys only. After all evidence is present, assemble a canonical unsigned manifest:
+Calculate release and reviewer key IDs from public keys only. Run the independent evidence-set subject/signing sequence above before adding the two excluded review files. After the complete evidence tree is present, assemble a canonical unsigned manifest:
 
 ```powershell
 node scripts/release/assemble-manifest.mjs `
@@ -265,11 +275,11 @@ For non-initial releases, add both `-PreviousManifest .\accepted-previous-manife
 
 Record the accepted sequence, version, canonical manifest hash, stable extension ID, release public-key ID, reviewer public-key ID, and Authenticode certificate hash in a write-protected offline checkpoint. Local state alone does not resist disk/snapshot rollback; restoring an older machine image must require reconciliation with that independent checkpoint.
 
-Final verification refuses a bundle root, descendant, manifest, signature, public key, or previous manifest that is not marked read-only, and rejects reparse points, hard-linked bundle files, missing entries, and unlisted files/directories. Mark the complete staging tree and external inputs read-only before invoking the command. A read-only attribute alone is deliberately insufficient: the wrapper attempts a uniquely named create-new probe in every bundle directory and refuses eligibility unless the verifier token is denied (or the medium reports write protection), both before and after Authenticode inspection. It also holds every directory and input file without write/delete sharing across both Node passes, Authenticode inspection, and eligibility output. This binds the path-based checks to the same bytes during the ceremony; access-controlled read-only media remains mandatory because owner/DACL changes by a same-user privileged process and mutation after verification exits are outside the script's proof.
+Final verification refuses a bundle root, descendant, manifest, signature, public key, or previous manifest that is not marked read-only, and rejects reparse points, hard-linked bundle files, missing entries, and unlisted files/directories. Mark the complete staging tree and external inputs read-only before invoking the command. A read-only attribute alone is deliberately insufficient: the wrapper attempts a uniquely named create-new probe in every bundle directory and refuses eligibility unless the verifier token is denied (or the medium reports write protection), both before and after Authenticode inspection. As with the review subject wrapper, it first converts the exact raw arguments into a case-sensitive duplicate-free dictionary inside the protected boundary; every root and external input is then bootstrap-opened, converted to a handle-derived local volume-GUID path, pinned through its full canonical ancestor chain, and matched by non-sentinel volume serial plus all 128 file-ID bits before the original aliases are discarded. It holds every directory and input file without write/delete sharing across both Node passes, Authenticode inspection, and eligibility output. This binds the path-based checks to the same objects and bytes even if an untrusted ancestor alias is retargeted during the ceremony; access-controlled read-only media remains mandatory because owner/DACL changes by a same-user privileged process and mutation after verification exits are outside the script's proof. Parameter-binding, preflight, and child failures collapse to one fixed wrapper error line without path disclosure.
 
 ## Guarantees and non-guarantees
 
-This scaffold guarantees, when its final verifier succeeds, byte-level binding among the exact canonical signed manifest, fixed role-to-path artifact set, fixed evidence paths, source/vendor/toolchain/lockfile records, the independently pinned stable extension identity, final native-host/installer identity, exact Windows tests, independently pinned signing identities, and independently signed review. It rejects duplicate JSON keys, non-canonical integer representation, unknown manifest members, path traversal/reparse points/hard links in the bundle, Windows case-folded path reuse, unlisted tree entries, artifact substitution, missing evidence, an extension-ID change across successor lineage, uncheckpointed lineage, and semantic-version rollback.
+This scaffold guarantees, when its final verifier succeeds, byte-level binding among the exact canonical signed manifest, fixed role-to-path artifact set, fixed evidence paths, source/vendor/toolchain/lockfile records, the independently pinned stable extension identity, final native-host/installer identity, exact Windows tests, independently pinned signing identities, and independently signed review. The review signature binds the payload artifact-set commitment and the separate non-circular commitment over all reviewable evidence records, so a release-key holder cannot silently substitute those evidence bytes while reusing an older review signature. It rejects duplicate JSON keys, non-canonical integer representation, unknown manifest members, path traversal/reparse points/hard links in the bundle, Windows case-folded path reuse, unlisted tree entries, artifact substitution, missing evidence, an extension-ID change across successor lineage, uncheckpointed lineage, and semantic-version rollback.
 
 It does not prove that a reviewer is organizationally independent, that an operator truly disconnected networking, that a hardware key was protected correctly, that GitHub's runner image is honest, that the compiler is free from compromise, or that an evidence-generating test was competently designed. Those are external ceremony and review obligations. Authenticode bytes are expected to differ from reproducible unsigned bytes; reproducibility is checked before platform signing and final hashes bind the signed form.
 

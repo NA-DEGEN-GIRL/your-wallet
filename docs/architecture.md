@@ -417,3 +417,41 @@ The eventual target is `PrivateMainnetCanary`: one maintainer, one Windows 11 x6
 machine, one Chrome Stable profile, isolated low-value accounts, and no third-
 party distribution. General-mainnet release requires a separate independent
 review and removal of canary-only warning overrides.
+
+The independent-review attestation is schema v2 and signs two distinct
+commitments: the final payload artifact-set hash and
+`reviewedEvidenceSetSha256`. The latter is computed over canonical
+`{bytes,path,sha256}` records for every mandatory evidence file and every one
+of the 17 Windows-negative logs, excluding only the review attestation and its
+detached signature to avoid a cycle; the reviewer public key is included. A
+separate read-only subject command derives this commitment directly from an
+exact, reparse-free, non-hard-linked staging tree before the two excluded files
+exist. The Windows ceremony wrapper bootstrap-opens the requested root,
+converts it to a handle-derived local volume-GUID path, locks every canonical
+ancestor from the volume root down without delete sharing, and accepts the
+canonical root only when its non-sentinel volume serial and complete 128-bit
+file ID match the bootstrap handle. It then discards the original alias, holds
+every staging directory and file with no write/delete sharing, proves effective
+read-only state, and repeats its tree checks around the single deterministic
+Node calculation. The Node path resolver enumerates every volume-path parent
+and requires the actual entry spelling to match exactly, including the root
+`evidence` entry. The same path pinning applies to the bundle and every
+external input in final offline verification, so ancestor junction, mount, or
+drive-alias retargets cannot redirect a path-based pass to different bytes;
+unsupported or UNC identities fail closed. Both wrappers collapse failures to
+fixed category lines without path disclosure, including raw argument binding:
+unknown, missing, duplicate, and wrong-case names are rejected by an exact
+dictionary parser inside the protected boundary. The Windows release gate also
+runs a volume-GUID case-alias rejection and a successful wrapper with its real
+Node call deliberately blocked, retargets the ancestor junction from valid tree
+A to different valid tree B, proves the canonical root still denies rename while
+the child is blocked, then requires the emitted subject to remain exactly A.
+Running the Node core alone does
+not prove those Windows share-mode, volume-identity, or offline properties.
+Assembly and final verification independently recompute the same value,
+and v1 or stale attestations fail closed. This prevents a release-manifest key
+holder from replacing installer/native-host, advisory, or Windows-negative
+evidence and reusing an earlier independent-review signature. The subject is
+not release eligibility, and organizational independence, read-only staging,
+final evidence production, and hardware-backed reviewer key custody remain
+external ceremony requirements.

@@ -11,6 +11,8 @@ import {
 export const MANIFEST_SCHEMA = "your-wallet-private-mainnet-canary-release-v1";
 export const RELEASE_PROFILE = "private-mainnet-canary";
 export const ELIGIBILITY_CLAIM = "private-mainnet-canary-candidate";
+export const INDEPENDENT_REVIEW_SCHEMA = "your-wallet-independent-security-review-v2";
+export const REVIEW_EVIDENCE_SUBJECT_SCHEMA = "your-wallet-reviewed-evidence-set-subject-v1";
 export const REQUIRED_ARTIFACT_PATHS = Object.freeze({
   "approval-ui-exe": "payload/approval-ui.exe",
   "broker-exe": "payload/broker.exe",
@@ -67,6 +69,16 @@ export const REQUIRED_WINDOWS_NEGATIVE_TESTS = Object.freeze([
   "vault-rollback-detected",
   "virtual-lock-failure",
 ]);
+export const REVIEW_EVIDENCE_EXCLUDED_KEYS = Object.freeze([
+  "reviewAttestation",
+  "reviewSignature",
+]);
+export const REQUIRED_REVIEWED_EVIDENCE_PATHS = Object.freeze([
+  ...Object.entries(REQUIRED_EVIDENCE_PATHS)
+    .filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))
+    .map(([, relativePath]) => relativePath),
+  ...REQUIRED_WINDOWS_NEGATIVE_TESTS.map((id) => `evidence/windows-negative/${id}.json`),
+].sort((left, right) => left < right ? -1 : left > right ? 1 : 0));
 export const REQUIRED_REVIEW_SCOPE = Object.freeze([
   "browser-origin-document-lifetime",
   "canonical-encoding",
@@ -91,6 +103,7 @@ const DECIMAL_RE = /^(?:0|[1-9][0-9]*)$/u;
 const EXTENSION_ID_RE = /^[a-p]{32}$/u;
 const NATIVE_HOST_RE = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/u;
 const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
+const WINDOWS_VOLUME_GUID_PATH_RE = /^\\\\\?\\Volume\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}\\/u;
 const ALLOWED_LICENSE_IDENTIFIERS = new Set([
   "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "CC0-1.0", "ISC", "MIT",
   "OFL-1.1", "Ubuntu-font-1.0", "Unicode-3.0", "Unlicense", "Zlib",
@@ -101,6 +114,29 @@ export class ReleaseValidationError extends Error {
     super(message);
     this.name = "ReleaseValidationError";
   }
+}
+
+export async function resolveExactReleasePath(input) {
+  if (
+    process.platform === "win32" &&
+    typeof input === "string" &&
+    WINDOWS_VOLUME_GUID_PATH_RE.test(input) &&
+    path.win32.normalize(input) === input
+  ) {
+    const volumeRoot = input.match(WINDOWS_VOLUME_GUID_PATH_RE)?.[0];
+    if (!volumeRoot) fail("release path does not have an exact volume root");
+    let current = volumeRoot;
+    const remainder = input.slice(volumeRoot.length);
+    for (const segment of remainder.split("\\").filter(Boolean)) {
+      const entries = await readdir(current);
+      if (entries.filter((entry) => entry === segment).length !== 1) {
+        fail("release path casing is not exact");
+      }
+      current = path.win32.join(current, segment);
+    }
+    return input;
+  }
+  return realpath(input);
 }
 
 function fail(message) {
@@ -339,6 +375,40 @@ export function computeArtifactSetSha256(artifacts) {
   return sha256Hex(Buffer.from(canonicalEncode(summaries), "utf8"));
 }
 
+export function computeReviewedEvidenceSetSha256(records) {
+  const reviewedRecords = requireArray(records, "reviewed evidence records", 64);
+  if (reviewedRecords.length !== REQUIRED_REVIEWED_EVIDENCE_PATHS.length) {
+    fail("reviewed evidence set does not contain the exact required file count");
+  }
+
+  const recordsByWindowsPath = new Map();
+  for (let index = 0; index < reviewedRecords.length; index += 1) {
+    const record = validateFileRecord(reviewedRecords[index], `reviewed evidence record ${index}`, "evidence");
+    const windowsPathKey = record.path.toLowerCase();
+    if (recordsByWindowsPath.has(windowsPathKey)) {
+      fail("reviewed evidence set contains a duplicate Windows path");
+    }
+    recordsByWindowsPath.set(windowsPathKey, record);
+  }
+
+  const summaries = REQUIRED_REVIEWED_EVIDENCE_PATHS.map((expectedPath) => {
+    const record = recordsByWindowsPath.get(expectedPath.toLowerCase());
+    if (!record || record.path !== expectedPath) fail("reviewed evidence set paths are not exact");
+    return { bytes: record.bytes, path: record.path, sha256: record.sha256 };
+  });
+  return sha256Hex(Buffer.from(canonicalEncode(summaries), "utf8"));
+}
+
+export function computeManifestReviewedEvidenceSetSha256(evidence, windowsNegativeTests) {
+  const manifestEvidence = validateEvidence(evidence);
+  const tests = requireArray(windowsNegativeTests, "manifest.windowsNegativeTests", 64);
+  const records = Object.entries(manifestEvidence)
+    .filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))
+    .map(([, record]) => record);
+  for (const test of tests) records.push(test?.log);
+  return computeReviewedEvidenceSetSha256(records);
+}
+
 function validateArtifact(value, index) {
   const label = `artifacts[${index}]`;
   const artifact = requireObject(value, label, ["authenticode", "file", "role"]);
@@ -515,14 +585,14 @@ export function validateManifest(manifest, previousManifest) {
 }
 
 async function assertNoReparseComponents(root, relativePath) {
-  const rootReal = await realpath(root);
+  const rootReal = await resolveExactReleasePath(root);
   let current = rootReal;
   for (const segment of relativePath.split("/")) {
     current = path.join(current, segment);
     const status = await lstat(current);
     if (status.isSymbolicLink()) fail(`release bundle path must not traverse a symbolic link: ${relativePath}`);
   }
-  const fileReal = await realpath(current);
+  const fileReal = await resolveExactReleasePath(current);
   const relative = path.relative(rootReal, fileReal);
   if (relative.startsWith("..") || path.isAbsolute(relative)) fail(`release bundle path escapes its root: ${relativePath}`);
   return fileReal;
@@ -638,6 +708,40 @@ function validateBoundAttestation(value, label, schema, current, extraKeys) {
   requireExact(attestation.sourceCommit, current.source.commit, `${label}.sourceCommit`);
   requireExact(attestation.artifactSetSha256, current.top.artifactSetSha256, `${label}.artifactSetSha256`);
   return attestation;
+}
+
+export function validateIndependentReviewAttestation(value, current) {
+  const review = validateBoundAttestation(
+    value,
+    "independent review attestation",
+    INDEPENDENT_REVIEW_SCHEMA,
+    current,
+    [
+      "criticalOpen",
+      "highOpen",
+      "independenceAttestation",
+      "reviewedEvidenceSetSha256",
+      "reviewerKeyIdSha256",
+      "scope",
+    ],
+  );
+  requireExact(review.independenceAttestation, "pass", "independent review attestation.independenceAttestation");
+  requireExact(review.criticalOpen, "0", "independent review attestation.criticalOpen");
+  requireExact(review.highOpen, "0", "independent review attestation.highOpen");
+  requireString(review.reviewerKeyIdSha256, "independent review attestation.reviewerKeyIdSha256", SHA256_RE, 64);
+  requireString(review.reviewedEvidenceSetSha256, "independent review attestation.reviewedEvidenceSetSha256", SHA256_RE, 64);
+  const expectedEvidenceSetSha256 = computeManifestReviewedEvidenceSetSha256(
+    current.evidence,
+    current.top.windowsNegativeTests,
+  );
+  if (review.reviewedEvidenceSetSha256 !== expectedEvidenceSetSha256) {
+    fail("independent review evidence-set commitment mismatch");
+  }
+  const scope = requireArray(review.scope, "independent review attestation.scope", 32);
+  if (canonicalEncode(scope) !== canonicalEncode(REQUIRED_REVIEW_SCOPE)) {
+    fail("independent review scope is incomplete or out of canonical order");
+  }
+  return review;
 }
 
 function parsePublicKey(publicKeyText, label) {
@@ -860,21 +964,12 @@ export async function verifyEvidenceAttestations(
   const requiredRegistrationTests = ["allowed-origin-exact", "registry-user-scope", "wrong-extension-id-rejected"];
   if (canonicalEncode(registrationTests) !== canonicalEncode(requiredRegistrationTests)) fail("native-host registration evidence must contain the exact test set");
 
-  const review = validateBoundAttestation(
+  const review = validateIndependentReviewAttestation(
     await readCanonicalEvidenceJson(bundleRoot, evidence.reviewAttestation, "independent review attestation"),
-    "independent review attestation",
-    "your-wallet-independent-security-review-v1",
     validated,
-    ["criticalOpen", "highOpen", "independenceAttestation", "reviewerKeyIdSha256", "scope"],
   );
-  requireExact(review.independenceAttestation, "pass", "independent review attestation.independenceAttestation");
-  requireExact(review.criticalOpen, "0", "independent review attestation.criticalOpen");
-  requireExact(review.highOpen, "0", "independent review attestation.highOpen");
-  requireString(review.reviewerKeyIdSha256, "independent review attestation.reviewerKeyIdSha256", SHA256_RE, 64);
   verifyExpectedReviewerKeyId(review.reviewerKeyIdSha256, expectedReviewerKeyId);
   if (review.reviewerKeyIdSha256 === top.signing.keyIdSha256) fail("independent reviewer key must differ from the release-manifest key");
-  const scope = requireArray(review.scope, "independent review attestation.scope", 32);
-  if (canonicalEncode(scope) !== canonicalEncode(REQUIRED_REVIEW_SCOPE)) fail("independent review scope is incomplete or out of canonical order");
   const [reviewSignature, reviewPublicKey] = await Promise.all([
     readVerifiedRecord(bundleRoot, evidence.reviewSignature),
     readVerifiedRecord(bundleRoot, evidence.reviewPublicKey),

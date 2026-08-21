@@ -9,15 +9,18 @@ import { test } from "node:test";
 
 import {
   ELIGIBILITY_CLAIM,
+  INDEPENDENT_REVIEW_SCHEMA,
   MANIFEST_SCHEMA,
   RELEASE_PROFILE,
   REQUIRED_ARTIFACT_PATHS,
   REQUIRED_ARTIFACT_ROLES,
   REQUIRED_EVIDENCE_PATHS,
+  REVIEW_EVIDENCE_EXCLUDED_KEYS,
   REQUIRED_REVIEW_SCOPE,
   REQUIRED_WINDOWS_NEGATIVE_TESTS,
   canonicalEncode,
   computeArtifactSetSha256,
+  computeReviewedEvidenceSetSha256,
   ed25519PublicKeyIdSha256,
   sha256Hex,
   validateManifest,
@@ -271,25 +274,7 @@ async function createSyntheticBundle() {
   const { privateKey: reviewerPrivateKey, publicKey: reviewerPublicKey } = generateKeyPairSync("ed25519");
   const reviewerPublicKeyPem = reviewerPublicKey.export({ format: "pem", type: "spki" });
   const reviewerKeyIdSha256 = ed25519PublicKeyIdSha256(reviewerPublicKeyPem);
-  const reviewAttestation = {
-    artifactSetSha256,
-    criticalOpen: "0",
-    highOpen: "0",
-    independenceAttestation: "pass",
-    profile: RELEASE_PROFILE,
-    reviewerKeyIdSha256,
-    schema: "your-wallet-independent-security-review-v1",
-    scope: REQUIRED_REVIEW_SCOPE,
-    sourceCommit: SOURCE_COMMIT,
-    version: VERSION,
-  };
-  await writeRelative(root, REQUIRED_EVIDENCE_PATHS.reviewAttestation, canonicalEncode(reviewAttestation));
   await writeRelative(root, REQUIRED_EVIDENCE_PATHS.reviewPublicKey, reviewerPublicKeyPem);
-  await writeRelative(
-    root,
-    REQUIRED_EVIDENCE_PATHS.reviewSignature,
-    signBytes(null, Buffer.from(canonicalEncode(reviewAttestation), "utf8"), reviewerPrivateKey).toString("base64"),
-  );
 
   const windowsNegativeTests = [];
   for (const id of REQUIRED_WINDOWS_NEGATIVE_TESTS) {
@@ -311,6 +296,33 @@ async function createSyntheticBundle() {
       sourceCommit: SOURCE_COMMIT,
     });
   }
+
+  const reviewedEvidenceRecords = [];
+  for (const [key, relativePath] of Object.entries(REQUIRED_EVIDENCE_PATHS)) {
+    if (!REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key)) {
+      reviewedEvidenceRecords.push(await fileRecord(root, relativePath));
+    }
+  }
+  reviewedEvidenceRecords.push(...windowsNegativeTests.map((item) => item.log));
+  const reviewAttestation = {
+    artifactSetSha256,
+    criticalOpen: "0",
+    highOpen: "0",
+    independenceAttestation: "pass",
+    profile: RELEASE_PROFILE,
+    reviewedEvidenceSetSha256: computeReviewedEvidenceSetSha256(reviewedEvidenceRecords),
+    reviewerKeyIdSha256,
+    schema: INDEPENDENT_REVIEW_SCHEMA,
+    scope: REQUIRED_REVIEW_SCOPE,
+    sourceCommit: SOURCE_COMMIT,
+    version: VERSION,
+  };
+  await writeRelative(root, REQUIRED_EVIDENCE_PATHS.reviewAttestation, canonicalEncode(reviewAttestation));
+  await writeRelative(
+    root,
+    REQUIRED_EVIDENCE_PATHS.reviewSignature,
+    signBytes(null, Buffer.from(canonicalEncode(reviewAttestation), "utf8"), reviewerPrivateKey).toString("base64"),
+  );
 
   const evidence = {};
   for (const [key, relativePath] of Object.entries(REQUIRED_EVIDENCE_PATHS)) {
@@ -373,6 +385,8 @@ async function createSyntheticBundle() {
     nativeHostManifest,
     releasePrivateKey,
     releasePublicKeyPem,
+    reviewAttestation,
+    reviewerPrivateKey,
     reviewerKeyIdSha256,
     root,
     signerCertificateSha256,
@@ -407,6 +421,110 @@ async function rebindSyntheticExtensionIdentity(fixture, extensionId) {
   }
 }
 
+async function reissueIndependentReview(fixture, overrides = {}) {
+  const reviewedEvidenceRecords = Object.entries(fixture.manifest.evidence)
+    .filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))
+    .map(([, record]) => record);
+  reviewedEvidenceRecords.push(...fixture.manifest.windowsNegativeTests.map((item) => item.log));
+  fixture.reviewAttestation = {
+    ...fixture.reviewAttestation,
+    ...overrides,
+    reviewedEvidenceSetSha256: computeReviewedEvidenceSetSha256(reviewedEvidenceRecords),
+  };
+  await replaceRelative(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+    canonicalEncode(fixture.reviewAttestation),
+  );
+  await replaceRelative(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.reviewSignature,
+    signBytes(
+      null,
+      Buffer.from(canonicalEncode(fixture.reviewAttestation), "utf8"),
+      fixture.reviewerPrivateKey,
+    ).toString("base64"),
+  );
+  fixture.manifest.evidence.reviewAttestation = await fileRecord(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+  );
+  fixture.manifest.evidence.reviewSignature = await fileRecord(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.reviewSignature,
+  );
+}
+
+async function expectReviewEvidenceMismatch(fixture) {
+  const invocation = await createVerifyCliInvocation(fixture);
+  try {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, invocation.arguments),
+      (error) => {
+        assert.equal(
+          error.stderr,
+          "RELEASE_INELIGIBLE: independent review evidence-set commitment mismatch\n",
+        );
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+  } finally {
+    await rm(invocation.inputs, { force: true, recursive: true });
+  }
+}
+
+async function replaceNativeHostDescriptionAndBindings(fixture) {
+  fixture.nativeHostManifest = {
+    ...fixture.nativeHostManifest,
+    description: "Your Wallet replacement private canary native host",
+  };
+  await replaceJson(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.nativeHostManifest,
+    fixture.nativeHostManifest,
+  );
+  const nativeHostManifestRecord = await fileRecord(
+    fixture.root,
+    REQUIRED_EVIDENCE_PATHS.nativeHostManifest,
+  );
+  fixture.manifest.evidence.nativeHostManifest = nativeHostManifestRecord;
+  for (const key of ["installerAclNegative", "nativeHostRegistration"]) {
+    const relativePath = REQUIRED_EVIDENCE_PATHS[key];
+    const absolutePath = path.join(fixture.root, ...relativePath.split("/"));
+    const evidence = JSON.parse(await readFile(absolutePath, "utf8"));
+    evidence.nativeHostManifestSha256 = nativeHostManifestRecord.sha256;
+    await replaceJson(fixture.root, relativePath, evidence);
+    fixture.manifest.evidence[key] = await fileRecord(fixture.root, relativePath);
+  }
+}
+
+async function replaceWindowsNegativeLog(fixture) {
+  const item = fixture.manifest.windowsNegativeTests[0];
+  const absolutePath = path.join(fixture.root, ...item.log.path.split("/"));
+  const log = JSON.parse(await readFile(absolutePath, "utf8"));
+  log.osBuild = "10.0.26100.2";
+  await replaceJson(fixture.root, item.log.path, log);
+  item.log = await fileRecord(fixture.root, item.log.path);
+}
+
+async function replaceOsvEvidenceAndPolicy(fixture) {
+  const rawPath = REQUIRED_EVIDENCE_PATHS.osvRawReport;
+  await replaceJson(fixture.root, rawPath, { results: [], variant: "replacement" });
+  fixture.manifest.evidence.osvRawReport = await fileRecord(fixture.root, rawPath);
+
+  const reportPath = REQUIRED_EVIDENCE_PATHS.osvAdvisoryReport;
+  const absoluteReportPath = path.join(fixture.root, ...reportPath.split("/"));
+  const report = JSON.parse(await readFile(absoluteReportPath, "utf8"));
+  report.databaseSnapshotId = "2026-08-14T00:00:00Z";
+  report.databaseSnapshotSha256 = digest("replacement-osv-database");
+  report.rawReportSha256 = fixture.manifest.evidence.osvRawReport.sha256;
+  await replaceJson(fixture.root, reportPath, report);
+  fixture.manifest.evidence.osvAdvisoryReport = await fileRecord(fixture.root, reportPath);
+  fixture.manifest.advisoryPolicy.osv.databaseSnapshotId = report.databaseSnapshotId;
+  fixture.manifest.advisoryPolicy.osv.databaseSnapshotSha256 = report.databaseSnapshotSha256;
+}
+
 async function createVerifyCliInvocation(fixture, expectedExtensionId = EXTENSION_ID) {
   const inputs = await mkdtemp(path.join(os.tmpdir(), "your-wallet-release-cli-"));
   const manifestPath = path.join(inputs, "release-manifest.json");
@@ -434,6 +552,37 @@ async function createVerifyCliInvocation(fixture, expectedExtensionId = EXTENSIO
       "--expected-signer-certificate-sha256", fixture.signerCertificateSha256,
     ],
     inputs,
+  };
+}
+
+async function createAssembleCliInvocation(fixture) {
+  const inputs = await mkdtemp(path.join(os.tmpdir(), "your-wallet-release-assembly-"));
+  const outputPath = path.join(inputs, "release-manifest.json");
+  const publicKeyPath = path.join(inputs, "release-public-key.pem");
+  await writeFile(publicKeyPath, fixture.releasePublicKeyPem, { flag: "wx" });
+  const { osv, rustSec } = fixture.manifest.advisoryPolicy;
+  return {
+    arguments: [
+      path.resolve("scripts/release/assemble-manifest.mjs"),
+      "--bundle-root", fixture.root,
+      "--output", outputPath,
+      "--source-commit", fixture.manifest.source.commit,
+      "--version", fixture.manifest.version,
+      "--sequence", fixture.manifest.sequence,
+      "--extension-id", fixture.manifest.extension.id,
+      "--native-host-name", fixture.manifest.extension.nativeHostName,
+      "--cargo-audit-version", rustSec.scannerVersion,
+      "--cargo-audit-binary-sha256", rustSec.scannerBinarySha256,
+      "--rustsec-db-commit", rustSec.databaseCommit,
+      "--rustsec-db-tree-sha256", rustSec.databaseTreeSha256,
+      "--osv-scanner-version", osv.scannerVersion,
+      "--osv-scanner-binary-sha256", osv.scannerBinarySha256,
+      "--osv-db-snapshot-id", osv.databaseSnapshotId,
+      "--osv-db-snapshot-sha256", osv.databaseSnapshotSha256,
+      "--release-public-key", publicKeyPath,
+    ],
+    inputs,
+    outputPath,
   };
 }
 
@@ -508,6 +657,7 @@ test("verify CLI rejects a self-consistent signed attacker-selected extension id
   const fixture = await createSyntheticBundle();
   const attackerExtensionId = "b".repeat(32);
   await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId);
+  await reissueIndependentReview(fixture);
   const validated = validateManifest(fixture.manifest);
   verifyExpectedExtensionId(validated, attackerExtensionId);
   await assert.doesNotReject(() => verifySyntheticBundle(fixture));
@@ -532,6 +682,260 @@ test("verify CLI rejects a self-consistent signed attacker-selected extension id
   }
 });
 
+test("old reviewer signature rejects a release-signed native-host evidence replacement", async () => {
+  const fixture = await createSyntheticBundle();
+  try {
+    await replaceNativeHostDescriptionAndBindings(fixture);
+    await expectReviewEvidenceMismatch(fixture);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("a refreshed v2 commitment cannot reuse the old reviewer signature under a fresh release signature", async () => {
+  const fixture = await createSyntheticBundle();
+  let invocation;
+  try {
+    const oldReviewSignature = await readFile(
+      path.join(fixture.root, ...REQUIRED_EVIDENCE_PATHS.reviewSignature.split("/")),
+    );
+    await replaceNativeHostDescriptionAndBindings(fixture);
+    const reviewedEvidenceRecords = Object.entries(fixture.manifest.evidence)
+      .filter(([key]) => !REVIEW_EVIDENCE_EXCLUDED_KEYS.includes(key))
+      .map(([, record]) => record);
+    reviewedEvidenceRecords.push(...fixture.manifest.windowsNegativeTests.map((item) => item.log));
+    fixture.reviewAttestation = {
+      ...fixture.reviewAttestation,
+      reviewedEvidenceSetSha256: computeReviewedEvidenceSetSha256(reviewedEvidenceRecords),
+    };
+    await replaceRelative(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+      canonicalEncode(fixture.reviewAttestation),
+    );
+    fixture.manifest.evidence.reviewAttestation = await fileRecord(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+    );
+    assert.deepEqual(
+      await readFile(path.join(fixture.root, ...REQUIRED_EVIDENCE_PATHS.reviewSignature.split("/"))),
+      oldReviewSignature,
+    );
+
+    invocation = await createVerifyCliInvocation(fixture);
+    await assert.rejects(
+      () => execFileAsync(process.execPath, invocation.arguments),
+      (error) => {
+        assert.equal(
+          error.stderr,
+          "RELEASE_INELIGIBLE: independent review attestation signature is invalid\n",
+        );
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { force: true, recursive: true }),
+      ...(invocation ? [rm(invocation.inputs, { force: true, recursive: true })] : []),
+    ]);
+  }
+});
+
+test("verify CLI keeps release, Authenticode, and reviewer pins in distinct external roles", async () => {
+  const fixture = await createSyntheticBundle();
+  const invocation = await createVerifyCliInvocation(fixture);
+  let selfReviewInvocation;
+  const replaceArgument = (argumentsList, name, value) => {
+    const replaced = [...argumentsList];
+    const index = replaced.indexOf(name);
+    assert.notEqual(index, -1);
+    replaced[index + 1] = value;
+    return replaced;
+  };
+  const expectCliFailure = async (argumentsList, expectedStderr) => {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, argumentsList),
+      (error) => {
+        assert.equal(error.stderr, expectedStderr);
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+  };
+  try {
+    const wrongReleaseKeyId = digest("wrong-release-key-id");
+    await expectCliFailure(
+      replaceArgument(
+        invocation.arguments,
+        "--expected-release-key-id",
+        wrongReleaseKeyId,
+      ),
+      `RELEASE_INELIGIBLE: independently pinned release key identifier must be "${wrongReleaseKeyId}"\n`,
+    );
+
+    const wrongSignerCertificateSha256 = digest("wrong-authenticode-signer-certificate");
+    const firstSignedArtifact = fixture.manifest.artifacts.find(
+      (artifact) => artifact.role !== "extension-package",
+    );
+    assert.ok(firstSignedArtifact);
+    await expectCliFailure(
+      replaceArgument(
+        invocation.arguments,
+        "--expected-signer-certificate-sha256",
+        wrongSignerCertificateSha256,
+      ),
+      `RELEASE_INELIGIBLE: ${firstSignedArtifact.role} independently pinned Authenticode signer must be "${wrongSignerCertificateSha256}"\n`,
+    );
+
+    const wrongReviewerKeyId = digest("wrong-reviewer-key-id");
+    await expectCliFailure(
+      replaceArgument(
+        invocation.arguments,
+        "--expected-reviewer-key-id",
+        wrongReviewerKeyId,
+      ),
+      `RELEASE_INELIGIBLE: independently pinned reviewer key identifier must be "${wrongReviewerKeyId}"\n`,
+    );
+
+    await replaceRelative(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewPublicKey,
+      fixture.releasePublicKeyPem,
+    );
+    fixture.manifest.evidence.reviewPublicKey = await fileRecord(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewPublicKey,
+    );
+    fixture.reviewerPrivateKey = fixture.releasePrivateKey;
+    fixture.reviewerKeyIdSha256 = fixture.manifest.signing.keyIdSha256;
+    await reissueIndependentReview(fixture, {
+      reviewerKeyIdSha256: fixture.reviewerKeyIdSha256,
+    });
+    selfReviewInvocation = await createVerifyCliInvocation(fixture);
+    await expectCliFailure(
+      selfReviewInvocation.arguments,
+      "RELEASE_INELIGIBLE: independent reviewer key must differ from the release-manifest key\n",
+    );
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { force: true, recursive: true }),
+      rm(invocation.inputs, { force: true, recursive: true }),
+      ...(selfReviewInvocation
+        ? [rm(selfReviewInvocation.inputs, { force: true, recursive: true })]
+        : []),
+    ]);
+  }
+});
+
+test("old reviewer signature rejects a release-signed Windows-negative log replacement", async () => {
+  const fixture = await createSyntheticBundle();
+  try {
+    await replaceWindowsNegativeLog(fixture);
+    await expectReviewEvidenceMismatch(fixture);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("old reviewer signature rejects advisory evidence and policy replacement", async () => {
+  const fixture = await createSyntheticBundle();
+  try {
+    await replaceOsvEvidenceAndPolicy(fixture);
+    await expectReviewEvidenceMismatch(fixture);
+
+    await reissueIndependentReview(fixture);
+    const invocation = await createVerifyCliInvocation(fixture);
+    try {
+      const { stdout } = await execFileAsync(process.execPath, invocation.arguments);
+      assert.equal(stdout, "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\n");
+    } finally {
+      await rm(invocation.inputs, { force: true, recursive: true });
+    }
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("independent review attestation v1 fails closed even with a valid old-schema signature", async () => {
+  const fixture = await createSyntheticBundle();
+  try {
+    const versionOne = { ...fixture.reviewAttestation };
+    versionOne.schema = "your-wallet-independent-security-review-v1";
+    delete versionOne.reviewedEvidenceSetSha256;
+    await replaceRelative(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+      canonicalEncode(versionOne),
+    );
+    await replaceRelative(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewSignature,
+      signBytes(
+        null,
+        Buffer.from(canonicalEncode(versionOne), "utf8"),
+        fixture.reviewerPrivateKey,
+      ).toString("base64"),
+    );
+    fixture.manifest.evidence.reviewAttestation = await fileRecord(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewAttestation,
+    );
+    fixture.manifest.evidence.reviewSignature = await fileRecord(
+      fixture.root,
+      REQUIRED_EVIDENCE_PATHS.reviewSignature,
+    );
+    const invocation = await createVerifyCliInvocation(fixture);
+    try {
+      await assert.rejects(
+        () => execFileAsync(process.execPath, invocation.arguments),
+        (error) => {
+          assert.match(error.stderr, /independent review attestation members must be exactly/u);
+          assert.equal(error.stdout, "");
+          return true;
+        },
+      );
+    } finally {
+      await rm(invocation.inputs, { force: true, recursive: true });
+    }
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("manifest assembly independently enforces review evidence-set v2 before output", async () => {
+  const fixture = await createSyntheticBundle();
+  const first = await createAssembleCliInvocation(fixture);
+  let second;
+  try {
+    const result = await execFileAsync(process.execPath, first.arguments);
+    assert.equal(result.stdout, "UNSIGNED_CANONICAL_MANIFEST_WRITTEN_NOT_RELEASE_ELIGIBLE\n");
+    assert.equal(result.stderr, "");
+    assert.equal(await readFile(first.outputPath, "utf8"), canonicalEncode(fixture.manifest));
+
+    await replaceNativeHostDescriptionAndBindings(fixture);
+    second = await createAssembleCliInvocation(fixture);
+    await assert.rejects(
+      () => execFileAsync(process.execPath, second.arguments),
+      (error) => {
+        assert.equal(
+          error.stderr,
+          "MANIFEST_ASSEMBLY_FAILED: independent review evidence-set commitment mismatch\n",
+        );
+        assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+    await assert.rejects(() => stat(second.outputPath), { code: "ENOENT" });
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { force: true, recursive: true }),
+      rm(first.inputs, { force: true, recursive: true }),
+      ...(second ? [rm(second.inputs, { force: true, recursive: true })] : []),
+    ]);
+  }
+});
+
 test("offline wrapper requires a case-sensitive pin and withholds both child passes", async () => {
   const [wrapper, common] = await Promise.all([
     readFile("scripts/release/verify-release-offline.ps1", "utf8"),
@@ -544,7 +948,7 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
     1,
   );
   assert.equal(
-    wrapper.match(/\[void\]\(Invoke-ReleaseCommand -Executable "node" -CommandArguments \$verifyArguments -WorkingDirectory \$bundle\)/gu)?.length,
+    wrapper.match(/\[void\]\(Invoke-ReleaseCommand -Executable "node" -CommandArguments \$verifyArguments -WorkingDirectory \$PSScriptRoot\)/gu)?.length,
     2,
   );
   assert.equal(
@@ -552,6 +956,15 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
     1,
   );
   assert.ok(common.includes("output withheld; inspect locally with privacy redaction"));
+  assert.ok(wrapper.includes("$bundle = $releaseLocks.CanonicalBundleRoot"));
+  assert.ok(wrapper.includes("$canonicalInputs = @($releaseLocks.CanonicalAdditionalFiles)"));
+  assert.ok(wrapper.includes("ConvertFrom-ExactNamedArguments"));
+  assert.ok(wrapper.includes("Invoke-OfflineReleaseVerification @boundArguments"));
+  assert.ok(!wrapper.includes("Invoke-OfflineReleaseVerification @args"));
+  assert.ok(!wrapper.includes("Resolve-Path -LiteralPath $BundleRoot"));
+  assert.ok(wrapper.includes("RELEASE_VERIFICATION_FAILED: offline release verification failed closed"));
+  assert.ok(common.includes("GetFinalPathNameByHandleW"));
+  assert.ok(common.includes("FileInfoByHandleClass.FileIdInfo"));
 
   const probeRoot = await mkdtemp(path.join(os.tmpdir(), "your-wallet-extension-pin-"));
   const probe = path.join(probeRoot, "validate-extension-id.ps1");
@@ -573,6 +986,55 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
       ]),
       (error) => {
         assert.equal(error.stdout, "");
+        return true;
+      },
+    );
+
+    const missingRoot = path.join(probeRoot, "private-missing-bundle");
+    const wrapperPath = path.resolve("scripts/release/verify-release-offline.ps1");
+    await assert.rejects(
+      () => execFileAsync("powershell", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", wrapperPath,
+        "-Manifest", path.join(probeRoot, "private-missing-manifest.json"),
+        "-Signature", path.join(probeRoot, "private-missing-signature.bin"),
+        "-ReleasePublicKey", path.join(probeRoot, "private-missing-release-key.pem"),
+        "-BundleRoot", missingRoot,
+        "-ExpectedReleaseKeyIdSha256", "1".repeat(64),
+        "-ExpectedExtensionId", EXTENSION_ID,
+        "-ExpectedReviewerKeyIdSha256", "2".repeat(64),
+        "-ExpectedSignerCertificateSha256", "3".repeat(64),
+        "-OperatorConfirmedNetworkIsolation",
+      ]),
+      (error) => {
+        const stderr = error.stderr.replace(/\r\n/gu, "\n");
+        assert.ok(error.stdout === "", "offline wrapper failure stdout must remain empty");
+        assert.ok(
+          stderr === "RELEASE_VERIFICATION_FAILED: offline release verification failed closed\n",
+          "offline wrapper failure stderr must be one fixed category line",
+        );
+        assert.ok(!stderr.includes(missingRoot), "offline wrapper must not disclose the supplied path");
+        assert.ok(!stderr.includes(wrapperPath), "offline wrapper must not disclose the script path");
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execFileAsync("powershell", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", wrapperPath,
+        "-UnknownPrivateParameter", probeRoot,
+      ], { timeout: 10_000 }),
+      (error) => {
+        const stderr = error.stderr.replace(/\r\n/gu, "\n");
+        assert.ok(error.stdout === "", "offline wrapper binding failure stdout must remain empty");
+        assert.ok(
+          stderr === "RELEASE_VERIFICATION_FAILED: offline release verification failed closed\n",
+          "offline wrapper binding failure stderr must be one fixed category line",
+        );
+        assert.ok(!stderr.includes(probeRoot), "offline wrapper must not disclose binding inputs");
+        assert.ok(!stderr.includes(wrapperPath), "offline wrapper must not disclose the script path");
         return true;
       },
     );

@@ -1,21 +1,21 @@
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory = $true)][string]$Manifest,
-    [Parameter(Mandatory = $true)][string]$Signature,
-    [Parameter(Mandatory = $true)][string]$ReleasePublicKey,
-    [Parameter(Mandatory = $true)][string]$BundleRoot,
-    [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReleaseKeyIdSha256,
-    [Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId,
-    [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReviewerKeyIdSha256,
-    [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedSignerCertificateSha256,
-    [Parameter(Mandatory = $false)][string]$PreviousManifest,
-    [Parameter(Mandatory = $false)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedPreviousManifestSha256,
-    [Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation
-)
-
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot "common.ps1")
+
+function Invoke-OfflineReleaseVerification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Signature,
+        [Parameter(Mandatory = $true)][string]$ReleasePublicKey,
+        [Parameter(Mandatory = $true)][string]$BundleRoot,
+        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReleaseKeyIdSha256,
+        [Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId,
+        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedReviewerKeyIdSha256,
+        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedSignerCertificateSha256,
+        [Parameter(Mandatory = $false)][string]$PreviousManifest,
+        [Parameter(Mandatory = $false)][ValidatePattern("^[0-9a-f]{64}$")][string]$ExpectedPreviousManifestSha256,
+        [Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation
+    )
 
 if (-not $OperatorConfirmedNetworkIsolation) {
     throw "Release verification refuses eligibility without an explicit offline-ceremony confirmation"
@@ -35,20 +35,25 @@ if ($hasPreviousManifest -ne $hasPreviousHash) {
     throw "PreviousManifest and ExpectedPreviousManifestSha256 must be supplied together from the offline checkpoint"
 }
 
-$bundle = (Resolve-Path -LiteralPath $BundleRoot).Path
-$manifestPath = (Resolve-Path -LiteralPath $Manifest).Path
-$signaturePath = (Resolve-Path -LiteralPath $Signature).Path
-$releasePublicKeyPath = (Resolve-Path -LiteralPath $ReleasePublicKey).Path
-$previousManifestPath = if ($hasPreviousManifest) { (Resolve-Path -LiteralPath $PreviousManifest).Path } else { $null }
-$additionalInputs = @($manifestPath, $signaturePath, $releasePublicKeyPath)
-if ($null -ne $previousManifestPath) {
-    $additionalInputs += $previousManifestPath
+$additionalInputs = @($Manifest, $Signature, $ReleasePublicKey)
+if ($hasPreviousManifest) {
+    $additionalInputs += $PreviousManifest
 }
 
-Assert-NoReparseTree -LiteralPath $bundle
 $releaseLocks = $null
 try {
-    $releaseLocks = Open-ReadOnlyReleaseTreeLocks -BundleRoot $bundle -AdditionalFiles $additionalInputs
+    $releaseLocks = Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot -AdditionalFiles $additionalInputs
+    $bundle = $releaseLocks.CanonicalBundleRoot
+    $canonicalInputs = @($releaseLocks.CanonicalAdditionalFiles)
+    $expectedInputCount = if ($hasPreviousManifest) { 4 } else { 3 }
+    if ($canonicalInputs.Count -ne $expectedInputCount) {
+        throw "Release verification did not pin the exact external input set"
+    }
+    $manifestPath = $canonicalInputs[0]
+    $signaturePath = $canonicalInputs[1]
+    $releasePublicKeyPath = $canonicalInputs[2]
+    $previousManifestPath = if ($hasPreviousManifest) { $canonicalInputs[3] } else { $null }
+    Assert-NoReparseTree -LiteralPath $bundle
     Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $bundle
     $verifyArguments = @(
         (Join-Path $PSScriptRoot "release-manifest.mjs"), "verify",
@@ -67,7 +72,7 @@ try {
             "--expected-previous-manifest-sha256", $ExpectedPreviousManifestSha256
         )
     }
-    [void](Invoke-ReleaseCommand -Executable "node" -CommandArguments $verifyArguments -WorkingDirectory $bundle)
+    [void](Invoke-ReleaseCommand -Executable "node" -CommandArguments $verifyArguments -WorkingDirectory $PSScriptRoot)
 
     $payloadFiles = @(
         "approval-ui.exe",
@@ -102,7 +107,7 @@ try {
     # new unlisted tree entry that appeared during inspection.
     Assert-NoReparseTree -LiteralPath $bundle
     Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $bundle
-    [void](Invoke-ReleaseCommand -Executable "node" -CommandArguments $verifyArguments -WorkingDirectory $bundle)
+    [void](Invoke-ReleaseCommand -Executable "node" -CommandArguments $verifyArguments -WorkingDirectory $PSScriptRoot)
 
     Write-Output "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION"
 }
@@ -110,4 +115,28 @@ finally {
     if ($null -ne $releaseLocks) {
         Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks
     }
+}
+}
+
+try {
+    . (Join-Path $PSScriptRoot "common.ps1")
+    $boundArguments = ConvertFrom-ExactNamedArguments `
+        -Arguments @($args) `
+        -RequiredValueNames @(
+            "Manifest",
+            "Signature",
+            "ReleasePublicKey",
+            "BundleRoot",
+            "ExpectedReleaseKeyIdSha256",
+            "ExpectedExtensionId",
+            "ExpectedReviewerKeyIdSha256",
+            "ExpectedSignerCertificateSha256"
+        ) `
+        -OptionalValueNames @("PreviousManifest", "ExpectedPreviousManifestSha256") `
+        -RequiredSwitchNames @("OperatorConfirmedNetworkIsolation")
+    Invoke-OfflineReleaseVerification @boundArguments
+}
+catch {
+    [Console]::Error.WriteLine("RELEASE_VERIFICATION_FAILED: offline release verification failed closed")
+    exit 1
 }
