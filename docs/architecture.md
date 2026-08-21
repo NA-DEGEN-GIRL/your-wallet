@@ -82,6 +82,17 @@ avoids depth underflow and false reorgs, but can delay updates after a deep
 rollback. Starting a sequence discloses the selected sender address, up to 64
 transaction hashes, and request timing to the single fixed RPC endpoint.
 
+Each rendered activity row offers an explicit copy of that selected-account
+row's already validated full transaction hash. The exact row field is sent to
+egui's clipboard command only from the completed button-click branch; the copy
+affordance adds no additional retained hash, URL, or explorer-choice state.
+Merely rendering the panel, pressing without completing a click, and foreign-
+account rows do not copy anything. Lock/session transitions never trigger this
+copy, and the copy affordance itself enqueues no worker work. The OS clipboard
+may outlive the wallet lock or process, so the UI reports that residual after
+copying. The copy affordance deliberately neither constructs nor opens an
+explorer URL and grants no external explorer provider authority.
+
 The activity generation is consistency metadata, not an external monotonic
 rollback anchor. Every retained row blocks a conflicting nonce slot, but a
 deleted or rolled-back valid file can hide ownership; missing history is not

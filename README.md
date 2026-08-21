@@ -276,6 +276,12 @@ block을 typed 응답으로 대조합니다. 순차 조회를 시작하면 선�
 ERC-20 symbol은 과거 컨트랙트가 제공한 신뢰되지 않은 표시 이름입니다. 포함
 깊이는 finality 선언이 아니며 앱은 nonce를 자동으로 다시 사용하지 않습니다.
 
+선택 계정의 각 활동 행에 있는 `거래 hash 복사`는 사용자가 직접 눌렀을 때만 그
+행의 검증된 전체 hash를 운영체제 클립보드에 넣습니다. 앱은 explorer URL을 만들거나
+열지 않으며 외부 조회 서비스를 대신 선택하지 않습니다. 클립보드 내용은 지갑을
+잠그거나 닫은 뒤에도 운영체제에 남을 수 있으므로, 신뢰하는 도구에 붙여넣은 뒤
+필요하면 사용자가 직접 덮어써야 합니다.
+
 서명 전에는 활동 capacity와 nonce 슬롯을 예약하고, exact `pending-v1.bin`을 잡은
 상태로 전송합니다. 노드가 받은 뒤 결과가 불확실해도 pending을 보존합니다. 성공
 hash가 확인되면 `Submitted` 행을 원자적으로 저장·폴더 flush·인증 readback한 뒤에만
@@ -482,7 +488,7 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 
 2026년 8월 21일 기준:
 
-- Sepolia 실행판 테스트 258개 통과
+- Sepolia 실행판 테스트 260개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
 - 프로덕션 Rust 테스트 548개 실행 통과

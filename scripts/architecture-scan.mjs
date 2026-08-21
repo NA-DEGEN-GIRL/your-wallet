@@ -1118,6 +1118,10 @@ const activityPanelBlock = rustFunctionBlock(
   sepoliaDemoUiProduction,
   "activity_panel",
 );
+const renderActivityTransactionHashBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "render_activity_transaction_hash",
+);
 const pendingActionBlock = rustItemBlock(
   sepoliaDemoUiProduction,
   /(?:^|\n)enum PendingAction\s*\{/u,
@@ -1208,6 +1212,14 @@ const headlessSmokeBlock = rustFunctionBlock(
 const activityBatchCandidateBlock = rustFunctionBlock(
   sepoliaDemoUiProduction,
   "activity_is_batch_candidate",
+);
+const activityHashCopyClickTestBlock = rustFunctionBlock(
+  sepoliaDemoUi,
+  "activity_hash_copy_is_click_gated_and_emits_only_the_exact_hash",
+);
+const activityHashCopyPanelTestBlock = rustFunctionBlock(
+  sepoliaDemoUi,
+  "activity_hash_copy_panel_filters_foreign_rows_and_never_dispatches_without_click",
 );
 requireInvariant(
   sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_CAPACITY: usize = 64") &&
@@ -1496,6 +1508,120 @@ requireInvariant(
     observeActivityBlock.includes("ActivityStatus::ReplacementSuspected") &&
     observeActivityBlock.includes("entry.status()"),
   "Sepolia activity refresh must stay manual-row scoped, stable-head bookended, immutable/tx-index exact, and fail closed on ambiguous reorg evidence",
+);
+const activityHashCopyPanelIndexes = [
+  activityPanelBlock.indexOf("let selected_account_index = snapshot.selected_account_index"),
+  activityPanelBlock.indexOf("let activity = snapshot.activity.clone()"),
+  activityPanelBlock.indexOf(
+    ".filter(|row| row.sender_account_index == selected_account_index)",
+  ),
+  activityPanelBlock.indexOf("render_activity_transaction_hash(ui, &row)"),
+];
+const activityHashCopyChecks = [
+  [
+    "exact helper",
+    renderActivityTransactionHashBlock.replace(/\s+/gu, " ").trim() ===
+      'fn render_activity_transaction_hash( ui: &mut egui::Ui, activity: &TransactionActivitySnapshot, ) -> egui::Response { ui.horizontal_wrapped(|ui| { ui.monospace(&activity.transaction_hash); let response = ui.button("거래 hash 복사"); if response.clicked() { ui.ctx().copy_text(activity.transaction_hash.clone()); } response }) .inner }',
+  ],
+  [
+    "helper scope",
+    !/(?:WorkerCommand|WorkerEvent|PendingAction|send_command|OpenUrl|open_url|hyperlink|Command::new|CreateProcess|ureq|https?:)/iu.test(
+      renderActivityTransactionHashBlock,
+    ) &&
+      (sepoliaDemoUiRuntime.match(/\brender_activity_transaction_hash\b/gu) ?? [])
+        .length === 2,
+  ],
+  [
+    "selected row call",
+    activityHashCopyPanelIndexes.every((index) => index >= 0) &&
+      activityHashCopyPanelIndexes.every(
+        (index, position) => position === 0 || activityHashCopyPanelIndexes[position - 1] < index,
+      ) &&
+      /if render_activity_transaction_hash\(ui,\s*&row\)\.clicked\(\)\s*\{\s*self\.notice\s*=\s*Some\(ACTIVITY_HASH_COPIED_NOTICE\.to_owned\(\)\);\s*\}/u.test(
+        activityPanelBlock,
+      ),
+  ],
+  [
+    "notice and no URL",
+    sepoliaDemoUiProduction.includes(
+      'const ACTIVITY_HASH_COPIED_NOTICE: &str =\n    "거래 hash를 클립보드에 복사했습니다. 운영체제 클립보드는 잠금 뒤에도 남을 수 있습니다."',
+    ) &&
+      !/(?:OpenUrl|open_url|hyperlink(?:_to)?|etherscan|explorer)/iu.test(
+        sepoliaDemoUiRuntime,
+      ),
+  ],
+  [
+    "no retained copy state",
+    !/(?:explorer|copied_activity_hash|activity_hash_(?:copy|url))\s*:/iu.test(
+      walletAppBlock,
+    ) &&
+      !/(?:copy|copied|clipboard|explorer|url)\w*(?:hash|activity|transaction)\w*\s*:/iu.test(
+        walletAppBlock,
+      ) &&
+      !/(?:hash|activity|transaction)\w*(?:copy|copied|clipboard|explorer|url)\w*\s*:/iu.test(
+        walletAppBlock,
+      ) &&
+      (walletAppBlock.match(/^[ \t]{4}[A-Za-z_]\w*\s*:/gmu) ?? []).length === 41,
+  ],
+  [
+    "click evidence",
+    activityHashCopyClickTestBlock.includes("assert!(!clicked)") &&
+      activityHashCopyClickTestBlock.includes("assert!(commands.is_empty())") &&
+      activityHashCopyClickTestBlock.includes("egui::OutputCommand::CopyText(") &&
+      activityHashCopyClickTestBlock.includes("activity.transaction_hash.clone()") &&
+      activityHashCopyClickTestBlock.includes(
+        "assert!(!ACTIVITY_HASH_COPIED_NOTICE.contains(\"0x\"))",
+      ),
+  ],
+  [
+    "panel evidence",
+    activityHashCopyPanelTestBlock.includes(
+      "!rendered.contains(foreign.transaction_hash.as_str())",
+    ) &&
+      activityHashCopyPanelTestBlock.includes("app.snapshot == snapshot_before") &&
+      activityHashCopyPanelTestBlock.includes("app.pending.is_none()") &&
+      activityHashCopyPanelTestBlock.includes("app.activity_refresh_target.is_none()") &&
+      activityHashCopyPanelTestBlock.includes("app.activity_refresh_batch.is_none()") &&
+      activityHashCopyPanelTestBlock.includes(
+        'const PRIOR_TRANSACTION_HASH_SENTINEL: &str = "public-prior-transaction-hash"',
+      ) &&
+      activityHashCopyPanelTestBlock.includes(
+        "app.last_transaction_hash = Some(PRIOR_TRANSACTION_HASH_SENTINEL.to_owned())",
+      ) &&
+      activityHashCopyPanelTestBlock.includes(
+        "app.last_transaction_hash.as_deref(),\n            Some(PRIOR_TRANSACTION_HASH_SENTINEL)",
+      ) &&
+      activityHashCopyPanelTestBlock.includes("app.last_activity_at == inactivity_before") &&
+      activityHashCopyPanelTestBlock.includes("command_receiver.try_recv().is_err()"),
+  ],
+  [
+    "README",
+    rootReadme.includes("각 활동 행에 있는 `거래 hash 복사`") &&
+      rootReadme.includes("클립보드 내용은 지갑을"),
+  ],
+  [
+    "architecture",
+    sepoliaArchitectureDoc.includes("already validated full transaction hash") &&
+      /The\s+OS clipboard\s+may outlive the wallet lock/u.test(sepoliaArchitectureDoc) &&
+      /Merely rendering the panel, pressing without completing a click, and foreign-\s*account rows do not copy anything/u.test(
+        sepoliaArchitectureDoc,
+      ) &&
+      /Lock\/session transitions never trigger this\s+copy/u.test(
+        sepoliaArchitectureDoc,
+      ) &&
+      /copy affordance itself enqueues no worker work/u.test(sepoliaArchitectureDoc) &&
+      /copy affordance deliberately\s+neither constructs nor\s+opens\s+an\s+explorer URL/u.test(
+        sepoliaArchitectureDoc,
+      ),
+  ],
+];
+const failedActivityHashCopyChecks = activityHashCopyChecks
+  .filter(([, passed]) => !passed)
+  .map(([name]) => name)
+  .join(", ");
+requireInvariant(
+  failedActivityHashCopyChecks.length === 0,
+  `Sepolia activity hash copy must remain exact-row, click-only, category-only, URL-free, and side-effect-free before consent (${failedActivityHashCopyChecks})`,
 );
 requireInvariant(
   sepoliaDemoUiProduction.includes(

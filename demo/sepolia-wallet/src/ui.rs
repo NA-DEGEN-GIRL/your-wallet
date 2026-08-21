@@ -4585,7 +4585,9 @@ impl WalletApp {
             ui.group(|ui| {
                 ui.label(RichText::new(activity_status_label(&row.status)).strong());
                 ui.label("전체 거래 해시");
-                ui.monospace(&row.transaction_hash);
+                if render_activity_transaction_hash(ui, &row).clicked() {
+                    self.notice = Some(ACTIVITY_HASH_COPIED_NOTICE.to_owned());
+                }
                 ui.label(format!("보낸 계정: 계정 {}", row.sender_account_index));
                 ui.label("전체 보낸 주소");
                 ui.monospace(&row.sender_address);
@@ -5570,6 +5572,24 @@ fn activity_status_label(status: &ActivityStatusSnapshot) -> String {
             "ReplacementSuspected · 계정 nonce 진행 감지".to_owned()
         }
     }
+}
+
+const ACTIVITY_HASH_COPIED_NOTICE: &str =
+    "거래 hash를 클립보드에 복사했습니다. 운영체제 클립보드는 잠금 뒤에도 남을 수 있습니다.";
+
+fn render_activity_transaction_hash(
+    ui: &mut egui::Ui,
+    activity: &TransactionActivitySnapshot,
+) -> egui::Response {
+    ui.horizontal_wrapped(|ui| {
+        ui.monospace(&activity.transaction_hash);
+        let response = ui.button("거래 hash 복사");
+        if response.clicked() {
+            ui.ctx().copy_text(activity.transaction_hash.clone());
+        }
+        response
+    })
+    .inner
 }
 
 fn render_activity_inclusion(ui: &mut egui::Ui, status: &ActivityStatusSnapshot) {
@@ -7651,16 +7671,17 @@ pub(crate) fn safe_error(mut error: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState, FeeSelection,
-        GENERIC_BACKEND_ERROR, GeneratedBackupUiState, HoldInput, HoldOutcome, HoldToSend,
-        PendingAction, PendingBroadcastPreview, PreparedPreview, SEND_HOLD_DURATION,
+        ACTIVITY_HASH_COPIED_NOTICE, ALLOWED_BACKEND_ERRORS, CustomTokenSnapshot, CustomTokenState,
+        FeeSelection, GENERIC_BACKEND_ERROR, GeneratedBackupUiState, HoldInput, HoldOutcome,
+        HoldToSend, PendingAction, PendingBroadcastPreview, PreparedPreview, SEND_HOLD_DURATION,
         SecretRevealKind, SendReceipt, StatusPalette, TimedSecretReveal, TransferAssetChoice,
         TransferPreview, WalletBackend, WalletKind, WalletSnapshot, WorkerCommand, WorkerEvent,
         WorkerRequest, WorkerResponse, automatic_lock_reason, clear_prepared_state,
         clear_snapshot_pending_broadcast, confirmation_enabled, execute_worker_command,
         execute_worker_request, hold_to_send_button, hold_to_send_input, preview_fields,
-        run_headless_smoke, safe_error, sanitize_custom_tokens, valid_amount_shape,
-        valid_gwei_shape, valid_password, valid_recipient_shape, zeroize_prepared_preview,
+        render_activity_transaction_hash, run_headless_smoke, safe_error, sanitize_custom_tokens,
+        valid_amount_shape, valid_gwei_shape, valid_password, valid_recipient_shape,
+        zeroize_prepared_preview,
     };
     use eframe::egui;
     use std::sync::atomic::Ordering;
@@ -7745,6 +7766,24 @@ mod tests {
             collect_rendered_text(&clipped.shape, &mut rendered);
         }
         rendered
+    }
+
+    fn run_activity_hash_copy_frame(
+        context: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        activity: &super::TransactionActivitySnapshot,
+    ) -> (egui::Rect, bool, Vec<egui::OutputCommand>) {
+        let mut button_rect = egui::Rect::NOTHING;
+        let mut clicked = false;
+        let output = context.run(hold_frame_input(time, events), |context| {
+            let response = egui::CentralPanel::default()
+                .show(context, |ui| render_activity_transaction_hash(ui, activity))
+                .inner;
+            button_rect = response.rect;
+            clicked = response.clicked();
+        });
+        (button_rect, clicked, output.platform_output.commands)
     }
 
     fn undo_key_event() -> egui::Event {
@@ -10146,6 +10185,93 @@ mod tests {
                 ..
             })
         ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_hash_copy_is_click_gated_and_emits_only_the_exact_hash() {
+        let activity = batch_activity(1, "ab", super::ActivityStatusSnapshot::Submitted);
+        let context = egui::Context::default();
+
+        let (button_rect, clicked, commands) =
+            run_activity_hash_copy_frame(&context, 0.0, Vec::new(), &activity);
+        assert!(!clicked);
+        assert!(commands.is_empty());
+
+        let pointer = button_rect.center();
+        let (_, clicked, commands) = run_activity_hash_copy_frame(
+            &context,
+            0.1,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &activity,
+        );
+        assert!(!clicked);
+        assert!(commands.is_empty());
+
+        let (_, clicked, commands) = run_activity_hash_copy_frame(
+            &context,
+            0.2,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &activity,
+        );
+        assert!(clicked);
+        assert_eq!(
+            commands,
+            vec![egui::OutputCommand::CopyText(
+                activity.transaction_hash.clone()
+            )]
+        );
+        assert!(!ACTIVITY_HASH_COPIED_NOTICE.contains("0x"));
+        assert!(!ACTIVITY_HASH_COPIED_NOTICE.contains(activity.transaction_hash.as_str()));
+    }
+
+    #[test]
+    fn activity_hash_copy_panel_filters_foreign_rows_and_never_dispatches_without_click() {
+        const PRIOR_TRANSACTION_HASH_SENTINEL: &str = "public-prior-transaction-hash";
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        app.last_transaction_hash = Some(PRIOR_TRANSACTION_HASH_SENTINEL.to_owned());
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        let selected = batch_activity(2, "d1", super::ActivityStatusSnapshot::Pending);
+        let mut foreign =
+            super::headless_native_activity(1, super::ActivityStatusSnapshot::Submitted);
+        foreign.submission_sequence = 1;
+        foreign.transaction_hash = format!("0x{}", "e2".repeat(32));
+        snapshot.activity = vec![selected.clone(), foreign.clone()];
+        app.snapshot = Some(snapshot);
+        let snapshot_before = app.snapshot.clone();
+        let inactivity_before = app.last_activity_at;
+
+        let rendered = rendered_panel_text(&context, |_context, ui| app.activity_panel(ui));
+
+        assert!(rendered.contains(selected.transaction_hash.as_str()));
+        assert!(!rendered.contains(foreign.transaction_hash.as_str()));
+        assert_eq!(rendered.matches("거래 hash 복사").count(), 1);
+        assert!(app.snapshot == snapshot_before);
+        assert!(app.pending.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.notice.is_none());
+        assert_eq!(
+            app.last_transaction_hash.as_deref(),
+            Some(PRIOR_TRANSACTION_HASH_SENTINEL)
+        );
+        assert!(app.last_activity_at == inactivity_before);
         assert!(command_receiver.try_recv().is_err());
     }
 
