@@ -50,16 +50,37 @@ transfers the held pending into the v2 retry path. This same-user namespace
 protocol does not constitute an OS-wide rollback/creation-prevention service;
 production still needs a trusted single-owner storage boundary.
 
-Activity refresh is manual and per-row against the fixed Sepolia RPC. Stable
-head bookends surround typed transaction, receipt, canonical-block, and latest
-nonce observations. Immutable sender/to/value/input/gas/fees/nonce/hash and
-transaction-index anchors must agree. Included success/revert depth is not
-finality. A single null or contradictory anchor does not mutate state; three
-misses spanning at least 64 heads may mark `DroppedCandidate`, and an advanced
-latest nonce may mark `ReplacementSuspected`. A stored high-water above the
-observed head also leaves the exact row and generation unchanged until the RPC
-head catches up. This avoids depth underflow and false reorgs, but can delay
-updates after a deep rollback.
+Activity refresh never runs as periodic or background polling. A user may
+refresh one row or explicitly start a selected-account sequence frozen from at
+most 64 start-of-run `Submitted`, `Pending`, `Reorged`, `DroppedCandidate`, and
+`ReplacementSuspected` submission sequences. `Included` and newly appearing
+rows are excluded. The coordinator retains only the session epoch, selected
+account index, ordered submission sequences, progress, and one deadline; the
+sole extra transaction hash remains in the existing zeroizing single-row
+target. It dispatches the existing per-row worker request one at a time, sends
+the first immediately, and waits at least two seconds after each successful
+durable result before the next. The first error, identity drift, lock, or
+account change stops and scrubs the coordinator. Here `k/total` counts only
+successful responses installed in the UI, and no later queued row is dispatched
+after the stop. A failing row may already have reached durable storage before an
+authenticated readback error, so its on-disk state is explicitly unknown until
+reopen or a direct row refresh; the coordinator does not claim that row stayed
+unchanged. There is no bulk backend/storage/RPC method, automatic retry, timer
+re-enqueue after completion, or inclusion of rows created after the explicit
+click. During the between-row wait the user may stop or switch accounts; no
+other wallet mutation may interleave.
+
+Every row still uses stable head bookends around typed transaction, receipt,
+canonical-block, and latest nonce observations. Immutable
+sender/to/value/input/gas/fees/nonce/hash and transaction-index anchors must
+agree. Included success/revert depth is not finality. A single null or
+contradictory anchor does not mutate state; three misses spanning at least 64
+heads may mark `DroppedCandidate`, and an advanced latest nonce may mark
+`ReplacementSuspected`. A stored high-water above the observed head also leaves
+the exact row and generation unchanged until the RPC head catches up. This
+avoids depth underflow and false reorgs, but can delay updates after a deep
+rollback. Starting a sequence discloses the selected sender address, up to 64
+transaction hashes, and request timing to the single fixed RPC endpoint.
 
 The activity generation is consistency metadata, not an external monotonic
 rollback anchor. Every retained row blocks a conflicting nonce slot, but a

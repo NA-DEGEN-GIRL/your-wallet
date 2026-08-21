@@ -1118,6 +1118,97 @@ const activityPanelBlock = rustFunctionBlock(
   sepoliaDemoUiProduction,
   "activity_panel",
 );
+const pendingActionBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)enum PendingAction\s*\{/u,
+);
+const workerCommandBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)enum WorkerCommand\s*\{/u,
+);
+const walletBackendTraitBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)pub trait WalletBackend\s*:\s*Send\s*\+\s*'static\s*\{/u,
+);
+const activityRefreshOriginBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)enum ActivityRefreshOrigin\s*\{/u,
+);
+const activityRefreshTargetBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)struct ActivityRefreshTarget\s*\{/u,
+);
+const activityRefreshTargetDropBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl Drop for ActivityRefreshTarget\s*\{/u,
+);
+const activityRefreshBatchBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)struct ActivityRefreshBatch\s*\{/u,
+);
+const activityRefreshBatchImplBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl ActivityRefreshBatch\s*\{/u,
+);
+const activityRefreshBatchDropBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl Drop for ActivityRefreshBatch\s*\{/u,
+);
+const clearActivityRefreshStateBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "clear_activity_refresh_state",
+);
+const activityBatchWaitMatchesBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "activity_refresh_batch_wait_matches_current",
+);
+const startActivityBatchBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "start_activity_refresh_batch_at",
+);
+const driveActivityBatchBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "drive_activity_refresh_batch",
+);
+const stopActivityBatchErrorBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "stop_activity_refresh_batch_with_error",
+);
+const stopActivityBatchUserBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "stop_activity_refresh_batch_by_user",
+);
+const selectAccountActivityBatchBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "select_account",
+);
+const applyWorkerEventAtBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "apply_worker_event_at",
+);
+const activityRefreshedUiStart = applyWorkerEventAtBlock.lastIndexOf(
+  "WorkerEvent::ActivityRefreshed {",
+);
+const activityRefreshedUiEnd = applyWorkerEventAtBlock.indexOf(
+  "WorkerEvent::CustomTokenAdded",
+  activityRefreshedUiStart,
+);
+const activityRefreshedUiBlock =
+  activityRefreshedUiStart >= 0 && activityRefreshedUiEnd > activityRefreshedUiStart
+    ? applyWorkerEventAtBlock.slice(activityRefreshedUiStart, activityRefreshedUiEnd)
+    : "";
+const walletEframeAppBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl eframe::App for WalletApp\s*\{/u,
+);
+const headlessSmokeBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "run_headless_smoke",
+);
+const activityBatchCandidateBlock = rustFunctionBlock(
+  sepoliaDemoUiProduction,
+  "activity_is_batch_candidate",
+);
 requireInvariant(
   sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_CAPACITY: usize = 64") &&
     sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_FILE_BYTES") &&
@@ -1407,9 +1498,240 @@ requireInvariant(
   "Sepolia activity refresh must stay manual-row scoped, stable-head bookended, immutable/tx-index exact, and fail closed on ambiguous reorg evidence",
 );
 requireInvariant(
+  sepoliaDemoUiProduction.includes(
+    "const ACTIVITY_BATCH_DELAY: Duration = Duration::from_secs(2)",
+  ) &&
+    sepoliaDemoUiProduction.includes("const MAX_ACTIVITY_BATCH_ROWS: usize = 64") &&
+    pendingActionBlock.includes("RefreshActivityBatchWait") &&
+    activityRefreshOriginBlock.includes("ManualRow") &&
+    activityRefreshOriginBlock.includes("origin_epoch: u64") &&
+    activityRefreshOriginBlock.includes("selected_account_index: u8") &&
+    activityRefreshOriginBlock.includes("submission_sequence: u64") &&
+    /^\s*enum ActivityRefreshOrigin\s*\{\s*ManualRow,\s*Batch\s*\{\s*origin_epoch:\s*u64,\s*selected_account_index:\s*u8,\s*submission_sequence:\s*u64,?\s*\},?\s*\}$/u.test(
+      activityRefreshOriginBlock,
+    ) &&
+    activityRefreshTargetBlock.includes("transaction_hash: Zeroizing<String>") &&
+    activityRefreshTargetBlock.includes("origin: ActivityRefreshOrigin") &&
+    /^\s*struct ActivityRefreshTarget\s*\{\s*transaction_hash:\s*Zeroizing<String>,\s*origin:\s*ActivityRefreshOrigin,?\s*\}$/u.test(
+      activityRefreshTargetBlock,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*struct ActivityRefreshTarget/u.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    activityRefreshTargetDropBlock.includes("self.transaction_hash.zeroize()") &&
+    activityRefreshTargetDropBlock.includes("*origin_epoch = 0") &&
+    activityRefreshTargetDropBlock.includes("*selected_account_index = 0") &&
+    activityRefreshTargetDropBlock.includes("*submission_sequence = 0") &&
+    activityRefreshBatchBlock.includes("origin_epoch: u64") &&
+    activityRefreshBatchBlock.includes("selected_account_index: u8") &&
+    activityRefreshBatchBlock.includes("remaining_sequences: VecDeque<u64>") &&
+    activityRefreshBatchBlock.includes("in_flight_sequence: Option<u64>") &&
+    activityRefreshBatchBlock.includes("completed: usize") &&
+    activityRefreshBatchBlock.includes("total: usize") &&
+    activityRefreshBatchBlock.includes("next_dispatch_at: Option<Instant>") &&
+    /^\s*struct ActivityRefreshBatch\s*\{\s*origin_epoch:\s*u64,\s*selected_account_index:\s*u8,\s*remaining_sequences:\s*VecDeque<u64>,\s*in_flight_sequence:\s*Option<u64>,\s*completed:\s*usize,\s*total:\s*usize,\s*next_dispatch_at:\s*Option<Instant>,?\s*\}$/u.test(
+      activityRefreshBatchBlock,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*struct ActivityRefreshBatch/u.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    !/(?:^|\n)\s*(?:unsafe\s+)?impl(?:\s*<[^>{}\r\n]*>)?\s+(?:Clone|Copy|Debug|fmt::Debug|(?:std|core)::fmt::Debug|Serialize|serde::Serialize)\s+for\s+(?:ActivityRefreshTarget|ActivityRefreshBatch)\b/mu.test(
+      sepoliaDemoUiProduction,
+    ) &&
+    activityRefreshBatchImplBlock.includes("self.total != 0") &&
+    activityRefreshBatchImplBlock.includes("self.total <= MAX_ACTIVITY_BATCH_ROWS") &&
+    activityRefreshBatchImplBlock.includes("self.completed < self.total") &&
+    activityRefreshBatchImplBlock.includes("self.completed + self.remaining_sequences.len() == self.total") &&
+    activityRefreshBatchImplBlock.includes(".all(|sequence| sequence != 0)") &&
+    activityRefreshBatchImplBlock.includes(".all(|(left, right)| left < right)") &&
+    activityRefreshBatchImplBlock.includes(
+      "match (self.in_flight_sequence, self.next_dispatch_at)",
+    ) &&
+    activityRefreshBatchImplBlock.includes("(Some(in_flight), None)") &&
+    activityRefreshBatchImplBlock.includes("self.remaining_sequences.front().copied() == Some(in_flight)") &&
+    activityRefreshBatchImplBlock.includes("(None, Some(_)) => true") &&
+    activityRefreshBatchImplBlock.includes("(Some(_), Some(_)) | (None, None) => false") &&
+    activityRefreshBatchImplBlock.includes("self.origin_epoch == origin_epoch") &&
+    activityRefreshBatchImplBlock.includes(
+      "self.selected_account_index == selected_account_index",
+    ) &&
+    activityRefreshBatchImplBlock.includes(
+      "self.in_flight_sequence == Some(submission_sequence)",
+    ) &&
+    activityRefreshBatchImplBlock.includes(
+      "self.remaining_sequences.front().copied() == Some(submission_sequence)",
+    ) &&
+    activityRefreshBatchImplBlock.includes("fn scrub(&mut self)") &&
+    activityRefreshBatchImplBlock.includes("self.remaining_sequences.clear()") &&
+    activityRefreshBatchDropBlock.includes("self.scrub()") &&
+    walletAppBlock.includes("activity_refresh_target: Option<ActivityRefreshTarget>") &&
+    walletAppBlock.includes("activity_refresh_batch: Option<ActivityRefreshBatch>"),
+  "Sepolia activity batch state must remain bounded, move-only, sequence-only, and explicitly scrubbed",
+);
+requireInvariant(
+  activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Submitted") &&
+    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Pending") &&
+    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Reorged(_)") &&
+    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::DroppedCandidate") &&
+    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::ReplacementSuspected") &&
+    (activityBatchCandidateBlock.match(/ActivityStatusSnapshot::/gu) ?? []).length === 5 &&
+    !activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Included") &&
+    /^\s*const fn activity_is_batch_candidate\(status:\s*&ActivityStatusSnapshot\)\s*->\s*bool\s*\{\s*matches!\(\s*status,\s*ActivityStatusSnapshot::Submitted\s*\|\s*ActivityStatusSnapshot::Pending\s*\|\s*ActivityStatusSnapshot::Reorged\(_\)\s*\|\s*ActivityStatusSnapshot::DroppedCandidate\s*\|\s*ActivityStatusSnapshot::ReplacementSuspected\s*\)\s*\}\s*$/u.test(
+      activityBatchCandidateBlock,
+    ) &&
+    startActivityBatchBlock.includes("self.require_unlocked_action()") &&
+    startActivityBatchBlock.includes("self.pending.is_some()") &&
+    startActivityBatchBlock.includes("self.prepared.is_some()") &&
+    startActivityBatchBlock.includes("self.secret_reveal.is_some()") &&
+    startActivityBatchBlock.includes("self.generated_backup.is_some()") &&
+    startActivityBatchBlock.includes("snapshot.pending_broadcast.is_some()") &&
+    startActivityBatchBlock.includes("snapshot.is_well_formed()") &&
+    startActivityBatchBlock.includes("snapshot.selected_account_index") &&
+    startActivityBatchBlock.includes("activity_is_batch_candidate(&row.status)") &&
+    startActivityBatchBlock.includes(".map(|row| row.submission_sequence)") &&
+    startActivityBatchBlock.includes("sequences.sort_unstable()") &&
+    startActivityBatchBlock.includes("sequences.truncate(MAX_ACTIVITY_BATCH_ROWS)") &&
+    startActivityBatchBlock.includes("next_dispatch_at: Some(now)") &&
+    startActivityBatchBlock.includes("PendingAction::RefreshActivityBatchWait") &&
+    startActivityBatchBlock.includes("self.drive_activity_refresh_batch(now)") &&
+    (sepoliaDemoUiRuntime.match(/self\.start_activity_refresh_batch_at\s*\(/gu) ?? [])
+      .length === 1 &&
+    (sepoliaDemoUiRuntime.match(/\bstart_activity_refresh_batch_at\b/gu) ?? [])
+      .length === 2 &&
+    (sepoliaDemoUiRuntime.match(/ActivityRefreshBatch\s*\{\s*origin_epoch:/gu) ?? [])
+      .length === 2 &&
+    (sepoliaDemoUiRuntime.match(/activity_refresh_batch\s*=\s*Some\s*\(/gu) ?? [])
+      .length === 1 &&
+    /start_batch\s*=\s*ui[\s\S]*?\.clicked\(\);[\s\S]*?if start_batch\s*\{\s*self\.start_activity_refresh_batch_at\(Instant::now\(\)\)/u.test(
+      activityPanelBlock,
+    ) &&
+    driveActivityBatchBlock.includes("self.pending != Some(PendingAction::RefreshActivityBatchWait)") &&
+    driveActivityBatchBlock.includes("if batch.in_flight_sequence.is_some()") &&
+    driveActivityBatchBlock.includes("if now < deadline") &&
+    driveActivityBatchBlock.includes("batch.remaining_sequences.front().copied()") &&
+    driveActivityBatchBlock.includes("origin_epoch == self.session_epoch") &&
+    driveActivityBatchBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
+    driveActivityBatchBlock.includes("snapshot.selected_account_index != selected_account_index") &&
+    driveActivityBatchBlock.includes("row.sender_address == selected.address") &&
+    driveActivityBatchBlock.includes("activity_is_batch_candidate(&row.status)") &&
+    driveActivityBatchBlock.includes("transaction_hash: Zeroizing::new(transaction_hash.clone())") &&
+    driveActivityBatchBlock.includes("WorkerCommand::RefreshActivity { transaction_hash }") &&
+    driveActivityBatchBlock.includes("PendingAction::RefreshActivity") &&
+    driveActivityBatchBlock.indexOf("batch.in_flight_sequence = Some(submission_sequence)") >= 0 &&
+    driveActivityBatchBlock.indexOf("batch.in_flight_sequence = Some(submission_sequence)") <
+      driveActivityBatchBlock.indexOf("self.activity_refresh_target = Some(ActivityRefreshTarget") &&
+    driveActivityBatchBlock.indexOf("self.activity_refresh_target = Some(ActivityRefreshTarget") <
+      driveActivityBatchBlock.indexOf("self.send_command(") &&
+    !/(?:thread::sleep|std::thread::sleep|last_activity_at)/u.test(
+      `${startActivityBatchBlock}\n${driveActivityBatchBlock}`,
+    ) &&
+    (sepoliaDemoUiRuntime.match(/WorkerCommand::RefreshActivity\s*\{/gu) ?? []).length === 3 &&
+    /RefreshActivity\s*\{\s*transaction_hash:\s*String,?\s*\}/u.test(
+      workerCommandBlock,
+    ) &&
+    (workerCommandBlock.match(/\b[A-Za-z_]\w*Activity\w*\b/gu) ?? []).length === 1 &&
+    walletBackendTraitBlock.includes(
+      "fn refresh_activity(",
+    ) &&
+    (walletBackendTraitBlock.match(/\bfn\s+\w*activity\w*\s*\(/gu) ?? []).length === 1 &&
+    !/(?:refresh_activity_batch|activity_batch)/u.test(
+      `${sepoliaDemoBackendProduction}\n${sepoliaDemoRpcProduction}\n${sepoliaDemoActivityStore}`,
+    ) &&
+    (sepoliaDemoUiRuntime.match(/self\.drive_activity_refresh_batch\s*\(/gu) ?? [])
+      .length === 2,
+  "Sepolia activity batch must be explicit-click only, freeze the five unresolved states, and reuse exactly one existing row request at a time",
+);
+const activityUpdateFirstLock = walletEframeAppBlock.indexOf(
+  "self.observe_automatic_lock(context, now)",
+);
+const activityUpdateEvents = walletEframeAppBlock.indexOf("self.process_events_at(now)");
+const activityUpdateSecondLock = walletEframeAppBlock.lastIndexOf(
+  "self.observe_automatic_lock(context, now)",
+);
+const activityUpdateDrive = walletEframeAppBlock.indexOf(
+  "self.drive_activity_refresh_batch(now)",
+);
+requireInvariant(
+  [
+    activityUpdateFirstLock,
+    activityUpdateEvents,
+    activityUpdateSecondLock,
+    activityUpdateDrive,
+  ].every((index) => index >= 0) &&
+    activityUpdateFirstLock < activityUpdateEvents &&
+    activityUpdateEvents < activityUpdateSecondLock &&
+    activityUpdateSecondLock < activityUpdateDrive &&
+    walletEframeAppBlock.includes("context.request_repaint_after(") &&
+    walletEframeAppBlock.includes("deadline.saturating_duration_since(now)") &&
+    activityRefreshedUiBlock.includes("completed_action == Some(PendingAction::RefreshActivity)") &&
+    activityRefreshedUiBlock.includes("batch.matches_in_flight(") &&
+    activityRefreshedUiBlock.includes("batch.origin_epoch == self.session_epoch") &&
+    activityRefreshedUiBlock.includes("snapshot.selected_account_index != selected_account_index") &&
+    activityRefreshedUiBlock.includes("prior.sender_address == selected.address") &&
+    activityRefreshedUiBlock.includes("same_activity_identity(prior, &refreshed)") &&
+    activityRefreshedUiBlock.includes("now.checked_add(ACTIVITY_BATCH_DELAY)") &&
+    activityRefreshedUiBlock.includes("PendingAction::RefreshActivityBatchWait") &&
+    activityRefreshedUiBlock.includes("let category = safe_error(error)") &&
+    activityRefreshedUiBlock.includes("self.stop_activity_refresh_batch_with_error(category.as_str())") &&
+    (activityRefreshedUiBlock.match(/batch\.matches_in_flight\s*\(/gu) ?? []).length === 2 &&
+    /Err\(error\),[\s\S]*?ActivityRefreshOrigin::Batch[\s\S]*?request_matches[\s\S]*?batch\.matches_in_flight\([\s\S]*?origin_epoch[\s\S]*?selected_account_index[\s\S]*?submission_sequence[\s\S]*?batch\.origin_epoch\s*==\s*self\.session_epoch[\s\S]*?let category = safe_error\(error\)/u.test(
+      activityRefreshedUiBlock,
+    ) &&
+    clearActivityRefreshStateBlock.includes("self.activity_refresh_target = None") &&
+    clearActivityRefreshStateBlock.includes("self.activity_refresh_batch = None") &&
+    clearActivityRefreshStateBlock.includes("PendingAction::RefreshActivityBatchWait") &&
+    stopActivityBatchErrorBlock.includes("zeroize_optional_string(&mut self.notice)") &&
+    stopActivityBatchErrorBlock.includes("현재 행의 내구 상태") &&
+    stopActivityBatchErrorBlock.includes("이후 대기 행은 요청하지 않았습니다") &&
+    stopActivityBatchUserBlock.includes("self.pending != Some(PendingAction::RefreshActivityBatchWait)") &&
+    activityBatchWaitMatchesBlock.includes(
+      "self.pending == Some(PendingAction::RefreshActivityBatchWait)",
+    ) &&
+    activityBatchWaitMatchesBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
+    activityBatchWaitMatchesBlock.includes("batch.is_well_formed()") &&
+    activityBatchWaitMatchesBlock.includes("batch.origin_epoch == self.session_epoch") &&
+    activityBatchWaitMatchesBlock.includes("batch.in_flight_sequence.is_none()") &&
+    activityBatchWaitMatchesBlock.includes("snapshot.is_well_formed()") &&
+    activityBatchWaitMatchesBlock.includes(
+      "snapshot.selected_account_index == batch.selected_account_index",
+    ) &&
+    /let selection_allowed\s*=\s*\(self\.pending\.is_none\(\)\s*\|\|\s*self\.activity_refresh_batch_wait_matches_current\(\)\)\s*&&/u.test(
+      accountPanelBlock,
+    ) &&
+    accountPanelBlock.includes("ui.add_enabled_ui(selection_allowed") &&
+    accountPanelBlock.includes("if requested_index != snapshot.selected_account_index") &&
+    accountPanelBlock.includes("self.select_account(requested_index)") &&
+    [
+      selectAccountActivityBatchBlock.indexOf(
+        "self.activity_refresh_batch_wait_matches_current()",
+      ),
+      selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()"),
+      selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()"),
+      selectAccountActivityBatchBlock.indexOf("WorkerCommand::SelectAccount"),
+    ].every((index) => index >= 0) &&
+    selectAccountActivityBatchBlock.indexOf("self.activity_refresh_batch_wait_matches_current()") <
+      selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()") &&
+    selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()") <
+      selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()") &&
+    selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()") <
+      selectAccountActivityBatchBlock.indexOf("WorkerCommand::SelectAccount") &&
+    !/(?:thread::sleep|std::thread::sleep|last_activity_at)/u.test(
+      `${activityRefreshedUiBlock}\n${stopActivityBatchErrorBlock}\n${stopActivityBatchUserBlock}\n${clearActivityRefreshStateBlock}`,
+    ),
+  "Sepolia activity batch must bind every response, schedule from response time, let lock/account change preempt dispatch, and scrub on every stop",
+);
+requireInvariant(
   activityPanelBlock.includes("이 행만 Sepolia에서 새로고침") &&
     activityPanelBlock.includes("고정된 Sepolia RPC") &&
-    activityPanelBlock.includes("자동 새로고침이나 nonce 자동 재사용은 하지 않습니다") &&
+    activityPanelBlock.includes("자동 새로고침, 자동 재시작, nonce 자동 재사용은 하지 않습니다") &&
+    activityPanelBlock.includes("Submitted/Pending/Reorged/DroppedCandidate/ReplacementSuspected") &&
+    activityPanelBlock.includes("최대 64개 고정") &&
+    activityPanelBlock.includes("Included 행은 포함하지 않으며") &&
+    activityPanelBlock.includes("선택한 발신 주소와 최대 64개 거래 해시, 요청 간격") &&
+    activityPanelBlock.includes("한 번에 한 행만 요청") &&
+    activityPanelBlock.includes("최소 2초") &&
+    activityPanelBlock.includes("현재 조회 행의 내구 상태는 응답 전까지 알 수 없으며") &&
+    activityPanelBlock.includes("다음 행 조회 전 순차 작업 중지") &&
     activityPanelBlock.includes("외부 단조 앵커") &&
     activityPanelBlock.includes("저장된 high-water보다 낮으면") &&
     activityPanelBlock.includes("전체 거래 해시") &&
@@ -1418,11 +1740,68 @@ requireInvariant(
     sepoliaDemoUiProduction.includes("WorkerCommand::RefreshActivity { transaction_hash }") &&
     sepoliaDemoUiProduction.includes("same_activity_identity(prior, &refreshed)") &&
     sepoliaDemoUiProduction.includes("zeroize_activity_snapshot") &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_dispatch_deadline_is_inclusive_exactly_once_and_sleep_free()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_freezes_sorted_unresolved_start_sequences_and_excludes_included()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_accepts_exactly_the_bounded_sixty_four_start_rows()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_due_time_row_drift_stops_and_clears_scheduled_notice()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_refresh_origin_and_first_error_progress_are_exact()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_forged_error_origin_stops_without_attribution_or_mutation()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_immutable_identity_mismatch_stops_without_row_mutation()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_account_selector_is_enabled_only_between_requests_and_scrubs_before_select()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_focus_and_inactivity_preempt_due_dispatch()",
+    ) &&
+    sepoliaDemoUi.includes(
+      "fn activity_batch_panel_discloses_scope_privacy_and_manual_only_controls()",
+    ) &&
+    headlessSmokeBlock.includes("let batch_started_at = Instant::now()") &&
+    headlessSmokeBlock.includes("app.start_activity_refresh_batch_at(batch_started_at)") &&
+    headlessSmokeBlock.includes("batch.total == 2") &&
+    headlessSmokeBlock.includes("batch.in_flight_sequence == Some(1)") &&
+    headlessSmokeBlock.includes("batch.remaining_sequences.iter().copied().eq([1, 2])") &&
+    headlessSmokeBlock.includes("first_completed_at + ACTIVITY_BATCH_DELAY") &&
+    headlessSmokeBlock.includes("next_deadline - Duration::from_nanos(1)") &&
+    headlessSmokeBlock.includes("command_receiver.try_recv().is_ok()") &&
+    headlessSmokeBlock.includes("app.drive_activity_refresh_batch(next_deadline)") &&
+    headlessSmokeBlock.includes("batch.in_flight_sequence == Some(2)") &&
+    headlessSmokeBlock.includes("submission_sequence: 2") &&
+    headlessSmokeBlock.includes("app.activity_refresh_batch.is_some()") &&
+    headlessSmokeBlock.includes("app.activity_refresh_target.is_some()") &&
+    headlessSmokeBlock.includes("notice.contains(\"2/2 응답 확인·화면 반영 완료\")") &&
+    headlessSmokeBlock.includes("transitions_checked: 101") &&
+    headlessSmokeBlock.includes("backend_routes_checked: backend.calls.len()") &&
+    sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 101)") &&
+    sepoliaDemoUi.includes("assert_eq!(evidence.backend_routes_checked, 37)") &&
+    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 101)") &&
+    sepoliaDemoHeadless.includes("assert_eq!(report.backend_routes_checked, 37)") &&
     sepoliaDemoHeadlessProduction.includes("ui::run_headless_smoke()") &&
     rootReadme.includes("activity-v1.bin") &&
     /현재 남아 있는\s*행만 nonce 충돌을 막습니다/u.test(rootReadme) &&
-    rootReadme.includes("head가 따라잡을 때까지 새로고침을 보류합니다"),
-  "Sepolia activity UI/docs lost exact identifiers, per-row fixed-RPC refresh, scrubbing, rollback honesty, or high-water delay disclosure",
+    rootReadme.includes("head가 따라잡을 때까지 새로고침을 보류합니다") &&
+    rootReadme.includes("시작 시점") &&
+    rootReadme.includes("submission 순서로 최대 64개 고정") &&
+    rootReadme.includes("단일 행 저장 뒤 인증 readback이 실패한 오류") &&
+    /at\s+most 64 start-of-run/u.test(sepoliaArchitectureDoc) &&
+    sepoliaArchitectureDoc.includes("one at a time") &&
+    sepoliaArchitectureDoc.includes("at least two seconds") &&
+    sepoliaArchitectureDoc.includes("A failing row may already have reached durable storage"),
+  "Sepolia activity UI/docs lost exact identifiers, bounded explicit sequencing, privacy disclosure, scrubbing, rollback honesty, or high-water delay disclosure",
 );
 requireInvariant(
   sepoliaDemoUiProduction.includes("BackendStateInvalidated") &&

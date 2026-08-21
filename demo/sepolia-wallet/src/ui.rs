@@ -4,6 +4,7 @@
 //! work is sent to one backend worker so Argon2 and network calls cannot freeze
 //! the `egui` event loop.
 
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -18,6 +19,8 @@ const MINIMUM_PASSWORD_BYTES: usize = 12;
 const SEND_HOLD_DURATION: Duration = Duration::from_secs(2);
 const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20);
 const INACTIVITY_LOCK_DURATION: Duration = Duration::from_secs(5 * 60);
+const ACTIVITY_BATCH_DELAY: Duration = Duration::from_secs(2);
+const MAX_ACTIVITY_BATCH_ROWS: usize = 64;
 const GENERATED_BACKUP_CHALLENGE_WORDS: usize = 4;
 pub(crate) const AUTO_OVERVIEW_TOKEN_LIMIT: usize = 3;
 const MAX_RUNTIME_BALANCE_BYTES: usize = 79;
@@ -1265,6 +1268,7 @@ enum PendingAction {
     ExportAccountPrivateKey,
     Refresh,
     RefreshActivity,
+    RefreshActivityBatchWait,
     AddCustomToken,
     RefreshCustomTokens,
     RemoveCustomToken,
@@ -1273,6 +1277,113 @@ enum PendingAction {
     CancelPrepared,
     InspectPendingBroadcast,
     RetryPending,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ActivityRefreshOrigin {
+    ManualRow,
+    Batch {
+        origin_epoch: u64,
+        selected_account_index: u8,
+        submission_sequence: u64,
+    },
+}
+
+/// The sole UI-side copy of a transaction hash while one refresh is in flight.
+///
+/// The origin binds a batch response without retaining another address or row.
+struct ActivityRefreshTarget {
+    transaction_hash: Zeroizing<String>,
+    origin: ActivityRefreshOrigin,
+}
+
+impl Drop for ActivityRefreshTarget {
+    fn drop(&mut self) {
+        self.transaction_hash.zeroize();
+        if let ActivityRefreshOrigin::Batch {
+            origin_epoch,
+            selected_account_index,
+            submission_sequence,
+        } = &mut self.origin
+        {
+            *origin_epoch = 0;
+            *selected_account_index = 0;
+            *submission_sequence = 0;
+        }
+    }
+}
+
+/// Manual, selected-account coordinator state. It deliberately retains only
+/// public insertion sequence numbers, never transaction hashes or addresses.
+struct ActivityRefreshBatch {
+    origin_epoch: u64,
+    selected_account_index: u8,
+    remaining_sequences: VecDeque<u64>,
+    in_flight_sequence: Option<u64>,
+    completed: usize,
+    total: usize,
+    next_dispatch_at: Option<Instant>,
+}
+
+impl ActivityRefreshBatch {
+    fn is_well_formed(&self) -> bool {
+        self.total != 0
+            && self.total <= MAX_ACTIVITY_BATCH_ROWS
+            && self.completed < self.total
+            && self.completed + self.remaining_sequences.len() == self.total
+            && self
+                .remaining_sequences
+                .iter()
+                .copied()
+                .all(|sequence| sequence != 0)
+            && self
+                .remaining_sequences
+                .iter()
+                .zip(self.remaining_sequences.iter().skip(1))
+                .all(|(left, right)| left < right)
+            && match (self.in_flight_sequence, self.next_dispatch_at) {
+                (Some(in_flight), None) => {
+                    self.remaining_sequences.front().copied() == Some(in_flight)
+                }
+                (None, Some(_)) => true,
+                (Some(_), Some(_)) | (None, None) => false,
+            }
+    }
+
+    fn matches_in_flight(
+        &self,
+        origin_epoch: u64,
+        selected_account_index: u8,
+        submission_sequence: u64,
+    ) -> bool {
+        self.is_well_formed()
+            && self.origin_epoch == origin_epoch
+            && self.selected_account_index == selected_account_index
+            && self.in_flight_sequence == Some(submission_sequence)
+            && self.remaining_sequences.front().copied() == Some(submission_sequence)
+    }
+
+    fn scrub(&mut self) {
+        self.origin_epoch = 0;
+        self.selected_account_index = 0;
+        for sequence in &mut self.remaining_sequences {
+            *sequence = 0;
+        }
+        self.remaining_sequences.clear();
+        if let Some(sequence) = self.in_flight_sequence.as_mut() {
+            *sequence = 0;
+        }
+        self.in_flight_sequence = None;
+        self.completed = 0;
+        self.total = 0;
+        self.next_dispatch_at = None;
+    }
+}
+
+impl Drop for ActivityRefreshBatch {
+    fn drop(&mut self) {
+        self.scrub();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1391,6 +1502,7 @@ impl PendingAction {
     const fn korean(self) -> &'static str {
         match self {
             Self::RefreshActivity => "선택한 거래 활동을 Sepolia에서 확인하는 중...",
+            Self::RefreshActivityBatchWait => "다음 미확정 거래 활동 새로고침을 기다리는 중...",
             Self::BeginGeneratedBackupChallenge => "백업 확인 문제를 준비하는 중...",
             Self::BeginGenerate => "새 복구 문구를 안전하게 만드는 중...",
             Self::ConfirmGenerated => "백업 확인된 v2 지갑을 저장하는 중...",
@@ -1539,7 +1651,8 @@ pub struct WalletApp {
     notice: Option<String>,
     error: Option<String>,
     last_transaction_hash: Option<String>,
-    activity_refresh_target: Option<String>,
+    activity_refresh_target: Option<ActivityRefreshTarget>,
+    activity_refresh_batch: Option<ActivityRefreshBatch>,
 }
 
 impl WalletApp {
@@ -1596,6 +1709,7 @@ impl WalletApp {
             error: None,
             last_transaction_hash: None,
             activity_refresh_target: None,
+            activity_refresh_batch: None,
         }
     }
 
@@ -1644,6 +1758,7 @@ impl WalletApp {
             error: Some(safe_error(message.into())),
             last_transaction_hash: None,
             activity_refresh_target: None,
+            activity_refresh_batch: None,
         }
     }
 
@@ -1709,6 +1824,28 @@ impl WalletApp {
             .cloned();
     }
 
+    fn clear_activity_refresh_state(&mut self) {
+        self.activity_refresh_target = None;
+        self.activity_refresh_batch = None;
+        if self.pending == Some(PendingAction::RefreshActivityBatchWait) {
+            self.pending = None;
+        }
+    }
+
+    fn activity_refresh_batch_wait_matches_current(&self) -> bool {
+        self.pending == Some(PendingAction::RefreshActivityBatchWait)
+            && self.session_phase == SessionPhase::Unlocked
+            && self.activity_refresh_batch.as_ref().is_some_and(|batch| {
+                batch.is_well_formed()
+                    && batch.origin_epoch == self.session_epoch
+                    && batch.in_flight_sequence.is_none()
+                    && self.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.is_well_formed()
+                            && snapshot.selected_account_index == batch.selected_account_index
+                    })
+            })
+    }
+
     fn scrub_frontend_session(&mut self) {
         self.secret_text_state_purge_pending = true;
         self.password.zeroize();
@@ -1756,7 +1893,7 @@ impl WalletApp {
         zeroize_optional_string(&mut self.notice);
         zeroize_optional_string(&mut self.error);
         zeroize_optional_string(&mut self.last_transaction_hash);
-        zeroize_optional_string(&mut self.activity_refresh_target);
+        self.clear_activity_refresh_state();
 
         self.password_visible = false;
         self.imported_secret_visible = false;
@@ -2156,7 +2293,17 @@ impl WalletApp {
     }
 
     fn refresh_activity_row(&mut self, transaction_hash: String) {
-        if !self.require_unlocked_action() || self.pending.is_some() {
+        if !self.require_unlocked_action() {
+            return;
+        }
+        if self.activity_refresh_batch.is_some() {
+            self.error = Some(
+                "미확정 활동 순차 새로고침이 끝나거나 중지된 뒤 한 행을 새로고침해 주세요."
+                    .to_owned(),
+            );
+            return;
+        }
+        if self.pending.is_some() {
             return;
         }
         let valid_target = self.snapshot.as_ref().is_some_and(|snapshot| {
@@ -2170,31 +2317,239 @@ impl WalletApp {
             self.error = Some("선택한 거래 활동 행이 현재 계정과 일치하지 않습니다.".to_owned());
             return;
         }
-        zeroize_optional_string(&mut self.activity_refresh_target);
-        self.activity_refresh_target = Some(transaction_hash.clone());
+        self.activity_refresh_target = None;
+        self.activity_refresh_target = Some(ActivityRefreshTarget {
+            transaction_hash: Zeroizing::new(transaction_hash.clone()),
+            origin: ActivityRefreshOrigin::ManualRow,
+        });
         self.send_command(
             WorkerCommand::RefreshActivity { transaction_hash },
             PendingAction::RefreshActivity,
         );
         if self.pending != Some(PendingAction::RefreshActivity) {
-            zeroize_optional_string(&mut self.activity_refresh_target);
+            self.activity_refresh_target = None;
         }
+    }
+
+    fn start_activity_refresh_batch_at(&mut self, now: Instant) {
+        if !self.require_unlocked_action() {
+            return;
+        }
+        if self.activity_refresh_batch.is_some() {
+            self.error = Some("미확정 활동 순차 새로고침이 이미 진행 중입니다.".to_owned());
+            return;
+        }
+        if self.pending.is_some()
+            || self.prepared.is_some()
+            || self.secret_reveal.is_some()
+            || self.generated_backup.is_some()
+            || self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.pending_broadcast.is_some())
+        {
+            self.error = Some(
+                "다른 민감 작업을 마친 뒤 미확정 활동 순차 새로고침을 시작해 주세요.".to_owned(),
+            );
+            return;
+        }
+
+        let Some((selected_account_index, mut sequences)) =
+            self.snapshot.as_ref().and_then(|snapshot| {
+                if !snapshot.is_well_formed()
+                    || matches!(snapshot.wallet_kind, WalletKind::LegacyV1RawPrivateKey)
+                {
+                    return None;
+                }
+                let sequences = snapshot
+                    .activity
+                    .iter()
+                    .filter(|row| {
+                        row.sender_account_index == snapshot.selected_account_index
+                            && activity_is_batch_candidate(&row.status)
+                    })
+                    .map(|row| row.submission_sequence)
+                    .collect::<Vec<_>>();
+                Some((snapshot.selected_account_index, sequences))
+            })
+        else {
+            self.error =
+                Some("현재 선택 계정의 거래 활동을 안전하게 확인할 수 없습니다.".to_owned());
+            return;
+        };
+        sequences.sort_unstable();
+        sequences.truncate(MAX_ACTIVITY_BATCH_ROWS);
+        if sequences.is_empty() {
+            self.notice = Some("순차 새로고침할 미확정 거래 활동이 없습니다.".to_owned());
+            self.error = None;
+            return;
+        }
+
+        let total = sequences.len();
+        self.activity_refresh_batch = Some(ActivityRefreshBatch {
+            origin_epoch: self.session_epoch,
+            selected_account_index,
+            remaining_sequences: VecDeque::from(sequences),
+            in_flight_sequence: None,
+            completed: 0,
+            total,
+            next_dispatch_at: Some(now),
+        });
+        self.pending = Some(PendingAction::RefreshActivityBatchWait);
+        self.notice = Some(format!(
+            "0/{total} 응답 확인·화면 반영. 사용자가 요청한 첫 미확정 행을 조회합니다."
+        ));
+        self.error = None;
+        self.drive_activity_refresh_batch(now);
+    }
+
+    fn drive_activity_refresh_batch(&mut self, now: Instant) {
+        let Some(batch) = self.activity_refresh_batch.as_ref() else {
+            return;
+        };
+        if batch.in_flight_sequence.is_some() {
+            return;
+        }
+        if self.pending != Some(PendingAction::RefreshActivityBatchWait) {
+            self.stop_activity_refresh_batch_with_error(
+                "순차 새로고침 대기 상태가 바뀌어 작업을 중지했습니다.",
+            );
+            return;
+        }
+        let Some(deadline) = batch.next_dispatch_at else {
+            self.stop_activity_refresh_batch_with_error(
+                "다음 새로고침 시점을 확인할 수 없어 작업을 중지했습니다.",
+            );
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+
+        let origin_epoch = batch.origin_epoch;
+        let selected_account_index = batch.selected_account_index;
+        let Some(submission_sequence) = batch.remaining_sequences.front().copied() else {
+            self.stop_activity_refresh_batch_with_error(
+                "남은 새로고침 순서를 확인할 수 없어 작업을 중지했습니다.",
+            );
+            return;
+        };
+        let context_is_valid = batch.is_well_formed()
+            && origin_epoch == self.session_epoch
+            && self.session_phase == SessionPhase::Unlocked
+            && self.prepared.is_none()
+            && self.secret_reveal.is_none()
+            && self.generated_backup.is_none();
+        let transaction_hash = self.snapshot.as_ref().and_then(|snapshot| {
+            let selected = snapshot.selected_account()?;
+            if !context_is_valid
+                || !snapshot.is_well_formed()
+                || snapshot.pending_broadcast.is_some()
+                || snapshot.selected_account_index != selected_account_index
+                || selected.index != selected_account_index
+            {
+                return None;
+            }
+            snapshot
+                .activity
+                .iter()
+                .find(|row| {
+                    row.submission_sequence == submission_sequence
+                        && row.sender_account_index == selected.index
+                        && row.sender_address == selected.address
+                        && row.is_well_formed()
+                        && activity_is_batch_candidate(&row.status)
+                })
+                .map(|row| row.transaction_hash.clone())
+        });
+        let Some(transaction_hash) = transaction_hash else {
+            self.stop_activity_refresh_batch_with_error(
+                "다음 미확정 활동 행의 계정·순서·상태가 바뀌어 작업을 중지했습니다.",
+            );
+            return;
+        };
+
+        if let Some(batch) = self.activity_refresh_batch.as_mut() {
+            batch.in_flight_sequence = Some(submission_sequence);
+            batch.next_dispatch_at = None;
+        }
+        self.pending = None;
+        self.activity_refresh_target = Some(ActivityRefreshTarget {
+            transaction_hash: Zeroizing::new(transaction_hash.clone()),
+            origin: ActivityRefreshOrigin::Batch {
+                origin_epoch,
+                selected_account_index,
+                submission_sequence,
+            },
+        });
+        self.send_command(
+            WorkerCommand::RefreshActivity { transaction_hash },
+            PendingAction::RefreshActivity,
+        );
+        if self.pending != Some(PendingAction::RefreshActivity) {
+            self.activity_refresh_target = None;
+            self.stop_activity_refresh_batch_with_error(
+                "지갑 백엔드에 다음 새로고침을 요청하지 못해 작업을 중지했습니다.",
+            );
+        }
+    }
+
+    fn stop_activity_refresh_batch_with_error(&mut self, category: &str) {
+        let progress = self
+            .activity_refresh_batch
+            .as_ref()
+            .map(|batch| (batch.completed, batch.total));
+        self.clear_activity_refresh_state();
+        zeroize_optional_string(&mut self.notice);
+        self.error = Some(progress.map_or_else(
+            || category.to_owned(),
+            |(completed, total)| {
+                format!(
+                    "{completed}/{total} 응답 확인·화면 반영. 오류가 난 현재 행의 내구 상태는 저장 후 확인 응답 실패 가능성 때문에 알 수 없습니다. 지갑을 다시 열거나 그 행을 직접 새로고침해 확인하세요. 이후 대기 행은 요청하지 않았습니다. {category}"
+                )
+            },
+        ));
+    }
+
+    fn stop_activity_refresh_batch_by_user(&mut self) {
+        let progress = self
+            .activity_refresh_batch
+            .as_ref()
+            .map(|batch| (batch.completed, batch.total));
+        if self.pending != Some(PendingAction::RefreshActivityBatchWait) {
+            return;
+        }
+        self.clear_activity_refresh_state();
+        self.error = None;
+        self.notice = progress.map(|(completed, total)| {
+            format!("{completed}/{total} 응답 확인·화면 반영. 이후 대기 행은 요청하지 않아 변경되지 않았습니다. 사용자가 순차 새로고침을 중지했습니다.")
+        });
     }
 
     fn select_account(&mut self, index: u8) {
         if !self.require_unlocked_action() {
             return;
         }
-        let Some(snapshot) = self.snapshot.as_ref() else {
+        let Some(selected_account_index) = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.selected_account_index)
+        else {
             return;
         };
-        if snapshot.selected_account_index == index {
+        if selected_account_index == index {
             return;
+        }
+        if self.activity_refresh_batch_wait_matches_current() {
+            self.stop_activity_refresh_batch_by_user();
         }
         if self.pending.is_some() {
             self.error = Some("다른 작업이 끝난 뒤 계정을 바꿔 주세요.".to_owned());
             return;
         }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
         if self.prepared.is_some() {
             self.error = Some("준비한 전송을 취소한 뒤 계정을 바꿔 주세요.".to_owned());
             return;
@@ -2222,6 +2577,7 @@ impl WalletApp {
             return;
         }
         self.receive_qr_visible = false;
+        self.clear_activity_refresh_state();
         self.send_command(
             WorkerCommand::SelectAccount { index },
             PendingAction::SelectAccount,
@@ -2399,7 +2755,12 @@ impl WalletApp {
         self.pending == Some(PendingAction::RetryPending)
     }
 
+    #[cfg(test)]
     fn process_events(&mut self) {
+        self.process_events_at(Instant::now());
+    }
+
+    fn process_events_at(&mut self, now: Instant) {
         loop {
             let response = match self.events.try_recv() {
                 Ok(response) => response,
@@ -2425,11 +2786,16 @@ impl WalletApp {
                 drop(response);
                 continue;
             }
-            self.apply_worker_event(response.event);
+            self.apply_worker_event_at(response.event, now);
         }
     }
 
+    #[cfg(test)]
     fn apply_worker_event(&mut self, event: WorkerEvent) {
+        self.apply_worker_event_at(event, Instant::now());
+    }
+
+    fn apply_worker_event_at(&mut self, event: WorkerEvent, now: Instant) {
         let completed_action = self.pending.take();
         if matches!(
             &event,
@@ -2439,6 +2805,18 @@ impl WalletApp {
                 | WorkerEvent::GeneratedCancelled(_)
         ) {
             self.secret_text_state_purge_pending = true;
+        }
+        if self.activity_refresh_batch.is_some()
+            && !matches!(
+                &event,
+                WorkerEvent::ActivityRefreshed { .. } | WorkerEvent::Locked
+            )
+        {
+            self.stop_activity_refresh_batch_with_error(
+                "순차 새로고침 중 예상하지 않은 백엔드 응답을 받아 작업을 중지했습니다.",
+            );
+            drop(event);
+            return;
         }
         match event {
             WorkerEvent::Locked => {
@@ -2765,11 +3143,16 @@ impl WalletApp {
                 mut transaction_hash,
                 result,
             } => {
-                let mut expected_hash = self.activity_refresh_target.take();
+                let expected_target = self.activity_refresh_target.take();
                 let request_matches = completed_action == Some(PendingAction::RefreshActivity)
-                    && expected_hash.as_deref() == Some(transaction_hash.as_str());
-                match result {
-                    Ok(mut refreshed) if request_matches => {
+                    && expected_target.as_ref().is_some_and(|target| {
+                        target.transaction_hash.as_str() == transaction_hash.as_str()
+                    });
+                let origin = expected_target.as_ref().map(|target| target.origin);
+                match (result, origin) {
+                    (Ok(mut refreshed), Some(ActivityRefreshOrigin::ManualRow))
+                        if request_matches && self.activity_refresh_batch.is_none() =>
+                    {
                         let replacement = self.snapshot.as_ref().and_then(|snapshot| {
                             snapshot
                                 .activity
@@ -2799,23 +3182,157 @@ impl WalletApp {
                             );
                         }
                     }
-                    Ok(mut refreshed) => {
-                        zeroize_activity_snapshot(&mut refreshed);
-                        self.error = Some(
-                            "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다.".to_owned(),
-                        );
+                    (
+                        Ok(mut refreshed),
+                        Some(ActivityRefreshOrigin::Batch {
+                            origin_epoch,
+                            selected_account_index,
+                            submission_sequence,
+                        }),
+                    ) if request_matches => {
+                        let batch_matches =
+                            self.activity_refresh_batch.as_ref().is_some_and(|batch| {
+                                batch.matches_in_flight(
+                                    origin_epoch,
+                                    selected_account_index,
+                                    submission_sequence,
+                                ) && batch.origin_epoch == self.session_epoch
+                            });
+                        let replacement = self.snapshot.as_ref().and_then(|snapshot| {
+                            let selected = snapshot.selected_account()?;
+                            if !batch_matches
+                                || self.session_phase != SessionPhase::Unlocked
+                                || !snapshot.is_well_formed()
+                                || snapshot.selected_account_index != selected_account_index
+                                || selected.index != selected_account_index
+                            {
+                                return None;
+                            }
+                            snapshot
+                                .activity
+                                .iter()
+                                .position(|entry| {
+                                    entry.submission_sequence == submission_sequence
+                                        && entry.transaction_hash == transaction_hash
+                                })
+                                .filter(|index| {
+                                    let prior = &snapshot.activity[*index];
+                                    prior.sender_account_index == selected.index
+                                        && prior.sender_address == selected.address
+                                        && prior.is_well_formed()
+                                        && activity_is_batch_candidate(&prior.status)
+                                        && refreshed.is_well_formed()
+                                        && refreshed.sender_account_index == selected.index
+                                        && refreshed.sender_address == selected.address
+                                        && same_activity_identity(prior, &refreshed)
+                                })
+                        });
+                        if let (Some(index), Some(snapshot)) = (replacement, self.snapshot.as_mut())
+                        {
+                            zeroize_activity_snapshot(&mut snapshot.activity[index]);
+                            snapshot.activity[index] = refreshed;
+
+                            let mut completed_batch = None;
+                            let mut scheduled = false;
+                            if let Some(batch) = self.activity_refresh_batch.as_mut() {
+                                let popped = batch.remaining_sequences.pop_front();
+                                let in_flight = batch.in_flight_sequence.take();
+                                if popped == Some(submission_sequence)
+                                    && in_flight == Some(submission_sequence)
+                                {
+                                    batch.completed = batch.completed.saturating_add(1);
+                                    if batch.completed == batch.total
+                                        && batch.remaining_sequences.is_empty()
+                                    {
+                                        completed_batch = Some((batch.completed, batch.total));
+                                    } else if batch.completed < batch.total
+                                        && batch.completed + batch.remaining_sequences.len()
+                                            == batch.total
+                                    {
+                                        batch.next_dispatch_at =
+                                            now.checked_add(ACTIVITY_BATCH_DELAY);
+                                        scheduled = batch.next_dispatch_at.is_some();
+                                    }
+                                }
+                            }
+
+                            if let Some((completed, total)) = completed_batch {
+                                self.activity_refresh_batch = None;
+                                self.notice = Some(format!(
+                                    "{completed}/{total} 응답 확인·화면 반영 완료. 사용자가 요청한 미확정 활동 순차 새로고침을 마쳤습니다."
+                                ));
+                            } else if scheduled {
+                                self.pending = Some(PendingAction::RefreshActivityBatchWait);
+                                if let Some(batch) = self.activity_refresh_batch.as_ref() {
+                                    self.notice = Some(format!(
+                                        "{}/{} 응답 확인·화면 반영. 이후 대기 행은 아직 요청하지 않았습니다. 다음 행은 최소 2초 뒤 확인합니다.",
+                                        batch.completed, batch.total
+                                    ));
+                                }
+                            } else {
+                                self.stop_activity_refresh_batch_with_error(
+                                    "순차 새로고침 진행 수를 확인할 수 없어 작업을 중지했습니다.",
+                                );
+                            }
+                        } else {
+                            zeroize_activity_snapshot(&mut refreshed);
+                            self.stop_activity_refresh_batch_with_error(
+                                "새로고침 결과가 현재 선택 계정의 불변 거래 정보와 일치하지 않아 작업을 중지했습니다.",
+                            );
+                        }
                     }
-                    Err(error) if request_matches => self.error = Some(safe_error(error)),
-                    Err(_) => {
-                        self.error = Some(
-                            "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다.".to_owned(),
-                        );
+                    (Ok(mut refreshed), _) => {
+                        zeroize_activity_snapshot(&mut refreshed);
+                        if self.activity_refresh_batch.is_some() {
+                            self.stop_activity_refresh_batch_with_error(
+                                "새로고침 응답의 요청 출처·계정·순서가 일치하지 않아 작업을 중지했습니다.",
+                            );
+                        } else {
+                            self.error = Some(
+                                "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다."
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    (Err(error), Some(ActivityRefreshOrigin::ManualRow))
+                        if request_matches && self.activity_refresh_batch.is_none() =>
+                    {
+                        self.error = Some(safe_error(error));
+                    }
+                    (
+                        Err(error),
+                        Some(ActivityRefreshOrigin::Batch {
+                            origin_epoch,
+                            selected_account_index,
+                            submission_sequence,
+                        }),
+                    ) if request_matches
+                        && self.activity_refresh_batch.as_ref().is_some_and(|batch| {
+                            batch.matches_in_flight(
+                                origin_epoch,
+                                selected_account_index,
+                                submission_sequence,
+                            ) && batch.origin_epoch == self.session_epoch
+                        }) =>
+                    {
+                        let category = safe_error(error);
+                        self.stop_activity_refresh_batch_with_error(category.as_str());
+                    }
+                    (Err(_), _) => {
+                        if self.activity_refresh_batch.is_some() {
+                            self.stop_activity_refresh_batch_with_error(
+                                "새로고침 오류 응답의 요청 출처·계정·순서가 일치하지 않아 작업을 중지했습니다.",
+                            );
+                        } else {
+                            self.error = Some(
+                                "거래 활동 새로고침 응답이 요청한 행과 일치하지 않습니다."
+                                    .to_owned(),
+                            );
+                        }
                     }
                 }
                 transaction_hash.zeroize();
-                if let Some(hash) = expected_hash.as_mut() {
-                    hash.zeroize();
-                }
+                drop(expected_target);
             }
             WorkerEvent::CustomTokenAdded(result) => match result {
                 Ok(tokens) => {
@@ -3328,16 +3845,16 @@ impl WalletApp {
         }
     }
 
-    fn account_panel(&mut self, ui: &mut egui::Ui) {
+    fn account_panel(&mut self, ui: &mut egui::Ui) -> bool {
         let Some(snapshot) = self.snapshot.clone() else {
-            return;
+            return false;
         };
         let Some(selected_account) = snapshot.selected_account().cloned() else {
             ui.colored_label(
                 StatusPalette::from_visuals(ui.visuals()).error,
                 "선택된 계정 정보가 올바르지 않습니다. 지갑을 잠근 뒤 다시 열어 주세요.",
             );
-            return;
+            return false;
         };
         let palette = StatusPalette::from_visuals(ui.visuals());
         ui.separator();
@@ -3357,17 +3874,18 @@ impl WalletApp {
         ui.add_space(6.0);
         ui.label(RichText::new("사용할 계정").strong());
         let mut requested_index = snapshot.selected_account_index;
-        let selection_allowed = self.pending.is_none()
+        let selection_allowed = (self.pending.is_none()
+            || self.activity_refresh_batch_wait_matches_current())
             && self.prepared.is_none()
             && self.secret_reveal.is_none()
             && self.generated_backup.is_none()
             && snapshot.pending_broadcast.is_none();
-        if snapshot.accounts.len() > 1 {
+        let account_selector_enabled = if snapshot.accounts.len() > 1 {
             let selected_label = format!(
                 "계정 {} · {}",
                 selected_account.index, selected_account.address
             );
-            let _ = ui.add_enabled_ui(selection_allowed, |ui| {
+            let response = ui.add_enabled_ui(selection_allowed, |ui| {
                 egui::ComboBox::from_id_salt("verified_wallet_account")
                     .selected_text(selected_label)
                     .width(590.0)
@@ -3381,12 +3899,14 @@ impl WalletApp {
                         }
                     });
             });
+            response.response.enabled()
         } else {
             ui.label(format!(
                 "계정 {} · {}",
                 selected_account.index, selected_account.address
             ));
-        }
+            false
+        };
         ui.label(
             RichText::new(
                 "선택한 계정은 주소 받기, ETH·토큰 잔액, 개인 키 내보내기, 모든 ETH/ERC-20 전송에 적용됩니다.",
@@ -3398,6 +3918,12 @@ impl WalletApp {
             ui.colored_label(
                 palette.warning,
                 "보류 거래의 서명 계정을 확인·처리하는 동안에는 계정을 바꿀 수 없습니다.",
+            );
+        }
+        if self.activity_refresh_batch_wait_matches_current() {
+            ui.colored_label(
+                palette.warning,
+                "지금 계정을 바꾸면 다음 행 조회 전에 미확정 활동 순차 새로고침을 중지하고 남은 행은 변경하지 않습니다.",
             );
         }
         if requested_index != snapshot.selected_account_index {
@@ -3506,6 +4032,7 @@ impl WalletApp {
                 self.refresh();
             }
         });
+        account_selector_enabled
     }
 
     fn secret_management_panel(&mut self, context: &egui::Context, ui: &mut egui::Ui) {
@@ -3935,16 +4462,38 @@ impl WalletApp {
         };
         let selected_account_index = snapshot.selected_account_index;
         let wallet_kind = snapshot.wallet_kind;
+        let has_pending_broadcast = snapshot.pending_broadcast.is_some();
         let activity = snapshot.activity.clone();
-        let refresh_enabled =
-            self.pending.is_none() && self.prepared.is_none() && self.secret_reveal.is_none();
+        let batch_candidate_count = activity
+            .iter()
+            .filter(|row| {
+                row.sender_account_index == selected_account_index
+                    && activity_is_batch_candidate(&row.status)
+            })
+            .count()
+            .min(MAX_ACTIVITY_BATCH_ROWS);
+        let batch_progress = self.activity_refresh_batch.as_ref().map(|batch| {
+            (
+                batch.completed,
+                batch.total,
+                batch.in_flight_sequence.is_some(),
+            )
+        });
+        let batch_active = batch_progress.is_some();
+        let batch_waiting = self.pending == Some(PendingAction::RefreshActivityBatchWait);
+        let refresh_enabled = self.pending.is_none()
+            && !batch_active
+            && self.prepared.is_none()
+            && self.secret_reveal.is_none()
+            && self.generated_backup.is_none()
+            && !has_pending_broadcast;
         let palette = StatusPalette::from_visuals(ui.visuals());
 
         ui.separator();
         ui.heading("4. 거래 활동");
         ui.label(
             RichText::new(
-                "각 행의 ‘이 행만 새로고침’은 앱에 고정된 Sepolia RPC만 조회합니다. 자동 새로고침이나 nonce 자동 재사용은 하지 않습니다.",
+                "각 행 또는 아래 순차 작업은 사용자가 직접 시작하며 앱에 고정된 Sepolia RPC만 조회합니다. 자동 새로고침, 자동 재시작, nonce 자동 재사용은 하지 않습니다.",
             )
             .small()
             .color(palette.muted),
@@ -3966,6 +4515,57 @@ impl WalletApp {
                 "v1 지갑에는 새 거래 활동을 만들 수 없습니다. 기존 보류 거래를 그대로 보존한 채 v2로 이전한 뒤 다시 열어 주세요.",
             );
             return;
+        }
+        ui.label(
+            RichText::new(
+                "순차 작업은 시작 시점의 Submitted/Pending/Reorged/DroppedCandidate/ReplacementSuspected 행을 submission 순서로 최대 64개 고정합니다. Included 행은 포함하지 않으며 계속 한 행씩 직접 조회할 수 있습니다.",
+            )
+            .small()
+            .color(palette.muted),
+        );
+        ui.colored_label(
+            palette.warning,
+            "순차 조회는 선택한 발신 주소와 최대 64개 거래 해시, 요청 간격을 고정 Sepolia RPC에 노출합니다. 한 번에 한 행만 요청하고, 응답 확인·화면 반영된 각 결과 뒤 최소 2초를 기다립니다.",
+        );
+        let start_enabled = refresh_enabled && batch_candidate_count != 0;
+        let mut start_batch = false;
+        let mut stop_batch = false;
+        ui.horizontal(|ui| {
+            start_batch = ui
+                .add_enabled(
+                    start_enabled,
+                    egui::Button::new(format!(
+                        "미확정 활동 순차 새로고침 ({batch_candidate_count}개)"
+                    )),
+                )
+                .clicked();
+            if batch_active {
+                stop_batch = ui
+                    .add_enabled(
+                        batch_waiting,
+                        egui::Button::new("다음 행 조회 전 순차 작업 중지"),
+                    )
+                    .clicked();
+            }
+        });
+        if let Some((completed, total, in_flight)) = batch_progress {
+            let progress_detail = if in_flight {
+                "현재 조회 행의 내구 상태는 응답 전까지 알 수 없으며, 이후 대기 행은 아직 요청하지 않았습니다."
+            } else {
+                "이후 대기 행은 아직 요청하지 않았습니다."
+            };
+            ui.label(
+                RichText::new(format!(
+                    "순차 새로고침 진행: {completed}/{total} 응답 확인·화면 반영. {progress_detail}"
+                ))
+                .small()
+                .color(palette.muted),
+            );
+        }
+        if start_batch {
+            self.start_activity_refresh_batch_at(Instant::now());
+        } else if stop_batch {
+            self.stop_activity_refresh_batch_by_user();
         }
         if activity.is_empty() {
             ui.label(
@@ -4565,6 +5165,17 @@ fn same_activity_identity(
         && left.transfer == right.transfer
 }
 
+const fn activity_is_batch_candidate(status: &ActivityStatusSnapshot) -> bool {
+    matches!(
+        status,
+        ActivityStatusSnapshot::Submitted
+            | ActivityStatusSnapshot::Pending
+            | ActivityStatusSnapshot::Reorged(_)
+            | ActivityStatusSnapshot::DroppedCandidate
+            | ActivityStatusSnapshot::ReplacementSuspected
+    )
+}
+
 fn receipt_matches_prepared(
     activity: &TransactionActivitySnapshot,
     prepared: &PreparedPreview,
@@ -5086,8 +5697,16 @@ impl eframe::App for WalletApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         self.observe_automatic_lock(context, now);
-        self.process_events();
+        self.process_events_at(now);
         self.observe_automatic_lock(context, now);
+        self.drive_activity_refresh_batch(now);
+        if let Some(deadline) = self
+            .activity_refresh_batch
+            .as_ref()
+            .and_then(|batch| batch.next_dispatch_at)
+        {
+            context.request_repaint_after(deadline.saturating_duration_since(now));
+        }
         self.expire_secret_reveal(now);
         self.expire_generated_backup(now);
         self.purge_queued_secret_text_edit_state(context);
@@ -5112,7 +5731,7 @@ impl eframe::App for WalletApp {
                 let lock_screen = self.session_controls(ui);
                 if !lock_screen {
                     self.wallet_setup(ui);
-                    self.account_panel(ui);
+                    let _ = self.account_panel(ui);
                     self.secret_management_panel(context, ui);
                     self.generated_backup_panel(context, ui);
                     self.secret_reveal_panel(context, ui);
@@ -5370,6 +5989,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         error: None,
         last_transaction_hash: None,
         activity_refresh_target: None,
+        activity_refresh_batch: None,
     };
     let mut backend = HeadlessBackend::default();
 
@@ -5811,6 +6431,101 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         return Err(());
     }
 
+    let batch_started_at = Instant::now();
+    app.start_activity_refresh_batch_at(batch_started_at);
+    if app.pending != Some(PendingAction::RefreshActivity)
+        || !app.activity_refresh_batch.as_ref().is_some_and(|batch| {
+            batch.total == 2
+                && batch.completed == 0
+                && batch.in_flight_sequence == Some(1)
+                && batch.remaining_sequences.iter().copied().eq([1, 2])
+        })
+    {
+        return Err(());
+    }
+    let first_completed_at = batch_started_at + Duration::from_millis(10);
+    route_headless_command_at(
+        &mut app,
+        &command_receiver,
+        &mut backend,
+        first_completed_at,
+        |command| {
+            matches!(
+                command,
+                WorkerCommand::RefreshActivity { transaction_hash }
+                    if transaction_hash == &format!("0x{}", "aa".repeat(32))
+            )
+        },
+    )?;
+    let next_deadline = app
+        .activity_refresh_batch
+        .as_ref()
+        .and_then(|batch| batch.next_dispatch_at)
+        .ok_or(())?;
+    if app.pending != Some(PendingAction::RefreshActivityBatchWait)
+        || next_deadline != first_completed_at + ACTIVITY_BATCH_DELAY
+    {
+        return Err(());
+    }
+    app.drive_activity_refresh_batch(next_deadline - Duration::from_nanos(1));
+    if app.pending != Some(PendingAction::RefreshActivityBatchWait)
+        || app
+            .activity_refresh_batch
+            .as_ref()
+            .is_none_or(|batch| batch.in_flight_sequence.is_some())
+        || command_receiver.try_recv().is_ok()
+    {
+        return Err(());
+    }
+    app.drive_activity_refresh_batch(next_deadline);
+    if app.pending != Some(PendingAction::RefreshActivity)
+        || !app.activity_refresh_batch.as_ref().is_some_and(|batch| {
+            batch.in_flight_sequence == Some(2) && batch.next_dispatch_at.is_none()
+        })
+        || !app.activity_refresh_target.as_ref().is_some_and(|target| {
+            matches!(
+                target.origin,
+                ActivityRefreshOrigin::Batch {
+                    origin_epoch: 0,
+                    selected_account_index: 1,
+                    submission_sequence: 2,
+                }
+            )
+        })
+    {
+        return Err(());
+    }
+    route_headless_command_at(
+        &mut app,
+        &command_receiver,
+        &mut backend,
+        next_deadline + Duration::from_millis(10),
+        |command| {
+            matches!(
+                command,
+                WorkerCommand::RefreshActivity { transaction_hash }
+                    if transaction_hash == &native_activity_hash
+            )
+        },
+    )?;
+    if app.pending.is_some()
+        || app.activity_refresh_batch.is_some()
+        || app.activity_refresh_target.is_some()
+        || !app.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.activity.len() == 2
+                && snapshot
+                    .activity
+                    .iter()
+                    .all(|row| matches!(row.status, ActivityStatusSnapshot::Pending))
+        })
+        || !app
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("2/2 응답 확인·화면 반영 완료"))
+    {
+        return Err(());
+    }
+
     app.recipient = RECIPIENT_SENTINEL.to_owned();
     app.amount_eth = AMOUNT_SENTINEL.to_owned();
     app.fee_mode = FeeMode::Faster;
@@ -6015,6 +6730,8 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
             "prepare-recommended",
             "confirm",
             "activity-refresh-row",
+            "activity-refresh-row",
+            "activity-refresh-row",
             "prepare-faster",
             "cancel",
             "prepare-custom",
@@ -6029,7 +6746,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     }
 
     Ok(HeadlessSmokeEvidence {
-        transitions_checked: 96,
+        transitions_checked: 101,
         backend_routes_checked: backend.calls.len(),
     })
 }
@@ -6040,6 +6757,16 @@ fn route_headless_command(
     backend: &mut dyn WalletBackend,
     expected: impl FnOnce(&WorkerCommand) -> bool,
 ) -> Result<(), ()> {
+    route_headless_command_at(app, command_receiver, backend, Instant::now(), expected)
+}
+
+fn route_headless_command_at(
+    app: &mut WalletApp,
+    command_receiver: &Receiver<WorkerRequest>,
+    backend: &mut dyn WalletBackend,
+    completed_at: Instant,
+    expected: impl FnOnce(&WorkerCommand) -> bool,
+) -> Result<(), ()> {
     let request = command_receiver.try_recv().map_err(|_| ())?;
     if request.epoch != app.session_epoch || !expected(&request.command) {
         return Err(());
@@ -6048,7 +6775,7 @@ fn route_headless_command(
     if response.epoch != app.session_epoch {
         return Err(());
     }
-    app.apply_worker_event(response.event);
+    app.apply_worker_event_at(response.event, completed_at);
     Ok(())
 }
 
@@ -7730,7 +8457,48 @@ mod tests {
             error: None,
             last_transaction_hash: None,
             activity_refresh_target: None,
+            activity_refresh_batch: None,
         }
+    }
+
+    fn batch_activity(
+        submission_sequence: u64,
+        hash_word: &str,
+        status: super::ActivityStatusSnapshot,
+    ) -> super::TransactionActivitySnapshot {
+        let mut row = super::headless_native_activity(0, status);
+        row.submission_sequence = submission_sequence;
+        row.transaction_hash = format!("0x{}", hash_word.repeat(32));
+        row
+    }
+
+    fn included_status() -> super::ActivityStatusSnapshot {
+        super::ActivityStatusSnapshot::Included(super::ActivityInclusionSnapshot {
+            outcome: super::ActivityInclusionOutcome::Success,
+            block_number: 10,
+            block_hash: format!("0x{}", "c1".repeat(32)),
+            observed_head_number: 12,
+            observed_head_hash: format!("0x{}", "c2".repeat(32)),
+            depth: 3,
+        })
+    }
+
+    fn reorged_status() -> super::ActivityStatusSnapshot {
+        let super::ActivityStatusSnapshot::Included(inclusion) = included_status() else {
+            unreachable!();
+        };
+        super::ActivityStatusSnapshot::Reorged(inclusion)
+    }
+
+    fn take_activity_refresh_request(
+        receiver: &std::sync::mpsc::Receiver<super::WorkerRequest>,
+    ) -> String {
+        let request = receiver.try_recv().expect("activity refresh request");
+        assert_eq!(request.epoch, 0);
+        let WorkerCommand::RefreshActivity { transaction_hash } = request.command else {
+            panic!("expected one-row activity refresh command");
+        };
+        transaction_hash
     }
 
     fn selected_overview_fixture(
@@ -9382,6 +10150,608 @@ mod tests {
     }
 
     #[test]
+    fn activity_batch_freezes_sorted_unresolved_start_sequences_and_excludes_included() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(5, "a5", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "a2", super::ActivityStatusSnapshot::DroppedCandidate),
+            batch_activity(6, "a6", included_status()),
+            batch_activity(4, "a4", reorged_status()),
+            batch_activity(1, "a1", super::ActivityStatusSnapshot::Pending),
+            batch_activity(3, "a3", super::ActivityStatusSnapshot::ReplacementSuspected),
+        ];
+        assert!(snapshot.is_well_formed());
+        app.snapshot = Some(snapshot);
+
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+
+        let batch = app
+            .activity_refresh_batch
+            .as_ref()
+            .expect("manual activity batch");
+        assert!(batch.is_well_formed());
+        assert!(batch.total == 5 && batch.completed == 0);
+        assert!(
+            batch
+                .remaining_sequences
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+                == [1, 2, 3, 4, 5]
+        );
+        assert!(batch.in_flight_sequence == Some(1));
+        assert!(batch.next_dispatch_at.is_none());
+        assert!(matches!(
+            app.activity_refresh_target
+                .as_ref()
+                .map(|target| target.origin),
+            Some(super::ActivityRefreshOrigin::Batch {
+                origin_epoch: 0,
+                selected_account_index: 0,
+                submission_sequence: 1,
+            })
+        ));
+        assert!(
+            take_activity_refresh_request(&command_receiver) == format!("0x{}", "a1".repeat(32))
+        );
+        assert!(command_receiver.try_recv().is_err());
+
+        let mut added_after_start =
+            batch_activity(7, "a7", super::ActivityStatusSnapshot::Submitted);
+        app.snapshot
+            .as_mut()
+            .expect("batch snapshot")
+            .activity
+            .push(added_after_start.clone());
+        assert!(
+            app.activity_refresh_batch
+                .as_ref()
+                .expect("frozen activity batch")
+                .remaining_sequences
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+                == [1, 2, 3, 4, 5]
+        );
+        super::zeroize_activity_snapshot(&mut added_after_start);
+    }
+
+    #[test]
+    fn activity_batch_accepts_exactly_the_bounded_sixty_four_start_rows() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = (1_u64..=64)
+            .rev()
+            .map(|sequence| {
+                batch_activity(
+                    sequence,
+                    format!("{sequence:02x}").as_str(),
+                    super::ActivityStatusSnapshot::Submitted,
+                )
+            })
+            .collect();
+        assert!(snapshot.is_well_formed());
+        app.snapshot = Some(snapshot);
+
+        app.start_activity_refresh_batch_at(Instant::now());
+        let batch = app
+            .activity_refresh_batch
+            .as_ref()
+            .expect("bounded manual activity batch");
+        assert!(batch.total == super::MAX_ACTIVITY_BATCH_ROWS);
+        assert!(batch.remaining_sequences.front().copied() == Some(1));
+        assert!(batch.remaining_sequences.back().copied() == Some(64));
+        let _ = take_activity_refresh_request(&command_receiver);
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_dispatch_deadline_is_inclusive_exactly_once_and_sleep_free() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(2, "b2", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(1, "b1", super::ActivityStatusSnapshot::Submitted),
+        ];
+        app.snapshot = Some(snapshot);
+        let started_at = Instant::now();
+        let inactivity_before = app.last_activity_at;
+
+        app.start_activity_refresh_batch_at(started_at);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+        let mut first_result = app
+            .snapshot
+            .as_ref()
+            .expect("activity snapshot")
+            .activity
+            .iter()
+            .find(|row| row.submission_sequence == 1)
+            .expect("first activity row")
+            .clone();
+        first_result.status = super::ActivityStatusSnapshot::Pending;
+        let first_completed_at = started_at + Duration::from_millis(100);
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Ok(first_result),
+            },
+            first_completed_at,
+        );
+        assert!(app.pending == Some(PendingAction::RefreshActivityBatchWait));
+        let deadline = app
+            .activity_refresh_batch
+            .as_ref()
+            .and_then(|batch| batch.next_dispatch_at)
+            .expect("second activity deadline");
+        assert!(deadline == first_completed_at + super::ACTIVITY_BATCH_DELAY);
+
+        app.drive_activity_refresh_batch(deadline - Duration::from_nanos(1));
+        assert!(command_receiver.try_recv().is_err());
+        assert!(app.pending == Some(PendingAction::RefreshActivityBatchWait));
+        app.drive_activity_refresh_batch(deadline);
+        assert!(app.last_activity_at == inactivity_before);
+        assert!(app.pending == Some(PendingAction::RefreshActivity));
+        let second_hash = take_activity_refresh_request(&command_receiver);
+        app.drive_activity_refresh_batch(deadline);
+        assert!(command_receiver.try_recv().is_err());
+
+        let mut second_result = app
+            .snapshot
+            .as_ref()
+            .expect("activity snapshot")
+            .activity
+            .iter()
+            .find(|row| row.submission_sequence == 2)
+            .expect("second activity row")
+            .clone();
+        second_result.status = super::ActivityStatusSnapshot::Pending;
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: second_hash,
+                result: Ok(second_result),
+            },
+            deadline + Duration::from_millis(100),
+        );
+        assert!(app.pending.is_none());
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.error.is_none());
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("2/2 응답 확인·화면 반영 완료"))
+        );
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_due_time_row_drift_stops_and_clears_scheduled_notice() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(1, "61", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "62", super::ActivityStatusSnapshot::Submitted),
+        ];
+        app.snapshot = Some(snapshot);
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+        let mut first_result =
+            app.snapshot.as_ref().expect("activity snapshot").activity[0].clone();
+        first_result.status = super::ActivityStatusSnapshot::Pending;
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Ok(first_result),
+            },
+            now,
+        );
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("최소 2초 뒤"))
+        );
+        app.snapshot.as_mut().expect("activity snapshot").activity[1].status = included_status();
+
+        app.drive_activity_refresh_batch(now + super::ACTIVITY_BATCH_DELAY);
+        assert!(app.pending.is_none());
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.notice.is_none());
+        assert!(app.error.as_deref().is_some_and(|error| {
+            error.contains("1/2 응답 확인·화면 반영")
+                && error.contains("이후 대기 행은 요청하지 않았습니다")
+                && error.contains("계정·순서·상태가 바뀌어")
+        }));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_refresh_origin_and_first_error_progress_are_exact() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(1, "d1", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "d2", super::ActivityStatusSnapshot::Submitted),
+        ];
+        let original = snapshot.activity.clone();
+        app.snapshot = Some(snapshot);
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+        let mut first_result = original[0].clone();
+        first_result.status = super::ActivityStatusSnapshot::Pending;
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Ok(first_result),
+            },
+            now,
+        );
+        let deadline = now + super::ACTIVITY_BATCH_DELAY;
+        app.drive_activity_refresh_batch(deadline);
+        let second_hash = take_activity_refresh_request(&command_receiver);
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: second_hash,
+                result: Err("Sepolia 연결을 확인하지 못했습니다.".to_owned()),
+            },
+            deadline + Duration::from_millis(1),
+        );
+        assert!(app.pending.is_none());
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(
+                snapshot.activity[0].status,
+                super::ActivityStatusSnapshot::Pending
+            ) && snapshot.activity[1] == original[1]
+        }));
+        assert!(app.error.as_deref().is_some_and(|error| {
+            error.contains("1/2 응답 확인·화면 반영")
+                && error.contains("현재 행의 내구 상태")
+                && error.contains("이후 대기 행은 요청하지 않았습니다")
+                && error.contains("Sepolia 연결을 확인하지 못했습니다.")
+        }));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_forged_error_origin_stops_without_attribution_or_mutation() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(1, "e1", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "e2", super::ActivityStatusSnapshot::Submitted),
+        ];
+        let original = snapshot.activity.clone();
+        app.snapshot = Some(snapshot);
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+        app.activity_refresh_target
+            .as_mut()
+            .expect("activity target")
+            .origin = super::ActivityRefreshOrigin::Batch {
+            origin_epoch: 1,
+            selected_account_index: 0,
+            submission_sequence: 1,
+        };
+
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Err("Sepolia 연결을 확인하지 못했습니다.".to_owned()),
+            },
+            now + Duration::from_millis(1),
+        );
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.pending.is_none());
+        assert!(
+            app.snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.activity == original)
+        );
+        assert!(app.error.as_deref().is_some_and(|error| {
+            error.contains("0/2 응답 확인·화면 반영")
+                && error.contains("현재 행의 내구 상태")
+                && error.contains("이후 대기 행은 요청하지 않았습니다")
+                && error.contains("요청 출처·계정·순서가 일치하지 않아")
+                && !error.contains("Sepolia 연결을 확인하지 못했습니다.")
+        }));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_immutable_identity_mismatch_stops_without_row_mutation() {
+        for mutation in 0..3 {
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+            let other_address = snapshot.accounts[1].address.clone();
+            snapshot.activity = vec![
+                batch_activity(1, "71", super::ActivityStatusSnapshot::Submitted),
+                batch_activity(2, "72", super::ActivityStatusSnapshot::Submitted),
+            ];
+            let original = snapshot.activity.clone();
+            app.snapshot = Some(snapshot);
+            let now = Instant::now();
+            app.start_activity_refresh_batch_at(now);
+            let first_hash = take_activity_refresh_request(&command_receiver);
+            let mut forged = original[0].clone();
+            match mutation {
+                0 => forged.submission_sequence = 9,
+                1 => {
+                    forged.sender_account_index = 1;
+                    forged.sender_address = other_address;
+                }
+                2 => forged.nonce = "999".to_owned(),
+                _ => unreachable!(),
+            }
+            forged.status = super::ActivityStatusSnapshot::Pending;
+
+            app.apply_worker_event_at(
+                WorkerEvent::ActivityRefreshed {
+                    transaction_hash: first_hash,
+                    result: Ok(forged),
+                },
+                now + Duration::from_millis(1),
+            );
+            assert!(app.activity_refresh_batch.is_none());
+            assert!(app.activity_refresh_target.is_none());
+            assert!(app.pending.is_none());
+            assert!(
+                app.snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.activity == original)
+            );
+            assert!(app.error.as_deref().is_some_and(|error| {
+                error.contains("0/2 응답 확인·화면 반영")
+                    && error.contains("현재 행의 내구 상태")
+                    && error.contains("이후 대기 행은 요청하지 않았습니다")
+                    && error.contains("불변 거래 정보와 일치하지 않아")
+            }));
+            assert!(command_receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn activity_batch_identity_select_lock_and_epoch_drift_stop_and_scrub() {
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(1, "f1", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "f2", super::ActivityStatusSnapshot::Submitted),
+        ];
+        app.snapshot = Some(snapshot);
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+        let mut first_result =
+            app.snapshot.as_ref().expect("activity snapshot").activity[0].clone();
+        first_result.status = super::ActivityStatusSnapshot::Pending;
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Ok(first_result),
+            },
+            now,
+        );
+        assert!(app.pending == Some(PendingAction::RefreshActivityBatchWait));
+
+        app.select_account(1);
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.pending == Some(PendingAction::SelectAccount));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::SelectAccount { index: 1 },
+            })
+        ));
+
+        app.pending = None;
+        app.start_activity_refresh_batch_at(now + Duration::from_secs(3));
+        let stale_hash = take_activity_refresh_request(&command_receiver);
+        let stale_result = app.snapshot.as_ref().expect("activity snapshot").activity[0].clone();
+        app.request_lock(super::LockReason::Explicit);
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                epoch: 1,
+                command: WorkerCommand::Lock,
+            })
+        ));
+        event_sender
+            .send(super::WorkerResponse {
+                epoch: 0,
+                event: WorkerEvent::ActivityRefreshed {
+                    transaction_hash: stale_hash,
+                    result: Ok(stale_result),
+                },
+            })
+            .expect("stale activity response");
+        app.process_events_at(now + Duration::from_secs(4));
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(matches!(
+            app.session_phase,
+            super::SessionPhase::Locking(super::LockReason::Explicit)
+        ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_account_selector_is_enabled_only_between_requests_and_scrubs_before_select() {
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![
+            batch_activity(1, "51", super::ActivityStatusSnapshot::Submitted),
+            batch_activity(2, "52", super::ActivityStatusSnapshot::Submitted),
+        ];
+        app.snapshot = Some(snapshot);
+        let now = Instant::now();
+        app.start_activity_refresh_batch_at(now);
+        let first_hash = take_activity_refresh_request(&command_receiver);
+
+        assert!(!app.activity_refresh_batch_wait_matches_current());
+        let mut in_flight_selector_enabled = true;
+        let in_flight_text = rendered_panel_text(&context, |_context, ui| {
+            in_flight_selector_enabled = app.account_panel(ui);
+        });
+        assert!(!in_flight_selector_enabled);
+        assert!(!in_flight_text.contains("지금 계정을 바꾸면 다음 행 조회 전에"));
+
+        let mut first_result =
+            app.snapshot.as_ref().expect("activity snapshot").activity[0].clone();
+        first_result.status = super::ActivityStatusSnapshot::Pending;
+        app.apply_worker_event_at(
+            WorkerEvent::ActivityRefreshed {
+                transaction_hash: first_hash,
+                result: Ok(first_result),
+            },
+            now,
+        );
+        assert!(app.activity_refresh_batch_wait_matches_current());
+        let mut waiting_selector_enabled = false;
+        let waiting_text = rendered_panel_text(&context, |_context, ui| {
+            waiting_selector_enabled = app.account_panel(ui);
+        });
+        assert!(waiting_selector_enabled);
+        assert!(waiting_text.contains("지금 계정을 바꾸면 다음 행 조회 전에"));
+        assert!(app.pending == Some(PendingAction::RefreshActivityBatchWait));
+        assert!(command_receiver.try_recv().is_err());
+
+        app.select_account(1);
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(app.pending == Some(PendingAction::SelectAccount));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(super::WorkerRequest {
+                epoch: 0,
+                command: WorkerCommand::SelectAccount { index: 1 },
+            })
+        ));
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn activity_batch_focus_and_inactivity_preempt_due_dispatch() {
+        for (focused, expected_reason) in [
+            (false, super::LockReason::FocusLost),
+            (true, super::LockReason::Inactivity),
+        ] {
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_event_sender, events) = std::sync::mpsc::channel();
+            let mut app = test_app(commands, events);
+            let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+            snapshot.activity = vec![
+                batch_activity(1, "91", super::ActivityStatusSnapshot::Submitted),
+                batch_activity(2, "92", super::ActivityStatusSnapshot::Submitted),
+            ];
+            app.snapshot = Some(snapshot);
+            let now = Instant::now();
+            let due = now + super::ACTIVITY_BATCH_DELAY;
+            app.last_activity_at = if focused {
+                due.checked_sub(super::INACTIVITY_LOCK_DURATION)
+                    .expect("inclusive inactivity boundary")
+            } else {
+                now
+            };
+            app.start_activity_refresh_batch_at(now);
+            let first_hash = take_activity_refresh_request(&command_receiver);
+            let mut first_result =
+                app.snapshot.as_ref().expect("activity snapshot").activity[0].clone();
+            first_result.status = super::ActivityStatusSnapshot::Pending;
+            app.apply_worker_event_at(
+                WorkerEvent::ActivityRefreshed {
+                    transaction_hash: first_hash,
+                    result: Ok(first_result),
+                },
+                now,
+            );
+            let inactivity_before = app.last_activity_at;
+            let context = egui::Context::default();
+            context.begin_pass(egui::RawInput {
+                focused,
+                ..Default::default()
+            });
+            app.observe_automatic_lock(&context, due);
+            app.drive_activity_refresh_batch(due);
+            let _ = context.end_pass();
+
+            assert!(app.last_activity_at == inactivity_before);
+            assert!(app.activity_refresh_batch.is_none());
+            assert!(app.activity_refresh_target.is_none());
+            assert!(matches!(
+                app.session_phase,
+                super::SessionPhase::Locking(reason) if reason == expected_reason
+            ));
+            assert!(matches!(
+                command_receiver.try_recv(),
+                Ok(super::WorkerRequest {
+                    epoch: 1,
+                    command: WorkerCommand::Lock,
+                })
+            ));
+            assert!(command_receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn activity_batch_panel_discloses_scope_privacy_and_manual_only_controls() {
+        let context = egui::Context::default();
+        let (commands, command_receiver) = std::sync::mpsc::channel();
+        let (_event_sender, events) = std::sync::mpsc::channel();
+        let mut app = test_app(commands, events);
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+        snapshot.activity = vec![batch_activity(
+            1,
+            "81",
+            super::ActivityStatusSnapshot::Submitted,
+        )];
+        app.snapshot = Some(snapshot);
+
+        let rendered = rendered_panel_text(&context, |_context, ui| app.activity_panel(ui));
+        assert!(rendered.contains("미확정 활동 순차 새로고침 (1개)"));
+        assert!(rendered.contains("사용자가 직접 시작"));
+        assert!(rendered.contains("자동 새로고침, 자동 재시작"));
+        assert!(rendered.contains("Included 행은 포함하지 않으며"));
+        assert!(rendered.contains("선택한 발신 주소와 최대 64개 거래 해시, 요청 간격"));
+        assert!(rendered.contains("최소 2초"));
+        assert!(rendered.contains("이 행만 Sepolia에서 새로고침"));
+        assert!(app.pending.is_none());
+        assert!(app.activity_refresh_batch.is_none());
+        assert!(app.activity_refresh_target.is_none());
+        assert!(command_receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn failed_open_or_migration_clears_stale_unlocked_ui_state() {
         let (commands, _command_receiver) = std::sync::mpsc::channel();
         let (_event_sender, events) = std::sync::mpsc::channel();
@@ -9418,7 +10788,10 @@ mod tests {
             app.custom_max_fee_gwei = "3".to_owned();
             app.custom_token_address = "token-marker".to_owned();
             app.last_transaction_hash = Some("transaction-marker".to_owned());
-            app.activity_refresh_target = Some("activity-marker".to_owned());
+            app.activity_refresh_target = Some(super::ActivityRefreshTarget {
+                transaction_hash: zeroize::Zeroizing::new("activity-marker".to_owned()),
+                origin: super::ActivityRefreshOrigin::ManualRow,
+            });
             app.prepared = Some(PreparedPreview::Native(exact_preview()));
             app.apply_worker_event(if account_select {
                 WorkerEvent::AccountSelected(Err("backend snapshot invalidated".to_owned()))
@@ -9736,8 +11109,8 @@ mod tests {
     #[test]
     fn headless_smoke_exercises_button_handlers_and_state_reducer() -> Result<(), ()> {
         let evidence = run_headless_smoke()?;
-        assert_eq!(evidence.transitions_checked, 96);
-        assert_eq!(evidence.backend_routes_checked, 35);
+        assert_eq!(evidence.transitions_checked, 101);
+        assert_eq!(evidence.backend_routes_checked, 37);
         Ok(())
     }
 }

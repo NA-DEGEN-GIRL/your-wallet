@@ -257,12 +257,24 @@ nonce, 수수료, 자산 식별자와 상태를 저장합니다. 상태는 `Subm
 `ReplacementSuspected`입니다. 이 이름들은 nonce 재사용 허가가 아닙니다. 보관된
 어떤 상태의 행도 같은 계정·보내는 주소·nonce에 다른 거래를 만들지 못하게 합니다.
 
-활동은 자동 조회하지 않습니다. 사용자가 각 행의 `이 행만 Sepolia에서 새로고침`을
-눌렀을 때만 앱에 고정된 RPC를 head 조회로 bookend하고, 거래·receipt·canonical
-block을 typed 응답으로 대조합니다. 전체 거래 hash, 보내는 주소, 받는 주소 또는
-토큰 컨트랙트 주소와 포함 block hash를 표시합니다. 저장된 ERC-20 symbol은 과거
-컨트랙트가 제공한 신뢰되지 않은 표시 이름입니다. 포함 깊이는 finality 선언이
-아니며 앱은 nonce를 자동으로 다시 사용하지 않습니다.
+활동은 주기적·백그라운드로 자동 조회하지 않습니다. 사용자는 각 행의
+`이 행만 Sepolia에서 새로고침`을 누르거나, 선택한 계정의 시작 시점
+`Submitted`/`Pending`/`Reorged`/`DroppedCandidate`/`ReplacementSuspected` 행을
+submission 순서로 최대 64개 고정해 명시적인 순차 조회를 시작할 수 있습니다.
+`Included` 행과 작업 도중 새로 생긴 행은 이 목록에 들어가지 않습니다. 순차
+작업도 기존 단일 행 경로를 한 번에 하나만 사용하며, 성공한 내구 결과 뒤 다음
+요청까지 최소 2초를 기다립니다. 첫 오류·불일치·잠금·계정 전환에서 성공 응답으로
+설치한 `k/전체`까지만 표시하고 그 뒤 대기 행은 요청하지 않으며, 자동 재시작·재시도·
+polling은 없습니다. 단일 행 저장 뒤 인증 readback이 실패한 오류라면 그 오류 행의
+디스크 상태는 UI가 확정할 수 없으므로 지갑을 다시 열거나 그 행을 직접 조회해야
+합니다.
+
+각 조회는 앱에 고정된 RPC를 head 조회로 bookend하고 거래·receipt·canonical
+block을 typed 응답으로 대조합니다. 순차 조회를 시작하면 선택한 보내는 주소와
+최대 64개 거래 hash, 요청 간격이 그 RPC에 노출됩니다. 전체 거래 hash, 보내는
+주소, 받는 주소 또는 토큰 컨트랙트 주소와 포함 block hash를 표시합니다. 저장된
+ERC-20 symbol은 과거 컨트랙트가 제공한 신뢰되지 않은 표시 이름입니다. 포함
+깊이는 finality 선언이 아니며 앱은 nonce를 자동으로 다시 사용하지 않습니다.
 
 서명 전에는 활동 capacity와 nonce 슬롯을 예약하고, exact `pending-v1.bin`을 잡은
 상태로 전송합니다. 노드가 받은 뒤 결과가 불확실해도 pending을 보존합니다. 성공
@@ -470,7 +482,7 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 
 2026년 8월 21일 기준:
 
-- Sepolia 실행판 테스트 247개 통과
+- Sepolia 실행판 테스트 258개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
 - 프로덕션 Rust 테스트 548개 실행 통과
