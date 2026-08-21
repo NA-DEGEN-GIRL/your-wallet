@@ -135,8 +135,15 @@ Implemented:
   transport-suite digest and manifest separate from the exactly three
   signing-TCB helpers, then checks Broker role, complete evidence, the exact
   manifest, and an absolute retained path before minting a non-clone opaque
-  capability. It exposes no launch or artifact accessor, no supervisor consumes
-  it, and `COMPILED_RELEASE_POLICY = None` keeps it unreachable in release.
+  capability. On Windows, `prepare_release_broker_supervisor` consumes that
+  capability by value and derives volume serial plus all 128 `FILE_ID_INFO` file
+  ID bits from the same already-held file handle. The resulting
+  `PreparedReleaseBrokerSupervisor` retains the admitted artifact and opaque
+  identity, has redacted `Debug`, is non-cloneable and drop-only, and exposes no
+  path, raw handle, PID, identity, artifact, or launch accessor. This prepared
+  state allocates no process, thread, pipe, Job, channel, or launch resource; it
+  is not Broker activation. `COMPILED_RELEASE_POLICY = None` keeps it unreachable
+  from release execution.
 
 Stop-ship before any signing-capable release:
 
@@ -155,8 +162,10 @@ Stop-ship before any signing-capable release:
    evidence and bind it to the exact artifact digest. The source currently sets
    `COMPILED_RELEASE_POLICY` to `None`. Bind the separate Broker transport suite
    and Broker manifest to the signed immutable install, then make the reviewed
-   exact-image supervisor consume the private preflight without adding a path,
-   handle, or generic launch escape.
+   exact-image activation supervisor consume the inert
+   `PreparedReleaseBrokerSupervisor` without adding a path reopen, raw-handle or
+   PID escape, or generic launch surface. The current prepared-only seam is not
+   that activation or signed-install proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the

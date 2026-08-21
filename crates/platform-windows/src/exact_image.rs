@@ -1,16 +1,23 @@
-//! Exact simultaneously-held executable image comparison for dormant helpers.
+//! Exact simultaneously-held executable identity for dormant helpers.
 //!
-//! This debug-only primitive compares the Broker artifact held without
-//! write/delete sharing to the executable-image file handle supplied by the
-//! first `CREATE_PROCESS_DEBUG_EVENT`. It never authenticates by path or PID.
+//! The release-preparation seam derives opaque `FILE_ID_INFO` only from an
+//! already verified and held helper handle. The debug-only mapped-image seam
+//! additionally compares that identity with the first
+//! `CREATE_PROCESS_DEBUG_EVENT` image handle. Neither path authenticates by
+//! reopening a path or trusting a PID.
 
 use core::fmt;
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 use std::path::Path;
 
 use thiserror::Error;
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 use windows::Win32::Foundation::HANDLE;
+use zeroize::Zeroize;
 
-use crate::helper::{HelperError, VerifiedHelper};
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+use crate::helper::HelperError;
+use crate::helper::VerifiedHelper;
 
 /// Stable failures from the exact Broker image boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -29,14 +36,15 @@ pub(crate) enum ExactImageError {
     MappedImageMismatch,
 }
 
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 impl From<HelperError> for ExactImageError {
     fn from(_error: HelperError) -> Self {
         Self::ArtifactUnavailable
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct ExactFileIdentity {
+#[derive(Eq, PartialEq)]
+pub(super) struct ExactFileIdentity {
     volume_serial_number: u64,
     file_id: [u8; 16],
 }
@@ -59,12 +67,35 @@ impl fmt::Debug for ExactFileIdentity {
     }
 }
 
+impl Zeroize for ExactFileIdentity {
+    fn zeroize(&mut self) {
+        self.volume_serial_number.zeroize();
+        self.file_id.zeroize();
+    }
+}
+
+impl Drop for ExactFileIdentity {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+/// Derives the exact identity only from the file object already retained by a
+/// verified helper. This performs no reopen, canonicalization, or path lookup.
+pub(super) fn held_helper_file_identity(
+    artifact: &VerifiedHelper,
+) -> Result<ExactFileIdentity, ExactImageError> {
+    sys::exact_file_identity(artifact.raw_handle())
+}
+
 /// Pinned debug Broker artifact and its exact Windows file-object identity.
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 pub(crate) struct PinnedBrokerImage {
     artifact: VerifiedHelper,
     identity: ExactFileIdentity,
 }
 
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 impl PinnedBrokerImage {
     /// Opens and pins the exact debug Broker executable.
     pub(crate) fn hold(path: &Path) -> Result<Self, ExactImageError> {
@@ -72,7 +103,7 @@ impl PinnedBrokerImage {
         if !artifact.is_broker() {
             return Err(ExactImageError::WrongRole);
         }
-        let identity = sys::exact_file_identity(artifact.raw_handle())?;
+        let identity = held_helper_file_identity(&artifact)?;
         Ok(Self { artifact, identity })
     }
 
@@ -85,12 +116,14 @@ impl PinnedBrokerImage {
         &self,
         mapped_image: HANDLE,
     ) -> Result<(), ExactImageError> {
-        (sys::exact_file_identity(mapped_image)? == self.identity)
+        sys::exact_file_identity(mapped_image)?
+            .eq(&self.identity)
             .then_some(())
             .ok_or(ExactImageError::MappedImageMismatch)
     }
 }
 
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 impl fmt::Debug for PinnedBrokerImage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PinnedBrokerImage([HELD EXACT BROKER ARTIFACT])")

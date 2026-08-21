@@ -264,12 +264,22 @@ transport-suite digest and one non-zero Broker manifest digest separately from
 the exactly three signing-TCB helper manifests. Admission consumes the pinned
 verified artifact and checks Broker role, complete compiled release evidence,
 the dedicated manifest, and an absolute verified path in that order before it
-can mint an opaque non-clone capability. The capability exposes no path, file,
-raw handle, launch, Job, pipe, process, or thread operation, and no supervisor
-consumes it yet. `COMPILED_RELEASE_POLICY` remains `None`; the default and
-all-feature release binaries therefore remain on the 4900/exit-78 path. A later
-reviewed slice must make the exact-image supervisor consume this capability and
-must add signed-install/native-host provenance evidence before release use.
+can mint an opaque non-clone capability. A Windows-only private preparation seam
+then consumes that capability by value. It queries volume serial and all 128
+`FILE_ID_INFO` file-ID bits from the same already-held file handle and retains
+both the admitted artifact and opaque identity in
+`PreparedReleaseBrokerSupervisor`. The prepared state is non-cloneable,
+redacted under `Debug`, and drop-only. It exposes no path, file, raw handle, PID,
+artifact, identity, launch, Job, pipe, channel, process, or thread operation and
+allocates none of those activation resources. No path is reopened and no PID is
+trusted. This is an inert supervisor typestate handoff, not Broker activation or
+an exact mapped-image proof.
+
+`COMPILED_RELEASE_POLICY` remains `None`; the default and all-feature release
+binaries therefore remain on the 4900/exit-78 path. A later reviewed slice must
+make the exact-image activation supervisor consume the prepared state and must
+add signed-install/native-host provenance, process/Job/channel, and negative
+release evidence before release use.
 
 ### Key Agent activation invariant (STOP-SHIP)
 

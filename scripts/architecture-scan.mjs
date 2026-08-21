@@ -3306,6 +3306,15 @@ const brokerArtifactSource = await text(
   "crates/platform-windows/src/broker_artifact.rs",
 );
 const brokerArtifactProduction = withoutBottomTestModule(brokerArtifactSource);
+const exactBrokerImage = await text(
+  "crates/platform-windows/src/exact_image.rs",
+);
+const exactBrokerImageProduction = withoutBottomTestModule(exactBrokerImage);
+const exactImageVisibleFunctionNames = [
+  ...exactBrokerImageProduction.matchAll(
+    /(?:^|\n)\s*pub(?:\((?:crate|super|in [^)]+)\))?\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
 const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction = withoutBottomTestModule(restrictedLauncher);
 requireInvariant(
@@ -3329,15 +3338,62 @@ const platformWindowsProductionFiles = await rustProductionSources(
   "crates/platform-windows/src",
 );
 const platformWindowsLib = await text("crates/platform-windows/src/lib.rs");
+const platformWindowsLibCode = platformWindowsLib.replace(/^\s*\/\/.*$/gmu, "");
+const attestationProduction = withoutBottomTestModule(attestation);
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
 );
 const activationArchitecture = await text("docs/architecture.md");
 const activationReadme = await text("crates/platform-windows/README.md");
 const securityDecisions = await text("docs/security-decisions.md");
+requireInvariant(
+  /#\[cfg\(test\)\]\s*pub\(crate\) fn for_broker_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*broker_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
+    activationHelper,
+  ) &&
+    (activationHelper.match(/\bfor_broker_artifact_test\b/gu) ?? []).length === 1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(digest: \[u8; 32\]\) -> Self\s*\{/u.test(
+      attestationProduction,
+    ) &&
+    (attestationProduction.match(/\bwith_broker_manifest_for_test\b/gu) ?? [])
+      .length === 1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_helper_manifests_for_test\(\s*digests: \[\[u8; 32\]; REQUIRED_HELPER_MANIFESTS\],\s*\) -> Self\s*\{/u.test(
+      attestationProduction,
+    ) &&
+    (attestationProduction.match(/\bwith_helper_manifests_for_test\b/gu) ?? [])
+      .length === 1,
+  "Broker/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
+);
 const brokerPreflight = rustFunctionBlock(
   brokerArtifactProduction,
   "preflight_broker_artifact",
+);
+const prepareReleaseBrokerSupervisor = rustFunctionBlock(
+  brokerArtifactProduction,
+  "prepare_release_broker_supervisor",
+);
+const preparedReleaseBrokerSupervisor = rustItemBlock(
+  brokerArtifactProduction,
+  /(?:^|\n)pub\(crate\)\s+struct\s+PreparedReleaseBrokerSupervisor\s*\{/u,
+);
+const preflightBrokerArtifactDebug = rustItemBlock(
+  brokerArtifactProduction,
+  /(?:^|\n)impl fmt::Debug for PreflightBrokerArtifact\s*\{/u,
+);
+const preparedReleaseBrokerSupervisorDebug = rustItemBlock(
+  brokerArtifactProduction,
+  /(?:^|\n)impl fmt::Debug for PreparedReleaseBrokerSupervisor\s*\{/u,
+);
+const preparedReleaseBrokerSupervisorDrop = rustItemBlock(
+  brokerArtifactProduction,
+  /(?:^|\n)impl Drop for PreparedReleaseBrokerSupervisor\s*\{/u,
+);
+const heldHelperFileIdentity = rustFunctionBlock(
+  exactBrokerImageProduction,
+  "held_helper_file_identity",
+);
+const preparedReleaseBrokerSupervisorTest = rustFunctionBlock(
+  brokerArtifactSource,
+  "prepared_release_broker_supervisor_retains_same_handle_and_full_file_identity",
 );
 const brokerPreflightOrder = [
   "if !artifact.is_broker()",
@@ -3346,6 +3402,57 @@ const brokerPreflightOrder = [
   "if !artifact.path().is_absolute()",
   "Ok(PreflightBrokerArtifact { artifact })",
 ].map((marker) => brokerPreflight.indexOf(marker));
+const preparedReleaseBrokerSupervisorNormalized = preparedReleaseBrokerSupervisor
+  .replace(/\s+/gu, " ")
+  .trim();
+const preflightBrokerArtifactDebugNormalized = preflightBrokerArtifactDebug
+  .replace(/\s+/gu, " ")
+  .trim();
+const preparedReleaseBrokerSupervisorDebugNormalized =
+  preparedReleaseBrokerSupervisorDebug.replace(/\s+/gu, " ").trim();
+const prepareReleaseBrokerSupervisorNormalized = prepareReleaseBrokerSupervisor
+  .replace(/\s+/gu, " ")
+  .trim();
+const heldHelperFileIdentityNormalized = heldHelperFileIdentity
+  .replace(/\s+/gu, " ")
+  .trim();
+const brokerAdmissionAndPreparedSurface = [
+  brokerPreflight,
+  preparedReleaseBrokerSupervisor,
+  preparedReleaseBrokerSupervisorDebug,
+  preparedReleaseBrokerSupervisorDrop,
+  prepareReleaseBrokerSupervisor,
+  heldHelperFileIdentity,
+].join("\n");
+const preflightBrokerTraitImpls = [
+  ...brokerArtifactProduction.matchAll(
+    /(?:^|\n)\s*(?:unsafe\s+)?impl\s+(?<trait>[^\r\n{]+?)\s+for\s+[^\r\n{]*\bPreflightBrokerArtifact\b[^\r\n{]*\{/gu,
+  ),
+].map((match) => match.groups.trait.trim());
+const preparedBrokerTraitImpls = [
+  ...brokerArtifactProduction.matchAll(
+    /(?:^|\n)\s*(?:unsafe\s+)?impl\s+(?<trait>[^\r\n{]+?)\s+for\s+[^\r\n{]*\bPreparedReleaseBrokerSupervisor\b[^\r\n{]*\{/gu,
+  ),
+].map((match) => match.groups.trait.trim());
+const brokerArtifactVisibleFunctionNames = [
+  ...brokerArtifactProduction.matchAll(
+    /(?:^|\n)\s*pub(?:\((?:crate|super|in [^)]+)\))?\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const preparedBrokerFunctionNames = [
+  ...brokerArtifactProduction.matchAll(
+    /(?:^|\n)\s*(?:pub(?:\([^)]+\))?\s+)?(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)[^;{]*PreparedReleaseBrokerSupervisor[^;{]*\{/gu,
+  ),
+].map((match) => match.groups.name);
+const preparedBrokerTestOrder = [
+  "let held_handle = admitted.artifact.raw_handle()",
+  "let expected_identity = held_helper_file_identity(&admitted.artifact)?",
+  "prepare_release_broker_supervisor(admitted)?",
+  "assert_eq!(prepared.artifact.artifact.raw_handle(), held_handle)",
+  "assert_eq!(prepared.identity, expected_identity)",
+  'format!("{prepared:?}")',
+  "drop(prepared)",
+].map((marker) => preparedReleaseBrokerSupervisorTest.indexOf(marker));
 requireInvariant(
   platformWindowsLib.includes("mod broker_artifact;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+broker_artifact\b/u.test(platformWindowsLib) &&
@@ -3357,6 +3464,13 @@ requireInvariant(
       brokerArtifactProduction,
     ) &&
     !/impl\s+Clone\s+for\s+PreflightBrokerArtifact\b/u.test(
+      brokerArtifactProduction,
+    ) &&
+    JSON.stringify(preflightBrokerTraitImpls) ===
+      JSON.stringify(["fmt::Debug"]) &&
+    preflightBrokerArtifactDebugNormalized ===
+      'impl fmt::Debug for PreflightBrokerArtifact { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("PreflightBrokerArtifact([PINNED VERIFIED BROKER])") } }' &&
+    !/(?:^|\n)\s*impl\s+PreflightBrokerArtifact\b[^\{]*\{/u.test(
       brokerArtifactProduction,
     ) &&
     brokerPreflightOrder.every((position) => position !== -1) &&
@@ -3373,14 +3487,113 @@ requireInvariant(
   "private Broker preflight must own one opaque artifact and preserve role/evidence/manifest/path ordering without activation APIs",
 );
 requireInvariant(
+  /#\[cfg\(windows\)\]\s*#\[must_use = "dropping the prepared Broker supervisor closes its pinned file"\]\s*pub\(crate\) struct PreparedReleaseBrokerSupervisor/u.test(
+    brokerArtifactProduction,
+  ) &&
+    preparedReleaseBrokerSupervisorNormalized ===
+      "pub(crate) struct PreparedReleaseBrokerSupervisor { artifact: PreflightBrokerArtifact, identity: ExactFileIdentity, }" &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+PreparedReleaseBrokerSupervisor/u.test(
+      brokerArtifactProduction,
+    ) &&
+    JSON.stringify(preparedBrokerTraitImpls) ===
+      JSON.stringify(["fmt::Debug", "Drop"]) &&
+    JSON.stringify(brokerArtifactVisibleFunctionNames) ===
+      JSON.stringify([
+        "preflight_broker_artifact",
+        "prepare_release_broker_supervisor",
+      ]) &&
+    JSON.stringify(preparedBrokerFunctionNames) ===
+      JSON.stringify(["prepare_release_broker_supervisor"]) &&
+    !/pub\(in\s+[^)]+\)/u.test(brokerArtifactProduction) &&
+    !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?type\s+\w+(?:<[^;=]*>)?\s*=\s*[^;]*\b(?:PreflightBrokerArtifact|PreparedReleaseBrokerSupervisor)\b[^;]*;/u.test(
+      brokerArtifactProduction,
+    ) &&
+    !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+[^;]*\b(?:PreflightBrokerArtifact|PreparedReleaseBrokerSupervisor)\b\s+as\s+\w+[^;]*;/u.test(
+      brokerArtifactProduction,
+    ) &&
+    preparedReleaseBrokerSupervisorDebugNormalized ===
+      'impl fmt::Debug for PreparedReleaseBrokerSupervisor { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])") } }' &&
+    preparedReleaseBrokerSupervisorDrop
+      .replace(/\s+/gu, " ")
+      .trim() ===
+      "impl Drop for PreparedReleaseBrokerSupervisor { fn drop(&mut self) { self.identity.zeroize(); } }" &&
+    !/(?:^|\n)impl\s+PreparedReleaseBrokerSupervisor\s*\{/u.test(
+      brokerArtifactProduction,
+    ) &&
+    /#\[cfg\(windows\)\]\s*pub\(crate\) fn prepare_release_broker_supervisor/u.test(
+      brokerArtifactProduction,
+    ) &&
+    prepareReleaseBrokerSupervisorNormalized ===
+      "pub(crate) fn prepare_release_broker_supervisor( artifact: PreflightBrokerArtifact, ) -> Result<PreparedReleaseBrokerSupervisor, BrokerSupervisorPreflightError> { let identity = held_helper_file_identity(&artifact.artifact)?; Ok(PreparedReleaseBrokerSupervisor { artifact, identity }) }" &&
+    heldHelperFileIdentityNormalized ===
+      "pub(super) fn held_helper_file_identity( artifact: &VerifiedHelper, ) -> Result<ExactFileIdentity, ExactImageError> { sys::exact_file_identity(artifact.raw_handle()) }" &&
+    /enum BrokerSupervisorPreflightError\s*\{[^}]*IdentityUnavailable/u.test(
+      brokerArtifactProduction,
+    ) &&
+    /impl From<ExactImageError> for BrokerSupervisorPreflightError\s*\{[\s\S]*?Self::IdentityUnavailable/u.test(
+      brokerArtifactProduction,
+    ) &&
+    !/(?:std::fs|OpenOptions|File::open|CreateFile\w*|OpenProcess|CreateProcess\w*|ShellExecute\w*|Command::new|std::thread|thread::Builder|\bmpsc\b|\b(?:sync_)?channel\s*\(|CreateNamedPipe\w*|CreatePipe|DormantBrokerPipe|BrokerJob|BrokerChannel|JobObject|\blaunch\w*\s*\(|\bspawn\w*\s*\()/u.test(
+      brokerAdmissionAndPreparedSurface,
+    ) &&
+    !/(?:\.path\s*\(|canonicalize\s*\(|\bopen\s*\(|\bhold\s*\(|raw_handle|\bpid\b)/iu.test(
+      prepareReleaseBrokerSupervisor,
+    ) &&
+    platformWindowsLib.includes(
+      "use platform_windows::broker_artifact::PreparedReleaseBrokerSupervisor;",
+    ) &&
+    platformWindowsLib.includes(
+      "use platform_windows::broker_artifact::prepare_release_broker_supervisor;",
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*(?:PreparedReleaseBrokerSupervisor|prepare_release_broker_supervisor)/u.test(
+      platformWindowsLib,
+    ) &&
+    !/(?:PreparedReleaseBrokerSupervisor|prepare_release_broker_supervisor)/u.test(
+      platformWindowsLibCode,
+    ) &&
+    platformWindowsProductionFiles
+      .filter(
+        (file) =>
+          file.path !== "crates/platform-windows/src/broker_artifact.rs" &&
+          file.path !== "crates/platform-windows/src/lib.rs",
+      )
+      .every(
+        (file) =>
+          !/(?:PreflightBrokerArtifact|PreparedReleaseBrokerSupervisor|prepare_release_broker_supervisor)/u.test(
+            file.source,
+          ),
+      ) &&
+    preparedBrokerTestOrder.every((position) => position !== -1) &&
+    preparedBrokerTestOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ),
+  "prepared release Broker supervisor must consume the preflight by value, retain only same-handle opaque identity, stay drop-only/private, and allocate no activation resource",
+);
+requireInvariant(
   activationArchitecture.includes("private, dormant Broker") &&
     activationArchitecture.includes("exactly three signing-TCB helper manifests") &&
-    /no supervisor\s+consumes it yet/u.test(activationArchitecture) &&
+    activationArchitecture.includes("`PreparedReleaseBrokerSupervisor`") &&
+    activationArchitecture.includes("same already-held file handle") &&
+    activationArchitecture.includes("all 128") &&
+    activationArchitecture.includes("not Broker activation") &&
+    activationArchitecture.includes("`COMPILED_RELEASE_POLICY` remains `None`") &&
+    activationArchitecture.includes("4900/exit-78") &&
     activationReadme.includes("private dormant Broker artifact preflight") &&
-    activationReadme.includes("no supervisor consumes") &&
+    activationReadme.includes("`prepare_release_broker_supervisor`") &&
+    activationReadme.includes("same already-held file handle") &&
+    activationReadme.includes("non-cloneable and drop-only") &&
+    /it\s+is not Broker activation/u.test(activationReadme) &&
+    activationReadme.includes("`COMPILED_RELEASE_POLICY = None`") &&
     securityDecisions.includes("private dormant Broker preflight") &&
-    securityDecisions.includes("not production Broker activation"),
-  "Broker artifact admission must remain documented as dormant and release-blocking",
+    securityDecisions.includes("`PreparedReleaseBrokerSupervisor`") &&
+    securityDecisions.includes("same already-held") &&
+    securityDecisions.includes("not production Broker activation") &&
+    securityDecisions.includes("Current release status: STOP-SHIP") &&
+    rootReadme.includes("`PreparedReleaseBrokerSupervisor`") &&
+    rootReadme.includes("경로 재열기") &&
+    rootReadme.includes("Broker 활성화가 아니라") &&
+    rootReadme.includes("실제 릴리스 정책은 계속 `None`"),
+  "Broker preflight-to-prepared handoff must remain documented as inert, same-handle, private, resource-free, release-disabled, and STOP-SHIP",
 );
 const productionProcessCreationSites = platformWindowsProductionFiles.flatMap(
   (file) =>
@@ -4030,10 +4243,6 @@ const brokerSupervisor = await text(
   "crates/platform-windows/src/broker_supervisor.rs",
 );
 const brokerSupervisorProduction = withoutBottomTestModule(brokerSupervisor);
-const exactBrokerImage = await text(
-  "crates/platform-windows/src/exact_image.rs",
-);
-const exactBrokerImageProduction = withoutBottomTestModule(exactBrokerImage);
 const nativeWindowsBrokerBridge = await text(
   "crates/native-host/src/windows_broker_bridge.rs",
 );
@@ -4089,9 +4298,50 @@ requireInvariant(
   /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*mod broker_supervisor;/u.test(
     platformWindowsLib,
   ) &&
-    /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*mod exact_image;/u.test(
+    /#\[cfg\(windows\)\]\s*#\[allow\(dead_code\)\]\s*mod exact_image;/u.test(
       platformWindowsLib,
     ) &&
+    !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*exact_image/u.test(
+      platformWindowsLib,
+    ) &&
+    /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub\(crate\) struct PinnedBrokerImage/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*impl PinnedBrokerImage/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*impl fmt::Debug for PinnedBrokerImage/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*impl From<HelperError> for ExactImageError/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    /#\[cfg\(all\(\s*windows,\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub\(crate\) fn hold_dormant_broker\(candidate: &Path\) -> Result<Self, HelperError>\s*\{\s*sys::hold_dormant_broker\(candidate\)\s*\}/u.test(
+      activationHelper,
+    ) &&
+    /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub\(super\) fn hold_dormant_broker\(candidate: &Path\) -> Result<VerifiedHelper, HelperError>\s*\{/u.test(
+      activationHelper,
+    ) &&
+    (activationHelper.match(/\bhold_dormant_broker\s*\(/gu) ?? []).length === 3 &&
+    (exactBrokerImageProduction.match(/VerifiedHelper::hold_dormant_broker\(/gu) ?? [])
+      .length === 1 &&
+    (exactBrokerImageProduction.match(/VerifiedHelper::hold_dormant_broker\b/gu) ?? [])
+      .length === 1 &&
+    platformWindowsProductionFiles
+      .filter(
+        (file) =>
+          file.path !== "crates/platform-windows/src/helper.rs" &&
+          file.path !== "crates/platform-windows/src/exact_image.rs",
+      )
+      .every((file) => !/\bhold_dormant_broker\b/u.test(file.source)) &&
+    JSON.stringify(exactImageVisibleFunctionNames) ===
+      JSON.stringify([
+        "held_helper_file_identity",
+        "hold",
+        "path",
+        "authenticate_mapped_image",
+        "exact_file_identity",
+      ]) &&
     brokerSupervisorExports.includes("DormantBrokerPayloadChannel") &&
     brokerSupervisorExports.includes("connect_inherited_native_host_channel") &&
     brokerSupervisorExports.includes("launch_dormant_broker_channel") &&
@@ -4105,7 +4355,7 @@ requireInvariant(
     ) &&
     (nativeLibraryForContract.match(/\bwindows_broker_bridge\b/gu) ?? [])
       .length === 2,
-  "Windows Broker supervisor, exact-image proof, and Native Host bridge APIs must be absent outside the Windows debug feature gate",
+  "Windows exact-file identity core must stay private and Windows-only while every path-opening Broker supervisor/image and Native Host bridge API remains behind the exact debug feature gate",
 );
 const brokerDisabledMain = rustItemBlock(
   brokerMainForContract,
@@ -4417,15 +4667,60 @@ const duplicateBrokerProcessObservation = rustItemBlock(
 );
 const exactFileIdentityDefinition = rustItemBlock(
   exactBrokerImageProduction,
-  /(?:^|\n)struct ExactFileIdentity\s*\{/u,
+  /(?:^|\n)pub\(super\) struct ExactFileIdentity\s*\{/u,
 );
 const exactFileIdentityNew = rustFunctionBlock(
   exactBrokerImageProduction,
   "new",
 );
+const exactFileIdentityQuery = rustFunctionBlock(
+  exactBrokerImageProduction,
+  "exact_file_identity",
+);
+const exactFileIdentityNewNormalized = exactFileIdentityNew
+  .replace(/\s+/gu, " ")
+  .trim();
+const exactFileIdentityQueryNormalized = exactFileIdentityQuery
+  .replace(/^\s*\/\/.*$/gmu, "")
+  .replace(/\s+/gu, " ")
+  .trim();
+const exactFileIdentityDebug = rustItemBlock(
+  exactBrokerImageProduction,
+  /(?:^|\n)impl fmt::Debug for ExactFileIdentity\s*\{/u,
+);
+const exactFileIdentityZeroize = rustItemBlock(
+  exactBrokerImageProduction,
+  /(?:^|\n)impl Zeroize for ExactFileIdentity\s*\{/u,
+);
+const exactFileIdentityDrop = rustItemBlock(
+  exactBrokerImageProduction,
+  /(?:^|\n)impl Drop for ExactFileIdentity\s*\{/u,
+);
+const exactFileIdentityTraitImpls = [
+  ...exactBrokerImageProduction.matchAll(
+    /(?:^|\n)\s*(?:unsafe\s+)?impl\s+(?<trait>[^\r\n{]+?)\s+for\s+[^\r\n{]*\bExactFileIdentity\b[^\r\n{]*\{/gu,
+  ),
+].map((match) => match.groups.trait.trim());
+const exactFileIdentityDebugNormalized = exactFileIdentityDebug
+  .replace(/\s+/gu, " ")
+  .trim();
+const exactFileIdentityZeroizeNormalized = exactFileIdentityZeroize
+  .replace(/\s+/gu, " ")
+  .trim();
+const exactFileIdentityDropNormalized = exactFileIdentityDrop
+  .replace(/\s+/gu, " ")
+  .trim();
 const exactMappedImageAuthentication = rustFunctionBlock(
   exactBrokerImageProduction,
   "authenticate_mapped_image",
+);
+const exactFileIdentitySentinelTest = rustFunctionBlock(
+  exactBrokerImage,
+  "exact_file_identity_rejects_zero_volume_and_sentinel_file_ids",
+);
+const exactFileIdentityEqualityTest = rustFunctionBlock(
+  exactBrokerImage,
+  "exact_file_identity_equality_binds_volume_and_all_128_file_id_bits",
 );
 requireInvariant(
   launchBrokerPath.includes("PinnedBrokerImage::hold(broker_path)") &&
@@ -4434,24 +4729,47 @@ requireInvariant(
     ) &&
     exactBrokerImageProduction.includes("FILE_ID_INFO") &&
     exactBrokerImageProduction.includes("GetFileInformationByHandleEx(") &&
-    /#\[derive\(Clone, Copy, Eq, PartialEq\)\]\s*struct ExactFileIdentity/u.test(
+    /#\[derive\(Eq, PartialEq\)\]\s*pub\(super\) struct ExactFileIdentity/u.test(
       exactBrokerImageProduction,
     ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*pub\(super\) struct ExactFileIdentity/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Serialize|serde::Serialize)\s+for\s+ExactFileIdentity/u.test(
+      exactBrokerImageProduction,
+    ) &&
+    JSON.stringify(exactFileIdentityTraitImpls) ===
+      JSON.stringify(["fmt::Debug", "Zeroize", "Drop"]) &&
     exactFileIdentityDefinition.includes("volume_serial_number: u64") &&
     exactFileIdentityDefinition.includes("file_id: [u8; 16]") &&
-    exactFileIdentityNew.includes("volume_serial_number == 0") &&
-    exactFileIdentityNew.includes("file_id == [0; 16]") &&
-    exactFileIdentityNew.includes("file_id == [u8::MAX; 16]") &&
-    exactMappedImageAuthentication.includes(
-      "sys::exact_file_identity(mapped_image)? == self.identity",
+    exactFileIdentityDebugNormalized ===
+      'impl fmt::Debug for ExactFileIdentity { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("ExactFileIdentity([FILE_ID_INFO])") } }' &&
+    exactFileIdentityZeroizeNormalized ===
+      "impl Zeroize for ExactFileIdentity { fn zeroize(&mut self) { self.volume_serial_number.zeroize(); self.file_id.zeroize(); } }" &&
+    exactFileIdentityDropNormalized ===
+      "impl Drop for ExactFileIdentity { fn drop(&mut self) { self.zeroize(); } }" &&
+    exactFileIdentityNewNormalized ===
+      "fn new(volume_serial_number: u64, file_id: [u8; 16]) -> Result<Self, ExactImageError> { if volume_serial_number == 0 || file_id == [0; 16] || file_id == [u8::MAX; 16] { return Err(ExactImageError::IdentityUnavailable); } Ok(Self { volume_serial_number, file_id, }) }" &&
+    exactFileIdentityQueryNormalized ===
+      "pub(super) fn exact_file_identity( handle: HANDLE, ) -> Result<ExactFileIdentity, ExactImageError> { if handle.is_invalid() || handle == INVALID_HANDLE_VALUE { return Err(ExactImageError::IdentityUnavailable); } let mut information = FILE_ID_INFO::default(); unsafe { GetFileInformationByHandleEx( handle, FileIdInfo, ptr::from_mut(&mut information).cast::<c_void>(), u32::try_from(size_of_val(&information)) .map_err(|_| ExactImageError::IdentityUnavailable)?, ) } .map_err(|_| ExactImageError::IdentityUnavailable)?; ExactFileIdentity::new( information.VolumeSerialNumber, information.FileId.Identifier, ) }" &&
+    exactMappedImageAuthentication.includes("sys::exact_file_identity(mapped_image)?") &&
+    exactMappedImageAuthentication.includes(".eq(&self.identity)") &&
+    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(0, valid_file_id)") &&
+    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(7, [0; 16])") &&
+    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(7, [u8::MAX; 16])") &&
+    (exactFileIdentitySentinelTest.match(/ExactImageError::IdentityUnavailable/gu) ?? [])
+      .length === 3 &&
+    exactFileIdentityEqualityTest.includes(
+      "assert_eq!(expected, ExactFileIdentity::new(7, file_id)?)",
     ) &&
-    exactBrokerImage.includes(
-      "exact_file_identity_rejects_zero_volume_and_sentinel_file_ids",
+    exactFileIdentityEqualityTest.includes(
+      "assert_ne!(expected, ExactFileIdentity::new(8, file_id)?)",
     ) &&
-    exactBrokerImage.includes(
-      "exact_file_identity_equality_binds_volume_and_all_128_file_id_bits",
+    exactFileIdentityEqualityTest.includes("for index in [0_usize, 8, 15]") &&
+    exactFileIdentityEqualityTest.includes("mismatched_file_id[index] ^= 1") &&
+    exactFileIdentityEqualityTest.includes(
+      "assert_ne!(expected, ExactFileIdentity::new(7, mismatched_file_id)?)",
     ) &&
-    exactBrokerImage.includes("for index in [0_usize, 8, 15]") &&
     authenticateBrokerImage.includes("CREATE_PROCESS_DEBUG_EVENT") &&
     authenticateBrokerImage.includes(
       "image.authenticate_mapped_image(event_file.raw())",

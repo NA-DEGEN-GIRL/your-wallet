@@ -507,7 +507,7 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 - Sepolia 실행판 테스트 264개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
-- 프로덕션 Rust 테스트 548개 실행 통과
+- 프로덕션 Rust 테스트 549개 실행 통과
 - 부모 커널 테스트 전용 headless 자식 fixture 6개는 직접 실행하지 않도록 의도적으로 제외
 - 위 Rust 테스트와 별도로 보안용 컴파일 실패 테스트 23개 통과
 - Chrome 확장 프로그램 테스트 33개 통과
@@ -540,9 +540,14 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   릴리스 Broker 시작 경로로 사용할 수 없습니다.
 - 일반 빌드에는 Broker 전송 증거와 Broker manifest를 3개 서명 helper allowlist와
   분리해 검사하는 비공개 사전검증 capability도 있습니다. 역할, 완전한 릴리스 증거,
-  정확한 manifest, 절대 경로를 순서대로 확인하지만 실행·프로세스·파이프 API가 없고
-  어떤 supervisor도 아직 소비하지 않습니다. 실제 릴리스 정책은 계속 `None`이므로
-  이 구조만으로 Broker가 시작되지는 않습니다.
+  정확한 manifest, 절대 경로를 순서대로 확인합니다. Windows 전용 비공개 준비 단계는
+  이 capability를 값으로 소비하고 이미 잡아 둔 바로 그 파일 핸들에서 volume serial과
+  `FILE_ID_INFO`의 128비트 file ID를 얻어 불투명한
+  `PreparedReleaseBrokerSupervisor`에 함께 보관합니다. 이 non-clone 상태의 Debug 출력은
+  가려져 있고 drop만 가능하며, 경로 재열기, raw handle/PID/accessor/export,
+  프로세스·스레드·파이프·Job·채널·launch 자원은 없습니다. 이는 Broker 활성화가 아니라
+  같은 파일 객체의 신원을 다음 단계에 잃지 않고 넘기기 위한 준비 typestate입니다.
+  실제 릴리스 정책은 계속 `None`이므로 이 구조만으로 Broker가 시작되지는 않습니다.
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.

@@ -47,6 +47,18 @@
 //! use platform_windows::broker_artifact::preflight_broker_artifact;
 //! ```
 //!
+//! The resulting release supervisor preparation is private and inert too. It
+//! retains only the admitted file and its opaque Windows file identity; there
+//! is no launch or resource accessor surface:
+//!
+//! ```compile_fail
+//! use platform_windows::broker_artifact::PreparedReleaseBrokerSupervisor;
+//! ```
+//!
+//! ```compile_fail
+//! use platform_windows::broker_artifact::prepare_release_broker_supervisor;
+//! ```
+//!
 //! The public one-shot helper launcher also rejects the manifest-derived Key
 //! Agent role; an allowlisted Key Agent cannot use that resumed-process path.
 
@@ -57,9 +69,10 @@ mod anchor_registry;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
-// This pure admission seam checks Broker role, complete release evidence, its
-// distinct manifest allowlist, and absolute verified path without allocating a
-// Job, pipe, thread, or process. It remains private and has no launch operation.
+// This pure admission and prepared-supervisor seam checks Broker role, complete
+// release evidence, its distinct manifest allowlist, absolute verified path,
+// and same-handle FILE_ID_INFO without allocating a Job, pipe, channel, thread,
+// or process. It remains private and has no launch operation.
 #[allow(dead_code)]
 mod broker_artifact;
 // This persistent secretless native-host/Broker transport is composed only by
@@ -76,11 +89,11 @@ mod broker_channel;
     debug_assertions
 ))]
 mod broker_supervisor;
-#[cfg(all(
-    windows,
-    feature = "broker-channel-contract-test-hook",
-    debug_assertions
-))]
+// Only the opaque same-handle identity core is available to the dormant
+// release-preparation seam. The path-opening/mapped-image debug primitive stays
+// item-gated by the exact debug hook inside this private module.
+#[cfg(windows)]
+#[allow(dead_code)]
 mod exact_image;
 // Exact image-file authentication and suspended-process ownership remain
 // crate-private until the supervisor can bind the resulting capability to the
