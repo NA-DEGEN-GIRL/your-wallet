@@ -426,28 +426,62 @@ of the 17 Windows-negative logs, excluding only the review attestation and its
 detached signature to avoid a cycle; the reviewer public key is included. A
 separate read-only subject command derives this commitment directly from an
 exact, reparse-free, non-hard-linked staging tree before the two excluded files
-exist. The Windows ceremony wrapper bootstrap-opens the requested root,
-converts it to a handle-derived local volume-GUID path, locks every canonical
-ancestor from the volume root down without delete sharing, and accepts the
-canonical root only when its non-sentinel volume serial and complete 128-bit
-file ID match the bootstrap handle. It then discards the original alias, holds
-every staging directory and file with no write/delete sharing, proves effective
-read-only state, and repeats its tree checks around the single deterministic
-Node calculation. The Node path resolver enumerates every volume-path parent
-and requires the actual entry spelling to match exactly, including the root
-`evidence` entry. The same path pinning applies to the bundle and every
-external input in final offline verification, so ancestor junction, mount, or
-drive-alias retargets cannot redirect a path-based pass to different bytes;
-unsupported or UNC identities fail closed. Both wrappers collapse failures to
-fixed category lines without path disclosure, including raw argument binding:
-unknown, missing, duplicate, and wrong-case names are rejected by an exact
-dictionary parser inside the protected boundary. The Windows release gate also
-runs a volume-GUID case-alias rejection and a successful wrapper with its real
-Node call deliberately blocked, retargets the ancestor junction from valid tree
-A to different valid tree B, proves the canonical root still denies rename while
-the child is blocked, then requires the emitted subject to remain exactly A.
-Running the Node core alone does
-not prove those Windows share-mode, volume-identity, or offline properties.
+exist.
+
+Both ceremony wrappers execute from a separately controlled verifier toolset,
+never from the candidate tree. Its independently checkpointed aggregate covers
+exactly `node.exe`, both wrappers, `common.ps1`, the two release MJS modules,
+and the native-host manifest validator in a fixed four-directory tree. Exact
+case, no extra entry, one hard link and default stream per file, read-only
+attributes, separate failed file-creation and subdirectory-creation probes in
+every directory, full volume/file identity, and disjoint candidate/toolset roots
+are mandatory. This runtime aggregate is a consistency/version pin; the already
+executing wrapper and Windows PowerShell bootstrap must themselves come from
+trusted write-protected media. An approved 64-bit Node image requires a fresh
+trusted 64-bit Windows PowerShell host.
+
+The wrapper bootstrap-opens each requested data root, converts it to a
+handle-derived local volume-GUID path, locks every canonical ancestor from the
+volume root down without delete sharing, and accepts the canonical root only
+when its non-sentinel volume serial and complete 128-bit file ID match the
+bootstrap handle. It then discards the original alias, holds every staging
+directory and file with no write/delete sharing, proves effective read-only
+state, and repeats its tree checks around the deterministic calculation. The
+Node path resolver enumerates every volume-path parent and requires the actual
+entry spelling to match exactly, including the root `evidence` entry. The same
+path pinning applies to the bundle and every external input in final offline
+verification.
+
+The runner bypasses function, alias, and `PATH` resolution. One fresh one-shot
+thread owns process creation, every debug event, image authentication,
+continuation, detach, and fail-closed debugger-thread exit. It creates the pinned
+Node image with a minimal three-variable environment, closed stdin, bounded raw
+output, no addons/global lookup, and a hard deadline. Before any user-mode
+instruction is released, its first `CREATE_PROCESS_DEBUG_EVENT` image handle
+must equal the retained `node.exe` by volume serial and all 128 file-ID bits. The
+three pinned JavaScript files are read through retained volume-GUID paths and
+evaluated as one in-memory `vm.SourceTextModule` graph in a distinct,
+string/wasm-code-generation-disabled context. That context exposes only the pinned source's
+required `Buffer` and `TextDecoder` globals and a minimal `node:process` facade.
+Only the exact review-to-release and release-to-native-validator relative edges
+and the five required `node:` built-ins can resolve. This separately closes both
+the DOS executable mapping race and a DOS script/module path race. The VM
+context blocks accidental ambient CommonJS/global lookup but is not a
+hostile-JavaScript sandbox; independently reviewed source bytes remain inside
+the verifier-toolset trust boundary.
+
+Ancestor junction, mount, drive-alias, or DOS-device retargets therefore cannot
+redirect a pass to different executable, module, or candidate bytes;
+unsupported or UNC identities fail closed. Both wrappers require exact exit,
+stderr, and stdout bytes and collapse every failure to fixed category lines
+without path disclosure. Raw argument names are case-sensitive and unknown,
+missing, duplicate, or wrong-case names are rejected inside that protected
+boundary. The Windows release gate stages an exact toolset, deliberately blocks
+its pinned proxy child, retargets the ancestor junction from valid tree A to
+different valid tree B, proves the canonical root still denies rename, and
+requires the exact subject bytes to remain A plus one LF. Running the Node core
+alone does not prove the Windows share-mode, mapped-image, module-graph,
+volume-identity, or offline properties.
 Assembly and final verification independently recompute the same value,
 and v1 or stale attestations fail closed. This prevents a release-manifest key
 holder from replacing installer/native-host, advisory, or Windows-negative

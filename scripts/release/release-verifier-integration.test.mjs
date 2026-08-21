@@ -936,7 +936,7 @@ test("manifest assembly independently enforces review evidence-set v2 before out
   }
 });
 
-test("offline wrapper requires a case-sensitive pin and withholds both child passes", async () => {
+test("offline wrapper requires case-sensitive identity pins and a sealed verifier toolset", async () => {
   const [wrapper, common] = await Promise.all([
     readFile("scripts/release/verify-release-offline.ps1", "utf8"),
     readFile("scripts/release/common.ps1", "utf8"),
@@ -948,14 +948,21 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
     1,
   );
   assert.equal(
-    wrapper.match(/\[void\]\(Invoke-ReleaseCommand -Executable "node" -CommandArguments \$verifyArguments -WorkingDirectory \$PSScriptRoot\)/gu)?.length,
+    wrapper.match(/Invoke-ReleaseToolsetNode/gu)?.length,
     2,
   );
   assert.equal(
-    wrapper.match(/Write-Output "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION"/gu)?.length,
+    wrapper.match(/\[Console\]::Out\.Write\("PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION`n"\)/gu)?.length,
     1,
   );
-  assert.ok(common.includes("output withheld; inspect locally with privacy redaction"));
+  assert.ok(wrapper.includes("[string]$ExpectedVerifierToolsetSha256"));
+  assert.ok(wrapper.includes("Open-VerifiedReleaseToolset"));
+  assert.ok(wrapper.includes("Assert-ReleaseTreesDisjoint"));
+  assert.ok(wrapper.includes("CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n"));
+  assert.equal(wrapper.match(/\$firstPass\.(?:ExitCode|Stderr|Stdout)/gu)?.length, 3);
+  assert.equal(wrapper.match(/\$secondPass\.(?:ExitCode|Stderr|Stdout)/gu)?.length, 3);
+  assert.ok(!wrapper.includes('Get-Command "node"'));
+  assert.ok(!wrapper.includes('Invoke-ReleaseCommand -Executable "node"'));
   assert.ok(wrapper.includes("$bundle = $releaseLocks.CanonicalBundleRoot"));
   assert.ok(wrapper.includes("$canonicalInputs = @($releaseLocks.CanonicalAdditionalFiles)"));
   assert.ok(wrapper.includes("ConvertFrom-ExactNamedArguments"));
@@ -965,6 +972,14 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
   assert.ok(wrapper.includes("RELEASE_VERIFICATION_FAILED: offline release verification failed closed"));
   assert.ok(common.includes("GetFinalPathNameByHandleW"));
   assert.ok(common.includes("FileInfoByHandleClass.FileIdInfo"));
+  assert.ok(common.includes("function Open-VerifiedReleaseToolset"));
+  assert.ok(common.includes("function Invoke-ReleaseToolsetNode"));
+  assert.ok(common.includes('"PATH=" + systemDirectory'));
+  assert.ok(common.includes('"SystemRoot=" + windowsDirectory'));
+  assert.ok(common.includes('"WINDIR=" + windowsDirectory'));
+  assert.ok(common.includes("CreateUnicodeEnvironment"));
+  assert.ok(common.includes("ProcThreadAttributeHandleList"));
+  assert.ok(!common.includes("ProcessStartInfo"));
 
   const probeRoot = await mkdtemp(path.join(os.tmpdir(), "your-wallet-extension-pin-"));
   const probe = path.join(probeRoot, "validate-extension-id.ps1");
@@ -1005,6 +1020,7 @@ test("offline wrapper requires a case-sensitive pin and withholds both child pas
         "-ExpectedExtensionId", EXTENSION_ID,
         "-ExpectedReviewerKeyIdSha256", "2".repeat(64),
         "-ExpectedSignerCertificateSha256", "3".repeat(64),
+        "-ExpectedVerifierToolsetSha256", "4".repeat(64),
         "-OperatorConfirmedNetworkIsolation",
       ]),
       (error) => {

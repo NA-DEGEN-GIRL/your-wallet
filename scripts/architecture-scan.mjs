@@ -5268,6 +5268,12 @@ requireStableDisplay(secretInput, "SecretInputError", "secret-input channel I/O 
 const releaseVerifier = await text("scripts/release/verify-release-offline.ps1");
 const releaseCommon = await text("scripts/release/common.ps1");
 const releaseCommonTests = await text("scripts/release/common.test.ps1");
+const releaseVerifierToolsetPreparation = await text(
+  "scripts/release/prepare-verifier-toolset.ps1",
+);
+const releaseVerifierToolsetTests = await text(
+  "scripts/release/verifier-toolset.test.ps1",
+);
 const releaseCheck = await text("scripts/release/check.ps1");
 const releaseManifestVerifier = await text("scripts/release/release-manifest.mjs");
 const releaseManifestTests = await text("scripts/release/release-manifest.test.mjs");
@@ -5342,7 +5348,7 @@ const extensionPinArityIntegrationTestBlock = rustItemBlock(
 );
 const extensionPinWrapperIntegrationTestBlock = rustItemBlock(
   releaseVerifierIntegrationTests,
-  /(?:^|\n)test\("offline wrapper requires a case-sensitive pin and withholds both child passes"/u,
+  /(?:^|\n)test\("offline wrapper requires case-sensitive identity pins and a sealed verifier toolset"/u,
 );
 const computeReviewedEvidenceSetBlock = rustItemBlock(
   releaseManifestVerifier,
@@ -5468,15 +5474,35 @@ requireInvariant(
     offlineReleaseVerificationBlock.includes('"--expected-extension-id", $ExpectedExtensionId') &&
     (offlineReleaseVerificationBlock.match(/\$verifyArguments\b/gu) ?? []).length === 4 &&
     (offlineReleaseVerificationBlock.match(/\bverifyArguments\b/gu) ?? []).length === 4 &&
+    offlineReleaseVerificationBlock.includes("[string]$ExpectedVerifierToolsetSha256") &&
+    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2 &&
+    offlineReleaseVerificationBlock.includes("Open-VerifiedReleaseToolset") &&
+    offlineReleaseVerificationBlock.includes("Assert-ReleaseTreesDisjoint") &&
+    offlineReleaseVerificationBlock.includes(
+      'Microsoft.PowerShell.Security\\Get-AuthenticodeSignature',
+    ) &&
+    offlineReleaseVerificationBlock.includes(
+      'CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n',
+    ) &&
+    (offlineReleaseVerificationBlock.match(/\$firstPass\.(?:ExitCode|Stderr|Stdout)/gu) ?? [])
+      .length === 3 &&
+    (offlineReleaseVerificationBlock.match(/\$secondPass\.(?:ExitCode|Stderr|Stdout)/gu) ?? [])
+      .length === 3 &&
+    !offlineReleaseVerificationBlock.includes('Get-Command "node"') &&
+    !offlineReleaseVerificationBlock.includes('Invoke-ReleaseCommand -Executable "node"') &&
     !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
       releaseVerifier,
     ),
-  "offline release verification must accept one exact lowercase external extension-ID pin and retain one immutable two-pass argument list",
+  "offline release verification must retain one immutable two-pass argument list and authenticate a separately pinned verifier toolset",
 );
 requireInvariant(
-  (offlineReleaseVerificationBlock.match(/Invoke-ReleaseCommand\s+-Executable\s+"node"\s+-CommandArguments\s+\$verifyArguments/gu) ?? [])
-    .length === 2,
-  "offline release verification must rehash and reverify after Authenticode inspection",
+  (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2 &&
+    offlineReleaseVerificationBlock.includes("$firstPass.ExitCode -ne 0") &&
+    offlineReleaseVerificationBlock.includes("$secondPass.ExitCode -ne 0") &&
+    offlineReleaseVerificationBlock.includes(
+      '[Console]::Out.Write("PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION`n")',
+    ),
+  "offline release verification must require two exact sealed cryptographic passes around Authenticode inspection",
 );
 requireInvariant(
   releaseVerifier.includes("function Invoke-OfflineReleaseVerification") &&
@@ -5494,7 +5520,6 @@ requireInvariant(
     releaseVerifier.includes(
       "$canonicalInputs = @($releaseLocks.CanonicalAdditionalFiles)",
     ) &&
-    (releaseVerifier.match(/-WorkingDirectory \$PSScriptRoot/gu) ?? []).length === 2 &&
     (releaseVerifier.match(/\$BundleRoot\b/gu) ?? []).length === 2 &&
     releaseCommon.includes("GetFinalPathNameByHandleW") &&
     releaseCommon.includes("private const uint VolumeNameGuid = 0x00000001") &&
@@ -5511,6 +5536,14 @@ requireInvariant(
     releaseCommon.includes("SameIdentity($bootstrap, $fileHandle)") &&
     releaseCommon.includes("CanonicalBundleRoot = $canonicalRoot") &&
     releaseCommon.includes("CanonicalAdditionalFiles = $canonicalAdditionalFiles.ToArray()") &&
+    releaseCommon.includes("function Open-VerifiedReleaseToolset") &&
+    releaseCommon.includes("function Invoke-ReleaseToolsetNode") &&
+    releaseCommon.includes("function Close-VerifiedReleaseToolset") &&
+    releaseCommon.includes("function Assert-ReleaseTreesDisjoint") &&
+    releaseCommon.includes("scripts/release/review-evidence-set.ps1") &&
+    releaseCommon.includes("scripts/release/verify-release-offline.ps1") &&
+    releaseCommon.includes("Release toolset files must have exactly one hard link") &&
+    releaseCommon.includes("Release toolset files may not contain alternate data streams") &&
     releaseCommon.includes("function ConvertFrom-ExactNamedArguments") &&
     releaseCommon.includes(
       "Dictionary[string, object]]::new([System.StringComparer]::Ordinal)",
@@ -5558,16 +5591,132 @@ requireInvariant(
     releaseCommonTests.includes("REVIEW_EVIDENCE_SET_FAILED: staged evidence set is not exact\\n"),
   "the deterministic Node consumers must accept only normalized, exact-case local volume-GUID paths without re-resolving their pinned Windows alias, while retaining realpath elsewhere",
 );
+const releaseCreateProcessIndex = releaseCommon.indexOf("if (!CreateProcessW(");
+const releaseCreateEventIndex = releaseCommon.indexOf(
+  "if (eventCode != CreateProcessDebugEvent || Invalid(eventFile))",
+);
+const releaseMappedIdentityIndex = releaseCommon.indexOf(
+  "FileIdInformation mappedIdentity = Identity(eventFile);",
+);
+const releasePreDetachSuspendIndex = releaseCommon.indexOf(
+  "previousSuspendCount = SuspendThread(primaryThread);",
+  releaseMappedIdentityIndex,
+);
+const releaseContinueDebugIndex = releaseCommon.indexOf(
+  "if (!ContinueDebugEvent(eventProcessId, eventThreadId, DbgContinue))",
+  releasePreDetachSuspendIndex,
+);
+const releaseDetachDebugIndex = releaseCommon.indexOf(
+  "if (!DebugActiveProcessStop(processId))",
+  releaseContinueDebugIndex,
+);
+const releaseFinalResumeIndex = releaseCommon.indexOf(
+  "previousSuspendCount = ResumeThread(primaryThread);",
+  releaseDetachDebugIndex,
+);
+requireInvariant(
+  releaseCommon.includes("private const uint DebugOnlyThisProcess = 0x00000002") &&
+    releaseCommon.includes("private const uint CreateSuspended = 0x00000004") &&
+    releaseCommon.includes("private const long ProcThreadAttributeHandleList = 0x00020002") &&
+    releaseCommon.includes("private const long ProcThreadAttributeMitigationPolicy = 0x00020007") &&
+    releaseCommon.includes("new IntPtr(IntPtr.Size * 3)") &&
+    releaseCommon.includes('"PATH=" + systemDirectory') &&
+    releaseCommon.includes('"SystemRoot=" + windowsDirectory') &&
+    releaseCommon.includes('"WINDIR=" + windowsDirectory') &&
+    /environment,\r?\n\s*systemDirectory,/u.test(releaseCommon) &&
+    releaseCommon.includes("WaitForDebugEventEx(debugEvent, eventWait)") &&
+    releaseCommon.includes("GetProcessIdFromEvent(eventProcess)") &&
+    releaseCommon.includes("GetThreadIdFromEvent(eventThread)") &&
+    releaseCommon.includes("FileIdInformation mappedIdentity = Identity(eventFile);") &&
+    releaseCommon.includes("if (!SameIdentity(expectedIdentity, mappedIdentity))") &&
+    releaseCommon.includes('previousSuspendCount != 0') &&
+    releaseCommon.includes('previousSuspendCount != 2') &&
+    releaseCommon.includes('previousSuspendCount != 1') &&
+    releaseCommon.includes("using System.Runtime.ExceptionServices;") &&
+    releaseCommon.includes("Thread worker = new Thread(delegate()") &&
+    releaseCommon.includes("result = RunOnFreshThread(") &&
+    releaseCommon.includes("failure = ExceptionDispatchInfo.Capture(error)") &&
+    releaseCommon.includes("worker.IsBackground = false") &&
+    releaseCommon.includes("worker.Join()") &&
+    releaseCommon.includes("private static ReleaseToolsetProcessResult RunOnFreshThread(") &&
+    releaseCommon.includes("[System.Environment]::Is64BitOperatingSystem") &&
+    releaseCommon.includes("[System.Environment]::Is64BitProcess") &&
+    releaseCreateProcessIndex !== -1 &&
+    releaseCreateProcessIndex < releaseCreateEventIndex &&
+    releaseCreateEventIndex < releaseMappedIdentityIndex &&
+    releaseMappedIdentityIndex < releasePreDetachSuspendIndex &&
+    releasePreDetachSuspendIndex < releaseContinueDebugIndex &&
+    releaseContinueDebugIndex < releaseDetachDebugIndex &&
+    releaseDetachDebugIndex < releaseFinalResumeIndex,
+  "the sealed verifier runner must isolate one fresh 64-bit debugger thread and authenticate the first mapped image by full file identity before a guarded detach and final user-mode resume",
+);
+requireInvariant(
+  releaseCommon.includes('"--no-addons"') &&
+    releaseCommon.includes('"--no-global-search-paths"') &&
+    releaseCommon.includes('"--experimental-vm-modules"') &&
+    releaseCommon.includes("new TextDecoder(\"utf-8\", { fatal: true })") &&
+    releaseCommon.includes("new vm.SourceTextModule(readSource(name)") &&
+    releaseCommon.includes("new vm.SyntheticModule(names") &&
+    releaseCommon.includes("const sealedArgv = Object.freeze([") &&
+    releaseCommon.includes("const processFacade = Object.create(null)") &&
+    releaseCommon.includes("Object.freeze(processFacade)") &&
+    releaseCommon.includes('Object.defineProperty(sandbox, "Buffer"') &&
+    releaseCommon.includes('Object.defineProperty(sandbox, "TextDecoder"') &&
+    releaseCommon.includes("const context = vm.createContext(sandbox") &&
+    releaseCommon.includes("codeGeneration: { strings: false, wasm: false }") &&
+    releaseCommon.includes('if (specifier === "node:process")') &&
+    releaseCommon.includes('synthetic.setExport("default", processFacade)') &&
+    releaseCommon.includes('"node:crypto"') &&
+    releaseCommon.includes('"node:fs/promises"') &&
+    releaseCommon.includes('"node:path"') &&
+    releaseCommon.includes('"node:process"') &&
+    releaseCommon.includes('"node:url"') &&
+    releaseCommon.includes('specifier === "./release-manifest.mjs"') &&
+    releaseCommon.includes(
+      'specifier === "../../extension/native-host/validate-manifest.mjs"',
+    ) &&
+    releaseCommon.includes('throw new Error("sealed loader refused an unapproved module edge")') &&
+    releaseCommon.includes('importModuleDynamically() { throw new Error("dynamic module loading is disabled"); }') &&
+    !releaseCommon.includes("process.argv = [") &&
+    releaseCommon.includes('$record.VolumePaths["extension/native-host/validate-manifest.mjs"]') &&
+    releaseCommon.includes('$record.VolumePaths["scripts/release/release-manifest.mjs"]') &&
+    releaseCommon.includes('$record.VolumePaths["scripts/release/review-evidence-set.mjs"]') &&
+    /\$record\.IdentityHandles\["node\.exe"\],\r?\n\s*\$record\.DosPaths\["node\.exe"\]/u.test(
+      releaseCommon,
+    ),
+  "the sealed verifier must run only the retained Node image and a fatal-UTF-8 isolated module context with a minimal process facade, exact edges, built-ins, and volume-GUID sources",
+);
+requireInvariant(
+  releaseCommon.includes(".your-wallet-file-write-probe-") &&
+    releaseCommon.includes(".your-wallet-directory-write-probe-") &&
+    releaseCommon.includes("[System.IO.Directory]::CreateDirectory($directoryProbePath)") &&
+    releaseCommon.includes("[System.IO.Directory]::Delete($directoryProbePath, $false)") &&
+    (releaseCommon.match(/\$nativeError -eq 19/gu) ?? []).length === 2 &&
+    releaseCommon.includes("could not prove that a staging directory denies file creation") &&
+    releaseCommon.includes("could not prove that a staging directory denies subdirectory creation") &&
+    !releaseCommon.includes("Get-FileHash") &&
+    !releaseVerifierToolsetPreparation.includes("Get-FileHash") &&
+    (releaseCommon.match(/Get-Sha256Lower -LiteralPath/gu) ?? []).length >= 2 &&
+    releaseVerifierToolsetPreparation.includes("Get-Sha256Lower -LiteralPath"),
+  "release tree write protection must deny both file and subdirectory creation for only proven access/write-protect reasons, while security hashes bypass ambient cmdlets",
+);
 requireInvariant(
   releaseCommonTests.includes("$wrapperJob = Start-Job -ScriptBlock") &&
-    releaseCommonTests.includes("function node {") &&
-    releaseCommonTests.includes('[System.IO.File]::WriteAllText($TaskReadyPath, "ready")') &&
+    releaseCommonTests.includes("public static class BlockingReviewNodeProxy") &&
+    releaseCommonTests.includes('File.WriteAllText(ReadyPath, "ready"') &&
     releaseCommonTests.includes(
-      "while (-not [System.IO.File]::Exists($TaskContinuePath))",
+      "while (!File.Exists(ContinuePath))",
     ) &&
     releaseCommonTests.includes(
-      "$output = @(& $ReviewWrapper -BundleRoot $ReviewRoot",
+      '"-ExpectedVerifierToolsetSha256"',
     ) &&
+    releaseCommonTests.includes("$wrapperToolsetHash = Get-InventorySha256") &&
+    releaseCommonTests.includes("$wrapperToolsetRoot") &&
+    releaseCommonTests.includes("$wrapperResult.Stdout") &&
+    releaseCommonTests.includes("$wrapperResult.Stderr") &&
+    releaseCommonTests.includes('$subject.Stdout + "`n"') &&
+    !releaseCommonTests.includes("$wrapperResult.Output.Trim()") &&
+    !releaseCommonTests.includes("function node {") &&
     releaseCommonTests.includes("if ([System.IO.File]::Exists($taskReadyPath))") &&
     (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectRoot, \$subjectMoveProbe\)/gu) ?? [])
       .length === 2 &&
@@ -5583,16 +5732,16 @@ requireInvariant(
     releaseCommonTests.includes(
       '[System.IO.File]::WriteAllText($taskContinuePath, "continue")',
     ) &&
-    releaseCommonTests.includes("$wrapperResult.Output.Trim()") &&
-    releaseCommonTests.includes("$subject.Stdout.Trim()") &&
-    releaseCommonTests.includes("$replacementSubject.Stdout.Trim()") &&
+    releaseCommonTests.includes('$replacementSubject.Stdout + "`n"') &&
     releaseCommonTests.includes(
       "Review wrapper followed the replacement ancestor alias",
     ) &&
     releaseCheck.includes(
-      'Invoke-Checked -Executable "powershell" -CommandArguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "common.test.ps1"))',
-    ),
-  "the release gate must execute a real successful wrapper ceremony whose blocked Node child survives an ancestor junction retarget while remaining bound to canonical A",
+      'foreach ($testScriptName in @("common.test.ps1", "verifier-toolset.test.ps1"))',
+    ) &&
+    releaseCheck.includes('Invoke-Checked -Executable "powershell"') &&
+    releaseCheck.includes("(Join-Path $PSScriptRoot $testScriptName)"),
+  "the release gate must execute a real successful sealed-toolset wrapper ceremony whose pinned blocked child survives an ancestor junction retarget while returning exact canonical A bytes",
 );
 const normalizedValidateReleaseManifest = validateReleaseManifestBlock
   .replace(/\s+/gu, " ")
@@ -5712,9 +5861,17 @@ requireInvariant(
     extensionPinWrapperIntegrationTestBlock.includes("RegexOptions]::CultureInvariant") &&
     extensionPinWrapperIntegrationTestBlock.includes('"A".repeat(32)') &&
     extensionPinWrapperIntegrationTestBlock.includes(
-      "output withheld; inspect locally with privacy redaction",
+      "ExpectedVerifierToolsetSha256",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes("Open-VerifiedReleaseToolset") &&
+    extensionPinWrapperIntegrationTestBlock.includes("Invoke-ReleaseToolsetNode") &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION`n",
     ),
-  "integration evidence must reject an internally self-consistent signed alternate ID and prove the case-sensitive two-pass wrapper stays silent",
+  "integration evidence must reject an internally self-consistent signed alternate ID and prove the case-sensitive sealed two-pass wrapper stays silent",
 );
 requireInvariant(
   releaseManifestVerifier.includes(
@@ -5904,6 +6061,7 @@ requireInvariant(
   releaseReviewEvidenceSetWrapper.includes(
     "[Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation",
   ) &&
+    releaseReviewEvidenceSetWrapper.includes("[string]$ExpectedVerifierToolsetSha256") &&
     releaseReviewEvidenceSetWrapper.includes(
       'if ($env:OS -ne "Windows_NT")',
     ) &&
@@ -5916,6 +6074,11 @@ requireInvariant(
     releaseReviewEvidenceSetWrapper.includes(
       "$bundle = $releaseLocks.CanonicalBundleRoot",
     ) &&
+    releaseReviewEvidenceSetWrapper.includes("Open-VerifiedReleaseToolset") &&
+    releaseReviewEvidenceSetWrapper.includes("Assert-ReleaseTreesDisjoint") &&
+    (releaseReviewEvidenceSetWrapper.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 1 &&
+    !releaseReviewEvidenceSetWrapper.includes('Get-Command "node"') &&
+    !releaseReviewEvidenceSetWrapper.includes('Invoke-ReleaseCommand -Executable "node"') &&
     !releaseReviewEvidenceSetWrapper.includes(
       "Resolve-Path -LiteralPath $BundleRoot",
     ) &&
@@ -5928,12 +6091,14 @@ requireInvariant(
     !/^\uFEFF?\[CmdletBinding\(\)\]/u.test(releaseReviewEvidenceSetWrapper) &&
     (releaseReviewEvidenceSetWrapper.match(/review-evidence-set\.mjs/gu) ?? []).length === 1 &&
     (releaseReviewEvidenceSetWrapper.match(/"--bundle-root"/gu) ?? []).length === 1 &&
+    releaseReviewEvidenceSetWrapper.includes("$result.ExitCode -ne 0") &&
     releaseReviewEvidenceSetWrapper.includes(
-      "if (-not [string]::IsNullOrEmpty($result.Stderr))",
+      '[string]::Equals($result.Stderr, "", [System.StringComparison]::Ordinal)',
     ) &&
     releaseReviewEvidenceSetWrapper.includes(
       "your-wallet-reviewed-evidence-set-subject-v1",
     ) &&
+    releaseReviewEvidenceSetWrapper.includes("\\n\\z'") &&
     releaseReviewEvidenceSetWrapper.includes(
       "[System.Text.RegularExpressions.RegexOptions]::CultureInvariant",
     ) &&
@@ -5942,14 +6107,115 @@ requireInvariant(
     releaseReviewEvidenceSetWrapper.includes(
       "REVIEW_EVIDENCE_SET_FAILED: offline review evidence ceremony failed closed",
     ) &&
-    releaseReviewEvidenceSetWrapper.includes("-WorkingDirectory $PSScriptRoot") &&
-    releaseReviewEvidenceSetWrapper.includes("Write-Output $result.Stdout") &&
+    releaseReviewEvidenceSetWrapper.includes("[Console]::Out.Write($result.Stdout)") &&
     (releaseReviewEvidenceSetWrapper.match(/Close-ReadOnlyReleaseTreeLocks -LockSet \$releaseLocks/gu) ?? [])
+      .length === 1 &&
+    (releaseReviewEvidenceSetWrapper.match(/Close-VerifiedReleaseToolset -Toolset \$toolset/gu) ?? [])
       .length === 1 &&
     !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
       releaseReviewEvidenceSetWrapper,
     ),
-  "the Windows reviewer wrapper must hold one offline no-write/no-delete staging tree around exactly one canonical subject calculation",
+  "the Windows reviewer wrapper must hold disjoint sealed runtime and evidence trees around one exact-byte canonical subject calculation",
+);
+requireInvariant(
+  releaseVerifierToolsetPreparation.includes("function Invoke-PrepareVerifierToolset") &&
+    releaseVerifierToolsetPreparation.includes("[string]$NodeExecutable") &&
+    releaseVerifierToolsetPreparation.includes("[string]$OutputDirectory") &&
+    releaseVerifierToolsetPreparation.includes("[switch]$OperatorConfirmedPreparationOnly") &&
+    releaseVerifierToolsetPreparation.includes("Open-PinnedReleaseFilePath") &&
+    releaseVerifierToolsetPreparation.includes('"node.exe" = $nodePath') &&
+    releaseVerifierToolsetPreparation.includes(
+      '"extension/native-host/validate-manifest.mjs"',
+    ) &&
+    releaseVerifierToolsetPreparation.includes(
+      '"scripts/release/review-evidence-set.ps1"',
+    ) &&
+    releaseVerifierToolsetPreparation.includes(
+      '"scripts/release/verify-release-offline.ps1"',
+    ) &&
+    releaseVerifierToolsetPreparation.includes("Get-InventorySha256") &&
+    releaseVerifierToolsetPreparation.includes(
+      "VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE",
+    ) &&
+    releaseVerifierToolsetPreparation.includes(
+      "deletion would be unsafe if an untrusted writer added an unexpected",
+    ) &&
+    !releaseVerifierToolsetPreparation.includes(
+      "PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION",
+    ),
+  "verifier-toolset preparation must stage only the pinned runtime graph, print its aggregate as non-eligibility output, and fail without destructive cleanup",
+);
+requireInvariant(
+  releaseVerifierToolsetTests.includes(
+    "Test toolset fixture was not the exact seven-file/four-directory shape",
+  ) &&
+    releaseVerifierToolsetTests.includes("extra-file") &&
+    releaseVerifierToolsetTests.includes("empty-extra-directory") &&
+    releaseVerifierToolsetTests.includes('Name = "case-alias"') &&
+    releaseVerifierToolsetTests.includes("hard-link") &&
+    releaseVerifierToolsetTests.includes('Label "alternate data stream"') &&
+    releaseVerifierToolsetTests.includes('Label "writable tree"') &&
+    releaseVerifierToolsetTests.includes('-Label "directory-writable tree"') &&
+    releaseVerifierToolsetTests.includes("Protect-TestTree -Root $directoryWritableRoot -DenyFilesOnly") &&
+    /Name = "case-alias";[\s\S]*?Pin = "exact"/u.test(releaseVerifierToolsetTests) &&
+    releaseVerifierToolsetTests.includes("function node") &&
+    releaseVerifierToolsetTests.includes(
+      "Ambient Get-FileHash shadow must not be called by the verifier",
+    ) &&
+    releaseVerifierToolsetTests.includes("NODE_OPTIONS") &&
+    releaseVerifierToolsetTests.includes("invalid-utf8") &&
+    releaseVerifierToolsetTests.includes("oversize") &&
+    releaseVerifierToolsetTests.includes("Bounded verifier subprocess timeout") &&
+    releaseVerifierToolsetTests.includes(
+      "Exact-image runner accepted an executable path that did not match its expected handle",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "Exact-image mismatch cleanup prevented a subsequent matched execution",
+    ) &&
+    releaseVerifierToolsetTests.includes("public static class RawProcess") &&
+    releaseVerifierToolsetTests.includes("strictUtf8.GetString(stdout.Bytes.ToArray())") &&
+    releaseVerifierToolsetTests.includes(
+      "Held verifier toolset root unexpectedly allowed a concurrent rename",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "Disjoint-root guard accepted equal verifier and evidence roots",
+    ) &&
+    releaseVerifierToolsetTests.includes("$realResultFirst = Invoke-ReleaseToolsetNode") &&
+    releaseVerifierToolsetTests.includes("$realResultSecond = Invoke-ReleaseToolsetNode") &&
+    releaseVerifierToolsetTests.includes(
+      "Sealed real-Node review/release/validate graph was not exact and deterministic",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "Sealed real-Node release entry did not reach its exact direct-file guard",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "Sealed VM context exposed ambient globals, process capabilities, or string code generation",
+    ) &&
+    releaseVerifierToolsetTests.includes('Name = "source-bom"') &&
+    releaseVerifierToolsetTests.includes('Name = "source-invalid-utf8"') &&
+    releaseVerifierToolsetTests.includes('Name = "unapproved-static-import"') &&
+    releaseVerifierToolsetTests.includes('Name = "unapproved-dynamic-import"') &&
+    releaseVerifierToolsetTests.includes(
+      "Sealed VM loader accepted a forbidden source or import graph",
+    ) &&
+    releaseVerifierToolsetTests.includes("POWERSHELL_VERIFIER_TOOLSET_PASS"),
+  "the release gate must behaviorally reject verifier-toolset inventory, identity, ambient-runtime, output, timeout, and root-overlap attacks",
+);
+requireInvariant(
+  releaseVerifierToolsetTests.includes("$preparationResult = Invoke-TestRawProcess") &&
+    releaseVerifierToolsetTests.includes("VERIFIER_TOOLSET_SHA256=${preparedToolsetHash}`n") &&
+    releaseVerifierToolsetTests.includes("VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE`n") &&
+    releaseVerifierToolsetTests.includes("$preparedFiles.Count -ne 7") &&
+    releaseVerifierToolsetTests.includes("$preparedDirectories.Count -ne 4") &&
+    releaseVerifierToolsetTests.includes(
+      "Preparation-only output was accepted without effective write protection",
+    ) &&
+    releaseVerifierToolsetTests.includes("$existingPreparationResult = Invoke-TestRawProcess") &&
+    releaseVerifierToolsetTests.includes("$invalidPreparationResult = Invoke-TestRawProcess") &&
+    releaseVerifierToolsetTests.includes(
+      "Verifier toolset preparation argument failure disclosed a path or changed its fixed line",
+    ),
+  "the release gate must execute preparation as a non-eligible exact-shape subprocess and reject existing outputs or private malformed arguments with fixed bytes",
 );
 requireInvariant(
   reviewEvidenceDigestUnitTestBlock.includes("reordered.windowsNegativeTests.reverse()") &&
@@ -6073,6 +6339,11 @@ requireInvariant(
     reviewSubjectWrapperTestBlock.includes(
       "Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks",
     ) &&
+    reviewSubjectWrapperTestBlock.includes("Open-VerifiedReleaseToolset") &&
+    reviewSubjectWrapperTestBlock.includes("Invoke-ReleaseToolsetNode") &&
+    reviewSubjectWrapperTestBlock.includes("Assert-ReleaseTreesDisjoint") &&
+    reviewSubjectWrapperTestBlock.includes("ExpectedVerifierToolsetSha256") &&
+    reviewSubjectWrapperTestBlock.includes("[Console]::Out.Write($result.Stdout)") &&
     reviewSubjectWrapperTestBlock.includes(
       "Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \\$bundle",
     ) &&
@@ -6086,6 +6357,9 @@ requireInvariant(
     reviewSubjectWrapperPrivacyTestBlock.includes(
       "!stderr.includes(privateParent)",
     ) &&
+    reviewSubjectWrapperPrivacyTestBlock.includes(
+      '"-ExpectedVerifierToolsetSha256"',
+    ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       '"-UnknownPrivateParameter", probeRoot',
     ) &&
@@ -6094,8 +6368,11 @@ requireInvariant(
     ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       "!stderr.includes(wrapperPath)",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      '"-ExpectedVerifierToolsetSha256", "4".repeat(64)',
     ),
-  "review subject and offline wrapper evidence must prove deterministic success plus file-set, arity, preflight, and parameter-binding fail-closure without path disclosure",
+  "review subject and offline wrapper evidence must prove deterministic success plus sealed-toolset, file-set, arity, preflight, and parameter-binding fail-closure without path disclosure",
 );
 requireInvariant(
   releaseSecurity.includes("independently sourced `ExpectedExtensionId`") &&
@@ -6104,14 +6381,26 @@ requireInvariant(
     releaseSecurity.includes(
       "-ExpectedExtensionId <independently pinned 32-lowercase-a-through-p>",
     ) &&
-    releaseSecurity.includes("same immutable expected-ID argument") &&
+    releaseSecurity.includes(
+      "-ExpectedVerifierToolsetSha256 <independently checkpointed 64-lower-hex>",
+    ) &&
+    releaseSecurity.includes("exactly four directories and these seven files") &&
+    releaseSecurity.includes("VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE") &&
+    releaseSecurity.includes("consistency and version pin") &&
+    releaseSecurity.includes("cannot make an untrusted `common.ps1`") &&
+    releaseSecurity.includes("The toolset and candidate trees must be disjoint") &&
+    releaseSecurity.includes("first pre-user-mode `CREATE_PROCESS_DEBUG_EVENT`") &&
+    releaseSecurity.includes("in-memory `vm.SourceTextModule` graph") &&
+    releaseSecurity.includes("ambient `NODE_OPTIONS`") &&
+    releaseSecurity.includes("CRLF, a BOM, trailing bytes") &&
+    releaseSecurity.includes("same held executable/module identities") &&
     releaseSecurity.includes("stable extension ID") &&
     releaseSecurity.includes("no stable production extension ID") &&
     releaseSecurity.includes("your-wallet-independent-security-review-v2") &&
     releaseSecurity.includes("reviewedEvidenceSetSha256") &&
     releaseSecurity.includes("Do not copy a digest out of the candidate manifest") &&
     releaseSecurity.includes("review-evidence-set.ps1") &&
-    releaseSecurity.includes("review-evidence-set.mjs --bundle-root") &&
+    releaseSecurity.includes("The review entry runs exactly once") &&
     releaseSecurity.includes("no write/delete sharing") &&
     releaseSecurity.includes("handle-derived local volume-GUID path") &&
     releaseSecurity.includes("The original path alias is then discarded") &&
@@ -6125,12 +6414,19 @@ requireInvariant(
     sepoliaArchitectureDoc.includes("v1 or stale attestations fail closed") &&
     sepoliaArchitectureDoc.includes("handle-derived local volume-GUID path") &&
     sepoliaArchitectureDoc.includes("complete 128-bit") &&
-    sepoliaArchitectureDoc.includes("fixed category lines without path disclosure") &&
+    sepoliaArchitectureDoc.includes("separately controlled verifier toolset") &&
+    sepoliaArchitectureDoc.includes("first `CREATE_PROCESS_DEBUG_EVENT`") &&
+    sepoliaArchitectureDoc.includes("in-memory `vm.SourceTextModule` graph") &&
+    sepoliaArchitectureDoc.includes("DOS script/module path race") &&
+    sepoliaArchitectureDoc.includes("fixed category lines") &&
+    sepoliaArchitectureDoc.includes("without path disclosure") &&
     sepoliaArchitectureDoc.includes("retargets") &&
     sepoliaArchitectureDoc.includes("still denies rename") &&
-    sepoliaArchitectureDoc.includes("emitted subject to remain exactly A") &&
-    rootReadme.includes("릴리스 정책·검증기 테스트 54개 통과"),
-  "release documentation must distinguish the mandatory external extension-ID pin from the still-absent production identity and ceremony",
+    sepoliaArchitectureDoc.includes("exact subject bytes to remain A plus one LF") &&
+    rootReadme.includes("릴리스 정책·검증기 테스트 54개 통과") &&
+    rootReadme.includes("봉인된 Windows 검증 도구셋") &&
+    rootReadme.includes("첫 디버그 생성 이벤트의 실제 이미지"),
+  "release documentation must distinguish external identity/toolset pins and mapped-image/module-graph guarantees from still-absent production evidence",
 );
 const releasePolicyTestCount = [
   releaseExtensionAuditTests,

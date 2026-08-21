@@ -5,6 +5,7 @@ function Invoke-ReviewEvidenceSetCeremony {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$BundleRoot,
+        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedVerifierToolsetSha256,
         [Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation
     )
 
@@ -14,28 +15,32 @@ if (-not $OperatorConfirmedNetworkIsolation) {
 if ($env:OS -ne "Windows_NT") {
     throw "Independent review evidence hashing requires Windows"
 }
-if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
-    throw "Required review evidence tool is unavailable"
-}
 
+$toolset = $null
 $releaseLocks = $null
 try {
+    $toolsetRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+    $toolset = Open-VerifiedReleaseToolset `
+        -ToolsetRoot $toolsetRoot `
+        -ExpectedSha256 $ExpectedVerifierToolsetSha256
     $releaseLocks = Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot
     $bundle = $releaseLocks.CanonicalBundleRoot
+    Assert-ReleaseTreesDisjoint `
+        -LeftCanonicalRoot $toolset.CanonicalVolumeRoot `
+        -RightCanonicalRoot $bundle
     Assert-NoReparseTree -LiteralPath $bundle
     Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $bundle
-    $result = Invoke-ReleaseCommand `
-        -Executable "node" `
-        -CommandArguments @(
-            (Join-Path $PSScriptRoot "review-evidence-set.mjs"),
-            "--bundle-root",
-            $bundle
-        ) `
-        -WorkingDirectory $PSScriptRoot
-    if (-not [string]::IsNullOrEmpty($result.Stderr)) {
+    $result = Invoke-ReleaseToolsetNode `
+        -Toolset $toolset `
+        -ScriptRelativePath "scripts/release/review-evidence-set.mjs" `
+        -CommandArguments @("--bundle-root", $bundle)
+    if ($result.ExitCode -ne 0) {
+        throw "Independent review evidence hashing failed closed"
+    }
+    if (-not [string]::Equals($result.Stderr, "", [System.StringComparison]::Ordinal)) {
         throw "Independent review evidence hashing produced unexpected diagnostics"
     }
-    $subjectPattern = '^\{"reviewedEvidenceSetSha256":"[0-9a-f]{64}","schema":"your-wallet-reviewed-evidence-set-subject-v1"\}$'
+    $subjectPattern = '\A\{"reviewedEvidenceSetSha256":"[0-9a-f]{64}","schema":"your-wallet-reviewed-evidence-set-subject-v1"\}\n\z'
     if (-not [System.Text.RegularExpressions.Regex]::IsMatch(
         $result.Stdout,
         $subjectPattern,
@@ -45,11 +50,18 @@ try {
     }
     Assert-NoReparseTree -LiteralPath $bundle
     Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $bundle
-    Write-Output $result.Stdout
+    [Console]::Out.Write($result.Stdout)
 }
 finally {
-    if ($null -ne $releaseLocks) {
-        Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks
+    try {
+        if ($null -ne $releaseLocks) {
+            Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks
+        }
+    }
+    finally {
+        if ($null -ne $toolset) {
+            Close-VerifiedReleaseToolset -Toolset $toolset
+        }
     }
 }
 }
@@ -58,7 +70,7 @@ try {
     . (Join-Path $PSScriptRoot "common.ps1")
     $boundArguments = ConvertFrom-ExactNamedArguments `
         -Arguments @($args) `
-        -RequiredValueNames @("BundleRoot") `
+        -RequiredValueNames @("BundleRoot", "ExpectedVerifierToolsetSha256") `
         -RequiredSwitchNames @("OperatorConfirmedNetworkIsolation")
     Invoke-ReviewEvidenceSetCeremony @boundArguments
 }

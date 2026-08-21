@@ -147,21 +147,30 @@ test("Windows review wrapper holds one offline read-only tree around the exact s
     readFile("scripts/release/common.ps1", "utf8"),
   ]);
   assert.ok(wrapper.includes("[Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation"));
+  assert.ok(wrapper.includes("[string]$ExpectedVerifierToolsetSha256"));
+  assert.ok(wrapper.includes("Open-VerifiedReleaseToolset"));
   assert.ok(wrapper.includes("Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot"));
   assert.ok(wrapper.includes("$bundle = $releaseLocks.CanonicalBundleRoot"));
+  assert.ok(wrapper.includes("Assert-ReleaseTreesDisjoint"));
   assert.ok(wrapper.includes("ConvertFrom-ExactNamedArguments"));
   assert.ok(wrapper.includes("Invoke-ReviewEvidenceSetCeremony @boundArguments"));
   assert.ok(!wrapper.includes("Invoke-ReviewEvidenceSetCeremony @args"));
   assert.ok(!wrapper.includes("Resolve-Path -LiteralPath $BundleRoot"));
+  assert.ok(!wrapper.includes('Get-Command "node"'));
+  assert.ok(!wrapper.includes('Invoke-ReleaseCommand -Executable "node"'));
   assert.equal(wrapper.match(/Assert-NoReparseTree -LiteralPath \$bundle/gu)?.length, 2);
   assert.equal(wrapper.match(/Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \$bundle/gu)?.length, 2);
   assert.equal(wrapper.match(/review-evidence-set\.mjs/gu)?.length, 1);
+  assert.equal(wrapper.match(/Invoke-ReleaseToolsetNode/gu)?.length, 1);
   assert.ok(wrapper.includes("--bundle-root"));
-  assert.ok(wrapper.includes("if (-not [string]::IsNullOrEmpty($result.Stderr))"));
+  assert.ok(wrapper.includes("$result.ExitCode -ne 0"));
+  assert.ok(wrapper.includes("[System.StringComparison]::Ordinal"));
   assert.ok(wrapper.includes("your-wallet-reviewed-evidence-set-subject-v1"));
+  assert.ok(wrapper.includes("\\n\\z'"));
   assert.ok(wrapper.includes("[System.Text.RegularExpressions.RegexOptions]::CultureInvariant"));
-  assert.ok(wrapper.includes("Write-Output $result.Stdout"));
+  assert.ok(wrapper.includes("[Console]::Out.Write($result.Stdout)"));
   assert.ok(wrapper.includes("Close-ReadOnlyReleaseTreeLocks -LockSet $releaseLocks"));
+  assert.ok(wrapper.includes("Close-VerifiedReleaseToolset -Toolset $toolset"));
   assert.ok(wrapper.includes("REVIEW_EVIDENCE_SET_FAILED: offline review evidence ceremony failed closed"));
   assert.ok(common.includes("private const uint FileShareRead = 0x00000001"));
   assert.ok(common.includes("GetFinalPathNameByHandleW"));
@@ -170,6 +179,8 @@ test("Windows review wrapper holds one offline read-only tree around the exact s
   assert.ok(common.includes("SameIdentity($bootstrap, $handles[$handles.Count - 1])"));
   assert.ok(common.includes("CanonicalBundleRoot = $canonicalRoot"));
   assert.ok(common.includes("function ConvertFrom-ExactNamedArguments"));
+  assert.ok(common.includes("function Open-VerifiedReleaseToolset"));
+  assert.ok(common.includes("function Invoke-ReleaseToolsetNode"));
 });
 
 test(
@@ -203,6 +214,8 @@ test(
       await expectPrivateFailure([
         "-BundleRoot",
         missingRoot,
+        "-ExpectedVerifierToolsetSha256",
+        "4".repeat(64),
         "-OperatorConfirmedNetworkIsolation",
       ]);
       await expectPrivateFailure(["-UnknownPrivateParameter", privateParent]);

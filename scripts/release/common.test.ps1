@@ -313,6 +313,8 @@ try {
     )
     $originalAcls = @{}
     $wrapperJob = $null
+    $wrapperToolsetRoot = $null
+    $wrapperToolsetOriginalAcl = $null
     try {
         foreach ($reviewRoot in @($subjectRoot, $subjectReplacementRoot)) {
             $acl = Get-Acl -LiteralPath $reviewRoot
@@ -333,31 +335,352 @@ try {
         [System.IO.Directory]::Move($subjectRoot, $subjectMoveProbe)
         [System.IO.Directory]::Move($subjectMoveProbe, $subjectRoot)
 
-        $wrapperPath = Join-Path $RepoRoot "scripts\release\review-evidence-set.ps1"
         $aliasedSubjectRoot = Join-Path $subjectAlias "volume-guid-review-subject"
         $taskRealNode = (Get-Command "node" -CommandType Application -ErrorAction Stop).Source
         $taskReadyPath = Join-Path $testRoot "review-wrapper-lock-ready.signal"
         $taskContinuePath = Join-Path $testRoot "review-wrapper-continue.signal"
-        $wrapperJob = Start-Job -ScriptBlock {
-            param($ReviewWrapper, $ReviewRoot, $TaskRealNode, $TaskReadyPath, $TaskContinuePath)
-            function node {
-                [System.IO.File]::WriteAllText($TaskReadyPath, "ready")
-                $deadline = [System.DateTime]::UtcNow.AddSeconds(30)
-                while (-not [System.IO.File]::Exists($TaskContinuePath)) {
-                    if ([System.DateTime]::UtcNow -ge $deadline) {
-                        throw "Review wrapper test node continuation timed out"
-                    }
-                    Start-Sleep -Milliseconds 5
+        $wrapperToolsetRoot = Join-Path $testRoot "sealed-review-wrapper-toolset"
+        foreach ($relativeDirectory in @("extension\native-host", "scripts\release")) {
+            [void](New-Item -ItemType Directory -Path (Join-Path $wrapperToolsetRoot $relativeDirectory) -Force)
+        }
+        foreach ($relativeFile in @(
+            "extension\native-host\validate-manifest.mjs",
+            "scripts\release\common.ps1",
+            "scripts\release\release-manifest.mjs",
+            "scripts\release\review-evidence-set.mjs",
+            "scripts\release\review-evidence-set.ps1",
+            "scripts\release\verify-release-offline.ps1"
+        )) {
+            Copy-Item `
+                -LiteralPath (Join-Path $RepoRoot $relativeFile) `
+                -Destination (Join-Path $wrapperToolsetRoot $relativeFile)
+        }
+        $realNodeLiteral = '"' + $taskRealNode.Replace('\', '\\').Replace('"', '\"') + '"'
+        $readyPathLiteral = '"' + $taskReadyPath.Replace('\', '\\').Replace('"', '\"') + '"'
+        $continuePathLiteral = '"' + $taskContinuePath.Replace('\', '\\').Replace('"', '\"') + '"'
+        $blockingProxySource = @"
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public static class BlockingReviewNodeProxy {
+    private static readonly string RealNode = $realNodeLiteral;
+    private static readonly string ReadyPath = $readyPathLiteral;
+    private static readonly string ContinuePath = $continuePathLiteral;
+
+    private static string Quote(string value) {
+        if (value == null || value.IndexOf('\0') >= 0) {
+            throw new ArgumentException("Invalid delegated argument");
+        }
+        if (value.Length != 0 && value.IndexOfAny(new char[] { ' ', '\t', '\r', '\n', '"' }) < 0) {
+            return value;
+        }
+        StringBuilder result = new StringBuilder();
+        result.Append('"');
+        int backslashes = 0;
+        foreach (char current in value) {
+            if (current == '\\') {
+                backslashes += 1;
+                continue;
+            }
+            if (current == '"') {
+                result.Append('\\', (backslashes * 2) + 1);
+                result.Append('"');
+                backslashes = 0;
+                continue;
+            }
+            result.Append('\\', backslashes);
+            backslashes = 0;
+            result.Append(current);
+        }
+        result.Append('\\', backslashes * 2);
+        result.Append('"');
+        return result.ToString();
+    }
+
+    private static string BuildArguments(string[] arguments) {
+        List<string> quoted = new List<string>();
+        foreach (string argument in arguments) {
+            quoted.Add(Quote(argument));
+        }
+        return String.Join(" ", quoted.ToArray());
+    }
+
+    public static int Main(string[] arguments) {
+        File.WriteAllText(ReadyPath, "ready", new UTF8Encoding(false));
+        DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+        while (!File.Exists(ContinuePath)) {
+            if (DateTime.UtcNow >= deadline) {
+                Console.Error.Write("blocking review proxy timed out\n");
+                return 124;
+            }
+            Thread.Sleep(5);
+        }
+        ProcessStartInfo start = new ProcessStartInfo();
+        start.FileName = RealNode;
+        start.Arguments = BuildArguments(arguments);
+        start.WorkingDirectory = Environment.CurrentDirectory;
+        start.UseShellExecute = false;
+        start.CreateNoWindow = true;
+        start.WindowStyle = ProcessWindowStyle.Hidden;
+        start.RedirectStandardInput = true;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        using (Process child = Process.Start(start)) {
+            child.StandardInput.Close();
+            Exception stdoutFailure = null;
+            Exception stderrFailure = null;
+            Thread stdoutThread = new Thread(delegate() {
+                try {
+                    child.StandardOutput.BaseStream.CopyTo(Console.OpenStandardOutput());
+                    Console.OpenStandardOutput().Flush();
                 }
-                & $TaskRealNode @args
+                catch (Exception error) {
+                    stdoutFailure = error;
+                }
+            });
+            Thread stderrThread = new Thread(delegate() {
+                try {
+                    child.StandardError.BaseStream.CopyTo(Console.OpenStandardError());
+                    Console.OpenStandardError().Flush();
+                }
+                catch (Exception error) {
+                    stderrFailure = error;
+                }
+            });
+            stdoutThread.IsBackground = true;
+            stderrThread.IsBackground = true;
+            stdoutThread.Start();
+            stderrThread.Start();
+            child.WaitForExit();
+            if (!stdoutThread.Join(5000) || !stderrThread.Join(5000)) {
+                return 125;
             }
-            $output = @(& $ReviewWrapper -BundleRoot $ReviewRoot `
-                -OperatorConfirmedNetworkIsolation 2>&1)
-            [pscustomobject]@{
-                ExitCode = $LASTEXITCODE
-                Output = ($output -join [System.Environment]::NewLine)
+            if (stdoutFailure != null || stderrFailure != null) {
+                return 126;
             }
-        } -ArgumentList $wrapperPath, $aliasedSubjectRoot, $taskRealNode, $taskReadyPath, $taskContinuePath
+            return child.ExitCode;
+        }
+        }
+}
+"@
+        $proxyNodePath = Join-Path $wrapperToolsetRoot "node.exe"
+        $proxyCompileJob = Start-Job -ScriptBlock {
+            param($CompilationSource, $CompilationOutput)
+            $ErrorActionPreference = "Stop"
+            Add-Type `
+                -TypeDefinition $CompilationSource `
+                -OutputAssembly $CompilationOutput `
+                -OutputType ConsoleApplication
+        } -ArgumentList $blockingProxySource, $proxyNodePath
+        try {
+            [void](Wait-Job -Job $proxyCompileJob -Timeout 60)
+            if ($proxyCompileJob.State -ne "Completed") {
+                throw "Blocking review proxy compilation did not complete"
+            }
+            [void](Receive-Job -Job $proxyCompileJob -ErrorAction Stop)
+            if (-not [System.IO.File]::Exists($proxyNodePath)) {
+                throw "Blocking review proxy compilation did not produce an executable"
+            }
+        }
+        finally {
+            if ($proxyCompileJob.State -eq "Running") {
+                Stop-Job -Job $proxyCompileJob
+            }
+            Remove-Job -Job $proxyCompileJob -Force
+        }
+        $wrapperToolsetHash = Get-InventorySha256 -Inventory (
+            Get-DirectoryInventory -LiteralPath $wrapperToolsetRoot
+        )
+        $wrapperToolsetAcl = Get-Acl -LiteralPath $wrapperToolsetRoot
+        $wrapperToolsetOriginalAcl = $wrapperToolsetAcl.GetSecurityDescriptorSddlForm(
+            [System.Security.AccessControl.AccessControlSections]::All
+        )
+        [void]$wrapperToolsetAcl.AddAccessRule($denyCreateRule)
+        Set-Acl -LiteralPath $wrapperToolsetRoot -AclObject $wrapperToolsetAcl
+        foreach ($item in @((Get-Item -LiteralPath $wrapperToolsetRoot -Force)) + @(
+            Get-ChildItem -LiteralPath $wrapperToolsetRoot -Force -Recurse
+        )) {
+            [System.IO.File]::SetAttributes(
+                $item.FullName,
+                ([System.IO.File]::GetAttributes($item.FullName) -bor [System.IO.FileAttributes]::ReadOnly)
+            )
+        }
+        $wrapperPath = Join-Path $wrapperToolsetRoot "scripts\release\review-evidence-set.ps1"
+        $taskPowerShell = Join-Path `
+            ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System)) `
+            "WindowsPowerShell\v1.0\powershell.exe"
+        $rawWrapperRunnerSource = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+namespace YourWalletTests {
+    public sealed class RawProcessResult {
+        public int ExitCode { get; private set; }
+        public string Stdout { get; private set; }
+        public string Stderr { get; private set; }
+        internal RawProcessResult(int exitCode, string stdout, string stderr) {
+            ExitCode = exitCode;
+            Stdout = stdout;
+            Stderr = stderr;
+        }
+    }
+
+    public static class RawWrapperProcess {
+        private sealed class CaptureState {
+            internal readonly object Sync = new object();
+            internal readonly MemoryStream Bytes = new MemoryStream();
+            internal readonly int MaximumBytes;
+            internal bool Overflow;
+            internal Exception Failure;
+            internal CaptureState(int maximumBytes) { MaximumBytes = maximumBytes; }
+        }
+
+        private static string Quote(string value) {
+            if (value == null || value.IndexOf('\0') >= 0) throw new ArgumentException("Invalid argument");
+            if (value.Length != 0 && value.IndexOfAny(new char[] { ' ', '\t', '\r', '\n', '"' }) < 0) return value;
+            StringBuilder result = new StringBuilder();
+            result.Append('"');
+            int backslashes = 0;
+            foreach (char current in value) {
+                if (current == '\\') { backslashes += 1; continue; }
+                if (current == '"') {
+                    result.Append('\\', (backslashes * 2) + 1);
+                    result.Append('"');
+                    backslashes = 0;
+                    continue;
+                }
+                result.Append('\\', backslashes);
+                backslashes = 0;
+                result.Append(current);
+            }
+            result.Append('\\', backslashes * 2);
+            result.Append('"');
+            return result.ToString();
+        }
+
+        private static string BuildArguments(string[] arguments) {
+            StringBuilder result = new StringBuilder();
+            for (int index = 0; index < arguments.Length; index += 1) {
+                if (index != 0) result.Append(' ');
+                result.Append(Quote(arguments[index]));
+            }
+            return result.ToString();
+        }
+
+        private static void Capture(Stream source, CaptureState state, Process process) {
+            try {
+                byte[] buffer = new byte[4096];
+                while (true) {
+                    int count = source.Read(buffer, 0, buffer.Length);
+                    if (count == 0) return;
+                    lock (state.Sync) {
+                        if (state.Bytes.Length > state.MaximumBytes - count) {
+                            state.Overflow = true;
+                            try { process.Kill(); } catch { }
+                            return;
+                        }
+                        state.Bytes.Write(buffer, 0, count);
+                    }
+                }
+            }
+            catch (Exception error) {
+                lock (state.Sync) { state.Failure = error; }
+                try { process.Kill(); } catch { }
+            }
+        }
+
+        public static RawProcessResult Run(
+            string executable,
+            string workingDirectory,
+            string[] arguments,
+            int timeoutMilliseconds,
+            int maximumOutputBytes
+        ) {
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = executable;
+            start.WorkingDirectory = workingDirectory;
+            start.Arguments = BuildArguments(arguments);
+            start.UseShellExecute = false;
+            start.CreateNoWindow = true;
+            start.WindowStyle = ProcessWindowStyle.Hidden;
+            start.RedirectStandardInput = true;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            Process process = new Process();
+            process.StartInfo = start;
+            CaptureState stdout = new CaptureState(maximumOutputBytes);
+            CaptureState stderr = new CaptureState(maximumOutputBytes);
+            Thread stdoutThread = null;
+            Thread stderrThread = null;
+            try {
+                if (!process.Start()) throw new IOException("Test process did not start");
+                process.StandardInput.Close();
+                stdoutThread = new Thread(delegate() { Capture(process.StandardOutput.BaseStream, stdout, process); });
+                stderrThread = new Thread(delegate() { Capture(process.StandardError.BaseStream, stderr, process); });
+                stdoutThread.IsBackground = true;
+                stderrThread.IsBackground = true;
+                stdoutThread.Start();
+                stderrThread.Start();
+                if (!process.WaitForExit(timeoutMilliseconds)) {
+                    try { process.Kill(); } catch { }
+                    if (!process.WaitForExit(5000)) throw new IOException("Test process could not be terminated");
+                    throw new TimeoutException("Test process exceeded its time limit");
+                }
+                if (!stdoutThread.Join(5000) || !stderrThread.Join(5000)) {
+                    throw new IOException("Test output capture did not terminate");
+                }
+                if (stdout.Overflow || stderr.Overflow) throw new IOException("Test output exceeded its limit");
+                if (stdout.Failure != null || stderr.Failure != null) throw new IOException("Test output capture failed");
+                UTF8Encoding strictUtf8 = new UTF8Encoding(false, true);
+                return new RawProcessResult(
+                    process.ExitCode,
+                    strictUtf8.GetString(stdout.Bytes.ToArray()),
+                    strictUtf8.GetString(stderr.Bytes.ToArray())
+                );
+            }
+            finally {
+                process.Dispose();
+            }
+        }
+    }
+}
+'@
+        $wrapperJob = Start-Job -ScriptBlock {
+            param($PowerShellPath, $ToolsetRoot, $ReviewWrapper, $ReviewRoot, $ToolsetHash, $RunnerSource)
+            Add-Type -TypeDefinition $RunnerSource
+            [YourWalletTests.RawWrapperProcess]::Run(
+                $PowerShellPath,
+                $ToolsetRoot,
+                [string[]]@(
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    $ReviewWrapper,
+                    "-BundleRoot",
+                    $ReviewRoot,
+                    "-ExpectedVerifierToolsetSha256",
+                    $ToolsetHash,
+                    "-OperatorConfirmedNetworkIsolation"
+                ),
+                60000,
+                1048576
+            )
+        } -ArgumentList @(
+            $taskPowerShell,
+            $wrapperToolsetRoot,
+            $wrapperPath,
+            $aliasedSubjectRoot,
+            $wrapperToolsetHash,
+            $rawWrapperRunnerSource
+        )
 
         $lockObserved = $false
         for ($attempt = 0; $attempt -lt 6000; $attempt += 1) {
@@ -408,9 +731,12 @@ try {
         if ($wrapperResult.ExitCode -ne 0) {
             throw "Review wrapper success test failed closed unexpectedly"
         }
+        if (-not [string]::Equals($wrapperResult.Stderr, "", [System.StringComparison]::Ordinal)) {
+            throw "Review wrapper success test produced unexpected diagnostics"
+        }
         if (-not [System.String]::Equals(
-            $wrapperResult.Output.Trim(),
-            $subject.Stdout.Trim(),
+            $wrapperResult.Stdout,
+            $subject.Stdout + "`n",
             [System.StringComparison]::Ordinal
         )) {
             $replacementSubject = Invoke-ReleaseCommand -Executable "node" -CommandArguments @(
@@ -419,8 +745,8 @@ try {
                 $subjectReplacementRoot
             ) -WorkingDirectory $RepoRoot
             if ([System.String]::Equals(
-                $wrapperResult.Output.Trim(),
-                $replacementSubject.Stdout.Trim(),
+                $wrapperResult.Stdout,
+                $replacementSubject.Stdout + "`n",
                 [System.StringComparison]::Ordinal
             )) {
                 throw "Review wrapper followed the replacement ancestor alias"
@@ -437,6 +763,20 @@ try {
         }
         if ([System.IO.Directory]::Exists($subjectAlias)) {
             [System.IO.Directory]::Delete($subjectAlias)
+        }
+        if ($null -ne $wrapperToolsetOriginalAcl -and [System.IO.Directory]::Exists($wrapperToolsetRoot)) {
+            $restoredToolsetAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+            $restoredToolsetAcl.SetSecurityDescriptorSddlForm($wrapperToolsetOriginalAcl)
+            Set-Acl -LiteralPath $wrapperToolsetRoot -AclObject $restoredToolsetAcl
+            foreach ($item in @((Get-ChildItem -LiteralPath $wrapperToolsetRoot -Force -Recurse)) + @(
+                (Get-Item -LiteralPath $wrapperToolsetRoot -Force)
+            )) {
+                $attributes = [int][System.IO.File]::GetAttributes($item.FullName)
+                [System.IO.File]::SetAttributes(
+                    $item.FullName,
+                    [System.IO.FileAttributes]($attributes -band (-bnot [int][System.IO.FileAttributes]::ReadOnly))
+                )
+            }
         }
         foreach ($reviewRoot in @($subjectRoot, $subjectReplacementRoot)) {
             if ($originalAcls.ContainsKey($reviewRoot)) {

@@ -42,7 +42,15 @@ function Invoke-Tests {
         throw "No release-policy tests were found"
     }
     Invoke-Checked -Executable "node" -CommandArguments (@("--test") + $tests)
-    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "common.test.ps1"))
+    foreach ($testScriptName in @("common.test.ps1", "verifier-toolset.test.ps1")) {
+        Invoke-Checked -Executable "powershell" -CommandArguments @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            (Join-Path $PSScriptRoot $testScriptName)
+        )
+    }
 }
 
 switch ($Target) {
