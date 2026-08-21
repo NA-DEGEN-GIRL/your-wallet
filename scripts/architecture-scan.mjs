@@ -1827,6 +1827,19 @@ requireInvariant(
     attestation.includes("valid_helper_manifest_allowlist"),
   "release evidence must bind the exact three signing-TCB helper manifests",
 );
+requireInvariant(
+  attestation.includes("broker_transport_suite_digest") &&
+    attestation.includes("broker_manifest_digest") &&
+    attestation.includes("with_broker_transport") &&
+    attestation.includes("valid_broker_manifest") &&
+    attestation.includes("!helpers.contains(&broker)") &&
+    /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(attestation),
+  "Broker transport evidence and manifest must remain separate from the three helper manifests and release-disabled",
+);
+const brokerArtifactSource = await text(
+  "crates/platform-windows/src/broker_artifact.rs",
+);
+const brokerArtifactProduction = withoutBottomTestModule(brokerArtifactSource);
 const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction = withoutBottomTestModule(restrictedLauncher);
 requireInvariant(
@@ -1855,6 +1868,54 @@ const activationHelper = withoutBottomTestModule(
 );
 const activationArchitecture = await text("docs/architecture.md");
 const activationReadme = await text("crates/platform-windows/README.md");
+const securityDecisions = await text("docs/security-decisions.md");
+const brokerPreflight = rustFunctionBlock(
+  brokerArtifactProduction,
+  "preflight_broker_artifact",
+);
+const brokerPreflightOrder = [
+  "if !artifact.is_broker()",
+  "if !attestation.signing_enabled()",
+  "if !attestation.allows_broker_manifest(artifact.manifest_digest())",
+  "if !artifact.path().is_absolute()",
+  "Ok(PreflightBrokerArtifact { artifact })",
+].map((marker) => brokerPreflight.indexOf(marker));
+requireInvariant(
+  platformWindowsLib.includes("mod broker_artifact;") &&
+    !/pub(?:\([^)]*\))?\s+mod\s+broker_artifact\b/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*broker_artifact/u.test(platformWindowsLib) &&
+    /pub\(crate\)\s+struct\s+PreflightBrokerArtifact\s*\{\s*artifact:\s*VerifiedHelper,?\s*\}/u.test(
+      brokerArtifactProduction,
+    ) &&
+    !/#\[derive\([^\]]*\bClone\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+PreflightBrokerArtifact\b/u.test(
+      brokerArtifactProduction,
+    ) &&
+    !/impl\s+Clone\s+for\s+PreflightBrokerArtifact\b/u.test(
+      brokerArtifactProduction,
+    ) &&
+    brokerPreflightOrder.every((position) => position !== -1) &&
+    brokerPreflightOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    activationHelper.includes("pub(crate) const fn is_broker(&self) -> bool") &&
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|path|raw_handle|launch|spawn)\b/u.test(
+      brokerArtifactProduction,
+    ) &&
+    !/\b(?:CreateProcess\w*|ShellExecute\w*|WinExec|Command::new|std::thread::spawn)\s*\(/u.test(
+      brokerArtifactProduction,
+    ),
+  "private Broker preflight must own one opaque artifact and preserve role/evidence/manifest/path ordering without activation APIs",
+);
+requireInvariant(
+  activationArchitecture.includes("private, dormant Broker") &&
+    activationArchitecture.includes("exactly three signing-TCB helper manifests") &&
+    /no supervisor\s+consumes it yet/u.test(activationArchitecture) &&
+    activationReadme.includes("private dormant Broker artifact preflight") &&
+    activationReadme.includes("no supervisor consumes") &&
+    securityDecisions.includes("private dormant Broker preflight") &&
+    securityDecisions.includes("not production Broker activation"),
+  "Broker artifact admission must remain documented as dormant and release-blocking",
+);
 const productionProcessCreationSites = platformWindowsProductionFiles.flatMap(
   (file) =>
     [

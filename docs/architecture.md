@@ -135,6 +135,19 @@ native-messaging registration, a stable release extension ID, and end-to-end
 signed-artifact/installer evidence. The debug artifact hold is not an
 Authenticode release allowlist and must not be described as one.
 
+The ordinary platform library now also contains a private, dormant Broker
+artifact-admission boundary. Release evidence binds a dedicated Broker
+transport-suite digest and one non-zero Broker manifest digest separately from
+the exactly three signing-TCB helper manifests. Admission consumes the pinned
+verified artifact and checks Broker role, complete compiled release evidence,
+the dedicated manifest, and an absolute verified path in that order before it
+can mint an opaque non-clone capability. The capability exposes no path, file,
+raw handle, launch, Job, pipe, process, or thread operation, and no supervisor
+consumes it yet. `COMPILED_RELEASE_POLICY` remains `None`; the default and
+all-feature release binaries therefore remain on the 4900/exit-78 path. A later
+reviewed slice must make the exact-image supervisor consume this capability and
+must add signed-install/native-host provenance evidence before release use.
+
 ### Key Agent activation invariant (STOP-SHIP)
 
 Windows routes debug events to the thread that created the debuggee. The activation

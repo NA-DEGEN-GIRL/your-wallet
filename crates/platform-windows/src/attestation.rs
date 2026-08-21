@@ -20,10 +20,14 @@ struct ReleasePolicy {
     appcontainer_suite_digest: [u8; 32],
     helper_suite_digest: [u8; 32],
     handle_suite_digest: [u8; 32],
+    broker_transport_suite_digest: [u8; 32],
     // Key Agent, approval UI, and secret-input UI. This is an artifact allowlist,
     // not launch-role authority: the public generic helper launcher separately
     // rejects the Key Agent, whose private supervisor seam owns its activation.
     helper_manifest_digests: [[u8; 32]; REQUIRED_HELPER_MANIFESTS],
+    // Broker is deliberately separate from the three signing-TCB helpers. Its
+    // manifest may authorize only the private Broker admission boundary.
+    broker_manifest_digest: [u8; 32],
 }
 
 /// A non-zero digest that identifies an exact release artifact.
@@ -86,6 +90,7 @@ pub struct ReleaseEvidence {
     appcontainer_network_denial: Option<TestEvidence>,
     helper_verification: Option<TestEvidence>,
     handle_leak_tests: Option<TestEvidence>,
+    broker_transport: Option<TestEvidence>,
 }
 
 impl ReleaseEvidence {
@@ -109,6 +114,13 @@ impl ReleaseEvidence {
         self.handle_leak_tests = Some(evidence);
         self
     }
+
+    /// Records exact native-host/Broker transport and process-binding evidence.
+    #[must_use]
+    pub const fn with_broker_transport(mut self, evidence: TestEvidence) -> Self {
+        self.broker_transport = Some(evidence);
+        self
+    }
 }
 
 /// A fail-closed signing-release attestation.
@@ -116,6 +128,7 @@ impl ReleaseEvidence {
 pub struct ReleaseAttestation {
     signing_enabled: bool,
     allowed_helper_manifest_digests: Option<[[u8; 32]; REQUIRED_HELPER_MANIFESTS]>,
+    allowed_broker_manifest_digest: Option<[u8; 32]>,
 }
 
 impl ReleaseAttestation {
@@ -124,25 +137,30 @@ impl ReleaseAttestation {
     ///
     /// Development builds deliberately contain no release policy, so this method
     /// always returns a disabled attestation regardless of caller-supplied values.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "preserve the established public release-evidence API"
+    )]
     #[must_use]
     pub fn evaluate(artifact: ArtifactDigest, evidence: ReleaseEvidence) -> Self {
         let Some(policy) = COMPILED_RELEASE_POLICY else {
             return Self::default();
         };
-        Self::evaluate_against_policy(policy, artifact, evidence)
+        Self::evaluate_against_policy(&policy, artifact, &evidence)
     }
 
     fn evaluate_against_policy(
-        policy: ReleasePolicy,
+        policy: &ReleasePolicy,
         artifact: ArtifactDigest,
-        evidence: ReleaseEvidence,
+        evidence: &ReleaseEvidence,
     ) -> Self {
         let signing_enabled = match (
             evidence.appcontainer_network_denial,
             evidence.helper_verification,
             evidence.handle_leak_tests,
+            evidence.broker_transport,
         ) {
-            (Some(appcontainer), Some(helper), Some(handles)) => {
+            (Some(appcontainer), Some(helper), Some(handles), Some(broker_transport)) => {
                 artifact == policy.artifact
                     && appcontainer.matches_artifact(artifact)
                     && appcontainer.suite_digest == policy.appcontainer_suite_digest
@@ -150,15 +168,24 @@ impl ReleaseAttestation {
                     && helper.suite_digest == policy.helper_suite_digest
                     && handles.matches_artifact(artifact)
                     && handles.suite_digest == policy.handle_suite_digest
+                    && broker_transport.matches_artifact(artifact)
+                    && broker_transport.suite_digest == policy.broker_transport_suite_digest
                     && valid_helper_manifest_allowlist(&policy.helper_manifest_digests)
+                    && valid_broker_manifest(
+                        policy.broker_manifest_digest,
+                        &policy.helper_manifest_digests,
+                    )
             }
             _ => false,
         };
         let allowed_helper_manifest_digests =
             signing_enabled.then_some(policy.helper_manifest_digests);
+        let allowed_broker_manifest_digest =
+            signing_enabled.then_some(policy.broker_manifest_digest);
         Self {
             signing_enabled,
             allowed_helper_manifest_digests,
+            allowed_broker_manifest_digest,
         }
     }
 
@@ -178,6 +205,12 @@ impl ReleaseAttestation {
                 .is_some_and(|allowed| allowed.contains(&digest))
     }
 
+    /// Returns whether this successful attestation retained the one exact
+    /// Broker manifest digest compiled into the signed release policy.
+    pub(crate) fn allows_broker_manifest(self, digest: [u8; 32]) -> bool {
+        self.signing_enabled && self.allowed_broker_manifest_digest == Some(digest)
+    }
+
     #[cfg(test)]
     pub(crate) const fn with_helper_manifests_for_test(
         digests: [[u8; 32]; REQUIRED_HELPER_MANIFESTS],
@@ -185,6 +218,16 @@ impl ReleaseAttestation {
         Self {
             signing_enabled: true,
             allowed_helper_manifest_digests: Some(digests),
+            allowed_broker_manifest_digest: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_broker_manifest_for_test(digest: [u8; 32]) -> Self {
+        Self {
+            signing_enabled: true,
+            allowed_helper_manifest_digests: None,
+            allowed_broker_manifest_digest: Some(digest),
         }
     }
 }
@@ -196,9 +239,23 @@ fn valid_helper_manifest_allowlist(digests: &[[u8; 32]; REQUIRED_HELPER_MANIFEST
         .all(|(index, digest)| *digest != [0; 32] && !digests[..index].contains(digest))
 }
 
+fn valid_broker_manifest(
+    broker: [u8; 32],
+    helpers: &[[u8; 32]; REQUIRED_HELPER_MANIFESTS],
+) -> bool {
+    broker != [0; 32] && !helpers.contains(&broker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ArtifactDigest, ReleaseAttestation, ReleaseEvidence, ReleasePolicy, TestEvidence};
+
+    const APP_CONTAINER_SUITE: u8 = 2;
+    const HELPER_SUITE: u8 = 3;
+    const HANDLE_SUITE: u8 = 4;
+    const BROKER_TRANSPORT_SUITE: u8 = 5;
+    const HELPER_MANIFESTS: [[u8; 32]; 3] = [[6; 32], [7; 32], [8; 32]];
+    const BROKER_MANIFEST: [u8; 32] = [9; 32];
 
     fn artifact(byte: u8) -> Result<ArtifactDigest, Box<dyn std::error::Error>> {
         Ok(ArtifactDigest::new([byte; 32])?)
@@ -211,34 +268,52 @@ mod tests {
         Ok(TestEvidence::new(artifact, [byte; 32])?)
     }
 
+    fn policy(artifact: ArtifactDigest) -> ReleasePolicy {
+        ReleasePolicy {
+            artifact,
+            appcontainer_suite_digest: [APP_CONTAINER_SUITE; 32],
+            helper_suite_digest: [HELPER_SUITE; 32],
+            handle_suite_digest: [HANDLE_SUITE; 32],
+            broker_transport_suite_digest: [BROKER_TRANSPORT_SUITE; 32],
+            helper_manifest_digests: HELPER_MANIFESTS,
+            broker_manifest_digest: BROKER_MANIFEST,
+        }
+    }
+
+    fn complete_evidence(
+        artifact: ArtifactDigest,
+    ) -> Result<ReleaseEvidence, Box<dyn std::error::Error>> {
+        Ok(ReleaseEvidence::default()
+            .with_appcontainer_network_denial(evidence(artifact, APP_CONTAINER_SUITE)?)
+            .with_helper_verification(evidence(artifact, HELPER_SUITE)?)
+            .with_handle_leak_tests(evidence(artifact, HANDLE_SUITE)?)
+            .with_broker_transport(evidence(artifact, BROKER_TRANSPORT_SUITE)?))
+    }
+
     #[test]
     fn gate_is_false_without_every_piece_of_evidence() -> Result<(), Box<dyn std::error::Error>> {
         let release = artifact(1)?;
         let incomplete = ReleaseEvidence::default()
-            .with_appcontainer_network_denial(evidence(release, 2)?)
-            .with_helper_verification(evidence(release, 3)?);
+            .with_appcontainer_network_denial(evidence(release, APP_CONTAINER_SUITE)?)
+            .with_helper_verification(evidence(release, HELPER_SUITE)?)
+            .with_handle_leak_tests(evidence(release, HANDLE_SUITE)?);
         assert!(!ReleaseAttestation::evaluate(release, incomplete).signing_enabled());
         assert!(!ReleaseAttestation::default().signing_enabled());
+        assert!(!ReleaseAttestation::default().allows_broker_manifest(BROKER_MANIFEST));
         Ok(())
     }
 
     #[test]
     fn evidence_for_another_artifact_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let release = artifact(1)?;
-        let other = artifact(9)?;
-        let policy = ReleasePolicy {
-            artifact: release,
-            appcontainer_suite_digest: [2; 32],
-            helper_suite_digest: [3; 32],
-            handle_suite_digest: [4; 32],
-            helper_manifest_digests: [[5; 32], [6; 32], [7; 32]],
-        };
+        let other = artifact(10)?;
         let mismatched = ReleaseEvidence::default()
-            .with_appcontainer_network_denial(evidence(release, 2)?)
-            .with_helper_verification(evidence(other, 3)?)
-            .with_handle_leak_tests(evidence(release, 4)?);
+            .with_appcontainer_network_denial(evidence(release, APP_CONTAINER_SUITE)?)
+            .with_helper_verification(evidence(release, HELPER_SUITE)?)
+            .with_handle_leak_tests(evidence(release, HANDLE_SUITE)?)
+            .with_broker_transport(evidence(other, BROKER_TRANSPORT_SUITE)?);
         assert!(
-            !ReleaseAttestation::evaluate_against_policy(policy, release, mismatched)
+            !ReleaseAttestation::evaluate_against_policy(&policy(release), release, &mismatched)
                 .signing_enabled()
         );
         Ok(())
@@ -247,26 +322,23 @@ mod tests {
     #[test]
     fn gate_is_true_only_with_all_bound_evidence() -> Result<(), Box<dyn std::error::Error>> {
         let release = artifact(1)?;
-        let complete = ReleaseEvidence::default()
-            .with_appcontainer_network_denial(evidence(release, 2)?)
-            .with_helper_verification(evidence(release, 3)?)
-            .with_handle_leak_tests(evidence(release, 4)?);
-        let policy = ReleasePolicy {
-            artifact: release,
-            appcontainer_suite_digest: [2; 32],
-            helper_suite_digest: [3; 32],
-            handle_suite_digest: [4; 32],
-            helper_manifest_digests: [[5; 32], [6; 32], [7; 32]],
-        };
-        let attestation = ReleaseAttestation::evaluate_against_policy(policy, release, complete);
+        let complete = complete_evidence(release)?;
+        let attestation =
+            ReleaseAttestation::evaluate_against_policy(&policy(release), release, &complete);
         assert!(attestation.signing_enabled());
-        assert!(attestation.allows_helper_manifest([5; 32]));
         assert!(attestation.allows_helper_manifest([6; 32]));
         assert!(attestation.allows_helper_manifest([7; 32]));
-        assert!(!attestation.allows_helper_manifest([8; 32]));
+        assert!(attestation.allows_helper_manifest([8; 32]));
+        assert!(!attestation.allows_helper_manifest(BROKER_MANIFEST));
+        assert!(attestation.allows_broker_manifest(BROKER_MANIFEST));
+        assert!(!attestation.allows_broker_manifest(HELPER_MANIFESTS[0]));
         assert!(
             !ReleaseAttestation::evaluate(release, complete).signing_enabled(),
             "development builds have no compiled release policy"
+        );
+        assert!(
+            !ReleaseAttestation::evaluate(release, complete)
+                .allows_broker_manifest(BROKER_MANIFEST)
         );
         Ok(())
     }
@@ -275,35 +347,57 @@ mod tests {
     fn helper_manifest_allowlist_is_retained_only_after_exact_evidence()
     -> Result<(), Box<dyn std::error::Error>> {
         let release = artifact(1)?;
-        let complete = ReleaseEvidence::default()
-            .with_appcontainer_network_denial(evidence(release, 2)?)
-            .with_helper_verification(evidence(release, 3)?)
-            .with_handle_leak_tests(evidence(release, 4)?);
-        let base = ReleasePolicy {
-            artifact: release,
-            appcontainer_suite_digest: [2; 32],
-            helper_suite_digest: [3; 32],
-            handle_suite_digest: [4; 32],
-            helper_manifest_digests: [[5; 32], [6; 32], [7; 32]],
-        };
+        let complete = complete_evidence(release)?;
+        let base = policy(release);
 
         let wrong_suite = ReleaseEvidence::default()
-            .with_appcontainer_network_denial(evidence(release, 2)?)
-            .with_helper_verification(evidence(release, 9)?)
-            .with_handle_leak_tests(evidence(release, 4)?);
-        let disabled = ReleaseAttestation::evaluate_against_policy(base, release, wrong_suite);
+            .with_appcontainer_network_denial(evidence(release, APP_CONTAINER_SUITE)?)
+            .with_helper_verification(evidence(release, 10)?)
+            .with_handle_leak_tests(evidence(release, HANDLE_SUITE)?)
+            .with_broker_transport(evidence(release, BROKER_TRANSPORT_SUITE)?);
+        let disabled = ReleaseAttestation::evaluate_against_policy(&base, release, &wrong_suite);
         assert!(!disabled.signing_enabled());
-        assert!(!disabled.allows_helper_manifest([5; 32]));
+        assert!(!disabled.allows_helper_manifest(HELPER_MANIFESTS[0]));
 
-        for invalid_allowlist in [[[0; 32], [6; 32], [7; 32]], [[5; 32], [5; 32], [7; 32]]] {
+        for invalid_allowlist in [[[0; 32], [7; 32], [8; 32]], [[6; 32], [6; 32], [8; 32]]] {
             let invalid_policy = ReleasePolicy {
                 helper_manifest_digests: invalid_allowlist,
                 ..base
             };
             let disabled =
-                ReleaseAttestation::evaluate_against_policy(invalid_policy, release, complete);
+                ReleaseAttestation::evaluate_against_policy(&invalid_policy, release, &complete);
             assert!(!disabled.signing_enabled());
-            assert!(!disabled.allows_helper_manifest([5; 32]));
+            assert!(!disabled.allows_helper_manifest(HELPER_MANIFESTS[0]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn broker_manifest_is_separate_and_retained_only_after_exact_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let release = artifact(1)?;
+        let complete = complete_evidence(release)?;
+        let base = policy(release);
+
+        let wrong_broker_suite = ReleaseEvidence::default()
+            .with_appcontainer_network_denial(evidence(release, APP_CONTAINER_SUITE)?)
+            .with_helper_verification(evidence(release, HELPER_SUITE)?)
+            .with_handle_leak_tests(evidence(release, HANDLE_SUITE)?)
+            .with_broker_transport(evidence(release, 10)?);
+        let disabled =
+            ReleaseAttestation::evaluate_against_policy(&base, release, &wrong_broker_suite);
+        assert!(!disabled.signing_enabled());
+        assert!(!disabled.allows_broker_manifest(BROKER_MANIFEST));
+
+        for invalid_broker_manifest in [[0; 32], HELPER_MANIFESTS[0]] {
+            let invalid_policy = ReleasePolicy {
+                broker_manifest_digest: invalid_broker_manifest,
+                ..base
+            };
+            let disabled =
+                ReleaseAttestation::evaluate_against_policy(&invalid_policy, release, &complete);
+            assert!(!disabled.signing_enabled());
+            assert!(!disabled.allows_broker_manifest(invalid_broker_manifest));
         }
         Ok(())
     }

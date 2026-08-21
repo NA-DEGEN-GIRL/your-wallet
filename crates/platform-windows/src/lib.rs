@@ -36,6 +36,17 @@
 //! use platform_windows::key_agent_supervisor::bind_dormant_key_agent;
 //! ```
 //!
+//! The release-bound Broker artifact admission is also private and dormant. It
+//! cannot be constructed or used as an external launch surface:
+//!
+//! ```compile_fail
+//! use platform_windows::broker_artifact::PreflightBrokerArtifact;
+//! ```
+//!
+//! ```compile_fail
+//! use platform_windows::broker_artifact::preflight_broker_artifact;
+//! ```
+//!
 //! The public one-shot helper launcher also rejects the manifest-derived Key
 //! Agent role; an allowlisted Key Agent cannot use that resumed-process path.
 
@@ -46,6 +57,11 @@ mod anchor_registry;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
+// This pure admission seam checks Broker role, complete release evidence, its
+// distinct manifest allowlist, and absolute verified path without allocating a
+// Job, pipe, thread, or process. It remains private and has no launch operation.
+#[allow(dead_code)]
+mod broker_artifact;
 // This persistent secretless native-host/Broker transport is composed only by
 // the Windows debug feature with the exact Broker supervisor and payload-only
 // `broker::ipc` adapters. Chrome-launched native-host provenance, signed and

@@ -14,6 +14,13 @@ no ordinary build can complete restricted launch or reach signing. Activating
 the helpers through exact signed-artifact attestation and the end-to-end suite
 remain release blockers.
 
+A private dormant Broker preflight now distinguishes Broker transport evidence
+and the exact Broker manifest from the three signing-TCB helper manifests. It
+can only retain an opaque pinned-artifact capability after role, complete
+release evidence, manifest, and absolute-path checks. Nothing consumes that
+capability, it has no launch operation, and the compiled policy remains absent;
+this is artifact admission structure, not production Broker activation.
+
 | Area | Decision |
 | --- | --- |
 | Native stack | Rust 2024; plain JavaScript MV3 extension |
@@ -47,6 +54,9 @@ Before any real mainnet value is used, the Windows build must prove:
    independent review of the secret and authorization TCBs.
 5. Exact extension-envelope dispatch through the native host and authenticated
    broker endpoint, including aggregate structural-limit and negative tests.
+   The private Broker artifact preflight must be consumed by the reviewed
+   exact-image supervisor and covered by signed immutable-install, manifest,
+   native-host provenance, process/Job/channel, and negative release evidence.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

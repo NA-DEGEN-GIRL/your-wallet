@@ -214,12 +214,9 @@ impl VerifiedHelper {
         matches!(self.role, HelperRole::KeyAgent)
     }
 
-    /// Returns whether this held debug-only artifact is the exact Broker role.
-    #[cfg(all(
-        windows,
-        feature = "broker-channel-contract-test-hook",
-        debug_assertions
-    ))]
+    /// Returns whether the verified release manifest names the exact Broker
+    /// role. Only the private Broker artifact-admission boundary may use this
+    /// narrower role proof in ordinary builds.
     pub(crate) const fn is_broker(&self) -> bool {
         matches!(self.role, HelperRole::Broker)
     }
@@ -327,6 +324,34 @@ impl VerifiedHelper {
             },
             manifest_digest: [24; 32],
             role: HelperRole::KeyAgent,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_broker_artifact_test(
+        path: PathBuf,
+        manifest_digest: [u8; 32],
+        broker_role: bool,
+    ) -> Result<Self, HelperError> {
+        let executable = std::env::current_exe().map_err(|_| HelperError::OperatingSystem)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(executable)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        Ok(Self {
+            path,
+            file,
+            identity: FileIdentity {
+                volume_serial_number: 31,
+                file_index: 32,
+                file_size: 33,
+            },
+            manifest_digest,
+            role: if broker_role {
+                HelperRole::Broker
+            } else {
+                HelperRole::Other
+            },
         })
     }
 }

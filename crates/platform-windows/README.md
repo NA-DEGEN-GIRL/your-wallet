@@ -130,7 +130,13 @@ Implemented:
   non-cloneable bound-anchor handle; application crates cannot implement or
   inject an alternative rollback-anchor trait;
 - an artifact-bound release evidence type whose public gate remains false in
-  development builds.
+  development builds;
+- a private dormant Broker artifact preflight that keeps one dedicated Broker
+  transport-suite digest and manifest separate from the exactly three
+  signing-TCB helpers, then checks Broker role, complete evidence, the exact
+  manifest, and an absolute retained path before minting a non-clone opaque
+  capability. It exposes no launch or artifact accessor, no supervisor consumes
+  it, and `COMPILED_RELEASE_POLICY = None` keeps it unreachable in release.
 
 Stop-ship before any signing-capable release:
 
@@ -147,7 +153,10 @@ Stop-ship before any signing-capable release:
    permitted.
 5. Generate an immutable compiled release policy from independently signed test
    evidence and bind it to the exact artifact digest. The source currently sets
-   `COMPILED_RELEASE_POLICY` to `None`.
+   `COMPILED_RELEASE_POLICY` to `None`. Bind the separate Broker transport suite
+   and Broker manifest to the signed immutable install, then make the reviewed
+   exact-image supervisor consume the private preflight without adding a path,
+   handle, or generic launch escape.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the
