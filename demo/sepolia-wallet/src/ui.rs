@@ -1327,6 +1327,7 @@ pub struct WalletApp {
     imported_secret_visible: bool,
     reauth_password: String,
     snapshot: Option<WalletSnapshot>,
+    receive_qr_visible: bool,
     custom_token_address: String,
     custom_tokens: Vec<CustomTokenSnapshot>,
     transfer_asset: TransferAssetChoice,
@@ -1381,6 +1382,7 @@ impl WalletApp {
             imported_secret_visible: false,
             reauth_password: String::new(),
             snapshot: None,
+            receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             transfer_asset: TransferAssetChoice::Native,
@@ -1427,6 +1429,7 @@ impl WalletApp {
             imported_secret_visible: false,
             reauth_password: String::new(),
             snapshot: None,
+            receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             transfer_asset: TransferAssetChoice::Native,
@@ -1514,6 +1517,7 @@ impl WalletApp {
             zeroize_wallet_snapshot(snapshot);
         }
         self.snapshot = None;
+        self.receive_qr_visible = false;
         for token in &mut self.custom_tokens {
             token.contract_address.zeroize();
             match &mut token.state {
@@ -1995,6 +1999,7 @@ impl WalletApp {
             self.error = Some("선택할 수 없는 계정입니다.".to_owned());
             return;
         }
+        self.receive_qr_visible = false;
         self.send_command(
             WorkerCommand::SelectAccount { index },
             PendingAction::SelectAccount,
@@ -2351,6 +2356,7 @@ impl WalletApp {
                         zeroize_wallet_snapshot(current);
                     }
                     self.snapshot = Some(snapshot);
+                    self.receive_qr_visible = false;
                     zeroize_custom_token_snapshots(&mut self.custom_tokens);
                     zeroize_transfer_asset_choice(&mut self.transfer_asset);
                     self.transfer_asset = TransferAssetChoice::Native;
@@ -3123,6 +3129,86 @@ impl WalletApp {
             }
         });
         ui.add_space(8.0);
+        let receive_button_text = if self.receive_qr_visible {
+            "받기 QR 숨기기"
+        } else {
+            "받기 QR 보기"
+        };
+        if ui
+            .add_enabled(
+                self.pending.is_none(),
+                egui::Button::new(receive_button_text),
+            )
+            .clicked()
+        {
+            self.receive_qr_visible = !self.receive_qr_visible;
+        }
+        if self.receive_qr_visible {
+            ui.add_space(6.0);
+            ui.group(|ui| {
+                ui.strong(format!(
+                    "계정 {} · Ethereum Sepolia · Chain ID {}",
+                    selected_account.index,
+                    crate::rpc::SEPOLIA_CHAIN_ID
+                ));
+                ui.colored_label(
+                    palette.warning,
+                    "QR과 결제 URI는 공개 주소를 노출합니다. 안전한 곳에서만 보여 주세요.",
+                );
+
+                match crate::receive_qr::ReceiveQr::new(selected_account.address.as_str()) {
+                    Ok(qr) => {
+                        ui.label("EIP-681 결제 URI");
+                        ui.add(
+                            egui::Label::new(RichText::new(qr.payment_uri()).monospace()).wrap(),
+                        );
+                        if ui.button("결제 URI 복사").clicked() {
+                            ui.ctx().copy_text(qr.payment_uri().to_owned());
+                            self.notice = Some("결제 URI를 클립보드에 복사했습니다.".to_owned());
+                        }
+                        ui.add_space(6.0);
+                        ui.vertical_centered(|ui| match qr.paint(ui) {
+                            Ok(metrics) => {
+                                debug_assert!(
+                                    metrics.symbol_modules >= 21
+                                        && metrics.total_modules > metrics.symbol_modules
+                                        && metrics.module_pixels >= 6
+                                        && metrics.dark_modules > 0
+                                        && metrics.clip_rect.contains(metrics.canvas.min)
+                                        && metrics.clip_rect.contains(metrics.canvas.max)
+                                );
+                            }
+                            Err(crate::receive_qr::ReceiveQrError::InvalidLayout) => {
+                                ui.colored_label(
+                                    palette.warning,
+                                    "QR을 표시할 공간이 부족합니다. 창 크기나 확대 비율을 조정해 주세요.",
+                                );
+                            }
+                            Err(
+                                crate::receive_qr::ReceiveQrError::InvalidAddress
+                                | crate::receive_qr::ReceiveQrError::Encoding,
+                            ) => {
+                                ui.colored_label(
+                                    palette.error,
+                                    "받기 QR을 만들지 못했습니다. 위 전체 주소를 확인해 주세요.",
+                                );
+                            }
+                        });
+                    }
+                    Err(
+                        crate::receive_qr::ReceiveQrError::InvalidAddress
+                        | crate::receive_qr::ReceiveQrError::Encoding
+                        | crate::receive_qr::ReceiveQrError::InvalidLayout,
+                    ) => {
+                        ui.colored_label(
+                            palette.error,
+                            "받기 QR을 만들지 못했습니다. 위 전체 주소를 확인해 주세요.",
+                        );
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
         ui.horizontal(|ui| {
             ui.label("잔액:");
             ui.strong(format!("{} Sepolia ETH", snapshot.balance_eth));
@@ -4951,6 +5037,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         imported_secret_visible: false,
         reauth_password: String::new(),
         snapshot: None,
+        receive_qr_visible: false,
         custom_token_address: String::new(),
         custom_tokens: Vec::new(),
         transfer_asset: TransferAssetChoice::Native,
@@ -5128,14 +5215,16 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
     };
     app.last_transaction_hash = Some("headless-prior-account-hash".to_owned());
     app.secret_text_state_purge_pending = false;
+    app.receive_qr_visible = true;
     app.select_account(1);
-    if app.pending != Some(PendingAction::SelectAccount) {
+    if app.pending != Some(PendingAction::SelectAccount) || app.receive_qr_visible {
         return Err(());
     }
     route_headless_command(&mut app, &command_receiver, &mut backend, |command| {
         matches!(command, WorkerCommand::SelectAccount { index: 1 })
     })?;
     if app.pending.is_some()
+        || app.receive_qr_visible
         || app
             .snapshot
             .as_ref()
@@ -5471,6 +5560,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         headless_reveal(SecretRevealKind::AccountPrivateKey),
         Instant::now(),
     );
+    app.receive_qr_visible = true;
     let previous_epoch = app.session_epoch;
     app.request_lock(LockReason::Explicit);
     if app.session_epoch != previous_epoch + 1
@@ -5482,6 +5572,7 @@ pub(crate) fn run_headless_smoke() -> Result<HeadlessSmokeEvidence, ()> {
         || app.snapshot.is_some()
         || app.prepared.is_some()
         || app.secret_reveal.is_some()
+        || app.receive_qr_visible
         || !app.custom_tokens.is_empty()
         || !app.password.is_empty()
         || !app.password_confirmation.is_empty()
@@ -7143,6 +7234,7 @@ mod tests {
             snapshot: Some(super::headless_snapshot(super::WalletKind::V2Mnemonic {
                 word_count: 12,
             })),
+            receive_qr_visible: false,
             custom_token_address: String::new(),
             custom_tokens: Vec::new(),
             transfer_asset: TransferAssetChoice::Native,
@@ -7485,9 +7577,11 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(app.amount_eth.len(), 8);
+        app.receive_qr_visible = true;
         app.request_lock(super::LockReason::Explicit);
         app.purge_queued_secret_text_edit_state(&context);
         assert!(app.amount_eth.is_empty());
+        assert!(!app.receive_qr_visible);
 
         let mut recreated = String::new();
         run_secret_text_frame(&context, amount_id, &mut recreated, true, 5.0, Vec::new());
@@ -7576,6 +7670,7 @@ mod tests {
 
         let mut switched = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
         switched.selected_account_index = 1;
+        app.receive_qr_visible = true;
         switched.balance_eth = "조회 전".to_owned();
         app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)));
         app.purge_queued_secret_text_edit_state(&context);
@@ -7596,6 +7691,7 @@ mod tests {
         assert!(app.reauth_password.is_empty());
         assert!(app.last_transaction_hash.is_none());
         assert!(app.secret_reveal.is_none());
+        assert!(!app.receive_qr_visible);
         assert!(app.export_kind == SecretRevealKind::Mnemonic);
 
         for id in [amount_id, reauth_id] {
@@ -7750,6 +7846,33 @@ mod tests {
     }
 
     #[test]
+    fn receive_qr_payload_follows_only_the_selected_account() {
+        let mut snapshot = super::headless_snapshot(WalletKind::V2Mnemonic { word_count: 12 });
+
+        for selected_index in [0, 1] {
+            snapshot.selected_account_index = selected_index;
+            let selected = snapshot.selected_account().expect("selected account");
+            let other = snapshot
+                .accounts
+                .iter()
+                .find(|account| account.index != selected_index)
+                .expect("other bounded account");
+            let qr = crate::receive_qr::ReceiveQr::new(selected.address.as_str())
+                .expect("headless address is a valid receive target");
+
+            assert_eq!(
+                qr.payment_uri(),
+                format!(
+                    "ethereum:{}@{}",
+                    selected.address,
+                    crate::rpc::SEPOLIA_CHAIN_ID
+                )
+            );
+            assert!(!qr.payment_uri().contains(other.address.as_str()));
+        }
+    }
+
+    #[test]
     fn account_selection_blocks_every_unsafe_ui_state_and_stale_result() {
         let (commands, command_receiver) = std::sync::mpsc::channel();
         let (event_sender, events) = std::sync::mpsc::channel();
@@ -7788,7 +7911,9 @@ mod tests {
         assert!(command_receiver.try_recv().is_err());
         clear_snapshot_pending_broadcast(app.snapshot.as_mut());
 
+        app.receive_qr_visible = true;
         app.select_account(1);
+        assert!(!app.receive_qr_visible);
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(WorkerRequest {

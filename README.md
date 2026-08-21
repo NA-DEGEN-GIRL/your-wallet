@@ -9,6 +9,21 @@ Windows에서 더블클릭으로 실행하는 **Ethereum Sepolia 테스트넷 �
 더블클릭하세요. [`TEST-WALLET.cmd`](TEST-WALLET.cmd)는 앱이 아니라 개발자용
 자동검사 파일입니다.
 
+## 받기 QR 계약 (Sepolia 실행판 한정)
+
+받기 QR은 사용자가 직접 열 때만 보이며, 현재 선택한 계정에서 백엔드가 검증한
+EIP-55 주소만 사용합니다. QR에는 정확히
+`ethereum:<address>@11155111`만 인코딩하며 금액, query string, `pay-` 형식은
+지원하지 않습니다. QR 보기, 결제 URI 복사, 별도의 일반 주소 복사는 각각 사용자가
+명시적으로 눌러야 실행됩니다.
+
+주소, 선택 계정 번호, Sepolia chain ID는 공개 식별 정보입니다. 사용하기 전에 수신
+기기에서 세 항목을 모두 확인하세요. QR은 매 화면 프레임에서만 만들며 정확히
+`qrcodegen =1.8.0`, 4모듈 여백, 저배율에서도 모듈당 최소 6 physical pixel을
+사용합니다. 전체 QR이 현재 보이는 영역 안에 들어오지 않으면 그리지 않고 안내를
+표시하므로, 잘리거나 일부만 보이는 QR은 만들지 않습니다. QR texture, cache, 파일,
+네트워크 경로도 없습니다. 계정 전환 요청·성공과 잠금·세션 정리는 QR을 다시 숨깁니다.
+
 > [!WARNING]
 > 실제 ETH, 메인넷 자산, 구매한 토큰을 절대 넣지 마세요. 이 앱에서는 가치가
 > 없는 Sepolia 테스트 ETH만 사용해야 합니다.
@@ -432,10 +447,10 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 
 2026년 8월 21일 기준:
 
-- Sepolia 실행판 테스트 229개 통과
+- Sepolia 실행판 테스트 233개 통과
 - 실제 Sepolia chain ID와 고정 genesis 연결 확인 통과
 - Sepolia 실행판 포맷·엄격한 Clippy·릴리스 빌드 통과
-- 프로덕션 Rust 테스트 588개 실행 통과
+- 프로덕션 Rust 테스트 548개 실행 통과
 - 부모 커널 테스트 전용 headless 자식 fixture 6개는 직접 실행하지 않도록 의도적으로 제외
 - 위 Rust 테스트와 별도로 보안용 컴파일 실패 테스트 23개 통과
 - Chrome 확장 프로그램 테스트 33개 통과

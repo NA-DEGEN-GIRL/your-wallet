@@ -94,6 +94,32 @@ remain in stack/process remnants. Demo lock scrubs owned secret buffers but is
 not a process-memory forensic-erasure guarantee. Production release is
 STOP-SHIP without an isolated Key Agent and a zeroizing KDF implementation.
 
+### Sepolia demo receive QR boundary
+
+The receive surface takes only `WalletSnapshot::selected_account()` and the
+frame-local constructor independently requires its strict EIP-55 checksum. The
+only encoded payload is `ethereum:<address>@11155111`; amount, query-string, and
+`pay-` variants are not representable. The ordinary plain-address copy remains
+available separately. QR reveal and URI copy are independent explicit actions,
+and the panel warns that the address, selected account index, and Sepolia chain
+ID are public identifying metadata that must be verified on the receiving
+device.
+
+The demo pins `qrcodegen` exactly to 1.8.0 and builds the matrix only in the
+revealed frame. Rendering reserves an exact four-module white quiet zone and
+uses integer physical-pixel module boundaries with a minimum six-pixel module,
+including low pixels-per-point. Layout uses the smaller dimension of the
+available rectangle intersected with the current clip rectangle. It verifies
+post-allocation that the entire canvas remains inside that clip before painting;
+a narrow panel, short viewport, or invalid scale therefore returns a category-
+only layout error rather than clipping any part of the symbol. No QR texture,
+cache, file, or network path exists.
+
+Receive reveal state is only a Boolean, never a cached matrix or URI. A valid
+account-selection request hides it before dispatch; successful selection hides
+it again while scrubbing the old account context; lock/session scrub also hides
+it. Thus no stale QR remains visible across account or session identity changes.
+
 ### Dormant Windows Broker composition
 
 The Windows composition is reachable only with

@@ -4,6 +4,7 @@ mod activity_store;
 mod backend;
 mod erc20;
 mod headless;
+mod receive_qr;
 mod rpc;
 mod token_store;
 mod ui;

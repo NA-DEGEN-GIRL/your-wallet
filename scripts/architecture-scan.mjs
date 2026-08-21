@@ -131,8 +131,11 @@ const rootManifest = await text("Cargo.toml");
 const rootReadme = await text("README.md");
 const sepoliaArchitectureDoc = await text("docs/architecture.md");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
+const sepoliaDemoLock = await text("demo/sepolia-wallet/Cargo.lock");
+const sepoliaDemoMain = await text("demo/sepolia-wallet/src/main.rs");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
+const sepoliaDemoReceiveQr = await text("demo/sepolia-wallet/src/receive_qr.rs");
 const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
 const sepoliaDemoHeadless = await text("demo/sepolia-wallet/src/headless.rs");
 const sepoliaDemoVaultV2 = await text("demo/sepolia-wallet/src/vault_v2.rs");
@@ -140,6 +143,10 @@ const sepoliaDemoTokenStore = await text("demo/sepolia-wallet/src/token_store.rs
 const sepoliaDemoActivityStore = await text(
   "demo/sepolia-wallet/src/activity_store.rs",
 );
+const qrcodegenLockBlock =
+  /\[\[package\]\]\r?\nname = "qrcodegen"\r?\n[\s\S]*?(?=\r?\n\[\[package\]\]|\s*$)/u.exec(
+    sepoliaDemoLock,
+  )?.[0] ?? "";
 requireInvariant(
   !rootManifest.includes("demo/sepolia-wallet"),
   "Sepolia demo must remain outside the production workspace",
@@ -260,6 +267,7 @@ requireInvariant(
 // Sepolia authenticated saved ERC-20 transfer invariants (demo-only).
 const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
 const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
+const sepoliaDemoReceiveQrProduction = withoutBottomTestModule(sepoliaDemoReceiveQr);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
 const sepoliaDemoHeadlessProduction = withoutBottomTestModule(sepoliaDemoHeadless);
 
@@ -318,6 +326,42 @@ const pendingWriteBlock = rustFunctionBlock(
 const accountSelectedUiBlock = rustItemBlock(
   sepoliaDemoUiProduction,
   /WorkerEvent::AccountSelected\(result\)\s*=>\s*match result\s*\{/u,
+);
+const walletAppBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)pub struct WalletApp\s*\{/u,
+);
+const walletAppImplBlock = rustItemBlock(
+  sepoliaDemoUiProduction,
+  /(?:^|\n)impl WalletApp\s*\{/u,
+);
+const selectAccountUiBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "select_account",
+);
+const scrubFrontendSessionBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "scrub_frontend_session",
+);
+const accountPanelBlock = rustFunctionBlock(walletAppImplBlock, "account_panel");
+const receiveRevealBlock = rustItemBlock(
+  accountPanelBlock,
+  /(?:^|\n)\s*if self\.receive_qr_visible\s*\{\s*ui\.add_space\(6\.0\);/u,
+);
+const qrLayoutImplBlock = rustItemBlock(
+  sepoliaDemoReceiveQrProduction,
+  /(?:^|\n)impl QrLayout\s*\{/u,
+);
+const qrLayoutConstructorBlock = rustFunctionBlock(qrLayoutImplBlock, "new");
+const receiveQrImplBlock = rustItemBlock(
+  sepoliaDemoReceiveQrProduction,
+  /(?:^|\n)impl ReceiveQr\s*\{/u,
+);
+const receiveQrConstructorBlock = rustFunctionBlock(receiveQrImplBlock, "new");
+const receiveQrPaintBlock = rustFunctionBlock(receiveQrImplBlock, "paint");
+const exactEip55Block = rustFunctionBlock(
+  sepoliaDemoReceiveQrProduction,
+  "is_exact_eip55_address",
 );
 const accountPrivateKeyRevealBlock = rustFunctionBlock(
   sepoliaDemoBackendProduction,
@@ -412,6 +456,132 @@ requireInvariant(
     !sepoliaDemoUiProduction.includes('"계정 0 개인 키"') &&
     !sepoliaDemoUiProduction.includes('"계정 0 잔액:'),
   "Sepolia secret export purpose/account binding and selected-account balance labels must remain exact and non-hardcoded",
+);
+requireInvariant(
+  receiveQrConstructorBlock.includes("if !is_exact_eip55_address(address)") &&
+    receiveQrConstructorBlock.includes(
+      'format!("ethereum:{address}@{SEPOLIA_CHAIN_ID}")',
+    ) &&
+    receiveQrConstructorBlock.includes(
+      "QrCode::encode_text(payment_uri.as_str(), QrCodeEcc::Medium)",
+    ) &&
+    !/(?:push_str|insert_str|ethereum:pay-|\bamount\b|\bvalue\b)/u.test(
+      receiveQrConstructorBlock,
+    ) &&
+    exactEip55Block.includes('address.strip_prefix("0x")') &&
+    exactEip55Block.includes("hex.len() != ADDRESS_HEX_BYTES") &&
+    exactEip55Block.includes("byte.is_ascii_hexdigit()") &&
+    exactEip55Block.includes("hex.bytes().all(|byte| byte == b'0')") &&
+    exactEip55Block.includes("hex.to_ascii_lowercase()") &&
+    exactEip55Block.includes("Keccak256::digest(lowercase.as_bytes())") &&
+    exactEip55Block.includes("byte.is_ascii_uppercase() == (nibble >= 8)") &&
+    sepoliaDemoRpc.includes("pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111"),
+  "Sepolia Receive QR must remain strict selected-account EIP-55 with exact amount-free ethereum:<address>@11155111 payload",
+);
+requireInvariant(
+  accountPanelBlock.includes("snapshot.selected_account().cloned()") &&
+    accountPanelBlock.includes("copy_text(selected_account.address.clone())") &&
+    /if ui\.button\([^{}]*\)\.clicked\(\)\s*\{\s*ui\.ctx\(\)\.copy_text\(selected_account\.address\.clone\(\)\);/u.test(
+      accountPanelBlock,
+    ) &&
+    /\.add_enabled\(\s*self\.pending\.is_none\(\),\s*egui::Button::new\(receive_button_text\),\s*\)\s*\.clicked\(\)/u.test(
+      accountPanelBlock,
+    ) &&
+    /if ui[\s\S]{0,320}?\.clicked\(\)\s*\{\s*self\.receive_qr_visible = !self\.receive_qr_visible;\s*\}/u.test(
+      accountPanelBlock,
+    ) &&
+    receiveRevealBlock.includes(
+      "ReceiveQr::new(selected_account.address.as_str())",
+    ) &&
+    receiveRevealBlock.includes("selected_account.index") &&
+    receiveRevealBlock.includes("crate::rpc::SEPOLIA_CHAIN_ID") &&
+    receiveRevealBlock.indexOf("palette.warning") <
+      receiveRevealBlock.indexOf("ReceiveQr::new") &&
+    /if ui\.button\([^{}]*\)\.clicked\(\)\s*\{\s*ui\.ctx\(\)\.copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\);/u.test(
+      receiveRevealBlock,
+    ) &&
+    (sepoliaDemoUiProduction.match(/ReceiveQr::new\(/gu) ?? []).length === 1 &&
+    selectAccountUiBlock.indexOf("self.receive_qr_visible = false") <
+      selectAccountUiBlock.indexOf("self.send_command(") &&
+    accountSelectedUiBlock.includes("self.receive_qr_visible = false") &&
+    scrubFrontendSessionBlock.includes("self.receive_qr_visible = false"),
+  "Sepolia Receive QR reveal/copy must stay explicit, selected-account-bound, public-metadata-warned, and hidden across selection and lock",
+);
+requireInvariant(
+  sepoliaDemoReceiveQrProduction.includes("const QUIET_ZONE_MODULES: u32 = 4") &&
+    sepoliaDemoReceiveQrProduction.includes("const MIN_MODULE_PIXELS: u32 = 6") &&
+    qrLayoutConstructorBlock.includes(
+      "let maximum_module_pixels = available_for_modules / total_modules",
+    ) &&
+    qrLayoutConstructorBlock.includes(
+      "if maximum_module_pixels < MIN_MODULE_PIXELS",
+    ) &&
+    qrLayoutConstructorBlock.includes(
+      "let preferred_module_pixels = (preferred_module_pixels as u32).max(MIN_MODULE_PIXELS)",
+    ) &&
+    qrLayoutConstructorBlock.includes(
+      "let module_pixels = preferred_module_pixels.min(maximum_module_pixels)",
+    ) &&
+    qrLayoutConstructorBlock.indexOf(".max(MIN_MODULE_PIXELS)") <
+      qrLayoutConstructorBlock.indexOf(".min(maximum_module_pixels)") &&
+    qrLayoutConstructorBlock.includes("checked_add(QUIET_ZONE_MODULES * 2)") &&
+    receiveQrPaintBlock.includes(
+      "ui.available_rect_before_wrap().intersect(clip_rect)",
+    ) &&
+    receiveQrPaintBlock.includes(
+      "visible_rect.width().min(visible_rect.height())",
+    ) &&
+    receiveQrPaintBlock.includes(
+      "QrLayout::new(self.code.size(), pixels_per_point, available_side)?",
+    ) &&
+    receiveQrPaintBlock.includes(
+      "if !clip_rect.contains(canvas.min) || !clip_rect.contains(canvas.max)",
+    ) &&
+    receiveQrPaintBlock.indexOf("clip_rect.contains(canvas.min)") <
+      receiveQrPaintBlock.indexOf("rect_filled(canvas") &&
+    receiveQrPaintBlock.includes("x + QUIET_ZONE_MODULES") &&
+    receiveQrPaintBlock.includes("y + QUIET_ZONE_MODULES") &&
+    receiveQrPaintBlock.includes("x + QUIET_ZONE_MODULES + 1") &&
+    receiveQrPaintBlock.includes("y + QUIET_ZONE_MODULES + 1"),
+  "Sepolia Receive QR must retain quiet-zone 4, >=6 integer physical modules, and whole-canvas width/height clip fail-closure",
+);
+requireInvariant(
+  sepoliaDemoManifest.includes('qrcodegen = "=1.8.0"') &&
+    qrcodegenLockBlock.includes('version = "1.8.0"') &&
+    !qrcodegenLockBlock.includes("dependencies =") &&
+    /^mod receive_qr;$/mu.test(sepoliaDemoMain) &&
+    !/^pub(?:\(crate\))?\s+mod receive_qr;$/mu.test(sepoliaDemoMain) &&
+    !/\bpub\s+use\b[^\r\n]*\breceive_qr\b/u.test(
+      `${sepoliaDemoMain}\n${sepoliaDemoUiProduction}`,
+    ) &&
+    walletAppBlock.includes("receive_qr_visible: bool") &&
+    !/(?:payment_uri|QrCode|ReceiveQr)/u.test(walletAppBlock) &&
+    (sepoliaDemoReceiveQrProduction.match(/crate::rpc::/gu) ?? []).length === 1 &&
+    !/(?:\bstatic\b|thread_local!|OnceLock|LazyLock|Mutex|RwLock|RefCell)/u.test(
+      sepoliaDemoReceiveQrProduction,
+    ) &&
+    !/(?:TextureHandle|load_texture|include_bytes!|std::fs|OpenOptions|File::|std::net|TcpStream|UdpSocket|ureq::|reqwest|web_sys|tokio::)/u.test(
+      sepoliaDemoReceiveQrProduction,
+    ),
+  "Sepolia Receive QR must stay qrcodegen 1.8.0, frame-local, and free of texture/cache/file/network APIs",
+);
+requireInvariant(
+  rootReadme.includes("## 받기 QR 계약 (Sepolia 실행판 한정)") &&
+    rootReadme.includes("`ethereum:<address>@11155111`") &&
+    rootReadme.includes("`qrcodegen =1.8.0`") &&
+    rootReadme.includes("전체 QR이 현재 보이는 영역 안에 들어오지 않으면 그리지 않고") &&
+    rootReadme.includes("계정 전환 요청·성공과 잠금·세션 정리는 QR을 다시 숨깁니다") &&
+    sepoliaArchitectureDoc.includes("### Sepolia demo receive QR boundary") &&
+    /the address,\s+selected account index,\s+and Sepolia chain\s+ID are public identifying metadata/u.test(
+      sepoliaArchitectureDoc,
+    ) &&
+    sepoliaArchitectureDoc.includes(
+      "the entire canvas remains inside that clip before painting",
+    ) &&
+    /No QR texture,\s+cache, file, or network path exists/u.test(
+      sepoliaArchitectureDoc,
+    ),
+  "Sepolia Receive QR documentation must retain exact payload, public-metadata warning, dependency, geometry, and fail-closed scope",
 );
 requireInvariant(
   preparePendingAccountBlock.includes("self.attribute_pending_sender") &&
