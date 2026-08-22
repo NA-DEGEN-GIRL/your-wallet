@@ -24,7 +24,6 @@ use std::{
     path::Path,
 };
 
-use thiserror::Error;
 #[cfg(test)]
 use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
@@ -82,21 +81,30 @@ const KEY_AGENT_PROFILE_DESCRIPTION: &str =
 const CAPABILITY_COUNT: u32 = 0;
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
 /// Stable, non-diagnostic failures from the private Key Agent LPAC boundary.
-#[derive(Error, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub(crate) enum KeyAgentLpacError {
     /// The fixed profile could not be created, derived, or validated.
-    #[error("Key Agent LPAC profile policy failed")]
     Profile,
     /// The exact process-creation attributes could not be installed.
-    #[error("Key Agent LPAC creation-attribute policy failed")]
     Attribute,
     /// Fresh profile-bound storage provisioning or revalidation failed.
-    #[error("Key Agent LPAC storage provisioning policy failed")]
     Provisioning,
     /// The suspended child token did not match the fixed LPAC policy.
-    #[error("Key Agent LPAC token policy failed")]
     Token,
 }
+
+impl fmt::Display for KeyAgentLpacError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Profile => "Key Agent LPAC profile policy failed",
+            Self::Attribute => "Key Agent LPAC creation-attribute policy failed",
+            Self::Provisioning => "Key Agent LPAC storage provisioning policy failed",
+            Self::Token => "Key Agent LPAC token policy failed",
+        })
+    }
+}
+
+impl ::std::error::Error for KeyAgentLpacError {}
 
 impl fmt::Debug for KeyAgentLpacError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,24 +112,21 @@ impl fmt::Debug for KeyAgentLpacError {
     }
 }
 
-/// Supervisor-held proof of one freshly provisioned Key Agent identity and root.
+/// Freshly created Key Agent objects that are not yet authorized for launch.
 ///
-/// Production construction succeeds only when this call created both the fixed
-/// `AppContainer` profile and the fixed storage leaf. The storage object remains
-/// held without delete sharing for the complete lifetime of this value. This is
-/// intentionally narrower than proof that a child opened or used the root.
-#[must_use = "the Key Agent provisioning proof must remain bound to its activation"]
-pub(crate) struct PreparedKeyAgentProvisioning {
+/// The trusted installer must durably commit and authoritatively reread an exact
+/// provenance record before these objects may ever become a
+/// [`PreparedKeyAgentProvisioning`]. There is deliberately no such production
+/// transition yet. Dropping this value does not delete or repair either durable
+/// object; a later trusted recovery ceremony must classify the partial state.
+#[must_use = "fresh Key Agent objects require a durable provenance ceremony"]
+pub(crate) struct PendingKeyAgentProvisioning {
     profile: PreparedKeyAgentProfile,
     storage_root: HeldKeyAgentStorageRoot,
 }
 
-impl PreparedKeyAgentProvisioning {
-    /// Creates a new fixed profile and a new fixed storage root exactly once.
-    ///
-    /// A profile that survives a later storage failure is deliberately not
-    /// deleted or adopted. Recovery requires a future trusted installer-bound
-    /// provenance ceremony rather than an ordinary startup repair.
+impl PendingKeyAgentProvisioning {
+    /// Creates the fixed profile and storage root but grants no launch authority.
     pub(crate) fn provision_fresh() -> Result<Self, KeyAgentLpacError> {
         let profile = PreparedKeyAgentProfile::provision_fresh()?;
         // SAFETY: the private profile owner retains this exact validated SID for
@@ -139,6 +144,46 @@ impl PreparedKeyAgentProvisioning {
         })
     }
 
+    #[cfg(test)]
+    fn prepare_for_kernel_test() -> Result<Self, KeyAgentLpacError> {
+        let profile = PreparedKeyAgentProfile::open_or_create()?;
+        // SAFETY: the test seam retains the exact SID owner while the storage
+        // helper copies it and chooses a private CSPRNG-named empty leaf.
+        let storage_root = unsafe {
+            create_unique_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+            )
+        }
+        .map_err(|_| KeyAgentLpacError::Provisioning)?;
+        Ok(Self {
+            profile,
+            storage_root,
+        })
+    }
+}
+
+impl fmt::Debug for PendingKeyAgentProvisioning {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (&self.profile, &self.storage_root);
+        formatter.write_str("PendingKeyAgentProvisioning([NON-LAUNCHABLE FRESH OBJECTS; REDACTED])")
+    }
+}
+
+/// Supervisor-held proof of an independently verified Key Agent installation.
+///
+/// No production constructor currently exists. A future trusted installer
+/// verifier must authenticate and reread the exact committed provenance record,
+/// then bind its owner, fixed profile, storage-root `FILE_ID_INFO`, installation
+/// identity, and release identity before constructing this launch capability.
+/// The test-only constructor does not make production adoption reachable.
+#[must_use = "the Key Agent provisioning proof must remain bound to its activation"]
+pub(crate) struct PreparedKeyAgentProvisioning {
+    profile: PreparedKeyAgentProfile,
+    storage_root: HeldKeyAgentStorageRoot,
+}
+
+impl PreparedKeyAgentProvisioning {
     /// Reuses the fixed persistent profile only for bounded kernel tests and
     /// creates a CSPRNG-named empty root that is removed non-recursively on drop.
     #[cfg(test)]
@@ -182,18 +227,18 @@ impl PreparedKeyAgentProvisioning {
 impl fmt::Debug for PreparedKeyAgentProvisioning {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
-            "PreparedKeyAgentProvisioning([FRESH PROFILE AND HELD STORAGE ROOT; REDACTED])",
+            "PreparedKeyAgentProvisioning([VERIFIED PROFILE AND HELD STORAGE ROOT; REDACTED])",
         )
     }
 }
 
 /// Supervisor-owned preparation of the one fixed Key Agent profile identity.
 ///
-/// Production provisioning can construct this value only when the profile was
-/// created by that exact call. Existing-profile adoption remains a separate,
-/// unimplemented installer-evidence boundary. The value owns an aligned copy of
-/// the fixed profile SID and the exact OS-reported local-data folder; neither is
-/// exposed to callers.
+/// Fresh provisioning can place this value only inside a non-launchable pending
+/// aggregate. Existing-profile adoption remains a separate, unimplemented
+/// installer-evidence boundary. The value owns an aligned copy of the fixed
+/// profile SID and the exact OS-reported local-data folder; neither is exposed
+/// to callers.
 #[must_use = "the prepared Key Agent profile must remain bound to its activation"]
 struct PreparedKeyAgentProfile {
     profile_sid: OwnedAppContainerSid,
@@ -577,7 +622,7 @@ impl OwnedAppContainerSid {
             .checked_add(word_bytes - 1)
             .and_then(|rounded| rounded.checked_div(word_bytes))
             .ok_or(KeyAgentLpacError::Profile)?;
-        let mut words = vec![0_usize; word_count].into_boxed_slice();
+        let mut words = ::std::vec![0_usize; word_count].into_boxed_slice();
         // SAFETY: the source contains the validated SID's complete reported
         // byte length and the aligned destination allocation is at least that
         // large. The allocations do not overlap.
@@ -889,7 +934,7 @@ fn token_information(
         .checked_add(word_size - 1)
         .and_then(|rounded| rounded.checked_div(word_size))
         .ok_or(KeyAgentLpacError::Token)?;
-    let mut words = vec![0_usize; word_count];
+    let mut words = ::std::vec![0_usize; word_count];
     let mut returned = 0_u32;
     // SAFETY: aligned storage has at least `required` writable bytes.
     unsafe {
@@ -1189,9 +1234,9 @@ mod tests {
     use super::{
         AppContainerMembershipEvidence, CAPABILITY_COUNT, KEY_AGENT_PROFILE_V1_NAME,
         KeyAgentLpacError, KeyAgentLpacKernelTestFixture, OwnedAppContainerSid, OwnedToken,
-        PreparedKeyAgentLpac, PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword,
-        TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
-        appcontainer_membership_evidence, require_created_sid_matches_derived,
+        PendingKeyAgentProvisioning, PreparedKeyAgentLpac, PreparedKeyAgentProfile,
+        PreparedKeyAgentProvisioning, TokenDword, TokenPolicyEvidence, VerifiedKeyAgentLpac,
+        appcontainer_folder, appcontainer_membership_evidence, require_created_sid_matches_derived,
         validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
@@ -1701,7 +1746,11 @@ mod tests {
     fn authority_types_are_non_clone_non_copy_and_debug_redacted() {
         fn assert_send<T: Send>() {}
 
+        assert_send::<PendingKeyAgentProvisioning>();
         assert_send::<PreparedKeyAgentProvisioning>();
+        let _ = <PendingKeyAgentProvisioning as AmbiguousIfClone<_>>::marker;
+        let _ = <PendingKeyAgentProvisioning as AmbiguousIfCopy<_>>::marker;
+        let _ = <PendingKeyAgentProvisioning as AmbiguousIfSync<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfClone<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfCopy<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfSync<_>>::marker;
@@ -1727,9 +1776,24 @@ mod tests {
         provisioning.revalidate()?;
         assert_eq!(
             format!("{provisioning:?}"),
-            "PreparedKeyAgentProvisioning([FRESH PROFILE AND HELD STORAGE ROOT; REDACTED])"
+            "PreparedKeyAgentProvisioning([VERIFIED PROFILE AND HELD STORAGE ROOT; REDACTED])"
         );
         drop(provisioning);
+        assert!(!storage_root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn pending_fresh_objects_are_redacted_non_launchable_and_exactly_cleaned()
+    -> Result<(), KeyAgentLpacError> {
+        let pending = PendingKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = pending.storage_root.path_for_test().to_path_buf();
+        assert!(storage_root.is_dir());
+        assert_eq!(
+            format!("{pending:?}"),
+            "PendingKeyAgentProvisioning([NON-LAUNCHABLE FRESH OBJECTS; REDACTED])"
+        );
+        drop(pending);
         assert!(!storage_root.exists());
         Ok(())
     }

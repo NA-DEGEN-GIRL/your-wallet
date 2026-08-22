@@ -79,17 +79,19 @@ Implemented:
   receives exactly three short-lived inherited stdio handles, one Job-list
   handle, the fixed zero-capability `YourWallet.KeyAgent.LPAC.v1` identity, and
   the ALL APPLICATION PACKAGES opt-out; the short-lived handles are dropped
-  before the worker returns. The provisioning capability consumed by this seam
-  can be minted in production only by fresh-creating both the fixed profile and
-  the fixed `YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC`
-  folder. An existing production profile or leaf fails closed and is not
-  opened, adopted, repaired, or deleted. The supervisor-held proof validates a
-  stable current-`TokenUser` owner and exact protected DACL for that SID plus the
-  fixed profile SID, the exact inherited Low/`NW` mandatory label, fixed local
-  NTFS with persistent ACLs, non-reparse state, and a nonzero-volume,
-  non-sentinel 128-bit `FILE_ID_INFO`. Its directory handle omits delete sharing,
-  is revalidated before and throughout binding, and remains held until cleanup
-  closes it last.
+  before the worker returns. The separate fresh-provisioning boundary creates
+  both the fixed profile and the fixed `YourWallet.KeyAgent.Storage.v1` leaf
+  beneath its validated `AC` folder, but yields only a non-launchable pending
+  capability. The prepared capability consumed by activation currently has no
+  production constructor or pending/candidate conversion. An existing
+  production profile or leaf fails closed and is not opened, adopted, repaired,
+  or deleted. Once a future trusted adapter supplies that prepared capability,
+  its supervisor-held proof must validate a stable current-`TokenUser` owner and
+  exact protected DACL for that SID plus the fixed profile SID, the exact
+  inherited Low/`NW` mandatory label, fixed local NTFS with persistent ACLs,
+  non-reparse state, and a nonzero-volume, non-sentinel 128-bit `FILE_ID_INFO`.
+  Its directory handle omits delete sharing, is revalidated before and
+  throughout binding, and remains held until cleanup closes it last.
 
   A private one-shot storage-startup transition now closes the former child-open
   and transcript-binding gap for this narrow object proof. The parent writes the
@@ -124,7 +126,7 @@ Implemented:
   every other inherited Win32 process setting, or DLL/dependency identity. The
   initial crate-private aggregate uniquely owns the detached suspended process,
   root Job, two parent endpoints, internally timed one-shot startup lease, and
-  fresh provisioning proof. It is non-clone, `!Sync`, exposes no raw handle or
+  independently verified profile/root proof. It is non-clone, `!Sync`, exposes no raw handle or
   generic resume API, and its only consuming resume transition is the fixed
   storage-startup proof above. The resulting private post-startup aggregate
   retains the running process, Job, both now-non-inheritable parent endpoints,
@@ -137,6 +139,29 @@ Implemented:
   differential: `CTMF_INCLUDE_APPCONTAINER` denies while adding
   `CTMF_INCLUDE_LPAC` allows, before detach. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
+
+- a private, pure install-provenance state model. Three distinct sealed inputs
+  represent an authenticated installer journal, independently expected
+  installation/release identities, and live fixed-profile/held-root
+  observations. Production has no constructor or consumer for any of them. The
+  model accepts only the exact v1 schema/policy, canonical fixed profile name and
+  SIDs, full root `FILE_ID_INFO`, and pairwise-distinct identities. It defines the
+  fixed state-to-generation mapping (`Prepared=1`, `ProfileCreated=2`,
+  `RootCreated=3`, `Committed=4`), but only an exact current `Committed=4` record
+  can yield the consistent-existing candidate; every other phase requires
+  recovery. It observes no predecessor history and cannot prove sequence, gaps,
+  rollback, or equivocation; those checks belong to the future authenticated
+  journal adapter.
+  Authenticated absence plus no objects is only an uninitialized candidate;
+  exact committed consistency is only an existing candidate; every partial,
+  pending, stale, mismatched, sentinel, or squatted state requires recovery.
+  Neither candidate is adoption or launch authority, and the existing candidate
+  retains no root handle. Fresh profile/root creation now returns a different
+  non-launchable `PendingKeyAgentProvisioning`; the activation boundary still
+  accepts only `PreparedKeyAgentProvisioning`, for which no production
+  constructor or pending/candidate conversion exists. Journal I/O,
+  authentication/anti-rollback, authoritative OS observation, adoption, and
+  recovery remain absent;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
   Before mutation it requires exactly three distinct kernel objects with exact
@@ -205,8 +230,10 @@ Implemented:
   and synthetic authentication keys/payloads; it is not a production fresh
   fixed profile/root E2E or release activation.
 
-  **Remaining storage/release boundary:** existing production profiles still
-  lack durable installer provenance/adoption/recovery, and the root's
+  **Remaining storage/release boundary:** the pure candidate classifier and
+  pending/launch typestate split do not supply durable authenticated installer
+  provenance, authoritative adoption, or recovery for existing production
+  profiles. The root's
   `TokenUser` ACE permits other same-user processes while ancestor checks remain
   non-atomic. Production rollback-anchor and storage/AEAD-key provisioning,
   live protected-settings/lease authority, authenticated Broker/supervisor
@@ -378,12 +405,15 @@ Stop-ship before any signing-capable release:
     sentinel tests against the exact signed `key-agent.exe`. The pinned libtest
     preamble and optional exact System32 `conhost.exe` topology accommodation are
     test-only and are not release attestation.
-11. Fresh-only fixed-profile/root creation, fixed zero-capability LPAC token
-    verification, test-root child open/binding, and the narrow private
+11. Non-launchable fresh fixed-profile/root creation, the pure non-authoritative
+    provenance classifier, fixed zero-capability LPAC token verification,
+    test-root child open/binding, and the narrow private
     generation-file policy are implemented and covered together by the
     `cfg(test)` integrated LPAC fixture. Keep production storage authorization
-    **STOP-SHIP** until durable installer provenance/adoption/recovery covers
-    existing profiles, the production rollback anchor and storage/AEAD keys are
+    **STOP-SHIP** until an installer-owned authenticated and rollback-resistant
+    journal plus authoritative held-object observation implements provenance,
+    adoption, and recovery for existing profiles; the production rollback
+    anchor and storage/AEAD keys are
     provisioned, and a protected-settings lease plus authenticated
     Broker/supervisor/single-instance topology consumes the sealed bindings. The
     public `WindowsGenerationStore` remains `TokenUser`-only; no frontend profile

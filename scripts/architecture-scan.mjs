@@ -1,12 +1,157 @@
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, open, readFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 const root = resolve(import.meta.dirname, "..");
 
 async function text(path) {
-  return readFile(resolve(root, path), "utf8");
+  return trustedRegularFileText(path);
+}
+
+function sameFileSystemObjectSnapshot(left, right) {
+  return (
+    (process.platform === "win32" || left.dev === right.dev) &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function sameRegularFileSnapshot(left, right) {
+  return (
+    left.isFile() &&
+    right.isFile() &&
+    sameFileSystemObjectSnapshot(left, right)
+  );
+}
+
+function sameDirectorySnapshot(left, right) {
+  return (
+    left.isDirectory() &&
+    right.isDirectory() &&
+    sameFileSystemObjectSnapshot(left, right)
+  );
+}
+
+async function trustedRegularFileText(path) {
+  const absolute = resolve(root, path);
+  const pathBefore = await lstat(absolute, { bigint: true });
+  if (
+    pathBefore.isSymbolicLink() ||
+    !pathBefore.isFile() ||
+    pathBefore.nlink !== 1n
+  ) {
+    throw new Error(`trusted input must be a regular single-link file: ${path}`);
+  }
+
+  const handle = await open(absolute, "r");
+  try {
+    const openedBefore = await handle.stat({ bigint: true });
+    if (!sameRegularFileSnapshot(pathBefore, openedBefore)) {
+      throw new Error(`trusted input identity changed before read: ${path}`);
+    }
+    const source = await handle.readFile({ encoding: "utf8" });
+    const openedAfter = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(absolute, { bigint: true });
+    if (
+      pathAfter.isSymbolicLink() ||
+      !sameRegularFileSnapshot(openedBefore, openedAfter) ||
+      !sameRegularFileSnapshot(openedAfter, pathAfter)
+    ) {
+      throw new Error(`trusted input changed during held-handle read: ${path}`);
+    }
+    return source;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function trustedDirectoryEntryInventory(path) {
+  const absolute = resolve(root, path);
+  const directoryBefore = await lstat(absolute, { bigint: true });
+  if (directoryBefore.isSymbolicLink() || !directoryBefore.isDirectory()) {
+    throw new Error(`trusted inventory root must be a non-link directory: ${path}`);
+  }
+  const entries = await readdir(absolute, { withFileTypes: true });
+  const inventory = [];
+  for (const entry of entries) {
+    const entryPath = join(absolute, entry.name);
+    const snapshot = await lstat(entryPath, { bigint: true });
+    inventory.push({
+      name: entry.name,
+      kind: snapshot.isSymbolicLink()
+        ? "symbolic-link"
+        : snapshot.isFile()
+          ? "file"
+          : snapshot.isDirectory()
+            ? "directory"
+            : "other",
+    });
+  }
+  const directoryAfter = await lstat(absolute, { bigint: true });
+  if (!sameDirectorySnapshot(directoryBefore, directoryAfter)) {
+    throw new Error(`trusted inventory directory changed during scan: ${path}`);
+  }
+  return inventory.sort((left, right) => left.name.localeCompare(right.name, "en"));
+}
+
+async function repositoryCargoOverridePaths() {
+  const paths = [];
+  const ignoredDirectoryNames = new Set([
+    ".agents",
+    ".codex",
+    ".git",
+    ".handoff",
+    "node_modules",
+    "target",
+  ]);
+  async function walk(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.name.toLowerCase() === ".cargo") {
+        paths.push(relative(root, absolute).replaceAll("\\", "/"));
+        continue;
+      }
+      if (
+        entry.isDirectory() &&
+        !ignoredDirectoryNames.has(entry.name.toLowerCase())
+      ) {
+        await walk(absolute);
+      }
+    }
+  }
+  await walk(root);
+  return paths.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function cargoLockPackageRecords(source) {
+  return [
+    ...source.matchAll(
+      /(?:^|\r?\n)\[\[package\]\]\r?\n(?<body>[\s\S]*?)(?=\r?\n\[\[package\]\]|\s*$)/gu,
+    ),
+  ].map((match) => {
+    const field = (name) =>
+      new RegExp(`^${name}\\s*=\\s*"(?<value>[^"]+)"\\s*$`, "mu").exec(
+        match.groups.body,
+      )?.groups.value ?? null;
+    const dependencies =
+      /^dependencies\s*=\s*\[(?<body>[\s\S]*?)^\]\s*$/mu.exec(
+        match.groups.body,
+      )?.groups.body ?? "";
+    return {
+      name: field("name"),
+      version: field("version"),
+      source: field("source"),
+      checksum: field("checksum"),
+      dependencies: [
+        ...dependencies.matchAll(/^\s*"(?<name>[^"]+)",?\s*$/gmu),
+      ].map((dependency) => dependency.groups.name),
+    };
+  });
 }
 
 function maskRustRange(characters, source, start, end) {
@@ -131,13 +276,75 @@ function rustBraceDepthBefore(sourceCode, end) {
   return depth;
 }
 
+function rustCfgMetaCallArguments(expression, name) {
+  const code = rustLexicalCode(expression).trim();
+  const prefix = new RegExp(`^${name}\\s*\\(`, "u").exec(code);
+  if (prefix === null) {
+    return null;
+  }
+  const opening = code.indexOf("(", prefix.index);
+  const closing = matchingRustDelimiter(code, opening, "(", ")");
+  if (closing === -1 || code.slice(closing + 1).trim() !== "") {
+    return null;
+  }
+  const argumentsSource = code.slice(opening + 1, closing);
+  const argumentsList = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index <= argumentsSource.length; index += 1) {
+    const character = argumentsSource[index];
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) {
+        return null;
+      }
+    } else if ((character === "," || index === argumentsSource.length) && depth === 0) {
+      const argument = argumentsSource.slice(start, index).trim();
+      if (argument !== "") {
+        argumentsList.push(argument);
+      }
+      start = index + 1;
+    }
+  }
+  return depth === 0 ? argumentsList : null;
+}
+
+function rustCfgExpressionRequiresTest(expression) {
+  const code = rustLexicalCode(expression).trim();
+  if (code === "test") {
+    return true;
+  }
+  const allArguments = rustCfgMetaCallArguments(code, "all");
+  if (allArguments !== null) {
+    return allArguments.some((argument) =>
+      rustCfgExpressionRequiresTest(argument),
+    );
+  }
+  const anyArguments = rustCfgMetaCallArguments(code, "any");
+  if (anyArguments !== null) {
+    return (
+      anyArguments.length > 0 &&
+      anyArguments.every((argument) =>
+        rustCfgExpressionRequiresTest(argument),
+      )
+    );
+  }
+  return false;
+}
+
 function withoutBottomTestModule(source) {
   const sourceCode = rustLexicalCode(source);
   const candidates = [
     ...sourceCode.matchAll(
-      /(?:^|\n)[\t ]*#\s*\[\s*cfg\s*\([^\]\r\n]*\btest\b[^\]\r\n]*\)\s*\][\t ]*(?:\r?\n[\t ]*)?mod\s+tests\s*\{/gu,
+      /(?:^|\n)[\t ]*#\s*\[\s*cfg\s*\((?<expression>[^\]\r\n]*)\)\s*\][\t ]*(?:\r?\n[\t ]*)?mod\s+tests\s*\{/gu,
     ),
-  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === 0);
+  ].filter(
+    (match) =>
+      rustBraceDepthBefore(sourceCode, match.index) === 0 &&
+      rustCfgExpressionRequiresTest(match.groups.expression),
+  );
   if (candidates.length === 0) {
     return source;
   }
@@ -163,8 +370,13 @@ function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
   while (/\s/u.test(sourceCode[cursor] ?? "")) {
     cursor += 1;
   }
-  while (sourceCode.startsWith("#[", cursor)) {
-    const openingBracket = sourceCode.indexOf("[", cursor);
+  for (;;) {
+    const attachedAttribute = /^#\s*\[/u.exec(sourceCode.slice(cursor));
+    if (attachedAttribute === null) {
+      break;
+    }
+    const openingBracket =
+      cursor + attachedAttribute[0].lastIndexOf("[");
     const closingBracket = matchingRustDelimiter(
       sourceCode,
       openingBracket,
@@ -180,8 +392,23 @@ function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
     }
   }
 
+  const itemSource = sourceCode.slice(cursor);
+  const visibility = String.raw`(?:pub(?:\s*\([^)]*\))?\s+)?`;
+  const bracedOrSemicolonItem = new RegExp(
+    `^${visibility}(?:(?:(?:const|async|unsafe)\\s+)*(?:extern(?:\\s+"[^"\\r\\n]*")?\\s+)?fn\\b|(?:unsafe\\s+)?(?:impl|trait)\\b|(?:struct|enum|union|mod)\\b|(?:unsafe\\s+)?extern(?:\\s+"[^"\\r\\n]*")?\\s*\\{)`,
+    "u",
+  ).test(itemSource);
+  const semicolonItem = new RegExp(
+    `^${visibility}(?:use\\b|type\\s+(?:r#)?[\\p{XID_Start}_][\\p{XID_Continue}_]*\\b|const\\s+(?:(?:r#)?[\\p{XID_Start}_][\\p{XID_Continue}_]*|_)\\s*:|static\\s+(?:mut\\s+)?(?:r#)?[\\p{XID_Start}_][\\p{XID_Continue}_]*\\s*:|extern\\s+crate\\b)`,
+    "u",
+  ).test(itemSource);
+  if (!bracedOrSemicolonItem && !semicolonItem) {
+    return null;
+  }
+
   let parentheses = 0;
   let brackets = 0;
+  let braces = 0;
   for (let index = cursor; index < sourceCode.length; index += 1) {
     switch (sourceCode[index]) {
       case "(":
@@ -197,13 +424,25 @@ function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
         brackets -= 1;
         break;
       case "{":
-        if (parentheses === 0 && brackets === 0) {
+        if (
+          bracedOrSemicolonItem &&
+          parentheses === 0 &&
+          brackets === 0 &&
+          braces === 0
+        ) {
           const closingBrace = matchingRustDelimiter(sourceCode, index, "{", "}");
           return closingBrace === -1 ? -1 : closingBrace + 1;
         }
+        braces += 1;
+        break;
+      case "}":
+        braces -= 1;
+        if (braces < 0) {
+          return -1;
+        }
         break;
       case ";":
-        if (parentheses === 0 && brackets === 0) {
+        if (parentheses === 0 && brackets === 0 && braces === 0) {
           return index + 1;
         }
         break;
@@ -224,6 +463,9 @@ function withoutCfgTestItems(source) {
       sourceCode,
       attribute.index + attribute[0].length,
     );
+    if (end === null) {
+      continue;
+    }
     if (end === -1) {
       throw new Error("architecture scan could not bound a cfg(test) Rust item");
     }
@@ -307,7 +549,8 @@ function rustStructLiteralSites(source, typeName) {
   for (const match of sourceCode.matchAll(
     new RegExp(`\\b${escapedType}\\s*\\{`, "gu"),
   )) {
-    if (/->\s*$/u.test(sourceCode.slice(Math.max(0, match.index - 16), match.index))) {
+    const prefix = sourceCode.slice(Math.max(0, match.index - 32), match.index);
+    if (/(?:->|\b(?:struct|enum|union|impl|for))\s*$/u.test(prefix)) {
       continue;
     }
     const opening = sourceCode.indexOf("{", match.index);
@@ -321,6 +564,489 @@ function rustStructLiteralSites(source, typeName) {
     });
   }
   return literals;
+}
+
+function rustImplItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const items = [];
+  for (let index = 0; index < sourceCode.length; index += 1) {
+    if (
+      !sourceCode.startsWith("impl", index) ||
+      /[A-Za-z0-9_]/u.test(sourceCode[index - 1] ?? "") ||
+      /[A-Za-z0-9_]/u.test(sourceCode[index + 4] ?? "")
+    ) {
+      continue;
+    }
+
+    const prefix = sourceCode.slice(0, index);
+    if (/(?:->|[:=<])\s*$/u.test(prefix)) {
+      continue;
+    }
+
+    const delimiters = [];
+    let opening = -1;
+    header: for (let cursor = index + 4; cursor < sourceCode.length; cursor += 1) {
+      const character = sourceCode[cursor];
+      switch (character) {
+        case "(":
+          delimiters.push(")");
+          break;
+        case "[":
+          delimiters.push("]");
+          break;
+        case "<":
+          delimiters.push(">");
+          break;
+        case ")":
+        case "]":
+        case ">":
+          if (delimiters.at(-1) === character) {
+            delimiters.pop();
+          }
+          break;
+        case "{":
+          if (delimiters.length === 0) {
+            opening = cursor;
+            break header;
+          }
+          delimiters.push("}");
+          break;
+        case "}":
+          if (delimiters.at(-1) === "}") {
+            delimiters.pop();
+          }
+          break;
+        case ";":
+          if (delimiters.length === 0) {
+            throw new Error("architecture scan found an unterminated impl item");
+          }
+          break;
+        default:
+          break;
+      }
+    }
+    if (opening === -1) {
+      throw new Error("architecture scan could not bound an impl header");
+    }
+    const closing = matchingRustDelimiter(sourceCode, opening, "{", "}");
+    if (closing === -1) {
+      throw new Error("architecture scan could not bound an impl body");
+    }
+    items.push({
+      index,
+      header: normalizeRustFragment(source.slice(index, opening)),
+      source: source.slice(index, closing + 1),
+    });
+  }
+  return items;
+}
+
+function rustTypeAliasItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const items = [];
+  for (let index = 0; index < sourceCode.length; index += 1) {
+    if (
+      !sourceCode.startsWith("type", index) ||
+      /[A-Za-z0-9_#]/u.test(sourceCode[index - 1] ?? "") ||
+      /[A-Za-z0-9_]/u.test(sourceCode[index + 4] ?? "")
+    ) {
+      continue;
+    }
+
+    const delimiters = [];
+    let closing = -1;
+    for (let cursor = index + 4; cursor < sourceCode.length; cursor += 1) {
+      const character = sourceCode[cursor];
+      switch (character) {
+        case "(":
+          delimiters.push(")");
+          break;
+        case "[":
+          delimiters.push("]");
+          break;
+        case "<":
+          delimiters.push(">");
+          break;
+        case "{":
+          delimiters.push("}");
+          break;
+        case ")":
+        case "]":
+        case ">":
+        case "}":
+          if (delimiters.at(-1) === character) {
+            delimiters.pop();
+          }
+          break;
+        case ";":
+          if (delimiters.length === 0) {
+            closing = cursor;
+          }
+          break;
+        default:
+          break;
+      }
+      if (closing !== -1) {
+        break;
+      }
+    }
+    if (closing === -1) {
+      throw new Error("architecture scan could not bound a type alias item");
+    }
+    items.push({
+      index,
+      source: source.slice(index, closing + 1),
+    });
+    index = closing;
+  }
+  return items;
+}
+
+function rustUseItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const items = [];
+  for (let index = 0; index < sourceCode.length; index += 1) {
+    if (
+      !sourceCode.startsWith("use", index) ||
+      /[\p{XID_Continue}_#]/u.test(sourceCode[index - 1] ?? "") ||
+      /[\p{XID_Continue}_]/u.test(sourceCode[index + 3] ?? "")
+    ) {
+      continue;
+    }
+
+    const delimiters = [];
+    let closing = -1;
+    for (let cursor = index + 3; cursor < sourceCode.length; cursor += 1) {
+      const character = sourceCode[cursor];
+      switch (character) {
+        case "(":
+          delimiters.push(")");
+          break;
+        case "[":
+          delimiters.push("]");
+          break;
+        case "{":
+          delimiters.push("}");
+          break;
+        case "<":
+          delimiters.push(">");
+          break;
+        case ")":
+        case "]":
+        case "}":
+        case ">":
+          if (delimiters.at(-1) === character) {
+            delimiters.pop();
+          }
+          break;
+        case ";":
+          if (delimiters.length === 0) {
+            closing = cursor;
+          }
+          break;
+        default:
+          break;
+      }
+      if (closing !== -1) {
+        break;
+      }
+    }
+    if (closing === -1) {
+      throw new Error("architecture scan could not bound a use item");
+    }
+    items.push({
+      index,
+      source: source.slice(index, closing + 1),
+    });
+    index = closing;
+  }
+  return items;
+}
+
+function rustExpansionSensitiveUseItems(source) {
+  return rustUseItems(source).filter((item) => {
+    const code = rustLexicalCode(item.source);
+    return /\bas\s+(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\b/u.test(
+      code,
+    ) || /\b(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\s*(?=,|\}|;|\bas\b)/u.test(
+      code,
+    );
+  });
+}
+
+function rustFunctionSignatures(source) {
+  const sourceCode = rustLexicalCode(source);
+  const signatures = [];
+  for (let index = 0; index < sourceCode.length; index += 1) {
+    if (
+      !sourceCode.startsWith("fn", index) ||
+      /[A-Za-z0-9_#]/u.test(sourceCode[index - 1] ?? "") ||
+      /[A-Za-z0-9_]/u.test(sourceCode[index + 2] ?? "")
+    ) {
+      continue;
+    }
+
+    const delimiters = [];
+    let closing = -1;
+    for (let cursor = index + 2; cursor < sourceCode.length; cursor += 1) {
+      const character = sourceCode[cursor];
+      switch (character) {
+        case "(":
+          delimiters.push(")");
+          break;
+        case "[":
+          delimiters.push("]");
+          break;
+        case "<":
+          delimiters.push(">");
+          break;
+        case ")":
+        case "]":
+        case ">":
+          if (delimiters.at(-1) === character) {
+            delimiters.pop();
+          }
+          break;
+        case "{":
+          if (delimiters.length === 0) {
+            closing = cursor;
+          } else {
+            delimiters.push("}");
+          }
+          break;
+        case "}":
+          if (delimiters.at(-1) === "}") {
+            delimiters.pop();
+          }
+          break;
+        case ";":
+          if (delimiters.length === 0) {
+            closing = cursor;
+          }
+          break;
+        default:
+          break;
+      }
+      if (closing !== -1) {
+        break;
+      }
+    }
+    if (closing === -1) {
+      throw new Error("architecture scan could not bound a function signature");
+    }
+    signatures.push({
+      index,
+      source: source.slice(index, closing),
+    });
+  }
+  return signatures;
+}
+
+function rustVisibleFunctionItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const signatures = rustFunctionSignatures(source);
+  const implItems = rustImplItems(source);
+  return [
+    ...sourceCode.matchAll(
+      /(?<![\p{XID_Continue}_#])pub(?<scope>\s*\([^)]*\))?\s+(?:(?:const|async|unsafe|extern)\s+)*fn\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+    ),
+  ].map((match) => {
+    const relativeFnIndex = match[0].search(/\bfn\b/u);
+    const fnIndex = match.index + relativeFnIndex;
+    const signature = signatures.find((item) => item.index === fnIndex);
+    if (signature === undefined) {
+      throw new Error(
+        `architecture scan lost visible function ${match.groups.name}`,
+      );
+    }
+    const owner = implItems
+      .filter(
+        (item) =>
+          item.index < match.index &&
+          match.index < item.index + item.source.length,
+      )
+      .at(-1);
+    return {
+      owner: owner?.header ?? "free",
+      visibility: compactRust(source.slice(match.index, fnIndex)),
+      name: match.groups.name.replace(/^r#/u, ""),
+      signature: compactRust(signature.source),
+    };
+  });
+}
+
+function rustMacroInvocations(source) {
+  const sourceCode = rustLexicalCode(source);
+  const invocations = [];
+  const macroPattern =
+    /(?<![\p{XID_Continue}_#])(?<path>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*(?:::(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)*)\s*!\s*(?<opening>[([{])/gu;
+  for (const match of sourceCode.matchAll(macroPattern)) {
+    if (
+      !match.groups.path.includes("::") &&
+      /^(?:abstract|as|async|await|become|box|break|const|continue|crate|do|dyn|else|enum|extern|false|final|fn|for|gen|if|impl|in|let|loop|macro|match|mod|move|mut|override|priv|pub|ref|return|self|Self|static|struct|super|trait|true|try|type|typeof|unsafe|unsized|use|virtual|where|while|yield)$/u.test(
+        match.groups.path,
+      )
+    ) {
+      continue;
+    }
+    const opening = sourceCode.indexOf(match.groups.opening, match.index);
+    const closingCharacter = { "(": ")", "[": "]", "{": "}" }[
+      match.groups.opening
+    ];
+    const closing = matchingRustDelimiter(
+      sourceCode,
+      opening,
+      match.groups.opening,
+      closingCharacter,
+    );
+    if (closing === -1) {
+      throw new Error(
+        `architecture scan could not bound ${match.groups.path} macro invocation`,
+      );
+    }
+    invocations.push({
+      index: match.index,
+      absolute: sourceCode.slice(Math.max(0, match.index - 2), match.index) === "::",
+      path: match.groups.path,
+      normalizedPath: match.groups.path
+        .split("::")
+        .map((segment) => segment.replace(/^r#/u, ""))
+        .join("::"),
+      source: source.slice(match.index, closing + 1),
+    });
+  }
+  return invocations;
+}
+
+function rustAttributeItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const attributes = [];
+  for (const match of sourceCode.matchAll(/#\s*(?<inner>!)?\s*\[/gu)) {
+    const opening = sourceCode.indexOf("[", match.index);
+    const closing = matchingRustDelimiter(sourceCode, opening, "[", "]");
+    if (closing === -1) {
+      throw new Error("architecture scan could not bound a Rust attribute");
+    }
+    attributes.push({
+      index: match.index,
+      inner: match.groups.inner === "!",
+      source: source.slice(match.index, closing + 1),
+    });
+  }
+  return attributes;
+}
+
+function rustAttachedOuterAttributes(source, itemIndex) {
+  const sourceCode = rustLexicalCode(source);
+  const preceding = rustAttributeItems(source).filter(
+    (attribute) => !attribute.inner && attribute.index < itemIndex,
+  );
+  const attached = [];
+  let cursor = itemIndex;
+  for (let index = preceding.length - 1; index >= 0; index -= 1) {
+    const attribute = preceding[index];
+    const attributeEnd = attribute.index + attribute.source.length;
+    if (attributeEnd > cursor) {
+      continue;
+    }
+    if (sourceCode.slice(attributeEnd, cursor).trim() !== "") {
+      break;
+    }
+    attached.unshift(attribute);
+    cursor = attribute.index;
+  }
+  return attached;
+}
+
+function rustModuleDeclarations(source) {
+  const sourceCode = rustLexicalCode(source);
+  return [
+    ...sourceCode.matchAll(
+      /(?<![\p{XID_Continue}_#])(?:(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)\s*;)/gu,
+    ),
+  ].map((match) => ({
+    index: match.index,
+    name: match.groups.name.replace(/^r#/u, ""),
+    source: source.slice(match.index, match.index + match[0].length),
+  }));
+}
+
+function rustExternalModulePaths(filePath, source, productionPaths) {
+  const crateSourceRoot = resolve(root, "crates/platform-windows/src");
+  const declaringFile = resolve(root, filePath);
+  return rustModuleDeclarations(source).flatMap((moduleDeclaration) => {
+    const attributes = rustAttachedOuterAttributes(
+      source,
+      moduleDeclaration.index,
+    );
+    return attributes
+      .filter((attribute) => /^#\s*\[\s*path\b/u.test(attribute.source))
+      .map((attribute) => {
+        const parsed =
+          /^#\s*\[\s*path\s*=\s*"(?<literal>[^"\r\n]+)"\s*\]\s*$/u.exec(
+            attribute.source,
+          );
+        const literal = parsed?.groups.literal ?? "[UNPARSED]";
+        const target =
+          parsed === null
+            ? resolve(root, "[UNPARSED]")
+            : resolve(dirname(declaringFile), literal);
+        const sourceRelativeTarget = relative(crateSourceRoot, target);
+        const workspaceRelativeTarget = relative(root, target).replaceAll(
+          "\\",
+          "/",
+        );
+        return {
+          declaringFile: filePath,
+          module: moduleDeclaration.name,
+          literal,
+          resolvedTarget: workspaceRelativeTarget,
+          insideCrateSource:
+            sourceRelativeTarget !== "" &&
+            sourceRelativeTarget !== ".." &&
+            !sourceRelativeTarget.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
+            !isAbsolute(sourceRelativeTarget),
+          inProductionInventory: productionPaths.has(workspaceRelativeTarget),
+          attributes: attributes.map((item) => compactRust(item.source)),
+        };
+      });
+  });
+}
+
+function rustAuthorityTypeErasureSites(source) {
+  return [
+    ...rustLexicalCode(source).matchAll(
+      /\b(?:transmute|transmute_copy|ManuallyDrop|MaybeUninit|zeroed|uninitialized|forget|into_raw(?:_parts)?|leak)\b|\bunion\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*|\b(?:Box|Rc|Arc)::from_raw\b|\b(?:Vec|String)::from_raw_parts(?:_mut)?\b|\b(?:ptr|core::ptr|std::ptr)::(?:read|read_unaligned|write|copy|copy_nonoverlapping)\s*\(|\.\s*cast\s*::\s*<[^<>]+>\s*\(\s*\)|\bas\s+\*\s*(?:const|mut)\b|\.\s*(?:read|read_unaligned)\s*\(\s*\)|\.\s*(?:copy_to|copy_to_nonoverlapping|copy_from|copy_from_nonoverlapping|set_len)\s*\(/gu,
+    ),
+  ].map((match) => match[0]);
+}
+
+function normalizedSourceSha256(source) {
+  return createHash("sha256")
+    .update(source.replace(/\r\n?/gu, "\n"), "utf8")
+    .digest("hex");
+}
+
+function rustUnsafeKeywordCount(source) {
+  return [...rustLexicalCode(source).matchAll(/\bunsafe\b/gu)].length;
+}
+
+function rustUnsafeSourceInventory(files) {
+  return files
+    .map((file) => ({
+      path: file.path,
+      unsafeCount: rustUnsafeKeywordCount(file.source),
+      sha256: normalizedSourceSha256(file.source),
+    }))
+    .filter((file) => file.unsafeCount > 0);
+}
+
+function isRustSourceFileName(name) {
+  return name.replace(/[ .]+$/gu, "").toLowerCase().endsWith(".rs");
+}
+
+function isCanonicalRustSourceFileName(name) {
+  return /^[a-z0-9_]+\.rs$/u.test(name);
 }
 
 function rustItemBlock(source, headerPattern) {
@@ -381,17 +1107,58 @@ function rustFunctionBlock(source, functionName) {
 
 async function rustProductionSources(
   relativeDirectory,
-  { withoutInlineTests = false } = {},
+  { withoutInlineTests = false, withTestCode = false } = {},
 ) {
   const files = [];
   async function walk(directory) {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const directoryBefore = await lstat(directory, { bigint: true });
+    if (directoryBefore.isSymbolicLink() || !directoryBefore.isDirectory()) {
+      const path = relative(root, directory).replaceAll("\\", "/");
+      throw new Error(`Rust production inventory contains a non-directory: ${path}`);
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    const caseFoldedEntryNames = new Set();
+    for (const entry of entries) {
+      if (/[ .]$/u.test(entry.name)) {
+        const path = relative(root, join(directory, entry.name)).replaceAll(
+          "\\",
+          "/",
+        );
+        throw new Error(
+          `Rust production entry has a forbidden Win32 trailing-dot/space alias: ${path}`,
+        );
+      }
+      const caseFoldedName = entry.name
+        .replace(/[ .]+$/gu, "")
+        .toLowerCase();
+      if (caseFoldedEntryNames.has(caseFoldedName)) {
+        const path = relative(root, directory).replaceAll("\\", "/");
+        throw new Error(
+          `Rust production directory has case-ambiguous entries: ${path}`,
+        );
+      }
+      caseFoldedEntryNames.add(caseFoldedName);
       const absolute = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        const path = relative(root, absolute).replaceAll("\\", "/");
+        throw new Error(`Rust production inventory contains a symbolic link: ${path}`);
+      }
       if (entry.isDirectory()) {
         await walk(absolute);
-      } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+      } else if (entry.isFile() && isRustSourceFileName(entry.name)) {
+        if (!isCanonicalRustSourceFileName(entry.name)) {
+          const path = relative(root, absolute).replaceAll("\\", "/");
+          throw new Error(
+            `Rust production source extension must be canonical lowercase .rs: ${path}`,
+          );
+        }
         files.push(absolute);
       }
+    }
+    const directoryAfter = await lstat(directory, { bigint: true });
+    if (!sameDirectorySnapshot(directoryBefore, directoryAfter)) {
+      const path = relative(root, directory).replaceAll("\\", "/");
+      throw new Error(`Rust production directory changed during scan: ${path}`);
     }
   }
 
@@ -399,10 +1166,17 @@ async function rustProductionSources(
   files.sort((left, right) => left.localeCompare(right, "en"));
   return Promise.all(
     files.map(async (absolute) => {
-      const source = withoutBottomTestModule(await readFile(absolute, "utf8"));
+      const path = relative(root, absolute).replaceAll("\\", "/");
+      const rawSource = await trustedRegularFileText(path);
+      const source = withTestCode
+        ? rawSource
+        : withoutBottomTestModule(rawSource);
       return {
-        path: relative(root, absolute).replaceAll("\\", "/"),
-        source: withoutInlineTests ? withoutCfgTestItems(source) : source,
+        path,
+        source:
+          withoutInlineTests && !withTestCode
+            ? withoutCfgTestItems(source)
+            : source,
       };
     }),
   );
@@ -572,11 +1346,101 @@ try {
 } catch {
   rustBottomTestRejectedTrailingProduction = true;
 }
+const rustBottomProductionCapableCfgFixtures = [
+  "#[cfg(any(test, windows))]\nmod tests { fn production_on_windows() {} }\n",
+  "#[cfg(not(test))]\nmod tests { fn production_outside_tests() {} }\n",
+  "#[cfg(any(test, not(test)))]\nmod tests { fn production_tautology() {} }\n",
+];
+const rustBottomTestRequiredCfgFixtures = [
+  "#[cfg(all(test, windows))]\nmod tests { fn windows_test_only() {} }\n",
+  "#[cfg(any(test, all(windows, test)))]\nmod tests { fn nested_test_only() {} }\n",
+];
 requireInvariant(
   withoutBottomTestModule(rustBottomTestFixture) ===
       rustBottomTestProductionFixture &&
-    rustBottomTestRejectedTrailingProduction,
-  "Rust production slicing must lexically balance the bottom cfg(test) module and reject any later item",
+    rustBottomTestRejectedTrailingProduction &&
+    rustBottomProductionCapableCfgFixtures.every(
+      (fixture) => withoutBottomTestModule(fixture) === fixture,
+    ) &&
+    rustBottomTestRequiredCfgFixtures.every(
+      (fixture) => withoutBottomTestModule(fixture) === "",
+    ),
+  "Rust production slicing must remove only bottom modules whose cfg logically requires test, preserve production-capable compound/negated forms, balance them lexically, and reject any later item",
+);
+requireInvariant(
+  isCanonicalRustSourceFileName("module.rs") &&
+    [
+      "module.RS",
+      "module.Rs",
+      "module.rS",
+      "Module.rs",
+      "module.rs.",
+      "module.rs ",
+    ].every(
+      (name) =>
+        isRustSourceFileName(name) && !isCanonicalRustSourceFileName(name),
+    ) &&
+    !isRustSourceFileName("module.rs.txt"),
+  "Rust source discovery must recognize case-insensitive extensions and accept only canonical lowercase .rs names",
+);
+const rustCfgTestNonItemFixtures = [
+  `
+enum Transport {
+    #[cfg(test)]
+    PinnedLibtestTerse,
+}
+struct ProductionAfterVariant;
+`,
+  `
+struct Evidence {
+    #[cfg(test)]
+    test_only: bool,
+    production: u8,
+}
+fn production_after_field() {}
+`,
+  `
+fn classify(value: u8) {
+    match value {
+        #[cfg(test)]
+        0 => test_only(),
+        _ => production(),
+    }
+}
+fn production_after_arm() {}
+`,
+  `
+fn execute() {
+    #[cfg(test)]
+    test_only();
+    production();
+}
+fn production_after_statement() {}
+`,
+  `
+fn execute_const_block() {
+    #[cfg(test)]
+    const { test_only() };
+    production();
+}
+fn production_after_const_block() {}
+`,
+];
+const rustCfgTestFullItemFixture = `
+#[cfg(test)]
+fn test_only_item() {}
+fn production_after_item() {}
+`;
+const rustCfgTestFullItemRelease = rustLexicalCode(
+  withoutCfgTestItems(rustCfgTestFullItemFixture),
+);
+requireInvariant(
+  rustCfgTestNonItemFixtures.every(
+    (fixture) => withoutCfgTestItems(fixture) === fixture,
+  ) &&
+    !rustCfgTestFullItemRelease.includes("test_only_item") &&
+    rustCfgTestFullItemRelease.includes("production_after_item"),
+  "cfg(test) slicing must remove only complete Rust items and preserve variants, fields, match arms, statements, and all following production code",
 );
 
 function hasDependency(manifest, crateName) {
@@ -627,7 +1491,8 @@ for (const manifestPath of publicBoundaryManifests) {
   }
 }
 
-const rootManifest = await text("Cargo.toml");
+const rootManifest = await trustedRegularFileText("Cargo.toml");
+const rootManifestSha256 = normalizedSourceSha256(rootManifest);
 const rootReadme = await text("README.md");
 const sepoliaArchitectureDoc = await text("docs/architecture.md");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
@@ -3852,6 +4717,15 @@ const keyAgentLpacSource = await text(
 );
 const keyAgentLpac = withoutBottomTestModule(keyAgentLpacSource);
 const keyAgentLpacRelease = withoutCfgTestItems(keyAgentLpac);
+const keyAgentInstallProvenanceSource = await text(
+  "crates/platform-windows/src/key_agent_install_provenance.rs",
+);
+const keyAgentInstallProvenance = withoutBottomTestModule(
+  keyAgentInstallProvenanceSource,
+);
+const keyAgentInstallProvenanceRelease = withoutCfgTestItems(
+  keyAgentInstallProvenance,
+);
 const keyAgentStorageSource = await text(
   "crates/platform-windows/src/key_agent_storage.rs",
 );
@@ -3887,6 +4761,7 @@ const keyAgentSupervisorSource = await text(
   "crates/platform-windows/src/key_agent_supervisor.rs",
 );
 const keyAgentSupervisor = withoutBottomTestModule(keyAgentSupervisorSource);
+const keyAgentSupervisorRelease = withoutCfgTestItems(keyAgentSupervisor);
 const keyAgentMainSource = await text("crates/key-agent/src/main.rs");
 const keyAgentWindowsMain = rustLexicalItemBlock(
   keyAgentMainSource,
@@ -3933,7 +4808,108 @@ const platformWindowsProductionFiles = await rustProductionSources(
 const workspaceRustProductionFiles = (
   await rustProductionSources("crates", { withoutInlineTests: true })
 ).filter((file) => /^crates\/[^/]+\/src\//u.test(file.path));
+const secretInputUiManifest = await text("crates/secret-input-ui/Cargo.toml");
+const platformWindowsLocalDependencyManifestInventory = [
+  {
+    path: "crates/approval-wire/Cargo.toml",
+    source: approvalWireManifest,
+  },
+  {
+    path: "crates/secret-input-ui/Cargo.toml",
+    source: secretInputUiManifest,
+  },
+].map(({ path, source }) => ({
+  path,
+  sha256: normalizedSourceSha256(source),
+}));
+const platformWindowsLocalDependencyCrateRootInventory = await Promise.all(
+  ["crates/approval-wire", "crates/secret-input-ui"].map(async (path) => ({
+    path,
+    entries: await trustedDirectoryEntryInventory(path),
+  })),
+);
+const platformWindowsLocalDependencySourceInventory = (
+  await Promise.all(
+    ["crates/approval-wire/src", "crates/secret-input-ui/src"].map((path) =>
+      rustProductionSources(path, { withTestCode: true }),
+    ),
+  )
+)
+  .flat()
+  .map((file) => ({
+    path: file.path,
+    sha256: normalizedSourceSha256(file.source),
+  }));
+const approvedPlatformWindowsLocalDependencyManifestInventory = [
+  {
+    path: "crates/approval-wire/Cargo.toml",
+    sha256: "c4425735387a3699cd3fd51eb6ae613a7e42f23a4fa8e282406103b09230f913",
+  },
+  {
+    path: "crates/secret-input-ui/Cargo.toml",
+    sha256: "a1fdd15bff500909518a7a9ba357775ad4bf65d40703f4db77e047a905e39572",
+  },
+];
+const approvedPlatformWindowsLocalDependencyCrateRootInventory = [
+  {
+    path: "crates/approval-wire",
+    entries: [
+      { name: "Cargo.toml", kind: "file" },
+      { name: "src", kind: "directory" },
+    ],
+  },
+  {
+    path: "crates/secret-input-ui",
+    entries: [
+      { name: "Cargo.toml", kind: "file" },
+      { name: "src", kind: "directory" },
+      { name: "tests", kind: "directory" },
+    ],
+  },
+];
+const approvedPlatformWindowsLocalDependencySourceInventory = [
+  {
+    path: "crates/approval-wire/src/lib.rs",
+    sha256: "d4c288cfa442d9e8efc3a008071e057d1607ffc9276265ecddd0c8a07ac28d37",
+  },
+  {
+    path: "crates/secret-input-ui/src/bootstrap.rs",
+    sha256: "04c65140711ed0b0725fc7d1444d1c57cff3197cc6766f4494d130e4adcfa81d",
+  },
+  {
+    path: "crates/secret-input-ui/src/bootstrap/windows.rs",
+    sha256: "5ef8c130bbade022f8948aaa3917d2eb71c794e457502bbffa67443fba6a034c",
+  },
+  {
+    path: "crates/secret-input-ui/src/lib.rs",
+    sha256: "0b597ffcfaea1359c7d8cf853234e0245e87151d549843eb363ac766f3ec5403",
+  },
+  {
+    path: "crates/secret-input-ui/src/main.rs",
+    sha256: "e1cece62907c531879318b64a17ada0fedee5416a35357a17e96bbba798c0fc0",
+  },
+  {
+    path: "crates/secret-input-ui/src/recovery_native.rs",
+    sha256: "599bf37dbdf31028f8e0f1a335719e3fc3c92fb79f25cb1e2c4788b3b857ffae",
+  },
+  {
+    path: "crates/secret-input-ui/src/recovery.rs",
+    sha256: "0de0473d33514c5ccefab8c2de5dc4d154d764cb507a1e4a25e2100748f3a058",
+  },
+];
 const platformWindowsLib = await text("crates/platform-windows/src/lib.rs");
+const platformWindowsManifest = await trustedRegularFileText(
+  "crates/platform-windows/Cargo.toml",
+);
+const platformWindowsManifestSha256 = normalizedSourceSha256(
+  platformWindowsManifest,
+);
+const platformWindowsCrateRootInventory =
+  await trustedDirectoryEntryInventory("crates/platform-windows");
+const workspaceManifest = rootManifest;
+const workspaceLock = await trustedRegularFileText("Cargo.lock");
+const workspaceLockSha256 = normalizedSourceSha256(workspaceLock);
+const repositoryCargoOverrideInventory = await repositoryCargoOverridePaths();
 const platformWindowsLibCode = platformWindowsLib.replace(/^\s*\/\/.*$/gmu, "");
 const inheritableHandleLaunchSource = await text(
   "crates/platform-windows/src/inheritable_handle_launch.rs",
@@ -5318,6 +6294,65 @@ const keyAgentCreateProcess = rustFunctionBlock(
   keyAgentActivation,
   "create_suspended_debuggee_process",
 );
+const keyAgentInstallProvenanceReleaseCode = rustLexicalCode(
+  keyAgentInstallProvenanceRelease,
+);
+const authenticatedKeyAgentInstallJournalBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+AuthenticatedKeyAgentInstallJournal\s*\{/u,
+);
+const expectedKeyAgentInstallIdentitiesBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+ExpectedKeyAgentInstallIdentities\s*\{/u,
+);
+const observedKeyAgentInstallObjectsBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+ObservedKeyAgentInstallObjects\s*\{/u,
+);
+const uninitializedKeyAgentInstallCandidateBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+UninitializedKeyAgentInstallCandidate\s*\{/u,
+);
+const consistentExistingKeyAgentInstallCandidateBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+ConsistentExistingKeyAgentInstallCandidate\s*\{/u,
+);
+const keyAgentInstallDispositionBlock = rustLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+enum\s+KeyAgentInstallDisposition\s*\{/u,
+);
+const classifyKeyAgentInstall = rustFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "classify_key_agent_install",
+);
+const exactCommittedKeyAgentInstallMatch = rustFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "exact_committed_match",
+);
+const keyAgentInstallTransactionGeneration = rustFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "transaction_generation",
+);
+const provisionFreshKeyAgentBoundary = rustFunctionBlock(
+  keyAgentSupervisor,
+  "provision_fresh_key_agent_boundary",
+);
+const pendingKeyAgentProvisioningBlock = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /pub\(crate\)\s+struct\s+PendingKeyAgentProvisioning\s*\{/u,
+);
+const preparedKeyAgentProvisioningBlock = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /pub\(crate\)\s+struct\s+PreparedKeyAgentProvisioning\s*\{/u,
+);
+const preparedKeyAgentProfileBlock = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /(?:^|\n)\s*struct\s+PreparedKeyAgentProfile\s*\{/u,
+);
+const pendingKeyAgentProvisioningImpl = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /impl\s+PendingKeyAgentProvisioning\s*\{/u,
+);
 const preparedKeyAgentProvisioningImpl = rustLexicalItemBlock(
   keyAgentLpacRelease,
   /impl\s+PreparedKeyAgentProvisioning\s*\{/u,
@@ -5335,9 +6370,19 @@ const ownedAppContainerSidTestImpl = rustLexicalItemBlock(
   /impl\s+OwnedAppContainerSid\s*\{/u,
 );
 const provisionFreshKeyAgent = rustFunctionBlock(
-  preparedKeyAgentProvisioningImpl,
+  pendingKeyAgentProvisioningImpl,
   "provision_fresh",
 );
+const pendingKeyAgentProvisioningMethods = [
+  ...rustLexicalCode(pendingKeyAgentProvisioningImpl).matchAll(
+    /\bfn\s+(?<name>[A-Za-z_]\w*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
+const preparedKeyAgentProvisioningMethods = [
+  ...rustLexicalCode(preparedKeyAgentProvisioningImpl).matchAll(
+    /\bfn\s+(?<name>[A-Za-z_]\w*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
 const provisionFreshKeyAgentProfile = rustFunctionBlock(
   preparedKeyAgentProfileImpl,
   "provision_fresh",
@@ -6365,18 +7410,30 @@ requireInvariant(
     /#\s*\[\s*cfg\s*\(\s*not\s*\(\s*test\s*\)\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare\(\s*\)\s*;/u.test(
       rustLexicalCode(prepareKeyAgentProcess),
     ) &&
-    !/\bprepare_for_kernel_test\b/u.test(
-      rustLexicalCode(prepareKeyAgentProcessRelease),
-    ) &&
+    (prepareKeyAgentProcessRelease.match(
+      /\bRestrictedProcessContext::prepare_for_kernel_test\(\s*\)/gu,
+    ) ?? []).length === 1 &&
     (prepareKeyAgentProcessRelease.match(
       /\bRestrictedProcessContext::prepare\(\s*\)/gu,
     ) ?? []).length === 1 &&
     (keyAgentActivationRelease.match(/\bprepare_for_kernel_test\b/gu) ?? [])
-      .length === 0 &&
-    platformWindowsProductionFiles.every(
-      (file) =>
-        !/\bprepare_for_kernel_test\b/u.test(rustLexicalCode(file.source)),
-    ),
+      .length === 1 &&
+    JSON.stringify(
+      platformWindowsProductionFiles
+        .map((file) => ({
+          path: file.path,
+          count: (rustLexicalCode(file.source).match(
+            /\bprepare_for_kernel_test\b/gu,
+          ) ?? []).length,
+        }))
+        .filter((file) => file.count > 0),
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          count: 1,
+        },
+      ]),
   "production context preparation must always enforce the replacement-ancestor and protected-directory content gates while the narrower kernel-test bypass remains structurally cfg(test)-only",
 );
 requireInvariant(
@@ -7100,6 +8157,7 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/helper.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_install_provenance.rs",
         "crates/platform-windows/src/key_agent_storage.rs",
         "crates/platform-windows/src/key_agent_supervisor.rs",
       ]) &&
@@ -7116,6 +8174,7 @@ requireInvariant(
     JSON.stringify(keyAgentStorageModuleConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+        "crates/platform-windows/src/key_agent_install_provenance.rs",
         "crates/platform-windows/src/key_agent_lpac.rs",
         "crates/platform-windows/src/key_agent_startup.rs",
         "crates/platform-windows/src/storage.rs",
@@ -7149,6 +8208,334 @@ requireInvariant(
         "crates/platform-windows/src/pipe.rs",
       ]),
   "the Key Agent startup codec must remain private to the child bootstrap, supervisor, and exact pipe typestates",
+);
+const keyAgentInstallProvenanceTypeNames = [
+  "AuthenticatedKeyAgentInstallJournal",
+  "ExpectedKeyAgentInstallIdentities",
+  "ObservedKeyAgentInstallObjects",
+  "UninitializedKeyAgentInstallCandidate",
+  "ConsistentExistingKeyAgentInstallCandidate",
+  "KeyAgentInstallDisposition",
+];
+const keyAgentInstallProvenanceExternalTokenNames = [
+  ...keyAgentInstallProvenanceTypeNames,
+  "classify_key_agent_install",
+];
+const keyAgentInstallProvenanceModuleConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bkey_agent_install_provenance\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const keyAgentInstallProvenanceRawInclusionConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+        file.source.includes("key_agent_install_provenance.rs"),
+    )
+    .map((file) => file.path);
+const platformWindowsLibWithoutInstallProvenanceDeclaration =
+  platformWindowsLibCode.replace(
+    /\bmod\s+key_agent_install_provenance\s*;/u,
+    "",
+  );
+const keyAgentInstallProvenanceConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      keyAgentInstallProvenanceExternalTokenNames.some((name) =>
+        new RegExp(`\\b${name}\\b`, "u").test(rustLexicalCode(file.source)),
+      ),
+  )
+  .map((file) => file.path);
+const classifyKeyAgentInstallConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+      rustCallSites(file.source, "classify_key_agent_install").length > 0,
+  )
+  .map((file) => file.path);
+const freshKeyAgentBoundaryConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
+      rustCallSites(file.source, "provision_fresh_key_agent_boundary").length > 0,
+  )
+  .map((file) => file.path);
+const pendingToPreparedConsumers = platformWindowsProductionFiles
+  .filter((file) => {
+    const code = rustLexicalCode(file.source);
+    return (
+      /impl\s+(?:From|TryFrom)\s*<\s*PendingKeyAgentProvisioning\s*>\s+for\s+PreparedKeyAgentProvisioning/u.test(
+        code,
+      ) ||
+      /fn\s+\w+\s*\([^)]*PendingKeyAgentProvisioning[^)]*\)\s*->\s*(?:Result\s*<\s*)?PreparedKeyAgentProvisioning/u.test(
+        code,
+      )
+    );
+  })
+  .map((file) => file.path);
+const provenanceVisibleTypes = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?\s+(?:struct|enum|union)\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const provenanceVisibleFunctions = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?\s+(?:(?:const|async|unsafe)\s+)*(?:extern(?:\s+"[^"\r\n]*")?\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const provenancePublicVisibilitySites = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?/gu,
+  ),
+];
+const provenanceImplItems = rustImplItems(keyAgentInstallProvenanceRelease);
+const provenanceImplHeaders = provenanceImplItems.map((item) => item.header);
+const expectedProvenanceImplHeaders = keyAgentInstallProvenanceTypeNames.map(
+  (name) => `impl fmt::Debug for ${name}`,
+);
+const provenanceReleaseAttributes = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(/#\s*\[[^\]]*\]/gu),
+].map((match) => compactRust(match[0]));
+const provenanceUseItems = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(/\buse\s+[^;]+;/gu),
+].map((match) => compactRust(match[0]));
+const provenanceCrateModulePaths = [
+  ...keyAgentInstallProvenanceReleaseCode.matchAll(
+    /\bcrate::(?<module>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.module);
+const provenanceTypeDefinitionCounts = keyAgentInstallProvenanceTypeNames.map(
+  (name) =>
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        new RegExp(`\\b(?:struct|enum|union)\\s+${name}\\b`, "gu"),
+      ) ?? []
+    ).length,
+);
+const provenancePinnedConstantDefinitionCounts = [
+  "INSTALL_JOURNAL_SCHEMA_V1",
+  "INSTALL_POLICY_V1",
+  "COMMITTED_JOURNAL_GENERATION_V1",
+].map(
+  (name) =>
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        new RegExp(`\\bconst\\s+${name}\\b`, "gu"),
+      ) ?? []
+    ).length,
+);
+const provenanceAuthorityConstructionCounts = [
+  "AuthenticatedKeyAgentInstallJournal",
+  "ExpectedKeyAgentInstallIdentities",
+  "ObservedKeyAgentInstallObjects",
+].map(
+  (name) =>
+    rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
+);
+const provenanceCandidateConstructionCounts = [
+  "UninitializedKeyAgentInstallCandidate",
+  "ConsistentExistingKeyAgentInstallCandidate",
+].map(
+  (name) =>
+    rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
+);
+const provenanceAuthorityBlocks = [
+  authenticatedKeyAgentInstallJournalBlock,
+  expectedKeyAgentInstallIdentitiesBlock,
+  observedKeyAgentInstallObjectsBlock,
+  uninitializedKeyAgentInstallCandidateBlock,
+  consistentExistingKeyAgentInstallCandidateBlock,
+];
+const provenanceForbiddenProductionPatterns = [
+  /\bunsafe\b/u,
+  /\bextern\b/u,
+  /\bstd\b/u,
+  /\b(?:super|self)::/u,
+  /\bstd::(?:fs|io|path|env|process|net)\b/u,
+  /\bwindows(?:::|_sys\b)/u,
+  /\bWin32\b/u,
+  /\b(?:File|OpenOptions|Command)\b/u,
+  /\b(?:serde|bincode|postcard)\b/u,
+  /\b(?!(?:if|while|return|let|else|match)\b)(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*\s*!\s*[([{]/u,
+  /\btype\b/u,
+  /\buse\b[^;]*\bas\s+[A-Za-z_]\w*/u,
+  /\b(?:Create|Open|Delete|Remove|Move|Reg|CryptProtect|NCrypt|BCrypt|Tpm)\w*\s*\(/u,
+  /\bdecode_be\s*\(/u,
+];
+const provenanceForbiddenTraitImpl = new RegExp(
+  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|AsRef|From(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:${keyAgentInstallProvenanceTypeNames.join("|")})\\b`,
+  "u",
+);
+const compactInstallTransactionGeneration = compactRust(
+  keyAgentInstallTransactionGeneration,
+);
+const expectedKeyAgentInstallProvenanceTests = [
+  "full_presence_and_transaction_truth_table_is_fail_closed",
+  "deterministic_profile_squatting_without_a_record_requires_recovery",
+  "every_record_binding_mismatch_requires_recovery",
+  "every_live_observation_or_expected_identity_mismatch_requires_recovery",
+  "malformed_or_aliased_canonical_sids_require_recovery",
+  "sentinel_expected_identities_and_invalid_journal_generation_require_recovery",
+  "authority_is_one_shot_thread_affine_and_debug_redacted",
+];
+requireInvariant(
+  platformWindowsLib.includes(
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod key_agent_install_provenance;",
+  ) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_install_provenance\b/u.test(
+      platformWindowsLib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_install_provenance/u.test(
+      platformWindowsLibCode,
+    ) &&
+    !/\bkey_agent_install_provenance\b/u.test(
+      platformWindowsLibWithoutInstallProvenanceDeclaration,
+    ) &&
+    JSON.stringify(keyAgentInstallProvenanceModuleConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(keyAgentInstallProvenanceRawInclusionConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(keyAgentInstallProvenanceConsumers) === JSON.stringify([]) &&
+    JSON.stringify(classifyKeyAgentInstallConsumers) === JSON.stringify([]) &&
+    JSON.stringify(freshKeyAgentBoundaryConsumers) === JSON.stringify([]) &&
+    JSON.stringify(pendingToPreparedConsumers) === JSON.stringify([]) &&
+    JSON.stringify(provenanceVisibleTypes) ===
+      JSON.stringify(keyAgentInstallProvenanceTypeNames) &&
+    JSON.stringify(provenanceVisibleFunctions) ===
+      JSON.stringify(["classify_key_agent_install"]) &&
+    provenancePublicVisibilitySites.length === 7 &&
+    JSON.stringify(provenanceReleaseAttributes) ===
+      JSON.stringify([
+        "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
+        "#[derive(Eq,PartialEq)]",
+        "#[allow(clippy::needless_pass_by_value)]",
+      ]) &&
+    JSON.stringify(provenanceUseItems) ===
+      JSON.stringify([
+        "usecore::fmt;",
+        "usecore::marker::PhantomData;",
+        "usecrate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;",
+        "usecrate::key_agent_storage::KeyAgentStorageRootIdentity;",
+      ]) &&
+    JSON.stringify(provenanceCrateModulePaths) ===
+      JSON.stringify(["key_agent_lpac", "key_agent_storage"]) &&
+    JSON.stringify(provenanceTypeDefinitionCounts) ===
+      JSON.stringify([1, 1, 1, 1, 1, 1]) &&
+    JSON.stringify(provenancePinnedConstantDefinitionCounts) ===
+      JSON.stringify([1, 1, 1]) &&
+    JSON.stringify(provenanceImplHeaders) ===
+      JSON.stringify(expectedProvenanceImplHeaders) &&
+    JSON.stringify(provenanceAuthorityConstructionCounts) ===
+      JSON.stringify([0, 0, 0]) &&
+    JSON.stringify(provenanceCandidateConstructionCounts) ===
+      JSON.stringify([1, 1]) &&
+    rustStructLiteralSites(keyAgentInstallProvenanceRelease, "Self").length === 0 &&
+    rustCallSites(
+      keyAgentInstallProvenanceRelease,
+      "classify_key_agent_install",
+    ).length === 1 &&
+    provenanceAuthorityBlocks.every(
+      (block) =>
+        block !== "" &&
+        !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(rustLexicalCode(block)),
+    ) &&
+    !provenanceForbiddenProductionPatterns.some((pattern) =>
+      pattern.test(keyAgentInstallProvenanceReleaseCode),
+    ) &&
+    !provenanceForbiddenTraitImpl.test(keyAgentInstallProvenanceReleaseCode) &&
+    /const\s+INSTALL_JOURNAL_SCHEMA_V1\s*:\s*u16\s*=\s*1\s*;/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    /const\s+INSTALL_POLICY_V1\s*:\s*u16\s*=\s*1\s*;/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    /const\s+COMMITTED_JOURNAL_GENERATION_V1\s*:\s*u64\s*=\s*4\s*;/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*pub\(crate\)\s+(?:struct|enum)\s+(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|KeyAgentInstallDisposition)\b/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    !/impl\s+(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate)\s*\{/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    !/(?<!struct\s)(?<!for\s)(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects)\s*\{/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    (keyAgentInstallProvenanceReleaseCode.match(
+      /_not_send_or_sync:\s*PhantomData<\*mut \(\)>/gu,
+    ) ?? []).length === 5 &&
+    keyAgentInstallProvenanceReleaseCode.includes("struct JournalEvidenceSeal;") &&
+    keyAgentInstallProvenanceReleaseCode.includes("struct ExpectedIdentitySeal;") &&
+    keyAgentInstallProvenanceReleaseCode.includes("struct OsObservationSeal;") &&
+    authenticatedKeyAgentInstallJournalBlock.includes(
+      "_seal: JournalEvidenceSeal",
+    ) &&
+    expectedKeyAgentInstallIdentitiesBlock.includes(
+      "_seal: ExpectedIdentitySeal",
+    ) &&
+    observedKeyAgentInstallObjectsBlock.includes("_seal: OsObservationSeal") &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "use crate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;",
+    ) &&
+    !keyAgentInstallProvenanceReleaseCode.includes(
+      "YourWallet.KeyAgent.LPAC.v1",
+    ) &&
+    /pub\(crate\)\s+fn\s+classify_key_agent_install\s*\(\s*journal:\s*AuthenticatedKeyAgentInstallJournal,\s*expected:\s*ExpectedKeyAgentInstallIdentities,\s*objects:\s*ObservedKeyAgentInstallObjects,?\s*\)\s*->\s*KeyAgentInstallDisposition/u.test(
+      classifyKeyAgentInstall,
+    ) &&
+    /Uninitialized\s*\(\s*UninitializedKeyAgentInstallCandidate\s*\)/u.test(
+      keyAgentInstallDispositionBlock,
+    ) &&
+    /ConsistentExisting\s*\(\s*ConsistentExistingKeyAgentInstallCandidate\s*\)/u.test(
+      keyAgentInstallDispositionBlock,
+    ) &&
+    /RecoveryRequired\s*,/u.test(keyAgentInstallDispositionBlock) &&
+    !/\b(?:Fresh|Adopt|VerifiedExisting)\b/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    classifyKeyAgentInstall.includes(
+      "expected_installation_id == expected_release_identity",
+    ) &&
+    classifyKeyAgentInstall.includes(
+      "journal.authenticated_generation == record.journal_generation",
+    ) &&
+    exactCommittedKeyAgentInstallMatch.includes(
+      "record.journal_generation == transaction_generation(record.transaction_state)",
+    ) &&
+    compactInstallTransactionGeneration.includes("Prepared=>1") &&
+    compactInstallTransactionGeneration.includes("ProfileCreated=>2") &&
+    compactInstallTransactionGeneration.includes("RootCreated=>3") &&
+    compactInstallTransactionGeneration.includes(
+      "Committed=>COMMITTED_JOURNAL_GENERATION_V1",
+    ) &&
+    keyAgentInstallProvenanceSource.includes("compiled fixed profile name") &&
+    keyAgentInstallProvenanceSource.includes("fixed storage leaf") &&
+    keyAgentInstallProvenanceSource.includes(
+      "retains no root handle",
+    ) &&
+    expectedKeyAgentInstallProvenanceTests.every((name) =>
+      keyAgentInstallProvenanceSource.includes(`fn ${name}`),
+    ) &&
+    /pub\(crate\)\s+fn\s+provision_fresh_key_agent_boundary\s*\(\s*\)\s*->\s*Result<\s*PendingKeyAgentProvisioning,\s*KeyAgentSupervisorError\s*>/u.test(
+      provisionFreshKeyAgentBoundary,
+    ) &&
+    provisionFreshKeyAgentBoundary.includes(
+      "PendingKeyAgentProvisioning::provision_fresh()",
+    ) &&
+    !keyAgentInstallProvenanceReleaseCode.includes(
+      "PreparedKeyAgentProvisioning",
+    ),
+  "Key Agent install provenance must remain a pure non-authoritative candidate classifier with three distinct sealed inputs, zero production consumers, non-launchable Pending freshness, and no Pending/candidate-to-Prepared conversion",
 );
 const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
   .filter(
@@ -8262,7 +9649,7 @@ requireInvariant(
       keyAgentSupervisor,
     ) &&
     keyAgentSupervisor.includes("impl fmt::Debug for BoundDormantKeyAgent") &&
-    keyAgentSupervisor.includes("[FRESH PROFILE AND HELD STORAGE ROOT]") &&
+    keyAgentSupervisor.includes("[VERIFIED PROFILE AND HELD STORAGE ROOT]") &&
     boundDormantOrder.every((position) => position !== -1) &&
     boundDormantOrder
       .slice(1)
@@ -9058,6 +10445,704 @@ requireInvariant(
   "all AppContainer profile APIs must share one non-reentrant, poison-fail-closed process coordinator whose release build mutates TLS outside debug assertions",
 );
 const compactProvisionFreshKeyAgent = compactRust(provisionFreshKeyAgent);
+const platformWindowsMacroRulesDefinitions = platformWindowsProductionFiles
+  .filter((file) => /\bmacro_rules\s*!/u.test(rustLexicalCode(file.source)))
+  .map((file) => file.path);
+const platformWindowsMacroItemDefinitions = platformWindowsProductionFiles
+  .filter((file) =>
+    /\bmacro\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*/u.test(
+      rustLexicalCode(file.source),
+    ),
+  )
+  .map((file) => file.path);
+const platformWindowsMacroNamespaceAttributes =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustAttributeItems(file.source)
+      .filter((attribute) =>
+        /^#!?\[macro_(?:export|use)\b/u.test(compactRust(attribute.source)),
+      )
+      .map((attribute) => ({
+        path: file.path,
+        attribute: compactRust(attribute.source),
+      })),
+  );
+const platformWindowsAttributeHeadInventory = [
+  ...new Set(
+    platformWindowsProductionFiles.flatMap((file) =>
+      rustAttributeItems(file.source).map((attribute) => {
+        const match =
+          /^#!?\[(?<path>[\p{XID_Start}_][\p{XID_Continue}_]*(?:::[\p{XID_Start}_][\p{XID_Continue}_]*)*)/u.exec(
+            compactRust(attribute.source),
+          );
+        return match?.groups.path ?? "[UNPARSED]";
+      }),
+    ),
+  ),
+].sort();
+const platformWindowsProductionPathSet = new Set(
+  platformWindowsProductionFiles.map((file) => file.path),
+);
+const platformWindowsExternalModulePathInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustExternalModulePaths(
+      file.path,
+      file.source,
+      platformWindowsProductionPathSet,
+    ),
+  );
+const platformWindowsFunctionLikeMacroPathInventory = [
+  ...new Set(
+    platformWindowsProductionFiles.flatMap((file) =>
+      rustMacroInvocations(file.source).map(
+        (invocation) => invocation.normalizedPath,
+      ),
+    ),
+  ),
+].sort();
+const platformWindowsDerivePathInventory = [
+  ...new Set(
+    platformWindowsProductionFiles.flatMap((file) =>
+      rustAttributeItems(file.source).flatMap((attribute) => {
+        const compact = compactRust(attribute.source);
+        if (!/^#\[derive\(/u.test(compact)) {
+          return [];
+        }
+        return [
+          ...compact
+            .slice("#[derive(".length, -2)
+            .matchAll(
+              /(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*(?:::(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)*/gu,
+            ),
+        ].map((match) =>
+          match[0]
+            .split("::")
+            .map((segment) => segment.replace(/^r#/u, ""))
+            .join("::"),
+        );
+      }),
+    ),
+  ),
+].sort();
+const platformWindowsCfgAttrInventory = [
+  ...new Set(
+    platformWindowsProductionFiles.flatMap((file) =>
+      rustAttributeItems(file.source)
+        .map((attribute) => compactRust(attribute.source))
+        .filter((attribute) => /^#!?\[cfg_attr\(/u.test(attribute)),
+    ),
+  ),
+].sort();
+const platformWindowsExpansionSensitiveUseInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustExpansionSensitiveUseItems(file.source)
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+  );
+const platformWindowsGlobUseInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustUseItems(file.source)
+      .filter((item) => /(?:^|::|\{)\s*\*\s*[,\};]/u.test(item.source))
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+);
+const platformWindowsForbiddenExpansionNamespaces =
+  platformWindowsProductionFiles
+    .filter((file) => {
+      const code = rustLexicalCode(file.source);
+      return /\bextern\s+crate\b/u.test(code) ||
+        /\bmod\s+(?:r#)?(?:core|ptr|std|thiserror)\b/u.test(code);
+    })
+    .map((file) => file.path);
+const platformWindowsDependencySectionMatch =
+  /\[dependencies\]\s*(?<body>[\s\S]*?)(?=\r?\n\[|$)/u.exec(
+    platformWindowsManifest,
+  );
+if (platformWindowsDependencySectionMatch === null) {
+  throw new Error("architecture scan lost platform-windows dependencies");
+}
+const compactPlatformWindowsDependencies =
+  platformWindowsDependencySectionMatch.groups.body
+    .replace(/^\s*#.*$/gmu, "")
+    .replace(/\s+/gu, "");
+const platformWindowsDependencySectionInventory = [
+  ...platformWindowsManifest.matchAll(
+    /^\[(?<section>[^\]]*dependencies[^\]]*)\]\s*$/gmu,
+  ),
+].map((match) => match.groups.section);
+const approvedThiserrorLockRecords = cargoLockPackageRecords(workspaceLock).filter(
+  (record) =>
+    (record.name === "thiserror" || record.name === "thiserror-impl") &&
+    record.version === "2.0.12",
+);
+const workspaceManifestWithoutComments = workspaceManifest
+  .replace(/^\s*#.*$/gmu, "")
+  .replace(/\s+#.*$/gmu, "");
+const platformWindowsIncludeMacroInvocations =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustMacroInvocations(file.source)
+      .filter((invocation) =>
+        /^(?:include|include_str|include_bytes)$/u.test(
+          invocation.normalizedPath.split("::").at(-1),
+        ),
+      )
+      .map((invocation) => ({ path: file.path, macro: invocation.path })),
+  );
+const platformWindowsIncludeMacroTokens = platformWindowsProductionFiles
+  .filter((file) =>
+    /\b(?:r#)?include(?:_str|_bytes)?\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const keyAgentProvisioningAuthorityMacroInvocations =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustMacroInvocations(file.source)
+      .filter((invocation) =>
+        /\b(?:(?:Pending|Prepared)KeyAgentProvisioning|PreparedKeyAgentProfile|key_agent_lpac)\b/u.test(
+          rustLexicalCode(invocation.source),
+        ),
+      )
+      .map((invocation) => ({ path: file.path, macro: invocation.path })),
+  );
+const keyAgentLpacMacroInvocationInventory = rustMacroInvocations(
+  keyAgentLpacRelease,
+).map((invocation) => ({
+  absolute: invocation.absolute,
+  path: invocation.path,
+  source: compactRust(invocation.source),
+}));
+const keyAgentLpacCopySidMacroInventory = rustMacroInvocations(
+  rustFunctionBlock(ownedAppContainerSidReleaseImpl, "copy_from"),
+).map((invocation) => ({
+  absolute: invocation.absolute,
+  path: invocation.path,
+  source: compactRust(invocation.source),
+}));
+const keyAgentLpacTokenInformationMacroInventory = rustMacroInvocations(
+  rustFunctionBlock(keyAgentLpacRelease, "token_information"),
+).map((invocation) => ({
+  absolute: invocation.absolute,
+  path: invocation.path,
+  source: compactRust(invocation.source),
+}));
+const keyAgentLpacAttributeInventory = rustAttributeItems(
+  keyAgentLpacRelease,
+).map((attribute) => compactRust(attribute.source));
+const keyAgentLpacReleaseCode = rustLexicalCode(keyAgentLpacRelease);
+const keyAgentLpacVisibilityCount = [
+  ...keyAgentLpacReleaseCode.matchAll(
+    /(?<![\p{XID_Continue}_#])pub(?:\s*\([^)]*\))?/gu,
+  ),
+].length;
+const keyAgentLpacVisibleFunctionInventory = rustVisibleFunctionItems(
+  keyAgentLpacRelease,
+);
+const keyAgentLpacVisibleNonFunctionInventory = [
+  ...keyAgentLpacReleaseCode.matchAll(
+    /(?<![\p{XID_Continue}_#])pub(?<scope>\s*\([^)]*\))?\s+(?<kind>const|static|struct|enum|trait|type|mod|use)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+  ),
+]
+  .filter((match) => !(match.groups.kind === "const" && match.groups.name === "fn"))
+  .map((match) => ({
+    visibility: `pub${compactRust(match.groups.scope ?? "")}`,
+    kind: match.groups.kind,
+    name: match.groups.name.replace(/^r#/u, ""),
+  }));
+const keyAgentLpacAuthorityAttributeInventory = [
+  {
+    target: "KeyAgentLpacError",
+    index: keyAgentLpacReleaseCode.search(
+      /\bpub\(crate\)\s+enum\s+KeyAgentLpacError\b/u,
+    ),
+  },
+  {
+    target: "PendingKeyAgentProvisioning",
+    index: keyAgentLpacReleaseCode.search(
+      /\bpub\(crate\)\s+struct\s+PendingKeyAgentProvisioning\b/u,
+    ),
+  },
+  {
+    target: "PreparedKeyAgentProvisioning",
+    index: keyAgentLpacReleaseCode.search(
+      /\bpub\(crate\)\s+struct\s+PreparedKeyAgentProvisioning\b/u,
+    ),
+  },
+  {
+    target: "PreparedKeyAgentProfile",
+    index: keyAgentLpacReleaseCode.search(/\bstruct\s+PreparedKeyAgentProfile\b/u),
+  },
+  {
+    target: "AppContainerMembershipEvidence",
+    index: keyAgentLpacReleaseCode.search(
+      /\benum\s+AppContainerMembershipEvidence\b/u,
+    ),
+  },
+].map(({ target, index }) => ({
+  target,
+  attributes: rustAttachedOuterAttributes(keyAgentLpacRelease, index).map(
+    (attribute) => compactRust(attribute.source),
+  ),
+}));
+const platformWindowsLibCodeForAttributes = rustLexicalCode(platformWindowsLib);
+const keyAgentSensitiveModuleAttributeInventory = [
+  "key_agent_install_provenance",
+  "key_agent_lpac",
+].map((moduleName) => {
+  const index = platformWindowsLibCodeForAttributes.search(
+    new RegExp(`\\bmod\\s+${moduleName}\\s*;`, "u"),
+  );
+  return {
+    module: moduleName,
+    attributes: rustAttachedOuterAttributes(platformWindowsLib, index).map(
+      (attribute) => compactRust(attribute.source),
+    ),
+  };
+});
+const preparedKeyAgentProvisioningTokenInventory =
+  platformWindowsProductionFiles
+    .map((file) => ({
+      path: file.path,
+      count: [
+        ...rustLexicalCode(file.source).matchAll(
+          /\bPreparedKeyAgentProvisioning\b/gu,
+        ),
+      ].length,
+    }))
+    .filter((entry) => entry.count > 0);
+const pendingKeyAgentProvisioningTokenInventory =
+  platformWindowsProductionFiles
+    .map((file) => ({
+      path: file.path,
+      count: [
+        ...rustLexicalCode(file.source).matchAll(
+          /\bPendingKeyAgentProvisioning\b/gu,
+        ),
+      ].length,
+    }))
+    .filter((entry) => entry.count > 0);
+const platformWindowsAuthorityTypeErasureInventory =
+  platformWindowsProductionFiles
+    .map((file) => ({
+      path: file.path,
+      sites: rustAuthorityTypeErasureSites(file.source).length,
+    }))
+    .filter((file) => file.sites > 0);
+const platformWindowsUnsafeSourceInventory = rustUnsafeSourceInventory(
+  platformWindowsProductionFiles,
+);
+const platformWindowsVisibleGenericFunctionInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustVisibleFunctionItems(file.source)
+      .filter((item) =>
+        /^fn(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*</u.test(
+          item.signature,
+        ),
+      )
+      .map((item) => ({ path: file.path, ...item })),
+  );
+const approvedPlatformWindowsAuthorityTypeErasureInventory = [
+  { path: "crates/platform-windows/src/anchor_registry.rs", sites: 4 },
+  { path: "crates/platform-windows/src/broker_channel.rs", sites: 15 },
+  { path: "crates/platform-windows/src/broker_supervisor.rs", sites: 7 },
+  { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
+  { path: "crates/platform-windows/src/helper.rs", sites: 6 },
+  { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 4 },
+  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 17 },
+  { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
+  { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 19 },
+  { path: "crates/platform-windows/src/launch.rs", sites: 15 },
+  { path: "crates/platform-windows/src/pipe.rs", sites: 4 },
+  { path: "crates/platform-windows/src/storage/sys.rs", sites: 18 },
+];
+const approvedPlatformWindowsUnsafeSourceInventory = [
+  {
+    path: "crates/platform-windows/src/appcontainer_profile_api.rs",
+    unsafeCount: 2,
+    sha256: "6bb03a36657dcf86d1ca7987fc9b3c65d2ed38b21cdcb7790836c1ffb3438194",
+  },
+  {
+    path: "crates/platform-windows/src/broker_channel.rs",
+    unsafeCount: 54,
+    sha256: "71b01b9d71c9c6920c06118c3b7a65cd571743246c4e28270ea530c08388cf52",
+  },
+  {
+    path: "crates/platform-windows/src/broker_supervisor.rs",
+    unsafeCount: 54,
+    sha256: "2282924004398ace5b32135e7bfe95e9435b9d611fdb57a48c26ab672ac7b11a",
+  },
+  {
+    path: "crates/platform-windows/src/exact_image.rs",
+    unsafeCount: 1,
+    sha256: "e02a90adc25ccad2b1ca03dde9cf1abbd269d0f0ef9eb0d9199ab1477dfea763",
+  },
+  {
+    path: "crates/platform-windows/src/helper.rs",
+    unsafeCount: 15,
+    sha256: "2beb23ad76a85190e9b972d70e35c6ed0a3d0084994158d9736c0ed92cbdd879",
+  },
+  {
+    path: "crates/platform-windows/src/inheritable_handle_launch.rs",
+    unsafeCount: 2,
+    sha256: "19db654fa8c1f1ea487f0cc5b48ee55e7d9afa8c3f0d19467d6f1215bde525d9",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    unsafeCount: 39,
+    sha256: "aca64dc1af31a70f4e8fb1cc79ae53a6022080d2cfcf050eba52da40dbe38f92",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+    unsafeCount: 13,
+    sha256: "a009b6553c58a1cb378f45c1316cd1249d3ce5623350f25a2a79353b2712de1d",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_lpac.rs",
+    unsafeCount: 37,
+    sha256: "f160b1663af832f59331ff2a8c214d784f437e0f75287d4e1dbba3ff2c69aade",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_root_job.rs",
+    unsafeCount: 12,
+    sha256: "41d690a8080eca9981620560e5ce219e6d9008ab652ce8659adb122f718b201c",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_storage.rs",
+    unsafeCount: 55,
+    sha256: "adc8c058cc85a84ee9db8a67b44d74ca186ac758b86233824d876f2ddf19e3e7",
+  },
+  {
+    path: "crates/platform-windows/src/launch.rs",
+    unsafeCount: 35,
+    sha256: "4c8771a90b1a09ff28948f95d8ae3b264ed2e4ca46442656670055a9e07a3e4e",
+  },
+  {
+    path: "crates/platform-windows/src/pipe.rs",
+    unsafeCount: 40,
+    sha256: "4ac64730478967df6cf904269156a3a71ebb43a23bd7b2cb1944e218d4947fa7",
+  },
+  {
+    path: "crates/platform-windows/src/restricted_process_context.rs",
+    unsafeCount: 7,
+    sha256: "23253730c814bdb3918b96586fb2b91effa2d9ba6da90f2c4d9b10e9571f26cd",
+  },
+  {
+    path: "crates/platform-windows/src/storage/sys.rs",
+    unsafeCount: 57,
+    sha256: "9f43024a824f0490da4350ae735208d844515aa028bc11bd72b3a24b91426ad7",
+  },
+];
+const approvedPlatformWindowsVisibleGenericFunctionInventory = [
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    owner: "free",
+    visibility: "pub(crate)",
+    name: "run_on_fresh_key_agent_debug_thread",
+    signature:
+      "fnrun_on_fresh_key_agent_debug_thread<T,E,F>(worker:F)->Result<T,E>whereT:Send+'static,E:From<KeyAgentActivationError>+Send+'static,F:FnOnce(FreshKeyAgentDebugThread)->Result<T,E>+Send+'static,",
+  },
+  {
+    path: "crates/platform-windows/src/pipe.rs",
+    owner: "impl PrivateKeyAgentPipes",
+    visibility: "pub(crate)",
+    name: "prepare_child_inheritance",
+    signature:
+      "fnprepare_child_inheritance<'pipes,'flight>(&'pipesself,flight:&'flightcrate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,)->Result<PreparedKeyAgentInheritance<'pipes,'flight>,PipeError>",
+  },
+];
+const preparedKeyAgentProvisioningReturningFunctions =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustFunctionSignatures(file.source)
+      .filter((signature) =>
+        /->[\s\S]*\bPreparedKeyAgentProvisioning\b/u.test(
+          rustLexicalCode(signature.source),
+        ),
+      )
+      .map((signature) => ({ path: file.path, source: signature.source })),
+  );
+const preparedKeyAgentProvisioningConstructionSites =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustStructLiteralSites(file.source, "PreparedKeyAgentProvisioning").map(
+      () => file.path,
+    ),
+  );
+const preparedKeyAgentProvisioningAliases = platformWindowsProductionFiles.flatMap(
+  (file) => {
+    const code = rustLexicalCode(file.source);
+    return [
+      ...[
+        ...code.matchAll(
+          /\bPreparedKeyAgentProvisioning\s+as\s+[A-Za-z_]\w*/gu,
+        ),
+      ].map(() => file.path),
+      ...rustTypeAliasItems(file.source)
+        .filter((item) =>
+          /\bPreparedKeyAgentProvisioning\b/u.test(
+            rustLexicalCode(item.source),
+          ),
+        )
+        .map(() => file.path),
+    ];
+  },
+);
+const preparedKeyAgentProvisioningImplItems =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustImplItems(file.source)
+      .filter((item) => /\bPreparedKeyAgentProvisioning\b/u.test(item.header))
+      .map((item) => ({ path: file.path, ...item })),
+  );
+const preparedKeyAgentProvisioningImplHeaders =
+  preparedKeyAgentProvisioningImplItems.map(({ path, header }) => ({
+    path,
+    header,
+  }));
+const pendingKeyAgentProvisioningImplItems =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustImplItems(file.source)
+      .filter((item) => /\bPendingKeyAgentProvisioning\b/u.test(item.header))
+      .map((item) => ({ path: file.path, ...item })),
+  );
+const pendingKeyAgentProvisioningImplHeaders =
+  pendingKeyAgentProvisioningImplItems.map(({ path, header }) => ({
+    path,
+    header,
+  }));
+const keyAgentProvisioningAuthorityTypeNames = [
+  "PendingKeyAgentProvisioning",
+  "PreparedKeyAgentProvisioning",
+  "PreparedKeyAgentLpac",
+  "VerifiedKeyAgentLpac",
+];
+const keyAgentProvisioningAuthorityTypePattern = new RegExp(
+  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")})\\b`,
+  "u",
+);
+const keyAgentProvisioningAuthorityImplHeaders =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustImplItems(file.source)
+      .filter((item) =>
+        keyAgentProvisioningAuthorityTypePattern.test(item.header),
+      )
+      .map(({ header }) => ({ path: file.path, header })),
+  );
+const keyAgentProvisioningAuthorityAliases =
+  platformWindowsProductionFiles.flatMap((file) => [
+    ...rustUseItems(file.source)
+      .filter((item) =>
+        keyAgentProvisioningAuthorityTypeNames.some((typeName) =>
+          new RegExp(`\\b${typeName}\\s+as\\b`, "u").test(
+            rustLexicalCode(item.source),
+          ),
+        ),
+      )
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+    ...rustTypeAliasItems(file.source)
+      .filter((item) =>
+        keyAgentProvisioningAuthorityTypePattern.test(
+          rustLexicalCode(item.source),
+        ),
+      )
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+  ]);
+const keyAgentProvisioningImplAttributeInventory = [
+  ...preparedKeyAgentProvisioningImplItems,
+  ...pendingKeyAgentProvisioningImplItems,
+].map((item) => {
+  const source = platformWindowsProductionFiles.find(
+    (file) => file.path === item.path,
+  )?.source;
+  if (source === undefined) {
+    throw new Error("architecture scan lost a provisioning impl source");
+  }
+  return {
+    header: item.header,
+    attributes: rustAttachedOuterAttributes(source, item.index).map(
+      (attribute) => compactRust(attribute.source),
+    ),
+  };
+});
+const preparedKeyAgentProvisioningSelfConstructionSites =
+  preparedKeyAgentProvisioningImplItems.flatMap((item) =>
+    rustStructLiteralSites(item.source, "Self").map(() => item.path),
+  );
+const keyAgentProvisioningTypeDefinitionCounts = [
+  "PendingKeyAgentProvisioning",
+  "PreparedKeyAgentProvisioning",
+  "PreparedKeyAgentProfile",
+].map(
+  (name) =>
+    (
+      rustLexicalCode(keyAgentLpacRelease).match(
+        new RegExp(`\\bstruct\\s+${name}\\b`, "gu"),
+      ) ?? []
+    ).length,
+);
+const preparedKeyAgentProvisioningImplScannerProbe = rustImplItems(`
+impl PreparedKeyAgentProvisioning
+where
+    [(); { 1 }]: Sized,
+{
+    fn hidden_constructor() -> Self {
+        Self {}
+    }
+}
+`);
+const preparedKeyAgentProvisioningUnsafeImplScannerProbe = rustImplItems(`
+unsafe impl HiddenMint for PreparedKeyAgentProvisioning {}
+`);
+const preparedKeyAgentProvisioningNestedImplScannerProbe = rustImplItems(`
+impl UnrelatedType {
+    fn install_hidden_impl() {
+        impl HiddenMint for PreparedKeyAgentProvisioning {
+            fn mint() -> Self {
+                Self {}
+            }
+        }
+    }
+}
+`);
+const preparedKeyAgentProvisioningAliasScannerProbe = rustTypeAliasItems(`
+type Alias where [(); 1]: Sized = PreparedKeyAgentProvisioning;
+`);
+const preparedKeyAgentProvisioningReturnScannerProbe = rustFunctionSignatures(`
+fn hidden_transition(pending: PendingKeyAgentProvisioning)
+    -> core::result::Result<PreparedKeyAgentProvisioning, ()>
+{
+    transform(pending)
+}
+`);
+const keyAgentProvisioningMacroScannerProbe = `
+macro_rules! make_item {
+    ($ty:ident) => {
+        fn hidden(profile: PreparedKeyAgentProfile, storage_root: HeldKeyAgentStorageRoot) -> Self {
+            $ty { profile, storage_root }
+        }
+    };
+}
+make_item!(PreparedKeyAgentProvisioning);
+`;
+const keyAgentProvisioningMacroScannerProbeInvocations = rustMacroInvocations(
+  keyAgentProvisioningMacroScannerProbe,
+);
+const keyAgentProvisioningAttributeScannerProbe = rustAttributeItems(`
+#[derive(HiddenMint)]
+struct PreparedKeyAgentProvisioning;
+#[cfg_attr(windows, derive(HiddenMint))]
+struct PreparedKeyAgentProfile;
+#[hidden_mint]
+impl PreparedKeyAgentProvisioning {}
+`);
+const keyAgentProvisioningIncludeScannerProbe = rustMacroInvocations(`
+include!(concat!("hidden_prepared_", "constructor.rs"));
+`);
+const keyAgentProvisioningMacroItemScannerProbe = `
+pub macro hidden_mint($ty:ty) {
+    impl HiddenMint for $ty {}
+}
+`;
+const keyAgentProvisioningMacroNamespaceAttributeScannerProbe =
+  rustAttributeItems(`
+#[macro_export]
+macro_rules! hidden_mint { () => {} }
+#![macro_use]
+extern crate hidden_macros;
+`);
+const keyAgentProvisioningAttachedModuleScannerProbe = `
+#[evil::inject]
+#[cfg(windows)]
+mod key_agent_lpac;
+`;
+const keyAgentProvisioningAttachedModuleScannerProbeAttributes =
+  rustAttachedOuterAttributes(
+    keyAgentProvisioningAttachedModuleScannerProbe,
+    rustLexicalCode(keyAgentProvisioningAttachedModuleScannerProbe).search(
+      /\bmod\s+key_agent_lpac\s*;/u,
+    ),
+  );
+const keyAgentProvisioningKeywordNotScannerProbe = rustMacroInvocations(`
+if !(profile_exists || root_exists) {}
+`);
+const keyAgentProvisioningUnicodeMacroScannerProbe = rustMacroInvocations(`
+use ::std::include as μ;
+μ!("hidden_prepared_constructor.inc");
+`);
+const keyAgentProvisioningRawIdentifierMacroScannerProbe =
+  rustMacroInvocations(`
+r#include!("hidden_prepared_constructor.inc");
+`);
+const keyAgentProvisioningTypeErasureScannerProbe = `
+#[allow(unsafe_code)]
+fn cast<T, U>(value: T) -> U {
+    let output = unsafe { core::mem::transmute_copy::<T, U>(&value) };
+    core::mem::forget(value);
+    output
+}
+`;
+const keyAgentProvisioningRawOwnershipScannerProbe = `
+union HiddenCast<T, U> {
+    source: core::mem::ManuallyDrop<T>,
+    target: core::mem::ManuallyDrop<U>,
+}
+fn boxed_cast<T, U>(value: T) -> U {
+    let raw = Box::into_raw(Box::new(value));
+    unsafe { ptr::read(raw.cast::<U>()) }
+}
+fn vector_cast<T, U>(value: T) -> U {
+    let mut slot = Vec::with_capacity(1);
+    slot.push(value);
+    let output = unsafe { slot.as_mut_ptr().cast::<U>().read() };
+    unsafe { slot.set_len(0) };
+    output
+}
+fn pointer_ops<T: Copy>(source: *const T, target: *mut T) -> T {
+    unsafe {
+        target.copy_from_nonoverlapping(source, 1);
+        core::ptr::read_unaligned(source)
+    }
+}
+`;
+const keyAgentProvisioningTypeErasureScannerProbeSites =
+  rustAuthorityTypeErasureSites(keyAgentProvisioningTypeErasureScannerProbe);
+const keyAgentProvisioningRawOwnershipScannerProbeSites =
+  rustAuthorityTypeErasureSites(keyAgentProvisioningRawOwnershipScannerProbe);
+const keyAgentProvisioningExternalPathScannerProbe = rustExternalModulePaths(
+  "crates/platform-windows/src/lib.rs",
+  `
+#[cfg(windows)]
+#[path = "../hidden_authority.rs"]
+mod hidden_authority;
+`,
+  platformWindowsProductionPathSet,
+);
+const keyAgentProvisioningVisibleSurfaceScannerProbe =
+  rustVisibleFunctionItems(`
+pub(crate) fn erase<T, U>(value: T) -> U {
+    convert(value)
+}
+`);
+const keyAgentProvisioningTraitImplScannerProbe = rustImplItems(`
+impl HiddenAuthority for VerifiedKeyAgentLpac {
+    fn mint(&self) {}
+}
+`).map((item) => item.header);
+const keyAgentProvisioningUnsafeSourceOriginal =
+  platformWindowsUnsafeSourceInventory.find(
+    (file) => file.path === "crates/platform-windows/src/helper.rs",
+  );
+const keyAgentProvisioningUnsafeSourceMutationProbe = rustUnsafeSourceInventory([
+  {
+    path: "crates/platform-windows/src/helper.rs",
+    source: `${
+      platformWindowsProductionFiles.find(
+        (file) => file.path === "crates/platform-windows/src/helper.rs",
+      )?.source ?? ""
+    }
+pub(crate) fn hidden_raw_move<T, U>(pointer: *const U) -> U {
+    unsafe { *pointer }
+}
+`,
+  },
+]).at(0);
+const keyAgentProvisioningDeriveAliasScannerProbe =
+  rustExpansionSensitiveUseItems(`
+use approval_wire::Mint as Clone;
+use approval_wire::OtherMint as r#Debug;
+`);
 const keyAgentFreshProvisioningOrder = [
   "PreparedKeyAgentProfile::provision_fresh()?",
   "create_fixed_key_agent_storage_root(",
@@ -9066,15 +11151,714 @@ const keyAgentFreshProvisioningOrder = [
   "Ok(Self{profile,storage_root,})",
 ].map((marker) => compactProvisionFreshKeyAgent.indexOf(marker));
 requireInvariant(
+  JSON.stringify(pendingKeyAgentProvisioningTokenInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          count: 3,
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_supervisor.rs",
+          count: 3,
+        },
+      ]) &&
+    JSON.stringify(platformWindowsAuthorityTypeErasureInventory) ===
+      JSON.stringify(approvedPlatformWindowsAuthorityTypeErasureInventory) &&
+    JSON.stringify(platformWindowsUnsafeSourceInventory) ===
+      JSON.stringify(approvedPlatformWindowsUnsafeSourceInventory) &&
+    JSON.stringify(platformWindowsVisibleGenericFunctionInventory) ===
+      JSON.stringify(approvedPlatformWindowsVisibleGenericFunctionInventory) &&
+    /\bpub\(crate\)\s+enum\s+KeyAgentSupervisorError\b/u.test(
+      rustLexicalCode(keyAgentSupervisorRelease),
+    ) &&
+    !/\bunsafe\b/u.test(rustLexicalCode(keyAgentSupervisorRelease)),
+  "Pending authority references, crate-visible generic callables, raw ownership sites, and unsafe-bearing production sources must remain exact while supervisor code stays safe-only",
+);
+requireInvariant(
+  JSON.stringify(platformWindowsMacroRulesDefinitions) === JSON.stringify([]) &&
+    JSON.stringify(platformWindowsMacroItemDefinitions) === JSON.stringify([]) &&
+    JSON.stringify(platformWindowsMacroNamespaceAttributes) ===
+      JSON.stringify([]) &&
+    JSON.stringify(platformWindowsIncludeMacroInvocations) ===
+      JSON.stringify([]) &&
+    JSON.stringify(platformWindowsIncludeMacroTokens) === JSON.stringify([]) &&
+    JSON.stringify(keyAgentProvisioningAuthorityMacroInvocations) ===
+      JSON.stringify([]),
+  "production Rust must not hide Key Agent provisioning authority behind declarative, include, or authority-bearing function-like macros",
+);
+requireInvariant(
+  JSON.stringify(platformWindowsAttributeHeadInventory) ===
+    JSON.stringify([
+      "allow",
+      "cfg",
+      "cfg_attr",
+      "derive",
+      "error",
+      "expect",
+      "must_use",
+      "path",
+      "repr",
+      "source",
+      "test",
+    ]),
+  "production Rust attributes must not introduce an unreviewed proc-macro expansion entry point",
+);
+requireInvariant(
+  JSON.stringify(platformWindowsExternalModulePathInventory) ===
+    JSON.stringify([
+      {
+        declaringFile: "crates/platform-windows/src/broker_artifact.rs",
+        module: "broker_supervisor",
+        literal: "broker_supervisor.rs",
+        resolvedTarget:
+          "crates/platform-windows/src/broker_supervisor.rs",
+        insideCrateSource: true,
+        inProductionInventory: true,
+        attributes: ["#[cfg(windows)]", "#[path=]"],
+      },
+    ]),
+  "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
+);
+requireInvariant(
+  keyAgentLpacVisibilityCount === 13 &&
+    JSON.stringify(keyAgentLpacVisibleFunctionInventory) ===
+      JSON.stringify([
+        {
+          owner: "impl PendingKeyAgentProvisioning",
+          visibility: "pub(crate)",
+          name: "provision_fresh",
+          signature:
+            "fnprovision_fresh()->Result<Self,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl PreparedKeyAgentProvisioning",
+          visibility: "pub(crate)",
+          name: "revalidate",
+          signature:
+            "fnrevalidate(&self)->Result<(),KeyAgentLpacError>",
+        },
+        {
+          owner: "impl PreparedKeyAgentProvisioning",
+          visibility: "pub(crate)",
+          name: "prepare_lpac",
+          signature:
+            "fnprepare_lpac(&self)->Result<PreparedKeyAgentLpac,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl PreparedKeyAgentProvisioning",
+          visibility: "pub(crate)",
+          name: "storage_root_identity",
+          signature:
+            "fnstorage_root_identity(&self)->KeyAgentStorageRootIdentity",
+        },
+        {
+          owner: "impl PreparedKeyAgentLpac",
+          visibility: "pub(crate)",
+          name: "environment_with_local_app_data",
+          signature:
+            "fnenvironment_with_local_app_data(&self,base_environment:&[u16],)->Result<Box<[u16]>,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl PreparedKeyAgentLpac",
+          visibility: "pub(crate)unsafe",
+          name: "install_into",
+          signature:
+            "fninstall_into(&self,attribute_list:LPPROC_THREAD_ATTRIBUTE_LIST,)->Result<(),KeyAgentLpacError>",
+        },
+        {
+          owner: "impl PreparedKeyAgentLpac",
+          visibility: "pub(crate)",
+          name: "verify_suspended_process",
+          signature:
+            "fnverify_suspended_process(self,process:BorrowedHandle<'_>,)->Result<VerifiedKeyAgentLpac,KeyAgentLpacError>",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacVisibleNonFunctionInventory) ===
+      JSON.stringify([
+        {
+          visibility: "pub(crate)",
+          kind: "const",
+          name: "KEY_AGENT_PROFILE_V1_NAME",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "enum",
+          name: "KeyAgentLpacError",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "PendingKeyAgentProvisioning",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "PreparedKeyAgentProvisioning",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "PreparedKeyAgentLpac",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "VerifiedKeyAgentLpac",
+        },
+      ]),
+  "the complete release LPAC crate-visible callable and item surface must remain exact",
+);
+requireInvariant(
+  JSON.stringify(platformWindowsFunctionLikeMacroPathInventory) ===
+      JSON.stringify([
+        "assert",
+        "assert_eq",
+        "assert_ne",
+        "core::mem::offset_of",
+        "debug_assert",
+        "debug_assert_eq",
+        "format",
+        "matches",
+        "offset_of",
+        "ptr::addr_of",
+        "std::vec",
+        "thread_local",
+        "unreachable",
+        "vec",
+        "write",
+      ]) &&
+    JSON.stringify(platformWindowsDerivePathInventory) ===
+      JSON.stringify([
+        "Clone",
+        "Copy",
+        "Debug",
+        "Default",
+        "Eq",
+        "Error",
+        "Hash",
+        "PartialEq",
+      ]) &&
+    JSON.stringify(platformWindowsCfgAttrInventory) ===
+      JSON.stringify([
+        "#![cfg_attr(not(windows),allow(dead_code))]",
+        "#[cfg_attr(not(test),allow(dead_code,reason=))]",
+        "#[cfg_attr(not(test),allow(unused_variables))]",
+      ]) &&
+    platformWindowsExpansionSensitiveUseInventory.every((item) =>
+      [
+        "usecore::mem::{offset_of,size_of,size_of_val};",
+        "usecore::ptr;",
+        "usethiserror::Error;",
+      ].includes(item.source),
+    ) &&
+    JSON.stringify(platformWindowsGlobUseInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/anchor_registry/tests.rs",
+          source: "usesuper::*;",
+        },
+      ]) &&
+    JSON.stringify(platformWindowsForbiddenExpansionNamespaces) ===
+      JSON.stringify([]),
+  "platform-windows production macro, derive, cfg_attr, import, glob, and namespace expansion providers must remain exact",
+);
+requireInvariant(
+  platformWindowsManifestSha256 ===
+      "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" &&
+    JSON.stringify(platformWindowsCrateRootInventory) ===
+      JSON.stringify([
+        { name: "Cargo.toml", kind: "file" },
+        { name: "README.md", kind: "file" },
+        { name: "src", kind: "directory" },
+      ]) &&
+    JSON.stringify(platformWindowsLocalDependencyManifestInventory) ===
+      JSON.stringify(approvedPlatformWindowsLocalDependencyManifestInventory) &&
+    JSON.stringify(platformWindowsLocalDependencyCrateRootInventory) ===
+      JSON.stringify(approvedPlatformWindowsLocalDependencyCrateRootInventory) &&
+    JSON.stringify(platformWindowsLocalDependencySourceInventory) ===
+      JSON.stringify(approvedPlatformWindowsLocalDependencySourceInventory) &&
+    [approvalWireManifest, secretInputUiManifest].every((manifest) =>
+      /^build\s*=\s*false$/gmu.test(manifest),
+    ) &&
+    /^build\s*=\s*false$/gmu.test(platformWindowsManifest) &&
+    JSON.stringify(platformWindowsDependencySectionInventory) ===
+      JSON.stringify(["dependencies"]) &&
+    compactPlatformWindowsDependencies ===
+      [
+        'approval-wire={path="../approval-wire"}',
+        "getrandom.workspace=true",
+        "hmac.workspace=true",
+        "sha2.workspace=true",
+        'secret-input-ui={path="../secret-input-ui"}',
+        "subtle.workspace=true",
+        "thiserror.workspace=true",
+        "windows={workspace=true,features=[",
+        '"Win32_Globalization",',
+        '"Win32_Security_Authorization",',
+        '"Win32_Security_Cryptography",',
+        '"Win32_Security_Cryptography_Catalog",',
+        '"Win32_Security_Cryptography_Sip",',
+        '"Win32_Security_Isolation",',
+        '"Win32_Security_WinTrust",',
+        '"Win32_System_Diagnostics_Debug",',
+        '"Win32_System_Com",',
+        '"Win32_System_IO",',
+        '"Win32_System_ProcessStatus",',
+        '"Win32_System_RemoteDesktop",',
+        '"Win32_System_SystemInformation",',
+        '"Win32_System_SystemServices",',
+        '"Win32_System_WindowsProgramming",',
+        "]}",
+        "zeroize.workspace=true",
+      ].join("") &&
+    rootManifestSha256 ===
+      "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49" &&
+    workspaceLockSha256 ===
+      "8ff742854955e290a3d5b5c502221c7fb6829d82931f50f838d849648d9fe483" &&
+    (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
+      .length === 1 &&
+    !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
+    JSON.stringify(repositoryCargoOverrideInventory) === JSON.stringify([]) &&
+    JSON.stringify(approvedThiserrorLockRecords) ===
+      JSON.stringify([
+        {
+          name: "thiserror",
+          version: "2.0.12",
+          source: "registry+https://github.com/rust-lang/crates.io-index",
+          checksum:
+            "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708",
+          dependencies: ["thiserror-impl 2.0.12"],
+        },
+        {
+          name: "thiserror-impl",
+          version: "2.0.12",
+          source: "registry+https://github.com/rust-lang/crates.io-index",
+          checksum:
+            "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d",
+          dependencies: ["proc-macro2", "quote", "syn 2.0.119"],
+        },
+      ]) &&
+    !/\bproc-macro\s*=/u.test(platformWindowsManifest),
+  "platform-windows package/local-dependency source closure, workspace manifest, complete lockfile/provider closure, default entrypoints, disabled build scripts, and dependencies must remain exact",
+);
+requireInvariant(
+  JSON.stringify(keyAgentLpacMacroInvocationInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacCopySidMacroInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacTokenInformationMacroInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]),
+  "the release Key Agent LPAC function-like macro inventory and enclosing functions must remain exact",
+);
+requireInvariant(
+  JSON.stringify(keyAgentLpacAttributeInventory) ===
+    JSON.stringify([
+      "#![allow(unsafe_code)]",
+      "#[derive(Eq,PartialEq)]",
+      "#[must_use=]",
+      "#[must_use=]",
+      "#[must_use=]",
+      "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
+    ]),
+  "the release Key Agent LPAC attribute inventory must remain exact",
+);
+requireInvariant(
+  JSON.stringify(keyAgentLpacAuthorityAttributeInventory) ===
+    JSON.stringify([
+      {
+        target: "KeyAgentLpacError",
+        attributes: ["#[derive(Eq,PartialEq)]"],
+      },
+      {
+        target: "PendingKeyAgentProvisioning",
+        attributes: ["#[must_use=]"],
+      },
+      {
+        target: "PreparedKeyAgentProvisioning",
+        attributes: ["#[must_use=]"],
+      },
+      {
+        target: "PreparedKeyAgentProfile",
+        attributes: ["#[must_use=]"],
+      },
+      {
+        target: "AppContainerMembershipEvidence",
+        attributes: ["#[derive(Clone,Copy,Debug,Eq,PartialEq)]"],
+      },
+    ]),
+  "the release Key Agent LPAC authority-bearing type attributes must stay attached to their exact targets",
+);
+requireInvariant(
+  JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
+    JSON.stringify([
+      {
+        header: "impl PreparedKeyAgentProvisioning",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+        attributes: [],
+      },
+      {
+        header: "impl PendingKeyAgentProvisioning",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for PendingKeyAgentProvisioning",
+        attributes: [],
+      },
+    ]),
+  "the release Key Agent provisioning impls must have no expansion attributes",
+);
+requireInvariant(
+  JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
+    JSON.stringify([
+      {
+        module: "key_agent_install_provenance",
+        attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
+      },
+      {
+        module: "key_agent_lpac",
+        attributes: ["#[cfg(windows)]"],
+      },
+    ]),
+  "the sensitive Key Agent module declarations must retain only their exact built-in attributes",
+);
+requireInvariant(
+  JSON.stringify(keyAgentLpacMacroInvocationInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacCopySidMacroInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacTokenInformationMacroInventory) ===
+      JSON.stringify([
+        {
+          absolute: true,
+          path: "std::vec",
+          source: "std::vec![0_usize;word_count]",
+        },
+      ]) &&
+    JSON.stringify(keyAgentLpacAttributeInventory) ===
+      JSON.stringify([
+        "#![allow(unsafe_code)]",
+        "#[derive(Eq,PartialEq)]",
+        "#[must_use=]",
+        "#[must_use=]",
+        "#[must_use=]",
+        "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
+      ]) &&
+    JSON.stringify(keyAgentLpacAuthorityAttributeInventory) ===
+      JSON.stringify([
+        {
+          target: "KeyAgentLpacError",
+          attributes: ["#[derive(Eq,PartialEq)]"],
+        },
+        {
+          target: "PendingKeyAgentProvisioning",
+          attributes: ["#[must_use=]"],
+        },
+        {
+          target: "PreparedKeyAgentProvisioning",
+          attributes: ["#[must_use=]"],
+        },
+        {
+          target: "PreparedKeyAgentProfile",
+          attributes: ["#[must_use=]"],
+        },
+        {
+          target: "AppContainerMembershipEvidence",
+          attributes: ["#[derive(Clone,Copy,Debug,Eq,PartialEq)]"],
+        },
+      ]) &&
+    JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
+      JSON.stringify([
+        {
+          header: "impl PreparedKeyAgentProvisioning",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+          attributes: [],
+        },
+        {
+          header: "impl PendingKeyAgentProvisioning",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for PendingKeyAgentProvisioning",
+          attributes: [],
+        },
+      ]) &&
+    JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
+      JSON.stringify([
+        {
+          module: "key_agent_install_provenance",
+          attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
+        },
+        {
+          module: "key_agent_lpac",
+          attributes: ["#[cfg(windows)]"],
+        },
+      ]),
+  "the release Key Agent LPAC macro and attribute surface must remain exact so expansion cannot mint provisioning authority",
+);
+requireInvariant(
+  /\bmacro_rules\s*!/u.test(
+    rustLexicalCode(keyAgentProvisioningMacroScannerProbe),
+  ) &&
+    keyAgentProvisioningMacroScannerProbeInvocations.length === 1 &&
+    keyAgentProvisioningMacroScannerProbeInvocations[0].path === "make_item" &&
+    /\bPreparedKeyAgentProvisioning\b/u.test(
+      rustLexicalCode(
+        keyAgentProvisioningMacroScannerProbeInvocations[0].source,
+      ),
+    ) &&
+    keyAgentProvisioningAttributeScannerProbe.length === 3 &&
+    keyAgentProvisioningAttributeScannerProbe.every(
+      (attribute) => attribute.inner === false,
+    ) &&
+    JSON.stringify(
+      keyAgentProvisioningIncludeScannerProbe.map(
+        (invocation) => invocation.path,
+      ),
+    ) === JSON.stringify(["include", "concat"]) &&
+    /\bmacro\s+hidden_mint\b/u.test(
+      rustLexicalCode(keyAgentProvisioningMacroItemScannerProbe),
+    ) &&
+    JSON.stringify(
+      keyAgentProvisioningMacroNamespaceAttributeScannerProbe.map(
+        (attribute) => compactRust(attribute.source),
+      ),
+    ) === JSON.stringify(["#[macro_export]", "#![macro_use]"]) &&
+    keyAgentProvisioningAttachedModuleScannerProbeAttributes.length === 2 &&
+    JSON.stringify(
+      keyAgentProvisioningAttachedModuleScannerProbeAttributes.map(
+        (attribute) => compactRust(attribute.source),
+      ),
+    ) === JSON.stringify(["#[evil::inject]", "#[cfg(windows)]"]) &&
+    keyAgentProvisioningKeywordNotScannerProbe.length === 0 &&
+    keyAgentProvisioningUnicodeMacroScannerProbe.length === 1 &&
+    keyAgentProvisioningUnicodeMacroScannerProbe[0].path === "μ" &&
+    keyAgentProvisioningUnicodeMacroScannerProbe[0].normalizedPath === "μ" &&
+    keyAgentProvisioningRawIdentifierMacroScannerProbe.length === 1 &&
+    keyAgentProvisioningRawIdentifierMacroScannerProbe[0].path ===
+      "r#include" &&
+    keyAgentProvisioningRawIdentifierMacroScannerProbe[0].normalizedPath ===
+      "include" &&
+    JSON.stringify(keyAgentProvisioningTypeErasureScannerProbeSites) ===
+      JSON.stringify(["transmute_copy", "forget"]) &&
+    JSON.stringify(keyAgentProvisioningRawOwnershipScannerProbeSites) ===
+      JSON.stringify([
+        "union HiddenCast",
+        "ManuallyDrop",
+        "ManuallyDrop",
+        "into_raw",
+        "ptr::read(",
+        ".cast::<U>()",
+        ".cast::<U>()",
+        ".read()",
+        ".set_len(",
+        ".copy_from_nonoverlapping(",
+        "core::ptr::read_unaligned(",
+      ]) &&
+    JSON.stringify(keyAgentProvisioningExternalPathScannerProbe) ===
+      JSON.stringify([
+        {
+          declaringFile: "crates/platform-windows/src/lib.rs",
+          module: "hidden_authority",
+          literal: "../hidden_authority.rs",
+          resolvedTarget: "crates/platform-windows/hidden_authority.rs",
+          insideCrateSource: false,
+          inProductionInventory: false,
+          attributes: ["#[cfg(windows)]", "#[path=]"],
+        },
+      ]) &&
+    JSON.stringify(keyAgentProvisioningVisibleSurfaceScannerProbe) ===
+      JSON.stringify([
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "erase",
+          signature: "fnerase<T,U>(value:T)->U",
+        },
+      ]) &&
+    JSON.stringify(keyAgentProvisioningTraitImplScannerProbe) ===
+      JSON.stringify(["impl HiddenAuthority for VerifiedKeyAgentLpac"]) &&
+    keyAgentProvisioningUnsafeSourceOriginal !== undefined &&
+    keyAgentProvisioningUnsafeSourceMutationProbe !== undefined &&
+    keyAgentProvisioningUnsafeSourceMutationProbe.unsafeCount ===
+      keyAgentProvisioningUnsafeSourceOriginal.unsafeCount + 1 &&
+    keyAgentProvisioningUnsafeSourceMutationProbe.sha256 !==
+      keyAgentProvisioningUnsafeSourceOriginal.sha256 &&
+    JSON.stringify(
+      keyAgentProvisioningDeriveAliasScannerProbe.map((item) =>
+        compactRust(item.source),
+      ),
+    ) ===
+      JSON.stringify([
+        "useapproval_wire::MintasClone;",
+        "useapproval_wire::OtherMintasr#Debug;",
+      ]),
+  "the architecture scanner must detect macro and attribute expansion probes around Key Agent provisioning authority",
+);
+requireInvariant(
   /const\s+KEY_AGENT_PROFILE_V1_NAME:\s*&str\s*=\s*"YourWallet\.KeyAgent\.LPAC\.v1"\s*;/u.test(
     keyAgentLpacRelease,
   ) &&
-    /pub\(crate\)\s+struct\s+PreparedKeyAgentProvisioning\s*\{[\s\S]*profile:\s*PreparedKeyAgentProfile,[\s\S]*storage_root:\s*HeldKeyAgentStorageRoot,/u.test(
-      keyAgentLpacRelease,
+    compactRust(pendingKeyAgentProvisioningBlock) ===
+      "pub(crate)structPendingKeyAgentProvisioning{profile:PreparedKeyAgentProfile,storage_root:HeldKeyAgentStorageRoot,}" &&
+    compactRust(preparedKeyAgentProvisioningBlock) ===
+      "pub(crate)structPreparedKeyAgentProvisioning{profile:PreparedKeyAgentProfile,storage_root:HeldKeyAgentStorageRoot,}" &&
+    compactRust(preparedKeyAgentProfileBlock) ===
+      "structPreparedKeyAgentProfile{profile_sid:OwnedAppContainerSid,appcontainer_local_data:PathBuf,_not_sync:PhantomData<Cell<()>>,}" &&
+    JSON.stringify(keyAgentProvisioningTypeDefinitionCounts) ===
+      JSON.stringify([1, 1, 1]) &&
+    JSON.stringify(preparedKeyAgentProvisioningTokenInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          count: 7,
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          count: 3,
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_supervisor.rs",
+          count: 5,
+        },
+      ]) &&
+    JSON.stringify(preparedKeyAgentProvisioningReturningFunctions) ===
+      JSON.stringify([]) &&
+    preparedKeyAgentProvisioningImplScannerProbe.length === 1 &&
+    rustStructLiteralSites(
+      preparedKeyAgentProvisioningImplScannerProbe[0].source,
+      "Self",
+    ).length === 1 &&
+    preparedKeyAgentProvisioningUnsafeImplScannerProbe.filter((item) =>
+      /\bPreparedKeyAgentProvisioning\b/u.test(item.header),
+    ).length === 1 &&
+    preparedKeyAgentProvisioningNestedImplScannerProbe.filter((item) =>
+      /\bPreparedKeyAgentProvisioning\b/u.test(item.header),
+    ).length === 1 &&
+    preparedKeyAgentProvisioningNestedImplScannerProbe
+      .filter((item) =>
+        /\bPreparedKeyAgentProvisioning\b/u.test(item.header),
+      )
+      .every(
+        (item) => rustStructLiteralSites(item.source, "Self").length === 1,
+      ) &&
+    preparedKeyAgentProvisioningAliasScannerProbe.length === 1 &&
+    /\bPreparedKeyAgentProvisioning\b/u.test(
+      preparedKeyAgentProvisioningAliasScannerProbe[0].source,
     ) &&
-    /(?<!pub\(crate\)\s)struct\s+PreparedKeyAgentProfile\s*\{/u.test(
-      keyAgentLpacRelease,
+    preparedKeyAgentProvisioningReturnScannerProbe.length === 1 &&
+    /->[\s\S]*\bPreparedKeyAgentProvisioning\b/u.test(
+      preparedKeyAgentProvisioningReturnScannerProbe[0].source,
     ) &&
+    JSON.stringify(pendingKeyAgentProvisioningMethods) ===
+      JSON.stringify(["provision_fresh"]) &&
+    JSON.stringify(preparedKeyAgentProvisioningMethods) ===
+      JSON.stringify(["revalidate", "prepare_lpac", "storage_root_identity"]) &&
+    JSON.stringify(preparedKeyAgentProvisioningConstructionSites) ===
+      JSON.stringify([]) &&
+    JSON.stringify(preparedKeyAgentProvisioningAliases) === JSON.stringify([]) &&
+    JSON.stringify(preparedKeyAgentProvisioningImplHeaders) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl PreparedKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+        },
+      ]) &&
+    JSON.stringify(pendingKeyAgentProvisioningImplHeaders) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl PendingKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for PendingKeyAgentProvisioning",
+        },
+      ]) &&
+    JSON.stringify(keyAgentProvisioningAuthorityImplHeaders) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl PendingKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for PendingKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl PreparedKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl PreparedKeyAgentLpac",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for PreparedKeyAgentLpac",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for VerifiedKeyAgentLpac",
+        },
+      ]) &&
+    JSON.stringify(keyAgentProvisioningAuthorityAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(preparedKeyAgentProvisioningSelfConstructionSites) ===
+      JSON.stringify([]) &&
     keyAgentFreshProvisioningOrder.every((position) => position !== -1) &&
     keyAgentFreshProvisioningOrder
       .slice(1)
@@ -9112,6 +11896,9 @@ requireInvariant(
     !rustLexicalCode(keyAgentLpacRelease).includes(
       "PreparedKeyAgentLpac::prepare()",
     ) &&
+    !/\bfn\s+(?:new|from_\w*|provision\w*|prepare_for_\w*)\s*\(/u.test(
+      preparedKeyAgentProvisioningImpl,
+    ) &&
     keyAgentLpacOpenOrCreate.includes("ERROR_ALREADY_EXISTS.to_hresult()") &&
     keyAgentLpacPrepare.includes("PreparedKeyAgentProfile::open_or_create()?") &&
     launchProfileApiOrder.every((position) => position !== -1) &&
@@ -9131,10 +11918,10 @@ requireInvariant(
     !/pub\(crate\)\s+fn\s+(?:raw|sid|profile|name|into_sid|profile_sid)\b/u.test(
       keyAgentLpacRelease,
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:PreparedKeyAgentProvisioning|PreparedKeyAgentLpac|VerifiedKeyAgentLpac)\b/u.test(
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:PendingKeyAgentProvisioning|PreparedKeyAgentProvisioning|PreparedKeyAgentLpac|VerifiedKeyAgentLpac)\b/u.test(
       keyAgentLpacRelease,
     ),
-  "release Key Agent provisioning must freshly create the fixed profile and fixed storage root, validate created-versus-derived SID equality, and keep existing-profile adoption cfg(test)-only",
+  "release Key Agent provisioning must quarantine fresh fixed objects as Pending, mint no production Prepared authority, validate created-versus-derived SID equality, and keep existing-profile adoption unavailable",
 );
 requireInvariant(
   keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
@@ -9868,8 +12655,28 @@ requireInvariant(
       keyAgentBoundaryDocumentation,
     ) &&
     activationArchitecture.includes("YourWallet.KeyAgent.Storage.v1") &&
-    /private production provisioning selector has no caller input\. It can only\s+fresh-create the fixed/u.test(
+    activationArchitecture.includes(
+      "The private fresh-provisioning selector has no caller input.",
+    ) &&
+    /but returns only a\s+non-launchable pending capability/u.test(
       activationArchitecture,
+    ) &&
+    /Activation accepts a\s+separate prepared capability for which production has no constructor or\s+pending\/candidate conversion/u.test(
+      activationArchitecture,
+    ) &&
+    /activation에 넣을 수\s+없는 `Pending` capability만 반환/u.test(rootReadme) &&
+    rootReadme.includes("pending/candidate conversion") &&
+    securityDecisions.includes(
+      "returns only a non-launchable pending capability",
+    ) &&
+    [
+      activationArchitecture,
+      activationReadme,
+      securityDecisions,
+      keyAgentProtocolDocumentation,
+    ].every((document) => /observes\s+no\s+predecessor\s+history/iu.test(document)) &&
+    !/exact four-step journal generation|exact\s+four transaction generations/iu.test(
+      keyAgentBoundaryDocumentation,
     ) &&
     activationArchitecture.includes(
       "The private storage-startup transition now proves that this exact child opens and",
@@ -9910,7 +12717,7 @@ requireInvariant(
     activationArchitecture.includes(
       "no production protected-settings consumer or settings key provisioning",
     ) &&
-    /existing production profiles still\s+lack durable installer provenance\/adoption\/recovery/u.test(
+    /pending\/launch typestate split do not supply durable authenticated installer\s+provenance, authoritative adoption, or recovery for existing production\s+profiles/u.test(
       activationReadme,
     ) &&
     /same-user processes while ancestor checks remain\s+non-atomic/u.test(

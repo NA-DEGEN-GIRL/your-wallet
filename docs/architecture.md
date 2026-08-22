@@ -16,7 +16,7 @@ invariants, not a claim that the current binaries establish every boundary.
 | Approval helper | `approval-wire` is the single bounded v2 codec used by the authorization TCB, Key Agent, Windows channel, and native frontend. The Key Agent creates one crate-private, non-clone `PreparedApprovalPrompt`; its exact digest, nonce, sampled expiry, locally protected anti-phishing phrase, risk, and every display field are request-hashed and retained across the interaction. The prompt additionally carries a one-shot protected-settings lease bound to the authenticated generation, phrase revision, canonical record digest, exclusive owner evidence, process instance, and a fresh nonce. Immediately before authorization or key use, the Key Agent consumes that lease and freshly reloads the exact protected record; lock, rotation, owner takeover, restart, or replay invalidates it. The Windows library creates the exact inherited request/response pipes, launches the allowlisted LPAC helper, enforces monotonic I/O deadlines and exact response-plus-EOF, and binds held process/file/manifest/profile identity into a fresh transcript. High-risk approval requires a monotonic two-second physical pointer or Space hold. Default executable builds exit 78; the opt-in runtime contract consumes one complete bounded inherited request, invokes the native surface, and writes one exact response without diagnostics. Signed-artifact end-to-end evidence is absent. |
 | Secret-input helper | The library has exact prompt/outcome codecs, bounded zeroizing response reads, and a non-persisting native secret surface. Its high-level parent API requires the release-attested restricted launcher and exact manifest-derived Secret Input role, atomically owns separate request/response pipes and the held helper/job, transfers the canonical prompt plus EOF, and performs cancellable/drained bounded response reads through EOF. The proof binds the exact prompt, held file/process/LPAC identity, and a fresh OS-CSPRNG challenge, then permits consumption only for that same prompt. Default executable builds exit 78 and the compiled release policy is absent. Direct-launch parent-identity denial and immutable signed-artifact evidence remain stop-ship. |
 | Broker/key agent/Windows boundary | Method schemas, state bounds, typed chain evidence, canonical display derivation, request-hashed one-shot approval, nonce lifecycle, signer self-checks, protected pipe/helper verification, and an opaque verified-response capability exist. The Key Agent now also has a crate-private offline-lifecycle wire/controller: exact magic/version/type/request-ID/sequence/deadline/length framing, fixed 64-byte frames, exact EOF, zero reserved fields, a 64-request controller-activation lifetime across one-shot inherited request channels, and distinct duplicate/replay/out-of-order outcomes. Admission pins the bounded wall-clock remainder to a trusted monotonic `Instant`; every frontend receives the exact absolute expiry. After a frontend returns, only the controller can mint a private-field, non-clone checked-deadline capability, and every service/session mutation must consume it. The same capability owns the trusted clock borrow and rechecks the pinned expiry after KDF/derivation/seal/reseal at the last safe point before durable commit, unlock, or pending-state activation; expiry locks without advancing generation or decrypted state. Its closed command set is status, 12/24-word creation, separate backup display/confirmation stages, open, lock, and confirmed-address lookup; no password, mnemonic, confirmation answers, signing, import/export, or network payload is representable. Status, lock, and confirmed-address access use the owned `OfflineWalletService`. Secret-bearing transitions require a crate-sealed frontend capability that can acquire inputs or present a borrowed view but cannot receive the vault service. Recovery display returns a non-clone, live-session-bound capability without mutation; only the deadline-checked controller may consume it into one pending positions-only confirmation, which lock, restart, cross-stage use, or replay clears or rejects. The compiled capability returns stable `Unavailable` and locks because authenticated Secret Input/Recovery adapters and the inherited channel launcher are not wired. The anti-phishing phrase has a sealed Key Agent-only lifecycle: a five-word OS-CSPRNG cue is first committed as pending and is unavailable to prompts until a trusted exact enrollment confirmation. Rotation is a persisted old-to-new pending ceremony. Loads carry typed authenticated-empty/record state, installation/store/class identity, an exclusive owner generation, exact record digest, and previous/high-water anchor evidence; same-generation equivocation, empty-after-observed, rollback, owner takeover, or ambiguous commits lock the lifecycle. The platform storage layer now has a narrow private fixed-role Key Agent generation-store adapter, but no production protected-settings consumer or settings key provisioning is wired yet; independent settings AEAD key custody, exclusive-owner enforcement, and a release-approved non-rollbackable anchor remain blockers. The launcher uses separate deterministic revision-v1, zero-capability LPAC profiles for manifest-derived Approval and Secret Input roles; the names and derived SIDs differ and callers cannot select the profile role. The launcher verifies every suspended child against its exact expected SID, and the Secret Input/recovery bootstrap independently repeats that check. Both use an exact inherited-handle list, minimal environment, suspended token verification, process mitigations, and a single-process kill-on-close job. The authenticated dual-slot store and encrypted Key Agent journal cover reservation, approval-pending, potentially-signed, signed-unbroadcast, broadcasting, submitted, and broadcast-unknown recovery. Raw transaction bytes remain journal-owned and reach an RPC adapter only through a non-clone lease after `Broadcasting` commits. Production rollback-anchor/key provisioning and signed-artifact helper/network/RPC evidence are absent; the compiled release policy is `None`, so launch and signing remain disabled. |
-| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and fresh supervisor-held fixed root before detaching with one proven suspend count. Its sole consuming resume transition writes a fixed one-shot request while the child is suspended, binding a fresh nonce, PID, process creation time, and complete root `FILE_ID_INFO`. After its first-operation stdio seal, the child uses the OS-rerouted `LOCALAPPDATA` locator to open only the compiled fixed leaf (or exact `cfg(test)` leaf), derives both security principals from its process token, checks the directory security and full identity, and returns one exact bound response. The parent independently compares the response, revalidates the held root/Job/topology/lease, commits artifact identity plus both frames into a domain-separated SHA-256 transcript commitment, and retains the process, Job, pipe endpoints, handshake, and no-delete-share root handle. The resulting private state exposes no generic runtime I/O or signing API. The same `cfg(test)` seam consumes sealed bindings for all four fixed generation roles and proves the exact two-principal file policy, inherited Low/NW label, full file identity, path/target revalidation, close/reopen lifecycle, and kernel denial matrix. Its persistent test profile/CSPRNG leaf, pinned libtest preamble, and exact System32 `conhost.exe` accommodation are test-only, not a production fresh-root/profile or signed-artifact E2E. Existing-profile durable provenance/adoption/recovery, same-user/ancestor race closure, production rollback anchor and storage/AEAD key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, delayed-suffix/EOF proof, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
+| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and independently prepared supervisor-held fixed root before detaching with one proven suspend count. Fresh profile/root creation returns a distinct non-launchable pending type; production has no constructor or conversion for the prepared activation type. A private pure classifier models three separately sealed provenance inputs and returns only non-authoritative uninitialized/consistent/recovery candidates; it has no production input source or consumer and retains no root handle. The sole consuming resume transition writes a fixed one-shot request while the child is suspended, binding a fresh nonce, PID, process creation time, and complete root `FILE_ID_INFO`. After its first-operation stdio seal, the child uses the OS-rerouted `LOCALAPPDATA` locator to open only the compiled fixed leaf (or exact `cfg(test)` leaf), derives both security principals from its process token, checks the directory security and full identity, and returns one exact bound response. The parent independently compares the response, revalidates the held root/Job/topology/lease, commits artifact identity plus both frames into a domain-separated SHA-256 transcript commitment, and retains the process, Job, pipe endpoints, handshake, and no-delete-share root handle. The resulting private state exposes no generic runtime I/O or signing API. The same `cfg(test)` seam consumes sealed bindings for all four fixed generation roles and proves the exact two-principal file policy, inherited Low/NW label, full file identity, path/target revalidation, close/reopen lifecycle, and kernel denial matrix. Its persistent test profile/CSPRNG leaf, pinned libtest preamble, and exact System32 `conhost.exe` accommodation are test-only, not a production fresh-root/profile or signed-artifact E2E. Authenticated rollback-resistant installer-journal I/O, authoritative existing-profile/root observation/adoption/recovery, same-user/ancestor race closure, production rollback anchor and storage/AEAD key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, delayed-suffix/EOF proof, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
 | Device key protection | The crate-private model generates epoch-1 installation bundles with six pairwise-distinct role secrets and releases them only through role-typed views after an anchored open. Rotation preserves the installation ID, advances the key epoch exactly once, rekeys every role, and remains pending until opaque external evidence binds the exact predecessor commitment to the exact new canonical signed envelope at a strictly newer shared-anchor generation. RSA-3072 OAEP-SHA-256/empty-label and low-S P-256 P1363 identities hash one canonical RFC 5280 SPKI form; CNG blobs are adapter-internal inputs only. The raw identity constructors and sealing markers are private to the key-material module, and the architecture gate scans every production Rust source under `key-agent` for an unreviewed PCP implementation. No production PCP or rollback-anchor adapter exists, so this path remains fail-closed and release-blocking. |
 
 ### Sepolia demo durable activity boundary
@@ -374,15 +374,19 @@ restricted-launch entry points reject a manifest-derived Key Agent before
 release evaluation or Win32 side effects. Only this private activation module
 may create that role.
 
-The private production provisioning selector has no caller input. It can only
-fresh-create the fixed, persistent `YourWallet.KeyAgent.LPAC.v1` profile and the
-fixed `YourWallet.KeyAgent.Storage.v1` leaf beneath the exact OS-reported `AC`
-folder. An existing production profile or leaf fails closed and is not opened,
-adopted, repaired, or deleted. The newly returned SID must equal an independently
-derived SID for the fixed profile name. Process creation installs a null
-capability pointer, capability count zero, reserved zero, and the ALL
-APPLICATION PACKAGES opt-out; releasing the prepared SID does not delete the OS
-profile.
+The private fresh-provisioning selector has no caller input. It can create the
+fixed, persistent `YourWallet.KeyAgent.LPAC.v1` profile and the fixed
+`YourWallet.KeyAgent.Storage.v1` leaf beneath the exact OS-reported `AC` folder,
+but returns only a non-launchable pending capability. Activation accepts a
+separate prepared capability for which production has no constructor or
+pending/candidate conversion. An existing production profile or leaf fails
+closed and is not opened, adopted, repaired, or deleted. The newly returned SID
+must equal an independently derived SID for the fixed profile name. A future
+authenticated, rollback-resistant installer adapter must authoritatively
+observe and retain the exact objects before it may add a prepared-capability
+mint. Process creation installs a null capability pointer, capability count
+zero, reserved zero, and the ALL APPLICATION PACKAGES opt-out; releasing the
+prepared SID does not delete the OS profile.
 
 The supervisor retains a non-clone proof whose held directory handle omits
 delete sharing. It validates a stable current-`TokenUser` owner and exact
@@ -450,8 +454,22 @@ implementation gap. The fixture uses a persistent test profile, CSPRNG leaf,
 in-memory anchors, and synthetic authentication keys/payloads; it is not a
 production fresh fixed profile/root E2E.
 
-Durable provenance/adoption/recovery for an existing production profile remain
-absent. The `TokenUser` ACE still permits other same-user processes, and
+Fresh object creation is now a non-launchable pending typestate. The activation
+path accepts only a prepared typestate, and no production constructor or
+pending/candidate conversion exists. A separate pure provenance classifier
+binds exact v1 schema/policy, canonical fixed profile name/SIDs, full root
+identity, and independent installation/release identity expectations across
+three distinct sealed inputs. The model fixes all four phase-to-generation
+mappings, but only current `Committed=4` consistency can produce the existing
+candidate; every other phase requires recovery. Its outputs
+are only non-authoritative candidates; it performs no I/O, retains no root
+handle, and has no production source or consumer. It observes no predecessor
+history and therefore cannot prove sequence, gaps, rollback, or equivocation;
+those checks belong to the future authenticated journal adapter.
+
+An authenticated rollback-resistant installer journal plus authoritative held
+profile/root observation, adoption, and recovery for an existing production
+profile remain absent. The `TokenUser` ACE still permits other same-user processes, and
 ancestor path validation is metadata-based rather than atomic. Production
 rollback-anchor and storage/AEAD-key provisioning, protected settings and its
 live lease, authenticated Broker/supervisor topology and single-instance,
@@ -604,13 +622,15 @@ This proof remains dormant for release even though the private child/root
 one-shot is implemented. It must not be armed until the authenticated Broker and
 supervisor topology consumes the sealed four-role bindings with a production
 rollback anchor and provisioned storage/AEAD keys, durable installer
-provenance/adoption/recovery covers existing profiles, a live protected-settings
+provenance/adoption/recovery covers existing profiles through an authenticated
+rollback-resistant journal and authoritative held-object observations, a live protected-settings
 lease is connected, and concurrent/event-contamination, panic, timeout, cleanup,
 and signed-artifact tests are release evidence. Preventing an external Job
 assignment after the dormant aggregate returns additionally needs a standalone
 single-instance supervisor bootstrap and reviewed supervisor process ACL.
 
-Fresh-only fixed-profile/root creation, fixed zero-capability LPAC construction,
+Non-launchable fresh fixed-profile/root creation, a pure non-authoritative
+provenance candidate classifier, fixed zero-capability LPAC construction,
 suspended-token verification, and a repo-local test-root child/open transcript
 commitment plus the private fixed-role generation-file policy are implemented.
 The `cfg(test)` integrated LPAC path proves that narrow composition, but does not
@@ -619,7 +639,8 @@ persistent-store facade still grants only the `TokenUser`; the separate private
 backend obtains the exact fixed Key Agent profile SID only from its sealed
 child-root binding and grants neither frontend profile access. The root's user
 ACE still permits other same-user processes. A trusted installer/supervisor must
-supply existing-profile provenance/adoption/recovery, production anchor and key
+supply authenticated rollback-resistant existing-profile
+provenance/adoption/recovery with retained object authority, production anchor and key
 provisioning, and any certificate-store, registry, or profile-dependent trust
 work outside the zero-capability child. Do not add `registryRead`, reuse a
 frontend profile, add generic runtime/signing IPC, or activate the dormant Key

@@ -74,17 +74,20 @@ is not atomic object-identity proof, and does not prove error-mode/priority or
 other Win32 process-state isolation, DLL/dependency identity, or signed-artifact
 execution.
 
-The dormant Key Agent production provisioning seam can only fresh-create the
-fixed `YourWallet.KeyAgent.LPAC.v1` AppContainer profile and the fixed
-`YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC` folder.
-Existing production profiles or roots fail closed and are not opened, adopted,
-repaired, or deleted. The supervisor-held proof requires the stable current
-`TokenUser` SID as owner and an exact protected two-ACE DACL for that SID plus
-the fixed profile SID, the exact inherited Low/`NW` mandatory label, a local
-fixed NTFS non-reparse directory with persistent ACLs, and a nonzero-volume,
-non-sentinel 128-bit `FILE_ID_INFO`. It keeps the directory open without delete
-sharing, revalidates the held identity, volume, and security policy throughout
-binding, and closes that handle last during cleanup.
+The dormant Key Agent fresh-provisioning seam can create the fixed
+`YourWallet.KeyAgent.LPAC.v1` AppContainer profile and the fixed
+`YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC` folder, but it
+returns only a non-launchable pending capability. Activation requires a separate
+prepared capability for which production has no constructor or
+pending/candidate conversion. Existing production profiles or roots fail closed
+and are not opened, adopted, repaired, or deleted. A future trusted adapter's
+supervisor-held proof must require the stable current `TokenUser` SID as owner
+and an exact protected two-ACE DACL for that SID plus the fixed profile SID, the
+exact inherited Low/`NW` mandatory label, a local fixed NTFS non-reparse
+directory with persistent ACLs, and a nonzero-volume, non-sentinel 128-bit
+`FILE_ID_INFO`. It keeps the directory open without delete sharing, revalidates
+the held identity, volume, and security policy throughout binding, and closes
+that handle last during cleanup.
 
 The private one-shot storage-startup transition now binds the child to that root.
 The parent writes a fixed request while the exact child is still suspended; it
@@ -146,8 +149,27 @@ matrix separately requires an actual `DELETE` open to hit the retained handle's
 CSPRNG leaf, in-memory anchors, and synthetic keys/payloads; it is not a
 production fresh-fixed-profile/root E2E or release authority.
 
-The remaining limits are immediate. Existing production profiles still lack
-durable installer provenance/adoption/recovery; the root `TokenUser` ACE leaves
+Fresh creation is now quarantined as non-launchable
+`PendingKeyAgentProvisioning`; only `PreparedKeyAgentProvisioning` enters the
+activation boundary, and production has no constructor or conversion that can
+mint it. A separate pure classifier models authenticated-journal,
+independently-expected identity, and live-object inputs with distinct sealed
+types. It binds exact schema/policy, canonical fixed profile name/SIDs, full root
+identity, and pairwise-distinct transaction/installation/release identities. It
+fixes all four phase-to-generation mappings, but only current `Committed=4`
+consistency can produce the existing candidate; every other phase requires
+recovery. It observes no predecessor history, so journal sequence, gaps,
+rollback, and equivocation remain the future authenticated adapter's
+responsibility. Its uninitialized and consistent-existing
+results are non-authoritative candidates, not creation, adoption, or launch
+capabilities; the latter retains no root handle. The module has no production
+input constructor, I/O, OS observer, or consumer. Journal read/authentication,
+rollback, gap, or equivocation failures must therefore fail closed before this
+model can be called by a future adapter.
+
+The remaining limits are immediate. Existing production profiles still lack an
+installer-owned authenticated rollback-resistant provenance journal,
+authoritative held-object adoption, and recovery; the root `TokenUser` ACE leaves
 other same-user processes able to access it, and ancestor path validation is
 not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process
@@ -248,13 +270,16 @@ Before any real mainnet value is used, the Windows build must prove:
    exact two-name environment and the Key Agent's exact three-name environment,
    including OS-derived `LOCALAPPDATA`, share the same verified System32
    current-directory boundary; that policy remains repo-local and is not atomic
-   directory identity or signed-artifact E2E evidence. The fresh fixed-profile/
+   directory identity or signed-artifact E2E evidence. The verified/prepared
    held-root proof, four creation attributes, suspended-token proof, and private
    request-before-resume storage transcript commitment now bind the kernel-test
    child to its exact CSPRNG test root. The same integrated `cfg(test)` path now
    exercises the four fixed private generation stores and their exact
-   dual-principal file policy. These proofs do not adopt an existing production
-   profile, provide durable installer provenance/adoption/recovery, provision a
+   dual-principal file policy. Fresh creation now yields only a non-launchable
+   pending state, and the pure provenance classifier yields only
+   non-authoritative candidates. These proofs do not adopt an existing
+   production profile, authenticate or anchor installer provenance, implement
+   authoritative adoption/recovery, provision a
    production rollback anchor or storage/AEAD keys, connect protected settings
    and its live lease, authenticate the Broker/supervisor/process topology or
    single-instance, establish Native Host provenance or a signed immutable

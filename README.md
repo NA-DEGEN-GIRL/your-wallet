@@ -585,11 +585,13 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
-- dormant Key Agent 실행 준비 경계는 production에서 고정 AppContainer profile
-  `YourWallet.KeyAgent.LPAC.v1`과 그 `AC` 아래 고정 leaf
-  `YourWallet.KeyAgent.Storage.v1`을 모두 새로 만든 증명만 받습니다. 기존 production
-  profile이나 leaf는 열거나 채택·복구·삭제하지 않고 fail-closed합니다. supervisor가
-  보유하는 증명은 stable current `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만
+- 별도 fresh 경계는 고정 AppContainer profile `YourWallet.KeyAgent.LPAC.v1`과 그 `AC`
+  아래 고정 leaf `YourWallet.KeyAgent.Storage.v1`을 만들 수 있지만, activation에 넣을 수
+  없는 `Pending` capability만 반환합니다. dormant Key Agent 실행 준비 경계는 별도로
+  검증된 `Prepared` capability만 받으며, production에는 이를 발급하는 constructor나
+  pending/candidate conversion이 없습니다. 기존 production profile이나 leaf는 열거나
+  채택·복구·삭제하지 않고 fail-closed합니다. 향후 신뢰 adapter가 발급할 supervisor
+  보유 증명은 stable current `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만
   포함하는 protected DACL, inherited Low/`NW` mandatory label, local fixed NTFS와
   persistent ACL/non-reparse 상태, nonzero volume 및 non-sentinel 128-bit
   `FILE_ID_INFO`를 검증합니다. directory handle은 delete sharing 없이 유지되며 binding

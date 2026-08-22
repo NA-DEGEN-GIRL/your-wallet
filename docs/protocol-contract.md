@@ -320,7 +320,22 @@ root separately proves actual-open `DELETE` as `SHARING_VIOLATION` plus a denied
 rollback anchors and synthetic keys/payloads, so it does not prove production
 anchor or AEAD-key provisioning.
 
-Durable existing-profile provenance/adoption/recovery, the same-user/ancestor
+Fresh fixed-profile/root creation now returns a non-launchable pending type;
+only a separately prepared type can enter activation, and no production
+constructor or conversion mints it. A private pure classifier consumes three
+distinct sealed facts—authenticated journal state, independently expected
+installation/release identities, and live fixed-profile/held-root observations—
+and returns only uninitialized, consistent-existing, or recovery-required
+candidate state. It binds the fixed v1 policy, canonical profile name/SIDs, full
+root identity, and distinct identities. It fixes all four phase-to-generation
+mappings, but only current `Committed=4` consistency can produce the existing
+candidate; every other phase requires recovery. It observes no predecessor
+history and therefore does not prove journal sequence, gaps, rollback, or
+equivocation. It performs no I/O, retains no root handle, has no production input
+constructor or consumer, and grants no creation, adoption, or launch authority.
+
+An authenticated rollback-resistant provenance journal, authoritative
+existing-profile/root observation and adoption/recovery, the same-user/ancestor
 race boundary, production rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
 single-instance, and signed immutable artifact/DLL/dependency E2E remain

@@ -27,7 +27,9 @@ use crate::key_agent_activation::{
     activate_preflighted_key_agent_on_fresh_worker, preflight_key_agent_activation,
     run_on_fresh_key_agent_debug_thread,
 };
-use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
+use crate::key_agent_lpac::{
+    KeyAgentLpacError, PendingKeyAgentProvisioning, PreparedKeyAgentProvisioning,
+};
 use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobError};
 use crate::key_agent_startup::{
     KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES, KeyAgentStartupCodecError,
@@ -78,7 +80,7 @@ pub(crate) enum KeyAgentSupervisorError {
     /// The root Job policy could not be created or revalidated exactly.
     #[error("Key Agent root Job policy is unavailable")]
     RootJobPolicy,
-    /// The fresh fixed profile/storage proof could not be created or revalidated.
+    /// The pending or independently verified fixed profile/storage state failed.
     #[error("Key Agent profile/storage provisioning is unavailable")]
     Provisioning,
     /// The exact fixed startup frame or returned identity proof was invalid.
@@ -263,7 +265,7 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
 /// This capability is crate-private, non-cloneable, and deliberately `!Sync`.
 /// It owns the detached-and-suspended exact-image proof, the two-process
 /// kill-on-close root Job, both unique parent pipe endpoints, and the one-shot
-/// startup lease, and the freshly provisioned profile/storage proof. The
+/// startup lease, and the independently verified profile/storage proof. The
 /// short-lived inheritable child handles and creation
 /// attributes have already been dropped before this value can cross the fresh
 /// worker join.
@@ -293,7 +295,7 @@ impl fmt::Debug for BoundDormantKeyAgent {
             .field("request_writer", &"[UNIQUE STARTUP REQUEST HANDLE]")
             .field("response_reader", &"[UNIQUE STARTUP RESPONSE HANDLE]")
             .field("startup_lease", &"[ONE-SHOT NONCE AND MONOTONIC DEADLINE]")
-            .field("provisioning", &"[FRESH PROFILE AND HELD STORAGE ROOT]")
+            .field("provisioning", &"[VERIFIED PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
 }
@@ -332,7 +334,7 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
                 &"[RETAINED RESPONSE HANDLE; NO RUNTIME I/O]",
             )
             .field("handshake", &"[VERIFIED STORAGE-STARTUP TRANSCRIPT]")
-            .field("provisioning", &"[FRESH PROFILE AND HELD STORAGE ROOT]")
+            .field("provisioning", &"[VERIFIED PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
 }
@@ -342,9 +344,12 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
 /// An already-existing profile or root fails closed. This seam deliberately
 /// does not adopt, repair, or delete persistent `AppContainer` state; a future
 /// trusted installer must supply durable provenance for that separate path.
+/// The result cannot be passed to [`bind_dormant_key_agent`]: fresh objects do
+/// not become launch authority before an independently authenticated committed
+/// provenance record is authoritatively reread and matched.
 pub(crate) fn provision_fresh_key_agent_boundary()
--> Result<PreparedKeyAgentProvisioning, KeyAgentSupervisorError> {
-    PreparedKeyAgentProvisioning::provision_fresh().map_err(Into::into)
+-> Result<PendingKeyAgentProvisioning, KeyAgentSupervisorError> {
+    PendingKeyAgentProvisioning::provision_fresh().map_err(Into::into)
 }
 
 /// Preflights and binds one exact Key Agent without executing its user code.
@@ -357,7 +362,7 @@ pub(crate) fn provision_fresh_key_agent_boundary()
 /// detached with one proven suspend count when the aggregate returns.
 ///
 /// This function configures and proves the fixed zero-capability Key Agent LPAC
-/// plus one fresh supervisor-held storage root, but stops before the sibling
+/// plus one verified supervisor-held storage root, but stops before the sibling
 /// one-shot storage-startup transition. Production remains fail-closed while
 /// signed release evidence, durable installer-bound existing-profile
 /// provenance, protected settings, and authenticated topology are absent.
@@ -947,7 +952,7 @@ mod tests {
         let creation_time = bound.activation.creation_time();
         let rendered = format!("{bound:?}");
         assert!(rendered.contains("BoundDormantKeyAgent"));
-        assert!(rendered.contains("FRESH PROFILE AND HELD STORAGE ROOT"));
+        assert!(rendered.contains("VERIFIED PROFILE AND HELD STORAGE ROOT"));
         assert!(!rendered.contains(&process_id.to_string()));
         assert!(!rendered.contains(&creation_time.to_string()));
         assert!(storage_root.is_dir());

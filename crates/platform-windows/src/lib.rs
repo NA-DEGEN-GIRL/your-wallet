@@ -107,6 +107,13 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
+// Pure, sealed install-state classification is compiled for review and tests,
+// but has no production evidence source or consumer. Fresh OS objects remain
+// non-launchable until a future installer-owned authenticated provenance and
+// authoritative-reread ceremony exists.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod key_agent_install_provenance;
 // Fixed, zero-capability Key Agent LPAC provisioning and suspended-token proof
 // remain private to the dormant activation boundary. No caller can select a
 // profile name, SID, capability, or raw token attribute.
@@ -114,9 +121,10 @@ mod key_agent_child_bootstrap;
 mod key_agent_lpac;
 #[cfg(windows)]
 mod key_agent_root_job;
-// Fresh provisioning of the fixed profile's storage root is a private,
-// supervisor-held proof. The startup child independently path-opens and retains
-// the same object, while the parent retains and revalidates its peer handle.
+// Fresh fixed-profile/root creation yields only non-launchable pending objects.
+// The startup path accepts a separately prepared supervisor-held proof; the
+// child independently path-opens and retains that same object while the parent
+// retains and revalidates its peer handle.
 #[cfg(windows)]
 mod key_agent_storage;
 // The fixed startup transcript binds the supervisor's nonce and suspended
