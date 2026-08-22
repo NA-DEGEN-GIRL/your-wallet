@@ -189,6 +189,8 @@ impl fmt::Debug for FileIdentity {
 pub struct VerifiedHelper {
     path: PathBuf,
     file: File,
+    #[cfg(all(test, windows))]
+    _key_agent_lpac_fixture: Option<crate::key_agent_lpac::KeyAgentLpacKernelTestFixture>,
     identity: FileIdentity,
     manifest_digest: [u8; 32],
     role: HelperRole,
@@ -268,6 +270,7 @@ impl VerifiedHelper {
         Ok(Self {
             path: PathBuf::from("NUL"),
             file,
+            _key_agent_lpac_fixture: None,
             identity: FileIdentity {
                 volume_serial_number: 1,
                 file_index: 2,
@@ -291,6 +294,7 @@ impl VerifiedHelper {
         Ok(Self {
             path: PathBuf::from("NUL"),
             file,
+            _key_agent_lpac_fixture: None,
             identity: FileIdentity {
                 volume_serial_number: 11,
                 file_index: 12,
@@ -307,7 +311,9 @@ impl VerifiedHelper {
 
         use windows::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
 
-        let path = std::env::current_exe().map_err(|_| HelperError::OperatingSystem)?;
+        let fixture = crate::key_agent_lpac::KeyAgentLpacKernelTestFixture::create()
+            .map_err(|_| HelperError::OperatingSystem)?;
+        let path = fixture.path().to_path_buf();
         let file = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ.0)
@@ -317,6 +323,7 @@ impl VerifiedHelper {
         Ok(Self {
             path,
             file,
+            _key_agent_lpac_fixture: Some(fixture),
             identity: FileIdentity {
                 volume_serial_number: 21,
                 file_index: 22,
@@ -346,6 +353,8 @@ impl VerifiedHelper {
         Ok(Self {
             path,
             file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
             identity: FileIdentity {
                 volume_serial_number: 31,
                 file_index: 32,
@@ -576,6 +585,8 @@ mod sys {
         Ok(VerifiedHelper {
             path: canonical,
             file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
             identity,
             manifest_digest: artifact_digest,
             role: HelperRole::Broker,
@@ -633,6 +644,8 @@ mod sys {
         Ok(VerifiedHelper {
             path: canonical_candidate,
             file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
             identity,
             manifest_digest: verifier.expected_manifest_digest,
             role: HelperRole::from_release_file_name(&verifier.manifest.file_name),

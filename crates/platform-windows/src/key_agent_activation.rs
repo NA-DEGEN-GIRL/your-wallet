@@ -58,6 +58,9 @@ pub(crate) enum KeyAgentActivationError {
     /// The process was not proven to be the sole member of the exact root Job.
     #[error("Key Agent root Job binding verification failed")]
     RootJobPolicy,
+    /// The child token did not prove the exact zero-capability Key Agent LPAC.
+    #[error("Key Agent LPAC policy verification failed")]
+    LpacPolicy,
     /// The fresh activation worker could not be created or did not return.
     #[error("dedicated Key Agent activation worker failed")]
     ActivationWorker,
@@ -241,6 +244,7 @@ impl fmt::Debug for HeldKeyAgentActivation {
             .debug_struct("HeldKeyAgentActivation")
             .field("artifact", &"[VERIFIED KEY AGENT ARTIFACT]")
             .field("process", &"[SUSPENDED PROCESS AND THREAD HANDLES]")
+            .field("lpac", &"[VERIFIED ZERO-CAPABILITY KEY AGENT LPAC]")
             .field("artifact_identity", &"[FILE_ID_INFO]")
             .field("creation_time", &"[REDACTED]")
             .finish_non_exhaustive()
@@ -491,6 +495,7 @@ mod sys {
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
+    use crate::key_agent_lpac::{PreparedKeyAgentLpac, VerifiedKeyAgentLpac};
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
     use crate::pipe::{PreparedKeyAgentInheritance, PrivateKeyAgentPipes};
     use crate::restricted_process_context::RestrictedProcessContext;
@@ -498,7 +503,7 @@ mod sys {
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
 
-    /// Initialized two-slot process-creation policy retained through one call.
+    /// Initialized four-slot process-creation policy retained through one call.
     ///
     /// The backing words, the exact three-HANDLE array, the prepared pipe
     /// capability, and the stable Job-HANDLE attribute all outlive
@@ -510,6 +515,7 @@ mod sys {
         inherited_handles: Box<[HANDLE; 3]>,
         _inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>,
         root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>,
+        lpac: &'resources PreparedKeyAgentLpac,
     }
 
     impl<'resources, 'pipes, 'flight, 'job>
@@ -518,11 +524,12 @@ mod sys {
         fn new(
             inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>,
             root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>,
+            lpac: &'resources PreparedKeyAgentLpac,
         ) -> Result<Self, KeyAgentActivationError> {
             let mut bytes = 0_usize;
             // SAFETY: the documented sizing call uses a null attribute list and
             // initializes `bytes`; its expected false result is not an error.
-            let _ = unsafe { InitializeProcThreadAttributeList(None, 2, None, &raw mut bytes) };
+            let _ = unsafe { InitializeProcThreadAttributeList(None, 4, None, &raw mut bytes) };
             if bytes == 0 {
                 return Err(KeyAgentActivationError::PrivateChannelPolicy);
             }
@@ -535,7 +542,7 @@ mod sys {
             let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());
             // SAFETY: `words` is aligned writable storage of at least `bytes`
             // and cannot reallocate while this wrapper is alive.
-            unsafe { InitializeProcThreadAttributeList(Some(pointer), 2, None, &raw mut bytes) }
+            unsafe { InitializeProcThreadAttributeList(Some(pointer), 4, None, &raw mut bytes) }
                 .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
 
             let inherited_handles = Box::new([
@@ -549,6 +556,7 @@ mod sys {
                 inherited_handles,
                 _inheritance: inheritance,
                 root_job_attribute,
+                lpac,
             };
             attributes.install_handle_list()?;
             // SAFETY: this initialized list has its second free slot, and this
@@ -560,6 +568,11 @@ mod sys {
                     .install_into(attributes.pointer)
             }
             .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            // SAFETY: the initialized list has exactly two slots remaining.
+            // `lpac` retains both its SID and heap-stable attribute values until
+            // this list is deleted by Drop.
+            unsafe { attributes.lpac.install_into(attributes.pointer) }
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
             Ok(attributes)
         }
 
@@ -616,6 +629,14 @@ mod sys {
     struct PreparedKeyAgentProcess {
         application: Vec<u16>,
         context: RestrictedProcessContext,
+        environment: Box<[u16]>,
+        lpac: PreparedKeyAgentLpac,
+    }
+
+    impl PreparedKeyAgentProcess {
+        fn into_lpac(self) -> PreparedKeyAgentLpac {
+            self.lpac
+        }
     }
 
     fn prepare_key_agent_process(
@@ -626,6 +647,11 @@ mod sys {
         #[cfg(not(test))]
         let context = RestrictedProcessContext::prepare();
         let context = context.map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
+        let lpac =
+            PreparedKeyAgentLpac::prepare().map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let environment = lpac
+            .environment_with_local_app_data(context.environment())
+            .map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
         let application = artifact
             .path()
             .as_os_str()
@@ -635,6 +661,8 @@ mod sys {
         Ok(PreparedKeyAgentProcess {
             application,
             context,
+            environment,
+            lpac,
         })
     }
 
@@ -647,7 +675,11 @@ mod sys {
         coordination_deadline: Instant,
         command_line: Option<&mut [u16]>,
     ) -> Result<PROCESS_INFORMATION, KeyAgentActivationError> {
-        let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute)?;
+        let attributes = KeyAgentCreationAttributes::new(
+            inheritance,
+            root_job_attribute,
+            &prepared_process.lpac,
+        )?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>())
             .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
@@ -670,11 +702,14 @@ mod sys {
             .map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
         // SAFETY: the verified absolute path is NUL terminated and retained for
         // the call. Production supplies no command line; the test-only buffer is
-        // writable and retained. `attributes` is a live initialized two-slot
-        // list containing exactly HANDLE_LIST(3) and JOB_LIST(1); the three
+        // writable and retained. `attributes` is a live initialized four-slot
+        // list containing exactly HANDLE_LIST(3), JOB_LIST(1),
+        // SECURITY_CAPABILITIES(zero), and the LPAC AAP opt-out policy; the three
         // listed stdio handles are the only inheritable handles. The retained
-        // process context supplies an exact two-name Unicode environment and a
-        // validated System32 current directory. The flags keep creation both
+        // process context supplies a validated System32 current directory and
+        // an exact three-name Unicode environment: its OS-derived SystemRoot
+        // and WINDIR plus the OS-derived LOCALAPPDATA required by AppContainer
+        // creation. The flags keep creation both
         // headless and suspended before user-mode entry.
         unsafe {
             flight
@@ -682,13 +717,7 @@ mod sys {
                     PCWSTR(prepared_process.application.as_ptr()),
                     command_line,
                     key_agent_creation_flags(),
-                    Some(
-                        prepared_process
-                            .context
-                            .environment()
-                            .as_ptr()
-                            .cast::<c_void>(),
-                    ),
+                    Some(prepared_process.environment.as_ptr().cast::<c_void>()),
                     PCWSTR(prepared_process.context.current_directory().as_ptr()),
                     ptr::from_ref(&startup.StartupInfo),
                     &raw mut information,
@@ -705,6 +734,11 @@ mod sys {
         thread_id: u32,
         pending_event: Option<(u32, u32)>,
         phase: LaunchPhase,
+        prepared_lpac: Option<PreparedKeyAgentLpac>,
+        // Present only after the exact suspended primary token proved the
+        // fixed Key Agent SID, zero capabilities, and differential LPAC
+        // access-membership behavior.
+        lpac: Option<VerifiedKeyAgentLpac>,
         // CREATE_SUSPENDED starts at one, then is consumed exactly once so the
         // kernel can deliver the pre-user-mode CREATE_PROCESS debug event. A
         // new explicit count is installed while that event holds all threads.
@@ -776,6 +810,7 @@ mod sys {
                 coordination_deadline,
                 command_line,
             )?;
+            let prepared_lpac = prepared_process.into_lpac();
             let process = OwnedWinHandle::new(information.hProcess);
             let primary_thread = OwnedWinHandle::new(information.hThread);
             drop(inheritance);
@@ -823,6 +858,8 @@ mod sys {
                     thread_id: information.dwThreadId,
                     pending_event: None,
                     phase: LaunchPhase::AwaitingCreateEvent,
+                    prepared_lpac: None,
+                    lpac: None,
                     proven_suspend_count: 1,
                     cleanup_exit_code: None,
                 };
@@ -839,6 +876,8 @@ mod sys {
                 thread_id: actual_thread_id,
                 pending_event: None,
                 phase: LaunchPhase::AwaitingCreateEvent,
+                prepared_lpac: Some(prepared_lpac),
+                lpac: None,
                 proven_suspend_count: 1,
                 cleanup_exit_code: None,
             };
@@ -877,7 +916,10 @@ mod sys {
         }
 
         pub(super) fn is_detached_and_suspended(&self) -> bool {
-            self.phase == LaunchPhase::DetachedSuspended && self.proven_suspend_count == 1
+            self.phase == LaunchPhase::DetachedSuspended
+                && self.proven_suspend_count == 1
+                && self.prepared_lpac.is_none()
+                && self.lpac.is_some()
         }
 
         pub(super) fn into_detached(
@@ -894,7 +936,10 @@ mod sys {
             expected_artifact: ExactFileObjectIdentity,
             timeout_milliseconds: u32,
         ) -> Result<AuthenticatedFirstEvent, KeyAgentActivationError> {
-            if self.phase != LaunchPhase::AwaitingCreateEvent {
+            if self.phase != LaunchPhase::AwaitingCreateEvent
+                || self.prepared_lpac.is_none()
+                || self.lpac.is_some()
+            {
                 return Err(KeyAgentActivationError::UnexpectedDebugEvent);
             }
             let mut event = DEBUG_EVENT::default();
@@ -976,11 +1021,24 @@ mod sys {
             }
             self.proven_suspend_count = 1;
 
+            let prepared_lpac = self
+                .prepared_lpac
+                .take()
+                .ok_or(KeyAgentActivationError::LpacPolicy)?;
+            let verified_lpac = prepared_lpac
+                .verify_suspended_process(self.process_handle())
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+            self.lpac = Some(verified_lpac);
+
             Ok(AuthenticatedFirstEvent { creation_time })
         }
 
         pub(super) fn detach_still_suspended(&mut self) -> Result<(), KeyAgentActivationError> {
-            if self.phase != LaunchPhase::CreateEventHeld || self.proven_suspend_count != 1 {
+            if self.phase != LaunchPhase::CreateEventHeld
+                || self.proven_suspend_count != 1
+                || self.prepared_lpac.is_some()
+                || self.lpac.is_none()
+            {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
             let (process_id, thread_id) = self
@@ -1291,7 +1349,9 @@ mod sys {
         inheritance: &PreparedKeyAgentInheritance<'_, '_>,
         root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     ) -> Result<usize, KeyAgentActivationError> {
-        let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute)?;
+        let lpac =
+            PreparedKeyAgentLpac::prepare().map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute, &lpac)?;
         Ok(attributes.explicit_handle_count())
     }
 
@@ -1335,10 +1395,12 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::Write;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle as _;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
         DEBUG_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
@@ -1530,9 +1592,9 @@ mod tests {
     fn live_file_identity_is_valid_and_stable_across_held_handles()
     -> Result<(), Box<dyn std::error::Error>> {
         let first = VerifiedHelper::for_key_agent_activation_test()?;
-        let second = VerifiedHelper::for_key_agent_activation_test()?;
+        let second = std::fs::File::open(first.path())?;
         let first_identity = sys::exact_file_identity(first.raw_handle())?;
-        let second_identity = sys::exact_file_identity(second.raw_handle())?;
+        let second_identity = sys::exact_file_identity(HANDLE(second.as_raw_handle()))?;
         assert_ne!(first_identity.volume_serial_number, 0);
         assert_ne!(first_identity.file_id, [0; 16]);
         assert_ne!(first_identity.file_id, [u8::MAX; 16]);
@@ -1907,10 +1969,7 @@ mod tests {
                 std::panic::resume_unwind(Box::new("intentional activation worker test unwind"));
             },
         );
-        assert!(matches!(
-            result,
-            Err(KeyAgentActivationError::ActivationWorker)
-        ));
+        assert_eq!(result, Err(KeyAgentActivationError::ActivationWorker));
         let observation = observation_receiver.recv()?;
         assert_eq!(
             observation.rejected_exit_code()?,

@@ -335,7 +335,8 @@ nonregular 객체, reparse가 있으면 자동 덮어쓰지 않습니다. 새 va
 `ZeroizeOnDrop`을 구현하지 않습니다. 따라서 password-equivalent 파생 context의
 stack 잔여를 완전히 지웠다고 보장하지 않습니다. 이 데모의 잠금은 소유한 secret
 buffer를 지우는 수준이며 process-memory forensic erase가 아닙니다. 운영 제품은
-격리된 Key Agent와 zeroizing KDF 구현 없이는 출시하면 안 됩니다(STOP-SHIP).
+위의 repo-local 경계를 signed artifact와 실제 supervisor에 결합한 격리 Key Agent
+증거와 완전한 zeroizing KDF 구현 없이는 출시하면 안 됩니다(STOP-SHIP).
 
 ## 커스텀 ERC-20 토큰 추가
 
@@ -560,18 +561,22 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   프로세스에 적재된 같은 `platform-windows` crate instance와
   그 비공개 API를 따르는 Rust 호출에 한정됩니다. 임의의 foreign FFI,
   `std::process::Command`, 별도 프로세스나 별도 적재 사본의 생성까지 가로채지는 않습니다.
-- 제한 helper와 휴면 Key Agent 생성은 이제 같은 비공개 process-context 정책을
-  사용합니다. OS가 보고한 system-shared Windows root에서 `SystemRoot`와 `WINDIR`만
-  담은 고정 double-NUL Unicode environment를 만들고, 그 root 바로 아래의 검증된
-  `System32`를 명시적 current directory로 전달하므로 부모의 ambient environment와
-  current directory를 상속하지 않습니다. 제한 helper는 이 preflight를 parent-proof,
-  영구 profile, Job 작업 전에 끝내며, Key Agent도 inheritable-handle flight 획득 전에
+- 제한 helper와 휴면 Key Agent 생성은 이제 같은 비공개 process-context 기반 정책을
+  사용합니다. OS가 보고한 system-shared Windows root에서 정확한 `SystemRoot`와
+  `WINDIR` 항목을 만들고, 그 root 바로 아래의 검증된 `System32`를 명시적 current
+  directory로 전달합니다. 제한 helper의 double-NUL Unicode environment에는 그 두
+  이름만 들어갑니다. Key Agent는 고정 profile을 준비한 뒤
+  `GetAppContainerFolderPath`가 돌려준 profile의 `...\Packages\<profile>\AC` 모양을
+  검증해 OS 유래 `LOCALAPPDATA`를 앞에 추가하므로, 정확히 `LOCALAPPDATA`,
+  `SystemRoot`, `WINDIR`만 받습니다. 어느 경로도 부모의 ambient environment나 current
+  directory를 상속하지 않습니다. 제한 helper는 이 preflight를 parent-proof, 영구
+  profile, Job 작업 전에 끝내며, Key Agent도 inheritable-handle flight 획득 전에
   끝냅니다. 두 경로 모두 `CreateProcessW` 직전에 thread impersonation 부재를 다시
   확인합니다. 이 검증은 DOS 경로 문자열·root/System32 배치·directory/reparse 상태,
   모든 조상의 경로 교체 권한과 Windows root/System32 자체의 내용 생성 권한 거부에
-  한정되며, directory handle을 유지하는 원자적
-  object-identity 증명이나 error mode/priority를 포함한 모든 Win32 process state 차단,
-  DLL/dependency identity 증거는 아닙니다.
+  한정되며, directory handle을 유지하는 원자적 object-identity 증명이나 error
+  mode/priority를 포함한 모든 Win32 process state 차단, DLL/dependency identity
+  증거는 아닙니다.
 - Key Agent 자식은 생성 시 inheritable stdio 핸들을 받지만, 실행 파일의 첫 Windows
   application 동작이 정확히 세 핸들을 모두 변경 전에 검사합니다. stdin/stdout은 서로
   다른 `PIPE`, stderr는 제3의 `CHAR` 객체여야 하고, 세 핸들은 서로 같은 커널 객체가
@@ -584,11 +589,29 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   인스턴스와 인증된 Native Host↔Broker↔Key Agent 프로세스 topology, signed install,
   Native Host provenance 및 실제 서명 artifact에서의 E2E 증거는 계속 별도 릴리스
   차단 조건입니다.
-- Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
-  Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
-  시작하거나 재개하는 API가 없습니다.
-- Key Agent 전용 LPAC·저장소 ACL, Broker 시작 nonce 교환과 보호 설정 lease 연결이
-  아직 없습니다.
+- Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개, 2프로세스
+  Windows Job, 고정된 영구 profile `YourWallet.KeyAgent.LPAC.v1`을 한 번의 생성에
+  묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle allowlist, Job, null
+  capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
+  `ALL_APPLICATION_PACKAGES` opt-out입니다. 첫 pre-user-mode debug 생성 이벤트가 잡힌
+  동안 mapped image의 정확한 파일 신원을 먼저 확인하고 명시적 suspend count를 다시
+  설치한 뒤, 토큰이 AppContainer이고 profile SID가 정확히 같으며 capability count가
+  0인지 검증합니다. 이어 primary token을 `SecurityIdentification` impersonation token으로
+  복제하고 그 `TokenUser` SID에 `CheckTokenMembershipEx`를 두 번 적용합니다.
+  `CTMF_INCLUDE_APPCONTAINER`로는 거부되고 `CTMF_INCLUDE_LPAC`까지 더했을 때만 허용되는
+  정확한 `(false, true)` 결과가 필수입니다. `TokenIsLessPrivilegedAppContainer`를
+  지원하는 경우 exact DWORD 값 1도 필수이며, 그 query만 `ERROR_INVALID_PARAMETER`를
+  반환하는 Windows에서도 위의 차등 access-membership 증명은 그대로 필수입니다. 다른
+  query 오류와 `(false, true)` 이외의 결과는 모두 거부합니다. opt-out만 생략한 정지
+  상태 일반 AppContainer가 `(true, true)`를 내는 kernel 음성 대조군도 있으며 두
+  대조 프로세스 모두 user mode로 재개하지 않습니다. Key Agent·Approval·Secret Input
+  profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유하며, 같은 스레드
+  재진입이나 poisoned gate는 fail-closed입니다. 이 검증이 성공해야만 debug
+  event를 계속하고 detach할 수 있으며, 프로세스는 이후에도 정지된 채이고 시작하거나
+  재개하는 API가 없습니다.
+- 위 LPAC 구현과 repo-local kernel proof는 릴리스 활성화 증거가 아닙니다. 신뢰된
+  production profile provisioning/ownership, Key Agent 전용 storage ACL, 인증된 Broker
+  startup nonce 교환과 프로세스 topology, 보호 설정 lease 연결은 아직 없습니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
 - 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.

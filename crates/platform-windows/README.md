@@ -76,8 +76,11 @@ Implemented:
   creation, so the shared artifact allowlist cannot bypass this seam. The
   activation-owned fresh worker now also creates the exact two-process
   kill-on-close root Job and private Key Agent pipes. One `STARTUPINFOEXW` call
-  receives exactly three short-lived inherited stdio handles plus one Job-list
-  handle; the short-lived handles are dropped before the worker returns. The
+  receives exactly three short-lived inherited stdio handles, one Job-list
+  handle, the fixed zero-capability `YourWallet.KeyAgent.LPAC.v1` identity, and
+  the ALL APPLICATION PACKAGES opt-out; the short-lived handles are dropped
+  before the worker returns. Key Agent and frontend profile APIs share one
+  process-wide non-reentrant, poison-fail-closed coordinator. The
   Restricted helpers prepare this context before parent-proof, persistent
   profile, or Job work; the Key Agent prepares it before acquiring the
   inheritable-handle flight. Both recheck that the creator thread is not
@@ -91,9 +94,13 @@ Implemented:
   uniquely owns the detached suspended
   process, root Job, two parent endpoints, and internally timed one-shot startup
   lease. It is non-clone, `!Sync`, exposes no raw handle, has no resume API, and drop
-  synchronously terminates the exact process tree. A distinct Key Agent LPAC,
-  Key Agent-only storage ACL, authenticated Broker/startup exchange, and
-  protected-settings lease remain unbound. The module cannot arm a release
+  synchronously terminates the exact process tree. The suspended token must
+  prove the fixed SID, zero capabilities, and the exact `CheckTokenMembershipEx`
+  differential: `CTMF_INCLUDE_APPCONTAINER` denies while adding
+  `CTMF_INCLUDE_LPAC` allows, before detach. Key
+  Agent-only storage ACL, authenticated Broker/startup exchange, trusted
+  production profile ownership, and protected-settings lease remain unbound.
+  The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
@@ -260,18 +267,19 @@ Stop-ship before any signing-capable release:
    secret-zeroization behavior. Headless codec and pipe tests do not substitute
    for this signed-artifact release evidence.
 10. Extend the dormant aggregate (which now owns the exact private startup pipes,
-    root Job, suspended image proof, and one-shot startup lease) with the
-    authenticated Broker protocol, distinct restricted Key Agent profile,
-    exact nonce exchange, and protected-settings lease. Repeat caller-event
+    root Job, suspended image/LPAC proof, and one-shot startup lease) with the
+    authenticated Broker protocol, trusted production ownership of the fixed
+    Key Agent profile, exact nonce exchange, and protected-settings lease. Repeat caller-event
     contamination, concurrent activation, worker panic/error cleanup, timeout,
     image mismatch, post-return supervisor Job assignment, and pre-user-mode
     sentinel tests against the exact signed `key-agent.exe`; headless
     test-harness evidence is necessary but not sufficient for release
     attestation.
-11. Keep zero-capability Key Agent LPAC activation and profile provisioning
-    **STOP-SHIP** until a distinct Key Agent profile is provisioned by an
-    installer/supervisor boundary, its profile SID receives narrowly scoped
-    storage access without granting either frontend profile access, and helper
+11. Fixed zero-capability Key Agent LPAC creation and suspended-token verification
+    are implemented, but keep production profile ownership/provisioning and
+    storage authorization **STOP-SHIP** until an installer/supervisor boundary
+    owns the fixed profile, its SID receives narrowly scoped storage access
+    without granting either frontend profile access, and helper
     trust/profile setup no longer depends on file, certificate-store, registry,
     or profile APIs unavailable inside that LPAC. The current TokenUser-only
     persistent-storage DACL does not authorize an AppContainer token. Do not add

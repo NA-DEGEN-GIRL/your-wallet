@@ -16,7 +16,7 @@ invariants, not a claim that the current binaries establish every boundary.
 | Approval helper | `approval-wire` is the single bounded v2 codec used by the authorization TCB, Key Agent, Windows channel, and native frontend. The Key Agent creates one crate-private, non-clone `PreparedApprovalPrompt`; its exact digest, nonce, sampled expiry, locally protected anti-phishing phrase, risk, and every display field are request-hashed and retained across the interaction. The prompt additionally carries a one-shot protected-settings lease bound to the authenticated generation, phrase revision, canonical record digest, exclusive owner evidence, process instance, and a fresh nonce. Immediately before authorization or key use, the Key Agent consumes that lease and freshly reloads the exact protected record; lock, rotation, owner takeover, restart, or replay invalidates it. The Windows library creates the exact inherited request/response pipes, launches the allowlisted LPAC helper, enforces monotonic I/O deadlines and exact response-plus-EOF, and binds held process/file/manifest/profile identity into a fresh transcript. High-risk approval requires a monotonic two-second physical pointer or Space hold. Default executable builds exit 78; the opt-in runtime contract consumes one complete bounded inherited request, invokes the native surface, and writes one exact response without diagnostics. Signed-artifact end-to-end evidence is absent. |
 | Secret-input helper | The library has exact prompt/outcome codecs, bounded zeroizing response reads, and a non-persisting native secret surface. Its high-level parent API requires the release-attested restricted launcher and exact manifest-derived Secret Input role, atomically owns separate request/response pipes and the held helper/job, transfers the canonical prompt plus EOF, and performs cancellable/drained bounded response reads through EOF. The proof binds the exact prompt, held file/process/LPAC identity, and a fresh OS-CSPRNG challenge, then permits consumption only for that same prompt. Default executable builds exit 78 and the compiled release policy is absent. Direct-launch parent-identity denial and immutable signed-artifact evidence remain stop-ship. |
 | Broker/key agent/Windows boundary | Method schemas, state bounds, typed chain evidence, canonical display derivation, request-hashed one-shot approval, nonce lifecycle, signer self-checks, protected pipe/helper verification, and an opaque verified-response capability exist. The Key Agent now also has a crate-private offline-lifecycle wire/controller: exact magic/version/type/request-ID/sequence/deadline/length framing, fixed 64-byte frames, exact EOF, zero reserved fields, a 64-request controller-activation lifetime across one-shot inherited request channels, and distinct duplicate/replay/out-of-order outcomes. Admission pins the bounded wall-clock remainder to a trusted monotonic `Instant`; every frontend receives the exact absolute expiry. After a frontend returns, only the controller can mint a private-field, non-clone checked-deadline capability, and every service/session mutation must consume it. The same capability owns the trusted clock borrow and rechecks the pinned expiry after KDF/derivation/seal/reseal at the last safe point before durable commit, unlock, or pending-state activation; expiry locks without advancing generation or decrypted state. Its closed command set is status, 12/24-word creation, separate backup display/confirmation stages, open, lock, and confirmed-address lookup; no password, mnemonic, confirmation answers, signing, import/export, or network payload is representable. Status, lock, and confirmed-address access use the owned `OfflineWalletService`. Secret-bearing transitions require a crate-sealed frontend capability that can acquire inputs or present a borrowed view but cannot receive the vault service. Recovery display returns a non-clone, live-session-bound capability without mutation; only the deadline-checked controller may consume it into one pending positions-only confirmation, which lock, restart, cross-stage use, or replay clears or rejects. The compiled capability returns stable `Unavailable` and locks because authenticated Secret Input/Recovery adapters and the inherited channel launcher are not wired. The anti-phishing phrase has a sealed Key Agent-only lifecycle: a five-word OS-CSPRNG cue is first committed as pending and is unavailable to prompts until a trusted exact enrollment confirmation. Rotation is a persisted old-to-new pending ceremony. Loads carry typed authenticated-empty/record state, installation/store/class identity, an exclusive owner generation, exact record digest, and previous/high-water anchor evidence; same-generation equivocation, empty-after-observed, rollback, owner takeover, or ambiguous commits lock the lifecycle. The platform storage layer now reserves `RecordClass::LocalSettings`, but no Key Agent adapter or production settings key provisioning is wired yet; independent settings AEAD key custody, exclusive-owner enforcement, and a release-approved non-rollbackable anchor remain blockers. The launcher uses separate deterministic revision-v1, zero-capability LPAC profiles for manifest-derived Approval and Secret Input roles; the names and derived SIDs differ and callers cannot select the profile role. The launcher verifies every suspended child against its exact expected SID, and the Secret Input/recovery bootstrap independently repeats that check. Both use an exact inherited-handle list, minimal environment, suspended token verification, process mitigations, and a single-process kill-on-close job. The authenticated dual-slot store and encrypted Key Agent journal cover reservation, approval-pending, potentially-signed, signed-unbroadcast, broadcasting, submitted, and broadcast-unknown recovery. Raw transaction bytes remain journal-owned and reach an RPC adapter only through a non-clone lease after `Broadcasting` commits. Production rollback-anchor/key provisioning and signed-artifact helper/network/RPC evidence are absent; the compiled release policy is `None`, so launch and signing remain disabled. |
-| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived Key Agent role and release allowlist before creating a fresh dedicated OS thread. That one thread owns `CreateProcessW`, the first debug event, mapped-image authentication, continuation, and debugger detach. The simultaneously held verifier handle and debug-event image handle must match by volume serial plus all 128 `FILE_ID_INFO` bits; zero volume and all-zero or all-`FF` non-unique IDs fail closed. Only a successful detach plus an exact one-count suspend probe can construct the non-clone detached capability. Both restricted-launch entry points reject the Key Agent role before release evaluation or process creation, so the shared artifact allowlist is not launch-role authority. The detached capability exposes no raw handle or resume operation and terminates/waits the exact process on drop. Separately, the Key Agent executable's first Windows application operation prevalidates its exact three inherited stdio objects as distinct `PIPE`/`PIPE`/`CHAR` handles with exact inherit-only flags, clears every inherit bit, and requires exact zero-flag readback. A child/grandchild kernel test proves by exact object comparison that none propagates. The activation module remains private and `COMPILED_RELEASE_POLICY` is `None`; zero-capability Key Agent LPAC provisioning, a Key Agent-only storage ACL, registry-independent helper/profile trust setup, Broker channel, profile/job, protected-settings lease, resume, and signed-artifact evidence are not connected. |
+| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived Key Agent role and release allowlist before creating a fresh dedicated OS thread. That thread owns `CreateProcessW`, the first debug event, mapped-image authentication, token verification, continuation, and debugger detach. Creation is fixed to the persistent `YourWallet.KeyAgent.LPAC.v1` profile and exactly four attributes: the three-handle allowlist, root Job, zero-capability `SECURITY_CAPABILITIES`, and `ALL_APPLICATION_PACKAGES` opt-out. While the exact pre-user-mode create event is held, the mapped image must first equal the retained artifact by volume serial and all 128 `FILE_ID_INFO` bits, then the worker installs one explicit suspend count and verifies the primary token. The proof requires exact AppContainer state, the fixed profile SID, zero capabilities, and a `CheckTokenMembershipEx` differential over the token-user SID: AppContainer inclusion alone must deny while AppContainer plus LPAC inclusion must allow. A supported `TokenIsLessPrivilegedAppContainer` query must additionally return an exact DWORD 1; only `ERROR_INVALID_PARAMETER` omits that direct query, while the differential proof remains mandatory and every other error fails closed. A suspended ordinary-AppContainer control that omits only the opt-out must instead pass both membership paths. Only the verified LPAC state may continue the debug event, detach, pass the exact one-count suspend probe, and construct the non-clone detached capability. Both generic restricted-launch entry points reject the Key Agent role before release evaluation or process creation. The detached capability exposes no raw handle or resume operation and terminates/waits the exact process on drop. Separately, the Key Agent executable's first Windows application operation seals its exact three inherited stdio objects, and a child/grandchild kernel test proves none propagates. The activation module remains private and `COMPILED_RELEASE_POLICY` is `None`; trusted production profile provisioning/ownership, a Key Agent-only storage ACL, authenticated Broker/startup topology and nonce exchange, protected-settings lease, resume, signed immutable installation, Native Host provenance, DLL/dependency identity, and signed-artifact E2E evidence remain unconnected. |
 | Device key protection | The crate-private model generates epoch-1 installation bundles with six pairwise-distinct role secrets and releases them only through role-typed views after an anchored open. Rotation preserves the installation ID, advances the key epoch exactly once, rekeys every role, and remains pending until opaque external evidence binds the exact predecessor commitment to the exact new canonical signed envelope at a strictly newer shared-anchor generation. RSA-3072 OAEP-SHA-256/empty-label and low-S P-256 P1363 identities hash one canonical RFC 5280 SPKI form; CNG blobs are adapter-internal inputs only. The raw identity constructors and sealing markers are private to the key-material module, and the architecture gate scans every production Rust source under `key-agent` for an unreviewed PCP implementation. No production PCP or rollback-anchor adapter exists, so this path remains fail-closed and release-blocking. |
 
 ### Sepolia demo durable activity boundary
@@ -124,7 +124,8 @@ Memory erasure is explicitly incomplete. Owned master/output arrays use
 `Zeroize` nor `ZeroizeOnDrop`; password-equivalent derived context can therefore
 remain in stack/process remnants. Demo lock scrubs owned secret buffers but is
 not a process-memory forensic-erasure guarantee. Production release is
-STOP-SHIP without an isolated Key Agent and a zeroizing KDF implementation.
+STOP-SHIP without release-attested isolated Key Agent execution and a zeroizing
+KDF implementation.
 
 ### Sepolia demo receive QR boundary
 
@@ -343,35 +344,67 @@ an all-zero ID means the filesystem does not support that identity and all-`FF`
 means a unique ID could not be established; both are rejected rather than
 compared. A zero volume serial is also rejected.
 
-While the create event freezes the process, the worker installs exactly one
-explicit primary-thread suspend count, continues the event, detaches, then probes
-that the count remains exactly one. Only this path may create the private
-detached type-state that crosses the thread join boundary. The attached/pending
-state stays non-`Send`; the detached wrapper alone is `Send`, is neither `Sync`
-nor cloneable, exposes no raw handle or resume API, and may only report redacted
-metadata or synchronously terminate/wait on drop.
+Only after that mapped-image proof succeeds, and while the create event still
+freezes every process thread, the worker installs exactly one explicit
+primary-thread suspend count and verifies the exact process token. The proof
+requires an exact DWORD `TokenIsAppContainer == 1`, the fixed Key Agent profile
+SID, and zero `TokenCapabilities`. It duplicates the primary token at
+`SecurityIdentification`, queries its valid `TokenUser` SID, and performs two
+`CheckTokenMembershipEx` access-membership checks. `CTMF_INCLUDE_APPCONTAINER`
+alone must return false, while adding `CTMF_INCLUDE_LPAC` must return true.
+When `TokenIsLessPrivilegedAppContainer` is supported it must also return an
+exact DWORD 1. Some supported Windows builds return `ERROR_INVALID_PARAMETER`
+for only that information class; that single result omits the DWORD check but
+does not relax the exact `(false, true)` differential. Any other query error,
+malformed result, SID mismatch, capability, or membership pair fails closed. A
+separate suspended ordinary-AppContainer control omits only the AAP opt-out and
+must produce `(true, true)`; neither control is resumed into user mode.
+
+Only the verified LPAC state may continue the event and detach. The worker then
+probes that the explicit count remains exactly one. Only this path may create
+the private detached type-state that crosses the thread join boundary. The
+attached/pending state stays non-`Send`; the detached wrapper alone is `Send`,
+is neither `Sync` nor cloneable, exposes no raw handle or resume API, and may
+only report redacted metadata or synchronously terminate/wait on drop.
 
 The three-artifact release allowlist is not launch-role authority. Both generic
 restricted-launch entry points reject a manifest-derived Key Agent before
 release evaluation or Win32 side effects. Only this private activation module
 may create that role.
 
-Restricted helpers and the Key Agent share one private immutable process
-context. It derives a fixed double-NUL Unicode environment containing only
-`SystemRoot` and `WINDIR` from `GetSystemWindowsDirectoryW`, and supplies the
-`GetSystemDirectoryW` result only when it is a plain absolute DOS path whose
-parent is that system-shared Windows root and whose leaf is `System32`. The
-production policy rejects directory reparses, path-replacement/delete/ACL
-rights on every ancestor, and file/subdirectory creation rights on the Windows
-root and System32 under the current primary token. It deliberately does not
-treat the system-drive root's create-sibling-directory right alone as authority
-to replace the fixed Windows path. Both launch paths therefore pass an explicit
-environment and current directory instead of inheriting the parent's ambient
-values. Restricted helpers prepare the context before parent-proof discovery,
-persistent profile creation/open, or Job creation; the Key Agent prepares it
-before acquiring its inheritable-handle flight. Each retains the UTF-16 owner
-through `CreateProcessW` and rejects thread impersonation both during
-preparation and again immediately before that call.
+The private profile selector has no caller input. It creates or opens the fixed,
+persistent `YourWallet.KeyAgent.LPAC.v1` profile. A newly created SID must equal
+an independently derived SID for that exact name; an existing profile uses the
+derived SID. Process creation installs a null capability pointer, capability
+count zero, reserved zero, and the ALL APPLICATION PACKAGES opt-out. Releasing
+the prepared SID does not delete the OS profile.
+
+Key Agent, Approval, and Secret Input profile creation/derivation, plus Key
+Agent `GetAppContainerFolderPath`, share one process-wide non-reentrant
+coordinator. Same-thread reentry and a poisoned gate fail closed, and the gate
+is released before inherited-handle launch coordination or process creation.
+
+Restricted helpers and the Key Agent share one private immutable base process
+context. It derives exact `SystemRoot` and `WINDIR` entries from
+`GetSystemWindowsDirectoryW`, and supplies the `GetSystemDirectoryW` result only
+when it is a plain absolute DOS path whose parent is that system-shared Windows
+root and whose leaf is `System32`. A restricted helper receives a fixed
+double-NUL Unicode environment containing only those two names. After preparing
+the fixed profile, the Key Agent asks `GetAppContainerFolderPath` for that SID,
+requires an absolute `Packages` / exact profile-name / `AC` layout, derives the
+host Local AppData parent from it, and prepends exactly one `LOCALAPPDATA` entry.
+Its environment therefore contains exactly `LOCALAPPDATA`, `SystemRoot`, and
+`WINDIR`; neither path inherits the parent's ambient values or current
+directory. The production policy rejects directory reparses,
+path-replacement/delete/ACL rights on every ancestor, and file/subdirectory
+creation rights on the Windows root and System32 under the current primary
+token. It deliberately does not treat the system-drive root's
+create-sibling-directory right alone as authority to replace the fixed Windows
+path. Restricted helpers prepare the base context before parent-proof discovery,
+persistent frontend profile creation/open, or Job creation; the Key Agent
+prepares it before acquiring its inheritable-handle flight. Each retains the
+UTF-16 owner through `CreateProcessW` and rejects thread impersonation both
+during preparation and again immediately before that call.
 
 This is a string/layout, metadata/reparse, and current-token rights proof. It
 retains no directory handle and is not an atomic kernel-object identity proof;
@@ -382,19 +415,30 @@ rejection so elevated developer tests can exercise process creation, while
 retaining the OS paths, shape/layout, reparse, and impersonation checks. That
 constructor is absent from the release path; production has no elevated bypass.
 
+The separate `cfg(test)`-only LPAC launch fixture opens the persistent fixed
+profile, copies the current test image into a CSPRNG-named directory beneath its
+OS-managed `AC` folder, and applies a protected DACL granting the current user
+full access and only the fixed profile SID read/execute. Drop removes only that
+exact file and now-empty directory; it neither changes the workspace image ACL
+nor deletes the persistent profile. This proves local kernel-test launchability,
+not production install-root, signed-artifact, or Key Agent storage authorization.
+
 The dormant supervisor composition now binds that exact-image proof to one
 preconfigured two-process kill-on-close root Job, one private request pipe, one
 separate private response pipe, and one internally timed one-shot startup nonce.
 The activation-owned fresh thread creates the Job and pipes, acquires the shared
 flight up to the startup-lease deadline, and creates exactly three short-lived
-inheritable stdio duplicates plus one borrowed Job handle through a two-slot
-`STARTUPINFOEXW` attribute list. The attribute list is deleted and all three
-duplicates close immediately after `CreateProcessW`; only then is the flight
-released and mapped-image authentication begun. The Job context is checked
-before creation, after exact-image detach while the child is still suspended,
-and once more before the aggregate crosses the join. Exactly one active Job
-member is required. The aggregate is non-clone, `!Sync`, externally private,
-has no raw-handle or resume operation, and aborts the process tree on drop.
+inheritable stdio duplicates plus one borrowed Job handle through an exact
+four-slot `STARTUPINFOEXW` attribute list: `HANDLE_LIST`, `JOB_LIST`,
+`SECURITY_CAPABILITIES`, and `ALL_APPLICATION_PACKAGES_POLICY`. The attribute
+list retains its three-handle array, Job value, profile SID, and both LPAC values
+through `CreateProcessW`; it is then deleted and all three duplicates close
+before the flight is released and mapped-image authentication begins. The Job
+context is checked before creation, after exact-image/LPAC detach while the child
+is still suspended, and once more before the aggregate crosses the join. Exactly
+one active Job member is required. The aggregate is non-clone, `!Sync`,
+externally private, has no raw-handle or resume operation, and aborts the process
+tree on drop.
 
 At process creation the Key Agent child receives inheritable stdio handles.
 Its entrypoint now makes child-side sealing the first Windows application
@@ -412,13 +456,13 @@ object exists in the grandchild.
 supervisor is single-instance, does not authenticate the Native Host/Broker/Key
 Agent process topology, and cannot coordinate a foreign or otherwise
 non-cooperating process-creation call. Release evidence must establish those
-boundaries across all loaded code and processes. The repo-local child bootstrap
-and grandchild negative test close only the stdio re-inheritance implementation
-gap; they are not evidence that the exact signed Key Agent image reached this
-step under the intended supervisor. Signed immutable installation, Native Host
-provenance, LPAC/profile and storage authorization, authenticated startup
-handshake, resume, exact signed-artifact E2E, DLL/dependency evidence, and
-`COMPILED_RELEASE_POLICY` remain separate blockers.
+boundaries across all loaded code and processes. The repo-local child bootstrap,
+LPAC token proof, and kernel tests are not evidence that the exact signed Key
+Agent image reached those steps under the intended supervisor. Signed immutable
+installation, Native Host provenance, trusted production ownership/provisioning
+of the fixed profile, Key Agent-only storage authorization, the authenticated
+Broker startup handshake and nonce exchange, resume, exact signed-artifact E2E,
+DLL/dependency evidence, and `COMPILED_RELEASE_POLICY` remain separate blockers.
 
 **릴리스 차단 조건 (한국어):** crate 내부 coordinator는 독립 supervisor 단일
 인스턴스나 Native Host/Broker/Key Agent 프로세스 topology를 증명하지 않으며, 그
@@ -428,27 +472,33 @@ handshake, resume, exact signed-artifact E2E, DLL/dependency evidence, and
 `PIPE`/`PIPE`/`CHAR`와 inherit-only flags로 사전검사하고 inherit bit를 모두 제거한 뒤
 flags 0을 재검사하며, grandchild exact-object 음성 테스트도 있습니다. 그러나 이
 repo-local 증거는 intended supervisor 아래 exact signed image가 그 단계에 도달했음을
-입증하지 않습니다. signed immutable installation, Native Host provenance, LPAC/profile과
-storage authorization, 인증된 startup handshake, resume, exact signed-artifact E2E,
-DLL/dependency 증거, `COMPILED_RELEASE_POLICY`는 계속 별도 차단 조건입니다.
+입증하지 않습니다. repo-local LPAC 토큰 증명과 kernel test도 exact signed image가
+intended supervisor 아래 같은 경계를 통과했다는 증거는 아닙니다. signed immutable
+installation, Native Host provenance, 고정 profile의 신뢰된 production
+ownership/provisioning, Key Agent 전용 storage authorization, 인증된 Broker startup
+handshake와 nonce 교환, resume, exact signed-artifact E2E, DLL/dependency 증거,
+`COMPILED_RELEASE_POLICY`는 계속 별도 차단 조건입니다.
 
 This proof remains dormant. It must not be armed until the same capability is
-bound to the authenticated Broker protocol, a distinct Key Agent LPAC/profile,
-Key Agent-only storage access, the exact startup-nonce exchange, and a live
-protected-settings lease, with concurrent/event-contamination, panic, timeout,
-cleanup, and signed-artifact tests included in release evidence. Preventing an
-external Job assignment after the dormant aggregate returns additionally needs
-a standalone supervisor bootstrap and reviewed supervisor process ACL.
+bound to the authenticated Broker protocol, trusted production ownership of the
+fixed Key Agent profile, Key Agent-only storage access, the exact startup-nonce
+exchange, and a live protected-settings lease, with concurrent/event-
+contamination, panic, timeout, cleanup, and signed-artifact tests included in
+release evidence. Preventing an external Job assignment after the dormant
+aggregate returns additionally needs a standalone supervisor bootstrap and
+reviewed supervisor process ACL.
 
-Zero-capability Key Agent LPAC/profile provisioning, storage authorization, and
-helper trust APIs remain **STOP-SHIP**. The current persistent-store DACL grants
-only the TokenUser principal, which does not by itself grant an AppContainer
-token access; granting either frontend profile access would expose vault or
-settings state to that UI role. A trusted installer/supervisor must provision a
-distinct Key Agent profile and narrowly scoped profile-SID storage access, and
-must perform any profile, file, certificate-store, or registry-dependent trust
-work outside the zero-capability child. Do not add `registryRead`, reuse a
-frontend profile, or activate the dormant Key Agent as a workaround.
+Fixed zero-capability Key Agent LPAC construction and suspended-token
+verification are implemented, but trusted production profile provisioning and
+ownership, storage authorization, and helper trust APIs remain **STOP-SHIP**.
+The current persistent-store DACL grants only the TokenUser principal, which
+does not by itself grant an AppContainer token access; granting either frontend
+profile access would expose vault or settings state to that UI role. A trusted
+installer/supervisor must bind the fixed Key Agent profile to narrowly scoped
+profile-SID storage access and must perform any profile, file,
+certificate-store, or registry-dependent trust work outside the zero-capability
+child. Do not add `registryRead`, reuse a frontend profile, or activate the
+dormant Key Agent as a workaround.
 
 ### Secret Input parent activation invariant (STOP-SHIP)
 

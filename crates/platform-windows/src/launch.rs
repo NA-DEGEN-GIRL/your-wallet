@@ -531,6 +531,9 @@ mod sys {
         HeldProcessIdentity, InheritedParentProof, InheritedStdio, LaunchError, LaunchedHelper,
         NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
     };
+    use crate::appcontainer_profile_api::{
+        AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
+    };
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
@@ -640,6 +643,8 @@ mod sys {
             let name_wide = wide_nul_str(metadata.name);
             let display_wide = wide_nul_str(metadata.display_name);
             let description_wide = wide_nul_str(metadata.description);
+            let profile_api =
+                acquire_appcontainer_profile_api().map_err(|_| LaunchError::OperatingSystem)?;
 
             // SAFETY: all strings are NUL terminated and there are deliberately no
             // capability SIDs. The returned SID is owned and freed with FreeSid.
@@ -656,7 +661,7 @@ mod sys {
                     let created = Self::from_raw(created_sid)?;
                     // Derivation is checked even on first creation so a changed OS
                     // profile contract cannot silently select a different SID.
-                    let derived = Self::derive(&name_wide)?;
+                    let derived = Self::derive_under_guard(&profile_api, &name_wide)?;
                     // SAFETY: both wrappers contain valid live SIDs.
                     unsafe {
                         EqualSid(created.raw(), derived.raw())
@@ -665,13 +670,23 @@ mod sys {
                     Ok(derived)
                 }
                 Err(error) if error.code() == ERROR_ALREADY_EXISTS.to_hresult() => {
-                    Self::derive(&name_wide)
+                    Self::derive_under_guard(&profile_api, &name_wide)
                 }
                 Err(_) => Err(LaunchError::OperatingSystem),
             }
         }
 
+        #[cfg(test)]
         fn derive(name_wide: &[u16]) -> Result<Self, LaunchError> {
+            let profile_api =
+                acquire_appcontainer_profile_api().map_err(|_| LaunchError::OperatingSystem)?;
+            Self::derive_under_guard(&profile_api, name_wide)
+        }
+
+        fn derive_under_guard(
+            _profile_api: &AppContainerProfileApiGuard,
+            name_wide: &[u16],
+        ) -> Result<Self, LaunchError> {
             // SAFETY: `name_wide` is a live NUL-terminated profile name.
             let sid = unsafe {
                 DeriveAppContainerSidFromAppContainerName(PCWSTR(name_wide.as_ptr()))

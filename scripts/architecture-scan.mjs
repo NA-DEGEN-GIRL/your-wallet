@@ -2877,7 +2877,7 @@ requireInvariant(
     rootReadme.includes("vault-v2.migrating") &&
     rootReadme.includes("HMAC/PRK context") &&
     rootReadme.includes("ZeroizeOnDrop") &&
-    rootReadme.includes("격리된 Key Agent") &&
+    /격리(?:된)?\s+Key Agent/u.test(rootReadme) &&
     rootReadme.includes("canonical transaction 재구성") &&
     rootReadme.includes("실제 전파·포함 여부") &&
     sepoliaArchitectureDoc.includes("token-then-activity namespaces") &&
@@ -2885,7 +2885,9 @@ requireInvariant(
     sepoliaArchitectureDoc.includes("HMAC/PRK context implements neither") &&
     sepoliaArchitectureDoc.includes("single fixed TLS RPC remains a trust boundary") &&
     sepoliaArchitectureDoc.includes("local envelope self-consistency") &&
-    sepoliaArchitectureDoc.includes("isolated Key Agent and a zeroizing KDF implementation"),
+    /isolated Key Agent(?: execution)? and a zeroizing\s+KDF implementation/u.test(
+      sepoliaArchitectureDoc,
+    ),
   "Sepolia backend-invalidated UI lock/scrub and durable-temp/memory-forensics residuals must remain explicit",
 );
 for (const requiredActivityTest of [
@@ -3837,6 +3839,17 @@ const keyAgentActivationSource = await text(
 );
 const keyAgentActivation = withoutBottomTestModule(keyAgentActivationSource);
 const keyAgentActivationRelease = withoutCfgTestItems(keyAgentActivation);
+const keyAgentLpacSource = await text(
+  "crates/platform-windows/src/key_agent_lpac.rs",
+);
+const keyAgentLpac = withoutBottomTestModule(keyAgentLpacSource);
+const keyAgentLpacRelease = withoutCfgTestItems(keyAgentLpac);
+const appContainerProfileApiSource = await text(
+  "crates/platform-windows/src/appcontainer_profile_api.rs",
+);
+const appContainerProfileApiProduction = withoutBottomTestModule(
+  appContainerProfileApiSource,
+);
 const restrictedProcessContextSource = await text(
   "crates/platform-windows/src/restricted_process_context.rs",
 );
@@ -5118,6 +5131,95 @@ const keyAgentCreateProcess = rustFunctionBlock(
   keyAgentActivation,
   "create_suspended_debuggee_process",
 );
+const keyAgentLpacPrepare = rustFunctionBlock(keyAgentLpacRelease, "prepare");
+const keyAgentLpacEnvironment = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "environment_with_local_app_data",
+);
+const keyAgentLpacAttributeInstall = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "install_into",
+);
+const keyAgentLpacVerifySuspended = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "verify_suspended_process",
+);
+const keyAgentLpacOpenOrCreate = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "open_or_create",
+);
+const keyAgentLpacDeriveUnderGuard = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "derive_under_guard",
+);
+const launchProfileOpenOrCreate = rustFunctionBlock(
+  restrictedLauncherRelease,
+  "open_or_create",
+);
+const launchProfileDeriveUnderGuard = rustFunctionBlock(
+  restrictedLauncherRelease,
+  "derive_under_guard",
+);
+const acquireAppContainerProfileApi = rustFunctionBlock(
+  appContainerProfileApiProduction,
+  "acquire_appcontainer_profile_api",
+);
+const appContainerProfileApiGuardDrop = rustLexicalItemBlock(
+  appContainerProfileApiProduction,
+  /impl\s+Drop\s+for\s+AppContainerProfileApiGuard\s*\{/u,
+);
+const appContainerProfileReentryTest = rustFunctionBlock(
+  appContainerProfileApiSource,
+  "same_thread_reentry_fails_closed_without_poisoning_gate",
+);
+const concurrentKeyAgentProfilePreparationTest = rustFunctionBlock(
+  keyAgentLpacSource,
+  "concurrent_fixed_profile_preparation_is_process_serialized",
+);
+const requireCreatedKeyAgentSidMatchesDerived = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "require_created_sid_matches_derived",
+);
+const verifyKeyAgentLpacToken = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "verify_process_token",
+);
+const queryKeyAgentLpacDword = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "token_dword",
+);
+const queryOptionalKeyAgentLpacDword = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "less_privileged_appcontainer_dword",
+);
+const queryKeyAgentLpacMembershipEvidence = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "appcontainer_membership_evidence",
+);
+const checkKeyAgentTokenMembership = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "check_token_membership",
+);
+const keyAgentLpacMembershipEvidenceDefinition = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /enum\s+AppContainerMembershipEvidence\s*\{/u,
+);
+const queryKeyAgentTokenInformation = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "token_information",
+);
+const validateKeyAgentLpacToken = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "validate_token_policy",
+);
+const keyAgentAppContainerFolder = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "appcontainer_folder",
+);
+const exactKeyAgentBaseEnvironment = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "base_environment_is_exact",
+);
 const compactRust = (source) => rustLexicalCode(source).replace(/\s+/gu, "");
 const restrictedProcessContextDefinition = rustLexicalItemBlock(
   restrictedProcessContextProduction,
@@ -5720,7 +5822,7 @@ requireInvariant(
     normalizeRustFragment(rustLexicalCode(restrictedContextFromPaths)) ===
       "fn from_system_paths( paths: &SystemProcessPaths, ) -> Result<Self, RestrictedProcessContextError> { Ok(Self { environment: minimal_environment_block(&paths.windows_root)?.into_boxed_slice(), current_directory: wide_nul_path(&paths.current_directory).into_boxed_slice(), _same_thread: PhantomData, }) }" &&
     normalizeRustFragment(rustLexicalCode(preparedKeyAgentProcessDefinition)) ===
-      "struct PreparedKeyAgentProcess { application: Vec<u16>, context: RestrictedProcessContext, }" &&
+      "struct PreparedKeyAgentProcess { application: Vec<u16>, context: RestrictedProcessContext, environment: Box<[u16]>, lpac: PreparedKeyAgentLpac, }" &&
     /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare_for_kernel_test\(\s*\)\s*;/u.test(
       rustLexicalCode(prepareKeyAgentProcess),
     ) &&
@@ -6037,7 +6139,7 @@ requireInvariant(
     compactRust(keyAgentCreateCalls[0]?.arguments[2] ?? "") ===
       "key_agent_creation_flags()" &&
     compactRust(keyAgentCreateCalls[0]?.arguments[3] ?? "") ===
-      "Some(prepared_process.context.environment().as_ptr().cast::<c_void>(),)" &&
+      "Some(prepared_process.environment.as_ptr().cast::<c_void>())" &&
     compactRust(keyAgentCreateCalls[0]?.arguments[4] ?? "") ===
       "PCWSTR(prepared_process.context.current_directory().as_ptr())",
   "both restricted launchers must pass the owned explicit Unicode environment and non-null current directory to the sole coordinated process-create call",
@@ -6427,10 +6529,31 @@ requireInvariant(
       ),
   "restricted AttributeList must retain both duplicate and Job owners, atomically install the exact JOB_LIST, and guard every suspended child until Job/token verification and resume succeed",
 );
+const keyAgentLpacModuleConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_lpac.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bkey_agent_lpac\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+key_agent_activation\b/u.test(platformWindowsLib) &&
     !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_activation/u.test(platformWindowsLib) &&
+    platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_lpac;") &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_lpac\b/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_lpac/u.test(platformWindowsLib) &&
+    JSON.stringify(keyAgentLpacModuleConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/helper.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+      ]) &&
+    !platformWindowsProductionFiles.some((file) =>
+      /\bpub(?:\([^)]*\))?\s+use\s+[^;]*\bkey_agent_lpac\b/u.test(
+        rustLexicalCode(file.source),
+      ),
+    ) &&
     platformWindowsLib.includes(
       "use platform_windows::key_agent_activation::HeldKeyAgentActivation;",
     ) &&
@@ -6446,7 +6569,7 @@ requireInvariant(
     platformWindowsLib.includes(
       "use platform_windows::key_agent_supervisor::bind_dormant_key_agent;",
     ),
-  "Key Agent activation and bound supervisor capabilities must remain externally private",
+  "Key Agent LPAC, activation, and bound supervisor capabilities must remain externally private",
 );
 const keyAgentRequestWriterImpl = rustItemBlock(
   keyAgentPipeProduction,
@@ -6828,6 +6951,262 @@ const verifyBoundRootProcess = rustFunctionBlock(
   keyAgentActivation,
   "verify_bound_root_process",
 );
+const keyAgentAttributeListInitializations = rustCallSites(
+  keyAgentCreationAttributeImpl,
+  "InitializeProcThreadAttributeList",
+);
+const keyAgentLpacAttributeUpdates = rustCallSites(
+  keyAgentLpacAttributeInstall,
+  "update_attribute",
+);
+const keyAgentLpacAttributeValues = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "from_profile_sid",
+);
+const keyAgentProfileCreation = rustCallSites(
+  keyAgentLpacOpenOrCreate,
+  "CreateAppContainerProfile",
+);
+const keyAgentProfileDerivations = rustCallSites(
+  keyAgentLpacOpenOrCreate,
+  "Self::derive_under_guard",
+);
+const launchProfileCreation = rustCallSites(
+  launchProfileOpenOrCreate,
+  "CreateAppContainerProfile",
+);
+const launchProfileDerivations = rustCallSites(
+  launchProfileOpenOrCreate,
+  "Self::derive_under_guard",
+);
+const appContainerProfileNativeApis = [
+  "CreateAppContainerProfile",
+  "DeriveAppContainerSidFromAppContainerName",
+  "GetAppContainerFolderPath",
+];
+const appContainerProfileNativeApiInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    appContainerProfileNativeApis.flatMap((api) =>
+      rustCallSites(file.source, api).map(() => ({ api, path: file.path })),
+    ),
+  );
+const appContainerProfileCoordinatorConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/appcontainer_profile_api.rs" &&
+        rustCallSites(file.source, "acquire_appcontainer_profile_api").length > 0,
+    )
+    .map((file) => file.path)
+    .sort();
+const compactKeyAgentCreationAttributeImpl = compactRust(
+  keyAgentCreationAttributeImpl,
+);
+const keyAgentCreationAttributeOrder = [
+  "attributes.install_handle_list()?",
+  "attributes.root_job_attribute.install_into(attributes.pointer)",
+  "attributes.lpac.install_into(attributes.pointer)",
+].map((marker) => compactKeyAgentCreationAttributeImpl.indexOf(marker));
+const compactAppContainerProfileAcquire = compactRust(
+  acquireAppContainerProfileApi,
+);
+const compactAppContainerProfileGuardDrop = compactRust(
+  appContainerProfileApiGuardDrop,
+);
+const appContainerProfileAcquireOrder = [
+  "PROFILE_API_HELD_BY_THREAD.try_with(Cell::get)",
+  "APP_CONTAINER_PROFILE_API.lock()",
+  "PROFILE_API_HELD_BY_THREAD.try_with(|held|held.replace(true))",
+  "Ok(AppContainerProfileApiGuard{_mutex:mutex})",
+].map((marker) => compactAppContainerProfileAcquire.indexOf(marker));
+const compactKeyAgentLpacOpenOrCreate = compactRust(
+  keyAgentLpacOpenOrCreate,
+);
+const keyAgentProfileApiOrder = [
+  "wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?",
+  "wide_nul_str(KEY_AGENT_PROFILE_DISPLAY_NAME)?",
+  "wide_nul_str(KEY_AGENT_PROFILE_DESCRIPTION)?",
+  "acquire_appcontainer_profile_api()",
+  "CreateAppContainerProfile(",
+  "Self::derive_under_guard(&profile_api,&name)?",
+  "require_created_sid_matches_derived(&created,&derived)?",
+].map((marker) => compactKeyAgentLpacOpenOrCreate.indexOf(marker));
+const compactLaunchProfileOpenOrCreate = compactRust(
+  launchProfileOpenOrCreate,
+);
+const launchProfileApiOrder = [
+  "profile_metadata(profile,role)?",
+  "wide_nul_str(metadata.name)",
+  "wide_nul_str(metadata.display_name)",
+  "wide_nul_str(metadata.description)",
+  "acquire_appcontainer_profile_api()",
+  "CreateAppContainerProfile(",
+  "Self::derive_under_guard(&profile_api,&name_wide)?",
+  "EqualSid(created.raw(),derived.raw())",
+].map((marker) => compactLaunchProfileOpenOrCreate.indexOf(marker));
+const compactKeyAgentAppContainerFolder = compactRust(
+  keyAgentAppContainerFolder,
+);
+const keyAgentAppContainerFolderOrder = [
+  "sid_string(profile_sid.0)?",
+  "acquire_appcontainer_profile_api()",
+  "GetAppContainerFolderPath(",
+  "folder.to_string()",
+  "CoTaskMemFree(",
+].map((marker) => compactKeyAgentAppContainerFolder.indexOf(marker));
+requireInvariant(
+  platformWindowsLib.includes(
+    "#[cfg(windows)]\nmod appcontainer_profile_api;",
+  ) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+appcontainer_profile_api\b/u.test(
+      platformWindowsLibCode,
+    ) &&
+    appContainerProfileApiProduction.includes(
+      "static APP_CONTAINER_PROFILE_API: Mutex<()> = Mutex::new(());",
+    ) &&
+    appContainerProfileApiProduction.includes(
+      "static PROFILE_API_HELD_BY_THREAD: Cell<bool>",
+    ) &&
+    /#\[must_use\s*=\s*"[^"]+"\]\s*pub\(crate\)\s+struct\s+AppContainerProfileApiGuard/u.test(
+      appContainerProfileApiProduction,
+    ) &&
+    appContainerProfileApiProduction.includes(
+      "_mutex: MutexGuard<'static, ()>",
+    ) &&
+    appContainerProfileAcquireOrder.every((position) => position !== -1) &&
+    appContainerProfileAcquireOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > appContainerProfileAcquireOrder[index],
+      ) &&
+    compactAppContainerProfileAcquire.includes(
+      "Err(AppContainerProfileApiCoordinationError::Reentrant)",
+    ) &&
+    compactAppContainerProfileAcquire.includes(
+      "map_err(|_|AppContainerProfileApiCoordinationError::Poisoned)",
+    ) &&
+    compactAppContainerProfileAcquire.includes("letwas_held=") &&
+    compactAppContainerProfileAcquire.includes("debug_assert!(!was_held)") &&
+    !appContainerProfileApiProduction.includes("into_inner") &&
+    compactAppContainerProfileGuardDrop.includes(
+      "try_with(|held|held.replace(false))",
+    ) &&
+    JSON.stringify(appContainerProfileCoordinatorConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    appContainerProfileNativeApiInventory.filter(
+      (call) => call.api === "CreateAppContainerProfile",
+    ).length === 2 &&
+    appContainerProfileNativeApiInventory.filter(
+      (call) => call.api === "DeriveAppContainerSidFromAppContainerName",
+    ).length === 2 &&
+    appContainerProfileNativeApiInventory.filter(
+      (call) => call.api === "GetAppContainerFolderPath",
+    ).length === 1 &&
+    appContainerProfileNativeApiInventory.every(
+      (call) =>
+        call.path === "crates/platform-windows/src/key_agent_lpac.rs" ||
+        call.path === "crates/platform-windows/src/launch.rs",
+    ) &&
+    keyAgentAppContainerFolderOrder.every((position) => position !== -1) &&
+    keyAgentAppContainerFolderOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > keyAgentAppContainerFolderOrder[index],
+      ) &&
+    !platformWindowsProductionFiles.some((file) =>
+      /\bDeleteAppContainerProfile\b/u.test(rustLexicalCode(file.source)),
+    ) &&
+    appContainerProfileReentryTest.includes(
+      "Err(AppContainerProfileApiCoordinationError::Reentrant)",
+    ) &&
+    concurrentKeyAgentProfilePreparationTest.includes("const WORKERS: usize = 16") &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      "AtomicBool::new(false)",
+    ) &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      "start.load(Ordering::Acquire)",
+    ) &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      "start.store(true, Ordering::Release)",
+    ) &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      "PreparedKeyAgentLpac::prepare()?",
+    ) &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      ".environment_with_local_app_data(context.environment())?",
+    ),
+  "all AppContainer profile APIs must share one non-reentrant, poison-fail-closed process coordinator whose release build mutates TLS outside debug assertions",
+);
+requireInvariant(
+  /const\s+KEY_AGENT_PROFILE_V1_NAME:\s*&str\s*=\s*"YourWallet\.KeyAgent\.LPAC\.v1"\s*;/u.test(
+    keyAgentLpacRelease,
+  ) &&
+    /pub\(crate\)\s+fn\s+prepare\(\s*\)\s*->\s*Result<Self,\s*KeyAgentLpacError>/u.test(
+      keyAgentLpacPrepare,
+    ) &&
+    keyAgentLpacPrepare.includes("OwnedAppContainerSid::open_or_create()?") &&
+    /fn\s+open_or_create\(\s*\)\s*->\s*Result<Self,\s*KeyAgentLpacError>/u.test(
+      keyAgentLpacOpenOrCreate,
+    ) &&
+    keyAgentLpacOpenOrCreate.includes("wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?") &&
+    keyAgentProfileCreation.length === 1 &&
+    keyAgentProfileCreation[0].arguments.length === 4 &&
+    keyAgentProfileCreation[0].arguments[3] === "None" &&
+    keyAgentProfileApiOrder.every((position) => position !== -1) &&
+    keyAgentProfileApiOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentProfileApiOrder[index],
+      ) &&
+    keyAgentProfileDerivations.length === 2 &&
+    keyAgentProfileDerivations.every(
+      (call) =>
+        JSON.stringify(call.arguments) ===
+        JSON.stringify(["&profile_api", "&name"]),
+    ) &&
+    keyAgentLpacDeriveUnderGuard.includes(
+      "_profile_api: &AppContainerProfileApiGuard",
+    ) &&
+    rustCallSites(
+      keyAgentLpacDeriveUnderGuard,
+      "DeriveAppContainerSidFromAppContainerName",
+    ).length === 1 &&
+    keyAgentLpacOpenOrCreate.includes(
+      "require_created_sid_matches_derived(&created, &derived)?",
+    ) &&
+    requireCreatedKeyAgentSidMatchesDerived.includes("EqualSid(created.0, derived.0)") &&
+    requireCreatedKeyAgentSidMatchesDerived.includes(
+      ".map_err(|_| KeyAgentLpacError::Profile)",
+    ) &&
+    keyAgentLpacOpenOrCreate.includes("ERROR_ALREADY_EXISTS.to_hresult()") &&
+    launchProfileApiOrder.every((position) => position !== -1) &&
+    launchProfileApiOrder
+      .slice(1)
+      .every((position, index) => position > launchProfileApiOrder[index]) &&
+    launchProfileCreation.length === 1 &&
+    launchProfileDerivations.length === 2 &&
+    launchProfileDerivations.every(
+      (call) =>
+        JSON.stringify(call.arguments) ===
+        JSON.stringify(["&profile_api", "&name_wide"]),
+    ) &&
+    launchProfileDeriveUnderGuard.includes(
+      "_profile_api: &AppContainerProfileApiGuard",
+    ) &&
+    !/pub\(crate\)\s+fn\s+(?:raw|sid|profile|name|into_sid|profile_sid)\b/u.test(
+      keyAgentLpacRelease,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:Prepared|Verified)KeyAgentLpac\b/u.test(
+      keyAgentLpacRelease,
+    ),
+  "Key Agent LPAC selection must remain a private zero-input fixed profile with created-versus-derived SID validation",
+);
 requireInvariant(
   keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
     keyAgentCreationAttributeBlock.includes(
@@ -6836,13 +7215,46 @@ requireInvariant(
     keyAgentCreationAttributeBlock.includes(
       "root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>",
     ) &&
-    keyAgentCreationAttributeImpl.match(
-      /InitializeProcThreadAttributeList\([^\n]*,\s*2,\s*None,/gu,
-    )?.length === 2 &&
+    keyAgentCreationAttributeBlock.includes("lpac: &'resources PreparedKeyAgentLpac") &&
+    keyAgentAttributeListInitializations.length === 2 &&
+    keyAgentAttributeListInitializations.every(
+      (call) => call.arguments.length === 4 && call.arguments[1] === "4",
+    ) &&
+    keyAgentAttributeListInitializations[0].arguments[0] === "None" &&
+    keyAgentAttributeListInitializations[1].arguments[0] === "Some(pointer)" &&
     keyAgentCreationAttributeImpl.includes(
       "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
     ) &&
-    keyAgentCreationAttributeImpl.includes(".install_into(attributes.pointer)") &&
+    (keyAgentCreationAttributeImpl.match(/\bUpdateProcThreadAttribute\s*\(/gu) ?? [])
+      .length === 1 &&
+    keyAgentCreationAttributeOrder.every((position) => position !== -1) &&
+    keyAgentCreationAttributeOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentCreationAttributeOrder[index],
+      ) &&
+    keyAgentLpacAttributeUpdates.length === 2 &&
+    JSON.stringify(
+      keyAgentLpacAttributeUpdates.map((call) => call.arguments[1]),
+    ) ===
+      JSON.stringify([
+        "PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES",
+        "PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY",
+      ]) &&
+    keyAgentLpacAttributeUpdates[0].arguments[3] ===
+      "size_of::<SECURITY_CAPABILITIES>()" &&
+    keyAgentLpacAttributeUpdates[1].arguments[3] === "size_of::<u32>()" &&
+    /const\s+CAPABILITY_COUNT:\s*u32\s*=\s*0\s*;/u.test(keyAgentLpacRelease) &&
+    keyAgentLpacAttributeValues.includes("AppContainerSid: profile_sid.0") &&
+    keyAgentLpacAttributeValues.includes("Capabilities: ptr::null_mut()") &&
+    keyAgentLpacAttributeValues.includes("CapabilityCount: CAPABILITY_COUNT") &&
+    keyAgentLpacAttributeValues.includes("Reserved: 0") &&
+    keyAgentLpacAttributeValues.includes(
+      "all_application_packages_policy: PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT",
+    ) &&
+    !/\b(?:PROC_THREAD_ATTRIBUTE_)?CHILD_PROCESS_POLICY\b/u.test(
+      `${keyAgentActivationRelease}\n${keyAgentLpacRelease}`,
+    ) &&
     keyAgentActivation.includes(
       "impl Drop for KeyAgentCreationAttributes<'_, '_, '_, '_>",
     ) &&
@@ -6869,10 +7281,474 @@ requireInvariant(
     ) &&
     verifyBoundRootProcess.includes(".recheck_supervisor_context()") &&
     verifyBoundRootProcess.includes(".contains_process(process)") &&
-    verifyBoundRootProcess.includes("active_processes == 1") &&
-    !keyAgentActivation.includes("PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES") &&
-    !keyAgentActivation.includes("SECURITY_CAPABILITIES"),
-  "dormant Key Agent creation must atomically bind exactly three stdio handles and one root Job without claiming LPAC",
+    verifyBoundRootProcess.includes("active_processes == 1"),
+  "dormant Key Agent creation must atomically bind three stdio handles, one root Job, and the exact zero-capability LPAC attributes without descendant policy",
+);
+const compactPrepareKeyAgentProcess = compactRust(prepareKeyAgentProcessRelease);
+const keyAgentProcessPreparationOrder = [
+  "RestrictedProcessContext::prepare()",
+  "PreparedKeyAgentLpac::prepare()",
+  ".environment_with_local_app_data(context.environment())",
+  "artifact.path()",
+  "Ok(PreparedKeyAgentProcess{",
+].map((marker) => compactPrepareKeyAgentProcess.indexOf(marker));
+const compactKeyAgentLpacEnvironment = compactRust(keyAgentLpacEnvironment);
+requireInvariant(
+  keyAgentProcessPreparationOrder.every((position) => position !== -1) &&
+    keyAgentProcessPreparationOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentProcessPreparationOrder[index],
+      ) &&
+    /struct\s+PreparedKeyAgentProcess\s*\{[\s\S]*?context:\s*RestrictedProcessContext,[\s\S]*?environment:\s*Box<\[u16\]>,[\s\S]*?lpac:\s*PreparedKeyAgentLpac,/u.test(
+      keyAgentActivationRelease,
+    ) &&
+    compactKeyAgentLpacEnvironment.includes(
+      "letappcontainer_local_data=appcontainer_folder(&self.profile_sid)?;",
+    ) &&
+    keyAgentLpacEnvironment.includes(
+      '!local_folder_name.eq_ignore_ascii_case("AC")',
+    ) &&
+    compactKeyAgentLpacEnvironment.includes(
+      "!profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)",
+    ) &&
+    keyAgentLpacEnvironment.includes(
+      '!packages_name.eq_ignore_ascii_case("Packages")',
+    ) &&
+    compactKeyAgentLpacEnvironment.includes("!local_app_data.is_absolute()") &&
+    compactKeyAgentLpacEnvironment.includes(
+      "!base_environment_is_exact(base_environment)",
+    ) &&
+    (keyAgentLpacEnvironment.match(/"LOCALAPPDATA="/gu) ?? []).length === 2 &&
+    keyAgentLpacEnvironment.includes(
+      'environment.extend("LOCALAPPDATA=".encode_utf16());',
+    ) &&
+    compactKeyAgentLpacEnvironment.includes(
+      "environment.extend_from_slice(&local_value);environment.push(0);environment.extend_from_slice(base_environment);",
+    ) &&
+    compactKeyAgentLpacEnvironment.includes(
+      "environment.len()>32_767||!environment.ends_with(&[0,0])",
+    ) &&
+    keyAgentAppContainerFolder.includes("GetAppContainerFolderPath") &&
+    keyAgentAppContainerFolder.includes("CoTaskMemFree") &&
+    exactKeyAgentBaseEnvironment.includes("environment.ends_with(&[0, 0])") &&
+    exactKeyAgentBaseEnvironment.includes('"SystemRoot=".encode_utf16()') &&
+    exactKeyAgentBaseEnvironment.includes('"WINDIR=".encode_utf16()') &&
+    exactKeyAgentBaseEnvironment.includes("entries.next().is_none()") &&
+    !/\b(?:std::env|env)::(?:var|var_os|vars|vars_os)\s*\(/u.test(
+      `${keyAgentActivationRelease}\n${keyAgentLpacRelease}`,
+    ) &&
+    !/\b(?:GetEnvironmentVariable|GetEnvironmentStrings|CreateEnvironmentBlock)\w*\b/u.test(
+      `${keyAgentActivationRelease}\n${keyAgentLpacRelease}`,
+    ) &&
+    keyAgentCreateProcess.includes(
+      "Some(prepared_process.environment.as_ptr().cast::<c_void>())",
+    ),
+  "Key Agent creation must use only OS-derived LOCALAPPDATA plus the exact validated SystemRoot/WINDIR block with no ambient environment inheritance",
+);
+const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacToken);
+const keyAgentLpacTokenQueryOrder = [
+  "OpenProcessToken(",
+  "token_dword(token.0,TokenIsAppContainer)?",
+  "less_privileged_appcontainer_dword(token.0)?",
+  "token_information(token.0,TokenAppContainerSid)?",
+  "EqualSid(container.TokenAppContainer,expected_sid)",
+  "token_information(token.0,TokenCapabilities)?",
+  "appcontainer_membership_evidence(token.0)?",
+  "validate_token_policy(&evidence)",
+].map((marker) => compactVerifyKeyAgentLpacToken.indexOf(marker));
+const compactOptionalKeyAgentLpacDword = compactRust(
+  queryOptionalKeyAgentLpacDword,
+);
+const compactKeyAgentLpacMembershipEvidence = compactRust(
+  queryKeyAgentLpacMembershipEvidence,
+);
+const keyAgentMembershipChecks = rustCallSites(
+  checkKeyAgentTokenMembership,
+  "CheckTokenMembershipEx",
+);
+const keyAgentMembershipEvidenceCalls = rustCallSites(
+  queryKeyAgentLpacMembershipEvidence,
+  "check_token_membership",
+);
+const compactKeyAgentTokenValidation = compactRust(validateKeyAgentLpacToken);
+requireInvariant(
+  /pub\(crate\)\s+fn\s+verify_suspended_process\(\s*self,\s*process:\s*BorrowedHandle<'_>/u.test(
+    keyAgentLpacVerifySuspended,
+  ) &&
+    keyAgentLpacVerifySuspended.includes(
+      "verify_process_token(process, self.profile_sid.0)?",
+    ) &&
+    keyAgentLpacVerifySuspended.includes("Ok(VerifiedKeyAgentLpac { _private: () })") &&
+    /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{\s*_private:\s*\(\),\s*\}/su.test(
+      keyAgentLpacRelease,
+    ) &&
+    keyAgentLpacTokenQueryOrder.every((position) => position !== -1) &&
+    keyAgentLpacTokenQueryOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentLpacTokenQueryOrder[index],
+    ) &&
+    compactVerifyKeyAgentLpacToken.includes(
+      "OpenProcessToken(HANDLE(process.as_raw_handle()),TOKEN_QUERY|TOKEN_DUPLICATE,&rawmutraw_token,)",
+    ) &&
+    queryKeyAgentLpacDword.includes("GetTokenInformation") &&
+    queryKeyAgentLpacDword.includes("size_of::<u32>()") &&
+    compactOptionalKeyAgentLpacDword.includes(
+      "TokenIsLessPrivilegedAppContainer",
+    ) &&
+    compactOptionalKeyAgentLpacDword.includes(
+      "Err(error)iferror.code()==ERROR_INVALID_PARAMETER.to_hresult()=>Ok(None)",
+    ) &&
+    (compactOptionalKeyAgentLpacDword.match(/=>Ok\(None\)/gu) ?? []).length ===
+      1 &&
+    compactOptionalKeyAgentLpacDword.includes(
+      "Err(_)=>Err(KeyAgentLpacError::Token)",
+    ) &&
+    compactKeyAgentLpacMembershipEvidence.includes(
+      "token_information(token,TokenUser)?",
+    ) &&
+    compactKeyAgentLpacMembershipEvidence.includes(
+      "IsValidSid(user.User.Sid)",
+    ) &&
+    compactKeyAgentLpacMembershipEvidence.includes(
+      "DuplicateToken(token,SecurityIdentification,&rawmutraw_impersonation_token,)",
+    ) &&
+    compactKeyAgentLpacMembershipEvidence.includes(
+      "letimpersonation_token=OwnedToken::new(raw_impersonation_token)?;",
+    ) &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentLpacMembershipEvidenceDefinition),
+    ) ===
+      "enum AppContainerMembershipEvidence { Lpac, RegularAppContainer, Neither, Inverted, }" &&
+    keyAgentMembershipEvidenceCalls.length === 2 &&
+    (rustLexicalCode(keyAgentLpacRelease).match(
+      /\bcheck_token_membership\s*\(/gu,
+    ) ?? []).length === 3 &&
+    JSON.stringify(
+      keyAgentMembershipEvidenceCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        [
+          "impersonation_token.0",
+          "user.User.Sid",
+          "CTMF_INCLUDE_APPCONTAINER",
+        ],
+        [
+          "impersonation_token.0",
+          "user.User.Sid",
+          "CTMF_INCLUDE_APPCONTAINER | CTMF_INCLUDE_LPAC",
+        ],
+      ]) &&
+    compactKeyAgentLpacMembershipEvidence.includes(
+      "Ok(match(passes_appcontainer,passes_lpac){(false,true)=>AppContainerMembershipEvidence::Lpac,(true,true)=>AppContainerMembershipEvidence::RegularAppContainer,(false,false)=>AppContainerMembershipEvidence::Neither,(true,false)=>AppContainerMembershipEvidence::Inverted,})",
+    ) &&
+    keyAgentMembershipChecks.length === 1 &&
+    JSON.stringify(keyAgentMembershipChecks[0].arguments) ===
+      JSON.stringify([
+        "Some(impersonation_token)",
+        "sid",
+        "flags",
+        "&raw mut is_member",
+      ]) &&
+    (keyAgentLpacRelease.match(/\bCheckTokenMembershipEx\s*\(/gu) ?? [])
+      .length === 1 &&
+    !/\bToken(?:Groups|RestrictedSids)\b/u.test(keyAgentLpacRelease) &&
+    queryKeyAgentTokenInformation.includes("MAX_TOKEN_INFORMATION_BYTES") &&
+    queryKeyAgentTokenInformation.includes("checked_add(word_size - 1)") &&
+    queryKeyAgentTokenInformation.includes("returned_bytes > required") &&
+    compactKeyAgentTokenValidation.includes("evidence.is_lpac.as_ref()") &&
+    compactKeyAgentTokenValidation.includes(
+      "Some(is_lpac)=>is_lpac.value==1&&is_lpac.returned_bytes==size_of::<u32>()",
+    ) &&
+    compactKeyAgentTokenValidation.includes("None=>true") &&
+    compactKeyAgentTokenValidation.includes("evidence.is_appcontainer.value!=1") &&
+    compactKeyAgentTokenValidation.includes(
+      "evidence.is_appcontainer.returned_bytes!=size_of::<u32>()",
+    ) &&
+    compactKeyAgentTokenValidation.includes(
+      "evidence.membership!=AppContainerMembershipEvidence::Lpac",
+    ) &&
+    compactKeyAgentTokenValidation.includes("!evidence.appcontainer_sid_valid") &&
+    compactKeyAgentTokenValidation.includes("!evidence.appcontainer_sid_matches") &&
+    compactKeyAgentTokenValidation.includes(
+      "evidence.capability_count!=CAPABILITY_COUNT",
+    ),
+  "the suspended Key Agent token must prove the fixed AppContainer SID, zero capabilities, and the exact AppContainer-versus-LPAC membership differential while allowing only the documented invalid-parameter query fallback",
+);
+const regularAppContainerAttributeList = rustFunctionBlock(
+  keyAgentLpacSource,
+  "regular_appcontainer_attribute_list",
+);
+const regularAppContainerAttributeInitializations = rustCallSites(
+  regularAppContainerAttributeList,
+  "InitializeProcThreadAttributeList",
+);
+const createSuspendedRegularAppContainer = rustFunctionBlock(
+  keyAgentLpacSource,
+  "create_suspended_regular_appcontainer",
+);
+const regularAppContainerCreateCalls = rustCallSites(
+  createSuspendedRegularAppContainer,
+  "CreateProcessW",
+);
+const regularAppContainerNegativeControl = rustFunctionBlock(
+  keyAgentLpacSource,
+  "regular_appcontainer_negative_control_passes_both_membership_paths",
+);
+const tokenPolicyNegativeControl = rustFunctionBlock(
+  keyAgentLpacSource,
+  "token_policy_rejects_each_single_invariant_break",
+);
+const testSuspendedProcessDrop = rustLexicalItemBlock(
+  keyAgentLpacSource,
+  /impl\s+Drop\s+for\s+TestSuspendedProcess\s*\{/u,
+);
+const terminateAndWaitTestSuspendedProcess = rustFunctionBlock(
+  keyAgentLpacSource,
+  "terminate_and_wait",
+);
+const compactTestSuspendedProcessDrop = compactRust(testSuspendedProcessDrop);
+const regularAppContainerCleanupOrder = [
+  "TerminateProcess(self.process,0xE0A0_0002)",
+  "WaitForSingleObject(self.process,5_000)",
+  "CloseHandle(self.process)",
+  "CloseHandle(self.thread)",
+].map((marker) => compactTestSuspendedProcessDrop.indexOf(marker));
+const compactTerminateAndWaitTestSuspendedProcess = compactRust(
+  terminateAndWaitTestSuspendedProcess,
+);
+const regularAppContainerExplicitCleanupOrder = [
+  "TerminateProcess(self.process,0xE0A0_0002)",
+  "WaitForSingleObject(self.process,5_000)",
+  "CloseHandle(self.thread)",
+  "CloseHandle(self.process)",
+  "self.thread=HANDLE::default()",
+  "self.process=HANDLE::default()",
+].map((marker) => compactTerminateAndWaitTestSuspendedProcess.indexOf(marker));
+requireInvariant(
+  !keyAgentLpacRelease.includes("regular_appcontainer") &&
+    regularAppContainerAttributeInitializations.length === 2 &&
+    regularAppContainerAttributeInitializations.every(
+      (call) => call.arguments.length === 4 && call.arguments[1] === "1",
+    ) &&
+    regularAppContainerAttributeList.includes(
+      "PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES",
+    ) &&
+    !rustLexicalCode(regularAppContainerAttributeList).includes(
+      "PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY",
+    ) &&
+    (regularAppContainerAttributeList.match(
+      /\bUpdateProcThreadAttribute\s*\(/gu,
+    ) ?? []).length === 1 &&
+    regularAppContainerCreateCalls.length === 1 &&
+    regularAppContainerCreateCalls[0].arguments.length === 10 &&
+    regularAppContainerCreateCalls[0].arguments[1] === "None" &&
+    regularAppContainerCreateCalls[0].arguments[4] === "false" &&
+    compactRust(regularAppContainerCreateCalls[0].arguments[5]) ===
+      "CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT|EXTENDED_STARTUPINFO_PRESENT" &&
+    compactRust(regularAppContainerCreateCalls[0].arguments[6]) ===
+      "Some(environment.as_ptr().cast::<c_void>())" &&
+    compactRust(regularAppContainerCreateCalls[0].arguments[7]) ===
+      "PCWSTR(context.current_directory().as_ptr())" &&
+    !/\b(?:ResumeThread|ContinueDebugEvent|DebugActiveProcessStop)\b/u.test(
+      rustLexicalCode(
+        `${createSuspendedRegularAppContainer}\n${regularAppContainerNegativeControl}\n${testSuspendedProcessDrop}`,
+      ),
+    ) &&
+    regularAppContainerNegativeControl.includes(
+      "create_suspended_regular_appcontainer(&prepared, &fixture)?",
+    ) &&
+    regularAppContainerNegativeControl.includes(
+      "appcontainer_membership_evidence(token.0)?",
+    ) &&
+    regularAppContainerNegativeControl.includes(
+      "AppContainerMembershipEvidence::RegularAppContainer",
+    ) &&
+    regularAppContainerNegativeControl.includes("process.terminate_and_wait()?") &&
+    regularAppContainerNegativeControl.indexOf("process.terminate_and_wait()?") <
+      regularAppContainerNegativeControl.indexOf("Ok(())") &&
+    tokenPolicyNegativeControl.includes(
+      "membership: AppContainerMembershipEvidence::RegularAppContainer",
+    ) &&
+    tokenPolicyNegativeControl.includes(
+      "membership: AppContainerMembershipEvidence::Neither",
+    ) &&
+    tokenPolicyNegativeControl.includes(
+      "membership: AppContainerMembershipEvidence::Inverted",
+    ) &&
+    tokenPolicyNegativeControl.includes("validate_token_policy(&evidence)") &&
+    tokenPolicyNegativeControl.includes("Err(KeyAgentLpacError::Token)") &&
+    regularAppContainerCleanupOrder.every((position) => position !== -1) &&
+    regularAppContainerCleanupOrder
+      .slice(1)
+      .every(
+        (position, index) => position > regularAppContainerCleanupOrder[index],
+      ) &&
+    regularAppContainerExplicitCleanupOrder.every(
+      (position) => position !== -1,
+    ) &&
+    regularAppContainerExplicitCleanupOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > regularAppContainerExplicitCleanupOrder[index],
+      ) &&
+    compactTerminateAndWaitTestSuspendedProcess.includes(
+      "WaitForSingleObject(self.process,5_000)}!=WAIT_OBJECT_0",
+    ),
+  "the cfg(test) regular-AppContainer negative control must omit only AAP opt-out, prove APP=true and APP|LPAC=true, never resume, and terminate/wait/close its suspended child",
+);
+const suspendedDebuggeeBlock = rustLexicalItemBlock(
+  keyAgentActivation,
+  /pub\(super\)\s+struct\s+SuspendedDebuggee\s*\{/u,
+);
+const suspendedDebuggeeImpl = rustLexicalItemBlock(
+  keyAgentActivation,
+  /impl\s+SuspendedDebuggee\s*\{/u,
+);
+const authenticateKeyAgentFirstEvent = rustFunctionBlock(
+  suspendedDebuggeeImpl,
+  "authenticate_first_event",
+);
+const detachKeyAgentStillSuspended = rustFunctionBlock(
+  suspendedDebuggeeImpl,
+  "detach_still_suspended",
+);
+const keyAgentDetachedSuspensionProof = rustFunctionBlock(
+  suspendedDebuggeeImpl,
+  "is_detached_and_suspended",
+);
+const compactAuthenticateKeyAgentFirstEvent = compactRust(
+  authenticateKeyAgentFirstEvent,
+);
+const keyAgentLpacAuthenticationOrder = [
+  "letmapped_identity=exact_file_identity(event_file.raw())?;",
+  "ifmapped_identity!=expected_artifact",
+  "drop(event_file);",
+  "letcreation_time=process_creation_time(self.process.raw())?;",
+  "letprevious_suspend_count=unsafe{SuspendThread(self.primary_thread.raw())};",
+  "ifprevious_suspend_count!=0",
+  "self.proven_suspend_count=1;",
+  "self.prepared_lpac.take()",
+  ".verify_suspended_process(self.process_handle())",
+  "self.lpac=Some(verified_lpac);",
+  "Ok(AuthenticatedFirstEvent{creation_time})",
+].map((marker) => compactAuthenticateKeyAgentFirstEvent.indexOf(marker));
+requireInvariant(
+  suspendedDebuggeeBlock.includes(
+    "prepared_lpac: Option<PreparedKeyAgentLpac>",
+  ) &&
+    suspendedDebuggeeBlock.includes("lpac: Option<VerifiedKeyAgentLpac>") &&
+    keyAgentLpacAuthenticationOrder.every((position) => position !== -1) &&
+    keyAgentLpacAuthenticationOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentLpacAuthenticationOrder[index],
+      ) &&
+    authenticateKeyAgentFirstEvent.includes("self.prepared_lpac.is_none()") &&
+    authenticateKeyAgentFirstEvent.includes("self.lpac.is_some()") &&
+    !rustLexicalCode(authenticateKeyAgentFirstEvent).includes(
+      "ContinueDebugEvent",
+    ) &&
+    detachKeyAgentStillSuspended.includes("self.proven_suspend_count != 1") &&
+    detachKeyAgentStillSuspended.includes("self.prepared_lpac.is_some()") &&
+    detachKeyAgentStillSuspended.includes("self.lpac.is_none()") &&
+    detachKeyAgentStillSuspended.indexOf("self.lpac.is_none()") <
+      detachKeyAgentStillSuspended.indexOf("ContinueDebugEvent") &&
+    keyAgentDetachedSuspensionProof.includes(
+      "self.phase == LaunchPhase::DetachedSuspended",
+    ) &&
+    keyAgentDetachedSuspensionProof.includes("self.proven_suspend_count == 1") &&
+    keyAgentDetachedSuspensionProof.includes("self.prepared_lpac.is_none()") &&
+    keyAgentDetachedSuspensionProof.includes("self.lpac.is_some()"),
+  "mapped-image authentication and an explicit suspend count must precede LPAC token proof, debug continuation, detachment, and detached type-state export",
+);
+const keyAgentLpacFixtureCreate = rustFunctionBlock(keyAgentLpac, "create");
+const keyAgentLpacFixtureDrop = rustLexicalItemBlock(
+  keyAgentLpac,
+  /impl\s+Drop\s+for\s+KeyAgentLpacKernelTestFixture\s*\{/u,
+);
+const keyAgentLpacFixtureDebug = rustLexicalItemBlock(
+  keyAgentLpac,
+  /impl\s+fmt::Debug\s+for\s+KeyAgentLpacKernelTestFixture\s*\{/u,
+);
+const applyExactKeyAgentFixtureDacl = rustFunctionBlock(
+  keyAgentLpac,
+  "apply_exact_fixture_dacl",
+);
+const createUniqueKeyAgentFixtureDirectory = rustFunctionBlock(
+  keyAgentLpac,
+  "create_unique_fixture_directory",
+);
+const copyCurrentKeyAgentTestImage = rustFunctionBlock(
+  keyAgentLpac,
+  "copy_current_test_image",
+);
+const keyAgentActivationTestArtifact = rustFunctionBlock(
+  activationHelper,
+  "for_key_agent_activation_test",
+);
+const compactKeyAgentLpacFixtureCreate = compactRust(
+  keyAgentLpacFixtureCreate,
+);
+const keyAgentFixtureCreationOrder = [
+  "OwnedAppContainerSid::open_or_create()?",
+  "appcontainer_folder(&profile_sid)?",
+  "create_unique_fixture_directory(&profile_folder)?",
+  "letexecutable=directory.join(",
+  "apply_exact_fixture_dacl(&directory,profile_sid.0)",
+  "copy_current_test_image(&executable)",
+  "apply_exact_fixture_dacl(&executable,profile_sid.0)",
+  "Ok(Self{directory,executable,})",
+].map((marker) => compactKeyAgentLpacFixtureCreate.indexOf(marker));
+requireInvariant(
+  /#\[cfg\(test\)\]\s*pub\(crate\)\s+struct\s+KeyAgentLpacKernelTestFixture\s*\{/u.test(
+    keyAgentLpac,
+  ) &&
+    !keyAgentLpacRelease.includes("KeyAgentLpacKernelTestFixture") &&
+    !keyAgentLpacRelease.includes("SetFileSecurityW") &&
+    !keyAgentLpacRelease.includes("std::env::current_exe") &&
+    keyAgentFixtureCreationOrder.every((position) => position !== -1) &&
+    keyAgentFixtureCreationOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentFixtureCreationOrder[index],
+      ) &&
+    keyAgentLpacFixtureCreate.includes(
+      'directory.join("key-agent-kernel-test.exe")',
+    ) &&
+    compactKeyAgentLpacFixtureCreate.includes("!profile_folder.is_absolute()") &&
+    compactKeyAgentLpacFixtureCreate.includes("!profile_folder.is_dir()") &&
+    createUniqueKeyAgentFixtureDirectory.includes("getrandom::fill(&mut random)") &&
+    createUniqueKeyAgentFixtureDirectory.includes("std::fs::create_dir(&candidate)") &&
+    !createUniqueKeyAgentFixtureDirectory.includes("create_dir_all") &&
+    copyCurrentKeyAgentTestImage.includes("std::env::current_exe()") &&
+    copyCurrentKeyAgentTestImage.includes(".create_new(true)") &&
+    copyCurrentKeyAgentTestImage.includes("destination_file.sync_all()") &&
+    applyExactKeyAgentFixtureDacl.includes(
+      'format!("D:P(A;;FA;;;{user_sid})(A;;GRGX;;;{profile_sid})")',
+    ) &&
+    applyExactKeyAgentFixtureDacl.includes(
+      "DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION",
+    ) &&
+    applyExactKeyAgentFixtureDacl.includes("SetFileSecurityW") &&
+    keyAgentLpacFixtureDrop.includes("remove_file(&self.executable)") &&
+    keyAgentLpacFixtureDrop.includes("remove_dir(&self.directory)") &&
+    !keyAgentLpacFixtureDrop.includes("remove_dir_all") &&
+    keyAgentLpacFixtureDebug.includes(
+      'formatter.write_str("KeyAgentLpacKernelTestFixture([REDACTED PATH])")',
+    ) &&
+    /#\[cfg\(all\(test,\s*windows\)\)\]\s*pub\(crate\)\s+fn\s+for_key_agent_activation_test/u.test(
+      activationHelper,
+    ) &&
+    keyAgentActivationTestArtifact.includes(
+      "KeyAgentLpacKernelTestFixture::create()",
+    ) &&
+    keyAgentActivationTestArtifact.includes("fixture.path().to_path_buf()") &&
+    keyAgentActivationTestArtifact.includes(".share_mode(FILE_SHARE_READ.0)") &&
+    keyAgentActivationTestArtifact.includes("_key_agent_lpac_fixture: Some(fixture)"),
+  "the Key Agent LPAC launchability fixture must remain test-only, profile-folder confined, CSPRNG-unique, exact-ACL protected, pinned, redacted, and non-recursively cleaned up",
 );
 const detachedImplStart = keyAgentActivation.indexOf("impl DetachedSuspendedDebuggee {");
 const detachedImplEnd = keyAgentActivation.indexOf(
@@ -6937,20 +7813,30 @@ requireInvariant(
     ),
   "verified Key Agent role must remain private and manifest-derived",
 );
+const keyAgentBoundaryDocumentation = [
+  rootReadme,
+  activationArchitecture,
+  activationReadme,
+  securityDecisions,
+].join("\n");
 requireInvariant(
-  activationArchitecture.includes("### Key Agent activation invariant (STOP-SHIP)") &&
+    activationArchitecture.includes("### Key Agent activation invariant (STOP-SHIP)") &&
     activationArchitecture.includes("fresh dedicated OS thread") &&
-    activationArchitecture.includes("all-zero or all-`FF`") &&
-    activationArchitecture.includes(
-      "Zero-capability Key Agent LPAC/profile provisioning, storage authorization, and",
+    /all-zero[\s\S]{0,100}all-`FF`/u.test(activationArchitecture) &&
+    activationArchitecture.includes("YourWallet.KeyAgent.LPAC.v1") &&
+    /\bfour-slot\s+`STARTUPINFOEXW` attribute list/u.test(
+      activationArchitecture,
     ) &&
+    activationArchitecture.includes("`SECURITY_CAPABILITIES`") &&
+    activationArchitecture.includes("`ALL_APPLICATION_PACKAGES_POLICY`") &&
+    activationArchitecture.includes("`GetAppContainerFolderPath`") &&
     activationArchitecture.includes("Do not add `registryRead`") &&
     /fresh dedicated\s+debugger OS thread/u.test(activationReadme) &&
     activationReadme.includes("all-zero and all-`FF`") &&
     activationReadme.includes("no resume API") &&
-    activationReadme.includes(
-      "Keep zero-capability Key Agent LPAC activation and profile provisioning",
-    ) &&
+    activationReadme.includes("YourWallet.KeyAgent.LPAC.v1") &&
+    activationReadme.includes("SECURITY_CAPABILITIES") &&
+    activationReadme.includes("ALL_APPLICATION_PACKAGES") &&
     activationReadme.includes("Do not add") &&
     activationReadme.includes("`registryRead`") &&
     activationArchitecture.includes("**STOP-SHIP (English):**") &&
@@ -6967,8 +7853,35 @@ requireInvariant(
     activationReadme.includes("`std::process::Command`") &&
     activationReadme.includes("separate matching static lock") &&
     activationReadme.includes("single-instance/process topology") &&
-    activationReadme.includes("clear the inherit bit"),
-  "Key Agent activation limitations, LPAC/storage blockers, and type-state proof must remain documented",
+    activationReadme.includes("clear the inherit bit") &&
+    keyAgentBoundaryDocumentation.includes("CheckTokenMembershipEx") &&
+    keyAgentBoundaryDocumentation.includes("(false, true)") &&
+    keyAgentBoundaryDocumentation.includes("(true, true)") &&
+    !/\bToken(?:Groups|RestrictedSids)\b/u.test(keyAgentBoundaryDocumentation) &&
+    !/Keep zero-capability Key Agent LPAC activation and profile provisioning\s+\*\*STOP-SHIP\*\* until a distinct Key Agent profile is provisioned/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    /(?:Key Agent-only|Key Agent 전용)\s+storage(?: ACL| authorization| access)/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    /authenticated\s+(?:Native Host\/)?Broker[\s\S]{0,120}(?:startup|process topology|프로세스 topology)/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    /(?:startup[^\n]{0,80}(?:nonce|exchange|교환)|nonce[^\n]{0,80}(?:startup|exchange|교환))/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    /(?:single-instance\/process topology|single-instance|단일\s*인스턴스)/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    /(?:signed immutable installation|signed install|서명[^\n]{0,40}(?:설치|artifact))/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    securityDecisions.includes("**Current release status: STOP-SHIP.**") &&
+    securityDecisions.includes("`COMPILED_RELEASE_POLICY` remains `None`") &&
+    activationArchitecture.includes("`COMPILED_RELEASE_POLICY`") &&
+    activationArchitecture.includes("remain separate blockers") &&
+    activationReadme.includes("`COMPILED_RELEASE_POLICY` is `None`"),
+  "Key Agent fixed-LPAC proof and exact membership semantics must be documented without weakening storage, startup/topology, signed-install, or release-disabled STOP-SHIP claims",
 );
 
 for (const mainPath of [

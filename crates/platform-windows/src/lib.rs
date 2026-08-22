@@ -67,6 +67,8 @@
 
 #[allow(dead_code)]
 mod anchor_registry;
+#[cfg(windows)]
+mod appcontainer_profile_api;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
@@ -104,12 +106,17 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
+// Fixed, zero-capability Key Agent LPAC provisioning and suspended-token proof
+// remain private to the dormant activation boundary. No caller can select a
+// profile name, SID, capability, or raw token attribute.
+#[cfg(windows)]
+mod key_agent_lpac;
 #[cfg(windows)]
 mod key_agent_root_job;
 // The startup lease, private parent channel, root Job, and exact-image
 // activation are one dormant aggregate with no resume path. Protected-settings
-// authorization, the Broker protocol, and a distinct Key Agent LPAC/storage
-// policy remain intentionally unbound and release-blocking.
+// authorization, the Broker protocol, and Key Agent-only storage policy remain
+// intentionally unbound and release-blocking.
 #[cfg(windows)]
 mod key_agent_supervisor;
 pub mod launch;
