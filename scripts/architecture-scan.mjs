@@ -3840,6 +3840,41 @@ const keyAgentPipeProduction = withoutBottomTestModule(keyAgentPipeSource);
 const keyAgentSupervisor = withoutBottomTestModule(
   await text("crates/platform-windows/src/key_agent_supervisor.rs"),
 );
+const keyAgentMainSource = await text("crates/key-agent/src/main.rs");
+const keyAgentWindowsMain = rustLexicalItemBlock(
+  keyAgentMainSource,
+  /#\s*\[\s*cfg\s*\(\s*windows\s*\)\s*\]\s*fn\s+main\s*\(\s*\)\s*\{/u,
+);
+const keyAgentChildBootstrapSource = await text(
+  "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+);
+const keyAgentChildBootstrapProduction = withoutBottomTestModule(
+  keyAgentChildBootstrapSource,
+);
+const sealInheritedKeyAgentStdio = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "seal_inherited_key_agent_stdio",
+);
+const sealExactKeyAgentStandardHandleSet = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "seal_exact_standard_handle_set",
+);
+const keyAgentBootstrapInvalidHandle = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "invalid",
+);
+const keyAgentBootstrapSameObject = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "same_object",
+);
+const keyAgentBootstrapHandleFlags = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "handle_flags",
+);
+const sealedKeyAgentStdioDefinition = rustLexicalItemBlock(
+  keyAgentChildBootstrapProduction,
+  /(?:^|\n)\s*pub\s+struct\s+SealedKeyAgentStdio\s*\{/u,
+);
 const platformWindowsProductionFiles = await rustProductionSources(
   "crates/platform-windows/src",
   { withoutInlineTests: true },
@@ -4275,6 +4310,508 @@ requireInvariant(
     rootReadme.includes("`COMPILED_RELEASE_POLICY`는 계속 `None`"),
   "Broker preflight and dormant activation must remain documented as same-held-file, private, release-disabled, coordinator-covered within one crate instance, and STOP-SHIP",
 );
+
+const keyAgentWindowsMainNormalized = normalizeRustFragment(
+  rustLexicalCode(keyAgentWindowsMain),
+);
+const keyAgentWindowsSealCalls = rustCallSites(
+  keyAgentWindowsMain,
+  "seal_inherited_key_agent_stdio",
+);
+const keyAgentWindowsExitCalls = rustCallSites(keyAgentWindowsMain, "exit");
+requireInvariant(
+  keyAgentWindowsMainNormalized ===
+    "#[cfg(windows)] fn main() { let Ok(_sealed_stdio) = platform_windows::seal_inherited_key_agent_stdio() else { std::process::exit(78); }; std::process::exit(78); }" &&
+    keyAgentWindowsSealCalls.length === 1 &&
+    keyAgentWindowsSealCalls[0]?.arguments.length === 0 &&
+    keyAgentWindowsExitCalls.length === 2 &&
+    keyAgentWindowsExitCalls.every(
+      (call) => JSON.stringify(call.arguments) === JSON.stringify(["78"]),
+    ) &&
+    !/\b(?:drop|forget)\s*\(\s*_sealed_stdio\s*\)/u.test(
+      rustLexicalCode(keyAgentWindowsMain),
+    ),
+  "the Windows Key Agent entrypoint must first seal zero-argument inherited stdio, retain the proof through scope exit, and terminate with exit 78 on both outcomes",
+);
+
+const keyAgentBootstrapPublicFunctionNames = [
+  ...rustLexicalCode(keyAgentChildBootstrapProduction).matchAll(
+    /(?:^|\n)\s*pub(?:\([^\r\n)]*\))?\s+(?:(?:const|async|unsafe)\s+)*(?:extern(?:\s+"[^"\r\n]*")?\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const keyAgentBootstrapExportMembers = normalizeRustFragment(
+  /pub\s+use\s+key_agent_child_bootstrap::\{(?<members>[^}]*)\}/u.exec(
+    rustLexicalCode(platformWindowsLib),
+  )?.groups?.members ?? "",
+);
+const keyAgentBootstrapApiAliases = [
+  ...rustLexicalCode(keyAgentChildBootstrapProduction).matchAll(
+    /\b(?:CompareObjectHandles|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation)\s+as\s+(?:_|[A-Za-z_]\w*)|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*(?:CompareObjectHandles|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation)\b/gu,
+  ),
+];
+const keyAgentBootstrapGetStdHandleCalls = rustCallSites(
+  keyAgentChildBootstrapProduction,
+  "GetStdHandle",
+);
+const keyAgentBootstrapCompareObjectCalls = rustCallSites(
+  keyAgentChildBootstrapProduction,
+  "CompareObjectHandles",
+);
+const keyAgentBootstrapGetFileTypeCalls = rustCallSites(
+  keyAgentChildBootstrapProduction,
+  "GetFileType",
+);
+const keyAgentBootstrapGetHandleInformationCalls = rustCallSites(
+  keyAgentChildBootstrapProduction,
+  "GetHandleInformation",
+);
+const keyAgentBootstrapSetHandleInformationCalls = rustCallSites(
+  keyAgentChildBootstrapProduction,
+  "SetHandleInformation",
+);
+const sealedKeyAgentStdioTraitImplementations = [
+  ...rustLexicalCode(keyAgentChildBootstrapProduction).matchAll(
+    /\bimpl(?:\s*<[^>{}]*>)?\s+(?<trait>[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:<[^>{}]*>)?)\s+for\s+SealedKeyAgentStdio\s*\{/gu,
+  ),
+].map((match) => normalizeRustFragment(match.groups.trait));
+requireInvariant(
+  platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_child_bootstrap;") &&
+    platformWindowsLib.includes(
+      "KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio,",
+    ) &&
+    keyAgentBootstrapExportMembers ===
+      "KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio," &&
+    JSON.stringify(keyAgentBootstrapPublicFunctionNames) ===
+      JSON.stringify(["seal_inherited_key_agent_stdio"]) &&
+    /^pub fn seal_inherited_key_agent_stdio\s*\(\s*\)\s*->\s*Result<\s*SealedKeyAgentStdio\s*,\s*KeyAgentChildBootstrapError\s*>\s*\{/u.test(
+      rustLexicalCode(sealInheritedKeyAgentStdio),
+    ) &&
+    JSON.stringify(
+      keyAgentBootstrapGetStdHandleCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["STD_INPUT_HANDLE"],
+        ["STD_OUTPUT_HANDLE"],
+        ["STD_ERROR_HANDLE"],
+      ]) &&
+    rustCallSites(sealInheritedKeyAgentStdio, "seal_exact_standard_handle_set")
+      .length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        sealInheritedKeyAgentStdio,
+        "seal_exact_standard_handle_set",
+      )[0]?.arguments,
+    ) === JSON.stringify(["[stdin, stdout, stderr]"]) &&
+    keyAgentBootstrapApiAliases.length === 0,
+  "the Key Agent child bootstrap must expose only one safe zero-argument sealing API and obtain stdin/stdout/stderr exactly once without API aliases",
+);
+
+const keyAgentBootstrapSameObjectCalls = rustCallSites(
+  sealExactKeyAgentStandardHandleSet,
+  "same_object",
+);
+const keyAgentBootstrapFileTypeCalls = rustCallSites(
+  sealExactKeyAgentStandardHandleSet,
+  "file_type",
+);
+const keyAgentBootstrapFlagCalls = rustCallSites(
+  sealExactKeyAgentStandardHandleSet,
+  "handle_flags",
+);
+const keyAgentBootstrapClearCalls = rustCallSites(
+  sealExactKeyAgentStandardHandleSet,
+  "SetHandleInformation",
+);
+const keyAgentBootstrapPreFlagCheck = sealExactKeyAgentStandardHandleSet.indexOf(
+  "handle_flags(*handle) != Ok(HANDLE_FLAG_INHERIT.0)",
+);
+const keyAgentBootstrapClearLoop = sealExactKeyAgentStandardHandleSet.indexOf(
+  "for handle in handles",
+);
+const keyAgentBootstrapPostFlagCheck = sealExactKeyAgentStandardHandleSet.indexOf(
+  "handle_flags(*handle) == Ok(0)",
+);
+const keyAgentBootstrapValidationPositions = [
+  sealExactKeyAgentStandardHandleSet.indexOf(
+    "handles.iter().copied().any(invalid)",
+  ),
+  ...keyAgentBootstrapSameObjectCalls.map((call) => call.index),
+  ...keyAgentBootstrapFileTypeCalls.map((call) => call.index),
+  keyAgentBootstrapPreFlagCheck,
+];
+requireInvariant(
+  sealExactKeyAgentStandardHandleSet.includes(
+    "handles.iter().copied().any(invalid)",
+  ) &&
+    normalizeRustFragment(rustLexicalCode(keyAgentBootstrapInvalidHandle)) ===
+      "fn invalid(handle: HANDLE) -> bool { handle.is_invalid() || handle == INVALID_HANDLE_VALUE }" &&
+    JSON.stringify(
+      keyAgentBootstrapSameObjectCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["stdin", "stdout"],
+        ["stdin", "stderr"],
+        ["stdout", "stderr"],
+      ]) &&
+    JSON.stringify(keyAgentBootstrapFileTypeCalls.map((call) => call.arguments)) ===
+      JSON.stringify([["stdin"], ["stdout"], ["stderr"]]) &&
+    sealExactKeyAgentStandardHandleSet.includes(
+      "file_type(stdin) != FILE_TYPE_PIPE",
+    ) &&
+    sealExactKeyAgentStandardHandleSet.includes(
+      "file_type(stdout) != FILE_TYPE_PIPE",
+    ) &&
+    sealExactKeyAgentStandardHandleSet.includes(
+      "file_type(stderr) != FILE_TYPE_CHAR",
+    ) &&
+    keyAgentBootstrapCompareObjectCalls.length === 1 &&
+    JSON.stringify(keyAgentBootstrapCompareObjectCalls[0]?.arguments) ===
+      JSON.stringify(["first", "second"]) &&
+    keyAgentBootstrapSameObject.includes(
+      "unsafe { CompareObjectHandles(first, second) }.as_bool()",
+    ) &&
+    keyAgentBootstrapGetFileTypeCalls.length === 1 &&
+    JSON.stringify(keyAgentBootstrapGetFileTypeCalls[0]?.arguments) ===
+      JSON.stringify(["handle"]) &&
+    keyAgentBootstrapGetHandleInformationCalls.length === 1 &&
+    JSON.stringify(keyAgentBootstrapGetHandleInformationCalls[0]?.arguments) ===
+      JSON.stringify(["handle", "&raw mut flags"]) &&
+    keyAgentBootstrapHandleFlags.includes("let mut flags = u32::MAX") &&
+    keyAgentBootstrapHandleFlags.includes("Ok(flags)"),
+  "the Key Agent child bootstrap must reject aliases pairwise and require exact PIPE/PIPE/CHAR kernel types using direct reviewed queries",
+);
+requireInvariant(
+  keyAgentBootstrapFlagCalls.length === 2 &&
+    keyAgentBootstrapFlagCalls.every(
+      (call) => JSON.stringify(call.arguments) === JSON.stringify(["*handle"]),
+    ) &&
+    keyAgentBootstrapClearCalls.length === 1 &&
+    keyAgentBootstrapSetHandleInformationCalls.length === 1 &&
+    JSON.stringify(keyAgentBootstrapClearCalls[0]?.arguments) ===
+      JSON.stringify(["handle", "HANDLE_FLAG_INHERIT.0", "HANDLE_FLAGS(0)"]) &&
+    keyAgentBootstrapValidationPositions.every((position) => position !== -1) &&
+    keyAgentBootstrapValidationPositions.every(
+      (position) => position < keyAgentBootstrapClearCalls[0].index,
+    ) &&
+    keyAgentBootstrapClearLoop !== -1 &&
+    keyAgentBootstrapClearLoop < keyAgentBootstrapClearCalls[0].index &&
+    keyAgentBootstrapPostFlagCheck > keyAgentBootstrapClearCalls[0].index &&
+    sealExactKeyAgentStandardHandleSet.includes("let mut clear_failed = false") &&
+    sealExactKeyAgentStandardHandleSet.includes("clear_failed = true") &&
+    sealExactKeyAgentStandardHandleSet.includes(
+      "if clear_failed || !exact_zero_flags",
+    ),
+  "all three Key Agent stdio handles must have exact INHERIT flags before one loop clear call and exact zero flags afterward, while attempting every clear",
+);
+requireInvariant(
+  normalizeRustFragment(rustLexicalCode(sealedKeyAgentStdioDefinition)) ===
+    "pub struct SealedKeyAgentStdio { _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    keyAgentChildBootstrapProduction.includes(
+      '#[must_use = "the Key Agent must retain its sealed stdio proof through startup"]',
+    ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\s+struct\s+SealedKeyAgentStdio/u.test(
+      keyAgentChildBootstrapProduction,
+    ) &&
+    !/\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync)\s+for\s+SealedKeyAgentStdio\b/u.test(
+      rustLexicalCode(keyAgentChildBootstrapProduction),
+    ) &&
+    !/\bimpl\s+SealedKeyAgentStdio\s*\{/u.test(
+      rustLexicalCode(keyAgentChildBootstrapProduction),
+    ) &&
+    JSON.stringify(sealedKeyAgentStdioTraitImplementations) ===
+      JSON.stringify(["fmt::Debug"]) &&
+    !/\bimpl\s+(?:AsHandle|AsRawHandle|IntoRawHandle)\s+for\s+SealedKeyAgentStdio\b/u.test(
+      rustLexicalCode(keyAgentChildBootstrapProduction),
+    ),
+  "SealedKeyAgentStdio must expose no raw capability and remain non-Clone, non-Copy, non-Send, and non-Sync",
+);
+
+const keyAgentBootstrapSubprocessTest = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "inherited_stdio_is_sealed_in_an_isolated_child_before_descendant_creation",
+);
+const keyAgentBootstrapChildFixture = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "inherited_stdio_child_fixture",
+);
+const keyAgentBootstrapChildFixtureCode = rustLexicalCode(
+  keyAgentBootstrapChildFixture,
+);
+const keyAgentBootstrapGrandchildFixture = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "deinheritance_grandchild_fixture",
+);
+const keyAgentBootstrapGrandchildImplementation = rustLexicalItemBlock(
+  keyAgentChildBootstrapSource,
+  /(?:^|\n)\s*impl\s+BroadInheritanceGrandchild\s*\{/u,
+);
+const keyAgentBootstrapGrandchildSpawn = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "spawn",
+);
+const keyAgentBootstrapGrandchildIsAlive = rustFunctionBlock(
+  keyAgentBootstrapGrandchildImplementation,
+  "is_alive",
+);
+const keyAgentBootstrapGrandchildIdentity = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "names_same_object",
+);
+const keyAgentBootstrapGrandchildTermination = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "terminate_and_reap",
+);
+const keyAgentBootstrapCurrentStandardHandles = rustFunctionBlock(
+  keyAgentChildBootstrapSource,
+  "current_standard_handles",
+);
+const keyAgentBootstrapGrandchildDefinition = rustLexicalItemBlock(
+  keyAgentChildBootstrapSource,
+  /(?:^|\n)\s*struct\s+BroadInheritanceGrandchild\s*\{/u,
+);
+const keyAgentBootstrapGrandchildDrop = rustLexicalItemBlock(
+  keyAgentChildBootstrapSource,
+  /(?:^|\n)\s*impl\s+Drop\s+for\s+BroadInheritanceGrandchild\s*\{/u,
+);
+const keyAgentBootstrapGrandchildDuplicate = rustCallSites(
+  keyAgentBootstrapGrandchildIdentity,
+  "DuplicateHandle",
+);
+const keyAgentBootstrapGrandchildCreate = rustCallSites(
+  keyAgentBootstrapGrandchildSpawn,
+  "CreateProcessW",
+);
+const keyAgentBootstrapSentinelFlagChanges = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "SetHandleInformation",
+);
+const keyAgentBootstrapSentinelCreation = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "CreateEventW",
+);
+const keyAgentBootstrapBroadSpawnCalls = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "BroadInheritanceGrandchild::spawn",
+);
+const keyAgentBootstrapChildIdentityCalls = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "names_same_object",
+);
+const keyAgentBootstrapChildAliveCalls = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "is_alive",
+);
+const keyAgentBootstrapChildTerminationCalls = rustCallSites(
+  keyAgentBootstrapChildFixture,
+  "terminate_and_reap",
+);
+const keyAgentBootstrapTestGetStdHandleCalls = rustCallSites(
+  keyAgentBootstrapCurrentStandardHandles,
+  "GetStdHandle",
+);
+const keyAgentBootstrapTerminationOrder = [
+  "WaitForSingleObject(process, 0)",
+  "TerminateProcess(process, 1)",
+  "WaitForSingleObject(process, 5_000)",
+].map((marker) => keyAgentBootstrapGrandchildTermination.indexOf(marker));
+const keyAgentBootstrapSentinelZeroAssertion =
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "assert_eq!(handle_flags(sentinel_handle)?, 0)",
+  );
+const keyAgentBootstrapAliveAssertion = keyAgentBootstrapChildFixtureCode.indexOf(
+  "assert!(grandchild.is_alive())",
+);
+const keyAgentBootstrapExactTermination = keyAgentBootstrapChildFixtureCode.indexOf(
+  "grandchild.terminate_and_reap()?;",
+);
+const keyAgentChildBootstrapCode = rustLexicalCode(
+  keyAgentChildBootstrapSource,
+);
+const keyAgentBootstrapDriverOrder = [
+  "acquire_inheritable_handle_launch(deadline())",
+  "let mut command = Command::new(executable)",
+  ".env(CHILD_FIXTURE_ENV, \"1\")",
+  "let child = command.spawn()?",
+  "drop(command)",
+  "drop(flight)",
+].map((marker) => keyAgentBootstrapSubprocessTest.indexOf(marker));
+const keyAgentBootstrapChildOrder = [
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "let original_handles = current_standard_handles()?",
+  ),
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "let sealed = seal_inherited_key_agent_stdio()?",
+  ),
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "assert_eq!(handle_flags(handle)?, 0)",
+  ),
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "acquire_inheritable_handle_launch(deadline())",
+  ),
+  keyAgentBootstrapSentinelCreation[0]?.index ?? -1,
+  keyAgentBootstrapSentinelFlagChanges[0]?.index ?? -1,
+  keyAgentBootstrapBroadSpawnCalls[0]?.index ?? -1,
+  keyAgentBootstrapSentinelFlagChanges[1]?.index ?? -1,
+  keyAgentBootstrapSentinelZeroAssertion,
+  keyAgentBootstrapChildFixtureCode.indexOf("drop(flight)"),
+  keyAgentBootstrapAliveAssertion,
+  keyAgentBootstrapChildIdentityCalls[0]?.index ?? -1,
+  keyAgentBootstrapChildFixtureCode.indexOf("for original in original_handles"),
+  keyAgentBootstrapChildIdentityCalls[1]?.index ?? -1,
+  keyAgentBootstrapExactTermination,
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "std::io::stdout().write_all(ACKNOWLEDGEMENT)?",
+  ),
+  keyAgentBootstrapChildFixtureCode.indexOf("drop(sealed)"),
+];
+requireInvariant(
+  /#\s*\[\s*test\s*\]\s*fn inherited_stdio_is_sealed_in_an_isolated_child_before_descendant_creation\b/u.test(
+    keyAgentChildBootstrapCode,
+  ) &&
+    /#\s*\[\s*test\s*\]\s*#\s*\[\s*ignore\s*=[^\]]*\]\s*fn inherited_stdio_child_fixture\b/u.test(
+      keyAgentChildBootstrapCode,
+    ) &&
+    /#\s*\[\s*test\s*\]\s*#\s*\[\s*ignore\s*=[^\]]*\]\s*fn deinheritance_grandchild_fixture\b/u.test(
+      keyAgentChildBootstrapCode,
+    ) &&
+    keyAgentChildBootstrapSource.includes(
+      '#[ignore = "launched only by the isolated Key Agent stdio driver"]',
+    ) &&
+    keyAgentChildBootstrapSource.includes(
+      '#[ignore = "launched only as the Key Agent stdio grandchild probe"]',
+    ) &&
+    rustCallSites(keyAgentChildBootstrapSource, "Command::new").length === 1 &&
+    rustCallSites(keyAgentChildBootstrapProduction, "CreateProcessW").length === 0 &&
+    rustCallSites(keyAgentChildBootstrapSource, "CreateProcessW").length === 1 &&
+    rustCallSites(keyAgentChildBootstrapSource, "GetStdHandle").length === 6 &&
+    JSON.stringify(
+      keyAgentBootstrapTestGetStdHandleCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["super::STD_INPUT_HANDLE"],
+        ["super::STD_OUTPUT_HANDLE"],
+        ["super::STD_ERROR_HANDLE"],
+      ]) &&
+    keyAgentBootstrapCurrentStandardHandles.includes(
+      "Ok([stdin, stdout, stderr])",
+    ) &&
+    keyAgentBootstrapDriverOrder.every((position) => position !== -1) &&
+    keyAgentBootstrapDriverOrder
+      .slice(1)
+      .every((position, index) => position > keyAgentBootstrapDriverOrder[index]) &&
+    keyAgentBootstrapChildOrder.every((position) => position !== -1) &&
+    keyAgentBootstrapChildOrder
+      .slice(1)
+      .every((position, index) => position > keyAgentBootstrapChildOrder[index]) &&
+    keyAgentBootstrapSubprocessTest.includes(".stdin(Stdio::piped())") &&
+    keyAgentBootstrapSubprocessTest.includes(".stdout(Stdio::piped())") &&
+    keyAgentBootstrapSubprocessTest.includes(".stderr(Stdio::null())") &&
+    keyAgentBootstrapSubprocessTest.includes("child_input.write_all(CHALLENGE)?") &&
+    keyAgentBootstrapSubprocessTest.includes("window == ACKNOWLEDGEMENT") &&
+    keyAgentBootstrapGrandchildFixture.includes(
+      "std::thread::sleep(Duration::from_secs(15))",
+    ) &&
+    keyAgentBootstrapGrandchildCreate.length === 1 &&
+    JSON.stringify(keyAgentBootstrapGrandchildCreate[0]?.arguments) ===
+      JSON.stringify([
+        "PCWSTR(application.as_ptr())",
+        "Some(PWSTR(command.as_mut_ptr()))",
+        "None",
+        "None",
+        "true",
+        "CREATE_NO_WINDOW",
+        "None",
+        "PCWSTR::null()",
+        "&raw const startup",
+        "&raw mut information",
+      ]) &&
+    keyAgentBootstrapGrandchildSpawn.includes("let startup = STARTUPINFOW") &&
+    !keyAgentBootstrapGrandchildSpawn.includes("STARTUPINFOEXW") &&
+    !keyAgentBootstrapGrandchildSpawn.includes("PROC_THREAD_ATTRIBUTE_HANDLE_LIST") &&
+    !keyAgentBootstrapGrandchildSpawn.includes("EXTENDED_STARTUPINFO_PRESENT") &&
+    JSON.stringify(
+      keyAgentBootstrapSentinelFlagChanges.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["sentinel_handle", "HANDLE_FLAG_INHERIT.0", "HANDLE_FLAG_INHERIT"],
+        ["sentinel_handle", "HANDLE_FLAG_INHERIT.0", "HANDLE_FLAGS(0)"],
+      ]) &&
+    keyAgentBootstrapSentinelCreation.length === 1 &&
+    JSON.stringify(keyAgentBootstrapSentinelCreation[0]?.arguments) ===
+      JSON.stringify(["None", "true", "false", "None"]) &&
+    keyAgentBootstrapChildFixtureCode.includes(
+      "OwnedHandle::from_raw_handle(sentinel.0)",
+    ) &&
+    keyAgentBootstrapBroadSpawnCalls.length === 1 &&
+    JSON.stringify(keyAgentBootstrapBroadSpawnCalls[0]?.arguments) ===
+      JSON.stringify(["&executable"]) &&
+    keyAgentBootstrapChildAliveCalls.length === 1 &&
+    keyAgentBootstrapChildAliveCalls[0]?.arguments.length === 0 &&
+    (rustLexicalCode(keyAgentBootstrapGrandchildImplementation).match(
+      /\bfn\s+is_alive\b/gu,
+    ) ?? []).length === 1 &&
+    normalizeRustFragment(rustLexicalCode(keyAgentBootstrapGrandchildIsAlive)) ===
+      "fn is_alive(&self) -> bool { (unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), 0) }) == WAIT_TIMEOUT }" &&
+    keyAgentBootstrapAliveAssertion !== -1 &&
+    keyAgentBootstrapSentinelZeroAssertion >
+      keyAgentBootstrapSentinelFlagChanges[1].index &&
+    keyAgentBootstrapSentinelZeroAssertion <
+      keyAgentBootstrapChildFixtureCode.indexOf("drop(flight)") &&
+    JSON.stringify(
+      keyAgentBootstrapChildIdentityCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["sentinel_handle", "sentinel_handle"],
+        ["original", "original"],
+      ]) &&
+    keyAgentBootstrapChildTerminationCalls.length === 1 &&
+    keyAgentBootstrapChildTerminationCalls[0]?.arguments.length === 0 &&
+    keyAgentBootstrapExactTermination !== -1 &&
+    keyAgentBootstrapChildFixtureCode.includes(
+      "assert!(grandchild.names_same_object(sentinel_handle, sentinel_handle)?)",
+    ) &&
+    keyAgentBootstrapChildFixtureCode.includes(
+      "assert!(!grandchild.names_same_object(original, original)?)",
+    ) &&
+    keyAgentBootstrapGrandchildDuplicate.length === 1 &&
+    JSON.stringify(keyAgentBootstrapGrandchildDuplicate[0]?.arguments) ===
+      JSON.stringify([
+        "HANDLE(self.process.as_raw_handle())",
+        "candidate",
+        "GetCurrentProcess()",
+        "&raw mut duplicate",
+        "0",
+        "false",
+        "DUPLICATE_SAME_ACCESS",
+      ]) &&
+    keyAgentBootstrapGrandchildIdentity.includes(
+      "OwnedHandle::from_raw_handle(duplicate.0.cast::<c_void>())",
+    ) &&
+    keyAgentBootstrapGrandchildIdentity.includes(
+      "same_object(HANDLE(duplicate.as_raw_handle()), expected)",
+    ) &&
+    keyAgentBootstrapGrandchildDefinition.includes("process: OwnedHandle") &&
+    keyAgentBootstrapGrandchildDrop.includes(
+      "let _ = self.terminate_and_reap()",
+    ) &&
+    keyAgentBootstrapTerminationOrder.every((position) => position !== -1) &&
+    keyAgentBootstrapTerminationOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentBootstrapTerminationOrder[index],
+      ) &&
+    keyAgentBootstrapGrandchildTermination.includes(
+      "let state = unsafe { WaitForSingleObject(process, 0) }",
+    ) &&
+    keyAgentBootstrapGrandchildTermination.includes(
+      "TerminateProcess(process, 1).map_err(|_| KeyAgentChildBootstrapError)?",
+    ) &&
+    keyAgentBootstrapGrandchildTermination.includes(
+      "WaitForSingleObject(process, 5_000) != WAIT_OBJECT_0",
+    ),
+  "the Key Agent stdio boundary must retain an actual child-and-grandchild test that proves the original three kernel objects are not inherited",
+);
+
 const productionProcessCreationSites = workspaceRustProductionFiles.flatMap(
   (file) =>
     [
@@ -4299,6 +4836,15 @@ requireInvariant(
       },
     ]),
   "workspace production process creation must remain confined to the sealed Windows coordinator and the exact debug-only Native Host contract hook",
+);
+requireInvariant(
+  productionProcessCreationSites.every(
+    (site) => !site.path.startsWith("crates/key-agent/src/"),
+  ) &&
+    !/\b(?:CreateProcess(?:AsUser|WithToken|WithLogon)?[WA]?|ShellExecute(?:Ex)?[WA]?|WinExec)\s*\(|\b(?:std::process::)?Command::new\s*\(/u.test(
+      rustLexicalCode(keyAgentChildBootstrapProduction),
+    ),
+  "the production Key Agent binary and child bootstrap must not gain descendant process creation",
 );
 const aliasedProcessCreationApis = workspaceRustProductionFiles.flatMap((file) =>
   [
@@ -4425,6 +4971,12 @@ const expectedSetHandleInformationInventory = [
     handle: "handle.raw()",
     mask: "HANDLE_FLAG_INHERIT.0",
     flags: "HANDLE_FLAG_INHERIT",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+    handle: "handle",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAGS(0)",
   },
 ];
 const expectedSecurityAttributesInventory = [

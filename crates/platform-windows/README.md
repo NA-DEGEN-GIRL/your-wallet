@@ -82,6 +82,15 @@ Implemented:
   Key Agent-only storage ACL, authenticated Broker/startup exchange, and
   protected-settings lease remain unbound. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
+- an earliest Key Agent child bootstrap with no caller-supplied handle input.
+  The Key Agent entrypoint makes this its first Windows application operation.
+  Before mutation it requires exactly three distinct kernel objects with exact
+  `PIPE`/`PIPE`/`CHAR` types and exactly `HANDLE_FLAG_INHERIT`; it then attempts
+  to clear the inherit bit on all three, never restores inheritance after a
+  partial failure, and requires all three flag words to read back as exactly
+  zero. The returned non-clone, `!Send + !Sync` proof exposes no handle. An
+  isolated child/grandchild kernel test uses `CompareObjectHandles` to prove
+  that none of the three original exact stdio objects reaches the grandchild;
 
   **Implemented Rust coordination boundary:** the dormant Broker activation,
   dormant Key Agent activation, and restricted helper launcher are the three
@@ -105,11 +114,13 @@ Implemented:
   process. The release PowerShell runtime's C# toolset runner therefore uses a
   separate matching static lock from inheritable-pipe creation through
   `CreateProcessW` and attribute/temporary-handle cleanup; that lock likewise
-  covers only cooperating calls through that runner type. A standalone
-  supervisor still needs independently proven single-instance/process topology,
-  signed-install and Native Host provenance remain absent, and the Key Agent
-  child must still clear the inherit bit on its three received stdio handles
-  before any later child creation (or prove that later creation is impossible).
+  covers only cooperating calls through that runner type. The Key Agent child
+  now does clear the inherit bit on its three received stdio handles before any
+  later application operation, and the repo-local grandchild test supplies an
+  exact-object negative for that boundary. A standalone supervisor still needs
+  independently proven single-instance/process topology; signed-install,
+  Native Host provenance, and artifact-bound execution of this bootstrap remain
+  absent.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -119,8 +130,11 @@ Implemented:
   `CreateProcessW` 호출이나 fresh worker의 최종 join을 중단시키지는 못합니다.
   다만 이 보장은 같은 프로세스에 적재된 하나의 crate instance와 협력 Rust 호출에만
   적용되며 임의의 FFI/표준 라이브러리 생성이나 다른 프로세스를 가로채지 않습니다.
-  독립 supervisor 단일 인스턴스와 인증된 topology, signed install/Native Host provenance,
-  Key Agent 자식의 stdio inherit-bit 제거는 계속 STOP-SHIP입니다.
+  Key Agent 자식은 이제 첫 Windows application 동작에서 정확한 `PIPE`/`PIPE`/`CHAR`
+  stdio 세 개를 사전검사하고 inherit bit를 모두 제거한 뒤 flags 0을 재검사하며,
+  grandchild exact-object 음성 테스트도 통과해야 합니다. 이 repo-local 경계와 별개로
+  독립 supervisor 단일 인스턴스와 인증된 topology, signed install/Native Host
+  provenance 및 서명 artifact 기반 실행 증거는 계속 STOP-SHIP입니다.
 - an HMAC-authenticated, bounded dual-slot generation store for already-encrypted
   vault/nonce/journal/local-settings records, with a stable class discriminant,
   a strict per-class ciphertext-format matrix, generation CAS, previous-digest chaining,
@@ -175,8 +189,8 @@ Implemented:
   keeps the core unreachable from release execution. The three cooperating Rust
   launch paths now have process-wide inheritable-handle coordination, but signed
   immutable installation, native-host provenance, cross-process supervisor
-  topology/single-instance evidence, and child-side Key Agent stdio
-  de-inheritance remain STOP-SHIP.
+  topology/single-instance evidence, and artifact-bound execution of the
+  implemented child-side Key Agent stdio de-inheritance remain STOP-SHIP.
 
 Stop-ship before any signing-capable release:
 
@@ -186,8 +200,10 @@ Stop-ship before any signing-capable release:
    `launch.rs`.
 2. Run negative network tests (TCP, UDP, DNS, loopback, private addresses, and
    inherited sockets) against the exact signed helpers.
-3. Run a child-side enumeration test proving that no handle except the explicit
-   list crosses the boundary.
+3. Run an artifact-bound child-side enumeration test proving that no handle
+   except the explicit list crosses the boundary. The repo-local Key Agent
+   child/grandchild test already proves that its three sealed exact stdio objects
+   do not propagate, but it is not evidence for the exact signed artifacts.
 4. Exercise path/reparse/ACL tests under the release installer identity and
    secure installed ACLs, including environments where symlink creation is
    permitted.
@@ -198,10 +214,10 @@ Stop-ship before any signing-capable release:
    prepared-value exact-image activation core to authenticated native-host
    provenance, prove the standalone supervisor's single-instance and exact
    process topology, exclude or mediate every foreign/uncoordinated inheriting
-   creation path, and make the Key Agent child clear its received stdio inherit
-   bits before it can create a descendant. The in-crate coordinator is not
-   signed-install, provenance, cross-process topology, or release-activation
-   proof.
+   creation path, and bind the implemented Key Agent first-operation stdio
+   sealing plus grandchild exact-object negative to the exact signed artifact.
+   The in-crate coordinator and repo-local child test are not signed-install,
+   provenance, cross-process topology, or release-activation proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the

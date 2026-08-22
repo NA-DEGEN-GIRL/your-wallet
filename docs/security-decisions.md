@@ -48,6 +48,16 @@ and other processes remain outside their scope. Deadlines bound coordinator or
 lock acquisition and explicit pre-create checks, not a synchronous
 `CreateProcessW` call or the fail-closed worker join.
 
+The Key Agent executable now seals its child-side standard handles as its first
+Windows application operation. It prevalidates exactly three distinct inherited
+objects with exact `PIPE`/`PIPE`/`CHAR` types and exact inherit-only flags,
+attempts to clear all three inherit bits without rollback, and accepts only an
+exact zero-flag readback. Any rejection exits 78 before another application
+operation. An isolated child/grandchild kernel test uses exact object comparison
+to prove that none of the original three stdio objects propagates. This is a
+repo-local implementation proof, not signed-artifact, supervisor-topology, or
+release-activation evidence.
+
 | Area | Decision |
 | --- | --- |
 | Native stack | Rust 2024; plain JavaScript MV3 extension |
@@ -87,10 +97,13 @@ Before any real mainnet value is used, the Windows build must prove:
    The in-crate and C# runner coordinators cover their exact cooperating call
    sites, but release evidence must still prove standalone-supervisor
    single-instance/topology and the absence or mediation of every foreign or
-   otherwise uncoordinated inheriting launch. The Key Agent child must clear the
-   inherit bit on its received stdio handles before any descendant creation, or
-   descendants must be prohibited. `COMPILED_RELEASE_POLICY` remains `None`;
-   coordination alone is not release activation proof.
+   otherwise uncoordinated inheriting launch. The Key Agent child now clears the
+   inherit bit on its exact three received stdio handles as its first Windows
+   application operation, and its repo-local grandchild test proves those exact
+   objects do not propagate. Release evidence must still bind that behavior to
+   the exact signed image and intended supervisor. `COMPILED_RELEASE_POLICY`
+   remains `None`; coordination and the local negative test are not release
+   activation proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

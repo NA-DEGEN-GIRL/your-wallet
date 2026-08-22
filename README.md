@@ -560,10 +560,18 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   프로세스에 적재된 같은 `platform-windows` crate instance와
   그 비공개 API를 따르는 Rust 호출에 한정됩니다. 임의의 foreign FFI,
   `std::process::Command`, 별도 프로세스나 별도 적재 사본의 생성까지 가로채지는 않습니다.
-- 따라서 standalone supervisor 단일 인스턴스와 인증된 Native Host↔Broker↔Key Agent
-  프로세스 topology는 여전히 별도 릴리스 증거가 필요합니다. Key Agent 자식도 전달받은
-  세 stdio 핸들의 inherit bit를 초기화 초기에 제거하거나 이후 자식 생성을 금지해야
-  하며, 이 child-side 경계는 아직 STOP-SHIP입니다.
+- Key Agent 자식은 생성 시 inheritable stdio 핸들을 받지만, 실행 파일의 첫 Windows
+  application 동작이 정확히 세 핸들을 모두 변경 전에 검사합니다. stdin/stdout은 서로
+  다른 `PIPE`, stderr는 제3의 `CHAR` 객체여야 하고, 세 핸들은 서로 같은 커널 객체가
+  아니며 flags가 각각 정확히 `HANDLE_FLAG_INHERIT`여야 합니다. 그 뒤 세 inherit bit를
+  모두 제거하고 flags가 정확히 0인지 다시 확인합니다. 일부 제거가 실패해도 나머지
+  핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
+  코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
+  객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
+- 이 구현은 child-side stdio 재상속 공백만 닫습니다. standalone supervisor 단일
+  인스턴스와 인증된 Native Host↔Broker↔Key Agent 프로세스 topology, signed install,
+  Native Host provenance 및 실제 서명 artifact에서의 E2E 증거는 계속 별도 릴리스
+  차단 조건입니다.
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.

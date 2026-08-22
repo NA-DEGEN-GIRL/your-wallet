@@ -103,6 +103,8 @@ mod inheritable_handle_launch;
 #[cfg(windows)]
 mod key_agent_activation;
 #[cfg(windows)]
+mod key_agent_child_bootstrap;
+#[cfg(windows)]
 mod key_agent_root_job;
 // The startup lease, private parent channel, root Job, and exact-image
 // activation are one dormant aggregate with no resume path. Protected-settings
@@ -137,5 +139,9 @@ pub use approval_channel::{PendingApproval, launch_approval_frontend};
 pub use broker_artifact::broker_supervisor::{
     DormantBrokerError, DormantBrokerPayloadChannel, connect_inherited_native_host_channel,
     launch_dormant_broker_channel,
+};
+#[cfg(windows)]
+pub use key_agent_child_bootstrap::{
+    KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};
