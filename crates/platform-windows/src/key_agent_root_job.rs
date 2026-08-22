@@ -837,13 +837,21 @@ mod tests {
             loop {
                 match std::fs::read_to_string(&self.0) {
                     Ok(value) => {
-                        let process_id = value.parse::<u32>()?;
-                        if process_id == 0 {
-                            return Err(
-                                std::io::Error::other("invalid tree child process ID").into()
-                            );
+                        if let Some(process_id) = value.strip_suffix('\n') {
+                            if process_id.is_empty() || process_id.contains('\n') {
+                                return Err(std::io::Error::other(
+                                    "invalid tree child process ID marker",
+                                )
+                                .into());
+                            }
+                            let process_id = process_id.parse::<u32>()?;
+                            if process_id == 0 {
+                                return Err(
+                                    std::io::Error::other("invalid tree child process ID").into()
+                                );
+                            }
+                            return Ok(process_id);
                         }
-                        return Ok(process_id);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
@@ -1031,7 +1039,7 @@ mod tests {
             .write(true)
             .create_new(true)
             .open(marker_path)?;
-        write!(marker, "{}", child.id())?;
+        marker.write_all(format!("{}\n", child.id()).as_bytes())?;
         marker.sync_all()?;
         let _ = child.wait()?;
         Ok(())

@@ -1594,8 +1594,11 @@ mod tests {
     #[test]
     fn already_inheritable_stdio_sources_are_rejected_before_launch()
     -> Result<(), Box<dyn std::error::Error>> {
+        // The full libtest suite runs many cooperating process-launch fixtures
+        // concurrently. This test proves source rejection, not the production
+        // launch-admission deadline, so allow the shared test flight to drain.
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(5))
+            .checked_add(Duration::from_mins(1))
             .ok_or(LaunchError::OperatingSystem)?;
         let flight = crate::inheritable_handle_launch::acquire_inheritable_handle_launch(deadline)
             .map_err(|_| LaunchError::OperatingSystem)?;
