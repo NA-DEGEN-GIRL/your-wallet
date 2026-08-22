@@ -322,20 +322,26 @@ anchor or AEAD-key provisioning.
 
 Fresh fixed-profile/root creation now returns a non-launchable pending type;
 only a separately prepared type can enter activation, and no production
-constructor or conversion mints it. A private pure classifier consumes three
-distinct sealed facts—authenticated journal state, independently expected
-installation/release identities, and live fixed-profile/held-root observations—
-and returns only uninitialized, consistent-existing, or recovery-required
-candidate state. It binds the fixed v1 policy, canonical profile name/SIDs, full
-root identity, and distinct identities. It fixes all four phase-to-generation
-mappings, but only current `Committed=4` consistency can produce the existing
-candidate; every other phase requires recovery. It observes no predecessor
-history and therefore does not prove journal sequence, gaps, rollback, or
-equivocation. It performs no I/O, retains no root handle, has no production input
-constructor or consumer, and grants no creation, adoption, or launch authority.
+constructor or conversion mints it. Before the private pure classifier, a
+canonical prefix-journal verifier authenticates every fixed record with an
+installer-owned HMAC-SHA256 key, enforces phase-specific payloads and the exact
+`Prepared=1`, `ProfileCreated=2`, `RootCreated=3`, `Committed=4` sequence, checks
+every predecessor commitment, and compares the current commitment/high-water
+with a separately sealed rollback-resistant checkpoint carrying independently
+expected installation/release identities. Rollback, gaps, reorderings,
+same-generation equivocation, malformed bytes, and non-canonical unused fields
+fail closed. The verifier produces only the distinct sealed authenticated
+journal and expected-identity facts. The classifier still consumes a third live
+fixed-profile/held-root observation and returns only uninitialized,
+consistent-existing, or recovery-required candidate state. Only current
+`Committed=4` consistency can produce the existing candidate; every other phase
+requires recovery. The module performs no I/O, retains no root handle, has no
+production key/checkpoint constructor, reader, writer, backend, or consumer, and
+grants no creation, adoption, or launch authority.
 
-An authenticated rollback-resistant provenance journal, authoritative
-existing-profile/root observation and adoption/recovery, the same-user/ancestor
+Production installer key/checkpoint provisioning, authoritative provenance
+journal I/O and durable writing, existing-profile/root observation and
+adoption/recovery, the same-user/ancestor
 race boundary, production rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
 single-instance, and signed immutable artifact/DLL/dependency E2E remain

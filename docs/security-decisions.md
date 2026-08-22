@@ -152,24 +152,27 @@ production fresh-fixed-profile/root E2E or release authority.
 Fresh creation is now quarantined as non-launchable
 `PendingKeyAgentProvisioning`; only `PreparedKeyAgentProvisioning` enters the
 activation boundary, and production has no constructor or conversion that can
-mint it. A separate pure classifier models authenticated-journal,
-independently-expected identity, and live-object inputs with distinct sealed
-types. It binds exact schema/policy, canonical fixed profile name/SIDs, full root
-identity, and pairwise-distinct transaction/installation/release identities. It
-fixes all four phase-to-generation mappings, but only current `Committed=4`
-consistency can produce the existing candidate; every other phase requires
-recovery. It observes no predecessor history, so journal sequence, gaps,
-rollback, and equivocation remain the future authenticated adapter's
-responsibility. Its uninitialized and consistent-existing
-results are non-authoritative candidates, not creation, adoption, or launch
-capabilities; the latter retains no root handle. The module has no production
-input constructor, I/O, OS observer, or consumer. Journal read/authentication,
-rollback, gap, or equivocation failures must therefore fail closed before this
-model can be called by a future adapter.
+mint it. The private pure provenance boundary includes a canonical
+prefix-journal verifier before the existing classifier. Every fixed record is
+authenticated with an installer-owned HMAC-SHA256 key before parsing. Exact
+phase-specific payloads, the `Prepared=1`, `ProfileCreated=2`, `RootCreated=3`,
+`Committed=4` sequence, predecessor commitments, and a separately sealed
+rollback-resistant checkpoint bind the independent installation/release
+identities, high-water generation, and current commitment. Lower/higher
+generations, gaps, reorderings, same-generation alternate histories, malformed
+bytes, non-canonical unused fields, or root evidence before creation fail
+closed. Only `RootCreated` and `Committed` carry the same canonical profile/owner
+SIDs and full root identity. The verifier mints only the distinct sealed
+authenticated-journal and expected-identity inputs; the classifier still needs
+an independent live-object input, and only current `Committed=4` consistency can
+produce the existing candidate. Its results remain non-authoritative candidates,
+not creation, adoption, or launch capabilities; the latter retains no root
+handle. The module has no production key/checkpoint constructor, reader, writer,
+backend, OS observer, or consumer.
 
-The remaining limits are immediate. Existing production profiles still lack an
-installer-owned authenticated rollback-resistant provenance journal,
-authoritative held-object adoption, and recovery; the root `TokenUser` ACE leaves
+The remaining limits are immediate. Existing production profiles still lack
+installer-owned key/checkpoint provisioning, authoritative provenance-journal
+I/O and durable writing, held-object adoption, and recovery; the root `TokenUser` ACE leaves
 other same-user processes able to access it, and ancestor path validation is
 not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process

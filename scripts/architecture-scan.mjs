@@ -1094,6 +1094,96 @@ function rustLexicalItemBlock(source, headerPattern) {
   return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
 }
 
+function rustTopLevelLexicalItemBlock(source, headerPattern) {
+  const sourceCode = rustLexicalCode(source);
+  const flags = headerPattern.flags.includes("g")
+    ? headerPattern.flags
+    : `${headerPattern.flags}g`;
+  const matches = [
+    ...sourceCode.matchAll(new RegExp(headerPattern.source, flags)),
+  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === 0);
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected exactly one top-level Rust item for ${headerPattern.source}`,
+    );
+  }
+
+  let itemStart = matches[0].index;
+  while (/\s/u.test(sourceCode[itemStart] ?? "")) {
+    itemStart += 1;
+  }
+  const openingBrace = sourceCode.indexOf("{", itemStart);
+  if (openingBrace === -1) {
+    return "";
+  }
+  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
+}
+
+function rustTopLevelFunctionBlock(source, functionName) {
+  const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return rustTopLevelLexicalItemBlock(
+    source,
+    new RegExp(
+      `(?:^|\\n)\\s*(?:pub(?:\\([^\\r\\n)]*\\))?\\s+)?(?:(?:const|async|unsafe)\\s+)*(?:extern(?:\\s+"[^"\\r\\n]*")?\\s+)?fn\\s+${escapedName}\\b[^{}]*\\{`,
+      "u",
+    ),
+  );
+}
+
+function rustTopLevelConstItem(source, constantName) {
+  const sourceCode = rustLexicalCode(source);
+  const escapedName = constantName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const matches = [
+    ...sourceCode.matchAll(
+      new RegExp(`(?:^|\\n)\\s*const\\s+${escapedName}\\b`, "gu"),
+    ),
+  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === 0);
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected exactly one top-level Rust const ${constantName}`,
+    );
+  }
+
+  let itemStart = matches[0].index;
+  while (/\s/u.test(sourceCode[itemStart] ?? "")) {
+    itemStart += 1;
+  }
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let index = itemStart; index < sourceCode.length; index += 1) {
+    switch (sourceCode[index]) {
+      case "(":
+        parentheses += 1;
+        break;
+      case ")":
+        parentheses -= 1;
+        break;
+      case "[":
+        brackets += 1;
+        break;
+      case "]":
+        brackets -= 1;
+        break;
+      case "{":
+        braces += 1;
+        break;
+      case "}":
+        braces -= 1;
+        break;
+      case ";":
+        if (parentheses === 0 && brackets === 0 && braces === 0) {
+          return source.slice(itemStart, index + 1);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return "";
+}
+
 function rustFunctionBlock(source, functionName) {
   const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return rustLexicalItemBlock(
@@ -6297,41 +6387,113 @@ const keyAgentCreateProcess = rustFunctionBlock(
 const keyAgentInstallProvenanceReleaseCode = rustLexicalCode(
   keyAgentInstallProvenanceRelease,
 );
-const authenticatedKeyAgentInstallJournalBlock = rustLexicalItemBlock(
+const installerJournalAuthenticationKeyBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /struct\s+InstallerJournalAuthenticationKey\s*\{/u,
+);
+const authenticatedKeyAgentInstallCheckpointBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /struct\s+AuthenticatedKeyAgentInstallCheckpoint\s*\{/u,
+);
+const authenticatedKeyAgentInstallJournalBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+AuthenticatedKeyAgentInstallJournal\s*\{/u,
 );
-const expectedKeyAgentInstallIdentitiesBlock = rustLexicalItemBlock(
+const expectedKeyAgentInstallIdentitiesBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+ExpectedKeyAgentInstallIdentities\s*\{/u,
 );
-const observedKeyAgentInstallObjectsBlock = rustLexicalItemBlock(
+const observedKeyAgentInstallObjectsBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+ObservedKeyAgentInstallObjects\s*\{/u,
 );
-const uninitializedKeyAgentInstallCandidateBlock = rustLexicalItemBlock(
+const uninitializedKeyAgentInstallCandidateBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+UninitializedKeyAgentInstallCandidate\s*\{/u,
 );
-const consistentExistingKeyAgentInstallCandidateBlock = rustLexicalItemBlock(
+const consistentExistingKeyAgentInstallCandidateBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+ConsistentExistingKeyAgentInstallCandidate\s*\{/u,
 );
-const keyAgentInstallDispositionBlock = rustLexicalItemBlock(
+const keyAgentInstallDispositionBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+enum\s+KeyAgentInstallDisposition\s*\{/u,
 );
-const classifyKeyAgentInstall = rustFunctionBlock(
+const keyAgentInstallRecordBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /enum\s+KeyAgentInstallRecord\s*\{/u,
+);
+const classifyKeyAgentInstall = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "classify_key_agent_install",
 );
-const exactCommittedKeyAgentInstallMatch = rustFunctionBlock(
+const exactCommittedKeyAgentInstallMatch = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "exact_committed_match",
 );
-const keyAgentInstallTransactionGeneration = rustFunctionBlock(
+const keyAgentInstallTransactionGeneration = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "transaction_generation",
+);
+const validKeyAgentInstallRecord = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "valid_install_record",
+);
+const encodeKeyAgentInstallJournalRecordBody = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "encode_install_journal_record_body",
+);
+const decodeKeyAgentInstallJournalRecordBody = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "decode_install_journal_record_body",
+);
+const decodeKeyAgentInstallJournalRoot = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "decode_install_journal_root",
+);
+const verifyKeyAgentInstallJournalRecordMac = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "verify_install_journal_record_mac",
+);
+const decodeAuthenticatedKeyAgentInstallJournalRecord = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "decode_authenticated_install_journal_record",
+);
+const authenticatedKeyAgentInstallJournalRecordDigest = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "authenticated_install_journal_record_digest",
+);
+const keyAgentInstallCheckpointCommitment = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "install_checkpoint_commitment",
+);
+const bindKeyAgentInstallJournalPhasePayload = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "bind_install_journal_phase_payload",
+);
+const validateNonemptyKeyAgentInstallJournalHistory = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "validate_nonempty_install_journal_history",
+);
+const validateAuthenticatedKeyAgentInstallJournal = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "validate_authenticated_install_journal",
+);
+const installJournalRecordMagicConstant = rustTopLevelConstItem(
+  keyAgentInstallProvenanceRelease,
+  "INSTALL_JOURNAL_RECORD_MAGIC_V1",
+);
+const installJournalRecordDigestDomainConstant = rustTopLevelConstItem(
+  keyAgentInstallProvenanceRelease,
+  "INSTALL_JOURNAL_RECORD_DIGEST_DOMAIN_V1",
+);
+const installJournalRecordMacDomainConstant = rustTopLevelConstItem(
+  keyAgentInstallProvenanceRelease,
+  "INSTALL_JOURNAL_RECORD_MAC_DOMAIN_V1",
+);
+const installCheckpointCommitmentDomainConstant = rustTopLevelConstItem(
+  keyAgentInstallProvenanceRelease,
+  "INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1",
 );
 const provisionFreshKeyAgentBoundary = rustFunctionBlock(
   keyAgentSupervisor,
@@ -8219,6 +8381,9 @@ const keyAgentInstallProvenanceTypeNames = [
 ];
 const keyAgentInstallProvenanceExternalTokenNames = [
   ...keyAgentInstallProvenanceTypeNames,
+  "InstallerJournalAuthenticationKey",
+  "AuthenticatedKeyAgentInstallCheckpoint",
+  "validate_authenticated_install_journal",
   "classify_key_agent_install",
 ];
 const keyAgentInstallProvenanceModuleConsumers = platformWindowsProductionFiles
@@ -8263,6 +8428,18 @@ const classifyKeyAgentInstallConsumers = platformWindowsProductionFiles
       rustCallSites(file.source, "classify_key_agent_install").length > 0,
   )
   .map((file) => file.path);
+const validateAuthenticatedKeyAgentInstallJournalConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+        rustCallSites(
+          file.source,
+          "validate_authenticated_install_journal",
+        ).length > 0,
+    )
+    .map((file) => file.path);
 const freshKeyAgentBoundaryConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
@@ -8300,9 +8477,13 @@ const provenancePublicVisibilitySites = [
 ];
 const provenanceImplItems = rustImplItems(keyAgentInstallProvenanceRelease);
 const provenanceImplHeaders = provenanceImplItems.map((item) => item.header);
-const expectedProvenanceImplHeaders = keyAgentInstallProvenanceTypeNames.map(
-  (name) => `impl fmt::Debug for ${name}`,
-);
+const expectedProvenanceImplHeaders = [
+  "impl fmt::Debug for InstallerJournalAuthenticationKey",
+  "impl fmt::Debug for AuthenticatedKeyAgentInstallCheckpoint",
+  ...keyAgentInstallProvenanceTypeNames.map(
+    (name) => `impl fmt::Debug for ${name}`,
+  ),
+];
 const provenanceReleaseAttributes = [
   ...keyAgentInstallProvenanceReleaseCode.matchAll(/#\s*\[[^\]]*\]/gu),
 ].map((match) => compactRust(match[0]));
@@ -8314,6 +8495,12 @@ const provenanceCrateModulePaths = [
     /\bcrate::(?<module>[A-Za-z_]\w*)/gu,
   ),
 ].map((match) => match.groups.module);
+const provenanceTypeAliases = rustTypeAliasItems(
+  keyAgentInstallProvenanceRelease,
+).map((item) => compactRust(item.source));
+const provenanceMacroInvocations = rustMacroInvocations(
+  keyAgentInstallProvenanceRelease,
+);
 const provenanceTypeDefinitionCounts = keyAgentInstallProvenanceTypeNames.map(
   (name) =>
     (
@@ -8326,6 +8513,13 @@ const provenancePinnedConstantDefinitionCounts = [
   "INSTALL_JOURNAL_SCHEMA_V1",
   "INSTALL_POLICY_V1",
   "COMMITTED_JOURNAL_GENERATION_V1",
+  "INSTALL_JOURNAL_RECORD_MAGIC_V1",
+  "INSTALL_JOURNAL_RECORD_DIGEST_DOMAIN_V1",
+  "INSTALL_JOURNAL_RECORD_MAC_DOMAIN_V1",
+  "INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1",
+  "INSTALL_JOURNAL_RECORD_BODY_BYTES",
+  "INSTALL_JOURNAL_MAC_BYTES",
+  "INSTALL_JOURNAL_RECORD_BYTES",
 ].map(
   (name) =>
     (
@@ -8334,10 +8528,47 @@ const provenancePinnedConstantDefinitionCounts = [
       ) ?? []
     ).length,
 );
+const provenancePinnedByteStringOccurrenceCounts = [
+  "INSTALL_JOURNAL_RECORD_MAGIC_V1",
+  "INSTALL_JOURNAL_RECORD_DIGEST_DOMAIN_V1",
+  "INSTALL_JOURNAL_RECORD_MAC_DOMAIN_V1",
+  "INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1",
+].map(
+  (name) =>
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        new RegExp(`\\b${name}\\b`, "gu"),
+      ) ?? []
+    ).length,
+);
+const provenanceVerifierHelperOccurrenceCounts = [
+  "encode_install_journal_record_body",
+  "decode_install_journal_record_body",
+  "verify_install_journal_record_mac",
+  "decode_authenticated_install_journal_record",
+  "authenticated_install_journal_record_digest",
+  "install_checkpoint_commitment",
+  "bind_install_journal_phase_payload",
+  "validate_nonempty_install_journal_history",
+].map(
+  (name) =>
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        new RegExp(`\\b${name}\\b`, "gu"),
+      ) ?? []
+    ).length,
+);
 const provenanceAuthorityConstructionCounts = [
   "AuthenticatedKeyAgentInstallJournal",
   "ExpectedKeyAgentInstallIdentities",
   "ObservedKeyAgentInstallObjects",
+].map(
+  (name) =>
+    rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
+);
+const provenancePrivateAuthorityConstructionCounts = [
+  "InstallerJournalAuthenticationKey",
+  "AuthenticatedKeyAgentInstallCheckpoint",
 ].map(
   (name) =>
     rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
@@ -8350,6 +8581,8 @@ const provenanceCandidateConstructionCounts = [
     rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
 );
 const provenanceAuthorityBlocks = [
+  installerJournalAuthenticationKeyBlock,
+  authenticatedKeyAgentInstallCheckpointBlock,
   authenticatedKeyAgentInstallJournalBlock,
   expectedKeyAgentInstallIdentitiesBlock,
   observedKeyAgentInstallObjectsBlock,
@@ -8367,17 +8600,77 @@ const provenanceForbiddenProductionPatterns = [
   /\b(?:File|OpenOptions|Command)\b/u,
   /\b(?:serde|bincode|postcard)\b/u,
   /\b(?!(?:if|while|return|let|else|match)\b)(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*\s*!\s*[([{]/u,
-  /\btype\b/u,
   /\buse\b[^;]*\bas\s+[A-Za-z_]\w*/u,
   /\b(?:Create|Open|Delete|Remove|Move|Reg|CryptProtect|NCrypt|BCrypt|Tpm)\w*\s*\(/u,
-  /\bdecode_be\s*\(/u,
 ];
 const provenanceForbiddenTraitImpl = new RegExp(
-  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|AsRef|From(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:${keyAgentInstallProvenanceTypeNames.join("|")})\\b`,
+  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|AsRef|From(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint|${keyAgentInstallProvenanceTypeNames.join("|")})\\b`,
   "u",
 );
 const compactInstallTransactionGeneration = compactRust(
   keyAgentInstallTransactionGeneration,
+);
+const compactKeyAgentInstallProvenanceRelease = compactRust(
+  keyAgentInstallProvenanceRelease,
+);
+const compactKeyAgentInstallRecord = compactRust(keyAgentInstallRecordBlock);
+const compactValidKeyAgentInstallRecord = compactRust(
+  validKeyAgentInstallRecord,
+);
+const compactEncodeKeyAgentInstallJournalRecordBody = compactRust(
+  encodeKeyAgentInstallJournalRecordBody,
+);
+const compactDecodeKeyAgentInstallJournalRecordBody = compactRust(
+  decodeKeyAgentInstallJournalRecordBody,
+);
+const compactVerifyKeyAgentInstallJournalRecordMac = compactRust(
+  verifyKeyAgentInstallJournalRecordMac,
+);
+const compactDecodeAuthenticatedKeyAgentInstallJournalRecord = compactRust(
+  decodeAuthenticatedKeyAgentInstallJournalRecord,
+);
+const compactAuthenticatedKeyAgentInstallJournalRecordDigest = compactRust(
+  authenticatedKeyAgentInstallJournalRecordDigest,
+);
+const compactKeyAgentInstallCheckpointCommitment = compactRust(
+  keyAgentInstallCheckpointCommitment,
+);
+const compactBindKeyAgentInstallJournalPhasePayload = compactRust(
+  bindKeyAgentInstallJournalPhasePayload,
+);
+const compactValidateNonemptyKeyAgentInstallJournalHistory = compactRust(
+  validateNonemptyKeyAgentInstallJournalHistory,
+);
+const compactValidateAuthenticatedKeyAgentInstallJournal = compactRust(
+  validateAuthenticatedKeyAgentInstallJournal,
+);
+const validateCheckpointCommitmentCalls = rustCallSites(
+  validateAuthenticatedKeyAgentInstallJournal,
+  "install_checkpoint_commitment",
+);
+const validateNonemptyHistoryCalls = rustCallSites(
+  validateAuthenticatedKeyAgentInstallJournal,
+  "validate_nonempty_install_journal_history",
+);
+const historyAuthenticatedDecodeCalls = rustCallSites(
+  validateNonemptyKeyAgentInstallJournalHistory,
+  "decode_authenticated_install_journal_record",
+);
+const historyPhasePayloadCalls = rustCallSites(
+  validateNonemptyKeyAgentInstallJournalHistory,
+  "bind_install_journal_phase_payload",
+);
+const historyRecordDigestCalls = rustCallSites(
+  validateNonemptyKeyAgentInstallJournalHistory,
+  "authenticated_install_journal_record_digest",
+);
+const authenticatedDecodeMacCalls = rustCallSites(
+  decodeAuthenticatedKeyAgentInstallJournalRecord,
+  "verify_install_journal_record_mac",
+);
+const authenticatedDecodeBodyCalls = rustCallSites(
+  decodeAuthenticatedKeyAgentInstallJournalRecord,
+  "decode_install_journal_record_body",
 );
 const expectedKeyAgentInstallProvenanceTests = [
   "full_presence_and_transaction_truth_table_is_fail_closed",
@@ -8387,6 +8680,10 @@ const expectedKeyAgentInstallProvenanceTests = [
   "malformed_or_aliased_canonical_sids_require_recovery",
   "sentinel_expected_identities_and_invalid_journal_generation_require_recovery",
   "authority_is_one_shot_thread_affine_and_debug_redacted",
+  "canonical_authenticated_codec_round_trips_all_phase_prefixes",
+  "codec_rejects_truncation_trailing_authentication_reserved_and_unused_bytes",
+  "exact_history_rejects_gap_order_id_payload_and_predecessor_drift",
+  "checkpoint_rejects_rollback_equivocation_digest_and_empty_mismatches",
 ];
 requireInvariant(
   platformWindowsLib.includes(
@@ -8407,6 +8704,8 @@ requireInvariant(
       JSON.stringify([]) &&
     JSON.stringify(keyAgentInstallProvenanceConsumers) === JSON.stringify([]) &&
     JSON.stringify(classifyKeyAgentInstallConsumers) === JSON.stringify([]) &&
+    JSON.stringify(validateAuthenticatedKeyAgentInstallJournalConsumers) ===
+      JSON.stringify([]) &&
     JSON.stringify(freshKeyAgentBoundaryConsumers) === JSON.stringify([]) &&
     JSON.stringify(pendingToPreparedConsumers) === JSON.stringify([]) &&
     JSON.stringify(provenanceVisibleTypes) ===
@@ -8424,6 +8723,10 @@ requireInvariant(
       JSON.stringify([
         "usecore::fmt;",
         "usecore::marker::PhantomData;",
+        "usehmac::{Hmac,Mac};",
+        "usesha2::{Digest,Sha256};",
+        "usesubtle::ConstantTimeEq;",
+        "usezeroize::Zeroizing;",
         "usecrate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;",
         "usecrate::key_agent_storage::KeyAgentStorageRootIdentity;",
       ]) &&
@@ -8431,12 +8734,34 @@ requireInvariant(
       JSON.stringify(["key_agent_lpac", "key_agent_storage"]) &&
     JSON.stringify(provenanceTypeDefinitionCounts) ===
       JSON.stringify([1, 1, 1, 1, 1, 1]) &&
-    JSON.stringify(provenancePinnedConstantDefinitionCounts) ===
-      JSON.stringify([1, 1, 1]) &&
+    provenancePinnedConstantDefinitionCounts.length === 10 &&
+    provenancePinnedConstantDefinitionCounts.every((count) => count === 1) &&
+    JSON.stringify(provenancePinnedByteStringOccurrenceCounts) ===
+      JSON.stringify([3, 2, 2, 2]) &&
+    provenanceVerifierHelperOccurrenceCounts.length === 8 &&
+    provenanceVerifierHelperOccurrenceCounts.every((count) => count === 2) &&
     JSON.stringify(provenanceImplHeaders) ===
       JSON.stringify(expectedProvenanceImplHeaders) &&
     JSON.stringify(provenanceAuthorityConstructionCounts) ===
-      JSON.stringify([0, 0, 0]) &&
+      JSON.stringify([1, 1, 0]) &&
+    JSON.stringify(provenancePrivateAuthorityConstructionCounts) ===
+      JSON.stringify([1, 1]) &&
+    rustStructLiteralSites(
+      validateAuthenticatedKeyAgentInstallJournal,
+      "AuthenticatedKeyAgentInstallJournal",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      validateAuthenticatedKeyAgentInstallJournal,
+      "ExpectedKeyAgentInstallIdentities",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      validateAuthenticatedKeyAgentInstallJournal,
+      "InstallerJournalAuthenticationKey",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      validateAuthenticatedKeyAgentInstallJournal,
+      "AuthenticatedKeyAgentInstallCheckpoint",
+    ).length === 1 &&
     JSON.stringify(provenanceCandidateConstructionCounts) ===
       JSON.stringify([1, 1]) &&
     rustStructLiteralSites(keyAgentInstallProvenanceRelease, "Self").length === 0 &&
@@ -8453,6 +8778,20 @@ requireInvariant(
       pattern.test(keyAgentInstallProvenanceReleaseCode),
     ) &&
     !provenanceForbiddenTraitImpl.test(keyAgentInstallProvenanceReleaseCode) &&
+    JSON.stringify(provenanceTypeAliases) ===
+      JSON.stringify(["typeInstallerJournalHmacSha256=Hmac<Sha256>;"]) &&
+    provenanceMacroInvocations.length === 0 &&
+    (keyAgentInstallProvenanceReleaseCode.match(
+      /\bKeyAgentStorageRootIdentity::decode_be\s*\(/gu,
+    ) ?? []).length === 1 &&
+    decodeKeyAgentInstallJournalRoot.includes(
+      "KeyAgentStorageRootIdentity::decode_be(root_identity)",
+    ) &&
+    (keyAgentInstallProvenanceReleaseCode.match(/\.encode_be\s*\(/gu) ?? [])
+      .length === 1 &&
+    encodeKeyAgentInstallJournalRecordBody.includes(
+      "root.root_identity.encode_be()",
+    ) &&
     /const\s+INSTALL_JOURNAL_SCHEMA_V1\s*:\s*u16\s*=\s*1\s*;/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
@@ -8462,21 +8801,78 @@ requireInvariant(
     /const\s+COMMITTED_JOURNAL_GENERATION_V1\s*:\s*u64\s*=\s*4\s*;/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
+    [
+      "constINSTALL_JOURNAL_RECORD_MAGIC_V1:[u8;8]=*b;",
+      "constRECORD_MAGIC_OFFSET:usize=0;",
+      "constRECORD_SCHEMA_OFFSET:usize=8;",
+      "constRECORD_POLICY_OFFSET:usize=10;",
+      "constRECORD_STATE_OFFSET:usize=12;",
+      "constRECORD_HEADER_RESERVED_OFFSET:usize=13;",
+      "constRECORD_HEADER_RESERVED_BYTES:usize=3;",
+      "constRECORD_GENERATION_OFFSET:usize=16;",
+      "constRECORD_TRANSACTION_ID_OFFSET:usize=24;",
+      "constRECORD_INSTALLATION_ID_OFFSET:usize=56;",
+      "constRECORD_RELEASE_IDENTITY_OFFSET:usize=88;",
+      "constRECORD_PREDECESSOR_DIGEST_OFFSET:usize=120;",
+      "constRECORD_PROFILE_NAME_LEN_OFFSET:usize=152;",
+      "constRECORD_PROFILE_NAME_OFFSET:usize=153;",
+      "constRECORD_PROFILE_SID_LEN_OFFSET:usize=217;",
+      "constRECORD_PROFILE_SID_OFFSET:usize=218;",
+      "constRECORD_STABLE_USER_SID_LEN_OFFSET:usize=286;",
+      "constRECORD_STABLE_USER_SID_OFFSET:usize=287;",
+      "constRECORD_ROOT_IDENTITY_OFFSET:usize=355;",
+      "constRECORD_TAIL_RESERVED_OFFSET:usize=379;",
+      "constRECORD_TAIL_RESERVED_BYTES:usize=5;",
+      "constINSTALL_JOURNAL_RECORD_BODY_BYTES:usize=384;",
+      "constINSTALL_JOURNAL_MAC_BYTES:usize=32;",
+      "constINSTALL_JOURNAL_RECORD_BYTES:usize=INSTALL_JOURNAL_RECORD_BODY_BYTES+INSTALL_JOURNAL_MAC_BYTES;",
+      "constRECORD_MAC_OFFSET:usize=INSTALL_JOURNAL_RECORD_BODY_BYTES;",
+    ].every((source) =>
+      compactKeyAgentInstallProvenanceRelease.includes(source),
+    ) &&
+    /^const\s+INSTALL_JOURNAL_RECORD_MAGIC_V1\s*:\s*\[u8;\s*8\]\s*=\s*\*b"YWKAIJ01"\s*;$/u.test(
+      installJournalRecordMagicConstant.trim(),
+    ) &&
+    /^const\s+INSTALL_JOURNAL_RECORD_DIGEST_DOMAIN_V1\s*:\s*&\[u8\]\s*=\s*b"your-wallet\/key-agent-install\/record-digest\/v1\\0"\s*;$/u.test(
+      installJournalRecordDigestDomainConstant.trim(),
+    ) &&
+    /^const\s+INSTALL_JOURNAL_RECORD_MAC_DOMAIN_V1\s*:\s*&\[u8\]\s*=\s*b"your-wallet\/key-agent-install\/record-mac\/v1\\0"\s*;$/u.test(
+      installJournalRecordMacDomainConstant.trim(),
+    ) &&
+    /^const\s+INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1\s*:\s*&\[u8\]\s*=\s*b"your-wallet\/key-agent-install\/checkpoint\/v1\\0"\s*;$/u.test(
+      installCheckpointCommitmentDomainConstant.trim(),
+    ) &&
+    compactEncodeKeyAgentInstallJournalRecordBody.includes(
+      "encoded[RECORD_MAGIC_OFFSET..RECORD_SCHEMA_OFFSET].copy_from_slice(&INSTALL_JOURNAL_RECORD_MAGIC_V1);",
+    ) &&
+    compactDecodeKeyAgentInstallJournalRecordBody.includes(
+      "ifencoded[RECORD_MAGIC_OFFSET..RECORD_SCHEMA_OFFSET]!=INSTALL_JOURNAL_RECORD_MAGIC_V1||",
+    ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*pub\(crate\)\s+(?:struct|enum)\s+(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|KeyAgentInstallDisposition)\b/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
-    !/impl\s+(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate)\s*\{/u.test(
+    !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*struct\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint)\b/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
-    !/(?<!struct\s)(?<!for\s)(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects)\s*\{/u.test(
+    !/impl\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint|AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate)\s*\{/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
     (keyAgentInstallProvenanceReleaseCode.match(
       /_not_send_or_sync:\s*PhantomData<\*mut \(\)>/gu,
-    ) ?? []).length === 5 &&
+    ) ?? []).length === 7 &&
     keyAgentInstallProvenanceReleaseCode.includes("struct JournalEvidenceSeal;") &&
     keyAgentInstallProvenanceReleaseCode.includes("struct ExpectedIdentitySeal;") &&
     keyAgentInstallProvenanceReleaseCode.includes("struct OsObservationSeal;") &&
+    keyAgentInstallProvenanceReleaseCode.includes("struct CheckpointEvidenceSeal;") &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "struct InstallerJournalAuthenticationKeySeal;",
+    ) &&
+    installerJournalAuthenticationKeyBlock.includes(
+      "_seal: InstallerJournalAuthenticationKeySeal",
+    ) &&
+    authenticatedKeyAgentInstallCheckpointBlock.includes(
+      "_seal: CheckpointEvidenceSeal",
+    ) &&
     authenticatedKeyAgentInstallJournalBlock.includes(
       "_seal: JournalEvidenceSeal",
     ) &&
@@ -8507,16 +8903,200 @@ requireInvariant(
       "expected_installation_id == expected_release_identity",
     ) &&
     classifyKeyAgentInstall.includes(
-      "journal.authenticated_generation == record.journal_generation",
+      "journal.authenticated_generation == record_common(&record).journal_generation",
     ) &&
     exactCommittedKeyAgentInstallMatch.includes(
-      "record.journal_generation == transaction_generation(record.transaction_state)",
+      "let KeyAgentInstallRecord::Committed",
+    ) &&
+    exactCommittedKeyAgentInstallMatch.includes(
+      "valid_install_record(record)",
+    ) &&
+    compactValidKeyAgentInstallRecord.includes(
+      "common.journal_generation!=transaction_generation(state)",
+    ) &&
+    /Prepared\s*\{\s*common\s*:\s*KeyAgentInstallCommonRecord\s*,?\s*\}/u.test(
+      keyAgentInstallRecordBlock,
+    ) &&
+    /ProfileCreated\s*\{\s*common\s*:\s*KeyAgentInstallCommonRecord\s*,\s*profile\s*:\s*KeyAgentInstallProfileEvidence\s*,?\s*\}/u.test(
+      keyAgentInstallRecordBlock,
+    ) &&
+    /RootCreated\s*\{\s*common\s*:\s*KeyAgentInstallCommonRecord\s*,\s*profile\s*:\s*KeyAgentInstallProfileEvidence\s*,\s*root\s*:\s*KeyAgentInstallRootEvidence\s*,?\s*\}/u.test(
+      keyAgentInstallRecordBlock,
+    ) &&
+    /Committed\s*\{\s*common\s*:\s*KeyAgentInstallCommonRecord\s*,\s*profile\s*:\s*KeyAgentInstallProfileEvidence\s*,\s*root\s*:\s*KeyAgentInstallRootEvidence\s*,?\s*\}/u.test(
+      keyAgentInstallRecordBlock,
     ) &&
     compactInstallTransactionGeneration.includes("Prepared=>1") &&
     compactInstallTransactionGeneration.includes("ProfileCreated=>2") &&
     compactInstallTransactionGeneration.includes("RootCreated=>3") &&
     compactInstallTransactionGeneration.includes(
       "Committed=>COMMITTED_JOURNAL_GENERATION_V1",
+    ) &&
+    compactEncodeKeyAgentInstallJournalRecordBody.includes(
+      "common.schema_version.to_be_bytes()",
+    ) &&
+    compactEncodeKeyAgentInstallJournalRecordBody.includes(
+      "common.policy_version.to_be_bytes()",
+    ) &&
+    compactEncodeKeyAgentInstallJournalRecordBody.includes(
+      "common.journal_generation.to_be_bytes()",
+    ) &&
+    (keyAgentInstallProvenanceReleaseCode.match(
+      /\b(?:u16|u64)::from_be_bytes\s*\(/gu,
+    ) ?? []).length === 3 &&
+    !/\b(?:from|to)_le_bytes\s*\(/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    compactDecodeKeyAgentInstallJournalRecordBody.includes(
+      "letcanonical=encode_install_journal_record_body(&record)?;ifcanonical!=*encoded",
+    ) &&
+    decodeKeyAgentInstallJournalRecordBody.includes(
+      "RECORD_HEADER_RESERVED_BYTES",
+    ) &&
+    decodeKeyAgentInstallJournalRecordBody.includes(
+      "RECORD_TAIL_RESERVED_BYTES",
+    ) &&
+    JSON.stringify(
+      validateCheckpointCommitmentCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        [
+          "high_water_generation",
+          "&current_record_digest",
+          "&installation_id",
+          "&release_identity",
+        ],
+      ]) &&
+    JSON.stringify(validateNonemptyHistoryCalls.map((call) => call.arguments)) ===
+      JSON.stringify([
+        [
+          "encoded_journal",
+          "&key",
+          "high_water_generation",
+          "&current_record_digest",
+          "&installation_id",
+          "&release_identity",
+        ],
+      ]) &&
+    JSON.stringify(
+      historyAuthenticatedDecodeCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["&encoded_record", "authentication_key"]]) &&
+    JSON.stringify(historyPhasePayloadCalls.map((call) => call.arguments)) ===
+      JSON.stringify([
+        [
+          "index",
+          "&encoded_record[..INSTALL_JOURNAL_RECORD_BODY_BYTES]",
+          "&mut profile_payload",
+          "&mut root_payload",
+        ],
+      ]) &&
+    JSON.stringify(historyRecordDigestCalls.map((call) => call.arguments)) ===
+      JSON.stringify([["&encoded_record"]]) &&
+    JSON.stringify(authenticatedDecodeMacCalls.map((call) => call.arguments)) ===
+      JSON.stringify([
+        ["&body", "&encoded[RECORD_MAC_OFFSET..]", "key"],
+      ]) &&
+    JSON.stringify(authenticatedDecodeBodyCalls.map((call) => call.arguments)) ===
+      JSON.stringify([["&body"]]) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "letexpected_commitment=install_checkpoint_commitment(high_water_generation,&current_record_digest,&installation_id,&release_identity,);",
+    ) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "Some(validate_nonempty_install_journal_history(encoded_journal,&key,high_water_generation,&current_record_digest,&installation_id,&release_identity,)?",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "letrecord=decode_authenticated_install_journal_record(&encoded_record,authentication_key)?;",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "bind_install_journal_phase_payload(index,&encoded_record[..INSTALL_JOURNAL_RECORD_BODY_BYTES],&mutprofile_payload,&mutroot_payload,)?;",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "previous_digest=authenticated_install_journal_record_digest(&encoded_record);",
+    ) &&
+    compactDecodeAuthenticatedKeyAgentInstallJournalRecord.includes(
+      "verify_install_journal_record_mac(&body,&encoded[RECORD_MAC_OFFSET..],key)?;decode_install_journal_record_body(&body)",
+    ) &&
+    compactDecodeAuthenticatedKeyAgentInstallJournalRecord.indexOf(
+      "verify_install_journal_record_mac",
+    ) >= 0 &&
+    compactDecodeAuthenticatedKeyAgentInstallJournalRecord.indexOf(
+      "verify_install_journal_record_mac",
+    ) <
+      compactDecodeAuthenticatedKeyAgentInstallJournalRecord.indexOf(
+        "decode_install_journal_record_body",
+      ) &&
+    compactVerifyKeyAgentInstallJournalRecordMac.includes(
+      "InstallerJournalHmacSha256::new_from_slice(key)",
+    ) &&
+    compactVerifyKeyAgentInstallJournalRecordMac.includes(
+      "mac.update(INSTALL_JOURNAL_RECORD_MAC_DOMAIN_V1);mac.update(body);mac.verify_slice(tag)",
+    ) &&
+    compactAuthenticatedKeyAgentInstallJournalRecordDigest.includes(
+      "digest.update(INSTALL_JOURNAL_RECORD_DIGEST_DOMAIN_V1);digest.update(encoded);digest.finalize().into()",
+    ) &&
+    compactKeyAgentInstallCheckpointCommitment ===
+      "fninstall_checkpoint_commitment(high_water_generation:u64,current_record_digest:&[u8;INSTALL_JOURNAL_DIGEST_BYTES],installation_id:&[u8;IDENTITY_BYTES],release_identity:&[u8;IDENTITY_BYTES],)->[u8;INSTALL_JOURNAL_DIGEST_BYTES]{letmutdigest=Sha256::new();digest.update(INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1);digest.update(INSTALL_JOURNAL_SCHEMA_V1.to_be_bytes());digest.update(INSTALL_POLICY_V1.to_be_bytes());digest.update(high_water_generation.to_be_bytes());digest.update(current_record_digest);digest.update(installation_id);digest.update(release_identity);digest.finalize().into()}" &&
+    (keyAgentInstallProvenanceReleaseCode.match(/\.ct_eq\s*\(/gu) ?? [])
+      .length === 3 &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "record_count.checked_mul(INSTALL_JOURNAL_RECORD_BYTES)",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "encoded_journal.len()!=expected_bytes",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "record_state(&record)!=expected_state",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "common.journal_generation!=u64::try_from(index+1)",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "common.installation_id!=*installation_id",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "common.release_identity!=*release_identity",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "common.predecessor_digest.ct_eq(&previous_digest)",
+    ) &&
+    compactValidateNonemptyKeyAgentInstallJournalHistory.includes(
+      "common.transaction_id!=first_transaction_id",
+    ) &&
+    compactBindKeyAgentInstallJournalPhasePayload.includes("ifindex>=1") &&
+    compactBindKeyAgentInstallJournalPhasePayload.includes("ifindex>=2") &&
+    compactBindKeyAgentInstallJournalPhasePayload.includes(
+      "profile_payload.is_some_and(|first|current!=first)",
+    ) &&
+    compactBindKeyAgentInstallJournalPhasePayload.includes(
+      "root_payload.is_some_and(|first|current!=first)",
+    ) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "expected_commitment.ct_eq(&commitment)",
+    ) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "ifencoded_journal.is_empty()",
+    ) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "high_water_generation!=0||current_record_digest!=[0;INSTALL_JOURNAL_DIGEST_BYTES]",
+    ) &&
+    compactValidateAuthenticatedKeyAgentInstallJournal.includes(
+      "(1..=COMMITTED_JOURNAL_GENERATION_V1).contains(&high_water_generation)",
+    ) &&
+    !/\b(?:DeviceKeyBundle|LocalSettings|GenerationStore|key_material|settings)\b/u.test(
+      keyAgentInstallProvenanceReleaseCode,
+    ) &&
+    ![
+      "ObservedKeyAgentInstallObjects",
+      "UninitializedKeyAgentInstallCandidate",
+      "ConsistentExistingKeyAgentInstallCandidate",
+      "KeyAgentInstallDisposition",
+      "PreparedKeyAgentProvisioning",
+    ].some((name) => validateAuthenticatedKeyAgentInstallJournal.includes(name)) &&
+    keyAgentInstallProvenanceSource.includes(
+      'InstallerJournalAuthenticationKey([REDACTED])',
+    ) &&
+    keyAgentInstallProvenanceSource.includes(
+      'AuthenticatedKeyAgentInstallCheckpoint([REDACTED])',
     ) &&
     keyAgentInstallProvenanceSource.includes("compiled fixed profile name") &&
     keyAgentInstallProvenanceSource.includes("fixed storage leaf") &&
@@ -8535,7 +9115,7 @@ requireInvariant(
     !keyAgentInstallProvenanceReleaseCode.includes(
       "PreparedKeyAgentProvisioning",
     ),
-  "Key Agent install provenance must remain a pure non-authoritative candidate classifier with three distinct sealed inputs, zero production consumers, non-launchable Pending freshness, and no Pending/candidate-to-Prepared conversion",
+  "Key Agent install provenance must retain its exact canonical HMAC journal/checkpoint verifier, phase history, three sealed classifier facts, zero production consumers, non-launchable Pending freshness, and no Pending/candidate-to-Prepared conversion",
 );
 const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
   .filter(
@@ -12670,13 +13250,51 @@ requireInvariant(
       "returns only a non-launchable pending capability",
     ) &&
     [
+      rootReadme,
       activationArchitecture,
       activationReadme,
       securityDecisions,
       keyAgentProtocolDocumentation,
-    ].every((document) => /observes\s+no\s+predecessor\s+history/iu.test(document)) &&
-    !/exact four-step journal generation|exact\s+four transaction generations/iu.test(
+    ].every(
+      (document) =>
+        document.includes("HMAC-SHA256") &&
+        /predecessor\s+commitments?/iu.test(document),
+    ) &&
+    !/observes\s+no\s+predecessor\s+history/iu.test(
       keyAgentBoundaryDocumentation,
+    ) &&
+    /`Prepared=1`,\s*`ProfileCreated=2`,\s*`RootCreated=3`,\s*`Committed=4`/u.test(
+      activationArchitecture,
+    ) &&
+    /production\s+installer key\/checkpoint backend나 journal reader\/writer는 없고[\s\S]{0,180}production 경로도 없습니다/iu.test(
+      rootReadme,
+    ) &&
+    /권위 있는\s+journal I\/O와 held-object adopt\/recovery/iu.test(
+      rootReadme,
+    ) &&
+    /Production has no installer-key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
+      activationReadme,
+    ) &&
+    /Authoritative journal I\/O,\s+installer key\/checkpoint provisioning,\s+durable writing,\s+authoritative OS\s+observation,\s+adoption,\s+and recovery remain absent/iu.test(
+      activationReadme,
+    ) &&
+    /no production installer-key\/checkpoint source,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
+      activationArchitecture,
+    ) &&
+    /Production installer-owned key\/checkpoint provisioning,\s+authoritative journal\s+I\/O and durable writing,\s+plus held profile\/root observation,\s+adoption,\s+and\s+recovery[\s\S]{0,80}remain absent/iu.test(
+      activationArchitecture,
+    ) &&
+    /no\s+production key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    /Production installer key\/checkpoint provisioning,\s+authoritative provenance\s+journal I\/O and durable writing,\s+existing-profile\/root observation and\s+adoption\/recovery/iu.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    /no production key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+OS observer,\s+or consumer/iu.test(
+      securityDecisions,
+    ) &&
+    /Existing production profiles still lack\s+installer-owned key\/checkpoint provisioning,\s+authoritative provenance-journal\s+I\/O and durable writing,\s+held-object adoption,\s+and recovery/iu.test(
+      securityDecisions,
     ) &&
     activationArchitecture.includes(
       "The private storage-startup transition now proves that this exact child opens and",

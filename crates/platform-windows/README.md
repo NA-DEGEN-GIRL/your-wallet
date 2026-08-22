@@ -140,18 +140,20 @@ Implemented:
   `CTMF_INCLUDE_LPAC` allows, before detach. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
 
-- a private, pure install-provenance state model. Three distinct sealed inputs
-  represent an authenticated installer journal, independently expected
-  installation/release identities, and live fixed-profile/held-root
-  observations. Production has no constructor or consumer for any of them. The
-  model accepts only the exact v1 schema/policy, canonical fixed profile name and
-  SIDs, full root `FILE_ID_INFO`, and pairwise-distinct identities. It defines the
-  fixed state-to-generation mapping (`Prepared=1`, `ProfileCreated=2`,
-  `RootCreated=3`, `Committed=4`), but only an exact current `Committed=4` record
-  can yield the consistent-existing candidate; every other phase requires
-  recovery. It observes no predecessor history and cannot prove sequence, gaps,
-  rollback, or equivocation; those checks belong to the future authenticated
-  journal adapter.
+- a private, pure install-provenance state model and canonical prefix-journal
+  verifier. Each fixed record is authenticated with an installer-owned
+  HMAC-SHA256 key before parsing, uses phase-specific payloads, and must follow
+  the exact `Prepared=1`, `ProfileCreated=2`, `RootCreated=3`, `Committed=4`
+  sequence with exact predecessor commitments. A separately sealed,
+  rollback-resistant checkpoint supplies the independent installation/release
+  identities, high-water generation, and current journal commitment; lower,
+  higher, same-generation alternate, gapped, reordered, malformed, or
+  non-canonical histories fail closed. The initial phases carry no fictitious
+  root identity, while `RootCreated` and `Committed` must bind the same full
+  `FILE_ID_INFO` and canonical profile/owner SIDs. The resulting authenticated
+  journal and expected identities remain distinct sealed classifier inputs.
+  Production has no installer-key/checkpoint constructor, reader, writer,
+  backend, or consumer for this verifier.
   Authenticated absence plus no objects is only an uninitialized candidate;
   exact committed consistency is only an existing candidate; every partial,
   pending, stale, mismatched, sentinel, or squatted state requires recovery.
@@ -159,9 +161,9 @@ Implemented:
   retains no root handle. Fresh profile/root creation now returns a different
   non-launchable `PendingKeyAgentProvisioning`; the activation boundary still
   accepts only `PreparedKeyAgentProvisioning`, for which no production
-  constructor or pending/candidate conversion exists. Journal I/O,
-  authentication/anti-rollback, authoritative OS observation, adoption, and
-  recovery remain absent;
+  constructor or pending/candidate conversion exists. Authoritative journal I/O,
+  installer key/checkpoint provisioning, durable writing, authoritative OS
+  observation, adoption, and recovery remain absent;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
   Before mutation it requires exactly three distinct kernel objects with exact

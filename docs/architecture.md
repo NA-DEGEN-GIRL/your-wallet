@@ -456,20 +456,28 @@ production fresh fixed profile/root E2E.
 
 Fresh object creation is now a non-launchable pending typestate. The activation
 path accepts only a prepared typestate, and no production constructor or
-pending/candidate conversion exists. A separate pure provenance classifier
-binds exact v1 schema/policy, canonical fixed profile name/SIDs, full root
-identity, and independent installation/release identity expectations across
-three distinct sealed inputs. The model fixes all four phase-to-generation
-mappings, but only current `Committed=4` consistency can produce the existing
-candidate; every other phase requires recovery. Its outputs
-are only non-authoritative candidates; it performs no I/O, retains no root
-handle, and has no production source or consumer. It observes no predecessor
-history and therefore cannot prove sequence, gaps, rollback, or equivocation;
-those checks belong to the future authenticated journal adapter.
+pending/candidate conversion exists. A separate pure provenance boundary now
+contains both the candidate classifier and a canonical prefix-journal verifier.
+The verifier authenticates each fixed record with an installer-owned
+HMAC-SHA256 key before parsing, requires the exact `Prepared=1`,
+`ProfileCreated=2`, `RootCreated=3`, `Committed=4` phase/generation sequence and
+predecessor commitments, and compares the complete current journal commitment
+and high-water generation with a separately sealed rollback-resistant
+checkpoint. Phase-specific payloads prevent early records from claiming a root
+that does not yet exist; the final two phases must bind the same canonical
+profile/owner SIDs and full root identity. Rollback, gaps, same-generation
+equivocation, reordered phases, and malformed or non-canonical bytes fail
+closed. The verifier mints only the existing distinct sealed authenticated
+journal and independent expected-identity facts for the classifier. Only exact
+current `Committed=4` consistency can produce the non-authoritative existing
+candidate; every other phase requires recovery. The module performs no I/O,
+retains no root handle, and has no production installer-key/checkpoint source,
+reader, writer, backend, or consumer.
 
-An authenticated rollback-resistant installer journal plus authoritative held
-profile/root observation, adoption, and recovery for an existing production
-profile remain absent. The `TokenUser` ACE still permits other same-user processes, and
+Production installer-owned key/checkpoint provisioning, authoritative journal
+I/O and durable writing, plus held profile/root observation, adoption, and
+recovery for an existing production profile remain absent. The `TokenUser` ACE
+still permits other same-user processes, and
 ancestor path validation is metadata-based rather than atomic. Production
 rollback-anchor and storage/AEAD-key provisioning, protected settings and its
 live lease, authenticated Broker/supervisor topology and single-instance,

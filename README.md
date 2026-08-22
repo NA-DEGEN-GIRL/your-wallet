@@ -665,12 +665,21 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `DELETE` actual-open의 `SHARING_VIOLATION`과 별도 `AccessCheck` denial,
   `FILE_DELETE_CHILD`/`WRITE_DAC`/`WRITE_OWNER`의 `ACCESS_DENIED`,
   `ACCESS_SYSTEM_SECURITY`의 `PRIVILEGE_NOT_HELD`를 각각 구분해 증명합니다.
-- 이 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory anchor와 합성
-  key/payload를 사용하는 `cfg(test)` 증명이지 production fresh profile/root E2E나 release
-  wiring이 아닙니다. 기존 production profile의 durable provenance/adopt/recovery,
-  same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
-  provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
-  single-instance, signed immutable artifact 및 DLL/dependency E2E가 모두 남아 있습니다.
+- 설치 provenance에는 이제 고정 phase별 payload를 쓰는 정규 prefix-journal codec이 있습니다.
+  각 레코드는 installer-owned HMAC-SHA256으로 먼저 인증되고, `Prepared=1`부터
+  `Committed=4`까지 정확한 순서·세대·predecessor commitment를 따라야 하며, 독립된
+  rollback-resistant 체크포인트의 high-water와 현재 commitment에도 정확히 일치해야
+  합니다. 아직 존재하지 않는 root identity를 초기 phase에 요구하지 않고,
+  `RootCreated`와 `Committed`만 동일한 완전한 root 증거를 가집니다. 그러나 production
+  installer key/checkpoint backend나 journal reader/writer는 없고 이 순수 verifier를
+  호출하는 production 경로도 없습니다.
+- 따라서 통합 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory
+  anchor와 합성 key/payload를 사용하는 `cfg(test)` 증명이지 production fresh
+  profile/root E2E나 release wiring이 아닙니다. 기존 production profile의 권위 있는
+  journal I/O와 held-object adopt/recovery, same-user 접근 및 non-atomic ancestor race,
+  production rollback anchor와 storage/AEAD key provisioning, live protected-settings lease,
+  인증된 Broker/supervisor topology와 single-instance, signed immutable artifact 및
+  DLL/dependency E2E가 모두 남아 있습니다.
   one-shot stream의 future delayed suffix/EOF도 증명되지 않고 generic runtime/signing IPC도
   없습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이며 이 항목들은 **STOP-SHIP**입니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
