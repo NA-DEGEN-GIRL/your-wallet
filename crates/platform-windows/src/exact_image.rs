@@ -11,7 +11,6 @@ use core::fmt;
 use std::path::Path;
 
 use thiserror::Error;
-#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 use windows::Win32::Foundation::HANDLE;
 use zeroize::Zeroize;
 
@@ -88,6 +87,20 @@ pub(super) fn held_helper_file_identity(
     sys::exact_file_identity(artifact.raw_handle())
 }
 
+/// Proves that a pre-user-mode mapped image is one already-held file object.
+///
+/// The expected identity is opaque and the comparison performs no path lookup,
+/// PID reopen, canonicalization, or second expected-file open.
+pub(super) fn authenticate_mapped_image(
+    identity: &ExactFileIdentity,
+    mapped_image: HANDLE,
+) -> Result<(), ExactImageError> {
+    sys::exact_file_identity(mapped_image)?
+        .eq(identity)
+        .then_some(())
+        .ok_or(ExactImageError::MappedImageMismatch)
+}
+
 /// Pinned debug Broker artifact and its exact Windows file-object identity.
 #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 pub(crate) struct PinnedBrokerImage {
@@ -116,10 +129,7 @@ impl PinnedBrokerImage {
         &self,
         mapped_image: HANDLE,
     ) -> Result<(), ExactImageError> {
-        sys::exact_file_identity(mapped_image)?
-            .eq(&self.identity)
-            .then_some(())
-            .ok_or(ExactImageError::MappedImageMismatch)
+        authenticate_mapped_image(&self.identity, mapped_image)
     }
 }
 

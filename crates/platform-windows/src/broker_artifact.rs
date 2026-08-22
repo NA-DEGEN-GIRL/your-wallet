@@ -2,18 +2,22 @@
 //!
 //! This module allocates no Job, pipe, channel, thread, or process and exposes
 //! no launch operation. It first converts an already verified, pinned Broker
-//! file into an opaque release capability, then may consume that capability
-//! into a prepared-only same-handle file-identity state.
+//! file into an opaque release capability, then consumes that capability into
+//! the supervisor-owned same-handle file-identity state.
 
 use core::fmt;
 
 use thiserror::Error;
-#[cfg(windows)]
-use zeroize::Zeroize;
 
+#[cfg(windows)]
+#[path = "broker_supervisor.rs"]
+pub(crate) mod broker_supervisor;
+
+#[cfg(windows)]
+use self::broker_supervisor::PreparedReleaseBrokerSupervisor;
 use crate::attestation::ReleaseAttestation;
 #[cfg(windows)]
-use crate::exact_image::{ExactFileIdentity, ExactImageError, held_helper_file_identity};
+use crate::exact_image::{ExactImageError, held_helper_file_identity};
 use crate::helper::VerifiedHelper;
 
 /// Stable failures from the dormant Broker artifact-admission boundary.
@@ -33,7 +37,7 @@ pub(crate) enum BrokerArtifactError {
     InvalidPath,
 }
 
-/// Stable failure from the prepared-only release Broker supervisor boundary.
+/// Stable failure from the release Broker supervisor preparation boundary.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum BrokerSupervisorPreflightError {
@@ -66,32 +70,6 @@ impl fmt::Debug for PreflightBrokerArtifact {
     }
 }
 
-/// Opaque prepared-only Broker supervisor state.
-///
-/// It owns the release-admitted artifact and the 128-bit `FILE_ID_INFO`
-/// identity derived from that same held file object. It has no path, handle,
-/// PID, process, launch, channel, Job, thread, or accessor surface.
-#[cfg(windows)]
-#[must_use = "dropping the prepared Broker supervisor closes its pinned file"]
-pub(crate) struct PreparedReleaseBrokerSupervisor {
-    artifact: PreflightBrokerArtifact,
-    identity: ExactFileIdentity,
-}
-
-#[cfg(windows)]
-impl fmt::Debug for PreparedReleaseBrokerSupervisor {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])")
-    }
-}
-
-#[cfg(windows)]
-impl Drop for PreparedReleaseBrokerSupervisor {
-    fn drop(&mut self) {
-        self.identity.zeroize();
-    }
-}
-
 /// Performs all release gates without allocating an activation resource.
 ///
 /// Role is checked before release evidence, the dedicated Broker manifest is
@@ -117,7 +95,7 @@ pub(crate) fn preflight_broker_artifact(
     Ok(PreflightBrokerArtifact { artifact })
 }
 
-/// Consumes one admitted Broker capability into a prepared-only supervisor.
+/// Consumes one admitted Broker capability into the private supervisor state.
 ///
 /// Identity is queried from the already retained file handle before ownership
 /// moves into the result. This allocates no pipe, Job, channel, thread, process,
@@ -127,7 +105,8 @@ pub(crate) fn prepare_release_broker_supervisor(
     artifact: PreflightBrokerArtifact,
 ) -> Result<PreparedReleaseBrokerSupervisor, BrokerSupervisorPreflightError> {
     let identity = held_helper_file_identity(&artifact.artifact)?;
-    Ok(PreparedReleaseBrokerSupervisor { artifact, identity })
+    let PreflightBrokerArtifact { artifact } = artifact;
+    Ok(PreparedReleaseBrokerSupervisor::new(artifact, identity))
 }
 
 #[cfg(test)]
@@ -135,11 +114,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{BrokerArtifactError, preflight_broker_artifact};
-    #[cfg(windows)]
-    use super::{PreparedReleaseBrokerSupervisor, prepare_release_broker_supervisor};
     use crate::attestation::ReleaseAttestation;
-    #[cfg(windows)]
-    use crate::exact_image::held_helper_file_identity;
     use crate::helper::VerifiedHelper;
 
     const BROKER_MANIFEST: [u8; 32] = [0x41; 32];
@@ -215,28 +190,6 @@ mod tests {
             format!("{admitted:?}"),
             "PreflightBrokerArtifact([PINNED VERIFIED BROKER])"
         );
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn prepared_release_broker_supervisor_retains_same_handle_and_full_file_identity()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let broker = artifact(absolute_path()?, BROKER_MANIFEST, true)?;
-        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
-        let admitted = preflight_broker_artifact(attestation, broker)?;
-        let held_handle = admitted.artifact.raw_handle();
-        let expected_identity = held_helper_file_identity(&admitted.artifact)?;
-
-        let prepared: PreparedReleaseBrokerSupervisor =
-            prepare_release_broker_supervisor(admitted)?;
-        assert_eq!(prepared.artifact.artifact.raw_handle(), held_handle);
-        assert_eq!(prepared.identity, expected_identity);
-        assert_eq!(
-            format!("{prepared:?}"),
-            "PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])"
-        );
-        drop(prepared);
         Ok(())
     }
 }

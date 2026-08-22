@@ -17,14 +17,20 @@ remain release blockers.
 A private dormant Broker preflight now distinguishes Broker transport evidence
 and the exact Broker manifest from the three signing-TCB helper manifests. It
 can only retain an opaque pinned-artifact capability after role, complete
-release evidence, manifest, and absolute-path checks. On Windows, a private
-prepared-only seam consumes that capability by value and retains volume serial
-plus all 128 `FILE_ID_INFO` file-ID bits derived from the same already-held
-handle alongside the admitted artifact. `PreparedReleaseBrokerSupervisor` is
-non-cloneable, redacted under `Debug`, drop-only, and has no path, raw-handle,
-PID, artifact, identity, or launch accessor. It creates no process, thread,
-pipe, Job, channel, or launch resource. The compiled policy remains absent;
-this is an inert identity-preserving typestate, not production Broker activation.
+release evidence, manifest, and absolute-path checks. On Windows, the admission
+module alone can mint `PreparedReleaseBrokerSupervisor`, which retains volume
+serial plus all 128 `FILE_ID_INFO` file-ID bits derived from the same already-held
+handle alongside the admitted artifact. The value is non-cloneable, redacted
+under `Debug`, and drop-only.
+
+A production-compiled, crate-private exact-image activation core now consumes
+that whole prepared value exactly once. Before user mode it matches the first
+debug-event mapped-image handle to the held identity, then retains the value with
+the exact process, one-member kill-on-close Job, and private process-bound
+channel through cleanup. Its release entry accepts no path, raw handle, PID,
+command line, application override, or generic launch target. The compiled
+policy remains absent, so the core is dormant and is not signed-install,
+native-host provenance, process-wide launch coordination, or release evidence.
 
 | Area | Decision |
 | --- | --- |
@@ -59,10 +65,12 @@ Before any real mainnet value is used, the Windows build must prove:
    independent review of the secret and authorization TCBs.
 5. Exact extension-envelope dispatch through the native host and authenticated
    broker endpoint, including aggregate structural-limit and negative tests.
-   The inert `PreparedReleaseBrokerSupervisor` must be consumed by the reviewed
-   exact-image activation supervisor and covered by signed immutable-install,
-   manifest, native-host provenance, process/Job/channel, and negative release
-   evidence. The prepared-only seam is not that activation proof.
+   The dormant exact-image core now consumes `PreparedReleaseBrokerSupervisor`,
+   but it must still be covered by signed immutable-install, manifest,
+   native-host provenance, process/Job/channel, and negative release evidence.
+   Every inheriting process creation must also use one sealed process-wide
+   coordinator or a dedicated launcher process; module-local locking is not
+   sufficient. The dormant core is not that release proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

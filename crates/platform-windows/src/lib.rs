@@ -47,12 +47,13 @@
 //! use platform_windows::broker_artifact::preflight_broker_artifact;
 //! ```
 //!
-//! The resulting release supervisor preparation is private and inert too. It
-//! retains only the admitted file and its opaque Windows file identity; there
-//! is no launch or resource accessor surface:
+//! The resulting release supervisor and exact-image activation core remain
+//! private and dormant too. The supervisor retains the admitted file and its
+//! opaque Windows file identity through exact child cleanup; there is no
+//! external launch or resource accessor surface:
 //!
 //! ```compile_fail
-//! use platform_windows::broker_artifact::PreparedReleaseBrokerSupervisor;
+//! use platform_windows::broker_artifact::broker_supervisor::PreparedReleaseBrokerSupervisor;
 //! ```
 //!
 //! ```compile_fail
@@ -69,28 +70,24 @@ mod anchor_registry;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
-// This pure admission and prepared-supervisor seam checks Broker role, complete
-// release evidence, its distinct manifest allowlist, absolute verified path,
-// and same-handle FILE_ID_INFO without allocating a Job, pipe, channel, thread,
-// or process. It remains private and has no launch operation.
+// This pure admission seam checks Broker role, complete release evidence, its
+// distinct manifest allowlist, absolute verified path, and same-handle
+// FILE_ID_INFO before its private child supervisor may allocate activation
+// resources. Nesting gives only the admission module prepared-state minting
+// authority.
 #[allow(dead_code)]
 mod broker_artifact;
-// This persistent secretless native-host/Broker transport is composed only by
-// the Windows debug feature with the exact Broker supervisor and payload-only
-// `broker::ipc` adapters. Chrome-launched native-host provenance, signed and
-// immutable installation/registration, stable extension identity, and release
-// attestation remain blocking; default and release entrypoints cannot reach it.
+// This persistent secretless native-host/Broker transport is composed by the
+// private prepared-value activation core. Only the Windows debug feature adds
+// cross-crate payload-only `broker::ipc` adapters. Chrome-launched native-host
+// provenance, signed immutable installation/registration, stable extension
+// identity, global launch coordination, and release attestation remain
+// blocking; default and release entrypoints cannot reach either composition.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod broker_channel;
-#[cfg(all(
-    windows,
-    feature = "broker-channel-contract-test-hook",
-    debug_assertions
-))]
-mod broker_supervisor;
-// Only the opaque same-handle identity core is available to the dormant
-// release-preparation seam. The path-opening/mapped-image debug primitive stays
+// The opaque same-handle identity query and mapped-image comparator serve the
+// private release-prepared core. Only the sibling path-opening image wrapper is
 // item-gated by the exact debug hook inside this private module.
 #[cfg(windows)]
 #[allow(dead_code)]
@@ -132,7 +129,7 @@ pub use approval_channel::{PendingApproval, launch_approval_frontend};
     feature = "broker-channel-contract-test-hook",
     debug_assertions
 ))]
-pub use broker_supervisor::{
+pub use broker_artifact::broker_supervisor::{
     DormantBrokerError, DormantBrokerPayloadChannel, connect_inherited_native_host_channel,
     launch_dormant_broker_channel,
 };

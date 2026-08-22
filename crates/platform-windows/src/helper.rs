@@ -334,9 +334,14 @@ impl VerifiedHelper {
         broker_role: bool,
     ) -> Result<Self, HelperError> {
         let executable = std::env::current_exe().map_err(|_| HelperError::OperatingSystem)?;
+        let held_path = if path.is_absolute() {
+            path.as_path()
+        } else {
+            executable.as_path()
+        };
         let file = std::fs::OpenOptions::new()
             .read(true)
-            .open(executable)
+            .open(held_path)
             .map_err(|_| HelperError::OperatingSystem)?;
         Ok(Self {
             path,

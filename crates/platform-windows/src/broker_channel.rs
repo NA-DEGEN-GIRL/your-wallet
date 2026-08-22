@@ -1,12 +1,13 @@
 //! Dormant Windows-only native-host/Broker channel proof.
 //!
 //! This module owns the persistent, secretless, process-bound multi-frame
-//! transport. It is intentionally crate-private. The debug-only
-//! `broker_supervisor` composes it with a simultaneously held Broker artifact,
-//! pre-user-mode mapped-image proof, retained process/Job cleanup, and
-//! payload-only `broker::ipc` adapters. That closed composition represents only
-//! chain ID, unavailable, and cancellation; default and release entrypoints do
-//! not construct it.
+//! transport. It is intentionally crate-private. The production-compiled but
+//! unreachable `broker_supervisor` core composes it with a release-prepared,
+//! simultaneously held Broker artifact, pre-user-mode mapped-image proof, and
+//! retained process/Job cleanup. Only the debug facade adds
+//! payload-only `broker::ipc` adapters. That debug composition represents only chain ID,
+//! unavailable, and cancellation; default and release entrypoints do not
+//! construct either path.
 //!
 //! The following remain STOP-SHIP before release activation:
 //!
@@ -17,8 +18,8 @@
 //! - every external RPC, account, signing, or Key Agent route.
 //!
 //! This transport owns the Broker codec's four-byte big-endian length prefix
-//! and exact 8,192-byte JSON payload ceiling. Its debug facade exposes payloads,
-//! not raw handles or an arbitrary externally supplied pipe name.
+//! and exact 8,192-byte JSON payload ceiling. Its optional debug facade exposes
+//! payloads, not raw handles or an arbitrary externally supplied pipe name.
 
 use core::fmt;
 use std::time::Instant;
@@ -80,16 +81,15 @@ impl std::error::Error for BrokerChannelError {}
 
 /// Exact retained process object expected at the other end of the pipe.
 ///
-/// No constructor accepts a PID or session number. The debug-only exact Broker
+/// No constructor accepts a PID or session number. The private exact Broker
 /// supervisor derives this token from an already-held, restricted process
-/// handle for both channel peers; default and release APIs cannot construct it.
+/// handle for both channel peers; external APIs cannot construct it.
 pub(crate) struct ExpectedBrokerPeer {
     process: sys::OwnedHandle,
     identity: sys::ProcessIdentity,
 }
 
 impl ExpectedBrokerPeer {
-    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     pub(crate) fn from_process_handle(
         process: std::os::windows::io::BorrowedHandle<'_>,
     ) -> Result<Self, BrokerChannelError> {
@@ -131,12 +131,10 @@ impl BrokerEndpointCapability {
         Ok(VerifiedBrokerChannel { pipe, peer })
     }
 
-    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     pub(crate) fn into_environment_value(self) -> std::ffi::OsString {
         self.name.into_environment_value()
     }
 
-    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     pub(crate) fn from_environment_value(
         value: &std::ffi::OsStr,
     ) -> Result<Self, BrokerChannelError> {
@@ -318,12 +316,7 @@ mod sys {
     use core::ffi::c_void;
     use core::mem::size_of;
     use core::ptr;
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     use std::os::windows::io::BorrowedHandle;
     #[cfg(test)]
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdOwnedHandle};
@@ -334,10 +327,6 @@ mod sys {
         ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     };
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     use windows::Win32::Foundation::{
         DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
     };
@@ -376,10 +365,6 @@ mod sys {
     use windows::Win32::System::Threading::{
         CreateEventW, GetCurrentProcess, GetProcessId, OpenProcessToken, WaitForSingleObject,
     };
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     use windows::Win32::System::Threading::{
         GetCurrentProcessId, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     };
@@ -445,10 +430,6 @@ mod sys {
             PCWSTR(self.utf16_with_nul.as_ptr())
         }
 
-        #[cfg(any(
-            test,
-            all(feature = "broker-channel-contract-test-hook", debug_assertions)
-        ))]
         pub(super) fn into_environment_value(self) -> std::ffi::OsString {
             let without_nul = self
                 .utf16_with_nul
@@ -457,10 +438,6 @@ mod sys {
             std::ffi::OsString::from_wide(without_nul)
         }
 
-        #[cfg(any(
-            test,
-            all(feature = "broker-channel-contract-test-hook", debug_assertions)
-        ))]
         pub(super) fn from_environment_value(
             value: &std::ffi::OsStr,
         ) -> Result<Self, BrokerChannelError> {
@@ -578,10 +555,6 @@ mod sys {
         }
     }
 
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     pub(super) fn current_process_id() -> u32 {
         // SAFETY: this scalar query has no preconditions.
         unsafe { GetCurrentProcessId() }
@@ -592,7 +565,6 @@ mod sys {
         identity_for_handle(unsafe { GetCurrentProcess() })
     }
 
-    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     pub(super) fn expected_peer_from_process_handle(
         source: BorrowedHandle<'_>,
     ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {
@@ -649,10 +621,6 @@ mod sys {
         Ok(std::process::Stdio::from(owned))
     }
 
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     fn duplicate_restricted_process_handle(
         source: HANDLE,
         inheritable: bool,
@@ -691,10 +659,6 @@ mod sys {
         Ok(duplicate)
     }
 
-    #[cfg(any(
-        test,
-        all(feature = "broker-channel-contract-test-hook", debug_assertions)
-    ))]
     fn expected_peer_from_owned_handle(
         process: OwnedHandle,
     ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {

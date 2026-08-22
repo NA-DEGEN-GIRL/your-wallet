@@ -541,14 +541,20 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   릴리스 Broker 시작 경로로 사용할 수 없습니다.
 - 일반 빌드에는 Broker 전송 증거와 Broker manifest를 3개 서명 helper allowlist와
   분리해 검사하는 비공개 사전검증 capability도 있습니다. 역할, 완전한 릴리스 증거,
-  정확한 manifest, 절대 경로를 순서대로 확인합니다. Windows 전용 비공개 준비 단계는
-  이 capability를 값으로 소비하고 이미 잡아 둔 바로 그 파일 핸들에서 volume serial과
-  `FILE_ID_INFO`의 128비트 file ID를 얻어 불투명한
-  `PreparedReleaseBrokerSupervisor`에 함께 보관합니다. 이 non-clone 상태의 Debug 출력은
-  가려져 있고 drop만 가능하며, 경로 재열기, raw handle/PID/accessor/export,
-  프로세스·스레드·파이프·Job·채널·launch 자원은 없습니다. 이는 Broker 활성화가 아니라
-  같은 파일 객체의 신원을 다음 단계에 잃지 않고 넘기기 위한 준비 typestate입니다.
-  실제 릴리스 정책은 계속 `None`이므로 이 구조만으로 Broker가 시작되지는 않습니다.
+  정확한 manifest, 절대 경로를 순서대로 확인한 뒤에만, 그 모듈의 비공개 자식
+  supervisor가 `PreparedReleaseBrokerSupervisor`를 만들 수 있습니다. 이 non-clone
+  상태는 이미 잡아 둔 바로 그 파일 핸들과 `FILE_ID_INFO`의 volume serial 및 128비트
+  file ID를 함께 보관합니다. production-compiled exact-image 활성화 core는 prepared
+  값을 통째로 한 번 소비하고, 첫 `CREATE_PROCESS_DEBUG_EVENT`의 mapped image가 같은
+  파일 객체인지 user mode 전에 확인한 뒤 process·one-member Job·비공개 채널과 함께
+  수명 끝까지 보유합니다. release 함수에는 경로, raw handle, PID, command line 또는
+  generic launch 입력이 없고, 신원 검증을 위한 경로 재열기도 없습니다.
+  실제 릴리스 정책은 계속 `None`이므로 이 core는 운영 진입점에서 도달할 수 없으며 signed install,
+  native-host provenance 또는 릴리스 활성화 완료의 증거도 아닙니다.
+- Broker와 Key Agent의 임시 inheritable handle 구간은 아직 하나의 sealed process-wide
+  coordinator로 직렬화되지 않았습니다. 다른 `bInheritHandles=TRUE` 자식이 동시에
+  생성되는 race를 막거나 전용 launcher process로 격리하기 전에는 어느 dormant
+  activation 경로도 운영에 연결할 수 없습니다.
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.

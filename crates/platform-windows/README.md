@@ -83,19 +83,21 @@ Implemented:
   protected-settings lease remain unbound. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
 
-  **STOP-SHIP (English):** Before arming this dormant path, the standalone
-  supervisor must be single-instance and process-wide single-flight for Key
-  Agent bind/arm. It must perform no other inheriting child creation while the
-  three ephemeral `HANDLE_FLAG_INHERIT` duplicates exist. All production
-  process creation must use one sealed coordinator, or Key Agent creation must
-  run in a dedicated launcher process; a module-local mutex is insufficient.
+  **STOP-SHIP (English):** Before arming either dormant activation path, the
+  standalone supervisor must be single-instance and process-wide single-flight
+  for Key Agent bind/arm and Broker activation. It must perform no other
+  inheriting child creation while either path's ephemeral
+  `HANDLE_FLAG_INHERIT` duplicates exist. All production process creation must
+  use one sealed coordinator, or inheriting creation must run in a dedicated
+  launcher process; a module-local mutex is insufficient.
 
-  **릴리스 차단 조건 (한국어):** 이 휴면 경로를 활성화하기 전에 독립 supervisor는
-  단일 인스턴스여야 하며 Key Agent bind/arm을 프로세스 전역 single-flight로
-  직렬화해야 합니다. 세 개의 임시 `HANDLE_FLAG_INHERIT` 중복 핸들이 존재하는
-  동안 다른 상속형 자식 프로세스를 생성하면 안 됩니다. 모든 운영 프로세스
-  생성은 하나의 sealed coordinator를 거치거나 Key Agent 생성을 전용 launcher
-  process로 격리해야 하며, 모듈 내부 mutex만으로는 충분하지 않습니다.
+  **릴리스 차단 조건 (한국어):** 두 휴면 activation 경로 중 하나라도 활성화하기 전에
+  독립 supervisor는 단일 인스턴스여야 하며 Key Agent bind/arm과 Broker activation을
+  프로세스 전역 single-flight로 직렬화해야 합니다. 어느 경로의 임시
+  `HANDLE_FLAG_INHERIT` 중복 핸들이든 존재하는 동안 다른 상속형 자식 프로세스를
+  생성하면 안 됩니다. 모든 운영 프로세스 생성은 하나의 sealed coordinator를
+  거치거나 상속형 생성을 전용 launcher process로 격리해야 하며, 모듈 내부 mutex만으로는
+  충분하지 않습니다.
 - an HMAC-authenticated, bounded dual-slot generation store for already-encrypted
   vault/nonce/journal/local-settings records, with a stable class discriminant,
   a strict per-class ciphertext-format matrix, generation CAS, previous-digest chaining,
@@ -139,11 +141,17 @@ Implemented:
   capability by value and derives volume serial plus all 128 `FILE_ID_INFO` file
   ID bits from the same already-held file handle. The resulting
   `PreparedReleaseBrokerSupervisor` retains the admitted artifact and opaque
-  identity, has redacted `Debug`, is non-cloneable and drop-only, and exposes no
-  path, raw handle, PID, identity, artifact, or launch accessor. This prepared
-  state allocates no process, thread, pipe, Job, channel, or launch resource; it
-  is not Broker activation. `COMPILED_RELEASE_POLICY = None` keeps it unreachable
-  from release execution.
+  identity, has redacted `Debug`, and is non-cloneable and drop-only. Only the
+  admission module can mint it. A production-compiled, crate-private exact-image
+  activation core consumes the whole value exactly once, creates the child on a
+  fresh debugger thread, compares the first mapped-image handle with that same
+  held identity before user mode, and retains the prepared value with the exact
+  process, one-member Job, and private process-bound channel through cleanup.
+  The release entry accepts no path, raw handle, PID, command line, or generic
+  launcher input and performs no identity path reopen. `COMPILED_RELEASE_POLICY = None`
+  keeps the core unreachable from release execution; signed immutable
+  installation, native-host provenance, and process-wide inheritable-handle
+  coordination remain STOP-SHIP evidence.
 
 Stop-ship before any signing-capable release:
 
@@ -161,11 +169,11 @@ Stop-ship before any signing-capable release:
 5. Generate an immutable compiled release policy from independently signed test
    evidence and bind it to the exact artifact digest. The source currently sets
    `COMPILED_RELEASE_POLICY` to `None`. Bind the separate Broker transport suite
-   and Broker manifest to the signed immutable install, then make the reviewed
-   exact-image activation supervisor consume the inert
-   `PreparedReleaseBrokerSupervisor` without adding a path reopen, raw-handle or
-   PID escape, or generic launch surface. The current prepared-only seam is not
-   that activation or signed-install proof.
+   and Broker manifest to the signed immutable install, bind the existing
+   prepared-value exact-image activation core to authenticated native-host
+   provenance, and route every inheriting process creation through one sealed
+   process-wide coordinator or dedicated launcher process. The dormant core is
+   not signed-install, provenance, coordinator, or release-activation proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the

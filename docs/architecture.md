@@ -267,19 +267,32 @@ the dedicated manifest, and an absolute verified path in that order before it
 can mint an opaque non-clone capability. A Windows-only private preparation seam
 then consumes that capability by value. It queries volume serial and all 128
 `FILE_ID_INFO` file-ID bits from the same already-held file handle and retains
-both the admitted artifact and opaque identity in
-`PreparedReleaseBrokerSupervisor`. The prepared state is non-cloneable,
-redacted under `Debug`, and drop-only. It exposes no path, file, raw handle, PID,
-artifact, identity, launch, Job, pipe, channel, process, or thread operation and
-allocates none of those activation resources. No path is reopened and no PID is
-trusted. This is an inert supervisor typestate handoff, not Broker activation or
-an exact mapped-image proof.
+the verified artifact and opaque identity in `PreparedReleaseBrokerSupervisor`.
+Only the admission module can invoke the supervisor's `pub(super)` constructor,
+so no sibling module can combine an unadmitted artifact with an unrelated ID.
+
+A production-compiled, crate-private Broker activation core consumes the whole
+prepared value exactly once. It uses the retained verified path only as the
+`CreateProcessW` application name, never to reopen or rederive expected identity;
+then a fresh creator/debugger thread verifies the first
+`CREATE_PROCESS_DEBUG_EVENT` mapped-image handle against the prepared identity
+before user mode. The exact process, active-process-limit-one kill-on-close Job,
+private process-bound channel, and entire prepared value stay owned together
+through synchronous cleanup. Its release entry accepts no path, raw handle, PID,
+command line, application override, or generic launch target. The separate
+debug-only sibling-path wrapper remains behind its feature and debug assertions.
 
 `COMPILED_RELEASE_POLICY` remains `None`; the default and all-feature release
-binaries therefore remain on the 4900/exit-78 path. A later reviewed slice must
-make the exact-image activation supervisor consume the prepared state and must
-add signed-install/native-host provenance, process/Job/channel, and negative
-release evidence before release use.
+binaries therefore remain on the 4900/exit-78 path. This dormant activation core
+is not release reachability, signed-install/native-host provenance, a global
+process-launch coordinator, or negative release evidence.
+
+**Broker STOP-SHIP:** the Broker launcher temporarily creates inheritable parent
+and shared-NUL handles before `CreateProcessW`. `HANDLE_LIST` restricts the Broker
+child, but cannot stop an unrelated concurrent `bInheritHandles=TRUE` creation
+from inheriting those handles. Before wiring this core, every inheriting process
+creation must pass through one sealed process-wide single-flight coordinator or
+run in a dedicated launcher process; a module-local mutex is insufficient.
 
 ### Key Agent activation invariant (STOP-SHIP)
 
@@ -322,21 +335,21 @@ and once more before the aggregate crosses the join. Exactly one active Job
 member is required. The aggregate is non-clone, `!Sync`, externally private,
 has no raw-handle or resume operation, and aborts the process tree on drop.
 
-**STOP-SHIP (English):** Before this dormant path is armed, the standalone
+**STOP-SHIP (English):** Before either dormant path is armed, the standalone
 supervisor must be single-instance and process-wide single-flight for Key Agent
-bind/arm. While any of the three ephemeral `HANDLE_FLAG_INHERIT` duplicates
-exist, it must perform no other inheriting child creation. Every production
-process-creation path must pass through one sealed coordinator, or Key Agent
-creation must be isolated in a dedicated launcher process; a module-local mutex
-does not coordinate direct or unrelated Win32 process creation.
+bind/arm and Broker activation. While any ephemeral `HANDLE_FLAG_INHERIT`
+duplicate exists, it must perform no other inheriting child creation. Every
+production process-creation path must pass through one sealed coordinator, or
+inheriting creation must be isolated in a dedicated launcher process; a
+module-local mutex does not coordinate direct or unrelated Win32 process creation.
 
-**릴리스 차단 조건 (한국어):** 이 휴면 경로를 활성화하기 전에 독립 supervisor는
-단일 인스턴스여야 하며 Key Agent bind/arm을 프로세스 전역 single-flight로
-직렬화해야 합니다. 세 개의 임시 `HANDLE_FLAG_INHERIT` 중복 핸들이 하나라도
-존재하는 동안에는 다른 상속형 자식 프로세스를 생성하면 안 됩니다. 모든 운영
-프로세스 생성은 하나의 sealed coordinator를 거치거나 Key Agent 생성을 전용
-launcher process로 격리해야 하며, 모듈 내부 mutex만으로는 직접 또는 무관한
-Win32 프로세스 생성을 통제할 수 없습니다.
+**릴리스 차단 조건 (한국어):** 두 휴면 경로 중 하나라도 활성화하기 전에 독립
+supervisor는 단일 인스턴스여야 하며 Key Agent bind/arm과 Broker activation을
+프로세스 전역 single-flight로 직렬화해야 합니다. 임시 `HANDLE_FLAG_INHERIT`
+중복 핸들이 하나라도 존재하는 동안에는 다른 상속형 자식 프로세스를 생성하면
+안 됩니다. 모든 운영 프로세스 생성은 하나의 sealed coordinator를 거치거나
+상속형 생성을 전용 launcher process로 격리해야 하며, 모듈 내부 mutex만으로는
+직접 또는 무관한 Win32 프로세스 생성을 통제할 수 없습니다.
 
 This proof remains dormant. It must not be armed until the same capability is
 bound to the authenticated Broker protocol, a distinct Key Agent LPAC/profile,

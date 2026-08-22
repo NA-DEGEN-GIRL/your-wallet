@@ -1,11 +1,12 @@
-//! Dormant debug-only exact Broker process and channel composition.
+//! Dormant exact Broker process and channel composition.
 //!
-//! The supervisor pins the sibling Broker executable, creates it under a fresh
-//! debugger thread with an exact inherited-handle list (one restricted parent
-//! capability plus one read/write NUL handle shared by all standard streams)
-//! and a one-process kill-on-close Job, authenticates the first mapped image by
-//! `FILE_ID_INFO` before user-mode entry, and only then releases the process to
-//! connect to the private process-bound channel.
+//! The crate-private release core consumes one prepared, same-held-file Broker
+//! capability. A separate debug-only facade may pin the sibling Broker path.
+//! Both create the child under a fresh debugger thread with an exact inherited-
+//! handle list (one restricted parent capability plus one read/write NUL handle
+//! shared by all standard streams) and a one-process kill-on-close Job,
+//! authenticate the first mapped image by `FILE_ID_INFO` before user-mode entry,
+//! and only then release the process to the private process-bound channel.
 
 use core::fmt;
 #[cfg(test)]
@@ -16,15 +17,74 @@ use std::path::Path;
 use std::time::Instant;
 
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::broker_channel::{
     BrokerChannelError, BrokerEndpointCapability, DormantBrokerPipe, ExpectedBrokerPeer,
     VerifiedBrokerChannel,
 };
-use crate::exact_image::{ExactImageError, PinnedBrokerImage};
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+use crate::exact_image::PinnedBrokerImage;
+use crate::exact_image::{ExactFileIdentity, ExactImageError, authenticate_mapped_image};
+use crate::helper::VerifiedHelper;
 
 const BROKER_ENDPOINT_ENV: &str = "YOUR_WALLET_DORMANT_BROKER_ENDPOINT_V1";
 const PARENT_PROCESS_HANDLE_ENV: &str = "YOUR_WALLET_DORMANT_PARENT_PROCESS_HANDLE_V1";
+
+/// Opaque release Broker state prepared from one already-admitted file object.
+///
+/// The supervisor alone can inspect these fields. The value is non-cloneable,
+/// has redacted diagnostics, and remains owned through exact child cleanup.
+#[must_use = "dropping the prepared Broker supervisor closes its pinned file"]
+pub(crate) struct PreparedReleaseBrokerSupervisor {
+    artifact: VerifiedHelper,
+    identity: ExactFileIdentity,
+}
+
+impl PreparedReleaseBrokerSupervisor {
+    pub(super) fn new(artifact: VerifiedHelper, identity: ExactFileIdentity) -> Self {
+        Self { artifact, identity }
+    }
+}
+
+impl fmt::Debug for PreparedReleaseBrokerSupervisor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])")
+    }
+}
+
+impl Drop for PreparedReleaseBrokerSupervisor {
+    fn drop(&mut self) {
+        self.identity.zeroize();
+    }
+}
+
+enum BrokerActivationImage {
+    Prepared(PreparedReleaseBrokerSupervisor),
+    #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+    Debug(PinnedBrokerImage),
+}
+
+impl BrokerActivationImage {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Prepared(prepared) => prepared.artifact.path(),
+            #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+            Self::Debug(image) => image.path(),
+        }
+    }
+
+    fn authenticate_mapped_image(
+        &self,
+        mapped_image: windows::Win32::Foundation::HANDLE,
+    ) -> Result<(), ExactImageError> {
+        match self {
+            Self::Prepared(prepared) => authenticate_mapped_image(&prepared.identity, mapped_image),
+            #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
+            Self::Debug(image) => image.authenticate_mapped_image(mapped_image),
+        }
+    }
+}
 
 /// Stable failures from the dormant Broker composition boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -147,6 +207,35 @@ impl Drop for DormantBrokerPayloadChannel {
     }
 }
 
+/// Consumes and binds one release-prepared exact Broker.
+///
+/// This function is crate-private and has no callsite while the compiled
+/// release policy is absent. It never reopens the expected artifact to derive
+/// identity; the prepared capability remains owned through process cleanup.
+///
+/// # Errors
+///
+/// Returns a fail-closed process proof, channel, or deadline error.
+pub(crate) fn launch_prepared_release_broker_channel(
+    prepared: PreparedReleaseBrokerSupervisor,
+    deadline: Instant,
+) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
+    launch_broker_image(BrokerActivationImage::Prepared(prepared), None, deadline)
+}
+
+#[cfg(test)]
+fn launch_prepared_release_broker_channel_for_test(
+    prepared: PreparedReleaseBrokerSupervisor,
+    command_line: &OsStr,
+    deadline: Instant,
+) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
+    launch_broker_image(
+        BrokerActivationImage::Prepared(prepared),
+        Some(command_line.to_os_string()),
+        deadline,
+    )
+}
+
 /// Launches and binds the exact sibling debug Broker.
 ///
 /// This function exists only when both the dormant feature and debug assertions
@@ -155,6 +244,7 @@ impl Drop for DormantBrokerPayloadChannel {
 /// # Errors
 ///
 /// Returns a fail-closed artifact, process proof, channel, or deadline error.
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 pub fn launch_dormant_broker_channel(
     deadline: Instant,
 ) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
@@ -189,6 +279,7 @@ pub fn connect_inherited_native_host_channel(
     })
 }
 
+#[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
 fn launch_broker_path(
     broker_path: &Path,
     command_line: Option<OsString>,
@@ -196,10 +287,19 @@ fn launch_broker_path(
 ) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
     check_deadline(deadline)?;
     let image = PinnedBrokerImage::hold(broker_path)?;
+    launch_broker_image(BrokerActivationImage::Debug(image), command_line, deadline)
+}
+
+fn launch_broker_image(
+    image: BrokerActivationImage,
+    command_line: Option<OsString>,
+    deadline: Instant,
+) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
+    check_deadline(deadline)?;
     let (server, endpoint) = DormantBrokerPipe::create("ipc-v1")?;
     let endpoint = endpoint.into_environment_value();
     let worker = std::thread::Builder::new()
-        .name("dormant-broker-activation".to_owned())
+        .name("broker-exact-image-activation".to_owned())
         .spawn(move || sys::launch_broker(image, &endpoint, command_line, deadline))
         .map_err(|_| DormantBrokerError::ProcessProof)?;
     let running = worker
@@ -222,15 +322,6 @@ fn check_deadline(deadline: Instant) -> Result<(), DormantBrokerError> {
     (Instant::now() < deadline)
         .then_some(())
         .ok_or(DormantBrokerError::Deadline)
-}
-
-#[cfg(test)]
-fn launch_broker_path_for_test(
-    broker_path: &Path,
-    command_line: &OsStr,
-    deadline: Instant,
-) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
-    launch_broker_path(broker_path, Some(command_line.to_os_string()), deadline)
 }
 
 mod sys {
@@ -286,7 +377,7 @@ mod sys {
     use windows::core::{BOOL, PCWSTR, PWSTR};
 
     use super::{
-        BROKER_ENDPOINT_ENV, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV, PinnedBrokerImage,
+        BROKER_ENDPOINT_ENV, BrokerActivationImage, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV,
     };
 
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
@@ -313,7 +404,7 @@ mod sys {
     pub(super) struct RunningBroker {
         process: OwnedWinHandle,
         job: BrokerJob,
-        _image: PinnedBrokerImage,
+        _image: BrokerActivationImage,
         shut_down: bool,
     }
 
@@ -505,7 +596,7 @@ mod sys {
     }
 
     pub(super) fn launch_broker(
-        image: PinnedBrokerImage,
+        image: BrokerActivationImage,
         endpoint: &OsStr,
         command_line: Option<OsString>,
         deadline: Instant,
@@ -515,7 +606,7 @@ mod sys {
 
     #[cfg(test)]
     pub(super) fn launch_broker_application_for_test(
-        image: PinnedBrokerImage,
+        image: BrokerActivationImage,
         application: &std::path::Path,
         endpoint: &OsStr,
         command_line: Option<OsString>,
@@ -526,7 +617,7 @@ mod sys {
 
     #[cfg(test)]
     pub(super) fn panic_after_create_for_test(
-        image: PinnedBrokerImage,
+        image: BrokerActivationImage,
         application: &std::path::Path,
         endpoint: &OsStr,
         command_line: Option<OsString>,
@@ -551,7 +642,7 @@ mod sys {
     }
 
     fn launch_broker_application(
-        image: PinnedBrokerImage,
+        image: BrokerActivationImage,
         application_override: Option<&std::path::Path>,
         endpoint: &OsStr,
         command_line: Option<OsString>,
@@ -568,7 +659,7 @@ mod sys {
     }
 
     fn launch_broker_application_with_after_create<AfterCreate>(
-        image: PinnedBrokerImage,
+        image: BrokerActivationImage,
         application_override: Option<&std::path::Path>,
         endpoint: &OsStr,
         command_line: Option<OsString>,
@@ -1042,7 +1133,7 @@ mod sys {
 
         fn authenticate_first_event(
             &mut self,
-            image: &PinnedBrokerImage,
+            image: &BrokerActivationImage,
             deadline: Instant,
         ) -> Result<(), DormantBrokerError> {
             let mut event = DEBUG_EVENT::default();
@@ -1289,13 +1380,21 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        BROKER_ENDPOINT_ENV, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV,
-        connect_inherited_native_host_channel, launch_broker_path_for_test, sys,
+        BROKER_ENDPOINT_ENV, BrokerActivationImage, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV,
+        PreparedReleaseBrokerSupervisor, connect_inherited_native_host_channel,
+        launch_prepared_release_broker_channel, launch_prepared_release_broker_channel_for_test,
+        sys,
     };
-    use crate::exact_image::PinnedBrokerImage;
+    use crate::attestation::ReleaseAttestation;
+    use crate::broker_artifact::{preflight_broker_artifact, prepare_release_broker_supervisor};
+    use crate::exact_image::held_helper_file_identity;
+    use crate::helper::VerifiedHelper;
 
-    const CHILD_ECHO_TEST: &str = "broker_supervisor::tests::dormant_broker_child_echo";
-    const CHILD_HANG_TEST: &str = "broker_supervisor::tests::dormant_broker_child_hang";
+    const CHILD_ECHO_TEST: &str =
+        "broker_artifact::broker_supervisor::tests::dormant_broker_child_echo";
+    const CHILD_HANG_TEST: &str =
+        "broker_artifact::broker_supervisor::tests::dormant_broker_child_hang";
+    const BROKER_MANIFEST: [u8; 32] = [0x41; 32];
     const SENTINEL_HANDLE_FILE: &str = "unrelated-inheritable-handle.txt";
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -1348,13 +1447,42 @@ mod tests {
     }
 
     #[test]
-    fn exact_hidden_supervisor_round_trips_one_be_frame_and_8192_payload()
+    fn prepared_release_supervisor_retains_same_handle_and_full_file_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifacts = TestArtifacts::create()?;
+        let broker = VerifiedHelper::for_broker_artifact_test(
+            artifacts.broker.clone(),
+            BROKER_MANIFEST,
+            true,
+        )?;
+        let held_handle = broker.raw_handle();
+        let expected_identity = held_helper_file_identity(&broker)?;
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let admitted = preflight_broker_artifact(attestation, broker)?;
+
+        let prepared = prepare_release_broker_supervisor(admitted)?;
+        assert_eq!(prepared.artifact.raw_handle(), held_handle);
+        assert_eq!(prepared.identity, expected_identity);
+        assert_eq!(
+            format!("{prepared:?}"),
+            "PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])"
+        );
+        drop(prepared);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_release_supervisor_round_trips_one_be_frame_and_8192_payload()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
         let unrelated_sentinel = artifacts.arm_unrelated_inheritable_sentinel()?;
         let command = child_command(&artifacts.broker, CHILD_ECHO_TEST);
-        let mut channel =
-            launch_broker_path_for_test(&artifacts.broker, &command, deadline_after(20))?;
+        let prepared = prepared_broker(artifacts.broker.clone())?;
+        let mut channel = launch_prepared_release_broker_channel_for_test(
+            prepared,
+            &command,
+            deadline_after(20),
+        )?;
         unrelated_sentinel.assert_not_signaled()?;
 
         let golden = br#"{"kind":"golden","value":1}"#;
@@ -1377,9 +1505,9 @@ mod tests {
     fn mismatched_mapped_file_is_rejected_before_user_mode()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
-        let image = PinnedBrokerImage::hold(&artifacts.broker)?;
+        let prepared = prepared_broker(artifacts.broker.clone())?;
         let result = sys::launch_broker_application_for_test(
-            image,
+            BrokerActivationImage::Prepared(prepared),
             &artifacts.mismatch,
             &OsString::from(r"\\.\pipe\LOCAL\unreachable-dormant-broker-test"),
             None,
@@ -1395,8 +1523,12 @@ mod tests {
         let artifacts = TestArtifacts::create()?;
         let unrelated_sentinel = artifacts.arm_unrelated_inheritable_sentinel()?;
         let command = child_command(&artifacts.broker, CHILD_HANG_TEST);
-        let mut channel =
-            launch_broker_path_for_test(&artifacts.broker, &command, deadline_after(20))?;
+        let prepared = prepared_broker(artifacts.broker.clone())?;
+        let mut channel = launch_prepared_release_broker_channel_for_test(
+            prepared,
+            &command,
+            deadline_after(20),
+        )?;
         unrelated_sentinel.assert_not_signaled()?;
         assert_eq!(
             channel.read_payload(deadline_after(5))?,
@@ -1412,14 +1544,14 @@ mod tests {
     fn panic_after_create_terminates_and_reaps_the_exact_child()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
-        let image = PinnedBrokerImage::hold(&artifacts.broker)?;
+        let prepared = prepared_broker(artifacts.broker.clone())?;
         let application = artifacts.broker.clone();
         let command = child_command(&application, CHILD_HANG_TEST);
         let endpoint = OsString::from(r"\\.\pipe\LOCAL\unreachable-panic-broker-test");
         let (observation_sender, observation_receiver) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
             sys::panic_after_create_for_test(
-                image,
+                BrokerActivationImage::Prepared(prepared),
                 &application,
                 &endpoint,
                 Some(command),
@@ -1429,6 +1561,18 @@ mod tests {
         });
         assert!(worker.join().is_err());
         observation_receiver.recv()?.wait_terminated()?;
+        Ok(())
+    }
+
+    #[test]
+    fn expired_release_entry_rejects_before_allocating_activation_resources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifacts = TestArtifacts::create()?;
+        let prepared = prepared_broker(artifacts.broker.clone())?;
+        assert!(matches!(
+            launch_prepared_release_broker_channel(prepared, Instant::now()),
+            Err(DormantBrokerError::Deadline)
+        ));
         Ok(())
     }
 
@@ -1519,5 +1663,14 @@ mod tests {
 
     fn deadline_after(seconds: u64) -> Instant {
         Instant::now() + Duration::from_secs(seconds)
+    }
+
+    fn prepared_broker(
+        path: PathBuf,
+    ) -> Result<PreparedReleaseBrokerSupervisor, Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_broker_artifact_test(path, BROKER_MANIFEST, true)?;
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let admitted = preflight_broker_artifact(attestation, artifact)?;
+        Ok(prepare_release_broker_supervisor(admitted)?)
     }
 }
