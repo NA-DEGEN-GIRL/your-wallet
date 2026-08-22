@@ -30,7 +30,23 @@ the exact process, one-member kill-on-close Job, and private process-bound
 channel through cleanup. Its release entry accepts no path, raw handle, PID,
 command line, application override, or generic launch target. The compiled
 policy remains absent, so the core is dormant and is not signed-install,
-native-host provenance, process-wide launch coordination, or release evidence.
+native-host provenance, authenticated process topology, or release evidence.
+
+The three production Rust inheriting-creation paths in one loaded
+`platform-windows` crate instance use a single private, deadline-bound
+process-wide coordinator. Temporary inheritable-handle owners borrow its
+thread-bound flight; after the sealed `CreateProcessW` returns, the per-launch
+attribute list and temporary handles are destroyed before release. The
+restricted launcher also assigns the suspended child to its retained
+kill-on-close Job atomically through `PROC_THREAD_ATTRIBUTE_JOB_LIST` and checks
+membership before token verification or resume. The release
+PowerShell runtime's C# toolset runner has a separate matching static lock over
+its own inheritable-pipe/create/cleanup window. Neither coordination boundary
+is an OS-wide hook:
+arbitrary foreign FFI or standard-library launches, separately linked copies,
+and other processes remain outside their scope. Deadlines bound coordinator or
+lock acquisition and explicit pre-create checks, not a synchronous
+`CreateProcessW` call or the fail-closed worker join.
 
 | Area | Decision |
 | --- | --- |
@@ -68,9 +84,13 @@ Before any real mainnet value is used, the Windows build must prove:
    The dormant exact-image core now consumes `PreparedReleaseBrokerSupervisor`,
    but it must still be covered by signed immutable-install, manifest,
    native-host provenance, process/Job/channel, and negative release evidence.
-   Every inheriting process creation must also use one sealed process-wide
-   coordinator or a dedicated launcher process; module-local locking is not
-   sufficient. The dormant core is not that release proof.
+   The in-crate and C# runner coordinators cover their exact cooperating call
+   sites, but release evidence must still prove standalone-supervisor
+   single-instance/topology and the absence or mediation of every foreign or
+   otherwise uncoordinated inheriting launch. The Key Agent child must clear the
+   inherit bit on its received stdio handles before any descendant creation, or
+   descendants must be prohibited. `COMPILED_RELEASE_POLICY` remains `None`;
+   coordination alone is not release activation proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

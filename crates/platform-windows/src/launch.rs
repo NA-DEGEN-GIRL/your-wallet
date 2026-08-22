@@ -126,10 +126,10 @@ impl<'handle> InheritedStdio<'handle> {
     ///
     /// # Errors
     ///
-    /// Returns [`LaunchError::InvalidHandle`] if any borrowed handle is invalid or
-    /// is not an anonymous or named-pipe handle. Disk files and sockets are
-    /// rejected before duplication; release evidence must separately exercise
-    /// remote named-pipe and inherited-endpoint denial.
+    /// Returns [`LaunchError::InvalidHandle`] if any borrowed handle is invalid,
+    /// already inheritable, or is not an anonymous or named-pipe handle. Disk
+    /// files and sockets are rejected before duplication; release evidence must
+    /// separately exercise remote named-pipe and inherited-endpoint denial.
     pub fn new(
         input: std::os::windows::io::BorrowedHandle<'handle>,
         output: std::os::windows::io::BorrowedHandle<'handle>,
@@ -148,8 +148,8 @@ impl<'handle> InheritedStdio<'handle> {
     /// Selects the synchronous named-pipe server ends created and retained by
     /// the crate-private Secret Input pipe owner. Some Windows versions deny
     /// `GetNamedPipeInfo` for direction-limited server handles, so this path
-    /// validates handle liveness while relying on the unforgeable Rust owner
-    /// type for the pipe-kind invariant.
+    /// validates handle liveness and non-inheritability while relying on the
+    /// unforgeable Rust owner type for the pipe-kind invariant.
     #[allow(dead_code)] // Reserved for the private Key Agent arming seam.
     pub(crate) fn for_secret_input_servers(
         input: std::os::windows::io::BorrowedHandle<'handle>,
@@ -490,12 +490,12 @@ mod sys {
     use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::{AsRawHandle, BorrowedHandle};
     use std::path::{Path, PathBuf};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED,
-        ERROR_ALREADY_EXISTS, GENERIC_READ, GetHandleInformation, HANDLE, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        ERROR_ALREADY_EXISTS, GENERIC_READ, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -512,33 +512,35 @@ mod sys {
         OPEN_EXISTING, WRITE_DAC, WRITE_OWNER,
     };
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     };
     use windows::Win32::System::Pipes::GetNamedPipeInfo;
     use windows::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
     use windows::Win32::System::Threading::{
-        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-        GetCurrentProcessId, GetProcessId, InitializeProcThreadAttributeList,
-        LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, OpenProcessToken,
-        PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
+        EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+        OpenProcessToken, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
         PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-        PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject,
+        PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
+        PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
     use windows::Win32::System::WindowsProgramming::{
         PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
         PROCESS_CREATION_CHILD_PROCESS_RESTRICTED,
     };
-    use windows::core::{PCWSTR, PWSTR};
+    use windows::core::{BOOL, PCWSTR};
 
     use super::{
         HeldProcessIdentity, InheritedParentProof, InheritedStdio, LaunchError, LaunchedHelper,
         NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
+    };
+    use crate::inheritable_handle_launch::{
+        InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
 
     const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
@@ -549,10 +551,11 @@ mod sys {
     const SECRET_INPUT_PROFILE_DISPLAY_NAME: &str = "Your Wallet secret input frontend";
     const SECRET_INPUT_PROFILE_DESCRIPTION: &str =
         "Persistent no-network LPAC identity for Your Wallet secret input";
-    const ATTRIBUTE_COUNT: u32 = 5;
+    const ATTRIBUTE_COUNT: u32 = 6;
     const CAPABILITY_COUNT: u32 = 0;
     const MAX_SYSTEM_PATH_UNITS: usize = 32_768;
     const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
+    const MAX_INHERITABLE_LAUNCH_WAIT: Duration = Duration::from_secs(5);
     const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
 
     const MITIGATION_DEP_ENABLE: u64 = 1;
@@ -597,6 +600,38 @@ mod sys {
             unsafe {
                 let _ = CloseHandle(self.0);
             }
+        }
+    }
+
+    /// Every handle in this owner was created under one exact process-wide
+    /// launch flight. The retained borrow makes releasing the flight before all
+    /// duplicates close a compile-time error.
+    struct InheritableDuplicates<'flight, 'coordinator> {
+        handles: Vec<OwnedWinHandle>,
+        flight: &'flight InheritableHandleLaunchFlight<'coordinator>,
+    }
+
+    impl<'flight, 'coordinator> InheritableDuplicates<'flight, 'coordinator> {
+        fn new(flight: &'flight InheritableHandleLaunchFlight<'coordinator>) -> Self {
+            Self {
+                handles: Vec::new(),
+                flight,
+            }
+        }
+
+        fn duplicate(&mut self, source: HANDLE) -> Result<HANDLE, LaunchError> {
+            let duplicate = duplicate_inheritable(self.flight, source)?;
+            let raw = duplicate.raw();
+            self.handles.push(duplicate);
+            Ok(raw)
+        }
+
+        fn raw_handles(&self) -> Box<[HANDLE]> {
+            self.handles
+                .iter()
+                .map(OwnedWinHandle::raw)
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
         }
     }
 
@@ -689,6 +724,7 @@ mod sys {
 
     struct AttributeValues {
         handles: Box<[HANDLE]>,
+        job: [HANDLE; 1],
         mitigation: u64,
         security_capabilities: SECURITY_CAPABILITIES,
         all_application_packages_policy: u32,
@@ -696,9 +732,10 @@ mod sys {
     }
 
     impl AttributeValues {
-        fn new(handles: Box<[HANDLE]>, profile_sid: PSID) -> Self {
+        fn new(handles: Box<[HANDLE]>, job: HANDLE, profile_sid: PSID) -> Self {
             Self {
                 handles,
+                job: [job],
                 mitigation: HELPER_MITIGATION_POLICY,
                 security_capabilities: SECURITY_CAPABILITIES {
                     AppContainerSid: profile_sid,
@@ -712,24 +749,30 @@ mod sys {
         }
     }
 
-    struct AttributeList {
+    struct AttributeList<'handles, 'flight, 'coordinator, 'job> {
         words: Vec<usize>,
         pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
         values: Box<AttributeValues>,
-        profile_sid: OwnedAppContainerSid,
+        profile_sid: Option<OwnedAppContainerSid>,
+        duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>,
+        job_owner: &'job OwnedWinHandle,
     }
 
-    impl AttributeList {
+    impl<'handles, 'flight, 'coordinator, 'job> AttributeList<'handles, 'flight, 'coordinator, 'job> {
         fn for_lpac(
-            handles: Box<[HANDLE]>,
-            profile: NoNetworkLpacProfile,
-            role: VerifiedLpacRole,
+            duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>,
+            job_owner: &'job OwnedWinHandle,
+            profile_sid: OwnedAppContainerSid,
         ) -> Result<Self, LaunchError> {
+            let handles = duplicate_owner.raw_handles();
             if handles.is_empty() {
                 return Err(LaunchError::InvalidHandle);
             }
-            let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;
-            let values = Box::new(AttributeValues::new(handles, profile_sid.raw()));
+            let values = Box::new(AttributeValues::new(
+                handles,
+                job_owner.raw(),
+                profile_sid.raw(),
+            ));
             let mut bytes = 0_usize;
             // SAFETY: the documented sizing call uses a null list and initializes
             // `bytes`. Its expected insufficient-buffer error is ignored.
@@ -761,7 +804,9 @@ mod sys {
                 words,
                 pointer,
                 values,
-                profile_sid,
+                profile_sid: Some(profile_sid),
+                duplicate_owner,
+                job_owner,
             };
             list.install_attributes()?;
             Ok(list)
@@ -772,6 +817,11 @@ mod sys {
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                 self.values.handles.as_ptr().cast::<c_void>(),
                 size_of_val(self.values.handles.as_ref()),
+            )?;
+            self.update(
+                PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                self.values.job.as_ptr().cast::<c_void>(),
+                size_of_val(&self.values.job),
             )?;
             self.update(
                 PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
@@ -820,15 +870,25 @@ mod sys {
 
         fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
             debug_assert!(!self.words.is_empty());
+            debug_assert_eq!(
+                self.duplicate_owner.handles.len(),
+                self.values.handles.len()
+            );
+            debug_assert_eq!(self.job_owner.raw(), self.values.job[0]);
             self.pointer
         }
 
-        const fn expected_sid(&self) -> PSID {
-            self.profile_sid.raw()
+        fn into_profile_sid(mut self) -> Result<OwnedAppContainerSid, LaunchError> {
+            let profile_sid = self
+                .profile_sid
+                .take()
+                .ok_or(LaunchError::OperatingSystem)?;
+            drop(self);
+            Ok(profile_sid)
         }
     }
 
-    impl Drop for AttributeList {
+    impl Drop for AttributeList<'_, '_, '_, '_> {
         fn drop(&mut self) {
             // SAFETY: initialization succeeded and this pointer is deleted once
             // before its backing Vec and attribute-value storage are dropped.
@@ -856,6 +916,9 @@ mod sys {
         unsafe {
             GetHandleInformation(HANDLE(handle.as_raw_handle()), &raw mut flags)
                 .map_err(|_| LaunchError::InvalidHandle)?;
+        }
+        if flags & HANDLE_FLAG_INHERIT.0 != 0 {
+            return Err(LaunchError::InvalidHandle);
         }
         Ok(())
     }
@@ -1123,7 +1186,10 @@ mod sys {
         Ok(())
     }
 
-    fn duplicate_inheritable(source: HANDLE) -> Result<OwnedWinHandle, LaunchError> {
+    fn duplicate_inheritable(
+        _flight: &InheritableHandleLaunchFlight<'_>,
+        source: HANDLE,
+    ) -> Result<OwnedWinHandle, LaunchError> {
         let mut duplicate = HANDLE::default();
         // SAFETY: source was validated and is live; duplication targets the current
         // process and explicitly marks only the duplicate inheritable.
@@ -1139,7 +1205,19 @@ mod sys {
             )
             .map_err(|_| LaunchError::OperatingSystem)?;
         }
-        Ok(OwnedWinHandle(duplicate))
+        if duplicate.is_invalid() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let duplicate = OwnedWinHandle(duplicate);
+        let mut flags = 0_u32;
+        // SAFETY: the successful duplicate remains owned for this exact flag
+        // query and must carry no ambient handle property besides inheritance.
+        unsafe { GetHandleInformation(duplicate.raw(), &raw mut flags) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        if flags != HANDLE_FLAG_INHERIT.0 {
+            return Err(LaunchError::OperatingSystem);
+        }
+        Ok(duplicate)
     }
 
     struct ParentProofSources {
@@ -1222,12 +1300,44 @@ mod sys {
         Ok(job)
     }
 
-    fn terminate_suspended(process: HANDLE) {
-        // SAFETY: callers invoke this only for a process they created suspended
-        // and still own. Failure is intentionally ignored during fail-closed
-        // cleanup because the owned job/process handles are also about to close.
+    const CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
+
+    fn terminate_and_reap_created_child(process: HANDLE, job: HANDLE) {
+        // SAFETY: the guard invokes this only for the exact process returned by
+        // CreateProcessW and its atomically assigned kill-on-close Job. The
+        // process is suspended until the guard is disarmed.
         unsafe {
+            let _ = TerminateJobObject(job, 1);
             let _ = TerminateProcess(process, 1);
+            let _ = WaitForSingleObject(process, CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS);
+        }
+    }
+
+    struct CreatedChildGuard<'process, 'job> {
+        process: &'process OwnedWinHandle,
+        job: &'job OwnedWinHandle,
+        armed: bool,
+    }
+
+    impl<'process, 'job> CreatedChildGuard<'process, 'job> {
+        fn new(process: &'process OwnedWinHandle, job: &'job OwnedWinHandle) -> Self {
+            Self {
+                process,
+                job,
+                armed: true,
+            }
+        }
+
+        fn disarm(mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for CreatedChildGuard<'_, '_> {
+        fn drop(&mut self) {
+            if self.armed {
+                terminate_and_reap_created_child(self.process.raw(), self.job.raw());
+            }
         }
     }
 
@@ -1275,15 +1385,46 @@ mod sys {
     ) -> Result<LaunchedHelper, LaunchError> {
         // Keep the identity-pinned executable file live through CreateProcessW.
         let _verified_file_handle = helper.raw_handle();
+        validate_live_handle(handles.input)?;
+        validate_live_handle(handles.output)?;
+        validate_live_handle(handles.error)?;
         let helper_file = helper.identity();
         let helper_manifest_digest = helper.manifest_digest();
         let originals = unique_raw_handles(handles);
-        let mut duplicates: Vec<OwnedWinHandle> = originals
+        let parent_sources = role
+            .inherits_parent_proof()
+            .then(current_parent_proof_sources)
+            .transpose()?;
+        let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;
+        let job = restricted_job()?;
+        let application: Vec<u16> = helper
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain(core::iter::once(0))
+            .collect();
+        let current_directory = system_directory()?;
+        let current_directory_wide = wide_nul_path(&current_directory);
+        let windows_root = windows_directory()?;
+        let environment = minimal_environment_block(&windows_root)?;
+
+        let coordination_deadline = Instant::now()
+            .checked_add(MAX_INHERITABLE_LAUNCH_WAIT)
+            .ok_or(LaunchError::OperatingSystem)?;
+        let flight = acquire_inheritable_handle_launch(coordination_deadline)
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        if Instant::now() >= coordination_deadline {
+            return Err(LaunchError::OperatingSystem);
+        }
+        validate_live_handle(handles.input)?;
+        validate_live_handle(handles.output)?;
+        validate_live_handle(handles.error)?;
+        let mut duplicates = InheritableDuplicates::new(&flight);
+        let stdio_duplicate_raw: Vec<HANDLE> = originals
             .iter()
             .copied()
-            .map(duplicate_inheritable)
+            .map(|source| duplicates.duplicate(source))
             .collect::<Result<_, _>>()?;
-        let stdio_duplicate_raw: Vec<HANDLE> = duplicates.iter().map(OwnedWinHandle::raw).collect();
 
         let map_duplicate = |borrowed: BorrowedHandle<'_>| -> Result<HANDLE, LaunchError> {
             let raw = borrowed.as_raw_handle() as usize;
@@ -1300,23 +1441,20 @@ mod sys {
         let standard_input = map_duplicate(handles.input)?;
         let standard_output = map_duplicate(handles.output)?;
         let standard_error = map_duplicate(handles.error)?;
-        let parent_proof = if role.inherits_parent_proof() {
-            let sources = current_parent_proof_sources()?;
-            let process = duplicate_inheritable(sources.process.raw())?;
-            let image = duplicate_inheritable(sources.image.raw())?;
+        let parent_proof = if let Some(sources) = parent_sources.as_ref() {
+            let process = duplicates.duplicate(sources.process.raw())?;
+            let image = duplicates.duplicate(sources.image.raw())?;
             let proof = InheritedParentProof {
-                process_handle: inherited_handle_value(process.raw())?,
-                image_handle: inherited_handle_value(image.raw())?,
+                process_handle: inherited_handle_value(process)?,
+                image_handle: inherited_handle_value(image)?,
                 process_id: sources.process_id,
             };
-            duplicates.push(process);
-            duplicates.push(image);
             Some(proof)
         } else {
             None
         };
-        let inherited_raw: Vec<HANDLE> = duplicates.iter().map(OwnedWinHandle::raw).collect();
-        let attributes = AttributeList::for_lpac(inherited_raw.into_boxed_slice(), profile, role)?;
+        drop(parent_sources);
+        let attributes = AttributeList::for_lpac(&duplicates, &job, profile_sid)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb =
             u32::try_from(size_of::<STARTUPINFOEXW>()).map_err(|_| LaunchError::OperatingSystem)?;
@@ -1325,67 +1463,65 @@ mod sys {
         startup.StartupInfo.hStdOutput = standard_output;
         startup.StartupInfo.hStdError = standard_error;
         startup.lpAttributeList = attributes.pointer();
+        if Instant::now() >= coordination_deadline {
+            return Err(LaunchError::OperatingSystem);
+        }
 
-        let job = restricted_job()?;
-
-        let application: Vec<u16> = helper
-            .path()
-            .as_os_str()
-            .encode_wide()
-            .chain(core::iter::once(0))
-            .collect();
-        let current_directory = system_directory()?;
-        let current_directory_wide = wide_nul_path(&current_directory);
-        let windows_root = windows_directory()?;
-        let environment = minimal_environment_block(&windows_root)?;
         let mut process_information = PROCESS_INFORMATION::default();
         // SAFETY: helper path is verified and NUL-terminated; startup and attribute
         // storage remain live. TRUE inheritance is constrained by HANDLE_LIST.
         // The Unicode environment is an explicit two-name allowlist, and the
         // current directory was checked non-writable and free of reparses.
         unsafe {
-            CreateProcessW(
-                PCWSTR(application.as_ptr()),
-                None::<PWSTR>,
-                None,
-                None,
-                true,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                Some(environment.as_ptr().cast::<c_void>()),
-                PCWSTR(current_directory_wide.as_ptr()),
-                ptr::from_ref(&startup.StartupInfo),
-                &raw mut process_information,
-            )
-            .map_err(|_| LaunchError::OperatingSystem)?;
+            flight
+                .create_process_with_explicit_handle_list(
+                    PCWSTR(application.as_ptr()),
+                    None,
+                    EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                    Some(environment.as_ptr().cast::<c_void>()),
+                    PCWSTR(current_directory_wide.as_ptr()),
+                    ptr::from_ref(&startup.StartupInfo),
+                    &raw mut process_information,
+                )
+                .map_err(|_| LaunchError::OperatingSystem)?;
         }
         let process = OwnedWinHandle(process_information.hProcess);
         let thread = OwnedWinHandle(process_information.hThread);
+        let child_guard = CreatedChildGuard::new(&process, &job);
+        let profile_sid = match attributes.into_profile_sid() {
+            Ok(profile_sid) => profile_sid,
+            Err(error) => {
+                drop(duplicates);
+                drop(flight);
+                return Err(error);
+            }
+        };
+        drop(duplicates);
+        drop(flight);
         // SAFETY: the process handle is live and refers to the suspended child.
         let held_process_id = unsafe { GetProcessId(process.raw()) };
         if held_process_id == 0 || held_process_id != process_information.dwProcessId {
-            terminate_suspended(process.raw());
             return Err(LaunchError::SandboxVerification);
         }
-        if verify_child_token(process.raw(), attributes.expected_sid()).is_err() {
-            terminate_suspended(process.raw());
+        let mut in_job = BOOL(0);
+        // SAFETY: CreateProcessW atomically assigned the suspended child through
+        // PROC_THREAD_ATTRIBUTE_JOB_LIST; both exact handles remain live.
+        unsafe { IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if !in_job.as_bool() {
             return Err(LaunchError::SandboxVerification);
         }
-
-        // SAFETY: both handles are live; assigning before resume prevents a child
-        // from escaping the single-process job during initialization.
-        if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) }.is_err() {
-            terminate_suspended(process.raw());
-            return Err(LaunchError::OperatingSystem);
+        if verify_child_token(process.raw(), profile_sid.raw()).is_err() {
+            return Err(LaunchError::SandboxVerification);
         }
         // SAFETY: thread is the suspended primary thread returned by CreateProcess.
         let previous_suspend_count = unsafe { ResumeThread(thread.raw()) };
         if previous_suspend_count != 1 {
-            terminate_suspended(process.raw());
             return Err(LaunchError::OperatingSystem);
         }
+        child_guard.disarm();
         drop(thread);
-        drop(attributes);
-        drop(duplicates);
+        drop(profile_sid);
 
         Ok(LaunchedHelper {
             process,
@@ -1480,11 +1616,14 @@ mod tests {
     use std::fs::OpenOptions;
     use std::net::{Ipv4Addr, TcpListener};
     use std::os::windows::io::{
-        AsHandle, AsRawSocket, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
+        AsHandle, AsRawHandle, AsRawSocket, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
     };
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{
+        HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
+    };
     use windows::Win32::System::JobObjects::{
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
@@ -1535,6 +1674,45 @@ mod tests {
     }
 
     #[test]
+    fn already_inheritable_stdio_sources_are_rejected_before_launch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(LaunchError::OperatingSystem)?;
+        let flight = crate::inheritable_handle_launch::acquire_inheritable_handle_launch(deadline)
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        let (read, write) = anonymous_pipe()?;
+        // SAFETY: the exact owned pipe source is live. The global flight keeps
+        // every cooperating inheriting launch out until the flag is restored.
+        unsafe {
+            SetHandleInformation(
+                HANDLE(read.as_raw_handle()),
+                HANDLE_FLAG_INHERIT.0,
+                HANDLE_FLAG_INHERIT,
+            )?;
+        }
+        let public_result =
+            InheritedStdio::new(read.as_handle(), write.as_handle(), write.as_handle());
+        let private_result = InheritedStdio::for_secret_input_servers(
+            read.as_handle(),
+            write.as_handle(),
+            write.as_handle(),
+        );
+        // SAFETY: restore the same live source before releasing the flight.
+        unsafe {
+            SetHandleInformation(
+                HANDLE(read.as_raw_handle()),
+                HANDLE_FLAG_INHERIT.0,
+                HANDLE_FLAGS(0),
+            )?;
+        }
+        drop(flight);
+        assert!(matches!(public_result, Err(LaunchError::InvalidHandle)));
+        assert!(matches!(private_result, Err(LaunchError::InvalidHandle)));
+        Ok(())
+    }
+
+    #[test]
     fn disk_handles_cannot_cross_the_stdio_boundary() -> Result<(), Box<dyn std::error::Error>> {
         let disk = OpenOptions::new().read(true).write(true).open("NUL")?;
         assert!(matches!(
@@ -1569,7 +1747,7 @@ mod tests {
         let job_flags = sys::job_flags_for_test();
         assert_ne!(job_flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0, 0);
         assert_ne!(job_flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0, 0);
-        assert_eq!(sys::attribute_count_for_test(), 5);
+        assert_eq!(sys::attribute_count_for_test(), 6);
         assert_eq!(sys::capability_count_for_test(), 0);
         assert_eq!(
             sys::lpac_opt_out_policy_for_test(),

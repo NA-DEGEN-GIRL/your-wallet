@@ -238,6 +238,11 @@ minimal two-variable Unicode environment. The first event must be that process's
 by volume serial plus all 128 `FILE_ID_INFO` bits before the primary thread is
 released into user mode. The process, Job, and pinned artifact remain retained
 for the channel lifetime, and failure/drop terminates and reaps the exact child.
+In the debug-hook child, the numeric parent bootstrap is first required to be
+the exact sole inheritable flag, is cleared to non-inheritable, and is copied
+with only query/synchronize rights. Rust owns only that fresh non-inheritable
+duplicate; the ambient numeric source is never adopted or closed by the safe
+API and is reclaimed by process teardown.
 
 The private named pipe has a protected current-logon DACL, a single instance,
 remote-client rejection, deadline-cancellable overlapped I/O, and retained peer
@@ -284,15 +289,43 @@ debug-only sibling-path wrapper remains behind its feature and debug assertions.
 
 `COMPILED_RELEASE_POLICY` remains `None`; the default and all-feature release
 binaries therefore remain on the 4900/exit-78 path. This dormant activation core
-is not release reachability, signed-install/native-host provenance, a global
-process-launch coordinator, or negative release evidence.
+is not release reachability, signed-install/native-host provenance, authenticated
+process topology, or negative release evidence.
 
-**Broker STOP-SHIP:** the Broker launcher temporarily creates inheritable parent
-and shared-NUL handles before `CreateProcessW`. `HANDLE_LIST` restricts the Broker
-child, but cannot stop an unrelated concurrent `bInheritHandles=TRUE` creation
-from inheriting those handles. Before wiring this core, every inheriting process
-creation must pass through one sealed process-wide single-flight coordinator or
-run in a dedicated launcher process; a module-local mutex is insufficient.
+### Inheritable-handle process-creation coordination
+
+The linked `platform-windows` crate instance contains one private,
+deadline-bound process-wide coordinator for its three production Rust
+inheriting-creation paths: restricted helper launch, dormant Broker activation,
+and dormant Key Agent activation. Each path acquires a non-reentrant,
+thread-bound flight before its first temporary inheritable handle. The Broker
+parent/NUL owners, restricted-launch duplicate owner, and Key Agent prepared
+stdio owner borrow the flight lifetime. The restricted launch attribute list
+also borrows its kill-on-close Job and installs `PROC_THREAD_ATTRIBUTE_JOB_LIST`,
+so the suspended child is born in that Job and exact membership is verified
+before token verification or resume. Raw Rust `CreateProcessW` with
+`bInheritHandles=TRUE` is sealed behind the flight method. After that call
+returns, the per-launch `STARTUPINFOEX` attribute list and every temporary
+inheritable owner are destroyed before the flight is released; debug-event
+authentication, token/Job verification, callbacks, and resume occur afterward.
+Waiting is bounded by the caller/startup deadline (and the restricted launcher's
+internal coordination limit), same-thread reentry fails, and unwind through a
+live flight permanently poisons the coordinator. This deadline bounds flight
+acquisition and explicit pre-create admission checks; synchronous Windows
+`CreateProcessW` and the fresh worker's eventual join are not interruptible by
+the coordinator and can exceed it.
+
+This closes the cooperating in-process race that `HANDLE_LIST` alone cannot:
+while the Broker's parent/shared-NUL handles, the Key Agent's three stdio
+duplicates, or a restricted helper's duplicates exist, neither of the other
+Rust paths can enter its inheriting creation window. The guarantee is scoped to
+one loaded crate instance and callers that use its private API. It is not an OS
+hook and does not intercept arbitrary foreign FFI, `std::process::Command`, a
+separately linked copy, or a different process. The release PowerShell runtime's
+C# toolset runner therefore uses a separate matching static lock around its own
+inheritable pipe creation, `CreateProcessW`, attribute-list deletion, and
+temporary child-end cleanup. That lock serializes only cooperating calls through
+that C# runner type and is not shared with the Rust coordinator.
 
 ### Key Agent activation invariant (STOP-SHIP)
 
@@ -326,30 +359,34 @@ may create that role.
 The dormant supervisor composition now binds that exact-image proof to one
 preconfigured two-process kill-on-close root Job, one private request pipe, one
 separate private response pipe, and one internally timed one-shot startup nonce.
-The activation-owned fresh thread creates the Job and pipes, retains exactly
-three short-lived inheritable stdio duplicates plus one borrowed Job handle
-through a two-slot `STARTUPINFOEXW` attribute list, and drops those creation-only
-capabilities before returning the aggregate. The Job context is checked before
-`CreateProcessW`, after exact-image detach while the child is still suspended,
+The activation-owned fresh thread creates the Job and pipes, acquires the shared
+flight up to the startup-lease deadline, and creates exactly three short-lived
+inheritable stdio duplicates plus one borrowed Job handle through a two-slot
+`STARTUPINFOEXW` attribute list. The attribute list is deleted and all three
+duplicates close immediately after `CreateProcessW`; only then is the flight
+released and mapped-image authentication begun. The Job context is checked
+before creation, after exact-image detach while the child is still suspended,
 and once more before the aggregate crosses the join. Exactly one active Job
 member is required. The aggregate is non-clone, `!Sync`, externally private,
 has no raw-handle or resume operation, and aborts the process tree on drop.
 
-**STOP-SHIP (English):** Before either dormant path is armed, the standalone
-supervisor must be single-instance and process-wide single-flight for Key Agent
-bind/arm and Broker activation. While any ephemeral `HANDLE_FLAG_INHERIT`
-duplicate exists, it must perform no other inheriting child creation. Every
-production process-creation path must pass through one sealed coordinator, or
-inheriting creation must be isolated in a dedicated launcher process; a
-module-local mutex does not coordinate direct or unrelated Win32 process creation.
+**STOP-SHIP (English):** the in-crate coordinator does not prove that a standalone
+supervisor is single-instance, does not authenticate the Native Host/Broker/Key
+Agent process topology, and cannot coordinate a foreign or otherwise
+non-cooperating process-creation call. Release evidence must establish those
+boundaries across all loaded code and processes. The Key Agent child also still
+receives inheritable stdio handles; it must clear their inherit bits during its
+first trusted bootstrap steps before any descendant can be created, or child
+creation must be made impossible. Signed immutable installation, Native Host
+provenance, and `COMPILED_RELEASE_POLICY` remain separate blockers.
 
-**릴리스 차단 조건 (한국어):** 두 휴면 경로 중 하나라도 활성화하기 전에 독립
-supervisor는 단일 인스턴스여야 하며 Key Agent bind/arm과 Broker activation을
-프로세스 전역 single-flight로 직렬화해야 합니다. 임시 `HANDLE_FLAG_INHERIT`
-중복 핸들이 하나라도 존재하는 동안에는 다른 상속형 자식 프로세스를 생성하면
-안 됩니다. 모든 운영 프로세스 생성은 하나의 sealed coordinator를 거치거나
-상속형 생성을 전용 launcher process로 격리해야 하며, 모듈 내부 mutex만으로는
-직접 또는 무관한 Win32 프로세스 생성을 통제할 수 없습니다.
+**릴리스 차단 조건 (한국어):** crate 내부 coordinator는 독립 supervisor 단일
+인스턴스나 Native Host/Broker/Key Agent 프로세스 topology를 증명하지 않으며, 그
+비공개 API를 사용하지 않는 FFI·표준 라이브러리·다른 프로세스의 생성을 조정할 수도
+없습니다. 릴리스 증거는 적재된 모든 코드와 프로세스에서 이 경계를 별도로 입증해야
+합니다. Key Agent 자식도 전달받은 stdio 핸들의 inherit bit를 최초 trusted bootstrap
+단계에서 제거하거나 후속 자식 생성을 불가능하게 해야 합니다. signed immutable
+installation, Native Host provenance, `COMPILED_RELEASE_POLICY`도 계속 별도 차단 조건입니다.
 
 This proof remains dormant. It must not be armed until the same capability is
 bound to the authenticated Broker protocol, a distinct Key Agent LPAC/profile,
@@ -556,6 +593,15 @@ the DOS executable mapping race and a DOS script/module path race. The VM
 context blocks accidental ambient CommonJS/global lookup but is not a
 hostile-JavaScript sandbox; independently reviewed source bytes remain inside
 the verifier-toolset trust boundary.
+
+This C# runner has its own static process-creation lock. The lock begins before
+its inheritable pipe ends are created and is retained through `CreateProcessW`,
+attribute-list deletion, and closure of every temporary child end. It therefore
+matches the Rust lifetime rule for concurrent calls through this runner, but it
+is a separate lock: it neither joins the `platform-windows` coordinator nor
+intercepts arbitrary foreign or standard-library process creation. Lock
+acquisition is bounded by the operation deadline, but synchronous
+`CreateProcessW` and the fail-closed outer worker join remain non-interruptible.
 
 Ancestor junction, mount, drive-alias, or DOS-device retargets therefore cannot
 redirect a pass to different executable, module, or candidate bytes;

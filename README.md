@@ -549,12 +549,21 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   파일 객체인지 user mode 전에 확인한 뒤 process·one-member Job·비공개 채널과 함께
   수명 끝까지 보유합니다. release 함수에는 경로, raw handle, PID, command line 또는
   generic launch 입력이 없고, 신원 검증을 위한 경로 재열기도 없습니다.
-  실제 릴리스 정책은 계속 `None`이므로 이 core는 운영 진입점에서 도달할 수 없으며 signed install,
-  native-host provenance 또는 릴리스 활성화 완료의 증거도 아닙니다.
-- Broker와 Key Agent의 임시 inheritable handle 구간은 아직 하나의 sealed process-wide
-  coordinator로 직렬화되지 않았습니다. 다른 `bInheritHandles=TRUE` 자식이 동시에
-  생성되는 race를 막거나 전용 launcher process로 격리하기 전에는 어느 dormant
-  activation 경로도 운영에 연결할 수 없습니다.
+  `COMPILED_RELEASE_POLICY`는 계속 `None`이므로 이 core는 운영 진입점에서 도달할 수
+  없으며 signed install, native-host provenance 또는 릴리스 활성화 완료의 증거도 아닙니다.
+- Broker, Key Agent, 제한 helper launcher의 세 Rust production 상속형 생성 경로는
+  이제 하나의 비공개 deadline-bound process-wide coordinator를 사용합니다. 각 경로의
+  임시 inheritable-handle owner는 coordinator flight의 수명을 빌리며, `CreateProcessW`
+  반환 뒤 `STARTUPINFOEX` attribute list와 임시 핸들을 정리한 다음에만 flight를
+  해제합니다. deadline은 flight 획득과 명시적인 생성 직전 검사만 제한하며, 동기식
+  `CreateProcessW`나 fresh worker의 최종 join을 중단시키지는 못합니다. 이 보장은 한
+  프로세스에 적재된 같은 `platform-windows` crate instance와
+  그 비공개 API를 따르는 Rust 호출에 한정됩니다. 임의의 foreign FFI,
+  `std::process::Command`, 별도 프로세스나 별도 적재 사본의 생성까지 가로채지는 않습니다.
+- 따라서 standalone supervisor 단일 인스턴스와 인증된 Native Host↔Broker↔Key Agent
+  프로세스 topology는 여전히 별도 릴리스 증거가 필요합니다. Key Agent 자식도 전달받은
+  세 stdio 핸들의 inherit bit를 초기화 초기에 제거하거나 이후 자식 생성을 금지해야
+  하며, 이 child-side 경계는 아직 STOP-SHIP입니다.
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.
@@ -573,7 +582,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   첫 디버그 생성 이벤트의 실제 이미지
   파일 ID가 고정된 파일과 같을 때만 실행되고, 세 검증 모듈은
   고정된 volume 경로에서 읽은 허용 목록 메모리 그래프로만 연결됩니다. 이 경계 자체도
-  실제 출시 증거를 대신하지는 않습니다.
+  실제 출시 증거를 대신하지는 않습니다. 이 C# runner는 inheritable pipe 생성부터
+  `CreateProcessW`, attribute list와 임시 child-end 핸들 정리까지 자체 정적 lock으로
+  직렬화합니다. 이 lock은 같은 runner type의 협력 호출만 맞춰 주며 Rust coordinator나
+  임의의 외부 process-creation 호출과 공유되는 전역 OS 잠금은 아닙니다. lock 획득은
+  deadline으로 제한되지만 동기식 `CreateProcessW`와 fail-closed worker join은 그렇지
+  않습니다.
 
 따라서 Sepolia 앱이 실행된다는 사실은 실제 자금을 보관할 수 있는 완성된
 메인넷 지갑이라는 뜻이 아닙니다.

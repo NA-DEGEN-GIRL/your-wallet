@@ -92,6 +92,11 @@ mod broker_channel;
 #[cfg(windows)]
 #[allow(dead_code)]
 mod exact_image;
+// All Rust `bInheritHandles=TRUE` process creation is sealed behind this one
+// process-wide, thread-bound permit. Callers acquire it before creating any
+// ephemeral inheritable handle and release it immediately after creation.
+#[cfg(windows)]
+mod inheritable_handle_launch;
 // Exact image-file authentication and suspended-process ownership remain
 // crate-private until the supervisor can bind the resulting capability to the
 // private Broker channel and protected-settings lease.

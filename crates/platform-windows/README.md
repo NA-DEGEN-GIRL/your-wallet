@@ -83,21 +83,44 @@ Implemented:
   protected-settings lease remain unbound. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
 
-  **STOP-SHIP (English):** Before arming either dormant activation path, the
-  standalone supervisor must be single-instance and process-wide single-flight
-  for Key Agent bind/arm and Broker activation. It must perform no other
-  inheriting child creation while either path's ephemeral
-  `HANDLE_FLAG_INHERIT` duplicates exist. All production process creation must
-  use one sealed coordinator, or inheriting creation must run in a dedicated
-  launcher process; a module-local mutex is insufficient.
+  **Implemented Rust coordination boundary:** the dormant Broker activation,
+  dormant Key Agent activation, and restricted helper launcher are the three
+  production Rust inheriting-creation paths. They acquire one private,
+  deadline-bound process-wide flight before the first temporary inheritable
+  handle. Temporary owners borrow that flight's lifetime, and the per-launch
+  attribute list plus all temporary inheritable handles are destroyed
+  immediately after `CreateProcessW` before the flight is released. Reentrant
+  acquisition fails closed, waiting is bounded by the path's trusted deadline,
+  and unwind poisons the coordinator. The deadline covers flight acquisition
+  and explicit pre-create admission checks; it cannot interrupt synchronous
+  Windows `CreateProcessW` or the fresh worker's eventual join.
+  The restricted launcher additionally binds its attribute list to the retained
+  kill-on-close Job and uses `PROC_THREAD_ATTRIBUTE_JOB_LIST`, then verifies
+  exact membership before token verification and resume.
 
-  **릴리스 차단 조건 (한국어):** 두 휴면 activation 경로 중 하나라도 활성화하기 전에
-  독립 supervisor는 단일 인스턴스여야 하며 Key Agent bind/arm과 Broker activation을
-  프로세스 전역 single-flight로 직렬화해야 합니다. 어느 경로의 임시
-  `HANDLE_FLAG_INHERIT` 중복 핸들이든 존재하는 동안 다른 상속형 자식 프로세스를
-  생성하면 안 됩니다. 모든 운영 프로세스 생성은 하나의 sealed coordinator를
-  거치거나 상속형 생성을 전용 launcher process로 격리해야 하며, 모듈 내부 mutex만으로는
-  충분하지 않습니다.
+  **Scope and remaining STOP-SHIP conditions:** this single-flight guarantee is
+  limited to cooperating call sites in one loaded `platform-windows` crate
+  instance. It is not an operating-system hook and does not intercept arbitrary
+  foreign FFI, `std::process::Command`, a separately linked copy, or another
+  process. The release PowerShell runtime's C# toolset runner therefore uses a
+  separate matching static lock from inheritable-pipe creation through
+  `CreateProcessW` and attribute/temporary-handle cleanup; that lock likewise
+  covers only cooperating calls through that runner type. A standalone
+  supervisor still needs independently proven single-instance/process topology,
+  signed-install and Native Host provenance remain absent, and the Key Agent
+  child must still clear the inherit bit on its three received stdio handles
+  before any later child creation (or prove that later creation is impossible).
+
+  **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
+  launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
+  `CreateProcessW` 직후 attribute list와 임시 핸들을 모두 정리할 때까지 하나의
+  deadline-bound process-wide flight를 공유합니다. 임시 owner는 flight 수명을 빌립니다.
+  이 deadline은 flight 획득과 명시적인 생성 직전 검사만 제한하며, 동기식
+  `CreateProcessW` 호출이나 fresh worker의 최종 join을 중단시키지는 못합니다.
+  다만 이 보장은 같은 프로세스에 적재된 하나의 crate instance와 협력 Rust 호출에만
+  적용되며 임의의 FFI/표준 라이브러리 생성이나 다른 프로세스를 가로채지 않습니다.
+  독립 supervisor 단일 인스턴스와 인증된 topology, signed install/Native Host provenance,
+  Key Agent 자식의 stdio inherit-bit 제거는 계속 STOP-SHIP입니다.
 - an HMAC-authenticated, bounded dual-slot generation store for already-encrypted
   vault/nonce/journal/local-settings records, with a stable class discriminant,
   a strict per-class ciphertext-format matrix, generation CAS, previous-digest chaining,
@@ -149,9 +172,11 @@ Implemented:
   process, one-member Job, and private process-bound channel through cleanup.
   The release entry accepts no path, raw handle, PID, command line, or generic
   launcher input and performs no identity path reopen. `COMPILED_RELEASE_POLICY = None`
-  keeps the core unreachable from release execution; signed immutable
-  installation, native-host provenance, and process-wide inheritable-handle
-  coordination remain STOP-SHIP evidence.
+  keeps the core unreachable from release execution. The three cooperating Rust
+  launch paths now have process-wide inheritable-handle coordination, but signed
+  immutable installation, native-host provenance, cross-process supervisor
+  topology/single-instance evidence, and child-side Key Agent stdio
+  de-inheritance remain STOP-SHIP.
 
 Stop-ship before any signing-capable release:
 
@@ -171,9 +196,12 @@ Stop-ship before any signing-capable release:
    `COMPILED_RELEASE_POLICY` to `None`. Bind the separate Broker transport suite
    and Broker manifest to the signed immutable install, bind the existing
    prepared-value exact-image activation core to authenticated native-host
-   provenance, and route every inheriting process creation through one sealed
-   process-wide coordinator or dedicated launcher process. The dormant core is
-   not signed-install, provenance, coordinator, or release-activation proof.
+   provenance, prove the standalone supervisor's single-instance and exact
+   process topology, exclude or mediate every foreign/uncoordinated inheriting
+   creation path, and make the Key Agent child clear its received stdio inherit
+   bits before it can create a descendant. The in-crate coordinator is not
+   signed-install, provenance, cross-process topology, or release-activation
+   proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the

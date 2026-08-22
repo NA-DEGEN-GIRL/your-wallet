@@ -128,6 +128,10 @@ impl SupervisorActivationLease {
             .ok_or(KeyAgentSupervisorError::Expired)
     }
 
+    fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+
     #[cfg(test)]
     fn ensure_live_at_for_test(&self, now: Instant) -> Result<(), KeyAgentSupervisorError> {
         (now < self.expires_at)
@@ -269,21 +273,21 @@ pub(crate) fn bind_dormant_key_agent(
         startup_lease.ensure_live()?;
         let root_job = KeyAgentRootJob::create()?;
         let pipes = PrivateKeyAgentPipes::create()?;
-        let inheritance = pipes.prepare_child_inheritance()?;
         let root_job_attribute = root_job.creation_attribute()?;
 
         let activation = activate_preflighted_key_agent_on_fresh_worker(
             fresh_thread,
             preflighted,
-            &inheritance,
+            &pipes,
             &root_job,
             &root_job_attribute,
+            startup_lease.expires_at(),
         )?;
 
-        // The borrowed attributes and all three ephemeral inheritable handles
-        // must be gone before either owner moves or crosses the worker join.
+        // The Job attribute is creation-only. The activation leaf has already
+        // closed all three inheritable handles and released the process-wide
+        // launch flight immediately after `CreateProcessW` returned.
         drop(root_job_attribute);
-        drop(inheritance);
 
         root_job.recheck_supervisor_context()?;
         root_job.verify_effective_limits()?;
@@ -323,17 +327,16 @@ fn bind_dormant_key_agent_for_kernel_test(
         startup_lease.ensure_live()?;
         let root_job = KeyAgentRootJob::create_for_kernel_test()?;
         let pipes = PrivateKeyAgentPipes::create()?;
-        let inheritance = pipes.prepare_child_inheritance()?;
         let root_job_attribute = root_job.creation_attribute()?;
         let activation = activate_preflighted_key_agent_on_fresh_worker(
             fresh_thread,
             preflighted,
-            &inheritance,
+            &pipes,
             &root_job,
             &root_job_attribute,
+            startup_lease.expires_at(),
         )?;
         drop(root_job_attribute);
-        drop(inheritance);
 
         root_job.verify_effective_limits()?;
         if root_job.active_process_count()? != 1 {

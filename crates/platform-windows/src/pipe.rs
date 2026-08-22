@@ -379,12 +379,13 @@ impl PrivateKeyAgentPipes {
         })
     }
 
-    pub(crate) fn prepare_child_inheritance(
-        &self,
-    ) -> Result<PreparedKeyAgentInheritance<'_>, PipeError> {
-        let stdin = sys::duplicate_inheritable(&self.child_request_source)?;
-        let stdout = sys::duplicate_inheritable(&self.child_response_source)?;
-        let stderr = sys::create_inheritable_null_sink()?;
+    pub(crate) fn prepare_child_inheritance<'pipes, 'flight>(
+        &'pipes self,
+        flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,
+    ) -> Result<PreparedKeyAgentInheritance<'pipes, 'flight>, PipeError> {
+        let stdin = sys::duplicate_inheritable(&self.child_request_source, flight)?;
+        let stdout = sys::duplicate_inheritable(&self.child_response_source, flight)?;
+        let stderr = sys::create_inheritable_null_sink(flight)?;
         sys::validate_prepared_key_agent_inheritance(
             &self.child_request_source,
             &self.child_response_source,
@@ -397,6 +398,7 @@ impl PrivateKeyAgentPipes {
             stdout,
             stderr,
             owner: PhantomData,
+            flight,
         })
     }
 
@@ -455,16 +457,17 @@ impl fmt::Debug for PrivateKeyAgentPipes {
 #[cfg(windows)]
 #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
 #[must_use = "inheritable handles must be retained only through the exact process creation call"]
-pub(crate) struct PreparedKeyAgentInheritance<'pipes> {
+pub(crate) struct PreparedKeyAgentInheritance<'pipes, 'flight> {
     stdin: sys::OwnedWinHandle,
     stdout: sys::OwnedWinHandle,
     stderr: sys::OwnedWinHandle,
     owner: PhantomData<&'pipes PrivateKeyAgentPipes>,
+    flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,
 }
 
 #[cfg(windows)]
 #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-impl PreparedKeyAgentInheritance<'_> {
+impl PreparedKeyAgentInheritance<'_, '_> {
     pub(crate) fn stdin(&self) -> BorrowedHandle<'_> {
         self.stdin.as_handle()
     }
@@ -479,7 +482,7 @@ impl PreparedKeyAgentInheritance<'_> {
 }
 
 #[cfg(windows)]
-impl fmt::Debug for PreparedKeyAgentInheritance<'_> {
+impl fmt::Debug for PreparedKeyAgentInheritance<'_, '_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreparedKeyAgentInheritance")
@@ -773,6 +776,7 @@ mod sys {
     use zeroize::Zeroizing;
 
     use super::{ExpectedPeer, PIPE_BUFFER_BYTES, PipeError, SensitivePipeName};
+    use crate::inheritable_handle_launch::InheritableHandleLaunchFlight;
 
     pub(super) struct OwnedWinHandle(HANDLE);
 
@@ -1009,13 +1013,7 @@ mod sys {
     #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
     pub(super) fn duplicate_inheritable(
         source: &OwnedWinHandle,
-    ) -> Result<OwnedWinHandle, PipeError> {
-        duplicate_with_inheritance(source, true)
-    }
-
-    fn duplicate_with_inheritance(
-        source: &OwnedWinHandle,
-        inheritable: bool,
+        _flight: &InheritableHandleLaunchFlight<'_>,
     ) -> Result<OwnedWinHandle, PipeError> {
         let mut duplicate = HANDLE::default();
         // SAFETY: the source is owned and live. Both process pseudo-handles name
@@ -1028,18 +1026,27 @@ mod sys {
                 GetCurrentProcess(),
                 &raw mut duplicate,
                 0,
-                inheritable,
+                true,
                 DUPLICATE_SAME_ACCESS,
             )
             .map_err(|_| PipeError::OperatingSystem)?;
         }
-        Ok(OwnedWinHandle(duplicate))
+        if duplicate.is_invalid() {
+            return Err(PipeError::OperatingSystem);
+        }
+        let duplicate = OwnedWinHandle(duplicate);
+        if handle_flags(duplicate.raw())? != HANDLE_FLAG_INHERIT.0 {
+            return Err(PipeError::OperatingSystem);
+        }
+        Ok(duplicate)
     }
 
     /// Opens the Windows null device write-only and returns only an inheritable
     /// duplicate. The non-inheritable source closes before this function returns.
     #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-    pub(super) fn create_inheritable_null_sink() -> Result<OwnedWinHandle, PipeError> {
+    pub(super) fn create_inheritable_null_sink(
+        flight: &InheritableHandleLaunchFlight<'_>,
+    ) -> Result<OwnedWinHandle, PipeError> {
         const NULL_DEVICE: [u16; 8] = [
             b'\\' as u16,
             b'\\' as u16,
@@ -1065,7 +1072,7 @@ mod sys {
         }
         .map(OwnedWinHandle)
         .map_err(|_| PipeError::OperatingSystem)?;
-        duplicate_inheritable(&source)
+        duplicate_inheritable(&source, flight)
     }
 
     #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
@@ -1075,10 +1082,10 @@ mod sys {
         parent_response: &OwnedWinHandle,
         child_response_source: &OwnedWinHandle,
     ) -> Result<(), PipeError> {
-        if handle_is_inheritable(parent_request.raw())?
-            || handle_is_inheritable(child_request_source.raw())?
-            || handle_is_inheritable(parent_response.raw())?
-            || handle_is_inheritable(child_response_source.raw())?
+        if handle_flags(parent_request.raw())? != 0
+            || handle_flags(child_request_source.raw())? != 0
+            || handle_flags(parent_response.raw())? != 0
+            || handle_flags(child_response_source.raw())? != 0
         {
             return Err(PipeError::OperatingSystem);
         }
@@ -1099,9 +1106,9 @@ mod sys {
         stdout: &OwnedWinHandle,
         stderr: &OwnedWinHandle,
     ) -> Result<(), PipeError> {
-        if !handle_is_inheritable(stdin.raw())?
-            || !handle_is_inheritable(stdout.raw())?
-            || !handle_is_inheritable(stderr.raw())?
+        if handle_flags(stdin.raw())? != HANDLE_FLAG_INHERIT.0
+            || handle_flags(stdout.raw())? != HANDLE_FLAG_INHERIT.0
+            || handle_flags(stderr.raw())? != HANDLE_FLAG_INHERIT.0
             || !same_kernel_object(child_request_source, stdin)
             || !same_kernel_object(child_response_source, stdout)
             || same_kernel_object(stdin, stdout)
@@ -1127,12 +1134,12 @@ mod sys {
         (unsafe { GetFileType(handle.raw()) }) == expected
     }
 
-    fn handle_is_inheritable(handle: HANDLE) -> Result<bool, PipeError> {
+    fn handle_flags(handle: HANDLE) -> Result<u32, PipeError> {
         let mut flags = 0_u32;
         // SAFETY: the caller retains ownership of a live handle for this query.
         unsafe { GetHandleInformation(handle, &raw mut flags) }
             .map_err(|_| PipeError::OperatingSystem)?;
-        Ok(flags & HANDLE_FLAG_INHERIT.0 != 0)
+        Ok(flags)
     }
 
     fn finish_client_connection(server: HANDLE) -> Result<(), PipeError> {
@@ -1580,7 +1587,7 @@ mod sys {
 
     #[cfg(test)]
     pub(super) fn handle_inheritable_for_test(handle: &OwnedWinHandle) -> Result<bool, PipeError> {
-        handle_is_inheritable(handle.raw())
+        Ok(handle_flags(handle.raw())? & HANDLE_FLAG_INHERIT.0 != 0)
     }
 
     #[cfg(test)]
@@ -1601,7 +1608,22 @@ mod sys {
     pub(super) fn duplicate_noninheritable_for_test(
         handle: &OwnedWinHandle,
     ) -> Result<OwnedWinHandle, PipeError> {
-        duplicate_with_inheritance(handle, false)
+        let mut duplicate = HANDLE::default();
+        // SAFETY: this test observer duplicates one live owned handle into the
+        // current process and explicitly clears inheritance on the result.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle.raw(),
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )
+            .map_err(|_| PipeError::OperatingSystem)?;
+        }
+        Ok(OwnedWinHandle(duplicate))
     }
 
     #[cfg(test)]
@@ -1748,6 +1770,11 @@ mod tests {
         PIPE_BUFFER_BYTES, PipeError, PrivateApprovalPipes, PrivateKeyAgentPipes,
         PrivatePipeServer, PrivateSecretInputPipes, SensitivePipeName, sys,
     };
+    use crate::inheritable_handle_launch::acquire_inheritable_handle_launch;
+
+    fn launch_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(30)
+    }
 
     #[test]
     fn current_logon_dacl_can_create_a_private_server() -> Result<(), Box<dyn std::error::Error>> {
@@ -1831,7 +1858,9 @@ mod tests {
     fn key_agent_prepared_stdio_is_exactly_three_distinct_inheritable_objects()
     -> Result<(), Box<dyn std::error::Error>> {
         let pipes = PrivateKeyAgentPipes::create()?;
-        let prepared = pipes.prepare_child_inheritance()?;
+        let flight = acquire_inheritable_handle_launch(launch_deadline())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        let prepared = pipes.prepare_child_inheritance(&flight)?;
         assert_eq!(
             format!("{prepared:?}"),
             "PreparedKeyAgentInheritance { stdin: \"[BORROWED HANDLE]\", stdout: \"[BORROWED HANDLE]\", stderr: \"[BORROWED HANDLE]\" }"
@@ -1882,7 +1911,9 @@ mod tests {
     fn key_agent_prepared_and_persistent_handle_drops_close_exact_scopes()
     -> Result<(), Box<dyn std::error::Error>> {
         let pipes = PrivateKeyAgentPipes::create()?;
-        let prepared = pipes.prepare_child_inheritance()?;
+        let flight = acquire_inheritable_handle_launch(launch_deadline())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        let prepared = pipes.prepare_child_inheritance(&flight)?;
         let stdin = sys::raw_handle_for_test(&prepared.stdin);
         let stdout = sys::raw_handle_for_test(&prepared.stdout);
         let stderr = sys::raw_handle_for_test(&prepared.stderr);
@@ -1932,7 +1963,9 @@ mod tests {
     fn key_agent_prepared_stdio_has_exact_directions_and_isolated_stderr()
     -> Result<(), Box<dyn std::error::Error>> {
         let pipes = PrivateKeyAgentPipes::create()?;
-        let prepared = pipes.prepare_child_inheritance()?;
+        let flight = acquire_inheritable_handle_launch(launch_deadline())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        let prepared = pipes.prepare_child_inheritance(&flight)?;
 
         let request = [0x42_u8; 64];
         sys::write_all_before(pipes.parent_request.raw(), &request, future_deadline()?)?;

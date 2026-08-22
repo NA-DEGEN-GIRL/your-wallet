@@ -9,14 +9,322 @@ async function text(path) {
   return readFile(resolve(root, path), "utf8");
 }
 
+function maskRustRange(characters, source, start, end) {
+  for (let index = start; index < end; index += 1) {
+    if (source[index] !== "\r" && source[index] !== "\n") {
+      characters[index] = " ";
+    }
+  }
+}
+
+function rustLexicalCode(source) {
+  const characters = source.split("");
+  for (let index = 0; index < source.length; ) {
+    if (source.startsWith("//", index)) {
+      const end = source.indexOf("\n", index + 2);
+      const exclusiveEnd = end === -1 ? source.length : end;
+      maskRustRange(characters, source, index, exclusiveEnd);
+      index = exclusiveEnd;
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      let depth = 1;
+      let cursor = index + 2;
+      while (cursor < source.length && depth !== 0) {
+        if (source.startsWith("/*", cursor)) {
+          depth += 1;
+          cursor += 2;
+        } else if (source.startsWith("*/", cursor)) {
+          depth -= 1;
+          cursor += 2;
+        } else {
+          cursor += 1;
+        }
+      }
+      if (depth !== 0) {
+        throw new Error("architecture scan found an unterminated Rust block comment");
+      }
+      maskRustRange(characters, source, index, cursor);
+      index = cursor;
+      continue;
+    }
+    if (source[index] === "r") {
+      let delimiter = index + 1;
+      while (source[delimiter] === "#") {
+        delimiter += 1;
+      }
+      if (source[delimiter] === '"') {
+        const hashes = source.slice(index + 1, delimiter);
+        const closing = `"${hashes}`;
+        const close = source.indexOf(closing, delimiter + 1);
+        if (close === -1) {
+          throw new Error("architecture scan found an unterminated Rust raw string");
+        }
+        const exclusiveEnd = close + closing.length;
+        maskRustRange(characters, source, index, exclusiveEnd);
+        index = exclusiveEnd;
+        continue;
+      }
+    }
+    if (source[index] === '"') {
+      let cursor = index + 1;
+      let escaped = false;
+      while (cursor < source.length) {
+        if (!escaped && source[cursor] === '"') {
+          cursor += 1;
+          break;
+        }
+        if (!escaped && source[cursor] === "\\") {
+          escaped = true;
+        } else {
+          escaped = false;
+        }
+        cursor += 1;
+      }
+      if (cursor > source.length || source[cursor - 1] !== '"') {
+        throw new Error("architecture scan found an unterminated Rust string");
+      }
+      maskRustRange(characters, source, index, cursor);
+      index = cursor;
+      continue;
+    }
+    if (source[index] === "'") {
+      const character = /^'(?:[^'\\\r\n]|\\(?:x[\dA-Fa-f]{2}|u\{[\dA-Fa-f_]+\}|.))'/u.exec(
+        source.slice(index),
+      );
+      if (character !== null) {
+        const exclusiveEnd = index + character[0].length;
+        maskRustRange(characters, source, index, exclusiveEnd);
+        index = exclusiveEnd;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return characters.join("");
+}
+
+function matchingRustDelimiter(sourceCode, opening, open, close) {
+  let depth = 0;
+  for (let index = opening; index < sourceCode.length; index += 1) {
+    if (sourceCode[index] === open) {
+      depth += 1;
+    } else if (sourceCode[index] === close) {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function rustBraceDepthBefore(sourceCode, end) {
+  let depth = 0;
+  for (let index = 0; index < end; index += 1) {
+    if (sourceCode[index] === "{") {
+      depth += 1;
+    } else if (sourceCode[index] === "}") {
+      depth -= 1;
+    }
+  }
+  return depth;
+}
+
 function withoutBottomTestModule(source) {
-  const marker = source.search(
-    /\r?\n#\[cfg\([^\]\r\n]*\btest\b[^\]\r\n]*\)\]\r?\nmod tests \{/u,
-  );
-  return marker === -1 ? source : source.slice(0, marker);
+  const sourceCode = rustLexicalCode(source);
+  const candidates = [
+    ...sourceCode.matchAll(
+      /(?:^|\n)[\t ]*#\s*\[\s*cfg\s*\([^\]\r\n]*\btest\b[^\]\r\n]*\)\s*\][\t ]*(?:\r?\n[\t ]*)?mod\s+tests\s*\{/gu,
+    ),
+  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === 0);
+  if (candidates.length === 0) {
+    return source;
+  }
+  if (candidates.length !== 1) {
+    throw new Error("architecture scan requires exactly one bottom Rust test module");
+  }
+  const marker = candidates[0];
+  const openingBrace = sourceCode.indexOf("{", marker.index);
+  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  if (closingBrace === -1) {
+    throw new Error("architecture scan found an unterminated bottom Rust test module");
+  }
+  if (sourceCode.slice(closingBrace + 1).trim() !== "") {
+    throw new Error(
+      "architecture scan requires the bottom Rust test module to be the final lexical item",
+    );
+  }
+  return source.slice(0, marker.index);
+}
+
+function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
+  let cursor = attributeEnd;
+  while (/\s/u.test(sourceCode[cursor] ?? "")) {
+    cursor += 1;
+  }
+  while (sourceCode.startsWith("#[", cursor)) {
+    const openingBracket = sourceCode.indexOf("[", cursor);
+    const closingBracket = matchingRustDelimiter(
+      sourceCode,
+      openingBracket,
+      "[",
+      "]",
+    );
+    if (closingBracket === -1) {
+      return -1;
+    }
+    cursor = closingBracket + 1;
+    while (/\s/u.test(sourceCode[cursor] ?? "")) {
+      cursor += 1;
+    }
+  }
+
+  let parentheses = 0;
+  let brackets = 0;
+  for (let index = cursor; index < sourceCode.length; index += 1) {
+    switch (sourceCode[index]) {
+      case "(":
+        parentheses += 1;
+        break;
+      case ")":
+        parentheses -= 1;
+        break;
+      case "[":
+        brackets += 1;
+        break;
+      case "]":
+        brackets -= 1;
+        break;
+      case "{":
+        if (parentheses === 0 && brackets === 0) {
+          const closingBrace = matchingRustDelimiter(sourceCode, index, "{", "}");
+          return closingBrace === -1 ? -1 : closingBrace + 1;
+        }
+        break;
+      case ";":
+        if (parentheses === 0 && brackets === 0) {
+          return index + 1;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return -1;
+}
+
+function withoutCfgTestItems(source) {
+  const sourceCode = rustLexicalCode(source);
+  const characters = source.split("");
+  for (const attribute of sourceCode.matchAll(
+    /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/gu,
+  )) {
+    const end = endOfRustItemAfterAttribute(
+      sourceCode,
+      attribute.index + attribute[0].length,
+    );
+    if (end === -1) {
+      throw new Error("architecture scan could not bound a cfg(test) Rust item");
+    }
+    maskRustRange(characters, source, attribute.index, end);
+  }
+  return characters.join("");
+}
+
+function normalizeRustFragment(fragment) {
+  return fragment.replace(/\s+/gu, " ").trim();
+}
+
+function rustCallSites(source, callee) {
+  const sourceCode = rustLexicalCode(source);
+  const escapedCallee = callee.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const calls = [];
+  for (const match of sourceCode.matchAll(
+    new RegExp(`\\b${escapedCallee}\\s*\\(`, "gu"),
+  )) {
+    const opening = sourceCode.indexOf("(", match.index);
+    const closing = matchingRustDelimiter(sourceCode, opening, "(", ")");
+    if (closing === -1) {
+      throw new Error(`architecture scan could not bound ${callee} call`);
+    }
+    const argumentsList = [];
+    let argumentStart = opening + 1;
+    let parentheses = 0;
+    let brackets = 0;
+    let braces = 0;
+    for (let index = argumentStart; index < closing; index += 1) {
+      switch (sourceCode[index]) {
+        case "(":
+          parentheses += 1;
+          break;
+        case ")":
+          parentheses -= 1;
+          break;
+        case "[":
+          brackets += 1;
+          break;
+        case "]":
+          brackets -= 1;
+          break;
+        case "{":
+          braces += 1;
+          break;
+        case "}":
+          braces -= 1;
+          break;
+        case ",":
+          if (parentheses === 0 && brackets === 0 && braces === 0) {
+            argumentsList.push(
+              normalizeRustFragment(source.slice(argumentStart, index)),
+            );
+            argumentStart = index + 1;
+          }
+          break;
+        default:
+          break;
+      }
+    }
+    const finalArgument = normalizeRustFragment(
+      source.slice(argumentStart, closing),
+    );
+    if (finalArgument !== "") {
+      argumentsList.push(finalArgument);
+    }
+    calls.push({
+      index: match.index,
+      arguments: argumentsList,
+      source: source.slice(match.index, closing + 1),
+    });
+  }
+  return calls;
+}
+
+function rustStructLiteralSites(source, typeName) {
+  const sourceCode = rustLexicalCode(source);
+  const escapedType = typeName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const literals = [];
+  for (const match of sourceCode.matchAll(
+    new RegExp(`\\b${escapedType}\\s*\\{`, "gu"),
+  )) {
+    if (/->\s*$/u.test(sourceCode.slice(Math.max(0, match.index - 16), match.index))) {
+      continue;
+    }
+    const opening = sourceCode.indexOf("{", match.index);
+    const closing = matchingRustDelimiter(sourceCode, opening, "{", "}");
+    if (closing === -1) {
+      throw new Error(`architecture scan could not bound ${typeName} literal`);
+    }
+    literals.push({
+      index: match.index,
+      source: source.slice(match.index, closing + 1),
+    });
+  }
+  return literals;
 }
 
 function rustItemBlock(source, headerPattern) {
+  headerPattern.lastIndex = 0;
   const header = headerPattern.exec(source);
   if (header === null) {
     return "";
@@ -26,7 +334,6 @@ function rustItemBlock(source, headerPattern) {
   if (openingBrace === -1) {
     return "";
   }
-
   let depth = 0;
   for (let index = openingBrace; index < source.length; index += 1) {
     if (source[index] === "{") {
@@ -41,18 +348,41 @@ function rustItemBlock(source, headerPattern) {
   return "";
 }
 
+function rustLexicalItemBlock(source, headerPattern) {
+  const sourceCode = rustLexicalCode(source);
+  headerPattern.lastIndex = 0;
+  const header = headerPattern.exec(sourceCode);
+  if (header === null) {
+    return "";
+  }
+
+  let itemStart = header.index;
+  while (/\s/u.test(sourceCode[itemStart] ?? "")) {
+    itemStart += 1;
+  }
+  const openingBrace = sourceCode.indexOf("{", itemStart);
+  if (openingBrace === -1) {
+    return "";
+  }
+  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
+}
+
 function rustFunctionBlock(source, functionName) {
   const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return rustItemBlock(
+  return rustLexicalItemBlock(
     source,
     new RegExp(
-      `(?:^|\\n)\\s*(?:pub(?:\\([^\\r\\n)]*\\))?\\s+)?(?:const\\s+)?fn\\s+${escapedName}\\b[^{}]*\\{`,
+      `(?:^|\\n)\\s*(?:pub(?:\\([^\\r\\n)]*\\))?\\s+)?(?:(?:const|async|unsafe)\\s+)*(?:extern(?:\\s+\"[^\"\\r\\n]*\")?\\s+)?fn\\s+${escapedName}\\b[^{}]*\\{`,
       "u",
     ),
   );
 }
 
-async function rustProductionSources(relativeDirectory) {
+async function rustProductionSources(
+  relativeDirectory,
+  { withoutInlineTests = false } = {},
+) {
   const files = [];
   async function walk(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -68,10 +398,13 @@ async function rustProductionSources(relativeDirectory) {
   await walk(resolve(root, relativeDirectory));
   files.sort((left, right) => left.localeCompare(right, "en"));
   return Promise.all(
-    files.map(async (absolute) => ({
-      path: relative(root, absolute).replaceAll("\\", "/"),
-      source: withoutBottomTestModule(await readFile(absolute, "utf8")),
-    })),
+    files.map(async (absolute) => {
+      const source = withoutBottomTestModule(await readFile(absolute, "utf8"));
+      return {
+        path: relative(root, absolute).replaceAll("\\", "/"),
+        source: withoutInlineTests ? withoutCfgTestItems(source) : source,
+      };
+    }),
   );
 }
 
@@ -218,6 +551,33 @@ function requireInvariant(condition, message) {
     throw new Error(`architecture invariant failed: ${message}`);
   }
 }
+
+const rustBottomTestProductionFixture = [
+  "fn production() {",
+  '    let _ = r###"} /* lexical trivia */"###;',
+  "}",
+].join("\n");
+const rustBottomTestFixture = [
+  rustBottomTestProductionFixture,
+  "#[cfg(test)]",
+  "mod tests {",
+  '    const TEXT: &str = r#"}"#;',
+  "    /* { nested comment brace } */",
+  "}",
+  "",
+].join("\n");
+let rustBottomTestRejectedTrailingProduction = false;
+try {
+  withoutBottomTestModule(`${rustBottomTestFixture}fn hidden_production() {}\n`);
+} catch {
+  rustBottomTestRejectedTrailingProduction = true;
+}
+requireInvariant(
+  withoutBottomTestModule(rustBottomTestFixture) ===
+      rustBottomTestProductionFixture &&
+    rustBottomTestRejectedTrailingProduction,
+  "Rust production slicing must lexically balance the bottom cfg(test) module and reject any later item",
+);
 
 function hasDependency(manifest, crateName) {
   const escaped = crateName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -3482,9 +3842,19 @@ const keyAgentSupervisor = withoutBottomTestModule(
 );
 const platformWindowsProductionFiles = await rustProductionSources(
   "crates/platform-windows/src",
+  { withoutInlineTests: true },
 );
+const workspaceRustProductionFiles = (
+  await rustProductionSources("crates", { withoutInlineTests: true })
+).filter((file) => /^crates\/[^/]+\/src\//u.test(file.path));
 const platformWindowsLib = await text("crates/platform-windows/src/lib.rs");
 const platformWindowsLibCode = platformWindowsLib.replace(/^\s*\/\/.*$/gmu, "");
+const inheritableHandleLaunchSource = await text(
+  "crates/platform-windows/src/inheritable_handle_launch.rs",
+);
+const inheritableHandleLaunch = withoutBottomTestModule(
+  inheritableHandleLaunchSource,
+);
 const attestationProduction = withoutBottomTestModule(attestation);
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
@@ -3873,7 +4243,9 @@ requireInvariant(
     activationArchitecture.includes(
       "production-compiled, crate-private Broker activation core",
     ) &&
-    activationArchitecture.includes("process-wide single-flight coordinator") &&
+    activationArchitecture.includes("deadline-bound process-wide coordinator") &&
+    activationArchitecture.includes("one loaded crate instance") &&
+    activationArchitecture.includes("separate matching static lock") &&
     activationArchitecture.includes("`COMPILED_RELEASE_POLICY` remains `None`") &&
     activationArchitecture.includes("4900/exit-78") &&
     activationReadme.includes("private dormant Broker artifact preflight") &&
@@ -3881,7 +4253,9 @@ requireInvariant(
     activationReadme.includes("same already-held file handle") &&
     activationReadme.includes("non-cloneable and drop-only") &&
     activationReadme.includes("production-compiled, crate-private exact-image") &&
-    activationReadme.includes("process-wide inheritable-handle") &&
+    activationReadme.includes("deadline-bound process-wide flight") &&
+    activationReadme.includes("one loaded `platform-windows` crate") &&
+    activationReadme.includes("separate matching static lock") &&
     activationReadme.includes("`COMPILED_RELEASE_POLICY = None`") &&
     securityDecisions.includes("private dormant Broker preflight") &&
     securityDecisions.includes("`PreparedReleaseBrokerSupervisor`") &&
@@ -3889,16 +4263,19 @@ requireInvariant(
     securityDecisions.includes(
       "production-compiled, crate-private exact-image activation core",
     ) &&
-    securityDecisions.includes("sealed process-wide") &&
+    securityDecisions.includes("deadline-bound") &&
+    securityDecisions.includes("one loaded") &&
+    securityDecisions.includes("separate matching static lock") &&
     securityDecisions.includes("Current release status: STOP-SHIP") &&
     rootReadme.includes("`PreparedReleaseBrokerSupervisor`") &&
     rootReadme.includes("경로 재열기") &&
     rootReadme.includes("production-compiled exact-image 활성화 core") &&
-    rootReadme.includes("sealed process-wide") &&
-    rootReadme.includes("실제 릴리스 정책은 계속 `None`"),
-  "Broker preflight and dormant activation must remain documented as same-held-file, private, release-disabled, coordinator-blocked, and STOP-SHIP",
+    rootReadme.includes("deadline-bound process-wide coordinator") &&
+    rootReadme.includes("같은 `platform-windows` crate instance") &&
+    rootReadme.includes("`COMPILED_RELEASE_POLICY`는 계속 `None`"),
+  "Broker preflight and dormant activation must remain documented as same-held-file, private, release-disabled, coordinator-covered within one crate instance, and STOP-SHIP",
 );
-const productionProcessCreationSites = platformWindowsProductionFiles.flatMap(
+const productionProcessCreationSites = workspaceRustProductionFiles.flatMap(
   (file) =>
     [
       ...file.source.matchAll(
@@ -3913,19 +4290,769 @@ requireInvariant(
   JSON.stringify(productionProcessCreationSites) ===
     JSON.stringify([
       {
-        path: "crates/platform-windows/src/broker_supervisor.rs",
-        api: "CreateProcessW",
+        path: "crates/native-host/src/main.rs",
+        api: "Command::new",
       },
       {
-        path: "crates/platform-windows/src/key_agent_activation.rs",
-        api: "CreateProcessW",
-      },
-      {
-        path: "crates/platform-windows/src/launch.rs",
+        path: "crates/platform-windows/src/inheritable_handle_launch.rs",
         api: "CreateProcessW",
       },
     ]),
-  "production Windows process creation must remain confined to the reviewed dormant Broker supervisor, dormant Key Agent activation, and restricted launcher call sites",
+  "workspace production process creation must remain confined to the sealed Windows coordinator and the exact debug-only Native Host contract hook",
+);
+const aliasedProcessCreationApis = workspaceRustProductionFiles.flatMap((file) =>
+  [
+    ...file.source.matchAll(
+      /\b(?:CreateProcess(?:AsUser|WithToken|WithLogon)?[WA]?|ShellExecute(?:Ex)?[WA]?|WinExec|Command|std::process)\s+as\s+\w+/gu,
+    ),
+  ].map((match) => ({ path: file.path, alias: match[0] })),
+);
+requireInvariant(
+  aliasedProcessCreationApis.length === 0,
+  "production process-creation APIs and std::process must not be aliased around the exact callsite inventory",
+);
+const duplicateHandleInventory = platformWindowsProductionFiles.flatMap((file) =>
+  rustCallSites(file.source, "DuplicateHandle").map((call) => ({
+    path: file.path,
+    sourceProcess: call.arguments[0],
+    sourceHandle: call.arguments[1],
+    targetProcess: call.arguments[2],
+    targetHandle: call.arguments[3],
+    desiredAccess: call.arguments[4],
+    inheritable: call.arguments[5],
+    options: call.arguments[6],
+  })),
+);
+const setHandleInformationInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustCallSites(file.source, "SetHandleInformation").map((call) => ({
+      path: file.path,
+      handle: call.arguments[0],
+      mask: call.arguments[1],
+      flags: call.arguments[2],
+    })),
+);
+const securityAttributesInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustStructLiteralSites(file.source, "SECURITY_ATTRIBUTES").map((literal) => ({
+      path: file.path,
+      inherit:
+        /\bbInheritHandle\s*:\s*(?<value>[^,}\r\n]+)/u.exec(
+          rustLexicalCode(literal.source),
+        )?.groups?.value.trim() ?? "",
+    })),
+);
+const aliasedInheritableHandleApis = platformWindowsProductionFiles.flatMap(
+  (file) => {
+    const sourceCode = rustLexicalCode(file.source);
+    return [
+      ...sourceCode.matchAll(
+        /\b(?:DuplicateHandle|SetHandleInformation|SECURITY_ATTRIBUTES)\s+as\s+(?:_|[A-Za-z_]\w*)|\btype\s+[A-Za-z_]\w*\s*=\s*(?:[A-Za-z_]\w*::)*SECURITY_ATTRIBUTES\b|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*(?:DuplicateHandle|SetHandleInformation)\b/gu,
+      ),
+    ].map((match) => ({ path: file.path, alias: match[0] }));
+  },
+);
+const alternativeSecurityAttributesInitialization =
+  platformWindowsProductionFiles.flatMap((file) => {
+    const sourceCode = rustLexicalCode(file.source);
+    return [
+      ...sourceCode.matchAll(
+        /\bSECURITY_ATTRIBUTES\s*::|\b(?:zeroed|uninit)(?:\s*::\s*<[^>]*>)?\s*\([^)]*SECURITY_ATTRIBUTES|\.bInheritHandle\s*=/gu,
+      ),
+    ].map((match) => ({ path: file.path, initialization: match[0] }));
+  });
+const expectedDuplicateHandleInventory = [
+  {
+    path: "crates/platform-windows/src/broker_channel.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "desired",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/broker_supervisor.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "handle",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "desired",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/broker_supervisor.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "GetCurrentProcess()",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "desired",
+    inheritable: "true",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/launch.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "0",
+    inheritable: "true",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/platform-windows/src/pipe.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source.raw()",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "0",
+    inheritable: "true",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+];
+const expectedSetHandleInformationInventory = [
+  {
+    path: "crates/platform-windows/src/broker_supervisor.rs",
+    handle: "handle",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAGS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/broker_supervisor.rs",
+    handle: "handle.raw()",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAG_INHERIT",
+  },
+];
+const expectedSecurityAttributesInventory = [
+  {
+    path: "crates/platform-windows/src/broker_channel.rs",
+    inherit: "BOOL(0)",
+  },
+  {
+    path: "crates/platform-windows/src/pipe.rs",
+    inherit: "BOOL(0)",
+  },
+  {
+    path: "crates/platform-windows/src/storage/sys.rs",
+    inherit: "BOOL(0)",
+  },
+];
+const coordinatorConsumers = platformWindowsProductionFiles.filter(
+  (file) =>
+    file.path !==
+      "crates/platform-windows/src/inheritable_handle_launch.rs" &&
+    file.source.includes("acquire_inheritable_handle_launch("),
+).map((file) => file.path);
+const coordinatorCreateConsumers = platformWindowsProductionFiles.filter(
+  (file) =>
+    file.path !==
+      "crates/platform-windows/src/inheritable_handle_launch.rs" &&
+    file.source.includes(".create_process_with_explicit_handle_list("),
+).map((file) => file.path);
+const coordinatorAcquireCallSites = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    file.path === "crates/platform-windows/src/inheritable_handle_launch.rs"
+      ? []
+      : rustCallSites(file.source, "acquire_inheritable_handle_launch").map(
+          () => file.path,
+        ),
+);
+const coordinatorCreateCallSites = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    file.path === "crates/platform-windows/src/inheritable_handle_launch.rs"
+      ? []
+      : rustCallSites(
+          file.source,
+          "create_process_with_explicit_handle_list",
+        ).map(() => file.path),
+);
+const inheritableCoordinatorDefinition = rustLexicalItemBlock(
+  inheritableHandleLaunch,
+  /(?:^|\n)\s*struct InheritableHandleLaunchCoordinator\s*\{/u,
+);
+const inheritableCoordinatorImplementation = rustLexicalItemBlock(
+  inheritableHandleLaunch,
+  /(?:^|\n)\s*impl InheritableHandleLaunchCoordinator\s*\{/u,
+);
+const coordinatorAcquire = rustFunctionBlock(inheritableHandleLaunch, "acquire");
+const coordinatorRelease = rustFunctionBlock(inheritableHandleLaunch, "release");
+const coordinatorWaiterRegister = rustFunctionBlock(
+  inheritableHandleLaunch,
+  "register",
+);
+const inheritableFlightDefinition = rustLexicalItemBlock(
+  inheritableHandleLaunch,
+  /(?:^|\n)\s*pub\(crate\) struct InheritableHandleLaunchFlight<'coordinator>\s*\{/u,
+);
+const inheritableFlightValidation = rustFunctionBlock(
+  inheritableHandleLaunch,
+  "validate_create_admission",
+);
+const inheritableCreateProcessLeaf = rustFunctionBlock(
+  inheritableHandleLaunch,
+  "create_process_with_explicit_handle_list",
+);
+const coordinatorReleaseOrder = [
+  "let wrong_thread = std::thread::current().id() != owner",
+  "let missing_thread_owner = !self.clear_current_thread_owner()",
+  ".active_generation",
+  ".compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)",
+  "if wrong_thread || missing_thread_owner || wrong_generation || panicking",
+  "self.poisoned.store(true, Ordering::SeqCst)",
+  "self.occupied.store(false, Ordering::SeqCst)",
+].map((marker) => coordinatorRelease.indexOf(marker));
+const coordinatorAcquireOrder = [
+  "if self.current_thread_owns()?",
+  "let mut waiter = WaiterRegistration::new(self)",
+  "if self.poisoned.load(Ordering::SeqCst)",
+  "if now >= deadline",
+  ".compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)",
+  "let generation = if let Ok(previous) =",
+  ".fetch_update(Ordering::SeqCst, Ordering::SeqCst, |generation|",
+  "self.active_generation.store(generation, Ordering::SeqCst)",
+  "self.record_current_thread_owner()",
+  "return Ok(InheritableHandleLaunchFlight",
+  "waiter.register()?",
+  "deadline.checked_duration_since(Instant::now())",
+  "std::thread::park_timeout(remaining.min(WAIT_POLL_INTERVAL))",
+].map((marker) => coordinatorAcquire.indexOf(marker));
+const flightAdmissionOrder = [
+  "self.coordinator.current_thread_owns().unwrap_or(false)",
+  "std::thread::current().id() != self.owner || !current_thread_owns",
+  "self.coordinator.poisoned.load(Ordering::SeqCst)",
+  "!self.coordinator.occupied.load(Ordering::SeqCst)",
+  "self.coordinator.active_generation.load(Ordering::SeqCst) != self.generation",
+  "Instant::now() >= self.deadline",
+].map((marker) => inheritableFlightValidation.indexOf(marker));
+const expectedCoordinatorTests = [
+  "local_coordinator_serializes_until_the_exact_flight_drops",
+  "local_coordinator_never_overlaps_many_contenders",
+  "local_coordinator_rejects_same_thread_reentrancy",
+  "distinct_local_coordinators_have_independent_thread_ownership",
+  "local_coordinator_rejects_an_expired_deadline_while_idle",
+  "flight_rechecks_its_absolute_deadline_at_create_admission",
+  "local_coordinator_bounds_concurrent_wait_by_deadline",
+  "local_coordinator_permanently_poisoned_by_in_flight_unwind",
+];
+const coordinatorTests = [
+  ...inheritableHandleLaunchSource.matchAll(
+    /#\[test\]\s*fn\s+(?<name>[A-Za-z_]\w*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
+const restrictedLaunchLeaf = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "launch",
+);
+const keyAgentCreateInner = rustFunctionBlock(keyAgentActivation, "create_inner");
+const keyAgentCreateProcess = rustFunctionBlock(
+  keyAgentActivation,
+  "create_suspended_debuggee_process",
+);
+const brokerCoordinatedCreate = rustFunctionBlock(
+  releaseBrokerSupervisorProduction,
+  "launch_broker_application_with_after_create",
+);
+const prepareKeyAgentInheritance = rustFunctionBlock(
+  keyAgentPipeProduction,
+  "prepare_child_inheritance",
+);
+const preparedKeyAgentInheritanceBlock =
+  /pub\(crate\)\s+struct\s+PreparedKeyAgentInheritance<'pipes,\s*'flight>\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    keyAgentPipeProduction,
+  )?.groups?.body ?? "";
+const inheritedStdioConstructor = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "new",
+);
+const secretInputStdioConstructor = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "for_secret_input_servers",
+);
+const validateRestrictedSourceHandle = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "validate_live_handle",
+);
+const restrictedInheritableDuplicateLeaf = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "duplicate_inheritable",
+);
+const keyAgentInheritableDuplicateLeaf = rustFunctionBlock(
+  keyAgentPipeProduction,
+  "duplicate_inheritable",
+);
+const brokerInheritedParentDefinition = rustLexicalItemBlock(
+  releaseBrokerSupervisorProduction,
+  /(?:^|\n)\s*struct InheritedParentProcess<'flight>\s*\{/u,
+);
+const brokerInheritedParentLeaf = rustLexicalItemBlock(
+  releaseBrokerSupervisorProduction,
+  /(?:^|\n)\s*impl<'flight> InheritedParentProcess<'flight>\s*\{/u,
+);
+const brokerInheritedNullDefinition = rustLexicalItemBlock(
+  releaseBrokerSupervisorProduction,
+  /(?:^|\n)\s*struct InheritedNullStdio<'flight>\s*\{/u,
+);
+const brokerInheritedNullLeaf = rustLexicalItemBlock(
+  releaseBrokerSupervisorProduction,
+  /(?:^|\n)\s*impl<'flight> InheritedNullStdio<'flight>\s*\{/u,
+);
+const duplicateInheritedParentProcess = rustFunctionBlock(
+  releaseBrokerSupervisorProduction,
+  "duplicate_inherited_parent_process",
+);
+const restrictedAttributeValuesDefinition = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*struct AttributeValues\s*\{/u,
+);
+const restrictedAttributeValuesImplementation = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*impl AttributeValues\s*\{/u,
+);
+const restrictedAttributeListDefinition = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*struct AttributeList<'handles,\s*'flight,\s*'coordinator[^>]*>\s*\{/u,
+);
+const restrictedAttributeListImplementation = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*impl<'handles,\s*'flight,\s*'coordinator[^>]*> AttributeList<'handles,\s*'flight,\s*'coordinator[^>]*>\s*\{/u,
+);
+const restrictedCreatedChildGuard = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*struct CreatedChildGuard<'process,\s*'job>\s*\{/u,
+);
+const restrictedCreatedChildGuardImplementation = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*impl<'process,\s*'job> CreatedChildGuard<'process,\s*'job>\s*\{/u,
+);
+const restrictedCreatedChildGuardDrop = rustLexicalItemBlock(
+  restrictedLauncherProduction,
+  /(?:^|\n)\s*impl Drop for CreatedChildGuard<'_,\s*'_>\s*\{/u,
+);
+const restrictedCreatedChildCleanup = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "terminate_and_reap_created_child",
+);
+const restrictedCreatedChildCleanupOrder = [
+  "TerminateJobObject(job, 1)",
+  "TerminateProcess(process, 1)",
+  "WaitForSingleObject(process, CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS)",
+].map((marker) => restrictedCreatedChildCleanup.indexOf(marker));
+const restrictedAcquireIndex = restrictedLaunchLeaf.indexOf(
+  "acquire_inheritable_handle_launch(coordination_deadline)",
+);
+const restrictedLateSourceChecks = [
+  "validate_live_handle(handles.input)?",
+  "validate_live_handle(handles.output)?",
+  "validate_live_handle(handles.error)?",
+].map((marker) => restrictedLaunchLeaf.indexOf(marker, restrictedAcquireIndex));
+const inheritableStdioSourceTest = rustFunctionBlock(
+  restrictedLauncher,
+  "already_inheritable_stdio_sources_are_rejected_before_launch",
+);
+const inheritableStdioSourceTestOrder = [
+  "acquire_inheritable_handle_launch(deadline)",
+  "let (read, write) = anonymous_pipe()?",
+  "HANDLE_FLAG_INHERIT",
+  "InheritedStdio::new(",
+  "let private_result = InheritedStdio::for_secret_input_servers(",
+  "HANDLE_FLAGS(0)",
+  "drop(flight)",
+].map((marker) => inheritableStdioSourceTest.indexOf(marker));
+const restrictedLaunchFlightOrder = [
+  "acquire_inheritable_handle_launch(coordination_deadline)",
+  "InheritableDuplicates::new(&flight)",
+  "AttributeList::for_lpac(&duplicates, &job, profile_sid)",
+  ".create_process_with_explicit_handle_list(",
+  "let process = OwnedWinHandle(process_information.hProcess)",
+  "let thread = OwnedWinHandle(process_information.hThread)",
+  "CreatedChildGuard::new(&process, &job)",
+  "attributes.into_profile_sid()",
+  "drop(duplicates)",
+  "drop(flight)",
+  "GetProcessId(process.raw())",
+  "IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job)",
+  "verify_child_token",
+  "ResumeThread",
+  "if previous_suspend_count != 1",
+  "child_guard.disarm()",
+].map((marker) => restrictedLaunchLeaf.indexOf(marker));
+const keyAgentFlightOrder = [
+  "acquire_inheritable_handle_launch(coordination_deadline)",
+  ".prepare_child_inheritance(&flight)",
+  "create_suspended_debuggee_process(",
+  "drop(inheritance)",
+  "drop(flight)",
+  "GetProcessId",
+  "GetThreadId",
+].map((marker) => keyAgentCreateInner.indexOf(marker));
+const brokerFlightOrder = [
+  "acquire_inheritable_handle_launch(deadline)",
+  "InheritedParentProcess::duplicate_current(&flight)",
+  "InheritedNullStdio::create(&flight)",
+  "CreationAttributes::new",
+  "flight.create_process_with_explicit_handle_list(",
+  "drop(attributes)",
+  "drop(inherited_stdio)",
+  "drop(inherited_parent)",
+  "drop(flight)",
+  "Debuggee::new(information)",
+  "after_create(&debuggee)",
+  "debuggee.authenticate_first_event",
+].map((marker) => brokerCoordinatedCreate.indexOf(marker));
+const duplicateInheritedParentProcessOrder = [
+  "let handle = HANDLE(raw as *mut c_void)",
+  "GetHandleInformation(handle, &raw mut flags)",
+  "flags != HANDLE_FLAG_INHERIT.0",
+  "SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))",
+  "flags = u32::MAX",
+  "if flags != 0",
+  "let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+  "DuplicateHandle(",
+  "if invalid(duplicate)",
+  "StdOwnedHandle::from_raw_handle(duplicate.0)",
+  "HANDLE(duplicate.as_raw_handle())",
+  "if duplicate_flags != 0",
+].map((marker) => duplicateInheritedParentProcess.indexOf(marker));
+const duplicateInheritedParentOriginalFlagQueries = [
+  ...rustLexicalCode(duplicateInheritedParentProcess).matchAll(
+    /GetHandleInformation\(handle,\s*&raw mut flags\)/gu,
+  ),
+].map((match) => match.index);
+const restrictedDeadlineChecks = [
+  ...restrictedLaunchLeaf.matchAll(
+    /if Instant::now\(\) >= coordination_deadline/gu,
+  ),
+].map((match) => match.index);
+const keyAgentFinalDeadlineCheck = keyAgentCreateProcess.indexOf(
+  "if Instant::now() >= coordination_deadline",
+);
+requireInvariant(
+  platformWindowsLib.includes("#[cfg(windows)]\nmod inheritable_handle_launch;") &&
+    !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*inheritable_handle_launch/u.test(
+      platformWindowsLib,
+    ) &&
+    (inheritableHandleLaunch.match(
+      /static PROCESS_WIDE_INHERITABLE_LAUNCH:/gu,
+    ) ?? []).length === 1 &&
+    /^struct InheritableHandleLaunchCoordinator\s*\{\s*occupied: AtomicBool,\s*poisoned: AtomicBool,\s*generation: AtomicU64,\s*active_generation: AtomicU64,\s*waiters: AtomicUsize,\s*\}$/u.test(
+      inheritableCoordinatorDefinition,
+    ) &&
+    inheritableCoordinatorImplementation.includes(
+      "occupied: AtomicBool::new(false)",
+    ) &&
+    inheritableCoordinatorImplementation.includes(
+      "poisoned: AtomicBool::new(false)",
+    ) &&
+    inheritableCoordinatorImplementation.includes("generation: AtomicU64::new(0)") &&
+    inheritableCoordinatorImplementation.includes(
+      "active_generation: AtomicU64::new(0)",
+    ) &&
+    inheritableCoordinatorImplementation.includes("waiters: AtomicUsize::new(0)") &&
+    /thread_local!\s*\{\s*static OWNED_COORDINATORS:\s*Cell<\[usize; 4\]>\s*=\s*const\s*\{\s*Cell::new\(\[0; 4\]\)\s*\};\s*\}/u.test(
+      inheritableHandleLaunch,
+    ) &&
+    !/\b(?:Mutex|Condvar|RefCell)\b/u.test(inheritableHandleLaunch) &&
+    inheritableHandleLaunch.includes("InheritableHandleLaunchError::Reentrant") &&
+    inheritableHandleLaunch.includes("InheritableHandleLaunchError::Poisoned") &&
+    /^pub\(crate\) struct InheritableHandleLaunchFlight<'coordinator>\s*\{\s*coordinator: &'coordinator InheritableHandleLaunchCoordinator,\s*owner: ThreadId,\s*generation: u64,\s*deadline: Instant,\s*_not_send_or_sync: PhantomData<Rc<\(\)>>,\s*\}$/u.test(
+      inheritableFlightDefinition,
+    ) &&
+    coordinatorAcquireOrder.every((position) => position !== -1) &&
+    coordinatorAcquireOrder
+      .slice(1)
+      .every((position, index) => position > coordinatorAcquireOrder[index]) &&
+    coordinatorAcquire.includes("waiters.checked_add(1)") === false &&
+    coordinatorWaiterRegister.includes("waiters.checked_add(1)") &&
+    inheritableHandleLaunch.includes("waiters.checked_sub(1)") &&
+    flightAdmissionOrder.every((position) => position !== -1) &&
+    flightAdmissionOrder
+      .slice(1)
+      .every((position, index) => position > flightAdmissionOrder[index]) &&
+    /->\s*Result<\(\), InheritableHandleCreateError>\s*\{\s*self\.validate_create_admission\(\)\?;/u.test(
+      rustLexicalCode(inheritableCreateProcessLeaf),
+    ) &&
+    inheritableCreateProcessLeaf.indexOf("self.validate_create_admission()?") <
+      inheritableCreateProcessLeaf.indexOf("CreateProcessW(") &&
+    coordinatorReleaseOrder.every((position) => position !== -1) &&
+    coordinatorReleaseOrder
+      .slice(1)
+      .every((position, index) => position > coordinatorReleaseOrder[index]) &&
+    inheritableHandleLaunch.includes(
+      ".release(self.owner, self.generation, std::thread::panicking())",
+    ) &&
+    inheritableHandleLaunch.includes(
+      "CreateProcessW(\n                application_name,",
+    ) &&
+    inheritableHandleLaunch.includes(
+      "None,\n                None,\n                true,",
+    ) &&
+    JSON.stringify(coordinatorTests) === JSON.stringify(expectedCoordinatorTests) &&
+    inheritableHandleLaunchSource.includes("wait_until_waiter_is_parked") &&
+    rustFunctionBlock(
+      inheritableHandleLaunchSource,
+      "local_coordinator_never_overlaps_many_contenders",
+    ).includes("const THREADS: usize = 8") &&
+    rustFunctionBlock(
+      inheritableHandleLaunchSource,
+      "local_coordinator_never_overlaps_many_contenders",
+    ).includes("const FLIGHTS_PER_THREAD: usize = 64") &&
+    !/unsafe\s+impl\s+(?:Send|Sync)|impl\s+(?:Clone|Copy)\s+for\s+InheritableHandleLaunchFlight|#\[derive\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\]\s*(?:pub\(crate\)\s+)?struct\s+InheritableHandleLaunchFlight/u.test(
+      inheritableHandleLaunch,
+    ) &&
+    JSON.stringify(duplicateHandleInventory) ===
+      JSON.stringify(expectedDuplicateHandleInventory) &&
+    JSON.stringify(setHandleInformationInventory) ===
+      JSON.stringify(expectedSetHandleInformationInventory) &&
+    JSON.stringify(securityAttributesInventory) ===
+      JSON.stringify(expectedSecurityAttributesInventory) &&
+    aliasedInheritableHandleApis.length === 0 &&
+    alternativeSecurityAttributesInitialization.length === 0 &&
+    rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle").length ===
+      1 &&
+    rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle")[0]
+      ?.arguments[5] === "true" &&
+    restrictedInheritableDuplicateLeaf.includes(
+      "_flight: &InheritableHandleLaunchFlight<'_>",
+    ) &&
+    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle").length === 1 &&
+    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle")[0]
+      ?.arguments[5] === "true" &&
+    keyAgentInheritableDuplicateLeaf.includes(
+      "_flight: &InheritableHandleLaunchFlight<'_>",
+    ) &&
+    brokerInheritedParentDefinition.includes(
+      "flight: &'flight InheritableHandleLaunchFlight<'static>",
+    ) &&
+    rustCallSites(brokerInheritedParentLeaf, "DuplicateHandle").length === 1 &&
+    rustCallSites(brokerInheritedParentLeaf, "DuplicateHandle")[0]?.arguments[5] ===
+      "true" &&
+    /flight:\s*&'flight InheritableHandleLaunchFlight<'static>/u.test(
+      brokerInheritedParentLeaf,
+    ) &&
+    brokerInheritedParentLeaf.includes("Ok(Self { handle, flight })") &&
+    brokerInheritedParentLeaf.includes("let _ = self.flight") &&
+    brokerInheritedNullDefinition.includes(
+      "flight: &'flight InheritableHandleLaunchFlight<'static>",
+    ) &&
+    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation").length === 1 &&
+    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation")[0]?.arguments[2] ===
+      "HANDLE_FLAG_INHERIT" &&
+    /flight:\s*&'flight InheritableHandleLaunchFlight<'static>/u.test(
+      brokerInheritedNullLeaf,
+    ) &&
+    brokerInheritedNullLeaf.includes("Ok(Self { handle, flight })") &&
+    brokerInheritedNullLeaf.includes("let _ = self.flight") &&
+    inheritedStdioConstructor.match(/sys::validate_handle\(/gu)?.length === 3 &&
+    secretInputStdioConstructor.match(/sys::validate_live_handle\(/gu)?.length === 3 &&
+    validateRestrictedSourceHandle.includes(
+      "flags & HANDLE_FLAG_INHERIT.0 != 0",
+    ) &&
+    validateRestrictedSourceHandle.includes("Err(LaunchError::InvalidHandle)") &&
+    restrictedLaunchLeaf.match(/validate_live_handle\(handles\.(?:input|output|error)\)\?/gu)
+      ?.length === 6 &&
+    restrictedLateSourceChecks.every(
+      (position) => position > restrictedAcquireIndex,
+    ) &&
+    restrictedLateSourceChecks.every(
+      (position) =>
+        position < restrictedLaunchLeaf.indexOf("InheritableDuplicates::new(&flight)"),
+    ) &&
+    inheritableStdioSourceTestOrder.every((position) => position !== -1) &&
+    inheritableStdioSourceTestOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    (inheritableStdioSourceTest.match(/Err\(LaunchError::InvalidHandle\)/gu) ?? [])
+      .length === 2 &&
+    prepareKeyAgentInheritance.includes(
+      "fn prepare_child_inheritance<'pipes, 'flight>",
+    ) &&
+    prepareKeyAgentInheritance.includes("&'pipes self") &&
+    prepareKeyAgentInheritance.includes(
+      "flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>",
+    ) &&
+    prepareKeyAgentInheritance.includes(
+      "Result<PreparedKeyAgentInheritance<'pipes, 'flight>, PipeError>",
+    ) &&
+    preparedKeyAgentInheritanceBlock.includes(
+      "owner: PhantomData<&'pipes PrivateKeyAgentPipes>",
+    ) &&
+    preparedKeyAgentInheritanceBlock.includes(
+      "flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>",
+    ) &&
+    JSON.stringify(coordinatorConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    JSON.stringify(coordinatorCreateConsumers) ===
+      JSON.stringify(coordinatorConsumers) &&
+    JSON.stringify(coordinatorAcquireCallSites) ===
+      JSON.stringify(coordinatorConsumers) &&
+    JSON.stringify(coordinatorCreateCallSites) ===
+      JSON.stringify(coordinatorConsumers) &&
+    restrictedLaunchLeaf.indexOf("if Instant::now() >= coordination_deadline") >
+      restrictedLaunchLeaf.indexOf(
+        "acquire_inheritable_handle_launch(coordination_deadline)",
+      ) &&
+    restrictedLaunchLeaf.indexOf("if Instant::now() >= coordination_deadline") <
+      restrictedLaunchLeaf.indexOf("InheritableDuplicates::new(&flight)") &&
+    restrictedDeadlineChecks.length === 2 &&
+    restrictedDeadlineChecks[1] <
+      restrictedLaunchLeaf.indexOf(".create_process_with_explicit_handle_list(") &&
+    keyAgentCreateInner.indexOf("if Instant::now() >= coordination_deadline") >
+      keyAgentCreateInner.indexOf(
+        "acquire_inheritable_handle_launch(coordination_deadline)",
+      ) &&
+    keyAgentCreateInner.indexOf("if Instant::now() >= coordination_deadline") <
+      keyAgentCreateInner.indexOf(".prepare_child_inheritance(&flight)") &&
+    keyAgentCreateProcess.includes("coordination_deadline: Instant") &&
+    keyAgentFinalDeadlineCheck >
+      keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") &&
+    keyAgentFinalDeadlineCheck <
+      keyAgentCreateProcess.indexOf(
+        ".create_process_with_explicit_handle_list(",
+      ) &&
+    brokerCoordinatedCreate.indexOf(
+      "check_deadline(deadline)?",
+      brokerCoordinatedCreate.indexOf("acquire_inheritable_handle_launch(deadline)"),
+    ) <
+      brokerCoordinatedCreate.indexOf(
+        "InheritedParentProcess::duplicate_current(&flight)",
+      ) &&
+    [restrictedLaunchFlightOrder, keyAgentFlightOrder, brokerFlightOrder].every(
+      (positions) =>
+        positions.every((position) => position !== -1) &&
+        positions
+          .slice(1)
+          .every((position, index) => position > positions[index]),
+    ),
+  "all inheriting Rust launches must use one private deadline-bound, non-reentrant, panic-poisoning process-wide flight from first temporary handle through immediate post-create close",
+);
+requireInvariant(
+  duplicateInheritedParentProcess.includes(
+    "pub(super) fn duplicate_inherited_parent_process(",
+  ) &&
+    duplicateInheritedParentProcess.includes(
+      "!text.bytes().all(|byte| byte.is_ascii_digit())",
+    ) &&
+    duplicateInheritedParentProcess.includes("if raw == 0") &&
+    duplicateInheritedParentProcessOrder.every((position) => position !== -1) &&
+    duplicateInheritedParentProcessOrder
+      .slice(1)
+      .every(
+        (position, index) => position > duplicateInheritedParentProcessOrder[index],
+      ) &&
+    duplicateInheritedParentOriginalFlagQueries.length === 2 &&
+    duplicateInheritedParentOriginalFlagQueries[0] <
+      duplicateInheritedParentProcess.indexOf("SetHandleInformation(") &&
+    duplicateInheritedParentOriginalFlagQueries[1] >
+      duplicateInheritedParentProcess.indexOf("SetHandleInformation(") &&
+    duplicateInheritedParentOriginalFlagQueries[1] <
+      duplicateInheritedParentProcess.indexOf(
+        "let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+      ) &&
+    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle").length === 1 &&
+    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
+      ?.arguments[4] === "desired" &&
+    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
+      ?.arguments[5] === "false" &&
+    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
+      ?.arguments[6] === "DUPLICATE_HANDLE_OPTIONS(0)" &&
+    rustCallSites(duplicateInheritedParentProcess, "from_raw_handle").length === 1 &&
+    rustCallSites(duplicateInheritedParentProcess, "from_raw_handle")[0]
+      ?.arguments[0] === "duplicate.0" &&
+    duplicateInheritedParentProcess.includes("Ok(duplicate)") &&
+    !/from_raw_handle\(\s*(?:raw|handle(?:\.0)?)\s*\)/u.test(
+      rustLexicalCode(duplicateInheritedParentProcess),
+    ),
+  "the Broker debug-hook parent capability must de-inherit the ambient raw handle, make one minimal-rights non-inheritable duplicate, validate that fresh duplicate directly, and own only the duplicate",
+);
+requireInvariant(
+  restrictedLauncherProduction.includes("const ATTRIBUTE_COUNT: u32 = 6") &&
+    restrictedAttributeValuesDefinition.includes("job: [HANDLE; 1]") &&
+    restrictedAttributeValuesImplementation.includes(
+      "fn new(handles: Box<[HANDLE]>, job: HANDLE, profile_sid: PSID)",
+    ) &&
+    restrictedAttributeValuesImplementation.includes("job: [job]") &&
+    restrictedAttributeListDefinition.includes(
+    "duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>",
+  ) &&
+    restrictedAttributeListDefinition.includes("job_owner: &'job OwnedWinHandle") &&
+    restrictedAttributeListImplementation.includes(
+      "duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>",
+    ) &&
+    restrictedAttributeListImplementation.includes(
+      "job_owner: &'job OwnedWinHandle",
+    ) &&
+    restrictedAttributeListImplementation.includes(
+      "let handles = duplicate_owner.raw_handles()",
+    ) &&
+    restrictedAttributeListImplementation.includes("duplicate_owner,") &&
+    restrictedAttributeListImplementation.includes("job_owner,") &&
+    /AttributeValues::new\(\s*handles,\s*job_owner\.raw\(\),\s*profile_sid\.raw\(\),?\s*\)/u.test(
+      restrictedAttributeListImplementation,
+    ) &&
+    (restrictedAttributeListImplementation.match(/self\.update\(/gu) ?? []).length ===
+      6 &&
+    restrictedAttributeListImplementation.indexOf(
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+    ) <
+      restrictedAttributeListImplementation.indexOf(
+        "PROC_THREAD_ATTRIBUTE_JOB_LIST",
+      ) &&
+    restrictedAttributeListImplementation.includes(
+      "self.values.job.as_ptr().cast::<c_void>()",
+    ) &&
+    restrictedAttributeListImplementation.includes("size_of_val(&self.values.job)") &&
+    restrictedAttributeListImplementation.includes(
+      "self.duplicate_owner.handles.len()",
+    ) &&
+    restrictedAttributeListImplementation.includes(
+      "debug_assert_eq!(self.job_owner.raw(), self.values.job[0])",
+    ) &&
+    restrictedLaunchLeaf.includes(
+      "AttributeList::for_lpac(&duplicates, &job, profile_sid)?",
+    ) &&
+    !restrictedLaunchLeaf.includes(
+      "AttributeList::for_lpac(duplicates.raw_handles()",
+    ) &&
+    !restrictedLaunchLeaf.includes("AssignProcessToJobObject") &&
+    restrictedLaunchLeaf.includes(
+      "IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job)",
+    ) &&
+    restrictedLaunchLeaf.includes("if !in_job.as_bool()") &&
+    restrictedCreatedChildGuard.includes(
+      "process: &'process OwnedWinHandle",
+    ) &&
+    restrictedCreatedChildGuard.includes("job: &'job OwnedWinHandle") &&
+    restrictedCreatedChildGuard.includes("armed: bool") &&
+    restrictedCreatedChildGuardImplementation.includes(
+      "fn new(process: &'process OwnedWinHandle, job: &'job OwnedWinHandle) -> Self",
+    ) &&
+    restrictedCreatedChildGuardImplementation.includes("process,") &&
+    restrictedCreatedChildGuardImplementation.includes("job,") &&
+    restrictedCreatedChildGuardImplementation.includes("armed: true") &&
+    restrictedCreatedChildGuardImplementation.includes("fn disarm(mut self)") &&
+    restrictedCreatedChildGuardImplementation.includes("self.armed = false") &&
+    restrictedCreatedChildGuardDrop.includes("if self.armed") &&
+    restrictedCreatedChildGuardDrop.includes(
+      "terminate_and_reap_created_child(self.process.raw(), self.job.raw())",
+    ) &&
+    restrictedLauncherProduction.includes(
+      "const CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000",
+    ) &&
+    restrictedCreatedChildCleanupOrder.every((position) => position !== -1) &&
+    restrictedCreatedChildCleanupOrder
+      .slice(1)
+      .every(
+        (position, index) => position > restrictedCreatedChildCleanupOrder[index],
+      ),
+  "restricted AttributeList must retain both duplicate and Job owners, atomically install the exact JOB_LIST, and guard every suspended child until Job/token verification and resume succeed",
 );
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
@@ -4011,11 +5138,11 @@ const boundDormantOrder = [
   "run_on_fresh_key_agent_debug_thread(move |fresh_thread|",
   "let root_job = KeyAgentRootJob::create()?",
   "let pipes = PrivateKeyAgentPipes::create()?",
-  "let inheritance = pipes.prepare_child_inheritance()?",
   "let root_job_attribute = root_job.creation_attribute()?",
   "activate_preflighted_key_agent_on_fresh_worker(",
+  "&pipes",
+  "startup_lease.expires_at()",
   "drop(root_job_attribute)",
-  "drop(inheritance)",
   "root_job.recheck_supervisor_context()?",
   "root_job.verify_effective_limits()?",
   "root_job.active_process_count()? != 1",
@@ -4216,14 +5343,28 @@ requireInvariant(
     publicGenericSpawn.indexOf("self.require_approval_frontend(helper)?") <
       publicGenericSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
     privateSecretSpawn.indexOf("self.require_secret_input_frontend(helper)?") <
-      privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
+    privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
     lowLevelLpacLaunch.includes("role: VerifiedLpacRole") &&
-    lowLevelLpacLaunch.includes("if role.inherits_parent_proof()") &&
+    lowLevelLpacLaunch.includes("let parent_sources = role") &&
+    lowLevelLpacLaunch.includes(".inherits_parent_proof()") &&
     lowLevelLpacLaunch.includes(
-      "AttributeList::for_lpac(inherited_raw.into_boxed_slice(), profile, role)",
+      "if let Some(sources) = parent_sources.as_ref()",
+    ) &&
+    lowLevelLpacLaunch.includes(
+      "let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;",
+    ) &&
+    lowLevelLpacLaunch.indexOf(
+      "let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;",
+    ) <
+      lowLevelLpacLaunch.indexOf("acquire_inheritable_handle_launch(") &&
+    lowLevelLpacLaunch.includes(
+      "AttributeList::for_lpac(&duplicates, &job, profile_sid)?",
     ) &&
     lpacAttributeConstruction.includes(
-      "OwnedAppContainerSid::open_or_create(profile, role)?",
+      "profile_sid: OwnedAppContainerSid",
+    ) &&
+    /AttributeValues::new\(\s*handles,\s*job_owner\.raw\(\),\s*profile_sid\.raw\(\),?\s*\)/u.test(
+      lpacAttributeConstruction,
     ) &&
     lpacProfileOpen.includes("profile_metadata(profile, role)?") &&
     lpacProfileMetadata.includes(
@@ -4295,16 +5436,12 @@ requireInvariant(
   "one unforgeable consumed fresh-worker proof must own the complete Key Agent debug-event lifecycle",
 );
 const keyAgentCreationAttributeBlock =
-  /struct\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'job>\s*\{(?<body>[\s\S]*?)\n\s*\}/u.exec(
+  /struct\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'flight,\s*'job>\s*\{(?<body>[\s\S]*?)\n\s*\}/u.exec(
     keyAgentActivation,
   )?.groups?.body ?? "";
 const keyAgentCreationAttributeImpl = rustItemBlock(
   keyAgentActivation,
-  /impl<'resources,\s*'pipes,\s*'job>\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'job>\s*\{/u,
-);
-const keyAgentCreateProcess = rustFunctionBlock(
-  keyAgentActivation,
-  "create_suspended_debuggee_process",
+  /impl<'resources,\s*'pipes,\s*'flight,\s*'job>\s*KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'flight,\s*'job>\s*\{/u,
 );
 const keyAgentCreationFlags = rustFunctionBlock(
   keyAgentActivation,
@@ -4317,7 +5454,7 @@ const verifyBoundRootProcess = rustFunctionBlock(
 requireInvariant(
   keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
     keyAgentCreationAttributeBlock.includes(
-      "_inheritance: &'resources PreparedKeyAgentInheritance<'pipes>",
+      "_inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>",
     ) &&
     keyAgentCreationAttributeBlock.includes(
       "root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>",
@@ -4330,7 +5467,7 @@ requireInvariant(
     ) &&
     keyAgentCreationAttributeImpl.includes(".install_into(attributes.pointer)") &&
     keyAgentActivation.includes(
-      "impl Drop for KeyAgentCreationAttributes<'_, '_, '_>",
+      "impl Drop for KeyAgentCreationAttributes<'_, '_, '_, '_>",
     ) &&
     keyAgentActivation.includes("DeleteProcThreadAttributeList(self.pointer)") &&
     keyAgentCreateProcess.includes("let mut startup = STARTUPINFOEXW::default();") &&
@@ -4341,10 +5478,13 @@ requireInvariant(
     keyAgentCreateProcess.includes("startup.lpAttributeList = attributes.pointer();") &&
     keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") !== -1 &&
     keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") <
-      keyAgentCreateProcess.indexOf("CreateProcessW(") &&
-    /CreateProcessW\([\s\S]*?true,\s*key_agent_creation_flags\(\),/u.test(
-      keyAgentCreateProcess,
+      keyAgentCreateProcess.indexOf(
+        ".create_process_with_explicit_handle_list(",
+      ) &&
+    keyAgentCreateProcess.includes(
+      "flight: &InheritableHandleLaunchFlight<'_>",
     ) &&
+    keyAgentCreateProcess.includes("key_agent_creation_flags()") &&
     keyAgentCreationFlags.includes("CREATE_SUSPENDED") &&
     keyAgentCreationFlags.includes("DEBUG_PROCESS") &&
     keyAgentCreationFlags.includes("DEBUG_ONLY_THIS_PROCESS") &&
@@ -4438,16 +5578,19 @@ requireInvariant(
     activationReadme.includes("`registryRead`") &&
     activationArchitecture.includes("**STOP-SHIP (English):**") &&
     activationArchitecture.includes("**릴리스 차단 조건 (한국어):**") &&
-    activationArchitecture.includes("process-wide single-flight") &&
-    activationArchitecture.includes("다른 상속형 자식 프로세스") &&
-    activationArchitecture.includes("sealed coordinator") &&
-    activationArchitecture.includes("dedicated launcher process") &&
-    activationReadme.includes("**STOP-SHIP (English):**") &&
-    activationReadme.includes("**릴리스 차단 조건 (한국어):**") &&
-    activationReadme.includes("process-wide single-flight") &&
-    activationReadme.includes("다른 상속형 자식 프로세스") &&
-    activationReadme.includes("sealed coordinator") &&
-    activationReadme.includes("dedicated launcher process"),
+    activationArchitecture.includes("deadline-bound process-wide coordinator") &&
+    activationArchitecture.includes("one loaded crate instance") &&
+    activationArchitecture.includes("separate matching static lock") &&
+    activationArchitecture.includes("supervisor is single-instance") &&
+    activationArchitecture.includes("receives inheritable stdio handles") &&
+    activationReadme.includes("**Implemented Rust coordination boundary:**") &&
+    activationReadme.includes("**Scope and remaining STOP-SHIP conditions:**") &&
+    activationReadme.includes("**구현 범위와 남은 릴리스 차단 조건:**") &&
+    activationReadme.includes("one loaded `platform-windows` crate") &&
+    activationReadme.includes("`std::process::Command`") &&
+    activationReadme.includes("separate matching static lock") &&
+    activationReadme.includes("single-instance/process topology") &&
+    activationReadme.includes("clear the inherit bit"),
   "Key Agent activation limitations, LPAC/storage blockers, and type-state proof must remain documented",
 );
 
@@ -4539,13 +5682,59 @@ const nativeProcessContractTest = await text("extension/tests/native-host-proces
 const platformManifestForWindowsBroker = await text(
   "crates/platform-windows/Cargo.toml",
 );
-const brokerChannelProduction = withoutBottomTestModule(
-  await text("crates/platform-windows/src/broker_channel.rs"),
+const brokerChannelSource = await text(
+  "crates/platform-windows/src/broker_channel.rs",
 );
+const brokerChannelProduction = withoutBottomTestModule(brokerChannelSource);
 const brokerSupervisor = await text(
   "crates/platform-windows/src/broker_supervisor.rs",
 );
 const brokerSupervisorProduction = withoutBottomTestModule(brokerSupervisor);
+const brokerDuplicateRestrictedProcessHandle = rustFunctionBlock(
+  brokerChannelProduction,
+  "duplicate_restricted_process_handle",
+);
+const brokerTestInheritedProcessStdio = rustFunctionBlock(
+  brokerChannelSource,
+  "process_handle_as_inherited_stdio",
+);
+const brokerTestSpawnChild = rustFunctionBlock(brokerChannelSource, "spawn_child");
+const brokerTestSpawnOrder = [
+  "acquire_inheritable_handle_launch(",
+  "let stdin = match expected_server",
+  "current_process_stdio_for_test(&flight)",
+  "child_process_stdio_for_test(&flight, child)",
+  "let child = command.spawn()?",
+  "drop(command)",
+  "drop(flight)",
+].map((marker) => brokerTestSpawnChild.indexOf(marker));
+requireInvariant(
+  /fn duplicate_restricted_process_handle\(\s*source: HANDLE,?\s*\)/u.test(
+    brokerDuplicateRestrictedProcessHandle,
+  ) &&
+    !/\binheritable\s*:\s*(?:bool|BOOL)\b/u.test(
+      brokerDuplicateRestrictedProcessHandle,
+    ) &&
+    rustCallSites(brokerDuplicateRestrictedProcessHandle, "DuplicateHandle").length ===
+      1 &&
+    rustCallSites(brokerDuplicateRestrictedProcessHandle, "DuplicateHandle")[0]
+      ?.arguments[5] === "false" &&
+    brokerDuplicateRestrictedProcessHandle.includes(
+      "let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+    ) &&
+    brokerDuplicateRestrictedProcessHandle.includes("if flags != 0") &&
+    /#\[cfg\(test\)\]\s*fn process_handle_as_inherited_stdio\(\s*_flight:\s*&crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'_>/u.test(
+      brokerChannelSource,
+    ) &&
+    rustCallSites(brokerTestInheritedProcessStdio, "DuplicateHandle").length === 1 &&
+    rustCallSites(brokerTestInheritedProcessStdio, "DuplicateHandle")[0]
+      ?.arguments[5] === "true" &&
+    brokerTestSpawnOrder.every((position) => position !== -1) &&
+    brokerTestSpawnOrder
+      .slice(1)
+      .every((position, index) => position > brokerTestSpawnOrder[index]),
+  "Broker parent-process duplication must be production-sealed to literal false, while its cfg(test) inheritable Stdio helper remains flight-bound through Command::spawn and immediate cleanup",
+);
 const nativeWindowsBrokerBridge = await text(
   "crates/native-host/src/windows_broker_bridge.rs",
 );
@@ -4925,6 +6114,30 @@ const authenticateBrokerImage = rustFunctionBlock(
   brokerSupervisorProduction,
   "authenticate_first_event",
 );
+const dormantBrokerPayloadImplementation = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)impl DormantBrokerPayloadChannel\s*\{/u,
+);
+const closeTerminalBrokerPayload = rustFunctionBlock(
+  dormantBrokerPayloadImplementation,
+  "close_terminal",
+);
+const writeBrokerPayload = rustFunctionBlock(
+  dormantBrokerPayloadImplementation,
+  "write_payload",
+);
+const readBrokerPayload = rustFunctionBlock(
+  dormantBrokerPayloadImplementation,
+  "read_payload",
+);
+const dormantBrokerPayloadDrop = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)impl Drop for DormantBrokerPayloadChannel\s*\{/u,
+);
+const terminalBrokerPayloadTest = rustFunctionBlock(
+  brokerSupervisor,
+  "terminal_channel_error_terminates_before_the_wrapper_is_dropped",
+);
 const brokerCreationFlags = rustFunctionBlock(
   brokerSupervisorProduction,
   "creation_flags",
@@ -4936,23 +6149,39 @@ const brokerCreationFlagNames = [
 ].map((match) => match[0]);
 const brokerCreationAttributesDefinition = rustItemBlock(
   brokerSupervisorProduction,
-  /(?:^|\n)\s*struct CreationAttributes<'resources>\s*\{/u,
+  /(?:^|\n)\s*struct CreationAttributes<'resources,\s*'flight>\s*\{/u,
 );
 const brokerCreationAttributesImplementation = rustItemBlock(
   brokerSupervisorProduction,
-  /(?:^|\n)\s*impl<'resources> CreationAttributes<'resources>\s*\{/u,
+  /(?:^|\n)\s*impl<'resources,\s*'flight> CreationAttributes<'resources,\s*'flight>\s*\{/u,
 );
 const brokerInheritedNullStdio = rustItemBlock(
   brokerSupervisorProduction,
-  /(?:^|\n)\s*impl InheritedNullStdio\s*\{/u,
+  /(?:^|\n)\s*impl<'flight> InheritedNullStdio<'flight>\s*\{/u,
+);
+const brokerInheritedParentProcess = rustItemBlock(
+  brokerSupervisorProduction,
+  /(?:^|\n)\s*impl<'flight> InheritedParentProcess<'flight>\s*\{/u,
 );
 const brokerChildKernelContract = rustFunctionBlock(
-  brokerSupervisorProduction,
+  brokerSupervisor,
   "assert_child_kernel_contract",
 );
-const brokerInheritableSentinel = rustItemBlock(
-  brokerSupervisorProduction,
-  /(?:^|\n)\s*impl InheritableSentinel\s*\{/u,
+const brokerUnrelatedSentinel = rustItemBlock(
+  brokerSupervisor,
+  /(?:^|\n)\s*impl UnrelatedSentinel\s*\{/u,
+);
+const brokerSentinelDriver = rustFunctionBlock(
+  brokerSupervisor,
+  "inheritable_handle_list_probe_runs_in_a_single_test_subprocess",
+);
+const brokerSentinelFixture = rustFunctionBlock(
+  brokerSupervisor,
+  "isolated_inheritable_sentinel_fixture",
+);
+const brokerSentinelWait = rustFunctionBlock(
+  brokerSupervisor,
+  "wait_for_isolated_child",
 );
 const brokerDebugWaitClassifier = rustFunctionBlock(
   brokerSupervisorProduction,
@@ -5027,6 +6256,42 @@ const exactFileIdentityEqualityTest = rustFunctionBlock(
   exactBrokerImage,
   "exact_file_identity_equality_binds_volume_and_all_128_file_id_bits",
 );
+const brokerDebugEventOwnershipOrder = [
+  "let event_file = match event.dwDebugEventCode",
+  "if event.dwProcessId != self.process_id",
+  "self.pending_event = Some((event.dwProcessId, event.dwThreadId))",
+  "if event.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT",
+  "let create = unsafe { event.u.CreateProcessInfo }",
+  "let event_file = event_file.ok_or(DormantBrokerError::ProcessProof)?",
+  "let event_process_id = unsafe { GetProcessId(create.hProcess) }",
+  "image.authenticate_mapped_image(event_file.raw())",
+].map((marker) => authenticateBrokerImage.indexOf(marker));
+requireInvariant(
+  brokerDebugEventOwnershipOrder.every((position) => position !== -1) &&
+    brokerDebugEventOwnershipOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ) &&
+    authenticateBrokerImage.includes(
+      "OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)",
+    ) &&
+    closeTerminalBrokerPayload.indexOf("drop(self.channel.take())") <
+      closeTerminalBrokerPayload.indexOf("self.supervisor.take()") &&
+    closeTerminalBrokerPayload.includes("supervisor.shutdown()?") &&
+    writeBrokerPayload.indexOf("self.close_terminal()?") !== -1 &&
+    writeBrokerPayload.indexOf(
+      "Err(error)",
+      writeBrokerPayload.indexOf("self.close_terminal()?") + 1,
+    ) > writeBrokerPayload.indexOf("self.close_terminal()?") &&
+    (readBrokerPayload.match(/self\.close_terminal\(\)\?/gu) ?? []).length === 2 &&
+    dormantBrokerPayloadDrop.includes("let _ = self.close_terminal()") &&
+    terminalBrokerPayloadTest.indexOf("let observation =") <
+      terminalBrokerPayloadTest.indexOf("channel.read_payload(Instant::now())") &&
+    terminalBrokerPayloadTest.indexOf("channel.read_payload(Instant::now())") <
+      terminalBrokerPayloadTest.indexOf("observation.wait_terminated()") &&
+    terminalBrokerPayloadTest.indexOf("observation.wait_terminated()") <
+      terminalBrokerPayloadTest.indexOf("drop(channel)"),
+  "Broker debug-event file ownership must precede identity rejection, and every terminal payload result must synchronously shut down the exact process before the wrapper can be retained",
+);
 requireInvariant(
   launchBrokerPath.includes("PinnedBrokerImage::hold(broker_path)") &&
     exactBrokerImageProduction.includes(
@@ -5092,6 +6357,12 @@ requireInvariant(
       "inherited_handles: Box<[HANDLE; 2]>",
     ) &&
     brokerCreationAttributesDefinition.includes("job_handle: Box<[HANDLE; 1]>") &&
+    brokerCreationAttributesDefinition.includes(
+      "_parent: &'resources InheritedParentProcess<'flight>",
+    ) &&
+    brokerCreationAttributesDefinition.includes(
+      "_stdio: &'resources InheritedNullStdio<'flight>",
+    ) &&
     brokerCreationAttributesImplementation.includes(
       "InitializeProcThreadAttributeList(None, 2",
     ) &&
@@ -5114,8 +6385,15 @@ requireInvariant(
     brokerInheritedNullStdio.includes("PCWSTR(NULL_DEVICE.as_ptr())") &&
     brokerInheritedNullStdio.includes("GENERIC_READ.0 | GENERIC_WRITE.0") &&
     brokerInheritedNullStdio.includes("FILE_SHARE_READ | FILE_SHARE_WRITE") &&
+    brokerInheritedNullStdio.includes(
+      "flight: &'flight InheritableHandleLaunchFlight<'static>",
+    ) &&
     brokerInheritedNullStdio.includes("HANDLE_FLAG_INHERIT") &&
     brokerInheritedNullStdio.includes("file_type != FILE_TYPE_CHAR") &&
+    brokerInheritedParentProcess.includes(
+      "flight: &'flight InheritableHandleLaunchFlight<'static>",
+    ) &&
+    brokerInheritedParentProcess.includes("true,") &&
     launchBrokerApplicationWrapper.includes(
       "launch_broker_application_with_after_create(",
     ) &&
@@ -5127,7 +6405,9 @@ requireInvariant(
       "launch_broker_application_with_after_create(",
     ) &&
     panicAfterBrokerCreate.includes("std::panic::resume_unwind") &&
-    launchBrokerApplicationWithAfterCreate.includes("CreateProcessW(") &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "flight.create_process_with_explicit_handle_list(",
+    ) &&
     launchBrokerApplicationWithAfterCreate.includes(
       "startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES",
     ) &&
@@ -5142,9 +6422,7 @@ requireInvariant(
     ) &&
     (launchBrokerApplicationWithAfterCreate.match(/\bSTARTF_[A-Z_]+\b/gu) ?? [])
       .length === 1 &&
-    /CreateProcessW\([\s\S]*?true,\s*creation_flags\(\),/u.test(
-      launchBrokerApplicationWithAfterCreate,
-    ) &&
+    launchBrokerApplicationWithAfterCreate.includes("creation_flags()") &&
     launchBrokerApplicationWithAfterCreate.includes(
       "debuggee.authenticate_first_event",
     ) &&
@@ -5176,10 +6454,43 @@ requireInvariant(
     ) &&
     brokerChildKernelContract.includes("expected != handle") &&
     brokerChildKernelContract.includes("file_type != FILE_TYPE_CHAR") &&
-    brokerInheritableSentinel.includes("WaitForSingleObject(self.0.raw(), 0)") &&
-    brokerInheritableSentinel.includes("== WAIT_TIMEOUT") &&
-    (brokerSupervisor.match(/unrelated_sentinel\.assert_not_signaled\(\)\?/gu) ?? [])
-      .length === 2 &&
+    !brokerSupervisorProduction.includes("UnrelatedSentinel") &&
+    !brokerSupervisorProduction.includes("SENTINEL_HANDLE_FILE") &&
+    !brokerSupervisorProduction.includes("CreateEventW") &&
+    !brokerSupervisorProduction.includes("SetEvent(") &&
+    brokerUnrelatedSentinel.includes("fn create(inheritable: bool)") &&
+    brokerUnrelatedSentinel.includes("CreateEventW(None, true, false, None)") &&
+    brokerUnrelatedSentinel.includes("if inheritable") &&
+    brokerUnrelatedSentinel.includes("HANDLE_FLAG_INHERIT") &&
+    brokerUnrelatedSentinel.includes("WaitForSingleObject(") &&
+    brokerUnrelatedSentinel.includes("== WAIT_TIMEOUT") &&
+    brokerSentinelDriver.includes("Command::new(executable)") &&
+    brokerSentinelDriver.includes(".arg(ISOLATED_SENTINEL_FIXTURE)") &&
+    brokerSentinelDriver.includes('.arg("--exact")') &&
+    brokerSentinelDriver.includes('.arg("--ignored")') &&
+    brokerSentinelDriver.includes('.arg("--test-threads=1")') &&
+    brokerSentinelDriver.includes('.env(ISOLATED_SENTINEL_ENV, "1")') &&
+    brokerSentinelDriver.indexOf(".spawn()?") <
+      brokerSentinelDriver.indexOf("drop(flight)") &&
+    brokerSentinelDriver.indexOf("drop(flight)") <
+      brokerSentinelDriver.indexOf("wait_for_isolated_child") &&
+    /#\[ignore = "launched only by the single-test sentinel isolation driver"\]\s*fn isolated_inheritable_sentinel_fixture/u.test(
+      brokerSupervisor,
+    ) &&
+    brokerSentinelFixture.indexOf("std::env::var_os(ISOLATED_SENTINEL_ENV)") <
+      brokerSentinelFixture.indexOf("arm_unrelated_sentinel(true)") &&
+    brokerSentinelFixture.indexOf("arm_unrelated_sentinel(true)") <
+      brokerSentinelFixture.indexOf(
+        "launch_prepared_release_broker_channel_for_test(",
+      ) &&
+    brokerSentinelFixture.indexOf(
+      "launch_prepared_release_broker_channel_for_test(",
+    ) < brokerSentinelFixture.indexOf("assert_not_signaled()") &&
+    (brokerSupervisor.match(/arm_unrelated_sentinel\(true\)/gu) ?? []).length === 1 &&
+    brokerSentinelWait.includes("child.try_wait()") &&
+    brokerSentinelWait.includes("Instant::now() < deadline") &&
+    brokerSentinelWait.includes("child.kill()") &&
+    (brokerSentinelWait.match(/child\.wait\(\)/gu) ?? []).length === 2 &&
     !/QueryInformationJobObject\(\s*None/u.test(brokerSupervisorProduction) &&
     !/false\s*&&/u.test(brokerSupervisor) &&
     authenticateBrokerImage.includes("GetLastError()") &&
@@ -5658,7 +6969,7 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "scripts/check.ps1": "ec9f3f41d47008f2579047b4ef157af933b998c61a8a35ac37c418696810f25f",
   "scripts/launcher-contract.test.ps1": "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
   "scripts/release/check.ps1": "a9d5d263f07a5bd8459597e3749aa5617708ac0b87536ca6fdd3341adfcde378",
-  "scripts/release/common.ps1": "5591e95cf5de52adc3464c7cfc8570c8b47f9b7145faa1b41ad940ec2a68270c",
+  "scripts/release/common.ps1": "82368bd92780baaffd487c5b674203349a7a4f1ee56b9d71a4ba3e58bd3db5fb",
   "scripts/release/common.test.ps1": "d67800a958a60df98ccbdf8d522344cc3f84d49c44b373d9dfc46faf851442a7",
   "scripts/release/prepare-unsigned.ps1": "5b84c796d4a9899b37666f295793e193b101e0a3564d7492ea26dd00bd0cbb3b",
   "scripts/release/prepare-verifier-toolset.ps1": "0523e4a106675d161a385e50fea097d859a9e0a3c942396ca4c1de0d0224a013",
@@ -7662,6 +8973,79 @@ const releaseDetachDebugIndex = releaseCommon.indexOf(
 const releaseFinalResumeIndex = releaseCommon.indexOf(
   "previousSuspendCount = ResumeThread(primaryThread);",
   releaseDetachDebugIndex,
+);
+const releaseRunOnFreshThread = rustItemBlock(
+  releaseCommon,
+  /private static ReleaseToolsetProcessResult RunOnFreshThread\(/u,
+);
+const releaseFreshWorkerEntry = rustItemBlock(
+  releaseCommon,
+  /public static ReleaseToolsetProcessResult Run\(/u,
+);
+const releaseCreationCriticalOrder = [
+  "Monitor.TryEnter(",
+  "CreatePipe(out stdoutRead",
+  "SetHandleInformation(stdoutRead, HandleFlagInherit, 0)",
+  "Marshal.WriteIntPtr(inheritedHandles, 0, stdinRead.DangerousGetHandle())",
+  "if (!CreateProcessW(",
+  "rawProcess = information.Process",
+  "process = AdoptRawHandle(ref rawProcess)",
+  "primaryThread = AdoptRawHandle(ref rawThread)",
+  "DisposeHandle(ref stdoutWrite)",
+  "DisposeHandle(ref stderrWrite)",
+  "DisposeHandle(ref stdinRead)",
+  "DisposeHandle(ref stdinWrite)",
+  "DeleteProcThreadAttributeList(attributeList)",
+  "FreeBuffer(ref attributeList)",
+  "Monitor.Exit(ProcessCreationSync)",
+  "Invalid(process) ||",
+].map((marker) => releaseRunOnFreshThread.indexOf(marker));
+requireInvariant(
+  releaseRunOnFreshThread.length > 0 &&
+    releaseFreshWorkerEntry.length > 0 &&
+    (releaseCommon.match(
+      /private static readonly object ProcessCreationSync = new object\(\);/gu,
+    ) ?? []).length === 1 &&
+    (releaseRunOnFreshThread.match(/Monitor\.TryEnter\(/gu) ?? []).length === 1 &&
+    (releaseRunOnFreshThread.match(/Monitor\.Exit\(ProcessCreationSync\)/gu) ?? [])
+      .length === 1 &&
+    !releaseCommon.includes("lock (ProcessCreationSync)") &&
+    releaseRunOnFreshThread.includes(
+      "checked((int)RemainingMilliseconds(\n                        timer,",
+    ) &&
+    releaseRunOnFreshThread.includes("ref processCreationLockTaken") &&
+    releaseRunOnFreshThread.includes("if (!processCreationLockTaken)") &&
+    (releaseRunOnFreshThread.match(/CreatePipe\(out /gu) ?? []).length === 3 &&
+    (releaseRunOnFreshThread.match(/SetHandleInformation\(/gu) ?? []).length === 3 &&
+    releaseRunOnFreshThread.includes(
+      "SetHandleInformation(stderrRead, HandleFlagInherit, 0)",
+    ) &&
+    releaseRunOnFreshThread.includes(
+      "SetHandleInformation(stdinWrite, HandleFlagInherit, 0)",
+    ) &&
+    releaseRunOnFreshThread.includes(
+      "Marshal.WriteIntPtr(inheritedHandles, IntPtr.Size, stdoutWrite.DangerousGetHandle())",
+    ) &&
+    releaseRunOnFreshThread.includes(
+      "Marshal.WriteIntPtr(inheritedHandles, IntPtr.Size * 2, stderrWrite.DangerousGetHandle())",
+    ) &&
+    (releaseRunOnFreshThread.match(/if \(!CreateProcessW\(/gu) ?? []).length === 1 &&
+    releaseRunOnFreshThread.includes("rawThread = information.Thread") &&
+    releaseRunOnFreshThread.includes("information.Process = IntPtr.Zero") &&
+    releaseRunOnFreshThread.includes("information.Thread = IntPtr.Zero") &&
+    releaseRunOnFreshThread.includes("rawEventFile = observedFile") &&
+    releaseRunOnFreshThread.includes("eventFile = AdoptRawHandle(ref rawEventFile)") &&
+    releaseRunOnFreshThread.includes("TerminateAndReapRaw(") &&
+    releaseRunOnFreshThread.includes("CloseRawHandle(ref rawEventFile)") &&
+    releaseRunOnFreshThread.includes("CloseRawHandle(ref rawThread)") &&
+    releaseRunOnFreshThread.includes("CloseRawHandle(ref rawProcess)") &&
+    (releaseFreshWorkerEntry.match(/RunOnFreshThread\(/gu) ?? []).length === 1 &&
+    releaseFreshWorkerEntry.includes("Thread worker = new Thread(delegate()") &&
+    releaseCreationCriticalOrder.every((position) => position !== -1) &&
+    releaseCreationCriticalOrder.every(
+      (position, index, positions) => index === 0 || positions[index - 1] < position,
+    ),
+  "the C# verifier runner must bound one fresh-thread coordination wait, create every inheritable pipe inside it, close all child ends before attribute cleanup and release, and retain raw-handle cleanup fallbacks",
 );
 requireInvariant(
   releaseCommon.includes("private const uint DebugOnlyThisProcess = 0x00000002") &&

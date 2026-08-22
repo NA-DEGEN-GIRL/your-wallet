@@ -143,6 +143,14 @@ pub struct DormantBrokerPayloadChannel {
 }
 
 impl DormantBrokerPayloadChannel {
+    fn close_terminal(&mut self) -> Result<(), DormantBrokerError> {
+        drop(self.channel.take());
+        if let Some(mut supervisor) = self.supervisor.take() {
+            supervisor.shutdown()?;
+        }
+        Ok(())
+    }
+
     /// Writes one non-empty JSON payload with the channel-owned BE frame.
     ///
     /// # Errors
@@ -159,7 +167,11 @@ impl DormantBrokerPayloadChannel {
                 self.channel = Some(channel);
                 Ok(())
             }
-            Err(error) => Err(error.into()),
+            Err(error) => {
+                let error = error.into();
+                self.close_terminal()?;
+                Err(error)
+            }
         }
     }
 
@@ -178,8 +190,15 @@ impl DormantBrokerPayloadChannel {
                 self.channel = Some(channel);
                 Ok(Some(payload))
             }
-            Ok((_channel, None)) => Ok(None),
-            Err(error) => Err(error.into()),
+            Ok((_channel, None)) => {
+                self.close_terminal()?;
+                Ok(None)
+            }
+            Err(error) => {
+                let error = error.into();
+                self.close_terminal()?;
+                Err(error)
+            }
         }
     }
 
@@ -200,10 +219,7 @@ impl fmt::Debug for DormantBrokerPayloadChannel {
 
 impl Drop for DormantBrokerPayloadChannel {
     fn drop(&mut self) {
-        drop(self.channel.take());
-        if let Some(mut supervisor) = self.supervisor.take() {
-            let _ = supervisor.shutdown();
-        }
+        let _ = self.close_terminal();
     }
 }
 
@@ -258,10 +274,15 @@ pub fn launch_dormant_broker_channel(
 ///
 /// The pipe name and inherited handle are read only from the supervisor's
 /// minimal child environment. The process object is never reopened by PID.
+/// The raw bootstrap handle is validated, made non-inheritable, and duplicated;
+/// only the OS-created duplicate is adopted by Rust. The original is left for
+/// process teardown because a safe API cannot claim ownership of an ambient
+/// numeric handle value.
 ///
 /// # Errors
 ///
 /// Returns a fail-closed parent-capability, channel, or deadline error.
+///
 pub fn connect_inherited_native_host_channel(
     deadline: Instant,
 ) -> Result<DormantBrokerPayloadChannel, DormantBrokerError> {
@@ -269,7 +290,7 @@ pub fn connect_inherited_native_host_channel(
         std::env::var_os(BROKER_ENDPOINT_ENV).ok_or(DormantBrokerError::ParentCapability)?;
     let parent =
         std::env::var_os(PARENT_PROCESS_HANDLE_ENV).ok_or(DormantBrokerError::ParentCapability)?;
-    let parent = sys::take_inherited_parent_process(&parent)?;
+    let parent = sys::duplicate_inherited_parent_process(&parent)?;
     let expected = ExpectedBrokerPeer::from_process_handle(parent.as_handle())?;
     let capability = BrokerEndpointCapability::from_environment_value(&endpoint)?;
     let channel = capability.connect(expected, deadline)?;
@@ -347,10 +368,6 @@ mod sys {
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_CHAR,
         GetFileType, OPEN_EXISTING,
     };
-    #[cfg(test)]
-    use windows::Win32::System::Console::{
-        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-    };
     use windows::Win32::System::Diagnostics::Debug::{
         CREATE_PROCESS_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcessStop,
         LOAD_DLL_DEBUG_EVENT, WaitForDebugEventEx,
@@ -363,21 +380,22 @@ mod sys {
         QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
     use windows::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS, DeleteProcThreadAttributeList,
-        EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetProcessId, GetThreadId,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, SuspendThread, TerminateProcess, UpdateProcThreadAttribute,
-        WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
+        DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        GetCurrentProcess, GetProcessId, GetThreadId, InitializeProcThreadAttributeList,
+        LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread,
+        TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
-    #[cfg(test)]
-    use windows::Win32::System::Threading::{CreateEventW, SetEvent};
     use windows::core::{BOOL, PCWSTR, PWSTR};
 
     use super::{
         BROKER_ENDPOINT_ENV, BrokerActivationImage, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV,
+    };
+    use crate::inheritable_handle_launch::{
+        InheritableHandleLaunchError, InheritableHandleLaunchFlight,
+        acquire_inheritable_handle_launch,
     };
 
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
@@ -521,80 +539,6 @@ mod sys {
         ))
     }
 
-    #[cfg(test)]
-    pub(super) struct InheritableSentinel(OwnedWinHandle);
-
-    #[cfg(test)]
-    impl InheritableSentinel {
-        pub(super) fn create() -> Result<Self, DormantBrokerError> {
-            // SAFETY: this unnamed manual-reset event has no borrowed security
-            // descriptor or name and is owned only by the test parent.
-            let event = unsafe { CreateEventW(None, true, false, None) }
-                .map_err(|_| DormantBrokerError::ProcessProof)?;
-            let event = OwnedWinHandle::new(event).ok_or(DormantBrokerError::ProcessProof)?;
-            // SAFETY: the exact live event is made inheritable solely to prove
-            // the explicit HANDLE_LIST excludes unrelated inheritable handles.
-            unsafe {
-                SetHandleInformation(event.raw(), HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-            }
-            .map_err(|_| DormantBrokerError::ProcessProof)?;
-            Ok(Self(event))
-        }
-
-        pub(super) fn raw_value(&self) -> usize {
-            self.0.raw().0 as usize
-        }
-
-        pub(super) fn assert_not_signaled(&self) -> Result<(), DormantBrokerError> {
-            // SAFETY: the parent retains this exact event while the child has
-            // already attempted the numeric-handle SetEvent challenge.
-            if unsafe { WaitForSingleObject(self.0.raw(), 0) } == WAIT_TIMEOUT {
-                Ok(())
-            } else {
-                Err(DormantBrokerError::ProcessProof)
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn assert_child_kernel_contract(
-        unrelated_parent_handle: usize,
-    ) -> Result<(), DormantBrokerError> {
-        if unrelated_parent_handle == 0 {
-            return Err(DormantBrokerError::ProcessProof);
-        }
-        let unrelated = HANDLE(unrelated_parent_handle as *mut c_void);
-        // SAFETY: this is a challenge against the parent's recorded handle
-        // value. A numeric collision may signal another event or fail, but only
-        // inheritance of the parent's exact retained event can wake that event.
-        let _ = unsafe { SetEvent(unrelated) };
-
-        let mut expected_stdio = None;
-        for standard_handle in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            // SAFETY: these scalar process-table queries borrow no caller memory.
-            let handle = unsafe { GetStdHandle(standard_handle) }
-                .map_err(|_| DormantBrokerError::ProcessProof)?;
-            if invalid(handle) {
-                return Err(DormantBrokerError::ProcessProof);
-            }
-            if expected_stdio.is_some_and(|expected| expected != handle) {
-                return Err(DormantBrokerError::ProcessProof);
-            }
-            expected_stdio = Some(handle);
-            let mut standard_flags = 0_u32;
-            // SAFETY: the inherited standard handle remains live in the child
-            // for these scalar kernel-object queries.
-            unsafe { GetHandleInformation(handle, &raw mut standard_flags) }
-                .map_err(|_| DormantBrokerError::ProcessProof)?;
-            // SAFETY: this scalar query borrows the same retained child handle.
-            let file_type = unsafe { GetFileType(handle) };
-            if standard_flags & HANDLE_FLAG_INHERIT.0 == 0 || file_type != FILE_TYPE_CHAR {
-                return Err(DormantBrokerError::ProcessProof);
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn launch_broker(
         image: BrokerActivationImage,
         endpoint: &OsStr,
@@ -671,8 +615,15 @@ mod sys {
     {
         check_deadline(deadline)?;
         let job = BrokerJob::create()?;
-        let inherited_parent = InheritedParentProcess::duplicate_current()?;
-        let inherited_stdio = InheritedNullStdio::create()?;
+        let flight = acquire_inheritable_handle_launch(deadline).map_err(|error| match error {
+            InheritableHandleLaunchError::Deadline => DormantBrokerError::Deadline,
+            InheritableHandleLaunchError::Reentrant | InheritableHandleLaunchError::Poisoned => {
+                DormantBrokerError::ProcessProof
+            }
+        })?;
+        check_deadline(deadline)?;
+        let inherited_parent = InheritedParentProcess::duplicate_current(&flight)?;
+        let inherited_stdio = InheritedNullStdio::create(&flight)?;
         let environment = minimal_environment(endpoint, inherited_parent.environment_value())?;
         let attributes = CreationAttributes::new(&inherited_parent, &inherited_stdio, &job)?;
         let mut startup = STARTUPINFOEXW::default();
@@ -704,12 +655,9 @@ mod sys {
         // and JOB_LIST(job=1); all three explicit standard streams use that
         // same read/write NUL handle, and `environment` is double-NUL Unicode.
         unsafe {
-            CreateProcessW(
+            flight.create_process_with_explicit_handle_list(
                 PCWSTR(application.as_ptr()),
                 Some(command_line_pointer).filter(|pointer| !pointer.is_null()),
-                None,
-                None,
-                true,
                 creation_flags(),
                 Some(environment.as_ptr().cast::<c_void>()),
                 PCWSTR::null(),
@@ -721,6 +669,7 @@ mod sys {
         drop(attributes);
         drop(inherited_stdio);
         drop(inherited_parent);
+        drop(flight);
 
         let mut debuggee = Debuggee::new(information)?;
         after_create(&debuggee);
@@ -740,7 +689,7 @@ mod sys {
         })
     }
 
-    pub(super) fn take_inherited_parent_process(
+    pub(super) fn duplicate_inherited_parent_process(
         value: &OsStr,
     ) -> Result<StdOwnedHandle, DormantBrokerError> {
         let text = value.to_str().ok_or(DormantBrokerError::ParentCapability)?;
@@ -761,22 +710,67 @@ mod sys {
         // SAFETY: a valid inherited handle value is the sole bootstrap input.
         unsafe { GetHandleInformation(handle, &raw mut flags) }
             .map_err(|_| DormantBrokerError::ParentCapability)?;
-        if flags & HANDLE_FLAG_INHERIT.0 == 0 {
+        if flags != HANDLE_FLAG_INHERIT.0 {
             return Err(DormantBrokerError::ParentCapability);
         }
         // SAFETY: this exact inherited handle is live; clearing its inheritance
         // flag prevents the bootstrap capability from escaping a later child.
         unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
             .map_err(|_| DormantBrokerError::ParentCapability)?;
-        // SAFETY: the supervisor explicitly transferred sole ownership of this
-        // one inherited duplicate into the child process.
-        Ok(unsafe { StdOwnedHandle::from_raw_handle(handle.0) })
+        flags = u32::MAX;
+        // SAFETY: the supervisor bootstrap contract keeps the exact raw source
+        // live while its post-clear flags are verified.
+        unsafe { GetHandleInformation(handle, &raw mut flags) }
+            .map_err(|_| DormantBrokerError::ParentCapability)?;
+        if flags != 0 {
+            return Err(DormantBrokerError::ParentCapability);
+        }
+        let mut duplicate = HANDLE::default();
+        let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0;
+        // SAFETY: the exact supervisor bootstrap contract keeps this raw source
+        // live with no same-process closer through this call. The current
+        // process is both source and target, and Windows initializes one new,
+        // non-inheritable handle on success. Later process-identity validation
+        // fails closed; no Rust ownership is claimed for the ambient source.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle,
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                desired,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| DormantBrokerError::ParentCapability)?;
+        if invalid(duplicate) {
+            return Err(DormantBrokerError::ParentCapability);
+        }
+        // SAFETY: DuplicateHandle returned a fresh handle whose sole ownership
+        // is transferred into this wrapper. The ambient source remains unowned.
+        let duplicate = unsafe { StdOwnedHandle::from_raw_handle(duplicate.0) };
+        let mut duplicate_flags = 0_u32;
+        // SAFETY: the fresh owned duplicate remains live for this query.
+        unsafe {
+            GetHandleInformation(HANDLE(duplicate.as_raw_handle()), &raw mut duplicate_flags)
+        }
+        .map_err(|_| DormantBrokerError::ParentCapability)?;
+        if duplicate_flags != 0 {
+            return Err(DormantBrokerError::ParentCapability);
+        }
+        Ok(duplicate)
     }
 
-    struct InheritedParentProcess(OwnedWinHandle);
+    struct InheritedParentProcess<'flight> {
+        handle: OwnedWinHandle,
+        flight: &'flight InheritableHandleLaunchFlight<'static>,
+    }
 
-    impl InheritedParentProcess {
-        fn duplicate_current() -> Result<Self, DormantBrokerError> {
+    impl<'flight> InheritedParentProcess<'flight> {
+        fn duplicate_current(
+            flight: &'flight InheritableHandleLaunchFlight<'static>,
+        ) -> Result<Self, DormantBrokerError> {
             let mut duplicate = HANDLE::default();
             let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0;
             // SAFETY: both pseudo source and target name the current process;
@@ -799,14 +793,15 @@ mod sys {
             // SAFETY: the successful duplicate remains owned during the query.
             unsafe { GetHandleInformation(handle.raw(), &raw mut flags) }
                 .map_err(|_| DormantBrokerError::ParentCapability)?;
-            if flags & HANDLE_FLAG_INHERIT.0 == 0 {
+            if flags != HANDLE_FLAG_INHERIT.0 {
                 return Err(DormantBrokerError::ParentCapability);
             }
-            Ok(Self(handle))
+            Ok(Self { handle, flight })
         }
 
         fn raw(&self) -> HANDLE {
-            self.0.raw()
+            let _ = self.flight;
+            self.handle.raw()
         }
 
         fn environment_value(&self) -> usize {
@@ -814,10 +809,15 @@ mod sys {
         }
     }
 
-    struct InheritedNullStdio(OwnedWinHandle);
+    struct InheritedNullStdio<'flight> {
+        handle: OwnedWinHandle,
+        flight: &'flight InheritableHandleLaunchFlight<'static>,
+    }
 
-    impl InheritedNullStdio {
-        fn create() -> Result<Self, DormantBrokerError> {
+    impl<'flight> InheritedNullStdio<'flight> {
+        fn create(
+            flight: &'flight InheritableHandleLaunchFlight<'static>,
+        ) -> Result<Self, DormantBrokerError> {
             // SAFETY: the constant device name is NUL terminated and retained
             // for this call. The handle is opened read/write without an
             // inheritable security descriptor, then explicitly constrained by
@@ -847,14 +847,15 @@ mod sys {
                 .map_err(|_| DormantBrokerError::ProcessProof)?;
             // SAFETY: this scalar query borrows the retained exact handle only.
             let file_type = unsafe { GetFileType(handle.raw()) };
-            if flags & HANDLE_FLAG_INHERIT.0 == 0 || file_type != FILE_TYPE_CHAR {
+            if flags != HANDLE_FLAG_INHERIT.0 || file_type != FILE_TYPE_CHAR {
                 return Err(DormantBrokerError::ProcessProof);
             }
-            Ok(Self(handle))
+            Ok(Self { handle, flight })
         }
 
         fn raw(&self) -> HANDLE {
-            self.0.raw()
+            let _ = self.flight;
+            self.handle.raw()
         }
     }
 
@@ -945,20 +946,20 @@ mod sys {
         }
     }
 
-    struct CreationAttributes<'resources> {
+    struct CreationAttributes<'resources, 'flight> {
         pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
         words: Vec<usize>,
         inherited_handles: Box<[HANDLE; 2]>,
         job_handle: Box<[HANDLE; 1]>,
-        _parent: &'resources InheritedParentProcess,
-        _stdio: &'resources InheritedNullStdio,
+        _parent: &'resources InheritedParentProcess<'flight>,
+        _stdio: &'resources InheritedNullStdio<'flight>,
         _job: &'resources BrokerJob,
     }
 
-    impl<'resources> CreationAttributes<'resources> {
+    impl<'resources, 'flight> CreationAttributes<'resources, 'flight> {
         fn new(
-            parent: &'resources InheritedParentProcess,
-            stdio: &'resources InheritedNullStdio,
+            parent: &'resources InheritedParentProcess<'flight>,
+            stdio: &'resources InheritedNullStdio<'flight>,
             job: &'resources BrokerJob,
         ) -> Result<Self, DormantBrokerError> {
             if parent.raw() == stdio.raw() {
@@ -1025,7 +1026,7 @@ mod sys {
         }
     }
 
-    impl Drop for CreationAttributes<'_> {
+    impl Drop for CreationAttributes<'_, '_> {
         fn drop(&mut self) {
             debug_assert!(!self.words.is_empty());
             // SAFETY: initialization succeeded and this exact list is deleted once.
@@ -1146,33 +1147,37 @@ mod sys {
                 let timed_out = unsafe { GetLastError() } == ERROR_SEM_TIMEOUT;
                 return Err(classify_debug_wait_failure(timed_out, deadline));
             }
-            // Record every delivered event before inspecting it so any reject
-            // path can continue that exact event before detaching and reaping.
-            self.pending_event = Some((event.dwProcessId, event.dwThreadId));
+            // Own either documented event file before any rejection. Windows
+            // transfers hFile ownership to the debugger, unlike hProcess and
+            // hThread, so every branch below must close it exactly once.
+            let event_file = match event.dwDebugEventCode {
+                CREATE_PROCESS_DEBUG_EVENT => {
+                    // SAFETY: the discriminant was matched immediately above.
+                    OwnedWinHandle::new(unsafe { event.u.CreateProcessInfo }.hFile)
+                }
+                LOAD_DLL_DEBUG_EVENT => {
+                    // SAFETY: the discriminant was matched immediately above.
+                    OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)
+                }
+                _ => None,
+            };
             if event.dwProcessId != self.process_id || event.dwThreadId != self.thread_id {
                 return Err(DormantBrokerError::ProcessProof);
             }
-            let event_file = match event.dwDebugEventCode {
-                CREATE_PROCESS_DEBUG_EVENT => {
-                    // SAFETY: the discriminant was checked immediately above.
-                    let create = unsafe { event.u.CreateProcessInfo };
-                    // SAFETY: event process/thread handles remain borrowed and live.
-                    let event_process_id = unsafe { GetProcessId(create.hProcess) };
-                    // SAFETY: same debug-event handle lifetime.
-                    let event_thread_id = unsafe { GetThreadId(create.hThread) };
-                    if event_process_id != self.process_id || event_thread_id != self.thread_id {
-                        return Err(DormantBrokerError::ProcessProof);
-                    }
-                    OwnedWinHandle::new(create.hFile).ok_or(DormantBrokerError::ProcessProof)?
-                }
-                LOAD_DLL_DEBUG_EVENT => {
-                    // SAFETY: the discriminant was checked immediately above.
-                    let load = unsafe { event.u.LoadDll };
-                    drop(OwnedWinHandle::new(load.hFile));
-                    return Err(DormantBrokerError::ProcessProof);
-                }
-                _ => return Err(DormantBrokerError::ProcessProof),
-            };
+            self.pending_event = Some((event.dwProcessId, event.dwThreadId));
+            if event.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT {
+                return Err(DormantBrokerError::ProcessProof);
+            }
+            // SAFETY: the discriminant was checked immediately above.
+            let create = unsafe { event.u.CreateProcessInfo };
+            let event_file = event_file.ok_or(DormantBrokerError::ProcessProof)?;
+            // SAFETY: event process/thread handles remain borrowed and live.
+            let event_process_id = unsafe { GetProcessId(create.hProcess) };
+            // SAFETY: same debug-event handle lifetime.
+            let event_thread_id = unsafe { GetThreadId(create.hThread) };
+            if event_process_id != self.process_id || event_thread_id != self.thread_id {
+                return Err(DormantBrokerError::ProcessProof);
+            }
             image.authenticate_mapped_image(event_file.raw())?;
             drop(event_file);
             // SAFETY: Windows holds every debuggee thread for this event; the
@@ -1373,11 +1378,28 @@ mod sys {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
+
     use std::collections::BTreeSet;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitStatus};
     use std::time::{Duration, Instant};
+
+    use windows::Win32::Foundation::{
+        DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GetHandleInformation, HANDLE,
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_TIMEOUT,
+    };
+    use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    use windows::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    use windows::Win32::System::Threading::{
+        CreateEventW, GetCurrentProcess, GetProcessId, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, SetEvent, WaitForSingleObject,
+    };
 
     use super::{
         BROKER_ENDPOINT_ENV, BrokerActivationImage, DormantBrokerError, PARENT_PROCESS_HANDLE_ENV,
@@ -1394,6 +1416,9 @@ mod tests {
         "broker_artifact::broker_supervisor::tests::dormant_broker_child_echo";
     const CHILD_HANG_TEST: &str =
         "broker_artifact::broker_supervisor::tests::dormant_broker_child_hang";
+    const ISOLATED_SENTINEL_FIXTURE: &str =
+        "broker_artifact::broker_supervisor::tests::isolated_inheritable_sentinel_fixture";
+    const ISOLATED_SENTINEL_ENV: &str = "YOUR_WALLET_ISOLATED_INHERITABLE_SENTINEL";
     const BROKER_MANIFEST: [u8; 32] = [0x41; 32];
     const SENTINEL_HANDLE_FILE: &str = "unrelated-inheritable-handle.txt";
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1402,6 +1427,45 @@ mod tests {
         directory: PathBuf,
         broker: PathBuf,
         mismatch: PathBuf,
+    }
+
+    struct UnrelatedSentinel(OwnedHandle);
+
+    impl UnrelatedSentinel {
+        fn create(inheritable: bool) -> Result<Self, DormantBrokerError> {
+            // SAFETY: the unnamed manual-reset event retains no borrowed
+            // security descriptor or name and is transferred to OwnedHandle.
+            let event = unsafe { CreateEventW(None, true, false, None) }
+                .map_err(|_| DormantBrokerError::ProcessProof)?;
+            // SAFETY: CreateEventW returned one owned live event handle.
+            let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
+            if inheritable {
+                // SAFETY: only the isolated single-test subprocess requests an
+                // inheritable unrelated handle for the HANDLE_LIST challenge.
+                unsafe {
+                    SetHandleInformation(
+                        HANDLE(event.as_raw_handle()),
+                        HANDLE_FLAG_INHERIT.0,
+                        HANDLE_FLAG_INHERIT,
+                    )
+                }
+                .map_err(|_| DormantBrokerError::ProcessProof)?;
+            }
+            Ok(Self(event))
+        }
+
+        fn raw_value(&self) -> usize {
+            self.0.as_raw_handle() as usize
+        }
+
+        fn assert_not_signaled(&self) -> Result<(), DormantBrokerError> {
+            // SAFETY: the retained event is live through this zero-time wait.
+            if unsafe { WaitForSingleObject(HANDLE(self.0.as_raw_handle()), 0) } == WAIT_TIMEOUT {
+                Ok(())
+            } else {
+                Err(DormantBrokerError::ProcessProof)
+            }
+        }
     }
 
     impl TestArtifacts {
@@ -1428,10 +1492,11 @@ mod tests {
             })
         }
 
-        fn arm_unrelated_inheritable_sentinel(
+        fn arm_unrelated_sentinel(
             &self,
-        ) -> Result<sys::InheritableSentinel, Box<dyn std::error::Error>> {
-            let sentinel = sys::InheritableSentinel::create()?;
+            inheritable: bool,
+        ) -> Result<UnrelatedSentinel, Box<dyn std::error::Error>> {
+            let sentinel = UnrelatedSentinel::create(inheritable)?;
             fs::write(
                 self.directory.join(SENTINEL_HANDLE_FILE),
                 sentinel.raw_value().to_string(),
@@ -1444,6 +1509,59 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn inherited_parent_bootstrap_is_copied_without_adopting_the_ambient_raw_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let flight =
+            crate::inheritable_handle_launch::acquire_inheritable_handle_launch(deadline_after(10))
+                .map_err(|_| DormantBrokerError::ParentCapability)?;
+        let mut source = HANDLE::default();
+        let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0;
+        // SAFETY: both pseudo-handles name this process and the flight remains
+        // live until this deliberately inheritable test duplicate closes.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                GetCurrentProcess(),
+                GetCurrentProcess(),
+                &raw mut source,
+                desired,
+                true,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )?;
+        }
+        if source.is_invalid() {
+            return Err("DuplicateHandle returned an invalid parent bootstrap".into());
+        }
+        // SAFETY: DuplicateHandle returned one freshly owned source handle.
+        let source = unsafe { OwnedHandle::from_raw_handle(source.0) };
+        let value = (source.as_raw_handle() as usize).to_string();
+        let duplicate = sys::duplicate_inherited_parent_process(OsStr::new(&value))?;
+
+        let mut source_flags = 0_u32;
+        let mut duplicate_flags = 0_u32;
+        // SAFETY: both exact owned handles remain live for these scalar queries.
+        unsafe {
+            GetHandleInformation(HANDLE(source.as_raw_handle()), &raw mut source_flags)?;
+            GetHandleInformation(HANDLE(duplicate.as_raw_handle()), &raw mut duplicate_flags)?;
+        }
+        assert_eq!(source_flags & HANDLE_FLAG_INHERIT.0, 0);
+        assert_eq!(duplicate_flags & HANDLE_FLAG_INHERIT.0, 0);
+        // SAFETY: the exact owned source handle remains live.
+        let source_process_id = unsafe { GetProcessId(HANDLE(source.as_raw_handle())) };
+        // SAFETY: the exact owned duplicate handle remains live.
+        let duplicate_process_id = unsafe { GetProcessId(HANDLE(duplicate.as_raw_handle())) };
+        assert_eq!(source_process_id, duplicate_process_id);
+        drop(duplicate);
+        // The safe bootstrap function duplicated rather than adopted/closed the
+        // ambient source, so the original remains independently usable.
+        // SAFETY: the independently owned source handle remains live.
+        unsafe { GetHandleInformation(HANDLE(source.as_raw_handle()), &raw mut source_flags)? };
+        drop(source);
+        drop(flight);
+        Ok(())
     }
 
     #[test]
@@ -1475,7 +1593,7 @@ mod tests {
     fn prepared_release_supervisor_round_trips_one_be_frame_and_8192_payload()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
-        let unrelated_sentinel = artifacts.arm_unrelated_inheritable_sentinel()?;
+        let unrelated_sentinel = artifacts.arm_unrelated_sentinel(false)?;
         let command = child_command(&artifacts.broker, CHILD_ECHO_TEST);
         let prepared = prepared_broker(artifacts.broker.clone())?;
         let mut channel = launch_prepared_release_broker_channel_for_test(
@@ -1502,6 +1620,59 @@ mod tests {
     }
 
     #[test]
+    fn inheritable_handle_list_probe_runs_in_a_single_test_subprocess()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executable = std::env::current_exe()?;
+        let flight =
+            crate::inheritable_handle_launch::acquire_inheritable_handle_launch(deadline_after(60))
+                .map_err(|_| DormantBrokerError::ProcessProof)?;
+        let mut child = Command::new(executable)
+            .arg(ISOLATED_SENTINEL_FIXTURE)
+            .arg("--exact")
+            .arg("--ignored")
+            .arg("--test-threads=1")
+            .env(ISOLATED_SENTINEL_ENV, "1")
+            .env_remove(BROKER_ENDPOINT_ENV)
+            .env_remove(PARENT_PROCESS_HANDLE_ENV)
+            .spawn()?;
+        drop(flight);
+        let status = wait_for_isolated_child(&mut child, deadline_after(45))?;
+        if !status.success() {
+            return Err(
+                std::io::Error::other("isolated inheritable HANDLE_LIST probe failed").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "launched only by the single-test sentinel isolation driver"]
+    fn isolated_inheritable_sentinel_fixture() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os(ISOLATED_SENTINEL_ENV).as_deref() != Some(OsStr::new("1")) {
+            return Ok(());
+        }
+        let artifacts = TestArtifacts::create()?;
+        let unrelated_sentinel = artifacts.arm_unrelated_sentinel(true)?;
+        let command = child_command(&artifacts.broker, CHILD_ECHO_TEST);
+        let prepared = prepared_broker(artifacts.broker.clone())?;
+        let mut channel = launch_prepared_release_broker_channel_for_test(
+            prepared,
+            &command,
+            deadline_after(20),
+        )?;
+        unrelated_sentinel.assert_not_signaled()?;
+        for payload in [b"probe-one".as_slice(), b"probe-two".as_slice()] {
+            channel.write_payload(payload, deadline_after(5))?;
+            assert_eq!(
+                channel.read_payload(deadline_after(5))?,
+                Some(payload.to_vec())
+            );
+        }
+        drop(channel);
+        Ok(())
+    }
+
+    #[test]
     fn mismatched_mapped_file_is_rejected_before_user_mode()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
@@ -1521,7 +1692,7 @@ mod tests {
     fn dropping_channel_terminates_and_reaps_a_hung_exact_child()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
-        let unrelated_sentinel = artifacts.arm_unrelated_inheritable_sentinel()?;
+        let unrelated_sentinel = artifacts.arm_unrelated_sentinel(false)?;
         let command = child_command(&artifacts.broker, CHILD_HANG_TEST);
         let prepared = prepared_broker(artifacts.broker.clone())?;
         let mut channel = launch_prepared_release_broker_channel_for_test(
@@ -1537,6 +1708,37 @@ mod tests {
         let observation = channel.process_observation_for_test()?;
         drop(channel);
         observation.wait_terminated()?;
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_channel_error_terminates_before_the_wrapper_is_dropped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifacts = TestArtifacts::create()?;
+        let unrelated_sentinel = artifacts.arm_unrelated_sentinel(false)?;
+        let command = child_command(&artifacts.broker, CHILD_HANG_TEST);
+        let prepared = prepared_broker(artifacts.broker.clone())?;
+        let mut channel = launch_prepared_release_broker_channel_for_test(
+            prepared,
+            &command,
+            deadline_after(20),
+        )?;
+        unrelated_sentinel.assert_not_signaled()?;
+        assert_eq!(
+            channel.read_payload(deadline_after(5))?,
+            Some(br#"{"ready":true}"#.to_vec())
+        );
+        let observation = channel.process_observation_for_test()?;
+        assert_eq!(
+            channel.read_payload(Instant::now()),
+            Err(DormantBrokerError::Deadline)
+        );
+        observation.wait_terminated()?;
+        assert_eq!(
+            channel.read_payload(deadline_after(1)),
+            Err(DormantBrokerError::Closed)
+        );
+        drop(channel);
         Ok(())
     }
 
@@ -1648,7 +1850,37 @@ mod tests {
             .ok_or(DormantBrokerError::ProcessProof)?;
         let raw = fs::read_to_string(directory.join(SENTINEL_HANDLE_FILE))?;
         let unrelated_parent_handle = raw.parse::<usize>()?;
-        sys::assert_child_kernel_contract(unrelated_parent_handle)?;
+        if unrelated_parent_handle == 0 {
+            return Err(DormantBrokerError::ProcessProof.into());
+        }
+        let unrelated = HANDLE(unrelated_parent_handle as *mut core::ffi::c_void);
+        // SAFETY: this is only a numeric challenge. Success is relevant solely
+        // when it names the exact retained parent event, which the parent checks.
+        let _ = unsafe { SetEvent(unrelated) };
+
+        let mut expected_stdio = None;
+        for standard_handle in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: these scalar process-table queries borrow no caller memory.
+            let handle = unsafe { GetStdHandle(standard_handle) }
+                .map_err(|_| DormantBrokerError::ProcessProof)?;
+            if handle.0.is_null() || handle == INVALID_HANDLE_VALUE {
+                return Err(DormantBrokerError::ProcessProof.into());
+            }
+            if expected_stdio.is_some_and(|expected| expected != handle) {
+                return Err(DormantBrokerError::ProcessProof.into());
+            }
+            expected_stdio = Some(handle);
+            let mut standard_flags = 0_u32;
+            // SAFETY: the inherited standard handle remains live for both
+            // scalar kernel-object queries.
+            unsafe { GetHandleInformation(handle, &raw mut standard_flags) }
+                .map_err(|_| DormantBrokerError::ProcessProof)?;
+            // SAFETY: this scalar query borrows the same retained child handle.
+            let file_type = unsafe { GetFileType(handle) };
+            if standard_flags & HANDLE_FLAG_INHERIT.0 == 0 || file_type != FILE_TYPE_CHAR {
+                return Err(DormantBrokerError::ProcessProof.into());
+            }
+        }
         Ok(())
     }
 
@@ -1659,6 +1891,33 @@ mod tests {
         command.push(test_name);
         command.push(" --exact --ignored --test-threads=1");
         command
+    }
+
+    fn wait_for_isolated_child(
+        child: &mut Child,
+        deadline: Instant,
+    ) -> std::io::Result<ExitStatus> {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "isolated sentinel subprocess exceeded its deadline",
+                    ));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            }
+        }
     }
 
     fn deadline_after(seconds: u64) -> Instant {

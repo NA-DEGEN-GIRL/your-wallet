@@ -1577,8 +1577,19 @@ namespace YourWallet {
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool TerminateProcess(SafeFileHandle process, uint exitCode);
 
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "TerminateProcess")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool TerminateProcessRaw(IntPtr process, uint exitCode);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "WaitForSingleObject")]
+        private static extern uint WaitForSingleObjectRaw(IntPtr handle, uint milliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -1826,6 +1837,37 @@ namespace YourWallet {
                 WaitForSingleObject(process, CleanupTimeoutMilliseconds) == WaitObject0;
         }
 
+        private static bool TerminateAndReapRaw(
+            IntPtr process,
+            uint processId,
+            bool debuggerAttached,
+            bool eventOutstanding,
+            bool eventMatchesCreatedIdentity,
+            uint eventProcessId,
+            uint eventThreadId
+        ) {
+            if (Invalid(process)) {
+                return false;
+            }
+            bool terminationAccepted = TerminateProcessRaw(process, RejectedProcessExitCode);
+            if (!terminationAccepted && WaitForSingleObjectRaw(process, 0) != WaitObject0) {
+                return false;
+            }
+            bool eventReleased = !eventOutstanding;
+            if (eventOutstanding && eventMatchesCreatedIdentity) {
+                eventReleased = ContinueDebugEvent(eventProcessId, eventThreadId, DbgContinue);
+            }
+            bool detached = !debuggerAttached;
+            if (debuggerAttached) {
+                detached = DebugActiveProcessStop(processId);
+                if (detached) eventReleased = true;
+            }
+            return
+                eventReleased &&
+                detached &&
+                WaitForSingleObjectRaw(process, CleanupTimeoutMilliseconds) == WaitObject0;
+        }
+
         public static ReleaseToolsetProcessResult Run(
             SafeFileHandle expectedExecutableHandle,
             string executable,
@@ -1867,6 +1909,41 @@ namespace YourWallet {
                 throw new IOException("Release toolset process worker returned no result");
             }
             return result;
+        }
+
+        private static void DisposeHandle(ref SafeFileHandle handle) {
+            if (handle != null) {
+                handle.Dispose();
+                handle = null;
+            }
+        }
+
+        private static void FreeBuffer(ref IntPtr buffer) {
+            if (buffer != IntPtr.Zero) {
+                Marshal.FreeHGlobal(buffer);
+                buffer = IntPtr.Zero;
+            }
+        }
+
+        private static SafeFileHandle AdoptRawHandle(ref IntPtr handle) {
+            if (Invalid(handle)) {
+                throw new IOException("Release toolset process returned an invalid raw handle");
+            }
+            SafeFileHandle adopted = new SafeFileHandle(handle, true);
+            handle = IntPtr.Zero;
+            return adopted;
+        }
+
+        private static bool CloseRawHandle(ref IntPtr handle) {
+            if (Invalid(handle)) {
+                handle = IntPtr.Zero;
+                return true;
+            }
+            if (!CloseHandle(handle)) {
+                return false;
+            }
+            handle = IntPtr.Zero;
+            return true;
         }
 
         private static ReleaseToolsetProcessResult RunOnFreshThread(
@@ -1921,8 +1998,12 @@ namespace YourWallet {
             IntPtr mitigationPolicy = IntPtr.Zero;
             IntPtr environment = IntPtr.Zero;
             IntPtr debugEvent = IntPtr.Zero;
+            IntPtr rawProcess = IntPtr.Zero;
+            IntPtr rawThread = IntPtr.Zero;
+            IntPtr rawEventFile = IntPtr.Zero;
             bool attributeListInitialized = false;
             bool processCreated = false;
+            bool processCreationLockTaken = false;
             bool debuggerAttached = false;
             bool eventOutstanding = false;
             bool eventMatchesCreatedIdentity = false;
@@ -1931,7 +2012,22 @@ namespace YourWallet {
             uint eventThreadId = 0;
             bool timedOut = false;
             Stopwatch timer = Stopwatch.StartNew();
+            ProcessInformation information = new ProcessInformation();
             try {
+                try {
+                    int lockWaitMilliseconds = checked((int)RemainingMilliseconds(
+                        timer,
+                        timeoutMilliseconds
+                    ));
+                    Monitor.TryEnter(
+                        ProcessCreationSync,
+                        lockWaitMilliseconds,
+                        ref processCreationLockTaken
+                    );
+                    if (!processCreationLockTaken) {
+                        throw new TimeoutException("Release process creation coordination timed out");
+                    }
+                    try {
                 SecurityAttributes pipeAttributes = new SecurityAttributes();
                 pipeAttributes.Length = (uint)Marshal.SizeOf(typeof(SecurityAttributes));
                 pipeAttributes.SecurityDescriptor = IntPtr.Zero;
@@ -2002,7 +2098,6 @@ namespace YourWallet {
                 startup.AttributeList = attributeList;
                 environment = BuildEnvironmentBlock(windowsDirectory, systemDirectory);
 
-                ProcessInformation information;
                 uint creationFlags =
                     DebugProcess |
                     DebugOnlyThisProcess |
@@ -2011,27 +2106,55 @@ namespace YourWallet {
                     ExtendedStartupInfoPresent |
                     CreateDefaultErrorMode |
                     CreateNoWindow;
-                lock (ProcessCreationSync) {
-                    if (!CreateProcessW(
-                        executable,
-                        commandLine,
-                        IntPtr.Zero,
-                        IntPtr.Zero,
-                        true,
-                        creationFlags,
-                        environment,
-                        systemDirectory,
-                        ref startup,
-                        out information
-                    )) {
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Release toolset process could not be created");
-                    }
+                if (!CreateProcessW(
+                    executable,
+                    commandLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    true,
+                    creationFlags,
+                    environment,
+                    systemDirectory,
+                    ref startup,
+                    out information
+                )) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Release toolset process could not be created");
                 }
                 processCreated = true;
                 debuggerAttached = true;
                 processId = information.ProcessId;
-                process = new SafeFileHandle(information.Process, true);
-                primaryThread = new SafeFileHandle(information.Thread, true);
+                rawProcess = information.Process;
+                rawThread = information.Thread;
+                information.Process = IntPtr.Zero;
+                information.Thread = IntPtr.Zero;
+                process = AdoptRawHandle(ref rawProcess);
+                primaryThread = AdoptRawHandle(ref rawThread);
+                    }
+                    finally {
+                        DisposeHandle(ref stdoutWrite);
+                        DisposeHandle(ref stderrWrite);
+                        DisposeHandle(ref stdinRead);
+                        DisposeHandle(ref stdinWrite);
+                        if (!processCreated) {
+                            DisposeHandle(ref stdoutRead);
+                            DisposeHandle(ref stderrRead);
+                        }
+                        if (attributeListInitialized) {
+                            DeleteProcThreadAttributeList(attributeList);
+                            attributeListInitialized = false;
+                        }
+                        FreeBuffer(ref attributeList);
+                        FreeBuffer(ref inheritedHandles);
+                        FreeBuffer(ref mitigationPolicy);
+                        FreeBuffer(ref environment);
+                    }
+                }
+                finally {
+                    if (processCreationLockTaken) {
+                        Monitor.Exit(ProcessCreationSync);
+                        processCreationLockTaken = false;
+                    }
+                }
                 if (
                     Invalid(process) ||
                     Invalid(primaryThread) ||
@@ -2048,15 +2171,6 @@ namespace YourWallet {
                 if (!DebugSetProcessKillOnExit(true)) {
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not establish fail-closed debugger ownership");
                 }
-
-                stdoutWrite.Dispose();
-                stdoutWrite = null;
-                stderrWrite.Dispose();
-                stderrWrite = null;
-                stdinRead.Dispose();
-                stdinRead = null;
-                stdinWrite.Dispose();
-                stdinWrite = null;
 
                 uint previousSuspendCount = ResumeThread(primaryThread);
                 if (previousSuspendCount != 1) {
@@ -2082,7 +2196,8 @@ namespace YourWallet {
                 if (eventCode == CreateProcessDebugEvent || eventCode == LoadDllDebugEvent) {
                     observedFile = Marshal.ReadIntPtr(debugEvent, unionOffset);
                     if (!Invalid(observedFile)) {
-                        eventFile = new SafeFileHandle(observedFile, true);
+                        rawEventFile = observedFile;
+                        eventFile = AdoptRawHandle(ref rawEventFile);
                     }
                 }
                 if (
@@ -2200,26 +2315,42 @@ namespace YourWallet {
                 );
             }
             catch (Exception error) {
-                if (eventFile != null) {
-                    eventFile.Dispose();
-                    eventFile = null;
+                DisposeHandle(ref eventFile);
+                bool reaped = true;
+                if (processCreated) {
+                    if (!Invalid(process)) {
+                        reaped = TerminateAndReap(
+                            process,
+                            processId,
+                            debuggerAttached,
+                            eventOutstanding,
+                            eventMatchesCreatedIdentity,
+                            eventProcessId,
+                            eventThreadId
+                        );
+                    }
+                    else {
+                        reaped = TerminateAndReapRaw(
+                            rawProcess,
+                            processId,
+                            debuggerAttached,
+                            eventOutstanding,
+                            eventMatchesCreatedIdentity,
+                            eventProcessId,
+                            eventThreadId
+                        );
+                    }
                 }
-                bool reaped = !processCreated || TerminateAndReap(
-                    process,
-                    processId,
-                    debuggerAttached,
-                    eventOutstanding,
-                    eventMatchesCreatedIdentity,
-                    eventProcessId,
-                    eventThreadId
-                );
                 bool captureStopped = JoinCaptureThreads(
                     stdoutThread,
                     stderrThread,
                     stdoutStream,
                     stderrStream
                 );
-                if (!reaped || !captureStopped) {
+                bool rawHandlesClosed = CloseRawHandle(ref rawEventFile);
+                rawHandlesClosed = CloseRawHandle(ref rawThread) && rawHandlesClosed;
+                rawHandlesClosed = CloseRawHandle(ref rawProcess) && rawHandlesClosed;
+                if (!reaped || !captureStopped || !rawHandlesClosed) {
                     throw new IOException("Release toolset process cleanup failed closed", error);
                 }
                 throw;
@@ -2236,6 +2367,9 @@ namespace YourWallet {
                 if (stdinWrite != null) stdinWrite.Dispose();
                 if (primaryThread != null) primaryThread.Dispose();
                 if (process != null) process.Dispose();
+                CloseRawHandle(ref rawEventFile);
+                CloseRawHandle(ref rawThread);
+                CloseRawHandle(ref rawProcess);
                 if (attributeListInitialized) DeleteProcThreadAttributeList(attributeList);
                 if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
                 if (inheritedHandles != IntPtr.Zero) Marshal.FreeHGlobal(inheritedHandles);

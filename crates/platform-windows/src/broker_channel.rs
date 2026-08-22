@@ -322,13 +322,15 @@ mod sys {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdOwnedHandle};
     use std::time::{Duration, Instant};
 
+    #[cfg(test)]
+    use windows::Win32::Foundation::HANDLE_FLAG_INHERIT;
     use windows::Win32::Foundation::{
         CloseHandle, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED,
         ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     };
     use windows::Win32::Foundation::{
-        DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
+        DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, GetHandleInformation,
     };
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -570,7 +572,7 @@ mod sys {
     ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {
         use std::os::windows::io::AsRawHandle;
 
-        let process = duplicate_restricted_process_handle(HANDLE(source.as_raw_handle()), false)?;
+        let process = duplicate_restricted_process_handle(HANDLE(source.as_raw_handle()))?;
         expected_peer_from_owned_handle(process)
     }
 
@@ -579,7 +581,7 @@ mod sys {
         child: &std::process::Child,
     ) -> Result<ExpectedBrokerPeer, BrokerChannelError> {
         let source = HANDLE(child.as_raw_handle());
-        let process = duplicate_restricted_process_handle(source, false)?;
+        let process = duplicate_restricted_process_handle(source)?;
         expected_peer_from_owned_handle(process)
     }
 
@@ -590,29 +592,60 @@ mod sys {
         // handle as the child's standard-input bootstrap slot.
         let source = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
             .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
-        let process = duplicate_restricted_process_handle(source, false)?;
+        let process = duplicate_restricted_process_handle(source)?;
         expected_peer_from_owned_handle(process)
     }
 
     #[cfg(test)]
-    pub(super) fn current_process_stdio_for_test() -> Result<std::process::Stdio, BrokerChannelError>
-    {
+    pub(super) fn current_process_stdio_for_test(
+        flight: &crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'_>,
+    ) -> Result<std::process::Stdio, BrokerChannelError> {
         // SAFETY: the pseudo-handle names the exact current process object.
-        process_handle_as_inherited_stdio(unsafe { GetCurrentProcess() })
+        process_handle_as_inherited_stdio(flight, unsafe { GetCurrentProcess() })
     }
 
     #[cfg(test)]
     pub(super) fn child_process_stdio_for_test(
+        flight: &crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'_>,
         child: &std::process::Child,
     ) -> Result<std::process::Stdio, BrokerChannelError> {
-        process_handle_as_inherited_stdio(HANDLE(child.as_raw_handle()))
+        process_handle_as_inherited_stdio(flight, HANDLE(child.as_raw_handle()))
     }
 
     #[cfg(test)]
     fn process_handle_as_inherited_stdio(
+        _flight: &crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'_>,
         source: HANDLE,
     ) -> Result<std::process::Stdio, BrokerChannelError> {
-        let process = duplicate_restricted_process_handle(source, true)?;
+        let mut duplicate = HANDLE::default();
+        let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0;
+        // SAFETY: source names the retained test process, both process
+        // pseudo-handles name this process, and the coordinator flight remains
+        // borrowed until Command::spawn returns and this temporary closes.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source,
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                desired,
+                true,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
+        if duplicate.is_invalid() {
+            return Err(BrokerChannelError::InvalidExpectedPeer);
+        }
+        let process = OwnedHandle(duplicate);
+        let mut flags = 0_u32;
+        // SAFETY: the successful test duplicate remains owned for this exact
+        // flag query and must carry only the requested inheritance property.
+        unsafe { GetHandleInformation(process.raw(), &raw mut flags) }
+            .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
+        if flags != HANDLE_FLAG_INHERIT.0 {
+            return Err(BrokerChannelError::InvalidExpectedPeer);
+        }
         let raw = process.raw().0;
         core::mem::forget(process);
         // SAFETY: ownership of the successful duplicate moves exactly once into
@@ -623,13 +656,12 @@ mod sys {
 
     fn duplicate_restricted_process_handle(
         source: HANDLE,
-        inheritable: bool,
     ) -> Result<OwnedHandle, BrokerChannelError> {
         let mut duplicate = HANDLE::default();
         let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0;
         // SAFETY: source is a retained process handle in this process. The exact
         // restricted duplicate is created into this process with no broader
-        // rights and one explicit inheritance choice.
+        // rights and is unconditionally non-inheritable.
         unsafe {
             DuplicateHandle(
                 GetCurrentProcess(),
@@ -637,7 +669,7 @@ mod sys {
                 GetCurrentProcess(),
                 &raw mut duplicate,
                 desired,
-                inheritable,
+                false,
                 DUPLICATE_HANDLE_OPTIONS(0),
             )
             .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
@@ -652,8 +684,7 @@ mod sys {
             GetHandleInformation(duplicate.raw(), &raw mut flags)
                 .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
         }
-        let is_inheritable = flags & HANDLE_FLAG_INHERIT.0 != 0;
-        if is_inheritable != inheritable {
+        if flags != 0 {
             return Err(BrokerChannelError::InvalidExpectedPeer);
         }
         Ok(duplicate)
@@ -1890,9 +1921,17 @@ mod tests {
         expected_server: ExpectedServerBootstrap<'_>,
     ) -> Result<ChildGuard, Box<dyn std::error::Error>> {
         let executable = std::env::current_exe()?;
+        let flight = crate::inheritable_handle_launch::acquire_inheritable_handle_launch(
+            deadline_after(10_000)?,
+        )
+        .map_err(|_| BrokerChannelError::InvalidExpectedPeer)?;
         let stdin = match expected_server {
-            ExpectedServerBootstrap::CurrentProcess => sys::current_process_stdio_for_test()?,
-            ExpectedServerBootstrap::Child(child) => sys::child_process_stdio_for_test(child)?,
+            ExpectedServerBootstrap::CurrentProcess => {
+                sys::current_process_stdio_for_test(&flight)?
+            }
+            ExpectedServerBootstrap::Child(child) => {
+                sys::child_process_stdio_for_test(&flight, child)?
+            }
         };
         let mut command = Command::new(executable);
         command
@@ -1909,7 +1948,10 @@ mod tests {
         } else {
             command.env_remove(CHILD_ENDPOINT);
         }
-        Ok(ChildGuard(Some(command.spawn()?)))
+        let child = command.spawn()?;
+        drop(command);
+        drop(flight);
+        Ok(ChildGuard(Some(child)))
     }
 
     fn expected_child(
