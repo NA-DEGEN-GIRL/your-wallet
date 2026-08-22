@@ -321,27 +321,34 @@ rollback anchors and synthetic keys/payloads, so it does not prove production
 anchor or AEAD-key provisioning.
 
 Fresh fixed-profile/root creation now returns a non-launchable pending type;
-only a separately prepared type can enter activation, and no production
-constructor or conversion mints it. Before the private pure classifier, a
-canonical prefix-journal verifier authenticates every fixed record with an
-installer-owned HMAC-SHA256 key, enforces phase-specific payloads and the exact
-`Prepared=1`, `ProfileCreated=2`, `RootCreated=3`, `Committed=4` sequence, checks
-every predecessor commitment, and compares the current commitment/high-water
-with a separately sealed rollback-resistant checkpoint carrying independently
-expected installation/release identities. Rollback, gaps, reorderings,
-same-generation equivocation, malformed bytes, and non-canonical unused fields
-fail closed. The verifier produces only the distinct sealed authenticated
-journal and expected-identity facts. The classifier still consumes a third live
-fixed-profile/held-root observation and returns only uninitialized,
-consistent-existing, or recovery-required candidate state. Only current
-`Committed=4` consistency can produce the existing candidate; every other phase
-requires recovery. The module performs no I/O, retains no root handle, has no
-production key/checkpoint constructor, reader, writer, backend, or consumer, and
-grants no creation, adoption, or launch authority.
+only a separately prepared type can enter activation, and no direct
+pending/candidate conversion mints it. The sole production-compiled prepared
+mint is the private sealed existing-install adoption transition. Before the
+private pure classifier, a canonical prefix-journal validator authenticates
+every fixed record with an installer-owned HMAC-SHA256 key, enforces
+phase-specific payloads and the exact `Prepared=1`, `ProfileCreated=2`,
+`RootCreated=3`, `Committed=4` sequence, checks every predecessor commitment,
+and compares the current commitment/high-water with a separately sealed
+rollback-resistant checkpoint carrying independently expected
+installation/release identities. Rollback, gaps, reorderings, same-generation
+equivocation, malformed bytes, and non-canonical unused fields fail closed.
+The validator returns an authenticated snapshot. A pure matcher consumes two
+matching committed snapshots plus authority-free evidence copied from a
+fixed-profile-binding and held-root aggregate; only exact current `Committed=4`
+consistency yields stable evidence. Its sole production-code consumer is the
+dormant adoption transition, which revalidates the profile binding and same
+no-delete-share root before and after matching, mints the prepared value through
+one private seal, and retains it inside `VerifiedExistingKeyAgentInstall`.
+The journal validator performs no I/O and has no production key/checkpoint
+constructor, journal reader/writer backend, or caller. The adoption transition
+has no production caller, and the verified aggregate has no downstream
+artifact-binding consumer.
 
-Production installer key/checkpoint provisioning, authoritative provenance
-journal I/O and durable writing, existing-profile/root observation and
-adoption/recovery, the same-user/ancestor
+Production still lacks authoritative profile-registration observation, a fixed
+existing-root opener and held-aggregate constructor, an exclusive installer
+lease enforcing the post-observation reread, canonical-path reopen identity
+comparison, downstream artifact binding, durable journal writing, and recovery.
+The same-user/ancestor
 race boundary, production rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
 single-instance, and signed immutable artifact/DLL/dependency E2E remain

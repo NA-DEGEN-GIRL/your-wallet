@@ -3,9 +3,10 @@
 //! This module is deliberately pure: it performs no profile, filesystem,
 //! registry, cryptographic-provider, or serialization I/O. It defines the
 //! canonical authenticated-journal codec and validates an independently
-//! authenticated checkpoint, but its authentication key, checkpoint, and live
-//! observations can be constructed only inside this module. Production
-//! currently has no source for any of them. Journal absence/read failure,
+//! authenticated checkpoint. Its internal observation is constructed only
+//! from the typed, authority-free snapshot copied by the LPAC held-object
+//! boundary. Production currently has no key, checkpoint, journal, or held OS
+//! observation source. Journal absence/read failure,
 //! malformed bytes, authentication failure, rollback, gaps, or equivocation
 //! therefore cannot mint classifier inputs. Until a future installer-owned
 //! adapter supplies those sealed facts, there is no production adoption path.
@@ -18,7 +19,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-use crate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;
+use crate::key_agent_lpac::{KEY_AGENT_PROFILE_V1_NAME, KeyAgentHeldInstallObservation};
 use crate::key_agent_storage::KeyAgentStorageRootIdentity;
 
 const INSTALL_JOURNAL_SCHEMA_V1: u16 = 1;
@@ -213,6 +214,24 @@ impl fmt::Debug for AuthenticatedKeyAgentInstallJournal {
     }
 }
 
+/// One complete journal/checkpoint validation result.
+///
+/// The current authenticated record digest is retained so an independently
+/// reread snapshot can be compared after the held OS observation. Production
+/// has no reader capable of constructing this value.
+pub(crate) struct AuthenticatedKeyAgentInstallSnapshot {
+    journal: AuthenticatedKeyAgentInstallJournal,
+    expected: ExpectedKeyAgentInstallIdentities,
+    current_record_digest: [u8; INSTALL_JOURNAL_DIGEST_BYTES],
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for AuthenticatedKeyAgentInstallSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedKeyAgentInstallSnapshot([REDACTED])")
+    }
+}
+
 /// Installation and release identities from trust domains independent of the journal.
 ///
 /// This distinct sealed input prevents the pure classifier contract from
@@ -231,11 +250,13 @@ impl fmt::Debug for ExpectedKeyAgentInstallIdentities {
     }
 }
 
-/// Live fixed-profile and held storage-root observations.
+/// Internal fixed-profile-binding and held-root observation record.
 ///
 /// The type alone does not prove an OS-registered profile, exact root security,
-/// local NTFS, or a retained no-delete-share handle. A future constructor must
-/// remain fused to those selector-free checks. Production has no OS observer.
+/// local NTFS, or a retained no-delete-share handle. Its sole compiled
+/// constructor consumes authority-free evidence copied from the typed held
+/// aggregate. Production has no authoritative profile-registration observer,
+/// existing-root opener, or constructor for that aggregate.
 pub(crate) struct ObservedKeyAgentInstallObjects {
     profile: Option<ObservedKeyAgentProfile>,
     root: Option<ObservedKeyAgentStorageRoot>,
@@ -270,7 +291,7 @@ impl fmt::Debug for UninitializedKeyAgentInstallCandidate {
 ///
 /// This candidate proves only consistency among the sealed facts supplied to
 /// this pure model. It is not an adoption or launch capability, and no
-/// production conversion to `PreparedKeyAgentProvisioning` exists. In
+/// direct production conversion to `PreparedKeyAgentProvisioning` exists. In
 /// particular, it retains no root handle and cannot cross an observation/open
 /// race as authority.
 pub(crate) struct ConsistentExistingKeyAgentInstallCandidate {
@@ -377,6 +398,139 @@ pub(crate) fn classify_key_agent_install(
         }
         _ => KeyAgentInstallDisposition::RecoveryRequired,
     }
+}
+
+/// Pure proof that two independently authenticated snapshots and one supplied
+/// authority-free OS observation describe the same committed installation.
+///
+/// This value retains no profile, root handle, path, or launch authority. Only
+/// the sibling adoption module can combine it with the still-held OS objects.
+#[must_use = "stable existing-install evidence must remain bound to held objects"]
+pub(crate) struct StableExistingKeyAgentInstallEvidence {
+    installation_id: [u8; IDENTITY_BYTES],
+    release_identity: [u8; IDENTITY_BYTES],
+    root_identity: KeyAgentStorageRootIdentity,
+    journal_generation: u64,
+    journal_record_digest: [u8; INSTALL_JOURNAL_DIGEST_BYTES],
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for StableExistingKeyAgentInstallEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StableExistingKeyAgentInstallEvidence([REDACTED])")
+    }
+}
+
+/// Consumes the handle-free proof into the exact fields retained by the
+/// adoption aggregate. The root identity remains intentionally unexported: it
+/// was already bound to the consumed held observation by the verifier.
+/// Passing by value is intentional so the sealed evidence remains one-shot.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn consume_stable_existing_key_agent_install_evidence(
+    evidence: StableExistingKeyAgentInstallEvidence,
+) -> (
+    [u8; IDENTITY_BYTES],
+    [u8; IDENTITY_BYTES],
+    u64,
+    [u8; INSTALL_JOURNAL_DIGEST_BYTES],
+) {
+    (
+        evidence.installation_id,
+        evidence.release_identity,
+        evidence.journal_generation,
+        evidence.journal_record_digest,
+    )
+}
+
+/// Compares the initial and post-observation authenticated snapshots, then
+/// runs the exact committed classifier over canonical held-object evidence.
+///
+/// The function is pure and consumes both one-shot snapshots. Its sole
+/// production caller is the private adoption transition, which must retain and
+/// revalidate the corresponding OS capabilities around this call.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn verify_existing_key_agent_install_snapshots(
+    initial: AuthenticatedKeyAgentInstallSnapshot,
+    reread: AuthenticatedKeyAgentInstallSnapshot,
+    observation: KeyAgentHeldInstallObservation,
+) -> Option<StableExistingKeyAgentInstallEvidence> {
+    let journal_generation = initial.journal.authenticated_generation;
+    let journal_record_digest = initial.current_record_digest;
+    let installation_id = initial.expected.installation_id;
+    let release_identity = initial.expected.release_identity;
+    if journal_generation != COMMITTED_JOURNAL_GENERATION_V1
+        || !valid_digest(&journal_record_digest)
+        || !same_authenticated_install_snapshot(&initial, &reread)
+    {
+        return None;
+    }
+
+    let root_identity = observation.storage_root_identity();
+    let objects = observed_install_objects_from_canonical(&observation)?;
+    let disposition = classify_key_agent_install(initial.journal, initial.expected, objects);
+    let KeyAgentInstallDisposition::ConsistentExisting(candidate) = disposition else {
+        return None;
+    };
+    if candidate.installation_id != installation_id
+        || candidate.release_identity != release_identity
+        || candidate.root_identity != root_identity
+    {
+        return None;
+    }
+
+    Some(StableExistingKeyAgentInstallEvidence {
+        installation_id,
+        release_identity,
+        root_identity,
+        journal_generation,
+        journal_record_digest,
+        _not_send_or_sync: PhantomData,
+    })
+}
+
+fn same_authenticated_install_snapshot(
+    initial: &AuthenticatedKeyAgentInstallSnapshot,
+    reread: &AuthenticatedKeyAgentInstallSnapshot,
+) -> bool {
+    initial.journal.authenticated_generation == reread.journal.authenticated_generation
+        && initial.current_record_digest == reread.current_record_digest
+        && initial.expected.installation_id == reread.expected.installation_id
+        && initial.expected.release_identity == reread.expected.release_identity
+}
+
+fn observed_install_objects_from_canonical(
+    observation: &KeyAgentHeldInstallObservation,
+) -> Option<ObservedKeyAgentInstallObjects> {
+    let fixed_name = KEY_AGENT_PROFILE_V1_NAME.as_bytes();
+    let name_len = u8::try_from(fixed_name.len()).ok()?;
+    let mut name = [0_u8; MAX_PROFILE_NAME_BYTES];
+    name.get_mut(..fixed_name.len())?
+        .copy_from_slice(fixed_name);
+    Some(ObservedKeyAgentInstallObjects {
+        profile: Some(ObservedKeyAgentProfile {
+            name_len,
+            name,
+            sid: canonical_observed_sid(observation.profile_sid())?,
+        }),
+        root: Some(ObservedKeyAgentStorageRoot {
+            identity: observation.storage_root_identity(),
+            stable_user_sid: canonical_observed_sid(observation.stable_user_sid())?,
+            profile_sid: canonical_observed_sid(observation.storage_profile_sid())?,
+        }),
+        _seal: OsObservationSeal,
+        _not_send_or_sync: PhantomData,
+    })
+}
+
+fn canonical_observed_sid(observed: &[u8]) -> Option<CanonicalSidEvidence> {
+    let len = u8::try_from(observed.len()).ok()?;
+    let mut bytes = [0_u8; MAX_CANONICAL_SID_BYTES];
+    bytes.get_mut(..observed.len())?.copy_from_slice(observed);
+    let sid = CanonicalSidEvidence { len, bytes };
+    if !valid_canonical_sid(&sid) {
+        return None;
+    }
+    Some(sid)
 }
 
 fn exact_committed_match(
@@ -806,13 +960,7 @@ fn validate_authenticated_install_journal(
     encoded_journal: &[u8],
     authentication_key: InstallerJournalAuthenticationKey,
     checkpoint: AuthenticatedKeyAgentInstallCheckpoint,
-) -> Result<
-    (
-        AuthenticatedKeyAgentInstallJournal,
-        ExpectedKeyAgentInstallIdentities,
-    ),
-    KeyAgentInstallJournalValidationError,
-> {
+) -> Result<AuthenticatedKeyAgentInstallSnapshot, KeyAgentInstallJournalValidationError> {
     let InstallerJournalAuthenticationKey { bytes: key, .. } = authentication_key;
     let AuthenticatedKeyAgentInstallCheckpoint {
         high_water_generation,
@@ -864,20 +1012,22 @@ fn validate_authenticated_install_journal(
         )?)
     };
 
-    Ok((
-        AuthenticatedKeyAgentInstallJournal {
+    Ok(AuthenticatedKeyAgentInstallSnapshot {
+        journal: AuthenticatedKeyAgentInstallJournal {
             authenticated_generation: high_water_generation,
             record,
             _seal: JournalEvidenceSeal,
             _not_send_or_sync: PhantomData,
         },
-        ExpectedKeyAgentInstallIdentities {
+        expected: ExpectedKeyAgentInstallIdentities {
             installation_id,
             release_identity,
             _seal: ExpectedIdentitySeal,
             _not_send_or_sync: PhantomData,
         },
-    ))
+        current_record_digest,
+        _not_send_or_sync: PhantomData,
+    })
 }
 
 #[cfg(test)]
@@ -944,6 +1094,108 @@ fn retag_authenticated_install_journal_record_for_test(
     let tag: [u8; INSTALL_JOURNAL_MAC_BYTES] = mac.finalize().into_bytes().into();
     encoded[RECORD_MAC_OFFSET..].copy_from_slice(&tag);
     Ok(())
+}
+
+/// Builds two independently validated snapshots for the held-adoption kernel
+/// tests without exposing any production journal/key/checkpoint constructor.
+#[cfg(test)]
+pub(crate) fn authenticated_install_snapshot_pair_for_test(
+    profile_sid: &[u8],
+    stable_user_sid: &[u8],
+    root_identity: KeyAgentStorageRootIdentity,
+    installation_id: [u8; IDENTITY_BYTES],
+    release_identity: [u8; IDENTITY_BYTES],
+    record_count: usize,
+) -> Option<(
+    AuthenticatedKeyAgentInstallSnapshot,
+    AuthenticatedKeyAgentInstallSnapshot,
+)> {
+    let states = [
+        KeyAgentInstallTransactionState::Prepared,
+        KeyAgentInstallTransactionState::ProfileCreated,
+        KeyAgentInstallTransactionState::RootCreated,
+        KeyAgentInstallTransactionState::Committed,
+    ];
+    if record_count > states.len() {
+        return None;
+    }
+    let transaction_id = [0x11_u8; IDENTITY_BYTES];
+    let key_bytes = [0xa5_u8; INSTALL_JOURNAL_AUTHENTICATION_KEY_BYTES];
+    let mut journal = Vec::with_capacity(record_count * INSTALL_JOURNAL_RECORD_BYTES);
+    let mut predecessor_digest = [0_u8; INSTALL_JOURNAL_DIGEST_BYTES];
+    for state in states.into_iter().take(record_count) {
+        let common = KeyAgentInstallCommonRecord {
+            schema_version: INSTALL_JOURNAL_SCHEMA_V1,
+            policy_version: INSTALL_POLICY_V1,
+            journal_generation: transaction_generation(state),
+            transaction_id,
+            installation_id,
+            release_identity,
+            predecessor_digest,
+        };
+        let profile = KeyAgentInstallProfileEvidence {
+            name_len: u8::try_from(KEY_AGENT_PROFILE_V1_NAME.len()).ok()?,
+            name: padded_fixed_profile_name_for_test()?,
+            sid: canonical_observed_sid(profile_sid)?,
+        };
+        let root = KeyAgentInstallRootEvidence {
+            stable_user_sid: canonical_observed_sid(stable_user_sid)?,
+            root_identity,
+        };
+        let record = match state {
+            KeyAgentInstallTransactionState::Prepared => KeyAgentInstallRecord::Prepared { common },
+            KeyAgentInstallTransactionState::ProfileCreated => {
+                KeyAgentInstallRecord::ProfileCreated { common, profile }
+            }
+            KeyAgentInstallTransactionState::RootCreated => KeyAgentInstallRecord::RootCreated {
+                common,
+                profile,
+                root,
+            },
+            KeyAgentInstallTransactionState::Committed => KeyAgentInstallRecord::Committed {
+                common,
+                profile,
+                root,
+            },
+        };
+        let key = installer_journal_authentication_key_for_test(key_bytes);
+        let encoded = encode_authenticated_install_journal_record_for_test(&record, &key).ok()?;
+        predecessor_digest = authenticated_install_journal_record_digest(&encoded);
+        journal.extend_from_slice(&encoded);
+    }
+
+    let generation = u64::try_from(record_count).ok()?;
+    let initial = validate_authenticated_install_journal(
+        &journal,
+        installer_journal_authentication_key_for_test(key_bytes),
+        authenticated_install_checkpoint_for_test(
+            generation,
+            predecessor_digest,
+            installation_id,
+            release_identity,
+        ),
+    )
+    .ok()?;
+    let reread = validate_authenticated_install_journal(
+        &journal,
+        installer_journal_authentication_key_for_test(key_bytes),
+        authenticated_install_checkpoint_for_test(
+            generation,
+            predecessor_digest,
+            installation_id,
+            release_identity,
+        ),
+    )
+    .ok()?;
+    Some((initial, reread))
+}
+
+#[cfg(test)]
+fn padded_fixed_profile_name_for_test() -> Option<[u8; MAX_PROFILE_NAME_BYTES]> {
+    let fixed = KEY_AGENT_PROFILE_V1_NAME.as_bytes();
+    let mut name = [0_u8; MAX_PROFILE_NAME_BYTES];
+    name.get_mut(..fixed.len())?.copy_from_slice(fixed);
+    Some(name)
 }
 
 fn valid_identity(value: &[u8; IDENTITY_BYTES]) -> bool {
@@ -1027,8 +1279,8 @@ mod tests {
 
     use super::{
         AuthenticatedKeyAgentInstallCheckpoint, AuthenticatedKeyAgentInstallJournal,
-        COMMITTED_JOURNAL_GENERATION_V1, CanonicalSidEvidence,
-        ConsistentExistingKeyAgentInstallCandidate, ExpectedIdentitySeal,
+        AuthenticatedKeyAgentInstallSnapshot, COMMITTED_JOURNAL_GENERATION_V1,
+        CanonicalSidEvidence, ConsistentExistingKeyAgentInstallCandidate, ExpectedIdentitySeal,
         ExpectedKeyAgentInstallIdentities, IDENTITY_BYTES,
         INSTALL_JOURNAL_AUTHENTICATION_KEY_BYTES, INSTALL_JOURNAL_DIGEST_BYTES,
         INSTALL_JOURNAL_RECORD_BODY_BYTES, INSTALL_JOURNAL_RECORD_BYTES, INSTALL_JOURNAL_SCHEMA_V1,
@@ -1043,9 +1295,9 @@ mod tests {
         RECORD_RELEASE_IDENTITY_OFFSET, RECORD_ROOT_IDENTITY_OFFSET,
         RECORD_STABLE_USER_SID_LEN_OFFSET, RECORD_STABLE_USER_SID_OFFSET, RECORD_STATE_OFFSET,
         RECORD_TAIL_RESERVED_OFFSET, RECORD_TRANSACTION_ID_OFFSET,
-        UninitializedKeyAgentInstallCandidate, authenticated_install_checkpoint_for_test,
-        authenticated_install_journal_record_digest, classify_key_agent_install as classify_model,
-        decode_authenticated_install_journal_record,
+        StableExistingKeyAgentInstallEvidence, UninitializedKeyAgentInstallCandidate,
+        authenticated_install_checkpoint_for_test, authenticated_install_journal_record_digest,
+        classify_key_agent_install as classify_model, decode_authenticated_install_journal_record,
         encode_authenticated_install_journal_record_for_test,
         installer_journal_authentication_key_for_test, record_common,
         retag_authenticated_install_journal_record_for_test, transaction_generation,
@@ -1281,10 +1533,7 @@ mod tests {
         encoded: &[u8],
         high_water_generation: u64,
         current_record_digest: [u8; INSTALL_JOURNAL_DIGEST_BYTES],
-    ) -> Option<(
-        AuthenticatedKeyAgentInstallJournal,
-        ExpectedKeyAgentInstallIdentities,
-    )> {
+    ) -> Option<super::AuthenticatedKeyAgentInstallSnapshot> {
         validate_authenticated_install_journal(
             encoded,
             authentication_key(),
@@ -1710,19 +1959,20 @@ mod tests {
                 current_digest,
             );
             assert!(validated.is_some(), "canonical prefix must validate");
-            let Some((authenticated_journal, expected_identities)) = validated else {
+            let Some(snapshot) = validated else {
                 continue;
             };
             assert_eq!(
-                authenticated_journal.authenticated_generation,
+                snapshot.journal.authenticated_generation,
                 u64::try_from(record_count).unwrap_or_default()
             );
-            assert_eq!(expected_identities.installation_id, INSTALLATION_ID);
-            assert_eq!(expected_identities.release_identity, RELEASE_IDENTITY);
+            assert_eq!(snapshot.expected.installation_id, INSTALLATION_ID);
+            assert_eq!(snapshot.expected.release_identity, RELEASE_IDENTITY);
+            assert_eq!(snapshot.current_record_digest, current_digest);
 
             let disposition = classify_model(
-                authenticated_journal,
-                expected_identities,
+                snapshot.journal,
+                snapshot.expected,
                 if record_count == 0 {
                     objects(false, false)?
                 } else {
@@ -1987,6 +2237,14 @@ mod tests {
         let _ = <AuthenticatedKeyAgentInstallCheckpoint as AmbiguousIfCopy<_>>::marker;
         let _ = <AuthenticatedKeyAgentInstallCheckpoint as AmbiguousIfSend<_>>::marker;
         let _ = <AuthenticatedKeyAgentInstallCheckpoint as AmbiguousIfSync<_>>::marker;
+        let _ = <AuthenticatedKeyAgentInstallSnapshot as AmbiguousIfClone<_>>::marker;
+        let _ = <AuthenticatedKeyAgentInstallSnapshot as AmbiguousIfCopy<_>>::marker;
+        let _ = <AuthenticatedKeyAgentInstallSnapshot as AmbiguousIfSend<_>>::marker;
+        let _ = <AuthenticatedKeyAgentInstallSnapshot as AmbiguousIfSync<_>>::marker;
+        let _ = <StableExistingKeyAgentInstallEvidence as AmbiguousIfClone<_>>::marker;
+        let _ = <StableExistingKeyAgentInstallEvidence as AmbiguousIfCopy<_>>::marker;
+        let _ = <StableExistingKeyAgentInstallEvidence as AmbiguousIfSend<_>>::marker;
+        let _ = <StableExistingKeyAgentInstallEvidence as AmbiguousIfSync<_>>::marker;
 
         let uninitialized = classify_key_agent_install(journal(None), objects(false, false)?);
         assert_eq!(
@@ -2021,6 +2279,14 @@ mod tests {
             format!("{:?}", checkpoint(0, [0; INSTALL_JOURNAL_DIGEST_BYTES])),
             "AuthenticatedKeyAgentInstallCheckpoint([REDACTED])"
         );
+        let empty_snapshot = validate_journal(&[], 0, [0; INSTALL_JOURNAL_DIGEST_BYTES]);
+        assert!(empty_snapshot.is_some());
+        if let Some(empty_snapshot) = empty_snapshot {
+            assert_eq!(
+                format!("{empty_snapshot:?}"),
+                "AuthenticatedKeyAgentInstallSnapshot([REDACTED])"
+            );
+        }
         Ok(())
     }
 }

@@ -78,16 +78,22 @@ The dormant Key Agent fresh-provisioning seam can create the fixed
 `YourWallet.KeyAgent.LPAC.v1` AppContainer profile and the fixed
 `YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC` folder, but it
 returns only a non-launchable pending capability. Activation requires a separate
-prepared capability for which production has no constructor or
-pending/candidate conversion. Existing production profiles or roots fail closed
-and are not opened, adopted, repaired, or deleted. A future trusted adapter's
-supervisor-held proof must require the stable current `TokenUser` SID as owner
-and an exact protected two-ACE DACL for that SID plus the fixed profile SID, the
-exact inherited Low/`NW` mandatory label, a local fixed NTFS non-reparse
-directory with persistent ACLs, and a nonzero-volume, non-sentinel 128-bit
-`FILE_ID_INFO`. It keeps the directory open without delete sharing, revalidates
-the held identity, volume, and security policy throughout binding, and closes
-that handle last during cleanup.
+prepared capability, and no direct pending/candidate conversion exists. The
+sole production-compiled prepared mint is the private sealed existing-install
+adoption transition. It consumes an initial and contractually post-observation
+authenticated snapshot plus a fixed-profile binding and retained
+no-delete-share root, revalidates that binding/root before and after the match,
+and seals the result inside `VerifiedExistingKeyAgentInstall`. Production has no
+held-aggregate constructor or transition/downstream caller, so existing profiles
+or roots still fail closed and are not opened, adopted, repaired, or deleted. A
+future production adapter's fixed-profile-binding/held-root aggregate must
+require the stable current `TokenUser` SID as owner and an exact protected
+two-ACE DACL for that SID plus the fixed profile SID, the exact inherited
+Low/`NW` mandatory label, a local fixed NTFS non-reparse directory with
+persistent ACLs, and a nonzero-volume, non-sentinel 128-bit `FILE_ID_INFO`. It
+keeps the directory open without delete sharing, revalidates the held identity,
+volume, and security policy throughout binding, and closes that handle last
+during cleanup.
 
 The private one-shot storage-startup transition now binds the child to that root.
 The parent writes a fixed request while the exact child is still suspended; it
@@ -151,8 +157,9 @@ production fresh-fixed-profile/root E2E or release authority.
 
 Fresh creation is now quarantined as non-launchable
 `PendingKeyAgentProvisioning`; only `PreparedKeyAgentProvisioning` enters the
-activation boundary, and production has no constructor or conversion that can
-mint it. The private pure provenance boundary includes a canonical
+activation boundary, and no direct pending/candidate conversion can mint it.
+The sole production-compiled mint is the private sealed existing-install
+adoption transition. The private pure provenance boundary includes a canonical
 prefix-journal verifier before the existing classifier. Every fixed record is
 authenticated with an installer-owned HMAC-SHA256 key before parsing. Exact
 phase-specific payloads, the `Prepared=1`, `ProfileCreated=2`, `RootCreated=3`,
@@ -162,17 +169,23 @@ identities, high-water generation, and current commitment. Lower/higher
 generations, gaps, reorderings, same-generation alternate histories, malformed
 bytes, non-canonical unused fields, or root evidence before creation fail
 closed. Only `RootCreated` and `Committed` carry the same canonical profile/owner
-SIDs and full root identity. The verifier mints only the distinct sealed
-authenticated-journal and expected-identity inputs; the classifier still needs
-an independent live-object input, and only current `Committed=4` consistency can
-produce the existing candidate. Its results remain non-authoritative candidates,
-not creation, adoption, or launch capabilities; the latter retains no root
-handle. The module has no production key/checkpoint constructor, reader, writer,
-backend, OS observer, or consumer.
+SIDs and full root identity. The journal validator produces an authenticated
+snapshot. The pure matcher consumes two matching committed snapshots plus
+authority-free evidence copied from a fixed-profile-binding and held-root
+aggregate; only current `Committed=4` consistency produces stable evidence. Its
+sole production-code consumer is the dormant sealed transition, which
+revalidates the same binding/root around the match and retains the prepared
+capability inside a private verified aggregate. The journal validator has no
+production key/checkpoint constructor, journal reader/writer backend, or caller.
+The transition has no production caller and the verified aggregate has no
+downstream artifact consumer.
 
 The remaining limits are immediate. Existing production profiles still lack
-installer-owned key/checkpoint provisioning, authoritative provenance-journal
-I/O and durable writing, held-object adoption, and recovery; the root `TokenUser` ACE leaves
+installer-owned key/checkpoint provisioning, authoritative profile-registration
+observation, a fixed existing-root opener and held-aggregate constructor, an
+exclusive installer lease enforcing the post-observation reread,
+canonical-path reopen identity comparison, durable journal I/O, downstream
+artifact binding, and recovery wiring; the root `TokenUser` ACE leaves
 other same-user processes able to access it, and ancestor path validation is
 not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process
@@ -280,9 +293,13 @@ Before any real mainnet value is used, the Windows build must prove:
    exercises the four fixed private generation stores and their exact
    dual-principal file policy. Fresh creation now yields only a non-launchable
    pending state, and the pure provenance classifier yields only
-   non-authoritative candidates. These proofs do not adopt an existing
-   production profile, authenticate or anchor installer provenance, implement
-   authoritative adoption/recovery, provision a
+   non-authoritative candidates. A separate sealed dormant transition now tests
+   the adoption-rule composition over test-held objects, but it cannot open or
+   adopt a production installation because authoritative profile-registration
+   observation, an existing-root opener, production snapshot/lease/reread
+   orchestration, canonical-path identity rebinding, a downstream artifact
+   consumer, and recovery wiring are absent. These proofs also do not
+   authenticate or anchor production installer provenance or provision a
    production rollback anchor or storage/AEAD keys, connect protected settings
    and its live lease, authenticate the Broker/supervisor/process topology or
    single-instance, establish Native Host provenance or a signed immutable

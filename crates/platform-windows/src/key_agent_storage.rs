@@ -156,6 +156,25 @@ impl HeldKeyAgentStorageRoot {
         self.identity
     }
 
+    /// Copies path-free principal and file-identity evidence from this held root.
+    ///
+    /// The snapshot carries no handle, path, or `PSID` and therefore grants no
+    /// filesystem authority. Callers must continue retaining and revalidating
+    /// `self`; this value alone can never authorize launch or root adoption.
+    pub(crate) fn install_observation(
+        &self,
+    ) -> Result<KeyAgentHeldRootObservation, KeyAgentStorageError> {
+        let (stable_user_sid_len, stable_user_sid) = self.stable_user_sid.canonical_bytes()?;
+        let (profile_sid_len, profile_sid) = self.profile_sid.canonical_bytes()?;
+        Ok(KeyAgentHeldRootObservation {
+            root_identity: self.identity,
+            stable_user_sid_len,
+            stable_user_sid,
+            profile_sid_len,
+            profile_sid,
+        })
+    }
+
     /// Revalidates the held object's exact identity, volume, and security policy.
     pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
         let handle = self.handle.as_ref().ok_or(KeyAgentStorageError::Identity)?;
@@ -171,6 +190,39 @@ impl HeldKeyAgentStorageRoot {
     #[cfg(test)]
     pub(crate) fn path_for_test(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Authority-free evidence copied from one retained storage-root handle.
+///
+/// The full root capability remains in [`HeldKeyAgentStorageRoot`]. This value
+/// deliberately exposes only canonical SID bytes and `FILE_ID_INFO` identity
+/// needed by the installer-provenance matcher.
+pub(crate) struct KeyAgentHeldRootObservation {
+    root_identity: KeyAgentStorageRootIdentity,
+    stable_user_sid_len: u8,
+    stable_user_sid: [u8; MAX_BINARY_SID_BYTES],
+    profile_sid_len: u8,
+    profile_sid: [u8; MAX_BINARY_SID_BYTES],
+}
+
+impl KeyAgentHeldRootObservation {
+    pub(crate) const fn root_identity(&self) -> KeyAgentStorageRootIdentity {
+        self.root_identity
+    }
+
+    pub(crate) fn stable_user_sid(&self) -> &[u8] {
+        &self.stable_user_sid[..usize::from(self.stable_user_sid_len)]
+    }
+
+    pub(crate) fn profile_sid(&self) -> &[u8] {
+        &self.profile_sid[..usize::from(self.profile_sid_len)]
+    }
+}
+
+impl fmt::Debug for KeyAgentHeldRootObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentHeldRootObservation([REDACTED IDENTITIES])")
     }
 }
 
@@ -1682,6 +1734,21 @@ impl OwnedSid {
     fn as_psid(&self) -> PSID {
         debug_assert!(self.byte_len <= size_of_val(&*self.words));
         PSID(self.words.as_ptr().cast_mut().cast::<c_void>())
+    }
+
+    fn canonical_bytes(&self) -> Result<(u8, [u8; MAX_BINARY_SID_BYTES]), KeyAgentStorageError> {
+        let byte_len =
+            u8::try_from(self.byte_len).map_err(|_| KeyAgentStorageError::ProfileBinding)?;
+        if !(MIN_BINARY_SID_BYTES..=MAX_BINARY_SID_BYTES).contains(&self.byte_len) {
+            return Err(KeyAgentStorageError::ProfileBinding);
+        }
+        let mut encoded = [0_u8; MAX_BINARY_SID_BYTES];
+        // SAFETY: construction validated `byte_len` against the owned aligned
+        // allocation, and this immutable view cannot outlive `self`.
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.byte_len) };
+        encoded[..self.byte_len].copy_from_slice(bytes);
+        Ok((byte_len, encoded))
     }
 }
 

@@ -4807,6 +4807,15 @@ const keyAgentLpacSource = await text(
 );
 const keyAgentLpac = withoutBottomTestModule(keyAgentLpacSource);
 const keyAgentLpacRelease = withoutCfgTestItems(keyAgentLpac);
+const keyAgentInstallAdoptionSource = await text(
+  "crates/platform-windows/src/key_agent_install_adoption.rs",
+);
+const keyAgentInstallAdoption = withoutBottomTestModule(
+  keyAgentInstallAdoptionSource,
+);
+const keyAgentInstallAdoptionRelease = withoutCfgTestItems(
+  keyAgentInstallAdoption,
+);
 const keyAgentInstallProvenanceSource = await text(
   "crates/platform-windows/src/key_agent_install_provenance.rs",
 );
@@ -6399,6 +6408,10 @@ const authenticatedKeyAgentInstallJournalBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+AuthenticatedKeyAgentInstallJournal\s*\{/u,
 );
+const authenticatedKeyAgentInstallSnapshotBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+AuthenticatedKeyAgentInstallSnapshot\s*\{/u,
+);
 const expectedKeyAgentInstallIdentitiesBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+ExpectedKeyAgentInstallIdentities\s*\{/u,
@@ -6415,6 +6428,10 @@ const consistentExistingKeyAgentInstallCandidateBlock = rustTopLevelLexicalItemB
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+ConsistentExistingKeyAgentInstallCandidate\s*\{/u,
 );
+const stableExistingKeyAgentInstallEvidenceBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallProvenanceRelease,
+  /pub\(crate\)\s+struct\s+StableExistingKeyAgentInstallEvidence\s*\{/u,
+);
 const keyAgentInstallDispositionBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+enum\s+KeyAgentInstallDisposition\s*\{/u,
@@ -6426,6 +6443,26 @@ const keyAgentInstallRecordBlock = rustTopLevelLexicalItemBlock(
 const classifyKeyAgentInstall = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "classify_key_agent_install",
+);
+const verifyExistingKeyAgentInstallSnapshots = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "verify_existing_key_agent_install_snapshots",
+);
+const consumeStableExistingKeyAgentInstallEvidence = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "consume_stable_existing_key_agent_install_evidence",
+);
+const sameAuthenticatedKeyAgentInstallSnapshot = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "same_authenticated_install_snapshot",
+);
+const observedInstallObjectsFromCanonical = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "observed_install_objects_from_canonical",
+);
+const canonicalObservedInstallSid = rustTopLevelFunctionBlock(
+  keyAgentInstallProvenanceRelease,
+  "canonical_observed_sid",
 );
 const exactCommittedKeyAgentInstallMatch = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
@@ -6495,6 +6532,25 @@ const installCheckpointCommitmentDomainConstant = rustTopLevelConstItem(
   keyAgentInstallProvenanceRelease,
   "INSTALL_CHECKPOINT_COMMITMENT_DOMAIN_V1",
 );
+const keyAgentInstallAdoptionReleaseCode = rustLexicalCode(
+  keyAgentInstallAdoptionRelease,
+);
+const existingInstallAdoptionSealBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+struct\s+ExistingInstallAdoptionSeal\s*\{/u,
+);
+const verifiedExistingKeyAgentInstallBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+struct\s+VerifiedExistingKeyAgentInstall\s*\{/u,
+);
+const keyAgentInstallAdoptionErrorBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+enum\s+KeyAgentInstallAdoptionError\s*\{/u,
+);
+const adoptExistingKeyAgentInstall = rustTopLevelFunctionBlock(
+  keyAgentInstallAdoptionRelease,
+  "adopt_existing_key_agent_install",
+);
 const provisionFreshKeyAgentBoundary = rustFunctionBlock(
   keyAgentSupervisor,
   "provision_fresh_key_agent_boundary",
@@ -6503,6 +6559,44 @@ const pendingKeyAgentProvisioningBlock = rustLexicalItemBlock(
   keyAgentLpacRelease,
   /pub\(crate\)\s+struct\s+PendingKeyAgentProvisioning\s*\{/u,
 );
+const heldExistingKeyAgentInstallObjectsBlock = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /pub\(crate\)\s+struct\s+HeldExistingKeyAgentInstallObjects\s*\{/u,
+);
+const heldExistingKeyAgentInstallObjectsImpl = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /impl\s+HeldExistingKeyAgentInstallObjects\s*\{/u,
+);
+const heldExistingKeyAgentInstallObjectsMethods = [
+  ...rustLexicalCode(heldExistingKeyAgentInstallObjectsImpl).matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const revalidateHeldExistingKeyAgentInstallObjects = rustFunctionBlock(
+  heldExistingKeyAgentInstallObjectsImpl,
+  "revalidate",
+);
+const observeHeldExistingKeyAgentInstallObjects = rustFunctionBlock(
+  heldExistingKeyAgentInstallObjectsImpl,
+  "install_observation",
+);
+const convertHeldExistingKeyAgentInstallObjects = rustFunctionBlock(
+  heldExistingKeyAgentInstallObjectsImpl,
+  "into_prepared",
+);
+const heldKeyAgentInstallObservationBlock = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /pub\(crate\)\s+struct\s+KeyAgentHeldInstallObservation\s*\{/u,
+);
+const heldKeyAgentInstallObservationImpl = rustLexicalItemBlock(
+  keyAgentLpacRelease,
+  /impl\s+KeyAgentHeldInstallObservation\s*\{/u,
+);
+const heldKeyAgentInstallObservationMethods = [
+  ...rustLexicalCode(heldKeyAgentInstallObservationImpl).matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
 const preparedKeyAgentProvisioningBlock = rustLexicalItemBlock(
   keyAgentLpacRelease,
   /pub\(crate\)\s+struct\s+PreparedKeyAgentProvisioning\s*\{/u,
@@ -6681,6 +6775,23 @@ const heldKeyAgentStorageRootDebug = rustLexicalItemBlock(
 );
 const heldKeyAgentStorageRootMethods = [
   ...heldKeyAgentStorageRootImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const heldKeyAgentStorageInstallObservation = rustFunctionBlock(
+  heldKeyAgentStorageRootImpl,
+  "install_observation",
+);
+const heldKeyAgentRootObservationDefinition = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /pub\(crate\)\s+struct\s+KeyAgentHeldRootObservation\s*\{/u,
+);
+const heldKeyAgentRootObservationImpl = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /impl\s+KeyAgentHeldRootObservation\s*\{/u,
+);
+const heldKeyAgentRootObservationMethods = [
+  ...heldKeyAgentRootObservationImpl.matchAll(
     /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
   ),
 ].map((match) => match.groups.name);
@@ -8319,6 +8430,7 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/helper.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
         "crates/platform-windows/src/key_agent_install_provenance.rs",
         "crates/platform-windows/src/key_agent_storage.rs",
         "crates/platform-windows/src/key_agent_supervisor.rs",
@@ -8373,11 +8485,13 @@ requireInvariant(
 );
 const keyAgentInstallProvenanceTypeNames = [
   "AuthenticatedKeyAgentInstallJournal",
+  "AuthenticatedKeyAgentInstallSnapshot",
   "ExpectedKeyAgentInstallIdentities",
   "ObservedKeyAgentInstallObjects",
   "UninitializedKeyAgentInstallCandidate",
   "ConsistentExistingKeyAgentInstallCandidate",
   "KeyAgentInstallDisposition",
+  "StableExistingKeyAgentInstallEvidence",
 ];
 const keyAgentInstallProvenanceExternalTokenNames = [
   ...keyAgentInstallProvenanceTypeNames,
@@ -8385,6 +8499,8 @@ const keyAgentInstallProvenanceExternalTokenNames = [
   "AuthenticatedKeyAgentInstallCheckpoint",
   "validate_authenticated_install_journal",
   "classify_key_agent_install",
+  "verify_existing_key_agent_install_snapshots",
+  "consume_stable_existing_key_agent_install_evidence",
 ];
 const keyAgentInstallProvenanceModuleConsumers = platformWindowsProductionFiles
   .filter(
@@ -8440,6 +8556,30 @@ const validateAuthenticatedKeyAgentInstallJournalConsumers =
         ).length > 0,
     )
     .map((file) => file.path);
+const verifyExistingKeyAgentInstallSnapshotsConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+        rustCallSites(
+          file.source,
+          "verify_existing_key_agent_install_snapshots",
+        ).length > 0,
+    )
+    .map((file) => file.path);
+const consumeStableExistingKeyAgentInstallEvidenceConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_provenance.rs" &&
+        rustCallSites(
+          file.source,
+          "consume_stable_existing_key_agent_install_evidence",
+        ).length > 0,
+    )
+    .map((file) => file.path);
 const freshKeyAgentBoundaryConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
@@ -8480,9 +8620,14 @@ const provenanceImplHeaders = provenanceImplItems.map((item) => item.header);
 const expectedProvenanceImplHeaders = [
   "impl fmt::Debug for InstallerJournalAuthenticationKey",
   "impl fmt::Debug for AuthenticatedKeyAgentInstallCheckpoint",
-  ...keyAgentInstallProvenanceTypeNames.map(
-    (name) => `impl fmt::Debug for ${name}`,
-  ),
+  "impl fmt::Debug for AuthenticatedKeyAgentInstallJournal",
+  "impl fmt::Debug for AuthenticatedKeyAgentInstallSnapshot",
+  "impl fmt::Debug for ExpectedKeyAgentInstallIdentities",
+  "impl fmt::Debug for ObservedKeyAgentInstallObjects",
+  "impl fmt::Debug for UninitializedKeyAgentInstallCandidate",
+  "impl fmt::Debug for ConsistentExistingKeyAgentInstallCandidate",
+  "impl fmt::Debug for KeyAgentInstallDisposition",
+  "impl fmt::Debug for StableExistingKeyAgentInstallEvidence",
 ];
 const provenanceReleaseAttributes = [
   ...keyAgentInstallProvenanceReleaseCode.matchAll(/#\s*\[[^\]]*\]/gu),
@@ -8560,6 +8705,7 @@ const provenanceVerifierHelperOccurrenceCounts = [
 );
 const provenanceAuthorityConstructionCounts = [
   "AuthenticatedKeyAgentInstallJournal",
+  "AuthenticatedKeyAgentInstallSnapshot",
   "ExpectedKeyAgentInstallIdentities",
   "ObservedKeyAgentInstallObjects",
 ].map(
@@ -8576,6 +8722,7 @@ const provenancePrivateAuthorityConstructionCounts = [
 const provenanceCandidateConstructionCounts = [
   "UninitializedKeyAgentInstallCandidate",
   "ConsistentExistingKeyAgentInstallCandidate",
+  "StableExistingKeyAgentInstallEvidence",
 ].map(
   (name) =>
     rustStructLiteralSites(keyAgentInstallProvenanceRelease, name).length,
@@ -8584,10 +8731,12 @@ const provenanceAuthorityBlocks = [
   installerJournalAuthenticationKeyBlock,
   authenticatedKeyAgentInstallCheckpointBlock,
   authenticatedKeyAgentInstallJournalBlock,
+  authenticatedKeyAgentInstallSnapshotBlock,
   expectedKeyAgentInstallIdentitiesBlock,
   observedKeyAgentInstallObjectsBlock,
   uninitializedKeyAgentInstallCandidateBlock,
   consistentExistingKeyAgentInstallCandidateBlock,
+  stableExistingKeyAgentInstallEvidenceBlock,
 ];
 const provenanceForbiddenProductionPatterns = [
   /\bunsafe\b/u,
@@ -8644,6 +8793,24 @@ const compactValidateNonemptyKeyAgentInstallJournalHistory = compactRust(
 const compactValidateAuthenticatedKeyAgentInstallJournal = compactRust(
   validateAuthenticatedKeyAgentInstallJournal,
 );
+const compactVerifyExistingKeyAgentInstallSnapshots = compactRust(
+  verifyExistingKeyAgentInstallSnapshots,
+);
+const compactObservedInstallObjectsFromCanonical = compactRust(
+  observedInstallObjectsFromCanonical,
+);
+const verifyExistingSnapshotSameCalls = rustCallSites(
+  verifyExistingKeyAgentInstallSnapshots,
+  "same_authenticated_install_snapshot",
+);
+const verifyExistingSnapshotObservationCalls = rustCallSites(
+  verifyExistingKeyAgentInstallSnapshots,
+  "observed_install_objects_from_canonical",
+);
+const verifyExistingSnapshotClassifierCalls = rustCallSites(
+  verifyExistingKeyAgentInstallSnapshots,
+  "classify_key_agent_install",
+);
 const validateCheckpointCommitmentCalls = rustCallSites(
   validateAuthenticatedKeyAgentInstallJournal,
   "install_checkpoint_commitment",
@@ -8699,26 +8866,48 @@ requireInvariant(
       platformWindowsLibWithoutInstallProvenanceDeclaration,
     ) &&
     JSON.stringify(keyAgentInstallProvenanceModuleConsumers) ===
-      JSON.stringify([]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
     JSON.stringify(keyAgentInstallProvenanceRawInclusionConsumers) ===
       JSON.stringify([]) &&
-    JSON.stringify(keyAgentInstallProvenanceConsumers) === JSON.stringify([]) &&
+    JSON.stringify(keyAgentInstallProvenanceConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
     JSON.stringify(classifyKeyAgentInstallConsumers) === JSON.stringify([]) &&
     JSON.stringify(validateAuthenticatedKeyAgentInstallJournalConsumers) ===
       JSON.stringify([]) &&
+    JSON.stringify(verifyExistingKeyAgentInstallSnapshotsConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    JSON.stringify(consumeStableExistingKeyAgentInstallEvidenceConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
     JSON.stringify(freshKeyAgentBoundaryConsumers) === JSON.stringify([]) &&
     JSON.stringify(pendingToPreparedConsumers) === JSON.stringify([]) &&
     JSON.stringify(provenanceVisibleTypes) ===
       JSON.stringify(keyAgentInstallProvenanceTypeNames) &&
     JSON.stringify(provenanceVisibleFunctions) ===
-      JSON.stringify(["classify_key_agent_install"]) &&
-    provenancePublicVisibilitySites.length === 7 &&
-    JSON.stringify(provenanceReleaseAttributes) ===
       JSON.stringify([
-        "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
-        "#[derive(Eq,PartialEq)]",
-        "#[allow(clippy::needless_pass_by_value)]",
+        "classify_key_agent_install",
+        "consume_stable_existing_key_agent_install_evidence",
+        "verify_existing_key_agent_install_snapshots",
       ]) &&
+    provenancePublicVisibilitySites.length === 11 &&
+    provenanceReleaseAttributes.length === 6 &&
+    provenanceReleaseAttributes.includes(
+      "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
+    ) &&
+    provenanceReleaseAttributes.includes("#[derive(Eq,PartialEq)]") &&
+    provenanceReleaseAttributes.filter(
+      (attribute) => attribute === "#[allow(clippy::needless_pass_by_value)]",
+    ).length === 3 &&
+    keyAgentInstallProvenanceRelease.includes(
+      '#[must_use = "stable existing-install evidence must remain bound to held objects"]',
+    ) &&
     JSON.stringify(provenanceUseItems) ===
       JSON.stringify([
         "usecore::fmt;",
@@ -8727,13 +8916,13 @@ requireInvariant(
         "usesha2::{Digest,Sha256};",
         "usesubtle::ConstantTimeEq;",
         "usezeroize::Zeroizing;",
-        "usecrate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;",
+        "usecrate::key_agent_lpac::{KEY_AGENT_PROFILE_V1_NAME,KeyAgentHeldInstallObservation};",
         "usecrate::key_agent_storage::KeyAgentStorageRootIdentity;",
       ]) &&
     JSON.stringify(provenanceCrateModulePaths) ===
       JSON.stringify(["key_agent_lpac", "key_agent_storage"]) &&
     JSON.stringify(provenanceTypeDefinitionCounts) ===
-      JSON.stringify([1, 1, 1, 1, 1, 1]) &&
+      JSON.stringify([1, 1, 1, 1, 1, 1, 1, 1]) &&
     provenancePinnedConstantDefinitionCounts.length === 10 &&
     provenancePinnedConstantDefinitionCounts.every((count) => count === 1) &&
     JSON.stringify(provenancePinnedByteStringOccurrenceCounts) ===
@@ -8743,7 +8932,7 @@ requireInvariant(
     JSON.stringify(provenanceImplHeaders) ===
       JSON.stringify(expectedProvenanceImplHeaders) &&
     JSON.stringify(provenanceAuthorityConstructionCounts) ===
-      JSON.stringify([1, 1, 0]) &&
+      JSON.stringify([1, 1, 1, 1]) &&
     JSON.stringify(provenancePrivateAuthorityConstructionCounts) ===
       JSON.stringify([1, 1]) &&
     rustStructLiteralSites(
@@ -8756,6 +8945,10 @@ requireInvariant(
     ).length === 1 &&
     rustStructLiteralSites(
       validateAuthenticatedKeyAgentInstallJournal,
+      "AuthenticatedKeyAgentInstallSnapshot",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      validateAuthenticatedKeyAgentInstallJournal,
       "InstallerJournalAuthenticationKey",
     ).length === 1 &&
     rustStructLiteralSites(
@@ -8763,12 +8956,20 @@ requireInvariant(
       "AuthenticatedKeyAgentInstallCheckpoint",
     ).length === 1 &&
     JSON.stringify(provenanceCandidateConstructionCounts) ===
-      JSON.stringify([1, 1]) &&
+      JSON.stringify([1, 1, 1]) &&
+    rustStructLiteralSites(
+      verifyExistingKeyAgentInstallSnapshots,
+      "StableExistingKeyAgentInstallEvidence",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      observedInstallObjectsFromCanonical,
+      "ObservedKeyAgentInstallObjects",
+    ).length === 1 &&
     rustStructLiteralSites(keyAgentInstallProvenanceRelease, "Self").length === 0 &&
     rustCallSites(
       keyAgentInstallProvenanceRelease,
       "classify_key_agent_install",
-    ).length === 1 &&
+    ).length === 2 &&
     provenanceAuthorityBlocks.every(
       (block) =>
         block !== "" &&
@@ -8848,18 +9049,18 @@ requireInvariant(
     compactDecodeKeyAgentInstallJournalRecordBody.includes(
       "ifencoded[RECORD_MAGIC_OFFSET..RECORD_SCHEMA_OFFSET]!=INSTALL_JOURNAL_RECORD_MAGIC_V1||",
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*pub\(crate\)\s+(?:struct|enum)\s+(?:AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|KeyAgentInstallDisposition)\b/u.test(
+    !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*pub\(crate\)\s+(?:struct|enum)\s+(?:AuthenticatedKeyAgentInstallJournal|AuthenticatedKeyAgentInstallSnapshot|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|KeyAgentInstallDisposition|StableExistingKeyAgentInstallEvidence)\b/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*struct\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint)\b/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
-    !/impl\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint|AuthenticatedKeyAgentInstallJournal|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate)\s*\{/u.test(
+    !/impl\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint|AuthenticatedKeyAgentInstallJournal|AuthenticatedKeyAgentInstallSnapshot|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|StableExistingKeyAgentInstallEvidence)\s*\{/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
     (keyAgentInstallProvenanceReleaseCode.match(
       /_not_send_or_sync:\s*PhantomData<\*mut \(\)>/gu,
-    ) ?? []).length === 7 &&
+    ) ?? []).length === 9 &&
     keyAgentInstallProvenanceReleaseCode.includes("struct JournalEvidenceSeal;") &&
     keyAgentInstallProvenanceReleaseCode.includes("struct ExpectedIdentitySeal;") &&
     keyAgentInstallProvenanceReleaseCode.includes("struct OsObservationSeal;") &&
@@ -8876,18 +9077,57 @@ requireInvariant(
     authenticatedKeyAgentInstallJournalBlock.includes(
       "_seal: JournalEvidenceSeal",
     ) &&
+    authenticatedKeyAgentInstallSnapshotBlock.includes(
+      "journal: AuthenticatedKeyAgentInstallJournal",
+    ) &&
+    authenticatedKeyAgentInstallSnapshotBlock.includes(
+      "expected: ExpectedKeyAgentInstallIdentities",
+    ) &&
+    authenticatedKeyAgentInstallSnapshotBlock.includes(
+      "current_record_digest: [u8; INSTALL_JOURNAL_DIGEST_BYTES]",
+    ) &&
     expectedKeyAgentInstallIdentitiesBlock.includes(
       "_seal: ExpectedIdentitySeal",
     ) &&
     observedKeyAgentInstallObjectsBlock.includes("_seal: OsObservationSeal") &&
     keyAgentInstallProvenanceReleaseCode.includes(
-      "use crate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;",
+      "KeyAgentHeldInstallObservation",
     ) &&
     !keyAgentInstallProvenanceReleaseCode.includes(
       "YourWallet.KeyAgent.LPAC.v1",
     ) &&
     /pub\(crate\)\s+fn\s+classify_key_agent_install\s*\(\s*journal:\s*AuthenticatedKeyAgentInstallJournal,\s*expected:\s*ExpectedKeyAgentInstallIdentities,\s*objects:\s*ObservedKeyAgentInstallObjects,?\s*\)\s*->\s*KeyAgentInstallDisposition/u.test(
       classifyKeyAgentInstall,
+    ) &&
+    /pub\(crate\)\s+fn\s+verify_existing_key_agent_install_snapshots\s*\(\s*initial:\s*AuthenticatedKeyAgentInstallSnapshot,\s*reread:\s*AuthenticatedKeyAgentInstallSnapshot,\s*observation:\s*KeyAgentHeldInstallObservation,?\s*\)\s*->\s*Option<\s*StableExistingKeyAgentInstallEvidence\s*>/u.test(
+      verifyExistingKeyAgentInstallSnapshots,
+    ) &&
+    JSON.stringify(verifyExistingSnapshotSameCalls.map((call) => call.arguments)) ===
+      JSON.stringify([["&initial", "&reread"]]) &&
+    JSON.stringify(
+      verifyExistingSnapshotObservationCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["&observation"]]) &&
+    JSON.stringify(
+      verifyExistingSnapshotClassifierCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([["initial.journal", "initial.expected", "objects"]]) &&
+    compactVerifyExistingKeyAgentInstallSnapshots.includes(
+      "journal_generation!=COMMITTED_JOURNAL_GENERATION_V1",
+    ) &&
+    compactVerifyExistingKeyAgentInstallSnapshots.includes(
+      "!valid_digest(&journal_record_digest)",
+    ) &&
+    compactVerifyExistingKeyAgentInstallSnapshots.includes(
+      "letKeyAgentInstallDisposition::ConsistentExisting(candidate)=dispositionelse",
+    ) &&
+    compactObservedInstallObjectsFromCanonical.includes(
+      "profile:Some(ObservedKeyAgentProfile",
+    ) &&
+    compactObservedInstallObjectsFromCanonical.includes(
+      "root:Some(ObservedKeyAgentStorageRoot",
+    ) &&
+    /pub\(crate\)\s+fn\s+consume_stable_existing_key_agent_install_evidence\s*\(\s*evidence:\s*StableExistingKeyAgentInstallEvidence,?\s*\)/u.test(
+      consumeStableExistingKeyAgentInstallEvidence,
     ) &&
     /Uninitialized\s*\(\s*UninitializedKeyAgentInstallCandidate\s*\)/u.test(
       keyAgentInstallDispositionBlock,
@@ -9115,7 +9355,361 @@ requireInvariant(
     !keyAgentInstallProvenanceReleaseCode.includes(
       "PreparedKeyAgentProvisioning",
     ),
-  "Key Agent install provenance must retain its exact canonical HMAC journal/checkpoint verifier, phase history, three sealed classifier facts, zero production consumers, non-launchable Pending freshness, and no Pending/candidate-to-Prepared conversion",
+  "Key Agent install provenance must retain its exact canonical HMAC journal/checkpoint verifier, phase history, sealed classifier facts, one exact pure adoption consumer, non-launchable Pending freshness, and no Pending/candidate-to-Prepared conversion",
+);
+const keyAgentInstallAdoptionTypeNames = [
+  "ExistingInstallAdoptionSeal",
+  "VerifiedExistingKeyAgentInstall",
+  "KeyAgentInstallAdoptionError",
+];
+const keyAgentInstallAdoptionExternalTokenNames = [
+  ...keyAgentInstallAdoptionTypeNames,
+  "adopt_existing_key_agent_install",
+];
+const keyAgentInstallAdoptionModuleConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bkey_agent_install_adoption\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const keyAgentInstallAdoptionConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      keyAgentInstallAdoptionExternalTokenNames.some((name) =>
+        new RegExp(`\\b${name}\\b`, "u").test(rustLexicalCode(file.source)),
+      ),
+  )
+  .map((file) => file.path);
+const adoptExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      rustCallSites(file.source, "adopt_existing_key_agent_install").length > 0,
+  )
+  .map((file) => file.path);
+const convertHeldExistingKeyAgentInstallConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_lpac.rs" &&
+        rustCallSites(file.source, "into_prepared").length > 0,
+    )
+    .map((file) => file.path);
+const keyAgentInstallAdoptionVisibleTypes = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?\s+(?:struct|enum|union)\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const keyAgentInstallAdoptionVisibleFunctions = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?\s+(?:(?:const|async|unsafe)\s+)*(?:extern(?:\s+"[^"\r\n]*")?\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const keyAgentInstallAdoptionVisibleFunctionInventory = rustVisibleFunctionItems(
+  keyAgentInstallAdoptionRelease,
+);
+const keyAgentInstallAdoptionPublicVisibilitySites = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(
+    /\bpub(?:\s*\([^\r\n)]*\))?/gu,
+  ),
+];
+const keyAgentInstallAdoptionImplHeaders = rustImplItems(
+  keyAgentInstallAdoptionRelease,
+).map((item) => item.header);
+const keyAgentInstallAdoptionAttributes = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(/#\s*\[[^\]]*\]/gu),
+].map((match) => compactRust(match[0]));
+const keyAgentInstallAdoptionUseItems = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(/\buse\s+[^;]+;/gu),
+].map((match) => compactRust(match[0]));
+const keyAgentInstallAdoptionCrateModulePaths = [
+  ...keyAgentInstallAdoptionReleaseCode.matchAll(
+    /\bcrate::(?<module>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.module);
+const keyAgentInstallAdoptionTypeAliases = rustTypeAliasItems(
+  keyAgentInstallAdoptionRelease,
+).map((item) => compactRust(item.source));
+const keyAgentInstallAdoptionMacroInvocations = rustMacroInvocations(
+  keyAgentInstallAdoptionRelease,
+);
+const keyAgentInstallAdoptionTypeDefinitionCounts =
+  keyAgentInstallAdoptionTypeNames.map(
+    (name) =>
+      (
+        keyAgentInstallAdoptionReleaseCode.match(
+          new RegExp(`\\b(?:struct|enum|union)\\s+${name}\\b`, "gu"),
+        ) ?? []
+      ).length,
+  );
+const keyAgentInstallAdoptionConstructionCounts = [
+  "ExistingInstallAdoptionSeal",
+  "VerifiedExistingKeyAgentInstall",
+].map(
+  (name) =>
+    rustStructLiteralSites(keyAgentInstallAdoptionRelease, name).length,
+);
+const heldExistingKeyAgentInstallConstructionSites =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustStructLiteralSites(file.source, "HeldExistingKeyAgentInstallObjects").map(
+      () => file.path,
+    ),
+  );
+const keyAgentInstallAdoptionSealConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bExistingInstallAdoptionSeal\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const verifiedExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bVerifiedExistingKeyAgentInstall\b/u.test(
+        rustLexicalCode(file.source),
+      ),
+  )
+  .map((file) => file.path);
+const keyAgentInstallAdoptionErrorConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bKeyAgentInstallAdoptionError\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const keyAgentInstallAdoptionForbiddenProductionPatterns = [
+  /\bunsafe\b/u,
+  /\b(?:async|await|union|macro_rules)\b/u,
+  /\bextern\b/u,
+  /\bstd\b/u,
+  /\bwindows(?:::|_sys\b)/u,
+  /\bWin32\b/u,
+  /\b(?:File|OpenOptions|Command)\b/u,
+  /\b(?:getrandom|hmac|sha2|subtle|zeroize)::/u,
+  /\b(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint)\b/u,
+  /\b(?:Box|Rc|Arc|Mutex|RwLock|OnceLock|ManuallyDrop|MaybeUninit)\b/u,
+  /\b(?:transmute(?:_copy)?|forget|from_raw|into_raw|leak)\b/u,
+  /\b(?:DeviceKeyBundle|LocalSettings|GenerationStore|settings|registry)\b/u,
+  /\buse\b[^;]*\bas\s+[A-Za-z_]\w*/u,
+  /\b(?:Create|Open|Delete|Remove|Move|Reg|CryptProtect|NCrypt|BCrypt|Tpm)\w*\s*\(/u,
+];
+const keyAgentInstallAdoptionForbiddenTraitImpl = new RegExp(
+  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall)\\b`,
+  "u",
+);
+const compactAdoptExistingKeyAgentInstall = compactRust(
+  adoptExistingKeyAgentInstall,
+);
+const adoptExistingKeyAgentInstallOrder = [
+  compactAdoptExistingKeyAgentInstall.indexOf("held.revalidate()"),
+  compactAdoptExistingKeyAgentInstall.indexOf(
+    "letobservation=held.install_observation()",
+  ),
+  compactAdoptExistingKeyAgentInstall.indexOf(
+    "verify_existing_key_agent_install_snapshots(initial,reread,observation)",
+  ),
+  compactAdoptExistingKeyAgentInstall.indexOf(
+    "consume_stable_existing_key_agent_install_evidence(stable)",
+  ),
+  compactAdoptExistingKeyAgentInstall.lastIndexOf("held.revalidate()"),
+  compactAdoptExistingKeyAgentInstall.indexOf(
+    "held.into_prepared(ExistingInstallAdoptionSeal{_private:()})",
+  ),
+  compactAdoptExistingKeyAgentInstall.indexOf(
+    "Ok(VerifiedExistingKeyAgentInstall{",
+  ),
+];
+const keyAgentInstallAdoptionExpectedTests = [
+  "exact_held_objects_and_unchanged_committed_snapshots_mint_adoption",
+  "checkpoint_reread_drift_and_uncommitted_history_require_recovery",
+  "held_root_identity_mismatch_requires_recovery",
+  "held_sid_bindings_must_match_authenticated_snapshots",
+  "adoption_authority_is_send_only_noncopy_and_redacted",
+];
+requireInvariant(
+  platformWindowsLib.includes(
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod key_agent_install_adoption;",
+  ) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_install_adoption\b/u.test(
+      platformWindowsLib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_install_adoption/u.test(
+      platformWindowsLibCode,
+    ) &&
+    JSON.stringify(keyAgentInstallAdoptionModuleConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+    JSON.stringify(keyAgentInstallAdoptionConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+    JSON.stringify(keyAgentInstallAdoptionSealConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+    JSON.stringify(verifiedExistingKeyAgentInstallConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(keyAgentInstallAdoptionErrorConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(adoptExistingKeyAgentInstallConsumers) === JSON.stringify([]) &&
+    JSON.stringify(convertHeldExistingKeyAgentInstallConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    JSON.stringify(keyAgentInstallAdoptionVisibleTypes) ===
+      JSON.stringify(keyAgentInstallAdoptionTypeNames) &&
+    JSON.stringify(keyAgentInstallAdoptionVisibleFunctions) ===
+      JSON.stringify(["adopt_existing_key_agent_install"]) &&
+    JSON.stringify(keyAgentInstallAdoptionVisibleFunctionInventory) ===
+      JSON.stringify([
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "adopt_existing_key_agent_install",
+          signature:
+            "fnadopt_existing_key_agent_install(initial:AuthenticatedKeyAgentInstallSnapshot,held:HeldExistingKeyAgentInstallObjects,reread:AuthenticatedKeyAgentInstallSnapshot,)->Result<VerifiedExistingKeyAgentInstall,KeyAgentInstallAdoptionError>",
+        },
+      ]) &&
+    keyAgentInstallAdoptionPublicVisibilitySites.length === 4 &&
+    JSON.stringify(keyAgentInstallAdoptionImplHeaders) ===
+      JSON.stringify([
+        "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
+        "impl fmt::Display for KeyAgentInstallAdoptionError",
+        "impl fmt::Debug for KeyAgentInstallAdoptionError",
+        "impl core::error::Error for KeyAgentInstallAdoptionError",
+      ]) &&
+    JSON.stringify(keyAgentInstallAdoptionAttributes) ===
+      JSON.stringify([
+        "#[must_use=]",
+        "#[derive(Clone,Copy,Eq,PartialEq)]",
+        "#[allow(clippy::needless_pass_by_value)]",
+      ]) &&
+    JSON.stringify(keyAgentInstallAdoptionUseItems) ===
+      JSON.stringify([
+        "usecore::cell::Cell;",
+        "usecore::fmt;",
+        "usecore::marker::PhantomData;",
+        "usecrate::key_agent_install_provenance::{AuthenticatedKeyAgentInstallSnapshot,consume_stable_existing_key_agent_install_evidence,verify_existing_key_agent_install_snapshots,};",
+        "usecrate::key_agent_lpac::{HeldExistingKeyAgentInstallObjects,PreparedKeyAgentProvisioning};",
+      ]) &&
+    JSON.stringify(keyAgentInstallAdoptionCrateModulePaths) ===
+      JSON.stringify(["key_agent_install_provenance", "key_agent_lpac"]) &&
+    JSON.stringify(keyAgentInstallAdoptionTypeAliases) === JSON.stringify([]) &&
+    keyAgentInstallAdoptionMacroInvocations.length === 0 &&
+    JSON.stringify(keyAgentInstallAdoptionTypeDefinitionCounts) ===
+      JSON.stringify([1, 1, 1]) &&
+    JSON.stringify(keyAgentInstallAdoptionConstructionCounts) ===
+      JSON.stringify([1, 1]) &&
+    JSON.stringify(heldExistingKeyAgentInstallConstructionSites) ===
+      JSON.stringify([]) &&
+    rustStructLiteralSites(
+      adoptExistingKeyAgentInstall,
+      "ExistingInstallAdoptionSeal",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      adoptExistingKeyAgentInstall,
+      "VerifiedExistingKeyAgentInstall",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      adoptExistingKeyAgentInstall,
+      "PreparedKeyAgentProvisioning",
+    ).length === 0 &&
+    rustStructLiteralSites(
+      convertHeldExistingKeyAgentInstallObjects,
+      "PreparedKeyAgentProvisioning",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      convertHeldExistingKeyAgentInstallObjects,
+      "ExistingInstallAdoptionSeal",
+    ).length === 0 &&
+    compactRust(existingInstallAdoptionSealBlock) ===
+      "pub(crate)structExistingInstallAdoptionSeal{_private:(),}" &&
+    compactRust(verifiedExistingKeyAgentInstallBlock) ===
+      "pub(crate)structVerifiedExistingKeyAgentInstall{provisioning:PreparedKeyAgentProvisioning,installation_id:[u8;32],release_identity:[u8;32],journal_generation:u64,journal_record_digest:[u8;32],_not_sync:PhantomData<Cell<()>>,}" &&
+    compactRust(keyAgentInstallAdoptionErrorBlock) ===
+      "pub(crate)enumKeyAgentInstallAdoptionError{RecoveryRequired,}" &&
+    !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(
+      keyAgentInstallAdoptionReleaseCode,
+    ) &&
+    !/impl\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall)\s*\{/u.test(
+      keyAgentInstallAdoptionReleaseCode,
+    ) &&
+    !keyAgentInstallAdoptionForbiddenProductionPatterns.some((pattern) =>
+      pattern.test(keyAgentInstallAdoptionReleaseCode),
+    ) &&
+    !keyAgentInstallAdoptionForbiddenTraitImpl.test(
+      keyAgentInstallAdoptionReleaseCode,
+    ) &&
+    rustAuthorityTypeErasureSites(keyAgentInstallAdoptionRelease).length === 0 &&
+    !/\btrait\b/u.test(keyAgentInstallAdoptionReleaseCode) &&
+    !/\b(?:unwrap|expect|panic)\s*!?\s*\(/u.test(
+      keyAgentInstallAdoptionReleaseCode,
+    ) &&
+    (keyAgentInstallAdoptionReleaseCode.match(
+      /\bKeyAgentInstallAdoptionError::RecoveryRequired\b/gu,
+    ) ?? []).length === 4 &&
+    rustCallSites(adoptExistingKeyAgentInstall, "revalidate").length === 2 &&
+    JSON.stringify(
+      rustCallSites(adoptExistingKeyAgentInstall, "revalidate").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([[], []]) &&
+    rustCallSites(adoptExistingKeyAgentInstall, "install_observation").length ===
+      1 &&
+    JSON.stringify(
+      rustCallSites(adoptExistingKeyAgentInstall, "install_observation").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([[]]) &&
+    rustCallSites(
+      adoptExistingKeyAgentInstall,
+      "verify_existing_key_agent_install_snapshots",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        adoptExistingKeyAgentInstall,
+        "verify_existing_key_agent_install_snapshots",
+      ).map((call) => call.arguments),
+    ) === JSON.stringify([["initial", "reread", "observation"]]) &&
+    rustCallSites(
+      adoptExistingKeyAgentInstall,
+      "consume_stable_existing_key_agent_install_evidence",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        adoptExistingKeyAgentInstall,
+        "consume_stable_existing_key_agent_install_evidence",
+      ).map((call) => call.arguments),
+    ) === JSON.stringify([["stable"]]) &&
+    rustCallSites(adoptExistingKeyAgentInstall, "into_prepared").length === 1 &&
+    JSON.stringify(
+      rustCallSites(adoptExistingKeyAgentInstall, "into_prepared").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["ExistingInstallAdoptionSeal { _private: () }"]]) &&
+    adoptExistingKeyAgentInstallOrder.every((position) => position !== -1) &&
+    adoptExistingKeyAgentInstallOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > adoptExistingKeyAgentInstallOrder[index],
+      ) &&
+    keyAgentInstallAdoptionReleaseCode.includes(
+      "_not_sync: PhantomData<Cell<()>>",
+    ) &&
+    keyAgentInstallAdoptionSource.includes(
+      'VerifiedExistingKeyAgentInstall([HELD; REDACTED])',
+    ) &&
+    keyAgentInstallAdoptionSource.includes(
+      "future backend must enforce that temporal ordering",
+    ) &&
+    keyAgentInstallAdoptionExpectedTests.every((name) =>
+      keyAgentInstallAdoptionSource.includes(`fn ${name}`),
+    ),
+  "existing Key Agent adoption must remain a private dormant, handle-retaining, exact two-snapshot transition with no production caller or alternate authority mint",
 );
 const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
   .filter(
@@ -9290,7 +9884,29 @@ requireInvariant(
       "LOW_MANDATORY_LABEL_SID",
     ) &&
     JSON.stringify(heldKeyAgentStorageRootMethods) ===
-      JSON.stringify(["identity", "revalidate", "path_for_test"]) &&
+      JSON.stringify([
+        "identity",
+        "install_observation",
+        "revalidate",
+        "path_for_test",
+      ]) &&
+    normalizeRustFragment(rustLexicalCode(heldKeyAgentRootObservationDefinition)) ===
+      "pub(crate) struct KeyAgentHeldRootObservation { root_identity: KeyAgentStorageRootIdentity, stable_user_sid_len: u8, stable_user_sid: [u8; MAX_BINARY_SID_BYTES], profile_sid_len: u8, profile_sid: [u8; MAX_BINARY_SID_BYTES], }" &&
+    JSON.stringify(heldKeyAgentRootObservationMethods) ===
+      JSON.stringify(["root_identity", "stable_user_sid", "profile_sid"]) &&
+    rustStructLiteralSites(
+      heldKeyAgentStorageInstallObservation,
+      "KeyAgentHeldRootObservation",
+    ).length === 1 &&
+    heldKeyAgentStorageInstallObservation.includes(
+      "self.stable_user_sid.canonical_bytes()?",
+    ) &&
+    heldKeyAgentStorageInstallObservation.includes(
+      "self.profile_sid.canonical_bytes()?",
+    ) &&
+    keyAgentStorageSource.includes(
+      "KeyAgentHeldRootObservation([REDACTED IDENTITIES])",
+    ) &&
     heldKeyAgentStorageRootImpl.includes(
       "#[cfg(test)]\n    pub(crate) fn path_for_test",
     ) &&
@@ -11238,6 +11854,12 @@ const keyAgentLpacAuthorityAttributeInventory = [
     ),
   },
   {
+    target: "HeldExistingKeyAgentInstallObjects",
+    index: keyAgentLpacReleaseCode.search(
+      /\bpub\(crate\)\s+struct\s+HeldExistingKeyAgentInstallObjects\b/u,
+    ),
+  },
+  {
     target: "PreparedKeyAgentProvisioning",
     index: keyAgentLpacReleaseCode.search(
       /\bpub\(crate\)\s+struct\s+PreparedKeyAgentProvisioning\b/u,
@@ -11261,6 +11883,7 @@ const keyAgentLpacAuthorityAttributeInventory = [
 }));
 const platformWindowsLibCodeForAttributes = rustLexicalCode(platformWindowsLib);
 const keyAgentSensitiveModuleAttributeInventory = [
+  "key_agent_install_adoption",
   "key_agent_install_provenance",
   "key_agent_lpac",
 ].map((moduleName) => {
@@ -11323,9 +11946,9 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 4 },
-  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 17 },
+  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 18 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
-  { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 19 },
+  { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 15 },
   { path: "crates/platform-windows/src/pipe.rs", sites: 4 },
   { path: "crates/platform-windows/src/storage/sys.rs", sites: 18 },
@@ -11373,8 +11996,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
-    unsafeCount: 37,
-    sha256: "f160b1663af832f59331ff2a8c214d784f437e0f75287d4e1dbba3ff2c69aade",
+    unsafeCount: 38,
+    sha256: "a5529179a21a58412b26e245b3edb66d179689c8ea90e45f3efaf043e6128d0a",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -11383,8 +12006,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
-    unsafeCount: 55,
-    sha256: "adc8c058cc85a84ee9db8a67b44d74ca186ac758b86233824d876f2ddf19e3e7",
+    unsafeCount: 56,
+    sha256: "0125c5d4c9b6c65b8afded7240ecae6ebeba43e21f7398b01b18ce97bd8aae23",
   },
   {
     path: "crates/platform-windows/src/launch.rs",
@@ -11484,22 +12107,30 @@ const pendingKeyAgentProvisioningImplHeaders =
   }));
 const keyAgentProvisioningAuthorityTypeNames = [
   "PendingKeyAgentProvisioning",
+  "HeldExistingKeyAgentInstallObjects",
   "PreparedKeyAgentProvisioning",
   "PreparedKeyAgentLpac",
   "VerifiedKeyAgentLpac",
+  "ExistingInstallAdoptionSeal",
+  "VerifiedExistingKeyAgentInstall",
 ];
 const keyAgentProvisioningAuthorityTypePattern = new RegExp(
   `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")})\\b`,
   "u",
 );
-const keyAgentProvisioningAuthorityImplHeaders =
+const keyAgentProvisioningAuthorityImplItems =
   platformWindowsProductionFiles.flatMap((file) =>
     rustImplItems(file.source)
       .filter((item) =>
         keyAgentProvisioningAuthorityTypePattern.test(item.header),
       )
-      .map(({ header }) => ({ path: file.path, header })),
+      .map((item) => ({ path: file.path, ...item })),
   );
+const keyAgentProvisioningAuthorityImplHeaders =
+  keyAgentProvisioningAuthorityImplItems.map(({ path, header }) => ({
+    path,
+    header,
+  }));
 const keyAgentProvisioningAuthorityAliases =
   platformWindowsProductionFiles.flatMap((file) => [
     ...rustUseItems(file.source)
@@ -11519,10 +12150,8 @@ const keyAgentProvisioningAuthorityAliases =
       )
       .map((item) => ({ path: file.path, source: compactRust(item.source) })),
   ]);
-const keyAgentProvisioningImplAttributeInventory = [
-  ...preparedKeyAgentProvisioningImplItems,
-  ...pendingKeyAgentProvisioningImplItems,
-].map((item) => {
+const keyAgentProvisioningImplAttributeInventory =
+  keyAgentProvisioningAuthorityImplItems.map((item) => {
   const source = platformWindowsProductionFiles.find(
     (file) => file.path === item.path,
   )?.source;
@@ -11535,13 +12164,15 @@ const keyAgentProvisioningImplAttributeInventory = [
       (attribute) => compactRust(attribute.source),
     ),
   };
-});
+  });
 const preparedKeyAgentProvisioningSelfConstructionSites =
   preparedKeyAgentProvisioningImplItems.flatMap((item) =>
     rustStructLiteralSites(item.source, "Self").map(() => item.path),
   );
 const keyAgentProvisioningTypeDefinitionCounts = [
   "PendingKeyAgentProvisioning",
+  "HeldExistingKeyAgentInstallObjects",
+  "KeyAgentHeldInstallObservation",
   "PreparedKeyAgentProvisioning",
   "PreparedKeyAgentProfile",
 ].map(
@@ -11800,7 +12431,7 @@ requireInvariant(
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
 );
 requireInvariant(
-  keyAgentLpacVisibilityCount === 13 &&
+  keyAgentLpacVisibilityCount === 22 &&
     JSON.stringify(keyAgentLpacVisibleFunctionInventory) ===
       JSON.stringify([
         {
@@ -11809,6 +12440,51 @@ requireInvariant(
           name: "provision_fresh",
           signature:
             "fnprovision_fresh()->Result<Self,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl HeldExistingKeyAgentInstallObjects",
+          visibility: "pub(crate)",
+          name: "revalidate",
+          signature: "fnrevalidate(&self)->Result<(),KeyAgentLpacError>",
+        },
+        {
+          owner: "impl HeldExistingKeyAgentInstallObjects",
+          visibility: "pub(crate)",
+          name: "install_observation",
+          signature:
+            "fninstall_observation(&self,)->Result<KeyAgentHeldInstallObservation,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl HeldExistingKeyAgentInstallObjects",
+          visibility: "pub(crate)",
+          name: "into_prepared",
+          signature:
+            "fninto_prepared(self,_seal:ExistingInstallAdoptionSeal,)->PreparedKeyAgentProvisioning",
+        },
+        {
+          owner: "impl KeyAgentHeldInstallObservation",
+          visibility: "pub(crate)",
+          name: "profile_sid",
+          signature: "fnprofile_sid(&self)->&[u8]",
+        },
+        {
+          owner: "impl KeyAgentHeldInstallObservation",
+          visibility: "pub(crate)",
+          name: "stable_user_sid",
+          signature: "fnstable_user_sid(&self)->&[u8]",
+        },
+        {
+          owner: "impl KeyAgentHeldInstallObservation",
+          visibility: "pub(crate)",
+          name: "storage_profile_sid",
+          signature: "fnstorage_profile_sid(&self)->&[u8]",
+        },
+        {
+          owner: "impl KeyAgentHeldInstallObservation",
+          visibility: "pub(crate)const",
+          name: "storage_root_identity",
+          signature:
+            "fnstorage_root_identity(&self)->KeyAgentStorageRootIdentity",
         },
         {
           owner: "impl PreparedKeyAgentProvisioning",
@@ -11869,6 +12545,16 @@ requireInvariant(
           visibility: "pub(crate)",
           kind: "struct",
           name: "PendingKeyAgentProvisioning",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "HeldExistingKeyAgentInstallObjects",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
+          name: "KeyAgentHeldInstallObservation",
         },
         {
           visibility: "pub(crate)",
@@ -12061,6 +12747,7 @@ requireInvariant(
       "#[must_use=]",
       "#[must_use=]",
       "#[must_use=]",
+      "#[must_use=]",
       "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
     ]),
   "the release Key Agent LPAC attribute inventory must remain exact",
@@ -12074,6 +12761,10 @@ requireInvariant(
       },
       {
         target: "PendingKeyAgentProvisioning",
+        attributes: ["#[must_use=]"],
+      },
+      {
+        target: "HeldExistingKeyAgentInstallObjects",
         attributes: ["#[must_use=]"],
       },
       {
@@ -12095,11 +12786,7 @@ requireInvariant(
   JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
     JSON.stringify([
       {
-        header: "impl PreparedKeyAgentProvisioning",
-        attributes: [],
-      },
-      {
-        header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+        header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
         attributes: [],
       },
       {
@@ -12110,12 +12797,44 @@ requireInvariant(
         header: "impl fmt::Debug for PendingKeyAgentProvisioning",
         attributes: [],
       },
+      {
+        header: "impl HeldExistingKeyAgentInstallObjects",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for HeldExistingKeyAgentInstallObjects",
+        attributes: [],
+      },
+      {
+        header: "impl PreparedKeyAgentProvisioning",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+        attributes: [],
+      },
+      {
+        header: "impl PreparedKeyAgentLpac",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for PreparedKeyAgentLpac",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for VerifiedKeyAgentLpac",
+        attributes: [],
+      },
     ]),
   "the release Key Agent provisioning impls must have no expansion attributes",
 );
 requireInvariant(
   JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
     JSON.stringify([
+      {
+        module: "key_agent_install_adoption",
+        attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
+      },
       {
         module: "key_agent_install_provenance",
         attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
@@ -12164,6 +12883,7 @@ requireInvariant(
         "#[must_use=]",
         "#[must_use=]",
         "#[must_use=]",
+        "#[must_use=]",
         "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
       ]) &&
     JSON.stringify(keyAgentLpacAuthorityAttributeInventory) ===
@@ -12174,6 +12894,10 @@ requireInvariant(
         },
         {
           target: "PendingKeyAgentProvisioning",
+          attributes: ["#[must_use=]"],
+        },
+        {
+          target: "HeldExistingKeyAgentInstallObjects",
           attributes: ["#[must_use=]"],
         },
         {
@@ -12192,11 +12916,7 @@ requireInvariant(
     JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
       JSON.stringify([
         {
-          header: "impl PreparedKeyAgentProvisioning",
-          attributes: [],
-        },
-        {
-          header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+          header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
           attributes: [],
         },
         {
@@ -12207,9 +12927,41 @@ requireInvariant(
           header: "impl fmt::Debug for PendingKeyAgentProvisioning",
           attributes: [],
         },
+        {
+          header: "impl HeldExistingKeyAgentInstallObjects",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for HeldExistingKeyAgentInstallObjects",
+          attributes: [],
+        },
+        {
+          header: "impl PreparedKeyAgentProvisioning",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for PreparedKeyAgentProvisioning",
+          attributes: [],
+        },
+        {
+          header: "impl PreparedKeyAgentLpac",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for PreparedKeyAgentLpac",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for VerifiedKeyAgentLpac",
+          attributes: [],
+        },
       ]) &&
     JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
       JSON.stringify([
+        {
+          module: "key_agent_install_adoption",
+          attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
+        },
         {
           module: "key_agent_install_provenance",
           attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
@@ -12326,12 +13078,16 @@ requireInvariant(
   ) &&
     compactRust(pendingKeyAgentProvisioningBlock) ===
       "pub(crate)structPendingKeyAgentProvisioning{profile:PreparedKeyAgentProfile,storage_root:HeldKeyAgentStorageRoot,}" &&
+    compactRust(heldExistingKeyAgentInstallObjectsBlock) ===
+      "pub(crate)structHeldExistingKeyAgentInstallObjects{profile:PreparedKeyAgentProfile,storage_root:HeldKeyAgentStorageRoot,}" &&
+    compactRust(heldKeyAgentInstallObservationBlock) ===
+      "pub(crate)structKeyAgentHeldInstallObservation{profile_sid_len:u8,profile_sid:[u8;MAX_INSTALL_SID_BYTES],root:KeyAgentHeldRootObservation,}" &&
     compactRust(preparedKeyAgentProvisioningBlock) ===
       "pub(crate)structPreparedKeyAgentProvisioning{profile:PreparedKeyAgentProfile,storage_root:HeldKeyAgentStorageRoot,}" &&
     compactRust(preparedKeyAgentProfileBlock) ===
       "structPreparedKeyAgentProfile{profile_sid:OwnedAppContainerSid,appcontainer_local_data:PathBuf,_not_sync:PhantomData<Cell<()>>,}" &&
     JSON.stringify(keyAgentProvisioningTypeDefinitionCounts) ===
-      JSON.stringify([1, 1, 1]) &&
+      JSON.stringify([1, 1, 1, 1, 1]) &&
     JSON.stringify(preparedKeyAgentProvisioningTokenInventory) ===
       JSON.stringify([
         {
@@ -12339,16 +13095,31 @@ requireInvariant(
           count: 7,
         },
         {
+          path: "crates/platform-windows/src/key_agent_install_adoption.rs",
+          count: 2,
+        },
+        {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
-          count: 3,
+          count: 5,
         },
         {
           path: "crates/platform-windows/src/key_agent_supervisor.rs",
           count: 5,
         },
       ]) &&
-    JSON.stringify(preparedKeyAgentProvisioningReturningFunctions) ===
-      JSON.stringify([]) &&
+    JSON.stringify(
+      preparedKeyAgentProvisioningReturningFunctions.map((entry) => ({
+        path: entry.path,
+        source: compactRust(entry.source),
+      })),
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          source:
+            "fninto_prepared(self,_seal:ExistingInstallAdoptionSeal,)->PreparedKeyAgentProvisioning",
+        },
+      ]) &&
     preparedKeyAgentProvisioningImplScannerProbe.length === 1 &&
     rustStructLiteralSites(
       preparedKeyAgentProvisioningImplScannerProbe[0].source,
@@ -12377,10 +13148,19 @@ requireInvariant(
     ) &&
     JSON.stringify(pendingKeyAgentProvisioningMethods) ===
       JSON.stringify(["provision_fresh"]) &&
+    JSON.stringify(heldExistingKeyAgentInstallObjectsMethods) ===
+      JSON.stringify(["revalidate", "install_observation", "into_prepared"]) &&
+    JSON.stringify(heldKeyAgentInstallObservationMethods) ===
+      JSON.stringify([
+        "profile_sid",
+        "stable_user_sid",
+        "storage_profile_sid",
+        "storage_root_identity",
+      ]) &&
     JSON.stringify(preparedKeyAgentProvisioningMethods) ===
       JSON.stringify(["revalidate", "prepare_lpac", "storage_root_identity"]) &&
     JSON.stringify(preparedKeyAgentProvisioningConstructionSites) ===
-      JSON.stringify([]) &&
+      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
     JSON.stringify(preparedKeyAgentProvisioningAliases) === JSON.stringify([]) &&
     JSON.stringify(preparedKeyAgentProvisioningImplHeaders) ===
       JSON.stringify([
@@ -12407,12 +13187,24 @@ requireInvariant(
     JSON.stringify(keyAgentProvisioningAuthorityImplHeaders) ===
       JSON.stringify([
         {
+          path: "crates/platform-windows/src/key_agent_install_adoption.rs",
+          header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
+        },
+        {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
           header: "impl PendingKeyAgentProvisioning",
         },
         {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
           header: "impl fmt::Debug for PendingKeyAgentProvisioning",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl HeldExistingKeyAgentInstallObjects",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl fmt::Debug for HeldExistingKeyAgentInstallObjects",
         },
         {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
@@ -12439,6 +13231,30 @@ requireInvariant(
       JSON.stringify([]) &&
     JSON.stringify(preparedKeyAgentProvisioningSelfConstructionSites) ===
       JSON.stringify([]) &&
+    rustStructLiteralSites(
+      observeHeldExistingKeyAgentInstallObjects,
+      "KeyAgentHeldInstallObservation",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      keyAgentLpacRelease,
+      "ExistingInstallAdoptionSeal",
+    ).length === 0 &&
+    revalidateHeldExistingKeyAgentInstallObjects.includes(
+      "self.profile.revalidate()?",
+    ) &&
+    revalidateHeldExistingKeyAgentInstallObjects.includes(
+      "self.storage_root",
+    ) &&
+    observeHeldExistingKeyAgentInstallObjects.includes(
+      "self.profile.profile_sid.canonical_bytes()?",
+    ) &&
+    observeHeldExistingKeyAgentInstallObjects.includes(
+      ".storage_root\n            .install_observation()",
+    ) &&
+    convertHeldExistingKeyAgentInstallObjects.includes(
+      "_seal: ExistingInstallAdoptionSeal",
+    ) &&
+    preparedKeyAgentProvisioningImpl.includes("self.profile.revalidate()?") &&
     keyAgentFreshProvisioningOrder.every((position) => position !== -1) &&
     keyAgentFreshProvisioningOrder
       .slice(1)
@@ -12496,12 +13312,12 @@ requireInvariant(
       "_profile_api: &AppContainerProfileApiGuard",
     ) &&
     !/pub\(crate\)\s+fn\s+(?:raw|sid|profile|name|into_sid|profile_sid)\b/u.test(
-      keyAgentLpacRelease,
+      keyAgentLpacRelease.replace(heldKeyAgentInstallObservationImpl, ""),
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:PendingKeyAgentProvisioning|PreparedKeyAgentProvisioning|PreparedKeyAgentLpac|VerifiedKeyAgentLpac)\b/u.test(
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:PendingKeyAgentProvisioning|HeldExistingKeyAgentInstallObjects|KeyAgentHeldInstallObservation|PreparedKeyAgentProvisioning|PreparedKeyAgentLpac|VerifiedKeyAgentLpac)\b/u.test(
       keyAgentLpacRelease,
     ),
-  "release Key Agent provisioning must quarantine fresh fixed objects as Pending, mint no production Prepared authority, validate created-versus-derived SID equality, and keep existing-profile adoption unavailable",
+  "release Key Agent provisioning must quarantine fresh fixed objects as Pending, permit only the sealed dormant held-object Prepared transition, validate created-versus-derived SID equality, and expose only exact authority-free observations",
 );
 requireInvariant(
   keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
@@ -13241,11 +14057,16 @@ requireInvariant(
     /but returns only a\s+non-launchable pending capability/u.test(
       activationArchitecture,
     ) &&
-    /Activation accepts a\s+separate prepared capability for which production has no constructor or\s+pending\/candidate conversion/u.test(
+    /Activation accepts a\s+separate prepared capability, and no direct pending\/candidate\s+conversion exists/u.test(
       activationArchitecture,
     ) &&
+    activationArchitecture.includes(
+      "The sole production-compiled mint is the private sealed existing-install",
+    ) &&
+    activationArchitecture.includes("VerifiedExistingKeyAgentInstall") &&
     /activation에 넣을 수\s+없는 `Pending` capability만 반환/u.test(rootReadme) &&
-    rootReadme.includes("pending/candidate conversion") &&
+    rootReadme.includes("pending/candidate의 직접 conversion") &&
+    rootReadme.includes("production에 컴파일되는 `PreparedKeyAgentProvisioning` mint는 정확히 하나") &&
     securityDecisions.includes(
       "returns only a non-launchable pending capability",
     ) &&
@@ -13266,35 +14087,52 @@ requireInvariant(
     /`Prepared=1`,\s*`ProfileCreated=2`,\s*`RootCreated=3`,\s*`Committed=4`/u.test(
       activationArchitecture,
     ) &&
-    /production\s+installer key\/checkpoint backend나 journal reader\/writer는 없고[\s\S]{0,180}production 경로도 없습니다/iu.test(
+    /canonical journal\s+validator에는 production installer key\/checkpoint constructor, journal reader\/writer\s+backend와 caller가 없습니다/iu.test(
       rootReadme,
     ) &&
-    /권위 있는\s+journal I\/O와 held-object adopt\/recovery/iu.test(
+    /two-snapshot matcher의 production-code consumer는\s+위 private dormant adoption transition 하나뿐/iu.test(
       rootReadme,
     ) &&
-    /Production has no installer-key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
+    /Production has no installer-key\/checkpoint constructor, journal reader\/writer\s+backend, or caller for the canonical journal validator/iu.test(
       activationReadme,
     ) &&
-    /Authoritative journal I\/O,\s+installer key\/checkpoint provisioning,\s+durable writing,\s+authoritative OS\s+observation,\s+adoption,\s+and recovery remain absent/iu.test(
+    activationReadme.includes(
+      "two-snapshot matcher has exactly one production-code consumer",
+    ) &&
+    /private\s+dormant adoption transition/iu.test(activationReadme) &&
+    /journal validator has no production\s+installer-key\/checkpoint constructor, reader\/writer backend, or caller/iu.test(
+      activationArchitecture,
+    ) &&
+    /sole production-code consumer is the dormant sealed\s+transition/iu.test(
+      activationArchitecture,
+    ) &&
+    /journal validator performs no I\/O and has no production key\/checkpoint\s+constructor, journal reader\/writer backend, or caller/iu.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    /sole production-code consumer is the\s+dormant adoption transition/iu.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    /journal validator has no\s+production key\/checkpoint constructor, journal reader\/writer backend, or caller/iu.test(
+      securityDecisions,
+    ) &&
+    /sole production-code consumer is the dormant sealed transition/iu.test(
+      securityDecisions,
+    ) &&
+    [
+      rootReadme,
+      activationArchitecture,
       activationReadme,
-    ) &&
-    /no production installer-key\/checkpoint source,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
-      activationArchitecture,
-    ) &&
-    /Production installer-owned key\/checkpoint provisioning,\s+authoritative journal\s+I\/O and durable writing,\s+plus held profile\/root observation,\s+adoption,\s+and\s+recovery[\s\S]{0,80}remain absent/iu.test(
-      activationArchitecture,
-    ) &&
-    /no\s+production key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+or consumer/iu.test(
-      keyAgentProtocolDocumentation,
-    ) &&
-    /Production installer key\/checkpoint provisioning,\s+authoritative provenance\s+journal I\/O and durable writing,\s+existing-profile\/root observation and\s+adoption\/recovery/iu.test(
-      keyAgentProtocolDocumentation,
-    ) &&
-    /no production key\/checkpoint constructor,\s+reader,\s+writer,\s+backend,\s+OS observer,\s+or consumer/iu.test(
       securityDecisions,
-    ) &&
-    /Existing production profiles still lack\s+installer-owned key\/checkpoint provisioning,\s+authoritative provenance-journal\s+I\/O and durable writing,\s+held-object adoption,\s+and recovery/iu.test(
-      securityDecisions,
+      keyAgentProtocolDocumentation,
+    ].every(
+      (document) =>
+        document.includes("VerifiedExistingKeyAgentInstall") &&
+        document.includes("post-observation") &&
+        document.includes("profile-registration") &&
+        /existing-root opener/iu.test(document) &&
+        /exclusive installer\s+lease/iu.test(document) &&
+        /canonical-path/iu.test(document) &&
+        /downstream artifact/iu.test(document),
     ) &&
     activationArchitecture.includes(
       "The private storage-startup transition now proves that this exact child opens and",
@@ -13335,7 +14173,7 @@ requireInvariant(
     activationArchitecture.includes(
       "no production protected-settings consumer or settings key provisioning",
     ) &&
-    /pending\/launch typestate split do not supply durable authenticated installer\s+provenance, authoritative adoption, or recovery for existing production\s+profiles/u.test(
+    /pending\/launch typestate split, and compiled dormant adoption transition do\s+not supply production journal inputs, authoritative profile-registration\s+observation/iu.test(
       activationReadme,
     ) &&
     /same-user processes while ancestor checks remain\s+non-atomic/u.test(

@@ -68,10 +68,12 @@ use windows::{
 use crate::appcontainer_profile_api::{
     AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
 };
+use crate::key_agent_install_adoption::ExistingInstallAdoptionSeal;
 #[cfg(test)]
 use crate::key_agent_storage::create_unique_key_agent_storage_root_for_test;
 use crate::key_agent_storage::{
-    HeldKeyAgentStorageRoot, KeyAgentStorageRootIdentity, create_fixed_key_agent_storage_root,
+    HeldKeyAgentStorageRoot, KeyAgentHeldRootObservation, KeyAgentStorageRootIdentity,
+    create_fixed_key_agent_storage_root,
 };
 
 pub(crate) const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
@@ -80,6 +82,7 @@ const KEY_AGENT_PROFILE_DESCRIPTION: &str =
     "Persistent zero-capability LPAC identity for Your Wallet Key Agent";
 const CAPABILITY_COUNT: u32 = 0;
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
+const MAX_INSTALL_SID_BYTES: usize = 68;
 /// Stable, non-diagnostic failures from the private Key Agent LPAC boundary.
 #[derive(Eq, PartialEq)]
 pub(crate) enum KeyAgentLpacError {
@@ -116,9 +119,10 @@ impl fmt::Debug for KeyAgentLpacError {
 ///
 /// The trusted installer must durably commit and authoritatively reread an exact
 /// provenance record before these objects may ever become a
-/// [`PreparedKeyAgentProvisioning`]. There is deliberately no such production
-/// transition yet. Dropping this value does not delete or repair either durable
-/// object; a later trusted recovery ceremony must classify the partial state.
+/// [`PreparedKeyAgentProvisioning`]. There is deliberately no direct
+/// Pending-to-Prepared production transition. Dropping this value does not
+/// delete or repair either durable object; a later trusted recovery ceremony
+/// must classify the partial state.
 #[must_use = "fresh Key Agent objects require a durable provenance ceremony"]
 pub(crate) struct PendingKeyAgentProvisioning {
     profile: PreparedKeyAgentProfile,
@@ -170,13 +174,119 @@ impl fmt::Debug for PendingKeyAgentProvisioning {
     }
 }
 
+/// Fixed-profile binding and held storage-root object awaiting adoption.
+///
+/// This type has no production constructor. In particular, merely deriving the
+/// deterministic profile SID or finding its folder is not authoritative proof
+/// that the per-user profile is registered. A future installer-owned observer
+/// must provide that proof, open the fixed root without repair, and retain the
+/// same no-delete-share handle before constructing this aggregate.
+#[must_use = "held existing Key Agent objects require authenticated adoption"]
+pub(crate) struct HeldExistingKeyAgentInstallObjects {
+    profile: PreparedKeyAgentProfile,
+    storage_root: HeldKeyAgentStorageRoot,
+}
+
+impl HeldExistingKeyAgentInstallObjects {
+    /// Creates real held objects only under the bounded kernel-test seam.
+    #[cfg(test)]
+    pub(crate) fn for_kernel_test() -> Result<Self, KeyAgentLpacError> {
+        let PendingKeyAgentProvisioning {
+            profile,
+            storage_root,
+        } = PendingKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let held = Self {
+            profile,
+            storage_root,
+        };
+        held.revalidate()?;
+        Ok(held)
+    }
+
+    /// Revalidates both the deterministic fixed-profile binding and the exact
+    /// retained storage-root object without reopening either authority.
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentLpacError> {
+        self.profile.revalidate()?;
+        self.storage_root
+            .revalidate()
+            .map_err(|_| KeyAgentLpacError::Provisioning)
+    }
+
+    /// Copies only path-free, handle-free evidence for provenance matching.
+    pub(crate) fn install_observation(
+        &self,
+    ) -> Result<KeyAgentHeldInstallObservation, KeyAgentLpacError> {
+        let (profile_sid_len, profile_sid) = self.profile.profile_sid.canonical_bytes()?;
+        let root = self
+            .storage_root
+            .install_observation()
+            .map_err(|_| KeyAgentLpacError::Provisioning)?;
+        Ok(KeyAgentHeldInstallObservation {
+            profile_sid_len,
+            profile_sid,
+            root,
+        })
+    }
+
+    /// Converts the held objects only after the adoption module supplies its
+    /// unforgeable seal. No other module can mint that seal.
+    pub(crate) fn into_prepared(
+        self,
+        _seal: ExistingInstallAdoptionSeal,
+    ) -> PreparedKeyAgentProvisioning {
+        PreparedKeyAgentProvisioning {
+            profile: self.profile,
+            storage_root: self.storage_root,
+        }
+    }
+}
+
+impl fmt::Debug for HeldExistingKeyAgentInstallObjects {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "HeldExistingKeyAgentInstallObjects([PROFILE BINDING AND HELD ROOT; REDACTED])",
+        )
+    }
+}
+
+/// Authority-free profile and root evidence copied from held OS objects.
+pub(crate) struct KeyAgentHeldInstallObservation {
+    profile_sid_len: u8,
+    profile_sid: [u8; MAX_INSTALL_SID_BYTES],
+    root: KeyAgentHeldRootObservation,
+}
+
+impl KeyAgentHeldInstallObservation {
+    pub(crate) fn profile_sid(&self) -> &[u8] {
+        &self.profile_sid[..usize::from(self.profile_sid_len)]
+    }
+
+    pub(crate) fn stable_user_sid(&self) -> &[u8] {
+        self.root.stable_user_sid()
+    }
+
+    pub(crate) fn storage_profile_sid(&self) -> &[u8] {
+        self.root.profile_sid()
+    }
+
+    pub(crate) const fn storage_root_identity(&self) -> KeyAgentStorageRootIdentity {
+        self.root.root_identity()
+    }
+}
+
+impl fmt::Debug for KeyAgentHeldInstallObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentHeldInstallObservation([REDACTED IDENTITIES])")
+    }
+}
+
 /// Supervisor-held proof of an independently verified Key Agent installation.
 ///
-/// No production constructor currently exists. A future trusted installer
-/// verifier must authenticate and reread the exact committed provenance record,
-/// then bind its owner, fixed profile, storage-root `FILE_ID_INFO`, installation
-/// identity, and release identity before constructing this launch capability.
-/// The test-only constructor does not make production adoption reachable.
+/// There is no reachable or unsealed production constructor. The sole compiled
+/// existing-install mint is the private dormant adoption transition, which
+/// authenticates matching committed snapshots and bookends the exact held root
+/// and profile binding with revalidation. Its test-only input constructors do
+/// not make production adoption reachable.
 #[must_use = "the Key Agent provisioning proof must remain bound to its activation"]
 pub(crate) struct PreparedKeyAgentProvisioning {
     profile: PreparedKeyAgentProfile,
@@ -205,6 +315,7 @@ impl PreparedKeyAgentProvisioning {
     }
 
     pub(crate) fn revalidate(&self) -> Result<(), KeyAgentLpacError> {
+        self.profile.revalidate()?;
         self.storage_root
             .revalidate()
             .map_err(|_| KeyAgentLpacError::Provisioning)
@@ -235,8 +346,9 @@ impl fmt::Debug for PreparedKeyAgentProvisioning {
 /// Supervisor-owned preparation of the one fixed Key Agent profile identity.
 ///
 /// Fresh provisioning can place this value only inside a non-launchable pending
-/// aggregate. Existing-profile adoption remains a separate, unimplemented
-/// installer-evidence boundary. The value owns an aligned copy of the fixed
+/// aggregate. The existing-install path can retain it only inside the private
+/// dormant held-object adoption boundary; production still has no authoritative
+/// profile-registration observer. The value owns an aligned copy of the fixed
 /// profile SID and the exact OS-reported local-data folder; neither is exposed
 /// to callers.
 #[must_use = "the prepared Key Agent profile must remain bound to its activation"]
@@ -270,6 +382,16 @@ impl PreparedKeyAgentProfile {
             appcontainer_local_data,
             _not_sync: PhantomData,
         })
+    }
+
+    fn revalidate(&self) -> Result<(), KeyAgentLpacError> {
+        let derived = OwnedAppContainerSid::derive_fixed()?;
+        require_created_sid_matches_derived(&self.profile_sid, &derived)?;
+        let current_folder = validated_appcontainer_folder(&derived)?;
+        if current_folder != self.appcontainer_local_data {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        Ok(())
     }
 
     fn prepare_lpac(&self) -> Result<PreparedKeyAgentLpac, KeyAgentLpacError> {
@@ -573,6 +695,13 @@ impl OwnedAppContainerSid {
         Self::derive_under_guard(&profile_api, name)
     }
 
+    fn derive_fixed() -> Result<Self, KeyAgentLpacError> {
+        let name = wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?;
+        let profile_api =
+            acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
+        Self::derive_under_guard(&profile_api, &name)
+    }
+
     fn derive_under_guard(
         _profile_api: &AppContainerProfileApiGuard,
         name: &[u16],
@@ -653,6 +782,20 @@ impl OwnedAppContainerSid {
 
     fn as_psid(&self) -> PSID {
         PSID(self.words.as_ptr().cast_mut().cast::<c_void>())
+    }
+
+    fn canonical_bytes(&self) -> Result<(u8, [u8; MAX_INSTALL_SID_BYTES]), KeyAgentLpacError> {
+        let byte_len = u8::try_from(self.byte_len).map_err(|_| KeyAgentLpacError::Profile)?;
+        if !(8..=MAX_INSTALL_SID_BYTES).contains(&self.byte_len) {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        let mut encoded = [0_u8; MAX_INSTALL_SID_BYTES];
+        // SAFETY: construction validated the SID length against the owned,
+        // aligned allocation. The immutable view cannot outlive `self`.
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.byte_len) };
+        encoded[..self.byte_len].copy_from_slice(bytes);
+        Ok((byte_len, encoded))
     }
 }
 
@@ -1232,12 +1375,12 @@ mod tests {
     use windows::core::PCWSTR;
 
     use super::{
-        AppContainerMembershipEvidence, CAPABILITY_COUNT, KEY_AGENT_PROFILE_V1_NAME,
-        KeyAgentLpacError, KeyAgentLpacKernelTestFixture, OwnedAppContainerSid, OwnedToken,
-        PendingKeyAgentProvisioning, PreparedKeyAgentLpac, PreparedKeyAgentProfile,
-        PreparedKeyAgentProvisioning, TokenDword, TokenPolicyEvidence, VerifiedKeyAgentLpac,
-        appcontainer_folder, appcontainer_membership_evidence, require_created_sid_matches_derived,
-        validate_token_policy, wide_nul_str,
+        AppContainerMembershipEvidence, CAPABILITY_COUNT, HeldExistingKeyAgentInstallObjects,
+        KEY_AGENT_PROFILE_V1_NAME, KeyAgentLpacError, KeyAgentLpacKernelTestFixture,
+        OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning, PreparedKeyAgentLpac,
+        PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword, TokenPolicyEvidence,
+        VerifiedKeyAgentLpac, appcontainer_folder, appcontainer_membership_evidence,
+        require_created_sid_matches_derived, validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -1748,12 +1891,16 @@ mod tests {
 
         assert_send::<PendingKeyAgentProvisioning>();
         assert_send::<PreparedKeyAgentProvisioning>();
+        assert_send::<HeldExistingKeyAgentInstallObjects>();
         let _ = <PendingKeyAgentProvisioning as AmbiguousIfClone<_>>::marker;
         let _ = <PendingKeyAgentProvisioning as AmbiguousIfCopy<_>>::marker;
         let _ = <PendingKeyAgentProvisioning as AmbiguousIfSync<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfClone<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfCopy<_>>::marker;
         let _ = <PreparedKeyAgentProvisioning as AmbiguousIfSync<_>>::marker;
+        let _ = <HeldExistingKeyAgentInstallObjects as AmbiguousIfClone<_>>::marker;
+        let _ = <HeldExistingKeyAgentInstallObjects as AmbiguousIfCopy<_>>::marker;
+        let _ = <HeldExistingKeyAgentInstallObjects as AmbiguousIfSync<_>>::marker;
         let _ = <PreparedKeyAgentLpac as AmbiguousIfClone<_>>::marker;
         let _ = <PreparedKeyAgentLpac as AmbiguousIfCopy<_>>::marker;
         let _ = <VerifiedKeyAgentLpac as AmbiguousIfClone<_>>::marker;
@@ -1765,6 +1912,25 @@ mod tests {
             format!("{:?}", KeyAgentLpacError::Profile),
             "KeyAgentLpacError([REDACTED])"
         );
+    }
+
+    #[test]
+    fn held_existing_observation_is_path_free_consistent_and_redacted()
+    -> Result<(), KeyAgentLpacError> {
+        let held = HeldExistingKeyAgentInstallObjects::for_kernel_test()?;
+        let observation = held.install_observation()?;
+        assert!(!observation.profile_sid().is_empty());
+        assert!(!observation.stable_user_sid().is_empty());
+        assert_eq!(observation.profile_sid(), observation.storage_profile_sid());
+        assert_eq!(
+            format!("{held:?}"),
+            "HeldExistingKeyAgentInstallObjects([PROFILE BINDING AND HELD ROOT; REDACTED])"
+        );
+        assert_eq!(
+            format!("{observation:?}"),
+            "KeyAgentHeldInstallObservation([REDACTED IDENTITIES])"
+        );
+        held.revalidate()
     }
 
     #[test]

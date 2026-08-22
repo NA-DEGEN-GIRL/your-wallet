@@ -587,15 +587,20 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
 - 별도 fresh 경계는 고정 AppContainer profile `YourWallet.KeyAgent.LPAC.v1`과 그 `AC`
   아래 고정 leaf `YourWallet.KeyAgent.Storage.v1`을 만들 수 있지만, activation에 넣을 수
-  없는 `Pending` capability만 반환합니다. dormant Key Agent 실행 준비 경계는 별도로
-  검증된 `Prepared` capability만 받으며, production에는 이를 발급하는 constructor나
-  pending/candidate conversion이 없습니다. 기존 production profile이나 leaf는 열거나
-  채택·복구·삭제하지 않고 fail-closed합니다. 향후 신뢰 adapter가 발급할 supervisor
-  보유 증명은 stable current `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만
-  포함하는 protected DACL, inherited Low/`NW` mandatory label, local fixed NTFS와
-  persistent ACL/non-reparse 상태, nonzero volume 및 non-sentinel 128-bit
-  `FILE_ID_INFO`를 검증합니다. directory handle은 delete sharing 없이 유지되며 binding
-  동안 재검증되고 cleanup에서 마지막으로 닫힙니다.
+  없는 `Pending` capability만 반환하며 pending/candidate의 직접 conversion은 없습니다.
+  production에 컴파일되는 `PreparedKeyAgentProvisioning` mint는 정확히 하나로, private
+  sealed existing-install adoption transition의 `HeldExistingKeyAgentInstallObjects::into_prepared`
+  입니다. 이 transition은 initial snapshot과 계약상 post-observation reread snapshot,
+  fixed-profile binding과 no-delete-share held root를 받아 matcher 전후로 binding/root를
+  재검증하고 `Prepared`를 `VerifiedExistingKeyAgentInstall` 안에 봉인합니다. 그러나
+  production에는 held aggregate constructor, transition caller, verified aggregate consumer가
+  없어 기존 profile이나 leaf를 열거나 채택·복구·삭제하지 않고 fail-closed합니다. 향후
+  production adapter가 구성할 fixed-profile-binding/held-root aggregate는 stable current
+  `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만 포함하는 protected DACL,
+  inherited Low/`NW` mandatory label, local fixed NTFS와 persistent ACL/non-reparse 상태,
+  nonzero volume 및 non-sentinel 128-bit `FILE_ID_INFO`를 검증해야 합니다. directory
+  handle은 delete sharing 없이 유지되며 binding 동안 재검증되고 cleanup에서 마지막으로
+  닫힙니다.
 - 같은 dormant activation은 정확한 실행 파일, 비공개 파이프 3개, 2프로세스 Windows
   Job과 위 provisioning 증명을 묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle
   allowlist, Job, null capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
@@ -670,16 +675,19 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `Committed=4`까지 정확한 순서·세대·predecessor commitment를 따라야 하며, 독립된
   rollback-resistant 체크포인트의 high-water와 현재 commitment에도 정확히 일치해야
   합니다. 아직 존재하지 않는 root identity를 초기 phase에 요구하지 않고,
-  `RootCreated`와 `Committed`만 동일한 완전한 root 증거를 가집니다. 그러나 production
-  installer key/checkpoint backend나 journal reader/writer는 없고 이 순수 verifier를
-  호출하는 production 경로도 없습니다.
+  `RootCreated`와 `Committed`만 동일한 완전한 root 증거를 가집니다. canonical journal
+  validator에는 production installer key/checkpoint constructor, journal reader/writer
+  backend와 caller가 없습니다. 인증된 two-snapshot matcher의 production-code consumer는
+  위 private dormant adoption transition 하나뿐입니다.
 - 따라서 통합 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory
   anchor와 합성 key/payload를 사용하는 `cfg(test)` 증명이지 production fresh
-  profile/root E2E나 release wiring이 아닙니다. 기존 production profile의 권위 있는
-  journal I/O와 held-object adopt/recovery, same-user 접근 및 non-atomic ancestor race,
-  production rollback anchor와 storage/AEAD key provisioning, live protected-settings lease,
-  인증된 Broker/supervisor topology와 single-instance, signed immutable artifact 및
-  DLL/dependency E2E가 모두 남아 있습니다.
+  profile/root E2E나 release wiring이 아닙니다. production에는 authoritative
+  profile-registration observer, fixed existing-root opener와 held-aggregate constructor,
+  post-observation reread 순서를 강제하는 exclusive installer lease, canonical-path reopen
+  identity 비교, downstream artifact-binding consumer와 recovery wiring이 없습니다.
+  same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
+  provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
+  single-instance, signed immutable artifact 및 DLL/dependency E2E도 모두 남아 있습니다.
   one-shot stream의 future delayed suffix/EOF도 증명되지 않고 generic runtime/signing IPC도
   없습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이며 이 항목들은 **STOP-SHIP**입니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.

@@ -107,10 +107,18 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
-// Pure, sealed install-state classification is compiled for review and tests,
-// but has no production evidence source or consumer. Fresh OS objects remain
-// non-launchable until a future installer-owned authenticated provenance and
-// authoritative-reread ceremony exists.
+// Held existing-install adoption bookends the pure authenticated-snapshot
+// matcher with exact root/profile-binding revalidation. It remains dormant:
+// no production profile observer, existing-root opener, checkpoint reader,
+// exclusive installer lease, or release-artifact consumer exists yet.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod key_agent_install_adoption;
+// Pure, sealed install-state classification is compiled for review and tests.
+// Its snapshot matcher has only the dormant held-object adoption consumer; the
+// journal validator still has no production evidence source or I/O backend.
+// Fresh OS objects remain non-launchable until a future installer-owned
+// authenticated provenance and authoritative-reread ceremony exists.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod key_agent_install_provenance;
