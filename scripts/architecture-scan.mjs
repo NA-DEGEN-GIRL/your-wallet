@@ -3741,6 +3741,14 @@ requireInvariant(
 
 const windowsStorage = await text("crates/platform-windows/src/storage/sys.rs");
 const windowsStorageFacade = await text("crates/platform-windows/src/storage.rs");
+const windowsStorageProduction = withoutBottomTestModule(windowsStorage);
+const windowsStorageRelease = withoutCfgTestItems(windowsStorageProduction);
+const windowsStorageFacadeProduction = withoutBottomTestModule(
+  windowsStorageFacade,
+);
+const windowsStorageFacadeRelease = withoutCfgTestItems(
+  windowsStorageFacadeProduction,
+);
 const anchorRegistry = await text("crates/platform-windows/src/anchor_registry.rs");
 const keyAgentDurable = await text("crates/key-agent/src/durable.rs");
 requireInvariant(
@@ -3848,6 +3856,7 @@ const keyAgentStorageSource = await text(
   "crates/platform-windows/src/key_agent_storage.rs",
 );
 const keyAgentStorage = withoutBottomTestModule(keyAgentStorageSource);
+const keyAgentStorageRelease = withoutCfgTestItems(keyAgentStorage);
 const keyAgentStartupSource = await text(
   "crates/platform-windows/src/key_agent_startup.rs",
 );
@@ -3939,6 +3948,7 @@ const activationHelper = withoutBottomTestModule(
 const activationArchitecture = await text("docs/architecture.md");
 const activationReadme = await text("crates/platform-windows/README.md");
 const securityDecisions = await text("docs/security-decisions.md");
+const keyAgentProtocolDocumentation = await text("docs/protocol-contract.md");
 requireInvariant(
   /#\[cfg\(test\)\]\s*pub\(crate\) fn for_broker_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*broker_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
     activationHelper,
@@ -4492,6 +4502,8 @@ const keyAgentStorageStartupProductionSurface = [
   keyAgentSupervisor,
   keyAgentPipeProduction,
   keyAgentActivationRelease,
+  windowsStorageRelease,
+  windowsStorageFacadeRelease,
 ].join("\n");
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_startup;") &&
@@ -4560,10 +4572,12 @@ const keyAgentChildStartupOrder = [
   "let actual_storage_identity = child_root.identity()",
   "request.storage_root_identity() != actual_storage_identity",
   ".revalidate()",
+  "let generation_store_bindings =",
+  ".into_fixed_generation_store_bindings()",
   "KeyAgentStartupResponse::from_validated_request(",
   "let response_frame = response.encode()",
   "write_exact_synchronous(sealed_stdio.stdout, response_frame.as_bytes())?",
-  "wait_for_parent_disconnect(&sealed_stdio, &child_root)",
+  "wait_for_parent_disconnect(&sealed_stdio, &generation_store_bindings)",
 ].map((marker) => serveInheritedKeyAgentStorageStartup.indexOf(marker));
 const readExactKeyAgentStartupRequest = rustFunctionBlock(
   keyAgentChildBootstrapProduction,
@@ -4594,12 +4608,12 @@ requireInvariant(
       "sealed_stdio: &SealedKeyAgentStdio",
     ) &&
     waitForKeyAgentParentDisconnect.includes(
-      "_child_root: &HeldChildKeyAgentStorageRoot",
+      "_generation_store_bindings: &FixedKeyAgentGenerationStoreBindings",
     ) &&
     waitForKeyAgentParentDisconnect.includes(
       "reject_nonzero_post_startup_bytes(transferred)?",
     ),
-  "the sole child bootstrap service must seal first, exchange exactly one 188/88 frame pair, prove the child-opened full storage identity, and retain both child capabilities until disconnect",
+  "the sole child bootstrap service must seal first, exchange exactly one 188/88 frame pair, prove the child-opened full storage identity, consume it into fixed generation-store bindings, and retain both child capabilities until disconnect",
 );
 
 const keyAgentBootstrapSameObjectCalls = rustCallSites(
@@ -5488,6 +5502,52 @@ const heldChildKeyAgentStorageRootMethods = [
     /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
   ),
 ].map((match) => match.groups.name);
+const fixedKeyAgentGenerationStoreRoleDefinition = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /pub\(crate\)\s+enum\s+FixedKeyAgentGenerationStoreRole\s*\{/u,
+);
+const keyAgentGenerationStoreRootAuthorityDefinition = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /struct\s+KeyAgentGenerationStoreRootAuthority\s*\{/u,
+);
+const keyAgentGenerationStoreBindingDefinition = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /pub\(crate\)\s+struct\s+KeyAgentGenerationStoreBinding\s*\{/u,
+);
+const keyAgentGenerationStoreBindingImpl = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /impl\s+KeyAgentGenerationStoreBinding\s*\{/u,
+);
+const keyAgentGenerationStoreBindingNew = rustFunctionBlock(
+  keyAgentGenerationStoreBindingImpl,
+  "new",
+);
+const keyAgentGenerationStoreBindingMethods = [
+  ...keyAgentGenerationStoreBindingImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const fixedKeyAgentGenerationStoreBindingsDefinition = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /pub\(crate\)\s+struct\s+FixedKeyAgentGenerationStoreBindings\s*\{/u,
+);
+const fixedKeyAgentGenerationStoreBindingsImpl = rustLexicalItemBlock(
+  keyAgentStorageRelease,
+  /impl\s+FixedKeyAgentGenerationStoreBindings\s*\{/u,
+);
+const fixedKeyAgentGenerationStoreBindingsMethods = [
+  ...fixedKeyAgentGenerationStoreBindingsImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const mintFixedKeyAgentGenerationStoreBindings = rustFunctionBlock(
+  heldChildKeyAgentStorageRootImpl,
+  "into_fixed_generation_store_bindings",
+);
+const fixedKeyAgentGenerationStoreBindingsFromChildRoot = rustFunctionBlock(
+  fixedKeyAgentGenerationStoreBindingsImpl,
+  "from_child_root",
+);
 const createFixedKeyAgentStorageRoot = rustFunctionBlock(
   keyAgentStorage,
   "create_fixed_key_agent_storage_root",
@@ -5572,6 +5632,103 @@ const revalidateHeldKeyAgentStorageRoot = rustFunctionBlock(
   heldKeyAgentStorageRootImpl,
   "revalidate",
 );
+const openFixedKeyAgentGenerationStore = rustFunctionBlock(
+  windowsStorageRelease,
+  "open_key_agent",
+);
+const fixedKeyAgentGenerationStoreSpec = rustFunctionBlock(
+  windowsStorageRelease,
+  "fixed_key_agent_store_spec",
+);
+const revalidateFixedKeyAgentGenerationStoreRootPath = rustFunctionBlock(
+  windowsStorageRelease,
+  "revalidate_key_agent_root_path",
+);
+const prepareFixedKeyAgentGenerationStorePathOperation = rustFunctionBlock(
+  windowsStorageRelease,
+  "prepare_key_agent_path_operation",
+);
+const removeFixedKeyAgentGenerationStoreStaleTemp = rustFunctionBlock(
+  windowsStorageRelease,
+  "remove_key_agent_stale_temp",
+);
+const readFixedKeyAgentGenerationStore = rustFunctionBlock(
+  windowsStorageRelease,
+  "read",
+);
+const writeFixedKeyAgentGenerationStore = rustFunctionBlock(
+  windowsStorageRelease,
+  "atomic_write",
+);
+const fixedKeyAgentGenerationStoreFileDescriptor = rustFunctionBlock(
+  windowsStorageRelease,
+  "for_key_agent_files",
+);
+const verifyFixedKeyAgentGenerationStoreFileSecurity = rustFunctionBlock(
+  windowsStorageRelease,
+  "verify_key_agent_file_security",
+);
+const inspectFixedKeyAgentGenerationStoreFileDescriptor = rustFunctionBlock(
+  windowsStorageRelease,
+  "inspect_key_agent_file_security_descriptor",
+);
+const inspectFixedKeyAgentGenerationStoreDacl = rustFunctionBlock(
+  windowsStorageRelease,
+  "inspect_exact_key_agent_dacl",
+);
+const inspectFixedKeyAgentGenerationStoreLowLabel = rustFunctionBlock(
+  windowsStorageRelease,
+  "inspect_exact_inherited_low_label",
+);
+const queryFixedKeyAgentGenerationStoreFileIdentity = rustFunctionBlock(
+  windowsStorageRelease,
+  "file_identity",
+);
+const inspectFixedKeyAgentGenerationStoreTarget = rustFunctionBlock(
+  windowsStorageRelease,
+  "inspect_optional_target",
+);
+const publicWindowsGenerationStoreImpl = rustLexicalItemBlock(
+  windowsStorageFacadeRelease,
+  /impl\s+WindowsGenerationStore\s*\{/u,
+);
+const publicWindowsGenerationStoreOpen = rustFunctionBlock(
+  publicWindowsGenerationStoreImpl,
+  "open",
+);
+const publicWindowsGenerationStoreMethods = [
+  ...publicWindowsGenerationStoreImpl.matchAll(
+    /pub\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
+const exerciseFixedKeyAgentGenerationStores = rustFunctionBlock(
+  windowsStorageFacade,
+  "exercise_fixed_key_agent_generation_stores_for_test",
+);
+const verifyFixedKeyAgentGenerationStoreRoleForTest = rustFunctionBlock(
+  windowsStorage,
+  "verify_and_cleanup_key_agent_role_for_test",
+);
+const fixedKeyAgentGenerationStoreContractTest = rustFunctionBlock(
+  windowsStorage,
+  "key_agent_file_access_and_fixed_store_contracts_are_exact",
+);
+const fixedKeyAgentGenerationStoreDaclNegativeTest = rustFunctionBlock(
+  windowsStorage,
+  "key_agent_file_descriptor_rejects_dacl_policy_drift",
+);
+const fixedKeyAgentGenerationStoreLabelNegativeTest = rustFunctionBlock(
+  windowsStorage,
+  "key_agent_file_descriptor_rejects_label_policy_drift",
+);
+const fixedKeyAgentGenerationStoreTargetBaselineTest = rustFunctionBlock(
+  windowsStorage,
+  "atomic_write_never_repairs_or_replaces_injected_targets",
+);
+const integratedKeyAgentGenerationStoreTest = rustFunctionBlock(
+  keyAgentSupervisorSource,
+  "integrated_storage_startup_binds_child_process_and_full_root_identity",
+);
 const keyAgentStorageCreateDirectoryCalls = rustCallSites(
   keyAgentStorage,
   "CreateDirectoryW",
@@ -5584,7 +5741,10 @@ const keyAgentStorageOpenCalls = rustCallSites(
   openKeyAgentStorageRootHandle,
   "CreateFileW",
 );
-const keyAgentStorageAllOpenCalls = rustCallSites(keyAgentStorage, "CreateFileW");
+const keyAgentStorageAllOpenCalls = rustCallSites(
+  keyAgentStorage,
+  "CreateFileW",
+);
 const keyAgentStorageSecurityInfoCalls = rustCallSites(
   verifyKeyAgentStorageHandleSecurity,
   "GetSecurityInfo",
@@ -6958,6 +7118,8 @@ requireInvariant(
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
         "crates/platform-windows/src/key_agent_lpac.rs",
         "crates/platform-windows/src/key_agent_startup.rs",
+        "crates/platform-windows/src/storage.rs",
+        "crates/platform-windows/src/storage/sys.rs",
       ]) &&
     platformWindowsLib.includes(
       "use platform_windows::key_agent_activation::HeldKeyAgentActivation;",
@@ -7077,7 +7239,7 @@ requireInvariant(
     !keyAgentStorage.includes("remove_dir_all") &&
     !keyAgentStorage.includes("OPEN_ALWAYS") &&
     keyAgentStorageOpenCalls.length === 1 &&
-    keyAgentStorageAllOpenCalls.length === 1 &&
+    keyAgentStorageAllOpenCalls.length === 2 &&
     keyAgentStorageOpenCalls[0].arguments.length === 7 &&
     compactRust(keyAgentStorageOpenCalls[0].arguments[1]) ===
       "FILE_READ_ATTRIBUTES.0|FILE_LIST_DIRECTORY.0|READ_CONTROL.0|GENERIC_WRITE.0" &&
@@ -7213,9 +7375,13 @@ requireInvariant(
     keyAgentStorageIdentityImpl.includes("file_id == [0; 16]") &&
     keyAgentStorageIdentityImpl.includes("file_id == [u8::MAX; 16]") &&
     normalizeRustFragment(rustLexicalCode(heldChildKeyAgentStorageRootDefinition)) ===
-      "pub(crate) struct HeldChildKeyAgentStorageRoot { handle: std::fs::File, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, }" &&
+      "pub(crate) struct HeldChildKeyAgentStorageRoot { handle: std::fs::File, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, #[allow(dead_code)] path: PathBuf, }" &&
     JSON.stringify(heldChildKeyAgentStorageRootMethods) ===
-      JSON.stringify(["identity", "revalidate"]) &&
+      JSON.stringify([
+        "identity",
+        "revalidate",
+        "into_fixed_generation_store_bindings",
+      ]) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+HeldChildKeyAgentStorageRoot/u.test(
       keyAgentStorage,
     ) &&
@@ -7225,8 +7391,9 @@ requireInvariant(
     heldChildKeyAgentStorageRootDebug.includes(
       "HeldChildKeyAgentStorageRoot([REDACTED HELD DIRECTORY])",
     ) &&
-    normalizeRustFragment(rustLexicalCode(openFixedKeyAgentStorageRootForChild)) ===
-      "pub(crate) fn open_fixed_key_agent_storage_root_for_child() -> Result<HeldChildKeyAgentStorageRoot, KeyAgentStorageError> { open_child_storage_root(KEY_AGENT_STORAGE_ROOT_LEAF) }" &&
+    /pub\(crate\)\s+fn\s+open_fixed_key_agent_storage_root_for_child\s*\(\s*\)\s*->\s*Result<HeldChildKeyAgentStorageRoot,\s*KeyAgentStorageError>\s*\{\s*open_child_storage_root\(KEY_AGENT_STORAGE_ROOT_LEAF\)\s*\}/u.test(
+      rustLexicalCode(openFixedKeyAgentStorageRootForChild),
+    ) &&
     JSON.stringify(keyAgentChildStorageOpenerConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -7257,6 +7424,602 @@ requireInvariant(
     ) &&
     verifyChildKeyAgentStorageRoot.includes("exact_file_identity(handle)"),
   "the Key Agent storage proof must expose full path-free FILE_ID_INFO and let only the child bootstrap reopen and retain that root through the sole exact no-delete-share probe",
+);
+const fixedKeyAgentBindingMintConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_storage.rs" &&
+      rustCallSites(file.source, "into_fixed_generation_store_bindings")
+        .length > 0,
+  )
+  .map((file) => file.path);
+const fixedKeyAgentBackendOpenProductionConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/storage/sys.rs" &&
+        file.path !== "crates/platform-windows/src/storage.rs" &&
+        rustCallSites(file.source, "WindowsBackend::open_key_agent").length >
+          0,
+    )
+    .map((file) => file.path);
+const fixedKeyAgentBackendFacadeProductionCalls = rustCallSites(
+  windowsStorageFacadeRelease.replace(
+    exerciseFixedKeyAgentGenerationStores,
+    "",
+  ),
+  "sys::WindowsBackend::open_key_agent",
+);
+const fixedKeyAgentBindingConstructorCalls = rustCallSites(
+  keyAgentStorageRelease,
+  "KeyAgentGenerationStoreBinding::new",
+);
+const fixedKeyAgentBindingFromRootCalls = rustCallSites(
+  keyAgentStorageRelease,
+  "FixedKeyAgentGenerationStoreBindings::from_child_root",
+);
+const fixedKeyAgentBackendTestOpenCalls = rustCallSites(
+  exerciseFixedKeyAgentGenerationStores,
+  "sys::WindowsBackend::open_key_agent",
+);
+const compactMintFixedKeyAgentGenerationStoreBindings = compactRust(
+  mintFixedKeyAgentGenerationStoreBindings,
+);
+const compactFixedKeyAgentGenerationStoreBindingsFromChildRoot = compactRust(
+  fixedKeyAgentGenerationStoreBindingsFromChildRoot,
+);
+const fixedKeyAgentBindingSurface = [
+  fixedKeyAgentGenerationStoreRoleDefinition,
+  keyAgentGenerationStoreRootAuthorityDefinition,
+  keyAgentGenerationStoreBindingDefinition,
+  keyAgentGenerationStoreBindingImpl,
+  fixedKeyAgentGenerationStoreBindingsDefinition,
+  fixedKeyAgentGenerationStoreBindingsImpl,
+  openFixedKeyAgentGenerationStore,
+  fixedKeyAgentGenerationStoreSpec,
+].join("\n");
+requireInvariant(
+  JSON.stringify(publicWindowsGenerationStoreMethods) ===
+    JSON.stringify(["open", "load", "commit"]) &&
+    publicWindowsGenerationStoreOpen.includes(
+      "let backend = sys::WindowsBackend::open(&config)?",
+    ) &&
+    !publicWindowsGenerationStoreImpl.includes("open_key_agent") &&
+    normalizeRustFragment(
+      rustLexicalCode(fixedKeyAgentGenerationStoreRoleDefinition),
+    ) ===
+      "pub(crate) enum FixedKeyAgentGenerationStoreRole { Vault = 1, NonceLedger = 2, SignedCandidateJournal = 3, LocalSettings = 4, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentGenerationStoreRootAuthorityDefinition),
+    ) ===
+      "struct KeyAgentGenerationStoreRootAuthority { root: HeldChildKeyAgentStorageRoot, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentGenerationStoreBindingDefinition),
+    ) ===
+      "pub(crate) struct KeyAgentGenerationStoreBinding { authority: Arc<KeyAgentGenerationStoreRootAuthority>, role: FixedKeyAgentGenerationStoreRole, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(fixedKeyAgentGenerationStoreBindingsDefinition),
+    ) ===
+      "pub(crate) struct FixedKeyAgentGenerationStoreBindings { vault: KeyAgentGenerationStoreBinding, nonce_ledger: KeyAgentGenerationStoreBinding, signed_candidate_journal: KeyAgentGenerationStoreBinding, local_settings: KeyAgentGenerationStoreBinding, }" &&
+    /^fn\s+new\s*\(/u.test(
+      normalizeRustFragment(rustLexicalCode(keyAgentGenerationStoreBindingNew)),
+    ) &&
+    JSON.stringify(keyAgentGenerationStoreBindingMethods) ===
+      JSON.stringify([
+        "role",
+        "root_path",
+        "root_handle",
+        "stable_user_sid",
+        "profile_sid",
+        "identity",
+        "revalidate",
+      ]) &&
+    JSON.stringify(fixedKeyAgentGenerationStoreBindingsMethods) ===
+      JSON.stringify(["identity", "revalidate", "into_parts"]) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+(?:KeyAgentGenerationStoreBinding|FixedKeyAgentGenerationStoreBindings)/u.test(
+      keyAgentStorageRelease,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Send|Sync|AsRawHandle)\s+for\s+(?:KeyAgentGenerationStoreBinding|FixedKeyAgentGenerationStoreBindings)\b/u.test(
+      keyAgentStorageRelease,
+    ) &&
+    compactMintFixedKeyAgentGenerationStoreBindings.includes(
+      "reject_thread_impersonation()?;self.revalidate()?;reject_thread_impersonation()?;",
+    ) &&
+    fixedKeyAgentBindingFromRootCalls.length === 1 &&
+    fixedKeyAgentBindingFromRootCalls[0].arguments.length === 1 &&
+    fixedKeyAgentBindingFromRootCalls[0].arguments[0] === "self" &&
+    fixedKeyAgentBindingConstructorCalls.length === 4 &&
+    compactFixedKeyAgentGenerationStoreBindingsFromChildRoot.includes(
+      "FixedKeyAgentGenerationStoreRole::Vault",
+    ) &&
+    compactFixedKeyAgentGenerationStoreBindingsFromChildRoot.includes(
+      "FixedKeyAgentGenerationStoreRole::NonceLedger",
+    ) &&
+    compactFixedKeyAgentGenerationStoreBindingsFromChildRoot.includes(
+      "FixedKeyAgentGenerationStoreRole::SignedCandidateJournal",
+    ) &&
+    compactFixedKeyAgentGenerationStoreBindingsFromChildRoot.includes(
+      "FixedKeyAgentGenerationStoreRole::LocalSettings",
+    ) &&
+    JSON.stringify(fixedKeyAgentBindingMintConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+      ]) &&
+    JSON.stringify(fixedKeyAgentBackendOpenProductionConsumers) ===
+      JSON.stringify([]) &&
+    fixedKeyAgentBackendFacadeProductionCalls.length === 0 &&
+    /pub\(super\)\s+fn\s+open_key_agent\s*\(\s*binding:\s*KeyAgentGenerationStoreBinding\s*,?\s*\)/u.test(
+      rustLexicalCode(openFixedKeyAgentGenerationStore),
+    ) &&
+    openFixedKeyAgentGenerationStore.includes(
+      "fixed_key_agent_store_spec(binding.role())",
+    ) &&
+    openFixedKeyAgentGenerationStore.includes(
+      "SecurityDescriptor::for_key_agent_files(",
+    ) &&
+    /FixedKeyAgentGenerationStoreRole::Vault\s*=>\s*\(\s*"vault",\s*RecordClass::Vault,\s*4_194_416,?\s*\)/su.test(
+      fixedKeyAgentGenerationStoreSpec,
+    ) &&
+    /FixedKeyAgentGenerationStoreRole::NonceLedger\s*=>\s*\{?\s*\(\s*"nonce-ledger",\s*RecordClass::NonceLedger,\s*16_777_216,?\s*\)\s*\}?/su.test(
+      fixedKeyAgentGenerationStoreSpec,
+    ) &&
+    /FixedKeyAgentGenerationStoreRole::SignedCandidateJournal\s*=>\s*\(\s*"signed-candidate-journal",\s*RecordClass::SignedCandidateJournal,\s*16_777_216,?\s*\)/su.test(
+      fixedKeyAgentGenerationStoreSpec,
+    ) &&
+    /FixedKeyAgentGenerationStoreRole::LocalSettings\s*=>\s*\{?\s*\(\s*"local-settings",\s*RecordClass::LocalSettings,\s*226,?\s*\)\s*\}?/su.test(
+      fixedKeyAgentGenerationStoreSpec,
+    ) &&
+    fixedKeyAgentBackendTestOpenCalls.length === 3 &&
+    /#\s*\[\s*cfg\s*\(\s*all\s*\(\s*windows\s*,\s*test\s*\)\s*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\(crate\)\s+fn\s+exercise_fixed_key_agent_generation_stores_for_test/u.test(
+      rustLexicalCode(windowsStorageFacade),
+    ) &&
+    !/\b(?:Approval|SecretInput|Frontend)\b/u.test(
+      rustLexicalCode(fixedKeyAgentBindingSurface),
+    ),
+  "the public stable-user store must remain unchanged while only the consuming child-root transition can mint four sealed fixed-role bindings for the dormant private Key Agent backend",
+);
+const revalidateFixedKeyAgentGenerationStoreHeldRoot = rustFunctionBlock(
+  windowsStorageRelease,
+  "revalidate_held_root",
+);
+const fixedKeyAgentGenerationStoreHeldRootBranch =
+  /HeldRoot::KeyAgent\(binding\)\s*=>\s*\{[\s\S]*?\n\s*\}/u.exec(
+    revalidateFixedKeyAgentGenerationStoreHeldRoot,
+  )?.[0] ?? "";
+const fixedKeyAgentGenerationStoreBackendDefinition = rustLexicalItemBlock(
+  windowsStorageRelease,
+  /pub\(super\)\s+struct\s+WindowsBackend\s*\{/u,
+);
+const verifyFixedKeyAgentGenerationStorePersistentFile = rustFunctionBlock(
+  windowsStorageRelease,
+  "verify_persistent_file",
+);
+const requireFixedKeyAgentGenerationStoreForbiddenDenial = rustFunctionBlock(
+  windowsStorage,
+  "require_forbidden_access_denial",
+);
+const verifyFixedKeyAgentGenerationStoreRootRights = rustFunctionBlock(
+  keyAgentStorage,
+  "verify_forbidden_root_rights_for_test",
+);
+const requireFixedKeyAgentGenerationStoreRootOpenError = rustFunctionBlock(
+  keyAgentStorage,
+  "require_root_open_error_for_test",
+);
+const accessCheckFixedKeyAgentGenerationStoreRootRight = rustFunctionBlock(
+  keyAgentStorage,
+  "access_check_denies_root_right_for_test",
+);
+const revalidateFixedKeyAgentGenerationStoreSecurityContext = rustFunctionBlock(
+  windowsStorageRelease,
+  "revalidate_security_context",
+);
+const hitFixedKeyAgentGenerationStoreFault = rustFunctionBlock(
+  windowsStorageFacadeRelease,
+  "hit_fault_with_security_revalidation",
+);
+const commitFixedKeyAgentGenerationStoreWithFault = rustFunctionBlock(
+  windowsStorageFacadeRelease,
+  "commit_with_fault",
+);
+const fixedKeyAgentGenerationStoreFaultPoints = rustFunctionBlock(
+  windowsStorageRelease,
+  "fault_points",
+);
+const fixedKeyAgentGenerationStoreOpenRevalidations = rustCallSites(
+  openFixedKeyAgentGenerationStore,
+  "revalidate_key_agent_root_path",
+);
+const fixedKeyAgentGenerationStoreRootPathRevalidations = rustCallSites(
+  revalidateFixedKeyAgentGenerationStoreRootPath,
+  "revalidate",
+);
+const fixedKeyAgentGenerationStoreStaleTempRevalidations = rustCallSites(
+  removeFixedKeyAgentGenerationStoreStaleTemp,
+  "prepare_key_agent_path_operation",
+);
+const fixedKeyAgentGenerationStoreReadRevalidations = rustCallSites(
+  readFixedKeyAgentGenerationStore,
+  "prepare_key_agent_path_operation",
+);
+const fixedKeyAgentGenerationStoreWriteRevalidations = rustCallSites(
+  writeFixedKeyAgentGenerationStore,
+  "prepare_key_agent_path_operation",
+);
+const compactFixedKeyAgentGenerationStoreWrite = compactRust(
+  writeFixedKeyAgentGenerationStore,
+);
+const fixedKeyAgentGenerationStoreTargetOrder = [
+  "letinitial_target=open_existing_file(target);",
+  "letinitial_target_identity=inspect_optional_target(",
+  "letexisting_target=open_existing_file(target);",
+  "letexisting_target_identity=inspect_optional_target(",
+  "ifexisting_target_identity!=initial_target_identity",
+  "letreplaced=atomic_replace(temp,target);",
+  "verify_installed_readback(",
+  "letrebound=open_existing_file(target);",
+  "iffile_identity(&rebound)?!=temp_identity",
+].map((marker) => compactFixedKeyAgentGenerationStoreWrite.indexOf(marker));
+const fixedKeyAgentGenerationStorePathBookends = [
+  "self.prepare_key_agent_path_operation()?;letinitial_target=open_existing_file(target);self.prepare_key_agent_path_operation()?;",
+  "self.prepare_key_agent_path_operation()?;letcreated=create_new_write_through(temp,&self.security_descriptor);self.prepare_key_agent_path_operation()?;",
+  "self.prepare_key_agent_path_operation()?;letexisting_target=open_existing_file(target);self.prepare_key_agent_path_operation()?;",
+  "self.prepare_key_agent_path_operation()?;letreplaced=atomic_replace(temp,target);self.prepare_key_agent_path_operation()?;",
+  "self.prepare_key_agent_path_operation()?;letinstalled=open_existing_file(target);self.prepare_key_agent_path_operation()?;",
+  "self.prepare_key_agent_path_operation()?;letrebound=open_existing_file(target);self.prepare_key_agent_path_operation()?;",
+];
+const compactFixedKeyAgentGenerationStoreFault = compactRust(
+  hitFixedKeyAgentGenerationStoreFault,
+);
+const compactFixedKeyAgentGenerationStoreCommitWithFault = compactRust(
+  commitFixedKeyAgentGenerationStoreWithFault,
+);
+const fixedKeyAgentGenerationStoreWriteFaultCalls = rustCallSites(
+  writeFixedKeyAgentGenerationStore,
+  "hit_fault_with_security_revalidation",
+);
+const fixedKeyAgentGenerationStoreCommitFaultCalls = rustCallSites(
+  commitFixedKeyAgentGenerationStoreWithFault,
+  "hit_fault_with_security_revalidation",
+);
+const fixedKeyAgentGenerationStoreKernelRights = [
+  "WRITE_DAC.0",
+  "WRITE_OWNER.0",
+  "FILE_EXECUTE.0",
+  "ACCESS_SYSTEM_SECURITY",
+];
+const fixedKeyAgentGenerationStoreKernelSurface = compactRust(
+  verifyFixedKeyAgentGenerationStoreRoleForTest,
+);
+const compactFixedKeyAgentGenerationStoreExercise = compactRust(
+  exerciseFixedKeyAgentGenerationStores,
+);
+const compactFixedKeyAgentGenerationStoreRootRights = compactRust(
+  verifyFixedKeyAgentGenerationStoreRootRights,
+);
+requireInvariant(
+  windowsStorage.includes(
+    "const KEY_AGENT_FILE_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0;",
+  ) &&
+    fixedKeyAgentGenerationStoreContractTest.includes(
+      "assert_eq!(KEY_AGENT_FILE_ACCESS, 0x0013_019f)",
+    ) &&
+    fixedKeyAgentGenerationStoreContractTest.includes(
+      "assert_eq!(FILE_ALL_ACCESS.0, 0x001f_01ff)",
+    ) &&
+    fixedKeyAgentGenerationStoreFileDescriptor.includes(
+      '"O:{user_text}D:P(A;;0x{:08x};;;{user_text})(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text})"',
+    ) &&
+    fixedKeyAgentGenerationStoreFileDescriptor.includes("FILE_ALL_ACCESS.0") &&
+    verifyFixedKeyAgentGenerationStoreFileSecurity.includes(
+      "OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreFileDescriptor.includes(
+      "inspect_exact_key_agent_dacl(dacl, stable_user_sid, profile_sid)?",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreFileDescriptor.includes(
+      "inspect_exact_inherited_low_label(sacl)",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreDacl.includes(
+      "inspect_acl_header(dacl, 2)?",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreDacl.indexOf(
+      "inspect_allow_ace(user_ace, stable_user_sid, FILE_ALL_ACCESS.0)?",
+    ) <
+      inspectFixedKeyAgentGenerationStoreDacl.indexOf(
+        "inspect_allow_ace(profile_ace, profile_sid, KEY_AGENT_FILE_ACCESS)?",
+      ) &&
+    inspectFixedKeyAgentGenerationStoreDacl.includes(
+      "require_exact_acl_size(acl_size, &information, exact_bytes)",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreLowLabel.includes(
+      "inspect_acl_header(sacl, 1)?",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreLowLabel.includes(
+      "header.AceFlags != INHERITED_FILE_LABEL_ACE_FLAGS",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreLowLabel.includes(
+      "SYSTEM_MANDATORY_LABEL_NO_WRITE_UP",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreLowLabel.includes(
+      "LOW_MANDATORY_LABEL_SID",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "let mut information = FILE_ID_INFO::default()",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "GetFileInformationByHandleEx(",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes("FileIdInfo") &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "information.FileId.Identifier",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "information.VolumeSerialNumber == 0",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "file_id == [0_u8; 16]",
+    ) &&
+    queryFixedKeyAgentGenerationStoreFileIdentity.includes(
+      "file_id == [u8::MAX; 16]",
+    ) &&
+    verifyFixedKeyAgentGenerationStorePersistentFile.includes(
+      "verify_not_reparse(file)?",
+    ) &&
+    verifyFixedKeyAgentGenerationStorePersistentFile.includes(
+      "information.nNumberOfLinks != 1",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreTarget.includes(
+      "verify_persistent_file(&file, descriptor)?",
+    ) &&
+    inspectFixedKeyAgentGenerationStoreTarget.includes(
+      "identity.volume_serial != expected_volume_serial",
+    ) &&
+    fixedKeyAgentGenerationStoreOpenRevalidations.length === 2 &&
+    fixedKeyAgentGenerationStoreRootPathRevalidations.length === 2 &&
+    fixedKeyAgentGenerationStoreHeldRootBranch.includes(
+      "binding.revalidate().map_err(|_| StoreError::UnsafePath)?",
+    ) &&
+    !fixedKeyAgentGenerationStoreHeldRootBranch.includes(
+      "verify_supported_local_volume",
+    ) &&
+    fixedKeyAgentGenerationStoreBackendDefinition.includes(
+      "slot_paths: [PathBuf; 2]",
+    ) &&
+    fixedKeyAgentGenerationStoreBackendDefinition.includes(
+      "temp_paths: [PathBuf; 3]",
+    ) &&
+    revalidateFixedKeyAgentGenerationStoreRootPath.includes(
+      "let reopened = open_directory(root)?",
+    ) &&
+    revalidateFixedKeyAgentGenerationStoreRootPath.includes(
+      "file_identity(&reopened)? != expected_identity",
+    ) &&
+    prepareFixedKeyAgentGenerationStorePathOperation.includes(
+      "self.revalidate_held_root()?",
+    ) &&
+    fixedKeyAgentGenerationStoreStaleTempRevalidations.length === 4 &&
+    fixedKeyAgentGenerationStoreReadRevalidations.length === 2 &&
+    fixedKeyAgentGenerationStoreWriteRevalidations.length === 12 &&
+    fixedKeyAgentGenerationStorePathBookends.every((bookend) =>
+      compactFixedKeyAgentGenerationStoreWrite.includes(bookend),
+    ) &&
+    revalidateFixedKeyAgentGenerationStoreSecurityContext.includes(
+      "self.prepare_key_agent_path_operation()",
+    ) &&
+    compactFixedKeyAgentGenerationStoreFault.includes(
+      "backend.revalidate_security_context()?;letfault_result=fault.hit(point);backend.revalidate_security_context()?;fault_result",
+    ) &&
+    fixedKeyAgentGenerationStoreWriteFaultCalls.length === 5 &&
+    [0, 1, 2, 3, 4].every((index) =>
+      compactFixedKeyAgentGenerationStoreWrite.includes(
+        `hit_fault_with_security_revalidation(self,fault,points[${index}])?;`,
+      ),
+    ) &&
+    !compactFixedKeyAgentGenerationStoreWrite.includes("fault.hit(") &&
+    fixedKeyAgentGenerationStoreCommitFaultCalls.length === 2 &&
+    compactFixedKeyAgentGenerationStoreCommitWithFault.includes(
+      "hit_fault_with_security_revalidation(&self.backend,fault,FaultPoint::BeforeAnchorAdvance,)?;",
+    ) &&
+    compactFixedKeyAgentGenerationStoreCommitWithFault.includes(
+      "hit_fault_with_security_revalidation(&self.backend,fault,FaultPoint::AfterAnchorAdvance)?;",
+    ) &&
+    compactFixedKeyAgentGenerationStoreCommitWithFault.indexOf(
+      "FaultPoint::BeforeAnchorAdvance",
+    ) <
+      compactFixedKeyAgentGenerationStoreCommitWithFault.indexOf(
+        "self.anchor.compare_and_advance",
+      ) &&
+    compactFixedKeyAgentGenerationStoreCommitWithFault.indexOf(
+      "self.anchor.compare_and_advance",
+    ) <
+      compactFixedKeyAgentGenerationStoreCommitWithFault.indexOf(
+        "FaultPoint::AfterAnchorAdvance",
+      ) &&
+    !compactFixedKeyAgentGenerationStoreCommitWithFault.includes("fault.hit(") &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::SlotTempCreated",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::SlotTempWritten",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::SlotTempFlushed",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::SlotReplaced",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::SlotDirectoryFlushed",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::ManifestTempCreated",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::ManifestTempWritten",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::ManifestTempFlushed",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::ManifestReplaced",
+    ) &&
+    fixedKeyAgentGenerationStoreFaultPoints.includes(
+      "FaultPoint::ManifestDirectoryFlushed",
+    ) &&
+    fixedKeyAgentGenerationStoreTargetOrder.every(
+      (position) => position !== -1,
+    ) &&
+    fixedKeyAgentGenerationStoreTargetOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > fixedKeyAgentGenerationStoreTargetOrder[index],
+      ) &&
+    fixedKeyAgentGenerationStoreTargetBaselineTest.includes(
+      "InjectWrongPolicyTarget",
+    ) &&
+    fixedKeyAgentGenerationStoreTargetBaselineTest.includes(
+      "SubstituteValidTarget",
+    ) &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes(
+      "KEY_AGENT_FILE_ACCESS ^ FILE_READ_ATTRIBUTES.0",
+    ) &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes(
+      "KEY_AGENT_FILE_ACCESS | WRITE_DAC.0",
+    ) &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes(
+      "(A;;FR;;;WD)",
+    ) &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes("(A;ID;") &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes("(D;;") &&
+    fixedKeyAgentGenerationStoreLabelNegativeTest.includes(
+      '"S:(ML;ID;NW;;;LW)"',
+    ) &&
+    fixedKeyAgentGenerationStoreLabelNegativeTest.includes(
+      '"S:(ML;OICIID;NW;;;LW)"',
+    ) &&
+    fixedKeyAgentGenerationStoreLabelNegativeTest.includes(
+      '"S:(ML;ID;NW;;;ME)"',
+    ),
+  "the private Key Agent generation backend must enforce the exact 0x001f01ff/0x0013019f two-principal file policy, ID-only inherited Low/NW label, full FILE_ID_INFO, per-path root revalidation, and target baseline",
+);
+requireInvariant(
+  fixedKeyAgentGenerationStoreKernelSurface.includes(
+    "letmutall_paths=Vec::with_capacity(7);",
+  ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "all_paths.push(lock_path);",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "all_paths.extend(slot_paths);",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "all_paths.push(manifest_path);",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "all_paths.extend(temp_paths.iter().cloned());",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "forpathin&all_paths",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "forforbidden_accessin[WRITE_DAC.0,WRITE_OWNER.0,FILE_EXECUTE.0,ACCESS_SYSTEM_SECURITY,]",
+    ) &&
+    fixedKeyAgentGenerationStoreKernelRights.every((right) =>
+      fixedKeyAgentGenerationStoreKernelSurface.includes(right),
+    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes(
+      "require_forbidden_access_denial(denied,forbidden_access)?;",
+    ) &&
+    requireFixedKeyAgentGenerationStoreForbiddenDenial.includes(
+      "desired_access == ACCESS_SYSTEM_SECURITY",
+    ) &&
+    requireFixedKeyAgentGenerationStoreForbiddenDenial.includes(
+      "ERROR_PRIVILEGE_NOT_HELD.to_hresult()",
+    ) &&
+    requireFixedKeyAgentGenerationStoreForbiddenDenial.includes(
+      "desired_access != ACCESS_SYSTEM_SECURITY",
+    ) &&
+    requireFixedKeyAgentGenerationStoreForbiddenDenial.includes(
+      "ERROR_ACCESS_DENIED.to_hresult()",
+    ) &&
+    exerciseFixedKeyAgentGenerationStores.includes(
+      "let anchors: [MemoryAnchor; 4]",
+    ) &&
+    exerciseFixedKeyAgentGenerationStores.includes(
+      "let first_bindings = aggregate.bindings_for_test()",
+    ) &&
+    exerciseFixedKeyAgentGenerationStores.includes(
+      "let second_bindings = aggregate.bindings_for_test()",
+    ) &&
+    compactFixedKeyAgentGenerationStoreExercise.includes(
+      "ifstore.commit(None,&payload)?.generation()!=1||store.load()?.generation()!=1",
+    ) &&
+    compactFixedKeyAgentGenerationStoreExercise.includes("drop(first_stores);") &&
+    compactFixedKeyAgentGenerationStoreExercise.includes(
+      "ifstore.load()?.generation()!=1||store.commit(Some(1),&payload)?.generation()!=2||store.load()?.generation()!=2",
+    ) &&
+    exerciseFixedKeyAgentGenerationStores.includes(
+      "store.backend.verify_and_cleanup_key_agent_role_for_test()",
+    ) &&
+    exerciseFixedKeyAgentGenerationStores.includes("struct ExactCleanup") &&
+    exerciseFixedKeyAgentGenerationStores.includes("cleanup.armed = false") &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "(DELETE.0,ERROR_SHARING_VIOLATION.to_hresult())",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "(FILE_DELETE_CHILD.0,ERROR_ACCESS_DENIED.to_hresult())",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "(WRITE_DAC.0,ERROR_ACCESS_DENIED.to_hresult())",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "(WRITE_OWNER.0,ERROR_ACCESS_DENIED.to_hresult())",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "(ACCESS_SYSTEM_SECURITY,ERROR_PRIVILEGE_NOT_HELD.to_hresult(),)",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "ifaccess==DELETE.0||access==WRITE_DAC.0",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "access_check_denies_root_right_for_test(",
+    ) &&
+    compactFixedKeyAgentGenerationStoreRootRights.includes(
+      "require_root_open_error_for_test(self.vault.root_path(),access,expected_error)?;",
+    ) &&
+    requireFixedKeyAgentGenerationStoreRootOpenError.includes("CreateFileW(") &&
+    requireFixedKeyAgentGenerationStoreRootOpenError.includes(
+      "error.code() == expected_error",
+    ) &&
+    accessCheckFixedKeyAgentGenerationStoreRootRight.includes("AccessCheck(") &&
+    accessCheckFixedKeyAgentGenerationStoreRootRight.includes(
+      "access_status.as_bool()",
+    ) &&
+    accessCheckFixedKeyAgentGenerationStoreRootRight.includes(
+      "granted_access != 0",
+    ) &&
+    serveInheritedKeyAgentStorageStartup.includes(
+      ".verify_forbidden_root_rights_for_test()",
+    ) &&
+    serveInheritedKeyAgentStorageStartup.includes(
+      "crate::storage::exercise_fixed_key_agent_generation_stores_for_test(",
+    ) &&
+    serveInheritedKeyAgentStorageStartup.includes(
+      "&generation_store_bindings",
+    ) &&
+    integratedKeyAgentGenerationStoreTest.includes(
+      "bind_key_agent_storage_startup_for_kernel_test(dormant)?",
+    ) &&
+    integratedKeyAgentGenerationStoreTest.includes(
+      "assert!(bound.provisioning.revalidate().is_ok())",
+    ) &&
+    integratedKeyAgentGenerationStoreTest.includes("drop(bound)") &&
+    integratedKeyAgentGenerationStoreTest.includes(
+      "assert!(!storage_root.exists())",
+    ),
+  "the cfg(test) integrated zero-capability LPAC helper must exercise four fixed stores across close/reopen, the exact per-store seven-file by four-right kernel-denial matrix, and the root open/AccessCheck denial split",
 );
 const keyAgentRequestWriterImpl = rustItemBlock(
   keyAgentPipeRelease,
@@ -9057,6 +9820,7 @@ const keyAgentBoundaryDocumentation = [
   activationArchitecture,
   activationReadme,
   securityDecisions,
+  keyAgentProtocolDocumentation,
 ].join("\n");
 requireInvariant(
     activationArchitecture.includes("### Key Agent activation invariant (STOP-SHIP)") &&
@@ -9115,17 +9879,71 @@ requireInvariant(
     /offers neither a follow-on read\/write\s+method nor signing authority/u.test(
       activationArchitecture,
     ) &&
-    /public\s+`WindowsGenerationStore` remains stable-`TokenUser`-only/u.test(
+    /public\s+`WindowsGenerationStore` (?:is unchanged and\s+)?remains\s+stable-`TokenUser`-only/u.test(
       activationArchitecture,
     ) &&
     /immediate\s+buffered-byte snapshots/u.test(activationArchitecture) &&
     /do not prove the absence\s+of a future delayed suffix or EOF/u.test(
       activationArchitecture,
     ) &&
-    keyAgentBoundaryDocumentation.includes("file-level dual-principal policy") &&
+    keyAgentBoundaryDocumentation.includes("WindowsBackend::open_key_agent") &&
+    ["Vault", "NonceLedger", "SignedCandidateJournal", "LocalSettings"].every(
+      (role) => keyAgentBoundaryDocumentation.includes(role),
+    ) &&
+    keyAgentBoundaryDocumentation.includes("4,194,416") &&
+    keyAgentBoundaryDocumentation.includes("16,777,216") &&
+    keyAgentBoundaryDocumentation.includes("`226` bytes") &&
+    keyAgentBoundaryDocumentation.includes("0x001f01ff") &&
+    keyAgentBoundaryDocumentation.includes("0x0013019f") &&
+    keyAgentBoundaryDocumentation.includes("exactly two explicit allow ACEs") &&
+    keyAgentBoundaryDocumentation.includes("INHERITED_ACE") &&
+    keyAgentBoundaryDocumentation.includes("FILE_ID_INFO") &&
+    keyAgentBoundaryDocumentation.includes("security-context hook") &&
+    keyAgentBoundaryDocumentation.includes("untrusted fault callback") &&
+    keyAgentBoundaryDocumentation.includes("seven physical") &&
+    keyAgentBoundaryDocumentation.includes("SHARING_VIOLATION") &&
+    keyAgentBoundaryDocumentation.includes("PRIVILEGE_NOT_HELD") &&
+    keyAgentBoundaryDocumentation.includes("AccessCheck") &&
+    activationArchitecture.includes(
+      "narrow private fixed-role Key Agent generation-store adapter",
+    ) &&
+    activationArchitecture.includes(
+      "no production protected-settings consumer or settings key provisioning",
+    ) &&
+    /existing production profiles still\s+lack durable installer provenance\/adoption\/recovery/u.test(
+      activationReadme,
+    ) &&
+    /same-user processes while ancestor checks remain\s+non-atomic/u.test(
+      activationReadme,
+    ) &&
+    activationReadme.includes(
+      "Production rollback-anchor and storage/AEAD-key provisioning",
+    ) &&
+    activationReadme.includes("live protected-settings/lease authority") &&
+    /authenticated Broker\/supervisor\s+topology and single-instance enforcement/u.test(
+      activationReadme,
+    ) &&
+    activationReadme.includes("signed immutable artifacts") &&
+    activationReadme.includes("exact DLL/dependency E2E evidence") &&
+    activationReadme.includes("future-delayed") &&
+    activationReadme.includes("no generic Key Agent runtime or") &&
+    activationReadme.includes("signing IPC exists") &&
+    /not a production fresh\s+fixed profile\/root E2E/u.test(activationReadme) &&
+    !/Generation-file adaptation\/file DACLs[^\n]*STOP-SHIP/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    !/pending a\s+file-level adapter and policy/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
+    !/\bno Key Agent adapter\b/iu.test(keyAgentBoundaryDocumentation) &&
+    !/(?:generation-file|generation-store)[^\n]{0,100}(?:adapter|DACL)[^\n]{0,100}(?:absent|missing|pending|unimplemented)/iu.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
     keyAgentBoundaryDocumentation.includes("durable installer provenance/recovery") &&
     keyAgentBoundaryDocumentation.includes("same-user mutation") &&
-    keyAgentBoundaryDocumentation.includes("CSPRNG-named test leaf") &&
+    /CSPRNG(?:-named)?\s+(?:test|storage)\s+leaf/u.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
     activationArchitecture.includes(
       "This central profile API rejects thread impersonation",
     ) &&

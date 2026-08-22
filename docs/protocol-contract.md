@@ -283,9 +283,49 @@ The integrated kernel positive uses a persistent test profile/CSPRNG leaf and tw
 preamble, and Job topology permits only the fixture plus at most the exact
 System32 `conhost.exe`. Production requires response magic at byte zero and one
 active Job member. This is not a production fresh-fixed-root or signed-artifact
-E2E. A generation-file adapter and reviewed file DACL, durable existing-profile
-provenance/recovery, protected-settings and authenticated Broker/supervisor
-topology, and signed immutable artifact/dependency E2E remain STOP-SHIP.
+E2E.
+
+After validating the request/root binding, the child consumes its held root into
+one sealed crate-private set of four generation-store roles. Callers cannot
+construct or clone a binding and cannot supply a raw path, principal, class,
+bound, or frontend selector. The closed tuples are `vault`/Vault/4,194,416,
+`nonce-ledger`/NonceLedger/16,777,216,
+`signed-candidate-journal`/SignedCandidateJournal/16,777,216, and
+`local-settings`/LocalSettings/226. Only the private
+`WindowsBackend::open_key_agent` consumes a binding; the public
+`WindowsGenerationStore` remains the separate stable-`TokenUser`-only facade.
+
+Every physical file for those roles uses the stable `TokenUser` as owner and a
+protected DACL with exactly two explicit allow ACEs in canonical order. The user
+mask is `FILE_ALL_ACCESS` (`0x001f01ff`); the exact Key Agent profile mask is
+`FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE` (`0x0013019f`). The file SACL
+must contain exactly one inherited Low/`NW` mandatory-label ACE with only the
+`INHERITED_ACE` (`ID`) flag. The backend accepts no other/broad/frontend
+principal, extra/reordered/deny/inherited-DACL ACE, mask drift, reparse point, or
+hard link. It revalidates thread-impersonation absence and the held/reopened root
+with full `FILE_ID_INFO` around each fixed child-path operation. Before replace,
+the target must match its original identity-or-absence baseline; afterward the
+installed file is rebound to exact bytes, digest, full identity, volume, and
+security. The backend security-context hook also bookends every untrusted fault
+callback, including both callbacks around rollback-anchor advancement.
+
+The integrated `cfg(test)` zero-capability LPAC path opens all four roles,
+commits/loads generation one, closes/reopens, and loads/commits generation two.
+For each role it verifies the seven lock/slot/manifest/temporary names. Every
+file must return `ACCESS_DENIED` for `WRITE_DAC`, `WRITE_OWNER`, and
+`FILE_EXECUTE`, and `PRIVILEGE_NOT_HELD` for `ACCESS_SYSTEM_SECURITY`. The held
+root separately proves actual-open `DELETE` as `SHARING_VIOLATION` plus a denied
+`AccessCheck`, `FILE_DELETE_CHILD`/`WRITE_DAC`/`WRITE_OWNER` as
+`ACCESS_DENIED`, and `ACCESS_SYSTEM_SECURITY` as `PRIVILEGE_NOT_HELD`. The fixture uses in-memory
+rollback anchors and synthetic keys/payloads, so it does not prove production
+anchor or AEAD-key provisioning.
+
+Durable existing-profile provenance/adoption/recovery, the same-user/ancestor
+race boundary, production rollback-anchor and storage/AEAD-key provisioning,
+protected-settings/lease authority, authenticated Broker/supervisor topology and
+single-instance, and signed immutable artifact/DLL/dependency E2E remain
+STOP-SHIP. The persistent startup stream still proves neither a future delayed
+suffix nor EOF, and there is no generic runtime/signing IPC.
 `COMPILED_RELEASE_POLICY` remains `None`.
 
 The crate-private Key Agent offline-lifecycle channel is a separate closed

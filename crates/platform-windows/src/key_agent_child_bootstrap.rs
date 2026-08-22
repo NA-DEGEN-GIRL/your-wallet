@@ -35,7 +35,7 @@ use crate::key_agent_startup::{
 #[cfg(test)]
 use crate::key_agent_storage::open_test_key_agent_storage_root_for_child;
 use crate::key_agent_storage::{
-    HeldChildKeyAgentStorageRoot, open_fixed_key_agent_storage_root_for_child,
+    FixedKeyAgentGenerationStoreBindings, open_fixed_key_agent_storage_root_for_child,
 };
 use crate::pipe::reject_buffered_key_agent_startup_bytes;
 
@@ -149,6 +149,25 @@ pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBo
     child_root
         .revalidate()
         .map_err(|_| KeyAgentChildBootstrapError)?;
+    let generation_store_bindings = child_root
+        .into_fixed_generation_store_bindings()
+        .map_err(|_| KeyAgentChildBootstrapError)?;
+    #[cfg(test)]
+    if request.is_test_mode() {
+        generation_store_bindings
+            .verify_forbidden_root_rights_for_test()
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+        crate::storage::exercise_fixed_key_agent_generation_stores_for_test(
+            &generation_store_bindings,
+        )
+        .map_err(|_| KeyAgentChildBootstrapError)?;
+        generation_store_bindings
+            .revalidate()
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+        if generation_store_bindings.identity() != actual_storage_identity {
+            return Err(KeyAgentChildBootstrapError);
+        }
+    }
 
     let response = KeyAgentStartupResponse::from_validated_request(
         &request,
@@ -160,7 +179,7 @@ pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBo
     let response_frame = response.encode().map_err(|_| KeyAgentChildBootstrapError)?;
     write_exact_synchronous(sealed_stdio.stdout, response_frame.as_bytes())?;
 
-    wait_for_parent_disconnect(&sealed_stdio, &child_root)
+    wait_for_parent_disconnect(&sealed_stdio, &generation_store_bindings)
 }
 
 fn current_process_id() -> Result<u32, KeyAgentChildBootstrapError> {
@@ -252,7 +271,7 @@ fn write_exact_synchronous(
 
 fn wait_for_parent_disconnect(
     sealed_stdio: &SealedKeyAgentStdio,
-    _child_root: &HeldChildKeyAgentStorageRoot,
+    _generation_store_bindings: &FixedKeyAgentGenerationStoreBindings,
 ) -> Result<(), KeyAgentChildBootstrapError> {
     let mut byte = [0_u8; 1];
     let mut transferred = 0_u32;

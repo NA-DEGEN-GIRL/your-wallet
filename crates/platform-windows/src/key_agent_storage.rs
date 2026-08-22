@@ -12,6 +12,7 @@ use core::ffi::c_void;
 use core::fmt;
 #[cfg(test)]
 use core::fmt::Write as _;
+use core::marker::PhantomData;
 use core::mem::{offset_of, size_of, size_of_val};
 use core::ptr;
 use std::fs;
@@ -19,12 +20,16 @@ use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, RawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN,
     ERROR_SUCCESS, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
 };
+#[cfg(test)]
+use windows::Win32::Foundation::{ERROR_PRIVILEGE_NOT_HELD, ERROR_SHARING_VIOLATION};
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
     SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -40,6 +45,11 @@ use windows::Win32::Security::{
     SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, SYSTEM_MANDATORY_LABEL_ACE,
     TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenUser,
 };
+#[cfg(test)]
+use windows::Win32::Security::{
+    AccessCheck, DuplicateToken, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION, PRIVILEGE_SET,
+    SecurityImpersonation, TOKEN_DUPLICATE,
+};
 use windows::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -49,6 +59,13 @@ use windows::Win32::Storage::FileSystem::{
     GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, OPEN_EXISTING, READ_CONTROL,
     SYNCHRONIZE, VOLUME_NAME_GUID,
 };
+#[cfg(test)]
+use windows::Win32::Storage::FileSystem::{
+    DELETE, FILE_ALL_ACCESS, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, WRITE_DAC, WRITE_OWNER,
+};
+#[cfg(test)]
+use windows::Win32::System::SystemServices::ACCESS_SYSTEM_SECURITY;
 use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SYSTEM_MANDATORY_LABEL_ACE_TYPE,
     SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
@@ -57,6 +74,8 @@ use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
 };
 use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
+#[cfg(test)]
+use windows::core::HRESULT;
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 use crate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;
@@ -244,6 +263,8 @@ pub(crate) struct HeldChildKeyAgentStorageRoot {
     identity: KeyAgentStorageRootIdentity,
     stable_user_sid: OwnedSid,
     profile_sid: OwnedSid,
+    #[allow(dead_code)] // Read only by the dormant fixed generation-store backend seam.
+    path: PathBuf,
 }
 
 impl HeldChildKeyAgentStorageRoot {
@@ -266,11 +287,255 @@ impl HeldChildKeyAgentStorageRoot {
         }
         Ok(())
     }
+
+    /// Consumes the child-held root into the four fixed generation-store roles.
+    ///
+    /// No path, principal, namespace, record class, or payload bound enters this
+    /// transition. The private aggregate mints each closed role exactly once and
+    /// retains this root until the last role binding is dropped.
+    pub(crate) fn into_fixed_generation_store_bindings(
+        self,
+    ) -> Result<FixedKeyAgentGenerationStoreBindings, KeyAgentStorageError> {
+        reject_thread_impersonation()?;
+        self.revalidate()?;
+        reject_thread_impersonation()?;
+        Ok(FixedKeyAgentGenerationStoreBindings::from_child_root(self))
+    }
 }
 
 impl fmt::Debug for HeldChildKeyAgentStorageRoot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("HeldChildKeyAgentStorageRoot([REDACTED HELD DIRECTORY])")
+    }
+}
+
+/// The four generation-store roles fixed into the Key Agent storage policy.
+///
+/// This enum carries no authority. A caller cannot supply it to a constructor;
+/// only the consuming child-root transition above mints live role bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum FixedKeyAgentGenerationStoreRole {
+    Vault = 1,
+    NonceLedger = 2,
+    SignedCandidateJournal = 3,
+    LocalSettings = 4,
+}
+
+struct KeyAgentGenerationStoreRootAuthority {
+    root: HeldChildKeyAgentStorageRoot,
+}
+
+impl fmt::Debug for KeyAgentGenerationStoreRootAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentGenerationStoreRootAuthority([REDACTED HELD ROOT])")
+    }
+}
+
+/// One non-cloneable binding between the held child root and one fixed store role.
+///
+/// The shared authority is cloned only inside the one-shot aggregate minting
+/// transition. The binding exposes no public path, handle, or principal and is
+/// deliberately thread-bound even though its underlying kernel handle is owned.
+#[must_use = "the fixed Key Agent generation-store binding must remain held"]
+#[allow(dead_code)] // Consumed only by the dormant fixed generation-store backend seam.
+pub(crate) struct KeyAgentGenerationStoreBinding {
+    authority: Arc<KeyAgentGenerationStoreRootAuthority>,
+    role: FixedKeyAgentGenerationStoreRole,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+#[allow(dead_code)] // Accessed only by the dormant fixed generation-store backend seam.
+impl KeyAgentGenerationStoreBinding {
+    fn new(
+        authority: Arc<KeyAgentGenerationStoreRootAuthority>,
+        role: FixedKeyAgentGenerationStoreRole,
+    ) -> Self {
+        Self {
+            authority,
+            role,
+            _not_send_or_sync: PhantomData,
+        }
+    }
+
+    /// Returns the closed role embedded by the one-shot root transition.
+    pub(crate) const fn role(&self) -> FixedKeyAgentGenerationStoreRole {
+        self.role
+    }
+
+    /// Returns the internally retained root path to the Windows backend only.
+    ///
+    /// No constructor accepts a path and no public API exports this binding.
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.authority.root.path
+    }
+
+    /// Borrows the exact no-delete-share root handle retained by the binding.
+    pub(crate) fn root_handle(&self) -> &std::fs::File {
+        &self.authority.root.handle
+    }
+
+    /// Returns the live stable-user SID retained by the root proof.
+    pub(crate) fn stable_user_sid(&self) -> PSID {
+        self.authority.root.stable_user_sid.as_psid()
+    }
+
+    /// Returns the live fixed-profile SID retained by the root proof.
+    pub(crate) fn profile_sid(&self) -> PSID {
+        self.authority.root.profile_sid.as_psid()
+    }
+
+    /// Returns path-free full `FILE_ID_INFO` evidence for the retained root.
+    pub(crate) fn identity(&self) -> KeyAgentStorageRootIdentity {
+        self.authority.root.identity
+    }
+
+    /// Revalidates the root without trusting an impersonating thread.
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
+        reject_thread_impersonation()?;
+        self.authority.root.revalidate()?;
+        reject_thread_impersonation()
+    }
+}
+
+impl fmt::Debug for KeyAgentGenerationStoreBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentGenerationStoreBinding([REDACTED FIXED ROLE AND ROOT])")
+    }
+}
+
+/// Exactly one binding for every fixed Key Agent generation-store role.
+///
+/// The value is non-cloneable, non-transferable, and caller-nonselectable. Its
+/// four fields are private so production composition can consume the complete
+/// set rather than opening an arbitrary subset or remapping a role.
+#[must_use = "the complete fixed Key Agent generation-store binding set must remain held"]
+#[allow(dead_code)] // Three roles stay retained while production storage remains dormant.
+pub(crate) struct FixedKeyAgentGenerationStoreBindings {
+    vault: KeyAgentGenerationStoreBinding,
+    nonce_ledger: KeyAgentGenerationStoreBinding,
+    signed_candidate_journal: KeyAgentGenerationStoreBinding,
+    local_settings: KeyAgentGenerationStoreBinding,
+}
+
+#[allow(dead_code)] // `into_parts` is the intentionally dormant production continuation.
+impl FixedKeyAgentGenerationStoreBindings {
+    fn from_child_root(root: HeldChildKeyAgentStorageRoot) -> Self {
+        let authority = Arc::new(KeyAgentGenerationStoreRootAuthority { root });
+        Self {
+            vault: KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::Vault,
+            ),
+            nonce_ledger: KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::NonceLedger,
+            ),
+            signed_candidate_journal: KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::SignedCandidateJournal,
+            ),
+            local_settings: KeyAgentGenerationStoreBinding::new(
+                authority,
+                FixedKeyAgentGenerationStoreRole::LocalSettings,
+            ),
+        }
+    }
+
+    /// Returns the path-free full identity shared by all four bindings.
+    pub(crate) fn identity(&self) -> KeyAgentStorageRootIdentity {
+        self.vault.identity()
+    }
+
+    /// Revalidates the one shared root authority.
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
+        self.vault.revalidate()
+    }
+
+    /// Consumes the complete set into the fixed role order.
+    pub(crate) fn into_parts(self) -> [KeyAgentGenerationStoreBinding; 4] {
+        [
+            self.vault,
+            self.nonce_ledger,
+            self.signed_candidate_journal,
+            self.local_settings,
+        ]
+    }
+
+    /// Mints test-only role bindings backed by the same retained root authority.
+    ///
+    /// This is intentionally not a `Clone` implementation and is absent from
+    /// production. Kernel tests use it to exercise close-and-reopen behavior.
+    #[cfg(test)]
+    pub(crate) fn bindings_for_test(&self) -> [KeyAgentGenerationStoreBinding; 4] {
+        let authority = Arc::clone(&self.vault.authority);
+        [
+            KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::Vault,
+            ),
+            KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::NonceLedger,
+            ),
+            KeyAgentGenerationStoreBinding::new(
+                Arc::clone(&authority),
+                FixedKeyAgentGenerationStoreRole::SignedCandidateJournal,
+            ),
+            KeyAgentGenerationStoreBinding::new(
+                authority,
+                FixedKeyAgentGenerationStoreRole::LocalSettings,
+            ),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verify_forbidden_root_rights_for_test(&self) -> Result<(), KeyAgentStorageError> {
+        let identity = self.identity();
+        for (access, expected_error) in [
+            (DELETE.0, ERROR_SHARING_VIOLATION.to_hresult()),
+            (FILE_DELETE_CHILD.0, ERROR_ACCESS_DENIED.to_hresult()),
+            (WRITE_DAC.0, ERROR_ACCESS_DENIED.to_hresult()),
+            (WRITE_OWNER.0, ERROR_ACCESS_DENIED.to_hresult()),
+            (
+                ACCESS_SYSTEM_SECURITY,
+                ERROR_PRIVILEGE_NOT_HELD.to_hresult(),
+            ),
+        ] {
+            if access == DELETE.0 || access == WRITE_DAC.0 {
+                self.revalidate_identity_for_test(identity)?;
+                access_check_denies_root_right_for_test(
+                    self.vault.root_handle(),
+                    &self.vault.authority.root.stable_user_sid,
+                    &self.vault.authority.root.profile_sid,
+                    access,
+                )?;
+                self.revalidate_identity_for_test(identity)?;
+            }
+            self.revalidate_identity_for_test(identity)?;
+            require_root_open_error_for_test(self.vault.root_path(), access, expected_error)?;
+            self.revalidate_identity_for_test(identity)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn revalidate_identity_for_test(
+        &self,
+        expected: KeyAgentStorageRootIdentity,
+    ) -> Result<(), KeyAgentStorageError> {
+        self.revalidate()?;
+        if self.identity() != expected {
+            return Err(KeyAgentStorageError::Identity);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for FixedKeyAgentGenerationStoreBindings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .write_str("FixedKeyAgentGenerationStoreBindings([REDACTED FOUR FIXED ROLE BINDINGS])")
     }
 }
 
@@ -346,6 +611,7 @@ fn open_child_storage_root(
         identity,
         stable_user_sid,
         profile_sid,
+        path,
     };
 
     held.revalidate()?;
@@ -462,6 +728,216 @@ fn open_storage_root_handle(path: &Path) -> Result<std::fs::File, KeyAgentStorag
     })?;
     // SAFETY: transfer the one successful owned Win32 handle to File exactly once.
     Ok(unsafe { std::fs::File::from_raw_handle(raw.0 as RawHandle) })
+}
+
+#[cfg(test)]
+fn require_root_open_error_for_test(
+    path: &Path,
+    desired_access: u32,
+    expected_error: HRESULT,
+) -> Result<(), KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    let wide = wide_path(path)?;
+    // SAFETY: the retained root supplied this validated NUL-terminated path.
+    // Each probe pins the exact kernel result separately from the DACL-only
+    // AccessCheck proof used where the retained handle masks DELETE access.
+    let result = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            desired_access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    };
+    reject_thread_impersonation()?;
+    match result {
+        Err(error) if error.code() == expected_error => Ok(()),
+        Ok(handle) => {
+            // SAFETY: a surprising successful open returned one fresh owned
+            // handle. Close it exactly once before failing the security proof.
+            drop(unsafe { std::fs::File::from_raw_handle(handle.0 as RawHandle) });
+            Err(KeyAgentStorageError::Security)
+        }
+        Err(_) => Err(KeyAgentStorageError::Security),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_lines)] // Keeps the complete kernel-proof lifetime in one test-only scope.
+fn access_check_denies_root_right_for_test(
+    root: &std::fs::File,
+    stable_user_sid: &OwnedSid,
+    profile_sid: &OwnedSid,
+    desired_access: u32,
+) -> Result<(), KeyAgentStorageError> {
+    const MAX_PRIVILEGE_SET_BYTES: usize = 64 * 1024;
+
+    reject_thread_impersonation()?;
+    let mut owner = PSID::default();
+    let mut group = PSID::default();
+    let mut dacl = ptr::null_mut::<ACL>();
+    let mut raw_descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: every requested output points to initialized writable storage;
+    // the held root handle remains live through descriptor inspection.
+    let status = unsafe {
+        GetSecurityInfo(
+            HANDLE(root.as_raw_handle()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | GROUP_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | LABEL_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            Some(&raw mut group),
+            Some(&raw mut dacl),
+            None,
+            Some(&raw mut raw_descriptor),
+        )
+    };
+    if raw_descriptor.0.is_null() {
+        return Err(KeyAgentStorageError::Security);
+    }
+    let descriptor = SecurityDescriptor(raw_descriptor);
+    let valid_group = status == ERROR_SUCCESS
+        && !group.0.is_null()
+        // SAFETY: successful GetSecurityInfo placed `group` inside the live
+        // self-relative descriptor retained by `descriptor`.
+        && unsafe { IsValidSid(group) }.as_bool();
+    if status != ERROR_SUCCESS || owner.0.is_null() || !valid_group || dacl.is_null() {
+        return Err(KeyAgentStorageError::Security);
+    }
+
+    let mut sacl_present = BOOL(0);
+    let mut sacl_defaulted = BOOL(0);
+    let mut sacl = ptr::null_mut::<ACL>();
+    // SAFETY: GetSecurityInfo returned one live self-relative descriptor that
+    // includes LABEL_SECURITY_INFORMATION.
+    unsafe {
+        windows::Win32::Security::GetSecurityDescriptorSacl(
+            descriptor.0,
+            &raw mut sacl_present,
+            &raw mut sacl,
+            &raw mut sacl_defaulted,
+        )
+        .map_err(|_| KeyAgentStorageError::Security)?;
+    }
+    if !sacl_present.as_bool() || sacl_defaulted.as_bool() || sacl.is_null() {
+        return Err(KeyAgentStorageError::Security);
+    }
+    inspect_handle_security_descriptor(
+        descriptor.0,
+        owner,
+        dacl,
+        sacl,
+        stable_user_sid,
+        profile_sid,
+    )?;
+
+    let token = current_process_impersonation_token_for_test()?;
+    let mapping = GENERIC_MAPPING {
+        GenericRead: FILE_GENERIC_READ.0,
+        GenericWrite: FILE_GENERIC_WRITE.0,
+        GenericExecute: FILE_GENERIC_EXECUTE.0,
+        GenericAll: FILE_ALL_ACCESS.0,
+    };
+    let mut privilege_bytes = 0_u32;
+    let mut granted_access = u32::MAX;
+    let mut access_status = BOOL(1);
+    // SAFETY: all scalar outputs and the mapping are live. The first call
+    // intentionally supplies no PRIVILEGE_SET so Windows reports its size.
+    let size_query = unsafe {
+        AccessCheck(
+            descriptor.0,
+            token.0,
+            desired_access,
+            ptr::from_ref(&mapping),
+            None,
+            &raw mut privilege_bytes,
+            &raw mut granted_access,
+            &raw mut access_status,
+        )
+    };
+    if !matches!(size_query, Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()) {
+        return Err(KeyAgentStorageError::Security);
+    }
+
+    let privilege_bytes =
+        usize::try_from(privilege_bytes).map_err(|_| KeyAgentStorageError::Security)?;
+    if privilege_bytes < size_of::<PRIVILEGE_SET>() || privilege_bytes > MAX_PRIVILEGE_SET_BYTES {
+        return Err(KeyAgentStorageError::Security);
+    }
+    let alignment = size_of::<usize>();
+    let word_count = privilege_bytes
+        .checked_add(alignment - 1)
+        .and_then(|rounded| rounded.checked_div(alignment))
+        .ok_or(KeyAgentStorageError::Security)?;
+    let mut privilege_words = vec![0_usize; word_count];
+    let capacity = privilege_words
+        .len()
+        .checked_mul(alignment)
+        .ok_or(KeyAgentStorageError::Security)?;
+    if capacity < privilege_bytes {
+        return Err(KeyAgentStorageError::Security);
+    }
+    let mut supplied_bytes = u32::try_from(capacity).map_err(|_| KeyAgentStorageError::Security)?;
+    granted_access = u32::MAX;
+    access_status = BOOL(1);
+    // SAFETY: Vec<usize> supplies alignment at least as strict as
+    // PRIVILEGE_SET and remains writable for the advertised capacity.
+    unsafe {
+        AccessCheck(
+            descriptor.0,
+            token.0,
+            desired_access,
+            ptr::from_ref(&mapping),
+            Some(privilege_words.as_mut_ptr().cast::<PRIVILEGE_SET>()),
+            &raw mut supplied_bytes,
+            &raw mut granted_access,
+            &raw mut access_status,
+        )
+        .map_err(|_| KeyAgentStorageError::Security)?;
+    }
+    reject_thread_impersonation()?;
+    if usize::try_from(supplied_bytes).map_err(|_| KeyAgentStorageError::Security)? > capacity
+        || access_status.as_bool()
+        || granted_access != 0
+    {
+        return Err(KeyAgentStorageError::Security);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn current_process_impersonation_token_for_test() -> Result<OwnedHandle, KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    let mut primary = HANDLE::default();
+    // SAFETY: query/duplicate-only access is requested for the current process
+    // token and the output points to initialized writable handle storage.
+    unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &raw mut primary,
+        )
+        .map_err(|_| KeyAgentStorageError::Security)?;
+    }
+    if primary.is_invalid() || primary == INVALID_HANDLE_VALUE {
+        return Err(KeyAgentStorageError::Security);
+    }
+    let primary = OwnedHandle(primary);
+    let mut impersonation = HANDLE::default();
+    // SAFETY: the primary token has TOKEN_DUPLICATE and the output receives one
+    // exclusively owned impersonation-token handle for AccessCheck only.
+    unsafe { DuplicateToken(primary.0, SecurityImpersonation, &raw mut impersonation) }
+        .map_err(|_| KeyAgentStorageError::Security)?;
+    if impersonation.is_invalid() || impersonation == INVALID_HANDLE_VALUE {
+        return Err(KeyAgentStorageError::Security);
+    }
+    reject_thread_impersonation()?;
+    Ok(OwnedHandle(impersonation))
 }
 
 fn verify_open_storage_root(
@@ -1406,9 +1882,11 @@ pub(crate) unsafe fn create_unique_key_agent_storage_root_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
+        FixedKeyAgentGenerationStoreBindings, FixedKeyAgentGenerationStoreRole,
         HeldChildKeyAgentStorageRoot, HeldKeyAgentStorageRoot, KEY_AGENT_STORAGE_IDENTITY_BYTES,
-        KEY_AGENT_STORAGE_ROOT_ACCESS, KeyAgentStorageError, KeyAgentStorageRootIdentity, OwnedSid,
-        SecurityDescriptor, inspect_handle_security_descriptor, is_exact_test_storage_root_leaf,
+        KEY_AGENT_STORAGE_ROOT_ACCESS, KeyAgentGenerationStoreBinding, KeyAgentStorageError,
+        KeyAgentStorageRootIdentity, OwnedSid, SecurityDescriptor,
+        inspect_handle_security_descriptor, is_exact_test_storage_root_leaf,
         reject_thread_impersonation, validate_child_profile_folder_shape,
     };
     use core::ffi::c_void;
@@ -1425,6 +1903,34 @@ mod tests {
     const USER_SID: &str = "S-1-5-21-1-2-3-1001";
     const PROFILE_SID: &str = "S-1-15-2-1-2-3-4-5-6-7-8";
     const OTHER_PROFILE_SID: &str = "S-1-15-2-8-7-6-5-4-3-2-1";
+
+    trait AmbiguousIfSend<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    trait AmbiguousIfSync<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<Marker> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     struct StringSid(PSID);
 
@@ -1530,9 +2036,43 @@ mod tests {
 
     #[test]
     fn operation_union_excludes_acl_and_owner_mutation() {
-        assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS & 0x0004_0000, 0);
-        assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS & 0x0008_0000, 0);
+        for forbidden in [
+            super::DELETE.0,
+            super::FILE_DELETE_CHILD.0,
+            super::WRITE_DAC.0,
+            super::WRITE_OWNER.0,
+            super::ACCESS_SYSTEM_SECURITY,
+        ] {
+            assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS & forbidden, 0);
+        }
         assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS, 0x0012_01b7);
+    }
+
+    #[test]
+    fn fixed_generation_store_roles_are_closed_and_complete() {
+        assert_eq!(
+            [
+                FixedKeyAgentGenerationStoreRole::Vault as u8,
+                FixedKeyAgentGenerationStoreRole::NonceLedger as u8,
+                FixedKeyAgentGenerationStoreRole::SignedCandidateJournal as u8,
+                FixedKeyAgentGenerationStoreRole::LocalSettings as u8,
+            ],
+            [1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn generation_store_authorities_are_thread_bound_and_unique() {
+        assert!(core::mem::needs_drop::<KeyAgentGenerationStoreBinding>());
+        assert!(core::mem::needs_drop::<FixedKeyAgentGenerationStoreBindings>());
+        let _ = <KeyAgentGenerationStoreBinding as AmbiguousIfSend<_>>::marker;
+        let _ = <KeyAgentGenerationStoreBinding as AmbiguousIfSync<_>>::marker;
+        let _ = <KeyAgentGenerationStoreBinding as AmbiguousIfClone<_>>::marker;
+        let _ = <KeyAgentGenerationStoreBinding as AmbiguousIfCopy<_>>::marker;
+        let _ = <FixedKeyAgentGenerationStoreBindings as AmbiguousIfSend<_>>::marker;
+        let _ = <FixedKeyAgentGenerationStoreBindings as AmbiguousIfSync<_>>::marker;
+        let _ = <FixedKeyAgentGenerationStoreBindings as AmbiguousIfClone<_>>::marker;
+        let _ = <FixedKeyAgentGenerationStoreBindings as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]

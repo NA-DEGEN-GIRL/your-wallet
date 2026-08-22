@@ -46,6 +46,82 @@ fn recovery_never_downgrades_path_acl_or_io_proof_failures_to_corruption() {
     );
 }
 
+#[test]
+fn fault_bookend_revalidates_after_callback_error_and_prioritizes_security_failure() {
+    #[derive(Debug)]
+    struct RevalidatingBackend {
+        events: Rc<RefCell<Vec<&'static str>>>,
+        revalidations: Cell<u8>,
+        fail_second_revalidation: bool,
+    }
+
+    impl DurableBackend for RevalidatingBackend {
+        fn revalidate_security_context(&self) -> Result<(), StoreError> {
+            self.events.borrow_mut().push("revalidate");
+            let next = self.revalidations.get().saturating_add(1);
+            self.revalidations.set(next);
+            if self.fail_second_revalidation && next == 2 {
+                Err(StoreError::UnsafePath)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn read(&self, _role: FileRole, _max_bytes: usize) -> Result<Option<Vec<u8>>, StoreError> {
+            unreachable!("fault-bookend test does not perform backend I/O")
+        }
+
+        fn atomic_write(
+            &mut self,
+            _role: FileRole,
+            _bytes: &[u8],
+            _fault: &mut dyn FaultControl,
+        ) -> Result<(), StoreError> {
+            unreachable!("fault-bookend test does not perform backend I/O")
+        }
+    }
+
+    struct FailingFault {
+        events: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl FaultControl for FailingFault {
+        fn hit(&mut self, _point: FaultPoint) -> Result<(), StoreError> {
+            self.events.borrow_mut().push("fault");
+            Err(StoreError::InjectedCrash)
+        }
+    }
+
+    for point in [
+        FaultPoint::BeforeAnchorAdvance,
+        FaultPoint::AfterAnchorAdvance,
+    ] {
+        for (fail_second_revalidation, expected) in [
+            (false, StoreError::InjectedCrash),
+            (true, StoreError::UnsafePath),
+        ] {
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let backend = RevalidatingBackend {
+                events: events.clone(),
+                revalidations: Cell::new(0),
+                fail_second_revalidation,
+            };
+            let mut fault = FailingFault {
+                events: events.clone(),
+            };
+
+            assert_eq!(
+                super::hit_fault_with_security_revalidation(&backend, &mut fault, point),
+                Err(expected),
+            );
+            assert_eq!(
+                events.borrow().as_slice(),
+                ["revalidate", "fault", "revalidate"]
+            );
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FailingReadBackend {
     role: FileRole,
@@ -211,7 +287,7 @@ impl DurableBackend for MemoryBackend {
 }
 
 #[derive(Clone, Debug, Default)]
-struct MemoryAnchor(Rc<RefCell<Option<AnchorValue>>>);
+pub(super) struct MemoryAnchor(Rc<RefCell<Option<AnchorValue>>>);
 
 impl RollbackAnchor for MemoryAnchor {
     fn load(&self, _store_id: [u8; 32]) -> Result<Option<AnchorValue>, AnchorError> {

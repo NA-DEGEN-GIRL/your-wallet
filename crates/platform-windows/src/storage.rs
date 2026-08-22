@@ -426,7 +426,7 @@ pub enum StoreError {
     /// A path component was non-local, relative, or a reparse point.
     #[error("durable store path is unsafe")]
     UnsafePath,
-    /// A required file or directory did not have the exact protected stable-user DACL and owner.
+    /// A required file or directory did not have its exact protected storage DACL and owner.
     #[error("durable store permissions are unsafe")]
     InsecurePermissions,
     /// The DACL allowed inheritance instead of being protected.
@@ -435,7 +435,7 @@ pub enum StoreError {
     /// The DACL contained rights or entries outside the exact release policy.
     #[error("durable store DACL entry is unsafe")]
     UnexpectedAccessControlEntry,
-    /// The owner or sole access entry did not name this process's stable `TokenUser` SID.
+    /// The owner or a required access entry did not name the sealed storage principals.
     #[error("durable store owner or DACL principal is unsafe")]
     WrongStoragePrincipal,
     /// Required Windows storage semantics are unavailable on this platform.
@@ -562,6 +562,13 @@ impl FaultControl for NoFault {
 }
 
 trait DurableBackend: fmt::Debug {
+    /// Revalidates any security authority that an untrusted fault callback
+    /// could have changed. Backends without ambient security context keep the
+    /// default no-op implementation.
+    fn revalidate_security_context(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     fn read(&self, role: FileRole, max_bytes: usize) -> Result<Option<Vec<u8>>, StoreError>;
     fn atomic_write(
         &mut self,
@@ -569,6 +576,19 @@ trait DurableBackend: fmt::Debug {
         bytes: &[u8],
         fault: &mut dyn FaultControl,
     ) -> Result<(), StoreError>;
+}
+
+fn hit_fault_with_security_revalidation<B: DurableBackend + ?Sized>(
+    backend: &B,
+    fault: &mut dyn FaultControl,
+    point: FaultPoint,
+) -> Result<(), StoreError> {
+    backend.revalidate_security_context()?;
+    let fault_result = fault.hit(point);
+    // Revalidate before propagating even an injected error: the callback may
+    // have left hostile ambient authority or rebound path state behind.
+    backend.revalidate_security_context()?;
+    fault_result
 }
 
 struct StoreCore<B, A> {
@@ -683,10 +703,14 @@ impl<B: DurableBackend, A: RollbackAnchor> StoreCore<B, A> {
             .as_ref()
             .map(|record| anchor_for_record(self.store_id, self.config.class, record, &self.key))
             .transpose()?;
-        fault.hit(FaultPoint::BeforeAnchorAdvance)?;
+        hit_fault_with_security_revalidation(
+            &self.backend,
+            fault,
+            FaultPoint::BeforeAnchorAdvance,
+        )?;
         self.anchor
             .compare_and_advance(self.store_id, expected_anchor, next_anchor)?;
-        fault.hit(FaultPoint::AfterAnchorAdvance)?;
+        hit_fault_with_security_revalidation(&self.backend, fault, FaultPoint::AfterAnchorAdvance)?;
         Ok(CommitReceipt {
             anchor: next_anchor,
         })
@@ -1305,6 +1329,111 @@ impl WindowsGenerationStore {
             Err(StoreError::UnsupportedPlatform)
         }
     }
+}
+
+#[cfg(all(windows, test))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear kernel fixture keeps four-role lifecycle and cleanup ordering auditable"
+)]
+pub(crate) fn exercise_fixed_key_agent_generation_stores_for_test(
+    aggregate: &crate::key_agent_storage::FixedKeyAgentGenerationStoreBindings,
+) -> Result<(), StoreError> {
+    use tests::MemoryAnchor;
+
+    struct ExactCleanup<'a> {
+        aggregate: &'a crate::key_agent_storage::FixedKeyAgentGenerationStoreBindings,
+        armed: bool,
+    }
+
+    impl Drop for ExactCleanup<'_> {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            for binding in self.aggregate.bindings_for_test() {
+                if let Ok((backend, _)) = sys::WindowsBackend::open_key_agent(binding) {
+                    let _ = backend.verify_and_cleanup_key_agent_role_for_test();
+                }
+            }
+        }
+    }
+
+    fn key_for(index: usize) -> Result<StorageAuthenticationKey, StoreError> {
+        let marker = u8::try_from(index)
+            .map_err(|_| StoreError::InvalidAuthenticationKey)?
+            .checked_add(0x41)
+            .ok_or(StoreError::InvalidAuthenticationKey)?;
+        StorageAuthenticationKey::new([marker; 32])
+    }
+
+    fn payload_for(class: RecordClass, marker: u8) -> Result<EncryptedPayload, StoreError> {
+        match class {
+            RecordClass::Vault => {
+                let mut blob = vec![marker; VAULT_HEADER_BYTES + XCHACHA_TAG_BYTES];
+                blob[..VAULT_MAGIC.len()].copy_from_slice(VAULT_MAGIC);
+                EncryptedPayload::vault_v1(blob)
+            }
+            other => {
+                let mut nonce = [marker; 24];
+                nonce[0] |= 1;
+                EncryptedPayload::xchacha20poly1305_v1(
+                    other,
+                    nonce,
+                    vec![marker; XCHACHA_TAG_BYTES + 16],
+                )
+            }
+        }
+    }
+
+    let mut cleanup = ExactCleanup {
+        aggregate,
+        armed: true,
+    };
+    let anchors: [MemoryAnchor; 4] = core::array::from_fn(|_| MemoryAnchor::default());
+    let first_bindings = aggregate.bindings_for_test();
+    let mut first_stores = Vec::with_capacity(first_bindings.len());
+    for (index, binding) in first_bindings.into_iter().enumerate() {
+        let (backend, config) = sys::WindowsBackend::open_key_agent(binding)?;
+        let payload = payload_for(
+            config.class,
+            u8::try_from(index)
+                .map_err(|_| StoreError::InvalidCiphertextEnvelope)?
+                .saturating_add(0x21),
+        )?;
+        let mut store = StoreCore::new(backend, anchors[index].clone(), config, key_for(index)?);
+        if store.commit(None, &payload)?.generation() != 1 || store.load()?.generation() != 1 {
+            return Err(StoreError::DurabilityFailure);
+        }
+        first_stores.push(store);
+    }
+    drop(first_stores);
+
+    let second_bindings = aggregate.bindings_for_test();
+    let mut reopened_stores = Vec::with_capacity(second_bindings.len());
+    for (index, binding) in second_bindings.into_iter().enumerate() {
+        let (backend, config) = sys::WindowsBackend::open_key_agent(binding)?;
+        let payload = payload_for(
+            config.class,
+            u8::try_from(index)
+                .map_err(|_| StoreError::InvalidCiphertextEnvelope)?
+                .saturating_add(0x61),
+        )?;
+        let mut store = StoreCore::new(backend, anchors[index].clone(), config, key_for(index)?);
+        if store.load()?.generation() != 1
+            || store.commit(Some(1), &payload)?.generation() != 2
+            || store.load()?.generation() != 2
+        {
+            return Err(StoreError::DurabilityFailure);
+        }
+        reopened_stores.push(store);
+    }
+
+    for store in reopened_stores {
+        store.backend.verify_and_cleanup_key_agent_role_for_test()?;
+    }
+    cleanup.armed = false;
+    Ok(())
 }
 
 impl fmt::Debug for WindowsGenerationStore {

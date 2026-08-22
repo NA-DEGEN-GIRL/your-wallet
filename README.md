@@ -643,14 +643,34 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `cfg(test)` accommodation으로 허용합니다. production parser는 response magic을 byte
   zero에서 요구하고 Job member 하나만 허용합니다. 따라서 이 테스트는 production fresh
   fixed-profile/root 또는 exact signed artifact E2E 증거가 아닙니다.
-- 남은 한계도 즉시 적용됩니다. Key Agent generation-file adapter와 각 파일의 reviewed
-  dual-principal DACL policy가 없고, 공개 `WindowsGenerationStore`는 계속
-  stable-`TokenUser`-only입니다. 기존 production profile의 durable installer
-  provenance/recovery, live protected-settings lease와 인증된 Broker/startup/process
-  topology 결합, signed immutable install 및 DLL/dependency를 포함한 exact-artifact E2E가
-  없습니다. `TokenUser` ACE는 다른 same-user process 접근을 허용하고 ancestor 검사는
-  atomic하지 않습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이므로 production
-  fresh-root 경로와 release activation은 도달 불가이며 모두 **STOP-SHIP**입니다.
+- 좁은 crate-private Key Agent generation-store adapter와 그 `cfg(test)` 통합 증명은 이제
+  구현되어 있습니다. child-held root를 소비하는 봉인된 전이가 caller가 만들 수 없는
+  binding 네 개(`Vault`, `NonceLedger`, `SignedCandidateJournal`, `LocalSettings`)를 고정
+  namespace/class/bound와 함께 한 번만 만들고, private backend open은 raw path·principal·
+  class selector나 frontend reference를 받지 않습니다. 공개 `WindowsGenerationStore`는
+  변경 없이 stable-`TokenUser`-only입니다. Key Agent 파일은 stable `TokenUser` owner,
+  user `FILE_ALL_ACCESS`(`0x001f01ff`)와 fixed profile
+  `FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE`(`0x0013019f`)의 정확한 explicit allow
+  ACE 두 개, 그리고 `ID`만 남은 inherited Low/`NW` mandatory-label ACE를 요구합니다.
+  모든 fixed child-path 연산 주위에서 thread impersonation과 held/reopened root의 전체
+  `FILE_ID_INFO`를 재검증하며, replace 전의 기존 target identity baseline과 설치 후
+  byte/hash/identity/security readback도 확인합니다. 또한 신뢰하지 않는 fault callback은
+  anchor 전·후 callback을 포함해 같은 security-context 재검증으로 앞뒤를 감쌉니다. 통합
+  zero-capability LPAC fixture는 네
+  role을 각각 generation 1/2까지 commit/load/reopen하고 role별 일곱 물리 파일에서
+  `WRITE_DAC`/`WRITE_OWNER`/`FILE_EXECUTE`는 `ACCESS_DENIED`,
+  `ACCESS_SYSTEM_SECURITY`는 `PRIVILEGE_NOT_HELD`인지 확인합니다. held root는
+  `DELETE` actual-open의 `SHARING_VIOLATION`과 별도 `AccessCheck` denial,
+  `FILE_DELETE_CHILD`/`WRITE_DAC`/`WRITE_OWNER`의 `ACCESS_DENIED`,
+  `ACCESS_SYSTEM_SECURITY`의 `PRIVILEGE_NOT_HELD`를 각각 구분해 증명합니다.
+- 이 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory anchor와 합성
+  key/payload를 사용하는 `cfg(test)` 증명이지 production fresh profile/root E2E나 release
+  wiring이 아닙니다. 기존 production profile의 durable provenance/adopt/recovery,
+  same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
+  provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
+  single-instance, signed immutable artifact 및 DLL/dependency E2E가 모두 남아 있습니다.
+  one-shot stream의 future delayed suffix/EOF도 증명되지 않고 generic runtime/signing IPC도
+  없습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이며 이 항목들은 **STOP-SHIP**입니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
 - 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.

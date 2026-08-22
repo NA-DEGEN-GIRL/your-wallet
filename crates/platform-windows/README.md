@@ -165,16 +165,55 @@ Implemented:
   trailing byte's absence or of EOF. Signed-artifact E2E must still cover that
   temporal boundary;
 
-  **Remaining storage/release boundary:** there is still no Key Agent
-  generation-file adapter or reviewed file-level dual-principal DACL; the public
-  `WindowsGenerationStore` remains stable-`TokenUser`-only. Existing production
-  profiles lack durable installer provenance/recovery, and the directory's
-  `TokenUser` ACE permits other same-user processes. Protected-settings authority,
-  the authenticated Broker/startup/process topology, signed immutable artifacts,
-  and exact DLL/dependency E2E evidence are not connected. The integrated test
-  uses a persistent test profile and CSPRNG leaf rather than a production fresh
-  fixed profile/root, and `COMPILED_RELEASE_POLICY` remains `None`; none of this
-  is release activation;
+  **Private fixed generation-store proof:** the child-held root can now be
+  consumed only into one crate-private set of four non-cloneable, thread-bound
+  bindings: `Vault`, `NonceLedger`, `SignedCandidateJournal`, and
+  `LocalSettings`. Their namespaces, record classes, and ciphertext bounds are
+  compiled in (`4,194,416`, `16,777,216`, `16,777,216`, and `226` bytes); no
+  caller path, principal, record selector, bound, or frontend reference enters
+  the binding-to-`WindowsBackend::open_key_agent` call graph. This narrow backend
+  is dormant outside its `cfg(test)` integration, and the public
+  `WindowsGenerationStore` remains unchanged and stable-`TokenUser`-only.
+
+  Every Key Agent lock, slot, manifest, and same-directory temporary file must
+  have the stable `TokenUser` owner and a protected canonical DACL with exactly
+  two explicit allow ACEs in order: `FILE_ALL_ACCESS` (`0x001f01ff`) for that
+  user, then `FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE` (`0x0013019f`)
+  for the exact Key Agent profile SID. The live file must also have exactly one
+  inherited Low/`NW` mandatory-label ACE with `INHERITED_ACE` (`ID`) as its only
+  ACE flag. Other, frontend, broad, deny, inherited-DACL, reordered, extra, or
+  partial ACEs fail closed. File opens reject reparses and link counts other
+  than one, use full `FILE_ID_INFO`, and require the root volume identity.
+  Thread-impersonation and held/reopened-root identity checks bookend each fixed
+  child-path operation. Replacement additionally requires the target's initial
+  identity/absence baseline to match immediately before replace and performs
+  exact installed byte/hash/identity/security readback afterward. The backend
+  security-context hook also bookends every untrusted fault callback, including
+  both callbacks around rollback-anchor advancement.
+
+  The integrated zero-capability LPAC kernel positive exercises the private
+  adapter for all four fixed roles, commits and loads generations one and two
+  across close/reopen, and verifies all seven physical names per role. On each
+  name, `WRITE_DAC`, `WRITE_OWNER`, and `FILE_EXECUTE` must fail with
+  `ACCESS_DENIED`, while `ACCESS_SYSTEM_SECURITY` must fail with
+  `PRIVILEGE_NOT_HELD`. The held-root matrix separately requires an actual
+  `DELETE` open to hit the retained handle's `SHARING_VIOLATION` plus a denied
+  `AccessCheck`; `FILE_DELETE_CHILD`, `WRITE_DAC`, and `WRITE_OWNER` must return
+  `ACCESS_DENIED`, and `ACCESS_SYSTEM_SECURITY` must return
+  `PRIVILEGE_NOT_HELD`. The integrated fixture still uses
+  the persistent test profile, a CSPRNG test leaf, in-memory rollback anchors,
+  and synthetic authentication keys/payloads; it is not a production fresh
+  fixed profile/root E2E or release activation.
+
+  **Remaining storage/release boundary:** existing production profiles still
+  lack durable installer provenance/adoption/recovery, and the root's
+  `TokenUser` ACE permits other same-user processes while ancestor checks remain
+  non-atomic. Production rollback-anchor and storage/AEAD-key provisioning,
+  live protected-settings/lease authority, authenticated Broker/supervisor
+  topology and single-instance enforcement, signed immutable artifacts, and
+  exact DLL/dependency E2E evidence are not connected. The future-delayed
+  suffix/EOF boundary remains unproved and no generic Key Agent runtime or
+  signing IPC exists. `COMPILED_RELEASE_POLICY` remains `None`;
 
   **Implemented Rust coordination boundary:** the dormant Broker activation,
   dormant Key Agent activation, and restricted helper launcher are the three
@@ -340,18 +379,21 @@ Stop-ship before any signing-capable release:
     preamble and optional exact System32 `conhost.exe` topology accommodation are
     test-only and are not release attestation.
 11. Fresh-only fixed-profile/root creation, fixed zero-capability LPAC token
-    verification, and test-root child open/binding are implemented, but keep
-    storage authorization **STOP-SHIP** until durable installer provenance and
-    recovery cover existing production profiles and a generation-store adapter
-    enforces the reviewed profile-SID DACL on every file without granting either
-    frontend profile access. The public `WindowsGenerationStore` remains
-    `TokenUser`-only and does not authorize an AppContainer token; the directory
-    startup proof alone does not change that or prove a production fresh-root E2E.
-    Helper trust/profile setup must not depend on file, certificate-store,
-    registry, or profile APIs unavailable inside the LPAC. Do not add
-    `registryRead`, reuse either frontend profile for the Key Agent, grant either
-    frontend profile vault/settings access, or activate the dormant Key Agent to
-    work around these blockers.
+    verification, test-root child open/binding, and the narrow private
+    generation-file policy are implemented and covered together by the
+    `cfg(test)` integrated LPAC fixture. Keep production storage authorization
+    **STOP-SHIP** until durable installer provenance/adoption/recovery covers
+    existing profiles, the production rollback anchor and storage/AEAD keys are
+    provisioned, and a protected-settings lease plus authenticated
+    Broker/supervisor/single-instance topology consumes the sealed bindings. The
+    public `WindowsGenerationStore` remains `TokenUser`-only; no frontend profile
+    is granted access. This test proof does not establish a production fresh-root
+    or signed-artifact/DLL/dependency E2E, and it does not close the delayed
+    suffix/EOF boundary. Helper trust/profile setup must not depend on file,
+    certificate-store, registry, or profile APIs unavailable inside the LPAC.
+    Do not add `registryRead`, reuse either frontend profile for the Key Agent,
+    add generic runtime/signing IPC, or activate the dormant Key Agent to work
+    around these blockers.
 
 The implementation follows Microsoft's [AppContainer launch
 contract](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer):
@@ -360,14 +402,17 @@ zero capability SIDs omit every network capability, and
 `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT` selects LPAC rather than the
 broader regular-AppContainer resource set.
 
-Neither the public generation-store DACL nor the new fixed-root DACL contains a
-SYSTEM or Administrators ACE. The former has only the stable `TokenUser` ACE;
-the latter adds the fixed profile SID only at the directory boundary, pending a
-file-level adapter and policy. An administrator or SYSTEM process may still use
-operating-system privileges to take ownership or perform backup operations;
-that privileged compromise is outside either DACL's guarantee. The `TokenUser`
-ACE also means the policy does not defend stored data from malware already
-executing as the same user.
+Neither the public generation-store DACL nor the fixed-root/private-generation-
+file DACLs contain a SYSTEM or Administrators ACE. The public facade remains
+stable-`TokenUser`-only. The fixed root adds the exact Key Agent profile SID at
+the directory boundary; each private generation file has exactly two explicit
+allow ACEs, stable `TokenUser` first with `FILE_ALL_ACCESS` (`0x001f01ff`) and
+that profile second with `FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE`
+(`0x0013019f`), plus the exact inherited ID-only Low/NW mandatory label. An
+administrator or SYSTEM process may still use operating-system privileges to
+take ownership or perform backup operations; that privileged compromise is
+outside these DACLs' guarantee. The stable-user ACE also means the policy does
+not defend stored data from malware already executing as the same user.
 
 Until items 1, 2, 3, 4, and 5 have artifact-bound evidence,
 `ReleaseAttestation::signing_enabled` remains false and

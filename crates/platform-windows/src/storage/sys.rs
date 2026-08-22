@@ -9,6 +9,8 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
 
+#[cfg(test)]
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD};
 use windows::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ,
     GENERIC_WRITE, HANDLE, HLOCAL, LocalFree,
@@ -20,30 +22,41 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
     DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
-    GetSecurityDescriptorControl, GetTokenInformation, IsValidAcl, IsValidSecurityDescriptor,
-    IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
-    SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED,
-    SE_OWNER_DEFAULTED, SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    GetSecurityDescriptorControl, GetSecurityDescriptorSacl, GetTokenInformation, IsValidAcl,
+    IsValidSecurityDescriptor, IsValidSid, LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED,
+    SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_OWNER_DEFAULTED,
+    SE_SACL_AUTO_INHERITED, SE_SACL_PRESENT, SE_SELF_RELATIVE, SECURITY_ATTRIBUTES,
+    SYSTEM_MANDATORY_LABEL_ACE, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 #[cfg(test)]
 use windows::Win32::Security::{
-    GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, SECURITY_DESCRIPTOR_RELATIVE,
-    SID_AND_ATTRIBUTES, TOKEN_GROUPS, TokenGroups,
+    GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, SE_SACL_AUTO_INHERIT_REQ,
+    SE_SACL_DEFAULTED, SECURITY_DESCRIPTOR_RELATIVE, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TokenGroups,
 };
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ALL_ACCESS,
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_REMOTE_PROTOCOL_INFO, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileDispositionInfo, FileRemoteProtocolInfo,
-    FlushFileBuffers, GetDriveTypeW, GetFileInformationByHandle, GetFileInformationByHandleEx,
-    GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL,
-    SetFileInformationByHandle, VOLUME_NAME_GUID,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_REMOTE_PROTOCOL_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+    FileDispositionInfo, FileIdInfo, FileRemoteProtocolInfo, FlushFileBuffers, GetDriveTypeW,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+    GetVolumeInformationByHandleW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, SetFileInformationByHandle, VOLUME_NAME_GUID,
 };
 #[cfg(test)]
+use windows::Win32::Storage::FileSystem::{
+    FILE_EXECUTE, FILE_SHARE_DELETE, WRITE_DAC, WRITE_OWNER,
+};
+#[cfg(test)]
+use windows::Win32::System::SystemServices::ACCESS_SYSTEM_SECURITY;
+#[cfg(test)]
 use windows::Win32::System::SystemServices::SE_GROUP_LOGON_ID;
-use windows::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS};
+use windows::Win32::System::SystemServices::{
+    ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SYSTEM_MANDATORY_LABEL_ACE_TYPE,
+    SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 #[cfg(test)]
@@ -52,22 +65,68 @@ use windows::Win32::System::WindowsProgramming::{
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
-use super::{DurableBackend, FaultControl, FaultPoint, FileRole, StoreConfig, StoreError, sha256};
+use crate::key_agent_storage::{FixedKeyAgentGenerationStoreRole, KeyAgentGenerationStoreBinding};
+
+use super::{
+    DurableBackend, FaultControl, FaultPoint, FileRole, RecordClass, StoreConfig, StoreError,
+    hit_fault_with_security_revalidation, sha256,
+};
 
 const MIN_BINARY_SID_BYTES: usize = 8;
+const MAX_BINARY_SID_BYTES: usize = 68;
 const MAX_FINAL_PATH_UTF16: usize = 32_768;
 const FILESYSTEM_NAME_UTF16: usize = 32;
+const KEY_AGENT_FILE_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0;
+const LOW_MANDATORY_LABEL_SID: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 16, 0, 16, 0, 0];
+// `INHERITED_ACE` is a byte flag in an ACE header. Keep the literal const-safe;
+// the unit contract below pins it to the Windows binding constant.
+const INHERITED_FILE_LABEL_ACE_FLAGS: u8 = 0x10;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct FileIdentity {
-    volume_serial: u32,
-    file_index: u64,
+    volume_serial: u64,
+    file_id: [u8; 16],
+}
+
+impl core::fmt::Debug for FileIdentity {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FileIdentity([FILE_ID_INFO])")
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "sealed Key-Agent backend is staged behind dormant release activation"
+    )
+)]
+enum HeldRoot {
+    Stable(std::fs::File),
+    KeyAgent(KeyAgentGenerationStoreBinding),
+}
+
+impl HeldRoot {
+    fn handle(&self) -> &std::fs::File {
+        match self {
+            Self::Stable(handle) => handle,
+            Self::KeyAgent(binding) => binding.root_handle(),
+        }
+    }
 }
 
 pub(super) struct WindowsBackend {
     root: PathBuf,
-    root_handle: std::fs::File,
+    held_root: HeldRoot,
     root_identity: FileIdentity,
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "fixed lock path is retained for the dormant kernel exercise"
+        )
+    )]
+    lock_path: PathBuf,
     lock_handle: std::fs::File,
     slot_paths: [PathBuf; 2],
     manifest_path: PathBuf,
@@ -116,8 +175,9 @@ impl WindowsBackend {
 
         let backend = Self {
             root: canonical_root,
-            root_handle,
+            held_root: HeldRoot::Stable(root_handle),
             root_identity,
+            lock_path,
             lock_handle,
             slot_paths,
             manifest_path,
@@ -127,8 +187,67 @@ impl WindowsBackend {
         for temp in &backend.temp_paths {
             remove_stale_temp(temp, &backend.security_descriptor)?;
         }
-        flush_directory(&backend.root_handle)?;
+        flush_directory(backend.held_root.handle())?;
         Ok(backend)
+    }
+
+    // The release integration consumes this only after its activation typestate
+    // is wired; the kernel fixture exercises the same sealed constructor now.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "sealed Key-Agent backend is staged behind dormant release activation"
+        )
+    )]
+    pub(super) fn open_key_agent(
+        binding: KeyAgentGenerationStoreBinding,
+    ) -> Result<(Self, StoreConfig), StoreError> {
+        binding.revalidate().map_err(|_| StoreError::UnsafePath)?;
+        let root = binding.root_path().to_path_buf();
+        let root_identity = file_identity(binding.root_handle())?;
+        verify_not_reparse(binding.root_handle())?;
+
+        let (namespace, class, max_ciphertext_bytes) = fixed_key_agent_store_spec(binding.role());
+        let config = StoreConfig::new(root.clone(), namespace, class, max_ciphertext_bytes)?;
+        let security_descriptor = SecurityDescriptor::for_key_agent_files(
+            binding.stable_user_sid(),
+            binding.profile_sid(),
+        )?;
+
+        let lock_path = root.join(format!("{}.lock", config.namespace));
+        revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+        let lock_result = create_or_open_lock(&lock_path, &security_descriptor);
+        revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+        let lock_handle = lock_result?;
+        let slot_paths = [
+            root.join(format!("{}.slot0", config.namespace)),
+            root.join(format!("{}.slot1", config.namespace)),
+        ];
+        let manifest_path = root.join(format!("{}.manifest", config.namespace));
+        let temp_paths = [
+            root.join(format!("{}.slot0.new", config.namespace)),
+            root.join(format!("{}.slot1.new", config.namespace)),
+            root.join(format!("{}.manifest.new", config.namespace)),
+        ];
+
+        let backend = Self {
+            root,
+            held_root: HeldRoot::KeyAgent(binding),
+            root_identity,
+            lock_path,
+            lock_handle,
+            slot_paths,
+            manifest_path,
+            temp_paths,
+            security_descriptor,
+        };
+        for temp in &backend.temp_paths {
+            backend.remove_key_agent_stale_temp(temp)?;
+        }
+        flush_directory(backend.held_root.handle())?;
+        backend.revalidate_held_root()?;
+        Ok((backend, config))
     }
 
     fn path_for(&self, role: FileRole) -> &Path {
@@ -165,17 +284,304 @@ impl WindowsBackend {
     }
 
     fn revalidate_held_root(&self) -> Result<(), StoreError> {
-        verify_not_reparse(&self.root_handle)?;
-        verify_stable_user_security(&self.root_handle, &self.security_descriptor.stable_user_sid)?;
-        verify_supported_local_volume(&self.root_handle)?;
-        if file_identity(&self.root_handle)? != self.root_identity {
+        if let HeldRoot::KeyAgent(binding) = &self.held_root {
+            // Reject a hostile thread token before any handle or path query.
+            binding.revalidate().map_err(|_| StoreError::UnsafePath)?;
+        }
+        let held = self.held_root.handle();
+        verify_not_reparse(held)?;
+        if file_identity(held)? != self.root_identity {
             return Err(StoreError::UnsafePath);
         }
+        match &self.held_root {
+            HeldRoot::Stable(_) => {
+                verify_stable_user_security(held, &self.security_descriptor.stable_user_sid)?;
+                verify_supported_local_volume(held)?;
+            }
+            HeldRoot::KeyAgent(binding) => {
+                // The startup-bound parent peer already proved fixed local NTFS.
+                // The zero-capability LPAC child must not repeat unavailable
+                // volume-management queries; it instead retains and revalidates
+                // the exact full-identity root binding.
+                binding.revalidate().map_err(|_| StoreError::UnsafePath)?;
+            }
+        }
         let reopened = open_directory(&self.root)?;
+        verify_not_reparse(&reopened)?;
         if file_identity(&reopened)? != self.root_identity {
             return Err(StoreError::UnsafePath);
         }
+        if let HeldRoot::KeyAgent(binding) = &self.held_root {
+            // End every Key-Agent path preparation with the binding's second
+            // thread-impersonation rejection immediately before the caller's
+            // fixed child-path operation.
+            binding.revalidate().map_err(|_| StoreError::UnsafePath)?;
+        }
         Ok(())
+    }
+
+    fn prepare_key_agent_path_operation(&self) -> Result<(), StoreError> {
+        if matches!(&self.held_root, HeldRoot::KeyAgent(_)) {
+            self.revalidate_held_root()?;
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "sealed Key-Agent backend is staged behind dormant release activation"
+        )
+    )]
+    fn remove_key_agent_stale_temp(&self, path: &Path) -> Result<(), StoreError> {
+        self.prepare_key_agent_path_operation()?;
+        let opened = open_stale_temp(path);
+        self.prepare_key_agent_path_operation()?;
+        let Some(file) = opened? else {
+            return Ok(());
+        };
+        verify_persistent_file(&file, &self.security_descriptor)?;
+        self.prepare_key_agent_path_operation()?;
+        let deletion = mark_file_for_deletion(&file);
+        drop(file);
+        self.prepare_key_agent_path_operation()?;
+        deletion
+    }
+
+    #[cfg(test)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear seven-file kernel proof keeps access checks and cleanup ordering auditable"
+    )]
+    pub(super) fn verify_and_cleanup_key_agent_role_for_test(self) -> Result<(), StoreError> {
+        let Self {
+            root,
+            held_root,
+            root_identity,
+            lock_path,
+            lock_handle,
+            slot_paths,
+            manifest_path,
+            temp_paths,
+            security_descriptor,
+        } = self;
+        let HeldRoot::KeyAgent(binding) = held_root else {
+            return Err(StoreError::UnsafePath);
+        };
+        drop(lock_handle);
+
+        let mut all_paths = Vec::with_capacity(7);
+        all_paths.push(lock_path);
+        all_paths.extend(slot_paths);
+        all_paths.push(manifest_path);
+        all_paths.extend(temp_paths.iter().cloned());
+        let mut cleanup = KeyAgentTestCleanup {
+            binding: &binding,
+            root: &root,
+            root_identity,
+            descriptor: &security_descriptor,
+            paths: &all_paths,
+            armed: true,
+        };
+
+        // Successful commits must leave no `.new` files. Create each exact temp
+        // role once so the kernel checks below cover all seven physical names.
+        for (index, path) in temp_paths.iter().enumerate() {
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let absent = open_existing_file(path);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            match absent {
+                Err(error) if is_not_found(&error) => {}
+                Ok(_) | Err(_) => return Err(StoreError::DurabilityFailure),
+            }
+
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let created = create_new_write_through(path, &security_descriptor);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let mut file = created?;
+            file.write_all(&[u8::try_from(index).unwrap_or(u8::MAX).saturating_add(1)])
+                .map_err(|_| StoreError::DurabilityFailure)?;
+            flush_file(&file)?;
+            verify_persistent_file(&file, &security_descriptor)?;
+            if file_identity(&file)?.volume_serial != root_identity.volume_serial {
+                return Err(StoreError::UnsafePath);
+            }
+        }
+
+        let mut identities = Vec::with_capacity(all_paths.len());
+        for path in &all_paths {
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let opened = open_existing_file(path);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let file = opened.map_err(|_| StoreError::DurabilityFailure)?;
+            verify_persistent_file(&file, &security_descriptor)?;
+            let identity = file_identity(&file)?;
+            if identity.volume_serial != root_identity.volume_serial {
+                return Err(StoreError::UnsafePath);
+            }
+            drop(file);
+
+            for forbidden_access in [
+                WRITE_DAC.0,
+                WRITE_OWNER.0,
+                FILE_EXECUTE.0,
+                ACCESS_SYSTEM_SECURITY,
+            ] {
+                revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+                let denied = request_exact_file_access(path, forbidden_access);
+                revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+                require_forbidden_access_denial(denied, forbidden_access)?;
+            }
+
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let reopened = open_existing_file(path);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let reopened = reopened.map_err(|_| StoreError::DurabilityFailure)?;
+            verify_persistent_file(&reopened, &security_descriptor)?;
+            if file_identity(&reopened)? != identity {
+                return Err(StoreError::UnsafePath);
+            }
+            identities.push(identity);
+        }
+
+        for (path, expected_identity) in all_paths.iter().zip(identities) {
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let opened = open_stale_temp(path);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let file = opened?.ok_or(StoreError::DurabilityFailure)?;
+            verify_persistent_file(&file, &security_descriptor)?;
+            if file_identity(&file)? != expected_identity {
+                return Err(StoreError::UnsafePath);
+            }
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            let deleted = mark_file_for_deletion(&file);
+            drop(file);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            deleted?;
+
+            let reopened = open_existing_file(path);
+            revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+            match reopened {
+                Err(error) if is_not_found(&error) => {}
+                Ok(_) | Err(_) => return Err(StoreError::DurabilityFailure),
+            }
+        }
+        flush_directory(binding.root_handle())?;
+        revalidate_key_agent_root_path(&binding, &root, root_identity)?;
+        cleanup.armed = false;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct KeyAgentTestCleanup<'a> {
+    binding: &'a KeyAgentGenerationStoreBinding,
+    root: &'a Path,
+    root_identity: FileIdentity,
+    descriptor: &'a SecurityDescriptor,
+    paths: &'a [PathBuf],
+    armed: bool,
+}
+
+#[cfg(test)]
+impl Drop for KeyAgentTestCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        for path in self.paths {
+            if revalidate_key_agent_root_path(self.binding, self.root, self.root_identity).is_err()
+            {
+                continue;
+            }
+            let opened = open_stale_temp(path);
+            if revalidate_key_agent_root_path(self.binding, self.root, self.root_identity).is_err()
+            {
+                continue;
+            }
+            let Ok(Some(file)) = opened else {
+                continue;
+            };
+            if verify_persistent_file(&file, self.descriptor).is_err() {
+                continue;
+            }
+            let Ok(identity) = file_identity(&file) else {
+                continue;
+            };
+            if identity.volume_serial != self.root_identity.volume_serial {
+                continue;
+            }
+            if revalidate_key_agent_root_path(self.binding, self.root, self.root_identity).is_err()
+            {
+                continue;
+            }
+            let deletion = mark_file_for_deletion(&file);
+            let post_mark_revalidation =
+                revalidate_key_agent_root_path(self.binding, self.root, self.root_identity);
+            drop(file);
+            let post_close_revalidation =
+                revalidate_key_agent_root_path(self.binding, self.root, self.root_identity);
+            let _ = (deletion, post_mark_revalidation, post_close_revalidation);
+        }
+        if revalidate_key_agent_root_path(self.binding, self.root, self.root_identity).is_ok() {
+            let flushed = flush_directory(self.binding.root_handle());
+            let post_flush_revalidation =
+                revalidate_key_agent_root_path(self.binding, self.root, self.root_identity);
+            let _ = (flushed, post_flush_revalidation);
+        }
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "sealed Key-Agent backend is staged behind dormant release activation"
+    )
+)]
+fn revalidate_key_agent_root_path(
+    binding: &KeyAgentGenerationStoreBinding,
+    root: &Path,
+    expected_identity: FileIdentity,
+) -> Result<(), StoreError> {
+    binding.revalidate().map_err(|_| StoreError::UnsafePath)?;
+    let reopened = open_directory(root)?;
+    verify_not_reparse(&reopened)?;
+    if file_identity(&reopened)? != expected_identity {
+        return Err(StoreError::UnsafePath);
+    }
+    // End adjacent to the caller's fixed child-path operation with the sealed
+    // binding's thread-impersonation and held-root identity checks.
+    binding.revalidate().map_err(|_| StoreError::UnsafePath)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "fixed Key-Agent roles are staged behind dormant release activation"
+    )
+)]
+fn fixed_key_agent_store_spec(
+    role: FixedKeyAgentGenerationStoreRole,
+) -> (&'static str, RecordClass, usize) {
+    // These names and bounds are durable format contracts, not caller input.
+    // Vault is its 112-byte header plus secret-core's 4 MiB ciphertext bound;
+    // settings is its 210-byte plaintext bound plus the 16-byte AEAD tag.
+    match role {
+        FixedKeyAgentGenerationStoreRole::Vault => ("vault", RecordClass::Vault, 4_194_416),
+        FixedKeyAgentGenerationStoreRole::NonceLedger => {
+            ("nonce-ledger", RecordClass::NonceLedger, 16_777_216)
+        }
+        FixedKeyAgentGenerationStoreRole::SignedCandidateJournal => (
+            "signed-candidate-journal",
+            RecordClass::SignedCandidateJournal,
+            16_777_216,
+        ),
+        FixedKeyAgentGenerationStoreRole::LocalSettings => {
+            ("local-settings", RecordClass::LocalSettings, 226)
+        }
     }
 }
 
@@ -191,15 +597,25 @@ impl core::fmt::Debug for WindowsBackend {
 }
 
 impl DurableBackend for WindowsBackend {
+    fn revalidate_security_context(&self) -> Result<(), StoreError> {
+        // Stable-user stores deliberately retain their existing behavior;
+        // sealed Key-Agent stores reject impersonation and rebind the exact
+        // held root identity around every untrusted callback.
+        self.prepare_key_agent_path_operation()
+    }
+
     fn read(&self, role: FileRole, max_bytes: usize) -> Result<Option<Vec<u8>>, StoreError> {
         self.revalidate_held_root()?;
         let path = self.path_for(role);
-        let file = match open_existing_file(path) {
+        self.prepare_key_agent_path_operation()?;
+        let opened = open_existing_file(path);
+        self.prepare_key_agent_path_operation()?;
+        let file = match opened {
             Ok(file) => file,
             Err(error) if is_not_found(&error) => return Ok(None),
             Err(_) => return Err(StoreError::DurabilityFailure),
         };
-        verify_persistent_file(&file, &self.security_descriptor.stable_user_sid)?;
+        verify_persistent_file(&file, &self.security_descriptor)?;
         let length = usize::try_from(
             file.metadata()
                 .map_err(|_| StoreError::DurabilityFailure)?
@@ -230,47 +646,84 @@ impl DurableBackend for WindowsBackend {
         fault: &mut dyn FaultControl,
     ) -> Result<(), StoreError> {
         self.revalidate_held_root()?;
-        verify_persistent_file(&self.lock_handle, &self.security_descriptor.stable_user_sid)?;
+        verify_persistent_file(&self.lock_handle, &self.security_descriptor)?;
         let target = self.path_for(role);
         let temp = self.temp_path_for(role);
         let points = Self::fault_points(role);
 
-        let mut file = create_new_write_through(temp, &self.security_descriptor)?;
+        self.prepare_key_agent_path_operation()?;
+        let initial_target = open_existing_file(target);
+        self.prepare_key_agent_path_operation()?;
+        let initial_target_identity = inspect_optional_target(
+            initial_target,
+            &self.security_descriptor,
+            self.root_identity.volume_serial,
+        )?;
+
+        self.prepare_key_agent_path_operation()?;
+        let created = create_new_write_through(temp, &self.security_descriptor);
+        self.prepare_key_agent_path_operation()?;
+        let mut file = created?;
         let temp_identity = file_identity(&file)?;
         if temp_identity.volume_serial != self.root_identity.volume_serial {
             return Err(StoreError::UnsafePath);
         }
-        fault.hit(points[0])?;
+        hit_fault_with_security_revalidation(self, fault, points[0])?;
         file.write_all(bytes)
             .map_err(|_| StoreError::DurabilityFailure)?;
-        fault.hit(points[1])?;
+        hit_fault_with_security_revalidation(self, fault, points[1])?;
         flush_file(&file)?;
-        verify_persistent_file(&file, &self.security_descriptor.stable_user_sid)?;
+        verify_persistent_file(&file, &self.security_descriptor)?;
         if file_identity(&file)? != temp_identity {
             return Err(StoreError::UnsafePath);
         }
-        fault.hit(points[2])?;
+        hit_fault_with_security_revalidation(self, fault, points[2])?;
         drop(file);
 
-        atomic_replace(temp, target)?;
-        fault.hit(points[3])?;
-        let installed = open_existing_file(target).map_err(|_| StoreError::DurabilityFailure)?;
+        // Refuse to use replacement as an ACL, owner, reparse, or hard-link
+        // repair mechanism. The verified handle must close before MoveFileExW,
+        // leaving only the unavoidable path-name race of that Win32 primitive;
+        // the installed full-identity readback below still fails closed.
+        self.prepare_key_agent_path_operation()?;
+        let existing_target = open_existing_file(target);
+        self.prepare_key_agent_path_operation()?;
+        let existing_target_identity = inspect_optional_target(
+            existing_target,
+            &self.security_descriptor,
+            self.root_identity.volume_serial,
+        )?;
+        if existing_target_identity != initial_target_identity {
+            return Err(StoreError::UnsafePath);
+        }
+
+        self.prepare_key_agent_path_operation()?;
+        let replaced = atomic_replace(temp, target);
+        self.prepare_key_agent_path_operation()?;
+        replaced?;
+        hit_fault_with_security_revalidation(self, fault, points[3])?;
+        self.prepare_key_agent_path_operation()?;
+        let installed = open_existing_file(target);
+        self.prepare_key_agent_path_operation()?;
+        let installed = installed.map_err(|_| StoreError::DurabilityFailure)?;
         verify_installed_readback(
             &installed,
             temp_identity,
             self.root_identity.volume_serial,
             bytes,
             sha256(bytes),
-            &self.security_descriptor.stable_user_sid,
+            &self.security_descriptor,
         )?;
-        let rebound = open_existing_file(target).map_err(|_| StoreError::DurabilityFailure)?;
-        verify_persistent_file(&rebound, &self.security_descriptor.stable_user_sid)?;
+        self.prepare_key_agent_path_operation()?;
+        let rebound = open_existing_file(target);
+        self.prepare_key_agent_path_operation()?;
+        let rebound = rebound.map_err(|_| StoreError::DurabilityFailure)?;
+        verify_persistent_file(&rebound, &self.security_descriptor)?;
         if file_identity(&rebound)? != temp_identity {
             return Err(StoreError::UnsafePath);
         }
-        flush_directory(&self.root_handle)?;
+        flush_directory(self.held_root.handle())?;
         self.revalidate_held_root()?;
-        fault.hit(points[4])?;
+        hit_fault_with_security_revalidation(self, fault, points[4])?;
         Ok(())
     }
 }
@@ -278,6 +731,7 @@ impl DurableBackend for WindowsBackend {
 struct SecurityDescriptor {
     descriptor: PSECURITY_DESCRIPTOR,
     stable_user_sid: StableUserSid,
+    profile_sid: Option<StableUserSid>,
 }
 
 impl SecurityDescriptor {
@@ -295,7 +749,53 @@ impl SecurityDescriptor {
         Self::from_sddl(stable_user_sid, &sddl)
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "sealed Key-Agent backend is staged behind dormant release activation"
+        )
+    )]
+    fn for_key_agent_files(stable_user: PSID, profile: PSID) -> Result<Self, StoreError> {
+        let stable_user_sid = StableUserSid(copy_sid(stable_user)?);
+        let profile_sid = StableUserSid(copy_sid(profile)?);
+        // SAFETY: both owned SID copies are valid and live for this comparison.
+        if unsafe { EqualSid(stable_user_sid.as_psid(), profile_sid.as_psid()) }.is_ok() {
+            return Err(StoreError::WrongStoragePrincipal);
+        }
+        let user_text = sid_to_string(stable_user_sid.as_psid())?;
+        let profile_text = sid_to_string(profile_sid.as_psid())?;
+        let sddl = format!(
+            "O:{user_text}D:P(A;;0x{:08x};;;{user_text})(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text})",
+            FILE_ALL_ACCESS.0,
+        );
+        Self::from_sddl_with_profile(stable_user_sid, profile_sid, &sddl)
+    }
+
     fn from_sddl(stable_user_sid: StableUserSid, sddl: &str) -> Result<Self, StoreError> {
+        Self::from_sddl_policy(stable_user_sid, None, sddl)
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "sealed Key-Agent backend is staged behind dormant release activation"
+        )
+    )]
+    fn from_sddl_with_profile(
+        stable_user_sid: StableUserSid,
+        profile_sid: StableUserSid,
+        sddl: &str,
+    ) -> Result<Self, StoreError> {
+        Self::from_sddl_policy(stable_user_sid, Some(profile_sid), sddl)
+    }
+
+    fn from_sddl_policy(
+        stable_user_sid: StableUserSid,
+        profile_sid: Option<StableUserSid>,
+        sddl: &str,
+    ) -> Result<Self, StoreError> {
         let wide = wide_nul(sddl);
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         // SAFETY: `wide` is NUL terminated and the output allocation is owned by
@@ -316,7 +816,17 @@ impl SecurityDescriptor {
         Ok(Self {
             descriptor,
             stable_user_sid,
+            profile_sid,
         })
+    }
+
+    fn verify_file_security(&self, file: &std::fs::File) -> Result<(), StoreError> {
+        match &self.profile_sid {
+            Some(profile_sid) => {
+                verify_key_agent_file_security(file, &self.stable_user_sid, profile_sid)
+            }
+            None => verify_stable_user_security(file, &self.stable_user_sid),
+        }
     }
 
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
@@ -331,6 +841,58 @@ impl SecurityDescriptor {
     fn inspect_for_test(&self, expected_sid: &StableUserSid) -> Result<(), StoreError> {
         let (owner, dacl) = self.parts_for_test()?;
         inspect_security_descriptor(self.descriptor, owner, dacl, expected_sid)
+    }
+
+    #[cfg(test)]
+    fn inspect_key_agent_creation_for_test(&self) -> Result<(), StoreError> {
+        let profile_sid = self
+            .profile_sid
+            .as_ref()
+            .ok_or(StoreError::WrongStoragePrincipal)?;
+        let (owner, dacl) = self.parts_for_test()?;
+        let control = inspect_descriptor_control(self.descriptor)?;
+        let required = security_control_flag(SE_SELF_RELATIVE)
+            | security_control_flag(SE_DACL_PRESENT)
+            | security_control_flag(SE_DACL_PROTECTED);
+        if control != required {
+            return Err(StoreError::InsecurePermissions);
+        }
+        inspect_owner(owner, &self.stable_user_sid)?;
+        inspect_exact_key_agent_dacl(dacl, &self.stable_user_sid, profile_sid)
+    }
+
+    #[cfg(test)]
+    fn inspect_key_agent_file_for_test(&self) -> Result<(), StoreError> {
+        let profile_sid = self
+            .profile_sid
+            .as_ref()
+            .ok_or(StoreError::WrongStoragePrincipal)?;
+        let (owner, dacl) = self.parts_for_test()?;
+        let mut sacl_present = BOOL(0);
+        let mut sacl_defaulted = BOOL(0);
+        let mut sacl = ptr::null_mut::<ACL>();
+        // SAFETY: the self-relative descriptor remains live and all outputs are
+        // initialized writable storage.
+        unsafe {
+            GetSecurityDescriptorSacl(
+                self.descriptor,
+                &raw mut sacl_present,
+                &raw mut sacl,
+                &raw mut sacl_defaulted,
+            )
+            .map_err(|_| StoreError::InsecurePermissions)?;
+        }
+        if !sacl_present.as_bool() || sacl_defaulted.as_bool() || sacl.is_null() {
+            return Err(StoreError::InsecurePermissions);
+        }
+        inspect_key_agent_file_security_descriptor(
+            self.descriptor,
+            owner,
+            dacl,
+            sacl,
+            &self.stable_user_sid,
+            profile_sid,
+        )
     }
 
     #[cfg(test)]
@@ -377,7 +939,11 @@ impl Drop for SecurityDescriptor {
 
 impl core::fmt::Debug for SecurityDescriptor {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("SecurityDescriptor([STABLE TOKEN USER SID ONLY])")
+        if self.profile_sid.is_some() {
+            formatter.write_str("SecurityDescriptor([KEY AGENT DUAL-PRINCIPAL FILE POLICY])")
+        } else {
+            formatter.write_str("SecurityDescriptor([STABLE TOKEN USER SID ONLY])")
+        }
     }
 }
 
@@ -561,9 +1127,9 @@ fn is_allowed_filesystem_name(buffer: &[u16]) -> bool {
         return false;
     }
     let name = &buffer[..end];
-    // ReFS uses 128-bit file identifiers. The 64-bit identifier returned by
-    // BY_HANDLE_FILE_INFORMATION is explicitly not guaranteed unique there, so
-    // ReFS must remain denied until every identity check uses FILE_ID_INFO.
+    // All identity checks now retain full FILE_ID_INFO. NTFS nevertheless
+    // remains the sealed allowlist because its ACL inheritance, hard-link, and
+    // directory-durability behavior is the policy proved by this backend.
     ascii_utf16_eq_ignore_case(name, b"NTFS")
 }
 
@@ -639,6 +1205,75 @@ fn open_existing_file(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+fn inspect_optional_target(
+    opened: std::io::Result<std::fs::File>,
+    descriptor: &SecurityDescriptor,
+    expected_volume_serial: u64,
+) -> Result<Option<FileIdentity>, StoreError> {
+    match opened {
+        Ok(file) => {
+            verify_persistent_file(&file, descriptor)?;
+            let identity = file_identity(&file)?;
+            if identity.volume_serial != expected_volume_serial {
+                return Err(StoreError::UnsafePath);
+            }
+            Ok(Some(identity))
+        }
+        Err(error) if is_not_found(&error) => Ok(None),
+        Err(_) => Err(StoreError::DurabilityFailure),
+    }
+}
+
+#[cfg(test)]
+fn request_exact_file_access(path: &Path, desired_access: u32) -> windows::core::Result<HANDLE> {
+    let wide = wide_path(path);
+    // SAFETY: the fixed file path is NUL terminated and OPEN_REPARSE_POINT
+    // prevents an access probe from following an unexpected reparse object.
+    unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            desired_access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+}
+
+#[cfg(test)]
+fn require_forbidden_access_denial(
+    result: windows::core::Result<HANDLE>,
+    desired_access: u32,
+) -> Result<(), StoreError> {
+    // ACCESS_SYSTEM_SECURITY is privilege-gated before the DACL result is
+    // surfaced by CreateFileW. The zero-capability LPAC therefore proves its
+    // fail-closed result as ERROR_PRIVILEGE_NOT_HELD; DACL-governed file rights
+    // must reach the distinct ERROR_ACCESS_DENIED result.
+    match result {
+        Err(error)
+            if desired_access == ACCESS_SYSTEM_SECURITY
+                && error.code() == ERROR_PRIVILEGE_NOT_HELD.to_hresult() =>
+        {
+            Ok(())
+        }
+        Err(error)
+            if desired_access != ACCESS_SYSTEM_SECURITY
+                && error.code() == ERROR_ACCESS_DENIED.to_hresult() =>
+        {
+            Ok(())
+        }
+        Err(_) => Err(StoreError::DurabilityFailure),
+        Ok(handle) => {
+            // SAFETY: a successful probe returned one owned handle, transferred
+            // exactly once so the negative test cannot leak it.
+            drop(unsafe { std::fs::File::from_raw_handle(handle.0 as RawHandle) });
+            Err(StoreError::InsecurePermissions)
+        }
+    }
+}
+
 fn create_or_open_lock(
     path: &Path,
     descriptor: &SecurityDescriptor,
@@ -661,11 +1296,19 @@ fn create_or_open_lock(
     .map_err(|_| StoreError::DurabilityFailure)?;
     // SAFETY: transfer exactly one successful owned handle to File.
     let file = unsafe { std::fs::File::from_raw_handle(handle.0 as RawHandle) };
-    verify_persistent_file(&file, &descriptor.stable_user_sid)?;
+    verify_persistent_file(&file, descriptor)?;
     Ok(file)
 }
 
 fn remove_stale_temp(path: &Path, descriptor: &SecurityDescriptor) -> Result<(), StoreError> {
+    let Some(file) = open_stale_temp(path)? else {
+        return Ok(());
+    };
+    verify_persistent_file(&file, descriptor)?;
+    mark_file_for_deletion(&file)
+}
+
+fn open_stale_temp(path: &Path) -> Result<Option<std::fs::File>, StoreError> {
     let wide = wide_path(path);
     // SAFETY: exact fixed temp path is NUL terminated. OPEN_REPARSE_POINT prevents
     // following an attacker-created reparse object while obtaining delete access.
@@ -686,13 +1329,16 @@ fn remove_stale_temp(path: &Path, descriptor: &SecurityDescriptor) -> Result<(),
             if error.code() == ERROR_FILE_NOT_FOUND.to_hresult()
                 || error.code() == ERROR_PATH_NOT_FOUND.to_hresult() =>
         {
-            return Ok(());
+            return Ok(None);
         }
         Err(_) => return Err(StoreError::DurabilityFailure),
     };
     // SAFETY: transfer exactly one successful owned handle to File.
     let file = unsafe { std::fs::File::from_raw_handle(handle.0 as RawHandle) };
-    verify_persistent_file(&file, &descriptor.stable_user_sid)?;
+    Ok(Some(file))
+}
+
+fn mark_file_for_deletion(file: &std::fs::File) -> Result<(), StoreError> {
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: the live handle has DELETE access and the input buffer has the
     // exact FILE_DISPOSITION_INFO representation and length.
@@ -705,7 +1351,6 @@ fn remove_stale_temp(path: &Path, descriptor: &SecurityDescriptor) -> Result<(),
         )
     }
     .map_err(|_| StoreError::DurabilityFailure)?;
-    drop(file);
     Ok(())
 }
 
@@ -731,7 +1376,7 @@ fn create_new_write_through(
     .map_err(|_| StoreError::DurabilityFailure)?;
     // SAFETY: transfer exactly one successful owned handle to File.
     let file = unsafe { std::fs::File::from_raw_handle(handle.0 as RawHandle) };
-    verify_persistent_file(&file, &descriptor.stable_user_sid)?;
+    verify_persistent_file(&file, descriptor)?;
     Ok(file)
 }
 
@@ -781,25 +1426,25 @@ fn verify_not_reparse(file: &std::fs::File) -> Result<(), StoreError> {
 
 fn verify_persistent_file(
     file: &std::fs::File,
-    expected_sid: &StableUserSid,
+    descriptor: &SecurityDescriptor,
 ) -> Result<(), StoreError> {
     verify_not_reparse(file)?;
     let information = file_information(file)?;
     if information.nNumberOfLinks != 1 {
         return Err(StoreError::UnsafePath);
     }
-    verify_stable_user_security(file, expected_sid)
+    descriptor.verify_file_security(file)
 }
 
 fn verify_installed_readback(
     file: &std::fs::File,
     expected_identity: FileIdentity,
-    expected_volume_serial: u32,
+    expected_volume_serial: u64,
     expected_bytes: &[u8],
     expected_digest: [u8; 32],
-    expected_sid: &StableUserSid,
+    descriptor: &SecurityDescriptor,
 ) -> Result<(), StoreError> {
-    verify_persistent_file(file, expected_sid)?;
+    verify_persistent_file(file, descriptor)?;
     let actual_identity = file_identity(file)?;
     if actual_identity != expected_identity
         || actual_identity.volume_serial != expected_volume_serial
@@ -833,11 +1478,25 @@ fn verify_installed_readback(
 }
 
 fn file_identity(file: &std::fs::File) -> Result<FileIdentity, StoreError> {
-    let information = file_information(file)?;
+    let mut information = FILE_ID_INFO::default();
+    // SAFETY: the held handle remains live and the output buffer has the exact
+    // FILE_ID_INFO layout requested by FileIdInfo.
+    unsafe {
+        GetFileInformationByHandleEx(
+            HANDLE(file.as_raw_handle()),
+            FileIdInfo,
+            (&raw mut information).cast::<c_void>(),
+            u32::try_from(size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX),
+        )
+        .map_err(|_| StoreError::UnsafePath)?;
+    }
+    let file_id = information.FileId.Identifier;
+    if information.VolumeSerialNumber == 0 || file_id == [0_u8; 16] || file_id == [u8::MAX; 16] {
+        return Err(StoreError::UnsafePath);
+    }
     Ok(FileIdentity {
-        volume_serial: information.dwVolumeSerialNumber,
-        file_index: (u64::from(information.nFileIndexHigh) << 32)
-            | u64::from(information.nFileIndexLow),
+        volume_serial: information.VolumeSerialNumber,
+        file_id,
     })
 }
 
@@ -883,29 +1542,144 @@ fn verify_stable_user_security(
     result
 }
 
+fn verify_key_agent_file_security(
+    file: &std::fs::File,
+    stable_user_sid: &StableUserSid,
+    profile_sid: &StableUserSid,
+) -> Result<(), StoreError> {
+    let mut owner = PSID::default();
+    let mut dacl = ptr::null_mut::<ACL>();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // LABEL_SECURITY_INFORMATION retrieves the mandatory label using the
+    // handle's READ_CONTROL access. The returned descriptor owns all pointers.
+    // SAFETY: all outputs are initialized writable storage and the file handle
+    // remains live through the complete query and inspection.
+    let status = unsafe {
+        GetSecurityInfo(
+            HANDLE(file.as_raw_handle()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            None,
+            Some(&raw mut dacl),
+            None,
+            Some(&raw mut descriptor),
+        )
+    };
+    if status != ERROR_SUCCESS || descriptor.0.is_null() || owner.0.is_null() || dacl.is_null() {
+        if !descriptor.0.is_null() {
+            // SAFETY: a non-null GetSecurityInfo descriptor uses LocalAlloc.
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+            }
+        }
+        return Err(StoreError::InsecurePermissions);
+    }
+
+    let mut sacl_present = BOOL(0);
+    let mut sacl_defaulted = BOOL(0);
+    let mut sacl = ptr::null_mut::<ACL>();
+    // SAFETY: the successful query returned one live self-relative descriptor;
+    // these outputs only expose its mandatory-label SACL.
+    let sacl_result = unsafe {
+        GetSecurityDescriptorSacl(
+            descriptor,
+            &raw mut sacl_present,
+            &raw mut sacl,
+            &raw mut sacl_defaulted,
+        )
+    };
+    if sacl_result.is_err() || !sacl_present.as_bool() || sacl_defaulted.as_bool() || sacl.is_null()
+    {
+        // SAFETY: GetSecurityInfo allocated this descriptor with LocalAlloc.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        }
+        return Err(StoreError::InsecurePermissions);
+    }
+
+    let result = inspect_key_agent_file_security_descriptor(
+        descriptor,
+        owner,
+        dacl,
+        sacl,
+        stable_user_sid,
+        profile_sid,
+    );
+    // SAFETY: GetSecurityInfo allocated this descriptor with LocalAlloc.
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    result
+}
+
+fn inspect_key_agent_file_security_descriptor(
+    descriptor: PSECURITY_DESCRIPTOR,
+    owner: PSID,
+    dacl: *mut ACL,
+    sacl: *mut ACL,
+    stable_user_sid: &StableUserSid,
+    profile_sid: &StableUserSid,
+) -> Result<(), StoreError> {
+    if descriptor.0.is_null() || dacl.is_null() || sacl.is_null() {
+        return Err(StoreError::InsecurePermissions);
+    }
+    let control = inspect_descriptor_control(descriptor)?;
+    let required = security_control_flag(SE_SELF_RELATIVE)
+        | security_control_flag(SE_DACL_PRESENT)
+        | security_control_flag(SE_DACL_PROTECTED)
+        | security_control_flag(SE_SACL_PRESENT);
+    let allowed = required | security_control_flag(SE_SACL_AUTO_INHERITED);
+    if control & required != required || control & !allowed != 0 {
+        return Err(StoreError::InsecurePermissions);
+    }
+    inspect_owner(owner, stable_user_sid)?;
+    inspect_exact_key_agent_dacl(dacl, stable_user_sid, profile_sid)?;
+    inspect_exact_inherited_low_label(sacl)
+}
+
+fn inspect_descriptor_control(descriptor: PSECURITY_DESCRIPTOR) -> Result<u16, StoreError> {
+    // SAFETY: the descriptor is caller-owned and remains live for inspection.
+    if descriptor.0.is_null() || !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool() {
+        return Err(StoreError::InsecurePermissions);
+    }
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    // SAFETY: outputs are exact initialized scalar storage.
+    unsafe {
+        GetSecurityDescriptorControl(descriptor, &raw mut control, &raw mut revision)
+            .map_err(|_| StoreError::InsecurePermissions)?;
+    }
+    Ok(control)
+}
+
+fn security_control_flag(flag: windows::Win32::Security::SECURITY_DESCRIPTOR_CONTROL) -> u16 {
+    u16::from_ne_bytes(flag.0.to_ne_bytes())
+}
+
+fn inspect_owner(owner: PSID, expected_sid: &StableUserSid) -> Result<(), StoreError> {
+    // SAFETY: a non-null owner pointer inside the live descriptor can be
+    // validated before any size-dependent access.
+    if owner.0.is_null() || !unsafe { IsValidSid(owner) }.as_bool() {
+        return Err(StoreError::InsecurePermissions);
+    }
+    // SAFETY: both SIDs are valid and live for this comparison.
+    unsafe { EqualSid(owner, expected_sid.as_psid()) }
+        .map_err(|_| StoreError::WrongStoragePrincipal)
+}
+
 fn inspect_security_descriptor(
     descriptor: PSECURITY_DESCRIPTOR,
     owner: PSID,
     dacl: *mut ACL,
     expected_sid: &StableUserSid,
 ) -> Result<(), StoreError> {
-    let mut control = 0_u16;
-    let mut revision = 0_u32;
-    // SAFETY: the descriptor was either returned by GetSecurityInfo or created
-    // by the SDDL conversion API and remains live for this inspection.
-    if !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool() {
-        return Err(StoreError::InsecurePermissions);
-    }
-    // SAFETY: descriptor remains live; output fields are initialized stack values.
-    unsafe {
-        GetSecurityDescriptorControl(descriptor, &raw mut control, &raw mut revision)
-            .map_err(|_| StoreError::InsecurePermissions)?;
-    }
-    let protected = u16::from_ne_bytes(SE_DACL_PROTECTED.0.to_ne_bytes());
-    let present = u16::from_ne_bytes(SE_DACL_PRESENT.0.to_ne_bytes());
-    let self_relative = u16::from_ne_bytes(SE_SELF_RELATIVE.0.to_ne_bytes());
-    let dacl_defaulted = u16::from_ne_bytes(SE_DACL_DEFAULTED.0.to_ne_bytes());
-    let owner_defaulted = u16::from_ne_bytes(SE_OWNER_DEFAULTED.0.to_ne_bytes());
+    let control = inspect_descriptor_control(descriptor)?;
+    let protected = security_control_flag(SE_DACL_PROTECTED);
+    let present = security_control_flag(SE_DACL_PRESENT);
+    let self_relative = security_control_flag(SE_SELF_RELATIVE);
+    let dacl_defaulted = security_control_flag(SE_DACL_DEFAULTED);
+    let owner_defaulted = security_control_flag(SE_OWNER_DEFAULTED);
     if control & protected == 0 {
         return Err(StoreError::UnprotectedDacl);
     }
@@ -914,87 +1688,132 @@ fn inspect_security_descriptor(
     }
     let forbidden_control = dacl_defaulted
         | owner_defaulted
-        | u16::from_ne_bytes(SE_DACL_AUTO_INHERITED.0.to_ne_bytes())
-        | u16::from_ne_bytes(SE_DACL_AUTO_INHERIT_REQ.0.to_ne_bytes());
+        | security_control_flag(SE_DACL_AUTO_INHERITED)
+        | security_control_flag(SE_DACL_AUTO_INHERIT_REQ);
     if control & forbidden_control != 0 {
         return Err(StoreError::InsecurePermissions);
     }
 
-    // SAFETY: a non-null owner pointer returned inside the live descriptor may
-    // be passed to the SID validator before any size-dependent access.
-    if owner.0.is_null() || !unsafe { IsValidSid(owner) }.as_bool() {
-        return Err(StoreError::InsecurePermissions);
-    }
-    // SAFETY: `owner` belongs to the live descriptor and the stable user SID is
-    // a valid owned copy returned by TokenUser.
-    unsafe { EqualSid(owner, expected_sid.as_psid()) }
-        .map_err(|_| StoreError::WrongStoragePrincipal)?;
-
+    inspect_owner(owner, expected_sid)?;
     inspect_exact_dacl(dacl, expected_sid)
 }
 
 fn inspect_exact_dacl(dacl: *mut ACL, expected_sid: &StableUserSid) -> Result<(), StoreError> {
+    let (acl_size, information) = inspect_acl_header(dacl, 1)?;
+    let ace = ace_at(dacl, 0)?;
+    let allow_bytes = inspect_allow_ace(ace, expected_sid, FILE_ALL_ACCESS.0)?;
+    let exact_bytes = size_of::<ACL>()
+        .checked_add(allow_bytes)
+        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
+    require_exact_acl_size(acl_size, &information, exact_bytes)
+}
+
+fn inspect_exact_key_agent_dacl(
+    dacl: *mut ACL,
+    stable_user_sid: &StableUserSid,
+    profile_sid: &StableUserSid,
+) -> Result<(), StoreError> {
+    let (acl_size, information) = inspect_acl_header(dacl, 2)?;
+    let user_ace = ace_at(dacl, 0)?;
+    let profile_ace = ace_at(dacl, 1)?;
+    let user_size = inspect_allow_ace(user_ace, stable_user_sid, FILE_ALL_ACCESS.0)?;
+    let profile_size = inspect_allow_ace(profile_ace, profile_sid, KEY_AGENT_FILE_ACCESS)?;
+    let exact_bytes = size_of::<ACL>()
+        .checked_add(user_size)
+        .and_then(|bytes| bytes.checked_add(profile_size))
+        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
+    require_exact_acl_size(acl_size, &information, exact_bytes)
+}
+
+fn inspect_exact_inherited_low_label(sacl: *mut ACL) -> Result<(), StoreError> {
+    let (acl_size, information) = inspect_acl_header(sacl, 1)?;
+    let ace = ace_at(sacl, 0)?;
+    // SAFETY: IsValidAcl and GetAce prove that the common ACE header is present.
+    let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+    let label_type = u8::try_from(SYSTEM_MANDATORY_LABEL_ACE_TYPE).unwrap_or(u8::MAX);
+    let sid_offset = core::mem::offset_of!(SYSTEM_MANDATORY_LABEL_ACE, SidStart);
+    if header.AceType != label_type
+        || header.AceFlags != INHERITED_FILE_LABEL_ACE_FLAGS
+        || usize::from(header.AceSize) < sid_offset.saturating_add(MIN_BINARY_SID_BYTES)
+    {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    // SAFETY: the accepted type and size prove the mandatory-label fixed fields.
+    let label = unsafe { &*ace.cast::<SYSTEM_MANDATORY_LABEL_ACE>() };
+    if label.Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    let sid_bytes = ptr::addr_of!(label.SidStart).cast::<u8>();
+    let available = usize::from(header.AceSize).saturating_sub(sid_offset);
+    let sid_length = validate_sid_in_ace(sid_bytes, available)?;
+    if sid_length != LOW_MANDATORY_LABEL_SID.len() {
+        return Err(StoreError::WrongStoragePrincipal);
+    }
+    // SAFETY: validation proved that this complete range belongs to the ACE.
+    let actual_sid = unsafe { core::slice::from_raw_parts(sid_bytes, sid_length) };
+    if actual_sid != LOW_MANDATORY_LABEL_SID {
+        return Err(StoreError::WrongStoragePrincipal);
+    }
+    let exact_bytes = size_of::<ACL>()
+        .checked_add(usize::from(header.AceSize))
+        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
+    require_exact_acl_size(acl_size, &information, exact_bytes)
+}
+
+fn inspect_acl_header(
+    acl: *mut ACL,
+    expected_ace_count: u32,
+) -> Result<(u16, ACL_SIZE_INFORMATION), StoreError> {
     // IsValidSecurityDescriptor deliberately does not validate individual
-    // ACL/ACE contents. Prove the ACL layout before GetAce returns a pointer
-    // that this function will inspect.
-    // SAFETY: `dacl` is non-null and belongs to the live descriptor.
-    if !unsafe { IsValidAcl(dacl) }.as_bool() {
+    // ACL/ACE contents. Prove the complete ACL before retrieving any ACE.
+    // SAFETY: a non-null ACL pointer lies inside the caller-owned descriptor.
+    if acl.is_null() || !unsafe { IsValidAcl(acl) }.as_bool() {
         return Err(StoreError::InsecurePermissions);
     }
-    // SAFETY: `IsValidAcl` accepted the complete ACL header before any field is
-    // read. Exact storage policy accepts only the canonical revision and zeroed
-    // reserved fields emitted by this module's descriptor.
-    let acl = unsafe { &*dacl };
-    if u32::from(acl.AclRevision) != ACL_REVISION.0 || acl.Sbz1 != 0 || acl.Sbz2 != 0 {
+    // SAFETY: IsValidAcl accepted the complete fixed header.
+    let acl_ref = unsafe { &*acl };
+    if u32::from(acl_ref.AclRevision) != ACL_REVISION.0 || acl_ref.Sbz1 != 0 || acl_ref.Sbz2 != 0 {
         return Err(StoreError::UnexpectedAccessControlEntry);
     }
     let mut information = ACL_SIZE_INFORMATION::default();
-    // SAFETY: `dacl` belongs to the live descriptor and output has exact size.
+    // SAFETY: the validated ACL remains live and output has the exact API type.
     unsafe {
         GetAclInformation(
-            dacl,
+            acl,
             (&raw mut information).cast::<c_void>(),
             u32::try_from(size_of::<ACL_SIZE_INFORMATION>()).unwrap_or(u32::MAX),
             AclSizeInformation,
         )
         .map_err(|_| StoreError::InsecurePermissions)?;
     }
-    if information.AceCount != 1 {
+    if information.AceCount != expected_ace_count {
         return Err(StoreError::UnexpectedAccessControlEntry);
     }
+    Ok((acl_ref.AclSize, information))
+}
+
+fn ace_at(acl: *mut ACL, index: u32) -> Result<*mut c_void, StoreError> {
     let mut ace = ptr::null_mut::<c_void>();
-    // SAFETY: the validated ACL reports one ACE at index zero.
+    // SAFETY: inspect_acl_header checked the exact count before fixed indices.
     unsafe {
-        GetAce(dacl, 0, &raw mut ace).map_err(|_| StoreError::InsecurePermissions)?;
+        GetAce(acl, index, &raw mut ace).map_err(|_| StoreError::InsecurePermissions)?;
     }
     if ace.is_null() {
         return Err(StoreError::UnexpectedAccessControlEntry);
     }
-    inspect_exact_allow_ace(acl, &information, ace, expected_sid)
+    Ok(ace)
 }
 
-fn inspect_exact_allow_ace(
-    acl: &ACL,
-    information: &ACL_SIZE_INFORMATION,
+fn inspect_allow_ace_with_mask(
     ace: *mut c_void,
     expected_sid: &StableUserSid,
-) -> Result<(), StoreError> {
+    expected_mask: u32,
+) -> Result<usize, StoreError> {
     // SAFETY: IsValidAcl and GetAce proved that the common fixed header is
     // contained in the ACL. Do not cast to a specific ACE layout until its type
     // and complete minimum size have been accepted.
     let header = unsafe { &*ace.cast::<ACE_HEADER>() };
     let (ace_type, ace_flags, ace_size) = (header.AceType, header.AceFlags, header.AceSize);
-    let exact_acl_bytes = size_of::<ACL>()
-        .checked_add(usize::from(ace_size))
-        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
-    if usize::try_from(information.AclBytesInUse)
-        .map_err(|_| StoreError::UnexpectedAccessControlEntry)?
-        != exact_acl_bytes
-        || information.AclBytesFree != 0
-        || usize::from(acl.AclSize) != exact_acl_bytes
-    {
-        return Err(StoreError::UnexpectedAccessControlEntry);
-    }
     let allowed_type = u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX);
     let sid_offset = core::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
     if ace_type != allowed_type
@@ -1006,7 +1825,7 @@ fn inspect_exact_allow_ace(
     // SAFETY: the accepted type and minimum size now prove that the standard
     // access-allowed ACE fixed fields are present.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if allowed.Mask != FILE_ALL_ACCESS.0 {
+    if allowed.Mask != expected_mask {
         return Err(StoreError::UnexpectedAccessControlEntry);
     }
     // SAFETY: SidStart is the documented first byte of the variable SID within
@@ -1014,33 +1833,62 @@ fn inspect_exact_allow_ace(
     let actual_sid_bytes = ptr::addr_of!(allowed.SidStart).cast::<u8>();
     let actual_sid = PSID(actual_sid_bytes.cast_mut().cast::<c_void>());
     let sid_bytes_available = usize::from(ace_size).saturating_sub(sid_offset);
-    // The second byte is SubAuthorityCount. Reading it is bounded by the
-    // complete fixed SID header proven above; calculate the exact declared SID
-    // length ourselves before calling APIs that accept only a raw PSID.
-    // SAFETY: MIN_BINARY_SID_BYTES includes the count byte.
-    let sub_authority_count = usize::from(unsafe { *actual_sid_bytes.add(1) });
-    let declared_sid_length = sub_authority_count
-        .checked_mul(size_of::<u32>())
-        .and_then(|length| length.checked_add(MIN_BINARY_SID_BYTES))
-        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
-    if sid_bytes_available != declared_sid_length {
-        return Err(StoreError::UnexpectedAccessControlEntry);
-    }
-    // SAFETY: the SID's self-declared complete length was proven to fit exactly
-    // inside the already validated ACE.
-    if !unsafe { IsValidSid(actual_sid) }.as_bool() {
-        return Err(StoreError::UnexpectedAccessControlEntry);
-    }
-    // SAFETY: IsValidSid accepted a SID whose full buffer is contained in the
-    // ACE. GetLengthSid therefore cannot read outside the descriptor.
-    let actual_sid_length = usize::try_from(unsafe { GetLengthSid(actual_sid) })
-        .map_err(|_| StoreError::UnexpectedAccessControlEntry)?;
-    if actual_sid_length != declared_sid_length {
-        return Err(StoreError::UnexpectedAccessControlEntry);
-    }
+    validate_sid_in_ace(actual_sid_bytes, sid_bytes_available)?;
     // SAFETY: both SIDs are valid and live for the comparison.
     unsafe { EqualSid(actual_sid, expected_sid.as_psid()) }
-        .map_err(|_| StoreError::WrongStoragePrincipal)
+        .map_err(|_| StoreError::WrongStoragePrincipal)?;
+    Ok(usize::from(ace_size))
+}
+
+fn inspect_allow_ace(
+    ace: *mut c_void,
+    expected_sid: &StableUserSid,
+    expected_mask: u32,
+) -> Result<usize, StoreError> {
+    inspect_allow_ace_with_mask(ace, expected_sid, expected_mask)
+}
+
+fn validate_sid_in_ace(sid_bytes: *const u8, available: usize) -> Result<usize, StoreError> {
+    if sid_bytes.is_null() || available < MIN_BINARY_SID_BYTES {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    // SAFETY: available contains the complete fixed SID header and count byte.
+    let sub_authority_count = usize::from(unsafe { *sid_bytes.add(1) });
+    let declared = sub_authority_count
+        .checked_mul(size_of::<u32>())
+        .and_then(|bytes| bytes.checked_add(MIN_BINARY_SID_BYTES))
+        .ok_or(StoreError::UnexpectedAccessControlEntry)?;
+    if declared != available || declared > MAX_BINARY_SID_BYTES {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    let sid = PSID(sid_bytes.cast_mut().cast::<c_void>());
+    // SAFETY: the self-declared SID length fits exactly inside the ACE.
+    if !unsafe { IsValidSid(sid) }.as_bool() {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    // SAFETY: IsValidSid accepted the SID wholly contained by the ACE.
+    let reported = usize::try_from(unsafe { GetLengthSid(sid) })
+        .map_err(|_| StoreError::UnexpectedAccessControlEntry)?;
+    if reported != declared {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    Ok(declared)
+}
+
+fn require_exact_acl_size(
+    acl_size: u16,
+    information: &ACL_SIZE_INFORMATION,
+    exact_bytes: usize,
+) -> Result<(), StoreError> {
+    if usize::try_from(information.AclBytesInUse)
+        .map_err(|_| StoreError::UnexpectedAccessControlEntry)?
+        != exact_bytes
+        || information.AclBytesFree != 0
+        || usize::from(acl_size) != exact_bytes
+    {
+        return Err(StoreError::UnexpectedAccessControlEntry);
+    }
+    Ok(())
 }
 
 fn current_stable_user_sid() -> Result<StableUserSid, StoreError> {
@@ -1214,6 +2062,241 @@ mod tests {
 
     fn exact_allow_ace(sid: &str) -> String {
         format!("(A;;0x{:08x};;;{sid})", FILE_ALL_ACCESS.0)
+    }
+
+    fn key_agent_test_principals() -> Result<(StableUserSid, StableUserSid), StoreError> {
+        let stable_user = current_stable_user_sid()?;
+        let profile = StableUserSid(current_logon_sid()?);
+        if stable_user == profile {
+            return Err(StoreError::WrongStoragePrincipal);
+        }
+        Ok((stable_user, profile))
+    }
+
+    fn key_agent_file_sddl(
+        user: &str,
+        profile: &str,
+        profile_mask: u32,
+        dacl_protection: &str,
+        label_ace: &str,
+    ) -> String {
+        format!(
+            "O:{user}D:{dacl_protection}(A;;0x{:08x};;;{user})(A;;0x{profile_mask:08x};;;{profile}){label_ace}",
+            FILE_ALL_ACCESS.0,
+        )
+    }
+
+    fn descriptor_with_key_agent_policy(
+        stable_user: StableUserSid,
+        profile: StableUserSid,
+        sddl: &str,
+    ) -> Result<SecurityDescriptor, StoreError> {
+        SecurityDescriptor::from_sddl_with_profile(stable_user, profile, sddl)
+    }
+
+    #[test]
+    fn key_agent_file_access_and_fixed_store_contracts_are_exact() {
+        assert_eq!(FILE_ALL_ACCESS.0, 0x001f_01ff);
+        assert_eq!(KEY_AGENT_FILE_ACCESS, 0x0013_019f);
+        assert_eq!(
+            KEY_AGENT_FILE_ACCESS,
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0
+        );
+        for forbidden in [
+            WRITE_DAC.0,
+            WRITE_OWNER.0,
+            FILE_EXECUTE.0,
+            ACCESS_SYSTEM_SECURITY,
+        ] {
+            assert_eq!(KEY_AGENT_FILE_ACCESS & forbidden, 0);
+        }
+        assert_eq!(
+            u32::from(INHERITED_FILE_LABEL_ACE_FLAGS),
+            windows::Win32::Security::INHERITED_ACE.0,
+        );
+
+        assert_eq!(
+            fixed_key_agent_store_spec(FixedKeyAgentGenerationStoreRole::Vault),
+            ("vault", RecordClass::Vault, 4_194_416),
+        );
+        assert_eq!(
+            fixed_key_agent_store_spec(FixedKeyAgentGenerationStoreRole::NonceLedger),
+            ("nonce-ledger", RecordClass::NonceLedger, 16_777_216),
+        );
+        assert_eq!(
+            fixed_key_agent_store_spec(FixedKeyAgentGenerationStoreRole::SignedCandidateJournal),
+            (
+                "signed-candidate-journal",
+                RecordClass::SignedCandidateJournal,
+                16_777_216,
+            ),
+        );
+        assert_eq!(
+            fixed_key_agent_store_spec(FixedKeyAgentGenerationStoreRole::LocalSettings),
+            ("local-settings", RecordClass::LocalSettings, 226),
+        );
+        assert_eq!(
+            4_194_416,
+            super::super::VAULT_HEADER_BYTES + 4 * 1024 * 1024,
+        );
+        assert_eq!(226, 210 + super::super::XCHACHA_TAG_BYTES);
+    }
+
+    #[test]
+    fn key_agent_creation_and_inherited_file_descriptors_are_exact() -> Result<(), StoreError> {
+        let (stable_user, profile) = key_agent_test_principals()?;
+        assert_eq!(
+            SecurityDescriptor::for_key_agent_files(stable_user.as_psid(), stable_user.as_psid(),)
+                .err(),
+            Some(StoreError::WrongStoragePrincipal),
+        );
+        let creation =
+            SecurityDescriptor::for_key_agent_files(stable_user.as_psid(), profile.as_psid())?;
+        creation.inspect_key_agent_creation_for_test()?;
+        assert_eq!(
+            creation.inspect_for_test(&stable_user),
+            Err(StoreError::UnexpectedAccessControlEntry),
+        );
+
+        let user_text = sid_to_string(stable_user.as_psid())?;
+        let profile_text = sid_to_string(profile.as_psid())?;
+        let sddl = key_agent_file_sddl(
+            &user_text,
+            &profile_text,
+            KEY_AGENT_FILE_ACCESS,
+            "P",
+            "S:(ML;ID;NW;;;LW)",
+        );
+        let file = descriptor_with_key_agent_policy(stable_user.clone(), profile, &sddl)?;
+        file.inspect_key_agent_file_for_test()?;
+        assert_eq!(
+            file.inspect_for_test(&stable_user),
+            Err(StoreError::UnexpectedAccessControlEntry),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_file_descriptor_rejects_dacl_policy_drift() -> Result<(), StoreError> {
+        let (stable_user, profile) = key_agent_test_principals()?;
+        let user_text = sid_to_string(stable_user.as_psid())?;
+        let profile_text = sid_to_string(profile.as_psid())?;
+        let exact_label = "S:(ML;ID;NW;;;LW)";
+        let cases = [
+            key_agent_file_sddl(
+                &user_text,
+                &profile_text,
+                KEY_AGENT_FILE_ACCESS ^ FILE_READ_ATTRIBUTES.0,
+                "P",
+                exact_label,
+            ),
+            key_agent_file_sddl(
+                &user_text,
+                &profile_text,
+                KEY_AGENT_FILE_ACCESS | WRITE_DAC.0,
+                "P",
+                exact_label,
+            ),
+            key_agent_file_sddl(
+                &user_text,
+                &profile_text,
+                KEY_AGENT_FILE_ACCESS,
+                "",
+                exact_label,
+            ),
+            format!(
+                "O:{user_text}D:P(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text})(A;;0x{:08x};;;{user_text}){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+            format!(
+                "O:{user_text}D:P(A;;0x{:08x};;;{user_text})(A;ID;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text}){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+            format!(
+                "O:{user_text}D:P(A;;0x{:08x};;;{user_text})(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text})(A;;FR;;;WD){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+            format!(
+                "O:SYD:P(A;;0x{:08x};;;{user_text})(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text}){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+            format!(
+                "O:{user_text}D:P(A;;0x{:08x};;;{user_text})(A;;0x{KEY_AGENT_FILE_ACCESS:08x};;;WD){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+            format!(
+                "O:{user_text}D:P(A;;0x{:08x};;;{user_text})(D;;0x{KEY_AGENT_FILE_ACCESS:08x};;;{profile_text}){exact_label}",
+                FILE_ALL_ACCESS.0,
+            ),
+        ];
+        for sddl in cases {
+            let descriptor =
+                descriptor_with_key_agent_policy(stable_user.clone(), profile.clone(), &sddl)?;
+            assert!(descriptor.inspect_key_agent_file_for_test().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_file_descriptor_rejects_label_policy_drift() -> Result<(), StoreError> {
+        let (stable_user, profile) = key_agent_test_principals()?;
+        let user_text = sid_to_string(stable_user.as_psid())?;
+        let profile_text = sid_to_string(profile.as_psid())?;
+        for label in [
+            "",
+            "S:(ML;;NW;;;LW)",
+            "S:(ML;OICIID;NW;;;LW)",
+            "S:(ML;ID;NW;;;ME)",
+            "S:(ML;ID;NR;;;LW)",
+            "S:(ML;ID;NW;;;LW)(ML;ID;NW;;;LW)",
+        ] {
+            let sddl =
+                key_agent_file_sddl(&user_text, &profile_text, KEY_AGENT_FILE_ACCESS, "P", label);
+            let descriptor =
+                descriptor_with_key_agent_policy(stable_user.clone(), profile.clone(), &sddl)?;
+            assert!(descriptor.inspect_key_agent_file_for_test().is_err());
+        }
+        for forbidden_control in [SE_SACL_DEFAULTED, SE_SACL_AUTO_INHERIT_REQ] {
+            let sddl = key_agent_file_sddl(
+                &user_text,
+                &profile_text,
+                KEY_AGENT_FILE_ACCESS,
+                "P",
+                "S:(ML;ID;NW;;;LW)",
+            );
+            let descriptor =
+                descriptor_with_key_agent_policy(stable_user.clone(), profile.clone(), &sddl)?;
+            let relative = descriptor
+                .descriptor
+                .0
+                .cast::<SECURITY_DESCRIPTOR_RELATIVE>();
+            // SAFETY: the SDDL conversion returned a live self-relative test
+            // descriptor; this changes only its initialized control word.
+            unsafe {
+                (*relative).Control.0 |= u16::from_ne_bytes(forbidden_control.0.to_ne_bytes());
+            }
+            assert_eq!(
+                descriptor.inspect_key_agent_file_for_test(),
+                Err(StoreError::InsecurePermissions),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_verifier_rejects_stable_single_principal_policy() -> Result<(), StoreError> {
+        let (stable_user, profile) = key_agent_test_principals()?;
+        let user_text = sid_to_string(stable_user.as_psid())?;
+        let sddl = format!(
+            "O:{user_text}D:P(A;;0x{:08x};;;{user_text})S:(ML;ID;NW;;;LW)",
+            FILE_ALL_ACCESS.0,
+        );
+        let stable = descriptor_with_key_agent_policy(stable_user, profile, &sddl)?;
+        assert_eq!(
+            stable.inspect_key_agent_file_for_test(),
+            Err(StoreError::UnexpectedAccessControlEntry),
+        );
+        Ok(())
     }
 
     #[test]
@@ -1622,6 +2705,133 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear race-injection test keeps mutation boundaries auditable"
+    )]
+    fn atomic_write_never_repairs_or_replaces_injected_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use core::fmt::Write as _;
+
+        const NAMESPACE: &str = "target-preflight";
+
+        struct ExactCleanup {
+            root: PathBuf,
+            namespace: &'static str,
+        }
+
+        impl Drop for ExactCleanup {
+            fn drop(&mut self) {
+                let temporary_parent = std::env::temp_dir();
+                let safe_name = self
+                    .root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("your-wallet-target-preflight-test-"));
+                if !self.root.starts_with(&temporary_parent) || !safe_name {
+                    return;
+                }
+                for suffix in [
+                    "lock",
+                    "slot0",
+                    "slot1",
+                    "manifest",
+                    "slot0.new",
+                    "slot1.new",
+                    "manifest.new",
+                ] {
+                    let _ = std::fs::remove_file(
+                        self.root.join(format!("{}.{suffix}", self.namespace)),
+                    );
+                }
+                let _ = std::fs::remove_dir(&self.root);
+            }
+        }
+
+        struct InjectWrongPolicyTarget {
+            target: PathBuf,
+            bytes: &'static [u8],
+            fired: bool,
+        }
+
+        impl FaultControl for InjectWrongPolicyTarget {
+            fn hit(&mut self, point: FaultPoint) -> Result<(), StoreError> {
+                if point == FaultPoint::ManifestTempFlushed && !self.fired {
+                    self.fired = true;
+                    std::fs::write(&self.target, self.bytes)
+                        .map_err(|_| StoreError::DurabilityFailure)?;
+                }
+                Ok(())
+            }
+        }
+
+        struct SubstituteValidTarget {
+            source: PathBuf,
+            target: PathBuf,
+            fired: bool,
+        }
+
+        impl FaultControl for SubstituteValidTarget {
+            fn hit(&mut self, point: FaultPoint) -> Result<(), StoreError> {
+                if point == FaultPoint::SlotTempFlushed && !self.fired {
+                    self.fired = true;
+                    atomic_replace(&self.source, &self.target)?;
+                }
+                Ok(())
+            }
+        }
+
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).map_err(|_| StoreError::DurabilityFailure)?;
+        let mut suffix = String::with_capacity(random.len() * 2);
+        for byte in random {
+            write!(&mut suffix, "{byte:02x}").map_err(|_| StoreError::DurabilityFailure)?;
+        }
+        let root = std::env::temp_dir().join(format!("your-wallet-target-preflight-test-{suffix}"));
+        let _cleanup = ExactCleanup {
+            root: root.clone(),
+            namespace: NAMESPACE,
+        };
+        let config = StoreConfig::new(root.clone(), NAMESPACE, RecordClass::NonceLedger, 4096)?;
+        let mut backend = WindowsBackend::open(&config)?;
+
+        let wrong_target = root.join(format!("{NAMESPACE}.manifest"));
+        let wrong_bytes = b"attacker target remains unchanged";
+        let mut wrong_policy = InjectWrongPolicyTarget {
+            target: wrong_target.clone(),
+            bytes: wrong_bytes,
+            fired: false,
+        };
+        assert!(matches!(
+            backend.atomic_write(FileRole::Manifest, b"candidate manifest", &mut wrong_policy),
+            Err(StoreError::InsecurePermissions
+                | StoreError::UnprotectedDacl
+                | StoreError::UnexpectedAccessControlEntry
+                | StoreError::WrongStoragePrincipal)
+        ));
+        assert!(wrong_policy.fired);
+        assert_eq!(std::fs::read(&wrong_target)?, wrong_bytes);
+
+        let slot_zero = root.join(format!("{NAMESPACE}.slot0"));
+        let slot_one = root.join(format!("{NAMESPACE}.slot1"));
+        let mut no_fault = super::super::NoFault;
+        backend.atomic_write(FileRole::Slot(0), b"original target", &mut no_fault)?;
+        backend.atomic_write(FileRole::Slot(1), b"valid substitution", &mut no_fault)?;
+        let mut substitution = SubstituteValidTarget {
+            source: slot_one,
+            target: slot_zero.clone(),
+            fired: false,
+        };
+        assert_eq!(
+            backend.atomic_write(FileRole::Slot(0), b"must not install", &mut substitution),
+            Err(StoreError::UnsafePath),
+        );
+        assert!(substitution.fired);
+        assert_eq!(std::fs::read(slot_zero)?, b"valid substitution");
+        Ok(())
+    }
+
+    #[test]
     fn held_file_readback_binds_bytes_digest_identity_and_acl()
     -> Result<(), Box<dyn std::error::Error>> {
         use core::fmt::Write as _;
@@ -1656,7 +2866,7 @@ mod tests {
             root_identity.volume_serial,
             expected,
             sha256(expected),
-            &descriptor.stable_user_sid,
+            &descriptor,
         )?;
         drop(installed);
 
@@ -1669,7 +2879,7 @@ mod tests {
                 root_identity.volume_serial,
                 wrong_bytes,
                 sha256(wrong_bytes),
-                &descriptor.stable_user_sid,
+                &descriptor,
             ),
             Err(StoreError::DurabilityFailure)
         );
@@ -1685,7 +2895,7 @@ mod tests {
                 root_identity.volume_serial,
                 expected,
                 wrong_digest,
-                &descriptor.stable_user_sid,
+                &descriptor,
             ),
             Err(StoreError::DurabilityFailure)
         );
@@ -1693,7 +2903,7 @@ mod tests {
 
         let installed = open_existing_file(&path)?;
         let mut wrong_identity = expected_identity;
-        wrong_identity.file_index ^= 1;
+        wrong_identity.file_id[15] ^= 1;
         assert_eq!(
             verify_installed_readback(
                 &installed,
@@ -1701,7 +2911,7 @@ mod tests {
                 root_identity.volume_serial,
                 expected,
                 sha256(expected),
-                &descriptor.stable_user_sid,
+                &descriptor,
             ),
             Err(StoreError::UnsafePath)
         );

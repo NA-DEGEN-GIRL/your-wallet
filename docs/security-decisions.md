@@ -110,19 +110,53 @@ root handle while the child retains its own root handle. These immediate peeks o
 persistent open streams prove neither the absence of a future delayed suffix nor
 EOF. Neither side exposes generic runtime I/O or signing authority.
 
-The remaining limits are immediate. There is no Key Agent generation-file
-adapter or reviewed file-level dual-principal DACL; the public
-`WindowsGenerationStore` remains stable-`TokenUser`-only. Existing production
-profiles still lack durable installer provenance and recovery, and the
-`TokenUser` ACE leaves other same-user processes able to access the root.
-Ancestor path validation is not atomic and assumes no concurrent same-user
-mutation. Kernel tests reuse the persistent test profile with a CSPRNG-named test
-leaf; they are not a production fresh-fixed-profile/root E2E. Protected settings,
-authenticated Broker/supervisor/process topology, signed immutable artifacts and
-DLL/dependency E2E, and release activation remain **STOP-SHIP**;
-`COMPILED_RELEASE_POLICY` is `None`. The central AppContainer profile API rejects
-thread impersonation before its process-wide non-reentrant gate; same-thread
-reentry and mutex poison also fail closed.
+The narrow generation-file boundary is now implemented without changing the
+public facade. Consuming the child-held root mints one private, unconstructible
+set of `Vault`, `NonceLedger`, `SignedCandidateJournal`, and `LocalSettings`
+bindings; `WindowsBackend::open_key_agent` accepts only one such binding and
+derives its namespace, class, bound, root, stable-user SID, and exact fixed
+profile SID internally. No caller path/principal/class selector or frontend
+reference enters this call graph. Public `WindowsGenerationStore` remains
+stable-`TokenUser`-only.
+
+Each Key Agent lock, slot, manifest, and temporary file must read back with the
+stable `TokenUser` owner, a protected DACL containing exactly two explicit allow
+ACEs in canonical order, and exactly one inherited Low/`NW` mandatory-label ACE
+whose only flag is `INHERITED_ACE` (`ID`). The user mask is
+`FILE_ALL_ACCESS` (`0x001f01ff`); the exact Key Agent profile mask is
+`FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE` (`0x0013019f`). Broad,
+frontend, wrong, extra, reordered, deny, or inherited-DACL principals/ACEs and
+mask or label drift fail closed. Each path operation is bookended by
+thread-impersonation and full held/reopened-root `FILE_ID_INFO` revalidation;
+files must be non-reparse, single-link, and on the held root volume. Replacement
+requires the target identity/absence baseline to remain unchanged and verifies
+the installed bytes, digest, full identity, and security afterward. The backend
+security-context hook also bookends every untrusted fault callback, including
+the two callbacks around rollback-anchor advancement.
+
+The integrated `cfg(test)` zero-capability LPAC path exercises all four roles
+through generation-one commit/load and generation-two close/reopen/commit/load.
+For every role it verifies seven physical file names. On each name,
+`WRITE_DAC`, `WRITE_OWNER`, and `FILE_EXECUTE` must fail with `ACCESS_DENIED`,
+while `ACCESS_SYSTEM_SECURITY` must fail with `PRIVILEGE_NOT_HELD`. The root
+matrix separately requires an actual `DELETE` open to hit the retained handle's
+`SHARING_VIOLATION` plus a denied `AccessCheck`; `FILE_DELETE_CHILD`,
+`WRITE_DAC`, and `WRITE_OWNER` return `ACCESS_DENIED`, and
+`ACCESS_SYSTEM_SECURITY` returns `PRIVILEGE_NOT_HELD`. This test uses the persistent test profile,
+CSPRNG leaf, in-memory anchors, and synthetic keys/payloads; it is not a
+production fresh-fixed-profile/root E2E or release authority.
+
+The remaining limits are immediate. Existing production profiles still lack
+durable installer provenance/adoption/recovery; the root `TokenUser` ACE leaves
+other same-user processes able to access it, and ancestor path validation is
+not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
+protected settings and a live lease, authenticated Broker/supervisor/process
+topology and single-instance enforcement, signed immutable artifacts and
+DLL/dependency E2E, and release activation remain **STOP-SHIP**. Persistent
+startup streams prove neither a future delayed suffix nor EOF, and no generic
+runtime/signing IPC exists. `COMPILED_RELEASE_POLICY` is `None`. The central
+AppContainer profile API rejects thread impersonation before its process-wide
+non-reentrant gate; same-thread reentry and mutex poison also fail closed.
 
 The activation still supplies zero capabilities plus the ALL APPLICATION
 PACKAGES opt-out in its exact four-entry process-creation attribute list. While
@@ -217,12 +251,15 @@ Before any real mainnet value is used, the Windows build must prove:
    directory identity or signed-artifact E2E evidence. The fresh fixed-profile/
    held-root proof, four creation attributes, suspended-token proof, and private
    request-before-resume storage transcript commitment now bind the kernel-test
-   child to its exact CSPRNG test root. They do not adopt an existing production
-   profile, provide durable installer provenance/recovery, enforce the
-   profile-SID DACL on generation files, connect protected settings, authenticate the
-   Broker/supervisor/process topology, establish Native Host provenance or a
-   signed immutable installation, or prove exact loaded DLL/dependency identity.
-   The pinned libtest preamble and optional System32 `conhost.exe` are test-only.
+   child to its exact CSPRNG test root. The same integrated `cfg(test)` path now
+   exercises the four fixed private generation stores and their exact
+   dual-principal file policy. These proofs do not adopt an existing production
+   profile, provide durable installer provenance/adoption/recovery, provision a
+   production rollback anchor or storage/AEAD keys, connect protected settings
+   and its live lease, authenticate the Broker/supervisor/process topology or
+   single-instance, establish Native Host provenance or a signed immutable
+   installation, or prove exact loaded DLL/dependency identity. The pinned
+   libtest preamble and optional System32 `conhost.exe` are test-only.
    `COMPILED_RELEASE_POLICY` remains `None`; these local proofs are neither a
    production fresh-root E2E nor release activation proof.
 6. Production provisioning and rotation for the implemented encrypted
@@ -237,10 +274,11 @@ Before any real mainnet value is used, the Windows build must prove:
    enumeration through the real helper entry point.
 9. Production wiring for the implemented sealed Key Agent settings lifecycle.
    The platform store now reserves a dedicated `LocalSettings` record class,
-   but the Key Agent deliberately has no production adapter or trusted ceremony
-   implementation. Release still requires independent settings AEAD key custody,
-   exact installation/store/class identity, exclusive process-owner generation,
-   and a release-approved non-rollbackable high-water anchor. The model commits
+   and the private fixed-role adapter can open that class, but no production
+   composition or trusted ceremony consumes it. Release still requires
+   independent settings AEAD key custody, exact installation/store/class
+   identity, exclusive process-owner generation, and a release-approved
+   non-rollbackable high-water anchor. The model commits
    enrollment and old-to-new rotation as pending, exposes neither cue until an
    exact trusted-surface confirmation commits `Ready`, and freshly reloads the
    authenticated record before issuing and consuming each one-shot approval
