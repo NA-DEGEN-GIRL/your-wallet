@@ -19,6 +19,7 @@ use thiserror::Error;
 use crate::{
     attestation::ReleaseAttestation,
     helper::VerifiedHelper,
+    key_agent_lpac::PreparedKeyAgentProvisioning,
     key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute},
     pipe::PrivateKeyAgentPipes,
 };
@@ -350,6 +351,7 @@ where
 pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
     fresh_thread: FreshKeyAgentDebugThread,
     preflighted: PreflightKeyAgentArtifact,
+    provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
     root_job: &KeyAgentRootJob,
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
@@ -361,6 +363,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
         fresh_thread,
         artifact,
         artifact_identity,
+        provisioning,
         pipes,
         root_job,
         root_job_attribute,
@@ -368,10 +371,14 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
     )
 }
 
+// Keeping each lifetime-bound launch authority explicit makes mismatched Job,
+// pipe, provisioning, and deadline inputs visible at this one testable leaf.
+#[allow(clippy::too_many_arguments)]
 fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     _fresh_thread: FreshKeyAgentDebugThread,
     artifact: VerifiedHelper,
     artifact_identity: ExactFileObjectIdentity,
+    provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
     root_job: &KeyAgentRootJob,
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
@@ -380,6 +387,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     verify_empty_root_job(root_job)?;
     let mut process = sys::SuspendedDebuggee::create(
         &artifact,
+        provisioning,
         pipes,
         root_job,
         root_job_attribute,
@@ -495,7 +503,9 @@ mod sys {
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
-    use crate::key_agent_lpac::{PreparedKeyAgentLpac, VerifiedKeyAgentLpac};
+    use crate::key_agent_lpac::{
+        PreparedKeyAgentLpac, PreparedKeyAgentProvisioning, VerifiedKeyAgentLpac,
+    };
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
     use crate::pipe::{PreparedKeyAgentInheritance, PrivateKeyAgentPipes};
     use crate::restricted_process_context::RestrictedProcessContext;
@@ -641,14 +651,19 @@ mod sys {
 
     fn prepare_key_agent_process(
         artifact: &VerifiedHelper,
+        provisioning: &PreparedKeyAgentProvisioning,
     ) -> Result<PreparedKeyAgentProcess, KeyAgentActivationError> {
         #[cfg(test)]
         let context = RestrictedProcessContext::prepare_for_kernel_test();
         #[cfg(not(test))]
         let context = RestrictedProcessContext::prepare();
         let context = context.map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
-        let lpac =
-            PreparedKeyAgentLpac::prepare().map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        provisioning
+            .revalidate()
+            .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let lpac = provisioning
+            .prepare_lpac()
+            .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
         let environment = lpac
             .environment_with_local_app_data(context.environment())
             .map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
@@ -750,6 +765,7 @@ mod sys {
     impl SuspendedDebuggee {
         pub(super) fn create(
             artifact: &VerifiedHelper,
+            provisioning: &PreparedKeyAgentProvisioning,
             pipes: &PrivateKeyAgentPipes,
             root_job: &KeyAgentRootJob,
             root_job_attribute: &KeyAgentRootJobAttribute<'_>,
@@ -757,6 +773,7 @@ mod sys {
         ) -> Result<Self, KeyAgentActivationError> {
             Self::create_inner(
                 artifact,
+                provisioning,
                 pipes,
                 root_job,
                 root_job_attribute,
@@ -768,6 +785,7 @@ mod sys {
         #[cfg(test)]
         pub(super) fn create_with_test_command_line(
             artifact: &VerifiedHelper,
+            provisioning: &PreparedKeyAgentProvisioning,
             pipes: &PrivateKeyAgentPipes,
             root_job: &KeyAgentRootJob,
             root_job_attribute: &KeyAgentRootJobAttribute<'_>,
@@ -776,6 +794,7 @@ mod sys {
         ) -> Result<Self, KeyAgentActivationError> {
             Self::create_inner(
                 artifact,
+                provisioning,
                 pipes,
                 root_job,
                 root_job_attribute,
@@ -786,13 +805,14 @@ mod sys {
 
         fn create_inner(
             artifact: &VerifiedHelper,
+            provisioning: &PreparedKeyAgentProvisioning,
             pipes: &PrivateKeyAgentPipes,
             root_job: &KeyAgentRootJob,
             root_job_attribute: &KeyAgentRootJobAttribute<'_>,
             coordination_deadline: Instant,
             command_line: Option<&mut [u16]>,
         ) -> Result<Self, KeyAgentActivationError> {
-            let prepared_process = prepare_key_agent_process(artifact)?;
+            let prepared_process = prepare_key_agent_process(artifact, provisioning)?;
             let flight = acquire_inheritable_handle_launch(coordination_deadline)
                 .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
             if Instant::now() >= coordination_deadline {
@@ -1349,8 +1369,11 @@ mod sys {
         inheritance: &PreparedKeyAgentInheritance<'_, '_>,
         root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     ) -> Result<usize, KeyAgentActivationError> {
-        let lpac =
-            PreparedKeyAgentLpac::prepare().map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()
+            .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let lpac = provisioning
+            .prepare_lpac()
+            .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
         let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute, &lpac)?;
         Ok(attributes.explicit_handle_count())
     }
@@ -1416,7 +1439,8 @@ mod tests {
     use crate::{
         attestation::ReleaseAttestation, helper::VerifiedHelper,
         inheritable_handle_launch::acquire_inheritable_handle_launch,
-        key_agent_root_job::KeyAgentRootJob, pipe::PrivateKeyAgentPipes,
+        key_agent_lpac::PreparedKeyAgentProvisioning, key_agent_root_job::KeyAgentRootJob,
+        pipe::PrivateKeyAgentPipes,
     };
 
     fn require_send<T: Send>() {}
@@ -1424,6 +1448,11 @@ mod tests {
     fn test_root_job() -> Result<KeyAgentRootJob, KeyAgentActivationError> {
         KeyAgentRootJob::create_for_kernel_test()
             .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+    }
+
+    fn test_provisioning() -> Result<PreparedKeyAgentProvisioning, KeyAgentActivationError> {
+        PreparedKeyAgentProvisioning::prepare_for_kernel_test()
+            .map_err(|_| KeyAgentActivationError::LpacPolicy)
     }
 
     fn activation_deadline() -> Instant {
@@ -1443,6 +1472,7 @@ mod tests {
     {
         let preflighted = preflight_key_agent_activation(attestation, artifact)?;
         run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+            let provisioning = test_provisioning()?;
             let root_job = test_root_job()?;
             let pipes = PrivateKeyAgentPipes::create()
                 .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -1452,6 +1482,7 @@ mod tests {
             let activation = activate_preflighted_key_agent_on_fresh_worker(
                 fresh_thread,
                 preflighted,
+                &provisioning,
                 &pipes,
                 &root_job,
                 &root_job_attribute,
@@ -1679,6 +1710,7 @@ mod tests {
         wrong_identity.file_id[0] ^= 1;
         run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
             move |_fresh_thread| {
+                let provisioning = test_provisioning()?;
                 let root_job = test_root_job()?;
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -1687,6 +1719,7 @@ mod tests {
                     .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
                 let mut process = sys::SuspendedDebuggee::create(
                     &artifact,
+                    &provisioning,
                     &pipes,
                     &root_job,
                     &root_job_attribute,
@@ -1714,6 +1747,7 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
             move |_fresh_thread| {
+                let provisioning = test_provisioning()?;
                 let root_job = test_root_job()?;
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -1722,6 +1756,7 @@ mod tests {
                     .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
                 let mut process = sys::SuspendedDebuggee::create(
                     &artifact,
+                    &provisioning,
                     &pipes,
                     &root_job,
                     &root_job_attribute,
@@ -1787,11 +1822,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let caller_artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let caller_identity = sys::exact_file_identity(caller_artifact.raw_handle())?;
+        let caller_provisioning = test_provisioning()?;
         let caller_root_job = test_root_job()?;
         let caller_pipes = PrivateKeyAgentPipes::create()?;
         let caller_root_job_attribute = caller_root_job.creation_attribute()?;
         let mut caller_debuggee = sys::SuspendedDebuggee::create(
             &caller_artifact,
+            &caller_provisioning,
             &caller_pipes,
             &caller_root_job,
             &caller_root_job_attribute,
@@ -1875,6 +1912,7 @@ mod tests {
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
         run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
             move |fresh_thread| {
+                let provisioning = test_provisioning()?;
                 let assigned_job = test_root_job()?;
                 let checked_job = test_root_job()?;
                 let pipes = PrivateKeyAgentPipes::create()
@@ -1886,6 +1924,7 @@ mod tests {
                     activate_preflighted_key_agent_on_fresh_worker(
                         fresh_thread,
                         preflighted,
+                        &provisioning,
                         &pipes,
                         &checked_job,
                         &mismatched_attribute,
@@ -1918,6 +1957,7 @@ mod tests {
         wrong_identity.file_id[3] ^= 1;
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
         let result = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+            let provisioning = test_provisioning()?;
             let root_job = test_root_job()?;
             let pipes = PrivateKeyAgentPipes::create()
                 .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -1929,6 +1969,7 @@ mod tests {
                 fresh_thread,
                 artifact,
                 wrong_identity,
+                &provisioning,
                 &pipes,
                 &root_job,
                 &root_job_attribute,
@@ -1949,6 +1990,7 @@ mod tests {
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
         let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
             move |_fresh_thread| {
+                let provisioning = test_provisioning()?;
                 let root_job = test_root_job()?;
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -1957,6 +1999,7 @@ mod tests {
                     .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
                 let process = sys::SuspendedDebuggee::create(
                     &artifact,
+                    &provisioning,
                     &pipes,
                     &root_job,
                     &root_job_attribute,
@@ -1997,6 +2040,7 @@ mod tests {
         wrong_identity.file_id[7] ^= 1;
         run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
             move |_fresh_thread| {
+                let provisioning = test_provisioning()?;
                 let root_job = test_root_job()?;
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
@@ -2005,6 +2049,7 @@ mod tests {
                     .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
                 let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
                     &artifact,
+                    &provisioning,
                     &pipes,
                     &root_job,
                     &root_job_attribute,

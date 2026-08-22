@@ -589,10 +589,28 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   인스턴스와 인증된 Native Host↔Broker↔Key Agent 프로세스 topology, signed install,
   Native Host provenance 및 실제 서명 artifact에서의 E2E 증거는 계속 별도 릴리스
   차단 조건입니다.
-- Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개, 2프로세스
-  Windows Job, 고정된 영구 profile `YourWallet.KeyAgent.LPAC.v1`을 한 번의 생성에
-  묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle allowlist, Job, null
-  capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
+- dormant Key Agent 실행 준비 경계는 production에서 고정 AppContainer profile
+  `YourWallet.KeyAgent.LPAC.v1`과 그 `AC` 아래 고정 leaf
+  `YourWallet.KeyAgent.Storage.v1`을 모두 새로 만든 증명만 받습니다. 기존 production
+  profile이나 leaf는 열거나 채택·복구·삭제하지 않고 fail-closed합니다. supervisor가
+  보유하는 증명은 stable current `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만
+  포함하는 protected DACL, inherited Low/`NW` mandatory label, local fixed NTFS와
+  persistent ACL/non-reparse 상태, nonzero volume 및 non-sentinel 128-bit
+  `FILE_ID_INFO`를 검증합니다. directory handle은 delete sharing 없이 유지되며 binding
+  동안 재검증되고 cleanup에서 마지막으로 닫힙니다.
+- 이 증명의 한계는 즉시 적용됩니다. child는 아직 root를 열거나 사용하지 않았고 child
+  identity 또는 protocol transcript도 root에 binding되지 않았습니다. Key Agent용
+  generation-store adapter와 file-level dual-principal policy가 없으며, 공개
+  `WindowsGenerationStore`는 계속 stable-`TokenUser`-only입니다. 기존 production
+  profile의 durable installer provenance/recovery도 없고 `TokenUser` ACE 때문에 다른
+  same-user process가 접근할 수 있습니다. ancestor path 검사는 atomic하지 않으며
+  concurrent same-user mutation이 없다고 가정합니다. kernel test는 persistent test
+  profile과 CSPRNG test leaf를 사용하므로 production fresh fixed E2E가 아닙니다. signed
+  immutable release, 인증된 process topology/startup nonce, resume, release activation은
+  계속 **STOP-SHIP**입니다.
+- 같은 dormant activation은 정확한 실행 파일, 비공개 파이프 3개, 2프로세스 Windows
+  Job과 위 provisioning 증명을 묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle
+  allowlist, Job, null capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
   `ALL_APPLICATION_PACKAGES` opt-out입니다. 첫 pre-user-mode debug 생성 이벤트가 잡힌
   동안 mapped image의 정확한 파일 신원을 먼저 확인하고 명시적 suspend count를 다시
   설치한 뒤, 토큰이 AppContainer이고 profile SID가 정확히 같으며 capability count가
@@ -605,13 +623,11 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   query 오류와 `(false, true)` 이외의 결과는 모두 거부합니다. opt-out만 생략한 정지
   상태 일반 AppContainer가 `(true, true)`를 내는 kernel 음성 대조군도 있으며 두
   대조 프로세스 모두 user mode로 재개하지 않습니다. Key Agent·Approval·Secret Input
-  profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유하며, 같은 스레드
-  재진입이나 poisoned gate는 fail-closed입니다. 이 검증이 성공해야만 debug
-  event를 계속하고 detach할 수 있으며, 프로세스는 이후에도 정지된 채이고 시작하거나
-  재개하는 API가 없습니다.
-- 위 LPAC 구현과 repo-local kernel proof는 릴리스 활성화 증거가 아닙니다. 신뢰된
-  production profile provisioning/ownership, Key Agent 전용 storage ACL, 인증된 Broker
-  startup nonce 교환과 프로세스 topology, 보호 설정 lease 연결은 아직 없습니다.
+  profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유하고, 이 central
+  API는 gate 획득 전에 thread impersonation을 거부합니다. 같은 스레드 재진입이나
+  poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를 계속하고
+  detach할 수 있으며, 프로세스는 이후에도 정지된 채이고 시작하거나 재개하는 API가
+  없습니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
 - 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.

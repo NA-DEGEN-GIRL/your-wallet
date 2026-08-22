@@ -11,6 +11,7 @@ use core::ffi::c_void;
 use core::fmt;
 use core::mem::size_of;
 use core::ptr;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
@@ -24,8 +25,10 @@ use std::{
 };
 
 use thiserror::Error;
+#[cfg(test)]
+use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 #[cfg(test)]
@@ -37,10 +40,10 @@ use windows::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows::Win32::Security::{
-    CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetTokenInformation, IsValidSid,
-    PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_APPCONTAINER_INFORMATION,
-    TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenCapabilities,
-    TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenUser,
+    CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetLengthSid, GetTokenInformation,
+    IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification,
+    TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid,
+    TokenCapabilities, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenUser,
 };
 #[cfg(test)]
 use windows::Win32::Security::{
@@ -66,6 +69,9 @@ use windows::{
 use crate::appcontainer_profile_api::{
     AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
 };
+#[cfg(test)]
+use crate::key_agent_storage::create_unique_key_agent_storage_root_for_test;
+use crate::key_agent_storage::{HeldKeyAgentStorageRoot, create_fixed_key_agent_storage_root};
 
 const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
 const KEY_AGENT_PROFILE_DISPLAY_NAME: &str = "Your Wallet Key Agent";
@@ -82,6 +88,9 @@ pub(crate) enum KeyAgentLpacError {
     /// The exact process-creation attributes could not be installed.
     #[error("Key Agent LPAC creation-attribute policy failed")]
     Attribute,
+    /// Fresh profile-bound storage provisioning or revalidation failed.
+    #[error("Key Agent LPAC storage provisioning policy failed")]
+    Provisioning,
     /// The suspended child token did not match the fixed LPAC policy.
     #[error("Key Agent LPAC token policy failed")]
     Token,
@@ -93,24 +102,156 @@ impl fmt::Debug for KeyAgentLpacError {
     }
 }
 
+/// Supervisor-held proof of one freshly provisioned Key Agent identity and root.
+///
+/// Production construction succeeds only when this call created both the fixed
+/// `AppContainer` profile and the fixed storage leaf. The storage object remains
+/// held without delete sharing for the complete lifetime of this value. This is
+/// intentionally narrower than proof that a child opened or used the root.
+#[must_use = "the Key Agent provisioning proof must remain bound to its activation"]
+pub(crate) struct PreparedKeyAgentProvisioning {
+    profile: PreparedKeyAgentProfile,
+    storage_root: HeldKeyAgentStorageRoot,
+}
+
+impl PreparedKeyAgentProvisioning {
+    /// Creates a new fixed profile and a new fixed storage root exactly once.
+    ///
+    /// A profile that survives a later storage failure is deliberately not
+    /// deleted or adopted. Recovery requires a future trusted installer-bound
+    /// provenance ceremony rather than an ordinary startup repair.
+    pub(crate) fn provision_fresh() -> Result<Self, KeyAgentLpacError> {
+        let profile = PreparedKeyAgentProfile::provision_fresh()?;
+        // SAFETY: the private profile owner retains this exact validated SID for
+        // the complete call. The storage constructor copies it immediately.
+        let storage_root = unsafe {
+            create_fixed_key_agent_storage_root(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+            )
+        }
+        .map_err(|_| KeyAgentLpacError::Provisioning)?;
+        Ok(Self {
+            profile,
+            storage_root,
+        })
+    }
+
+    /// Reuses the fixed persistent profile only for bounded kernel tests and
+    /// creates a CSPRNG-named empty root that is removed non-recursively on drop.
+    #[cfg(test)]
+    pub(crate) fn prepare_for_kernel_test() -> Result<Self, KeyAgentLpacError> {
+        let profile = PreparedKeyAgentProfile::open_or_create()?;
+        // SAFETY: identical to the production ownership argument; the test seam
+        // chooses the leaf internally and retains no borrowed pointer.
+        let storage_root = unsafe {
+            create_unique_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+            )
+        }
+        .map_err(|_| KeyAgentLpacError::Provisioning)?;
+        Ok(Self {
+            profile,
+            storage_root,
+        })
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentLpacError> {
+        self.storage_root
+            .revalidate()
+            .map_err(|_| KeyAgentLpacError::Provisioning)
+    }
+
+    pub(crate) fn prepare_lpac(&self) -> Result<PreparedKeyAgentLpac, KeyAgentLpacError> {
+        self.profile.prepare_lpac()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn storage_root_path_for_test(&self) -> &Path {
+        self.storage_root.path_for_test()
+    }
+}
+
+impl fmt::Debug for PreparedKeyAgentProvisioning {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "PreparedKeyAgentProvisioning([FRESH PROFILE AND HELD STORAGE ROOT; REDACTED])",
+        )
+    }
+}
+
+/// Supervisor-owned preparation of the one fixed Key Agent profile identity.
+///
+/// Production provisioning can construct this value only when the profile was
+/// created by that exact call. Existing-profile adoption remains a separate,
+/// unimplemented installer-evidence boundary. The value owns an aligned copy of
+/// the fixed profile SID and the exact OS-reported local-data folder; neither is
+/// exposed to callers.
+#[must_use = "the prepared Key Agent profile must remain bound to its activation"]
+struct PreparedKeyAgentProfile {
+    profile_sid: OwnedAppContainerSid,
+    appcontainer_local_data: PathBuf,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PreparedKeyAgentProfile {
+    /// Creates the fixed profile and rejects an already-existing profile.
+    ///
+    /// This is intentionally not a normal startup operation. A future trusted
+    /// installer/supervisor ceremony must call it once and preserve durable
+    /// provenance before any later process may adopt the persistent profile.
+    fn provision_fresh() -> Result<Self, KeyAgentLpacError> {
+        let profile_sid = OwnedAppContainerSid::create_fresh()?;
+        Self::from_profile_sid(profile_sid)
+    }
+
+    #[cfg(test)]
+    fn open_or_create() -> Result<Self, KeyAgentLpacError> {
+        let profile_sid = OwnedAppContainerSid::open_or_create()?;
+        Self::from_profile_sid(profile_sid)
+    }
+
+    fn from_profile_sid(profile_sid: OwnedAppContainerSid) -> Result<Self, KeyAgentLpacError> {
+        let appcontainer_local_data = validated_appcontainer_folder(&profile_sid)?;
+        Ok(Self {
+            profile_sid,
+            appcontainer_local_data,
+            _not_sync: PhantomData,
+        })
+    }
+
+    fn prepare_lpac(&self) -> Result<PreparedKeyAgentLpac, KeyAgentLpacError> {
+        PreparedKeyAgentLpac::from_profile(self)
+    }
+}
+
+impl fmt::Debug for PreparedKeyAgentProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedKeyAgentProfile([FIXED PROFILE; REDACTED])")
+    }
+}
+
 /// Opaque ownership of the fixed Key Agent profile SID and stable attribute
 /// values required by one process-creation attempt.
 ///
-/// This value is deliberately non-cloneable and thread-affine. Its fixed,
-/// zero-input constructor is the only production profile-selection seam.
+/// This value is deliberately non-cloneable and thread-affine. Production can
+/// derive it only from a held [`PreparedKeyAgentProvisioning`]; the zero-input
+/// constructor below is compiled for tests only.
 pub(crate) struct PreparedKeyAgentLpac {
     // Drop the pointer-bearing value record before freeing its target SID.
     values: Box<KeyAgentLpacAttributeValues>,
     profile_sid: OwnedAppContainerSid,
+    appcontainer_local_data: PathBuf,
     _same_thread: PhantomData<Rc<()>>,
 }
 
 impl PreparedKeyAgentLpac {
-    /// Creates or opens the one compiled Key Agent profile and prepares its
-    /// exact zero-capability LPAC attribute values.
+    /// Test-only compatibility path that creates or opens the fixed profile
+    /// before preparing its exact zero-capability LPAC attribute values.
+    #[cfg(test)]
     pub(crate) fn prepare() -> Result<Self, KeyAgentLpacError> {
-        let profile_sid = OwnedAppContainerSid::open_or_create()?;
-        Ok(Self::from_profile_sid(profile_sid))
+        PreparedKeyAgentProfile::open_or_create()?.prepare_lpac()
     }
 
     /// Extends the trusted two-name process context with the exact OS-reported
@@ -119,7 +260,7 @@ impl PreparedKeyAgentLpac {
         &self,
         base_environment: &[u16],
     ) -> Result<Box<[u16]>, KeyAgentLpacError> {
-        let appcontainer_local_data = appcontainer_folder(&self.profile_sid)?;
+        let appcontainer_local_data = &self.appcontainer_local_data;
         let local_folder_name = appcontainer_local_data
             .file_name()
             .and_then(|name| name.to_str())
@@ -168,21 +309,23 @@ impl PreparedKeyAgentLpac {
         Ok(environment.into_boxed_slice())
     }
 
-    fn from_profile_sid(profile_sid: OwnedAppContainerSid) -> Self {
+    fn from_profile(profile: &PreparedKeyAgentProfile) -> Result<Self, KeyAgentLpacError> {
+        let profile_sid = profile.profile_sid.duplicate()?;
         let values = Box::new(KeyAgentLpacAttributeValues {
             security_capabilities: SECURITY_CAPABILITIES {
-                AppContainerSid: profile_sid.0,
+                AppContainerSid: profile_sid.as_psid(),
                 Capabilities: ptr::null_mut(),
                 CapabilityCount: CAPABILITY_COUNT,
                 Reserved: 0,
             },
             all_application_packages_policy: PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
         });
-        Self {
+        Ok(Self {
             values,
             profile_sid,
+            appcontainer_local_data: profile.appcontainer_local_data.clone(),
             _same_thread: PhantomData,
-        }
+        })
     }
 
     /// Installs exactly `SECURITY_CAPABILITIES` and the LPAC
@@ -221,7 +364,7 @@ impl PreparedKeyAgentLpac {
         self,
         process: BorrowedHandle<'_>,
     ) -> Result<VerifiedKeyAgentLpac, KeyAgentLpacError> {
-        verify_process_token(process, self.profile_sid.0)?;
+        verify_process_token(process, self.profile_sid.as_psid())?;
         Ok(VerifiedKeyAgentLpac { _private: () })
     }
 }
@@ -267,9 +410,9 @@ impl KeyAgentLpacKernelTestFixture {
 
         let directory = create_unique_fixture_directory(&profile_folder)?;
         let executable = directory.join("key-agent-kernel-test.exe");
-        let result = apply_exact_fixture_dacl(&directory, profile_sid.0)
+        let result = apply_exact_fixture_dacl(&directory, profile_sid.as_psid())
             .and_then(|()| copy_current_test_image(&executable))
-            .and_then(|()| apply_exact_fixture_dacl(&executable, profile_sid.0));
+            .and_then(|()| apply_exact_fixture_dacl(&executable, profile_sid.as_psid()));
         if let Err(error) = result {
             let _ = std::fs::remove_file(&executable);
             let _ = std::fs::remove_dir(&directory);
@@ -308,9 +451,38 @@ struct KeyAgentLpacAttributeValues {
     all_application_packages_policy: u32,
 }
 
-struct OwnedAppContainerSid(PSID);
+struct OwnedAppContainerSid {
+    words: Box<[usize]>,
+    byte_len: usize,
+}
 
 impl OwnedAppContainerSid {
+    fn create_fresh() -> Result<Self, KeyAgentLpacError> {
+        let name = wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?;
+        let display_name = wide_nul_str(KEY_AGENT_PROFILE_DISPLAY_NAME)?;
+        let description = wide_nul_str(KEY_AGENT_PROFILE_DESCRIPTION)?;
+        let profile_api =
+            acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
+
+        // SAFETY: all strings are NUL terminated and there are deliberately no
+        // capability SIDs. Only a newly-created profile may mint this proof;
+        // ERROR_ALREADY_EXISTS and every other failure remain fail-closed.
+        let created_sid = unsafe {
+            CreateAppContainerProfile(
+                PCWSTR(name.as_ptr()),
+                PCWSTR(display_name.as_ptr()),
+                PCWSTR(description.as_ptr()),
+                None,
+            )
+        }
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+        let created = Self::from_profile_api(created_sid)?;
+        let derived = Self::derive_under_guard(&profile_api, &name)?;
+        require_created_sid_matches_derived(&created, &derived)?;
+        Ok(derived)
+    }
+
+    #[cfg(test)]
     fn open_or_create() -> Result<Self, KeyAgentLpacError> {
         let name = wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?;
         let display_name = wide_nul_str(KEY_AGENT_PROFILE_DISPLAY_NAME)?;
@@ -371,17 +543,73 @@ impl OwnedAppContainerSid {
             }
             return Err(KeyAgentLpacError::Profile);
         }
-        Ok(Self(sid))
+        let copied = Self::copy_from(sid);
+        // SAFETY: every valid non-null result from an AppContainer profile API
+        // is released exactly once after its bytes have been copied.
+        unsafe {
+            let _ = FreeSid(sid);
+        }
+        copied
+    }
+
+    fn copy_from(sid: PSID) -> Result<Self, KeyAgentLpacError> {
+        // SAFETY: callers supply a valid live SID returned by a profile API or
+        // retained in another owned aligned SID buffer.
+        if sid.is_invalid() || !unsafe { IsValidSid(sid) }.as_bool() {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        // SAFETY: validation accepted the complete SID before its declared
+        // length is queried.
+        let byte_len = usize::try_from(unsafe { GetLengthSid(sid) })
+            .map_err(|_| KeyAgentLpacError::Profile)?;
+        if !(8..=256).contains(&byte_len) {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        let word_bytes = size_of::<usize>();
+        let word_count = byte_len
+            .checked_add(word_bytes - 1)
+            .and_then(|rounded| rounded.checked_div(word_bytes))
+            .ok_or(KeyAgentLpacError::Profile)?;
+        let mut words = vec![0_usize; word_count].into_boxed_slice();
+        // SAFETY: the source contains the validated SID's complete reported
+        // byte length and the aligned destination allocation is at least that
+        // large. The allocations do not overlap.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                sid.0.cast::<u8>(),
+                words.as_mut_ptr().cast::<u8>(),
+                byte_len,
+            );
+        }
+        let owned = Self { words, byte_len };
+        // SAFETY: the owned aligned buffer contains the exact copied SID bytes.
+        if !unsafe { IsValidSid(owned.as_psid()) }.as_bool() {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        // SAFETY: IsValidSid just accepted the complete owned aligned buffer.
+        let copied_byte_len = usize::try_from(unsafe { GetLengthSid(owned.as_psid()) })
+            .map_err(|_| KeyAgentLpacError::Profile)?;
+        if copied_byte_len != owned.byte_len {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        Ok(owned)
+    }
+
+    fn duplicate(&self) -> Result<Self, KeyAgentLpacError> {
+        Self::copy_from(self.as_psid())
+    }
+
+    fn as_psid(&self) -> PSID {
+        PSID(self.words.as_ptr().cast_mut().cast::<c_void>())
     }
 }
 
 impl Drop for OwnedAppContainerSid {
     fn drop(&mut self) {
-        // SAFETY: this wrapper exclusively owns one SID returned by an
-        // AppContainer profile API. Dropping it does not delete the profile.
-        unsafe {
-            let _ = FreeSid(self.0);
+        for word in &mut self.words {
+            *word = 0;
         }
+        self.byte_len = 0;
     }
 }
 
@@ -396,7 +624,8 @@ fn require_created_sid_matches_derived(
     derived: &OwnedAppContainerSid,
 ) -> Result<(), KeyAgentLpacError> {
     // SAFETY: both owners contain valid live profile SIDs.
-    unsafe { EqualSid(created.0, derived.0) }.map_err(|_| KeyAgentLpacError::Profile)
+    unsafe { EqualSid(created.as_psid(), derived.as_psid()) }
+        .map_err(|_| KeyAgentLpacError::Profile)
 }
 
 struct OwnedToken(HANDLE);
@@ -732,7 +961,7 @@ fn invalid_handle(handle: HANDLE) -> bool {
 }
 
 fn appcontainer_folder(profile_sid: &OwnedAppContainerSid) -> Result<PathBuf, KeyAgentLpacError> {
-    let sid_text = wide_nul_str(&sid_string(profile_sid.0)?)?;
+    let sid_text = wide_nul_str(&sid_string(profile_sid.as_psid())?)?;
     let _profile_api =
         acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
     // SAFETY: the converted SID string is live and NUL terminated.
@@ -748,6 +977,38 @@ fn appcontainer_folder(profile_sid: &OwnedAppContainerSid) -> Result<PathBuf, Ke
     // SAFETY: GetAppContainerFolderPath allocates with CoTaskMemAlloc.
     unsafe { CoTaskMemFree(Some(folder.0.cast::<c_void>())) };
     path
+}
+
+fn validated_appcontainer_folder(
+    profile_sid: &OwnedAppContainerSid,
+) -> Result<PathBuf, KeyAgentLpacError> {
+    let appcontainer_local_data = appcontainer_folder(profile_sid)?;
+    let local_folder_name = appcontainer_local_data
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let profile_folder = appcontainer_local_data
+        .parent()
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let profile_name = profile_folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let packages = profile_folder.parent().ok_or(KeyAgentLpacError::Profile)?;
+    let packages_name = packages
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let packages_parent = packages.parent().ok_or(KeyAgentLpacError::Profile)?;
+    if !local_folder_name.eq_ignore_ascii_case("AC")
+        || !profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)
+        || !packages_name.eq_ignore_ascii_case("Packages")
+        || !appcontainer_local_data.is_absolute()
+        || !packages_parent.is_absolute()
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    Ok(appcontainer_local_data)
 }
 
 fn sid_string(sid: PSID) -> Result<String, KeyAgentLpacError> {
@@ -920,8 +1181,9 @@ mod tests {
     use super::{
         AppContainerMembershipEvidence, CAPABILITY_COUNT, KEY_AGENT_PROFILE_V1_NAME,
         KeyAgentLpacError, KeyAgentLpacKernelTestFixture, OwnedAppContainerSid, OwnedToken,
-        PreparedKeyAgentLpac, TokenDword, TokenPolicyEvidence, VerifiedKeyAgentLpac,
-        appcontainer_folder, appcontainer_membership_evidence, require_created_sid_matches_derived,
+        PreparedKeyAgentLpac, PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword,
+        TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
+        appcontainer_membership_evidence, require_created_sid_matches_derived,
         validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
@@ -940,6 +1202,12 @@ mod tests {
     }
     impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
     impl<T: Copy> AmbiguousIfCopy<u8> for T {}
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
 
     struct TestAttributeList {
         pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
@@ -1142,7 +1410,8 @@ mod tests {
     #[test]
     fn prepared_policy_is_fixed_zero_capability_lpac() -> Result<(), KeyAgentLpacError> {
         let sid = OwnedAppContainerSid::derive(&wide_nul_str(KEY_AGENT_PROFILE_V1_NAME)?)?;
-        let prepared = PreparedKeyAgentLpac::from_profile_sid(sid);
+        let profile = PreparedKeyAgentProfile::from_profile_sid(sid)?;
+        let prepared = profile.prepare_lpac()?;
         assert_eq!(KEY_AGENT_PROFILE_V1_NAME, "YourWallet.KeyAgent.LPAC.v1");
         assert_eq!(prepared.values.security_capabilities.CapabilityCount, 0);
         assert!(prepared.values.security_capabilities.Capabilities.is_null());
@@ -1156,7 +1425,7 @@ mod tests {
             unsafe {
                 EqualSid(
                     prepared.values.security_capabilities.AppContainerSid,
-                    prepared.profile_sid.0,
+                    prepared.profile_sid.as_psid(),
                 )
             }
             .is_ok()
@@ -1410,16 +1679,22 @@ mod tests {
             OwnedAppContainerSid::derive(&wide_nul_str(SECRET_INPUT_PROFILE_V1_NAME)?)?;
 
         // SAFETY: every wrapper owns one valid, live derived SID.
-        assert!(unsafe { EqualSid(key_agent.0, approval.0) }.is_err());
+        assert!(unsafe { EqualSid(key_agent.as_psid(), approval.as_psid()) }.is_err());
         // SAFETY: same ownership and validity argument.
-        assert!(unsafe { EqualSid(key_agent.0, secret_input.0) }.is_err());
+        assert!(unsafe { EqualSid(key_agent.as_psid(), secret_input.as_psid()) }.is_err());
         // SAFETY: the two frontend profiles must also remain distinct.
-        assert!(unsafe { EqualSid(approval.0, secret_input.0) }.is_err());
+        assert!(unsafe { EqualSid(approval.as_psid(), secret_input.as_psid()) }.is_err());
         Ok(())
     }
 
     #[test]
     fn authority_types_are_non_clone_non_copy_and_debug_redacted() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<PreparedKeyAgentProvisioning>();
+        let _ = <PreparedKeyAgentProvisioning as AmbiguousIfClone<_>>::marker;
+        let _ = <PreparedKeyAgentProvisioning as AmbiguousIfCopy<_>>::marker;
+        let _ = <PreparedKeyAgentProvisioning as AmbiguousIfSync<_>>::marker;
         let _ = <PreparedKeyAgentLpac as AmbiguousIfClone<_>>::marker;
         let _ = <PreparedKeyAgentLpac as AmbiguousIfCopy<_>>::marker;
         let _ = <VerifiedKeyAgentLpac as AmbiguousIfClone<_>>::marker;
@@ -1431,5 +1706,21 @@ mod tests {
             format!("{:?}", KeyAgentLpacError::Profile),
             "KeyAgentLpacError([REDACTED])"
         );
+    }
+
+    #[test]
+    fn provisioning_proof_is_revalidated_redacted_and_exactly_cleaned()
+    -> Result<(), KeyAgentLpacError> {
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        assert!(storage_root.is_dir());
+        provisioning.revalidate()?;
+        assert_eq!(
+            format!("{provisioning:?}"),
+            "PreparedKeyAgentProvisioning([FRESH PROFILE AND HELD STORAGE ROOT; REDACTED])"
+        );
+        drop(provisioning);
+        assert!(!storage_root.exists());
+        Ok(())
     }
 }

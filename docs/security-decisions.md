@@ -70,28 +70,47 @@ is not atomic object-identity proof, and does not prove error-mode/priority or
 other Win32 process-state isolation, DLL/dependency identity, or signed-artifact
 execution.
 
-The dormant Key Agent activation now creates or opens only the persistent
-`YourWallet.KeyAgent.LPAC.v1` profile and supplies zero capabilities plus the
-ALL APPLICATION PACKAGES opt-out in its exact four-entry process-creation
-attribute list. While the first pre-user-mode create event remains held, it
-authenticates the mapped image, installs one explicit suspend count, and then
-verifies the exact primary token before continuation or detach. Accepted tokens
-must report AppContainer, match the fixed profile SID, and have zero
-capabilities. The process token is duplicated at `SecurityIdentification`; two
-`CheckTokenMembershipEx` checks over its valid `TokenUser` SID must produce
-exactly false with `CTMF_INCLUDE_APPCONTAINER` and true only after
-`CTMF_INCLUDE_LPAC` is added. A supported `TokenIsLessPrivilegedAppContainer`
-query must return an exact DWORD 1. Only `ERROR_INVALID_PARAMETER` for that one
-class omits the direct DWORD check; the exact membership differential remains
-mandatory and every other error fails closed. A suspended ordinary-AppContainer
-control that omits only the AAP opt-out must produce `(true, true)`, and neither
-control is resumed into user mode. The detached capability still has no resume
-API.
-Key Agent and frontend profile APIs share one process-wide non-reentrant gate;
-same-thread reentry and mutex poison fail closed before any native profile call.
-This is a repo-local construction and kernel proof, not trusted production
-profile ownership/provisioning, Key Agent storage authorization, signed-install,
-Broker-topology, startup-handshake, or release-activation evidence.
+The dormant Key Agent production provisioning seam can only fresh-create the
+fixed `YourWallet.KeyAgent.LPAC.v1` AppContainer profile and the fixed
+`YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC` folder.
+Existing production profiles or roots fail closed and are not opened, adopted,
+repaired, or deleted. The supervisor-held proof requires the stable current
+`TokenUser` SID as owner and an exact protected two-ACE DACL for that SID plus
+the fixed profile SID, the exact inherited Low/`NW` mandatory label, a local
+fixed NTFS non-reparse directory with persistent ACLs, and a nonzero-volume,
+non-sentinel 128-bit `FILE_ID_INFO`. It keeps the directory open without delete
+sharing, revalidates the held identity, volume, and security policy throughout
+binding, and closes that handle last during cleanup.
+
+The limitations are immediate: the child has not opened, used, or been bound or
+transcript-bound to that root. There is no Key Agent generation-store adapter or
+file-level dual-principal policy; the public `WindowsGenerationStore` remains
+stable-`TokenUser`-only. Existing production profiles still lack durable
+installer provenance and recovery, and the `TokenUser` ACE leaves other
+same-user processes able to access the root. Ancestor path validation is not
+atomic and assumes no concurrent same-user mutation. Kernel tests reuse the
+persistent test profile with a CSPRNG-named test leaf; they are not a production
+fresh-fixed-profile/root E2E. The central AppContainer profile API rejects thread
+impersonation before its process-wide non-reentrant gate; same-thread reentry and
+mutex poison also fail closed. Signed immutable release, authenticated process
+topology and startup-nonce exchange, resume, and release activation remain
+**STOP-SHIP**.
+
+The activation still supplies zero capabilities plus the ALL APPLICATION
+PACKAGES opt-out in its exact four-entry process-creation attribute list. While
+the first pre-user-mode create event remains held, it authenticates the mapped
+image, installs one explicit suspend count, and verifies the exact primary token
+before continuation or detach. Accepted tokens must report AppContainer, match
+the fixed profile SID, and have zero capabilities. The process token is
+duplicated at `SecurityIdentification`; two `CheckTokenMembershipEx` checks over
+its valid `TokenUser` SID must produce exactly false with
+`CTMF_INCLUDE_APPCONTAINER` and true only after `CTMF_INCLUDE_LPAC` is added. A
+supported `TokenIsLessPrivilegedAppContainer` query must return an exact DWORD
+1. Only `ERROR_INVALID_PARAMETER` for that one class omits the direct DWORD
+check; the exact membership differential remains mandatory and every other
+error fails closed. A suspended ordinary-AppContainer control that omits only
+the AAP opt-out must produce `(true, true)`, and neither control is resumed into
+user mode. The detached capability still has no resume API.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -155,13 +174,14 @@ Before any real mainnet value is used, the Windows build must prove:
    exact two-name environment and the Key Agent's exact three-name environment,
    including OS-derived `LOCALAPPDATA`, share the same verified System32
    current-directory boundary; that policy remains repo-local and is not atomic
-   directory identity or signed-artifact E2E evidence. The fixed Key Agent
-   profile, four creation attributes, and suspended-token proof likewise do not
-   establish trusted production profile ownership/provisioning, Key Agent-only
-   storage ACLs, an authenticated Broker/startup topology and nonce exchange,
-   Native Host provenance, signed immutable installation, resume, or exact
-   loaded DLL/dependency identity. `COMPILED_RELEASE_POLICY` remains `None`;
-   coordination and these local proofs are not release activation proof.
+   directory identity or signed-artifact E2E evidence. The fresh fixed-profile
+   and held fixed-root proof, four creation attributes, and suspended-token proof
+   do not bind child storage use, adopt an existing production profile, provide
+   durable installer provenance/recovery, authenticate Broker/startup topology
+   and nonce exchange, establish Native Host provenance or signed immutable
+   installation, resume the child, or prove exact loaded DLL/dependency identity.
+   `COMPILED_RELEASE_POLICY` remains `None`; coordination and these local proofs
+   are not release activation proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

@@ -24,6 +24,7 @@ use crate::key_agent_activation::{
     activate_preflighted_key_agent_on_fresh_worker, preflight_key_agent_activation,
     run_on_fresh_key_agent_debug_thread,
 };
+use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
 use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobError};
 use crate::pipe::{KeyAgentRequestWriter, KeyAgentResponseReader, PipeError, PrivateKeyAgentPipes};
 
@@ -58,6 +59,9 @@ pub(crate) enum KeyAgentSupervisorError {
     /// The root Job policy could not be created or revalidated exactly.
     #[error("Key Agent root Job policy is unavailable")]
     RootJobPolicy,
+    /// The fresh fixed profile/storage proof could not be created or revalidated.
+    #[error("Key Agent profile/storage provisioning is unavailable")]
+    Provisioning,
 }
 
 impl From<KeyAgentActivationError> for KeyAgentSupervisorError {
@@ -75,6 +79,12 @@ impl From<PipeError> for KeyAgentSupervisorError {
 impl From<KeyAgentRootJobError> for KeyAgentSupervisorError {
     fn from(_error: KeyAgentRootJobError) -> Self {
         Self::RootJobPolicy
+    }
+}
+
+impl From<KeyAgentLpacError> for KeyAgentSupervisorError {
+    fn from(_error: KeyAgentLpacError) -> Self {
+        Self::Provisioning
     }
 }
 
@@ -219,14 +229,16 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
 /// This capability is crate-private, non-cloneable, and deliberately `!Sync`.
 /// It owns the detached-and-suspended exact-image proof, the two-process
 /// kill-on-close root Job, both unique parent pipe endpoints, and the one-shot
-/// startup lease. The short-lived inheritable child handles and creation
+/// startup lease, and the freshly provisioned profile/storage proof. The
+/// short-lived inheritable child handles and creation
 /// attributes have already been dropped before this value can cross the fresh
 /// worker join.
 ///
 /// Field order is security-significant: dropping this value first aborts the
 /// exact suspended process, then terminates the root Job, then closes the
-/// parent channel endpoints, and finally zeroizes the startup nonce. No raw
-/// handle, pipe name, debugger operation, or resume operation is exposed.
+/// parent channel endpoints, zeroizes the startup nonce, and finally closes the
+/// no-delete-share storage-root handle. No raw handle, path, SID, pipe name,
+/// debugger operation, or resume operation is exposed.
 #[must_use = "dropping the dormant Key Agent capability aborts its suspended process tree"]
 pub(crate) struct BoundDormantKeyAgent {
     activation: HeldKeyAgentActivation,
@@ -235,6 +247,7 @@ pub(crate) struct BoundDormantKeyAgent {
     response_reader: KeyAgentResponseReader,
     startup_lease: SupervisorActivationLease,
     not_sync: PhantomData<Cell<()>>,
+    provisioning: PreparedKeyAgentProvisioning,
 }
 
 impl fmt::Debug for BoundDormantKeyAgent {
@@ -246,8 +259,19 @@ impl fmt::Debug for BoundDormantKeyAgent {
             .field("request_writer", &"[UNIQUE PARENT REQUEST HANDLE]")
             .field("response_reader", &"[UNIQUE PARENT RESPONSE HANDLE]")
             .field("startup_lease", &"[ONE-SHOT NONCE AND MONOTONIC DEADLINE]")
+            .field("provisioning", &"[FRESH PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
+}
+
+/// Performs the one-time fresh profile and fixed storage-root ceremony.
+///
+/// An already-existing profile or root fails closed. This seam deliberately
+/// does not adopt, repair, or delete persistent `AppContainer` state; a future
+/// trusted installer must supply durable provenance for that separate path.
+pub(crate) fn provision_fresh_key_agent_boundary()
+-> Result<PreparedKeyAgentProvisioning, KeyAgentSupervisorError> {
+    PreparedKeyAgentProvisioning::provision_fresh().map_err(Into::into)
 }
 
 /// Preflights and binds one exact Key Agent without executing its user code.
@@ -259,18 +283,23 @@ impl fmt::Debug for BoundDormantKeyAgent {
 /// attributes cannot escape the exact `CreateProcessW` call. The child remains
 /// detached with one proven suspend count when the aggregate returns.
 ///
-/// This function does not configure a Key Agent LPAC and cannot resume or arm
-/// the process. Production remains fail-closed while release evidence is
-/// absent and the Key Agent-only profile/storage policy is STOP-SHIP.
+/// This function configures and proves the fixed zero-capability Key Agent LPAC
+/// plus one fresh supervisor-held storage root, but cannot resume or arm the
+/// process. Production remains fail-closed while signed release evidence,
+/// durable installer-bound existing-profile provenance, and child-side binding
+/// to the proven storage root are absent.
 pub(crate) fn bind_dormant_key_agent(
     attestation: ReleaseAttestation,
     artifact: VerifiedHelper,
+    provisioning: PreparedKeyAgentProvisioning,
 ) -> Result<BoundDormantKeyAgent, KeyAgentSupervisorError> {
     let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+    provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
     run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
         startup_lease.ensure_live()?;
+        provisioning.revalidate()?;
         let root_job = KeyAgentRootJob::create()?;
         let pipes = PrivateKeyAgentPipes::create()?;
         let root_job_attribute = root_job.creation_attribute()?;
@@ -278,6 +307,7 @@ pub(crate) fn bind_dormant_key_agent(
         let activation = activate_preflighted_key_agent_on_fresh_worker(
             fresh_thread,
             preflighted,
+            &provisioning,
             &pipes,
             &root_job,
             &root_job_attribute,
@@ -296,6 +326,7 @@ pub(crate) fn bind_dormant_key_agent(
         }
 
         let (request_writer, response_reader) = pipes.into_parent();
+        provisioning.revalidate()?;
         startup_lease.ensure_live()?;
         Ok(BoundDormantKeyAgent {
             activation,
@@ -304,6 +335,7 @@ pub(crate) fn bind_dormant_key_agent(
             response_reader,
             startup_lease,
             not_sync: PhantomData,
+            provisioning,
         })
     })
 }
@@ -319,18 +351,22 @@ pub(crate) fn bind_dormant_key_agent(
 fn bind_dormant_key_agent_for_kernel_test(
     attestation: ReleaseAttestation,
     artifact: VerifiedHelper,
+    provisioning: PreparedKeyAgentProvisioning,
 ) -> Result<BoundDormantKeyAgent, KeyAgentSupervisorError> {
     let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+    provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
     run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
         startup_lease.ensure_live()?;
+        provisioning.revalidate()?;
         let root_job = KeyAgentRootJob::create_for_kernel_test()?;
         let pipes = PrivateKeyAgentPipes::create()?;
         let root_job_attribute = root_job.creation_attribute()?;
         let activation = activate_preflighted_key_agent_on_fresh_worker(
             fresh_thread,
             preflighted,
+            &provisioning,
             &pipes,
             &root_job,
             &root_job_attribute,
@@ -343,6 +379,7 @@ fn bind_dormant_key_agent_for_kernel_test(
             return Err(KeyAgentSupervisorError::RootJobPolicy);
         }
         let (request_writer, response_reader) = pipes.into_parent();
+        provisioning.revalidate()?;
         startup_lease.ensure_live()?;
         Ok(BoundDormantKeyAgent {
             activation,
@@ -351,6 +388,7 @@ fn bind_dormant_key_agent_for_kernel_test(
             response_reader,
             startup_lease,
             not_sync: PhantomData,
+            provisioning,
         })
     })
 }
@@ -364,6 +402,7 @@ mod tests {
     use crate::attestation::ReleaseAttestation;
     use crate::helper::VerifiedHelper;
     use crate::key_agent_activation::KeyAgentActivationError;
+    use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
     use crate::key_agent_root_job::KeyAgentRootJobError;
     use crate::pipe::{PipeError, key_agent_parent_endpoints_are_noninheritable_for_test};
     use std::time::{Duration, Instant};
@@ -490,6 +529,10 @@ mod tests {
             KeyAgentSupervisorError::from(KeyAgentRootJobError::UnsupportedSupervisorContext),
             KeyAgentSupervisorError::RootJobPolicy
         );
+        assert_eq!(
+            KeyAgentSupervisorError::from(KeyAgentLpacError::Provisioning),
+            KeyAgentSupervisorError::Provisioning
+        );
     }
 
     #[test]
@@ -497,7 +540,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let attestation = attestation_for(&artifact);
-        let bound = bind_dormant_key_agent_for_kernel_test(attestation, artifact)?;
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let bound = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
 
         assert!(bound.activation.is_detached_and_suspended());
         assert!(
@@ -516,11 +561,14 @@ mod tests {
         let creation_time = bound.activation.creation_time();
         let rendered = format!("{bound:?}");
         assert!(rendered.contains("BoundDormantKeyAgent"));
+        assert!(rendered.contains("FRESH PROFILE AND HELD STORAGE ROOT"));
         assert!(!rendered.contains(&process_id.to_string()));
         assert!(!rendered.contains(&creation_time.to_string()));
+        assert!(storage_root.is_dir());
 
         let observation = bound.activation.duplicate_process_observation()?;
         drop(bound);
+        assert!(!storage_root.exists());
         assert_eq!(
             observation.rejected_exit_code()?,
             REJECTED_PROCESS_EXIT_CODE
@@ -533,7 +581,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let attestation = attestation_for(&artifact);
-        let bound = bind_dormant_key_agent_for_kernel_test(attestation, artifact)?;
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let bound = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
         let observation = bound.activation.duplicate_process_observation()?;
 
         let worker = std::thread::spawn(move || {
@@ -541,6 +591,7 @@ mod tests {
             std::panic::resume_unwind(Box::new("intentional dormant aggregate unwind test"));
         });
         assert!(worker.join().is_err());
+        assert!(!storage_root.exists());
         assert_eq!(
             observation.rejected_exit_code()?,
             REJECTED_PROCESS_EXIT_CODE

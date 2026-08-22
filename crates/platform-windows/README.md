@@ -79,31 +79,53 @@ Implemented:
   receives exactly three short-lived inherited stdio handles, one Job-list
   handle, the fixed zero-capability `YourWallet.KeyAgent.LPAC.v1` identity, and
   the ALL APPLICATION PACKAGES opt-out; the short-lived handles are dropped
-  before the worker returns. Key Agent and frontend profile APIs share one
-  process-wide non-reentrant, poison-fail-closed coordinator. The Key Agent's
-  explicit three-name Unicode environment sets `LOCALAPPDATA` directly to the
-  exact profile `AC` path returned by `GetAppContainerFolderPath`, alongside
-  OS-derived `SystemRoot` and `WINDIR`. The Restricted helpers prepare this
-  context before parent-proof, persistent profile, or Job work; the Key Agent
-  prepares it before acquiring the inheritable-handle flight. Both recheck that
-  the creator thread is not impersonating immediately before `CreateProcessW`.
-  This context proof is
-  limited to DOS-path shape, Windows-root/System32 layout, directory/reparse
-  state, path-replacement rights on every ancestor, and content-creation rights
-  on the Windows root and System32 under the current primary token. It retains
-  no directory handle and is not an atomic object-identity proof; it also makes
-  no claim about error mode, priority, every other inherited Win32 process
-  setting, or DLL/dependency identity. The resulting crate-private aggregate
-  uniquely owns the detached suspended
-  process, root Job, two parent endpoints, and internally timed one-shot startup
-  lease. It is non-clone, `!Sync`, exposes no raw handle, has no resume API, and drop
-  synchronously terminates the exact process tree. The suspended token must
-  prove the fixed SID, zero capabilities, and the exact `CheckTokenMembershipEx`
+  before the worker returns. The provisioning capability consumed by this seam
+  can be minted in production only by fresh-creating both the fixed profile and
+  the fixed `YourWallet.KeyAgent.Storage.v1` leaf beneath its validated `AC`
+  folder. An existing production profile or leaf fails closed and is not
+  opened, adopted, repaired, or deleted. The supervisor-held proof validates a
+  stable current-`TokenUser` owner and exact protected DACL for that SID plus the
+  fixed profile SID, the exact inherited Low/`NW` mandatory label, fixed local
+  NTFS with persistent ACLs, non-reparse state, and a nonzero-volume,
+  non-sentinel 128-bit `FILE_ID_INFO`. Its directory handle omits delete sharing,
+  is revalidated before and throughout binding, and remains held until cleanup
+  closes it last.
+
+  These limitations are immediate: the child has not opened or used the root,
+  and neither child identity nor a protocol transcript is bound to it. There is
+  no Key Agent generation-store adapter or file-level dual-principal policy; the
+  public `WindowsGenerationStore` remains stable-`TokenUser`-only. Existing
+  production profiles lack durable installer provenance/recovery, and the
+  `TokenUser` ACE permits other same-user processes. Ancestor path validation is
+  not atomic and assumes no concurrent same-user mutation. Kernel tests reuse
+  the persistent test profile with a CSPRNG-named test leaf, not the production
+  fresh fixed profile/root E2E. Signed immutable release, authenticated process
+  topology and startup nonce, resume, and release activation remain
+  **STOP-SHIP**.
+
+  Key Agent and frontend profile APIs share one process-wide non-reentrant,
+  poison-fail-closed coordinator; the central profile API rejects thread
+  impersonation before acquiring it. The Key Agent's explicit three-name
+  Unicode environment sets `LOCALAPPDATA` directly to the exact profile `AC`
+  path returned by `GetAppContainerFolderPath`, alongside OS-derived
+  `SystemRoot` and `WINDIR`. The Restricted helpers prepare this context before
+  parent-proof, persistent profile, or Job work; the Key Agent prepares it
+  before acquiring the inheritable-handle flight. Both recheck that the creator
+  thread is not impersonating immediately before `CreateProcessW`. This context
+  proof is limited to DOS-path shape, Windows-root/System32 layout,
+  directory/reparse state, path-replacement rights on every ancestor, and
+  content-creation rights on the Windows root and System32 under the current
+  primary token. It retains no directory handle and is not an atomic
+  object-identity proof; it also makes no claim about error mode, priority,
+  every other inherited Win32 process setting, or DLL/dependency identity. The
+  resulting crate-private aggregate uniquely owns the detached suspended
+  process, root Job, two parent endpoints, internally timed one-shot startup
+  lease, and fresh provisioning proof. It is non-clone, `!Sync`, exposes no raw
+  handle, has no resume API, and drop synchronously terminates the exact process
+  tree before closing the held storage root. The suspended token must prove the
+  fixed SID, zero capabilities, and the exact `CheckTokenMembershipEx`
   differential: `CTMF_INCLUDE_APPCONTAINER` denies while adding
-  `CTMF_INCLUDE_LPAC` allows, before detach. Key
-  Agent-only storage ACL, authenticated Broker/startup exchange, trusted
-  production profile ownership, and protected-settings lease remain unbound.
-  The module cannot arm a release
+  `CTMF_INCLUDE_LPAC` allows, before detach. The module cannot arm a release
   while `COMPILED_RELEASE_POLICY` is `None`;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
@@ -270,22 +292,24 @@ Stop-ship before any signing-capable release:
    secret-zeroization behavior. Headless codec and pipe tests do not substitute
    for this signed-artifact release evidence.
 10. Extend the dormant aggregate (which now owns the exact private startup pipes,
-    root Job, suspended image/LPAC proof, and one-shot startup lease) with the
-    authenticated Broker protocol, trusted production ownership of the fixed
-    Key Agent profile, exact nonce exchange, and protected-settings lease. Repeat caller-event
-    contamination, concurrent activation, worker panic/error cleanup, timeout,
-    image mismatch, post-return supervisor Job assignment, and pre-user-mode
-    sentinel tests against the exact signed `key-agent.exe`; headless
-    test-harness evidence is necessary but not sufficient for release
+    root Job, suspended image/LPAC proof, one-shot startup lease, and held fixed
+    root) with the authenticated Broker protocol, exact startup-nonce exchange,
+    child identity/transcript binding to that root, and protected-settings lease.
+    Repeat caller-event contamination, concurrent activation, worker panic/error
+    cleanup, timeout, image mismatch, post-return supervisor Job assignment, and
+    pre-user-mode sentinel tests against the exact signed `key-agent.exe`;
+    headless test-harness evidence is necessary but not sufficient for release
     attestation.
-11. Fixed zero-capability Key Agent LPAC creation and suspended-token verification
-    are implemented, but keep production profile ownership/provisioning and
-    storage authorization **STOP-SHIP** until an installer/supervisor boundary
-    owns the fixed profile, its SID receives narrowly scoped storage access
-    without granting either frontend profile access, and helper
-    trust/profile setup no longer depends on file, certificate-store, registry,
-    or profile APIs unavailable inside that LPAC. The current TokenUser-only
-    persistent-storage DACL does not authorize an AppContainer token. Do not add
+11. Fresh-only fixed-profile/root creation and fixed zero-capability LPAC token
+    verification are implemented, but keep storage authorization **STOP-SHIP**
+    until durable installer provenance/recovery covers existing production
+    profiles, the child opens and authenticates the supervisor-held root, and a
+    generation-store adapter enforces the reviewed profile-SID policy on every
+    file without granting either frontend profile access. The public
+    `WindowsGenerationStore` remains `TokenUser`-only and does not authorize an
+    AppContainer token; the new directory proof alone does not change that.
+    Helper trust/profile setup must not depend on file, certificate-store,
+    registry, or profile APIs unavailable inside the LPAC. Do not add
     `registryRead`, reuse either frontend profile for the Key Agent, grant either
     frontend profile vault/settings access, or activate the dormant Key Agent to
     work around these blockers.
@@ -297,11 +321,14 @@ zero capability SIDs omit every network capability, and
 `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT` selects LPAC rather than the
 broader regular-AppContainer resource set.
 
-The storage DACL intentionally contains no SYSTEM or Administrators ACE. An
-administrator or SYSTEM process may still use operating-system privileges to
-take ownership or perform backup operations; that privileged compromise is
-outside this DACL's guarantee. The policy does not claim to defend stored data
-from malware already executing as the same user.
+Neither the public generation-store DACL nor the new fixed-root DACL contains a
+SYSTEM or Administrators ACE. The former has only the stable `TokenUser` ACE;
+the latter adds the fixed profile SID only at the directory boundary, pending a
+file-level adapter and policy. An administrator or SYSTEM process may still use
+operating-system privileges to take ownership or perform backup operations;
+that privileged compromise is outside either DACL's guarantee. The `TokenUser`
+ACE also means the policy does not defend stored data from malware already
+executing as the same user.
 
 Until items 1, 2, 3, 4, and 5 have artifact-bound evidence,
 `ReleaseAttestation::signing_enabled` remains false and

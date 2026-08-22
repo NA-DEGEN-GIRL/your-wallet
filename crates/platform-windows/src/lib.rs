@@ -113,9 +113,14 @@ mod key_agent_child_bootstrap;
 mod key_agent_lpac;
 #[cfg(windows)]
 mod key_agent_root_job;
+// Fresh provisioning of the fixed profile's storage root is a private,
+// supervisor-held proof. It does not yet claim that the suspended child opened
+// or used that object; startup handle/transcript binding remains separate.
+#[cfg(windows)]
+mod key_agent_storage;
 // The startup lease, private parent channel, root Job, and exact-image
 // activation are one dormant aggregate with no resume path. Protected-settings
-// authorization, the Broker protocol, and Key Agent-only storage policy remain
+// authorization, the Broker protocol, and child-side storage binding remain
 // intentionally unbound and release-blocking.
 #[cfg(windows)]
 mod key_agent_supervisor;
