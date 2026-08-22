@@ -71,9 +71,11 @@ use crate::appcontainer_profile_api::{
 };
 #[cfg(test)]
 use crate::key_agent_storage::create_unique_key_agent_storage_root_for_test;
-use crate::key_agent_storage::{HeldKeyAgentStorageRoot, create_fixed_key_agent_storage_root};
+use crate::key_agent_storage::{
+    HeldKeyAgentStorageRoot, KeyAgentStorageRootIdentity, create_fixed_key_agent_storage_root,
+};
 
-const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
+pub(crate) const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
 const KEY_AGENT_PROFILE_DISPLAY_NAME: &str = "Your Wallet Key Agent";
 const KEY_AGENT_PROFILE_DESCRIPTION: &str =
     "Persistent zero-capability LPAC identity for Your Wallet Key Agent";
@@ -167,6 +169,10 @@ impl PreparedKeyAgentProvisioning {
         self.profile.prepare_lpac()
     }
 
+    pub(crate) fn storage_root_identity(&self) -> KeyAgentStorageRootIdentity {
+        self.storage_root.identity()
+    }
+
     #[cfg(test)]
     pub(crate) fn storage_root_path_for_test(&self) -> &Path {
         self.storage_root.path_for_test()
@@ -254,8 +260,9 @@ impl PreparedKeyAgentLpac {
         PreparedKeyAgentProfile::open_or_create()?.prepare_lpac()
     }
 
-    /// Extends the trusted two-name process context with the exact OS-reported
-    /// `AppContainer` `LOCALAPPDATA` folder required by Windows process creation.
+    /// Extends the trusted two-name process context with the OS-derived user
+    /// local-data base that Windows rebases to this exact `AppContainer`'s `AC`
+    /// folder during process creation.
     pub(crate) fn environment_with_local_app_data(
         &self,
         base_environment: &[u16],
@@ -287,7 +294,7 @@ impl PreparedKeyAgentLpac {
         {
             return Err(KeyAgentLpacError::Profile);
         }
-        let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();
+        let local_value: Vec<u16> = packages_parent.as_os_str().encode_wide().collect();
         if local_value.is_empty() || local_value.contains(&0) {
             return Err(KeyAgentLpacError::Profile);
         }
@@ -1162,6 +1169,7 @@ mod tests {
     use core::mem::size_of;
     use core::ptr;
     use std::os::windows::ffi::OsStrExt as _;
+    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1625,11 +1633,13 @@ mod tests {
             .split(|unit| *unit == 0)
             .collect();
         let mut exact_local_app_data: Vec<u16> = "LOCALAPPDATA=".encode_utf16().collect();
-        exact_local_app_data.extend(
-            appcontainer_folder(&prepared.profile_sid)?
-                .as_os_str()
-                .encode_wide(),
-        );
+        let appcontainer_local_data = appcontainer_folder(&prepared.profile_sid)?;
+        let user_local_data = appcontainer_local_data
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or(KeyAgentLpacError::Profile)?;
+        exact_local_app_data.extend(user_local_data.as_os_str().encode_wide());
         let system_root: Vec<u16> = "SystemRoot=[ROOT]".encode_utf16().collect();
         let windir: Vec<u16> = "WINDIR=[ROOT]".encode_utf16().collect();
         assert_eq!(entries.len(), 4);

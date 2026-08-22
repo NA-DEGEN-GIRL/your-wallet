@@ -1,14 +1,13 @@
 //! Key Agent process entrypoint.
 //!
-//! The production inherited channel remains a stop-ship item. On Windows, the
-//! binary nevertheless seals the exact three inherited standard handles before
-//! any other application operation, preventing their accidental propagation to
-//! a later descendant. It then remains fail-closed so no public or accidental
-//! raw-sign interface exists while release evidence is absent.
+//! On Windows, the binary's only application operation seals the exact inherited
+//! standard handles, proves the fixed storage-startup transcript, and then waits
+//! for the supervisor to close its retained request endpoint. It always exits
+//! fail-closed afterward; no public or accidental signing interface exists.
 
 #[cfg(windows)]
 fn main() {
-    let Ok(_sealed_stdio) = platform_windows::seal_inherited_key_agent_stdio() else {
+    let Ok(()) = platform_windows::serve_inherited_key_agent_storage_startup() else {
         std::process::exit(78);
     };
     std::process::exit(78);

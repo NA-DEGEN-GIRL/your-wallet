@@ -3848,6 +3848,11 @@ const keyAgentStorageSource = await text(
   "crates/platform-windows/src/key_agent_storage.rs",
 );
 const keyAgentStorage = withoutBottomTestModule(keyAgentStorageSource);
+const keyAgentStartupSource = await text(
+  "crates/platform-windows/src/key_agent_startup.rs",
+);
+const keyAgentStartup = withoutBottomTestModule(keyAgentStartupSource);
+const keyAgentStartupRelease = withoutCfgTestItems(keyAgentStartup);
 const appContainerProfileApiSource = await text(
   "crates/platform-windows/src/appcontainer_profile_api.rs",
 );
@@ -3868,6 +3873,7 @@ const keyAgentRootJobSource = await text(
 );
 const keyAgentPipeSource = await text("crates/platform-windows/src/pipe.rs");
 const keyAgentPipeProduction = withoutBottomTestModule(keyAgentPipeSource);
+const keyAgentPipeRelease = withoutCfgTestItems(keyAgentPipeProduction);
 const keyAgentSupervisorSource = await text(
   "crates/platform-windows/src/key_agent_supervisor.rs",
 );
@@ -3882,6 +3888,10 @@ const keyAgentChildBootstrapSource = await text(
 );
 const keyAgentChildBootstrapProduction = withoutBottomTestModule(
   keyAgentChildBootstrapSource,
+);
+const serveInheritedKeyAgentStorageStartup = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "serve_inherited_key_agent_storage_startup",
 );
 const sealInheritedKeyAgentStdio = rustFunctionBlock(
   keyAgentChildBootstrapProduction,
@@ -3905,7 +3915,7 @@ const keyAgentBootstrapHandleFlags = rustFunctionBlock(
 );
 const sealedKeyAgentStdioDefinition = rustLexicalItemBlock(
   keyAgentChildBootstrapProduction,
-  /(?:^|\n)\s*pub\s+struct\s+SealedKeyAgentStdio\s*\{/u,
+  /(?:^|\n)\s*struct\s+SealedKeyAgentStdio\s*\{/u,
 );
 const platformWindowsProductionFiles = await rustProductionSources(
   "crates/platform-windows/src",
@@ -4346,24 +4356,21 @@ requireInvariant(
 const keyAgentWindowsMainNormalized = normalizeRustFragment(
   rustLexicalCode(keyAgentWindowsMain),
 );
-const keyAgentWindowsSealCalls = rustCallSites(
+const keyAgentWindowsStorageStartupCalls = rustCallSites(
   keyAgentWindowsMain,
-  "seal_inherited_key_agent_stdio",
+  "serve_inherited_key_agent_storage_startup",
 );
 const keyAgentWindowsExitCalls = rustCallSites(keyAgentWindowsMain, "exit");
 requireInvariant(
   keyAgentWindowsMainNormalized ===
-    "#[cfg(windows)] fn main() { let Ok(_sealed_stdio) = platform_windows::seal_inherited_key_agent_stdio() else { std::process::exit(78); }; std::process::exit(78); }" &&
-    keyAgentWindowsSealCalls.length === 1 &&
-    keyAgentWindowsSealCalls[0]?.arguments.length === 0 &&
+    "#[cfg(windows)] fn main() { let Ok(()) = platform_windows::serve_inherited_key_agent_storage_startup() else { std::process::exit(78); }; std::process::exit(78); }" &&
+    keyAgentWindowsStorageStartupCalls.length === 1 &&
+    keyAgentWindowsStorageStartupCalls[0]?.arguments.length === 0 &&
     keyAgentWindowsExitCalls.length === 2 &&
     keyAgentWindowsExitCalls.every(
       (call) => JSON.stringify(call.arguments) === JSON.stringify(["78"]),
-    ) &&
-    !/\b(?:drop|forget)\s*\(\s*_sealed_stdio\s*\)/u.test(
-      rustLexicalCode(keyAgentWindowsMain),
     ),
-  "the Windows Key Agent entrypoint must first seal zero-argument inherited stdio, retain the proof through scope exit, and terminate with exit 78 on both outcomes",
+  "the Windows Key Agent entrypoint must invoke only the zero-argument storage-startup child service and terminate with exit 78 on both outcomes",
 );
 
 const keyAgentBootstrapPublicFunctionNames = [
@@ -4409,13 +4416,16 @@ const sealedKeyAgentStdioTraitImplementations = [
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_child_bootstrap;") &&
     platformWindowsLib.includes(
-      "KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio,",
+      "KeyAgentChildBootstrapError, serve_inherited_key_agent_storage_startup,",
     ) &&
     keyAgentBootstrapExportMembers ===
-      "KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio," &&
+      "KeyAgentChildBootstrapError, serve_inherited_key_agent_storage_startup," &&
     JSON.stringify(keyAgentBootstrapPublicFunctionNames) ===
-      JSON.stringify(["seal_inherited_key_agent_stdio"]) &&
-    /^pub fn seal_inherited_key_agent_stdio\s*\(\s*\)\s*->\s*Result<\s*SealedKeyAgentStdio\s*,\s*KeyAgentChildBootstrapError\s*>\s*\{/u.test(
+      JSON.stringify(["serve_inherited_key_agent_storage_startup"]) &&
+    /^pub fn serve_inherited_key_agent_storage_startup\s*\(\s*\)\s*->\s*Result<\s*\(\s*\)\s*,\s*KeyAgentChildBootstrapError\s*>\s*\{/u.test(
+      rustLexicalCode(serveInheritedKeyAgentStorageStartup),
+    ) &&
+    /^fn seal_inherited_key_agent_stdio\s*\(\s*\)\s*->\s*Result<\s*SealedKeyAgentStdio\s*,\s*KeyAgentChildBootstrapError\s*>\s*\{/u.test(
       rustLexicalCode(sealInheritedKeyAgentStdio),
     ) &&
     JSON.stringify(
@@ -4435,7 +4445,161 @@ requireInvariant(
       )[0]?.arguments,
     ) === JSON.stringify(["[stdin, stdout, stderr]"]) &&
     keyAgentBootstrapApiAliases.length === 0,
-  "the Key Agent child bootstrap must expose only one safe zero-argument sealing API and obtain stdin/stdout/stderr exactly once without API aliases",
+  "the Key Agent child bootstrap must expose only one safe zero-argument storage-startup service while its private seal obtains stdin/stdout/stderr exactly once without API aliases",
+);
+
+const keyAgentStartupRequestFrameDefinition = rustLexicalItemBlock(
+  keyAgentStartupRelease,
+  /(?:^|\n)\s*pub\(crate\)\s+struct\s+KeyAgentStartupRequestFrame\s*\{/u,
+);
+const keyAgentStartupResponseFrameDefinition = rustLexicalItemBlock(
+  keyAgentStartupRelease,
+  /(?:^|\n)\s*pub\(crate\)\s+struct\s+KeyAgentStartupResponseFrame\s*\{/u,
+);
+const keyAgentStartupRequestDefinition = rustLexicalItemBlock(
+  keyAgentStartupRelease,
+  /(?:^|\n)\s*pub\(crate\)\s+struct\s+KeyAgentStartupRequest\s*\{/u,
+);
+const keyAgentStartupResponseDefinition = rustLexicalItemBlock(
+  keyAgentStartupRelease,
+  /(?:^|\n)\s*pub\(crate\)\s+struct\s+KeyAgentStartupResponse\s*\{/u,
+);
+const keyAgentStartupRequestEncode = rustFunctionBlock(
+  keyAgentStartupRelease,
+  "encode",
+);
+const keyAgentStartupRequestDecode = rustFunctionBlock(
+  keyAgentStartupRelease,
+  "decode",
+);
+const keyAgentStartupResponseImpl = rustLexicalItemBlock(
+  keyAgentStartupRelease,
+  /(?:^|\n)\s*impl\s+KeyAgentStartupResponse\s*\{/u,
+);
+const keyAgentStartupResponseEncode = rustFunctionBlock(
+  keyAgentStartupResponseImpl,
+  "encode",
+);
+const keyAgentStartupResponseDecode = rustFunctionBlock(
+  keyAgentStartupResponseImpl,
+  "decode",
+);
+const keyAgentStorageStartupProductionSurface = [
+  keyAgentWindowsMain,
+  keyAgentStartupRelease,
+  keyAgentChildBootstrapProduction,
+  keyAgentStorage,
+  keyAgentSupervisor,
+  keyAgentPipeProduction,
+  keyAgentActivationRelease,
+].join("\n");
+requireInvariant(
+  platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_startup;") &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_startup\b/u.test(
+      rustLexicalCode(platformWindowsLib),
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*\bkey_agent_startup\b/u.test(
+      rustLexicalCode(platformWindowsLib),
+    ) &&
+    keyAgentStartupRelease.includes(
+      "pub(crate) const KEY_AGENT_STARTUP_REQUEST_BYTES: usize = 188;",
+    ) &&
+    keyAgentStartupRelease.includes(
+      "pub(crate) const KEY_AGENT_STARTUP_RESPONSE_BYTES: usize = 88;",
+    ) &&
+    keyAgentStartupRelease.includes('const REQUEST_MAGIC: [u8; 8] = *b"YWKSREQ1";') &&
+    keyAgentStartupRelease.includes('const RESPONSE_MAGIC: [u8; 8] = *b"YWKSRES1";') &&
+    normalizeRustFragment(rustLexicalCode(keyAgentStartupRequestFrameDefinition)) ===
+      "pub(crate) struct KeyAgentStartupRequestFrame { bytes: Zeroizing<[u8; KEY_AGENT_STARTUP_REQUEST_BYTES]>, }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentStartupResponseFrameDefinition)) ===
+      "pub(crate) struct KeyAgentStartupResponseFrame { bytes: Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentStartupRequestDefinition)) ===
+      "pub(crate) struct KeyAgentStartupRequest { nonce: Zeroizing<[u8; NONCE_BYTES]>, expected_process_id: u32, expected_creation_time: u64, storage_root_identity: KeyAgentStorageRootIdentity, storage_leaf: String, }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentStartupResponseDefinition)) ===
+      "pub(crate) struct KeyAgentStartupResponse { echoed_nonce: Zeroizing<[u8; NONCE_BYTES]>, actual_process_id: u32, actual_creation_time: u64, storage_root_identity: KeyAgentStorageRootIdentity, }" &&
+    keyAgentStartupRequestEncode.includes("FrameBuilder::<KEY_AGENT_STARTUP_REQUEST_BYTES>::new()") &&
+    keyAgentStartupRequestEncode.includes(".push(&188_u32.to_be_bytes())") &&
+    keyAgentStartupRequestDecode.includes(
+      "frame.len() != KEY_AGENT_STARTUP_REQUEST_BYTES",
+    ) &&
+    keyAgentStartupRequestDecode.includes(
+      "read_u32(frame, REQUEST_LENGTH_OFFSET) != Some(188)",
+    ) &&
+    keyAgentStartupResponseEncode.includes(
+      "FrameBuilder::<KEY_AGENT_STARTUP_RESPONSE_BYTES>::new()",
+    ) &&
+    keyAgentStartupResponseEncode.includes(".push(&88_u32.to_be_bytes())") &&
+    keyAgentStartupResponseDecode.includes(
+      "frame.len() != KEY_AGENT_STARTUP_RESPONSE_BYTES",
+    ) &&
+    keyAgentStartupResponseDecode.includes(
+      "read_u32(frame, RESPONSE_LENGTH_OFFSET) != Some(88)",
+    ) &&
+    !/\b(?:Path|PathBuf|LOCALAPPDATA|LocalAppData|local_app_data|storage_path|path_hash|path_digest|storage_hash)\b/u.test(
+      rustLexicalCode(keyAgentStartupRelease),
+    ),
+  "the private Key Agent startup codec must retain exact zeroizing 188/88-byte process-and-full-storage-identity frames without serializing a LOCALAPPDATA path or hash",
+);
+requireInvariant(
+  !keyAgentStorageStartupProductionSurface.includes("YWKSDIAG") &&
+    !/\blast_storage\w*\b/iu.test(
+      rustLexicalCode(keyAgentStorageStartupProductionSurface),
+    ),
+  "the Key Agent storage-startup slice must not regain YWKSDIAG or last_storage diagnostic state",
+);
+
+const keyAgentChildStartupOrder = [
+  "let sealed_stdio = seal_inherited_key_agent_stdio()?",
+  "let mut request_frame = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES])",
+  "read_exact_synchronous(sealed_stdio.stdin, &mut request_frame)?",
+  "reject_buffered_key_agent_startup_bytes(stdin)",
+  "KeyAgentStartupRequest::decode(request_frame.as_slice())",
+  "let actual_process_id = current_process_id()?",
+  "let actual_creation_time = current_process_creation_time()?",
+  "open_fixed_key_agent_storage_root_for_child()",
+  "let actual_storage_identity = child_root.identity()",
+  "request.storage_root_identity() != actual_storage_identity",
+  ".revalidate()",
+  "KeyAgentStartupResponse::from_validated_request(",
+  "let response_frame = response.encode()",
+  "write_exact_synchronous(sealed_stdio.stdout, response_frame.as_bytes())?",
+  "wait_for_parent_disconnect(&sealed_stdio, &child_root)",
+].map((marker) => serveInheritedKeyAgentStorageStartup.indexOf(marker));
+const readExactKeyAgentStartupRequest = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "read_exact_synchronous",
+);
+const writeExactKeyAgentStartupResponse = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "write_exact_synchronous",
+);
+const waitForKeyAgentParentDisconnect = rustFunctionBlock(
+  keyAgentChildBootstrapProduction,
+  "wait_for_parent_disconnect",
+);
+requireInvariant(
+  keyAgentChildStartupOrder.every((position) => position !== -1) &&
+    keyAgentChildStartupOrder
+      .slice(1)
+      .every(
+        (position, index) => position > keyAgentChildStartupOrder[index],
+      ) &&
+    /fn\s+read_exact_synchronous\s*\([\s\S]*bytes:\s*&mut\s*\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\]/u.test(
+      readExactKeyAgentStartupRequest,
+    ) &&
+    /fn\s+write_exact_synchronous\s*\([\s\S]*bytes:\s*&\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\]/u.test(
+      writeExactKeyAgentStartupResponse,
+    ) &&
+    waitForKeyAgentParentDisconnect.includes(
+      "sealed_stdio: &SealedKeyAgentStdio",
+    ) &&
+    waitForKeyAgentParentDisconnect.includes(
+      "_child_root: &HeldChildKeyAgentStorageRoot",
+    ) &&
+    waitForKeyAgentParentDisconnect.includes(
+      "reject_nonzero_post_startup_bytes(transferred)?",
+    ),
+  "the sole child bootstrap service must seal first, exchange exactly one 188/88 frame pair, prove the child-opened full storage identity, and retain both child capabilities until disconnect",
 );
 
 const keyAgentBootstrapSameObjectCalls = rustCallSites(
@@ -4537,11 +4701,11 @@ requireInvariant(
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(sealedKeyAgentStdioDefinition)) ===
-    "pub struct SealedKeyAgentStdio { _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    "struct SealedKeyAgentStdio { stdin: HANDLE, stdout: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
     keyAgentChildBootstrapProduction.includes(
       '#[must_use = "the Key Agent must retain its sealed stdio proof through startup"]',
     ) &&
-    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\s+struct\s+SealedKeyAgentStdio/u.test(
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+SealedKeyAgentStdio/u.test(
       keyAgentChildBootstrapProduction,
     ) &&
     !/\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync)\s+for\s+SealedKeyAgentStdio\b/u.test(
@@ -4555,7 +4719,7 @@ requireInvariant(
     !/\bimpl\s+(?:AsHandle|AsRawHandle|IntoRawHandle)\s+for\s+SealedKeyAgentStdio\b/u.test(
       rustLexicalCode(keyAgentChildBootstrapProduction),
     ),
-  "SealedKeyAgentStdio must expose no raw capability and remain non-Clone, non-Copy, non-Send, and non-Sync",
+  "the private SealedKeyAgentStdio must retain only the request/response peers and expose no raw, clone, or thread-transfer capability",
 );
 
 const keyAgentBootstrapSubprocessTest = rustFunctionBlock(
@@ -5299,6 +5463,31 @@ const heldKeyAgentStorageRootMethods = [
     /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
   ),
 ].map((match) => match.groups.name);
+const keyAgentStorageIdentityDefinition = rustLexicalItemBlock(
+  keyAgentStorage,
+  /pub\(crate\)\s+struct\s+KeyAgentStorageRootIdentity\s*\{/u,
+);
+const keyAgentStorageIdentityImpl = rustLexicalItemBlock(
+  keyAgentStorage,
+  /impl\s+KeyAgentStorageRootIdentity\s*\{/u,
+);
+const heldChildKeyAgentStorageRootDefinition = rustLexicalItemBlock(
+  keyAgentStorage,
+  /pub\(crate\)\s+struct\s+HeldChildKeyAgentStorageRoot\s*\{/u,
+);
+const heldChildKeyAgentStorageRootImpl = rustLexicalItemBlock(
+  keyAgentStorage,
+  /impl\s+HeldChildKeyAgentStorageRoot\s*\{/u,
+);
+const heldChildKeyAgentStorageRootDebug = rustLexicalItemBlock(
+  keyAgentStorage,
+  /impl\s+fmt::Debug\s+for\s+HeldChildKeyAgentStorageRoot\s*\{/u,
+);
+const heldChildKeyAgentStorageRootMethods = [
+  ...heldChildKeyAgentStorageRootImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
+].map((match) => match.groups.name);
 const createFixedKeyAgentStorageRoot = rustFunctionBlock(
   keyAgentStorage,
   "create_fixed_key_agent_storage_root",
@@ -5310,6 +5499,26 @@ const createKeyAgentStorageRoot = rustFunctionBlock(
 const openAndVerifyKeyAgentStorageRoot = rustFunctionBlock(
   keyAgentStorage,
   "open_and_verify_created_root",
+);
+const openFixedKeyAgentStorageRootForChild = rustFunctionBlock(
+  keyAgentStorage,
+  "open_fixed_key_agent_storage_root_for_child",
+);
+const openChildKeyAgentStorageRoot = rustFunctionBlock(
+  keyAgentStorage,
+  "open_child_storage_root",
+);
+const openKeyAgentStorageRootHandle = rustFunctionBlock(
+  keyAgentStorage,
+  "open_storage_root_handle",
+);
+const verifyChildKeyAgentStorageRoot = rustFunctionBlock(
+  keyAgentStorage,
+  "verify_child_open_storage_root",
+);
+const validateChildKeyAgentStorageProfileFolder = rustFunctionBlock(
+  keyAgentStorage,
+  "validate_child_profile_folder_shape",
 );
 const validateKeyAgentStorageProfileFolder = rustFunctionBlock(
   keyAgentStorage,
@@ -5355,6 +5564,10 @@ const currentStableKeyAgentStorageUserSid = rustFunctionBlock(
   keyAgentStorage,
   "current_stable_user_sid",
 );
+const currentKeyAgentStorageProcessToken = rustFunctionBlock(
+  keyAgentStorage,
+  "current_process_token",
+);
 const revalidateHeldKeyAgentStorageRoot = rustFunctionBlock(
   heldKeyAgentStorageRootImpl,
   "revalidate",
@@ -5368,9 +5581,10 @@ const keyAgentStorageFactoryCalls = rustCallSites(
   "create_storage_root",
 );
 const keyAgentStorageOpenCalls = rustCallSites(
-  openAndVerifyKeyAgentStorageRoot,
+  openKeyAgentStorageRootHandle,
   "CreateFileW",
 );
+const keyAgentStorageAllOpenCalls = rustCallSites(keyAgentStorage, "CreateFileW");
 const keyAgentStorageSecurityInfoCalls = rustCallSites(
   verifyKeyAgentStorageHandleSecurity,
   "GetSecurityInfo",
@@ -6707,6 +6921,14 @@ const keyAgentStorageModuleConsumers = platformWindowsProductionFiles
       /\bkey_agent_storage\b/u.test(rustLexicalCode(file.source)),
   )
   .map((file) => file.path);
+const keyAgentStartupModuleConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_startup.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bkey_agent_startup\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+key_agent_activation\b/u.test(platformWindowsLib) &&
@@ -6718,6 +6940,7 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/helper.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_storage.rs",
         "crates/platform-windows/src/key_agent_supervisor.rs",
       ]) &&
     !platformWindowsProductionFiles.some((file) =>
@@ -6727,9 +6950,15 @@ requireInvariant(
     ) &&
     platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_storage;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+key_agent_storage\b/u.test(platformWindowsLib) &&
-    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_storage/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*\bkey_agent_storage\b/u.test(
+      platformWindowsLib,
+    ) &&
     JSON.stringify(keyAgentStorageModuleConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_startup.rs",
+      ]) &&
     platformWindowsLib.includes(
       "use platform_windows::key_agent_activation::HeldKeyAgentActivation;",
     ) &&
@@ -6745,7 +6974,19 @@ requireInvariant(
     platformWindowsLib.includes(
       "use platform_windows::key_agent_supervisor::bind_dormant_key_agent;",
     ),
-  "Key Agent LPAC, activation, and bound supervisor capabilities must remain externally private",
+  "Key Agent LPAC, storage, activation, and bound supervisor capabilities must remain externally private",
+);
+requireInvariant(
+  platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_startup;") &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_startup\b/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_startup/u.test(platformWindowsLib) &&
+    JSON.stringify(keyAgentStartupModuleConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+        "crates/platform-windows/src/pipe.rs",
+      ]),
+  "the Key Agent startup codec must remain private to the child bootstrap, supervisor, and exact pipe typestates",
 );
 const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
   .filter(
@@ -6756,10 +6997,18 @@ const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
       ),
   )
   .map((file) => file.path);
+const keyAgentChildStorageOpenerConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_storage.rs" &&
+      rustCallSites(file.source, "open_fixed_key_agent_storage_root_for_child")
+        .length > 0,
+  )
+  .map((file) => file.path);
 const compactKeyAgentStorage = compactRust(keyAgentStorage);
 const compactCreateKeyAgentStorageRoot = compactRust(createKeyAgentStorageRoot);
-const compactOpenAndVerifyKeyAgentStorageRoot = compactRust(
-  openAndVerifyKeyAgentStorageRoot,
+const compactOpenKeyAgentStorageRootHandle = compactRust(
+  openKeyAgentStorageRootHandle,
 );
 const compactValidateKeyAgentStorageProfileFolder = compactRust(
   validateKeyAgentStorageProfileFolder,
@@ -6828,6 +7077,7 @@ requireInvariant(
     !keyAgentStorage.includes("remove_dir_all") &&
     !keyAgentStorage.includes("OPEN_ALWAYS") &&
     keyAgentStorageOpenCalls.length === 1 &&
+    keyAgentStorageAllOpenCalls.length === 1 &&
     keyAgentStorageOpenCalls[0].arguments.length === 7 &&
     compactRust(keyAgentStorageOpenCalls[0].arguments[1]) ===
       "FILE_READ_ATTRIBUTES.0|FILE_LIST_DIRECTORY.0|READ_CONTROL.0|GENERIC_WRITE.0" &&
@@ -6836,7 +7086,10 @@ requireInvariant(
     keyAgentStorageOpenCalls[0].arguments[4] === "OPEN_EXISTING" &&
     compactRust(keyAgentStorageOpenCalls[0].arguments[5]) ===
       "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT" &&
-    !compactOpenAndVerifyKeyAgentStorageRoot.includes("FILE_SHARE_DELETE") &&
+    !compactOpenKeyAgentStorageRootHandle.includes("FILE_SHARE_DELETE") &&
+    !/\b(?:OpenFileById|NtOpenFile|ZwOpenFile|CreateFile2|File::open|OpenOptions|canonicalize)\b/u.test(
+      rustLexicalCode(keyAgentStorage),
+    ) &&
     compactValidateKeyAgentStorageProfileFolder.includes("!path.is_absolute()") &&
     validateKeyAgentStorageProfileFolder.includes(
       '!name.eq_ignore_ascii_case("AC")',
@@ -6850,9 +7103,6 @@ requireInvariant(
     verifyKeyAgentStorageDirectory.includes("FILE_ATTRIBUTE_DIRECTORY.0") &&
     verifyKeyAgentStorageDirectory.includes("FILE_ATTRIBUTE_REPARSE_POINT.0") &&
     compactQueryKeyAgentStorageIdentity.includes("FileIdInfo") &&
-    compactQueryKeyAgentStorageIdentity.includes("VolumeSerialNumber==0") &&
-    compactQueryKeyAgentStorageIdentity.includes("Identifier==[0;16]") &&
-    compactQueryKeyAgentStorageIdentity.includes("Identifier==[u8::MAX;16]") &&
     compactVerifyKeyAgentStorageVolume.includes("GetDriveTypeW(") &&
     compactVerifyKeyAgentStorageVolume.includes("!=DRIVE_FIXED") &&
     compactVerifyKeyAgentStorageVolume.includes("FileRemoteProtocolInfo") &&
@@ -6866,9 +7116,12 @@ requireInvariant(
     ) &&
     !keyAgentStorageRootDescriptor.includes("S:") &&
     currentStableKeyAgentStorageUserSid.includes(
+      "let token = current_process_token()?",
+    ) &&
+    currentStableKeyAgentStorageUserSid.includes("token_user_sid(token.0)") &&
+    currentKeyAgentStorageProcessToken.includes(
       "OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY",
     ) &&
-    currentStableKeyAgentStorageUserSid.includes("TokenUser") &&
     compactInspectKeyAgentStorageCreationDescriptor.includes(
       "control_flag(SE_DACL_PROTECTED)",
     ) &&
@@ -6908,7 +7161,7 @@ requireInvariant(
       "LOW_MANDATORY_LABEL_SID",
     ) &&
     JSON.stringify(heldKeyAgentStorageRootMethods) ===
-      JSON.stringify(["revalidate", "path_for_test"]) &&
+      JSON.stringify(["identity", "revalidate", "path_for_test"]) &&
     heldKeyAgentStorageRootImpl.includes(
       "#[cfg(test)]\n    pub(crate) fn path_for_test",
     ) &&
@@ -6945,15 +7198,81 @@ requireInvariant(
     integratedKeyAgentStorageBindingTest.includes("assert!(!storage_root.exists())") &&
     !keyAgentStorage.includes("WindowsGenerationStore") &&
     !keyAgentActivationRelease.includes("HeldKeyAgentStorageRoot"),
-  "the Key Agent storage proof must fresh-create one fixed root with the exact dual-principal protected DACL, inherited Low/NW label, local NTFS identity, no-delete-share held handle, opaque revalidation-only authority, and real cfg(test) kernel cleanup proof",
+  "the Key Agent storage proof must fresh-create one fixed root with the exact dual-principal protected DACL, inherited Low/NW label, local NTFS identity, no-delete-share held handle, opaque revalidation authority, and real cfg(test) kernel cleanup proof",
+);
+requireInvariant(
+  normalizeRustFragment(rustLexicalCode(keyAgentStorageIdentityDefinition)) ===
+      "pub(crate) struct KeyAgentStorageRootIdentity { volume_serial_number: u64, file_id: [u8; 16], }" &&
+    keyAgentStorageIdentityImpl.includes(
+      "pub(crate) fn encode_be(self) -> [u8; 24]",
+    ) &&
+    keyAgentStorageIdentityImpl.includes(
+      "pub(crate) fn decode_be(encoded: [u8; 24])",
+    ) &&
+    keyAgentStorageIdentityImpl.includes("volume_serial_number == 0") &&
+    keyAgentStorageIdentityImpl.includes("file_id == [0; 16]") &&
+    keyAgentStorageIdentityImpl.includes("file_id == [u8::MAX; 16]") &&
+    normalizeRustFragment(rustLexicalCode(heldChildKeyAgentStorageRootDefinition)) ===
+      "pub(crate) struct HeldChildKeyAgentStorageRoot { handle: std::fs::File, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, }" &&
+    JSON.stringify(heldChildKeyAgentStorageRootMethods) ===
+      JSON.stringify(["identity", "revalidate"]) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+HeldChildKeyAgentStorageRoot/u.test(
+      keyAgentStorage,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Sync|AsRawHandle)\s+for\s+HeldChildKeyAgentStorageRoot\b/u.test(
+      keyAgentStorage,
+    ) &&
+    heldChildKeyAgentStorageRootDebug.includes(
+      "HeldChildKeyAgentStorageRoot([REDACTED HELD DIRECTORY])",
+    ) &&
+    normalizeRustFragment(rustLexicalCode(openFixedKeyAgentStorageRootForChild)) ===
+      "pub(crate) fn open_fixed_key_agent_storage_root_for_child() -> Result<HeldChildKeyAgentStorageRoot, KeyAgentStorageError> { open_child_storage_root(KEY_AGENT_STORAGE_ROOT_LEAF) }" &&
+    JSON.stringify(keyAgentChildStorageOpenerConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+      ]) &&
+    openChildKeyAgentStorageRoot.includes(
+      'std::env::var_os("LOCALAPPDATA")',
+    ) &&
+    openChildKeyAgentStorageRoot.includes("reject_thread_impersonation()?") &&
+    openChildKeyAgentStorageRoot.includes("current_process_token()?") &&
+    openChildKeyAgentStorageRoot.includes("token_user_sid(token.0)?") &&
+    openChildKeyAgentStorageRoot.includes("token_appcontainer_sid(token.0)?") &&
+    openChildKeyAgentStorageRoot.includes(
+      "let handle = open_storage_root_handle(&path)?",
+    ) &&
+    openChildKeyAgentStorageRoot.includes("held.revalidate()?") &&
+    validateChildKeyAgentStorageProfileFolder.includes(
+      '!local_folder_name.eq_ignore_ascii_case("AC")',
+    ) &&
+    validateChildKeyAgentStorageProfileFolder.includes(
+      "!profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)",
+    ) &&
+    validateChildKeyAgentStorageProfileFolder.includes(
+      '!packages_name.eq_ignore_ascii_case("Packages")',
+    ) &&
+    verifyChildKeyAgentStorageRoot.includes("verify_directory_object(handle)?") &&
+    verifyChildKeyAgentStorageRoot.includes(
+      "verify_handle_security(handle, stable_user_sid, profile_sid)?",
+    ) &&
+    verifyChildKeyAgentStorageRoot.includes("exact_file_identity(handle)"),
+  "the Key Agent storage proof must expose full path-free FILE_ID_INFO and let only the child bootstrap reopen and retain that root through the sole exact no-delete-share probe",
 );
 const keyAgentRequestWriterImpl = rustItemBlock(
-  keyAgentPipeProduction,
+  keyAgentPipeRelease,
   /impl\s+KeyAgentRequestWriter\s*\{/u,
 );
 const keyAgentResponseReaderImpl = rustItemBlock(
-  keyAgentPipeProduction,
+  keyAgentPipeRelease,
   /impl\s+KeyAgentResponseReader\s*\{/u,
+);
+const keyAgentStartupRequestWriterImpl = rustItemBlock(
+  keyAgentPipeRelease,
+  /impl\s+KeyAgentStartupRequestWriter\s*\{/u,
+);
+const keyAgentStartupResponseReaderImpl = rustItemBlock(
+  keyAgentPipeRelease,
+  /impl\s+KeyAgentStartupResponseReader\s*\{/u,
 );
 const keyAgentRequestWriterMethods = [...keyAgentRequestWriterImpl.matchAll(
   /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
@@ -6961,31 +7280,161 @@ const keyAgentRequestWriterMethods = [...keyAgentRequestWriterImpl.matchAll(
 const keyAgentResponseReaderMethods = [...keyAgentResponseReaderImpl.matchAll(
   /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
 )].map((match) => match[1]);
+const keyAgentStartupRequestWriterMethods = [
+  ...keyAgentStartupRequestWriterImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+  ),
+].map((match) => match[1]);
+const keyAgentStartupResponseReaderMethods = [
+  ...keyAgentStartupResponseReaderImpl.matchAll(
+    /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+  ),
+].map((match) => match[1]);
+const keyAgentStartupRequestSend = rustFunctionBlock(
+  keyAgentStartupRequestWriterImpl,
+  "send",
+);
+const keyAgentStartupResponseReceive = rustFunctionBlock(
+  keyAgentStartupResponseReaderImpl,
+  "receive",
+);
+const rejectBufferedKeyAgentStartupBytes = rustFunctionBlock(
+  keyAgentPipeRelease,
+  "reject_buffered_key_agent_startup_bytes",
+);
+const rejectBufferedPipeBytes = rustFunctionBlock(
+  keyAgentPipeRelease,
+  "reject_buffered_bytes",
+);
+const rejectBufferedPipeBytesPeekCalls = rustCallSites(
+  rejectBufferedPipeBytes,
+  "PeekNamedPipe",
+);
+const bufferedKeyAgentResponseSuffixTest = rustFunctionBlock(
+  keyAgentPipeSource,
+  "key_agent_startup_transport_rejects_buffered_response_suffix",
+);
+const bufferedKeyAgentRequestSuffixTest = rustFunctionBlock(
+  keyAgentPipeSource,
+  "key_agent_child_boundary_detects_buffered_request_suffix",
+);
+const keyAgentStartupResponseReceiveOrder = [
+  "sys::read_exact_before(self.0.raw(), KEY_AGENT_STARTUP_RESPONSE_BYTES, deadline)?",
+  "reject_buffered_key_agent_startup_bytes(self.0.as_handle())?",
+  "exact.copy_from_slice(frame.as_slice())",
+  "Ok((exact, KeyAgentResponseReader(self.0)))",
+].map((marker) => keyAgentStartupResponseReceive.indexOf(marker));
+const privateKeyAgentPipesIntoParent = rustFunctionBlock(
+  rustLexicalItemBlock(
+    keyAgentPipeRelease,
+    /impl\s+PrivateKeyAgentPipes\s*\{/u,
+  ),
+  "into_parent",
+);
 requireInvariant(
+  keyAgentPipeProduction.includes(
+    "unsafe impl Send for KeyAgentStartupRequestWriter {}",
+  ) &&
+    keyAgentPipeProduction.includes(
+      "unsafe impl Send for KeyAgentStartupResponseReader {}",
+    ) &&
   keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentRequestWriter {}") &&
     keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentResponseReader {}") &&
     keyAgentPipeProduction.includes(
       "Windows permits the owned HANDLE to be used and",
     ) &&
-    !/unsafe\s+impl\s+Sync\s+for\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+    !/unsafe\s+impl\s+Sync\s+for\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
       keyAgentPipeProduction,
     ) &&
     !/unsafe\s+impl\s+Send\s+for\s+(?:OwnedWinHandle|PrivateKeyAgentPipes|PreparedKeyAgentInheritance)\b/u.test(
       keyAgentPipeProduction,
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
       keyAgentPipeProduction,
     ) &&
-    !/impl\s+(?:Clone|Copy)\s+for\s+KeyAgent(?:RequestWriter|ResponseReader)\b/u.test(
+    !/impl\s+(?:Clone|Copy)\s+for\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
       keyAgentPipeProduction,
     ) &&
-    JSON.stringify(keyAgentRequestWriterMethods) === JSON.stringify(["write_bounded"]) &&
-    JSON.stringify(keyAgentResponseReaderMethods) ===
-      JSON.stringify(["read_bounded_to_end"]) &&
+    JSON.stringify(keyAgentStartupRequestWriterMethods) ===
+      JSON.stringify(["send"]) &&
+    JSON.stringify(keyAgentStartupResponseReaderMethods) ===
+      JSON.stringify(["receive"]) &&
+    keyAgentRequestWriterMethods.length === 0 &&
+    keyAgentResponseReaderMethods.length === 0 &&
+    /fn\s+send\s*\(\s*self,\s*frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*deadline:\s*Instant,?\s*\)\s*->\s*Result<\s*KeyAgentRequestWriter\s*,\s*PipeError\s*>/u.test(
+      rustLexicalCode(keyAgentStartupRequestSend),
+    ) &&
+    keyAgentStartupRequestSend.includes(
+      "sys::write_all_before(self.0.raw(), frame, deadline)?",
+    ) &&
+    /fn\s+receive\s*\(\s*self,\s*deadline:\s*Instant,?\s*\)/u.test(
+      rustLexicalCode(keyAgentStartupResponseReceive),
+    ) &&
+    keyAgentStartupResponseReceive.includes(
+      "sys::read_exact_before(self.0.raw(), KEY_AGENT_STARTUP_RESPONSE_BYTES, deadline)?",
+    ) &&
+    keyAgentStartupResponseReceiveOrder.every((position) => position !== -1) &&
+    keyAgentStartupResponseReceiveOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > keyAgentStartupResponseReceiveOrder[index],
+      ) &&
+    keyAgentStartupResponseReceive.includes(
+      "Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>",
+    ) &&
+    keyAgentStartupResponseReceive.includes("KeyAgentResponseReader") &&
+    privateKeyAgentPipesIntoParent.includes(
+      "(KeyAgentStartupRequestWriter, KeyAgentStartupResponseReader)",
+    ) &&
+    !/\b(?:write_bounded|read_bounded_to_end)\b/u.test(
+      `${keyAgentStartupRequestWriterImpl}\n${keyAgentStartupResponseReaderImpl}\n${keyAgentRequestWriterImpl}\n${keyAgentResponseReaderImpl}`,
+    ) &&
     keyAgentPipeSource.includes(
       "fn key_agent_parent_endpoints_transfer_once_to_a_fresh_thread()",
     ),
-  "only the unique consuming Key Agent parent endpoints may cross one worker boundary",
+  "only the unique consuming 188/88-byte Key Agent startup typestates may perform pipe I/O, while retained parent endpoints expose no operational methods",
+);
+requireInvariant(
+  /pub\(crate\)\s+fn\s+reject_buffered_key_agent_startup_bytes\s*\(\s*handle:\s*BorrowedHandle<'_>,?\s*\)\s*->\s*Result<\(\),\s*PipeError>\s*\{\s*sys::reject_buffered_bytes\(handle\)\s*\}/u.test(
+    rustLexicalCode(rejectBufferedKeyAgentStartupBytes),
+  ),
+  "the Key Agent startup buffered-byte wrapper must remain one exact crate-private forwarding function",
+);
+requireInvariant(
+  rejectBufferedPipeBytesPeekCalls.length === 1 &&
+    JSON.stringify(rejectBufferedPipeBytesPeekCalls[0]?.arguments) ===
+      JSON.stringify([
+        "HANDLE(handle.as_raw_handle())",
+        "None",
+        "0",
+        "None",
+        "Some(&raw mut available)",
+        "None",
+      ]),
+  "the Key Agent startup buffered-byte probe must make one exact non-consuming PeekNamedPipe call",
+);
+requireInvariant(
+  rejectBufferedPipeBytes.includes("let mut available = 0_u32") &&
+    rejectBufferedPipeBytes.includes("if available == 0") &&
+    rejectBufferedPipeBytes.includes("Err(PipeError::TrailingData)"),
+  "the Key Agent startup buffered-byte probe must accept only an empty immediate queue and reject a suffix",
+);
+requireInvariant(
+  bufferedKeyAgentResponseSuffixTest.includes(
+      "KEY_AGENT_STARTUP_RESPONSE_BYTES",
+    ) &&
+    bufferedKeyAgentResponseSuffixTest.includes(".checked_add(1)") &&
+    bufferedKeyAgentResponseSuffixTest.includes("Err(PipeError::TrailingData)") &&
+    bufferedKeyAgentRequestSuffixTest.includes(
+      "KEY_AGENT_STARTUP_REQUEST_BYTES",
+    ) &&
+    bufferedKeyAgentRequestSuffixTest.includes(".checked_add(1)") &&
+    bufferedKeyAgentRequestSuffixTest.includes(
+      "sys::reject_buffered_bytes(child_request.as_handle())",
+    ) &&
+    bufferedKeyAgentRequestSuffixTest.includes("Err(PipeError::TrailingData)"),
+  "the Key Agent startup boundary must keep exact request/response buffered-suffix negative tests",
 );
 const boundDormantBlock =
   /pub\(crate\)\s+struct\s+BoundDormantKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
@@ -7030,12 +7479,16 @@ const provisioningRevalidationPositions = [
 requireInvariant(
   boundDormantBlock.includes("activation: HeldKeyAgentActivation") &&
     boundDormantBlock.includes("root_job: KeyAgentRootJob") &&
-    boundDormantBlock.includes("request_writer: KeyAgentRequestWriter") &&
-    boundDormantBlock.includes("response_reader: KeyAgentResponseReader") &&
+    boundDormantBlock.includes(
+      "request_writer: KeyAgentStartupRequestWriter",
+    ) &&
+    boundDormantBlock.includes(
+      "response_reader: KeyAgentStartupResponseReader",
+    ) &&
     boundDormantBlock.includes("startup_lease: SupervisorActivationLease") &&
     boundDormantBlock.includes("not_sync: PhantomData<Cell<()>>") &&
     boundDormantBlock.includes("provisioning: PreparedKeyAgentProvisioning") &&
-    /activation:\s*HeldKeyAgentActivation[\s\S]*root_job:\s*KeyAgentRootJob[\s\S]*request_writer:\s*KeyAgentRequestWriter[\s\S]*response_reader:\s*KeyAgentResponseReader[\s\S]*startup_lease:\s*SupervisorActivationLease[\s\S]*not_sync:\s*PhantomData<Cell<\(\)>>[\s\S]*provisioning:\s*PreparedKeyAgentProvisioning/u.test(
+    /activation:\s*HeldKeyAgentActivation[\s\S]*root_job:\s*KeyAgentRootJob[\s\S]*request_writer:\s*KeyAgentStartupRequestWriter[\s\S]*response_reader:\s*KeyAgentStartupResponseReader[\s\S]*startup_lease:\s*SupervisorActivationLease[\s\S]*not_sync:\s*PhantomData<Cell<\(\)>>[\s\S]*provisioning:\s*PreparedKeyAgentProvisioning/u.test(
       boundDormantBlock,
     ) &&
     !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(boundDormantBlock) &&
@@ -7047,9 +7500,6 @@ requireInvariant(
     ) &&
     keyAgentSupervisor.includes("impl fmt::Debug for BoundDormantKeyAgent") &&
     keyAgentSupervisor.includes("[FRESH PROFILE AND HELD STORAGE ROOT]") &&
-    !/impl\s+BoundDormantKeyAgent\s*\{[\s\S]*?fn\s+(?:resume|start|raw|handle|pipe_name|duplicate)\b/u.test(
-      keyAgentSupervisor,
-    ) &&
     boundDormantOrder.every((position) => position !== -1) &&
     boundDormantOrder
       .slice(1)
@@ -7084,7 +7534,198 @@ requireInvariant(
     consumeSupervisorLease.includes("self.ensure_live()?") &&
     ensureSupervisorLeaseLive.includes("Instant::now()") &&
     !/fn\s+ensure_live\s*\([^)]*\bInstant\b/su.test(ensureSupervisorLeaseLive),
-  "the bound dormant Key Agent must atomically own one internally timed, non-clone, no-resume supervisor attempt",
+  "the bound dormant Key Agent must atomically own one internally timed, non-clone storage-startup attempt with pre-transcript pipe typestates",
+);
+const boundStorageProvenBlock =
+  /pub\(crate\)\s+struct\s+BoundStorageProvenKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    keyAgentSupervisor,
+  )?.groups?.body ?? "";
+const bindKeyAgentStorageStartup = rustFunctionBlock(
+  keyAgentSupervisor,
+  "bind_key_agent_storage_startup",
+);
+const bindKeyAgentStorageStartupWithRequest = rustFunctionBlock(
+  keyAgentSupervisor,
+  "bind_key_agent_storage_startup_with_request",
+);
+const keyAgentStartupTranscriptCommitment = rustFunctionBlock(
+  keyAgentSupervisor,
+  "startup_transcript_commitment",
+);
+const receiveKeyAgentStorageStartupResponse = rustFunctionBlock(
+  keyAgentSupervisor,
+  "receive_storage_startup_response",
+);
+const validateKeyAgentStorageStartupResponse = rustFunctionBlock(
+  keyAgentSupervisor,
+  "validate_storage_startup_response",
+);
+const revalidatePostKeyAgentStartupState = rustFunctionBlock(
+  keyAgentSupervisor,
+  "revalidate_post_startup_state",
+);
+const compactBindKeyAgentStorageStartupWithRequest = compactRust(
+  bindKeyAgentStorageStartupWithRequest,
+);
+const firstPostSendProvisioningRevalidation =
+  compactBindKeyAgentStorageStartupWithRequest.indexOf(
+    "ifletErr(error)=provisioning.revalidate()",
+  );
+const bindKeyAgentStorageStartupOrder = [
+  "bound.startup_lease.ensure_live()?",
+  "bound.provisioning.revalidate()?",
+  "bound.startup_lease.nonce_for_child()",
+  "request.expected_process_id()!=bound.activation.process_id()",
+  "request.expected_creation_time()!=bound.activation.creation_time()",
+  "request.storage_root_identity()!=bound.provisioning.storage_root_identity()",
+  "letrequest_frame=request.encode()?",
+  "letdeadline=bound.startup_lease.expires_at()",
+  "letartifact_identity=bound.activation.artifact_identity()",
+  "letBoundDormantKeyAgent{",
+  "request_writer.send(request_frame.as_bytes(),deadline)",
+  "ifletErr(error)=startup_lease.ensure_live()",
+].map((marker) =>
+  compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
+);
+bindKeyAgentStorageStartupOrder.push(
+  firstPostSendProvisioningRevalidation,
+  ...[
+    "activation.resume_for_storage_startup()",
+    "receive_storage_startup_response(response_reader,deadline,response_transport)",
+    "KeyAgentStartupResponse::decode(response_frame.as_slice())",
+    "validate_storage_startup_response(request,&response)",
+    "revalidate_post_startup_state(&provisioning,&root_job,&activation,response_transport)",
+  ].map((marker) =>
+    compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
+  ),
+  ...[
+    "startup_transcript_commitment(",
+    "startup_lease.verify_and_consume(response.echoed_nonce(),transcript_commitment)",
+    "Ok(BoundStorageProvenKeyAgent{",
+  ].map((marker) =>
+    compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
+  ),
+);
+requireInvariant(
+  bindKeyAgentStorageStartupOrder.every((position) => position !== -1) &&
+    bindKeyAgentStorageStartupOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > bindKeyAgentStorageStartupOrder[index],
+      ),
+  "the one Key Agent storage-startup transition must preserve request, resume, response, revalidation, topology, transcript, and minting order",
+);
+const validateKeyAgentStorageStartupResponseOrder = [
+  "request.nonce().ct_eq(response.echoed_nonce())",
+  "response.actual_process_id()!=request.expected_process_id()",
+  "response.actual_creation_time()!=request.expected_creation_time()",
+  "response.storage_root_identity()!=request.storage_root_identity()",
+  "Ok(())",
+].map((marker) =>
+  compactRust(validateKeyAgentStorageStartupResponse).indexOf(
+    compactRust(marker),
+  ),
+);
+const revalidatePostKeyAgentStartupOrder = [
+  "provisioning.revalidate()?",
+  "root_job.recheck_supervisor_context()?",
+  "root_job.verify_effective_limits()?",
+  "lettopology_is_valid=matchresponse_transport",
+  "StartupResponseTransport::Exact=>root_job.active_process_count().map(|count|count==1)",
+  "topology_is_valid.then_some(()).ok_or(KeyAgentSupervisorError::RootJobPolicy)",
+].map((marker) =>
+  compactRust(revalidatePostKeyAgentStartupState).indexOf(compactRust(marker)),
+);
+requireInvariant(
+  /response_reader:\s*KeyAgentStartupResponseReader/u.test(
+    rustLexicalCode(receiveKeyAgentStorageStartupResponse),
+  ) &&
+    receiveKeyAgentStorageStartupResponse.includes(
+      "Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>",
+    ) &&
+    receiveKeyAgentStorageStartupResponse.includes("KeyAgentResponseReader") &&
+    rustCallSites(receiveKeyAgentStorageStartupResponse, "receive").length === 1 &&
+    receiveKeyAgentStorageStartupResponse.includes(
+      "StartupResponseTransport::Exact => response_reader.receive(deadline)",
+    ) &&
+    validateKeyAgentStorageStartupResponseOrder.every(
+      (position) => position !== -1,
+    ) &&
+    validateKeyAgentStorageStartupResponseOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > validateKeyAgentStorageStartupResponseOrder[index],
+      ) &&
+    revalidatePostKeyAgentStartupOrder.every((position) => position !== -1) &&
+    revalidatePostKeyAgentStartupOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > revalidatePostKeyAgentStartupOrder[index],
+      ),
+  "the storage-startup response helper must consume one exact 88-byte frame before full nonce/process/storage validation and post-resume provisioning/Job/topology revalidation",
+);
+requireInvariant(
+  /fn\s+bind_key_agent_storage_startup\s*\(\s*bound:\s*BoundDormantKeyAgent,?\s*\)\s*->\s*Result<\s*BoundStorageProvenKeyAgent\s*,\s*KeyAgentSupervisorError\s*>/u.test(
+    rustLexicalCode(bindKeyAgentStorageStartup),
+  ) &&
+    bindKeyAgentStorageStartup.includes("KeyAgentStartupRequest::new(") &&
+    bindKeyAgentStorageStartup.includes(
+      "bound.provisioning.storage_root_identity()",
+    ) &&
+    bindKeyAgentStorageStartup.includes(
+      "StartupResponseTransport::Exact",
+    ) &&
+    rustCallSites(keyAgentSupervisor, "resume_for_storage_startup").length === 1 &&
+    boundStorageProvenBlock.includes(
+      "activation: RunningKeyAgentActivation",
+    ) &&
+    boundStorageProvenBlock.includes("root_job: KeyAgentRootJob") &&
+    boundStorageProvenBlock.includes("request_writer: KeyAgentRequestWriter") &&
+    boundStorageProvenBlock.includes("response_reader: KeyAgentResponseReader") &&
+    boundStorageProvenBlock.includes(
+      "handshake: VerifiedSupervisorHandshake",
+    ) &&
+    boundStorageProvenBlock.includes("not_sync: PhantomData<Cell<()>>") &&
+    boundStorageProvenBlock.includes(
+      "provisioning: PreparedKeyAgentProvisioning",
+    ) &&
+    !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(boundStorageProvenBlock) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+BoundStorageProvenKeyAgent/u.test(
+      keyAgentSupervisor,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Sync)\s+for\s+BoundStorageProvenKeyAgent\b/u.test(
+      keyAgentSupervisor,
+    ) &&
+    !/impl\s+BoundStorageProvenKeyAgent\s*\{/u.test(keyAgentSupervisor) &&
+    keyAgentSupervisor.includes(
+      "impl fmt::Debug for BoundStorageProvenKeyAgent",
+    ) &&
+    keyAgentSupervisor.includes("[DETACHED RUNNING KEY AGENT]") &&
+    keyAgentSupervisor.includes("[VERIFIED STORAGE-STARTUP TRANSCRIPT]") &&
+    /fn\s+startup_transcript_commitment\s*\(\s*artifact_identity:\s*\[u8;\s*24\],\s*request_frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*response_frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\],?\s*\)\s*->\s*\[u8;\s*STARTUP_TRANSCRIPT_BYTES\]/u.test(
+      rustLexicalCode(keyAgentStartupTranscriptCommitment),
+    ) &&
+    keyAgentStartupTranscriptCommitment.includes(
+      "transcript.update(STARTUP_TRANSCRIPT_DOMAIN)",
+    ) &&
+    keyAgentStartupTranscriptCommitment.includes(
+      "transcript.update(artifact_identity)",
+    ) &&
+    keyAgentStartupTranscriptCommitment.includes(
+      "transcript.update(request_frame)",
+    ) &&
+    keyAgentStartupTranscriptCommitment.includes(
+      "transcript.update(response_frame)",
+    ) &&
+    !/\b(?:LOCALAPPDATA|storage_path|path_hash|path_digest|storage_hash)\b/u.test(
+      rustLexicalCode(
+        `${bindKeyAgentStorageStartup}\n${bindKeyAgentStorageStartupWithRequest}\n${keyAgentStartupTranscriptCommitment}`,
+      ),
+    ),
+  "one consuming supervisor transition must bind the exact storage-startup transcript and mint only BoundStorageProvenKeyAgent with retained non-operational endpoints",
 );
 const heldActivationBlock =
   /pub\(crate\)\s+struct\s+HeldKeyAgentActivation\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
@@ -7097,6 +7738,29 @@ const heldActivationImpl = rustItemBlock(
 const heldActivationMethods = [...heldActivationImpl.matchAll(
   /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
 )].map((match) => match[1]);
+const resumeHeldKeyAgentForStorageStartup = rustFunctionBlock(
+  heldActivationImpl,
+  "resume_for_storage_startup",
+);
+const runningActivationBlock =
+  /pub\(crate\)\s+struct\s+RunningKeyAgentActivation\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    keyAgentActivation,
+  )?.groups?.body ?? "";
+const runningActivationImpl = rustItemBlock(
+  keyAgentActivation,
+  /impl\s+RunningKeyAgentActivation\s*\{/u,
+);
+const runningActivationMethods = [...runningActivationImpl.matchAll(
+  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+)].map((match) => match[1]);
+const suspendedDebuggeeStartupImpl = rustLexicalItemBlock(
+  keyAgentActivation,
+  /impl\s+SuspendedDebuggee\s*\{/u,
+);
+const resumeSuspendedDebuggeeForStorageStartup = rustFunctionBlock(
+  suspendedDebuggeeStartupImpl,
+  "resume_for_storage_startup",
+);
 requireInvariant(
   heldActivationBlock.includes("process: sys::DetachedSuspendedDebuggee") &&
     !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(heldActivationBlock) &&
@@ -7106,6 +7770,7 @@ requireInvariant(
         "creation_time",
         "artifact_identity",
         "is_detached_and_suspended",
+        "resume_for_storage_startup",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
       ]) &&
@@ -7115,13 +7780,61 @@ requireInvariant(
     /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+is_member_of_root_job_for_test/u.test(
       heldActivationImpl,
     ) &&
-    /impl\s+Drop\s+for\s+HeldKeyAgentActivation[\s\S]*?self\.process\.abort\(\)/u.test(
+    /fn\s+resume_for_storage_startup\s*\(\s*self,?\s*\)\s*->\s*Result<\s*RunningKeyAgentActivation\s*,\s*KeyAgentActivationError\s*>/u.test(
+      rustLexicalCode(resumeHeldKeyAgentForStorageStartup),
+    ) &&
+    !/impl\s+Drop\s+for\s+HeldKeyAgentActivation\b/u.test(
       keyAgentActivation,
     ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+HeldKeyAgentActivation/u.test(
       keyAgentActivation,
     ),
-  "held Key Agent activation must remain opaque, non-clone, detached-only, and drop-aborting",
+  "held Key Agent activation must remain opaque and non-clone with only the consuming fixed storage-startup transition",
+);
+requireInvariant(
+  runningActivationBlock.includes("process: sys::DetachedRunningDebuggee") &&
+    runningActivationBlock.includes("artifact: VerifiedHelper") &&
+    runningActivationBlock.includes(
+      "artifact_identity: ExactFileObjectIdentity",
+    ) &&
+    runningActivationBlock.includes("creation_time: u64") &&
+    !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(runningActivationBlock) &&
+    JSON.stringify(runningActivationMethods) ===
+      JSON.stringify([
+        "process_id",
+        "creation_time",
+        "artifact_identity",
+        "is_detached_and_running",
+        "duplicate_process_observation",
+        "is_member_of_root_job_for_test",
+      ]) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+duplicate_process_observation/u.test(
+      runningActivationImpl,
+    ) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+is_member_of_root_job_for_test/u.test(
+      runningActivationImpl,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+RunningKeyAgentActivation/u.test(
+      keyAgentActivation,
+    ) &&
+    !/impl\s+(?:Clone|Copy|Sync|AsRawHandle)\s+for\s+RunningKeyAgentActivation\b/u.test(
+      keyAgentActivation,
+    ) &&
+    rustCallSites(resumeSuspendedDebuggeeForStorageStartup, "ResumeThread").length === 1 &&
+    resumeSuspendedDebuggeeForStorageStartup.includes(
+      "if previous_suspend_count != 1",
+    ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes(
+      "self.proven_suspend_count = 0",
+    ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes(
+      ".transition(LaunchTransition::ResumeStorageStartup)?",
+    ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes(
+      "WaitForSingleObject(self.process.raw(), 0)",
+    ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes("!= WAIT_TIMEOUT"),
+  "the fixed resume leaf must release exactly one suspend count and mint only the opaque detached-running proof after a live-process check",
 );
 const preflightActivation = rustFunctionBlock(
   keyAgentActivation,
@@ -7297,15 +8010,22 @@ const freshWorkerEntry = rustFunctionBlock(
   keyAgentActivation,
   "activate_preflighted_key_agent_on_fresh_worker",
 );
-const debugWorkerPositions = [
+const authenticateDetachAndBindActivation = rustFunctionBlock(
+  keyAgentActivation,
+  "authenticate_detach_and_bind_activation",
+);
+const debugWorkerCreationPositions = [
   "verify_empty_root_job(root_job)?",
   "sys::SuspendedDebuggee::create(",
+  "authenticate_detach_and_bind_activation(",
+].map((marker) => freshWorkerActivation.indexOf(marker));
+const debugWorkerAuthenticationPositions = [
   ".authenticate_first_event(",
   "process.detach_still_suspended()",
   "verify_bound_root_process(root_job, process.process_handle())",
   "let process = process.into_detached()?;",
   "Ok(HeldKeyAgentActivation {",
-].map((marker) => freshWorkerActivation.indexOf(marker));
+].map((marker) => authenticateDetachAndBindActivation.indexOf(marker));
 requireInvariant(
   freshDebugRunner.includes("std::thread::Builder::new()") &&
     freshDebugRunner.includes(".spawn(move ||") &&
@@ -7323,12 +8043,21 @@ requireInvariant(
     freshWorkerEntry.indexOf("let artifact_identity = sys::exact_file_identity") <
       freshWorkerEntry.indexOf(
         "activate_preflighted_key_agent_on_fresh_worker_with_identity(",
-      ) &&
+    ) &&
     freshWorkerActivation.includes("_fresh_thread: FreshKeyAgentDebugThread") &&
-    debugWorkerPositions.every((position) => position !== -1) &&
-    debugWorkerPositions
+    debugWorkerCreationPositions.every((position) => position !== -1) &&
+    debugWorkerCreationPositions
       .slice(1)
-      .every((position, index) => position > debugWorkerPositions[index]) &&
+      .every(
+        (position, index) => position > debugWorkerCreationPositions[index],
+      ) &&
+    debugWorkerAuthenticationPositions.every((position) => position !== -1) &&
+    debugWorkerAuthenticationPositions
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > debugWorkerAuthenticationPositions[index],
+      ) &&
     bindDormantFunction.match(/run_on_fresh_key_agent_debug_thread\(/gu)?.length === 1,
   "one unforgeable consumed fresh-worker proof must own the complete Key Agent debug-event lifecycle",
 );
@@ -7780,7 +8509,7 @@ requireInvariant(
       "environment.extend_from_slice(&local_value);environment.push(0);environment.extend_from_slice(base_environment);",
     ) &&
     keyAgentLpacEnvironment.includes(
-      "let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();",
+      "let local_value: Vec<u16> = packages_parent.as_os_str().encode_wide().collect();",
     ) &&
     compactKeyAgentLpacEnvironment.includes(
       "environment.len()>32_767||!environment.ends_with(&[0,0])",
@@ -7806,7 +8535,7 @@ requireInvariant(
     keyAgentCreateProcess.includes(
       "Some(prepared_process.environment.as_ptr().cast::<c_void>())",
     ),
-  "Key Agent creation must use the exact OS-returned AppContainer AC path as LOCALAPPDATA plus the validated SystemRoot/WINDIR block with no ambient environment inheritance",
+  "Key Agent creation must use the OS-derived user local-data base that Windows rebases to the exact AppContainer AC path as LOCALAPPDATA, plus validated SystemRoot/WINDIR with no ambient inheritance",
 );
 const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacToken);
 const keyAgentLpacTokenQueryOrder = [
@@ -8242,6 +8971,7 @@ requireInvariant(
         "process_id",
         "is_detached_and_suspended",
         "abort",
+        "resume_for_storage_startup",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
       ]) &&
@@ -8254,8 +8984,55 @@ requireInvariant(
     !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedSuspendedDebuggee/u.test(
       keyAgentActivation,
     ) &&
-    !/fn\s+(?:into_inner|as_raw_handle|resume|continue|detach)\b/u.test(detachedImpl),
-  "only the proven detached suspended type-state may cross the fresh worker boundary",
+    /fn\s+resume_for_storage_startup\s*\(\s*mut\s+self,?\s*\)\s*->\s*Result<\s*DetachedRunningDebuggee\s*,\s*KeyAgentActivationError\s*>/u.test(
+      rustLexicalCode(detachedImpl),
+    ) &&
+    !/fn\s+(?:into_inner|as_raw_handle|continue|detach|resume)\b/u.test(
+      detachedImpl,
+    ),
+  "only the proven detached suspended type-state may cross the fresh worker boundary and consume itself into the fixed storage-startup running proof",
+);
+const detachedRunningImplStart = keyAgentActivation.indexOf(
+  "impl DetachedRunningDebuggee {",
+);
+const detachedRunningImplEnd = keyAgentActivation.indexOf(
+  "impl fmt::Debug for DetachedRunningDebuggee",
+);
+const detachedRunningImpl = keyAgentActivation.slice(
+  detachedRunningImplStart,
+  detachedRunningImplEnd,
+);
+const detachedRunningMethods = [...detachedRunningImpl.matchAll(
+  /pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu,
+)].map((match) => match[1]);
+requireInvariant(
+  keyAgentActivation.includes(
+    "pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);",
+  ) &&
+    keyAgentActivation.includes("unsafe impl Send for DetachedRunningDebuggee {}") &&
+    !/unsafe\s+impl\s+Sync\s+for\s+DetachedRunningDebuggee\b/u.test(
+      keyAgentActivation,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*(?:pub\(super\)\s+)?struct\s+DetachedRunningDebuggee/u.test(
+      keyAgentActivation,
+    ) &&
+    JSON.stringify(detachedRunningMethods) ===
+      JSON.stringify([
+        "process_id",
+        "is_detached_and_running",
+        "duplicate_process_observation",
+        "is_member_of_root_job_for_test",
+      ]) &&
+    !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedRunningDebuggee/u.test(
+      keyAgentActivation,
+    ) &&
+    !/fn\s+(?:into_inner|as_raw_handle|resume|continue|detach|start|write|read)\b/u.test(
+      detachedRunningImpl,
+    ) &&
+    keyAgentActivation.includes(
+      'formatter.write_str("DetachedRunningDebuggee([REDACTED HANDLES AND IDENTITY])")',
+    ),
+  "the detached-running Key Agent type-state must remain a non-cloneable, non-Sync, observation-only proof with no second transition or operational I/O",
 );
 requireInvariant(
   keyAgentActivation.includes("volume_serial_number == 0") &&
@@ -8295,7 +9072,10 @@ requireInvariant(
     activationArchitecture.includes("Do not add `registryRead`") &&
     /fresh dedicated\s+debugger OS thread/u.test(activationReadme) &&
     activationReadme.includes("all-zero and all-`FF`") &&
-    activationReadme.includes("no resume API") &&
+    /no raw handle or\s+generic resume API/u.test(activationReadme) &&
+    activationReadme.includes(
+      "its only consuming resume transition is the fixed",
+    ) &&
     activationReadme.includes("YourWallet.KeyAgent.LPAC.v1") &&
     activationReadme.includes("SECURITY_CAPABILITIES") &&
     activationReadme.includes("ALL_APPLICATION_PACKAGES") &&
@@ -8324,21 +9104,30 @@ requireInvariant(
       keyAgentBoundaryDocumentation,
     ) &&
     activationArchitecture.includes("YourWallet.KeyAgent.Storage.v1") &&
-    activationArchitecture.includes(
-      "Production provisioning can only fresh-create the fixed",
+    /private production provisioning selector has no caller input\. It can only\s+fresh-create the fixed/u.test(
+      activationArchitecture,
     ) &&
     activationArchitecture.includes(
-      "does not prove that the child opened, used, identity-bound, or transcript-bound the root",
+      "The private storage-startup transition now proves that this exact child opens and",
     ) &&
-    activationArchitecture.includes(
-      "public `WindowsGenerationStore` remains stable-`TokenUser`-only",
+    activationArchitecture.includes("complete 188-byte") &&
+    activationArchitecture.includes("one exact 88-byte") &&
+    /offers neither a follow-on read\/write\s+method nor signing authority/u.test(
+      activationArchitecture,
+    ) &&
+    /public\s+`WindowsGenerationStore` remains stable-`TokenUser`-only/u.test(
+      activationArchitecture,
+    ) &&
+    /immediate\s+buffered-byte snapshots/u.test(activationArchitecture) &&
+    /do not prove the absence\s+of a future delayed suffix or EOF/u.test(
+      activationArchitecture,
     ) &&
     keyAgentBoundaryDocumentation.includes("file-level dual-principal policy") &&
     keyAgentBoundaryDocumentation.includes("durable installer provenance/recovery") &&
     keyAgentBoundaryDocumentation.includes("same-user mutation") &&
     keyAgentBoundaryDocumentation.includes("CSPRNG-named test leaf") &&
     activationArchitecture.includes(
-      "The central profile API rejects thread impersonation",
+      "This central profile API rejects thread impersonation",
     ) &&
     /authenticated\s+(?:Native Host\/)?Broker[\s\S]{0,120}(?:startup|process topology|프로세스 topology)/iu.test(
       keyAgentBoundaryDocumentation,

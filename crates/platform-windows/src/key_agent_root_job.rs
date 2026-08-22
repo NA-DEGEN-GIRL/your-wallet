@@ -127,6 +127,14 @@ impl KeyAgentRootJob {
         sys::active_process_count(self.handle.as_handle())
     }
 
+    #[cfg(test)]
+    pub(crate) fn verify_kernel_fixture_topology_for_test(
+        &self,
+        expected_process_id: u32,
+    ) -> Result<bool, KeyAgentRootJobError> {
+        sys::verify_kernel_fixture_topology_for_test(self.handle.as_handle(), expected_process_id)
+    }
+
     /// Re-reads and verifies the exact effective limit record.
     pub(crate) fn verify_effective_limits(&self) -> Result<(), KeyAgentRootJobError> {
         sys::verify_exact_limits(self.handle.as_handle())
@@ -236,6 +244,8 @@ mod sys {
     use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::time::{Duration, Instant};
 
+    #[cfg(test)]
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::{
         CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -244,7 +254,16 @@ mod sys {
         JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
         SetInformationJobObject, TerminateJobObject,
     };
+    #[cfg(test)]
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
     use windows::Win32::System::Threading::GetCurrentProcess;
+    #[cfg(test)]
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    #[cfg(test)]
+    use windows::core::PWSTR;
     use windows::core::{BOOL, PCWSTR};
 
     use super::{KEY_AGENT_ROOT_PROCESS_LIMIT, KeyAgentRootJobError};
@@ -346,6 +365,12 @@ mod sys {
     pub(super) fn active_process_count(
         job: BorrowedHandle<'_>,
     ) -> Result<u32, KeyAgentRootJobError> {
+        Ok(active_process_id_list(job)?.number_of_process_ids_in_list)
+    }
+
+    fn active_process_id_list(
+        job: BorrowedHandle<'_>,
+    ) -> Result<RootJobProcessIdList, KeyAgentRootJobError> {
         let mut processes = RootJobProcessIdList::default();
         let buffer_bytes = structure_size::<RootJobProcessIdList>()?;
         let mut returned_bytes = 0_u32;
@@ -383,7 +408,78 @@ mod sys {
         {
             return Err(KeyAgentRootJobError::Query);
         }
-        Ok(count)
+        Ok(processes)
+    }
+
+    #[cfg(test)]
+    pub(super) fn verify_kernel_fixture_topology_for_test(
+        job: BorrowedHandle<'_>,
+        expected_process_id: u32,
+    ) -> Result<bool, KeyAgentRootJobError> {
+        let processes = active_process_id_list(job)?;
+        let count = usize::try_from(processes.number_of_process_ids_in_list)
+            .map_err(|_| KeyAgentRootJobError::Query)?;
+        if !(1..=2).contains(&count) {
+            return Ok(false);
+        }
+        let mut system_directory = vec![0_u16; 32_768];
+        // SAFETY: the complete fixed-size UTF-16 output buffer is writable.
+        let system_length = unsafe { GetSystemDirectoryW(Some(&mut system_directory)) };
+        let system_length =
+            usize::try_from(system_length).map_err(|_| KeyAgentRootJobError::Query)?;
+        if system_length == 0 || system_length >= system_directory.len() {
+            return Err(KeyAgentRootJobError::Query);
+        }
+        let mut expected_conhost = String::from_utf16(
+            system_directory
+                .get(..system_length)
+                .ok_or(KeyAgentRootJobError::Query)?,
+        )
+        .map_err(|_| KeyAgentRootJobError::Query)?;
+        expected_conhost.push_str("\\conhost.exe");
+
+        let mut saw_expected = false;
+        let mut saw_system_conhost = false;
+        for process_id in &processes.process_ids[..count] {
+            let process_id = u32::try_from(*process_id).map_err(|_| KeyAgentRootJobError::Query)?;
+            if process_id == expected_process_id {
+                if saw_expected {
+                    return Ok(false);
+                }
+                saw_expected = true;
+                continue;
+            }
+            // SAFETY: the scalar process ID is kernel-reported. The returned
+            // query handle, when successful, is closed exactly once below.
+            let process =
+                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+                    .map_err(|_| KeyAgentRootJobError::Query)?;
+            let mut image = [0_u16; 1_024];
+            let mut length = u32::try_from(image.len()).map_err(|_| KeyAgentRootJobError::Query)?;
+            // SAFETY: the process handle is live and the UTF-16 output buffer
+            // and length are writable for the complete call.
+            let query = unsafe {
+                QueryFullProcessImageNameW(
+                    process,
+                    PROCESS_NAME_WIN32,
+                    PWSTR(image.as_mut_ptr()),
+                    &raw mut length,
+                )
+            };
+            // SAFETY: OpenProcess returned this fresh handle above.
+            unsafe {
+                let _ = CloseHandle(process);
+            }
+            query.map_err(|_| KeyAgentRootJobError::Query)?;
+            let length = usize::try_from(length).map_err(|_| KeyAgentRootJobError::Query)?;
+            let image = String::from_utf16(image.get(..length).ok_or(KeyAgentRootJobError::Query)?)
+                .map_err(|_| KeyAgentRootJobError::Query)?;
+            if saw_system_conhost || !image.eq_ignore_ascii_case(&expected_conhost) {
+                return Ok(false);
+            }
+            saw_system_conhost = true;
+        }
+        Ok(saw_expected && (count == 1 || saw_system_conhost))
     }
 
     pub(super) fn terminate_and_wait(

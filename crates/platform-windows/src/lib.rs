@@ -11,10 +11,11 @@
 //! use platform_windows::pipe::PrivateSecretInputPipes;
 //! ```
 //!
-//! The exact Key Agent process-activation proof is likewise a dormant,
+//! The exact Key Agent process-activation proof is likewise a
 //! supervisor-internal capability. External crates cannot construct or resume
 //! it. All creator-thread-bound debug operations finish on one fresh worker;
-//! only the proven detached-and-suspended capability crosses that join:
+//! internally, the detached-and-suspended proof has only one consuming
+//! transition into the fixed storage-startup exchange:
 //!
 //! ```compile_fail
 //! use platform_windows::key_agent_activation::HeldKeyAgentActivation;
@@ -25,8 +26,8 @@
 //! ```
 //!
 //! The fully bound dormant supervisor aggregate is private as well. External
-//! crates cannot obtain its Job, parent pipe endpoints, startup lease, or held
-//! process, and there is no resume operation:
+//! crates cannot obtain its Job, parent pipe endpoints, startup lease, held
+//! process, or fixed resume transition:
 //!
 //! ```compile_fail
 //! use platform_windows::key_agent_supervisor::BoundDormantKeyAgent;
@@ -114,14 +115,19 @@ mod key_agent_lpac;
 #[cfg(windows)]
 mod key_agent_root_job;
 // Fresh provisioning of the fixed profile's storage root is a private,
-// supervisor-held proof. It does not yet claim that the suspended child opened
-// or used that object; startup handle/transcript binding remains separate.
+// supervisor-held proof. The startup child independently path-opens and retains
+// the same object, while the parent retains and revalidates its peer handle.
 #[cfg(windows)]
 mod key_agent_storage;
-// The startup lease, private parent channel, root Job, and exact-image
-// activation are one dormant aggregate with no resume path. Protected-settings
-// authorization, the Broker protocol, and child-side storage binding remain
-// intentionally unbound and release-blocking.
+// The fixed startup transcript binds the supervisor's nonce and suspended
+// process instance to the root identity independently reopened by the child.
+// It remains crate-private and carries no signing or general IPC authority.
+#[cfg(windows)]
+mod key_agent_startup;
+// The startup lease, private parent channel, root Job, exact-image activation,
+// and child-opened root evidence form one private one-shot transition. No
+// generic runtime or signing operation is exposed; protected-settings
+// authorization and the Broker/topology protocol remain release-blocking.
 #[cfg(windows)]
 mod key_agent_supervisor;
 pub mod launch;
@@ -158,6 +164,6 @@ pub use broker_artifact::broker_supervisor::{
 };
 #[cfg(windows)]
 pub use key_agent_child_bootstrap::{
-    KeyAgentChildBootstrapError, SealedKeyAgentStdio, seal_inherited_key_agent_stdio,
+    KeyAgentChildBootstrapError, serve_inherited_key_agent_storage_startup,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

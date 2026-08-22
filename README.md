@@ -585,10 +585,6 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
-- 이 구현은 child-side stdio 재상속 공백만 닫습니다. standalone supervisor 단일
-  인스턴스와 인증된 Native Host↔Broker↔Key Agent 프로세스 topology, signed install,
-  Native Host provenance 및 실제 서명 artifact에서의 E2E 증거는 계속 별도 릴리스
-  차단 조건입니다.
 - dormant Key Agent 실행 준비 경계는 production에서 고정 AppContainer profile
   `YourWallet.KeyAgent.LPAC.v1`과 그 `AC` 아래 고정 leaf
   `YourWallet.KeyAgent.Storage.v1`을 모두 새로 만든 증명만 받습니다. 기존 production
@@ -598,16 +594,6 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   persistent ACL/non-reparse 상태, nonzero volume 및 non-sentinel 128-bit
   `FILE_ID_INFO`를 검증합니다. directory handle은 delete sharing 없이 유지되며 binding
   동안 재검증되고 cleanup에서 마지막으로 닫힙니다.
-- 이 증명의 한계는 즉시 적용됩니다. child는 아직 root를 열거나 사용하지 않았고 child
-  identity 또는 protocol transcript도 root에 binding되지 않았습니다. Key Agent용
-  generation-store adapter와 file-level dual-principal policy가 없으며, 공개
-  `WindowsGenerationStore`는 계속 stable-`TokenUser`-only입니다. 기존 production
-  profile의 durable installer provenance/recovery도 없고 `TokenUser` ACE 때문에 다른
-  same-user process가 접근할 수 있습니다. ancestor path 검사는 atomic하지 않으며
-  concurrent same-user mutation이 없다고 가정합니다. kernel test는 persistent test
-  profile과 CSPRNG test leaf를 사용하므로 production fresh fixed E2E가 아닙니다. signed
-  immutable release, 인증된 process topology/startup nonce, resume, release activation은
-  계속 **STOP-SHIP**입니다.
 - 같은 dormant activation은 정확한 실행 파일, 비공개 파이프 3개, 2프로세스 Windows
   Job과 위 provisioning 증명을 묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle
   allowlist, Job, null capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
@@ -626,8 +612,45 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유하고, 이 central
   API는 gate 획득 전에 thread impersonation을 거부합니다. 같은 스레드 재진입이나
   poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를 계속하고
-  detach할 수 있으며, 프로세스는 이후에도 정지된 채이고 시작하거나 재개하는 API가
-  없습니다.
+  detach할 수 있으며, 그때 정확히 하나의 suspend count가 남습니다.
+- 그 dormant 상태의 유일한 consuming 전이는 private one-shot storage-startup
+  증명입니다. 부모는 자식이 정지된 동안 fresh nonce, 정확한 PID와 process creation
+  `FILETIME`, supervisor-held root의 volume serial과 128비트 file ID, 그리고 고정
+  production leaf(또는 `cfg(test)`의 정확한 CSPRNG test leaf)를 담은 고정
+  `YWKSREQ1` frame을 먼저 씁니다. 그 뒤에만 검증된 suspend count 하나를 해제합니다.
+  raw thread handle이나 caller-selectable path를 받는 generic resume API는 없습니다.
+- 자식은 stdio sealing 직후 정확한 188-byte 요청 하나를 읽고 즉시
+  `PeekNamedPipe`를 호출해 그 시점에 이미 buffered된 suffix를 root open이나 response
+  전에 거부합니다. 이어 OS가 해당 AppContainer에 대해 돌려준 `LOCALAPPDATA`의 정확한
+  `Packages/<fixed-profile>/AC` 모양을 다시 확인하고, 그 아래 고정/test leaf를 직접
+  엽니다. 현재 process token에서 얻은 `TokenUser`와 AppContainer SID를 기준으로
+  directory object, owner, protected two-ACE DACL, inherited Low/`NW` label과 전체
+  `FILE_ID_INFO`를 검사하고 handle을 유지합니다. 요청과 실제 nonce·PID·creation
+  time·root identity가 모두 같을 때만 정확한 88-byte `YWKSRES1` response를 한 번
+  쓰며, 이후 도착한 request byte는 fail-closed하고 부모 request handle이 닫힐 때까지
+  root와 sealed handles를 유지합니다.
+- 부모도 정확한 88-byte response를 읽은 직후 `PeekNamedPipe`로 이미 buffered된 suffix를
+  거부한 다음 nonce, PID, creation time과 전체 root identity를 독립적으로 비교합니다.
+  이어 held root의 volume/security/identity와 Job context·limits·topology 및 monotonic
+  startup lease를 다시 검사합니다. 성공 증명은 domain, held artifact identity, exact
+  request와 exact response를 SHA-256 transcript commitment로 묶고 running process, root
+  Job, 양쪽 parent pipe endpoint와 no-delete-share root handle을 함께 보유합니다. 두
+  peek은 그 순간의 buffered suffix만 검사하며, 계속 열린 persistent byte stream의
+  future delayed trailing byte나 EOF를 증명하지 않습니다. 이 private 상태에는 generic
+  runtime request나 signing API가 없습니다.
+- 통합 kernel positive test는 persistent test profile의 CSPRNG leaf를 사용하고, 고정된
+  libtest terse preamble과 test process 옆의 선택적 exact System32 `conhost.exe`만
+  `cfg(test)` accommodation으로 허용합니다. production parser는 response magic을 byte
+  zero에서 요구하고 Job member 하나만 허용합니다. 따라서 이 테스트는 production fresh
+  fixed-profile/root 또는 exact signed artifact E2E 증거가 아닙니다.
+- 남은 한계도 즉시 적용됩니다. Key Agent generation-file adapter와 각 파일의 reviewed
+  dual-principal DACL policy가 없고, 공개 `WindowsGenerationStore`는 계속
+  stable-`TokenUser`-only입니다. 기존 production profile의 durable installer
+  provenance/recovery, live protected-settings lease와 인증된 Broker/startup/process
+  topology 결합, signed immutable install 및 DLL/dependency를 포함한 exact-artifact E2E가
+  없습니다. `TokenUser` ACE는 다른 same-user process 접근을 허용하고 ancestor 검사는
+  atomic하지 않습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이므로 production
+  fresh-root 경로와 release activation은 도달 불가이며 모두 **STOP-SHIP**입니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
 - 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.

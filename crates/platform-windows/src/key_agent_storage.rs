@@ -18,13 +18,12 @@ use std::fs;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, RawHandle};
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN,
+    ERROR_SUCCESS, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -38,8 +37,8 @@ use windows::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
     SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED,
     SE_OWNER_DEFAULTED, SE_SACL_AUTO_INHERIT_REQ, SE_SACL_DEFAULTED, SE_SACL_PRESENT,
-    SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, SYSTEM_MANDATORY_LABEL_ACE, TOKEN_QUERY, TOKEN_USER,
-    TokenUser,
+    SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, SYSTEM_MANDATORY_LABEL_ACE,
+    TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
@@ -54,23 +53,30 @@ use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SYSTEM_MANDATORY_LABEL_ACE_TYPE,
     SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
+};
 use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
+use crate::key_agent_lpac::KEY_AGENT_PROFILE_V1_NAME;
+
 const KEY_AGENT_STORAGE_ROOT_LEAF: &str = "YourWallet.KeyAgent.Storage.v1";
+#[cfg(test)]
+const KEY_AGENT_STORAGE_TEST_ROOT_LEAF_PREFIX: &str = "YourWallet.KeyAgent.Storage.Test.";
+const KEY_AGENT_STORAGE_IDENTITY_BYTES: usize = size_of::<u64>() + 16;
 const MIN_BINARY_SID_BYTES: usize = 8;
 const MAX_BINARY_SID_BYTES: usize = 68;
+const MAX_STORAGE_TOKEN_INFORMATION_BYTES: usize = 1_024;
 const MAX_FINAL_PATH_UTF16: usize = 32_768;
 const FILESYSTEM_NAME_UTF16: usize = 32;
 
 // The directory access required by the existing generation-store backend:
-// list/traverse, create files/subdirectories, perform its documented
-// GENERIC_WRITE directory flush, and operate on exact child handles. It
-// deliberately excludes DELETE_CHILD, WRITE_DAC,
-// and WRITE_OWNER. FILE_ADD_SUBDIRECTORY, FILE_WRITE_EA, and
-// FILE_WRITE_ATTRIBUTES are unavoidable members of FILE_GENERIC_WRITE, which
-// the held directory handle requests for FlushFileBuffers.
+// list/traverse, create files/subdirectories, and operate on exact child
+// handles. It deliberately excludes DELETE_CHILD, WRITE_DAC, and WRITE_OWNER.
+// FILE_ADD_SUBDIRECTORY, FILE_WRITE_EA, and FILE_WRITE_ATTRIBUTES are
+// unavoidable members of FILE_GENERIC_WRITE, which the held directory handle
+// retains for the later generation-store adapter.
 const KEY_AGENT_STORAGE_ROOT_ACCESS: u32 = READ_CONTROL.0
     | SYNCHRONIZE.0
     | FILE_LIST_DIRECTORY.0
@@ -89,7 +95,7 @@ const LOW_MANDATORY_LABEL_SID: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 16, 0, 16, 0, 0]
 /// Stable, path-free failures from fixed Key Agent storage provisioning.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum KeyAgentStorageError {
-    /// The supplied integration-only profile folder or SID was invalid.
+    /// The exact profile-folder binding or supplied integration SID was invalid.
     #[error("Key Agent storage profile binding is invalid")]
     ProfileBinding,
     /// The fixed storage root already exists and cannot be adopted or repaired.
@@ -126,6 +132,11 @@ pub(crate) struct HeldKeyAgentStorageRoot {
 }
 
 impl HeldKeyAgentStorageRoot {
+    /// Returns copyable, path-free identity evidence for startup binding.
+    pub(crate) const fn identity(&self) -> KeyAgentStorageRootIdentity {
+        self.identity
+    }
+
     /// Revalidates the held object's exact identity, volume, and security policy.
     pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
         let handle = self.handle.as_ref().ok_or(KeyAgentStorageError::Identity)?;
@@ -171,15 +182,95 @@ impl Drop for HeldKeyAgentStorageRoot {
     }
 }
 
-#[derive(Eq, PartialEq)]
-struct KeyAgentStorageRootIdentity {
+/// Stable, path-free identity evidence for one validated storage root.
+///
+/// This value conveys no handle, path, or principal authority. Decoding accepts
+/// only the exact startup-frame representation and rejects every sentinel that
+/// the live `FILE_ID_INFO` query rejects.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct KeyAgentStorageRootIdentity {
     volume_serial_number: u64,
     file_id: [u8; 16],
+}
+
+impl KeyAgentStorageRootIdentity {
+    fn from_parts(
+        volume_serial_number: u64,
+        file_id: [u8; 16],
+    ) -> Result<Self, KeyAgentStorageError> {
+        if volume_serial_number == 0 || file_id == [0; 16] || file_id == [u8::MAX; 16] {
+            return Err(KeyAgentStorageError::Identity);
+        }
+        Ok(Self {
+            volume_serial_number,
+            file_id,
+        })
+    }
+
+    /// Encodes the identity as volume serial followed by file ID, in network order.
+    pub(crate) fn encode_be(self) -> [u8; 24] {
+        let mut encoded = [0_u8; KEY_AGENT_STORAGE_IDENTITY_BYTES];
+        let (volume, file_id) = encoded.split_at_mut(size_of::<u64>());
+        volume.copy_from_slice(&self.volume_serial_number.to_be_bytes());
+        file_id.copy_from_slice(&self.file_id);
+        encoded
+    }
+
+    /// Decodes and validates the exact network-order startup representation.
+    pub(crate) fn decode_be(encoded: [u8; 24]) -> Result<Self, KeyAgentStorageError> {
+        let (volume, file_id) = encoded.split_at(size_of::<u64>());
+        let volume_serial_number = u64::from_be_bytes(
+            <[u8; size_of::<u64>()]>::try_from(volume)
+                .map_err(|_| KeyAgentStorageError::Identity)?,
+        );
+        let file_id = <[u8; 16]>::try_from(file_id).map_err(|_| KeyAgentStorageError::Identity)?;
+        Self::from_parts(volume_serial_number, file_id)
+    }
 }
 
 impl fmt::Debug for KeyAgentStorageRootIdentity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyAgentStorageRootIdentity([REDACTED])")
+    }
+}
+
+/// Opaque child-held proof of the path-opened fixed Key Agent storage root.
+///
+/// The value is deliberately non-cloneable and exposes no path, SID, or raw
+/// handle. Its `File` omits delete sharing for the capability's full lifetime.
+#[must_use = "the child must retain its held Key Agent storage root"]
+pub(crate) struct HeldChildKeyAgentStorageRoot {
+    handle: std::fs::File,
+    identity: KeyAgentStorageRootIdentity,
+    stable_user_sid: OwnedSid,
+    profile_sid: OwnedSid,
+}
+
+impl HeldChildKeyAgentStorageRoot {
+    /// Returns copyable, path-free identity evidence for startup binding.
+    pub(crate) const fn identity(&self) -> KeyAgentStorageRootIdentity {
+        self.identity
+    }
+
+    /// Revalidates the held object's exact identity and security policy.
+    ///
+    /// The supervisor-owned peer capability proves the local NTFS volume
+    /// policy before and after startup. Matching the complete `FILE_ID_INFO`
+    /// here binds this child-held handle to that already-proven object without
+    /// requiring volume-management queries from inside LPAC.
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
+        let identity =
+            verify_child_open_storage_root(&self.handle, &self.stable_user_sid, &self.profile_sid)?;
+        if identity != self.identity {
+            return Err(KeyAgentStorageError::Identity);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for HeldChildKeyAgentStorageRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HeldChildKeyAgentStorageRoot([REDACTED HELD DIRECTORY])")
     }
 }
 
@@ -208,6 +299,69 @@ pub(crate) unsafe fn create_fixed_key_agent_storage_root(
             false,
         )
     }
+}
+
+/// Opens the fixed storage root from the child process's exact environment.
+///
+/// This function accepts no caller-selected path, leaf, token, or SID. It
+/// rejects thread impersonation, validates the process's AppContainer-rebased
+/// `LOCALAPPDATA`, and obtains both expected principals from the current
+/// process token before path-opening the one compiled-in leaf.
+pub(crate) fn open_fixed_key_agent_storage_root_for_child()
+-> Result<HeldChildKeyAgentStorageRoot, KeyAgentStorageError> {
+    open_child_storage_root(KEY_AGENT_STORAGE_ROOT_LEAF)
+}
+
+#[cfg(test)]
+pub(crate) fn open_test_key_agent_storage_root_for_child(
+    leaf: &str,
+) -> Result<HeldChildKeyAgentStorageRoot, KeyAgentStorageError> {
+    if !is_exact_test_storage_root_leaf(leaf) {
+        return Err(KeyAgentStorageError::ProfileBinding);
+    }
+    open_child_storage_root(leaf)
+}
+
+fn open_child_storage_root(
+    leaf: &str,
+) -> Result<HeldChildKeyAgentStorageRoot, KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    let validated_ac_folder = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    validate_child_profile_folder_shape(&validated_ac_folder)?;
+
+    let token = current_process_token()?;
+    let stable_user_sid = token_user_sid(token.0)?;
+    let profile_sid = token_appcontainer_sid(token.0)?;
+    let path = validated_ac_folder.join(leaf);
+
+    // Recheck immediately before CreateFileW so its access check uses the same
+    // non-impersonating process identity whose token supplied both principals.
+    reject_thread_impersonation()?;
+    let handle = open_storage_root_handle(&path)?;
+    let identity = verify_child_open_storage_root(&handle, &stable_user_sid, &profile_sid)?;
+    let held = HeldChildKeyAgentStorageRoot {
+        handle,
+        identity,
+        stable_user_sid,
+        profile_sid,
+    };
+
+    held.revalidate()?;
+    Ok(held)
+}
+
+#[cfg(test)]
+fn is_exact_test_storage_root_leaf(leaf: &str) -> bool {
+    leaf.strip_prefix(KEY_AGENT_STORAGE_TEST_ROOT_LEAF_PREFIX)
+        .is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        })
 }
 
 unsafe fn create_storage_root(
@@ -269,27 +423,8 @@ fn open_and_verify_created_root(
     stable_user_sid: OwnedSid,
     profile_sid: OwnedSid,
 ) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
-    let wide = wide_path(path)?;
-    // SAFETY: the freshly created absolute path is NUL terminated. Omitting
-    // FILE_SHARE_DELETE pins this exact directory object against replacement.
-    let raw = unsafe {
-        CreateFileW(
-            PCWSTR(wide.as_ptr()),
-            FILE_READ_ATTRIBUTES.0 | FILE_LIST_DIRECTORY.0 | READ_CONTROL.0 | GENERIC_WRITE.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            None,
-        )
-    }
-    .map_err(|_| KeyAgentStorageError::Creation)?;
-    // SAFETY: transfer the one successful owned Win32 handle to File exactly once.
-    let handle = unsafe { std::fs::File::from_raw_handle(raw.0 as RawHandle) };
-    verify_directory_object(&handle)?;
-    verify_supported_local_ntfs(&handle)?;
-    verify_handle_security(&handle, &stable_user_sid, &profile_sid)?;
-    let identity = exact_file_identity(&handle)?;
+    let handle = open_storage_root_handle(path)?;
+    let identity = verify_open_storage_root(&handle, &stable_user_sid, &profile_sid)?;
 
     Ok(HeldKeyAgentStorageRoot {
         handle: Some(handle),
@@ -301,6 +436,53 @@ fn open_and_verify_created_root(
         #[cfg(test)]
         cleanup_on_drop: false,
     })
+}
+
+fn open_storage_root_handle(path: &Path) -> Result<std::fs::File, KeyAgentStorageError> {
+    let wide = wide_path(path)?;
+    // SAFETY: the validated absolute path is NUL terminated. Omitting
+    // FILE_SHARE_DELETE pins the opened directory object against replacement.
+    let raw = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_READ_ATTRIBUTES.0 | FILE_LIST_DIRECTORY.0 | READ_CONTROL.0 | GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+    .map_err(|error| {
+        if error.code() == ERROR_ACCESS_DENIED.to_hresult() {
+            KeyAgentStorageError::Security
+        } else {
+            KeyAgentStorageError::Creation
+        }
+    })?;
+    // SAFETY: transfer the one successful owned Win32 handle to File exactly once.
+    Ok(unsafe { std::fs::File::from_raw_handle(raw.0 as RawHandle) })
+}
+
+fn verify_open_storage_root(
+    handle: &std::fs::File,
+    stable_user_sid: &OwnedSid,
+    profile_sid: &OwnedSid,
+) -> Result<KeyAgentStorageRootIdentity, KeyAgentStorageError> {
+    verify_directory_object(handle)?;
+    verify_supported_local_ntfs(handle)?;
+    verify_handle_security(handle, stable_user_sid, profile_sid)?;
+    exact_file_identity(handle)
+}
+
+fn verify_child_open_storage_root(
+    handle: &std::fs::File,
+    stable_user_sid: &OwnedSid,
+    profile_sid: &OwnedSid,
+) -> Result<KeyAgentStorageRootIdentity, KeyAgentStorageError> {
+    verify_directory_object(handle)?;
+    verify_handle_security(handle, stable_user_sid, profile_sid)?;
+    exact_file_identity(handle)
 }
 
 fn validate_profile_folder(path: &Path) -> Result<(), KeyAgentStorageError> {
@@ -323,6 +505,50 @@ fn validate_profile_folder(path: &Path) -> Result<(), KeyAgentStorageError> {
     }
     let metadata = fs::symlink_metadata(path).map_err(|_| KeyAgentStorageError::ProfileBinding)?;
     if !metadata.is_dir() {
+        return Err(KeyAgentStorageError::ProfileBinding);
+    }
+    Ok(())
+}
+
+fn validate_child_profile_folder_shape(path: &Path) -> Result<(), KeyAgentStorageError> {
+    let mut components = path.components();
+    if !matches!(
+        (components.next(), components.next()),
+        (
+            Some(Component::Prefix(prefix)),
+            Some(Component::RootDir)
+        ) if matches!(prefix.kind(), Prefix::Disk(_))
+    ) || components
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(KeyAgentStorageError::ProfileBinding);
+    }
+    let local_folder_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let profile_folder = path.parent().ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let profile_name = profile_folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let packages = profile_folder
+        .parent()
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let packages_name = packages
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let packages_parent = packages
+        .parent()
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    if !path.is_absolute()
+        || !packages_parent.is_absolute()
+        || !local_folder_name.eq_ignore_ascii_case("AC")
+        || !profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)
+        || !packages_name.eq_ignore_ascii_case("Packages")
+        || path.as_os_str().encode_wide().any(|unit| unit == 0)
+    {
         return Err(KeyAgentStorageError::ProfileBinding);
     }
     Ok(())
@@ -357,16 +583,10 @@ fn exact_file_identity(
         )
     }
     .map_err(|_| KeyAgentStorageError::Identity)?;
-    if information.VolumeSerialNumber == 0
-        || information.FileId.Identifier == [0; 16]
-        || information.FileId.Identifier == [u8::MAX; 16]
-    {
-        return Err(KeyAgentStorageError::Identity);
-    }
-    Ok(KeyAgentStorageRootIdentity {
-        volume_serial_number: information.VolumeSerialNumber,
-        file_id: information.FileId.Identifier,
-    })
+    KeyAgentStorageRootIdentity::from_parts(
+        information.VolumeSerialNumber,
+        information.FileId.Identifier,
+    )
 }
 
 fn verify_supported_local_ntfs(directory: &std::fs::File) -> Result<(), KeyAgentStorageError> {
@@ -1003,39 +1223,124 @@ impl fmt::Debug for OwnedSid {
 }
 
 fn current_stable_user_sid() -> Result<OwnedSid, KeyAgentStorageError> {
+    let token = current_process_token()?;
+    token_user_sid(token.0)
+}
+
+fn current_process_token() -> Result<OwnedHandle, KeyAgentStorageError> {
     let mut token = HANDLE::default();
     // SAFETY: query-only current process token output is valid.
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
         .map_err(|_| KeyAgentStorageError::Security)?;
-    let token = OwnedHandle(token);
+    if token.is_invalid() || token == INVALID_HANDLE_VALUE {
+        return Err(KeyAgentStorageError::Security);
+    }
+    Ok(OwnedHandle(token))
+}
+
+struct TokenInformation {
+    words: Vec<usize>,
+    returned_bytes: usize,
+}
+
+fn token_information(
+    token: HANDLE,
+    class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
+) -> Result<TokenInformation, KeyAgentStorageError> {
     let mut needed = 0_u32;
-    // SAFETY: first call intentionally queries the exact TokenUser length.
-    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &raw mut needed) };
-    if needed < u32::try_from(size_of::<TOKEN_USER>()).unwrap_or(u32::MAX) {
+    // SAFETY: the first call intentionally queries this information class's
+    // exact byte length without supplying an output buffer.
+    let size_query = unsafe { GetTokenInformation(token, class, None, 0, &raw mut needed) };
+    let needed_bytes = usize::try_from(needed).map_err(|_| KeyAgentStorageError::Security)?;
+    if !matches!(size_query, Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult())
+        || needed_bytes == 0
+        || needed_bytes > MAX_STORAGE_TOKEN_INFORMATION_BYTES
+    {
         return Err(KeyAgentStorageError::Security);
     }
     let word_size = size_of::<usize>();
-    let words = usize::try_from(needed)
-        .map_err(|_| KeyAgentStorageError::Security)?
+    let words = needed_bytes
         .checked_add(word_size - 1)
         .and_then(|bytes| bytes.checked_div(word_size))
         .ok_or(KeyAgentStorageError::Security)?;
     let mut buffer = vec![0_usize; words];
+    let capacity = buffer
+        .len()
+        .checked_mul(word_size)
+        .ok_or(KeyAgentStorageError::Security)?;
+    let mut returned = 0_u32;
     // SAFETY: aligned buffer is writable for the queried byte length.
     unsafe {
         GetTokenInformation(
-            token.0,
-            TokenUser,
+            token,
+            class,
             Some(buffer.as_mut_ptr().cast::<c_void>()),
             needed,
-            &raw mut needed,
+            &raw mut returned,
         )
     }
     .map_err(|_| KeyAgentStorageError::Security)?;
+    let returned_bytes = usize::try_from(returned).map_err(|_| KeyAgentStorageError::Security)?;
+    if returned_bytes != needed_bytes || returned_bytes > capacity {
+        return Err(KeyAgentStorageError::Security);
+    }
+    Ok(TokenInformation {
+        words: buffer,
+        returned_bytes,
+    })
+}
+
+fn token_user_sid(token: HANDLE) -> Result<OwnedSid, KeyAgentStorageError> {
+    let information = token_information(token, TokenUser)?;
+    if information.returned_bytes < size_of::<TOKEN_USER>() {
+        return Err(KeyAgentStorageError::Security);
+    }
     // SAFETY: Windows initialized a complete TOKEN_USER in the aligned buffer.
-    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let user = unsafe { ptr::read_unaligned(information.words.as_ptr().cast::<TOKEN_USER>()) };
     // SAFETY: TokenUser owns a live SID until buffer drop; copy completes first.
-    unsafe { OwnedSid::copy_from(sid) }.map_err(|_| KeyAgentStorageError::Security)
+    unsafe { OwnedSid::copy_from(user.User.Sid) }.map_err(|_| KeyAgentStorageError::Security)
+}
+
+fn token_appcontainer_sid(token: HANDLE) -> Result<OwnedSid, KeyAgentStorageError> {
+    let information = token_information(token, TokenAppContainerSid)?;
+    if information.returned_bytes < size_of::<TOKEN_APPCONTAINER_INFORMATION>() {
+        return Err(KeyAgentStorageError::Security);
+    }
+    // SAFETY: the aligned token-information allocation contains the complete
+    // returned structure and remains live while its interior SID is copied.
+    let container = unsafe {
+        ptr::read_unaligned(
+            information
+                .words
+                .as_ptr()
+                .cast::<TOKEN_APPCONTAINER_INFORMATION>(),
+        )
+    };
+    if container.TokenAppContainer.is_invalid() {
+        return Err(KeyAgentStorageError::Security);
+    }
+    // SAFETY: TokenAppContainerSid returned this non-null SID inside the
+    // still-live information allocation; the owned copy completes first.
+    unsafe { OwnedSid::copy_from(container.TokenAppContainer) }
+        .map_err(|_| KeyAgentStorageError::Security)
+}
+
+fn reject_thread_impersonation() -> Result<(), KeyAgentStorageError> {
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo-thread handle and output are valid; OpenAsSelf makes
+    // the token query independent of the current impersonation level.
+    let result = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &raw mut token) };
+    match result {
+        Ok(()) if token.is_invalid() || token == INVALID_HANDLE_VALUE => {
+            Err(KeyAgentStorageError::Security)
+        }
+        Ok(()) => {
+            drop(OwnedHandle(token));
+            Err(KeyAgentStorageError::Security)
+        }
+        Err(error) if error.code() == ERROR_NO_TOKEN.to_hresult() => Ok(()),
+        Err(_) => Err(KeyAgentStorageError::Security),
+    }
 }
 
 struct OwnedHandle(HANDLE);
@@ -1101,14 +1406,19 @@ pub(crate) unsafe fn create_unique_key_agent_storage_root_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        KEY_AGENT_STORAGE_ROOT_ACCESS, KeyAgentStorageError, OwnedSid, SecurityDescriptor,
-        inspect_handle_security_descriptor,
+        HeldChildKeyAgentStorageRoot, HeldKeyAgentStorageRoot, KEY_AGENT_STORAGE_IDENTITY_BYTES,
+        KEY_AGENT_STORAGE_ROOT_ACCESS, KeyAgentStorageError, KeyAgentStorageRootIdentity, OwnedSid,
+        SecurityDescriptor, inspect_handle_security_descriptor, is_exact_test_storage_root_leaf,
+        reject_thread_impersonation, validate_child_profile_folder_shape,
     };
     use core::ffi::c_void;
+    use core::mem::size_of;
     use core::ptr;
+    use std::path::Path;
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
     use windows::Win32::Security::{
-        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetSecurityDescriptorSacl, PSID,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetSecurityDescriptorSacl,
+        ImpersonateSelf, PSID, RevertToSelf, SecurityImpersonation,
     };
     use windows::core::BOOL;
 
@@ -1117,6 +1427,18 @@ mod tests {
     const OTHER_PROFILE_SID: &str = "S-1-15-2-8-7-6-5-4-3-2-1";
 
     struct StringSid(PSID);
+
+    struct RevertImpersonation;
+
+    impl Drop for RevertImpersonation {
+        fn drop(&mut self) {
+            // SAFETY: this guard is constructed only after ImpersonateSelf
+            // succeeds in the same test thread.
+            unsafe {
+                let _ = RevertToSelf();
+            }
+        }
+    }
 
     impl StringSid {
         fn parse(value: &str) -> Result<Self, KeyAgentStorageError> {
@@ -1211,6 +1533,138 @@ mod tests {
         assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS & 0x0004_0000, 0);
         assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS & 0x0008_0000, 0);
         assert_eq!(KEY_AGENT_STORAGE_ROOT_ACCESS, 0x0012_01b7);
+    }
+
+    #[test]
+    fn child_storage_identity_queries_reject_thread_impersonation() -> windows::core::Result<()> {
+        {
+            // SAFETY: the unwind-safe guard below restores the thread token.
+            unsafe { ImpersonateSelf(SecurityImpersonation) }?;
+            let _revert = RevertImpersonation;
+            assert_eq!(
+                reject_thread_impersonation(),
+                Err(KeyAgentStorageError::Security)
+            );
+        }
+        assert_eq!(reject_thread_impersonation(), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn identity_codec_is_exact_big_endian_and_round_trips() -> Result<(), KeyAgentStorageError> {
+        let file_id = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1e, 0x1f,
+        ];
+        let identity = KeyAgentStorageRootIdentity::from_parts(0x0102_0304_0506_0708, file_id)?;
+        let encoded = identity.encode_be();
+        assert_eq!(
+            encoded,
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            ]
+        );
+        assert_eq!(KeyAgentStorageRootIdentity::decode_be(encoded)?, identity);
+        Ok(())
+    }
+
+    #[test]
+    fn identity_sentinels_fail_closed() {
+        assert_eq!(
+            KeyAgentStorageRootIdentity::from_parts(0, [1; 16]),
+            Err(KeyAgentStorageError::Identity)
+        );
+        assert_eq!(
+            KeyAgentStorageRootIdentity::from_parts(1, [0; 16]),
+            Err(KeyAgentStorageError::Identity)
+        );
+        assert_eq!(
+            KeyAgentStorageRootIdentity::from_parts(1, [u8::MAX; 16]),
+            Err(KeyAgentStorageError::Identity)
+        );
+        assert!(KeyAgentStorageRootIdentity::from_parts(1, [2; 16]).is_ok());
+
+        let mut zero_volume = [1_u8; 24];
+        let (volume, _) = zero_volume.split_at_mut(size_of::<u64>());
+        volume.fill(0);
+        assert_eq!(
+            KeyAgentStorageRootIdentity::decode_be(zero_volume),
+            Err(KeyAgentStorageError::Identity)
+        );
+
+        let mut zero_file_id = [0_u8; 24];
+        let (volume, _) = zero_file_id.split_at_mut(size_of::<u64>());
+        volume.copy_from_slice(&1_u64.to_be_bytes());
+        assert_eq!(
+            KeyAgentStorageRootIdentity::decode_be(zero_file_id),
+            Err(KeyAgentStorageError::Identity)
+        );
+
+        let mut maximum_file_id = [u8::MAX; 24];
+        let (volume, _) = maximum_file_id.split_at_mut(size_of::<u64>());
+        volume.copy_from_slice(&1_u64.to_be_bytes());
+        assert_eq!(
+            KeyAgentStorageRootIdentity::decode_be(maximum_file_id),
+            Err(KeyAgentStorageError::Identity)
+        );
+    }
+
+    #[test]
+    fn identity_is_copy_value_evidence_with_fixed_redacted_debug()
+    -> Result<(), KeyAgentStorageError> {
+        fn require_copy<T: Copy>() {}
+
+        require_copy::<KeyAgentStorageRootIdentity>();
+        assert_eq!(KEY_AGENT_STORAGE_IDENTITY_BYTES, 24);
+        assert!(core::mem::needs_drop::<HeldKeyAgentStorageRoot>());
+        assert!(core::mem::needs_drop::<HeldChildKeyAgentStorageRoot>());
+        let identity = KeyAgentStorageRootIdentity::from_parts(7, [8; 16])?;
+        assert_eq!(
+            format!("{identity:?}"),
+            "KeyAgentStorageRootIdentity([REDACTED])"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_child_leaf_accepts_only_existing_fixture_grammar() {
+        assert!(is_exact_test_storage_root_leaf(
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcdef"
+        ));
+        for rejected in [
+            "YourWallet.KeyAgent.Storage.v1",
+            "YourWallet.KeyAgent.Storage.Test.",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcde",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcdef0",
+            "YourWallet.KeyAgent.Storage.Test.0123456789ABCDEF0123456789ABCDEF",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcdeg",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef/123456789abcdef",
+        ] {
+            assert!(!is_exact_test_storage_root_leaf(rejected));
+        }
+    }
+
+    #[test]
+    fn child_profile_locator_accepts_only_fixed_drive_profile_ac_shape() {
+        let accepted = Path::new(r"C:\Local\Packages\YourWallet.KeyAgent.LPAC.v1\AC");
+        assert_eq!(validate_child_profile_folder_shape(accepted), Ok(()));
+
+        for rejected in [
+            r"Local\Packages\YourWallet.KeyAgent.LPAC.v1\AC",
+            r"\\server\share\Packages\YourWallet.KeyAgent.LPAC.v1\AC",
+            r"C:\Local\Other\YourWallet.KeyAgent.LPAC.v1\AC",
+            r"C:\Local\Packages\YourWallet.KeyAgent.LPAC.v2\AC",
+            r"C:\Local\Packages\YourWallet.KeyAgent.LPAC.v1\LocalCache",
+            r"C:\Local\Parent\..\Packages\YourWallet.KeyAgent.LPAC.v1\AC",
+            r"C:\Local\Packages\YourWallet.KeyAgent.LPAC.v1\AC\extra",
+            "C:\\Local\\Packages\\YourWallet.KeyAgent.LPAC.v1\\A\0C",
+        ] {
+            assert_eq!(
+                validate_child_profile_folder_shape(Path::new(rejected)),
+                Err(KeyAgentStorageError::ProfileBinding)
+            );
+        }
     }
 
     #[test]

@@ -1,11 +1,11 @@
-//! Dormant, fail-closed proof for one exact suspended Key Agent activation.
+//! Fail-closed proofs for one exact Key Agent activation.
 //!
 //! This module deliberately exposes no runtime arming API outside this crate.
 //! The supervisor must verify and pin the Key Agent artifact before creation,
 //! then compare that held file with the image-file handle supplied by the first
-//! Windows process-creation debug event. A successful value still owns a
-//! suspended process; dropping it terminates the process without resuming user
-//! code.
+//! Windows process-creation debug event. The dormant value owns a suspended
+//! process and exposes only one consuming transition into the fixed
+//! storage-startup probe; both dormant and running proofs terminate on drop.
 
 #![allow(dead_code)]
 
@@ -71,6 +71,9 @@ pub(crate) enum KeyAgentActivationError {
     /// A documented suspend-count transition was not exact.
     #[error("Key Agent suspension invariant mismatch")]
     SuspensionMismatch,
+    /// The exact detached primary thread could not enter the storage probe.
+    #[error("Key Agent storage-startup resume failed")]
+    StartupResume,
     /// The first debug event did not arrive inside the fixed bound.
     #[error("Key Agent process-creation debug event timed out")]
     DebugEventTimeout,
@@ -120,6 +123,14 @@ impl ExactFileObjectIdentity {
             file_id,
         })
     }
+
+    pub(crate) fn encode_be(self) -> [u8; 24] {
+        let mut encoded = [0_u8; 24];
+        let (volume, file_id) = encoded.split_at_mut(8);
+        volume.copy_from_slice(&self.volume_serial_number.to_be_bytes());
+        file_id.copy_from_slice(&self.file_id);
+        encoded
+    }
 }
 
 impl fmt::Debug for ExactFileObjectIdentity {
@@ -134,6 +145,7 @@ enum LaunchPhase {
     CreateEventHeld,
     EventContinued,
     DetachedSuspended,
+    DetachedRunning,
     Aborted,
 }
 
@@ -142,6 +154,7 @@ enum LaunchTransition {
     ReceiveCreateEvent,
     ContinueCreateEvent,
     DetachDebugger,
+    ResumeStorageStartup,
     Abort,
 }
 
@@ -155,11 +168,15 @@ impl LaunchPhase {
                 Ok(Self::EventContinued)
             }
             (Self::EventContinued, LaunchTransition::DetachDebugger) => Ok(Self::DetachedSuspended),
+            (Self::DetachedSuspended, LaunchTransition::ResumeStorageStartup) => {
+                Ok(Self::DetachedRunning)
+            }
             (
                 Self::AwaitingCreateEvent
                 | Self::CreateEventHeld
                 | Self::EventContinued
-                | Self::DetachedSuspended,
+                | Self::DetachedSuspended
+                | Self::DetachedRunning,
                 LaunchTransition::Abort,
             ) => Ok(Self::Aborted),
             _ => Err(KeyAgentActivationError::DebugDetach),
@@ -172,7 +189,8 @@ impl LaunchPhase {
 /// This type is non-cloneable and crate-private. It retains the original
 /// `FILE_SHARE_READ`-only [`VerifiedHelper`] handle, exact process and primary
 /// thread handles, the 128-bit file-object proof, and process creation time.
-/// There is deliberately no resume method in this dormant slice.
+/// The only consuming transition resumes it for the fixed storage-startup
+/// probe; no generic resume or raw thread operation is exposed.
 pub(crate) struct HeldKeyAgentActivation {
     process: sys::DetachedSuspendedDebuggee,
     // Keep the process field first so its Drop cleanup runs before the pinned
@@ -199,6 +217,26 @@ impl HeldKeyAgentActivation {
         self.process.is_detached_and_suspended()
     }
 
+    /// Consumes the dormant proof and releases exactly its one verified primary
+    /// suspend count for the fixed storage-startup protocol.
+    pub(crate) fn resume_for_storage_startup(
+        self,
+    ) -> Result<RunningKeyAgentActivation, KeyAgentActivationError> {
+        let Self {
+            process,
+            artifact,
+            artifact_identity,
+            creation_time,
+        } = self;
+        let process = process.resume_for_storage_startup()?;
+        Ok(RunningKeyAgentActivation {
+            process,
+            artifact,
+            artifact_identity,
+            creation_time,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn duplicate_process_observation(
         &self,
@@ -214,6 +252,68 @@ impl HeldKeyAgentActivation {
         root_job: &KeyAgentRootJob,
     ) -> Result<bool, KeyAgentActivationError> {
         self.process.is_member_of_root_job_for_test(root_job)
+    }
+}
+
+/// Opaque ownership of the exact verified Key Agent after the one permitted
+/// storage-startup resume transition.
+///
+/// This type proves only that the primary thread was released from the exact
+/// detached suspend count. The supervisor must still authenticate the startup
+/// response before wrapping it in a storage-proven aggregate.
+pub(crate) struct RunningKeyAgentActivation {
+    process: sys::DetachedRunningDebuggee,
+    // Keep process cleanup ahead of the verified artifact pin.
+    artifact: VerifiedHelper,
+    artifact_identity: ExactFileObjectIdentity,
+    creation_time: u64,
+}
+
+impl RunningKeyAgentActivation {
+    pub(crate) const fn process_id(&self) -> u32 {
+        self.process.process_id()
+    }
+
+    pub(crate) const fn creation_time(&self) -> u64 {
+        self.creation_time
+    }
+
+    pub(crate) const fn artifact_identity(&self) -> ExactFileObjectIdentity {
+        self.artifact_identity
+    }
+
+    pub(crate) fn is_detached_and_running(&self) -> bool {
+        self.process.is_detached_and_running()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn duplicate_process_observation(
+        &self,
+    ) -> Result<KeyAgentProcessObservation, KeyAgentActivationError> {
+        self.process
+            .duplicate_process_observation()
+            .map(KeyAgentProcessObservation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_member_of_root_job_for_test(
+        &self,
+        root_job: &KeyAgentRootJob,
+    ) -> Result<bool, KeyAgentActivationError> {
+        self.process.is_member_of_root_job_for_test(root_job)
+    }
+}
+
+impl fmt::Debug for RunningKeyAgentActivation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RunningKeyAgentActivation")
+            .field("artifact", &"[VERIFIED KEY AGENT ARTIFACT]")
+            .field("process", &"[RUNNING PROCESS AND THREAD HANDLES]")
+            .field("lpac", &"[VERIFIED ZERO-CAPABILITY KEY AGENT LPAC]")
+            .field("artifact_identity", &"[FILE_ID_INFO]")
+            .field("creation_time", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
 }
 
@@ -249,15 +349,6 @@ impl fmt::Debug for HeldKeyAgentActivation {
             .field("artifact_identity", &"[FILE_ID_INFO]")
             .field("creation_time", &"[REDACTED]")
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for HeldKeyAgentActivation {
-    fn drop(&mut self) {
-        // Abort while `artifact` still pins the verified file object. Field
-        // destruction closes that read-only pin only after the process has
-        // synchronously terminated (or cleanup has failed closed).
-        let _ = self.process.abort();
     }
 }
 
@@ -371,6 +462,36 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
     )
 }
 
+/// Test-only equivalent that selects one exact ignored child fixture through
+/// the test executable's command line. Production activation never supplies a
+/// command line and therefore cannot select this seam.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
+    _fresh_thread: FreshKeyAgentDebugThread,
+    preflighted: PreflightKeyAgentArtifact,
+    provisioning: &PreparedKeyAgentProvisioning,
+    pipes: &PrivateKeyAgentPipes,
+    root_job: &KeyAgentRootJob,
+    root_job_attribute: &KeyAgentRootJobAttribute<'_>,
+    coordination_deadline: Instant,
+    command_line: &mut [u16],
+) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+    let PreflightKeyAgentArtifact { artifact } = preflighted;
+    let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
+    verify_empty_root_job(root_job)?;
+    let process = sys::SuspendedDebuggee::create_with_test_command_line(
+        &artifact,
+        provisioning,
+        pipes,
+        root_job,
+        root_job_attribute,
+        coordination_deadline,
+        command_line,
+    )?;
+    authenticate_detach_and_bind_activation(artifact, artifact_identity, root_job, process)
+}
+
 // Keeping each lifetime-bound launch authority explicit makes mismatched Job,
 // pipe, provisioning, and deadline inputs visible at this one testable leaf.
 #[allow(clippy::too_many_arguments)]
@@ -385,7 +506,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     coordination_deadline: Instant,
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
     verify_empty_root_job(root_job)?;
-    let mut process = sys::SuspendedDebuggee::create(
+    let process = sys::SuspendedDebuggee::create(
         &artifact,
         provisioning,
         pipes,
@@ -393,6 +514,15 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
         root_job_attribute,
         coordination_deadline,
     )?;
+    authenticate_detach_and_bind_activation(artifact, artifact_identity, root_job, process)
+}
+
+fn authenticate_detach_and_bind_activation(
+    artifact: VerifiedHelper,
+    artifact_identity: ExactFileObjectIdentity,
+    root_job: &KeyAgentRootJob,
+    mut process: sys::SuspendedDebuggee,
+) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
     let first_event = match process
         .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)
     {
@@ -474,7 +604,7 @@ mod sys {
 
     use windows::Win32::Foundation::{
         CloseHandle, DBG_CONTINUE, ERROR_SEM_TIMEOUT, FILETIME, GetLastError, HANDLE,
-        INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     #[cfg(test)]
     use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
@@ -723,8 +853,8 @@ mod sys {
         // listed stdio handles are the only inheritable handles. The retained
         // process context supplies a validated System32 current directory and
         // an exact three-name Unicode environment: its OS-derived SystemRoot
-        // and WINDIR plus the OS-derived LOCALAPPDATA required by AppContainer
-        // creation. The flags keep creation both
+        // and WINDIR plus the OS-derived user LOCALAPPDATA base that Windows
+        // rebases for the AppContainer. The flags keep creation both
         // headless and suspended before user-mode entry.
         unsafe {
             flight
@@ -942,6 +1072,41 @@ mod sys {
                 && self.lpac.is_some()
         }
 
+        fn is_detached_and_running(&self) -> bool {
+            self.phase == LaunchPhase::DetachedRunning
+                && self.proven_suspend_count == 0
+                && self.prepared_lpac.is_none()
+                && self.lpac.is_some()
+                && self.pending_event.is_none()
+        }
+
+        fn resume_for_storage_startup(&mut self) -> Result<(), KeyAgentActivationError> {
+            if !self.is_detached_and_suspended() || self.pending_event.is_some() {
+                return Err(KeyAgentActivationError::StartupResume);
+            }
+            // SAFETY: the exact detached primary thread is still owned and the
+            // post-detach proof established precisely one explicit suspend
+            // count. This is the only production call that releases it.
+            let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };
+            if previous_suspend_count != 1 {
+                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::SuspensionMismatch);
+            }
+            self.proven_suspend_count = 0;
+            self.phase = self
+                .phase
+                .transition(LaunchTransition::ResumeStorageStartup)?;
+
+            // SAFETY: a zero-time wait only observes the exact owned process.
+            // A live process must remain nonsignaled immediately after resume;
+            // later exit is handled by the deadline-bound startup channel.
+            if unsafe { WaitForSingleObject(self.process.raw(), 0) } != WAIT_TIMEOUT {
+                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::StartupResume);
+            }
+            Ok(())
+        }
+
         pub(super) fn into_detached(
             self,
         ) -> Result<DetachedSuspendedDebuggee, KeyAgentActivationError> {
@@ -1127,7 +1292,10 @@ mod sys {
                     .map_err(|_| KeyAgentActivationError::Cleanup)?;
                 self.pending_event = None;
             }
-            if self.phase != LaunchPhase::DetachedSuspended {
+            if !matches!(
+                self.phase,
+                LaunchPhase::DetachedSuspended | LaunchPhase::DetachedRunning
+            ) {
                 // SAFETY: only the creator thread owns this debug relationship.
                 // It is best-effort because termination may already have removed
                 // the relationship; the process wait below is authoritative.
@@ -1211,6 +1379,13 @@ mod sys {
             self.0.abort()
         }
 
+        pub(super) fn resume_for_storage_startup(
+            mut self,
+        ) -> Result<DetachedRunningDebuggee, KeyAgentActivationError> {
+            self.0.resume_for_storage_startup()?;
+            Ok(DetachedRunningDebuggee(self.0))
+        }
+
         #[cfg(test)]
         pub(super) fn duplicate_process_observation(
             &self,
@@ -1232,6 +1407,48 @@ mod sys {
     impl fmt::Debug for DetachedSuspendedDebuggee {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("DetachedSuspendedDebuggee([REDACTED HANDLES AND IDENTITY])")
+        }
+    }
+
+    /// Type-state proof that the exact detached primary thread entered the one
+    /// permitted storage-startup probe and has no remaining suspend count.
+    pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);
+
+    // SAFETY: the debug relationship ended before this wrapper was constructed.
+    // It uniquely owns process-wide handles and exposes only observation and
+    // synchronous cleanup; no creator-thread-only debugger operation remains.
+    unsafe impl Send for DetachedRunningDebuggee {}
+
+    impl DetachedRunningDebuggee {
+        pub(super) const fn process_id(&self) -> u32 {
+            self.0.process_id()
+        }
+
+        pub(super) fn is_detached_and_running(&self) -> bool {
+            self.0.is_detached_and_running()
+        }
+
+        #[cfg(test)]
+        pub(super) fn duplicate_process_observation(
+            &self,
+        ) -> Result<TestProcessObservation, KeyAgentActivationError> {
+            self.0.duplicate_process_observation()
+        }
+
+        #[cfg(test)]
+        pub(super) fn is_member_of_root_job_for_test(
+            &self,
+            root_job: &KeyAgentRootJob,
+        ) -> Result<bool, KeyAgentActivationError> {
+            root_job
+                .contains_process(self.0.process_handle())
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+        }
+    }
+
+    impl fmt::Debug for DetachedRunningDebuggee {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("DetachedRunningDebuggee([REDACTED HANDLES AND IDENTITY])")
         }
     }
 
@@ -1432,7 +1649,7 @@ mod tests {
     use super::{
         ExactFileObjectIdentity, FreshKeyAgentDebugThread, HeldKeyAgentActivation,
         KeyAgentActivationError, LaunchPhase, LaunchTransition, PreflightKeyAgentArtifact,
-        activate_preflighted_key_agent_on_fresh_worker,
+        RunningKeyAgentActivation, activate_preflighted_key_agent_on_fresh_worker,
         activate_preflighted_key_agent_on_fresh_worker_with_identity, fail_after_cleanup,
         preflight_key_agent_activation, run_on_fresh_key_agent_debug_thread, sys,
     };
@@ -1570,6 +1787,18 @@ mod tests {
             Ok(LaunchPhase::DetachedSuspended)
         );
         assert_eq!(
+            LaunchPhase::DetachedSuspended.transition(LaunchTransition::ResumeStorageStartup),
+            Ok(LaunchPhase::DetachedRunning)
+        );
+        assert_eq!(
+            LaunchPhase::DetachedRunning.transition(LaunchTransition::ResumeStorageStartup),
+            Err(KeyAgentActivationError::DebugDetach)
+        );
+        assert_eq!(
+            LaunchPhase::DetachedRunning.transition(LaunchTransition::Abort),
+            Ok(LaunchPhase::Aborted)
+        );
+        assert_eq!(
             LaunchPhase::AwaitingCreateEvent.transition(LaunchTransition::DetachDebugger),
             Err(KeyAgentActivationError::DebugDetach)
         );
@@ -1579,6 +1808,10 @@ mod tests {
         );
         assert_eq!(
             LaunchPhase::Aborted.transition(LaunchTransition::ReceiveCreateEvent),
+            Err(KeyAgentActivationError::DebugDetach)
+        );
+        assert_eq!(
+            LaunchPhase::Aborted.transition(LaunchTransition::ResumeStorageStartup),
             Err(KeyAgentActivationError::DebugDetach)
         );
     }
@@ -1637,7 +1870,9 @@ mod tests {
     fn authority_and_detached_type_states_have_exact_transfer_traits() {
         require_send::<PreflightKeyAgentArtifact>();
         require_send::<sys::DetachedSuspendedDebuggee>();
+        require_send::<sys::DetachedRunningDebuggee>();
         require_send::<HeldKeyAgentActivation>();
+        require_send::<RunningKeyAgentActivation>();
 
         let _ = <FreshKeyAgentDebugThread as AmbiguousIfSend<_>>::marker;
         let _ = <FreshKeyAgentDebugThread as AmbiguousIfSync<_>>::marker;
@@ -1649,6 +1884,12 @@ mod tests {
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfSync<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfClone<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfCopy<_>>::marker;
+        let _ = <sys::DetachedRunningDebuggee as AmbiguousIfSync<_>>::marker;
+        let _ = <sys::DetachedRunningDebuggee as AmbiguousIfClone<_>>::marker;
+        let _ = <sys::DetachedRunningDebuggee as AmbiguousIfCopy<_>>::marker;
+        let _ = <RunningKeyAgentActivation as AmbiguousIfSync<_>>::marker;
+        let _ = <RunningKeyAgentActivation as AmbiguousIfClone<_>>::marker;
+        let _ = <RunningKeyAgentActivation as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]

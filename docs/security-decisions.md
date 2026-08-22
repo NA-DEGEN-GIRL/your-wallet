@@ -4,8 +4,12 @@ These decisions are normative targets for version 0.1. They do not certify that
 the current binaries satisfy them. A change requires an ADR, new vectors, and
 security review.
 
-**Current release status: STOP-SHIP.** `broker`, `key-agent`, and default builds
-of `approval-ui` and `secret-input-ui` exit with code 78 immediately.
+**Current release status: STOP-SHIP.** `broker` and default builds of
+`approval-ui` and `secret-input-ui` exit with code 78 immediately. A directly
+started `key-agent` also fails closed; only the private inherited startup shape
+can make it seal stdio, complete one storage-object proof, and wait for its
+supervisor endpoint to close before it exits 78. It exposes no runtime or signing
+protocol.
 `native-host` validates one bounded persistent stream, returns error 4900 for
 each valid request without reaching a Broker, then exits 78 on EOF or the first
 terminal error. The UI helpers have opt-in inherited-stream runtime
@@ -82,19 +86,43 @@ non-sentinel 128-bit `FILE_ID_INFO`. It keeps the directory open without delete
 sharing, revalidates the held identity, volume, and security policy throughout
 binding, and closes that handle last during cleanup.
 
-The limitations are immediate: the child has not opened, used, or been bound or
-transcript-bound to that root. There is no Key Agent generation-store adapter or
-file-level dual-principal policy; the public `WindowsGenerationStore` remains
-stable-`TokenUser`-only. Existing production profiles still lack durable
-installer provenance and recovery, and the `TokenUser` ACE leaves other
-same-user processes able to access the root. Ancestor path validation is not
-atomic and assumes no concurrent same-user mutation. Kernel tests reuse the
-persistent test profile with a CSPRNG-named test leaf; they are not a production
-fresh-fixed-profile/root E2E. The central AppContainer profile API rejects thread
-impersonation before its process-wide non-reentrant gate; same-thread reentry and
-mutex poison also fail closed. Signed immutable release, authenticated process
-topology and startup-nonce exchange, resume, and release activation remain
-**STOP-SHIP**.
+The private one-shot storage-startup transition now binds the child to that root.
+The parent writes a fixed request while the exact child is still suspended; it
+contains a fresh nonce, the held PID and process creation `FILETIME`, the full
+volume-serial/128-bit root identity, and only the compiled production leaf or
+exact `cfg(test)` leaf grammar. Only then does the consuming transition release
+the sole verified suspend count. After reading the exact 188-byte request, the
+child immediately uses `PeekNamedPipe` to reject any already-buffered suffix. It
+then resolves the leaf beneath the exact OS-rerouted `LOCALAPPDATA`, derives
+`TokenUser` and the AppContainer SID from its own process token, and checks the
+directory object, owner, protected two-ACE DACL, inherited Low/`NW` label, and
+complete `FILE_ID_INFO` before returning one response that echoes the nonce and
+binds its PID, creation time, and root identity.
+
+After reading the exact 88-byte response, the parent immediately uses
+`PeekNamedPipe` to reject any already-buffered suffix. It then independently
+compares every response field, revalidates the held root's
+volume/security/identity, Job context/limits/topology, and monotonic lease, and
+commits the held artifact identity plus the exact request and response into a
+domain-separated SHA-256 transcript commitment. The resulting private aggregate
+retains the process, Job, parent pipe endpoints, handshake, and no-delete-share
+root handle while the child retains its own root handle. These immediate peeks on
+persistent open streams prove neither the absence of a future delayed suffix nor
+EOF. Neither side exposes generic runtime I/O or signing authority.
+
+The remaining limits are immediate. There is no Key Agent generation-file
+adapter or reviewed file-level dual-principal DACL; the public
+`WindowsGenerationStore` remains stable-`TokenUser`-only. Existing production
+profiles still lack durable installer provenance and recovery, and the
+`TokenUser` ACE leaves other same-user processes able to access the root.
+Ancestor path validation is not atomic and assumes no concurrent same-user
+mutation. Kernel tests reuse the persistent test profile with a CSPRNG-named test
+leaf; they are not a production fresh-fixed-profile/root E2E. Protected settings,
+authenticated Broker/supervisor/process topology, signed immutable artifacts and
+DLL/dependency E2E, and release activation remain **STOP-SHIP**;
+`COMPILED_RELEASE_POLICY` is `None`. The central AppContainer profile API rejects
+thread impersonation before its process-wide non-reentrant gate; same-thread
+reentry and mutex poison also fail closed.
 
 The activation still supplies zero capabilities plus the ALL APPLICATION
 PACKAGES opt-out in its exact four-entry process-creation attribute list. While
@@ -110,7 +138,8 @@ supported `TokenIsLessPrivilegedAppContainer` query must return an exact DWORD
 check; the exact membership differential remains mandatory and every other
 error fails closed. A suspended ordinary-AppContainer control that omits only
 the AAP opt-out must produce `(true, true)`, and neither control is resumed into
-user mode. The detached capability still has no resume API.
+user mode. The detached Key Agent capability exposes no generic resume API; its
+only consuming resume transition is the fixed storage-startup exchange above.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -120,7 +149,18 @@ exact zero-flag readback. Any rejection exits 78 before another application
 operation. An isolated child/grandchild kernel test uses exact object comparison
 to prove that none of the original three stdio objects propagates. This is a
 repo-local implementation proof, not signed-artifact, supervisor-topology, or
-release-activation evidence.
+release-activation evidence. Immediately afterward the child reads exactly one
+startup request, rejects an already-buffered suffix before its process/root
+checks, writes exactly one response only after those checks, fails closed on any
+input byte that arrives later, and retains its sealed handles and independently
+opened root until the parent request endpoint disconnects.
+
+The integrated kernel positive has two explicit `cfg(test)` accommodations: an
+exact pinned terse libtest preamble may precede the response, and Job topology may
+contain only the fixture process plus at most the exact System32 `conhost.exe`.
+Production requires response magic at byte zero and exactly one Job member. These
+test accommodations prove neither the production fresh fixed root nor execution
+of the exact signed release artifact.
 
 | Area | Decision |
 | --- | --- |
@@ -174,14 +214,17 @@ Before any real mainnet value is used, the Windows build must prove:
    exact two-name environment and the Key Agent's exact three-name environment,
    including OS-derived `LOCALAPPDATA`, share the same verified System32
    current-directory boundary; that policy remains repo-local and is not atomic
-   directory identity or signed-artifact E2E evidence. The fresh fixed-profile
-   and held fixed-root proof, four creation attributes, and suspended-token proof
-   do not bind child storage use, adopt an existing production profile, provide
-   durable installer provenance/recovery, authenticate Broker/startup topology
-   and nonce exchange, establish Native Host provenance or signed immutable
-   installation, resume the child, or prove exact loaded DLL/dependency identity.
-   `COMPILED_RELEASE_POLICY` remains `None`; coordination and these local proofs
-   are not release activation proof.
+   directory identity or signed-artifact E2E evidence. The fresh fixed-profile/
+   held-root proof, four creation attributes, suspended-token proof, and private
+   request-before-resume storage transcript commitment now bind the kernel-test
+   child to its exact CSPRNG test root. They do not adopt an existing production
+   profile, provide durable installer provenance/recovery, enforce the
+   profile-SID DACL on generation files, connect protected settings, authenticate the
+   Broker/supervisor/process topology, establish Native Host provenance or a
+   signed immutable installation, or prove exact loaded DLL/dependency identity.
+   The pinned libtest preamble and optional System32 `conhost.exe` are test-only.
+   `COMPILED_RELEASE_POLICY` remains `None`; these local proofs are neither a
+   production fresh-root E2E nor release activation proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;
    signed-artifact crash tests must cover every persistence and RPC boundary.

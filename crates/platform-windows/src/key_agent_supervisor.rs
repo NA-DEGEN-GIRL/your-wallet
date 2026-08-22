@@ -1,10 +1,10 @@
-//! Dormant supervisor-owned bootstrap state for the Key Agent.
+//! Supervisor-owned dormant and storage-proven Key Agent bootstrap states.
 //!
-//! This module deliberately contains no process-resume operation. The startup
-//! nonce and monotonic deadline belong to the external supervisor boundary;
-//! they are separate from the Key Agent's protected-settings lease, which may
-//! be issued only after the Key Agent has started and revalidated its own
-//! authenticated settings state.
+//! This module contains exactly one consuming resume transition for the fixed
+//! storage-startup exchange and no general runtime operation. Its nonce,
+//! process-instance binding, root identity, and monotonic deadline remain
+//! separate from the Key Agent's protected-settings lease, which may be issued
+//! only after later authenticated settings and topology boundaries exist.
 
 #![allow(dead_code)]
 
@@ -13,24 +13,43 @@ use core::fmt;
 use core::marker::PhantomData;
 use std::time::{Duration, Instant};
 
+use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::attestation::ReleaseAttestation;
 use crate::helper::VerifiedHelper;
+#[cfg(test)]
+use crate::key_agent_activation::activate_preflighted_key_agent_on_fresh_worker_for_kernel_test;
 use crate::key_agent_activation::{
-    HeldKeyAgentActivation, KeyAgentActivationError,
+    HeldKeyAgentActivation, KeyAgentActivationError, RunningKeyAgentActivation,
     activate_preflighted_key_agent_on_fresh_worker, preflight_key_agent_activation,
     run_on_fresh_key_agent_debug_thread,
 };
 use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
 use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobError};
-use crate::pipe::{KeyAgentRequestWriter, KeyAgentResponseReader, PipeError, PrivateKeyAgentPipes};
+use crate::key_agent_startup::{
+    KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES, KeyAgentStartupCodecError,
+    KeyAgentStartupRequest, KeyAgentStartupResponse,
+};
+use crate::pipe::{
+    KeyAgentRequestWriter, KeyAgentResponseReader, KeyAgentStartupRequestWriter,
+    KeyAgentStartupResponseReader, PipeError, PrivateKeyAgentPipes,
+};
 
 const ACTIVATION_NONCE_BYTES: usize = 32;
+const STARTUP_TRANSCRIPT_BYTES: usize = 32;
+const STARTUP_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/key-agent-storage-startup/v1\0";
 const MAX_STARTUP_LIFETIME: Duration = Duration::from_mins(2);
 const RANDOMNESS_ATTEMPTS: usize = 4;
+
+#[derive(Clone, Copy)]
+enum StartupResponseTransport {
+    Exact,
+    #[cfg(test)]
+    PinnedLibtestTerse,
+}
 
 /// Stable failures while minting a supervisor-only startup lease.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -62,6 +81,9 @@ pub(crate) enum KeyAgentSupervisorError {
     /// The fresh fixed profile/storage proof could not be created or revalidated.
     #[error("Key Agent profile/storage provisioning is unavailable")]
     Provisioning,
+    /// The exact fixed startup frame or returned identity proof was invalid.
+    #[error("Key Agent storage-startup protocol failed")]
+    StartupProtocol,
 }
 
 impl From<KeyAgentActivationError> for KeyAgentSupervisorError {
@@ -85,6 +107,12 @@ impl From<KeyAgentRootJobError> for KeyAgentSupervisorError {
 impl From<KeyAgentLpacError> for KeyAgentSupervisorError {
     fn from(_error: KeyAgentLpacError) -> Self {
         Self::Provisioning
+    }
+}
+
+impl From<KeyAgentStartupCodecError> for KeyAgentSupervisorError {
+    fn from(_error: KeyAgentStartupCodecError) -> Self {
+        Self::StartupProtocol
     }
 }
 
@@ -150,11 +178,12 @@ impl SupervisorActivationLease {
     }
 
     /// Consumes this attempt while checking the exact echoed nonce and trusted
-    /// monotonic deadline. The returned proof remains private to this module;
-    /// a future resume path must consume it and recheck the deadline itself.
+    /// monotonic deadline. The returned transcript proof remains private to
+    /// this module and grants no protected-settings or runtime authority.
     fn verify_and_consume(
         self,
         candidate: &[u8; ACTIVATION_NONCE_BYTES],
+        transcript_commitment: [u8; STARTUP_TRANSCRIPT_BYTES],
     ) -> Result<VerifiedSupervisorHandshake, KeyAgentSupervisorError> {
         self.ensure_live()?;
         if self.nonce.as_ref().ct_eq(candidate).unwrap_u8() == 0 {
@@ -163,6 +192,7 @@ impl SupervisorActivationLease {
         Ok(VerifiedSupervisorHandshake {
             nonce: self.nonce,
             expires_at: self.expires_at,
+            transcript_commitment: Zeroizing::new(transcript_commitment),
         })
     }
 
@@ -171,6 +201,7 @@ impl SupervisorActivationLease {
         self,
         candidate: &[u8; ACTIVATION_NONCE_BYTES],
         now: Instant,
+        transcript_commitment: [u8; STARTUP_TRANSCRIPT_BYTES],
     ) -> Result<VerifiedSupervisorHandshake, KeyAgentSupervisorError> {
         self.ensure_live_at_for_test(now)?;
         if self.nonce.as_ref().ct_eq(candidate).unwrap_u8() == 0 {
@@ -179,6 +210,7 @@ impl SupervisorActivationLease {
         Ok(VerifiedSupervisorHandshake {
             nonce: self.nonce,
             expires_at: self.expires_at,
+            transcript_commitment: Zeroizing::new(transcript_commitment),
         })
     }
 
@@ -205,10 +237,11 @@ impl fmt::Debug for SupervisorActivationLease {
 struct VerifiedSupervisorHandshake {
     nonce: Zeroizing<[u8; ACTIVATION_NONCE_BYTES]>,
     expires_at: Instant,
+    transcript_commitment: Zeroizing<[u8; STARTUP_TRANSCRIPT_BYTES]>,
 }
 
 impl VerifiedSupervisorHandshake {
-    /// Final in-module deadline check for the future no-gap resume boundary.
+    /// Reports whether the completed startup proof remains inside its lease.
     fn is_live(&self) -> bool {
         Instant::now() < self.expires_at
     }
@@ -220,6 +253,7 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
             .debug_struct("VerifiedSupervisorHandshake")
             .field("nonce", &"[REDACTED]")
             .field("expires_at", &"[TRUSTED MONOTONIC DEADLINE]")
+            .field("transcript_commitment", &"[REDACTED SHA-256]")
             .finish()
     }
 }
@@ -238,13 +272,13 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
 /// exact suspended process, then terminates the root Job, then closes the
 /// parent channel endpoints, zeroizes the startup nonce, and finally closes the
 /// no-delete-share storage-root handle. No raw handle, path, SID, pipe name,
-/// debugger operation, or resume operation is exposed.
+/// debugger operation, or generic resume operation is exposed.
 #[must_use = "dropping the dormant Key Agent capability aborts its suspended process tree"]
 pub(crate) struct BoundDormantKeyAgent {
     activation: HeldKeyAgentActivation,
     root_job: KeyAgentRootJob,
-    request_writer: KeyAgentRequestWriter,
-    response_reader: KeyAgentResponseReader,
+    request_writer: KeyAgentStartupRequestWriter,
+    response_reader: KeyAgentStartupResponseReader,
     startup_lease: SupervisorActivationLease,
     not_sync: PhantomData<Cell<()>>,
     provisioning: PreparedKeyAgentProvisioning,
@@ -256,9 +290,48 @@ impl fmt::Debug for BoundDormantKeyAgent {
             .debug_struct("BoundDormantKeyAgent")
             .field("activation", &"[DETACHED SUSPENDED KEY AGENT]")
             .field("root_job", &"[TWO-PROCESS KILL-ON-CLOSE ROOT JOB]")
-            .field("request_writer", &"[UNIQUE PARENT REQUEST HANDLE]")
-            .field("response_reader", &"[UNIQUE PARENT RESPONSE HANDLE]")
+            .field("request_writer", &"[UNIQUE STARTUP REQUEST HANDLE]")
+            .field("response_reader", &"[UNIQUE STARTUP RESPONSE HANDLE]")
             .field("startup_lease", &"[ONE-SHOT NONCE AND MONOTONIC DEADLINE]")
+            .field("provisioning", &"[FRESH PROFILE AND HELD STORAGE ROOT]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// One exact Key Agent whose sole permitted user-mode step proved that it
+/// reopened the supervisor-held storage root and observed the same process
+/// instance and startup nonce.
+///
+/// This private capability still exposes no runtime request operation and no
+/// signing authority. Field order is security-significant: the running process
+/// is synchronously terminated before the root Job, retained pipe endpoints,
+/// transcript proof, or held provisioning state are released.
+#[must_use = "dropping the storage-proven Key Agent terminates its process tree"]
+pub(crate) struct BoundStorageProvenKeyAgent {
+    activation: RunningKeyAgentActivation,
+    root_job: KeyAgentRootJob,
+    request_writer: KeyAgentRequestWriter,
+    response_reader: KeyAgentResponseReader,
+    handshake: VerifiedSupervisorHandshake,
+    not_sync: PhantomData<Cell<()>>,
+    provisioning: PreparedKeyAgentProvisioning,
+}
+
+impl fmt::Debug for BoundStorageProvenKeyAgent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BoundStorageProvenKeyAgent")
+            .field("activation", &"[DETACHED RUNNING KEY AGENT]")
+            .field("root_job", &"[TWO-PROCESS KILL-ON-CLOSE ROOT JOB]")
+            .field(
+                "request_writer",
+                &"[RETAINED REQUEST HANDLE; NO RUNTIME I/O]",
+            )
+            .field(
+                "response_reader",
+                &"[RETAINED RESPONSE HANDLE; NO RUNTIME I/O]",
+            )
+            .field("handshake", &"[VERIFIED STORAGE-STARTUP TRANSCRIPT]")
             .field("provisioning", &"[FRESH PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
@@ -284,10 +357,10 @@ pub(crate) fn provision_fresh_key_agent_boundary()
 /// detached with one proven suspend count when the aggregate returns.
 ///
 /// This function configures and proves the fixed zero-capability Key Agent LPAC
-/// plus one fresh supervisor-held storage root, but cannot resume or arm the
-/// process. Production remains fail-closed while signed release evidence,
-/// durable installer-bound existing-profile provenance, and child-side binding
-/// to the proven storage root are absent.
+/// plus one fresh supervisor-held storage root, but stops before the sibling
+/// one-shot storage-startup transition. Production remains fail-closed while
+/// signed release evidence, durable installer-bound existing-profile
+/// provenance, protected settings, and authenticated topology are absent.
 pub(crate) fn bind_dormant_key_agent(
     attestation: ReleaseAttestation,
     artifact: VerifiedHelper,
@@ -340,6 +413,223 @@ pub(crate) fn bind_dormant_key_agent(
     })
 }
 
+/// Executes only the fixed storage-startup probe for a dormant production Key
+/// Agent and returns a private, non-operational proof aggregate.
+///
+/// The request is written while the child is still suspended. Exactly one
+/// verified suspend count is then released; the child must reopen the fixed
+/// root by path and echo the nonce, process instance, creation time, and full
+/// `FILE_ID_INFO` identity before the deadline. No general request/response
+/// operation becomes available after this transition.
+pub(crate) fn bind_key_agent_storage_startup(
+    bound: BoundDormantKeyAgent,
+) -> Result<BoundStorageProvenKeyAgent, KeyAgentSupervisorError> {
+    let request = KeyAgentStartupRequest::new(
+        bound.startup_lease.nonce_for_child(),
+        bound.activation.process_id(),
+        bound.activation.creation_time(),
+        bound.provisioning.storage_root_identity(),
+    )?;
+    bind_key_agent_storage_startup_with_request(bound, &request, StartupResponseTransport::Exact)
+}
+
+#[cfg(test)]
+fn bind_key_agent_storage_startup_for_kernel_test(
+    bound: BoundDormantKeyAgent,
+) -> Result<BoundStorageProvenKeyAgent, KeyAgentSupervisorError> {
+    let storage_leaf = bound
+        .provisioning
+        .storage_root_path_for_test()
+        .file_name()
+        .and_then(|leaf| leaf.to_str())
+        .ok_or(KeyAgentSupervisorError::StartupProtocol)?;
+    let request = KeyAgentStartupRequest::new_for_test(
+        bound.startup_lease.nonce_for_child(),
+        bound.activation.process_id(),
+        bound.activation.creation_time(),
+        bound.provisioning.storage_root_identity(),
+        storage_leaf,
+    )?;
+    bind_key_agent_storage_startup_with_request(
+        bound,
+        &request,
+        StartupResponseTransport::PinnedLibtestTerse,
+    )
+}
+
+fn bind_key_agent_storage_startup_with_request(
+    bound: BoundDormantKeyAgent,
+    request: &KeyAgentStartupRequest,
+    response_transport: StartupResponseTransport,
+) -> Result<BoundStorageProvenKeyAgent, KeyAgentSupervisorError> {
+    bound.startup_lease.ensure_live()?;
+    bound.provisioning.revalidate()?;
+    if bound
+        .startup_lease
+        .nonce_for_child()
+        .ct_eq(request.nonce())
+        .unwrap_u8()
+        == 0
+        || request.expected_process_id() != bound.activation.process_id()
+        || request.expected_creation_time() != bound.activation.creation_time()
+        || request.storage_root_identity() != bound.provisioning.storage_root_identity()
+    {
+        return Err(KeyAgentSupervisorError::StartupProtocol);
+    }
+
+    let request_frame = request.encode()?;
+    let deadline = bound.startup_lease.expires_at();
+    let artifact_identity = bound.activation.artifact_identity();
+    let BoundDormantKeyAgent {
+        activation,
+        root_job,
+        request_writer,
+        response_reader,
+        startup_lease,
+        not_sync: _,
+        provisioning,
+    } = bound;
+
+    let request_writer = match request_writer.send(request_frame.as_bytes(), deadline) {
+        Ok(writer) => writer,
+        Err(error) => {
+            drop(activation);
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = startup_lease.ensure_live() {
+        drop(activation);
+        return Err(error);
+    }
+    if let Err(error) = provisioning.revalidate() {
+        drop(activation);
+        return Err(error.into());
+    }
+
+    let activation = activation.resume_for_storage_startup()?;
+    let response_result =
+        receive_storage_startup_response(response_reader, deadline, response_transport);
+    let (response_frame, response_reader) = match response_result {
+        Ok(response) => response,
+        Err(error) => {
+            drop(activation);
+            return Err(error.into());
+        }
+    };
+    let response = match KeyAgentStartupResponse::decode(response_frame.as_slice()) {
+        Ok(response) => response,
+        Err(_error) => {
+            drop(activation);
+            return Err(KeyAgentSupervisorError::StartupProtocol);
+        }
+    };
+
+    if let Err(error) = validate_storage_startup_response(request, &response) {
+        drop(activation);
+        return Err(error);
+    }
+    if let Err(error) =
+        revalidate_post_startup_state(&provisioning, &root_job, &activation, response_transport)
+    {
+        drop(activation);
+        return Err(error);
+    }
+
+    let transcript_commitment = startup_transcript_commitment(
+        artifact_identity.encode_be(),
+        request_frame.as_bytes(),
+        &response_frame,
+    );
+    let handshake =
+        match startup_lease.verify_and_consume(response.echoed_nonce(), transcript_commitment) {
+            Ok(handshake) => handshake,
+            Err(error) => {
+                drop(activation);
+                return Err(error);
+            }
+        };
+
+    Ok(BoundStorageProvenKeyAgent {
+        activation,
+        root_job,
+        request_writer,
+        response_reader,
+        handshake,
+        not_sync: PhantomData,
+        provisioning,
+    })
+}
+
+fn receive_storage_startup_response(
+    response_reader: KeyAgentStartupResponseReader,
+    deadline: Instant,
+    response_transport: StartupResponseTransport,
+) -> Result<
+    (
+        Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>,
+        KeyAgentResponseReader,
+    ),
+    PipeError,
+> {
+    match response_transport {
+        StartupResponseTransport::Exact => response_reader.receive(deadline),
+        #[cfg(test)]
+        StartupResponseTransport::PinnedLibtestTerse => {
+            response_reader.receive_after_exact_libtest_terse_preamble_for_test(deadline)
+        }
+    }
+}
+
+fn validate_storage_startup_response(
+    request: &KeyAgentStartupRequest,
+    response: &KeyAgentStartupResponse,
+) -> Result<(), KeyAgentSupervisorError> {
+    if request.nonce().ct_eq(response.echoed_nonce()).unwrap_u8() == 0 {
+        return Err(KeyAgentSupervisorError::BindingMismatch);
+    }
+    if response.actual_process_id() != request.expected_process_id()
+        || response.actual_creation_time() != request.expected_creation_time()
+        || response.storage_root_identity() != request.storage_root_identity()
+    {
+        return Err(KeyAgentSupervisorError::StartupProtocol);
+    }
+    Ok(())
+}
+
+fn revalidate_post_startup_state(
+    provisioning: &PreparedKeyAgentProvisioning,
+    root_job: &KeyAgentRootJob,
+    #[cfg_attr(not(test), allow(unused_variables))] activation: &RunningKeyAgentActivation,
+    response_transport: StartupResponseTransport,
+) -> Result<(), KeyAgentSupervisorError> {
+    provisioning.revalidate()?;
+    root_job.recheck_supervisor_context()?;
+    root_job.verify_effective_limits()?;
+    let topology_is_valid = match response_transport {
+        StartupResponseTransport::Exact => root_job.active_process_count().map(|count| count == 1),
+        #[cfg(test)]
+        StartupResponseTransport::PinnedLibtestTerse => {
+            root_job.verify_kernel_fixture_topology_for_test(activation.process_id())
+        }
+    }?;
+    topology_is_valid
+        .then_some(())
+        .ok_or(KeyAgentSupervisorError::RootJobPolicy)
+}
+
+fn startup_transcript_commitment(
+    artifact_identity: [u8; 24],
+    request_frame: &[u8; KEY_AGENT_STARTUP_REQUEST_BYTES],
+    response_frame: &[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES],
+) -> [u8; STARTUP_TRANSCRIPT_BYTES] {
+    let mut transcript = Sha256::new();
+    transcript.update(STARTUP_TRANSCRIPT_DOMAIN);
+    transcript.update(artifact_identity);
+    transcript.update(request_frame);
+    transcript.update(response_frame);
+    transcript.finalize().into()
+}
+
 /// Test-harness equivalent of [`bind_dormant_key_agent`] for kernel-positive
 /// coverage when the Rust test runner is itself Job-contained.
 ///
@@ -353,6 +643,19 @@ fn bind_dormant_key_agent_for_kernel_test(
     artifact: VerifiedHelper,
     provisioning: PreparedKeyAgentProvisioning,
 ) -> Result<BoundDormantKeyAgent, KeyAgentSupervisorError> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt as _;
+
+    const STORAGE_STARTUP_CHILD_FIXTURE: &str =
+        "key_agent_child_bootstrap::tests::storage_startup_child_fixture";
+    let command_line = format!(
+        "\"{}\" --exact {STORAGE_STARTUP_CHILD_FIXTURE} --ignored --test-threads=1 --quiet",
+        artifact.path().display()
+    );
+    let mut command_line = OsStr::new(&command_line)
+        .encode_wide()
+        .chain(core::iter::once(0))
+        .collect::<Vec<_>>();
     let preflighted = preflight_key_agent_activation(attestation, artifact)?;
     provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
@@ -363,7 +666,7 @@ fn bind_dormant_key_agent_for_kernel_test(
         let root_job = KeyAgentRootJob::create_for_kernel_test()?;
         let pipes = PrivateKeyAgentPipes::create()?;
         let root_job_attribute = root_job.creation_attribute()?;
-        let activation = activate_preflighted_key_agent_on_fresh_worker(
+        let activation = activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
             fresh_thread,
             preflighted,
             &provisioning,
@@ -371,6 +674,7 @@ fn bind_dormant_key_agent_for_kernel_test(
             &root_job,
             &root_job_attribute,
             startup_lease.expires_at(),
+            &mut command_line,
         )?;
         drop(root_job_attribute);
 
@@ -396,18 +700,45 @@ fn bind_dormant_key_agent_for_kernel_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVATION_NONCE_BYTES, BoundDormantKeyAgent, KeyAgentSupervisorError,
-        MAX_STARTUP_LIFETIME, SupervisorActivationLease, bind_dormant_key_agent_for_kernel_test,
+        ACTIVATION_NONCE_BYTES, BoundDormantKeyAgent, BoundStorageProvenKeyAgent,
+        KeyAgentStartupCodecError, KeyAgentSupervisorError, MAX_STARTUP_LIFETIME,
+        STARTUP_TRANSCRIPT_BYTES, SupervisorActivationLease,
+        bind_dormant_key_agent_for_kernel_test, bind_key_agent_storage_startup_for_kernel_test,
+        startup_transcript_commitment,
     };
     use crate::attestation::ReleaseAttestation;
     use crate::helper::VerifiedHelper;
     use crate::key_agent_activation::KeyAgentActivationError;
     use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
     use crate::key_agent_root_job::KeyAgentRootJobError;
-    use crate::pipe::{PipeError, key_agent_parent_endpoints_are_noninheritable_for_test};
+    use crate::key_agent_startup::{
+        KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES,
+    };
+    use crate::pipe::{
+        PipeError, key_agent_parent_endpoints_are_noninheritable_for_test,
+        key_agent_startup_parent_endpoints_are_noninheritable_for_test,
+    };
     use std::time::{Duration, Instant};
 
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     fn attestation_for(artifact: &VerifiedHelper) -> ReleaseAttestation {
         ReleaseAttestation::with_helper_manifests_for_test([
@@ -425,8 +756,41 @@ mod tests {
         assert_ne!(first.nonce_for_child(), &[0; ACTIVATION_NONCE_BYTES]);
         assert_ne!(first.nonce_for_child(), second.nonce_for_child());
         let echoed = *first.nonce_for_child();
-        assert!(first.verify_and_consume(&echoed)?.is_live());
+        let handshake = first.verify_and_consume(&echoed, [3; STARTUP_TRANSCRIPT_BYTES])?;
+        assert!(handshake.is_live());
+        assert_eq!(
+            handshake.transcript_commitment.as_ref(),
+            &[3; STARTUP_TRANSCRIPT_BYTES]
+        );
         Ok(())
+    }
+
+    #[test]
+    fn transcript_commitment_binds_artifact_request_and_response_bytes() {
+        let artifact = [1_u8; 24];
+        let request = [2_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        let response = [3_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES];
+        let commitment = startup_transcript_commitment(artifact, &request, &response);
+        assert_ne!(commitment, [0; STARTUP_TRANSCRIPT_BYTES]);
+
+        let mut changed_artifact = artifact;
+        changed_artifact[23] ^= 1;
+        assert_ne!(
+            commitment,
+            startup_transcript_commitment(changed_artifact, &request, &response)
+        );
+        let mut changed_request = request;
+        changed_request[KEY_AGENT_STARTUP_REQUEST_BYTES - 1] ^= 1;
+        assert_ne!(
+            commitment,
+            startup_transcript_commitment(artifact, &changed_request, &response)
+        );
+        let mut changed_response = response;
+        changed_response[KEY_AGENT_STARTUP_RESPONSE_BYTES - 1] ^= 1;
+        assert_ne!(
+            commitment,
+            startup_transcript_commitment(artifact, &request, &changed_response)
+        );
     }
 
     #[test]
@@ -445,14 +809,19 @@ mod tests {
                     &echoed,
                     exact_expiry
                         .checked_sub(Duration::from_nanos(1))
-                        .ok_or(KeyAgentSupervisorError::DeadlineUnavailable,)?
+                        .ok_or(KeyAgentSupervisorError::DeadlineUnavailable,)?,
+                    [4; STARTUP_TRANSCRIPT_BYTES],
                 )
                 .is_ok()
         );
         let expired =
             SupervisorActivationLease::with_test_parts([1; ACTIVATION_NONCE_BYTES], exact_expiry);
         assert!(matches!(
-            expired.verify_and_consume_at_for_test(&[1; ACTIVATION_NONCE_BYTES], exact_expiry),
+            expired.verify_and_consume_at_for_test(
+                &[1; ACTIVATION_NONCE_BYTES],
+                exact_expiry,
+                [4; STARTUP_TRANSCRIPT_BYTES],
+            ),
             Err(KeyAgentSupervisorError::Expired)
         ));
         Ok(())
@@ -466,7 +835,11 @@ mod tests {
             now + Duration::from_secs(1),
         );
         assert!(matches!(
-            lease.verify_and_consume_at_for_test(&[2; ACTIVATION_NONCE_BYTES], now),
+            lease.verify_and_consume_at_for_test(
+                &[2; ACTIVATION_NONCE_BYTES],
+                now,
+                [5; STARTUP_TRANSCRIPT_BYTES],
+            ),
             Err(KeyAgentSupervisorError::BindingMismatch)
         ));
     }
@@ -513,6 +886,13 @@ mod tests {
     fn dormant_aggregate_can_cross_only_by_unique_ownership() {
         fn assert_send<T: Send>() {}
         assert_send::<BoundDormantKeyAgent>();
+        assert_send::<BoundStorageProvenKeyAgent>();
+        let _ = <BoundDormantKeyAgent as AmbiguousIfSync<_>>::marker;
+        let _ = <BoundDormantKeyAgent as AmbiguousIfClone<_>>::marker;
+        let _ = <BoundDormantKeyAgent as AmbiguousIfCopy<_>>::marker;
+        let _ = <BoundStorageProvenKeyAgent as AmbiguousIfSync<_>>::marker;
+        let _ = <BoundStorageProvenKeyAgent as AmbiguousIfClone<_>>::marker;
+        let _ = <BoundStorageProvenKeyAgent as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]
@@ -533,6 +913,10 @@ mod tests {
             KeyAgentSupervisorError::from(KeyAgentLpacError::Provisioning),
             KeyAgentSupervisorError::Provisioning
         );
+        assert_eq!(
+            KeyAgentSupervisorError::from(KeyAgentStartupCodecError::InvalidResponse),
+            KeyAgentSupervisorError::StartupProtocol
+        );
     }
 
     #[test]
@@ -552,10 +936,12 @@ mod tests {
         );
         assert_eq!(bound.root_job.active_process_count()?, 1);
         assert!(bound.root_job.verify_effective_limits().is_ok());
-        assert!(key_agent_parent_endpoints_are_noninheritable_for_test(
-            &bound.request_writer,
-            &bound.response_reader,
-        )?);
+        assert!(
+            key_agent_startup_parent_endpoints_are_noninheritable_for_test(
+                &bound.request_writer,
+                &bound.response_reader,
+            )?
+        );
 
         let process_id = bound.activation.process_id();
         let creation_time = bound.activation.creation_time();
@@ -591,6 +977,61 @@ mod tests {
             std::panic::resume_unwind(Box::new("intentional dormant aggregate unwind test"));
         });
         assert!(worker.join().is_err());
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn integrated_storage_startup_binds_child_process_and_full_root_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let attestation = attestation_for(&artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
+        let bound = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+
+        assert!(bound.activation.is_detached_and_running());
+        assert!(
+            bound
+                .activation
+                .is_member_of_root_job_for_test(&bound.root_job)?
+        );
+        assert!(
+            bound
+                .root_job
+                .verify_kernel_fixture_topology_for_test(bound.activation.process_id())?
+        );
+        assert!(bound.root_job.verify_effective_limits().is_ok());
+        assert!(bound.provisioning.revalidate().is_ok());
+        assert!(key_agent_parent_endpoints_are_noninheritable_for_test(
+            &bound.request_writer,
+            &bound.response_reader,
+        )?);
+        assert!(bound.handshake.is_live());
+        assert!(
+            bound
+                .handshake
+                .transcript_commitment
+                .iter()
+                .any(|byte| *byte != 0)
+        );
+
+        let process_id = bound.activation.process_id();
+        let creation_time = bound.activation.creation_time();
+        let rendered = format!("{bound:?}");
+        assert!(rendered.contains("BoundStorageProvenKeyAgent"));
+        assert!(rendered.contains("VERIFIED STORAGE-STARTUP TRANSCRIPT"));
+        assert!(!rendered.contains(&process_id.to_string()));
+        assert!(!rendered.contains(&creation_time.to_string()));
+        assert!(storage_root.is_dir());
+
+        let observation = bound.activation.duplicate_process_observation()?;
+        drop(bound);
         assert!(!storage_root.exists());
         assert_eq!(
             observation.rejected_exit_code()?,

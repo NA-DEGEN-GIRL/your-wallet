@@ -234,6 +234,60 @@ same crate. Labels and fixed ordering are owned only by `approval-ui`; no caller
 label crosses the channel. The key agent never parses JSON, ABI descriptions,
 HTML, or arbitrary prompt text.
 
+### Key Agent storage-startup handshake
+
+The private Windows storage-startup protocol is a fixed one-shot exchange, not a
+general Key Agent command channel. Its 188-byte `YWKSREQ1` version-1 request has
+an exact declared length and zero reserved fields and carries a nonzero 32-byte
+attempt nonce, the supervisor-observed nonzero PID and process creation
+`FILETIME`, the storage root's nonzero volume serial plus all 128
+`FILE_ID_INFO` bits, and one closed storage-leaf selector. Production construction
+can encode only `YourWallet.KeyAgent.Storage.v1`; `cfg(test)` adds only the exact
+CSPRNG test-leaf grammar. Unknown flags, malformed ASCII, nonzero padding,
+sentinel identities, and any request slice whose length is not exactly 188 bytes
+are rejected. On the live pipe the child reads that fixed frame and immediately
+uses `PeekNamedPipe` to reject any suffix already buffered at that boundary,
+before decoding, opening the root, or responding. A byte arriving after the peek
+is detected only during the later disconnect wait and therefore may be detected
+after the success response.
+
+The parent writes that complete request while the exact-image/LPAC-proven child
+still has one verified suspend count. The only consuming resume transition then
+releases that count for this handshake; no raw-thread or caller-selected generic
+resume exists. After sealing its three inherited standard handles as its first
+Windows application operation, the child reads the one request and opens the
+fixed/test leaf beneath the exact OS-rerouted `LOCALAPPDATA` locator. It validates
+the `Packages` / fixed-profile / `AC` shape, derives `TokenUser` and the
+AppContainer SID from its own process token, and checks the directory object,
+owner, protected two-ACE DACL, inherited Low/`NW` label, and full file identity.
+
+Only an exact match may produce the 88-byte `YWKSRES1` version-1 success frame.
+That response echoes the nonce and reports the child's own PID, creation time,
+and complete root identity; the parent decodes and compares them independently.
+It then revalidates its no-delete-share root handle, the Job context/limits and
+permitted topology, and the monotonic one-attempt lease. A domain-separated
+SHA-256 transcript commitment covers the held artifact identity and the exact
+request and response frames. The resulting private state retains the running
+process, Job, both parent endpoints, handshake, and root proof; the child
+retains its root and sealed handles until the parent request endpoint closes,
+and it rejects any later input byte without another response. Neither state
+exposes follow-on runtime I/O, a protected-settings capability, or signing
+authority. The parent intentionally consumes exactly 88 response bytes,
+immediately uses `PeekNamedPipe` to reject an already-buffered suffix, and
+retains that endpoint. Because the byte stream stays open, this snapshot does
+not prove that a future delayed response suffix is absent or establish response
+EOF; signed-artifact trailing-output negative evidence remains separate.
+
+The integrated kernel positive uses a persistent test profile/CSPRNG leaf and two
+`cfg(test)`-only adapters: the response reader consumes one pinned terse libtest
+preamble, and Job topology permits only the fixture plus at most the exact
+System32 `conhost.exe`. Production requires response magic at byte zero and one
+active Job member. This is not a production fresh-fixed-root or signed-artifact
+E2E. A generation-file adapter and reviewed file DACL, durable existing-profile
+provenance/recovery, protected-settings and authenticated Broker/supervisor
+topology, and signed immutable artifact/dependency E2E remain STOP-SHIP.
+`COMPILED_RELEASE_POLICY` remains `None`.
+
 The crate-private Key Agent offline-lifecycle channel is a separate closed
 protocol (`YWOFREQ1`/`YWOFRES1`, version 1). Every request binds a nonzero
 request ID, exact sequence, absolute local deadline, declared payload length,
@@ -263,10 +317,11 @@ vault service. Recovery display first returns a non-clone, live-session-bound
 recheck can consume it into one in-memory challenge, and the later confirmation
 command consumes that exact challenge and a fresh opaque binding. Lock, error,
 restart, cross-stage use, or replay clears or rejects the pending challenge.
-The compiled capability is intentionally
-unavailable until authenticated one-shot helper adapters and the inherited
-Windows channel are implemented; the Key Agent executable therefore still
-exits 78.
+The compiled offline-lifecycle capability is intentionally unavailable until
+authenticated one-shot helper adapters and its inherited Windows command channel
+are implemented. The Key Agent executable can perform only the separate
+storage-startup proof above, then remains fail-closed and ultimately exits 78;
+it never serves this offline-lifecycle protocol.
 
 The display projection separately carries origin/provenance, account, network,
 chain ID, genesis and rule-set identity, RPC observation digest, operation kind,
