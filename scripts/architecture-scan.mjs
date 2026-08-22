@@ -6543,6 +6543,10 @@ const verifiedExistingKeyAgentInstallBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+struct\s+VerifiedExistingKeyAgentInstall\s*\{/u,
 );
+const verifiedExistingKeyAgentInstallDebugImpl = rustLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /impl\s+fmt::Debug\s+for\s+VerifiedExistingKeyAgentInstall\s*\{/u,
+);
 const keyAgentInstallAdoptionErrorBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+enum\s+KeyAgentInstallAdoptionError\s*\{/u,
@@ -9391,6 +9395,15 @@ const adoptExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
       rustCallSites(file.source, "adopt_existing_key_agent_install").length > 0,
   )
   .map((file) => file.path);
+const adoptExistingKeyAgentInstallTokenConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      /\badopt_existing_key_agent_install\b/u.test(
+        rustLexicalCode(file.source),
+      ),
+  )
+  .map((file) => file.path);
 const convertHeldExistingKeyAgentInstallConsumers =
   platformWindowsProductionFiles
     .filter(
@@ -9508,6 +9521,25 @@ const keyAgentInstallAdoptionForbiddenTraitImpl = new RegExp(
 const compactAdoptExistingKeyAgentInstall = compactRust(
   adoptExistingKeyAgentInstall,
 );
+const expectedCompactAdoptExistingKeyAgentInstall = [
+  "pub(crate)fnadopt_existing_key_agent_install(initial:AuthenticatedKeyAgentInstallSnapshot,held:HeldExistingKeyAgentInstallObjects,reread:AuthenticatedKeyAgentInstallSnapshot,)->Result<VerifiedExistingKeyAgentInstall,KeyAgentInstallAdoptionError>{",
+  "held.revalidate().map_err(|_|KeyAgentInstallAdoptionError::RecoveryRequired)?;",
+  "letobservation=held.install_observation().map_err(|_|KeyAgentInstallAdoptionError::RecoveryRequired)?;",
+  "letstable=verify_existing_key_agent_install_snapshots(initial,reread,observation).ok_or(KeyAgentInstallAdoptionError::RecoveryRequired)?;",
+  "let(installation_id,release_identity,journal_generation,journal_record_digest)=consume_stable_existing_key_agent_install_evidence(stable);",
+  "held.revalidate().map_err(|_|KeyAgentInstallAdoptionError::RecoveryRequired)?;",
+  "letprovisioning=held.into_prepared(ExistingInstallAdoptionSeal{_private:()});",
+  "Ok(VerifiedExistingKeyAgentInstall{provisioning,installation_id,release_identity,journal_generation,journal_record_digest,_not_sync:PhantomData,})",
+  "}",
+].join("");
+const expectedCompactVerifiedExistingKeyAgentInstallDebugImpl = [
+  "implfmt::DebugforVerifiedExistingKeyAgentInstall{",
+  "fnfmt(&self,formatter:&mutfmt::Formatter<'_>)->fmt::Result{",
+  "let_=(&self.provisioning,&self.installation_id,&self.release_identity,&self.journal_generation,&self.journal_record_digest,);",
+  "formatter.write_str()",
+  "}",
+  "}",
+].join("");
 const adoptExistingKeyAgentInstallOrder = [
   compactAdoptExistingKeyAgentInstall.indexOf("held.revalidate()"),
   compactAdoptExistingKeyAgentInstall.indexOf(
@@ -9555,6 +9587,8 @@ requireInvariant(
     JSON.stringify(keyAgentInstallAdoptionErrorConsumers) ===
       JSON.stringify([]) &&
     JSON.stringify(adoptExistingKeyAgentInstallConsumers) === JSON.stringify([]) &&
+    JSON.stringify(adoptExistingKeyAgentInstallTokenConsumers) ===
+      JSON.stringify([]) &&
     JSON.stringify(convertHeldExistingKeyAgentInstallConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_install_adoption.rs",
@@ -9631,6 +9665,10 @@ requireInvariant(
       "pub(crate)structVerifiedExistingKeyAgentInstall{provisioning:PreparedKeyAgentProvisioning,installation_id:[u8;32],release_identity:[u8;32],journal_generation:u64,journal_record_digest:[u8;32],_not_sync:PhantomData<Cell<()>>,}" &&
     compactRust(keyAgentInstallAdoptionErrorBlock) ===
       "pub(crate)enumKeyAgentInstallAdoptionError{RecoveryRequired,}" &&
+    compactAdoptExistingKeyAgentInstall ===
+      expectedCompactAdoptExistingKeyAgentInstall &&
+    compactRust(verifiedExistingKeyAgentInstallDebugImpl) ===
+      expectedCompactVerifiedExistingKeyAgentInstallDebugImpl &&
     !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
@@ -11786,11 +11824,28 @@ const platformWindowsIncludeMacroTokens = platformWindowsProductionFiles
     /\b(?:r#)?include(?:_str|_bytes)?\b/u.test(rustLexicalCode(file.source)),
   )
   .map((file) => file.path);
+const keyAgentProvisioningAuthorityTypeNames = [
+  "PendingKeyAgentProvisioning",
+  "HeldExistingKeyAgentInstallObjects",
+  "PreparedKeyAgentProvisioning",
+  "PreparedKeyAgentLpac",
+  "VerifiedKeyAgentLpac",
+  "ExistingInstallAdoptionSeal",
+  "VerifiedExistingKeyAgentInstall",
+];
+const keyAgentProvisioningAuthorityTypePattern = new RegExp(
+  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")})\\b`,
+  "u",
+);
+const keyAgentProvisioningAuthorityMacroTokenPattern = new RegExp(
+  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")}|PreparedKeyAgentProfile|key_agent_lpac|key_agent_install_adoption)\\b`,
+  "u",
+);
 const keyAgentProvisioningAuthorityMacroInvocations =
   platformWindowsProductionFiles.flatMap((file) =>
     rustMacroInvocations(file.source)
       .filter((invocation) =>
-        /\b(?:(?:Pending|Prepared)KeyAgentProvisioning|PreparedKeyAgentProfile|key_agent_lpac)\b/u.test(
+        keyAgentProvisioningAuthorityMacroTokenPattern.test(
           rustLexicalCode(invocation.source),
         ),
       )
@@ -12105,19 +12160,6 @@ const pendingKeyAgentProvisioningImplHeaders =
     path,
     header,
   }));
-const keyAgentProvisioningAuthorityTypeNames = [
-  "PendingKeyAgentProvisioning",
-  "HeldExistingKeyAgentInstallObjects",
-  "PreparedKeyAgentProvisioning",
-  "PreparedKeyAgentLpac",
-  "VerifiedKeyAgentLpac",
-  "ExistingInstallAdoptionSeal",
-  "VerifiedExistingKeyAgentInstall",
-];
-const keyAgentProvisioningAuthorityTypePattern = new RegExp(
-  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")})\\b`,
-  "u",
-);
 const keyAgentProvisioningAuthorityImplItems =
   platformWindowsProductionFiles.flatMap((file) =>
     rustImplItems(file.source)
@@ -12230,6 +12272,17 @@ make_item!(PreparedKeyAgentProvisioning);
 const keyAgentProvisioningMacroScannerProbeInvocations = rustMacroInvocations(
   keyAgentProvisioningMacroScannerProbe,
 );
+const keyAgentProvisioningAdoptionMacroScannerProbeInvocations =
+  rustMacroInvocations(`
+mint!(HeldExistingKeyAgentInstallObjects);
+mint!(ExistingInstallAdoptionSeal);
+mint!(VerifiedExistingKeyAgentInstall);
+mint!(key_agent_install_adoption);
+`).filter((invocation) =>
+    keyAgentProvisioningAuthorityMacroTokenPattern.test(
+      rustLexicalCode(invocation.source),
+    ),
+  );
 const keyAgentProvisioningAttributeScannerProbe = rustAttributeItems(`
 #[derive(HiddenMint)]
 struct PreparedKeyAgentProvisioning;
@@ -12984,6 +13037,32 @@ requireInvariant(
         keyAgentProvisioningMacroScannerProbeInvocations[0].source,
       ),
     ) &&
+    JSON.stringify(
+      keyAgentProvisioningAdoptionMacroScannerProbeInvocations.map(
+        (invocation) => ({
+          path: invocation.path,
+          source: compactRust(invocation.source),
+        }),
+      ),
+    ) ===
+      JSON.stringify([
+        {
+          path: "mint",
+          source: "mint!(HeldExistingKeyAgentInstallObjects)",
+        },
+        {
+          path: "mint",
+          source: "mint!(ExistingInstallAdoptionSeal)",
+        },
+        {
+          path: "mint",
+          source: "mint!(VerifiedExistingKeyAgentInstall)",
+        },
+        {
+          path: "mint",
+          source: "mint!(key_agent_install_adoption)",
+        },
+      ]) &&
     keyAgentProvisioningAttributeScannerProbe.length === 3 &&
     keyAgentProvisioningAttributeScannerProbe.every(
       (attribute) => attribute.inner === false,
