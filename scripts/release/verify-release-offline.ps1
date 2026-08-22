@@ -1,5 +1,6 @@
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
 
 function Invoke-OfflineReleaseVerification {
     [CmdletBinding()]
@@ -107,7 +108,7 @@ try {
     )
     foreach ($fileName in $payloadFiles) {
         $filePath = Join-Path $bundle "payload\$fileName"
-        $signatureStatus = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $filePath
+        $signatureStatus = Get-ReleaseAuthenticodeSignature -LiteralPath $filePath
         if ($signatureStatus.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signatureStatus.SignerCertificate) {
             throw "Offline Authenticode re-verification failed closed"
         }
@@ -156,7 +157,7 @@ finally {
 }
 
 try {
-    . (Join-Path $PSScriptRoot "common.ps1")
+    . ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
     $boundArguments = ConvertFrom-ExactNamedArguments `
         -Arguments @($args) `
         -RequiredValueNames @(

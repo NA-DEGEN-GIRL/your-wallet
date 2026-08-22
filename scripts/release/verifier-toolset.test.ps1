@@ -1,6 +1,7 @@
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot "common.ps1")
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
 
 if ($env:OS -ne "Windows_NT") {
     throw "Verifier toolset tests require Windows"
@@ -31,6 +32,7 @@ $toolsetFiles = @(
 $activeProtections = [System.Collections.Generic.Dictionary[string, object]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
+$script:SealedReleasePowerShellBootstrapVerified = $false
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $denyCreateRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
     $currentSid,
@@ -377,50 +379,41 @@ function Assert-X86VerifierHostPreflight {
 
     $commonPath = Join-Path $PSScriptRoot "common.ps1"
     $commonPathLiteral = "'" + $commonPath.Replace("'", "''") + "'"
+    $probePath = Join-Path $testRoot "x86-release-runtime-preflight.ps1"
     $probeSource = @'
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-if (
-    -not [System.Environment]::Is64BitOperatingSystem -or
-    [System.Environment]::Is64BitProcess
-) {
-    [Console]::Error.Write("X86_VERIFIER_HOST_PREFLIGHT_ENVIRONMENT_INVALID`n")
-    exit 90
-}
-
-. __COMMON_PATH_LITERAL__
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
 try {
-    [void](Open-VerifiedReleaseToolset `
-        -ToolsetRoot "X:\__your_wallet_x86_preflight_must_not_access__" `
-        -ExpectedSha256 ("0" * 64))
-    [Console]::Error.Write("X86_VERIFIER_HOST_PREFLIGHT_NOT_REJECTED`n")
-    exit 91
+    . __COMMON_PATH_LITERAL__
 }
 catch {
     if (-not [System.String]::Equals(
         $_.Exception.Message,
-        "Verified release toolsets require a 64-bit Windows verifier process",
+        "Release PowerShell runtime bootstrap failed closed",
         [System.StringComparison]::Ordinal
     )) {
         [Console]::Error.Write("X86_VERIFIER_HOST_PREFLIGHT_UNEXPECTED_FAILURE`n")
         exit 92
     }
+    [Console]::Out.Write("X86_VERIFIER_HOST_PREFLIGHT_PASS`n")
+    exit 0
 }
-[Console]::Out.Write("X86_VERIFIER_HOST_PREFLIGHT_PASS`n")
+[Console]::Error.Write("X86_VERIFIER_HOST_PREFLIGHT_NOT_REJECTED`n")
+exit 91
 '@.Replace("__COMMON_PATH_LITERAL__", $commonPathLiteral)
-    $encodedProbe = [System.Convert]::ToBase64String(
-        [System.Text.Encoding]::Unicode.GetBytes($probeSource)
-    )
+    Write-NewUtf8File -LiteralPath $probePath -Content $probeSource
     $result = Invoke-TestRawProcess `
         -Executable $x86PowerShell `
         -WorkingDirectory $RepoRoot `
         -Arguments @(
             "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-EncodedCommand",
-            $encodedProbe
+            "-File",
+            $probePath
         ) `
         -TimeoutMilliseconds 30000
     if (
@@ -511,7 +504,9 @@ function Invoke-ReviewWrapperRaw {
         -Executable $powershellPath `
         -WorkingDirectory $ToolsetRoot `
         -Arguments @(
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
@@ -553,7 +548,9 @@ function Invoke-OfflineWrapperRaw {
         -Executable $powershellPath `
         -WorkingDirectory $ToolsetRoot `
         -Arguments (@(
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
@@ -581,6 +578,439 @@ function Assert-FixedOfflineWrapperFailure {
             throw "Final release wrapper disclosed a private input: $Label"
         }
     }
+}
+
+function Assert-SealedReleasePowerShellBootstrap {
+    $systemPowerShell = [System.IO.Path]::Combine(
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System),
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe"
+    )
+    $commonPath = [System.IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot "common.ps1")
+    )
+    $commonPathLiteral = "'" + $commonPath.Replace("'", "''") + "'"
+    $probeRoot = Join-Path $testRoot "release-powershell-bootstrap-probes"
+    [void][System.IO.Directory]::CreateDirectory($probeRoot)
+
+    $bootstrapFailureTemplate = @'
+__PRELUDE__
+$PSModuleAutoLoadingPreference = "None"
+$ErrorActionPreference = "Stop"
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+try {
+    . __COMMON_PATH__
+}
+catch {
+    if ([System.String]::Equals(
+        $_.Exception.Message,
+        "Release PowerShell runtime bootstrap failed closed",
+        [System.StringComparison]::Ordinal
+    )) {
+        [Console]::Out.Write("RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n")
+        exit 0
+    }
+    [Console]::Error.Write("RELEASE_POWERSHELL_BOOTSTRAP_UNEXPECTED_FAILURE`n")
+    exit 92
+}
+[Console]::Error.Write("RELEASE_POWERSHELL_BOOTSTRAP_NOT_REJECTED`n")
+exit 91
+'@
+    $typePreludeTemplate = @'
+$assemblyName = [System.Reflection.AssemblyName]::new("YourWallet.ReleaseBootstrapProbe")
+$assemblyBuilder = [System.AppDomain]::CurrentDomain.DefineDynamicAssembly(
+    $assemblyName,
+    [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+)
+$moduleBuilder = $assemblyBuilder.DefineDynamicModule("probe")
+$typeBuilder = $moduleBuilder.DefineType(
+    "__TYPE_NAME__",
+    [System.Reflection.TypeAttributes]::Public -bor
+        [System.Reflection.TypeAttributes]::Abstract -bor
+        [System.Reflection.TypeAttributes]::Sealed
+)
+[void]$typeBuilder.CreateType()
+'@
+    $loadedModulePrelude = @'
+$fakeModule = New-Module -Name "Microsoft.PowerShell.Security" -ScriptBlock {
+    function Get-AuthenticodeSignature {
+        param([string]$LiteralPath)
+        [pscustomobject]@{ Marker = "fake" }
+    }
+    Export-ModuleMember -Function Get-AuthenticodeSignature
+}
+Import-Module $fakeModule
+'@
+    $commandShadowMarker = Join-Path $probeRoot "bootstrap-command-shadow-invoked.marker"
+    $commandShadowMarkerLiteral = "'" + $commandShadowMarker.Replace("'", "''") + "'"
+    $shadowPreludeTemplate = @'
+function __COMMAND_NAME__ {
+    [System.IO.File]::WriteAllText(__MARKER_PATH__, "invoked")
+    throw "ambient command shadow executed"
+}
+'@.Replace("__MARKER_PATH__", $commandShadowMarkerLiteral)
+    $joinPathShadowPrelude = $shadowPreludeTemplate.Replace("__COMMAND_NAME__", "Join-Path")
+    $addTypeShadowPrelude = $shadowPreludeTemplate.Replace("__COMMAND_NAME__", "Add-Type")
+    $longAliasPreludeTemplate = @'
+$utilityManifest = [System.IO.Path]::Combine(
+    $PSHOME,
+    "Modules",
+    "Microsoft.PowerShell.Utility",
+    "Microsoft.PowerShell.Utility.psd1"
+)
+Import-Module -Name $utilityManifest -Force
+function Invoke-AmbientReleaseAliasTarget {
+    [System.IO.File]::WriteAllText(__MARKER_PATH__, "invoked")
+    throw "ambient long-form alias executed"
+}
+Set-Alias `
+    -Name "Initialize-ReleasePowerShellRuntime" `
+    -Value "Invoke-AmbientReleaseAliasTarget" `
+    -Scope Global `
+    -Force
+Remove-Module -Name "Microsoft.PowerShell.Utility" -Force
+'@
+    $longAliasPrelude = $longAliasPreludeTemplate.Replace(
+        "__MARKER_PATH__",
+        $commandShadowMarkerLiteral
+    )
+    $bootstrapAttacks = @(
+        [pscustomobject]@{
+            Name = "directory-lock-type"
+            Prelude = $typePreludeTemplate.Replace(
+                "__TYPE_NAME__",
+                "YourWallet.ReleaseDirectoryLock"
+            )
+        },
+        [pscustomobject]@{
+            Name = "toolset-process-type"
+            Prelude = $typePreludeTemplate.Replace(
+                "__TYPE_NAME__",
+                "YourWallet.ReleaseToolsetProcess"
+            )
+        },
+        [pscustomobject]@{
+            Name = "toolset-process-result-type"
+            Prelude = $typePreludeTemplate.Replace(
+                "__TYPE_NAME__",
+                "YourWallet.ReleaseToolsetProcessResult"
+            )
+        },
+        [pscustomobject]@{
+            Name = "loaded-security-module"
+            Prelude = $loadedModulePrelude
+        },
+        [pscustomobject]@{
+            Name = "join-path-shadow"
+            Prelude = $joinPathShadowPrelude
+        },
+        [pscustomobject]@{
+            Name = "add-type-shadow"
+            Prelude = $addTypeShadowPrelude
+        },
+        [pscustomobject]@{
+            Name = "long-form-alias-shadow"
+            Prelude = $longAliasPrelude
+        }
+    )
+    if ($bootstrapAttacks.Count -ne 7) {
+        throw "Release PowerShell bootstrap attack matrix is incomplete"
+    }
+    $executedBootstrapAttackCount = 0
+    foreach ($bootstrapAttack in $bootstrapAttacks) {
+        $attackProbeRoot = Join-Path $probeRoot $bootstrapAttack.Name
+        [void][System.IO.Directory]::CreateDirectory($attackProbeRoot)
+        $probePath = Join-Path $attackProbeRoot "common.test.ps1"
+        $probeSource = $bootstrapFailureTemplate.Replace(
+            "__PRELUDE__",
+            $bootstrapAttack.Prelude
+        ).Replace("__COMMON_PATH__", $commonPathLiteral)
+        Write-NewUtf8File -LiteralPath $probePath -Content $probeSource
+        $probeResult = Invoke-TestRawProcess `
+            -Executable $systemPowerShell `
+            -WorkingDirectory $RepoRoot `
+            -Arguments @(
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                $probePath
+            ) `
+            -TimeoutMilliseconds 30000
+        if (
+            $probeResult.ExitCode -ne 0 -or
+            -not [System.String]::Equals(
+                $probeResult.Stdout,
+                "RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [System.String]::Equals(
+                $probeResult.Stderr,
+                "",
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw "Release PowerShell bootstrap accepted ambient runtime state"
+        }
+        $executedBootstrapAttackCount += 1
+    }
+    if ($executedBootstrapAttackCount -ne 7) {
+        throw "Release PowerShell bootstrap attack matrix did not execute completely"
+    }
+    if ([System.IO.File]::Exists($commandShadowMarker)) {
+        throw "Release PowerShell bootstrap invoked an ambient command shadow"
+    }
+
+    $unapprovedEntryProbePath = Join-Path $probeRoot "unapproved-entry.ps1"
+    $unapprovedEntryProbeSource = $bootstrapFailureTemplate.Replace(
+        "__PRELUDE__",
+        ""
+    ).Replace("__COMMON_PATH__", $commonPathLiteral)
+    Write-NewUtf8File `
+        -LiteralPath $unapprovedEntryProbePath `
+        -Content $unapprovedEntryProbeSource
+    $unapprovedEntryProbeResult = Invoke-TestRawProcess `
+        -Executable $systemPowerShell `
+        -WorkingDirectory $RepoRoot `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $unapprovedEntryProbePath
+        ) `
+        -TimeoutMilliseconds 30000
+    if (
+        $unapprovedEntryProbeResult.ExitCode -ne 0 -or
+        -not [System.String]::Equals(
+            $unapprovedEntryProbeResult.Stdout,
+            "RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $unapprovedEntryProbeResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Release PowerShell bootstrap accepted an unapproved entry script"
+    }
+
+    $targetMismatchProbePath = Join-Path $probeRoot "file-target-mismatch.ps1"
+    $targetMismatchProbeSource = $bootstrapFailureTemplate.Replace(
+        "__PRELUDE__",
+        ""
+    ).Replace(
+        '$script:ReleasePowerShellEntryScriptPath = $PSCommandPath',
+        '$script:ReleasePowerShellEntryScriptPath = $PSCommandPath + ".different"'
+    ).Replace("__COMMON_PATH__", $commonPathLiteral)
+    Write-NewUtf8File `
+        -LiteralPath $targetMismatchProbePath `
+        -Content $targetMismatchProbeSource
+    $targetMismatchResult = Invoke-TestRawProcess `
+        -Executable $systemPowerShell `
+        -WorkingDirectory $RepoRoot `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $targetMismatchProbePath
+        ) `
+        -TimeoutMilliseconds 30000
+    if (
+        $targetMismatchResult.ExitCode -ne 0 -or
+        -not [System.String]::Equals(
+            $targetMismatchResult.Stdout,
+            "RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $targetMismatchResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Release PowerShell bootstrap accepted a different -File target"
+    }
+
+    $authenticodeMarker = Join-Path $probeRoot "fake-authenticode-invoked.marker"
+    $markerLiteral = "'" + $authenticodeMarker.Replace("'", "''") + "'"
+    $lateModuleProbeRoot = Join-Path $probeRoot "late-authenticode-module"
+    [void][System.IO.Directory]::CreateDirectory($lateModuleProbeRoot)
+    $lateModuleProbePath = Join-Path $lateModuleProbeRoot "common.test.ps1"
+    $lateModuleProbeTemplate = @'
+$PSModuleAutoLoadingPreference = "None"
+$ErrorActionPreference = "Stop"
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+. __COMMON_PATH__
+$fakeModule = New-Module -Name "Microsoft.PowerShell.Security" -ScriptBlock {
+    function Get-AuthenticodeSignature {
+        param([string]$LiteralPath)
+        [System.IO.File]::WriteAllText(__MARKER_PATH__, "invoked")
+        [pscustomobject]@{ Marker = "fake" }
+    }
+    Export-ModuleMember -Function Get-AuthenticodeSignature
+}
+Import-Module $fakeModule
+try {
+    [void](Get-ReleaseAuthenticodeSignature -LiteralPath (
+        [System.IO.Path]::Combine($PSHOME, "powershell.exe")
+    ))
+}
+catch {
+    if ([System.String]::Equals(
+        $_.Exception.Message,
+        "Authenticode command identity changed after release bootstrap",
+        [System.StringComparison]::Ordinal
+    )) {
+        [Console]::Out.Write("AUTHENTICODE_COMMAND_SHADOW_REJECTED`n")
+        exit 0
+    }
+    [Console]::Error.Write("AUTHENTICODE_COMMAND_SHADOW_UNEXPECTED_FAILURE`n")
+    exit 92
+}
+[Console]::Error.Write("AUTHENTICODE_COMMAND_SHADOW_NOT_REJECTED`n")
+exit 91
+'@
+    $lateModuleProbeSource = $lateModuleProbeTemplate.Replace(
+        "__COMMON_PATH__",
+        $commonPathLiteral
+    ).Replace("__MARKER_PATH__", $markerLiteral)
+    Write-NewUtf8File -LiteralPath $lateModuleProbePath -Content $lateModuleProbeSource
+    $lateModuleProbeResult = Invoke-TestRawProcess `
+        -Executable $systemPowerShell `
+        -WorkingDirectory $RepoRoot `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $lateModuleProbePath
+        ) `
+        -TimeoutMilliseconds 30000
+    if (
+        $lateModuleProbeResult.ExitCode -ne 0 -or
+        -not [System.String]::Equals(
+            $lateModuleProbeResult.Stdout,
+            "AUTHENTICODE_COMMAND_SHADOW_REJECTED`n",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $lateModuleProbeResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        ) -or
+        [System.IO.File]::Exists($authenticodeMarker)
+    ) {
+        throw "Trusted Authenticode command accepted a late same-name module"
+    }
+
+    $missingFlagProbePath = Join-Path $probeRoot "missing-host-flag.ps1"
+    $missingFlagProbeSource = $bootstrapFailureTemplate.Replace(
+        "__PRELUDE__",
+        ""
+    ).Replace("__COMMON_PATH__", $commonPathLiteral)
+    Write-NewUtf8File `
+        -LiteralPath $missingFlagProbePath `
+        -Content $missingFlagProbeSource
+    $missingFlagResult = Invoke-TestRawProcess `
+        -Executable $systemPowerShell `
+        -WorkingDirectory $RepoRoot `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $missingFlagProbePath
+        ) `
+        -TimeoutMilliseconds 30000
+    if (
+        $missingFlagResult.ExitCode -ne 0 -or
+        -not [System.String]::Equals(
+            $missingFlagResult.Stdout,
+            "RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $missingFlagResult.Stderr,
+            "",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Release PowerShell bootstrap accepted a missing exact host flag"
+    }
+
+    $wrapperPath = Join-Path $PSScriptRoot "verify-release-offline.ps1"
+    $privateBootstrapPath = Join-Path $probeRoot "private-bootstrap-input"
+    $fakeModuleRoot = Join-Path $probeRoot "external-module-path"
+    $fakeManagementRoot = Join-Path $fakeModuleRoot "Microsoft.PowerShell.Management"
+    [void][System.IO.Directory]::CreateDirectory($fakeManagementRoot)
+    $moduleMarker = Join-Path $probeRoot "external-module-invoked.marker"
+    $moduleMarkerLiteral = "'" + $moduleMarker.Replace("'", "''") + "'"
+    $fakeManagementSource = @'
+[System.IO.File]::WriteAllText(__MARKER_PATH__, "module-loaded")
+function Join-Path {
+    param([string]$Path, [string]$ChildPath)
+    [System.IO.File]::WriteAllText(__MARKER_PATH__, "command-invoked")
+    [System.IO.Path]::Combine($Path, $ChildPath)
+}
+Export-ModuleMember -Function Join-Path
+'@.Replace("__MARKER_PATH__", $moduleMarkerLiteral)
+    Write-NewUtf8File `
+        -LiteralPath (Join-Path $fakeManagementRoot "Microsoft.PowerShell.Management.psm1") `
+        -Content $fakeManagementSource
+    $priorModulePath = [System.Environment]::GetEnvironmentVariable(
+        "PSModulePath",
+        [System.EnvironmentVariableTarget]::Process
+    )
+    try {
+        [System.Environment]::SetEnvironmentVariable(
+            "PSModulePath",
+            $fakeModuleRoot + [System.IO.Path]::PathSeparator + $priorModulePath,
+            [System.EnvironmentVariableTarget]::Process
+        )
+        $externalModuleResult = Invoke-TestRawProcess `
+            -Executable $systemPowerShell `
+            -WorkingDirectory $RepoRoot `
+            -Arguments @(
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                $wrapperPath,
+                "-UnknownPrivatePath",
+                $privateBootstrapPath
+            ) `
+            -TimeoutMilliseconds 30000
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable(
+            "PSModulePath",
+            $priorModulePath,
+            [System.EnvironmentVariableTarget]::Process
+        )
+    }
+    Assert-FixedOfflineWrapperFailure `
+        -Result $externalModuleResult `
+        -Label "external-first module path" `
+        -PrivateValues @($privateBootstrapPath, $wrapperPath, $fakeModuleRoot)
+    if ([System.IO.File]::Exists($moduleMarker)) {
+        throw "Release wrapper auto-loaded an external module path"
+    }
+    $script:SealedReleasePowerShellBootstrapVerified = $true
 }
 
 function Invoke-ProxyCompilation {
@@ -617,6 +1047,10 @@ function Invoke-ProxyCompilation {
 
 try {
     Assert-X86VerifierHostPreflight
+    Assert-SealedReleasePowerShellBootstrap
+    if (-not $script:SealedReleasePowerShellBootstrapVerified) {
+        throw "Release PowerShell bootstrap behavior tests did not complete"
+    }
     Assert-ReleaseSequenceBinderRejectsTerminalLineFeed
     Initialize-ReleaseToolsetProcessType
     $behaviorProxy = Join-Path $testRoot "compiled-behavior-node.exe"
@@ -851,7 +1285,9 @@ public static class VerifierBehaviorNode {
         ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System)) `
         "WindowsPowerShell\v1.0\powershell.exe"
     $preparationArguments = @(
+        "-NoLogo",
         "-NoProfile",
+        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -920,7 +1356,9 @@ public static class VerifierBehaviorNode {
         -Executable $systemPowerShell `
         -WorkingDirectory $RepoRoot `
         -Arguments @(
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
@@ -946,7 +1384,7 @@ public static class VerifierBehaviorNode {
 
     $releaseCapturePath = Join-Path $testRoot "release-wrapper-argv.capture"
     $releaseCaptureLiteral = $releaseCapturePath.Replace('\', '\\').Replace('"', '\"')
-    $releasePayloadSignature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+    $releasePayloadSignature = Get-ReleaseAuthenticodeSignature `
         -LiteralPath $systemPowerShell
     if ($releasePayloadSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
         $null -eq $releasePayloadSignature.SignerCertificate) {
@@ -1113,7 +1551,7 @@ public static class DecoyNode {
             "ends-with-\",
             'slash-before-quote\"',
             "tab`tand`nnewline",
-            "한글"
+            (([char]0xD55C).ToString() + ([char]0xAE00).ToString())
         )
         $roundtripResult = Invoke-ReleaseToolsetNode `
             -Toolset $proxyToolset `
@@ -1177,7 +1615,7 @@ public static class DecoyNode {
         foreach ($invalidInvocation in @(
             { [void](Invoke-ReleaseToolsetNode -Toolset $proxyToolset -ScriptRelativePath "Scripts/release/review-evidence-set.mjs" -CommandArguments @()) },
             { [void](Invoke-ReleaseToolsetNode -Toolset $proxyToolset -ScriptRelativePath "scripts/release/common.ps1" -CommandArguments @()) },
-            { [void](Invoke-ReleaseToolsetNode -Toolset $proxyToolset -ScriptRelativePath "scripts/release/review-evidence-set.mjs" -CommandArguments @("bad$([char]0)value")) }
+            { [void](Invoke-ReleaseToolsetNode -Toolset $proxyToolset -ScriptRelativePath "scripts/release/review-evidence-set.mjs" -CommandArguments @(("bad" + ([char]0).ToString() + "value"))) }
         )) {
             $invalidRejected = $false
             try {
@@ -1485,7 +1923,11 @@ public static class DecoyNode {
                 [System.StringComparison]::Ordinal
             )) {
             $directCaptureExists = [System.IO.File]::Exists($releaseCapturePath)
-            throw "Direct sealed successor proxy contract failed (exit=$($releaseFixtureResult.ExitCode), capture=$directCaptureExists)"
+            throw (
+                "Direct sealed successor proxy contract failed (exit={0}, capture={1})" -f
+                $releaseFixtureResult.ExitCode,
+                $directCaptureExists
+            )
         }
         [System.IO.File]::Delete($releaseCapturePath)
         $releaseSuccessorResult = Invoke-OfflineWrapperRaw `
@@ -1543,7 +1985,13 @@ public static class DecoyNode {
         else {
             "none"
         }
-        throw "Final release wrapper rejected the exact successor checkpoint contract (exit=$($releaseSuccessorResult.ExitCode), stdoutExact=$releaseStdoutExact, stderrEmpty=$releaseStderrEmpty, capturePass=$releaseCapturePass)"
+        throw (
+            "Final release wrapper rejected the exact successor checkpoint contract (exit={0}, stdoutExact={1}, stderrEmpty={2}, capturePass={3})" -f
+            $releaseSuccessorResult.ExitCode,
+            $releaseStdoutExact,
+            $releaseStderrEmpty,
+            $releaseCapturePass
+        )
     }
     $releaseCaptureLines = [System.IO.File]::ReadAllLines(
         $releaseCapturePath,
@@ -1745,7 +2193,12 @@ public static class DecoyNode {
                             "",
                             [System.StringComparison]::Ordinal
                         )
-                        throw "Direct exact review behavior fixture failed (exit=$($directBehaviorResult.ExitCode), stdoutExact=$directStdoutExact, stderrEmpty=$directStderrEmpty)"
+                        throw (
+                            "Direct exact review behavior fixture failed (exit={0}, stdoutExact={1}, stderrEmpty={2})" -f
+                            $directBehaviorResult.ExitCode,
+                            $directStdoutExact,
+                            $directStderrEmpty
+                        )
                     }
                 }
                 finally {
@@ -1779,7 +2232,12 @@ public static class DecoyNode {
                     "",
                     [System.StringComparison]::Ordinal
                 )
-                throw "Review wrapper rejected an exact raw canonical subject (exit=$($wrapperResult.ExitCode), stdoutExact=$stdoutMatches, stderrEmpty=$stderrEmpty)"
+                throw (
+                    "Review wrapper rejected an exact raw canonical subject (exit={0}, stdoutExact={1}, stderrEmpty={2})" -f
+                    $wrapperResult.ExitCode,
+                    $stdoutMatches,
+                    $stderrEmpty
+                )
             }
         }
         else {

@@ -4,9 +4,10 @@ param(
     [string]$OutputDirectory
 )
 
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot "common.ps1")
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $OutputFull = [System.IO.Path]::GetFullPath($OutputDirectory)
@@ -61,8 +62,8 @@ try {
     $secondSource = Join-Path $workRoot "clean-b"
     [void](New-Item -ItemType Directory -Path $firstSource)
     [void](New-Item -ItemType Directory -Path $secondSource)
-    Expand-Archive -LiteralPath $sourceArchive -DestinationPath $firstSource
-    Expand-Archive -LiteralPath $sourceArchive -DestinationPath $secondSource
+    Expand-ReleaseZipArchive -LiteralPath $sourceArchive -DestinationPath $firstSource
+    Expand-ReleaseZipArchive -LiteralPath $sourceArchive -DestinationPath $secondSource
 
     $vendorSource = Join-Path $workRoot "vendor-source"
     [void](Invoke-ReleaseCommand -Executable "cargo" -CommandArguments @("vendor", "--frozen", "--versioned-dirs", $vendorSource) -WorkingDirectory $RepoRoot)

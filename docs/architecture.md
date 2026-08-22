@@ -435,10 +435,68 @@ and the native-host manifest validator in a fixed four-directory tree. Exact
 case, no extra entry, one hard link and default stream per file, read-only
 attributes, separate failed file-creation and subdirectory-creation probes in
 every directory, full volume/file identity, and disjoint candidate/toolset roots
-are mandatory. This runtime aggregate is a consistency/version pin; the already
-executing wrapper and Windows PowerShell bootstrap must themselves come from
-trusted write-protected media. An approved 64-bit Node image requires a fresh
-trusted 64-bit Windows PowerShell host.
+are mandatory. This runtime aggregate is a consistency/version pin; it cannot
+make the already executing wrapper, `common.ps1`, system PowerShell image, or
+Windows OS authenticate itself. The wrapper and `common.ps1` must therefore come
+from the independently reviewed write-protected toolset.
+
+The repository architecture gate recursively inventories every executable
+PowerShell source (`.ps1`, `.psm1`, and `.psd1`) outside its explicit generated
+and control-directory exclusions. It rejects reparse entries, NUL bytes, and
+anything other than ASCII without a BOM or valid BOM-marked UTF-8, then requires
+both the exact approved path set and an exact raw-byte SHA-256 pin for every
+source. Adding or editing any PowerShell source therefore requires an explicit
+reviewed update to the pin table in `scripts/architecture-scan.mjs`. These pins
+are a repository change-review checkpoint; because the scanner and pins live in
+the same repository, they are not an independent trust anchor or runtime
+authentication mechanism.
+
+The five top-level `scripts/release/*.test.mjs` suites are likewise discovered
+as one exact regular-file inventory, decoded and hashed from the same single
+read, and matched to reviewed raw-byte SHA-256 pins before their contents are
+used by the architecture assertions. `scripts/release/check.ps1` independently
+requires the same ordered filenames and hashes immediately before invoking the
+Node test runner, so an unchanged test count cannot hide a hollowed callback.
+This remains a deterministic repository review gate, not protection against a
+same-user process that can rewrite files concurrently with the developer check.
+
+The static release check is itself one of the sealed `common.ps1` consumers. It
+must run under the exact system Windows PowerShell argv shown below, accepts an
+explicit absolute Node executable path rather than resolving `node` through its
+own `PATH`, and delegates every child launch to the common Application-only
+runner. Exit zero is insufficient: every child must also produce empty stderr,
+and the two PowerShell behavior tests must each produce their one exact stdout
+sentinel. Both Windows CI workflows carry this same invocation contract.
+
+Every entry that consumes `common.ps1` begins by setting
+`$PSModuleAutoLoadingPreference` to `None` and accepting only the exact system
+64-bit Desktop Windows PowerShell 5.1 image invoked exactly as follows:
+
+```powershell
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <current-entry>
+```
+
+Only that entry's arguments may follow. A different image, 32-bit host,
+PowerShell Core, missing/extra/abbreviated engine option, or different
+`-File` target fails before any caller-controlled release, toolset, or candidate
+path is opened. `common.ps1` requires exactly zero loaded modules at
+initialization, zero pre-existing protected `YourWallet.*` types, and zero
+function, alias, script, or application shadows for critical command names.
+`PSModulePath` is never searched. Beneath `$PSHOME\Modules`, the bootstrap imports
+only the absolute manifests `Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1`,
+`Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1`, and
+`Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1`; the
+script-based `Microsoft.PowerShell.Archive` module is not imported. Authenticode
+and `Add-Type` operations invoke their verified `CmdletInfo` objects directly.
+ZIP handling validates and retains the exact strong-named GAC framework types,
+and its source extractor rejects traversal, automatic `~`-form DOS 8.3
+aliases, device-name aliases, duplicate Windows paths, reparse output, and
+symbolic-link entries. The bootstrap also rejects every
+long-form alias, while generic build-tool names resolve only as applications and
+are invoked through the resulting absolute paths. Profiles, module autoload,
+ambient command shadows, and preloaded replacement runtime types therefore fail
+closed rather than becoming an operating assumption.
 
 The wrapper bootstrap-opens each requested data root, converts it to a
 handle-derived local volume-GUID path, locks every canonical ancestor from the
@@ -504,4 +562,13 @@ holder from replacing installer/native-host, advisory, or Windows-negative
 evidence and reusing an earlier independent-review signature. The subject is
 not release eligibility, and organizational independence, read-only staging,
 final evidence production, and hardware-backed reviewer key custody remain
-external ceremony requirements.
+external ceremony requirements. For the ambient PowerShell bootstrap itself,
+the remaining external boundary is only the Windows OS and exact system
+Windows PowerShell image, the independently reviewed write-protected toolset,
+and live same-integrity process injection during or after admission. Release
+preparation separately assumes no concurrent same-user mutation of its fresh
+temporary extraction tree. Module/type/command cleanliness is enforced
+in-process. Release remains
+STOP-SHIP until a production offline transcript records the accepted
+exact-system-host invocation and write-protected verifier-toolset checkpoint
+together with the other mandatory evidence.

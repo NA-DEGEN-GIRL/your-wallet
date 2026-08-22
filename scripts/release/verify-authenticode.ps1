@@ -6,9 +6,10 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputPath
 )
 
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot "common.ps1")
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
 
 if ($env:OS -ne "Windows_NT") {
     throw "Authenticode verification requires Windows"
@@ -41,7 +42,7 @@ $entries = [System.Collections.Generic.List[object]]::new()
 # compares the report positionally in that same order.
 foreach ($fileName in $requiredFiles | Where-Object { $_ -ne "extension-package.zip" }) {
     $filePath = Join-Path $payloadRoot $fileName
-    $signature = Get-AuthenticodeSignature -LiteralPath $filePath
+    $signature = Get-ReleaseAuthenticodeSignature -LiteralPath $filePath
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate) {
         throw "Authenticode verification failed closed for a required payload"
     }
@@ -65,8 +66,13 @@ foreach ($fileName in $requiredFiles | Where-Object { $_ -ne "extension-package.
 }
 
 $entryJson = foreach ($entry in $entries) {
-    "{`"path`":`"$($entry.path)`",`"sha256`":`"$($entry.sha256)`",`"signerCertificateSha256`":`"$($entry.signerCertificateSha256)`",`"status`":`"valid`"}"
+    '{"path":"' + [string]$entry.path +
+        '","sha256":"' + [string]$entry.sha256 +
+        '","signerCertificateSha256":"' + [string]$entry.signerCertificateSha256 +
+        '","status":"valid"}'
 }
-$report = "{`"artifactSetSha256`":`"${ArtifactSetSha256}`",`"entries`":[$($entryJson -join ',')],`"result`":`"pass`",`"schema`":`"your-wallet-authenticode-evidence-v1`"}`n"
+$report = '{"artifactSetSha256":"' + $ArtifactSetSha256 +
+    '","entries":[' + ($entryJson -join ',') +
+    '],"result":"pass","schema":"your-wallet-authenticode-evidence-v1"}' + "`n"
 Write-NewUtf8File -LiteralPath $OutputPath -Content $report
 Write-Output "AUTHENTICODE_EVIDENCE_WRITTEN"

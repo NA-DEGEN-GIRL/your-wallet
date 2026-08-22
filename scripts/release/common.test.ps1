@@ -1,6 +1,7 @@
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot "common.ps1")
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
+. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("your-wallet-release-" + [System.Guid]::NewGuid().ToString("N"))
@@ -42,6 +43,30 @@ try {
         }
     }
 
+    $applicationShadowMarker = Join-Path $testRoot "application-shadow.marker"
+    function global:node {
+        [System.IO.File]::WriteAllText(
+            $applicationShadowMarker,
+            "invoked"
+        )
+        throw "ambient application-name function executed"
+    }
+    try {
+        $nodeVersionResult = Invoke-ReleaseCommand `
+            -Executable "node" `
+            -CommandArguments @("--version") `
+            -WorkingDirectory $RepoRoot
+    }
+    finally {
+        Remove-Item -LiteralPath "Function:\global:node" -Force
+    }
+    if (
+        $nodeVersionResult.ExitCode -ne 0 -or
+        [System.IO.File]::Exists($applicationShadowMarker)
+    ) {
+        throw "Release application resolution accepted an ambient function"
+    }
+
     $inventory = Get-DirectoryInventory -LiteralPath (Join-Path $RepoRoot "extension\src")
     $firstInventoryHash = Get-InventorySha256 -Inventory $inventory
     $secondInventoryHash = Get-InventorySha256 -Inventory (Get-DirectoryInventory -LiteralPath (Join-Path $RepoRoot "extension\src"))
@@ -55,6 +80,179 @@ try {
     New-DeterministicExtensionZip -ExtensionRoot (Join-Path $RepoRoot "extension") -OutputPath $secondZip
     if (-not [System.String]::Equals((Get-Sha256Lower -LiteralPath $firstZip), (Get-Sha256Lower -LiteralPath $secondZip), [System.StringComparison]::Ordinal)) {
         throw "Deterministic extension packages differ"
+    }
+
+    $extractedExtension = Join-Path $testRoot "extracted-extension"
+    [void](New-Item -ItemType Directory -Path $extractedExtension)
+    Expand-ReleaseZipArchive `
+        -LiteralPath $firstZip `
+        -DestinationPath $extractedExtension
+    if (-not [System.String]::Equals(
+        (Get-Sha256Lower -LiteralPath (Join-Path $extractedExtension "manifest.json")),
+        (Get-Sha256Lower -LiteralPath (Join-Path $RepoRoot "extension\manifest.json")),
+        [System.StringComparison]::Ordinal
+    )) {
+        throw "Sealed release ZIP extraction changed a regular file"
+    }
+
+    $traversalZip = Join-Path $testRoot "traversal.zip"
+    $traversalStream = [System.IO.File]::Open(
+        $traversalZip,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $traversalArchive = $script:ReleaseZipArchiveType::new(
+            $traversalStream,
+            $script:ReleaseZipArchiveCreateMode,
+            $true
+        )
+        try {
+            $traversalEntry = $traversalArchive.CreateEntry(
+                "../escaped.txt",
+                $script:ReleaseNoCompressionLevel
+            )
+            $traversalEntryStream = $traversalEntry.Open()
+            try {
+                $traversalBytes = [System.Text.Encoding]::UTF8.GetBytes("must not escape")
+                $traversalEntryStream.Write(
+                    $traversalBytes,
+                    0,
+                    $traversalBytes.Length
+                )
+            }
+            finally {
+                $traversalEntryStream.Dispose()
+            }
+        }
+        finally {
+            $traversalArchive.Dispose()
+        }
+        $traversalStream.Flush($true)
+    }
+    finally {
+        $traversalStream.Dispose()
+    }
+    $traversalDestination = Join-Path $testRoot "traversal-output"
+    $escapedPath = Join-Path $testRoot "escaped.txt"
+    [void](New-Item -ItemType Directory -Path $traversalDestination)
+    $traversalRejected = $false
+    try {
+        Expand-ReleaseZipArchive `
+            -LiteralPath $traversalZip `
+            -DestinationPath $traversalDestination
+    }
+    catch {
+        $traversalRejected = $true
+    }
+    if (-not $traversalRejected -or (Test-Path -LiteralPath $escapedPath)) {
+        throw "Sealed release ZIP extraction accepted a traversal entry"
+    }
+
+    $shortAliasZip = Join-Path $testRoot "short-alias.zip"
+    $shortAliasStream = [System.IO.File]::Open(
+        $shortAliasZip,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $shortAliasArchive = $script:ReleaseZipArchiveType::new(
+            $shortAliasStream,
+            $script:ReleaseZipArchiveCreateMode,
+            $true
+        )
+        try {
+            foreach ($shortAliasEntryPath in @(
+                "LongDirectoryName/first.txt",
+                "LONGDI~1/second.txt"
+            )) {
+                $shortAliasEntry = $shortAliasArchive.CreateEntry(
+                    $shortAliasEntryPath,
+                    $script:ReleaseNoCompressionLevel
+                )
+                $shortAliasEntryStream = $shortAliasEntry.Open()
+                try {
+                    $shortAliasEntryStream.WriteByte(0x41)
+                }
+                finally {
+                    $shortAliasEntryStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $shortAliasArchive.Dispose()
+        }
+        $shortAliasStream.Flush($true)
+    }
+    finally {
+        $shortAliasStream.Dispose()
+    }
+    $shortAliasDestination = Join-Path $testRoot "short-alias-output"
+    [void](New-Item -ItemType Directory -Path $shortAliasDestination)
+    $shortAliasRejected = $false
+    try {
+        Expand-ReleaseZipArchive `
+            -LiteralPath $shortAliasZip `
+            -DestinationPath $shortAliasDestination
+    }
+    catch {
+        $shortAliasRejected = $true
+    }
+    if (-not $shortAliasRejected) {
+        throw "Sealed release ZIP extraction accepted an NTFS short-name alias"
+    }
+
+    $reservedDeviceZip = Join-Path $testRoot "reserved-device.zip"
+    $reservedDeviceStream = [System.IO.File]::Open(
+        $reservedDeviceZip,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $reservedDeviceArchive = $script:ReleaseZipArchiveType::new(
+            $reservedDeviceStream,
+            $script:ReleaseZipArchiveCreateMode,
+            $true
+        )
+        try {
+            $reservedDeviceEntryPath =
+                "COM" + ([char]0x00B9).ToString() + ".txt"
+            $reservedDeviceEntry = $reservedDeviceArchive.CreateEntry(
+                $reservedDeviceEntryPath,
+                $script:ReleaseNoCompressionLevel
+            )
+            $reservedDeviceEntryStream = $reservedDeviceEntry.Open()
+            try {
+                $reservedDeviceEntryStream.WriteByte(0x41)
+            }
+            finally {
+                $reservedDeviceEntryStream.Dispose()
+            }
+        }
+        finally {
+            $reservedDeviceArchive.Dispose()
+        }
+        $reservedDeviceStream.Flush($true)
+    }
+    finally {
+        $reservedDeviceStream.Dispose()
+    }
+    $reservedDeviceDestination = Join-Path $testRoot "reserved-device-output"
+    [void](New-Item -ItemType Directory -Path $reservedDeviceDestination)
+    $reservedDeviceRejected = $false
+    try {
+        Expand-ReleaseZipArchive `
+            -LiteralPath $reservedDeviceZip `
+            -DestinationPath $reservedDeviceDestination
+    }
+    catch {
+        $reservedDeviceRejected = $true
+    }
+    if (-not $reservedDeviceRejected) {
+        throw "Sealed release ZIP extraction accepted a reserved Windows device alias"
     }
 
     $lockRoot = Join-Path $testRoot "read-only-lock-test"
@@ -80,7 +278,7 @@ try {
             $lockSet.CanonicalBundleRoot,
             ([System.IO.Path]::Combine($lockSet.CanonicalBundleRoot, "evidence\record.txt"))
         ))
-        $authenticodePathProbe = Get-AuthenticodeSignature -LiteralPath (
+        $authenticodePathProbe = Get-ReleaseAuthenticodeSignature -LiteralPath (
             [System.IO.Path]::Combine($lockSet.CanonicalBundleRoot, "evidence\record.txt")
         )
         if ($null -eq $authenticodePathProbe) {
@@ -659,7 +857,9 @@ namespace YourWalletTests {
                 $PowerShellPath,
                 $ToolsetRoot,
                 [string[]]@(
+                    "-NoLogo",
                     "-NoProfile",
+                    "-NonInteractive",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
@@ -683,15 +883,19 @@ namespace YourWalletTests {
         )
 
         $lockObserved = $false
-        for ($attempt = 0; $attempt -lt 6000; $attempt += 1) {
-            if ($wrapperJob.State -in @("Completed", "Failed", "Stopped")) {
-                break
-            }
+        for (
+            $attempt = 0;
+            $attempt -lt 6000 -and
+                -not $lockObserved -and
+                $wrapperJob.State -notin @("Completed", "Failed", "Stopped");
+            $attempt += 1
+        ) {
             if ([System.IO.File]::Exists($taskReadyPath)) {
                 $lockObserved = $true
-                break
             }
-            Start-Sleep -Milliseconds 5
+            else {
+                Start-Sleep -Milliseconds 5
+            }
         }
         if (-not $lockObserved) {
             throw "Review wrapper test node was not reached while canonical locks were held"

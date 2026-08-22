@@ -1,5 +1,6 @@
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
 
 function Invoke-ReviewEvidenceSetCeremony {
     [CmdletBinding()]
@@ -67,7 +68,7 @@ finally {
 }
 
 try {
-    . (Join-Path $PSScriptRoot "common.ps1")
+    . ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
     $boundArguments = ConvertFrom-ExactNamedArguments `
         -Arguments @($args) `
         -RequiredValueNames @("BundleRoot", "ExpectedVerifierToolsetSha256") `

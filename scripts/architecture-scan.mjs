@@ -1,5 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, relative, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -70,6 +72,144 @@ async function rustProductionSources(relativeDirectory) {
       path: relative(root, absolute).replaceAll("\\", "/"),
       source: withoutBottomTestModule(await readFile(absolute, "utf8")),
     })),
+  );
+}
+
+async function repositoryPowerShellSources() {
+  const files = [];
+  const ignoredRootDirectories = new Set([
+    ".git",
+    ".agents",
+    ".codex",
+    ".handoff",
+    "node_modules",
+    "target",
+  ]);
+  async function walk(directory) {
+    const isRoot = resolve(directory) === root;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (
+        isRoot &&
+        entry.isDirectory() &&
+        ignoredRootDirectories.has(entry.name)
+      ) {
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        const path = relative(root, absolute).replaceAll("\\", "/");
+        throw new Error(`repository inventory contains a symbolic link: ${path}`);
+      }
+      if (entry.isDirectory()) {
+        await walk(absolute);
+      } else if (entry.isFile()) {
+        const extension = entry.name.toLowerCase();
+        if (
+          extension.endsWith(".ps1") ||
+          extension.endsWith(".psm1") ||
+          extension.endsWith(".psd1")
+        ) {
+          files.push(absolute);
+        }
+      }
+    }
+  }
+
+  await walk(root);
+  files.sort((left, right) => left.localeCompare(right, "en"));
+  return Promise.all(
+    files.map(async (absolute) => {
+      const path = relative(root, absolute).replaceAll("\\", "/");
+      const bytes = await readFile(absolute);
+      const hasUtf8Bom =
+        bytes.length >= 3 &&
+        bytes[0] === 0xef &&
+        bytes[1] === 0xbb &&
+        bytes[2] === 0xbf;
+      let source;
+      if (hasUtf8Bom) {
+        try {
+          source = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(3));
+        } catch {
+          throw new Error(`PowerShell source is not valid UTF-8 with BOM: ${path}`);
+        }
+      } else if (bytes.every((byte) => byte <= 0x7f)) {
+        source = bytes.toString("ascii");
+      } else {
+        throw new Error(
+          `PowerShell source must be ASCII or valid UTF-8 with BOM: ${path}`,
+        );
+      }
+      if (source.includes("\u0000")) {
+        throw new Error(`PowerShell source contains a NUL byte: ${path}`);
+      }
+      return {
+        path,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        source: source.replace(/\r\n?/gu, "\n"),
+      };
+    }),
+  );
+}
+
+async function releasePolicyTestSources() {
+  const directory = resolve(root, "scripts/release");
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.name.endsWith(".test.mjs"))
+    .sort((left, right) => left.name.localeCompare(right.name, "en"));
+  return Promise.all(
+    entries.map(async (entry) => {
+      const path = `scripts/release/${entry.name}`;
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        throw new Error(`release-policy test is not a regular file: ${path}`);
+      }
+      const bytes = await readFile(resolve(root, path));
+      if (
+        bytes.length >= 3 &&
+        bytes[0] === 0xef &&
+        bytes[1] === 0xbb &&
+        bytes[2] === 0xbf
+      ) {
+        throw new Error(`release-policy test must not use a UTF-8 BOM: ${path}`);
+      }
+      let source;
+      try {
+        source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new Error(`release-policy test is not valid UTF-8: ${path}`);
+      }
+      if (source.includes("\u0000")) {
+        throw new Error(`release-policy test contains a NUL byte: ${path}`);
+      }
+      return {
+        path,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        source: source.replace(/\r\n?/gu, "\n"),
+      };
+    }),
+  );
+}
+
+function hasExactCaseInsensitivePathInventory(actualPaths, approvedPaths) {
+  const actual = actualPaths.map((path) => path.toLowerCase());
+  const approved = approvedPaths.map((path) => path.toLowerCase());
+  return (
+    new Set(actual).size === actual.length &&
+    new Set(approved).size === approved.length &&
+    JSON.stringify([...actual].sort()) === JSON.stringify([...approved].sort())
+  );
+}
+
+function hasExactSourcePins(sources, approvedPins) {
+  const approvedPaths = Object.keys(approvedPins);
+  return (
+    hasExactCaseInsensitivePathInventory(
+      sources.map(({ path }) => path),
+      approvedPaths,
+    ) &&
+    sources.every(
+      ({ path, sha256 }) => approvedPins[path.toLowerCase()] === sha256,
+    )
   );
 }
 
@@ -5265,39 +5405,185 @@ requireInvariant(
 requireStableDisplay(approvalUi, "ApprovalError", "approval channel I/O failed");
 requireStableDisplay(secretInput, "SecretInputError", "secret-input channel I/O failed");
 
-const releaseVerifier = await text("scripts/release/verify-release-offline.ps1");
-const releaseCommon = await text("scripts/release/common.ps1");
-const releaseCommonTests = await text("scripts/release/common.test.ps1");
-const releaseVerifierToolsetPreparation = await text(
+const repositoryPowerShellScripts = await repositoryPowerShellSources();
+const repositoryPowerShellScriptsByPath = new Map(
+  repositoryPowerShellScripts.map((script) => [script.path.toLowerCase(), script]),
+);
+function repositoryPowerShellSource(path) {
+  const script = repositoryPowerShellScriptsByPath.get(path.toLowerCase());
+  if (script === undefined) {
+    throw new Error(`approved PowerShell source is missing: ${path}`);
+  }
+  return script.source;
+}
+const releasePolicyTests = await releasePolicyTestSources();
+const releasePolicyTestsByPath = new Map(
+  releasePolicyTests.map((test) => [test.path.toLowerCase(), test]),
+);
+function releasePolicyTestSource(path) {
+  const test = releasePolicyTestsByPath.get(path.toLowerCase());
+  if (test === undefined) {
+    throw new Error(`approved release-policy test is missing: ${path}`);
+  }
+  return test.source;
+}
+
+const releaseVerifier = repositoryPowerShellSource(
+  "scripts/release/verify-release-offline.ps1",
+);
+const releaseCommon = repositoryPowerShellSource("scripts/release/common.ps1");
+const releaseCommonTests = repositoryPowerShellSource(
+  "scripts/release/common.test.ps1",
+);
+const releaseUnsignedPreparation = repositoryPowerShellSource(
+  "scripts/release/prepare-unsigned.ps1",
+);
+const releaseAuthenticodeVerifier = repositoryPowerShellSource(
+  "scripts/release/verify-authenticode.ps1",
+);
+const releaseVerifierToolsetPreparation = repositoryPowerShellSource(
   "scripts/release/prepare-verifier-toolset.ps1",
 );
-const releaseVerifierToolsetTests = await text(
+const releaseVerifierToolsetTests = repositoryPowerShellSource(
   "scripts/release/verifier-toolset.test.ps1",
 );
-const releaseCheck = await text("scripts/release/check.ps1");
+const releaseCheck = repositoryPowerShellSource("scripts/release/check.ps1");
 const releaseManifestVerifier = await text("scripts/release/release-manifest.mjs");
-const releaseManifestTests = await text("scripts/release/release-manifest.test.mjs");
+const releaseManifestTests = releasePolicyTestSource(
+  "scripts/release/release-manifest.test.mjs",
+);
 const releaseManifestAssembler = await text("scripts/release/assemble-manifest.mjs");
 const releaseReviewEvidenceSet = await text("scripts/release/review-evidence-set.mjs");
-const releaseReviewEvidenceSetWrapper = await text(
+const releaseReviewEvidenceSetWrapper = repositoryPowerShellSource(
   "scripts/release/review-evidence-set.ps1",
 );
-const releaseReviewEvidenceSetTests = await text(
+const releaseReviewEvidenceSetTests = releasePolicyTestSource(
   "scripts/release/review-evidence-set.test.mjs",
 );
-const releaseVerifierIntegrationTests = await text(
+const releaseVerifierIntegrationTests = releasePolicyTestSource(
   "scripts/release/release-verifier-integration.test.mjs",
 );
-const releaseExtensionAuditTests = await text(
+const releaseExtensionAuditTests = releasePolicyTestSource(
   "scripts/release/audit-extension.test.mjs",
 );
-const releaseInventoryTests = await text(
+const releaseInventoryTests = releasePolicyTestSource(
   "scripts/release/generate-inventories.test.mjs",
 );
-const releaseTestSuiteNames = (await readdir(resolve(root, "scripts/release")))
-  .filter((name) => name.endsWith(".test.mjs"))
-  .sort();
+const approvedSealedReleasePowerShellEntryPaths = [
+  "scripts/release/check.ps1",
+  "scripts/release/common.test.ps1",
+  "scripts/release/prepare-unsigned.ps1",
+  "scripts/release/prepare-verifier-toolset.ps1",
+  "scripts/release/review-evidence-set.ps1",
+  "scripts/release/verifier-toolset.test.ps1",
+  "scripts/release/verify-authenticode.ps1",
+  "scripts/release/verify-release-offline.ps1",
+];
+const approvedOtherPowerShellScriptPaths = [
+  "scripts/check.ps1",
+  "scripts/launcher-contract.test.ps1",
+  "scripts/release/common.ps1",
+  "scripts/run-sepolia-wallet.ps1",
+];
+const approvedRepositoryPowerShellScriptPaths = [
+  ...approvedSealedReleasePowerShellEntryPaths,
+  ...approvedOtherPowerShellScriptPaths,
+];
+const approvedPowerShellSourceSha256 = Object.freeze({
+  "scripts/check.ps1": "ec9f3f41d47008f2579047b4ef157af933b998c61a8a35ac37c418696810f25f",
+  "scripts/launcher-contract.test.ps1": "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
+  "scripts/release/check.ps1": "a9d5d263f07a5bd8459597e3749aa5617708ac0b87536ca6fdd3341adfcde378",
+  "scripts/release/common.ps1": "5591e95cf5de52adc3464c7cfc8570c8b47f9b7145faa1b41ad940ec2a68270c",
+  "scripts/release/common.test.ps1": "d67800a958a60df98ccbdf8d522344cc3f84d49c44b373d9dfc46faf851442a7",
+  "scripts/release/prepare-unsigned.ps1": "5b84c796d4a9899b37666f295793e193b101e0a3564d7492ea26dd00bd0cbb3b",
+  "scripts/release/prepare-verifier-toolset.ps1": "0523e4a106675d161a385e50fea097d859a9e0a3c942396ca4c1de0d0224a013",
+  "scripts/release/review-evidence-set.ps1": "1d9575c405d0c01d3787270c5d5853a13f814ac0636cb7959ef7dc0d7d8e53fa",
+  "scripts/release/verifier-toolset.test.ps1": "aa9f4e1e4a13a47dba1032c528a0f0e2febf09134653b4300cd82c57fe766945",
+  "scripts/release/verify-authenticode.ps1": "179923bb1c5cf2acd349fd97e5c7731a63fefe8627969afaf6447d4841f3bbdd",
+  "scripts/release/verify-release-offline.ps1": "8f25897182ab4da26cd40b0f8abe4259cf9d72b3d69ac2c7bd007b987fe5bff6",
+  "scripts/run-sepolia-wallet.ps1": "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
+});
+const approvedReleasePolicyTestSha256 = Object.freeze({
+  "scripts/release/audit-extension.test.mjs": "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906",
+  "scripts/release/generate-inventories.test.mjs": "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc",
+  "scripts/release/release-manifest.test.mjs": "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a",
+  "scripts/release/release-verifier-integration.test.mjs": "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e",
+  "scripts/release/review-evidence-set.test.mjs": "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470",
+});
+const sealedReleasePowerShellEntries = approvedSealedReleasePowerShellEntryPaths
+  .map((path) => repositoryPowerShellScriptsByPath.get(path.toLowerCase()))
+  .filter((script) => script !== undefined);
+const discoveredReleaseCommonConsumerPaths = repositoryPowerShellScripts
+  .filter(
+    ({ path, source }) =>
+      path.toLowerCase() !== "scripts/release/common.ps1" &&
+      powerShellReferencesReleaseCommon(source),
+  )
+  .map(({ path }) => path);
+const releaseCommonPowerShellAnalysis = analyzePowerShellSource(releaseCommon);
+const releaseCommonTestsPowerShellAnalysis = analyzePowerShellSource(releaseCommonTests);
+const releaseVerifierToolsetTestsPowerShellAnalysis = analyzePowerShellSource(
+  releaseVerifierToolsetTests,
+);
+const releaseCheckPowerShellAnalysis = analyzePowerShellSource(releaseCheck);
+const releaseWrapperCeremonyStart = releaseCommonTests.indexOf(
+  "$wrapperToolsetRoot =",
+);
+const releaseWrapperCeremonyEnd = releaseCommonTests.indexOf(
+  'Write-Output "POWERSHELL_RELEASE_HELPERS_PASS"',
+  releaseWrapperCeremonyStart,
+);
+const releaseWrapperCeremonyBlock =
+  releaseWrapperCeremonyStart >= 0 && releaseWrapperCeremonyEnd > releaseWrapperCeremonyStart
+    ? releaseCommonTests.slice(releaseWrapperCeremonyStart, releaseWrapperCeremonyEnd)
+    : "";
+const missingHostFlagProbeStart = activePowerShellLiteralIndexes(
+  releaseVerifierToolsetTestsPowerShellAnalysis,
+  '$missingFlagProbePath = Join-Path $probeRoot "missing-host-flag.ps1"',
+)[0] ?? -1;
+const missingHostFlagProbeEnd = activePowerShellLiteralIndexes(
+  releaseVerifierToolsetTestsPowerShellAnalysis,
+  '$wrapperPath = Join-Path $PSScriptRoot "verify-release-offline.ps1"',
+).find((index) => index > missingHostFlagProbeStart) ?? -1;
+const missingHostFlagProbeBlock =
+  missingHostFlagProbeStart >= 0 && missingHostFlagProbeEnd > missingHostFlagProbeStart
+    ? releaseVerifierToolsetTestsPowerShellAnalysis.commentFreeCode.slice(
+        missingHostFlagProbeStart,
+        missingHostFlagProbeEnd,
+      )
+    : "";
+const releaseTestSuiteNames = releasePolicyTests.map(({ path }) =>
+  path.slice("scripts/release/".length),
+);
 const releaseSecurity = await text("docs/release-security.md");
+const ciWorkflow = await text(".github/workflows/ci.yml");
+const releaseEvidencePolicyWorkflow = await text(
+  ".github/workflows/release-evidence-policy.yml",
+);
+const trustedReleaseModuleNamesBlock =
+  /foreach \(\$moduleName in @\((?<body>[\s\S]*?)\)\) \{\s*\$manifestPath =/u.exec(
+    releaseCommon,
+  )?.groups?.body ?? "";
+const trustedReleaseModuleNames = [
+  ...trustedReleaseModuleNamesBlock.matchAll(/"(?<name>Microsoft\.PowerShell\.[A-Za-z]+)"/gu),
+].map((match) => match.groups.name);
+const approvedReleaseEntryScriptNamesBlock =
+  /foreach \(\$approvedEntryScriptName in @\((?<body>[\s\S]*?)\)\) \{/u.exec(
+    releaseCommon,
+  )?.groups?.body ?? "";
+const approvedReleaseEntryScriptNames = [
+  ...approvedReleaseEntryScriptNamesBlock.matchAll(/"(?<name>[A-Za-z0-9.-]+\.ps1)"/gu),
+].map((match) => match.groups.name);
+const releaseBootstrapPreflightOrder = [
+  'foreach ($protectedTypeName in @(',
+  'foreach ($visibleAlias in @(',
+  "$getModuleCommand =",
+  "@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0",
+  'foreach ($coreCommandName in @(',
+  'foreach ($moduleCommandName in @(',
+  "$trustedModules =",
+  'foreach ($moduleName in @(',
+].map((marker) => releaseCommon.indexOf(marker));
 const offlineReleaseVerificationBlock = rustItemBlock(
   releaseVerifier,
   /(?:^|\n)function Invoke-OfflineReleaseVerification\s*\{/u,
@@ -5491,6 +5777,1517 @@ const reviewSubjectWrapperPrivacyTestBlock = rustItemBlock(
   releaseReviewEvidenceSetTests,
   /(?:^|\n)\s*async \(\) => \{\s*const privateParent = await mkdtemp\(path\.join\(os\.tmpdir\(\), "your-wallet-review-wrapper-private-"\)\)/u,
 );
+
+function analyzePowerShellSource(source) {
+  const normalized = source
+    .replace(/^\uFEFF/u, "")
+    .replace(/\r\n?/gu, "\n");
+  const commentFree = normalized.split("");
+  const executable = normalized.split("");
+  const activeCode = new Uint8Array(normalized.length);
+  let state = "code";
+  let blockCommentDepth = 0;
+  let hereStringQuote = "";
+  let hasRequiresDirective = false;
+  let hasExpandableSubexpression = false;
+
+  const blank = (characters, index) => {
+    if (characters[index] !== "\n") characters[index] = " ";
+  };
+  const blankBoth = (index) => {
+    blank(commentFree, index);
+    blank(executable, index);
+  };
+  const lineEndAfter = (index) => {
+    const lineEnd = normalized.indexOf("\n", index);
+    return lineEnd < 0 ? normalized.length : lineEnd;
+  };
+  const isHereStringBoundary = (index, token) => {
+    if (!normalized.startsWith(token, index)) return false;
+    const lineEnd = lineEndAfter(index + token.length);
+    return /^[ \t]*$/u.test(
+      normalized.slice(index + token.length, lineEnd),
+    );
+  };
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    const next = normalized[index + 1];
+
+    if (state === "line-comment") {
+      blankBoth(index);
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      blankBoth(index);
+      if (character === "<" && next === "#") {
+        blankBoth(index + 1);
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "#" && next === ">") {
+        blankBoth(index + 1);
+        blockCommentDepth -= 1;
+        index += 1;
+        if (blockCommentDepth === 0) state = "code";
+      }
+      continue;
+    }
+    if (state === "here-string") {
+      const atLineStart = index === 0 || normalized[index - 1] === "\n";
+      const terminator = `${hereStringQuote}@`;
+      if (atLineStart && normalized.startsWith(terminator, index)) {
+        blankBoth(index);
+        blankBoth(index + 1);
+        index += 1;
+        state = "code";
+        hereStringQuote = "";
+      } else {
+        if (hereStringQuote === '"' && character === "$" && next === "(") {
+          hasExpandableSubexpression = true;
+        }
+        blankBoth(index);
+      }
+      continue;
+    }
+    if (state === "single-string") {
+      blank(executable, index);
+      if (character === "'" && next === "'") {
+        blank(executable, index + 1);
+        index += 1;
+      } else if (character === "'") {
+        state = "code";
+      }
+      continue;
+    }
+    if (state === "double-string") {
+      blank(executable, index);
+      if (character === "$" && next === "(") {
+        hasExpandableSubexpression = true;
+      }
+      if (character === "`") {
+        if (index + 1 < normalized.length) blank(executable, index + 1);
+        index += 1;
+      } else if (character === '"' && next === '"') {
+        blank(executable, index + 1);
+        index += 1;
+      } else if (character === '"') {
+        state = "code";
+      }
+      continue;
+    }
+
+    if (
+      character === "@" &&
+      (next === "'" || next === '"') &&
+      isHereStringBoundary(index, `${character}${next}`)
+    ) {
+      const lineEnd = lineEndAfter(index + 2);
+      hereStringQuote = next;
+      for (let offset = index; offset < lineEnd; offset += 1) blankBoth(offset);
+      index = lineEnd - 1;
+      state = "here-string";
+      continue;
+    }
+    if (character === "<" && next === "#") {
+      blankBoth(index);
+      blankBoth(index + 1);
+      blockCommentDepth = 1;
+      state = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "#") {
+      const directive = normalized.slice(index, index + 9);
+      const afterDirective = normalized[index + 9] ?? "";
+      if (
+        directive.toLowerCase() === "#requires" &&
+        !/[A-Za-z0-9_-]/u.test(afterDirective)
+      ) {
+        hasRequiresDirective = true;
+      }
+      blankBoth(index);
+      state = "line-comment";
+      continue;
+    }
+    if (character === "'") {
+      blank(executable, index);
+      state = "single-string";
+      continue;
+    }
+    if (character === '"') {
+      blank(executable, index);
+      state = "double-string";
+      continue;
+    }
+    activeCode[index] = 1;
+    if (character === "`" && index + 1 < normalized.length) {
+      activeCode[index + 1] = 1;
+      index += 1;
+    }
+  }
+
+  const valid =
+    (state === "code" || state === "line-comment") &&
+    !hasExpandableSubexpression;
+  const executableCode = executable.join("");
+  return {
+    activeCode,
+    commentFreeCode: commentFree.join(""),
+    executableCode,
+    hasPreExecutionDirective:
+      hasRequiresDirective || /^[^\S\r\n]*using\b/imu.test(executableCode),
+    valid,
+  };
+}
+
+function activePowerShellMatches(analysis, pattern) {
+  if (!pattern.global) {
+    throw new Error("active PowerShell match patterns must be global");
+  }
+  return [...analysis.commentFreeCode.matchAll(pattern)].filter(
+    (match) => analysis.activeCode[match.index] === 1,
+  );
+}
+
+function activePowerShellLiteralIndexes(analysis, literal) {
+  const indexes = [];
+  let cursor = 0;
+  for (;;) {
+    const index = analysis.commentFreeCode.indexOf(literal, cursor);
+    if (index < 0) return indexes;
+    if (analysis.activeCode[index] === 1) indexes.push(index);
+    cursor = index + literal.length;
+  }
+}
+
+function powerShellReferencesReleaseCommon(source) {
+  const analysis = analyzePowerShellSource(source);
+  return (
+    /common[^.\r\n]{0,80}\.ps1/iu.test(analysis.commentFreeCode) ||
+    activePowerShellLiteralIndexes(
+      analysis,
+      "ReleasePowerShellEntryScriptPath",
+    ).length > 0
+  );
+}
+
+function powerShellBraceDepthAt(analysis, targetIndex) {
+  let depth = 0;
+  for (let index = 0; index < targetIndex; index += 1) {
+    const character = analysis.executableCode[index];
+    if (character === "{") depth += 1;
+    else if (character === "}") depth -= 1;
+    if (depth < 0) return -1;
+  }
+  return depth;
+}
+
+function hasOneActivePowerShellMatchAtBraceDepth(
+  analysis,
+  pattern,
+  expectedDepth,
+) {
+  const matches = activePowerShellMatches(analysis, pattern);
+  return (
+    matches.length === 1 &&
+    powerShellBraceDepthAt(analysis, matches[0].index) === expectedDepth
+  );
+}
+
+function hasOneActivePowerShellLiteralAtBraceDepth(
+  analysis,
+  literal,
+  expectedDepth,
+) {
+  const indexes = activePowerShellLiteralIndexes(analysis, literal);
+  return (
+    indexes.length === 1 &&
+    powerShellBraceDepthAt(analysis, indexes[0]) === expectedDepth
+  );
+}
+
+function skipPowerShellTrivia(source, initialIndex) {
+  let index = initialIndex;
+  for (;;) {
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] === "#") {
+      const lineEnd = source.indexOf("\n", index + 1);
+      return lineEnd < 0 ? source.length : skipPowerShellTrivia(source, lineEnd + 1);
+    }
+    if (source[index] === "<" && source[index + 1] === "#") {
+      const commentEnd = source.indexOf("#>", index + 2);
+      if (commentEnd < 0) return -1;
+      index = commentEnd + 2;
+      continue;
+    }
+    return index;
+  }
+}
+
+function powerShellBraceEnd(source, openingBrace) {
+  let depth = 0;
+  let state = "code";
+  for (let index = openingBrace; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === "single") {
+      if (character === "'" && next === "'") index += 1;
+      else if (character === "'") state = "code";
+      continue;
+    }
+    if (state === "double") {
+      if (character === "`") index += 1;
+      else if (character === '"') state = "code";
+      continue;
+    }
+    if (state === "line-comment") {
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "#" && next === ">") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "@" && (next === "'" || next === '"')) {
+      const terminator = `\n${next}@`;
+      const hereEnd = source.indexOf(terminator, index + 2);
+      if (hereEnd < 0) return -1;
+      index = hereEnd + terminator.length - 1;
+      continue;
+    }
+    if (character === "'") {
+      state = "single";
+      continue;
+    }
+    if (character === '"') {
+      state = "double";
+      continue;
+    }
+    if (character === "#") {
+      state = "line-comment";
+      continue;
+    }
+    if (character === "<" && next === "#") {
+      state = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "`") {
+      index += 1;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+      if (depth < 0) return -1;
+    }
+  }
+  return -1;
+}
+
+function powerShellFunctionBlock(source, functionName) {
+  const analysis = analyzePowerShellSource(source);
+  if (!analysis.valid) return "";
+  const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const header = new RegExp(
+    `(?:^|\\n)\\s*function\\s+${escapedName}\\s*\\{`,
+    "u",
+  ).exec(analysis.executableCode);
+  if (header === null) return "";
+  const openingBrace = analysis.executableCode.indexOf("{", header.index);
+  const closingBrace = powerShellBraceEnd(analysis.executableCode, openingBrace);
+  return closingBrace < 0
+    ? ""
+    : analysis.commentFreeCode.slice(header.index, closingBrace + 1);
+}
+
+function powerShellExecutableOutsideNamedFunctions(analysis) {
+  if (!analysis.valid) return "";
+  const outsideFunctions = analysis.executableCode.split("");
+  const functionHeader =
+    /(?:^|\n)[ \t]*function[ \t]+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\{/gu;
+  for (const match of analysis.executableCode.matchAll(functionHeader)) {
+    const openingBrace = analysis.executableCode.indexOf("{", match.index);
+    if (
+      openingBrace < 0 ||
+      powerShellBraceDepthAt(analysis, openingBrace) !== 0
+    ) {
+      continue;
+    }
+    const closingBrace = powerShellBraceEnd(
+      analysis.executableCode,
+      openingBrace,
+    );
+    if (closingBrace < 0) return "";
+    for (let index = match.index; index <= closingBrace; index += 1) {
+      if (outsideFunctions[index] !== "\n") outsideFunctions[index] = " ";
+    }
+    functionHeader.lastIndex = closingBrace + 1;
+  }
+  return outsideFunctions.join("");
+}
+
+function hasPowerShellEarlyTerminationOutsideNamedFunctions(analysis) {
+  const outsideFunctions = powerShellExecutableOutsideNamedFunctions(analysis);
+  return /\b(?:return|exit|break|continue)\b/iu.test(outsideFunctions);
+}
+
+function bootstrapPrecedesPowerShellExecution(source, prefixEnd) {
+  const exactDotSource =
+    '. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))';
+  if (source[prefixEnd] !== "\n") return false;
+  let cursor = skipPowerShellTrivia(source, prefixEnd + 1);
+  if (cursor < 0) return false;
+  if (source.startsWith(exactDotSource, cursor)) {
+    let afterDotSource = cursor + exactDotSource.length;
+    while (source[afterDotSource] === " " || source[afterDotSource] === "\t") {
+      afterDotSource += 1;
+    }
+    return source[afterDotSource] === "\n" || afterDotSource === source.length;
+  }
+
+  for (;;) {
+    const functionHeader = /function\s+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*\s*\{/uy;
+    functionHeader.lastIndex = cursor;
+    const match = functionHeader.exec(source);
+    if (match === null) break;
+    const openingBrace = source.indexOf("{", cursor);
+    const closingBrace = powerShellBraceEnd(source, openingBrace);
+    if (closingBrace < 0) return false;
+    cursor = skipPowerShellTrivia(source, closingBrace + 1);
+    if (cursor < 0) return false;
+  }
+
+  if (!source.startsWith("try", cursor)) return false;
+  cursor += "try".length;
+  if (/[A-Za-z0-9_-]/u.test(source[cursor] ?? "")) return false;
+  cursor = skipPowerShellTrivia(source, cursor);
+  if (cursor < 0 || source[cursor] !== "{") return false;
+  cursor = skipPowerShellTrivia(source, cursor + 1);
+  if (cursor < 0 || !source.startsWith(exactDotSource, cursor)) return false;
+  let afterDotSource = cursor + exactDotSource.length;
+  while (source[afterDotSource] === " " || source[afterDotSource] === "\t") {
+    afterDotSource += 1;
+  }
+  return source[afterDotSource] === "\n" || source[afterDotSource] === "}";
+}
+
+function hasSealedPowerShellExecutablePrefix(source, prefix) {
+  const analysis = analyzePowerShellSource(source);
+  if (!analysis.valid || analysis.hasPreExecutionDirective) return false;
+  const normalized = analysis.commentFreeCode;
+  const prefixIndex = normalized.indexOf(prefix);
+  if (prefixIndex >= 0 && analysis.activeCode[prefixIndex] !== 1) return false;
+  if (prefixIndex === 0) {
+    return bootstrapPrecedesPowerShellExecution(normalized, prefix.length);
+  }
+  if (prefixIndex < 0) return false;
+
+  const preamble = normalized.slice(0, prefixIndex);
+  const allowedParameterMetadata = new Set([
+    "CmdletBinding",
+    "Parameter",
+    "ValidatePattern",
+    "ValidateSet",
+    "string",
+    "switch",
+    "System.Text.RegularExpressions.RegexOptions",
+  ]);
+  const parameterMetadataNames = [
+    ...preamble.matchAll(/\[(?<name>[A-Za-z][A-Za-z0-9.]*)/gu),
+  ].map((match) => match.groups.name);
+  if (
+    parameterMetadataNames.some((name) => !allowedParameterMetadata.has(name))
+  ) {
+    return false;
+  }
+  const cmdletBinding = "[CmdletBinding()]\n";
+  if (!preamble.startsWith(cmdletBinding)) return false;
+
+  let cursor = cmdletBinding.length;
+  while (/\s/u.test(preamble[cursor] ?? "")) cursor += 1;
+  if (!preamble.startsWith("param", cursor)) return false;
+  cursor += "param".length;
+  while (/\s/u.test(preamble[cursor] ?? "")) cursor += 1;
+  if (preamble[cursor] !== "(") return false;
+
+  let depth = 0;
+  let squareDepth = 0;
+  let state = "code";
+  let parameterEnd = -1;
+  for (let index = cursor; index < preamble.length; index += 1) {
+    const character = preamble[index];
+    const next = preamble[index + 1];
+    if (state === "single") {
+      if (character === "'" && next === "'") {
+        index += 1;
+      } else if (character === "'") {
+        state = "code";
+      }
+      continue;
+    }
+    if (state === "double") {
+      if (character === "`") {
+        index += 1;
+      } else if (character === '"') {
+        state = "code";
+      }
+      continue;
+    }
+    if (state === "line-comment") {
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "#" && next === ">") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "'") {
+      state = "single";
+      continue;
+    }
+    if (character === '"') {
+      state = "double";
+      continue;
+    }
+    if (character === "#") {
+      state = "line-comment";
+      continue;
+    }
+    if (character === "<" && next === "#") {
+      state = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "`") {
+      index += 1;
+      continue;
+    }
+    if (
+      character === "{" ||
+      character === "}" ||
+      character === ";" ||
+      character === "&" ||
+      character === "|" ||
+      (character === "$" && next === "(")
+    ) {
+      return false;
+    }
+    if (character === "[") {
+      squareDepth += 1;
+      continue;
+    }
+    if (character === "]") {
+      squareDepth -= 1;
+      if (squareDepth < 0) return false;
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth -= 1;
+      if (depth < 0) return false;
+      if (depth === 0) {
+        parameterEnd = index;
+        break;
+      }
+      continue;
+    }
+    if (character === "=" && depth === 1 && squareDepth === 0) {
+      return false;
+    }
+  }
+  const validPreamble =
+    parameterEnd >= 0 &&
+    squareDepth === 0 &&
+    preamble.slice(parameterEnd + 1).trim().length === 0;
+  return (
+    validPreamble &&
+    bootstrapPrecedesPowerShellExecution(normalized, prefixIndex + prefix.length)
+  );
+}
+
+const releaseCheckInvokeTestsBlock = powerShellFunctionBlock(
+  releaseCheck,
+  "Invoke-Tests",
+);
+const releaseCheckInvokeCheckedBlock = powerShellFunctionBlock(
+  releaseCheck,
+  "Invoke-Checked",
+);
+const expectedReleaseCheckInvokeCheckedBlock = [
+  "function Invoke-Checked {",
+  "    param([Parameter(Mandatory = $true)][string]$Executable, [Parameter(Mandatory = $true)][string[]]$CommandArguments)",
+  "    $result = Invoke-ReleaseCommand `",
+  "        -Executable $Executable `",
+  "        -CommandArguments $CommandArguments `",
+  "        -WorkingDirectory $RepoRoot",
+  "    if (-not [System.String]::IsNullOrEmpty($result.Stderr)) {",
+  '        throw "Release check command emitted stderr"',
+  "    }",
+  "    if (-not [System.String]::IsNullOrEmpty($result.Stdout)) {",
+  "        Write-Output $result.Stdout",
+  "    }",
+  "}",
+].join("\n");
+const exactSealedReleaseCheckWorkflowInvocation = [
+  "        run: |",
+  '          $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell", "v1.0", "powershell.exe")',
+  '          $nodeExecutable = $ExecutionContext.InvokeCommand.GetCommand("node", [System.Management.Automation.CommandTypes]::Application).Path',
+  "          & $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/check.ps1 all -NodeExecutable $nodeExecutable",
+].join("\n");
+const releaseCheckInvokeTestsAnalysis = analyzePowerShellSource(
+  releaseCheckInvokeTestsBlock,
+);
+const releaseCheckExactPowerShellTestLoop = [
+  "    $expectedPowerShellTestSuccess = @{",
+  '        "common.test.ps1" = "POWERSHELL_RELEASE_HELPERS_PASS"',
+  '        "verifier-toolset.test.ps1" = "POWERSHELL_VERIFIER_TOOLSET_PASS"',
+  "    }",
+  '    foreach ($testScriptName in @("common.test.ps1", "verifier-toolset.test.ps1")) {',
+  "        $testOutput = @(",
+  "            Invoke-Checked -Executable $systemPowerShell -CommandArguments @(",
+  '                "-NoLogo",',
+  '                "-NoProfile",',
+  '                "-NonInteractive",',
+  '                "-ExecutionPolicy",',
+  '                "Bypass",',
+  '                "-File",',
+  "                (Join-Path $PSScriptRoot $testScriptName)",
+  "            )",
+  "        )",
+  "        $expectedSuccess = $expectedPowerShellTestSuccess[$testScriptName]",
+  "        if (",
+  "            $testOutput.Count -ne 1 -or",
+  "            -not [System.String]::Equals(",
+  "                [string]$testOutput[0],",
+  "                $expectedSuccess,",
+  "                [System.StringComparison]::Ordinal",
+  "            )",
+  "        ) {",
+  '            throw "Release PowerShell behavior test did not emit its exact success sentinel"',
+  "        }",
+  "        Write-Output $testOutput[0]",
+  "    }",
+].join("\n");
+const releaseCheckExactPowerShellTestLoopIndexes = activePowerShellLiteralIndexes(
+  releaseCheckInvokeTestsAnalysis,
+  releaseCheckExactPowerShellTestLoop,
+);
+const expectedReleaseCheckInvokeTestsBlock = [
+  "function Invoke-Tests {",
+  "    $approvedTestSha256 = [ordered]@{",
+  "        \"audit-extension.test.mjs\" = \"ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906\"",
+  "        \"generate-inventories.test.mjs\" = \"cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc\"",
+  "        \"release-manifest.test.mjs\" = \"4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a\"",
+  "        \"release-verifier-integration.test.mjs\" = \"9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e\"",
+  "        \"review-evidence-set.test.mjs\" = \"b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470\"",
+  "    }",
+  "    $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter \"*.test.mjs\" -File | Sort-Object -Property Name | ForEach-Object { $_.FullName })",
+  "    if ($tests.Count -ne $approvedTestSha256.Count) {",
+  "        throw \"Release-policy test inventory is not approved\"",
+  "    }",
+  "    $approvedTestNames = @($approvedTestSha256.Keys)",
+  "    for ($index = 0; $index -lt $approvedTestNames.Count; $index += 1) {",
+  "        $testName = [System.IO.Path]::GetFileName($tests[$index])",
+  "        if (",
+  "            -not [System.String]::Equals(",
+  "                $testName,",
+  "                [string]$approvedTestNames[$index],",
+  "                [System.StringComparison]::Ordinal",
+  "            )",
+  "        ) {",
+  "            throw \"Release-policy test inventory is not approved\"",
+  "        }",
+  "        $sha256 = [System.Security.Cryptography.SHA256]::Create()",
+  "        try {",
+  "            $digest = $sha256.ComputeHash([System.IO.File]::ReadAllBytes($tests[$index]))",
+  "        }",
+  "        finally {",
+  "            $sha256.Dispose()",
+  "        }",
+  "        $actualSha256 = ([System.BitConverter]::ToString($digest)).Replace(\"-\", \"\").ToLowerInvariant()",
+  "        if (",
+  "            -not [System.String]::Equals(",
+  "                $actualSha256,",
+  "                [string]$approvedTestSha256[$testName],",
+  "                [System.StringComparison]::Ordinal",
+  "            )",
+  "        ) {",
+  "            throw \"Release-policy test source is not approved\"",
+  "        }",
+  "    }",
+  "    $stderrRejected = $false",
+  "    try {",
+  "        $null = Invoke-Checked `",
+  "            -Executable $NodeExecutable `",
+  "            -CommandArguments @(",
+  "                \"-e\",",
+  "                'process.stdout.write(\"EXACT_STDOUT\");process.stderr.write(\"REJECTED_STDERR\")'",
+  "            )",
+  "    }",
+  "    catch {",
+  "        $stderrRejected = $true",
+  "    }",
+  "    if (-not $stderrRejected) {",
+  "        throw \"Release check accepted child stderr\"",
+  "    }",
+  "    Invoke-Checked -Executable $NodeExecutable -CommandArguments (@(\"--test\") + $tests)",
+  "    $systemPowerShell = [System.IO.Path]::Combine(",
+  "        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System),",
+  "        \"WindowsPowerShell\",",
+  "        \"v1.0\",",
+  "        \"powershell.exe\"",
+  "    )",
+  "    if (-not [System.IO.File]::Exists($systemPowerShell)) {",
+  "        throw \"System Windows PowerShell is unavailable\"",
+  "    }",
+  "    $expectedPowerShellTestSuccess = @{",
+  "        \"common.test.ps1\" = \"POWERSHELL_RELEASE_HELPERS_PASS\"",
+  "        \"verifier-toolset.test.ps1\" = \"POWERSHELL_VERIFIER_TOOLSET_PASS\"",
+  "    }",
+  "    foreach ($testScriptName in @(\"common.test.ps1\", \"verifier-toolset.test.ps1\")) {",
+  "        $testOutput = @(",
+  "            Invoke-Checked -Executable $systemPowerShell -CommandArguments @(",
+  "                \"-NoLogo\",",
+  "                \"-NoProfile\",",
+  "                \"-NonInteractive\",",
+  "                \"-ExecutionPolicy\",",
+  "                \"Bypass\",",
+  "                \"-File\",",
+  "                (Join-Path $PSScriptRoot $testScriptName)",
+  "            )",
+  "        )",
+  "        $expectedSuccess = $expectedPowerShellTestSuccess[$testScriptName]",
+  "        if (",
+  "            $testOutput.Count -ne 1 -or",
+  "            -not [System.String]::Equals(",
+  "                [string]$testOutput[0],",
+  "                $expectedSuccess,",
+  "                [System.StringComparison]::Ordinal",
+  "            )",
+  "        ) {",
+  "            throw \"Release PowerShell behavior test did not emit its exact success sentinel\"",
+  "        }",
+  "        Write-Output $testOutput[0]",
+  "    }",
+  "}",
+].join("\n");
+const sealedReleaseBootstrapTestBlock = powerShellFunctionBlock(
+  releaseVerifierToolsetTests,
+  "Assert-SealedReleasePowerShellBootstrap",
+);
+const sealedReleaseBootstrapTestAnalysis = analyzePowerShellSource(
+  sealedReleaseBootstrapTestBlock,
+);
+const sealedReleaseBootstrapAttackMatrix = [
+  "    $bootstrapAttacks = @(",
+  "        [pscustomobject]@{",
+  '            Name = "directory-lock-type"',
+  "            Prelude = $typePreludeTemplate.Replace(",
+  '                "__TYPE_NAME__",',
+  '                "YourWallet.ReleaseDirectoryLock"',
+  "            )",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "toolset-process-type"',
+  "            Prelude = $typePreludeTemplate.Replace(",
+  '                "__TYPE_NAME__",',
+  '                "YourWallet.ReleaseToolsetProcess"',
+  "            )",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "toolset-process-result-type"',
+  "            Prelude = $typePreludeTemplate.Replace(",
+  '                "__TYPE_NAME__",',
+  '                "YourWallet.ReleaseToolsetProcessResult"',
+  "            )",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "loaded-security-module"',
+  "            Prelude = $loadedModulePrelude",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "join-path-shadow"',
+  "            Prelude = $joinPathShadowPrelude",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "add-type-shadow"',
+  "            Prelude = $addTypeShadowPrelude",
+  "        },",
+  "        [pscustomobject]@{",
+  '            Name = "long-form-alias-shadow"',
+  "            Prelude = $longAliasPrelude",
+  "        }",
+  "    )",
+].join("\n");
+const sealedReleaseBootstrapAttackMatrixIndexes = activePowerShellLiteralIndexes(
+  sealedReleaseBootstrapTestAnalysis,
+  sealedReleaseBootstrapAttackMatrix,
+);
+const sealedReleaseBootstrapAttackExecutionMarkers = [
+  "$bootstrapAttacks.Count -ne 7",
+  "$executedBootstrapAttackCount = 0",
+  "foreach ($bootstrapAttack in $bootstrapAttacks) {",
+  "$executedBootstrapAttackCount += 1",
+  "$executedBootstrapAttackCount -ne 7",
+].map((literal) => ({
+  indexes: activePowerShellLiteralIndexes(
+    sealedReleaseBootstrapTestAnalysis,
+    literal,
+  ),
+  literal,
+}));
+const sealedReleaseBootstrapAttackExecutionBlock = [
+  "    if ($bootstrapAttacks.Count -ne 7) {",
+  '        throw "Release PowerShell bootstrap attack matrix is incomplete"',
+  "    }",
+  "    $executedBootstrapAttackCount = 0",
+  "    foreach ($bootstrapAttack in $bootstrapAttacks) {",
+  "        $attackProbeRoot = Join-Path $probeRoot $bootstrapAttack.Name",
+  "        [void][System.IO.Directory]::CreateDirectory($attackProbeRoot)",
+  '        $probePath = Join-Path $attackProbeRoot "common.test.ps1"',
+  "        $probeSource = $bootstrapFailureTemplate.Replace(",
+  '            "__PRELUDE__",',
+  "            $bootstrapAttack.Prelude",
+  '        ).Replace("__COMMON_PATH__", $commonPathLiteral)',
+  "        Write-NewUtf8File -LiteralPath $probePath -Content $probeSource",
+  "        $probeResult = Invoke-TestRawProcess `",
+  "            -Executable $systemPowerShell `",
+  "            -WorkingDirectory $RepoRoot `",
+  "            -Arguments @(",
+  '                "-NoLogo",',
+  '                "-NoProfile",',
+  '                "-NonInteractive",',
+  '                "-ExecutionPolicy",',
+  '                "Bypass",',
+  '                "-File",',
+  "                $probePath",
+  "            ) `",
+  "            -TimeoutMilliseconds 30000",
+  "        if (",
+  "            $probeResult.ExitCode -ne 0 -or",
+  "            -not [System.String]::Equals(",
+  "                $probeResult.Stdout,",
+  '                "RELEASE_POWERSHELL_BOOTSTRAP_REJECTED`n",',
+  "                [System.StringComparison]::Ordinal",
+  "            ) -or",
+  "            -not [System.String]::Equals(",
+  "                $probeResult.Stderr,",
+  '                "",',
+  "                [System.StringComparison]::Ordinal",
+  "            )",
+  "        ) {",
+  '            throw "Release PowerShell bootstrap accepted ambient runtime state"',
+  "        }",
+  "        $executedBootstrapAttackCount += 1",
+  "    }",
+  "    if ($executedBootstrapAttackCount -ne 7) {",
+  '        throw "Release PowerShell bootstrap attack matrix did not execute completely"',
+  "    }",
+].join("\n");
+const sealedReleaseBootstrapAttackExecutionBlockIndexes =
+  activePowerShellLiteralIndexes(
+    sealedReleaseBootstrapTestAnalysis,
+    sealedReleaseBootstrapAttackExecutionBlock,
+  );
+const commandShadowMarkerGuardBlock = [
+  "    if ([System.IO.File]::Exists($commandShadowMarker)) {",
+  '        throw "Release PowerShell bootstrap invoked an ambient command shadow"',
+  "    }",
+].join("\n");
+const authenticodeMarkerGuardBlock = [
+  "    if (",
+  "        $lateModuleProbeResult.ExitCode -ne 0 -or",
+  "        -not [System.String]::Equals(",
+  "            $lateModuleProbeResult.Stdout,",
+  '            "AUTHENTICODE_COMMAND_SHADOW_REJECTED`n",',
+  "            [System.StringComparison]::Ordinal",
+  "        ) -or",
+  "        -not [System.String]::Equals(",
+  "            $lateModuleProbeResult.Stderr,",
+  '            "",',
+  "            [System.StringComparison]::Ordinal",
+  "        ) -or",
+  "        [System.IO.File]::Exists($authenticodeMarker)",
+  "    ) {",
+  '        throw "Trusted Authenticode command accepted a late same-name module"',
+  "    }",
+].join("\n");
+const externalModuleMarkerGuardBlock = [
+  "    if ([System.IO.File]::Exists($moduleMarker)) {",
+  '        throw "Release wrapper auto-loaded an external module path"',
+  "    }",
+].join("\n");
+const commandShadowMarkerGuardIndexes = activePowerShellLiteralIndexes(
+  sealedReleaseBootstrapTestAnalysis,
+  commandShadowMarkerGuardBlock,
+);
+const authenticodeMarkerGuardIndexes = activePowerShellLiteralIndexes(
+  sealedReleaseBootstrapTestAnalysis,
+  authenticodeMarkerGuardBlock,
+);
+const externalModuleMarkerGuardIndexes = activePowerShellLiteralIndexes(
+  sealedReleaseBootstrapTestAnalysis,
+  externalModuleMarkerGuardBlock,
+);
+const sealedReleaseBootstrapTopLevelSequence = [
+  "try {",
+  "    Assert-X86VerifierHostPreflight",
+  "    Assert-SealedReleasePowerShellBootstrap",
+  "    if (-not $script:SealedReleasePowerShellBootstrapVerified) {",
+  '        throw "Release PowerShell bootstrap behavior tests did not complete"',
+  "    }",
+].join("\n");
+const sealedReleaseBootstrapTopLevelSequenceIndexes = activePowerShellLiteralIndexes(
+  releaseVerifierToolsetTestsPowerShellAnalysis,
+  sealedReleaseBootstrapTopLevelSequence,
+);
+const sealedReleaseBootstrapFlagInitializationIndexes = activePowerShellLiteralIndexes(
+  releaseVerifierToolsetTestsPowerShellAnalysis,
+  "$script:SealedReleasePowerShellBootstrapVerified = $false",
+);
+const sealedReleaseBootstrapFlagCompletionIndexes = activePowerShellLiteralIndexes(
+  sealedReleaseBootstrapTestAnalysis,
+  "$script:SealedReleasePowerShellBootstrapVerified = $true",
+);
+const commonPowerShellTestSuccessTail = [
+  '    Write-Output "POWERSHELL_RELEASE_HELPERS_PASS"',
+  "}",
+  "finally {",
+].join("\n");
+const verifierPowerShellTestSuccessTail = [
+  '    Write-Output "POWERSHELL_VERIFIER_TOOLSET_PASS"',
+  "}",
+  "finally {",
+].join("\n");
+const commonPowerShellTestSuccessTailIndexes = activePowerShellLiteralIndexes(
+  releaseCommonTestsPowerShellAnalysis,
+  commonPowerShellTestSuccessTail,
+);
+const verifierPowerShellTestSuccessTailIndexes = activePowerShellLiteralIndexes(
+  releaseVerifierToolsetTestsPowerShellAnalysis,
+  verifierPowerShellTestSuccessTail,
+);
+const blockCommentPowerShellCallDecoy = analyzePowerShellSource(
+  "<#\nAssert-SealedReleasePowerShellBootstrap\n#>",
+);
+const lineCommentPowerShellCallDecoy = analyzePowerShellSource(
+  "# Assert-SealedReleasePowerShellBootstrap",
+);
+const hereStringPowerShellCallDecoy = analyzePowerShellSource(
+  "$decoy = @'\nAssert-SealedReleasePowerShellBootstrap\n'@",
+);
+const multilineStringPowerShellCallDecoy = analyzePowerShellSource(
+  "$decoy = '\nAssert-SealedReleasePowerShellBootstrap\n'",
+);
+const expandableStringPowerShellCallDecoy = analyzePowerShellSource(
+  '$decoy = "$(Assert-SealedReleasePowerShellBootstrap)"',
+);
+const expandableHereStringPowerShellCallDecoy = analyzePowerShellSource(
+  '$decoy = @"\n$(Assert-SealedReleasePowerShellBootstrap)\n"@',
+);
+const unreachablePowerShellCallDecoy = analyzePowerShellSource(
+  "try {\n    if ($false) {\n        Assert-SealedReleasePowerShellBootstrap\n    }\n}",
+);
+const unreachablePowerShellMarkerDecoy = analyzePowerShellSource(
+  "function Test-Decoy {\n    if ($false) {\n        if ([System.IO.File]::Exists($commandShadowMarker)) {\n        }\n    }\n}",
+);
+const releaseCheckHereStringCallDecoy = analyzePowerShellSource(
+  [
+    "function Invoke-Tests {",
+    "    $decoy = @'",
+    "        Invoke-Checked -Executable $systemPowerShell -CommandArguments @(",
+    '            "-NoLogo",',
+    '            "-NoProfile",',
+    '            "-NonInteractive",',
+    '            "-ExecutionPolicy",',
+    '            "Bypass",',
+    '            "-File",',
+    "            (Join-Path $PSScriptRoot $testScriptName)",
+    "        )",
+    "'@",
+    "}",
+  ].join("\n"),
+);
+const earlyTerminationPowerShellDecoys = [
+  'Write-Output "POWERSHELL_VERIFIER_TOOLSET_PASS"; return',
+  'Write-Output "POWERSHELL_VERIFIER_TOOLSET_PASS"; exit 0',
+  'if ($true) { break }',
+  'if ($true) { continue }',
+  '[System.Environment]::Exit(0)',
+].map((source) => analyzePowerShellSource(source));
+const namedFunctionReturnPowerShellControl = analyzePowerShellSource(
+  "function Invoke-Decoy { return }\nWrite-Output \"continued\"",
+);
+const powerShellUsingWhitespaceDecoys = ["\u000b", "\u000c", "\u00a0"].map(
+  (whitespace) => analyzePowerShellSource(`${whitespace}using module ambient`),
+);
+const sealedPowerShellEntryPrefix = [
+  '$PSModuleAutoLoadingPreference = "None"',
+  '$ErrorActionPreference = "Stop"',
+  "$script:ReleasePowerShellEntryScriptPath = $PSCommandPath",
+].join("\n");
+const exactReleaseCommonDotSource =
+  '. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))';
+for (const { path, source } of sealedReleasePowerShellEntries) {
+  const analysis = analyzePowerShellSource(source);
+  requireInvariant(
+    analysis.valid,
+    `sealed release PowerShell lexical analysis is invalid: ${path}`,
+  );
+  requireInvariant(
+    hasSealedPowerShellExecutablePrefix(source, sealedPowerShellEntryPrefix),
+    `sealed release PowerShell executable prefix is invalid: ${path}`,
+  );
+  requireInvariant(
+    activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource).length === 1,
+    `sealed release PowerShell common binding is not unique: ${path}`,
+  );
+  requireInvariant(
+    activePowerShellLiteralIndexes(
+      analysis,
+      '. (Join-Path $PSScriptRoot "common.ps1")',
+    ).length === 0,
+    `sealed release PowerShell entry uses an unapproved common binding: ${path}`,
+  );
+}
+requireInvariant(
+  hasExactCaseInsensitivePathInventory(
+    repositoryPowerShellScripts.map(({ path }) => path),
+    approvedRepositoryPowerShellScriptPaths,
+  ) &&
+    hasExactSourcePins(
+      repositoryPowerShellScripts,
+      approvedPowerShellSourceSha256,
+    ) &&
+    !hasExactSourcePins(
+      repositoryPowerShellScripts.map((source, index) =>
+        index === 0 ? { ...source, sha256: "0".repeat(64) } : source,
+      ),
+      approvedPowerShellSourceSha256,
+    ) &&
+    hasExactCaseInsensitivePathInventory(
+      discoveredReleaseCommonConsumerPaths,
+      approvedSealedReleasePowerShellEntryPaths,
+    ) &&
+    powerShellReferencesReleaseCommon(
+      '. ([System.IO.Path]::Combine($PSScriptRoot, "common" + ".ps1"))',
+    ) &&
+    powerShellReferencesReleaseCommon(
+      "$script:ReleasePowerShellEntryScriptPath = $PSCommandPath",
+    ) &&
+    !hasExactCaseInsensitivePathInventory(
+      [
+        ...repositoryPowerShellScripts.map(({ path }) => path),
+        "scripts/release/dynamic-common-entry.ps1",
+      ],
+      approvedRepositoryPowerShellScriptPaths,
+    ) &&
+    !hasExactCaseInsensitivePathInventory(
+      [
+        ...repositoryPowerShellScripts.map(({ path }) => path),
+        "scripts/release/dynamic-common-module.psm1",
+      ],
+      approvedRepositoryPowerShellScriptPaths,
+    ) &&
+    !hasExactCaseInsensitivePathInventory(
+      [
+        ...repositoryPowerShellScripts.map(({ path }) => path),
+        repositoryPowerShellScripts[0].path.toUpperCase(),
+      ],
+      approvedRepositoryPowerShellScriptPaths,
+    ) &&
+  sealedReleasePowerShellEntries.every(
+    ({ source }) => {
+      const analysis = analyzePowerShellSource(source);
+      return (
+        analysis.valid &&
+        hasSealedPowerShellExecutablePrefix(source, sealedPowerShellEntryPrefix) &&
+        activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource).length === 1 &&
+        activePowerShellLiteralIndexes(
+          analysis,
+          '. (Join-Path $PSScriptRoot "common.ps1")',
+        ).length === 0
+      );
+    },
+  ) &&
+    sealedReleasePowerShellEntries.length ===
+      approvedSealedReleasePowerShellEntryPaths.length &&
+    !hasSealedPowerShellExecutablePrefix(
+      '[CmdletBinding()]\nparam(\n    [ValidateScript({ Write-Output "ran"; $true })]\n    [string]$Path\n)\n\n' +
+        sealedPowerShellEntryPrefix,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix} + ".different"\n. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}; Write-Output "ran"\n. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}\nWrite-Output "ran"\n. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}\n#Requires -Modules Microsoft.PowerShell.Utility\n${exactReleaseCommonDotSource}`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}\nfunction Invoke-Decoy {\n    #Requires -Version 5.1\n}\ntry {\n    ${exactReleaseCommonDotSource}\n}`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    !hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}\n$decoy = @'\n${exactReleaseCommonDotSource}\n'@`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    [
+      ` > $([System.Console]::WriteLine("ran"))`,
+      ' | ForEach-Object { Write-Output "ran" }',
+      '; Write-Output "ran"',
+    ].every(
+      (suffix) =>
+        !hasSealedPowerShellExecutablePrefix(
+          `${sealedPowerShellEntryPrefix}\nfunction Invoke-Decoy { }\ntry {\n    ${exactReleaseCommonDotSource}${suffix}\n}`,
+          sealedPowerShellEntryPrefix,
+        ),
+    ) &&
+    hasSealedPowerShellExecutablePrefix(
+      `${sealedPowerShellEntryPrefix}\n<# #Requires is inert here #>\n${exactReleaseCommonDotSource}`,
+      sealedPowerShellEntryPrefix,
+    ) &&
+    activePowerShellMatches(
+      blockCommentPowerShellCallDecoy,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+    ).length === 0 &&
+    activePowerShellMatches(
+      lineCommentPowerShellCallDecoy,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+    ).length === 0 &&
+    activePowerShellMatches(
+      hereStringPowerShellCallDecoy,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+    ).length === 0 &&
+    activePowerShellMatches(
+      multilineStringPowerShellCallDecoy,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+    ).length === 0 &&
+    !expandableStringPowerShellCallDecoy.valid &&
+    !expandableHereStringPowerShellCallDecoy.valid &&
+    !hasOneActivePowerShellMatchAtBraceDepth(
+      unreachablePowerShellCallDecoy,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+      1,
+    ) &&
+    !hasOneActivePowerShellMatchAtBraceDepth(
+      unreachablePowerShellMarkerDecoy,
+      /^[ \t]*if \(\[System\.IO\.File\]::Exists\(\$commandShadowMarker\)\) \{/gmu,
+      1,
+    ) &&
+    earlyTerminationPowerShellDecoys.every((analysis) =>
+      hasPowerShellEarlyTerminationOutsideNamedFunctions(analysis),
+    ) &&
+    !hasPowerShellEarlyTerminationOutsideNamedFunctions(
+      namedFunctionReturnPowerShellControl,
+    ) &&
+    powerShellUsingWhitespaceDecoys.every(
+      (analysis) => analysis.hasPreExecutionDirective,
+    ) &&
+    releaseCommonPowerShellAnalysis.valid &&
+    !releaseCommonPowerShellAnalysis.hasPreExecutionDirective &&
+    releaseCommonPowerShellAnalysis.commentFreeCode.startsWith(
+      '$PSModuleAutoLoadingPreference = "None"\n$ErrorActionPreference = "Stop"\n',
+    ) &&
+    JSON.stringify(approvedReleaseEntryScriptNames) ===
+      JSON.stringify(
+        approvedSealedReleasePowerShellEntryPaths.map((path) =>
+          path.slice(path.lastIndexOf("/") + 1),
+        ),
+      ) &&
+    releaseCommon.includes(
+      "[System.IO.Path]::GetFileName(\n        [System.IO.Path]::GetFullPath($script:ReleasePowerShellEntryScriptPath)",
+    ) &&
+    releaseCommon.includes("if (-not $approvedEntryScript) {") &&
+    releaseCommon.includes("function Initialize-ReleasePowerShellRuntime") &&
+    releaseCommon.includes("[System.Environment]::Is64BitOperatingSystem") &&
+    releaseCommon.includes("[System.Environment]::Is64BitProcess") &&
+    releaseCommon.includes('[string]$PSVersionTable.PSEdition,\n            "Desktop"') &&
+    releaseCommon.includes("$PSVersionTable.PSVersion.Major -ne 5") &&
+    releaseCommon.includes("$PSVersionTable.PSVersion.Minor -ne 1") &&
+    releaseCommon.includes("[System.Environment]::GetCommandLineArgs()") &&
+    releaseCommon.includes("$commandLine.Count -lt 8") &&
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"].every(
+      (argument) => releaseCommon.includes(`"${argument}"`),
+    ) &&
+    releaseCommon.includes("$script:ReleasePowerShellEntryScriptPath") &&
+    releaseCommon.includes("$currentProcess.MainModule.FileName") &&
+    releaseCommon.includes("[System.Environment+SpecialFolder]::System") &&
+    releaseCommon.includes('"WindowsPowerShell", "v1.0"') &&
+    releaseCommon.includes('"powershell.exe"') &&
+    releaseCommon.includes('throw "Release PowerShell runtime bootstrap failed closed"'),
+  "the exact approved PowerShell inventory must use one unambiguous encoding and exact reviewed raw-byte SHA-256 pins, and every sealed release entry must reject pre-execution directives, disable autoload before ambient code, and bind common.ps1 to one exact direct system Windows PowerShell 5.1 invocation",
+);
+requireInvariant(
+  releaseCommon.includes('"YourWallet.ReleaseDirectoryLock"') &&
+    releaseCommon.includes('"YourWallet.ReleaseToolsetProcessResult"') &&
+    releaseCommon.includes('"YourWallet.ReleaseToolsetProcess"') &&
+    releaseCommon.includes("@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0") &&
+    releaseCommon.includes("[System.Management.Automation.CommandTypes]::Cmdlet") &&
+    releaseCommon.includes("$visibleCommands.Count -ne 1") &&
+    releaseCommon.includes("release core command surface is shadowed before module import") &&
+    releaseCommon.includes("release module command surface is shadowed before module import") &&
+    releaseBootstrapPreflightOrder.every(
+      (index, position, indexes) =>
+        index >= 0 && (position === 0 || index > indexes[position - 1]),
+    ) &&
+    [
+      "Microsoft.PowerShell.Management",
+      "Microsoft.PowerShell.Utility",
+      "Microsoft.PowerShell.Security",
+    ].every((moduleName) => releaseCommon.includes(`"${moduleName}"`)) &&
+    JSON.stringify(trustedReleaseModuleNames) ===
+      JSON.stringify([
+        "Microsoft.PowerShell.Management",
+        "Microsoft.PowerShell.Utility",
+        "Microsoft.PowerShell.Security",
+      ]) &&
+    (releaseCommon.match(/& \$importModuleCommand\s*`/gu) ?? []).length === 1 &&
+    !/^\s*Import-Module\b/gmu.test(releaseCommon) &&
+    !releaseCommon.includes('"Microsoft.PowerShell.Archive"') &&
+    releaseCommon.includes("$expectedPowerShellHome") &&
+    releaseCommon.includes("$trustedModules.Add($moduleName, $importedModules[0])") &&
+    releaseCommon.includes('"Add-Type" = "Microsoft.PowerShell.Utility"') &&
+    releaseCommon.includes(
+      '"Get-AuthenticodeSignature" = "Microsoft.PowerShell.Security"',
+    ) &&
+    releaseCommon.includes("$script:ReleaseTrustedCommands = $trustedCommands") &&
+    releaseCommon.includes('$visibleAlias.Name.Contains("-")') &&
+    releaseCommon.includes("$initializeRuntimeCommands[0]") &&
+    releaseCommon.includes('$trustedCommands["Add-Type"]') &&
+    releaseCommon.includes('-AssemblyName "System.IO.Compression"') &&
+    releaseCommon.includes("$frameworkAssembly.GlobalAssemblyCache") &&
+    releaseCommon.includes("$script:ReleaseZipArchiveType = $zipArchiveType") &&
+    releaseCommon.includes("$script:ReleaseZipArchiveModeType = $zipArchiveModeType") &&
+    releaseCommon.includes("$script:ReleaseCompressionLevelType = $compressionLevelType") &&
+    !/^\s*Add-Type\b/gmu.test(releaseCommon) &&
+    !releaseCommon.includes("[System.IO.Compression.ZipArchive]::") &&
+    !releaseCommon.includes("[System.IO.Compression.ZipArchiveMode]::") &&
+    !releaseCommon.includes("[System.IO.Compression.CompressionLevel]::") &&
+    !releaseCommon.includes("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature") &&
+    releaseCommon.includes("function Get-ReleaseAuthenticodeSignature") &&
+    releaseCommon.includes('$trustedCommand = $script:ReleaseTrustedCommands["Get-AuthenticodeSignature"]') &&
+    releaseCommon.includes("$signatures = @(& $trustedCommand -LiteralPath $LiteralPath -ErrorAction Stop)") &&
+    releaseVerifier.includes("Get-ReleaseAuthenticodeSignature -LiteralPath $filePath") &&
+    releaseAuthenticodeVerifier.includes("Get-ReleaseAuthenticodeSignature -LiteralPath $filePath"),
+  "release PowerShell bootstrap must reject loaded modules, protected types, and command shadows, import only binary-safe exact system manifests, and retain exact Authenticode and compression identities",
+);
+requireInvariant(
+  releaseCommon.includes("$script:ReleaseDirectoryLockType = $compiledType") &&
+    releaseCommon.includes("$script:ReleaseToolsetProcessType = $compiledProcessType") &&
+    releaseCommon.includes("$script:ReleaseToolsetProcessResultType = $compiledResultType") &&
+    releaseCommon.includes("[object]::ReferenceEquals($resolvedType, $compiledType)") &&
+    releaseCommon.includes(
+      "[object]::ReferenceEquals($resolvedProcessType, $compiledProcessType)",
+    ) &&
+    releaseCommon.includes("$script:ReleaseDirectoryLockType::OpenDirectory") &&
+    releaseCommon.includes("$script:ReleaseDirectoryLockType::OpenFile") &&
+    releaseCommon.includes("$script:ReleaseToolsetProcessType::Run") &&
+    !releaseCommon.includes("[YourWallet.ReleaseDirectoryLock]::") &&
+    !releaseCommon.includes("[YourWallet.ReleaseToolsetProcess]::") &&
+    !/if \(\$null -ne \("YourWallet\.Release(?:DirectoryLock|ToolsetProcess)" -as \[type\]\)\) \{\s*return/gu.test(
+      releaseCommon,
+    ) &&
+    releaseCommonTestsPowerShellAnalysis.valid &&
+    !hasPowerShellEarlyTerminationOutsideNamedFunctions(
+      releaseCommonTestsPowerShellAnalysis,
+    ) &&
+    commonPowerShellTestSuccessTailIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      releaseCommonTestsPowerShellAnalysis,
+      commonPowerShellTestSuccessTailIndexes[0],
+    ) === 1 &&
+    releaseVerifierToolsetTestsPowerShellAnalysis.valid &&
+    !hasPowerShellEarlyTerminationOutsideNamedFunctions(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+    ) &&
+    verifierPowerShellTestSuccessTailIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      verifierPowerShellTestSuccessTailIndexes[0],
+    ) === 1 &&
+    releaseVerifierToolsetTestsPowerShellAnalysis.executableCode.includes(
+      "function Assert-SealedReleasePowerShellBootstrap",
+    ) &&
+    activePowerShellMatches(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      /(?:^|\n)[ \t]*function[ \t]+Assert-SealedReleasePowerShellBootstrap[ \t]*\{/gimu,
+    ).length === 1 &&
+    activePowerShellMatches(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      /\bAssert-SealedReleasePowerShellBootstrap\b/gimu,
+    ).length === 2 &&
+    activePowerShellMatches(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      /\bSealedReleasePowerShellBootstrapVerified\b/gimu,
+    ).length === 3 &&
+    sealedReleaseBootstrapTestBlock.length > 0 &&
+    sealedReleaseBootstrapTestAnalysis.valid &&
+    !/\b(?:return|exit|break|continue)\b/iu.test(
+      sealedReleaseBootstrapTestAnalysis.executableCode,
+    ) &&
+    sealedReleaseBootstrapTopLevelSequenceIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      sealedReleaseBootstrapTopLevelSequenceIndexes[0],
+    ) === 0 &&
+    sealedReleaseBootstrapFlagInitializationIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      sealedReleaseBootstrapFlagInitializationIndexes[0],
+    ) === 0 &&
+    sealedReleaseBootstrapFlagCompletionIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      sealedReleaseBootstrapFlagCompletionIndexes[0],
+    ) === 1 &&
+    /\$script:SealedReleasePowerShellBootstrapVerified = \$true[ \t]*\n[ \t]*\}[ \t]*$/u.test(
+      sealedReleaseBootstrapTestAnalysis.commentFreeCode,
+    ) &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      /^[ \t]*Assert-SealedReleasePowerShellBootstrap[ \t]*$/gmu,
+      1,
+    ) &&
+    sealedReleaseBootstrapAttackMatrixIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      sealedReleaseBootstrapAttackMatrixIndexes[0],
+    ) === 1 &&
+    sealedReleaseBootstrapAttackExecutionBlockIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      sealedReleaseBootstrapAttackExecutionBlockIndexes[0],
+    ) === 1 &&
+    sealedReleaseBootstrapAttackExecutionMarkers.every(
+      ({ indexes }, position, markers) =>
+        indexes.length === 1 &&
+        powerShellBraceDepthAt(
+          sealedReleaseBootstrapTestAnalysis,
+          indexes[0],
+        ) === [1, 1, 1, 2, 1][position] &&
+        (position === 0 || indexes[0] > markers[position - 1].indexes[0]),
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "directory-lock-type"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "toolset-process-type"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "toolset-process-result-type"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "loaded-security-module"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "join-path-shadow"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "add-type-shadow"',
+      2,
+    ) &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      'Name = "long-form-alias-shadow"',
+      2,
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "Release PowerShell bootstrap invoked an ambient command shadow",
+    ) &&
+    commandShadowMarkerGuardIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      commandShadowMarkerGuardIndexes[0],
+    ) === 1 &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      /^[ \t]*if \(\[System\.IO\.File\]::Exists\(\$commandShadowMarker\)\) \{/gmu,
+      1,
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "AUTHENTICODE_COMMAND_SHADOW_REJECTED",
+    ) &&
+    authenticodeMarkerGuardIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      authenticodeMarkerGuardIndexes[0],
+    ) === 1 &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      /^[ \t]*\[System\.IO\.File\]::Exists\(\$authenticodeMarker\)[ \t]*$/gmu,
+      1,
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "Release PowerShell bootstrap accepted a different -File target",
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "Release PowerShell bootstrap accepted an unapproved entry script",
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "Release PowerShell bootstrap accepted a missing exact host flag",
+    ) &&
+    activePowerShellLiteralIndexes(
+      releaseVerifierToolsetTestsPowerShellAnalysis,
+      '$missingFlagProbePath = Join-Path $probeRoot "missing-host-flag.ps1"',
+    ).length === 1 &&
+    missingHostFlagProbeBlock.length > 0 &&
+    !missingHostFlagProbeBlock.includes('"-UnknownPrivatePath"') &&
+    activePowerShellLiteralIndexes(
+      sealedReleaseBootstrapTestAnalysis,
+      '-Label "external-first module path"',
+    ).length === 1 &&
+    releaseVerifierToolsetTests.includes(
+      '[System.IO.File]::WriteAllText(__MARKER_PATH__, "module-loaded")',
+    ) &&
+    sealedReleaseBootstrapTestAnalysis.commentFreeCode.includes(
+      "Release wrapper auto-loaded an external module path",
+    ) &&
+    externalModuleMarkerGuardIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      sealedReleaseBootstrapTestAnalysis,
+      externalModuleMarkerGuardIndexes[0],
+    ) === 1 &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      sealedReleaseBootstrapTestAnalysis,
+      /^[ \t]*if \(\[System\.IO\.File\]::Exists\(\$moduleMarker\)\) \{/gmu,
+      1,
+    ) &&
+    releaseCommon.includes("function Expand-ReleaseZipArchive") &&
+    releaseCommon.includes("Release source archive contains a noncanonical path") &&
+    releaseCommon.includes('$segment.Contains("~")') &&
+    releaseUnsignedPreparation.includes(
+      "Expand-ReleaseZipArchive -LiteralPath $sourceArchive",
+    ) &&
+    !releaseUnsignedPreparation.includes("Expand-Archive") &&
+    releaseCommonTests.includes("Sealed release ZIP extraction accepted a traversal entry") &&
+    releaseCommonTests.includes(
+      "Sealed release ZIP extraction accepted an NTFS short-name alias",
+    ) &&
+    releaseCommonTests.includes(
+      "Sealed release ZIP extraction accepted a reserved Windows device alias",
+    ) &&
+    releaseCommon.includes(
+      "[System.Management.Automation.CommandTypes]::Application",
+    ) &&
+    releaseCommonTests.includes(
+      "Release application resolution accepted an ambient function",
+    ) &&
+    releaseCommonTests.includes("function global:node") &&
+    releaseCheckPowerShellAnalysis.valid &&
+    !releaseCheckPowerShellAnalysis.hasPreExecutionDirective &&
+    !hasPowerShellEarlyTerminationOutsideNamedFunctions(
+      releaseCheckPowerShellAnalysis,
+    ) &&
+    releaseCheckInvokeCheckedBlock.trim() ===
+      expectedReleaseCheckInvokeCheckedBlock &&
+    [ciWorkflow, releaseEvidencePolicyWorkflow].every(
+      (workflow) =>
+        workflow.split(exactSealedReleaseCheckWorkflowInvocation).length === 2,
+    ) &&
+    releaseCheck.includes(
+      "if (-not [System.IO.Path]::IsPathRooted($NodeExecutable))",
+    ) &&
+    (releaseCheck.match(/Invoke-Checked -Executable \$NodeExecutable/gu) ?? [])
+      .length === 3 &&
+    releaseCheckInvokeTestsBlock.includes(
+      "$null = Invoke-Checked `\n            -Executable $NodeExecutable `",
+    ) &&
+    !releaseCheck.includes('Invoke-Checked -Executable "node"') &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      releaseCheckPowerShellAnalysis,
+      "[System.Environment+SpecialFolder]::System",
+      1,
+    ) &&
+    releaseCheckInvokeTestsBlock.length > 0 &&
+    releaseCheckInvokeTestsAnalysis.valid &&
+    releaseCheckInvokeTestsAnalysis.commentFreeCode.trim() ===
+      expectedReleaseCheckInvokeTestsBlock &&
+    releaseCheckExactPowerShellTestLoopIndexes.length === 1 &&
+    powerShellBraceDepthAt(
+      releaseCheckInvokeTestsAnalysis,
+      releaseCheckExactPowerShellTestLoopIndexes[0],
+    ) === 1 &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      releaseCheckPowerShellAnalysis,
+      /^[ \t]*Invoke-Checked -Executable \$systemPowerShell -CommandArguments @\(/gmu,
+      2,
+    ) &&
+    hasOneActivePowerShellMatchAtBraceDepth(
+      releaseCheckInvokeTestsAnalysis,
+      /^[ \t]*Invoke-Checked -Executable \$systemPowerShell -CommandArguments @\(\n[ \t]*"-NoLogo",\n[ \t]*"-NoProfile",\n[ \t]*"-NonInteractive",\n[ \t]*"-ExecutionPolicy",\n[ \t]*"Bypass",\n[ \t]*"-File",\n[ \t]*\(Join-Path \$PSScriptRoot \$testScriptName\)\n[ \t]*\)/gmu,
+      2,
+    ) &&
+    activePowerShellMatches(
+      releaseCheckHereStringCallDecoy,
+      /^[ \t]*Invoke-Checked -Executable \$systemPowerShell -CommandArguments @\(\n[ \t]*"-NoLogo",\n[ \t]*"-NoProfile",\n[ \t]*"-NonInteractive",\n[ \t]*"-ExecutionPolicy",\n[ \t]*"Bypass",\n[ \t]*"-File",\n[ \t]*\(Join-Path \$PSScriptRoot \$testScriptName\)\n[ \t]*\)/gmu,
+    ).length === 0,
+  "compiled release runtime types must retain exact Type identity, the sealed release check must require an absolute Node application with empty child stderr, and behavior tests must prove fail-closure against type, module, command, argv, and PSModulePath preloads",
+);
+requireInvariant(
+  releaseSecurity.includes("Every release entry that consumes `common.ps1` sets") &&
+    releaseSecurity.includes("exact system 64-bit Desktop Windows PowerShell 5.1 image") &&
+    releaseSecurity.includes("It never searches `PSModulePath`") &&
+    releaseSecurity.includes("zero pre-existing protected `YourWallet.*` types") &&
+    releaseSecurity.includes("zero long-form aliases") &&
+    releaseSecurity.includes(
+      "does not import the script-based `Microsoft.PowerShell.Archive` module",
+    ) &&
+    releaseSecurity.includes("strong-named GAC assemblies") &&
+    releaseSecurity.includes("automatic `~`-form DOS 8.3 aliases") &&
+    releaseSecurity.includes(
+      "no concurrent same-user mutation of its fresh temporary extraction tree",
+    ) &&
+    releaseSecurity.includes("verified `CmdletInfo` objects directly") &&
+    releaseSecurity.includes("module, protected-type, and command-shadow cleanliness is verified by code") &&
+    releaseSecurity.includes("absence of live same-integrity process injection") &&
+    releaseSecurity.includes("exact-system-host bootstrap transcript") &&
+    sepoliaArchitectureDoc.includes("Every entry that consumes `common.ps1` begins") &&
+    sepoliaArchitectureDoc.includes("`PSModulePath` is never searched") &&
+    sepoliaArchitectureDoc.includes("zero pre-existing protected `YourWallet.*` types") &&
+    sepoliaArchitectureDoc.includes(
+      "script-based `Microsoft.PowerShell.Archive` module is not imported",
+    ) &&
+    sepoliaArchitectureDoc.includes("long-form alias") &&
+    sepoliaArchitectureDoc.includes("automatic `~`-form DOS 8.3") &&
+    sepoliaArchitectureDoc.includes(
+      "no concurrent same-user mutation of its fresh",
+    ) &&
+    sepoliaArchitectureDoc.includes("verified `CmdletInfo` objects directly"),
+  "release documentation must distinguish code-enforced PowerShell namespace cleanliness from the residual system-host, write-protected-toolset, and live-injection trust boundary",
+);
 for (const pinnedInput of [
   "ExpectedReleaseKeyIdSha256",
   "ExpectedReviewerKeyIdSha256",
@@ -5566,7 +7363,7 @@ requireInvariant(
     offlineReleaseVerificationBlock.includes("Open-VerifiedReleaseToolset") &&
     offlineReleaseVerificationBlock.includes("Assert-ReleaseTreesDisjoint") &&
     offlineReleaseVerificationBlock.includes(
-      'Microsoft.PowerShell.Security\\Get-AuthenticodeSignature',
+      "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
     ) &&
     offlineReleaseVerificationBlock.includes(
       'CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n',
@@ -5647,7 +7444,7 @@ requireInvariant(
     releaseCommonTests.includes("$aliasLockSet.CanonicalBundleRoot") &&
     releaseCommonTests.includes("$aliasLockSet.CanonicalAdditionalFiles") &&
     releaseCommonTests.includes(
-      "$authenticodePathProbe = Get-AuthenticodeSignature -LiteralPath",
+      "$authenticodePathProbe = Get-ReleaseAuthenticodeSignature -LiteralPath",
     ) &&
     releaseCommonTests.includes(
       "Authenticode inspection did not accept the canonical volume-GUID path",
@@ -5803,7 +7600,8 @@ requireInvariant(
     releaseCommonTests.includes("$wrapperResult.Stderr") &&
     releaseCommonTests.includes('$subject.Stdout + "`n"') &&
     !releaseCommonTests.includes("$wrapperResult.Output.Trim()") &&
-    !releaseCommonTests.includes("function node {") &&
+    releaseWrapperCeremonyBlock.length > 0 &&
+    !/function\s+(?:global:)?node\s*\{/u.test(releaseWrapperCeremonyBlock) &&
     releaseCommonTests.includes("if ([System.IO.File]::Exists($taskReadyPath))") &&
     (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectRoot, \$subjectMoveProbe\)/gu) ?? [])
       .length === 2 &&
@@ -5826,7 +7624,7 @@ requireInvariant(
     releaseCheck.includes(
       'foreach ($testScriptName in @("common.test.ps1", "verifier-toolset.test.ps1"))',
     ) &&
-    releaseCheck.includes('Invoke-Checked -Executable "powershell"') &&
+    releaseCheck.includes("Invoke-Checked -Executable $systemPowerShell") &&
     releaseCheck.includes("(Join-Path $PSScriptRoot $testScriptName)"),
   "the release gate must execute a real successful sealed-toolset wrapper ceremony whose pinned blocked child survives an ancestor junction retarget while returning exact canonical A bytes",
 );
@@ -6701,14 +8499,25 @@ const releasePolicyTestCount = [
   0,
 );
 requireInvariant(
-  JSON.stringify(releaseTestSuiteNames) === JSON.stringify([
-    "audit-extension.test.mjs",
-    "generate-inventories.test.mjs",
-    "release-manifest.test.mjs",
-    "release-verifier-integration.test.mjs",
-    "review-evidence-set.test.mjs",
-  ]) && releasePolicyTestCount === 60,
-  "the documented release-policy and verifier evidence total must match the five executed Node suites",
+  hasExactSourcePins(
+    releasePolicyTests,
+    approvedReleasePolicyTestSha256,
+  ) &&
+    !hasExactSourcePins(
+      releasePolicyTests.map((source, index) =>
+        index === 0 ? { ...source, sha256: "0".repeat(64) } : source,
+      ),
+      approvedReleasePolicyTestSha256,
+    ) &&
+    JSON.stringify(releaseTestSuiteNames) === JSON.stringify([
+      "audit-extension.test.mjs",
+      "generate-inventories.test.mjs",
+      "release-manifest.test.mjs",
+      "release-verifier-integration.test.mjs",
+      "review-evidence-set.test.mjs",
+    ]) &&
+    releasePolicyTestCount === 60,
+  "the five executed Node suites must match their exact reviewed raw-byte SHA-256 pins and documented 60-test total",
 );
 
 process.stdout.write("architecture scan passed\n");

@@ -1,5 +1,596 @@
-Set-StrictMode -Version Latest
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
+
+function Initialize-ReleasePowerShellRuntime {
+    if (
+        $env:OS -ne "Windows_NT" -or
+        -not [System.Environment]::Is64BitOperatingSystem -or
+        -not [System.Environment]::Is64BitProcess -or
+        -not [System.String]::Equals(
+            [string]$PSVersionTable.PSEdition,
+            "Desktop",
+            [System.StringComparison]::Ordinal
+        ) -or
+        $PSVersionTable.PSVersion.Major -ne 5 -or
+        $PSVersionTable.PSVersion.Minor -ne 1 -or
+        $ExecutionContext.SessionState.LanguageMode -ne
+            [System.Management.Automation.PSLanguageMode]::FullLanguage -or
+        -not [System.String]::Equals(
+            [string]$PSModuleAutoLoadingPreference,
+            "None",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "invalid release host"
+    }
+
+    $systemDirectory = [System.Environment]::GetFolderPath(
+        [System.Environment+SpecialFolder]::System
+    )
+    if ([string]::IsNullOrWhiteSpace($systemDirectory)) {
+        throw "invalid release host"
+    }
+    $expectedPowerShellHome = [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($systemDirectory, "WindowsPowerShell", "v1.0")
+    )
+    $expectedPowerShellImage = [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($expectedPowerShellHome, "powershell.exe")
+    )
+    $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $actualPowerShellImage = [System.IO.Path]::GetFullPath(
+            $currentProcess.MainModule.FileName
+        )
+    }
+    finally {
+        $currentProcess.Dispose()
+    }
+    if (
+        -not [System.String]::Equals(
+            $actualPowerShellImage,
+            $expectedPowerShellImage,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [System.String]::Equals(
+            [System.IO.Path]::GetFullPath($PSHOME),
+            $expectedPowerShellHome,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "invalid release host"
+    }
+
+    $commandLine = [System.Environment]::GetCommandLineArgs()
+    $expectedHostArguments = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File"
+    )
+    if ($commandLine.Count -lt 8) {
+        throw "invalid release invocation"
+    }
+    for ($argumentIndex = 0; $argumentIndex -lt $expectedHostArguments.Count; $argumentIndex += 1) {
+        if (-not [System.String]::Equals(
+            $commandLine[$argumentIndex + 1],
+            $expectedHostArguments[$argumentIndex],
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "invalid release invocation"
+        }
+    }
+    if (
+        [string]::IsNullOrWhiteSpace([string]$script:ReleasePowerShellEntryScriptPath) -or
+        -not [System.String]::Equals(
+            [System.IO.Path]::GetFullPath($commandLine[7]),
+            [System.IO.Path]::GetFullPath($script:ReleasePowerShellEntryScriptPath),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "invalid release invocation"
+    }
+
+    $entryScriptName = [System.IO.Path]::GetFileName(
+        [System.IO.Path]::GetFullPath($script:ReleasePowerShellEntryScriptPath)
+    )
+    $approvedEntryScript = $false
+    foreach ($approvedEntryScriptName in @(
+        "check.ps1",
+        "common.test.ps1",
+        "prepare-unsigned.ps1",
+        "prepare-verifier-toolset.ps1",
+        "review-evidence-set.ps1",
+        "verifier-toolset.test.ps1",
+        "verify-authenticode.ps1",
+        "verify-release-offline.ps1"
+    )) {
+        if ([System.String]::Equals(
+            $entryScriptName,
+            $approvedEntryScriptName,
+            [System.StringComparison]::Ordinal
+        )) {
+            $approvedEntryScript = $true
+        }
+    }
+    if (-not $approvedEntryScript) {
+        throw "invalid release invocation"
+    }
+
+    foreach ($protectedTypeName in @(
+        "YourWallet.ReleaseDirectoryLock",
+        "YourWallet.ReleaseToolsetProcessResult",
+        "YourWallet.ReleaseToolsetProcess"
+    )) {
+        if ($null -ne ($protectedTypeName -as [type])) {
+            throw "pre-existing release runtime type"
+        }
+    }
+
+    foreach ($visibleAlias in @(
+        $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+            "*",
+            [System.Management.Automation.CommandTypes]::Alias,
+            $true
+        )
+    )) {
+        if ($visibleAlias.Name.Contains("-")) {
+            throw "release host contains an ambient long-form alias"
+        }
+    }
+
+    $automationAssembly = [System.Management.Automation.PSObject].Assembly
+    $getModuleCommand = $ExecutionContext.SessionState.InvokeCommand.GetCommand(
+        "Get-Module",
+        [System.Management.Automation.CommandTypes]::Cmdlet
+    )
+    $importModuleCommand = $ExecutionContext.SessionState.InvokeCommand.GetCommand(
+        "Import-Module",
+        [System.Management.Automation.CommandTypes]::Cmdlet
+    )
+    if (
+        $null -eq $getModuleCommand -or
+        $null -eq $importModuleCommand -or
+        $getModuleCommand.CommandType -ne [System.Management.Automation.CommandTypes]::Cmdlet -or
+        $importModuleCommand.CommandType -ne [System.Management.Automation.CommandTypes]::Cmdlet -or
+        -not [System.String]::Equals(
+            $getModuleCommand.ModuleName,
+            "Microsoft.PowerShell.Core",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $importModuleCommand.ModuleName,
+            "Microsoft.PowerShell.Core",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $getModuleCommand.ImplementingType.FullName,
+            "Microsoft.PowerShell.Commands.GetModuleCommand",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            $importModuleCommand.ImplementingType.FullName,
+            "Microsoft.PowerShell.Commands.ImportModuleCommand",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [object]::ReferenceEquals(
+            $getModuleCommand.ImplementingType.Assembly,
+            $automationAssembly
+        ) -or
+        -not [object]::ReferenceEquals(
+            $importModuleCommand.ImplementingType.Assembly,
+            $automationAssembly
+        )
+    ) {
+        throw "invalid release bootstrap commands"
+    }
+    if (@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0) {
+        throw "release host already contains a loaded module"
+    }
+
+    foreach ($coreCommandName in @(
+        "ForEach-Object",
+        "Get-Command",
+        "Get-Module",
+        "Import-Module",
+        "Set-StrictMode",
+        "Where-Object"
+    )) {
+        $visibleCommands = @(
+            $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+                $coreCommandName,
+                [System.Management.Automation.CommandTypes]::All,
+                $true
+            )
+        )
+        if (
+            $visibleCommands.Count -ne 1 -or
+            $visibleCommands[0].CommandType -ne
+                [System.Management.Automation.CommandTypes]::Cmdlet -or
+            -not [System.String]::Equals(
+                $visibleCommands[0].ModuleName,
+                "Microsoft.PowerShell.Core",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [object]::ReferenceEquals(
+                $visibleCommands[0].ImplementingType.Assembly,
+                $automationAssembly
+            )
+        ) {
+            throw "release core command surface is shadowed before module import"
+        }
+    }
+    foreach ($moduleCommandName in @(
+        "Add-Type",
+        "Copy-Item",
+        "Get-AuthenticodeSignature",
+        "Get-ChildItem",
+        "Get-Item",
+        "Get-Location",
+        "Get-Variable",
+        "Join-Path",
+        "Move-Item",
+        "New-Item",
+        "Remove-Item",
+        "Resolve-Path",
+        "Set-Location",
+        "Sort-Object",
+        "Split-Path",
+        "Test-Path",
+        "Write-Output"
+    )) {
+        if (@(
+            $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+                $moduleCommandName,
+                [System.Management.Automation.CommandTypes]::All,
+                $true
+            )
+        ).Count -ne 0) {
+            throw "release module command surface is shadowed before module import"
+        }
+    }
+
+    $trustedModules = [System.Collections.Generic.Dictionary[
+        string,
+        System.Management.Automation.PSModuleInfo
+    ]]::new([System.StringComparer]::Ordinal)
+    foreach ($moduleName in @(
+        "Microsoft.PowerShell.Management",
+        "Microsoft.PowerShell.Utility",
+        "Microsoft.PowerShell.Security"
+    )) {
+        $manifestPath = [System.IO.Path]::GetFullPath(
+            [System.IO.Path]::Combine(
+                $expectedPowerShellHome,
+                "Modules",
+                $moduleName,
+                $moduleName + ".psd1"
+            )
+        )
+        if (
+            -not [System.IO.File]::Exists($manifestPath) -or
+            ([System.IO.File]::GetAttributes($manifestPath) -band
+                [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            throw "trusted release module manifest is unavailable"
+        }
+        $importedModules = @(
+            & $importModuleCommand `
+                -Name $manifestPath `
+                -Force `
+                -PassThru `
+                -ErrorAction Stop
+        )
+        if (
+            $importedModules.Count -ne 1 -or
+            -not [System.String]::Equals(
+                $importedModules[0].Name,
+                $moduleName,
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [System.String]::Equals(
+                [System.IO.Path]::GetFullPath($importedModules[0].Path),
+                $manifestPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            throw "trusted release module identity is invalid"
+        }
+        $trustedModules.Add($moduleName, $importedModules[0])
+    }
+
+    $trustedCommands = [System.Collections.Generic.Dictionary[
+        string,
+        System.Management.Automation.CommandInfo
+    ]]::new([System.StringComparer]::Ordinal)
+    foreach ($coreCommandName in @(
+        "ForEach-Object",
+        "Get-Command",
+        "Get-Module",
+        "Import-Module",
+        "Set-StrictMode",
+        "Where-Object"
+    )) {
+        $visibleCommands = @(
+            $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+                $coreCommandName,
+                [System.Management.Automation.CommandTypes]::All,
+                $true
+            )
+        )
+        if (
+            $visibleCommands.Count -ne 1 -or
+            $visibleCommands[0].CommandType -ne
+                [System.Management.Automation.CommandTypes]::Cmdlet -or
+            -not [System.String]::Equals(
+                $visibleCommands[0].ModuleName,
+                "Microsoft.PowerShell.Core",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [object]::ReferenceEquals(
+                $visibleCommands[0].ImplementingType.Assembly,
+                $automationAssembly
+            )
+        ) {
+            throw "release core command surface is shadowed"
+        }
+        $trustedCommands.Add($coreCommandName, $visibleCommands[0])
+    }
+
+    $moduleCommandOwners = [ordered]@{
+        "Add-Type" = "Microsoft.PowerShell.Utility"
+        "Copy-Item" = "Microsoft.PowerShell.Management"
+        "Get-AuthenticodeSignature" = "Microsoft.PowerShell.Security"
+        "Get-ChildItem" = "Microsoft.PowerShell.Management"
+        "Get-Item" = "Microsoft.PowerShell.Management"
+        "Get-Location" = "Microsoft.PowerShell.Management"
+        "Get-Variable" = "Microsoft.PowerShell.Utility"
+        "Join-Path" = "Microsoft.PowerShell.Management"
+        "Move-Item" = "Microsoft.PowerShell.Management"
+        "New-Item" = "Microsoft.PowerShell.Management"
+        "Remove-Item" = "Microsoft.PowerShell.Management"
+        "Resolve-Path" = "Microsoft.PowerShell.Management"
+        "Set-Location" = "Microsoft.PowerShell.Management"
+        "Sort-Object" = "Microsoft.PowerShell.Utility"
+        "Split-Path" = "Microsoft.PowerShell.Management"
+        "Test-Path" = "Microsoft.PowerShell.Management"
+        "Write-Output" = "Microsoft.PowerShell.Utility"
+    }
+    foreach ($commandName in $moduleCommandOwners.Keys) {
+        $moduleName = $moduleCommandOwners[$commandName]
+        $expectedCommand = $trustedModules[$moduleName].ExportedCommands[$commandName]
+        $visibleCommands = @(
+            $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+                $commandName,
+                [System.Management.Automation.CommandTypes]::All,
+                $true
+            )
+        )
+        if (
+            $null -eq $expectedCommand -or
+            $visibleCommands.Count -ne 1 -or
+            $visibleCommands[0].CommandType -ne $expectedCommand.CommandType -or
+            -not [System.String]::Equals(
+                $visibleCommands[0].ModuleName,
+                $moduleName,
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [System.String]::Equals(
+                [System.IO.Path]::GetFullPath($visibleCommands[0].Module.Path),
+                [System.IO.Path]::GetFullPath($trustedModules[$moduleName].Path),
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            throw "release module command surface is shadowed"
+        }
+        if ($visibleCommands[0].CommandType -eq [System.Management.Automation.CommandTypes]::Cmdlet) {
+            if (-not [object]::ReferenceEquals(
+                $visibleCommands[0].ImplementingType,
+                $expectedCommand.ImplementingType
+            )) {
+                throw "release module cmdlet identity is invalid"
+            }
+        }
+        elseif (-not [System.String]::Equals(
+            $visibleCommands[0].Definition,
+            $expectedCommand.Definition,
+            [System.StringComparison]::Ordinal
+        )) {
+            throw "release module function identity is invalid"
+        }
+        $trustedCommands.Add($commandName, $visibleCommands[0])
+    }
+
+    $compressionTypes = @(
+        & $trustedCommands["Add-Type"] `
+            -AssemblyName "System.IO.Compression" `
+            -PassThru `
+            -ErrorAction Stop
+    )
+    $zipArchiveType = $null
+    $zipArchiveModeType = $null
+    foreach ($candidateType in $compressionTypes) {
+        if ([System.String]::Equals(
+            $candidateType.FullName,
+            "System.IO.Compression.ZipArchive",
+            [System.StringComparison]::Ordinal
+        )) {
+            if ($null -ne $zipArchiveType) {
+                throw "compression runtime type is duplicated"
+            }
+            $zipArchiveType = $candidateType
+        }
+        elseif ([System.String]::Equals(
+            $candidateType.FullName,
+            "System.IO.Compression.ZipArchiveMode",
+            [System.StringComparison]::Ordinal
+        )) {
+            if ($null -ne $zipArchiveModeType) {
+                throw "compression runtime type is duplicated"
+            }
+            $zipArchiveModeType = $candidateType
+        }
+    }
+    if (
+        $null -eq $zipArchiveType -or
+        $null -eq $zipArchiveModeType -or
+        -not $zipArchiveType.IsPublic -or
+        -not $zipArchiveModeType.IsPublic -or
+        -not $zipArchiveModeType.IsEnum -or
+        -not [object]::ReferenceEquals(
+            $zipArchiveType.Assembly,
+            $zipArchiveModeType.Assembly
+        )
+    ) {
+        throw "compression runtime types are unavailable"
+    }
+
+    $compressionLevelType = $null
+    foreach ($candidateMethod in $zipArchiveType.GetMethods(
+        [System.Reflection.BindingFlags]::Instance -bor
+            [System.Reflection.BindingFlags]::Public
+    )) {
+        $parameters = $candidateMethod.GetParameters()
+        if (
+            [System.String]::Equals(
+                $candidateMethod.Name,
+                "CreateEntry",
+                [System.StringComparison]::Ordinal
+            ) -and
+            $parameters.Count -eq 2 -and
+            [object]::ReferenceEquals($parameters[0].ParameterType, [string]) -and
+            [System.String]::Equals(
+                $parameters[1].ParameterType.FullName,
+                "System.IO.Compression.CompressionLevel",
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            if ($null -ne $compressionLevelType) {
+                throw "compression level type is ambiguous"
+            }
+            $compressionLevelType = $parameters[1].ParameterType
+        }
+    }
+    if (
+        $null -eq $compressionLevelType -or
+        -not $compressionLevelType.IsEnum -or
+        -not $compressionLevelType.IsPublic
+    ) {
+        throw "compression level type is unavailable"
+    }
+
+    $expectedFrameworkToken = [byte[]]@(
+        0xb7,
+        0x7a,
+        0x5c,
+        0x56,
+        0x19,
+        0x34,
+        0xe0,
+        0x89
+    )
+    $windowsRoot = [System.IO.Path]::GetFullPath(
+        [System.Environment]::GetFolderPath(
+            [System.Environment+SpecialFolder]::Windows
+        )
+    ).TrimEnd([char[]]"\/")
+    $windowsRootPrefix = $windowsRoot + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($frameworkAssembly in @(
+        $zipArchiveType.Assembly,
+        $compressionLevelType.Assembly
+    )) {
+        $frameworkAssemblyName = $frameworkAssembly.GetName()
+        $expectedAssemblyName = if ([object]::ReferenceEquals(
+            $frameworkAssembly,
+            $zipArchiveType.Assembly
+        )) {
+            "System.IO.Compression"
+        }
+        else {
+            "System"
+        }
+        $actualFrameworkToken = $frameworkAssemblyName.GetPublicKeyToken()
+        $frameworkLocation = [System.IO.Path]::GetFullPath(
+            $frameworkAssembly.Location
+        )
+        if (
+            $frameworkAssembly.IsDynamic -or
+            -not $frameworkAssembly.GlobalAssemblyCache -or
+            -not [System.String]::Equals(
+                $frameworkAssemblyName.Name,
+                $expectedAssemblyName,
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [System.String]::Equals(
+                $frameworkAssemblyName.Version.ToString(),
+                "4.0.0.0",
+                [System.StringComparison]::Ordinal
+            ) -or
+            $actualFrameworkToken.Count -ne $expectedFrameworkToken.Count -or
+            -not $frameworkLocation.StartsWith(
+                $windowsRootPrefix,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not [System.IO.File]::Exists($frameworkLocation) -or
+            ([System.IO.File]::GetAttributes($frameworkLocation) -band
+                [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            throw "compression framework assembly identity is invalid"
+        }
+        for (
+            $tokenIndex = 0;
+            $tokenIndex -lt $expectedFrameworkToken.Count;
+            $tokenIndex += 1
+        ) {
+            if ($actualFrameworkToken[$tokenIndex] -ne
+                $expectedFrameworkToken[$tokenIndex]) {
+                throw "compression framework assembly identity is invalid"
+            }
+        }
+    }
+
+    $script:ReleaseZipArchiveType = $zipArchiveType
+    $script:ReleaseZipArchiveModeType = $zipArchiveModeType
+    $script:ReleaseCompressionLevelType = $compressionLevelType
+    $script:ReleaseZipArchiveReadMode = [System.Enum]::Parse(
+        $zipArchiveModeType,
+        "Read",
+        $false
+    )
+    $script:ReleaseZipArchiveCreateMode = [System.Enum]::Parse(
+        $zipArchiveModeType,
+        "Create",
+        $false
+    )
+    $script:ReleaseNoCompressionLevel = [System.Enum]::Parse(
+        $compressionLevelType,
+        "NoCompression",
+        $false
+    )
+    $script:ReleaseTrustedCommands = $trustedCommands
+    $script:ReleaseDirectoryLockType = $null
+    $script:ReleaseToolsetProcessResultType = $null
+    $script:ReleaseToolsetProcessType = $null
+}
+
+try {
+    $initializeRuntimeCommands = @(
+        $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+            "Initialize-ReleasePowerShellRuntime",
+            [System.Management.Automation.CommandTypes]::Function,
+            $true
+        )
+    )
+    if ($initializeRuntimeCommands.Count -ne 1) {
+        throw "release runtime initializer identity is ambiguous"
+    }
+    & $initializeRuntimeCommands[0]
+    & $script:ReleaseTrustedCommands["Set-StrictMode"] -Version Latest
+}
+catch {
+    throw "Release PowerShell runtime bootstrap failed closed"
+}
 
 function Invoke-ReleaseCommand {
     param(
@@ -7,6 +598,30 @@ function Invoke-ReleaseCommand {
         [Parameter(Mandatory = $true)][string[]]$CommandArguments,
         [Parameter(Mandatory = $false)][string]$WorkingDirectory = (Get-Location).Path
     )
+
+    if ([System.IO.Path]::IsPathRooted($Executable)) {
+        $applicationPath = [System.IO.Path]::GetFullPath($Executable)
+    }
+    else {
+        $applicationCommand =
+            $ExecutionContext.SessionState.InvokeCommand.GetCommand(
+                $Executable,
+                [System.Management.Automation.CommandTypes]::Application
+            )
+        if ($null -eq $applicationCommand) {
+            throw "Release application is unavailable"
+        }
+        $applicationPath = [System.IO.Path]::GetFullPath(
+            $applicationCommand.Path
+        )
+    }
+    if (
+        -not [System.IO.File]::Exists($applicationPath) -or
+        ([System.IO.File]::GetAttributes($applicationPath) -band
+            [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    ) {
+        throw "Release application identity is invalid"
+    }
 
     $stdoutLines = @()
     $stderr = ""
@@ -18,7 +633,7 @@ function Invoke-ReleaseCommand {
         $ErrorActionPreference = "Continue"
         $stderrPath = [System.IO.Path]::GetTempFileName()
         try {
-            $stdoutLines = @(& $Executable @CommandArguments 2> $stderrPath)
+            $stdoutLines = @(& $applicationPath @CommandArguments 2> $stderrPath)
             $exitCode = $LASTEXITCODE
             $stderr = [System.IO.File]::ReadAllText($stderrPath)
         }
@@ -31,7 +646,7 @@ function Invoke-ReleaseCommand {
         Set-Location -LiteralPath $priorLocation.Path
     }
     if ($exitCode -ne 0) {
-        throw "Release command failed closed with exit code ${exitCode}: $Executable (output withheld; inspect locally with privacy redaction)"
+        throw "Release command failed closed with exit code ${exitCode} (executable and output withheld; inspect locally with privacy redaction)"
     }
     [pscustomobject]@{ Stdout = ($stdoutLines -join [System.Environment]::NewLine); Stderr = $stderr; ExitCode = $exitCode }
 }
@@ -142,6 +757,44 @@ function Get-Sha256Lower {
     ([System.BitConverter]::ToString($hash) -replace "-", "").ToLowerInvariant()
 }
 
+function Get-ReleaseAuthenticodeSignature {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $trustedCommand = $script:ReleaseTrustedCommands["Get-AuthenticodeSignature"]
+    $visibleCommands = @(
+        $ExecutionContext.SessionState.InvokeCommand.GetCommands(
+            "Get-AuthenticodeSignature",
+            [System.Management.Automation.CommandTypes]::All,
+            $true
+        )
+    )
+    if (
+        $visibleCommands.Count -ne 1 -or
+        $visibleCommands[0].CommandType -ne $trustedCommand.CommandType -or
+        -not [System.String]::Equals(
+            $visibleCommands[0].ModuleName,
+            $trustedCommand.ModuleName,
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [System.String]::Equals(
+            [System.IO.Path]::GetFullPath($visibleCommands[0].Module.Path),
+            [System.IO.Path]::GetFullPath($trustedCommand.Module.Path),
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [object]::ReferenceEquals(
+            $visibleCommands[0].ImplementingType,
+            $trustedCommand.ImplementingType
+        )
+    ) {
+        throw "Authenticode command identity changed after release bootstrap"
+    }
+    $signatures = @(& $trustedCommand -LiteralPath $LiteralPath -ErrorAction Stop)
+    if ($signatures.Count -ne 1) {
+        throw "Authenticode inspection returned an invalid result count"
+    }
+    $signatures[0]
+}
+
 function Assert-NoReparseTree {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
     $root = [System.IO.DirectoryInfo]::new($LiteralPath)
@@ -167,10 +820,19 @@ function Assert-NoReparseTree {
 }
 
 function Initialize-ReleaseDirectoryLockType {
-    if ($null -ne ("YourWallet.ReleaseDirectoryLock" -as [type])) {
+    if ($null -ne $script:ReleaseDirectoryLockType) {
+        $resolvedType = "YourWallet.ReleaseDirectoryLock" -as [type]
+        if (-not [object]::ReferenceEquals($resolvedType, $script:ReleaseDirectoryLockType)) {
+            throw "Release directory lock type identity changed"
+        }
         return
     }
-    Add-Type -TypeDefinition @"
+    if ($null -ne ("YourWallet.ReleaseDirectoryLock" -as [type])) {
+        throw "Release directory lock type was preloaded"
+    }
+    $addTypeCommand = $script:ReleaseTrustedCommands["Add-Type"]
+    $compiledTypes = @(
+        & $addTypeCommand -PassThru -TypeDefinition @"
 using System;
 using System.ComponentModel;
 using System.IO;
@@ -449,6 +1111,28 @@ namespace YourWallet {
     }
 }
 "@
+    )
+    $compiledType = $null
+    foreach ($candidateType in $compiledTypes) {
+        if ([System.String]::Equals(
+            $candidateType.FullName,
+            "YourWallet.ReleaseDirectoryLock",
+            [System.StringComparison]::Ordinal
+        )) {
+            if ($null -ne $compiledType) {
+                throw "Release directory lock compilation returned a duplicate type"
+            }
+            $compiledType = $candidateType
+        }
+    }
+    $resolvedType = "YourWallet.ReleaseDirectoryLock" -as [type]
+    if (
+        $null -eq $compiledType -or
+        -not [object]::ReferenceEquals($resolvedType, $compiledType)
+    ) {
+        throw "Release directory lock compilation returned an invalid type"
+    }
+    $script:ReleaseDirectoryLockType = $compiledType
 }
 
 function Get-CanonicalReleaseDirectoryPaths {
@@ -484,20 +1168,20 @@ function Open-PinnedReleaseDirectoryPath {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 
     Initialize-ReleaseDirectoryLockType
-    $bootstrap = [YourWallet.ReleaseDirectoryLock]::OpenDirectory($LiteralPath)
+    $bootstrap = $script:ReleaseDirectoryLockType::OpenDirectory($LiteralPath)
     $handles = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
     try {
-        $canonical = [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($bootstrap)
+        $canonical = $script:ReleaseDirectoryLockType::GetFinalVolumePath($bootstrap)
         foreach ($directoryPath in @(Get-CanonicalReleaseDirectoryPaths -CanonicalDirectory $canonical)) {
-            $handles.Add([YourWallet.ReleaseDirectoryLock]::OpenDirectory($directoryPath))
+            $handles.Add($script:ReleaseDirectoryLockType::OpenDirectory($directoryPath))
         }
         if (
             $handles.Count -eq 0 -or
-            -not [YourWallet.ReleaseDirectoryLock]::SameIdentity($bootstrap, $handles[$handles.Count - 1])
+            -not $script:ReleaseDirectoryLockType::SameIdentity($bootstrap, $handles[$handles.Count - 1])
         ) {
             throw "Release directory identity changed while its canonical path was pinned"
         }
-        $confirmed = [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($handles[$handles.Count - 1])
+        $confirmed = $script:ReleaseDirectoryLockType::GetFinalVolumePath($handles[$handles.Count - 1])
         if (-not [System.String]::Equals($canonical, $confirmed, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Release directory canonical path changed while its ancestors were pinned"
         }
@@ -518,24 +1202,24 @@ function Open-PinnedReleaseFilePath {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 
     Initialize-ReleaseDirectoryLockType
-    $bootstrap = [YourWallet.ReleaseDirectoryLock]::OpenFile($LiteralPath)
+    $bootstrap = $script:ReleaseDirectoryLockType::OpenFile($LiteralPath)
     $directoryHandles = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
     $fileHandle = $null
     try {
-        $canonical = [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($bootstrap)
+        $canonical = $script:ReleaseDirectoryLockType::GetFinalVolumePath($bootstrap)
         $lastSeparator = $canonical.LastIndexOf("\", [System.StringComparison]::Ordinal)
         if ($lastSeparator -lt 0) {
             throw "Pinned release file has no canonical parent"
         }
         $parent = $canonical.Substring(0, $lastSeparator)
         foreach ($directoryPath in @(Get-CanonicalReleaseDirectoryPaths -CanonicalDirectory $parent)) {
-            $directoryHandles.Add([YourWallet.ReleaseDirectoryLock]::OpenDirectory($directoryPath))
+            $directoryHandles.Add($script:ReleaseDirectoryLockType::OpenDirectory($directoryPath))
         }
-        $fileHandle = [YourWallet.ReleaseDirectoryLock]::OpenFile($canonical)
-        if (-not [YourWallet.ReleaseDirectoryLock]::SameIdentity($bootstrap, $fileHandle)) {
+        $fileHandle = $script:ReleaseDirectoryLockType::OpenFile($canonical)
+        if (-not $script:ReleaseDirectoryLockType::SameIdentity($bootstrap, $fileHandle)) {
             throw "Release file identity changed while its canonical path was pinned"
         }
-        $confirmed = [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($fileHandle)
+        $confirmed = $script:ReleaseDirectoryLockType::GetFinalVolumePath($fileHandle)
         if (-not [System.String]::Equals($canonical, $confirmed, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Release file canonical path changed while its ancestors were pinned"
         }
@@ -586,7 +1270,7 @@ function Open-ReadOnlyReleaseTreeLocks {
             $directory = $pendingDirectories.Dequeue()
             foreach ($item in @($directory.GetFileSystemInfos() | Sort-Object -Property FullName)) {
                 if (($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
-                    $directoryHandles.Add([YourWallet.ReleaseDirectoryLock]::OpenDirectory($item.FullName))
+                    $directoryHandles.Add($script:ReleaseDirectoryLockType::OpenDirectory($item.FullName))
                     $stableAttributes = [System.IO.File]::GetAttributes($item.FullName)
                     if (($stableAttributes -band [System.IO.FileAttributes]::ReadOnly) -eq 0) {
                         throw "Release verification requires the bundle root and every descendant to be marked read-only"
@@ -597,7 +1281,7 @@ function Open-ReadOnlyReleaseTreeLocks {
                     if (-not $seen.Add($item.FullName)) {
                         throw "Release verification encountered a duplicate Windows file path"
                     }
-                    $fileHandles.Add([YourWallet.ReleaseDirectoryLock]::OpenFile($item.FullName))
+                    $fileHandles.Add($script:ReleaseDirectoryLockType::OpenFile($item.FullName))
                     $stableAttributes = [System.IO.File]::GetAttributes($item.FullName)
                     if (($stableAttributes -band [System.IO.FileAttributes]::ReadOnly) -eq 0) {
                         throw "Release verification requires the bundle root and every descendant to be marked read-only"
@@ -648,10 +1332,35 @@ function Close-ReadOnlyReleaseTreeLocks {
 }
 
 function Initialize-ReleaseToolsetProcessType {
-    if ($null -ne ("YourWallet.ReleaseToolsetProcess" -as [type])) {
+    if (
+        $null -ne $script:ReleaseToolsetProcessType -or
+        $null -ne $script:ReleaseToolsetProcessResultType
+    ) {
+        $resolvedProcessType = "YourWallet.ReleaseToolsetProcess" -as [type]
+        $resolvedResultType = "YourWallet.ReleaseToolsetProcessResult" -as [type]
+        if (
+            -not [object]::ReferenceEquals(
+                $resolvedProcessType,
+                $script:ReleaseToolsetProcessType
+            ) -or
+            -not [object]::ReferenceEquals(
+                $resolvedResultType,
+                $script:ReleaseToolsetProcessResultType
+            )
+        ) {
+            throw "Release toolset process type identity changed"
+        }
         return
     }
-    Add-Type -TypeDefinition @"
+    if (
+        $null -ne ("YourWallet.ReleaseToolsetProcess" -as [type]) -or
+        $null -ne ("YourWallet.ReleaseToolsetProcessResult" -as [type])
+    ) {
+        throw "Release toolset process type was preloaded"
+    }
+    $addTypeCommand = $script:ReleaseTrustedCommands["Add-Type"]
+    $compiledTypes = @(
+        & $addTypeCommand -PassThru -TypeDefinition @"
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -1541,6 +2250,43 @@ namespace YourWallet {
     }
 }
 "@
+    )
+    $compiledProcessType = $null
+    $compiledResultType = $null
+    foreach ($candidateType in $compiledTypes) {
+        if ([System.String]::Equals(
+            $candidateType.FullName,
+            "YourWallet.ReleaseToolsetProcess",
+            [System.StringComparison]::Ordinal
+        )) {
+            if ($null -ne $compiledProcessType) {
+                throw "Release toolset process compilation returned a duplicate type"
+            }
+            $compiledProcessType = $candidateType
+        }
+        elseif ([System.String]::Equals(
+            $candidateType.FullName,
+            "YourWallet.ReleaseToolsetProcessResult",
+            [System.StringComparison]::Ordinal
+        )) {
+            if ($null -ne $compiledResultType) {
+                throw "Release toolset process compilation returned a duplicate result type"
+            }
+            $compiledResultType = $candidateType
+        }
+    }
+    $resolvedProcessType = "YourWallet.ReleaseToolsetProcess" -as [type]
+    $resolvedResultType = "YourWallet.ReleaseToolsetProcessResult" -as [type]
+    if (
+        $null -eq $compiledProcessType -or
+        $null -eq $compiledResultType -or
+        -not [object]::ReferenceEquals($resolvedProcessType, $compiledProcessType) -or
+        -not [object]::ReferenceEquals($resolvedResultType, $compiledResultType)
+    ) {
+        throw "Release toolset process compilation returned an invalid type set"
+    }
+    $script:ReleaseToolsetProcessType = $compiledProcessType
+    $script:ReleaseToolsetProcessResultType = $compiledResultType
 }
 
 function Initialize-VerifiedReleaseToolsetRegistry {
@@ -1694,7 +2440,7 @@ function Open-VerifiedReleaseToolset {
         $inventory = [System.Collections.Generic.List[object]]::new()
         foreach ($relative in $expectedFiles) {
             $canonicalFile = Join-Path $volumeRoot $relative.Replace("/", "\")
-            [YourWallet.ReleaseDirectoryLock]::AssertOnlyDefaultDataStream($canonicalFile)
+            $script:ReleaseDirectoryLockType::AssertOnlyDefaultDataStream($canonicalFile)
             $item = Get-Item -LiteralPath $canonicalFile -Force
             $inventory.Add([ordered]@{
                 bytes = $item.Length.ToString([System.Globalization.CultureInfo]::InvariantCulture)
@@ -1716,14 +2462,14 @@ function Open-VerifiedReleaseToolset {
             throw "Release toolset root identity changed while deriving its execution path"
         }
         $dosRoot = ConvertFrom-CanonicalReleaseDosPath -CanonicalDosPath (
-            [YourWallet.ReleaseDirectoryLock]::GetFinalDosPath($pinnedRootHandle)
+            $script:ReleaseDirectoryLockType::GetFinalDosPath($pinnedRootHandle)
         )
-        $dosRootHandle = [YourWallet.ReleaseDirectoryLock]::OpenDirectory($dosRoot)
+        $dosRootHandle = $script:ReleaseDirectoryLockType::OpenDirectory($dosRoot)
         $retainedHandles.Add($dosRootHandle)
         if (
-            -not [YourWallet.ReleaseDirectoryLock]::SameIdentity($pinnedRootHandle, $dosRootHandle) -or
+            -not $script:ReleaseDirectoryLockType::SameIdentity($pinnedRootHandle, $dosRootHandle) -or
             -not [System.String]::Equals(
-                [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($dosRootHandle),
+                $script:ReleaseDirectoryLockType::GetFinalVolumePath($dosRootHandle),
                 $volumeRoot,
                 [System.StringComparison]::Ordinal
             )
@@ -1742,9 +2488,9 @@ function Open-VerifiedReleaseToolset {
                 $retainedHandles.Add($handle)
             }
             $retainedHandles.Add($filePin.FileHandle)
-            [YourWallet.ReleaseDirectoryLock]::AssertSingleLink($filePin.FileHandle)
+            $script:ReleaseDirectoryLockType::AssertSingleLink($filePin.FileHandle)
             $finalDosPath = ConvertFrom-CanonicalReleaseDosPath -CanonicalDosPath (
-                [YourWallet.ReleaseDirectoryLock]::GetFinalDosPath($filePin.FileHandle)
+                $script:ReleaseDirectoryLockType::GetFinalDosPath($filePin.FileHandle)
             )
             if (
                 -not [System.String]::Equals($filePin.CanonicalPath, $volumePath, [System.StringComparison]::Ordinal) -or
@@ -1752,12 +2498,12 @@ function Open-VerifiedReleaseToolset {
             ) {
                 throw "Release toolset file path or casing changed while it was pinned"
             }
-            $dosFileHandle = [YourWallet.ReleaseDirectoryLock]::OpenFile($expectedDosPath)
+            $dosFileHandle = $script:ReleaseDirectoryLockType::OpenFile($expectedDosPath)
             $retainedHandles.Add($dosFileHandle)
             if (
-                -not [YourWallet.ReleaseDirectoryLock]::SameIdentity($filePin.FileHandle, $dosFileHandle) -or
+                -not $script:ReleaseDirectoryLockType::SameIdentity($filePin.FileHandle, $dosFileHandle) -or
                 -not [System.String]::Equals(
-                    [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($dosFileHandle),
+                    $script:ReleaseDirectoryLockType::GetFinalVolumePath($dosFileHandle),
                     $volumePath,
                     [System.StringComparison]::Ordinal
                 )
@@ -1838,12 +2584,12 @@ function Invoke-ReleaseToolsetNode {
     $record = Get-VerifiedReleaseToolsetRecord -Toolset $Toolset
     $temporaryHandles = [System.Collections.Generic.List[System.IDisposable]]::new()
     try {
-        $dosRootHandle = [YourWallet.ReleaseDirectoryLock]::OpenDirectory($record.CanonicalDosRoot)
+        $dosRootHandle = $script:ReleaseDirectoryLockType::OpenDirectory($record.CanonicalDosRoot)
         $temporaryHandles.Add($dosRootHandle)
         if (
-            -not [YourWallet.ReleaseDirectoryLock]::SameIdentity($record.RootIdentityHandle, $dosRootHandle) -or
+            -not $script:ReleaseDirectoryLockType::SameIdentity($record.RootIdentityHandle, $dosRootHandle) -or
             -not [System.String]::Equals(
-                [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($dosRootHandle),
+                $script:ReleaseDirectoryLockType::GetFinalVolumePath($dosRootHandle),
                 $record.CanonicalVolumeRoot,
                 [System.StringComparison]::Ordinal
             )
@@ -1863,12 +2609,12 @@ function Invoke-ReleaseToolsetNode {
             else {
                 $record.VolumePaths[$relative]
             }
-            $candidate = [YourWallet.ReleaseDirectoryLock]::OpenFile($executionPath)
+            $candidate = $script:ReleaseDirectoryLockType::OpenFile($executionPath)
             $temporaryHandles.Add($candidate)
             if (
-                -not [YourWallet.ReleaseDirectoryLock]::SameIdentity($record.IdentityHandles[$relative], $candidate) -or
+                -not $script:ReleaseDirectoryLockType::SameIdentity($record.IdentityHandles[$relative], $candidate) -or
                 -not [System.String]::Equals(
-                    [YourWallet.ReleaseDirectoryLock]::GetFinalVolumePath($candidate),
+                    $script:ReleaseDirectoryLockType::GetFinalVolumePath($candidate),
                     $record.VolumePaths[$relative],
                     [System.StringComparison]::Ordinal
                 )
@@ -2020,7 +2766,7 @@ const { fileURLToPath } = require("node:url");
             $record.VolumePaths["scripts/release/release-manifest.mjs"],
             $record.VolumePaths["scripts/release/review-evidence-set.mjs"]
         ) + @($CommandArguments)
-        [YourWallet.ReleaseToolsetProcess]::Run(
+        $script:ReleaseToolsetProcessType::Run(
             $record.IdentityHandles["node.exe"],
             $record.DosPaths["node.exe"],
             [string[]]$arguments,
@@ -2237,6 +2983,181 @@ function Get-InventorySha256 {
     ([System.BitConverter]::ToString($hash) -replace "-", "").ToLowerInvariant()
 }
 
+function Expand-ReleaseZipArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $archivePath = (Resolve-Path -LiteralPath $LiteralPath).Path
+    $archiveItem = Get-Item -LiteralPath $archivePath -Force
+    if (
+        $archiveItem.PSIsContainer -or
+        ($archiveItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    ) {
+        throw "Release source archive must be a regular non-reparse file"
+    }
+
+    $destinationRoot = (Resolve-Path -LiteralPath $DestinationPath).Path
+    Assert-NoReparseTree -LiteralPath $destinationRoot
+    if (@(Get-ChildItem -LiteralPath $destinationRoot -Force).Count -ne 0) {
+        throw "Release source archive destination must be empty"
+    }
+    $destinationPrefix = $destinationRoot.TrimEnd("\") + "\"
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $deviceNamePattern = "^(?:COM|LPT)[1-9{0}{1}{2}]$" -f `
+        ([char]0x00B9), `
+        ([char]0x00B2), `
+        ([char]0x00B3)
+
+    $archiveStream = [System.IO.File]::Open(
+        $archivePath,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $archive = $script:ReleaseZipArchiveType::new(
+            $archiveStream,
+            $script:ReleaseZipArchiveReadMode,
+            $true
+        )
+        try {
+            if ($archive.Entries.Count -eq 0) {
+                throw "Release source archive must not be empty"
+            }
+            foreach ($entry in $archive.Entries) {
+                $entryPath = [string]$entry.FullName
+                $isDirectory = $entryPath.EndsWith(
+                    "/",
+                    [System.StringComparison]::Ordinal
+                )
+                $relativePath = if ($isDirectory) {
+                    $entryPath.Substring(0, $entryPath.Length - 1)
+                }
+                else {
+                    $entryPath
+                }
+                if (
+                    [string]::IsNullOrWhiteSpace($relativePath) -or
+                    $entryPath.StartsWith(
+                        "/",
+                        [System.StringComparison]::Ordinal
+                    ) -or
+                    $entryPath.Contains("\") -or
+                    $relativePath.Contains(":") -or
+                    -not $seenPaths.Add($relativePath)
+                ) {
+                    throw "Release source archive contains a noncanonical path"
+                }
+                foreach ($segment in $relativePath.Split(
+                    [char[]]@("/"),
+                    [System.StringSplitOptions]::None
+                )) {
+                    $deviceStem = $segment.Split([char[]]@("."), 2)[0].TrimEnd(
+                        [char[]]@(" ", ".")
+                    ).ToUpperInvariant()
+                    if (
+                        [string]::IsNullOrEmpty($segment) -or
+                        [System.String]::Equals(
+                            $segment,
+                            ".",
+                            [System.StringComparison]::Ordinal
+                        ) -or
+                        [System.String]::Equals(
+                            $segment,
+                            "..",
+                            [System.StringComparison]::Ordinal
+                        ) -or
+                        $segment.EndsWith(
+                            ".",
+                            [System.StringComparison]::Ordinal
+                        ) -or
+                        $segment.EndsWith(
+                            " ",
+                            [System.StringComparison]::Ordinal
+                        ) -or
+                        $segment.IndexOfAny(
+                            [System.IO.Path]::GetInvalidFileNameChars()
+                        ) -ge 0 -or
+                        $segment.Contains("~") -or
+                        $deviceStem -in @(
+                            "CON",
+                            "PRN",
+                            "AUX",
+                            "NUL",
+                            "CONIN$",
+                            "CONOUT$"
+                        ) -or
+                        $deviceStem -match $deviceNamePattern
+                    ) {
+                        throw "Release source archive contains a noncanonical path"
+                    }
+                }
+
+                $unixFileType = ([int64]$entry.ExternalAttributes -shr 16) -band 0xf000
+                if ($unixFileType -eq 0xa000) {
+                    throw "Release source archive contains a symbolic link"
+                }
+                $targetPath = [System.IO.Path]::GetFullPath(
+                    [System.IO.Path]::Combine(
+                        $destinationRoot,
+                        $relativePath.Replace("/", "\")
+                    )
+                )
+                if (-not $targetPath.StartsWith(
+                    $destinationPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    throw "Release source archive path escaped its destination"
+                }
+
+                if ($isDirectory) {
+                    if ($entry.Length -ne 0) {
+                        throw "Release source archive directory entry carries data"
+                    }
+                    [void][System.IO.Directory]::CreateDirectory($targetPath)
+                    continue
+                }
+
+                $targetParent = [System.IO.Path]::GetDirectoryName($targetPath)
+                [void][System.IO.Directory]::CreateDirectory($targetParent)
+                $entryStream = $entry.Open()
+                try {
+                    $targetStream = [System.IO.File]::Open(
+                        $targetPath,
+                        [System.IO.FileMode]::CreateNew,
+                        [System.IO.FileAccess]::Write,
+                        [System.IO.FileShare]::None
+                    )
+                    try {
+                        $entryStream.CopyTo($targetStream)
+                        $targetStream.Flush($true)
+                        if ($targetStream.Length -ne $entry.Length) {
+                            throw "Release source archive length changed during extraction"
+                        }
+                    }
+                    finally {
+                        $targetStream.Dispose()
+                    }
+                }
+                finally {
+                    $entryStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $archiveStream.Dispose()
+    }
+    Assert-NoReparseTree -LiteralPath $destinationRoot
+}
+
 function New-DeterministicExtensionZip {
     param(
         [Parameter(Mandatory = $true)][string]$ExtensionRoot,
@@ -2244,18 +3165,21 @@ function New-DeterministicExtensionZip {
     )
     $root = (Resolve-Path -LiteralPath $ExtensionRoot).Path
     Assert-NoReparseTree -LiteralPath $root
-    Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
     if (Test-Path -LiteralPath $OutputPath) {
         throw "Deterministic extension package output already exists"
     }
-    $files = @("manifest.json") + @(Get-ChildItem -LiteralPath (Join-Path $root "src") -File | ForEach-Object { "src/$($_.Name)" } | Sort-Object)
+    $files = @("manifest.json") + @(Get-ChildItem -LiteralPath (Join-Path $root "src") -File | ForEach-Object { "src/" + $_.Name } | Sort-Object)
     $parent = Split-Path -Parent $OutputPath
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $parent)
     }
     $stream = [System.IO.File]::Open($OutputPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     try {
-        $archive = [System.IO.Compression.ZipArchive]::new($stream, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+        $archive = $script:ReleaseZipArchiveType::new(
+            $stream,
+            $script:ReleaseZipArchiveCreateMode,
+            $true
+        )
         try {
             foreach ($relative in $files) {
                 $source = Join-Path $root $relative.Replace("/", "\")
@@ -2263,7 +3187,10 @@ function New-DeterministicExtensionZip {
                 if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw "Extension package input must be a regular non-reparse file"
                 }
-                $entry = $archive.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::NoCompression)
+                $entry = $archive.CreateEntry(
+                    $relative,
+                    $script:ReleaseNoCompressionLevel
+                )
                 $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
                 $entryStream = $entry.Open()
                 try {

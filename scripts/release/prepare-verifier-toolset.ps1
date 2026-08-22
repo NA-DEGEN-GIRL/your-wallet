@@ -1,5 +1,6 @@
+$PSModuleAutoLoadingPreference = "None"
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
+$script:ReleasePowerShellEntryScriptPath = $PSCommandPath
 
 function Invoke-PrepareVerifierToolset {
     [CmdletBinding()]
@@ -130,7 +131,7 @@ function Invoke-PrepareVerifierToolset {
 }
 
 try {
-    . (Join-Path $PSScriptRoot "common.ps1")
+    . ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))
     $boundArguments = ConvertFrom-ExactNamedArguments `
         -Arguments @($args) `
         -RequiredValueNames @("NodeExecutable", "OutputDirectory") `

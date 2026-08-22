@@ -11,17 +11,20 @@ The only command allowed to print an eligibility result is `verify-release-offli
 The CI-safe check is read-only apart from test-owned temporary directories:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/check.ps1 all
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell", "v1.0", "powershell.exe")
+$nodeExecutable = $ExecutionContext.InvokeCommand.GetCommand("node", [System.Management.Automation.CommandTypes]::Application).Path
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/check.ps1 all -NodeExecutable $nodeExecutable
 ```
 
-It parses every release script, audits the extension source, runs deterministic policy tests, and verifies deterministic PowerShell packaging helpers. It never invokes a release build or asks for credentials.
+It parses every release script, audits the extension source, runs deterministic policy tests, and verifies deterministic PowerShell packaging helpers. The caller must select the absolute Node application path explicitly; the sealed gate rejects relative input, never resolves `node` through its own `PATH`, requires every child to exit zero with empty stderr, and applies exact stdout sentinels to both PowerShell behavior tests. It never invokes a release build or asks for credentials.
 
 The manual `release-evidence-policy` workflow requires exact cargo-audit/OSV Scanner versions, scanner-binary hashes, and immutable RustSec/OSV database identifiers and hashes. It validates only their shape and the repository policy tests, prints `POLICY_INPUTS_VALIDATED_NOT_RELEASE_ELIGIBLE`, and deliberately does not download a scanner, build, sign, upload, install, or publish anything.
 
 Unsigned preparation is an explicit, separate ceremony:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/prepare-unsigned.ps1 `
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/prepare-unsigned.ps1 `
   -OutputDirectory .\release-preparation
 ```
 
@@ -105,7 +108,8 @@ node scripts/release/hash-payload.mjs `
 The command prints the artifact-set SHA-256. Supply that value and the independently pinned Authenticode leaf-certificate SHA-256 to the Windows verifier:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify-authenticode.ps1 `
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/verify-authenticode.ps1 `
   -PayloadDirectory .\release-bundle\payload `
   -ArtifactSetSha256 <64-lower-hex> `
   -ExpectedSignerCertificateSha256 <64-lower-hex> `
@@ -187,7 +191,8 @@ scripts/release/verify-release-offline.ps1
 An operator can prepare those bytes without making an eligibility claim:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/prepare-verifier-toolset.ps1 `
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/prepare-verifier-toolset.ps1 `
   -NodeExecutable <independently-reviewed-node.exe> `
   -OutputDirectory .\verifier-toolset-staging `
   -OperatorConfirmedPreparationOnly
@@ -195,7 +200,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/prepare-veri
 
 The preparation command prints `VERIFIER_TOOLSET_SHA256=<64-lower-hex>` followed by `VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE`. Treat that digest as provisional until the exact transferred tree has been independently reviewed and recomputed on its write-protected destination. Record only that independently confirmed aggregate through a separately controlled checkpoint. The destination medium or access control must deny the verifier token both file and subdirectory creation in every directory. The script's read-only attributes are only staging hygiene; they do not prove effective write protection. Never take the expected aggregate from the candidate bundle or from a command copied out of it. A failed preparation deliberately leaves its partial directory in place and refuses to reuse it; do not treat it as a success marker, and review then discard it before rerunning with a new absent output path.
 
-At ceremony time the wrapper derives the toolset root from its own location. It requires the exact case-sensitive printable-ASCII tree, one default data stream and one hard link per runtime file, read-only attributes, failed create-new file and subdirectory probes in every directory, the independently checkpointed aggregate, and complete retained volume/file identities. The toolset and candidate trees must be disjoint. The expected aggregate is a consistency and version pin for the already trusted wrapper/toolset; it cannot make an untrusted `common.ps1`, wrapper, PowerShell host, or Windows kernel authenticate itself. Start a fresh trusted 64-bit system Windows PowerShell with `-NoProfile` directly from the write-protected toolset; a 32-bit ceremony host is refused before the runtime tree is accepted.
+The repository architecture gate recursively inventories every `.ps1`, `.psm1`,
+and `.psd1` source outside its explicit generated and control-directory
+exclusions. Each entry must use an unambiguous accepted encoding and match both
+the exact approved path inventory and its reviewed raw-byte SHA-256 pin in
+`scripts/architecture-scan.mjs`; any PowerShell source edit or addition must
+update that table explicitly. This is a repository change-review checkpoint,
+not an independent trust anchor for the scanner or a way for already executing
+release code to authenticate itself.
+
+The same architecture gate discovers the five top-level release-policy
+`.test.mjs` suites as one exact regular-file inventory and derives both semantic
+analysis and raw-byte SHA-256 from each file's single read. The release check
+also requires those exact ordered filenames and hashes before it starts Node;
+retaining a suite name or test count while hollowing a callback therefore fails
+the reviewed gate. This is deterministic regression protection, not a security
+boundary against a same-user process that can rewrite developer-check inputs
+concurrently.
+
+Every release entry that consumes `common.ps1` sets `$PSModuleAutoLoadingPreference` to `None` as its first executable statement and performs the PowerShell bootstrap preflight before it opens any caller-controlled release, toolset, or candidate path. The preflight accepts only the exact system 64-bit Desktop Windows PowerShell 5.1 image and the exact engine argument vector `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <current-entry>`; abbreviations, extra engine options, a different `-File` target, 32-bit hosts, PowerShell Core, and non-system images fail closed. `common.ps1` then requires exactly zero loaded modules, zero pre-existing protected `YourWallet.*` types, zero long-form aliases, and zero function, alias, script, or application shadows for its critical commands. It never searches `PSModulePath`: it imports only the absolute manifests `Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1`, `Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1`, and `Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1` beneath `$PSHOME\Modules`. It deliberately does not import the script-based `Microsoft.PowerShell.Archive` module. Authenticode inspection and `Add-Type` compilation invoke their already verified `CmdletInfo` objects directly rather than resolving a command name. ZIP handling retains exact framework `Type` and enum identities from the strong-named GAC assemblies after validating their system location, and source extraction rejects traversal, automatic `~`-form DOS 8.3 aliases, device-name aliases, duplicate Windows paths, reparse output, and symbolic-link entries. Generic build-tool names are resolved specifically as `Application` commands and invoked by the resulting absolute path, so same-name functions or aliases cannot intercept them. Any bootstrap mismatch is rejected before release data is opened, so module/type/command cleanliness is a code-enforced invariant rather than an operator-supplied host assumption.
+
+At ceremony time the wrapper derives the toolset root from its own location. It requires the exact case-sensitive printable-ASCII tree, one default data stream and one hard link per runtime file, read-only attributes, failed create-new file and subdirectory probes in every directory, the independently checkpointed aggregate, and complete retained volume/file identities. The toolset and candidate trees must be disjoint. The expected aggregate is a consistency and version pin for the already trusted wrapper/toolset; it cannot make an untrusted `common.ps1`, wrapper, exact system PowerShell image, or Windows OS authenticate itself. Invoke the write-protected entry through the system path variable and exact engine flags shown here; the entry independently validates that bootstrap before accepting the runtime tree.
 
 The attestation schema is `your-wallet-independent-security-review-v2` and includes the release profile/version, source commit, final artifact-set hash, exact `reviewedEvidenceSetSha256`, reviewer public-key ID, `independenceAttestation: "pass"`, and zero open Critical/High findings. `reviewedEvidenceSetSha256` is the SHA-256 of the canonical, exact-path-ordered array of `{bytes,path,sha256}` records for every mandatory evidence file other than `review-attestation.json` and `review-attestation.sig`, plus all 17 Windows-negative logs. A v1 attestation fails closed. Its `scope` array must have this exact order:
 
@@ -215,7 +240,8 @@ The attestation schema is `your-wallet-independent-security-review-v2` and inclu
 Before creating either `review-attestation.json` or `review-attestation.sig`, stage every other mandatory evidence file, all 17 Windows-negative logs, and `review-public-key.pem` on the reviewer's separately controlled, read-only tree. Do not copy a digest out of the candidate manifest. The read-only subject command walks that exact evidence subtree itself, rejects missing, extra, case-aliased, reparse, non-regular, or hard-linked files, pins each opened file while hashing it, and prints one canonical JSON subject. It neither reads a candidate manifest nor claims release eligibility:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File <write-protected-verifier-toolset>\scripts\release\review-evidence-set.ps1 `
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <write-protected-verifier-toolset>\scripts\release\review-evidence-set.ps1 `
   -BundleRoot .\release-bundle `
   -ExpectedVerifierToolsetSha256 <independently-checkpointed-64-lower-hex> `
   -OperatorConfirmedNetworkIsolation
@@ -223,7 +249,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <write-protected-verifier-to
 
 The Windows wrapper requires the entire staging tree to be effectively read-only and non-reparse. It parses the raw command line into an exact, case-sensitive, duplicate-free named-argument dictionary inside its protected failure boundary, then opens the requested root, derives a local volume-GUID path from that handle, locks every canonical ancestor from the volume root down with no delete sharing, and requires the bootstrap root and canonical root to match by non-sentinel volume serial plus the complete 128-bit `FILE_ID_INFO`. The original path alias is then discarded. It retains those directory handles and every read-only file handle with no write/delete sharing across the calculation.
 
-The sealed runner does not use a PowerShell function, alias, or `PATH` lookup. One fresh, one-shot verifier thread owns process creation, every debug event, mapped-image authentication, continuation, detach, and fail-closed debugger-thread exit. It creates the pinned `node.exe` hidden with an exact three-variable environment, closed stdin, byte-bounded stdout/stderr, no addon or global module search, and a hard timeout. The first pre-user-mode `CREATE_PROCESS_DEBUG_EVENT` image handle must match the retained Node handle by the full volume serial and 128-bit file ID before the guarded primary thread is released. The three JavaScript modules are then read only through their retained volume-GUID paths and evaluated as one in-memory `vm.SourceTextModule` graph in a distinct, string/wasm-code-generation-disabled context with only the pinned source's required `Buffer` and `TextDecoder` globals plus a minimal `node:process` facade. The two repository-relative edges shown by the source graph and the five required `node:` built-ins are the entire static/dynamic module-resolution allowlist. Thus neither a DOS-device remap nor an ambient `NODE_OPTIONS`, preload, function, or fake `node.exe` can redirect the executable or module bytes. The VM context prevents accidental ambient CommonJS/global lookup; it is not a hostile-JavaScript sandbox, so the independently reviewed source bytes and toolset aggregate remain part of the trust boundary.
+The sealed Node runner does not use a PowerShell function, alias, or `PATH` lookup. One fresh, one-shot verifier thread owns process creation, every debug event, mapped-image authentication, continuation, detach, and fail-closed debugger-thread exit. It creates the pinned `node.exe` hidden with an exact three-variable environment, closed stdin, byte-bounded stdout/stderr, no addon or global module search, and a hard timeout. The first pre-user-mode `CREATE_PROCESS_DEBUG_EVENT` image handle must match the retained Node handle by the full volume serial and 128-bit file ID before the guarded primary thread is released. The three JavaScript modules are then read only through their retained volume-GUID paths and evaluated as one in-memory `vm.SourceTextModule` graph in a distinct, string/wasm-code-generation-disabled context with only the pinned source's required `Buffer` and `TextDecoder` globals plus a minimal `node:process` facade. The two repository-relative edges shown by the source graph and the five required `node:` built-ins are the entire static/dynamic module-resolution allowlist. Thus neither a DOS-device remap nor an ambient `NODE_OPTIONS`, preload, function, or fake `node.exe` can redirect the executable or module bytes. The VM context prevents accidental ambient CommonJS/global lookup; it is not a hostile-JavaScript sandbox, so the independently reviewed source bytes and toolset aggregate remain part of the trust boundary.
 
 The review entry runs exactly once with only the pinned bundle volume path. The Node core enumerates each volume-path parent to require the requested on-disk spelling exactly before it walks the evidence tree. The wrapper requires exit zero, zero stderr bytes, and exactly one canonical subject followed by one LF; CRLF, a BOM, trailing bytes, or diagnostics fail closed. It repeats the tree checks and releases the handles only after the subject is fixed. A junction, mount alias, drive alias, UNC path, unsupported filesystem identity, ancestor retarget, or case-only `evidence` alias therefore fails closed or cannot redirect the subject calculation. The release gate exercises this behaviorally with a staged exact toolset: it rejects a volume-GUID tree whose root entry is spelled `Evidence`; a successful wrapper ceremony is paused at its pinned child, a live rename probe proves the canonical root is still locked, its ancestor junction is retargeted from tree A to different valid tree B, and the exact emitted bytes must still be A plus one LF. Running the Node core alone does not establish the Windows share-mode, mapped-image, module-graph, volume-identity, or offline-ceremony guarantees. Unknown, missing, duplicate, or wrong-case parameters and all later wrapper failures emit only one fixed category line and never echo the supplied or resolved path.
 
@@ -289,7 +315,8 @@ The assembly command writes `UNSIGNED_CANONICAL_MANIFEST_WRITTEN_NOT_RELEASE_ELI
 On a separately controlled Windows verification system with networking physically or administratively disabled, run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File <write-protected-verifier-toolset>\scripts\release\verify-release-offline.ps1 `
+$systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
+& $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <write-protected-verifier-toolset>\scripts\release\verify-release-offline.ps1 `
   -Manifest .\release-manifest.json `
   -Signature .\release-manifest.sig `
   -ReleasePublicKey .\release-public-key.pem `
@@ -315,20 +342,20 @@ Final verification refuses a bundle root, descendant, manifest, signature, publi
 
 This scaffold guarantees, when its final verifier succeeds, byte-level binding among the independently pinned exact verifier toolset, authenticated mapped Node image and in-memory module graph, exact canonical signed manifest, mandatory external release sequence, fixed role-to-path artifact set, fixed evidence paths, source/vendor/toolchain/lockfile records, the independently pinned stable extension identity, final native-host/installer identity, exact Windows tests, independently pinned signing identities, and independently signed review. The review signature binds the payload artifact-set commitment and the separate non-circular commitment over all reviewable evidence records, so a release-key holder cannot silently substitute those evidence bytes while reusing an older review signature. It rejects duplicate JSON keys, non-canonical integer representation, unknown manifest members, path traversal/reparse points/hard links in the bundle or verifier runtime, Windows case-folded path reuse, unlisted tree entries, artifact substitution, missing evidence, an extension-ID change across successor lineage, an old signed sequence replay against a newer checkpoint, uncheckpointed lineage, and semantic-version rollback.
 
-It does not prove that a reviewer is organizationally independent, that an operator truly disconnected networking, that the trusted Windows kernel/PowerShell bootstrap or write-protected media is honest, that a hardware key was protected correctly, that GitHub's runner image is honest, that the compiler is free from compromise, or that an evidence-generating test was competently designed. It also does not defend the resumed Node process from an already active same-user/same-integrity process that can inject a thread or write its memory; the offline ceremony requires a clean dedicated account/host without such a process. Those are external ceremony and review obligations. The toolset's runtime self-hash does not bootstrap trust in the code already performing that check, and the VM context is a resolution boundary for reviewed source rather than a hostile-code sandbox. Authenticode bytes are expected to differ from reproducible unsigned bytes; reproducibility is checked before platform signing and final hashes bind the signed form. Consumers must require process exit zero and the exact success bytes; grepping a marker while ignoring the exit status is never an eligibility check.
+It does not prove that a reviewer is organizationally independent, that an operator truly disconnected networking, that a hardware key was protected correctly, that GitHub's runner image is honest, that the compiler is free from compromise, or that an evidence-generating test was competently designed. For the ambient PowerShell bootstrap boundary, however, module, protected-type, and command-shadow cleanliness is verified by code and is not delegated to an operator cleanliness assumption. The residual external bootstrap trust is limited to the Windows OS and exact system Windows PowerShell 5.1 image, the independently reviewed write-protected verifier toolset that is already executing, and the absence of live same-integrity process injection into the bootstrap PowerShell or resumed Node process. Release preparation additionally assumes no concurrent same-user mutation of its fresh temporary extraction tree; that staging step cannot make a hostile peer process trustworthy. The toolset's runtime self-hash does not bootstrap trust in the code already performing that check, and the VM context is a resolution boundary for reviewed source rather than a hostile-code sandbox. Authenticode bytes are expected to differ from reproducible unsigned bytes; reproducibility is checked before platform signing and final hashes bind the signed form. Consumers must require process exit zero and the exact success bytes; grepping a marker while ignoring the exit status is never an eligibility check.
 
 ## Remaining release STOP-SHIP conditions
 
 At repository scaffold time, all of the following remain unresolved:
 
-- no successful clean, frozen, offline two-directory release run has been recorded;
+- no successful frozen, offline, exact-system-host two-directory release run has been recorded;
 - no production installer or verified install/uninstall/upgrade ACL behavior exists;
 - no stable production extension ID and store/update ceremony is recorded;
 - no Authenticode certificate or independently pinned leaf-certificate hash is configured;
 - no offline hardware-backed release key, reviewer key, signatures, rotation drill, or revocation drill exists;
 - none of the 17 exact Windows negative-test evidence files has been produced for a final artifact set;
 - no independently signed review with zero Critical/High findings exists;
-- no production verifier-toolset aggregate and trusted offline checkpoint has been recorded;
+- no production independently reviewed write-protected verifier-toolset aggregate, exact-system-host bootstrap transcript, or trusted offline checkpoint has been recorded;
 - no accepted release-sequence/previous-manifest checkpoint or rollback-resistant external ledger exists;
 - dependency cache provisioning, advisory review, compiler/SDK provenance, and diverse-build review remain external work;
 - pinned cargo-audit/OSV Scanner binaries, immutable RustSec/OSV snapshots, and zero-finding raw reports are absent;

@@ -23,4 +23,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 check
       - name: Run check-only release policy tests
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/check.ps1 all
+        run: |
+          $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell", "v1.0", "powershell.exe")
+          $nodeExecutable = $ExecutionContext.InvokeCommand.GetCommand("node", [System.Management.Automation.CommandTypes]::Application).Path
+          & $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/check.ps1 all -NodeExecutable $nodeExecutable
