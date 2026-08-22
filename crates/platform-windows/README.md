@@ -80,11 +80,14 @@ Implemented:
   handle, the fixed zero-capability `YourWallet.KeyAgent.LPAC.v1` identity, and
   the ALL APPLICATION PACKAGES opt-out; the short-lived handles are dropped
   before the worker returns. Key Agent and frontend profile APIs share one
-  process-wide non-reentrant, poison-fail-closed coordinator. The
-  Restricted helpers prepare this context before parent-proof, persistent
-  profile, or Job work; the Key Agent prepares it before acquiring the
-  inheritable-handle flight. Both recheck that the creator thread is not
-  impersonating immediately before `CreateProcessW`. This context proof is
+  process-wide non-reentrant, poison-fail-closed coordinator. The Key Agent's
+  explicit three-name Unicode environment sets `LOCALAPPDATA` directly to the
+  exact profile `AC` path returned by `GetAppContainerFolderPath`, alongside
+  OS-derived `SystemRoot` and `WINDIR`. The Restricted helpers prepare this
+  context before parent-proof, persistent profile, or Job work; the Key Agent
+  prepares it before acquiring the inheritable-handle flight. Both recheck that
+  the creator thread is not impersonating immediately before `CreateProcessW`.
+  This context proof is
   limited to DOS-path shape, Windows-root/System32 layout, directory/reparse
   state, path-replacement rights on every ancestor, and content-creation rights
   on the Windows root and System32 under the current primary token. It retains

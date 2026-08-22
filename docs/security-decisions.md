@@ -54,10 +54,10 @@ system-shared Windows root and passes a verified System32 current directory. A
 restricted helper's fixed double-NUL Unicode environment contains only those two
 names. The Key Agent prepares its fixed profile first, validates the
 `GetAppContainerFolderPath` result as the exact absolute
-`Packages` / profile-name / `AC` layout, and prepends the OS-derived host
-`LOCALAPPDATA`; its environment therefore contains exactly `LOCALAPPDATA`,
-`SystemRoot`, and `WINDIR`. Neither child inherits the parent's ambient
-environment or current directory. Restricted helpers complete the base
+`Packages` / profile-name / `AC` layout, and uses that exact OS-returned `AC`
+path directly as `LOCALAPPDATA`; its environment therefore contains exactly
+`LOCALAPPDATA`, `SystemRoot`, and `WINDIR`. Neither child inherits the parent's
+ambient environment or current directory. Restricted helpers complete the base
 preflight before parent-proof, persistent frontend profile, or Job work; the Key
 Agent completes it before acquiring the inheritable-handle flight. Both recheck
 thread impersonation immediately before `CreateProcessW`. The proof is limited

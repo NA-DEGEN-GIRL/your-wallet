@@ -5220,6 +5220,10 @@ const exactKeyAgentBaseEnvironment = rustFunctionBlock(
   keyAgentLpacRelease,
   "base_environment_is_exact",
 );
+const exactKeyAgentEnvironmentTest = rustFunctionBlock(
+  keyAgentLpacSource,
+  "exact_environment_has_only_three_os_scoped_names",
+);
 const compactRust = (source) => rustLexicalCode(source).replace(/\s+/gu, "");
 const restrictedProcessContextDefinition = rustLexicalItemBlock(
   restrictedProcessContextProduction,
@@ -7315,7 +7319,10 @@ requireInvariant(
     keyAgentLpacEnvironment.includes(
       '!packages_name.eq_ignore_ascii_case("Packages")',
     ) &&
-    compactKeyAgentLpacEnvironment.includes("!local_app_data.is_absolute()") &&
+    compactKeyAgentLpacEnvironment.includes(
+      "!appcontainer_local_data.is_absolute()",
+    ) &&
+    compactKeyAgentLpacEnvironment.includes("!packages_parent.is_absolute()") &&
     compactKeyAgentLpacEnvironment.includes(
       "!base_environment_is_exact(base_environment)",
     ) &&
@@ -7326,6 +7333,9 @@ requireInvariant(
     compactKeyAgentLpacEnvironment.includes(
       "environment.extend_from_slice(&local_value);environment.push(0);environment.extend_from_slice(base_environment);",
     ) &&
+    keyAgentLpacEnvironment.includes(
+      "let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();",
+    ) &&
     compactKeyAgentLpacEnvironment.includes(
       "environment.len()>32_767||!environment.ends_with(&[0,0])",
     ) &&
@@ -7335,6 +7345,12 @@ requireInvariant(
     exactKeyAgentBaseEnvironment.includes('"SystemRoot=".encode_utf16()') &&
     exactKeyAgentBaseEnvironment.includes('"WINDIR=".encode_utf16()') &&
     exactKeyAgentBaseEnvironment.includes("entries.next().is_none()") &&
+    exactKeyAgentEnvironmentTest.includes(
+      "appcontainer_folder(&prepared.profile_sid)?",
+    ) &&
+    exactKeyAgentEnvironmentTest.includes(
+      "assert!(entries[0] == exact_local_app_data);",
+    ) &&
     !/\b(?:std::env|env)::(?:var|var_os|vars|vars_os)\s*\(/u.test(
       `${keyAgentActivationRelease}\n${keyAgentLpacRelease}`,
     ) &&
@@ -7344,7 +7360,7 @@ requireInvariant(
     keyAgentCreateProcess.includes(
       "Some(prepared_process.environment.as_ptr().cast::<c_void>())",
     ),
-  "Key Agent creation must use only OS-derived LOCALAPPDATA plus the exact validated SystemRoot/WINDIR block with no ambient environment inheritance",
+  "Key Agent creation must use the exact OS-returned AppContainer AC path as LOCALAPPDATA plus the validated SystemRoot/WINDIR block with no ambient environment inheritance",
 );
 const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacToken);
 const keyAgentLpacTokenQueryOrder = [

@@ -391,9 +391,9 @@ when it is a plain absolute DOS path whose parent is that system-shared Windows
 root and whose leaf is `System32`. A restricted helper receives a fixed
 double-NUL Unicode environment containing only those two names. After preparing
 the fixed profile, the Key Agent asks `GetAppContainerFolderPath` for that SID,
-requires an absolute `Packages` / exact profile-name / `AC` layout, derives the
-host Local AppData parent from it, and prepends exactly one `LOCALAPPDATA` entry.
-Its environment therefore contains exactly `LOCALAPPDATA`, `SystemRoot`, and
+requires an absolute `Packages` / exact profile-name / `AC` layout, and uses that
+exact OS-returned `AC` path directly as its single `LOCALAPPDATA` entry. Its
+environment therefore contains exactly `LOCALAPPDATA`, `SystemRoot`, and
 `WINDIR`; neither path inherits the parent's ambient values or current
 directory. The production policy rejects directory reparses,
 path-replacement/delete/ACL rights on every ancestor, and file/subdirectory

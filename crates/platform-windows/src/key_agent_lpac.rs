@@ -113,8 +113,8 @@ impl PreparedKeyAgentLpac {
         Ok(Self::from_profile_sid(profile_sid))
     }
 
-    /// Extends the trusted two-name process context with the one OS-derived
-    /// `LOCALAPPDATA` value required by Windows `AppContainer` process creation.
+    /// Extends the trusted two-name process context with the exact OS-reported
+    /// `AppContainer` `LOCALAPPDATA` folder required by Windows process creation.
     pub(crate) fn environment_with_local_app_data(
         &self,
         base_environment: &[u16],
@@ -136,16 +136,17 @@ impl PreparedKeyAgentLpac {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(KeyAgentLpacError::Profile)?;
-        let local_app_data = packages.parent().ok_or(KeyAgentLpacError::Profile)?;
+        let packages_parent = packages.parent().ok_or(KeyAgentLpacError::Profile)?;
         if !local_folder_name.eq_ignore_ascii_case("AC")
             || !profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)
             || !packages_name.eq_ignore_ascii_case("Packages")
-            || !local_app_data.is_absolute()
+            || !appcontainer_local_data.is_absolute()
+            || !packages_parent.is_absolute()
             || !base_environment_is_exact(base_environment)
         {
             return Err(KeyAgentLpacError::Profile);
         }
-        let local_value: Vec<u16> = local_app_data.as_os_str().encode_wide().collect();
+        let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();
         if local_value.is_empty() || local_value.contains(&0) {
             return Err(KeyAgentLpacError::Profile);
         }
@@ -1354,12 +1355,16 @@ mod tests {
         let entries: Vec<&[u16]> = environment[..environment.len() - 1]
             .split(|unit| *unit == 0)
             .collect();
-        let local_prefix: Vec<u16> = "LOCALAPPDATA=".encode_utf16().collect();
+        let mut exact_local_app_data: Vec<u16> = "LOCALAPPDATA=".encode_utf16().collect();
+        exact_local_app_data.extend(
+            appcontainer_folder(&prepared.profile_sid)?
+                .as_os_str()
+                .encode_wide(),
+        );
         let system_root: Vec<u16> = "SystemRoot=[ROOT]".encode_utf16().collect();
         let windir: Vec<u16> = "WINDIR=[ROOT]".encode_utf16().collect();
         assert_eq!(entries.len(), 4);
-        assert!(entries[0].starts_with(&local_prefix));
-        assert!(entries[0].len() > local_prefix.len());
+        assert!(entries[0] == exact_local_app_data);
         assert!(entries[1] == system_root);
         assert!(entries[2] == windir);
         assert!(entries[3].is_empty());
