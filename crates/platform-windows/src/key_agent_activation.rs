@@ -49,6 +49,9 @@ pub(crate) enum KeyAgentActivationError {
     /// Windows could not create the process in the required suspended state.
     #[error("suspended Key Agent creation failed")]
     ProcessCreation,
+    /// The exact minimal environment or System32 working directory was unsafe.
+    #[error("Key Agent process context policy failed")]
+    ProcessContextPolicy,
     /// The inherited private-channel creation attributes could not be bound.
     #[error("Key Agent private-channel creation policy failed")]
     PrivateChannelPolicy,
@@ -473,12 +476,13 @@ mod sys {
     #[cfg(test)]
     use windows::Win32::System::Threading::GetCurrentProcess;
     use windows::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS,
-        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-        GetProcessId, GetProcessTimes, GetThreadId, InitializeProcThreadAttributeList,
-        LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
+        DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, SuspendThread, TerminateProcess, UpdateProcThreadAttribute,
+        WaitForSingleObject,
     };
     use windows::core::{PCWSTR, PWSTR};
 
@@ -489,6 +493,7 @@ mod sys {
     };
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
     use crate::pipe::{PreparedKeyAgentInheritance, PrivateKeyAgentPipes};
+    use crate::restricted_process_context::RestrictedProcessContext;
 
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
@@ -608,21 +613,40 @@ mod sys {
         }
     }
 
+    struct PreparedKeyAgentProcess {
+        application: Vec<u16>,
+        context: RestrictedProcessContext,
+    }
+
+    fn prepare_key_agent_process(
+        artifact: &VerifiedHelper,
+    ) -> Result<PreparedKeyAgentProcess, KeyAgentActivationError> {
+        #[cfg(test)]
+        let context = RestrictedProcessContext::prepare_for_kernel_test();
+        #[cfg(not(test))]
+        let context = RestrictedProcessContext::prepare();
+        let context = context.map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
+        let application = artifact
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain(core::iter::once(0))
+            .collect();
+        Ok(PreparedKeyAgentProcess {
+            application,
+            context,
+        })
+    }
+
     fn create_suspended_debuggee_process(
         flight: &InheritableHandleLaunchFlight<'_>,
-        artifact: &VerifiedHelper,
+        prepared_process: &PreparedKeyAgentProcess,
         inheritance: &PreparedKeyAgentInheritance<'_, '_>,
         root_job: &KeyAgentRootJob,
         root_job_attribute: &KeyAgentRootJobAttribute<'_>,
         coordination_deadline: Instant,
         command_line: Option<&mut [u16]>,
     ) -> Result<PROCESS_INFORMATION, KeyAgentActivationError> {
-        let application: Vec<u16> = artifact
-            .path()
-            .as_os_str()
-            .encode_wide()
-            .chain(core::iter::once(0))
-            .collect();
         let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>())
@@ -640,20 +664,32 @@ mod sys {
         if Instant::now() >= coordination_deadline {
             return Err(KeyAgentActivationError::ProcessCreation);
         }
+        prepared_process
+            .context
+            .recheck_thread()
+            .map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
         // SAFETY: the verified absolute path is NUL terminated and retained for
         // the call. Production supplies no command line; the test-only buffer is
         // writable and retained. `attributes` is a live initialized two-slot
         // list containing exactly HANDLE_LIST(3) and JOB_LIST(1); the three
-        // listed stdio handles are the only inheritable handles. The flags keep
-        // creation both headless and suspended before user-mode entry.
+        // listed stdio handles are the only inheritable handles. The retained
+        // process context supplies an exact two-name Unicode environment and a
+        // validated System32 current directory. The flags keep creation both
+        // headless and suspended before user-mode entry.
         unsafe {
             flight
                 .create_process_with_explicit_handle_list(
-                    PCWSTR(application.as_ptr()),
+                    PCWSTR(prepared_process.application.as_ptr()),
                     command_line,
                     key_agent_creation_flags(),
-                    None,
-                    PCWSTR::null(),
+                    Some(
+                        prepared_process
+                            .context
+                            .environment()
+                            .as_ptr()
+                            .cast::<c_void>(),
+                    ),
+                    PCWSTR(prepared_process.context.current_directory().as_ptr()),
                     ptr::from_ref(&startup.StartupInfo),
                     &raw mut information,
                 )
@@ -722,6 +758,7 @@ mod sys {
             coordination_deadline: Instant,
             command_line: Option<&mut [u16]>,
         ) -> Result<Self, KeyAgentActivationError> {
+            let prepared_process = prepare_key_agent_process(artifact)?;
             let flight = acquire_inheritable_handle_launch(coordination_deadline)
                 .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
             if Instant::now() >= coordination_deadline {
@@ -732,7 +769,7 @@ mod sys {
                 .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
             let information = create_suspended_debuggee_process(
                 &flight,
-                artifact,
+                &prepared_process,
                 &inheritance,
                 root_job,
                 root_job_attribute,
@@ -1235,6 +1272,7 @@ mod sys {
             | DEBUG_PROCESS
             | DEBUG_ONLY_THIS_PROCESS
             | CREATE_NO_WINDOW
+            | CREATE_UNICODE_ENVIRONMENT
             | EXTENDED_STARTUPINFO_PRESENT
     }
 
@@ -1302,8 +1340,8 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use windows::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS,
-        EXTENDED_STARTUPINFO_PRESENT,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
+        DEBUG_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
     };
 
     use super::{
@@ -1526,6 +1564,7 @@ mod tests {
             | DEBUG_PROCESS
             | DEBUG_ONLY_THIS_PROCESS
             | CREATE_NO_WINDOW
+            | CREATE_UNICODE_ENVIRONMENT
             | EXTENDED_STARTUPINFO_PRESENT)
             .0;
         assert_eq!(sys::key_agent_creation_flag_bits_for_test(), expected);

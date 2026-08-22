@@ -19,6 +19,7 @@ secret-input-ui = { path = "../secret-input-ui" }
 subtle.workspace = true
 thiserror.workspace = true
 windows = { workspace = true, features = [
+    "Win32_Globalization",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_Security_Cryptography_Catalog",

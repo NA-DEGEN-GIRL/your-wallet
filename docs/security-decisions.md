@@ -48,6 +48,23 @@ and other processes remain outside their scope. Deadlines bound coordinator or
 lock acquisition and explicit pre-create checks, not a synchronous
 `CreateProcessW` call or the fail-closed worker join.
 
+Restricted helpers and the Key Agent now use one private immutable process
+context. It builds a fixed double-NUL Unicode environment containing only
+`SystemRoot` and `WINDIR` from the OS-reported system-shared Windows root and
+passes a verified System32 current directory, so neither child inherits the
+parent's ambient environment or current directory. Restricted helpers complete
+this preflight before parent-proof, persistent profile, or Job work; the Key
+Agent completes it before acquiring the inheritable-handle flight. Both recheck
+thread impersonation immediately before `CreateProcessW`. The proof is limited to DOS
+path shape, Windows-root/System32 layout, directory/reparse state,
+path-replacement rights on every ancestor, and content-creation rights on the
+Windows root and System32 available to the current primary token. A create-only
+right on the system-drive root does not by itself permit replacement of the
+fixed Windows path and is not rejected. The proof retains no directory handle,
+is not atomic object-identity proof, and does not prove error-mode/priority or
+other Win32 process-state isolation, DLL/dependency identity, or signed-artifact
+execution.
+
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
 objects with exact `PIPE`/`PIPE`/`CHAR` types and exact inherit-only flags,
@@ -86,7 +103,8 @@ Before any real mainnet value is used, the Windows build must prove:
    fallback is permitted.
 2. Exact inherited-handle allowlisting and negative tests for stray handles.
 3. Helper executable code-signing identity, manifest hash, version, and install
-   ACL verification before launch without a writable-path time-of-check race.
+   ACL verification before launch without a writable-path time-of-check race,
+   plus exact loaded DLL/dependency identity and resolution evidence.
 4. Reproducible signed artifacts, dependency/SBOM review, recovery drill, and
    independent review of the secret and authorization TCBs.
 5. Exact extension-envelope dispatch through the native host and authenticated
@@ -101,8 +119,10 @@ Before any real mainnet value is used, the Windows build must prove:
    inherit bit on its exact three received stdio handles as its first Windows
    application operation, and its repo-local grandchild test proves those exact
    objects do not propagate. Release evidence must still bind that behavior to
-   the exact signed image and intended supervisor. `COMPILED_RELEASE_POLICY`
-   remains `None`; coordination and the local negative test are not release
+   the exact signed image and intended supervisor. The explicit environment and
+   System32 current-directory policy is likewise repo-local and not atomic
+   directory identity or signed-artifact E2E evidence. `COMPILED_RELEASE_POLICY`
+   remains `None`; coordination and these local proofs are not release
    activation proof.
 6. Production provisioning and rotation for the implemented encrypted
    nonce/signing/broadcast journal, backed by a real rollback-resistant anchor;

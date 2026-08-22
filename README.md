@@ -560,6 +560,18 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   프로세스에 적재된 같은 `platform-windows` crate instance와
   그 비공개 API를 따르는 Rust 호출에 한정됩니다. 임의의 foreign FFI,
   `std::process::Command`, 별도 프로세스나 별도 적재 사본의 생성까지 가로채지는 않습니다.
+- 제한 helper와 휴면 Key Agent 생성은 이제 같은 비공개 process-context 정책을
+  사용합니다. OS가 보고한 system-shared Windows root에서 `SystemRoot`와 `WINDIR`만
+  담은 고정 double-NUL Unicode environment를 만들고, 그 root 바로 아래의 검증된
+  `System32`를 명시적 current directory로 전달하므로 부모의 ambient environment와
+  current directory를 상속하지 않습니다. 제한 helper는 이 preflight를 parent-proof,
+  영구 profile, Job 작업 전에 끝내며, Key Agent도 inheritable-handle flight 획득 전에
+  끝냅니다. 두 경로 모두 `CreateProcessW` 직전에 thread impersonation 부재를 다시
+  확인합니다. 이 검증은 DOS 경로 문자열·root/System32 배치·directory/reparse 상태,
+  모든 조상의 경로 교체 권한과 Windows root/System32 자체의 내용 생성 권한 거부에
+  한정되며, directory handle을 유지하는 원자적
+  object-identity 증명이나 error mode/priority를 포함한 모든 Win32 process state 차단,
+  DLL/dependency identity 증거는 아닙니다.
 - Key Agent 자식은 생성 시 inheritable stdio 핸들을 받지만, 실행 파일의 첫 Windows
   application 동작이 정확히 세 핸들을 모두 변경 전에 검사합니다. stdin/stdout은 서로
   다른 `PIPE`, stderr는 제3의 `CHAR` 객체여야 하고, 세 핸들은 서로 같은 커널 객체가
@@ -575,9 +587,10 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 - Key Agent 실행 준비 경계는 정확한 실행 파일, 비공개 파이프 3개와 2프로세스
   Windows Job을 한 번의 생성에 묶지만, 프로세스는 검증 후에도 정지된 채이며
   시작하거나 재개하는 API가 없습니다.
-- Key Agent 전용 LPAC·저장소 ACL, 최소 환경/작업 폴더, Broker 시작 nonce 교환과
-  보호 설정 lease 연결이 아직 없습니다.
+- Key Agent 전용 LPAC·저장소 ACL, Broker 시작 nonce 교환과 보호 설정 lease 연결이
+  아직 없습니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
+- 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.
 - 최종 오프라인 검증도 후보 번들과 분리된 7파일 도구셋, 독립적으로 기록한 집계 해시,
   쓰기 방지 상태와 `[1-9][0-9]{0,31}` 형식의 rollback-resistant offline checkpoint에서

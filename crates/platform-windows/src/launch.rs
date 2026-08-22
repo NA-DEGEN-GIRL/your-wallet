@@ -484,18 +484,14 @@ mod sys {
     use core::mem::size_of;
     use core::ptr;
     use std::collections::HashSet;
-    use std::ffi::OsString;
-    use std::fs;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use std::os::windows::fs::MetadataExt;
+    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, BorrowedHandle};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED,
-        ERROR_ALREADY_EXISTS, GENERIC_READ, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, GENERIC_READ,
+        GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -506,10 +502,7 @@ mod sys {
         TokenIsAppContainer,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING, WRITE_DAC, WRITE_OWNER,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
     };
     use windows::Win32::System::JobObjects::{
         CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -517,7 +510,6 @@ mod sys {
         JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     };
     use windows::Win32::System::Pipes::GetNamedPipeInfo;
-    use windows::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
     use windows::Win32::System::Threading::{
         CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
@@ -542,6 +534,9 @@ mod sys {
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
+    use crate::restricted_process_context::{
+        RestrictedProcessContext, RestrictedProcessContextError,
+    };
 
     const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
     const APPROVAL_PROFILE_DISPLAY_NAME: &str = "Your Wallet approval frontend";
@@ -553,7 +548,6 @@ mod sys {
         "Persistent no-network LPAC identity for Your Wallet secret input";
     const ATTRIBUTE_COUNT: u32 = 6;
     const CAPABILITY_COUNT: u32 = 0;
-    const MAX_SYSTEM_PATH_UNITS: usize = 32_768;
     const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
     const MAX_INHERITABLE_LAUNCH_WAIT: Duration = Duration::from_secs(5);
     const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
@@ -981,107 +975,14 @@ mod sys {
             .collect()
     }
 
-    fn windows_directory() -> Result<PathBuf, LaunchError> {
-        system_path(GetWindowsDirectoryW)
-    }
-
-    fn system_directory() -> Result<PathBuf, LaunchError> {
-        system_path(GetSystemDirectoryW)
-    }
-
-    fn system_path(getter: unsafe fn(Option<&mut [u16]>) -> u32) -> Result<PathBuf, LaunchError> {
-        let mut buffer = vec![0_u16; MAX_SYSTEM_PATH_UNITS];
-        // SAFETY: the writable buffer is valid for the complete call. Both
-        // accepted getters have identical contracts and return a UTF-16 length.
-        let length = unsafe { getter(Some(&mut buffer)) };
-        let length = usize::try_from(length).map_err(|_| LaunchError::OperatingSystem)?;
-        if length == 0 || length >= buffer.len() || buffer[..length].contains(&0) {
-            return Err(LaunchError::OperatingSystem);
-        }
-        let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
-        validate_secure_working_directory(&path)?;
-        Ok(path)
-    }
-
-    fn validate_secure_working_directory(path: &Path) -> Result<(), LaunchError> {
-        if !path.is_absolute()
-            || !fs::metadata(path)
-                .map_err(|_| LaunchError::UnsafeWorkingDirectory)?
-                .is_dir()
-        {
-            return Err(LaunchError::UnsafeWorkingDirectory);
-        }
-        for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            reject_reparse_directory(ancestor)?;
-            reject_writable_directory(ancestor)?;
-        }
-        Ok(())
-    }
-
-    fn reject_reparse_directory(path: &Path) -> Result<(), LaunchError> {
-        let metadata =
-            fs::symlink_metadata(path).map_err(|_| LaunchError::UnsafeWorkingDirectory)?;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-            return Err(LaunchError::UnsafeWorkingDirectory);
-        }
-        Ok(())
-    }
-
-    fn reject_writable_directory(path: &Path) -> Result<(), LaunchError> {
-        let wide = wide_nul_path(path);
-        let dangerous_rights = [
-            FILE_ADD_FILE.0,
-            FILE_ADD_SUBDIRECTORY.0,
-            FILE_DELETE_CHILD.0,
-            DELETE.0,
-            WRITE_DAC.0,
-            WRITE_OWNER.0,
-        ];
-        for right in dangerous_rights {
-            // SAFETY: `wide` is NUL terminated. This opens an existing directory
-            // only to ask Windows whether the current token has a dangerous right.
-            let result = unsafe {
-                CreateFileW(
-                    PCWSTR(wide.as_ptr()),
-                    right,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                    None,
-                )
-            };
-            match result {
-                Ok(handle) => {
-                    // SAFETY: CreateFileW returned this owned handle.
-                    unsafe {
-                        let _ = CloseHandle(handle);
-                    }
-                    return Err(LaunchError::UnsafeWorkingDirectory);
-                }
-                Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {}
-                Err(_) => return Err(LaunchError::OperatingSystem),
+    const fn map_process_context_error(error: RestrictedProcessContextError) -> LaunchError {
+        match error {
+            RestrictedProcessContextError::OperatingSystem
+            | RestrictedProcessContextError::ThreadImpersonation => LaunchError::OperatingSystem,
+            RestrictedProcessContextError::UnsafeWorkingDirectory => {
+                LaunchError::UnsafeWorkingDirectory
             }
         }
-        Ok(())
-    }
-
-    fn minimal_environment_block(windows_root: &Path) -> Result<Vec<u16>, LaunchError> {
-        if !windows_root.is_absolute() {
-            return Err(LaunchError::UnsafeWorkingDirectory);
-        }
-        let value: Vec<u16> = windows_root.as_os_str().encode_wide().collect();
-        if value.is_empty() || value.contains(&0) {
-            return Err(LaunchError::OperatingSystem);
-        }
-        let mut block = Vec::with_capacity(value.len().saturating_mul(2).saturating_add(24));
-        for name in ["SystemRoot=", "WINDIR="] {
-            block.extend(name.encode_utf16());
-            block.extend_from_slice(&value);
-            block.push(0);
-        }
-        block.push(0);
-        Ok(block)
     }
 
     fn token_information(
@@ -1388,6 +1289,8 @@ mod sys {
         validate_live_handle(handles.input)?;
         validate_live_handle(handles.output)?;
         validate_live_handle(handles.error)?;
+        let process_context =
+            RestrictedProcessContext::prepare().map_err(map_process_context_error)?;
         let helper_file = helper.identity();
         let helper_manifest_digest = helper.manifest_digest();
         let originals = unique_raw_handles(handles);
@@ -1403,11 +1306,6 @@ mod sys {
             .encode_wide()
             .chain(core::iter::once(0))
             .collect();
-        let current_directory = system_directory()?;
-        let current_directory_wide = wide_nul_path(&current_directory);
-        let windows_root = windows_directory()?;
-        let environment = minimal_environment_block(&windows_root)?;
-
         let coordination_deadline = Instant::now()
             .checked_add(MAX_INHERITABLE_LAUNCH_WAIT)
             .ok_or(LaunchError::OperatingSystem)?;
@@ -1466,6 +1364,9 @@ mod sys {
         if Instant::now() >= coordination_deadline {
             return Err(LaunchError::OperatingSystem);
         }
+        process_context
+            .recheck_thread()
+            .map_err(map_process_context_error)?;
 
         let mut process_information = PROCESS_INFORMATION::default();
         // SAFETY: helper path is verified and NUL-terminated; startup and attribute
@@ -1478,8 +1379,8 @@ mod sys {
                     PCWSTR(application.as_ptr()),
                     None,
                     EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                    Some(environment.as_ptr().cast::<c_void>()),
-                    PCWSTR(current_directory_wide.as_ptr()),
+                    Some(process_context.environment().as_ptr().cast::<c_void>()),
+                    PCWSTR(process_context.current_directory().as_ptr()),
                     ptr::from_ref(&startup.StartupInfo),
                     &raw mut process_information,
                 )
@@ -1600,12 +1501,14 @@ mod sys {
 
     #[cfg(test)]
     pub(super) fn environment_for_test(root: &Path) -> Result<Vec<u16>, LaunchError> {
-        minimal_environment_block(root)
+        crate::restricted_process_context::environment_for_test(root)
+            .map_err(map_process_context_error)
     }
 
     #[cfg(test)]
     pub(super) fn validate_working_directory_for_test(path: &Path) -> Result<(), LaunchError> {
-        validate_secure_working_directory(path)
+        crate::restricted_process_context::validate_working_directory_for_test(path)
+            .map_err(map_process_context_error)
     }
 }
 
@@ -1807,8 +1710,21 @@ mod tests {
             parse_environment(&block)?,
             [r"SystemRoot=C:\Windows", r"WINDIR=C:\Windows"]
         );
-        assert!(!String::from_utf16(&block)?.contains("USERPROFILE"));
-        assert!(!String::from_utf16(&block)?.contains("TOKEN"));
+        let decoded = String::from_utf16(&block)?;
+        for ambient_name in [
+            "PATH",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "AUTHORIZATION",
+            "PASSWORD",
+            "SECRET",
+            "TOKEN",
+        ] {
+            assert!(!decoded.contains(ambient_name));
+        }
         Ok(())
     }
 

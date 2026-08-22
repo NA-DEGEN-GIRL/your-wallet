@@ -3823,14 +3823,28 @@ const exactImageVisibleFunctionNames = [
 ].map((match) => match.groups.name);
 const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction = withoutBottomTestModule(restrictedLauncher);
+const restrictedLauncherRelease = withoutCfgTestItems(
+  restrictedLauncherProduction,
+);
 requireInvariant(
   restrictedLauncher.includes("allows_helper_manifest") &&
     restrictedLauncher.includes("HelperManifestNotAllowed"),
   "restricted launcher must enforce the release-bound helper allowlist",
 );
 
-const keyAgentActivation = withoutBottomTestModule(
-  await text("crates/platform-windows/src/key_agent_activation.rs"),
+const keyAgentActivationSource = await text(
+  "crates/platform-windows/src/key_agent_activation.rs",
+);
+const keyAgentActivation = withoutBottomTestModule(keyAgentActivationSource);
+const keyAgentActivationRelease = withoutCfgTestItems(keyAgentActivation);
+const restrictedProcessContextSource = await text(
+  "crates/platform-windows/src/restricted_process_context.rs",
+);
+const restrictedProcessContext = withoutBottomTestModule(
+  restrictedProcessContextSource,
+);
+const restrictedProcessContextProduction = withoutCfgTestItems(
+  restrictedProcessContext,
 );
 const keyAgentRootJobSource = await text(
   "crates/platform-windows/src/key_agent_root_job.rs",
@@ -5104,6 +5118,284 @@ const keyAgentCreateProcess = rustFunctionBlock(
   keyAgentActivation,
   "create_suspended_debuggee_process",
 );
+const compactRust = (source) => rustLexicalCode(source).replace(/\s+/gu, "");
+const restrictedProcessContextDefinition = rustLexicalItemBlock(
+  restrictedProcessContextProduction,
+  /(?:^|\n)\s*pub\(crate\)\s+struct\s+RestrictedProcessContext\s*\{/u,
+);
+const systemProcessPathsDefinition = rustLexicalItemBlock(
+  restrictedProcessContextProduction,
+  /(?:^|\n)\s*struct\s+SystemProcessPaths\s*\{/u,
+);
+const restrictedProcessContextImplementation = rustLexicalItemBlock(
+  restrictedProcessContext,
+  /(?:^|\n)\s*impl\s+RestrictedProcessContext\s*\{/u,
+);
+const restrictedContextPublicMethods = [
+  ...rustLexicalCode(restrictedProcessContextImplementation).matchAll(
+    /\bpub\(crate\)\s+fn\s+(?<name>[A-Za-z_]\w*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
+const restrictedContextPrepare = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "prepare",
+);
+const restrictedContextKernelPrepare = rustFunctionBlock(
+  restrictedProcessContext,
+  "prepare_for_kernel_test",
+);
+const restrictedContextFromPaths = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "from_system_paths",
+);
+const prepareSystemProcessPaths = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "prepare_system_process_paths",
+);
+const querySystemPath = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "query_system_path",
+);
+const validateExistingReparseFreeDirectory = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "validate_existing_reparse_free_directory",
+);
+const rejectReplaceableAncestors = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "reject_replaceable_ancestors",
+);
+const rejectContentWritableDirectory = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "reject_content_writable_directory",
+);
+const plainAbsoluteDosPath = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "plain_absolute_dos_path",
+);
+const validateSystemDirectoryLayout = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "validate_system_directory_layout",
+);
+const restrictedContextOrdinalEq = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "ordinal_eq",
+);
+const rejectThreadImpersonation = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "reject_thread_impersonation",
+);
+const rejectReparseDirectory = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "reject_reparse_directory",
+);
+const rejectDangerousDirectoryRights = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "reject_dangerous_directory_rights",
+);
+const minimalRestrictedEnvironment = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "minimal_environment_block",
+);
+const wideNulRestrictedPath = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "wide_nul_path",
+);
+const restrictedContextRecheck = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "recheck_thread",
+);
+const restrictedContextEnvironmentAccessor = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "environment",
+);
+const restrictedContextDirectoryAccessor = rustFunctionBlock(
+  restrictedProcessContextProduction,
+  "current_directory",
+);
+const preparedKeyAgentProcessDefinition = rustLexicalItemBlock(
+  keyAgentActivationRelease,
+  /(?:^|\n)\s*struct\s+PreparedKeyAgentProcess\s*\{/u,
+);
+const prepareKeyAgentProcess = rustFunctionBlock(
+  keyAgentActivation,
+  "prepare_key_agent_process",
+);
+const prepareKeyAgentProcessRelease = rustFunctionBlock(
+  keyAgentActivationRelease,
+  "prepare_key_agent_process",
+);
+const restrictedContextConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/restricted_process_context.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bRestrictedProcessContext\b|\brestricted_process_context\s*::/u.test(
+        rustLexicalCode(file.source),
+      ),
+  )
+  .map((file) => file.path);
+const restrictedContextPrepareCallSites = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustCallSites(file.source, "RestrictedProcessContext::prepare").map(
+      (call) => ({ path: file.path, arguments: call.arguments }),
+    ),
+);
+const systemDirectoryApiInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    [
+      ...rustLexicalCode(file.source).matchAll(
+        /\b(?<api>GetSystemWindowsDirectoryW|GetSystemDirectoryW)\b/gu,
+      ),
+    ].map((match) => ({ path: file.path, api: match.groups.api })),
+);
+const forbiddenAmbientDirectoryApis = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    [
+      ...rustLexicalCode(file.source).matchAll(
+        /\b(?<api>GetWindowsDirectoryW|GetEnvironmentStrings[AW]?|GetCurrentDirectory[AW]?)\b/gu,
+      ),
+    ].map((match) => ({ path: file.path, api: match.groups.api })),
+);
+const prepareSystemPathQueries = rustCallSites(
+  prepareSystemProcessPaths,
+  "query_system_path",
+);
+const systemLayoutOrdinalCalls = rustCallSites(
+  validateSystemDirectoryLayout,
+  "ordinal_eq",
+);
+const compareStringOrdinalCalls = rustCallSites(
+  restrictedContextOrdinalEq,
+  "CompareStringOrdinal",
+);
+const openThreadTokenCalls = rustCallSites(
+  rejectThreadImpersonation,
+  "OpenThreadToken",
+);
+const dangerousDirectoryOpenCalls = rustCallSites(
+  rejectDangerousDirectoryRights,
+  "CreateFileW",
+);
+const replaceableAncestorPrepareCalls = rustCallSites(
+  restrictedContextPrepare,
+  "reject_replaceable_ancestors",
+);
+const protectedContentPrepareCalls = rustCallSites(
+  restrictedContextPrepare,
+  "reject_content_writable_directory",
+);
+const replacementRightsLeafCalls = rustCallSites(
+  rejectReplaceableAncestors,
+  "reject_dangerous_directory_rights",
+);
+const protectedContentRightsLeafCalls = rustCallSites(
+  rejectContentWritableDirectory,
+  "reject_dangerous_directory_rights",
+);
+const environmentNulPushes = rustCallSites(
+  minimalRestrictedEnvironment,
+  "push",
+);
+const restrictedLaunchCreateCalls = rustCallSites(
+  restrictedLaunchLeaf,
+  "create_process_with_explicit_handle_list",
+);
+const restrictedLaunchCompact = compactRust(restrictedLaunchLeaf);
+const restrictedLaunchContextPreparationOrder = [
+  "validate_live_handle(handles.input)?;",
+  "validate_live_handle(handles.output)?;",
+  "validate_live_handle(handles.error)?;",
+  "letprocess_context=RestrictedProcessContext::prepare().map_err(map_process_context_error)?;",
+  "lethelper_file=helper.identity();",
+  "lethelper_manifest_digest=helper.manifest_digest();",
+  "letoriginals=unique_raw_handles(handles);",
+  ".then(current_parent_proof_sources)",
+  "letprofile_sid=OwnedAppContainerSid::open_or_create(profile,role)?;",
+  "letjob=restricted_job()?;",
+  "letapplication:Vec<u16>=helper",
+  ".encode_wide()",
+  "letcoordination_deadline=Instant::now()",
+  "acquire_inheritable_handle_launch(coordination_deadline)",
+].map((marker) => restrictedLaunchCompact.indexOf(marker));
+const keyAgentCreateCalls = rustCallSites(
+  keyAgentCreateProcess,
+  "create_process_with_explicit_handle_list",
+);
+const restrictedLaunchCreateIndex = restrictedLaunchLeaf.indexOf(
+  ".create_process_with_explicit_handle_list(",
+);
+const restrictedLaunchFinalContextIndex = [
+  ...rustLexicalCode(restrictedLaunchLeaf).matchAll(
+    /\bprocess_context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
+  ),
+].at(-1)?.index ?? -1;
+const restrictedLaunchFinalContextGap = compactRust(
+  restrictedLaunchLeaf.slice(
+    restrictedLaunchFinalContextIndex,
+    restrictedLaunchCreateIndex,
+  ),
+);
+const keyAgentCreateIndex = keyAgentCreateProcess.indexOf(
+  ".create_process_with_explicit_handle_list(",
+);
+const keyAgentFinalContextIndex = [
+  ...rustLexicalCode(keyAgentCreateProcess).matchAll(
+    /\bprepared_process\s*\.\s*context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
+  ),
+].at(-1)?.index ?? -1;
+const keyAgentFinalContextGap = compactRust(
+  keyAgentCreateProcess.slice(keyAgentFinalContextIndex, keyAgentCreateIndex),
+);
+const restrictedContextKernelTest = rustFunctionBlock(
+  restrictedProcessContextSource,
+  "kernel_test_context_uses_exact_os_paths_and_two_name_environment",
+);
+const restrictedContextImpersonationTest = rustFunctionBlock(
+  restrictedProcessContextSource,
+  "impersonating_thread_cannot_prepare_or_recheck_context",
+);
+const restrictedContextImpersonationOrder = [
+  "ImpersonateSelf(SecurityImpersonation)?",
+  "letguard=RevertImpersonation",
+  "context.recheck_thread(),Err(RestrictedProcessContextError::ThreadImpersonation)",
+  "RestrictedProcessContext::prepare_for_kernel_test(),Err(RestrictedProcessContextError::ThreadImpersonation)",
+  "drop(guard)",
+  "reject_thread_impersonation_for_test(),Ok(())",
+  "context.recheck_thread(),Ok(())",
+].map((marker) => compactRust(restrictedContextImpersonationTest).indexOf(marker));
+const restrictedContextRightSetsTest = rustFunctionBlock(
+  restrictedProcessContextSource,
+  "ancestor_replacement_and_protected_content_right_sets_are_distinct",
+);
+const restrictedContextTraitTest = rustFunctionBlock(
+  restrictedProcessContextSource,
+  "process_context_is_thread_bound_non_clone_and_non_copy",
+);
+const restrictedEnvironmentBoundsTest = rustFunctionBlock(
+  restrictedProcessContextSource,
+  "environment_block_rejects_interior_nul_and_excess_length",
+);
+const restrictedEnvironmentAllowlistTest = rustFunctionBlock(
+  restrictedLauncher,
+  "environment_is_an_exact_allowlist_without_user_secrets",
+);
+const restrictedWorkingDirectoryTest = rustFunctionBlock(
+  restrictedLauncher,
+  "relative_and_user_writable_working_directories_are_rejected",
+);
+const keyAgentActivateForTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "activate_for_test",
+);
+const keyAgentSuccessfulKernelTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "successful_kernel_proof_detaches_with_one_verified_suspend_count",
+);
+const keyAgentProductionActivationForContext = rustFunctionBlock(
+  keyAgentActivationRelease,
+  "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+);
 const brokerCoordinatedCreate = rustFunctionBlock(
   releaseBrokerSupervisorProduction,
   "launch_broker_application_with_after_create",
@@ -5281,6 +5573,535 @@ const restrictedDeadlineChecks = [
 ].map((match) => match.index);
 const keyAgentFinalDeadlineCheck = keyAgentCreateProcess.indexOf(
   "if Instant::now() >= coordination_deadline",
+);
+const prepareSystemProcessPathOrder = [
+  "reject_thread_impersonation()?",
+  "query_system_path(GetSystemWindowsDirectoryW)?",
+  "query_system_path(GetSystemDirectoryW)?",
+  "validate_existing_reparse_free_directory(&windows_root)?",
+  "validate_existing_reparse_free_directory(&current_directory)?",
+  "validate_system_directory_layout(&windows_root, &current_directory)?",
+  "reject_thread_impersonation()?",
+  "Ok(SystemProcessPaths {",
+].map((marker, index) =>
+  prepareSystemProcessPaths.indexOf(
+    marker,
+    index === 6
+      ? prepareSystemProcessPaths.indexOf(marker) + marker.length
+      : undefined,
+  ),
+);
+const plainAbsoluteDosPathOrder = [
+  "encoded.contains(&u16::from(b'/'))",
+  ".split(|unit| *unit == u16::from(b'\\\\'))",
+  "part == [u16::from(b'.')]",
+  "part == [u16::from(b'.'), u16::from(b'.')]",
+  "Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))",
+  "Some(Component::RootDir)",
+  "components.all(|component| matches!(component, Component::Normal(_)))",
+].map((marker) => plainAbsoluteDosPath.indexOf(marker));
+const validateExistingDirectoryOrder = [
+  "!plain_absolute_dos_path(path)",
+  "fs::metadata(path)",
+  ".is_dir()",
+  "path.ancestors().collect::<Vec<_>>().into_iter().rev()",
+  "reject_reparse_directory(ancestor)?",
+].map((marker) => validateExistingReparseFreeDirectory.indexOf(marker));
+const restrictedEnvironmentOrder = [
+  "if !plain_absolute_dos_path(windows_root)",
+  "if value.is_empty() || value.contains(&0)",
+  ".checked_mul(2)",
+  ".checked_add(24)",
+  'for name in ["SystemRoot=", "WINDIR="]',
+  "block.extend(name.encode_utf16())",
+  "block.extend_from_slice(&value)",
+  "block.push(0)",
+  "block.push(0)",
+  "if block.len() > MAX_ENVIRONMENT_UNITS",
+  "Ok(block)",
+].map((marker, index) =>
+  minimalRestrictedEnvironment.indexOf(
+    marker,
+    index === 8
+      ? minimalRestrictedEnvironment.indexOf(marker) + marker.length
+      : undefined,
+  ),
+);
+requireInvariant(
+  (
+    rustLexicalCode(platformWindowsLib).match(
+      /#\s*\[\s*cfg\s*\(\s*windows\s*\)\s*\]\s*mod\s+restricted_process_context\s*;/gu,
+    ) ?? []
+  ).length === 1 &&
+    !/\bpub(?:\([^)]*\))?\s+mod\s+restricted_process_context\b/u.test(
+      rustLexicalCode(platformWindowsLib),
+    ) &&
+    !/\bpub(?:\([^)]*\))?\s+use\s+[^;]*\brestricted_process_context\b/u.test(
+      rustLexicalCode(platformWindowsLib),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(restrictedProcessContextDefinition)) ===
+      "pub(crate) struct RestrictedProcessContext { environment: Box<[u16]>, current_directory: Box<[u16]>, _same_thread: PhantomData<Rc<()>>, }" &&
+    normalizeRustFragment(rustLexicalCode(systemProcessPathsDefinition)) ===
+      "struct SystemProcessPaths { windows_root: PathBuf, current_directory: PathBuf, }" &&
+    JSON.stringify(restrictedContextPublicMethods) ===
+      JSON.stringify([
+        "prepare",
+        "prepare_for_kernel_test",
+        "environment",
+        "current_directory",
+        "recheck_thread",
+      ]) &&
+    normalizeRustFragment(
+      rustLexicalCode(restrictedContextEnvironmentAccessor),
+    ) ===
+      "pub(crate) fn environment(&self) -> &[u16] { &self.environment }" &&
+    normalizeRustFragment(rustLexicalCode(restrictedContextDirectoryAccessor)) ===
+      "pub(crate) fn current_directory(&self) -> &[u16] { &self.current_directory }" &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\(crate\)\s+struct\s+RestrictedProcessContext\b/u.test(
+      restrictedProcessContext,
+    ) &&
+    !/\bimpl\s+(?:Clone|Copy|Default)\s+for\s+RestrictedProcessContext\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    !/\bunsafe\s+impl\s+(?:Send|Sync)\s+for\s+RestrictedProcessContext\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    !/\bimpl(?:\s*<[^>{}]*>)?\s+[^{};\r\n]+\s+for\s+RestrictedProcessContext\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    ["Send", "Sync", "Clone", "Copy"].every((traitName) =>
+      restrictedContextTraitTest.includes(
+        `<RestrictedProcessContext as AmbiguousIf${traitName}<_>>::marker`,
+      ),
+    ) &&
+    !/\bimpl(?:\s*<[^>{}]*>)?\s+(?:AsRef|AsMut|Borrow|BorrowMut|Deref|DerefMut)\b[\s\S]{0,160}\bfor\s+RestrictedProcessContext\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    !/\bpub\(crate\)\s+fn\s+[A-Za-z_]\w*(?:raw|path|handle)[A-Za-z_]\w*\s*\(/u.test(
+      rustLexicalCode(restrictedProcessContextImplementation),
+    ) &&
+    JSON.stringify([...restrictedContextConsumers].sort()) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    restrictedContextPrepareCallSites.length === 2 &&
+    restrictedContextPrepareCallSites.every(
+      (call) => call.arguments.length === 0,
+    ) &&
+    JSON.stringify(
+      restrictedContextPrepareCallSites.map((call) => call.path).sort(),
+    ) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    !platformWindowsProductionFiles.some((file) =>
+      /\bRestrictedProcessContext\s+as\s+[A-Za-z_]\w*/u.test(
+        rustLexicalCode(file.source),
+      ),
+    ),
+  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two approved launchers",
+);
+requireInvariant(
+  normalizeRustFragment(rustLexicalCode(restrictedContextPrepare)) ===
+    "pub(crate) fn prepare() -> Result<Self, RestrictedProcessContextError> { let paths = prepare_system_process_paths()?; reject_replaceable_ancestors(&paths.windows_root)?; reject_replaceable_ancestors(&paths.current_directory)?; reject_content_writable_directory(&paths.windows_root)?; reject_content_writable_directory(&paths.current_directory)?; reject_thread_impersonation()?; Self::from_system_paths(&paths) }" &&
+    /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*pub\(crate\)\s+fn\s+prepare_for_kernel_test\s*\(\s*\)/u.test(
+      rustLexicalCode(restrictedProcessContext),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(restrictedContextKernelPrepare)) ===
+      "pub(crate) fn prepare_for_kernel_test() -> Result<Self, RestrictedProcessContextError> { let paths = prepare_system_process_paths()?; Self::from_system_paths(&paths) }" &&
+    !/\bprepare_for_kernel_test\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    !/\bprepare_with_directory_policy\b|\breject_(?:writable|dangerous|content|replaceable)[A-Za-z_]*\s*:\s*bool\b|\bif\s+reject_writable\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(restrictedContextFromPaths)) ===
+      "fn from_system_paths( paths: &SystemProcessPaths, ) -> Result<Self, RestrictedProcessContextError> { Ok(Self { environment: minimal_environment_block(&paths.windows_root)?.into_boxed_slice(), current_directory: wide_nul_path(&paths.current_directory).into_boxed_slice(), _same_thread: PhantomData, }) }" &&
+    normalizeRustFragment(rustLexicalCode(preparedKeyAgentProcessDefinition)) ===
+      "struct PreparedKeyAgentProcess { application: Vec<u16>, context: RestrictedProcessContext, }" &&
+    /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare_for_kernel_test\(\s*\)\s*;/u.test(
+      rustLexicalCode(prepareKeyAgentProcess),
+    ) &&
+    /#\s*\[\s*cfg\s*\(\s*not\s*\(\s*test\s*\)\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare\(\s*\)\s*;/u.test(
+      rustLexicalCode(prepareKeyAgentProcess),
+    ) &&
+    !/\bprepare_for_kernel_test\b/u.test(
+      rustLexicalCode(prepareKeyAgentProcessRelease),
+    ) &&
+    (prepareKeyAgentProcessRelease.match(
+      /\bRestrictedProcessContext::prepare\(\s*\)/gu,
+    ) ?? []).length === 1 &&
+    (keyAgentActivationRelease.match(/\bprepare_for_kernel_test\b/gu) ?? [])
+      .length === 0 &&
+    platformWindowsProductionFiles.every(
+      (file) =>
+        !/\bprepare_for_kernel_test\b/u.test(rustLexicalCode(file.source)),
+    ),
+  "production context preparation must always enforce the replacement-ancestor and protected-directory content gates while the narrower kernel-test bypass remains structurally cfg(test)-only",
+);
+requireInvariant(
+  systemDirectoryApiInventory.length === 4 &&
+    systemDirectoryApiInventory.every(
+      (entry) =>
+        entry.path ===
+        "crates/platform-windows/src/restricted_process_context.rs",
+    ) &&
+    systemDirectoryApiInventory.filter(
+      (entry) => entry.api === "GetSystemWindowsDirectoryW",
+    ).length === 2 &&
+    systemDirectoryApiInventory.filter(
+      (entry) => entry.api === "GetSystemDirectoryW",
+    ).length === 2 &&
+    !platformWindowsProductionFiles.some((file) =>
+      /\b(?:GetSystemWindowsDirectoryW|GetSystemDirectoryW)\s+as\s+[A-Za-z_]\w*/u.test(
+        rustLexicalCode(file.source),
+      ),
+    ) &&
+    forbiddenAmbientDirectoryApis.length === 0 &&
+    !/\bstd\s*::\s*env\b/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    !/\bstd\s*::\s*env\b/u.test(
+      rustLexicalCode(
+        `${restrictedLaunchLeaf}\n${prepareKeyAgentProcessRelease}\n${keyAgentCreateProcess}`,
+      ),
+    ) &&
+    prepareSystemPathQueries.length === 2 &&
+    prepareSystemPathQueries[0]?.arguments[0] ===
+      "GetSystemWindowsDirectoryW" &&
+    prepareSystemPathQueries[1]?.arguments[0] === "GetSystemDirectoryW" &&
+    prepareSystemPathQueries.every((call) => call.arguments.length === 1) &&
+    prepareSystemProcessPathOrder.every((position) => position !== -1) &&
+    prepareSystemProcessPathOrder
+      .slice(1)
+      .every(
+        (position, index) => position > prepareSystemProcessPathOrder[index],
+      ) &&
+    querySystemPath.includes(
+      "let mut buffer = vec![0_u16; MAX_SYSTEM_PATH_UNITS]",
+    ) &&
+    querySystemPath.includes("let length = unsafe { getter(Some(&mut buffer)) }") &&
+    querySystemPath.includes(
+      "if length == 0 || length >= buffer.len() || buffer[..length].contains(&0)",
+    ) &&
+    querySystemPath.includes(
+      "PathBuf::from(OsString::from_wide(&buffer[..length]))",
+    ),
+  "restricted child paths must use only the exact unaliased system Windows/System32 APIs and reject ambient environment/current-directory APIs",
+);
+requireInvariant(
+  plainAbsoluteDosPathOrder.every((position) => position !== -1) &&
+    plainAbsoluteDosPathOrder
+      .slice(1)
+      .every((position, index) => position > plainAbsoluteDosPathOrder[index]),
+  "restricted child paths must remain plain local absolute DOS paths without slash or dot-component ambiguity",
+);
+requireInvariant(
+    validateExistingDirectoryOrder.every((position) => position !== -1) &&
+    validateExistingDirectoryOrder
+      .slice(1)
+      .every(
+        (position, index) => position > validateExistingDirectoryOrder[index],
+      ) &&
+    rejectReparseDirectory.includes("fs::symlink_metadata(path)") &&
+    rejectReparseDirectory.includes(
+      "metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0",
+    ),
+  "restricted child paths must exist as directories and every ancestor must remain reparse-free",
+);
+requireInvariant(
+    normalizeRustFragment(rustLexicalCode(rejectReplaceableAncestors)) ===
+      "fn reject_replaceable_ancestors(path: &Path) -> Result<(), RestrictedProcessContextError> { for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() { reject_dangerous_directory_rights(ancestor, &PATH_REPLACEMENT_RIGHTS)?; } Ok(()) }" &&
+    normalizeRustFragment(
+      rustLexicalCode(rejectContentWritableDirectory),
+    ) ===
+      "fn reject_content_writable_directory(path: &Path) -> Result<(), RestrictedProcessContextError> { reject_dangerous_directory_rights(path, &PROTECTED_DIRECTORY_CONTENT_RIGHTS) }",
+  "restricted child path replacement and protected-directory content checks must remain separate exact leaves",
+);
+requireInvariant(
+    systemLayoutOrdinalCalls.length === 2 &&
+    JSON.stringify(systemLayoutOrdinalCalls[0]?.arguments) ===
+      JSON.stringify(["parent.as_os_str()", "windows_root.as_os_str()"]) &&
+    JSON.stringify(systemLayoutOrdinalCalls[1]?.arguments) ===
+      JSON.stringify(["leaf", 'OsStr::new("System32")']) &&
+    compactRust(validateSystemDirectoryLayout).indexOf(
+      "system_directory.parent()",
+    ) <
+      compactRust(validateSystemDirectoryLayout).indexOf(
+        "system_directory.file_name()",
+      ) &&
+    compareStringOrdinalCalls.length === 1 &&
+    JSON.stringify(compareStringOrdinalCalls[0]?.arguments) ===
+      JSON.stringify(["&first", "&second", "true"]) &&
+    restrictedContextOrdinalEq.includes("== CSTR_EQUAL"),
+  "restricted child System32 must remain the immediate ordinal-case-insensitive child of the OS-reported Windows directory",
+);
+requireInvariant(
+  /\bconst\s+PATH_REPLACEMENT_RIGHTS\s*:\s*\[u32;\s*4\]\s*=\s*\[\s*FILE_DELETE_CHILD\.0\s*,\s*DELETE\.0\s*,\s*WRITE_DAC\.0\s*,\s*WRITE_OWNER\.0\s*,?\s*\]\s*;/u.test(
+    rustLexicalCode(restrictedProcessContextProduction),
+  ) &&
+    /\bconst\s+PROTECTED_DIRECTORY_CONTENT_RIGHTS\s*:\s*\[u32;\s*2\]\s*=\s*\[\s*FILE_ADD_FILE\.0\s*,\s*FILE_ADD_SUBDIRECTORY\.0\s*,?\s*\]\s*;/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    replaceableAncestorPrepareCalls.length === 2 &&
+    JSON.stringify(
+      replaceableAncestorPrepareCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["&paths.windows_root"],
+        ["&paths.current_directory"],
+      ]) &&
+    protectedContentPrepareCalls.length === 2 &&
+    JSON.stringify(protectedContentPrepareCalls.map((call) => call.arguments)) ===
+      JSON.stringify([
+        ["&paths.windows_root"],
+        ["&paths.current_directory"],
+      ]) &&
+    replacementRightsLeafCalls.length === 1 &&
+    JSON.stringify(replacementRightsLeafCalls[0]?.arguments) ===
+      JSON.stringify(["ancestor", "&PATH_REPLACEMENT_RIGHTS"]) &&
+    protectedContentRightsLeafCalls.length === 1 &&
+    JSON.stringify(protectedContentRightsLeafCalls[0]?.arguments) ===
+      JSON.stringify(["path", "&PROTECTED_DIRECTORY_CONTENT_RIGHTS"]) &&
+    (rustLexicalCode(restrictedProcessContextProduction).match(
+      /\breject_dangerous_directory_rights\b/gu,
+    ) ?? []).length === 3 &&
+    dangerousDirectoryOpenCalls.length === 1 &&
+    JSON.stringify(dangerousDirectoryOpenCalls[0]?.arguments) ===
+      JSON.stringify([
+        "PCWSTR(wide.as_ptr())",
+        "right",
+        "FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE",
+        "None",
+        "OPEN_EXISTING",
+        "FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT",
+        "None",
+      ]) &&
+    rejectDangerousDirectoryRights.includes(
+      "for right in dangerous_rights.iter().copied()",
+    ) &&
+    rejectDangerousDirectoryRights.includes("let _ = CloseHandle(handle)") &&
+    rejectDangerousDirectoryRights.includes(
+      "return Err(RestrictedProcessContextError::UnsafeWorkingDirectory)",
+    ) &&
+    rejectDangerousDirectoryRights.includes(
+      "Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {}",
+    ) &&
+    rejectDangerousDirectoryRights.includes(
+      "Err(_) => return Err(RestrictedProcessContextError::OperatingSystem)",
+    ) &&
+    openThreadTokenCalls.length === 1 &&
+    JSON.stringify(openThreadTokenCalls[0]?.arguments) ===
+      JSON.stringify([
+        "GetCurrentThread()",
+        "TOKEN_QUERY",
+        "true",
+        "&raw mut token",
+      ]) &&
+    rejectThreadImpersonation.includes(
+      "token.is_invalid() || token == INVALID_HANDLE_VALUE",
+    ) &&
+    rejectThreadImpersonation.includes("let _ = CloseHandle(token)") &&
+    rejectThreadImpersonation.includes(
+      "Err(RestrictedProcessContextError::ThreadImpersonation)",
+    ) &&
+    rejectThreadImpersonation.includes(
+      "ERROR_NO_TOKEN.to_hresult() => Ok(())",
+    ) &&
+    restrictedContextRecheck.includes(
+      "!self.environment.ends_with(&[0, 0])",
+    ) &&
+    restrictedContextRecheck.includes(
+      "self.current_directory.last() != Some(&0)",
+    ) &&
+    restrictedContextRecheck.indexOf("reject_thread_impersonation()") >
+      restrictedContextRecheck.indexOf("self.current_directory.last()") &&
+    restrictedContextRightSetsTest.includes(
+      "PATH_REPLACEMENT_RIGHTS,\n            [FILE_DELETE_CHILD.0, DELETE.0, WRITE_DAC.0, WRITE_OWNER.0]",
+    ) &&
+    restrictedContextRightSetsTest.includes(
+      "PROTECTED_DIRECTORY_CONTENT_RIGHTS,\n            [FILE_ADD_FILE.0, FILE_ADD_SUBDIRECTORY.0]",
+    ) &&
+    restrictedContextRightSetsTest.includes(
+      ".all(|right| !PROTECTED_DIRECTORY_CONTENT_RIGHTS.contains(right))",
+    ),
+  "restricted child context must reject replacement rights on every ancestor, content rights only on Windows/System32, and thread impersonation without a release switch",
+);
+requireInvariant(
+  /\bconst\s+MAX_SYSTEM_PATH_UNITS\s*:\s*usize\s*=\s*32_768\s*;/u.test(
+    rustLexicalCode(restrictedProcessContextProduction),
+  ) &&
+    /\bconst\s+MAX_ENVIRONMENT_UNITS\s*:\s*usize\s*=\s*32_767\s*;/u.test(
+      rustLexicalCode(restrictedProcessContextProduction),
+    ) &&
+    restrictedEnvironmentOrder.every((position) => position !== -1) &&
+    restrictedEnvironmentOrder
+      .slice(1)
+      .every((position, index) => position > restrictedEnvironmentOrder[index]) &&
+    (minimalRestrictedEnvironment.match(/"SystemRoot="/gu) ?? []).length === 1 &&
+    (minimalRestrictedEnvironment.match(/"WINDIR="/gu) ?? []).length === 1 &&
+    environmentNulPushes.length === 2 &&
+    environmentNulPushes.every(
+      (call) =>
+        call.arguments.length === 1 && compactRust(call.arguments[0]) === "0",
+    ) &&
+    normalizeRustFragment(rustLexicalCode(wideNulRestrictedPath)) ===
+      "fn wide_nul_path(path: &Path) -> Vec<u16> { path.as_os_str() .encode_wide() .chain(core::iter::once(0)) .collect() }" &&
+    restrictedContextFromPaths.indexOf(
+      "minimal_environment_block(&paths.windows_root)",
+    ) <
+      restrictedContextFromPaths.indexOf(
+        "wide_nul_path(&paths.current_directory)",
+      ) &&
+    restrictedEnvironmentAllowlistTest.includes("block.ends_with(&[0, 0])") &&
+    restrictedEnvironmentAllowlistTest.includes(
+      '[r"SystemRoot=C:\\Windows", r"WINDIR=C:\\Windows"]',
+    ) &&
+    [
+      '"PATH"',
+      '"TEMP"',
+      '"TMP"',
+      '"USERPROFILE"',
+      '"HTTP_PROXY"',
+      '"HTTPS_PROXY"',
+      '"AUTHORIZATION"',
+      '"PASSWORD"',
+      '"SECRET"',
+      '"TOKEN"',
+    ].every((name) => restrictedEnvironmentAllowlistTest.includes(name)) &&
+    restrictedEnvironmentBoundsTest.includes(
+      "minimal_environment_block(&interior_nul)",
+    ) &&
+    restrictedEnvironmentBoundsTest.includes(
+      "let maximum_root_units = (MAX_ENVIRONMENT_UNITS - 21) / 2",
+    ) &&
+    restrictedEnvironmentBoundsTest.includes(
+      "Ok(MAX_ENVIRONMENT_UNITS)",
+    ) &&
+    restrictedEnvironmentBoundsTest.includes(
+      "minimal_environment_block(&oversized_root)",
+    ) &&
+    (restrictedEnvironmentBoundsTest.match(
+      /Err\(RestrictedProcessContextError::OperatingSystem\)/gu,
+    ) ?? []).length === 2,
+  "restricted child environment storage must remain the bounded SystemRoot-then-WINDIR double-NUL Unicode allowlist",
+);
+requireInvariant(
+  restrictedLaunchCompact.includes(
+    "validate_live_handle(handles.input)?;validate_live_handle(handles.output)?;validate_live_handle(handles.error)?;letprocess_context=RestrictedProcessContext::prepare().map_err(map_process_context_error)?;",
+  ) &&
+    restrictedLaunchContextPreparationOrder.every(
+      (position) => position !== -1,
+    ) &&
+    restrictedLaunchContextPreparationOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > restrictedLaunchContextPreparationOrder[index],
+      ) &&
+    keyAgentCreateInner.indexOf(
+      "let prepared_process = prepare_key_agent_process(artifact)?",
+    ) !== -1 &&
+    keyAgentCreateInner.indexOf(
+      "let prepared_process = prepare_key_agent_process(artifact)?",
+    ) <
+      keyAgentCreateInner.indexOf(
+        "acquire_inheritable_handle_launch(coordination_deadline)",
+      ) &&
+    compactRust(keyAgentCreateInner).includes(
+      "create_suspended_debuggee_process(&flight,&prepared_process,",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "prepared_process: &PreparedKeyAgentProcess",
+    ) &&
+    !/\bartifact\s*:\s*&VerifiedHelper\b/u.test(
+      rustLexicalCode(keyAgentCreateProcess),
+    ),
+  "restricted launch must prepare context immediately after initial stdio validation and before parent proof, LPAC profile, Job, application, deadline, or flight work; Key Agent must likewise prepare before its flight",
+);
+requireInvariant(
+  restrictedLaunchCreateCalls.length === 1 &&
+    restrictedLaunchCreateCalls[0]?.arguments.length === 7 &&
+    compactRust(restrictedLaunchCreateCalls[0]?.arguments[2] ?? "") ===
+      "EXTENDED_STARTUPINFO_PRESENT|CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT" &&
+    compactRust(restrictedLaunchCreateCalls[0]?.arguments[3] ?? "") ===
+      "Some(process_context.environment().as_ptr().cast::<c_void>())" &&
+    compactRust(restrictedLaunchCreateCalls[0]?.arguments[4] ?? "") ===
+      "PCWSTR(process_context.current_directory().as_ptr())" &&
+    keyAgentCreateCalls.length === 1 &&
+    keyAgentCreateCalls[0]?.arguments.length === 7 &&
+    compactRust(keyAgentCreateCalls[0]?.arguments[0] ?? "") ===
+      "PCWSTR(prepared_process.application.as_ptr())" &&
+    compactRust(keyAgentCreateCalls[0]?.arguments[2] ?? "") ===
+      "key_agent_creation_flags()" &&
+    compactRust(keyAgentCreateCalls[0]?.arguments[3] ?? "") ===
+      "Some(prepared_process.context.environment().as_ptr().cast::<c_void>(),)" &&
+    compactRust(keyAgentCreateCalls[0]?.arguments[4] ?? "") ===
+      "PCWSTR(prepared_process.context.current_directory().as_ptr())",
+  "both restricted launchers must pass the owned explicit Unicode environment and non-null current directory to the sole coordinated process-create call",
+);
+requireInvariant(
+  (restrictedLaunchLeaf.match(/\.recheck_thread\(\)/gu) ?? []).length === 1 &&
+    restrictedLaunchFinalContextGap ===
+      "process_context.recheck_thread().map_err(map_process_context_error)?;letmutprocess_information=PROCESS_INFORMATION::default();unsafe{flight" &&
+    (keyAgentCreateProcess.match(/\.recheck_thread\(\)/gu) ?? []).length === 1 &&
+    keyAgentFinalContextGap ===
+      "prepared_process.context.recheck_thread().map_err(|_|KeyAgentActivationError::ProcessContextPolicy)?;unsafe{flight",
+  "both restricted launchers must make the thread-context recheck the final operation immediately before the coordinated process-create call",
+);
+requireInvariant(
+  restrictedContextKernelTest.includes(
+    "RestrictedProcessContext::prepare_for_kernel_test()?",
+  ) &&
+    restrictedContextKernelTest.includes("environment.ends_with(&[0, 0])") &&
+    restrictedContextKernelTest.includes(
+      "environment.iter().filter(|unit| **unit == 0).count(), 3",
+    ) &&
+    restrictedContextKernelTest.includes(
+      "context.current_directory().last(), Some(&0)",
+    ) &&
+    restrictedContextKernelTest.includes("context.recheck_thread()") &&
+    restrictedContextImpersonationTest.includes(
+      "ImpersonateSelf(SecurityImpersonation)?",
+    ) &&
+    restrictedContextImpersonationTest.includes(
+      "RestrictedProcessContext::prepare_for_kernel_test()",
+    ) &&
+    (restrictedContextImpersonationTest.match(
+      /\bcontext\.recheck_thread\(\)/gu,
+    ) ?? []).length === 2 &&
+    restrictedContextImpersonationOrder.every((position) => position !== -1) &&
+    restrictedContextImpersonationOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > restrictedContextImpersonationOrder[index],
+      ) &&
+    restrictedContextImpersonationTest.includes(
+      "Err(RestrictedProcessContextError::ThreadImpersonation)",
+    ) &&
+    restrictedWorkingDirectoryTest.includes(
+      'validate_working_directory_for_test(Path::new("relative"))',
+    ) &&
+    restrictedWorkingDirectoryTest.includes(
+      "validate_working_directory_for_test(&current)",
+    ) &&
+    keyAgentSuccessfulKernelTest.includes(
+      "activate_for_test(attestation, artifact",
+    ) &&
+    keyAgentActivateForTest.includes(
+      "activate_preflighted_key_agent_on_fresh_worker(",
+    ) &&
+    keyAgentProductionActivationForContext.includes(
+      "sys::SuspendedDebuggee::create(",
+    ) &&
+    keyAgentCreateInner.includes("create_suspended_debuggee_process(") &&
+    keyAgentCreateProcess.includes(
+      ".create_process_with_explicit_handle_list(",
+    ),
+  "the cfg(test) context bypass must retain policy coverage and at least one kernel proof must still traverse the actual coordinated Key Agent creation path",
 );
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod inheritable_handle_launch;") &&
@@ -5999,6 +6820,10 @@ const keyAgentCreationFlags = rustFunctionBlock(
   keyAgentActivation,
   "key_agent_creation_flags",
 );
+const keyAgentCreationFlagsTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "process_creation_flags_are_exact_and_do_not_debug_descendants",
+);
 const verifyBoundRootProcess = rustFunctionBlock(
   keyAgentActivation,
   "verify_bound_root_process",
@@ -6037,11 +6862,11 @@ requireInvariant(
       "flight: &InheritableHandleLaunchFlight<'_>",
     ) &&
     keyAgentCreateProcess.includes("key_agent_creation_flags()") &&
-    keyAgentCreationFlags.includes("CREATE_SUSPENDED") &&
-    keyAgentCreationFlags.includes("DEBUG_PROCESS") &&
-    keyAgentCreationFlags.includes("DEBUG_ONLY_THIS_PROCESS") &&
-    keyAgentCreationFlags.includes("CREATE_NO_WINDOW") &&
-    keyAgentCreationFlags.includes("EXTENDED_STARTUPINFO_PRESENT") &&
+    normalizeRustFragment(rustLexicalCode(keyAgentCreationFlags)) ===
+      "fn key_agent_creation_flags() -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS { CREATE_SUSPENDED | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentCreationFlagsTest)).includes(
+      "let expected = (CREATE_SUSPENDED | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT) .0; assert_eq!(sys::key_agent_creation_flag_bits_for_test(), expected);",
+    ) &&
     verifyBoundRootProcess.includes(".recheck_supervisor_context()") &&
     verifyBoundRootProcess.includes(".contains_process(process)") &&
     verifyBoundRootProcess.includes("active_processes == 1") &&

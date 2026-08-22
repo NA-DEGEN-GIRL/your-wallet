@@ -54,8 +54,11 @@ Implemented:
   with cross-role, Other, and Key Agent artifacts rejected before release-policy
   evaluation or Win32 process/profile calls. Both profiles have zero capability
   SIDs, an explicit `ALL APPLICATION PACKAGES` opt-out, child-process
-  prohibition, an exact inherited named-pipe handle list, a two-variable system
-  environment, a non-user-writable/reparse-free System32 working directory,
+  prohibition, an exact inherited named-pipe handle list, a fixed two-variable
+  Unicode environment (`SystemRoot`/`WINDIR`) derived from the OS-reported
+  system-shared Windows root, a verified non-user-writable/reparse-free
+  System32 working directory, no parent ambient environment/current-directory
+  inheritance,
   suspended token verification, process mitigations, and a single-process
   kill-on-close job;
 - helper verification for absolute install-root containment, reparse traversal,
@@ -75,7 +78,17 @@ Implemented:
   kill-on-close root Job and private Key Agent pipes. One `STARTUPINFOEXW` call
   receives exactly three short-lived inherited stdio handles plus one Job-list
   handle; the short-lived handles are dropped before the worker returns. The
-  resulting crate-private aggregate uniquely owns the detached suspended
+  Restricted helpers prepare this context before parent-proof, persistent
+  profile, or Job work; the Key Agent prepares it before acquiring the
+  inheritable-handle flight. Both recheck that the creator thread is not
+  impersonating immediately before `CreateProcessW`. This context proof is
+  limited to DOS-path shape, Windows-root/System32 layout, directory/reparse
+  state, path-replacement rights on every ancestor, and content-creation rights
+  on the Windows root and System32 under the current primary token. It retains
+  no directory handle and is not an atomic object-identity proof; it also makes
+  no claim about error mode, priority, every other inherited Win32 process
+  setting, or DLL/dependency identity. The resulting crate-private aggregate
+  uniquely owns the detached suspended
   process, root Job, two parent endpoints, and internally timed one-shot startup
   lease. It is non-clone, `!Sync`, exposes no raw handle, has no resume API, and drop
   synchronously terminates the exact process tree. A distinct Key Agent LPAC,
@@ -119,8 +132,8 @@ Implemented:
   later application operation, and the repo-local grandchild test supplies an
   exact-object negative for that boundary. A standalone supervisor still needs
   independently proven single-instance/process topology; signed-install,
-  Native Host provenance, and artifact-bound execution of this bootstrap remain
-  absent.
+  Native Host provenance, artifact-bound execution of this bootstrap, exact
+  signed-artifact E2E, and DLL/dependency evidence remain absent.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -197,7 +210,7 @@ Stop-ship before any signing-capable release:
 1. Independently review the LPAC profile, security-capabilities and
    all-application-packages attributes, environment/current-directory policy,
    suspended token verification, and inherited-handle validation implemented in
-   `launch.rs`.
+   `restricted_process_context.rs` and `launch.rs`.
 2. Run negative network tests (TCP, UDP, DNS, loopback, private addresses, and
    inherited sockets) against the exact signed helpers.
 3. Run an artifact-bound child-side enumeration test proving that no handle
@@ -206,7 +219,9 @@ Stop-ship before any signing-capable release:
    do not propagate, but it is not evidence for the exact signed artifacts.
 4. Exercise path/reparse/ACL tests under the release installer identity and
    secure installed ACLs, including environments where symlink creation is
-   permitted.
+   permitted. Supply separate exact-artifact DLL/dependency loading and identity
+   evidence; the string/reparse/rights process-context validation is not an
+   atomic held-directory identity proof.
 5. Generate an immutable compiled release policy from independently signed test
    evidence and bind it to the exact artifact digest. The source currently sets
    `COMPILED_RELEASE_POLICY` to `None`. Bind the separate Broker transport suite

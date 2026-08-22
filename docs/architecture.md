@@ -356,6 +356,32 @@ restricted-launch entry points reject a manifest-derived Key Agent before
 release evaluation or Win32 side effects. Only this private activation module
 may create that role.
 
+Restricted helpers and the Key Agent share one private immutable process
+context. It derives a fixed double-NUL Unicode environment containing only
+`SystemRoot` and `WINDIR` from `GetSystemWindowsDirectoryW`, and supplies the
+`GetSystemDirectoryW` result only when it is a plain absolute DOS path whose
+parent is that system-shared Windows root and whose leaf is `System32`. The
+production policy rejects directory reparses, path-replacement/delete/ACL
+rights on every ancestor, and file/subdirectory creation rights on the Windows
+root and System32 under the current primary token. It deliberately does not
+treat the system-drive root's create-sibling-directory right alone as authority
+to replace the fixed Windows path. Both launch paths therefore pass an explicit
+environment and current directory instead of inheriting the parent's ambient
+values. Restricted helpers prepare the context before parent-proof discovery,
+persistent profile creation/open, or Job creation; the Key Agent prepares it
+before acquiring its inheritable-handle flight. Each retains the UTF-16 owner
+through `CreateProcessW` and rejects thread impersonation both during
+preparation and again immediately before that call.
+
+This is a string/layout, metadata/reparse, and current-token rights proof. It
+retains no directory handle and is not an atomic kernel-object identity proof;
+it does not establish DLL/dependency identity or resolution and makes no claim
+about inherited error mode, priority, or every other Win32 process setting. A
+`cfg(test)`-only Key Agent kernel-test constructor may skip the writable-right
+rejection so elevated developer tests can exercise process creation, while
+retaining the OS paths, shape/layout, reparse, and impersonation checks. That
+constructor is absent from the release path; production has no elevated bypass.
+
 The dormant supervisor composition now binds that exact-image proof to one
 preconfigured two-process kill-on-close root Job, one private request pipe, one
 separate private response pipe, and one internally timed one-shot startup nonce.
@@ -391,7 +417,8 @@ and grandchild negative test close only the stdio re-inheritance implementation
 gap; they are not evidence that the exact signed Key Agent image reached this
 step under the intended supervisor. Signed immutable installation, Native Host
 provenance, LPAC/profile and storage authorization, authenticated startup
-handshake, resume, and `COMPILED_RELEASE_POLICY` remain separate blockers.
+handshake, resume, exact signed-artifact E2E, DLL/dependency evidence, and
+`COMPILED_RELEASE_POLICY` remain separate blockers.
 
 **릴리스 차단 조건 (한국어):** crate 내부 coordinator는 독립 supervisor 단일
 인스턴스나 Native Host/Broker/Key Agent 프로세스 topology를 증명하지 않으며, 그
@@ -402,8 +429,8 @@ handshake, resume, and `COMPILED_RELEASE_POLICY` remain separate blockers.
 flags 0을 재검사하며, grandchild exact-object 음성 테스트도 있습니다. 그러나 이
 repo-local 증거는 intended supervisor 아래 exact signed image가 그 단계에 도달했음을
 입증하지 않습니다. signed immutable installation, Native Host provenance, LPAC/profile과
-storage authorization, 인증된 startup handshake, resume, `COMPILED_RELEASE_POLICY`는 계속
-별도 차단 조건입니다.
+storage authorization, 인증된 startup handshake, resume, exact signed-artifact E2E,
+DLL/dependency 증거, `COMPILED_RELEASE_POLICY`는 계속 별도 차단 조건입니다.
 
 This proof remains dormant. It must not be armed until the same capability is
 bound to the authenticated Broker protocol, a distinct Key Agent LPAC/profile,

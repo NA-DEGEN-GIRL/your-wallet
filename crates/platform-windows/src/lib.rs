@@ -119,6 +119,10 @@ pub mod pipe;
 // crate-private prevents arbitrary anti-phishing phrase provenance.
 #[allow(dead_code)]
 mod recovery_channel;
+// Restricted helpers and the Key Agent share one immutable, OS-derived launch
+// context so neither inherits the supervisor's environment or working folder.
+#[cfg(windows)]
+mod restricted_process_context;
 // The authenticated Secret Input arming seam is intentionally crate-private
 // and dormant until a Key Agent leaf adapter can mint live protected-state
 // authorization. Keeping it compiled and tested without exporting a raw UI
