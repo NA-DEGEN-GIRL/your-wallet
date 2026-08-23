@@ -5061,6 +5061,13 @@ const attestedArtifactAccessorConsumers = platformWindowsProductionFiles
       rustCallSites(file.source, "attested_artifact").length > 0,
   )
   .map((file) => file.path);
+const attestedArtifactAccessorTokenConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/attestation.rs" &&
+      /\battested_artifact\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
 );
@@ -5140,6 +5147,8 @@ requireInvariant(
     JSON.stringify(attestedArtifactDigestConsumers) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
     JSON.stringify(attestedArtifactAccessorConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+    JSON.stringify(attestedArtifactAccessorTokenConsumers) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
     platformWindowsProductionFiles
       .filter(
@@ -11836,12 +11845,30 @@ const preflightKeyAgentActivationConsumers = platformWindowsProductionFiles
       rustCallSites(file.source, "preflight_key_agent_activation").length > 0,
   )
   .map((file) => file.path);
+const preflightKeyAgentActivationTokenConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+        /\bpreflight_key_agent_activation\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
 const matchesPreflightReleaseIdentityConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
         file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
         rustCallSites(file.source, "matches_release_identity").length > 0,
+    )
+    .map((file) => file.path);
+const matchesPreflightReleaseIdentityTokenConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+        /\bmatches_release_identity\b/u.test(rustLexicalCode(file.source)),
     )
     .map((file) => file.path);
 requireInvariant(
@@ -11891,7 +11918,15 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/key_agent_install_adoption.rs",
       ]) &&
+    JSON.stringify(preflightKeyAgentActivationTokenConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
     JSON.stringify(matchesPreflightReleaseIdentityConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    JSON.stringify(matchesPreflightReleaseIdentityTokenConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_install_adoption.rs",
       ]) &&
