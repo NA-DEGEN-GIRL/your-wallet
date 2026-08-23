@@ -4,13 +4,16 @@
 mod windows;
 
 /// One request released only after the inherited Windows parent, child sandbox,
-/// proof handles, nonce exchange, and exact request hash are authenticated.
+/// proof handles, fresh child-local authoritative duplicates, nonce exchange,
+/// and exact request hash are authenticated.
 ///
 /// The private field prevents raw or legacy request bytes from reaching the UI
 /// without crossing the complete bootstrap boundary first.
 #[must_use = "the authenticated Approval request must be presented or rejected"]
 pub(super) struct AuthenticatedApprovalRequest {
     request: approval_ui::ApprovalRequest,
+    #[cfg(windows)]
+    parent_binding: windows::VerifiedParentChannelBinding,
 }
 
 impl core::fmt::Debug for AuthenticatedApprovalRequest {
@@ -21,12 +24,31 @@ impl core::fmt::Debug for AuthenticatedApprovalRequest {
 
 impl AuthenticatedApprovalRequest {
     #[cfg(windows)]
-    const fn new(request: approval_ui::ApprovalRequest) -> Self {
-        Self { request }
+    const fn new(
+        request: approval_ui::ApprovalRequest,
+        parent_binding: windows::VerifiedParentChannelBinding,
+    ) -> Self {
+        Self {
+            request,
+            parent_binding,
+        }
     }
 
     pub(super) const fn request(&self) -> &approval_ui::ApprovalRequest {
         &self.request
+    }
+
+    /// Revalidates that the exact retained parent process is still live before
+    /// the UI decision is released over the already-bound response channel.
+    pub(super) fn revalidate_parent(&self) -> Result<(), approval_ui::ApprovalError> {
+        #[cfg(windows)]
+        {
+            self.parent_binding.revalidate()
+        }
+        #[cfg(not(windows))]
+        {
+            Err(std::io::Error::other("Approval parent authentication failed").into())
+        }
     }
 }
 

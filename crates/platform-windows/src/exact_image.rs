@@ -18,20 +18,20 @@ use zeroize::Zeroize;
 use crate::helper::HelperError;
 use crate::helper::VerifiedHelper;
 
-/// Stable failures from the exact Broker image boundary.
+/// Stable failures from the exact held-helper image boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum ExactImageError {
-    /// The debug artifact was not derived as the exact Broker role.
-    #[error("held artifact is not the Broker")]
+    /// The held artifact was not derived for the expected helper role.
+    #[error("held artifact has the wrong helper role")]
     WrongRole,
-    /// The debug Broker artifact could not be held exactly.
-    #[error("Broker artifact could not be held")]
+    /// The exact helper artifact could not be held.
+    #[error("helper artifact could not be held")]
     ArtifactUnavailable,
     /// `FILE_ID_INFO` did not provide an unambiguous identity.
-    #[error("Broker artifact identity is unavailable")]
+    #[error("helper artifact identity is unavailable")]
     IdentityUnavailable,
-    /// The mapped executable was not the simultaneously held Broker file.
-    #[error("mapped Broker image did not match the held artifact")]
+    /// The mapped executable was not the simultaneously held helper file.
+    #[error("mapped helper image did not match the held artifact")]
     MappedImageMismatch,
 }
 
@@ -42,6 +42,7 @@ impl From<HelperError> for ExactImageError {
     }
 }
 
+/// Opaque exact file-object identity for one simultaneously held helper.
 #[derive(Eq, PartialEq)]
 pub(super) struct ExactFileIdentity {
     volume_serial_number: u64,
@@ -57,6 +58,17 @@ impl ExactFileIdentity {
             volume_serial_number,
             file_id,
         })
+    }
+
+    /// Encodes the volume followed by all 128 opaque file-ID bits.
+    ///
+    /// The volume is big-endian; the Windows-provided file-ID byte sequence is
+    /// retained exactly. Callers receive no field-level access to the identity.
+    pub(super) fn encode_be(&self) -> [u8; 24] {
+        let mut encoded = [0_u8; 24];
+        encoded[..8].copy_from_slice(&self.volume_serial_number.to_be_bytes());
+        encoded[8..].copy_from_slice(&self.file_id);
+        encoded
     }
 }
 
@@ -199,6 +211,14 @@ mod tests {
             ExactFileIdentity::new(7, [u8::MAX; 16]),
             Err(ExactImageError::IdentityUnavailable)
         );
+
+        let mut non_sentinel_near_zero = [0; 16];
+        non_sentinel_near_zero[0] = 1;
+        assert!(ExactFileIdentity::new(7, non_sentinel_near_zero).is_ok());
+
+        let mut non_sentinel_near_all_ones = [u8::MAX; 16];
+        non_sentinel_near_all_ones[15] ^= 1;
+        assert!(ExactFileIdentity::new(7, non_sentinel_near_all_ones).is_ok());
     }
 
     #[test]
@@ -213,6 +233,40 @@ mod tests {
             let mut mismatched_file_id = file_id;
             mismatched_file_id[index] ^= 1;
             assert_ne!(expected, ExactFileIdentity::new(7, mismatched_file_id)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_file_identity_encoding_binds_volume_and_file_id_low_mid_high_bytes()
+    -> Result<(), ExactImageError> {
+        let volume_serial_number = 0x0102_0304_0506_0708_u64;
+        let file_id = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1e, 0x1f,
+        ];
+        let encoded = ExactFileIdentity::new(volume_serial_number, file_id)?.encode_be();
+        assert_eq!(
+            encoded,
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            ]
+        );
+
+        let volume_mutated = ExactFileIdentity::new(volume_serial_number ^ 1, file_id)?.encode_be();
+        let mut expected_volume_mutation = encoded;
+        expected_volume_mutation[7] ^= 1;
+        assert_eq!(volume_mutated, expected_volume_mutation);
+
+        for index in [0_usize, 8, 15] {
+            let mut mutated_file_id = file_id;
+            mutated_file_id[index] ^= 1;
+            let mutation =
+                ExactFileIdentity::new(volume_serial_number, mutated_file_id)?.encode_be();
+            let mut expected_mutation = encoded;
+            expected_mutation[8 + index] ^= 1;
+            assert_eq!(mutation, expected_mutation);
         }
         Ok(())
     }

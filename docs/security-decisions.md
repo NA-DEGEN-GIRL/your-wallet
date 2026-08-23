@@ -341,10 +341,20 @@ overlapped client ends. While the child is suspended, the launcher remotely
 injects parent-process and parent-image proof handles with inheritance disabled.
 After sealing stdio, the child verifies the Approval LPAC and Job and requires
 the two stdio objects and two proof objects to be four pairwise-distinct exact
-objects with zero flags. Its pipe-peer check correlates only the client
-PID/session reported by both child-held server ends with the process-proof PID
-and child session; it is not an exact endpoint/process-object capability. The
-image check applies case-preserving exact normalized path-string equality: it
+objects with zero flags. Only fresh child-local duplicates become authoritative
+and remain retained through response write; the launcher-known original injected
+slots are never adopted and are left only for bounded process-exit cleanup. The
+child derives the authoritative parent PID and
+process-token `TokenSessionId` from the retained live exact parent process
+handle, then requires the parent-hello PID, both child-held server ends'
+client PID/session observations, and the child token session to match that
+identity. It retains and revalidates the binding across UI presentation and
+response write. While the process handle remains live, this prevents PID-reuse
+substitution and corroborates the pipe observations against the exact live
+parent process object. Transferable and duplicable pipe handles still prevent
+proof of exclusive endpoint ownership, endpoint topology/exclusivity, or
+per-write attribution. The image check applies case-preserving exact normalized
+path-string equality: it
 normalizes only an optional `\\?\` prefix and separators and compares the live
 process image path with a separate held file's final path; a casing mismatch
 fails closed. It then checks the held path's `\\key-agent.exe` suffix and version
@@ -380,7 +390,10 @@ release-path positive evidence covering case-sensitive directories and
 alternate path forms, live mapped exact-file-object proof, the complete
 DLL/dependency graph, immutable installation, a supervisor-held activation
 capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
-are zero production orchestration callers composing `launch_approval_frontend`
+is no positive kernel availability test proving that the zero-capability
+Approval LPAC can complete `OpenProcessToken(parent)`, so this handle-first
+success path remains release-unproven. The repository has zero production
+orchestration callers composing `launch_approval_frontend`
 through a verified response into signing and no positive signed-handshake E2E.
 `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default
 Approval builds still exit 78. No signed-artifact, topology, or release evidence
@@ -468,10 +481,19 @@ Before any real mainnet value is used, the Windows build must prove:
    only those two objects; the suspended child separately receives
    non-inheritable parent-process and parent-image proofs and validates all four
    objects as pairwise distinct with zero flags after its Approval
-   LPAC/Job/pipe-peer checks. The child holds synchronous server pipe ends and
-   the parent holds overlapped client ends, but the peer queries establish only
-   PID/session correlation, not an exact endpoint/process-object capability.
-   Likewise, the case-preserving exact normalized process/held-file path-string
+   LPAC/Job/pipe-peer checks. From the retained live exact parent process handle,
+   the child derives the authoritative PID and process-token `TokenSessionId`,
+   matches the parent hello, both server-end client PID/session observations,
+   and child token session, and retains and revalidates that binding through UI
+   and response write. This prevents PID-reuse substitution while the handle is
+   live and corroborates the pipe observations against that exact process
+   object. It still does not establish exclusive endpoint ownership,
+   topology/exclusivity, or per-write attribution because pipe handles are
+   transferable and duplicable. No positive kernel availability test yet proves
+   that the zero-capability Approval LPAC can complete
+   `OpenProcessToken(parent)`, so with the compiled policies still `None` this
+   success path remains release-unproven. Likewise, the case-preserving exact
+   normalized process/held-file path-string
    equality, held-path suffix/version metadata, held-handle-plus-path
    Authenticode validation, and cloned-held-handle SHA do not prove the mapped
    exact file object. The positive-sentinel test still covers
@@ -539,9 +561,15 @@ Before any real mainnet value is used, the Windows build must prove:
    Signed release evidence must cover case-sensitive directories and alternate
    path forms and prove the live mapped exact file object, complete
    DLL/dependency graph, immutable installation, a supervisor-held activation
-   capability, and exact endpoint topology/exclusivity; PID/session pipe
-   correlation and separate held-file
-   policy checks are insufficient. There are currently zero production callers
+   capability, and exact endpoint topology/exclusivity. The handle-first child
+   does corroborate both pipe PID/session observations against a retained live
+   exact parent process object and blocks PID-reuse substitution while that
+   handle is live, but transferable/duplicable pipe handles leave exclusive
+   endpoint ownership, topology/exclusivity, and per-write attribution
+   unproven. The absence of a zero-capability Approval LPAC positive kernel test
+   for `OpenProcessToken(parent)` leaves even that success path release-unproven,
+   and separate held-file policy checks remain insufficient for mapped-image
+   identity. There are currently zero production callers
    composing `launch_approval_frontend` through verified response into signing
    and no positive signed-handshake E2E. Raw/legacy silent failure and local wire
    tests do not provide signed-artifact, supervisor-topology, or release-

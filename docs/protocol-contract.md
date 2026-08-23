@@ -139,11 +139,21 @@ with preflags exactly `HANDLE_FLAG_INHERIT`, attempts both inherit-bit clears
 without rollback, and accepts only exact-zero readback for both. It then
 verifies the Approval LPAC, Job, and pipe peer and requires the sealed stdin,
 shared output pipe, process proof, and image proof to be four pairwise-distinct
-exact objects with zero flags. For the synchronous server ends held by the child
-(whose overlapped client ends remain with the parent),
-`GetNamedPipeClientProcessId` and `GetNamedPipeClientSessionId` correlate the
-reported client PID/session with the process-proof PID and child session. This
-is not an exact endpoint/process-object capability. The image check applies
+exact objects with zero flags. Only fresh child-local duplicates become
+authoritative and remain retained through response write; the launcher-known
+original injected slots are never adopted and are left only for bounded
+process-exit cleanup. The child derives the authoritative parent PID
+and process-token `TokenSessionId` from the retained live exact parent process
+handle. For the synchronous server ends held by the child (whose overlapped
+client ends remain with the parent), it requires the parent-hello PID, both
+`GetNamedPipeClientProcessId` and `GetNamedPipeClientSessionId` observations,
+and the child token session to match that exact process-derived identity. It
+retains and revalidates the binding across UI presentation and response write.
+While the retained process handle is live, this prevents PID-reuse substitution
+and corroborates the pipe observations against the exact live parent process
+object. It does not prove exclusive endpoint ownership, endpoint
+topology/exclusivity, or per-write attribution because pipe handles remain
+transferable and duplicable. The image check applies
 case-preserving exact normalized path-string equality: it normalizes only an
 optional `\\?\` prefix and separators and compares the live process image path
 with a separate held file's final path; a casing mismatch fails closed. It then
@@ -182,7 +192,10 @@ release-path positive evidence covering case-sensitive directories and
 alternate path forms, live mapped exact-file-object proof, the complete
 DLL/dependency graph, immutable installation, a supervisor-held activation
 capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
-are zero production orchestration callers composing `launch_approval_frontend`
+is no positive kernel availability test proving that the zero-capability
+Approval LPAC can complete `OpenProcessToken(parent)`, so the new handle-first
+success path remains release-unproven. The repository also has zero production
+orchestration callers composing `launch_approval_frontend`
 through a verified response into signing and no positive signed-handshake E2E.
 Raw or legacy direct Approval launch cannot complete the parent-auth exchange
 and fails silently. Default Approval builds still exit 78, and

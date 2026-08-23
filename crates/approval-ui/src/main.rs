@@ -5,15 +5,27 @@
 //! `runtime-entrypoint` feature only defines the child-side authenticated
 //! inherited-stream contract. On Windows the child first seals its exact
 //! inherited synchronous server pipe objects while the parent retains the
-//! overlapped client ends. It then checks LPAC and Job policy, correlates the two
-//! pipe-client PID/session reports with a live same-session process proof, and
-//! requires case-preserving exact normalized path-string equality between that
-//! process image path and a separate held file path before checking the held
-//! path's executable suffix and version metadata and performing held-handle-
-//! backed Authenticode and SHA-256 policy checks.
-//! PID/session correlation is not an exact endpoint/process-object
-//! capability, and path equality plus held-file checks do not prove that the
-//! live process was mapped from that exact file object. Signed release-path
+//! overlapped client ends. It then checks LPAC and Job policy and makes fresh
+//! child-local duplicates of the two injected proof handles. Only those copies
+//! become authoritative and remain retained through response write; the
+//! launcher-known original slots are never adopted and remain only for bounded
+//! process-exit cleanup. From the retained live exact parent process handle it
+//! derives the parent PID and process-token `TokenSessionId`, then requires the parent hello, both pipe
+//! server client PID/session observations, and the child token session to match.
+//! The binding remains owned across UI presentation and response write and is
+//! revalidated before release of the response. While that retained process
+//! handle remains live, this prevents PID-reuse substitution and corroborates
+//! the pipe observations against the exact live parent process object. Because
+//! pipe handles are transferable and duplicable, it does not prove exclusive
+//! endpoint ownership, endpoint topology/exclusivity, or per-write attribution.
+//! The child also requires case-preserving exact normalized path-string equality
+//! between the process image path and a separate held file path before checking
+//! the held path's executable suffix and version metadata and performing held-
+//! handle-backed Authenticode and SHA-256 policy checks. Path equality plus
+//! held-file checks do not prove that the live process was mapped from that exact
+//! file object. No positive kernel availability test yet proves that the
+//! zero-capability Approval LPAC can complete `OpenProcessToken(parent)`, so this
+//! success path remains release-unproven. Signed release-path
 //! positive evidence covering case-sensitive directories and alternate path
 //! forms, immutable installation, the complete DLL/dependency graph,
 //! supervisor-held activation capability, and endpoint topology/exclusivity
@@ -55,6 +67,7 @@ fn run_once() -> Result<(), approval_ui::ApprovalError> {
     let decision = approval_ui::Decision::Reject;
     #[cfg(not(all(feature = "runtime-contract-test-hook", debug_assertions)))]
     let decision = approval_ui::present(request)?;
+    authenticated.revalidate_parent()?;
     let response = approval_ui::ApprovalResponse::for_request(decision, request);
     let output = std::io::stdout();
     let mut writer = output.lock();

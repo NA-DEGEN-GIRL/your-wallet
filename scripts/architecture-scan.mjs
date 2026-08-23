@@ -6009,7 +6009,7 @@ const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction =
   withoutBottomTestModule(restrictedLauncher);
 const approvedRestrictedLauncherProductionBoundaryRawSha256 =
-  "4ae7c143e1ffbdba71bf51e435d5bb81f0177f1bcae0546bf876ca549b59242c";
+  "f3d6a9c3d51fc93a9809090837ce969c6acfd97db774e0d045ce530db2e30485";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -6147,7 +6147,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "77086c79f063be981eadf4bb5aaed090606734a92047a98b9a64806e46a46ada";
+  "be770810af7bdc7a08e2794017449da1e36ff9a28ec0ad1e8e385781a00097fb";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6506,7 +6506,7 @@ const approvedPlatformWindowsLocalDependencyCrateRootInventory = [
 const approvedPlatformWindowsLocalDependencySourceInventory = [
   {
     path: "crates/approval-wire/src/lib.rs",
-    sha256: "4f341589057aea14af86a39dd744c7c6d42d71e994e54b976c14b4d061fb8185",
+    sha256: "bb93c9941bf34b87650a9dd6214ed53d5d5f39acfe9b6a1aba9748985ea23e8b",
   },
   {
     path: "crates/secret-input-ui/src/bootstrap.rs",
@@ -9281,6 +9281,17 @@ const expectedDuplicateHandleInventory = [
   },
   {
     path: "crates/platform-windows/src/launch.rs",
+    sourceProcess: "current_process",
+    sourceHandle: "current_process",
+    targetProcess: "current_process",
+    targetHandle: "&raw mut process",
+    desiredAccess:
+      "(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/launch.rs",
     sourceProcess: "GetCurrentProcess()",
     sourceHandle: "source",
     targetProcess: "child_process",
@@ -10787,8 +10798,6 @@ const launchCurrentParentProofSources = rustFunctionBlockAtDepth(
   "current_parent_proof_sources",
   1,
 );
-const approvedLaunchCurrentParentProofSourcesSha256 =
-  "88bf116fd032a2277cc58dc3900dbe4dc64c206384deff2f3c9fb8e9d17b0764";
 const launchParentSourceApiUsage = rustIdentifierUsageInventory(
   [
     {
@@ -10796,19 +10805,191 @@ const launchParentSourceApiUsage = rustIdentifierUsageInventory(
       source: launchCurrentParentProofSources,
     },
   ],
-  ["OpenProcess", "CreateFileW"],
+  [
+    "CompareObjectHandles",
+    "CreateFileW",
+    "DuplicateHandle",
+    "GetCurrentProcess",
+    "GetCurrentProcessId",
+    "GetHandleInformation",
+    "GetProcessId",
+  ],
 );
+const launchCurrentParentProofSourcesContract = (source) => {
+  const compact = compactRust(source);
+  return (
+    orderedRustMarkersAtDepth(source, [
+      { marker: "let current_process = unsafe { GetCurrentProcess() }", depth: 1 },
+      { marker: "let mut process = HANDLE::default()", depth: 1 },
+      { marker: "DuplicateHandle(", depth: 2 },
+      { marker: "if process.is_invalid()", depth: 1 },
+      { marker: "let process = OwnedWinHandle(process)", depth: 1 },
+      { marker: "let mut flags = u32::MAX", depth: 1 },
+      {
+        marker: "GetHandleInformation(process.raw(), &raw mut flags)",
+        depth: 2,
+      },
+      {
+        marker: "let process_id = unsafe { GetProcessId(process.raw()) }",
+        depth: 1,
+      },
+      {
+        marker: "let current_process_id = unsafe { GetCurrentProcessId() }",
+        depth: 1,
+      },
+      { marker: "let exact_current_process =", depth: 1 },
+      {
+        marker: "CompareObjectHandles(process.raw(), current_process)",
+        depth: 2,
+      },
+      { marker: "if flags != 0", depth: 1 },
+      { marker: "let executable = std::env::current_exe()", depth: 1 },
+      { marker: "CreateFileW(", depth: 2 },
+      { marker: "Ok(ParentProofSources {", depth: 1 },
+    ]) &&
+    JSON.stringify(
+      rustCallSites(source, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "current_process",
+          "current_process",
+          "current_process",
+          "&rawmutprocess",
+          "(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE).0",
+          "false",
+          "DUPLICATE_HANDLE_OPTIONS(0)",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(source, "GetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process.raw()", "&rawmutflags"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "GetProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process.raw()"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "GetCurrentProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(source, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process.raw()", "current_process"]]) &&
+    rustCallSites(source, "OpenProcess").length === 0 &&
+    !/\breturn\s+Ok\s*\(/u.test(rustLexicalCode(source)) &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(rustLexicalCode(source)) &&
+    compact.includes(
+      "ifflags!=0||process_id==0||process_id!=current_process_id||!exact_current_process{returnErr(LaunchError::OperatingSystem);}",
+    ) &&
+    compact.includes(
+      "Ok(ParentProofSources{process,image,process_id,})",
+    )
+  );
+};
 const launchCurrentParentProofSourcesMutationProbes = [
-  launchCurrentParentProofSources
-    .replace("            OpenProcess(", "            (OpenProcess)(")
-    .replace(
-      "PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE",
-      "PROCESS_ALL_ACCESS",
-    ),
   launchCurrentParentProofSources.replace(
-    "        let process_id = unsafe { GetCurrentProcessId() };",
-    "        if alternate_path() { return parent_sources_unchecked(); }\n        let process_id = unsafe { GetCurrentProcessId() };",
+    "(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+    "PROCESS_ALL_ACCESS.0",
   ),
+  launchCurrentParentProofSources.replace(
+    "                false,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+    "                true,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  launchCurrentParentProofSources.replace(
+    "                DUPLICATE_HANDLE_OPTIONS(0),",
+    "                DUPLICATE_SAME_ACCESS,",
+  ),
+  launchCurrentParentProofSources.replace(
+    "unsafe { CompareObjectHandles(process.raw(), current_process) }.as_bool()",
+    "true",
+  ),
+  launchCurrentParentProofSources.replace("        if flags != 0", "        if false"),
+  launchCurrentParentProofSources.replace(
+    "            || process_id != current_process_id",
+    "            || false",
+  ),
+  withVacuousRustEarlyOk(
+    launchCurrentParentProofSources,
+    "current_parent_proof_sources",
+    "Ok(parent_sources_unchecked())",
+  ),
+];
+const launchParentProofKernelTestContract = (production, fullSource) => {
+  let helper;
+  let kernelTest;
+  try {
+    helper = rustFunctionBlockAtDepth(
+      production,
+      "verify_current_parent_proof_for_test",
+      1,
+    );
+    kernelTest = rustFunctionBlockAtDepth(
+      fullSource,
+      "parent_process_proof_is_a_real_non_inheritable_exact_current_object",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const helperCompact = compactRust(helper);
+  return (
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        fullSource,
+        "parent_process_proof_is_a_real_non_inheritable_exact_current_object",
+        1,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    JSON.stringify(
+      rustCallSites(helper, "current_parent_proof_sources").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(helper, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["proof.process.raw()", "current_process"]]) &&
+    JSON.stringify(
+      rustCallSites(helper, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["proof.process.raw()", "0"]]) &&
+    helperCompact.includes(
+      "flags==0&&proof.process_id==current_process_id&&exact_current_process&&process_wait==WAIT_TIMEOUT&&proof.image.raw()!=proof.process.raw()",
+    ) &&
+    compactRust(kernelTest).includes(
+      "sys::verify_current_parent_proof_for_test()?",
+    ) &&
+    !hasVacuousRustTestEscape(kernelTest)
+  );
+};
+const launchParentProofKernelTestMutationProbes = [
+  {
+    production: restrictedLauncherProduction.replace(
+      "            && process_wait == WAIT_TIMEOUT",
+      "            && true",
+    ),
+    full: restrictedLauncher.replace(
+      "            && process_wait == WAIT_TIMEOUT",
+      "            && true",
+    ),
+  },
+  {
+    production: restrictedLauncherProduction,
+    full: restrictedLauncher.replace(
+      "        sys::verify_current_parent_proof_for_test()?;",
+      "        skip_current_parent_proof_test()?;",
+    ),
+  },
 ];
 const launchRequireNonInheritableProof = rustFunctionBlockAtDepth(
   restrictedLauncherProduction,
@@ -11193,28 +11374,22 @@ requireInvariant(
       rustLexicalCode(launchParentProofSourcesDefinition),
     ) ===
       "struct ParentProofSources { process: OwnedWinHandle, image: OwnedWinHandle, process_id: u32, }" &&
-    normalizedSourceSha256(rustLexicalCode(launchCurrentParentProofSources)) ===
-      approvedLaunchCurrentParentProofSourcesSha256 &&
+    launchCurrentParentProofSourcesContract(launchCurrentParentProofSources) &&
     launchCurrentParentProofSourcesMutationProbes.every(
-      (probe) =>
-        normalizedSourceSha256(rustLexicalCode(probe)) !==
-        approvedLaunchCurrentParentProofSourcesSha256,
+      (probe) => !launchCurrentParentProofSourcesContract(probe),
     ) &&
     launchParentSourceApiUsage.aliases.length === 0 &&
     launchParentSourceApiUsage.qualified.length === 0 &&
     launchParentSourceApiUsage.references.length === 0 &&
-    JSON.stringify(
-      rustCallSites(launchCurrentParentProofSources, "OpenProcess").map(
-        (call) => call.arguments.map(compactRust),
-      ),
-    ) ===
-      JSON.stringify([
-        [
-          "PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE",
-          "false",
-          "process_id",
-        ],
-      ]) &&
+    rustCallSites(launchCurrentParentProofSources, "OpenProcess").length === 0 &&
+    launchParentProofKernelTestContract(
+      restrictedLauncherProduction,
+      restrictedLauncher,
+    ) &&
+    launchParentProofKernelTestMutationProbes.every(
+      ({ production, full }) =>
+        !launchParentProofKernelTestContract(production, full),
+    ) &&
     JSON.stringify(
       rustCallSites(
         launchRequireNonInheritableProof,
@@ -19581,7 +19756,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/exact_image.rs",
     unsafeCount: 1,
-    sha256: "e02a90adc25ccad2b1ca03dde9cf1abbd269d0f0ef9eb0d9199ab1477dfea763",
+    sha256: "2c18949e3e29590ba41490fb42e0b455354f9a441752d673bf9a2a25e7347b91",
   },
   {
     path: "crates/platform-windows/src/helper.rs",
@@ -19620,8 +19795,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/launch.rs",
-    unsafeCount: 43,
-    sha256: "ad6cd71331936d49d46436342f55c8ef788d48fa2f7de1868b8a84064c753c28",
+    unsafeCount: 47,
+    sha256: "108bad146bf907ab8fdee6f29fb1e0f481cf64718837ae0381f8e3fb251f9748",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -22216,6 +22391,25 @@ requireInvariant(
 );
 
 const approvalRunOnce = rustTopLevelFunctionBlock(approvalMain, "run_once");
+const approvedApprovalCriticalLeafSha256 = {
+  runOnce: "8c61bece3a05906ceed86b45b672acca1334d28c7dfb6fc718dd67f06d2bb4e4",
+  bindChannelsToParent:
+    "cacf23d62f2f30c1d1fcd82f76dbff78e8bcc5936d89ce32b05679029aaecb8b",
+  duplicateUntrustedCandidate:
+    "487b1e53cc13271160f0ccbd78074abce91d332f7476120a3079e273b1f60a1e",
+  sealInheritedStdio:
+    "ccb8197cdfd81d9393652342bbe686e41270fd9532c3668b8c73b6411f89488e",
+  sealExactStdio:
+    "4a4ddd032e9da781572f4a8fc42975c306d4b7fd4a25776fbbfadf4e2d2d4f4e",
+  setBinaryStdio:
+    "5a087962f81fc1312ff451771ce0a8617ce495fb93940307853e703d942a8f11",
+  invalidHandle:
+    "573ba8ea915006221cd349853c7b228acf6f3a57e9c1ac6adc7682a6bc446396",
+  sameObject:
+    "e150b70e94941df5bb4c6e17a15d971a50241193919e1702ddbe383bc3107e75",
+  handleFlags:
+    "e702f496d0dd6a2c385b8bfd1ca0a2c04e7d8e57a7e709dda1588a706ebf0772",
+};
 const approvalAuthenticateInheritedParent = rustTopLevelFunctionBlock(
   approvalBootstrap,
   "authenticate_inherited_parent",
@@ -22224,11 +22418,6 @@ const approvalAuthenticatedRequestImpl = rustImplItemAtDepth(
   approvalBootstrap,
   "impl AuthenticatedApprovalRequest",
   0,
-);
-const approvalAuthenticatedRequestNew = rustFunctionBlockAtDepth(
-  approvalAuthenticatedRequestImpl,
-  "new",
-  1,
 );
 const approvalRuntimeMainFirstOperationContract = (source) => {
   const expected = `#[cfg(feature = "runtime-entrypoint")]
@@ -22282,22 +22471,86 @@ const approvalHandleFlags = rustTopLevelFunctionBlock(
   approvalBootstrapWindowsProduction,
   "handle_flags",
 );
+const approvalCriticalHandleLeafSha256 = {
+  sealInheritedStdio: normalizedSourceSha256(
+    rustLexicalCode(approvalSealInheritedStdio),
+  ),
+  sealExactStdio: normalizedSourceSha256(
+    rustLexicalCode(approvalSealExactStdio),
+  ),
+  setBinaryStdio: normalizedSourceSha256(
+    rustLexicalCode(approvalSetBinaryStdio),
+  ),
+  invalidHandle: normalizedSourceSha256(rustLexicalCode(approvalInvalidHandle)),
+  sameObject: normalizedSourceSha256(rustLexicalCode(approvalSameObject)),
+  handleFlags: normalizedSourceSha256(rustLexicalCode(approvalHandleFlags)),
+};
+const approvalCriticalHandleLeafMutationProbes = [
+  {
+    approved: approvedApprovalCriticalLeafSha256.sealInheritedStdio,
+    source: approvalSealInheritedStdio.replace(
+      "fn seal_inherited_approval_stdio() -> Result<SealedApprovalStdio, approval_ui::ApprovalError> {",
+      "fn seal_inherited_approval_stdio() -> Result<SealedApprovalStdio, approval_ui::ApprovalError> {\n    if std::hint::black_box(true) { return Ok(SealedApprovalStdio { input: HANDLE(1), output: HANDLE(2) }); }",
+    ),
+  },
+  {
+    approved: approvedApprovalCriticalLeafSha256.sealExactStdio,
+    source: approvalSealExactStdio.replace(
+      "fn seal_exact_approval_stdio(handles: [HANDLE; 3]) -> Result<(), approval_ui::ApprovalError> {",
+      "fn seal_exact_approval_stdio(handles: [HANDLE; 3]) -> Result<(), approval_ui::ApprovalError> {\n    if std::hint::black_box(true) { return Ok(()); }",
+    ),
+  },
+  {
+    approved: approvedApprovalCriticalLeafSha256.setBinaryStdio,
+    source: approvalSetBinaryStdio.replace(
+      "fn set_binary_stdio(sealed: &SealedApprovalStdio) -> Result<(), approval_ui::ApprovalError> {",
+      "fn set_binary_stdio(sealed: &SealedApprovalStdio) -> Result<(), approval_ui::ApprovalError> {\n    if std::hint::black_box(true) { return Ok(()); }",
+    ),
+  },
+  {
+    approved: approvedApprovalCriticalLeafSha256.invalidHandle,
+    source: approvalInvalidHandle.replace(
+      "fn invalid_handle(handle: HANDLE) -> bool {",
+      "fn invalid_handle(handle: HANDLE) -> bool {\n    if std::hint::black_box(true) { return false; }",
+    ),
+  },
+  {
+    approved: approvedApprovalCriticalLeafSha256.sameObject,
+    source: approvalSameObject.replace(
+      "fn same_object(first: HANDLE, second: HANDLE) -> bool {",
+      "fn same_object(first: HANDLE, second: HANDLE) -> bool {\n    if std::hint::black_box(true) { return false; }",
+    ),
+  },
+  {
+    approved: approvedApprovalCriticalLeafSha256.handleFlags,
+    source: approvalHandleFlags.replace(
+      "fn handle_flags(handle: HANDLE) -> Result<u32, approval_ui::ApprovalError> {",
+      "fn handle_flags(handle: HANDLE) -> Result<u32, approval_ui::ApprovalError> {\n    if std::hint::black_box(true) { return Ok(0); }",
+    ),
+  },
+];
 
 const approvalParentAuthenticationContract = (source) => {
-  let channelsDefinition;
+  let processObservationDefinition;
+  let bindingDefinition;
+  let bindingDebugImpl;
+  let bindingImpl;
+  let bindingRevalidate;
   let profileConst;
   let parentPolicyConst;
   let authenticated;
-  let verifyParentProcessId;
-  let verifySelfAndChannels;
+  let verifySelf;
   let pipeClient;
+  let verifyChannelObservations;
   let validateParentProofSet;
   let exactObjectsDistinct;
   let rejectThreadImpersonation;
   let deriveExpectedProfileSid;
   let verifyLpacToken;
   let verifyJob;
-  let verifyParentHandles;
+  let processSessionId;
+  let liveProcessObservation;
+  let bindChannelsToParent;
   let requireParentCreatedFirst;
   let verifyParentArtifact;
   let tokenDword;
@@ -22310,13 +22563,31 @@ const approvalParentAuthenticationContract = (source) => {
   let verifyAuthenticode;
   let signerCertificateHash;
   let duplicateUntrustedCandidate;
-  let adoptValidatedHandle;
   let sidImpl;
   let sidDrop;
   try {
-    channelsDefinition = rustTopLevelLexicalItemBlock(
+    processObservationDefinition = rustTopLevelLexicalItemBlock(
       source,
-      /struct\s+Channels\s*\{/u,
+      /struct\s+ProcessObservation\s*\{/u,
+    );
+    bindingDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+VerifiedParentChannelBinding\s*\{/u,
+    );
+    bindingDebugImpl = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for VerifiedParentChannelBinding",
+      0,
+    );
+    bindingImpl = rustImplItemAtDepth(
+      source,
+      "impl VerifiedParentChannelBinding",
+      0,
+    );
+    bindingRevalidate = rustFunctionBlockAtDepth(
+      bindingImpl,
+      "revalidate",
+      1,
     );
     profileConst = rustConstItemAtDepth(source, "PROFILE_V1_NAME", 0);
     parentPolicyConst = rustConstItemAtDepth(
@@ -22325,15 +22596,12 @@ const approvalParentAuthenticationContract = (source) => {
       0,
     );
     authenticated = rustTopLevelFunctionBlock(source, "authenticate_request");
-    verifyParentProcessId = rustTopLevelFunctionBlock(
-      source,
-      "verify_parent_process_id",
-    );
-    verifySelfAndChannels = rustTopLevelFunctionBlock(
-      source,
-      "verify_self_and_channels",
-    );
+    verifySelf = rustTopLevelFunctionBlock(source, "verify_self");
     pipeClient = rustTopLevelFunctionBlock(source, "pipe_client");
+    verifyChannelObservations = rustTopLevelFunctionBlock(
+      source,
+      "verify_channel_observations",
+    );
     validateParentProofSet = rustTopLevelFunctionBlock(
       source,
       "validate_parent_proof_handle_set",
@@ -22352,9 +22620,17 @@ const approvalParentAuthenticationContract = (source) => {
     );
     verifyLpacToken = rustTopLevelFunctionBlock(source, "verify_lpac_token");
     verifyJob = rustTopLevelFunctionBlock(source, "verify_job");
-    verifyParentHandles = rustTopLevelFunctionBlock(
+    processSessionId = rustTopLevelFunctionBlock(
       source,
-      "verify_parent_handles",
+      "process_session_id",
+    );
+    liveProcessObservation = rustTopLevelFunctionBlock(
+      source,
+      "live_process_observation",
+    );
+    bindChannelsToParent = rustTopLevelFunctionBlock(
+      source,
+      "bind_channels_to_parent",
     );
     requireParentCreatedFirst = rustTopLevelFunctionBlock(
       source,
@@ -22386,10 +22662,6 @@ const approvalParentAuthenticationContract = (source) => {
       source,
       "duplicate_untrusted_candidate",
     );
-    adoptValidatedHandle = rustTopLevelFunctionBlock(
-      source,
-      "adopt_validated_handle",
-    );
     sidImpl = rustImplItemAtDepth(source, "impl UnvalidatedProfileApiSid", 0);
     sidDrop = rustImplItemAtDepth(
       source,
@@ -22401,9 +22673,12 @@ const approvalParentAuthenticationContract = (source) => {
   }
   const code = rustLexicalCode(source);
   const authenticatedCompact = compactRust(authenticated);
-  const selfCompact = compactRust(verifySelfAndChannels);
+  const selfCompact = compactRust(verifySelf);
   const lpacCompact = compactRust(verifyLpacToken);
-  const parentCompact = compactRust(verifyParentHandles);
+  const bindingCompact = compactRust(bindingRevalidate);
+  const bindCode = rustLexicalCode(bindChannelsToParent);
+  const bindCompact = compactRust(bindChannelsToParent);
+  const observationCompact = compactRust(liveProcessObservation);
   const artifactCompact = compactRust(verifyParentArtifact);
   return (
     normalizeRustFragment(profileConst) ===
@@ -22414,14 +22689,24 @@ const approvalParentAuthenticationContract = (source) => {
     [...code.matchAll(/(?:^|\n)\s*const\s+COMPILED_PARENT_POLICY\b/gu)].filter(
       (match) => rustBraceDepthBefore(code, match.index) === 0,
     ).length === 1 &&
-    normalizeRustFragment(rustLexicalCode(channelsDefinition)) ===
-      "struct Channels { stdio: SealedApprovalStdio, parent_process_id: u32, parent_session_id: u32, }" &&
-    /#\s*\[\s*must_use\s*=/u.test(code) &&
-    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:Channels|SealedApprovalStdio|VerifiedParentHandles)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:Channels|SealedApprovalStdio|VerifiedParentHandles)\b/u.test(
+    normalizeRustFragment(rustLexicalCode(processObservationDefinition)) ===
+      "struct ProcessObservation { process_id: u32, session_id: u32, }" &&
+    /#\s*\[\s*derive\s*\(\s*Clone\s*,\s*Copy\s*,\s*Eq\s*,\s*PartialEq\s*\)\s*\]\s*struct\s+ProcessObservation\b/u.test(
       code,
     ) &&
+    normalizeRustFragment(rustLexicalCode(bindingDefinition)) ===
+      "struct VerifiedParentChannelBinding { stdio: SealedApprovalStdio, process: OwnedHandle, image: OwnedHandle, parent: ProcessObservation, }" &&
+    /#\s*\[\s*must_use\s*=\s*"the Approval runtime must retain its exact parent\/channel binding"\s*\]\s*pub\s*\(\s*super\s*\)\s+struct\s+VerifiedParentChannelBinding\b/u.test(
+      source,
+    ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:VerifiedParentChannelBinding|SealedApprovalStdio)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:VerifiedParentChannelBinding|SealedApprovalStdio)\b/u.test(
+      code,
+    ) &&
+    bindingDebugImpl.includes(
+      'formatter.write_str("VerifiedParentChannelBinding([REDACTED])")',
+    ) &&
     authenticatedCompact.startsWith(
-      "pub(super)fnauthenticate_request()->Result<AuthenticatedApprovalRequest,approval_ui::ApprovalError>{letsealed_stdio=seal_inherited_approval_stdio()?;letchannels=verify_self_and_channels(sealed_stdio)?;letSome(policy)=COMPILED_PARENT_POLICYelse{returnErr(native_failure(()));};",
+      "pub(super)fnauthenticate_request()->Result<AuthenticatedApprovalRequest,approval_ui::ApprovalError>{letsealed_stdio=seal_inherited_approval_stdio()?;verify_self(&sealed_stdio)?;letSome(policy)=COMPILED_PARENT_POLICYelse{returnErr(native_failure(()));};",
     ) &&
     orderedRustMarkersAtDepth(authenticated, [
       {
@@ -22429,7 +22714,7 @@ const approvalParentAuthenticationContract = (source) => {
         depth: 1,
       },
       {
-        marker: "let channels = verify_self_and_channels(sealed_stdio)?",
+        marker: "verify_self(&sealed_stdio)?",
         depth: 1,
       },
       { marker: "let Some(policy) = COMPILED_PARENT_POLICY else", depth: 1 },
@@ -22447,10 +22732,9 @@ const approvalParentAuthenticationContract = (source) => {
       },
       {
         marker:
-          "verify_parent_process_id(&parent_hello, channels.parent_process_id)?",
+          "let parent_binding = bind_channels_to_parent(&parent_hello, sealed_stdio, policy)?",
         depth: 1,
       },
-      { marker: "let parent_handles = verify_parent_handles(", depth: 1 },
       { marker: "getrandom::fill(&mut child_nonce)", depth: 1 },
       {
         marker: "let child_hello = ApprovalChildHello::new(child_nonce)?",
@@ -22475,15 +22759,33 @@ const approvalParentAuthenticationContract = (source) => {
           "let request = decode_parent_finish(&parent_hello, &child_hello, finish.as_slice())?",
         depth: 1,
       },
-      { marker: "drop(parent_handles)", depth: 1 },
-      { marker: "Ok(AuthenticatedApprovalRequest::new(request))", depth: 1 },
+      { marker: "parent_binding.revalidate()?", depth: 1 },
+      {
+        marker:
+          "Ok(AuthenticatedApprovalRequest::new(request, parent_binding))",
+        depth: 1,
+      },
     ]) &&
     rustCallSites(authenticated, "seal_inherited_approval_stdio").length ===
       1 &&
-    rustCallSites(authenticated, "verify_self_and_channels").length === 1 &&
+    JSON.stringify(
+      rustCallSites(authenticated, "verify_self").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&sealed_stdio"]]) &&
     rustCallSites(authenticated, "decode_parent_hello").length === 1 &&
-    rustCallSites(authenticated, "verify_parent_handles").length === 1 &&
+    JSON.stringify(
+      rustCallSites(authenticated, "bind_channels_to_parent").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["&parent_hello", "sealed_stdio", "policy"]]) &&
     rustCallSites(authenticated, "decode_parent_finish").length === 1 &&
+    JSON.stringify(
+      rustCallSites(authenticated, "revalidate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
     rustCallSites(authenticated, "read_request").length === 0 &&
     authenticatedCompact.includes(
       "letmaximum_finish=PARENT_FINISH_HEADER_BYTES.checked_add(usize::try_from(approval_ui::MAX_REQUEST_BYTES).map_err(native_failure)?).ok_or_else(||native_failure(()))?;",
@@ -22491,29 +22793,8 @@ const approvalParentAuthenticationContract = (source) => {
     authenticatedCompact.includes(
       "letread_bound=u64::try_from(maximum_finish).map_err(native_failure)?.checked_add(1).ok_or_else(||native_failure(()))?;",
     ) &&
-    selfCompact.startsWith(
-      "fnverify_self_and_channels(sealed:SealedApprovalStdio,)->Result<Channels,approval_ui::ApprovalError>{set_binary_stdio(&sealed)?;verify_lpac_token()?;verify_job()?;",
-    ) &&
-    JSON.stringify(
-      rustCallSites(verifySelfAndChannels, "pipe_client").map((call) =>
-        call.arguments.map(compactRust),
-      ),
-    ) === JSON.stringify([["input"], ["output"]]) &&
-    selfCompact.includes(
-      "ifinput_pid==0||input_pid!=output_pid||input_session!=output_session||input_session==u32::MAX{returnErr(native_failure(()));}",
-    ) &&
-    selfCompact.includes(
-      "ifparent_process_session!=input_session||child_session!=input_session{",
-    ) &&
-    JSON.stringify(
-      rustCallSites(verifySelfAndChannels, "ProcessIdToSessionId").map((call) =>
-        call.arguments.map(compactRust),
-      ),
-    ) ===
-      JSON.stringify([
-        ["input_pid", "&rawmutparent_process_session"],
-        ["std::process::id()", "&rawmutchild_session"],
-      ]) &&
+    selfCompact ===
+      "fnverify_self(sealed:&SealedApprovalStdio)->Result<(),approval_ui::ApprovalError>{set_binary_stdio(sealed)?;verify_lpac_token()?;verify_job()?;Ok(())}" &&
     JSON.stringify(
       rustCallSites(pipeClient, "GetNamedPipeClientProcessId").map((call) =>
         call.arguments.map(compactRust),
@@ -22524,9 +22805,65 @@ const approvalParentAuthenticationContract = (source) => {
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["handle", "&rawmutsession_id"]]) &&
-    compactRust(verifyParentProcessId).includes(
-      "(hello.process_id()==expected_process_id).then_some(()).ok_or_else(||native_failure(()))",
+    compactRust(pipeClient) ===
+      "fnpipe_client(handle:HANDLE)->Result<ProcessObservation,approval_ui::ApprovalError>{letmutprocess_id=0_u32;letmutsession_id=u32::MAX;unsafe{GetNamedPipeClientProcessId(handle,&rawmutprocess_id).map_err(native_failure)?;GetNamedPipeClientSessionId(handle,&rawmutsession_id).map_err(native_failure)?;}Ok(ProcessObservation{process_id,session_id,})}" &&
+    compactRust(verifyChannelObservations).includes(
+      "ifparent.process_id==0||parent.session_id==u32::MAX||hello_process_id!=parent.process_id||child_session_id!=parent.session_id||input_peer!=parent||output_peer!=parent{returnErr(native_failure(()));}Ok(())",
     ) &&
+    compactRust(verifyChannelObservations).startsWith(
+      "fnverify_channel_observations(hello_process_id:u32,parent:ProcessObservation,child_session_id:u32,input_peer:ProcessObservation,output_peer:ProcessObservation,)->Result<(),approval_ui::ApprovalError>{ifparent.process_id",
+    ) &&
+    JSON.stringify(
+      rustCallSites(processSessionId, "OpenProcessToken").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "TOKEN_QUERY", "&rawmuttoken"]]) &&
+    JSON.stringify(
+      rustCallSites(processSessionId, "token_dword").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&token", "TokenSessionId"]]) &&
+    compactRust(processSessionId).startsWith(
+      "fnprocess_session_id(process:HANDLE)->Result<u32,approval_ui::ApprovalError>{letmuttoken=HANDLE::default();unsafe{OpenProcessToken(process,TOKEN_QUERY,&rawmuttoken)}.map_err(native_failure)?;lettoken=unsafe{owned_handle(token.0asusizeasu64)?};token_dword(&token,TokenSessionId)}",
+    ) &&
+    rustCallSites(source, "ProcessIdToSessionId").length === 0 &&
+    JSON.stringify(
+      rustCallSites(liveProcessObservation, "GetProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process"]]) &&
+    JSON.stringify(
+      rustCallSites(liveProcessObservation, "WaitForSingleObject").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "0"], ["process", "0"]]) &&
+    JSON.stringify(
+      rustCallSites(liveProcessObservation, "process_session_id").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process"]]) &&
+    observationCompact ===
+      "fnlive_process_observation(process:HANDLE,)->Result<ProcessObservation,approval_ui::ApprovalError>{letprocess_id=unsafe{GetProcessId(process)};letprocess_wait=unsafe{WaitForSingleObject(process,0)};ifprocess_id==0||process_wait!=WAIT_TIMEOUT{returnErr(native_failure(()));}letsession_id=process_session_id(process)?;letprocess_wait_after_session=unsafe{WaitForSingleObject(process,0)};ifsession_id==u32::MAX||process_wait_after_session!=WAIT_TIMEOUT{returnErr(native_failure(()));}Ok(ProcessObservation{process_id,session_id,})}" &&
+    JSON.stringify(
+      rustCallSites(bindingRevalidate, "validate_parent_proof_handle_set").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "raw(&self.process)",
+          "raw(&self.image)",
+          "self.stdio.input",
+          "self.stdio.output",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(bindingRevalidate, "live_process_observation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["raw(&self.process)"]]) &&
+    bindingCompact ===
+      "pub(super)fnrevalidate(&self)->Result<(),approval_ui::ApprovalError>{validate_parent_proof_handle_set(raw(&self.process),raw(&self.image),self.stdio.input,self.stdio.output,)?;(live_process_observation(raw(&self.process))?==self.parent).then_some(()).ok_or_else(||native_failure(()))}" &&
     compactRust(deriveExpectedProfileSid).includes(
       "reject_thread_impersonation()?;letexpected=unsafe{DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr()))}.map(UnvalidatedProfileApiSid::new);reject_thread_impersonation()?;expected.map_err(native_failure)",
     ) &&
@@ -22577,17 +22914,28 @@ const approvalParentAuthenticationContract = (source) => {
     compactRust(verifyJob).includes(
       "basic.LimitFlags&JOB_OBJECT_LIMIT_ACTIVE_PROCESS==JOB_OBJECT_LIMIT(0)||basic.LimitFlags&JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE==JOB_OBJECT_LIMIT(0)||basic.ActiveProcessLimit!=1",
     ) &&
-    normalizeRustFragment(rustLexicalCode(validateParentProofSet)).includes(
-      "let handles = [stdin, stdout, process, image];",
-    ) &&
-    rustLexicalCode(validateParentProofSet).includes(
-      ".any(|handle| !matches!(handle_flags(*handle), Ok(0)))",
-    ) &&
-    rustLexicalCode(validateParentProofSet).includes(
-      "!exact_objects_are_pairwise_distinct(&handles)",
-    ) &&
-    rustLexicalCode(exactObjectsDistinct).includes(".skip(index + 1)") &&
-    orderedRustMarkersAtDepth(verifyParentHandles, [
+    compactRust(validateParentProofSet) ===
+      "fnvalidate_parent_proof_handle_set(process:HANDLE,image:HANDLE,stdin:HANDLE,stdout:HANDLE,)->Result<(),approval_ui::ApprovalError>{lethandles=[stdin,stdout,process,image];ifhandles.iter().copied().any(invalid_handle)||handles.iter().any(|handle|!matches!(handle_flags(*handle),Ok(0)))||!exact_objects_are_pairwise_distinct(&handles){returnErr(native_failure(()));}Ok(())}" &&
+    compactRust(exactObjectsDistinct) ===
+      "fnexact_objects_are_pairwise_distinct(handles:&[HANDLE])->bool{handles.iter().enumerate().all(|(index,first)|{handles.iter().skip(index+1).all(|second|!same_object(*first,*second))})}" &&
+    normalizedSourceSha256(bindCode) ===
+      approvedApprovalCriticalLeafSha256.bindChannelsToParent &&
+    [...bindCode.matchAll(/\bprocess_copy\b/gu)].length === 8 &&
+    [...bindCode.matchAll(/\bimage_copy\b/gu)].length === 5 &&
+    !/\b(?:owned_handle|from_raw_handle|CloseHandle)\b/u.test(bindCode) &&
+    orderedRustMarkersAtDepth(bindChannelsToParent, [
+      {
+        marker:
+          "let process_value = usize::try_from(hello.process_handle())",
+        depth: 1,
+      },
+      {
+        marker: "let image_value = usize::try_from(hello.image_handle())",
+        depth: 1,
+      },
+      { marker: "let stdin_value = stdio.input.0 as usize", depth: 1 },
+      { marker: "let stdout_value = stdio.output.0 as usize", depth: 1 },
+      { marker: "if process_value == stdin_value", depth: 1 },
       {
         marker: "let process_candidate = HANDLE(process_value as RawHandle)",
         depth: 1,
@@ -22598,7 +22946,7 @@ const approvalParentAuthenticationContract = (source) => {
       },
       {
         marker:
-          "validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?",
+          "validate_parent_proof_handle_set(\n        process_candidate,\n        image_candidate,",
         depth: 1,
       },
       {
@@ -22612,44 +22960,120 @@ const approvalParentAuthenticationContract = (source) => {
         depth: 1,
       },
       {
-        marker: "let process_id = unsafe { GetProcessId(raw(&process_copy)) }",
+        marker:
+          "validate_parent_proof_handle_set(\n        raw(&process_copy),\n        raw(&image_copy),\n        stdio.input,\n        stdio.output,\n    )?;\n    let parent =",
         depth: 1,
       },
       {
-        marker:
-          "let process_wait = unsafe { WaitForSingleObject(raw(&process_copy), 0) }",
+        marker: "let parent = live_process_observation(raw(&process_copy))?",
         depth: 1,
       },
       {
-        marker:
-          "if process_id != hello.process_id() || process_wait != WAIT_TIMEOUT",
+        marker: "let child_process = unsafe { GetCurrentProcess() }",
         depth: 1,
       },
-      { marker: "if session != expected_session", depth: 1 },
+      {
+        marker: "let child_session_id = process_session_id(child_process)?",
+        depth: 1,
+      },
+      { marker: "let input_peer = pipe_client(stdio.input)?", depth: 1 },
+      { marker: "let output_peer = pipe_client(stdio.output)?", depth: 1 },
+      { marker: "verify_channel_observations(", depth: 1 },
       { marker: "require_parent_created_first(&process_copy)?", depth: 1 },
       {
         marker: "verify_parent_artifact(&process_copy, &image_copy, policy)?",
         depth: 1,
       },
       {
-        marker: "if !same_object(process_candidate, raw(&process_copy))",
+        marker:
+          "validate_parent_proof_handle_set(\n        raw(&process_copy),\n        raw(&image_copy),\n        stdio.input,\n        stdio.output,\n    )?;\n    if live_process_observation",
         depth: 1,
       },
       {
-        marker:
-          "let process = unsafe { adopt_validated_handle(process_candidate) }",
+        marker: "if live_process_observation(raw(&process_copy))? != parent",
         depth: 1,
       },
-      {
-        marker:
-          "let image = unsafe { adopt_validated_handle(image_candidate) }",
-        depth: 1,
-      },
-      { marker: "Ok(VerifiedParentHandles {", depth: 1 },
+      { marker: "Ok(VerifiedParentChannelBinding {", depth: 1 },
     ]) &&
-    parentCompact.includes(
-      "if!same_object(process_candidate,raw(&process_copy))||!same_object(image_candidate,raw(&image_copy))||!matches!(handle_flags(process_candidate),Ok(0))||!matches!(handle_flags(image_candidate),Ok(0)){",
+    bindCompact.includes(
+      "ifprocess_value==stdin_value||process_value==stdout_value||image_value==stdin_value||image_value==stdout_value||process_value==image_value{returnErr(native_failure(()));}",
     ) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "validate_parent_proof_handle_set").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "process_candidate",
+          "image_candidate",
+          "stdio.input",
+          "stdio.output",
+        ],
+        [
+          "raw(&process_copy)",
+          "raw(&image_copy)",
+          "stdio.input",
+          "stdio.output",
+        ],
+        [
+          "raw(&process_copy)",
+          "raw(&image_copy)",
+          "stdio.input",
+          "stdio.output",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "duplicate_untrusted_candidate").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process_candidate"], ["image_candidate"]]) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "live_process_observation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["raw(&process_copy)"],
+        ["raw(&process_copy)"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "process_session_id").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["child_process"]]) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "pipe_client").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["stdio.input"], ["stdio.output"]]) &&
+    JSON.stringify(
+      rustCallSites(bindChannelsToParent, "verify_channel_observations").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "hello.process_id()",
+          "parent",
+          "child_session_id",
+          "input_peer",
+          "output_peer",
+        ],
+      ]) &&
+    rustCallSites(bindChannelsToParent, "same_object").length === 0 &&
+    bindCompact.includes(
+      "iflive_process_observation(raw(&process_copy))?!=parent{",
+    ) &&
+    bindCompact.includes(
+      "Ok(VerifiedParentChannelBinding{stdio,process:process_copy,image:image_copy,parent,})",
+    ) &&
+    rustCallSites(bindChannelsToParent, "adopt_validated_handle").length === 0 &&
+    rustCallSites(bindChannelsToParent, "from_raw_handle").length === 0 &&
+    rustCallSites(bindChannelsToParent, "CloseHandle").length === 0 &&
+    !/\badopt_validated_handle\b/u.test(rustLexicalCode(source)) &&
+    normalizedSourceSha256(rustLexicalCode(duplicateUntrustedCandidate)) ===
+      approvedApprovalCriticalLeafSha256.duplicateUntrustedCandidate &&
     JSON.stringify(
       rustCallSites(duplicateUntrustedCandidate, "DuplicateHandle").map(
         (call) => call.arguments.map(compactRust),
@@ -22666,8 +23090,9 @@ const approvalParentAuthenticationContract = (source) => {
           "DUPLICATE_SAME_ACCESS",
         ],
       ]) &&
-    compactRust(adoptValidatedHandle) ===
-      "unsafefnadopt_validated_handle(handle:HANDLE)->OwnedHandle{unsafe{OwnedHandle::from_raw_handle(handle.0)}}" &&
+    compactRust(duplicateUntrustedCandidate).includes(
+      "if!matches!(handle_flags(raw(&duplicate)),Ok(0)){returnErr(native_failure(()));}",
+    ) &&
     compactRust(requireParentCreatedFirst).includes(
       "parent_creation<=child_creation",
     ) &&
@@ -22762,8 +23187,12 @@ const approvalParentAuthenticationMutationProbes = [
     "    side_effect();\n    let sealed_stdio = seal_inherited_approval_stdio()?;",
   ),
   approvalBootstrapWindowsProduction.replace(
-    "    verify_parent_process_id(&parent_hello, channels.parent_process_id)?;\n",
-    "",
+    "    process: OwnedHandle,",
+    "    process: u32,",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    let parent_binding = bind_channels_to_parent(&parent_hello, sealed_stdio, policy)?;",
+    "    let parent_binding = bind_channels_unchecked(&parent_hello, sealed_stdio, policy)?;",
   ),
   approvalBootstrapWindowsProduction.replace(
     "    getrandom::fill(&mut child_nonce).map_err(native_failure)?;",
@@ -22779,8 +23208,64 @@ const approvalParentAuthenticationMutationProbes = [
     "        .checked_add(0)",
   ),
   approvalBootstrapWindowsProduction.replace(
-    "    drop(parent_handles);\n    Ok(AuthenticatedApprovalRequest::new(request))",
+    "    parent_binding.revalidate()?;",
+    "",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    Ok(AuthenticatedApprovalRequest::new(request, parent_binding))",
     "    Ok(AuthenticatedApprovalRequest::new(request))",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    token_dword(&token, TokenSessionId)",
+    "    token_dword(&token, TokenUser)",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }",
+    "    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if process_id == 0 || process_wait != WAIT_TIMEOUT {",
+    "    if process_id == 0 || false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if session_id == u32::MAX || process_wait_after_session != WAIT_TIMEOUT {",
+    "    if session_id == u32::MAX || false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || hello_process_id != parent.process_id",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || child_session_id != parent.session_id",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || input_peer != parent",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || output_peer != parent",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || parent.session_id == u32::MAX",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if parent.process_id == 0",
+    "    if false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    let input_peer = pipe_client(stdio.input)?;",
+    "    let input_peer = pipe_client(stdio.output)?;",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if process_value == stdin_value",
+    "    if false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if live_process_observation(raw(&process_copy))? != parent",
+    "    if false",
   ),
   approvalBootstrapWindowsProduction.replace(
     "        || !exact_objects_are_pairwise_distinct(&handles)",
@@ -22795,8 +23280,83 @@ const approvalParentAuthenticationMutationProbes = [
     "            true,\n            DUPLICATE_SAME_ACCESS,",
   ),
   approvalBootstrapWindowsProduction.replace(
-    "        || !same_object(image_candidate, raw(&image_copy))",
-    "        || false",
+    "        process: process_copy,",
+    "        process: unsafe { adopt_validated_handle(process_candidate) },",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        image: image_copy,",
+    "        image: unsafe { adopt_validated_handle(image_candidate) },",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    Ok(VerifiedParentChannelBinding {",
+    "    let _adopted = unsafe { OwnedHandle::from_raw_handle(process_candidate.0) };\n    Ok(VerifiedParentChannelBinding {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    Ok(VerifiedParentChannelBinding {",
+    "    unsafe { CloseHandle(process_candidate); }\n    Ok(VerifiedParentChannelBinding {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    Ok(VerifiedParentChannelBinding {",
+    "    let process_copy = unsafe { owned_handle(process_candidate.0 as usize as u64)? };\n    let image_copy = unsafe { owned_handle(image_candidate.0 as usize as u64)? };\n    Ok(VerifiedParentChannelBinding {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    Ok(VerifiedParentChannelBinding {",
+    "    let _ = unsafe { (CloseHandle)(process_candidate) };\n    Ok(VerifiedParentChannelBinding {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "fn duplicate_untrusted_candidate(\n    handle: HANDLE,\n) -> Result<OwnedHandle, approval_ui::ApprovalError> {\n    let mut duplicate = HANDLE::default();",
+    "fn duplicate_untrusted_candidate(\n    handle: HANDLE,\n) -> Result<OwnedHandle, approval_ui::ApprovalError> {\n    if std::hint::black_box(true) { return unsafe { owned_handle(handle.0 as usize as u64) }; }\n    let mut duplicate = HANDLE::default();",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    validate_parent_proof_handle_set(\n        raw(&process_copy),\n        raw(&image_copy),\n        stdio.input,\n        stdio.output,\n    )?;",
+    "",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if !matches!(handle_flags(raw(&duplicate)), Ok(0)) {",
+    "    if false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        validate_parent_proof_handle_set(\n            raw(&self.process),",
+    "        validate_parent_proof_handle_set(\n            raw(&self.image),",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        (live_process_observation(raw(&self.process))? == self.parent)",
+    "        true",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "verify_channel_observations",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "pipe_client",
+    "Ok(ProcessObservation { process_id: 1, session_id: 1 })",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "validate_parent_proof_handle_set",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "exact_objects_are_pairwise_distinct",
+    "true",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "live_process_observation",
+    "Ok(ProcessObservation { process_id: 1, session_id: 1 })",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    let session_id = process_session_id(process)?;",
+    "    let session_id = process_session_id(process)?;\n    if std::hint::black_box(true) { return Ok(ProcessObservation { process_id, session_id }); }",
+  ),
+  withVacuousRustEarlyOk(
+    approvalBootstrapWindowsProduction,
+    "revalidate",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        )?;\n        (live_process_observation(raw(&self.process))? == self.parent)",
+    "        )?;\n        if std::hint::black_box(true) { return Ok(()); }\n        (live_process_observation(raw(&self.process))? == self.parent)",
   ),
   approvalBootstrapWindowsProduction.replace(
     "    reject_thread_impersonation()?;\n    expected.map_err(native_failure)",
@@ -22820,6 +23380,193 @@ const approvalParentAuthenticationMutationProbes = [
   ),
 ];
 
+const approvalParentObservationTestsContract = (source) => {
+  let duplicateTest;
+  let channelTest;
+  let liveTest;
+  let sessionTest;
+  try {
+    duplicateTest = rustFunctionBlockAtDepth(
+      source,
+      "parent_proof_authority_is_a_fresh_exact_non_inheritable_duplicate",
+      1,
+    );
+    channelTest = rustFunctionBlockAtDepth(
+      source,
+      "channel_observations_must_match_the_exact_parent_process_object",
+      1,
+    );
+    liveTest = rustFunctionBlockAtDepth(
+      source,
+      "live_process_observation_is_stable_and_rejects_an_exited_object",
+      1,
+    );
+    sessionTest = rustFunctionBlockAtDepth(
+      source,
+      "process_session_is_derived_from_the_exact_process_token",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const tests = [duplicateTest, channelTest, liveTest, sessionTest];
+  const duplicateCompact = compactRust(duplicateTest);
+  const channelCompact = compactRust(channelTest);
+  const liveCompact = compactRust(liveTest);
+  const sessionCompact = compactRust(sessionTest);
+  return (
+    [
+      "parent_proof_authority_is_a_fresh_exact_non_inheritable_duplicate",
+      "channel_observations_must_match_the_exact_parent_process_object",
+      "live_process_observation_is_stable_and_rejects_an_exited_object",
+      "process_session_is_derived_from_the_exact_process_token",
+    ].every(
+      (name) =>
+        JSON.stringify(rustFunctionOuterAttributesAtDepth(source, name, 1)) ===
+        JSON.stringify(["#[test]"]),
+    ) &&
+    tests.every((test) => !hasVacuousRustTestEscape(test)) &&
+    JSON.stringify(
+      rustCallSites(duplicateTest, "duplicate_untrusted_candidate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["raw(&original)"]]) &&
+    JSON.stringify(
+      rustCallSites(duplicateTest, "CreateEventW").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["None", "true", "false", "None"]]) &&
+    duplicateCompact.includes("assert_ne!(raw(&original),raw(&duplicate))") &&
+    duplicateCompact.includes(
+      "assert!(same_object(raw(&original),raw(&duplicate)))",
+    ) &&
+    duplicateCompact.includes("assert_eq!(handle_flags(raw(&original))?,0)") &&
+    duplicateCompact.includes("assert_eq!(handle_flags(raw(&duplicate))?,0)") &&
+    JSON.stringify(
+      rustCallSites(channelTest, "verify_channel_observations").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["42", "parent", "7", "parent", "parent"],
+        ["hello", "proof", "child", "input", "output"],
+      ]) &&
+    [
+      "(0,parent,7,parent,parent)",
+      "(43,parent,7,parent,parent)",
+      "process_id:0,session_id:7",
+      "process_id:42,session_id:u32::MAX",
+      "(42,parent,8,parent,parent)",
+      "process_id:0,..parent",
+      "process_id:43,..parent",
+      "session_id:8,..parent",
+    ].every((marker) => channelCompact.includes(marker)) &&
+    channelCompact.split("process_id:0,..parent").length - 1 === 2 &&
+    channelCompact.split("process_id:43,..parent").length - 1 === 2 &&
+    channelCompact.split("session_id:8,..parent").length - 1 === 2 &&
+    channelCompact.includes(
+      "verify_channel_observations(hello,proof,child,input,output).is_err()",
+    ) &&
+    JSON.stringify(
+      rustCallSites(liveTest, "live_process_observation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["current_process"],
+        ["current_process"],
+        ["child_process"],
+        ["child_process"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(liveTest, "GetCurrentProcess").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(liveTest, "GetCurrentProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    orderedRustMarkersAtDepth(liveTest, [
+      { marker: "let first = live_process_observation(current_process)?", depth: 1 },
+      { marker: "let second = live_process_observation(current_process)?", depth: 1 },
+      { marker: "assert!(first == second)", depth: 1 },
+      { marker: "assert_eq!(first.process_id, current_process_id)", depth: 1 },
+      { marker: "let before_exit = live_process_observation(child_process)?", depth: 1 },
+      { marker: "assert_ne!(before_exit.process_id, current_process_id)", depth: 1 },
+      { marker: "child.child.terminate_and_reap()?", depth: 1 },
+      { marker: "assert!(live_process_observation(child_process).is_err())", depth: 1 },
+    ]) &&
+    JSON.stringify(
+      rustCallSites(sessionTest, "process_session_id").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["current_process"]]) &&
+    JSON.stringify(
+      rustCallSites(sessionTest, "GetCurrentProcess").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(sessionTest, "GetCurrentProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(sessionTest, "ProcessIdToSessionId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["current_process_id", "&rawmutpid_session"]]) &&
+    sessionCompact.includes("assert_ne!(token_session,u32::MAX)") &&
+    sessionCompact.includes("assert_eq!(token_session,pid_session)")
+  );
+};
+const approvalParentObservationTestMutationProbes = [
+  approvalBootstrapWindows.replace(
+    "        let duplicate = duplicate_untrusted_candidate(raw(&original))?;",
+    "        let duplicate = original;",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert_ne!(raw(&original), raw(&duplicate));",
+    "        assert_eq!(raw(&original), raw(&duplicate));",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert!(same_object(raw(&original), raw(&duplicate)));",
+    "        assert!(true);",
+  ),
+  approvalBootstrapWindows.replace("            (0, parent, 7, parent, parent),\n", ""),
+  approvalBootstrapWindows.replace(
+    "                    process_id: 0,\n                    ..parent",
+    "                    process_id: 42,\n                    ..parent",
+  ),
+  approvalBootstrapWindows.replace(
+    "verify_channel_observations(hello, proof, child, input, output).is_err()",
+    "verify_channel_observations(hello, proof, child, input, output).is_ok()",
+  ),
+  approvalBootstrapWindows.replace(
+    "        let second = live_process_observation(current_process)?;",
+    "        let second = first;",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert!(live_process_observation(child_process).is_err());",
+    "        assert!(true);",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert_eq!(first.process_id, current_process_id);",
+    "        assert_eq!(current_process_id, current_process_id);",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert_ne!(before_exit.process_id, current_process_id);",
+    "        assert_ne!(before_exit.process_id, before_exit.process_id);",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert_eq!(token_session, pid_session);",
+    "        assert_eq!(pid_session, pid_session);",
+  ),
+];
+
 const approvalFirstOperationEnvelope = (source) => {
   let runOnce;
   try {
@@ -22829,21 +23576,65 @@ const approvalFirstOperationEnvelope = (source) => {
   }
   const compact = compactRust(runOnce);
   const opening = compact.indexOf("{");
+  const releaseOrder = [
+    "let authenticated = bootstrap::authenticate_inherited_parent()?",
+    "let request = authenticated.request()",
+    "let decision = approval_ui::present(request)?",
+    "authenticated.revalidate_parent()?",
+    "let response = approval_ui::ApprovalResponse::for_request(decision, request)",
+    "let result = approval_ui::write_response(&mut writer, response)",
+    "drop(writer)",
+    "drop(authenticated)",
+    "\n    result\n",
+  ].map((marker) => runOnce.indexOf(marker));
   return (
     opening !== -1 &&
+    normalizedSourceSha256(rustLexicalCode(runOnce)) ===
+      approvedApprovalCriticalLeafSha256.runOnce &&
+    [...rustLexicalCode(runOnce).matchAll(/\bfor_request\b/gu)].length === 1 &&
+    [...rustLexicalCode(runOnce).matchAll(/\bwrite_response\b/gu)].length ===
+      1 &&
     compact
       .slice(opening + 1)
       .startsWith(
         "letauthenticated=bootstrap::authenticate_inherited_parent()?;letrequest=authenticated.request();",
       ) &&
-    compact.includes(
-      "letresult=approval_ui::write_response(&mutwriter,response);drop(writer);drop(authenticated);result}",
+    releaseOrder.every((position) => position !== -1) &&
+    releaseOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     JSON.stringify(
       rustCallSites(runOnce, "authenticate_inherited_parent").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "present").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["request"]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "revalidate_parent").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "for_request").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["decision", "request"]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "write_response").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&mutwriter", "response"]]) &&
+    runOnce.indexOf("let decision = approval_ui::present(request)?") <
+      runOnce.indexOf("authenticated.revalidate_parent()?") &&
+    runOnce.indexOf("authenticated.revalidate_parent()?") <
+      runOnce.indexOf(
+        "let response = approval_ui::ApprovalResponse::for_request(decision, request)",
+      ) &&
     rustCallSites(runOnce, "seal_inherited_approval_stdio").length === 0 &&
     rustCallSites(runOnce, "set_binary_stdio").length === 0 &&
     rustCallSites(runOnce, "read_request").length === 0 &&
@@ -22866,6 +23657,27 @@ const approvalFirstOperationMutationProbes = [
   approvalMain.replace(
     "    let request = authenticated.request();",
     "    let request = approval_ui::read_request(&mut std::io::stdin())?;",
+  ),
+  approvalMain.replace("    authenticated.revalidate_parent()?;\n", ""),
+  approvalMain.replace(
+    "    authenticated.revalidate_parent()?;\n    let response = approval_ui::ApprovalResponse::for_request(decision, request);",
+    "    let response = approval_ui::ApprovalResponse::for_request(decision, request);\n    authenticated.revalidate_parent()?;",
+  ),
+  approvalMain.replace(
+    "    authenticated.revalidate_parent()?;",
+    "    let early_response = approval_ui::ApprovalResponse::for_request(decision, request);\n    approval_ui::write_response(&mut std::io::stdout(), early_response)?;\n    authenticated.revalidate_parent()?;",
+  ),
+  approvalMain.replace(
+    "    authenticated.revalidate_parent()?;",
+    "    let early_response = (approval_ui::ApprovalResponse::for_request)(decision, request);\n    (approval_ui::write_response)(&mut std::io::stdout(), early_response)?;\n    authenticated.revalidate_parent()?;",
+  ),
+  approvalMain.replace(
+    "    let result = approval_ui::write_response(&mut writer, response);",
+    "    let result = approval_ui::write_response(&mut writer, response);\n    let late_response = (approval_ui::ApprovalResponse::for_request)(decision, request);\n    (approval_ui::write_response)(&mut writer, late_response)?;",
+  ),
+  approvalMain.replace(
+    "    let result = approval_ui::write_response(&mut writer, response);\n    drop(writer);\n    drop(authenticated);",
+    "    drop(authenticated);\n    let result = approval_ui::write_response(&mut writer, response);\n    drop(writer);",
   ),
   approvalMain.replace(
     "    drop(authenticated);",
@@ -23290,7 +24102,7 @@ const approvalFixtureContract = (source) => {
       "seal_exact_approval_stdio([raw(&event), output, output]).is_err()",
     ].every((marker) => rustLexicalCode(rejection).includes(marker)) &&
     compactRust(linearity) ===
-      "fnsealed_approval_stdio_is_thread_bound_non_clone_and_non_copy(){let_=<SealedApprovalStdioasAmbiguousIfSend<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfSync<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfClone<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfCopy<_>>::marker;let_=<ChannelsasAmbiguousIfSend<_>>::marker;let_=<ChannelsasAmbiguousIfSync<_>>::marker;let_=<ChannelsasAmbiguousIfClone<_>>::marker;let_=<ChannelsasAmbiguousIfCopy<_>>::marker;}" &&
+      "fnsealed_approval_stdio_is_thread_bound_non_clone_and_non_copy(){let_=<SealedApprovalStdioasAmbiguousIfSend<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfSync<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfClone<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfCopy<_>>::marker;let_=<VerifiedParentChannelBindingasAmbiguousIfSend<_>>::marker;let_=<VerifiedParentChannelBindingasAmbiguousIfSync<_>>::marker;let_=<VerifiedParentChannelBindingasAmbiguousIfClone<_>>::marker;let_=<VerifiedParentChannelBindingasAmbiguousIfCopy<_>>::marker;}" &&
     driverOrder &&
     childOrder &&
     driverCompact.includes(
@@ -23385,6 +24197,14 @@ const approvalFixtureContract = (source) => {
 };
 const approvalFixtureMutationProbes = [
   approvalBootstrapWindows.replace(
+    "        let _ = <VerifiedParentChannelBinding as AmbiguousIfSend<_>>::marker;",
+    "        let _ = <VerifiedParentChannelBinding as AmbiguousIfClone<_>>::marker;",
+  ),
+  approvalBootstrapWindows.replace(
+    "        let _ = <VerifiedParentChannelBinding as AmbiguousIfCopy<_>>::marker;",
+    "",
+  ),
+  approvalBootstrapWindows.replace(
     "    #[test]\n    fn inherited_approval_stdio_is_sealed_before_descendant_creation",
     "    #[test]\n    #[ignore]\n    fn inherited_approval_stdio_is_sealed_before_descendant_creation",
   ),
@@ -23440,6 +24260,81 @@ const approvalTestsModuleAttributeMutationProbes = [
     "#[cfg(all(test, any()))]\nmod tests {",
   ),
 ];
+const approvalAuthenticatedRequestContract = (source) => {
+  let definition;
+  let implBlock;
+  let constructor;
+  let requestAccessor;
+  let revalidateParent;
+  try {
+    definition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+AuthenticatedApprovalRequest\s*\{/u,
+    );
+    implBlock = rustImplItemAtDepth(
+      source,
+      "impl AuthenticatedApprovalRequest",
+      0,
+    );
+    constructor = rustFunctionBlockAtDepth(implBlock, "new", 1);
+    requestAccessor = rustFunctionBlockAtDepth(implBlock, "request", 1);
+    revalidateParent = rustFunctionBlockAtDepth(
+      implBlock,
+      "revalidate_parent",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  return (
+    normalizeRustFragment(rustLexicalCode(definition)) ===
+      "struct AuthenticatedApprovalRequest { request: approval_ui::ApprovalRequest, #[cfg(windows)] parent_binding: windows::VerifiedParentChannelBinding, }" &&
+    /#\s*\[\s*must_use\s*=\s*"the authenticated Approval request must be presented or rejected"\s*\]\s*pub\s*\(\s*super\s*\)\s+struct\s+AuthenticatedApprovalRequest\b/u.test(
+      source,
+    ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\][\s\S]{0,160}\bAuthenticatedApprovalRequest\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\bAuthenticatedApprovalRequest\b/u.test(
+      code,
+    ) &&
+    /#\s*\[\s*cfg\s*\(\s*windows\s*\)\s*\]\s*const\s+fn\s+new\s*\(/u.test(
+      implBlock,
+    ) &&
+    compactRust(constructor) ===
+      "constfnnew(request:approval_ui::ApprovalRequest,parent_binding:windows::VerifiedParentChannelBinding,)->Self{Self{request,parent_binding,}}" &&
+    compactRust(requestAccessor) ===
+      "pub(super)constfnrequest(&self)->&approval_ui::ApprovalRequest{&self.request}" &&
+    JSON.stringify(
+      rustCallSites(revalidateParent, "revalidate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    compactRust(revalidateParent) ===
+      "pub(super)fnrevalidate_parent(&self)->Result<(),approval_ui::ApprovalError>{#[cfg(windows)]{self.parent_binding.revalidate()}#[cfg(not(windows))]{Err(std::io::Error::other().into())}}"
+  );
+};
+const approvalAuthenticatedRequestMutationProbes = [
+  approvalBootstrap.replace(
+    "    #[cfg(windows)]\n    parent_binding: windows::VerifiedParentChannelBinding,",
+    "",
+  ),
+  approvalBootstrap.replace(
+    "        parent_binding: windows::VerifiedParentChannelBinding,",
+    "        parent_binding: u32,",
+  ),
+  approvalBootstrap.replace(
+    "            parent_binding,\n        }",
+    "            parent_binding: unchecked_binding(),\n        }",
+  ),
+  approvalBootstrap.replace(
+    "            self.parent_binding.revalidate()",
+    "            Ok(())",
+  ),
+  approvalBootstrap.replace(
+    '            Err(std::io::Error::other("Approval parent authentication failed").into())',
+    "            Ok(())",
+  ),
+  withVacuousRustEarlyOk(approvalBootstrap, "revalidate_parent"),
+];
 const approvalHandleApis = [
   "CompareObjectHandles",
   "CreateEventW",
@@ -23460,35 +24355,15 @@ const approvalHandleApiUsage = rustIdentifierUsageInventory(
   ],
   approvalHandleApis,
 );
-
 requireInvariant(
   approvalMain.includes(
     '#[cfg(feature = "runtime-entrypoint")]\nmod bootstrap;',
   ) &&
-    /#\s*\[\s*must_use\s*=/u.test(rustLexicalCode(approvalBootstrap)) &&
-    normalizeRustFragment(
-      rustLexicalCode(
-        rustTopLevelLexicalItemBlock(
-          approvalBootstrap,
-          /struct\s+AuthenticatedApprovalRequest\s*\{/u,
-        ),
-      ),
-    ) ===
-      "struct AuthenticatedApprovalRequest { request: approval_ui::ApprovalRequest, }" &&
-    /pub\s*\(\s*super\s*\)\s+struct\s+AuthenticatedApprovalRequest\s*\{/u.test(
-      rustLexicalCode(approvalBootstrap),
-    ) &&
-    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\][\s\S]{0,120}\bAuthenticatedApprovalRequest\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\bAuthenticatedApprovalRequest\b/u.test(
-      rustLexicalCode(approvalBootstrap),
-    ) &&
-    /(?:^|\n)\s*const\s+fn\s+new\s*\(/u.test(
-      rustLexicalCode(approvalAuthenticatedRequestImpl),
-    ) &&
-    !/(?:^|\n)\s*pub[^\n{;]*\bfn\s+new\s*\(/u.test(
-      rustLexicalCode(approvalAuthenticatedRequestImpl),
-    ) &&
-    compactRust(approvalAuthenticatedRequestNew).includes(
-      "constfnnew(request:approval_ui::ApprovalRequest)->Self{Self{request}}",
+    approvalAuthenticatedRequestContract(approvalBootstrap) &&
+    approvalAuthenticatedRequestMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrap &&
+        !approvalAuthenticatedRequestContract(probe),
     ) &&
     rustLexicalCode(approvalAuthenticateInheritedParent).includes(
       "windows::authenticate_request()",
@@ -23533,6 +24408,14 @@ requireInvariant(
       (probe) =>
         probe !== approvalSetBinaryStdio && !approvalSetBinaryContract(probe),
     ) &&
+    Object.entries(approvalCriticalHandleLeafSha256).every(
+      ([name, sha256]) =>
+        sha256 === approvedApprovalCriticalLeafSha256[name],
+    ) &&
+    approvalCriticalHandleLeafMutationProbes.every(
+      ({ source, approved }) =>
+        normalizedSourceSha256(rustLexicalCode(source)) !== approved,
+    ) &&
     normalizeRustFragment(rustLexicalCode(approvalInvalidHandle)) ===
       "fn invalid_handle(handle: HANDLE) -> bool { handle.is_invalid() || handle == INVALID_HANDLE_VALUE }" &&
     JSON.stringify(
@@ -23557,8 +24440,14 @@ requireInvariant(
       (probe) =>
         probe !== approvalBootstrapWindowsProduction &&
         !approvalParentAuthenticationContract(probe),
+    ) &&
+    approvalParentObservationTestsContract(approvalBootstrapWindows) &&
+    approvalParentObservationTestMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrapWindows &&
+        !approvalParentObservationTestsContract(probe),
     ),
-  "Approval child authentication must remain policy-disabled, LPAC/Job/pipe-bound, four-object validated, duplicate-inspected, artifact-checked, nonce-bound, EOF-bounded, and proof-retaining through request decode",
+  "Approval child authentication must remain policy-disabled, LPAC/Job/pipe-bound, four-object validated, fresh-duplicate-retaining, source-slot non-adopting, early-success-resistant, artifact-checked, nonce-bound, EOF-bounded, retained through presentation, and revalidated before response release",
 );
 const approvalArtifactCanonicalizationTestContract = (source) => {
   let fixedVersionTest;
@@ -23893,11 +24782,11 @@ const approvalStdioDocumentationContract = (source) => {
     /exact\s+file\s+object[\s\S]{0,80}mapped[\s\S]{0,80}증명[^.\r\n]{0,40}아닙/iu.test(
       source,
     );
-  const explicitlyDeniesEndpointObjectCapability =
-    /not\s+an?\s+exact(?:\s+pipe)?\s+endpoint\/process-object\s+capability/iu.test(
+  const explicitlyDeniesEndpointExclusivity =
+    /(?:does\s+not\s+(?:prove|establish)|prevents?\s+proof\s+of|leaves?)[\s\S]{0,120}exclusive\s+endpoint\s+ownership[\s\S]{0,120}(?:endpoint\s+)?topology\/exclusivity[\s\S]{0,120}per-write\s+attribution(?:[\s\S]{0,40}unproven)?/iu.test(
       source,
     ) ||
-    /exact(?:\s+pipe)?\s+endpoint\/process-object\s+capability[^.\r\n]{0,40}아닙/iu.test(
+    /exclusive\s+endpoint\s+ownership[\s\S]{0,120}(?:endpoint\s+)?topology\/exclusivity[\s\S]{0,80}per-write\s+attribution[^.\r\n]{0,40}증명[^.\r\n]{0,40}못/iu.test(
       source,
     );
   const explicitlyPinsZeroProductionOrchestration =
@@ -23926,6 +24815,12 @@ const approvalStdioDocumentationContract = (source) => {
     /exact-zero/iu.test(source) &&
     /positive\s+sentinel/iu.test(source) &&
     /CompareObjectHandles/u.test(source) &&
+    /fresh\s+child-local\s+duplicates[\s\S]{0,120}authoritative/iu.test(
+      source,
+    ) &&
+    /original\s+injected\s+slots[\s\S]{0,100}never\s+adopted[\s\S]{0,120}process-exit\s+cleanup/iu.test(
+      source,
+    ) &&
     /(?:non-atomic|not\s+atomic|원자적이지)/iu.test(source) &&
     /(?:re-enabl|inherit-bit)/iu.test(source) &&
     /explicit\s+duplication/iu.test(source) &&
@@ -23941,7 +24836,7 @@ const approvalStdioDocumentationContract = (source) => {
       source,
     ) &&
     /overlapped\s+client\s+ends?/iu.test(source) &&
-    explicitlyDeniesEndpointObjectCapability &&
+    explicitlyDeniesEndpointExclusivity &&
     /case-preserving\s+exact\s+normalized\s+path-string\s+equality/iu.test(
       source,
     ) &&
@@ -24041,6 +24936,8 @@ const approvalStdioDocumentationMutationPatterns = [
   /exact-zero/iu,
   /positive\s+sentinel/iu,
   /CompareObjectHandles/u,
+  /fresh\s+child-local\s+duplicates/iu,
+  /process-exit\s+cleanup/iu,
   /(?:non-atomic|not\s+atomic|원자적이지)/iu,
   /explicit\s+duplication/iu,
   /exhaustive/iu,
@@ -24048,7 +24945,7 @@ const approvalStdioDocumentationMutationPatterns = [
   /exit\s+78/iu,
   /synchronous\s+server/iu,
   /overlapped\s+client/iu,
-  /endpoint\/process-object\s+capability/iu,
+  /exclusive\s+endpoint\s+ownership/iu,
   /case-preserving\s+exact\s+normalized\s+path-string\s+equality/iu,
   /\\\\\?\\/u,
   /casing/iu,
@@ -24137,6 +25034,9 @@ requireInvariant(
       "exactly two inherited stdio `PIPE` objects",
       "numerically equal stdout and stderr",
       "four pairwise-distinct exact objects with zero flags",
+      "fresh child-local duplicates become authoritative",
+      "original injected slots are never adopted",
+      "bounded process-exit cleanup",
       "fixed 62-byte parent hello",
       "fixed 106-byte child hello",
       "110-byte parent-finish header",
@@ -24530,6 +25430,7 @@ requireInvariant(
       .every((file) => !/\bhold_dormant_broker\b/u.test(file.source)) &&
     JSON.stringify(exactImageVisibleFunctionNames) ===
       JSON.stringify([
+        "encode_be",
         "held_helper_file_identity",
         "authenticate_mapped_image",
         "hold",
@@ -24961,6 +25862,158 @@ const exactFileIdentityEqualityTest = rustFunctionBlock(
   exactBrokerImage,
   "exact_file_identity_equality_binds_volume_and_all_128_file_id_bits",
 );
+const exactFileIdentityEncodingContract = (production, fullSource) => {
+  let implBlock;
+  let encodeBe;
+  let errorDefinition;
+  let heldIdentity;
+  let mappedAuthentication;
+  let sentinelTest;
+  let encodingTest;
+  try {
+    implBlock = rustImplItemAtDepth(production, "impl ExactFileIdentity", 0);
+    encodeBe = rustFunctionBlockAtDepth(implBlock, "encode_be", 1);
+    errorDefinition = rustItemBlock(
+      production,
+      /(?:^|\n)pub\(crate\) enum ExactImageError\s*\{/u,
+    );
+    heldIdentity = rustFunctionBlock(production, "held_helper_file_identity");
+    mappedAuthentication = rustFunctionBlock(
+      production,
+      "authenticate_mapped_image",
+    );
+    sentinelTest = rustFunctionBlockAtDepth(
+      fullSource,
+      "exact_file_identity_rejects_zero_volume_and_sentinel_file_ids",
+      1,
+    );
+    encodingTest = rustFunctionBlockAtDepth(
+      fullSource,
+      "exact_file_identity_encoding_binds_volume_and_file_id_low_mid_high_bytes",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const sentinelCompact = compactRust(sentinelTest);
+  const encodingCompact = compactRust(encodingTest);
+  return (
+    compactRust(encodeBe) ===
+      "pub(super)fnencode_be(&self)->[u8;24]{letmutencoded=[0_u8;24];encoded[..8].copy_from_slice(&self.volume_serial_number.to_be_bytes());encoded[8..].copy_from_slice(&self.file_id);encoded}" &&
+    JSON.stringify(
+      rustCallSites(encodeBe, "copy_from_slice").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&self.volume_serial_number.to_be_bytes()"],
+        ["&self.file_id"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(encodeBe, "to_be_bytes").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    !/\bto_(?:le|ne)_bytes\b/u.test(rustLexicalCode(encodeBe)) &&
+    [
+      "held artifact has the wrong helper role",
+      "helper artifact could not be held",
+      "helper artifact identity is unavailable",
+      "mapped helper image did not match the held artifact",
+    ].every((marker) => errorDefinition.includes(marker)) &&
+    !/\bBroker\b/u.test(errorDefinition) &&
+    !/\bBroker\b/u.test(rustLexicalCode(heldIdentity)) &&
+    !/\bBroker\b/u.test(rustLexicalCode(mappedAuthentication)) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        fullSource,
+        "exact_file_identity_rejects_zero_volume_and_sentinel_file_ids",
+        1,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    !hasVacuousRustTestEscape(sentinelTest) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        fullSource,
+        "exact_file_identity_encoding_binds_volume_and_file_id_low_mid_high_bytes",
+        1,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    !hasVacuousRustTestEscape(encodingTest) &&
+    sentinelCompact.includes("non_sentinel_near_zero[0]=1") &&
+    sentinelCompact.includes(
+      "ExactFileIdentity::new(7,non_sentinel_near_zero).is_ok()",
+    ) &&
+    sentinelCompact.includes("non_sentinel_near_all_ones[15]^=1") &&
+    sentinelCompact.includes(
+      "ExactFileIdentity::new(7,non_sentinel_near_all_ones).is_ok()",
+    ) &&
+    encodingCompact.includes(
+      "letvolume_serial_number=0x0102_0304_0506_0708_u64",
+    ) &&
+    encodingCompact.includes(
+      "ExactFileIdentity::new(volume_serial_number,file_id)?.encode_be()",
+    ) &&
+    encodingCompact.includes(
+      "ExactFileIdentity::new(volume_serial_number^1,file_id)?.encode_be()",
+    ) &&
+    encodingCompact.includes(
+      "ExactFileIdentity::new(volume_serial_number,mutated_file_id)?.encode_be()",
+    ) &&
+    encodingCompact.includes(
+      "[0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,]",
+    ) &&
+    encodingCompact.includes("expected_volume_mutation[7]^=1") &&
+    encodingCompact.includes("forindexin[0_usize,8,15]") &&
+    encodingCompact.includes("expected_mutation[8+index]^=1") &&
+    (rustCallSites(encodingTest, "encode_be").length === 3)
+  );
+};
+const exactFileIdentityEncodingMutationProbes = [
+  {
+    production: exactBrokerImageProduction.replace("to_be_bytes()", "to_le_bytes()"),
+    full: exactBrokerImage.replace("to_be_bytes()", "to_le_bytes()"),
+  },
+  {
+    production: exactBrokerImageProduction.replace("encoded[8..]", "encoded[8..16]"),
+    full: exactBrokerImage.replace("encoded[8..]", "encoded[8..16]"),
+  },
+  {
+    production: exactBrokerImageProduction.replace(
+      "helper artifact could not be held",
+      "Broker artifact could not be held",
+    ),
+    full: exactBrokerImage.replace(
+      "helper artifact could not be held",
+      "Broker artifact could not be held",
+    ),
+  },
+  {
+    production: exactBrokerImageProduction,
+    full: exactBrokerImage.replace("        non_sentinel_near_zero[0] = 1;\n", ""),
+  },
+  {
+    production: exactBrokerImageProduction,
+    full: exactBrokerImage.replace(
+      "        expected_volume_mutation[7] ^= 1;",
+      "        expected_volume_mutation[0] ^= 1;",
+    ),
+  },
+  {
+    production: exactBrokerImageProduction,
+    full: exactBrokerImage.replaceAll(
+      "        for index in [0_usize, 8, 15] {",
+      "        for index in [0_usize, 15] {",
+    ),
+  },
+  {
+    production: exactBrokerImageProduction,
+    full: exactBrokerImage.replace(
+      "            expected_mutation[8 + index] ^= 1;",
+      "            expected_mutation[index] ^= 1;",
+    ),
+  },
+];
 const brokerDebugEventOwnershipOrder = [
   "let event_file = match event.dwDebugEventCode",
   "if event.dwProcessId != self.process_id",
@@ -25003,6 +26056,16 @@ requireInvariant(
 );
 requireInvariant(
   launchBrokerPath.includes("PinnedBrokerImage::hold(broker_path)") &&
+    exactFileIdentityEncodingContract(
+      exactBrokerImageProduction,
+      exactBrokerImage,
+    ) &&
+    exactFileIdentityEncodingMutationProbes.every(
+      ({ production, full }) =>
+        production !== exactBrokerImageProduction || full !== exactBrokerImage
+          ? !exactFileIdentityEncodingContract(production, full)
+          : false,
+    ) &&
     exactBrokerImageProduction.includes(
       "VerifiedHelper::hold_dormant_broker(path)",
     ) &&

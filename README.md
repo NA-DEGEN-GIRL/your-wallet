@@ -607,18 +607,29 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   동안 inherit 불가 상태로 원격 주입됩니다. 자식은 binary mode보다 앞선 첫
   Windows/CRT application 동작에서 두 stdio 객체의 `HANDLE_FLAG_INHERIT`인 exact
   inherit-only preflags를 확인하고 rollback 없는 순차 clear와 exact-zero readback으로
-  먼저 봉인합니다. 그 뒤 Approval LPAC, Job, pipe peer를
-  검증하고, 봉인된 stdin, shared output pipe, process proof, image proof가 모두 flags
-  0인 네 pairwise-distinct exact object인지 확인합니다. pipe peer 검사는 두 pipe가
-  보고한 client PID/session의 일치와 process proof PID 및 자식 session의 상관관계만
-  확인합니다. 이는 exact pipe endpoint/process-object capability가 아닙니다. image
+  먼저 봉인합니다. 그 뒤 Approval LPAC과 Job을 검증하고, 봉인된 stdin, shared
+  output pipe, process proof, image proof가 모두 flags 0인 네 pairwise-distinct exact
+  object인지 확인합니다. Only fresh child-local duplicates become authoritative and remain
+  retained through response write; the launcher-known original injected slots are never
+  adopted and are left only for bounded process-exit cleanup. 자식은 retained live exact
+  parent process handle에서 부모
+  PID와 process-token `TokenSessionId`를 도출하고, parent hello PID, 두 pipe server가
+  보고한 client PID/session, 자식 token session이 모두 그 identity와 일치해야
+  합니다. 이 binding은 UI 표시와 response write 동안 보유되고 재검증됩니다. 따라서
+  retained process handle이 live인 동안 PID-reuse substitution을 막고 pipe
+  observation을 exact live parent process object와 대조합니다. 다만 pipe handle은
+  transferable/duplicable이므로 exclusive endpoint ownership, endpoint
+  topology/exclusivity, per-write attribution은 증명하지 못합니다. image
   proof는 case-preserving exact normalized path-string equality를 사용합니다. 즉 live
   process image path와 별도 held file final path에서 선택적인 `\\?\` prefix와
   separator만 정규화하고, ambiguous casing은 fail closed입니다. 이어 held path의
   `\\key-agent.exe` suffix와 held-handle-derived path로 다시 조회한 version metadata를
   검사하고, held handle+path를 사용한 Authenticode signer 검증과 cloned held handle의
   SHA-256를 수행합니다. 따라서 live process가 그 exact file
-  object에서 mapped되었다는 증명은 아닙니다.
+  object에서 mapped되었다는 증명은 아닙니다. zero-capability Approval LPAC에서
+  `OpenProcessToken(parent)` 성공을 입증하는 positive kernel availability test도 아직
+  없고 compiled policies는 `None`이므로, 이 handle-first 성공 경로는 release에서
+  검증되지 않았습니다.
 
   Parent-auth 순서는 고정 62-byte parent hello, 고정 106-byte child hello,
   110-byte parent-finish header와 exact request 및 request EOF, 고정 75-byte response와

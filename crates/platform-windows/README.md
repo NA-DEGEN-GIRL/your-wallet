@@ -267,17 +267,29 @@ Implemented:
   parent-image proof handles with inheritance disabled. After sealing stdio,
   the child verifies the Approval LPAC and Job and requires the sealed stdin,
   shared output pipe, process proof, and image proof to be four pairwise-
-  distinct exact objects with zero flags. Its pipe-peer check correlates only
-  the client PID/session reported by both child-held server ends with the
-  process-proof PID and child session. It is not an exact
-  endpoint/process-object capability. The image check applies
+  distinct exact objects with zero flags. Only fresh child-local duplicates
+  become authoritative and remain retained through response write; the
+  launcher-known original injected slots are never adopted and are left only
+  for bounded process-exit cleanup. It derives the parent PID and
+  process-token `TokenSessionId` from the retained live exact parent process
+  handle and requires the parent-hello PID, both child-held server ends' client
+  PID/session observations, and the child token session to match. It owns and
+  revalidates that binding across UI presentation and response write. While the
+  process handle remains live, this prevents PID-reuse substitution and
+  corroborates the pipe observations against the exact live parent process
+  object. Transferable and duplicable pipe handles still prevent proof of
+  exclusive endpoint ownership, endpoint topology/exclusivity, or per-write
+  attribution. The image check applies
   case-preserving exact normalized path-string equality: it normalizes only an
   optional `\\?\` prefix and separators and compares the live process image path with a separate
   held file's final path; a casing mismatch fails closed. It then checks the held
   path's `\\key-agent.exe` suffix and version metadata, supplies the held handle
   plus path to Authenticode signer validation, and computes SHA-256 through a
   cloned held handle against the compiled parent policy. It does not prove that the live process was mapped
-  from that exact file object. Parent-auth order is a fixed 62-byte
+  from that exact file object. No positive kernel availability test yet proves
+  that the zero-capability Approval LPAC can complete
+  `OpenProcessToken(parent)`; with the compiled policies still `None`, this
+  handle-first success path remains release-unproven. Parent-auth order is a fixed 62-byte
   parent hello, fixed 106-byte child hello, a 110-byte parent-finish header plus
   exact request and request EOF, then a fixed 75-byte response and response EOF.
   After response-plus-EOF the parent locally hashes held child PID/file
@@ -432,9 +444,18 @@ Implemented:
   client ends. Its launch `HANDLE_LIST` contains only those two child objects;
   two parent-identity proofs are injected non-inheritable while the child is
   suspended. After Approval LPAC and Job verification, it requires those four
-  exact objects to be pairwise distinct with zero flags. Pipe-peer inspection
-  supplies PID/session correlation only, not an exact endpoint/process-object
-  capability. The image policy separately requires case-preserving exact
+  exact objects to be pairwise distinct with zero flags. The retained live
+  exact parent process handle supplies the authoritative PID and process-token
+  `TokenSessionId`; the parent hello, both server-end client PID/session
+  observations, and child token session must match, and the binding is retained
+  and revalidated through UI presentation and response write. This prevents
+  PID-reuse substitution while the handle is live and corroborates the pipe
+  observations against the exact process object. It does not prove exclusive
+  endpoint ownership, topology/exclusivity, or per-write attribution because
+  pipe handles remain transferable and duplicable. No positive kernel
+  availability test yet proves that the zero-capability Approval LPAC can
+  complete `OpenProcessToken(parent)`, so with the policies still `None` this
+  success path remains release-unproven. The image policy separately requires case-preserving exact
   normalized path-string equality between live and held-file paths, checks the
   held path's suffix/version metadata, uses held handle plus path for
   Authenticode validation, and hashes a cloned held handle for SHA-256. It does
@@ -475,9 +496,17 @@ Implemented:
   overlapped client ends를 보유합니다. parent-process/image proof는 suspended 자식에
   inherit 불가로 별도 주입됩니다. 자식은 첫 Windows/CRT application 동작에서 stdio를
   봉인한 뒤 Approval LPAC과 Job을 확인하고, stdio 둘과 proof 둘이 flags 0인 네
-  pairwise-distinct exact object인지 검증합니다. pipe-peer 검사는 child-held server
-  ends가 보고한 client PID/session을 process-proof PID 및 child session과 연결할 뿐
-  exact endpoint/process-object capability는 아닙니다. image 검사는
+  pairwise-distinct exact object인지 검증합니다. 자식은 retained live exact parent
+  process handle에서 authoritative PID와 process-token `TokenSessionId`를 도출하고,
+  parent hello, 두 child-held server ends의 client PID/session observation, child token
+  session이 모두 일치해야 합니다. 이 binding은 UI 표시와 response write 동안
+  보유되고 재검증됩니다. 따라서 handle이 live인 동안 PID-reuse substitution을 막고
+  pipe observation을 exact parent process object와 대조합니다. 다만 pipe handle은
+  transferable/duplicable이므로 exclusive endpoint ownership,
+  topology/exclusivity, per-write attribution은 증명하지 못합니다. zero-capability
+  Approval LPAC에서 `OpenProcessToken(parent)` 성공을 입증하는 positive kernel
+  availability test도 아직 없고 policies는 `None`이므로 이 성공 경로는
+  release-unproven입니다. image 검사는
   case-preserving exact normalized path-string equality를 사용합니다. 즉 선택적인 `\\?\` prefix와 separator만
   정규화해 live process image path와 별도 held file final path를 비교하며 casing
   mismatch는 fail closed입니다. 이어 held path의 `\\key-agent.exe` suffix와 version
@@ -635,8 +664,18 @@ Stop-ship before any signing-capable release:
    and alternate path forms, that the live image was mapped from the exact held
    file object, the complete DLL/dependency graph, immutable installation, a
    supervisor-held activation capability, and exact endpoint
-   topology/exclusivity. Current pipe inspection provides only PID/session
-   correlation, and current held-file policy checks do not provide those proofs.
+   topology/exclusivity. Current pipe inspection is corroborated against a
+   retained live exact parent process object: the child derives PID and
+   process-token `TokenSessionId`, matches the hello, both server-end client
+   PID/session observations, and child token session, and retains and
+   revalidates the binding through response write. That blocks PID-reuse
+   substitution while the handle is live, but transferable/duplicable pipe
+   handles still leave exclusive endpoint ownership, topology/exclusivity, and
+   per-write attribution unproven. No positive kernel availability test shows
+   that the zero-capability Approval LPAC can complete
+   `OpenProcessToken(parent)`, so the handle-first path remains release-unproven.
+   Current held-file policy checks likewise do not provide the mapped-image,
+   immutable-install, DLL-graph, or supervisor-lineage proofs.
    Kernel-level pipe tests cover the framing and cancellation primitives, and
    the repo-local positive-sentinel grandchild test supplies only a non-
    exhaustive two-object propagation negative. Its sequential clears are non-

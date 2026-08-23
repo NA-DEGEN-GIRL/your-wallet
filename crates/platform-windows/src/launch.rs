@@ -507,8 +507,9 @@ mod sys {
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, GENERIC_READ,
-        GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DUPLICATE_SAME_ACCESS,
+        DuplicateHandle, ERROR_ALREADY_EXISTS, GENERIC_READ, GetHandleInformation, HANDLE,
+        HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -534,8 +535,8 @@ mod sys {
     use windows::Win32::System::Threading::{
         CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
-        OpenProcessToken, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
+        PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
         PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
@@ -1236,23 +1237,48 @@ mod sys {
     }
 
     fn current_parent_proof_sources() -> Result<ParentProofSources, LaunchError> {
-        // SAFETY: both calls take scalar values only. OpenProcess returns a real
-        // least-privilege handle rather than the non-inheritable pseudo handle.
-        let process_id = unsafe { GetCurrentProcessId() };
-        if process_id == 0 {
-            return Err(LaunchError::OperatingSystem);
-        }
-        // SAFETY: the nonzero PID is the current process and only documented,
-        // least-privilege query/wait rights are requested.
-        let process = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+        // SAFETY: the pseudo handle denotes this exact process object and is valid
+        // as both the source/target process and the handle being duplicated.
+        let current_process = unsafe { GetCurrentProcess() };
+        let mut process = HANDLE::default();
+        // SAFETY: duplication converts the pseudo current-process handle directly
+        // into one real, non-inheritable, least-privilege process-object handle.
+        unsafe {
+            DuplicateHandle(
+                current_process,
+                current_process,
+                current_process,
+                &raw mut process,
+                (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0,
                 false,
-                process_id,
+                DUPLICATE_HANDLE_OPTIONS(0),
             )
         }
-        .map(OwnedWinHandle)
         .map_err(|_| LaunchError::OperatingSystem)?;
+        if process.is_invalid() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let process = OwnedWinHandle(process);
+        let mut flags = u32::MAX;
+        // SAFETY: the real duplicate remains owned throughout all scalar checks.
+        unsafe { GetHandleInformation(process.raw(), &raw mut flags) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        // SAFETY: all calls borrow either the retained real handle or the current
+        // pseudo handle, and return only scalar/object-equality observations.
+        let process_id = unsafe { GetProcessId(process.raw()) };
+        // SAFETY: this call returns only the current process's scalar identifier.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        // SAFETY: both handles remain live and denote process objects for this
+        // non-owning exact kernel-object comparison.
+        let exact_current_process =
+            unsafe { CompareObjectHandles(process.raw(), current_process) }.as_bool();
+        if flags != 0
+            || process_id == 0
+            || process_id != current_process_id
+            || !exact_current_process
+        {
+            return Err(LaunchError::OperatingSystem);
+        }
 
         let executable = std::env::current_exe().map_err(|_| LaunchError::OperatingSystem)?;
         if !executable.is_absolute() {
@@ -1709,6 +1735,32 @@ mod sys {
         crate::restricted_process_context::validate_working_directory_for_test(path)
             .map_err(map_process_context_error)
     }
+
+    #[cfg(test)]
+    pub(super) fn verify_current_parent_proof_for_test() -> Result<(), LaunchError> {
+        let proof = current_parent_proof_sources()?;
+        let mut flags = u32::MAX;
+        // SAFETY: both proof handles remain owned for the complete validation.
+        unsafe { GetHandleInformation(proof.process.raw(), &raw mut flags) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        // SAFETY: the pseudo handle denotes this exact test process.
+        let current_process = unsafe { GetCurrentProcess() };
+        // SAFETY: both handles remain live and denote process objects for this
+        // non-owning exact kernel-object comparison.
+        let exact_current_process =
+            unsafe { CompareObjectHandles(proof.process.raw(), current_process) }.as_bool();
+        // SAFETY: this call returns only the current test process's scalar ID.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        // SAFETY: a zero-timeout wait only observes the retained exact process.
+        let process_wait = unsafe { WaitForSingleObject(proof.process.raw(), 0) };
+        (flags == 0
+            && proof.process_id == current_process_id
+            && exact_current_process
+            && process_wait == WAIT_TIMEOUT
+            && proof.image.raw() != proof.process.raw())
+        .then_some(())
+        .ok_or(LaunchError::OperatingSystem)
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -1875,6 +1927,13 @@ mod tests {
             PROCESS_CREATION_CHILD_PROCESS_RESTRICTED
         );
         assert_eq!(NoNetworkLpacProfile::v1().revision(), 1);
+    }
+
+    #[test]
+    fn parent_process_proof_is_a_real_non_inheritable_exact_current_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        sys::verify_current_parent_proof_for_test()?;
+        Ok(())
     }
 
     #[test]

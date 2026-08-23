@@ -35,7 +35,7 @@ use windows::Win32::Security::WinTrust::{
 use windows::Win32::Security::{
     EqualSid, FreeSid, GetTokenInformation, IsValidSid, PSID, TOKEN_APPCONTAINER_INFORMATION,
     TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-    TokenIsLessPrivilegedAppContainer,
+    TokenIsLessPrivilegedAppContainer, TokenSessionId,
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_TYPE_PIPE, GETFINALPATHNAMEBYHANDLE_FLAGS, GetFileType, GetFileVersionInfoSizeW,
@@ -50,7 +50,6 @@ use windows::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, QueryInformationJobObject,
 };
 use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId};
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, GetProcessId, GetProcessTimes, OpenProcessToken,
     OpenThreadToken, PROCESS_NAME_WIN32, QueryFullProcessImageNameW, WaitForSingleObject,
@@ -79,11 +78,18 @@ struct ParentTrustPolicy {
 // a test feature or arbitrary caller from turning the Approval surface on.
 const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;
 
-#[must_use = "the Approval bootstrap must retain its sealed channel proof"]
-struct Channels {
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ProcessObservation {
+    process_id: u32,
+    session_id: u32,
+}
+
+#[must_use = "the Approval runtime must retain its exact parent/channel binding"]
+pub(super) struct VerifiedParentChannelBinding {
     stdio: SealedApprovalStdio,
-    parent_process_id: u32,
-    parent_session_id: u32,
+    process: OwnedHandle,
+    image: OwnedHandle,
+    parent: ProcessObservation,
 }
 
 #[must_use = "binary mode and request processing require the sealed Approval stdio proof"]
@@ -96,7 +102,7 @@ struct SealedApprovalStdio {
 pub(super) fn authenticate_request()
 -> Result<AuthenticatedApprovalRequest, approval_ui::ApprovalError> {
     let sealed_stdio = seal_inherited_approval_stdio()?;
-    let channels = verify_self_and_channels(sealed_stdio)?;
+    verify_self(&sealed_stdio)?;
     let Some(policy) = COMPILED_PARENT_POLICY else {
         return Err(native_failure(()));
     };
@@ -106,14 +112,7 @@ pub(super) fn authenticate_request()
     let mut encoded_parent = Zeroizing::new([0_u8; PARENT_HELLO_BYTES]);
     reader.read_exact(&mut *encoded_parent)?;
     let parent_hello = decode_parent_hello(&*encoded_parent)?;
-    verify_parent_process_id(&parent_hello, channels.parent_process_id)?;
-    let parent_handles = verify_parent_handles(
-        &parent_hello,
-        channels.parent_session_id,
-        channels.stdio.input,
-        channels.stdio.output,
-        policy,
-    )?;
+    let parent_binding = bind_channels_to_parent(&parent_hello, sealed_stdio, policy)?;
 
     let mut child_nonce = [0_u8; 32];
     getrandom::fill(&mut child_nonce).map_err(native_failure)?;
@@ -142,55 +141,35 @@ pub(super) fn authenticate_request()
         return Err(approval_ui::ApprovalError::Malformed);
     }
     let request = decode_parent_finish(&parent_hello, &child_hello, finish.as_slice())?;
-    // Keep both proof kernel objects pinned until the exact nonce/hash-bound
-    // request has arrived. They close before native UI code is entered.
-    drop(parent_handles);
-    Ok(AuthenticatedApprovalRequest::new(request))
+    parent_binding.revalidate()?;
+    Ok(AuthenticatedApprovalRequest::new(request, parent_binding))
 }
 
-fn verify_parent_process_id(
-    hello: &ApprovalParentHello,
-    expected_process_id: u32,
-) -> Result<(), approval_ui::ApprovalError> {
-    (hello.process_id() == expected_process_id)
-        .then_some(())
-        .ok_or_else(|| native_failure(()))
-}
-
-fn verify_self_and_channels(
-    sealed: SealedApprovalStdio,
-) -> Result<Channels, approval_ui::ApprovalError> {
-    set_binary_stdio(&sealed)?;
+fn verify_self(sealed: &SealedApprovalStdio) -> Result<(), approval_ui::ApprovalError> {
+    set_binary_stdio(sealed)?;
     verify_lpac_token()?;
     verify_job()?;
-    let input = sealed.input;
-    let output = sealed.output;
-    let (input_pid, input_session) = pipe_client(input)?;
-    let (output_pid, output_session) = pipe_client(output)?;
-    if input_pid == 0
-        || input_pid != output_pid
-        || input_session != output_session
-        || input_session == u32::MAX
-    {
-        return Err(native_failure(()));
+    Ok(())
+}
+
+impl fmt::Debug for VerifiedParentChannelBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VerifiedParentChannelBinding([REDACTED])")
     }
-    let mut parent_process_session = u32::MAX;
-    // SAFETY: output points to one initialized DWORD.
-    unsafe { ProcessIdToSessionId(input_pid, &raw mut parent_process_session) }
-        .map_err(native_failure)?;
-    let mut child_session = u32::MAX;
-    // SAFETY: output points to one initialized DWORD and std::process::id is
-    // the live current Approval child PID.
-    unsafe { ProcessIdToSessionId(std::process::id(), &raw mut child_session) }
-        .map_err(native_failure)?;
-    if parent_process_session != input_session || child_session != input_session {
-        return Err(native_failure(()));
+}
+
+impl VerifiedParentChannelBinding {
+    pub(super) fn revalidate(&self) -> Result<(), approval_ui::ApprovalError> {
+        validate_parent_proof_handle_set(
+            raw(&self.process),
+            raw(&self.image),
+            self.stdio.input,
+            self.stdio.output,
+        )?;
+        (live_process_observation(raw(&self.process))? == self.parent)
+            .then_some(())
+            .ok_or_else(|| native_failure(()))
     }
-    Ok(Channels {
-        stdio: sealed,
-        parent_process_id: input_pid,
-        parent_session_id: input_session,
-    })
 }
 
 impl fmt::Debug for SealedApprovalStdio {
@@ -325,7 +304,7 @@ fn validate_parent_proof_handle_set(
     Ok(())
 }
 
-fn pipe_client(handle: HANDLE) -> Result<(u32, u32), approval_ui::ApprovalError> {
+fn pipe_client(handle: HANDLE) -> Result<ProcessObservation, approval_ui::ApprovalError> {
     let mut process_id = 0_u32;
     let mut session_id = u32::MAX;
     // SAFETY: the sealed pipe is live for these non-owning queries and both
@@ -334,7 +313,29 @@ fn pipe_client(handle: HANDLE) -> Result<(u32, u32), approval_ui::ApprovalError>
         GetNamedPipeClientProcessId(handle, &raw mut process_id).map_err(native_failure)?;
         GetNamedPipeClientSessionId(handle, &raw mut session_id).map_err(native_failure)?;
     }
-    Ok((process_id, session_id))
+    Ok(ProcessObservation {
+        process_id,
+        session_id,
+    })
+}
+
+fn verify_channel_observations(
+    hello_process_id: u32,
+    parent: ProcessObservation,
+    child_session_id: u32,
+    input_peer: ProcessObservation,
+    output_peer: ProcessObservation,
+) -> Result<(), approval_ui::ApprovalError> {
+    if parent.process_id == 0
+        || parent.session_id == u32::MAX
+        || hello_process_id != parent.process_id
+        || child_session_id != parent.session_id
+        || input_peer != parent
+        || output_peer != parent
+    {
+        return Err(native_failure(()));
+    }
+    Ok(())
 }
 
 /// Owns one untrusted SID returned by the profile API until post-call checks,
@@ -544,17 +545,47 @@ fn token_information(
     Ok(buffer)
 }
 
-fn verify_parent_handles(
+fn process_session_id(process: HANDLE) -> Result<u32, approval_ui::ApprovalError> {
+    let mut token = HANDLE::default();
+    // SAFETY: process is a retained process object or the current-process pseudo
+    // handle. The successful token query returns one fresh owned handle.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }.map_err(native_failure)?;
+    // SAFETY: successful OpenProcessToken transferred one unique token handle.
+    let token = unsafe { owned_handle(token.0 as usize as u64)? };
+    token_dword(&token, TokenSessionId)
+}
+
+fn live_process_observation(
+    process: HANDLE,
+) -> Result<ProcessObservation, approval_ui::ApprovalError> {
+    // SAFETY: process is retained by the caller for both non-owning queries.
+    let process_id = unsafe { GetProcessId(process) };
+    // SAFETY: a zero-timeout wait only observes the exact process object's state.
+    let process_wait = unsafe { WaitForSingleObject(process, 0) };
+    if process_id == 0 || process_wait != WAIT_TIMEOUT {
+        return Err(native_failure(()));
+    }
+    let session_id = process_session_id(process)?;
+    // SAFETY: the same retained exact process object remains borrowed.
+    let process_wait_after_session = unsafe { WaitForSingleObject(process, 0) };
+    if session_id == u32::MAX || process_wait_after_session != WAIT_TIMEOUT {
+        return Err(native_failure(()));
+    }
+    Ok(ProcessObservation {
+        process_id,
+        session_id,
+    })
+}
+
+fn bind_channels_to_parent(
     hello: &ApprovalParentHello,
-    expected_session: u32,
-    stdin: HANDLE,
-    stdout: HANDLE,
+    stdio: SealedApprovalStdio,
     policy: ParentTrustPolicy,
-) -> Result<VerifiedParentHandles, approval_ui::ApprovalError> {
+) -> Result<VerifiedParentChannelBinding, approval_ui::ApprovalError> {
     let process_value = usize::try_from(hello.process_handle()).map_err(native_failure)?;
     let image_value = usize::try_from(hello.image_handle()).map_err(native_failure)?;
-    let stdin_value = stdin.0 as usize;
-    let stdout_value = stdout.0 as usize;
+    let stdin_value = stdio.input.0 as usize;
+    let stdout_value = stdio.output.0 as usize;
     if process_value == stdin_value
         || process_value == stdout_value
         || image_value == stdin_value
@@ -565,47 +596,55 @@ fn verify_parent_handles(
     }
     let process_candidate = HANDLE(process_value as RawHandle);
     let image_candidate = HANDLE(image_value as RawHandle);
-    validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?;
+    validate_parent_proof_handle_set(
+        process_candidate,
+        image_candidate,
+        stdio.input,
+        stdio.output,
+    )?;
     let process_copy = duplicate_untrusted_candidate(process_candidate)?;
     let image_copy = duplicate_untrusted_candidate(image_candidate)?;
-    // SAFETY: process_copy is a live child-local duplicate of a kernel process handle.
-    let process_id = unsafe { GetProcessId(raw(&process_copy)) };
-    // SAFETY: a zero-timeout wait only queries the live process object's state.
-    let process_wait = unsafe { WaitForSingleObject(raw(&process_copy), 0) };
-    if process_id != hello.process_id() || process_wait != WAIT_TIMEOUT {
-        return Err(native_failure(()));
-    }
-    let mut session = u32::MAX;
-    // SAFETY: output points to an initialized DWORD.
-    unsafe { ProcessIdToSessionId(hello.process_id(), &raw mut session) }
-        .map_err(native_failure)?;
-    if session != expected_session {
-        return Err(native_failure(()));
-    }
+    // Only these fresh child-created duplicates become authoritative. The
+    // launcher knows the numeric injected slots and may still retain a process
+    // handle with PROCESS_DUP_HANDLE, so adopting either original after a
+    // check would reopen a remote close/reuse race. This one-shot child leaves
+    // exactly those two source slots for process-exit cleanup.
+    validate_parent_proof_handle_set(
+        raw(&process_copy),
+        raw(&image_copy),
+        stdio.input,
+        stdio.output,
+    )?;
+    let parent = live_process_observation(raw(&process_copy))?;
+    // SAFETY: this pseudo handle denotes the exact current Approval process.
+    let child_process = unsafe { GetCurrentProcess() };
+    let child_session_id = process_session_id(child_process)?;
+    let input_peer = pipe_client(stdio.input)?;
+    let output_peer = pipe_client(stdio.output)?;
+    verify_channel_observations(
+        hello.process_id(),
+        parent,
+        child_session_id,
+        input_peer,
+        output_peer,
+    )?;
     require_parent_created_first(&process_copy)?;
     verify_parent_artifact(&process_copy, &image_copy, policy)?;
-    if !same_object(process_candidate, raw(&process_copy))
-        || !same_object(image_candidate, raw(&image_copy))
-        || !matches!(handle_flags(process_candidate), Ok(0))
-        || !matches!(handle_flags(image_candidate), Ok(0))
-    {
+    validate_parent_proof_handle_set(
+        raw(&process_copy),
+        raw(&image_copy),
+        stdio.input,
+        stdio.output,
+    )?;
+    if live_process_observation(raw(&process_copy))? != parent {
         return Err(native_failure(()));
     }
-    // SAFETY: each candidate was proven to be the exact non-inheritable object
-    // validated through its retained duplicate. This single-threaded bootstrap
-    // now transfers each original child-local handle into one owner exactly once.
-    let process = unsafe { adopt_validated_handle(process_candidate) };
-    // SAFETY: same final revalidation and unique transfer as process.
-    let image = unsafe { adopt_validated_handle(image_candidate) };
-    Ok(VerifiedParentHandles {
-        _process: process,
-        _image: image,
+    Ok(VerifiedParentChannelBinding {
+        stdio,
+        process: process_copy,
+        image: image_copy,
+        parent,
     })
-}
-
-struct VerifiedParentHandles {
-    _process: OwnedHandle,
-    _image: OwnedHandle,
 }
 
 fn require_parent_created_first(parent: &OwnedHandle) -> Result<(), approval_ui::ApprovalError> {
@@ -874,8 +913,8 @@ fn duplicate_untrusted_candidate(
 ) -> Result<OwnedHandle, approval_ui::ApprovalError> {
     let mut duplicate = HANDLE::default();
     // SAFETY: the candidate has already passed live handle queries. Duplicating
-    // it into this process with inherit=false creates independent ownership and
-    // never closes or adopts the untrusted original on an error path.
+    // it into this process with inherit=false creates the only authoritative
+    // ownership; the launcher-known original is never closed or adopted here.
     unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -893,13 +932,11 @@ fn duplicate_untrusted_candidate(
     }
     // SAFETY: successful DuplicateHandle returned one fresh current-process
     // handle, which transfers to this owner exactly once.
-    Ok(unsafe { OwnedHandle::from_raw_handle(duplicate.0) })
-}
-
-unsafe fn adopt_validated_handle(handle: HANDLE) -> OwnedHandle {
-    // SAFETY: caller proves this exact raw candidate completed final
-    // revalidation and has not previously been adopted.
-    unsafe { OwnedHandle::from_raw_handle(handle.0) }
+    let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate.0) };
+    if !matches!(handle_flags(raw(&duplicate)), Ok(0)) {
+        return Err(native_failure(()));
+    }
+    Ok(duplicate)
 }
 
 fn raw(handle: &OwnedHandle) -> HANDLE {
@@ -925,14 +962,14 @@ mod tests {
     use std::sync::Mutex;
 
     use super::{
-        COMPILED_PARENT_POLICY, Channels, PROFILE_V1_NAME, SealedApprovalStdio,
-        UnvalidatedProfileApiSid, VS_FIXEDFILEINFO_SIGNATURE, decode_fixed_file_version,
-        derive_expected_profile_sid, handle_flags, normalize_path, seal_exact_approval_stdio,
-        seal_inherited_approval_stdio, set_binary_stdio, validate_parent_proof_handle_set,
-        verify_parent_process_id, wide_nul,
+        COMPILED_PARENT_POLICY, PROFILE_V1_NAME, ProcessObservation, SealedApprovalStdio,
+        UnvalidatedProfileApiSid, VS_FIXEDFILEINFO_SIGNATURE, VerifiedParentChannelBinding,
+        decode_fixed_file_version, derive_expected_profile_sid, duplicate_untrusted_candidate,
+        handle_flags, live_process_observation, normalize_path, process_session_id, same_object,
+        seal_exact_approval_stdio, seal_inherited_approval_stdio, set_binary_stdio,
+        validate_parent_proof_handle_set, verify_channel_observations, wide_nul,
     };
     use approval_ui::ApprovalError;
-    use approval_wire::ApprovalParentHello;
     use windows::Win32::Foundation::{
         DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS,
         SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -940,10 +977,11 @@ mod tests {
     use windows::Win32::Security::PSID;
     use windows::Win32::Storage::FileSystem::VS_FIXEDFILEINFO;
     use windows::Win32::System::Pipes::CreatePipe;
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, CreateProcessW, GetCurrentProcess,
-        GetExitCodeProcess, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW,
-        TerminateProcess, WaitForSingleObject,
+        GetCurrentProcessId, GetExitCodeProcess, PROCESS_INFORMATION, ResumeThread,
+        STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
     };
     use windows::core::{PCWSTR, PWSTR};
 
@@ -1246,10 +1284,28 @@ mod tests {
         let _ = <SealedApprovalStdio as AmbiguousIfSync<_>>::marker;
         let _ = <SealedApprovalStdio as AmbiguousIfClone<_>>::marker;
         let _ = <SealedApprovalStdio as AmbiguousIfCopy<_>>::marker;
-        let _ = <Channels as AmbiguousIfSend<_>>::marker;
-        let _ = <Channels as AmbiguousIfSync<_>>::marker;
-        let _ = <Channels as AmbiguousIfClone<_>>::marker;
-        let _ = <Channels as AmbiguousIfCopy<_>>::marker;
+        let _ = <VerifiedParentChannelBinding as AmbiguousIfSend<_>>::marker;
+        let _ = <VerifiedParentChannelBinding as AmbiguousIfSync<_>>::marker;
+        let _ = <VerifiedParentChannelBinding as AmbiguousIfClone<_>>::marker;
+        let _ = <VerifiedParentChannelBinding as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn parent_proof_authority_is_a_fresh_exact_non_inheritable_duplicate()
+    -> Result<(), ApprovalError> {
+        // SAFETY: successful CreateEventW returns one fresh, non-inheritable
+        // current-process handle owned by this test.
+        let original =
+            unsafe { CreateEventW(None, true, false, None) }.map_err(super::native_failure)?;
+        // SAFETY: the successful API call transferred one unique event handle.
+        let original = unsafe { OwnedHandle::from_raw_handle(original.0) };
+        let duplicate = duplicate_untrusted_candidate(raw(&original))?;
+
+        assert_ne!(raw(&original), raw(&duplicate));
+        assert!(same_object(raw(&original), raw(&duplicate)));
+        assert_eq!(handle_flags(raw(&original))?, 0);
+        assert_eq!(handle_flags(raw(&duplicate))?, 0);
+        Ok(())
     }
 
     #[test]
@@ -1338,11 +1394,144 @@ mod tests {
     }
 
     #[test]
-    fn parent_process_id_must_match_the_pipe_client() -> Result<(), ApprovalError> {
-        let hello = ApprovalParentHello::new(42, 0x100, 0x104, [1; 32])?;
-        verify_parent_process_id(&hello, 42)?;
-        assert!(verify_parent_process_id(&hello, 43).is_err());
-        assert!(verify_parent_process_id(&hello, 0).is_err());
+    fn channel_observations_must_match_the_exact_parent_process_object() -> Result<(), ApprovalError>
+    {
+        let parent = ProcessObservation {
+            process_id: 42,
+            session_id: 7,
+        };
+        verify_channel_observations(42, parent, 7, parent, parent)?;
+
+        let invalid = [
+            (0, parent, 7, parent, parent),
+            (43, parent, 7, parent, parent),
+            (
+                42,
+                ProcessObservation {
+                    process_id: 0,
+                    session_id: 7,
+                },
+                7,
+                parent,
+                parent,
+            ),
+            (
+                42,
+                ProcessObservation {
+                    process_id: 42,
+                    session_id: u32::MAX,
+                },
+                7,
+                parent,
+                parent,
+            ),
+            (42, parent, 8, parent, parent),
+            (
+                42,
+                parent,
+                7,
+                ProcessObservation {
+                    process_id: 0,
+                    ..parent
+                },
+                parent,
+            ),
+            (
+                42,
+                parent,
+                7,
+                ProcessObservation {
+                    process_id: 43,
+                    ..parent
+                },
+                parent,
+            ),
+            (
+                42,
+                parent,
+                7,
+                ProcessObservation {
+                    session_id: 8,
+                    ..parent
+                },
+                parent,
+            ),
+            (
+                42,
+                parent,
+                7,
+                parent,
+                ProcessObservation {
+                    process_id: 0,
+                    ..parent
+                },
+            ),
+            (
+                42,
+                parent,
+                7,
+                parent,
+                ProcessObservation {
+                    process_id: 43,
+                    ..parent
+                },
+            ),
+            (
+                42,
+                parent,
+                7,
+                parent,
+                ProcessObservation {
+                    session_id: 8,
+                    ..parent
+                },
+            ),
+        ];
+        assert!(
+            invalid
+                .into_iter()
+                .all(|(hello, proof, child, input, output)| {
+                    verify_channel_observations(hello, proof, child, input, output).is_err()
+                })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_process_observation_is_stable_and_rejects_an_exited_object() -> Result<(), ApprovalError>
+    {
+        // SAFETY: the pseudo handle denotes this exact live test process.
+        let current_process = unsafe { GetCurrentProcess() };
+        // SAFETY: this call returns only the current process's scalar identifier.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let first = live_process_observation(current_process)?;
+        let second = live_process_observation(current_process)?;
+        assert!(first == second);
+        assert_eq!(first.process_id, current_process_id);
+
+        let executable = std::env::current_exe().map_err(super::native_failure)?;
+        let child = BroadInheritanceGrandchild::spawn(&executable)?;
+        let child_process = raw(&child.child.process);
+        let before_exit = live_process_observation(child_process)?;
+        assert_ne!(before_exit.process_id, current_process_id);
+        child.child.terminate_and_reap()?;
+        assert!(live_process_observation(child_process).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn process_session_is_derived_from_the_exact_process_token() -> Result<(), ApprovalError> {
+        // SAFETY: the pseudo handle and scalar PID identify this exact test process.
+        let current_process = unsafe { GetCurrentProcess() };
+        // SAFETY: this call returns only the current process's scalar identifier.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let token_session = process_session_id(current_process)?;
+        let mut pid_session = u32::MAX;
+        // SAFETY: output points to one exact DWORD for the live current PID.
+        unsafe { ProcessIdToSessionId(current_process_id, &raw mut pid_session) }
+            .map_err(super::native_failure)?;
+        assert_ne!(token_session, u32::MAX);
+        assert_eq!(token_session, pid_session);
         Ok(())
     }
 

@@ -6,13 +6,26 @@
 //! security-critical bit. The approval frontend is the sole owner of labels.
 //!
 //! The bootstrap codec fixes frame sizes and order; decoding it is not parent
-//! authentication. The Windows child separately validates the live process and
-//! PID/session correlation, requires case-preserving exact normalized path-string
-//! equality between its image path and a separately held file path, checks the
-//! held path's executable suffix and version metadata, and performs held-handle-
-//! backed Authenticode and SHA-256 policy checks. Those checks do not prove that the live
-//! process was mapped from the exact held file object, nor do pipe PID/session
-//! queries create an exact endpoint/process-object capability. The fixed
+//! authentication. The Windows child makes fresh child-local duplicates of the
+//! injected proof handles; only those copies become authoritative and remain
+//! retained through response write, while the launcher-known original slots are
+//! never adopted and remain only for bounded process-exit cleanup. From the live
+//! exact parent process copy it derives the PID and process-token `TokenSessionId`, and
+//! requires the parent hello, both pipe server client PID/session observations,
+//! and the child token session to match that object. It owns and revalidates this
+//! binding across UI presentation and response write. While the retained process
+//! handle is live, that prevents PID-reuse substitution and corroborates the pipe
+//! observations against the exact live parent process object. Transferable and
+//! duplicable pipe handles still prevent proof of exclusive endpoint ownership,
+//! endpoint topology/exclusivity, or per-write attribution. The child also
+//! requires case-preserving exact normalized path-string equality between its
+//! image path and a separately held file path, checks the held path's executable
+//! suffix and version metadata, and performs held-handle-backed Authenticode and
+//! SHA-256 policy checks. Those checks do not prove that the live process was
+//! mapped from the exact held file object. No positive kernel availability test
+//! yet proves that the zero-capability Approval LPAC can complete
+//! `OpenProcessToken(parent)`; the compiled policies remain `None`, so this
+//! success path remains release-unproven. The fixed
 //! response echoes the request digest and one-shot Approval request nonce, but
 //! not either bootstrap nonce, so replay resistance also depends on the private
 //! one-shot endpoint and a fresh one-shot Approval request nonce. There are zero
@@ -82,9 +95,14 @@ impl std::error::Error for WireError {}
 /// The numeric handles name only the two non-inheritable proof objects already
 /// injected into the suspended child. Decoding this value does not itself
 /// authenticate either object; the child-side Windows boundary must validate
-/// their types and attributes, correlate the process and pipe PID/session, and
-/// apply policy to the separately held image file. The current path correlation
-/// and held-file checks do not prove the live mapped exact file object.
+/// their types and attributes, copy them into fresh child-local handles, retain
+/// only those copies as authority, derive identity from the retained live exact
+/// process object, corroborate both pipe PID/session observations against it,
+/// and apply policy to the separately held image file. This prevents PID-reuse
+/// substitution while the process handle remains live, but transferable pipe
+/// handles still prevent exclusive endpoint ownership or per-write attribution.
+/// The current path correlation and held-file checks do not prove the live
+/// mapped exact file object.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ApprovalParentHello {
     process_id: u32,
@@ -123,13 +141,15 @@ impl ApprovalParentHello {
         self.process_id
     }
 
-    /// Child-local value naming the injected parent process handle.
+    /// Child-local source-slot value for the injected parent process handle.
+    /// The child validates through and retains only a fresh duplicate.
     #[must_use]
     pub const fn process_handle(self) -> u64 {
         self.process_handle
     }
 
-    /// Child-local value naming the injected parent image-file handle.
+    /// Child-local source-slot value for the injected parent image-file handle.
+    /// The child validates through and retains only a fresh duplicate.
     #[must_use]
     pub const fn image_handle(self) -> u64 {
         self.image_handle
