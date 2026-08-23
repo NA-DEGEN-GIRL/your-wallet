@@ -17,7 +17,7 @@ use std::time::Instant;
 use thiserror::Error;
 
 use crate::{
-    attestation::ReleaseAttestation,
+    attestation::{AttestedArtifactDigest, ReleaseAttestation},
     helper::VerifiedHelper,
     key_agent_lpac::PreparedKeyAgentProvisioning,
     key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute},
@@ -187,8 +187,9 @@ impl LaunchPhase {
 /// Opaque ownership of one exact Key Agent that has not executed user code.
 ///
 /// This type is non-cloneable and crate-private. It retains the original
-/// `FILE_SHARE_READ`-only [`VerifiedHelper`] handle, exact process and primary
-/// thread handles, the 128-bit file-object proof, and process creation time.
+/// `FILE_SHARE_READ`-only [`VerifiedHelper`] handle, opaque whole-release
+/// identity, exact process and primary thread handles, the 128-bit file-object
+/// proof, and process creation time.
 /// The only consuming transition resumes it for the fixed storage-startup
 /// probe; no generic resume or raw thread operation is exposed.
 pub(crate) struct HeldKeyAgentActivation {
@@ -196,6 +197,7 @@ pub(crate) struct HeldKeyAgentActivation {
     // Keep the process field first so its Drop cleanup runs before the pinned
     // artifact is closed, even if the explicit Held drop cleanup failed.
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
     creation_time: u64,
 }
@@ -225,6 +227,7 @@ impl HeldKeyAgentActivation {
         let Self {
             process,
             artifact,
+            release_identity,
             artifact_identity,
             creation_time,
         } = self;
@@ -232,6 +235,7 @@ impl HeldKeyAgentActivation {
         Ok(RunningKeyAgentActivation {
             process,
             artifact,
+            release_identity,
             artifact_identity,
             creation_time,
         })
@@ -258,13 +262,15 @@ impl HeldKeyAgentActivation {
 /// Opaque ownership of the exact verified Key Agent after the one permitted
 /// storage-startup resume transition.
 ///
-/// This type proves only that the primary thread was released from the exact
-/// detached suspend count. The supervisor must still authenticate the startup
-/// response before wrapping it in a storage-proven aggregate.
+/// It retains the pinned artifact and opaque whole-release identity, but proves
+/// only that the primary thread was released from the exact detached suspend
+/// count. The supervisor must still authenticate the startup response before
+/// wrapping it in a storage-proven aggregate.
 pub(crate) struct RunningKeyAgentActivation {
     process: sys::DetachedRunningDebuggee,
     // Keep process cleanup ahead of the verified artifact pin.
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
     creation_time: u64,
 }
@@ -356,11 +362,21 @@ impl fmt::Debug for HeldKeyAgentActivation {
 ///
 /// Construction performs the complete role -> release evidence -> manifest
 /// allowlist -> absolute-path sequence before a worker, Job, pipe, or process
-/// is created. The held [`VerifiedHelper`] remains pinned through exact-image
-/// authentication. This capability is non-cloneable and has no artifact or
-/// raw-handle accessor.
+/// is created. The held [`VerifiedHelper`] and opaque whole-release identity
+/// remain pinned through exact-image authentication. This capability is
+/// non-cloneable and has no artifact, release-digest, or raw-handle accessor.
 pub(crate) struct PreflightKeyAgentArtifact {
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
+}
+
+impl PreflightKeyAgentArtifact {
+    /// Compares durable install provenance with the exact release cohort that
+    /// authorized this already-held Key Agent artifact. No raw release digest
+    /// is exposed to callers.
+    pub(crate) fn matches_release_identity(&self, expected: &[u8; 32]) -> bool {
+        self.release_identity.matches(expected)
+    }
 }
 
 impl fmt::Debug for PreflightKeyAgentArtifact {
@@ -377,9 +393,9 @@ pub(crate) fn preflight_key_agent_activation(
     if !artifact.is_key_agent() {
         return Err(KeyAgentActivationError::WrongRole);
     }
-    if !attestation.signing_enabled() {
-        return Err(KeyAgentActivationError::ReleaseNotAttested);
-    }
+    let release_identity = attestation
+        .attested_artifact()
+        .ok_or(KeyAgentActivationError::ReleaseNotAttested)?;
     if !attestation.allows_helper_manifest(artifact.manifest_digest()) {
         return Err(KeyAgentActivationError::ManifestNotAllowed);
     }
@@ -387,7 +403,10 @@ pub(crate) fn preflight_key_agent_activation(
         return Err(KeyAgentActivationError::InvalidPath);
     }
 
-    Ok(PreflightKeyAgentArtifact { artifact })
+    Ok(PreflightKeyAgentArtifact {
+        artifact,
+        release_identity,
+    })
 }
 
 /// One-shot proof that code is running on the activation-owned fresh OS thread.
@@ -448,11 +467,15 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     coordination_deadline: Instant,
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
-    let PreflightKeyAgentArtifact { artifact } = preflighted;
+    let PreflightKeyAgentArtifact {
+        artifact,
+        release_identity,
+    } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     activate_preflighted_key_agent_on_fresh_worker_with_identity(
         fresh_thread,
         artifact,
+        release_identity,
         artifact_identity,
         provisioning,
         pipes,
@@ -477,7 +500,10 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
     coordination_deadline: Instant,
     command_line: &mut [u16],
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
-    let PreflightKeyAgentArtifact { artifact } = preflighted;
+    let PreflightKeyAgentArtifact {
+        artifact,
+        release_identity,
+    } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     verify_empty_root_job(root_job)?;
     let process = sys::SuspendedDebuggee::create_with_test_command_line(
@@ -489,7 +515,13 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
         coordination_deadline,
         command_line,
     )?;
-    authenticate_detach_and_bind_activation(artifact, artifact_identity, root_job, process)
+    authenticate_detach_and_bind_activation(
+        artifact,
+        release_identity,
+        artifact_identity,
+        root_job,
+        process,
+    )
 }
 
 // Keeping each lifetime-bound launch authority explicit makes mismatched Job,
@@ -498,6 +530,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
 fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     _fresh_thread: FreshKeyAgentDebugThread,
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
     provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
@@ -514,11 +547,18 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
         root_job_attribute,
         coordination_deadline,
     )?;
-    authenticate_detach_and_bind_activation(artifact, artifact_identity, root_job, process)
+    authenticate_detach_and_bind_activation(
+        artifact,
+        release_identity,
+        artifact_identity,
+        root_job,
+        process,
+    )
 }
 
 fn authenticate_detach_and_bind_activation(
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
     root_job: &KeyAgentRootJob,
     mut process: sys::SuspendedDebuggee,
@@ -540,6 +580,7 @@ fn authenticate_detach_and_bind_activation(
     Ok(HeldKeyAgentActivation {
         process,
         artifact,
+        release_identity,
         artifact_identity,
         creation_time: first_event.creation_time,
     })
@@ -1654,9 +1695,11 @@ mod tests {
         preflight_key_agent_activation, run_on_fresh_key_agent_debug_thread, sys,
     };
     use crate::{
-        attestation::ReleaseAttestation, helper::VerifiedHelper,
+        attestation::{ArtifactDigest, ReleaseAttestation},
+        helper::VerifiedHelper,
         inheritable_handle_launch::acquire_inheritable_handle_launch,
-        key_agent_lpac::PreparedKeyAgentProvisioning, key_agent_root_job::KeyAgentRootJob,
+        key_agent_lpac::PreparedKeyAgentProvisioning,
+        key_agent_root_job::KeyAgentRootJob,
         pipe::PrivateKeyAgentPipes,
     };
 
@@ -1765,11 +1808,10 @@ mod tests {
     }
 
     fn attestation_for(artifact: &VerifiedHelper) -> ReleaseAttestation {
-        ReleaseAttestation::with_helper_manifests_for_test([
-            artifact.manifest_digest(),
-            [25; 32],
-            [26; 32],
-        ])
+        ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([23; 32]),
+            [artifact.manifest_digest(), [25; 32], [26; 32]],
+        )
     }
 
     #[test]
@@ -2205,10 +2247,14 @@ mod tests {
             let root_job_attribute = root_job
                 .creation_attribute()
                 .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-            let PreflightKeyAgentArtifact { artifact } = preflighted;
+            let PreflightKeyAgentArtifact {
+                artifact,
+                release_identity,
+            } = preflighted;
             activate_preflighted_key_agent_on_fresh_worker_with_identity(
                 fresh_thread,
                 artifact,
+                release_identity,
                 wrong_identity,
                 &provisioning,
                 &pipes,

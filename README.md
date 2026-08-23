@@ -592,9 +592,17 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   sealed existing-install adoption transition의 `HeldExistingKeyAgentInstallObjects::into_prepared`
   입니다. 이 transition은 initial snapshot과 계약상 post-observation reread snapshot,
   fixed-profile binding과 no-delete-share held root를 받아 matcher 전후로 binding/root를
-  재검증하고 `Prepared`를 `VerifiedExistingKeyAgentInstall` 안에 봉인합니다. 그러나
-  production에는 held aggregate constructor, transition caller, verified aggregate consumer가
-  없어 기존 profile이나 leaf를 열거나 채택·복구·삭제하지 않고 fail-closed합니다. 향후
+  재검증하고 `Prepared`를 `VerifiedExistingKeyAgentInstall` 안에 봉인합니다. 이어 구현된
+  dormant release-binding은 held Key Agent를 preflight하고 journal `release_identity`를
+  `ReleaseAttestation`이 승인한 전체 `ReleasePolicy` `ArtifactDigest`와 constant-time으로
+  비교한 뒤에만 `ArtifactBoundExistingKeyAgentInstall`을 만듭니다. 이 값은 helper manifest
+  digest나 Windows file identity와 다릅니다. helper manifest는 역할·버전·실행 파일 hash·
+  signer를, held handle과 `FILE_ID_INFO`는 실제 child file object를 별도로 묶습니다. 봉인된
+  supervisor split만 artifact-bound 값을 소비할 수 있고 install continuity는 dormant 및
+  storage-proven 상태까지 유지됩니다. 하지만 adoption transition, release-binding, dormant
+  supervisor binder의 production caller는 모두 0개입니다. production에는 held aggregate
+  constructor도 없어 기존 profile이나 leaf를 열거나 채택·복구·삭제하지 않고
+  fail-closed합니다. 향후
   production adapter가 구성할 fixed-profile-binding/held-root aggregate는 stable current
   `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만 포함하는 protected DACL,
   inherited Low/`NW` mandatory label, local fixed NTFS와 persistent ACL/non-reparse 상태,
@@ -678,13 +686,21 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `RootCreated`와 `Committed`만 동일한 완전한 root 증거를 가집니다. canonical journal
   validator에는 production installer key/checkpoint constructor, journal reader/writer
   backend와 caller가 없습니다. 인증된 two-snapshot matcher의 production-code consumer는
-  위 private dormant adoption transition 하나뿐입니다.
+  위 private dormant adoption transition 하나뿐입니다. journal `release_identity`는 전체
+  `ReleasePolicy` `ArtifactDigest`이고 helper manifest digest나 `FILE_ID_INFO`가 아닙니다.
+  이 전체 release 비교와 exact child preflight를 결합하는 dormant binding은 구현됐지만
+  production caller가 없습니다. committed whole-release identity가 달라지면 현재 계약상
+  in-place upgrade가 아니라 `RecoveryRequired`입니다. checkpoint/observation/reread 순서를
+  직렬화하는 exclusive installer lease가 없으므로 production upgrade orchestration도
+  열리지 않습니다. 그 결과는 runtime/signing IPC, installer key,
+  rollback anchor, storage/AEAD key 또는 protected-settings/lease authority가 아닙니다.
 - 따라서 통합 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory
   anchor와 합성 key/payload를 사용하는 `cfg(test)` 증명이지 production fresh
   profile/root E2E나 release wiring이 아닙니다. production에는 authoritative
   profile-registration observer, fixed existing-root opener와 held-aggregate constructor,
   post-observation reread 순서를 강제하는 exclusive installer lease, canonical-path reopen
-  identity 비교, downstream artifact-binding consumer와 recovery wiring이 없습니다.
+  identity 비교, production installer key/checkpoint 및 journal I/O backend, dormant-binding
+  caller, recovery 및 release-activation wiring이 없습니다.
   same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
   provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
   single-instance, signed immutable artifact 및 DLL/dependency E2E도 모두 남아 있습니다.

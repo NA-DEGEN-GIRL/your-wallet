@@ -4,6 +4,7 @@
 //! evidence digests from tests performed against the exact artifact digest passed
 //! to `ReleaseAttestation::evaluate`.
 
+use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 
 const REQUIRED_HELPER_MANIFESTS: usize = 3;
@@ -45,6 +46,37 @@ impl ArtifactDigest {
             return Err(AttestationError::ZeroDigest);
         }
         Ok(Self(value))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(value: [u8; 32]) -> Self {
+        assert!(
+            value != [0; 32],
+            "test release artifact digest must be nonzero"
+        );
+        Self(value)
+    }
+}
+
+/// Opaque proof that the compiled release policy accepted one exact artifact.
+///
+/// Unlike [`ArtifactDigest`], ordinary callers cannot construct this type. It
+/// is retained only by a successful [`ReleaseAttestation`] so later internal
+/// boundaries can bind durable installation evidence to the same release
+/// cohort without accepting a caller-supplied digest as authority.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct AttestedArtifactDigest(ArtifactDigest);
+
+impl AttestedArtifactDigest {
+    /// Compares an authenticated release identity with durable opaque bytes.
+    pub(crate) fn matches(self, expected: &[u8; 32]) -> bool {
+        self.0.0.ct_eq(expected).into()
+    }
+}
+
+impl core::fmt::Debug for AttestedArtifactDigest {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("AttestedArtifactDigest([REDACTED])")
     }
 }
 
@@ -126,7 +158,7 @@ impl ReleaseEvidence {
 /// A fail-closed signing-release attestation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReleaseAttestation {
-    signing_enabled: bool,
+    attested_artifact: Option<AttestedArtifactDigest>,
     allowed_helper_manifest_digests: Option<[[u8; 32]; REQUIRED_HELPER_MANIFESTS]>,
     allowed_broker_manifest_digest: Option<[u8; 32]>,
 }
@@ -183,7 +215,7 @@ impl ReleaseAttestation {
         let allowed_broker_manifest_digest =
             signing_enabled.then_some(policy.broker_manifest_digest);
         Self {
-            signing_enabled,
+            attested_artifact: signing_enabled.then_some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests,
             allowed_broker_manifest_digest,
         }
@@ -193,13 +225,20 @@ impl ReleaseAttestation {
     /// same exact artifact.
     #[must_use]
     pub const fn signing_enabled(self) -> bool {
-        self.signing_enabled
+        self.attested_artifact.is_some()
+    }
+
+    /// Returns the exact release identity only after complete compiled evidence
+    /// accepted it. The returned type is opaque and cannot be forged from raw
+    /// bytes by sibling modules.
+    pub(crate) const fn attested_artifact(self) -> Option<AttestedArtifactDigest> {
+        self.attested_artifact
     }
 
     /// Returns whether this successful attestation retained the exact helper
     /// manifest digest compiled into the signed release policy.
     pub(crate) fn allows_helper_manifest(self, digest: [u8; 32]) -> bool {
-        self.signing_enabled
+        self.attested_artifact.is_some()
             && self
                 .allowed_helper_manifest_digests
                 .is_some_and(|allowed| allowed.contains(&digest))
@@ -208,24 +247,28 @@ impl ReleaseAttestation {
     /// Returns whether this successful attestation retained the one exact
     /// Broker manifest digest compiled into the signed release policy.
     pub(crate) fn allows_broker_manifest(self, digest: [u8; 32]) -> bool {
-        self.signing_enabled && self.allowed_broker_manifest_digest == Some(digest)
+        self.attested_artifact.is_some() && self.allowed_broker_manifest_digest == Some(digest)
     }
 
     #[cfg(test)]
     pub(crate) const fn with_helper_manifests_for_test(
+        artifact: ArtifactDigest,
         digests: [[u8; 32]; REQUIRED_HELPER_MANIFESTS],
     ) -> Self {
         Self {
-            signing_enabled: true,
+            attested_artifact: Some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests: Some(digests),
             allowed_broker_manifest_digest: None,
         }
     }
 
     #[cfg(test)]
-    pub(crate) const fn with_broker_manifest_for_test(digest: [u8; 32]) -> Self {
+    pub(crate) const fn with_broker_manifest_for_test(
+        artifact: ArtifactDigest,
+        digest: [u8; 32],
+    ) -> Self {
         Self {
-            signing_enabled: true,
+            attested_artifact: Some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests: None,
             allowed_broker_manifest_digest: Some(digest),
         }
@@ -297,8 +340,11 @@ mod tests {
             .with_appcontainer_network_denial(evidence(release, APP_CONTAINER_SUITE)?)
             .with_helper_verification(evidence(release, HELPER_SUITE)?)
             .with_handle_leak_tests(evidence(release, HANDLE_SUITE)?);
-        assert!(!ReleaseAttestation::evaluate(release, incomplete).signing_enabled());
+        let disabled = ReleaseAttestation::evaluate(release, incomplete);
+        assert!(!disabled.signing_enabled());
+        assert!(disabled.attested_artifact().is_none());
         assert!(!ReleaseAttestation::default().signing_enabled());
+        assert!(ReleaseAttestation::default().attested_artifact().is_none());
         assert!(!ReleaseAttestation::default().allows_broker_manifest(BROKER_MANIFEST));
         Ok(())
     }
@@ -326,6 +372,11 @@ mod tests {
         let attestation =
             ReleaseAttestation::evaluate_against_policy(&policy(release), release, &complete);
         assert!(attestation.signing_enabled());
+        assert!(
+            attestation
+                .attested_artifact()
+                .is_some_and(|identity| identity.matches(&[1; 32]))
+        );
         assert!(attestation.allows_helper_manifest([6; 32]));
         assert!(attestation.allows_helper_manifest([7; 32]));
         assert!(attestation.allows_helper_manifest([8; 32]));
@@ -335,6 +386,11 @@ mod tests {
         assert!(
             !ReleaseAttestation::evaluate(release, complete).signing_enabled(),
             "development builds have no compiled release policy"
+        );
+        assert!(
+            ReleaseAttestation::evaluate(release, complete)
+                .attested_artifact()
+                .is_none()
         );
         assert!(
             !ReleaseAttestation::evaluate(release, complete)

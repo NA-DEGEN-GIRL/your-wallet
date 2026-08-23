@@ -1407,7 +1407,7 @@ mod tests {
         launch_prepared_release_broker_channel, launch_prepared_release_broker_channel_for_test,
         sys,
     };
-    use crate::attestation::ReleaseAttestation;
+    use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::broker_artifact::{preflight_broker_artifact, prepare_release_broker_supervisor};
     use crate::exact_image::held_helper_file_identity;
     use crate::helper::VerifiedHelper;
@@ -1575,7 +1575,10 @@ mod tests {
         )?;
         let held_handle = broker.raw_handle();
         let expected_identity = held_helper_file_identity(&broker)?;
-        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(
+            ArtifactDigest::for_test([0x40; 32]),
+            BROKER_MANIFEST,
+        );
         let admitted = preflight_broker_artifact(attestation, broker)?;
 
         let prepared = prepare_release_broker_supervisor(admitted)?;
@@ -1928,7 +1931,10 @@ mod tests {
         path: PathBuf,
     ) -> Result<PreparedReleaseBrokerSupervisor, Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_broker_artifact_test(path, BROKER_MANIFEST, true)?;
-        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(
+            ArtifactDigest::for_test([0x40; 32]),
+            BROKER_MANIFEST,
+        );
         let admitted = preflight_broker_artifact(attestation, artifact)?;
         Ok(prepare_release_broker_supervisor(admitted)?)
     }

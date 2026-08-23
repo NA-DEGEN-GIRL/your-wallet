@@ -1553,7 +1553,7 @@ mod tests {
 
     use super::RestrictedLauncher;
     use super::{HeldProcessIdentity, InheritedStdio, LaunchError, NoNetworkLpacProfile, sys};
-    use crate::attestation::ReleaseAttestation;
+    use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::{FileIdentity, VerifiedHelper};
 
     fn anonymous_pipe() -> Result<(OwnedHandle, OwnedHandle), Box<dyn std::error::Error>> {
@@ -1788,8 +1788,10 @@ mod tests {
             Err(LaunchError::ReleaseNotAttested)
         );
 
-        let release =
-            ReleaseAttestation::with_helper_manifests_for_test([[5; 32], [6; 32], [7; 32]]);
+        let release = ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([4; 32]),
+            [[5; 32], [6; 32], [7; 32]],
+        );
         let launcher = RestrictedLauncher::new(release, profile);
         assert_eq!(launcher.require_allowed_helper([5; 32]), Ok(()));
         assert_eq!(launcher.require_allowed_helper([6; 32]), Ok(()));
@@ -1804,11 +1806,10 @@ mod tests {
     fn generic_launcher_rejects_allowlisted_key_agent_before_process_creation()
     -> Result<(), Box<dyn std::error::Error>> {
         let key_agent = VerifiedHelper::for_key_agent_activation_test()?;
-        let release = ReleaseAttestation::with_helper_manifests_for_test([
-            key_agent.manifest_digest(),
-            [6; 32],
-            [7; 32],
-        ]);
+        let release = ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([4; 32]),
+            [key_agent.manifest_digest(), [6; 32], [7; 32]],
+        );
         let launcher = RestrictedLauncher::new(release, NoNetworkLpacProfile::v1());
         let (read, write) = anonymous_pipe()?;
         let stdio = InheritedStdio::new(read.as_handle(), write.as_handle(), write.as_handle())?;

@@ -165,7 +165,15 @@ authenticated with an installer-owned HMAC-SHA256 key before parsing. Exact
 phase-specific payloads, the `Prepared=1`, `ProfileCreated=2`, `RootCreated=3`,
 `Committed=4` sequence, predecessor commitments, and a separately sealed
 rollback-resistant checkpoint bind the independent installation/release
-identities, high-water generation, and current commitment. Lower/higher
+identities, high-water generation, and current commitment. The authenticated
+journal `release_identity` is the whole-release `ReleasePolicy`
+`ArtifactDigest` accepted by `ReleaseAttestation`, not the helper-manifest
+digest or a Windows file identity. The manifest separately binds the exact child
+role, version, executable hash, and signer; the retained handle and full
+`FILE_ID_INFO` bind the child file object. A changed committed whole-release
+identity is `RecoveryRequired`, not an in-place upgrade. No exclusive installer
+lease yet serializes checkpoint, observation, and post-observation reread, so
+production upgrade orchestration remains closed. Lower/higher
 generations, gaps, reorderings, same-generation alternate histories, malformed
 bytes, non-canonical unused fields, or root evidence before creation fail
 closed. Only `RootCreated` and `Committed` carry the same canonical profile/owner
@@ -175,17 +183,24 @@ authority-free evidence copied from a fixed-profile-binding and held-root
 aggregate; only current `Committed=4` consistency produces stable evidence. Its
 sole production-code consumer is the dormant sealed transition, which
 revalidates the same binding/root around the match and retains the prepared
-capability inside a private verified aggregate. The journal validator has no
+capability inside `VerifiedExistingKeyAgentInstall`. The implemented dormant
+release-binding preflights the exact child, constant-time compares that whole
+release identity, and only then creates `ArtifactBoundExistingKeyAgentInstall`.
+Only the supervisor's private-field seal can split it, and install continuity is
+retained through dormant and storage-proven states. This is not runtime/signing
+IPC, installer-key, rollback-anchor, storage/AEAD-key, or
+protected-settings/lease authority. The journal validator has no
 production key/checkpoint constructor, journal reader/writer backend, or caller.
-The transition has no production caller and the verified aggregate has no
-downstream artifact consumer.
+The adoption transition, release-binding, and dormant supervisor binder all have
+zero production call sites.
 
 The remaining limits are immediate. Existing production profiles still lack
 installer-owned key/checkpoint provisioning, authoritative profile-registration
 observation, a fixed existing-root opener and held-aggregate constructor, an
 exclusive installer lease enforcing the post-observation reread,
-canonical-path reopen identity comparison, durable journal I/O, downstream
-artifact binding, and recovery wiring; the root `TokenUser` ACE leaves
+canonical-path reopen identity comparison, production installer-key/checkpoint
+and journal I/O backends, recovery, and release-activation orchestration; the
+root `TokenUser` ACE leaves
 other same-user processes able to access it, and ancestor path validation is
 not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process
@@ -294,11 +309,16 @@ Before any real mainnet value is used, the Windows build must prove:
    dual-principal file policy. Fresh creation now yields only a non-launchable
    pending state, and the pure provenance classifier yields only
    non-authoritative candidates. A separate sealed dormant transition now tests
-   the adoption-rule composition over test-held objects, but it cannot open or
+   the adoption-rule composition over test-held objects. The compiled
+   whole-release binding then separates the journal `release_identity` from the
+   helper-manifest and exact file-object identities and retains continuity, but
+   neither it nor the dormant supervisor binder has a production call site. It
+   cannot open or
    adopt a production installation because authoritative profile-registration
    observation, an existing-root opener, production snapshot/lease/reread
-   orchestration, canonical-path identity rebinding, a downstream artifact
-   consumer, and recovery wiring are absent. These proofs also do not
+   orchestration, canonical-path identity rebinding, production
+   installer-key/checkpoint and journal I/O backends, recovery, and release
+   activation are absent. These proofs also do not
    authenticate or anchor production installer provenance or provision a
    production rollback anchor or storage/AEAD keys, connect protected settings
    and its live lease, authenticate the Broker/supervisor/process topology or

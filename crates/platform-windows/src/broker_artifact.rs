@@ -114,7 +114,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{BrokerArtifactError, preflight_broker_artifact};
-    use crate::attestation::ReleaseAttestation;
+    use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::VerifiedHelper;
 
     const BROKER_MANIFEST: [u8; 32] = [0x41; 32];
@@ -160,7 +160,10 @@ mod tests {
     fn exact_broker_manifest_is_required_before_path_admission()
     -> Result<(), Box<dyn std::error::Error>> {
         let relative_broker = artifact(PathBuf::from("broker.exe"), BROKER_MANIFEST, true)?;
-        let wrong_manifest = ReleaseAttestation::with_broker_manifest_for_test([0x42; 32]);
+        let wrong_manifest = ReleaseAttestation::with_broker_manifest_for_test(
+            ArtifactDigest::for_test([0x40; 32]),
+            [0x42; 32],
+        );
         assert!(matches!(
             preflight_broker_artifact(wrong_manifest, relative_broker),
             Err(BrokerArtifactError::ManifestNotAllowed)
@@ -171,7 +174,10 @@ mod tests {
     #[test]
     fn relative_path_is_rejected_after_exact_manifest() -> Result<(), Box<dyn std::error::Error>> {
         let relative_broker = artifact(PathBuf::from("broker.exe"), BROKER_MANIFEST, true)?;
-        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(
+            ArtifactDigest::for_test([0x40; 32]),
+            BROKER_MANIFEST,
+        );
         assert!(matches!(
             preflight_broker_artifact(attestation, relative_broker),
             Err(BrokerArtifactError::InvalidPath)
@@ -183,7 +189,10 @@ mod tests {
     fn exact_release_bound_broker_mints_only_redacted_opaque_capability()
     -> Result<(), Box<dyn std::error::Error>> {
         let broker = artifact(absolute_path()?, BROKER_MANIFEST, true)?;
-        let attestation = ReleaseAttestation::with_broker_manifest_for_test(BROKER_MANIFEST);
+        let attestation = ReleaseAttestation::with_broker_manifest_for_test(
+            ArtifactDigest::for_test([0x40; 32]),
+            BROKER_MANIFEST,
+        );
         let admitted = preflight_broker_artifact(attestation, broker)?;
         assert_eq!(admitted.artifact.manifest_digest(), BROKER_MANIFEST);
         assert_eq!(

@@ -88,11 +88,24 @@ Implemented:
   contractually post-observation authenticated snapshot plus a fixed-profile
   binding and retained no-delete-share root, revalidates the binding and held
   root before and after matching, and seals the prepared capability inside
-  `VerifiedExistingKeyAgentInstall`. That transition has no production caller,
-  and the verified aggregate has no downstream consumer, so an existing
-  production profile or leaf still fails closed and is not opened, adopted,
-  repaired, or deleted. A future production adapter that constructs the held
-  aggregate must validate a stable current-`TokenUser` owner and exact protected
+  `VerifiedExistingKeyAgentInstall`. The implemented dormant release-binding
+  preflights the held Key Agent and then constant-time compares the journal
+  `release_identity` with the whole-release `ReleasePolicy` `ArtifactDigest`
+  accepted by `ReleaseAttestation`. That identity is not the helper-manifest
+  digest or a Windows file identity: the manifest separately binds role,
+  version, executable hash, and signer, while the retained handle and full
+  `FILE_ID_INFO` bind the exact child file object. Only the supervisor's sealed
+  split can consume `ArtifactBoundExistingKeyAgentInstall`, and install
+  continuity remains retained through the dormant and storage-proven states.
+  A changed committed whole-release identity is `RecoveryRequired`, not an
+  in-place upgrade under this contract. No exclusive installer lease yet
+  serializes checkpoint, observation, and post-observation reread, so production
+  upgrade orchestration remains closed.
+  The adoption transition, release-binding, and dormant supervisor binder all
+  have zero production call sites, so an existing production profile or leaf
+  still fails closed and is not opened, adopted, repaired, or deleted. A future
+  production adapter that constructs the held aggregate must validate a stable
+  current-`TokenUser` owner and exact protected
   DACL for that SID plus the fixed profile SID, the exact inherited Low/`NW`
   mandatory label, fixed local NTFS with persistent ACLs, non-reparse state, and
   a nonzero-volume, non-sentinel 128-bit `FILE_ID_INFO`. Its directory handle
@@ -171,11 +184,14 @@ Implemented:
   accepts only `PreparedKeyAgentProvisioning`, and there is no direct
   pending/candidate conversion. The sole sealed mint described above revalidates
   the fixed-profile binding and same held root around the pure match and retains
-  the result inside a private verified aggregate. Production still lacks an
+  the result inside a private verified aggregate. Its one compiled downstream
+  boundary performs the whole-release artifact match described above but has no
+  production caller. Production still lacks an
   authoritative profile-registration observer, fixed existing-root opener and
   held-aggregate constructor, an exclusive installer lease that enforces the
   post-observation reread, canonical-path reopen identity comparison, a
-  downstream artifact-binding consumer, durable journal writing, and recovery;
+  production installer-key/checkpoint and journal reader/writer backend,
+  recovery, and release-activation orchestration;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
   Before mutation it requires exactly three distinct kernel objects with exact
@@ -248,8 +264,10 @@ Implemented:
   pending/launch typestate split, and compiled dormant adoption transition do
   not supply production journal inputs, authoritative profile-registration
   observation, fixed existing-root opening, exclusive lease/reread
-  orchestration, canonical-path identity rebinding, downstream artifact
-  consumption, or recovery. The root's
+  orchestration, canonical-path identity rebinding, a production caller for the
+  implemented dormant whole-release binding, recovery, or release activation.
+  The artifact-bound continuity is not runtime/signing IPC, an installer key,
+  rollback anchor, storage/AEAD key, or protected-settings authority. The root's
   `TokenUser` ACE permits other same-user processes while ancestor checks remain
   non-atomic. Production rollback-anchor and storage/AEAD-key provisioning,
   live protected-settings/lease authority, authenticated Broker/supervisor
@@ -422,16 +440,18 @@ Stop-ship before any signing-capable release:
     preamble and optional exact System32 `conhost.exe` topology accommodation are
     test-only and are not release attestation.
 11. Non-launchable fresh fixed-profile/root creation, the pure non-authoritative
-    provenance classifier, private dormant sealed adoption transition, fixed
+    provenance classifier, private dormant sealed adoption and whole-release
+    artifact-binding transitions, fixed
     zero-capability LPAC token verification,
     test-root child open/binding, and the narrow private
     generation-file policy are implemented and covered together by the
     `cfg(test)` integrated LPAC fixture. Keep production storage authorization
     **STOP-SHIP** until installer-owned authenticated and rollback-resistant
     journal inputs, authoritative profile-registration observation, fixed-root
-    opening, and an exclusive lease/post-observation reread connect the already
-    implemented dormant adoption transition to an exact artifact-binding
-    consumer and recovery path; the production rollback
+    opening, and an exclusive installer lease/post-observation reread invoke the
+    already implemented dormant artifact-binding and supervisor path; production
+    installer-key/checkpoint and journal I/O backends plus recovery and release
+    activation are supplied; the production rollback
     anchor and storage/AEAD keys are
     provisioned, and a protected-settings lease plus authenticated
     Broker/supervisor/single-instance topology consumes the sealed bindings. The

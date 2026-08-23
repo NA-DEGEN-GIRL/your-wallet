@@ -5017,6 +5017,50 @@ const inheritableHandleLaunch = withoutBottomTestModule(
   inheritableHandleLaunchSource,
 );
 const attestationProduction = withoutBottomTestModule(attestation);
+const attestationRelease = withoutCfgTestItems(attestationProduction);
+const attestationReleaseCode = rustLexicalCode(attestationRelease);
+const attestedArtifactDigestImpl = rustLexicalItemBlock(
+  attestationRelease,
+  /impl\s+AttestedArtifactDigest\s*\{/u,
+);
+const attestedArtifactDigestDebugImpl = rustLexicalItemBlock(
+  attestationRelease,
+  /impl\s+core::fmt::Debug\s+for\s+AttestedArtifactDigest\s*\{/u,
+);
+const releaseAttestationBlock = rustTopLevelLexicalItemBlock(
+  attestationRelease,
+  /pub\s+struct\s+ReleaseAttestation\s*\{/u,
+);
+const releaseAttestationImpl = rustLexicalItemBlock(
+  attestationRelease,
+  /impl\s+ReleaseAttestation\s*\{/u,
+);
+const evaluateReleaseAttestationAgainstPolicy = rustFunctionBlock(
+  releaseAttestationImpl,
+  "evaluate_against_policy",
+);
+const attestedArtifactAccessor = rustFunctionBlock(
+  releaseAttestationImpl,
+  "attested_artifact",
+);
+const attestedArtifactMatches = rustFunctionBlock(
+  attestedArtifactDigestImpl,
+  "matches",
+);
+const attestedArtifactDigestConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/attestation.rs" &&
+      /\bAttestedArtifactDigest\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const attestedArtifactAccessorConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/attestation.rs" &&
+      rustCallSites(file.source, "attested_artifact").length > 0,
+  )
+  .map((file) => file.path);
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
 );
@@ -5029,17 +5073,95 @@ requireInvariant(
     activationHelper,
   ) &&
     (activationHelper.match(/\bfor_broker_artifact_test\b/gu) ?? []).length === 1 &&
-    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(digest: \[u8; 32\]\) -> Self\s*\{/u.test(
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
     (attestationProduction.match(/\bwith_broker_manifest_for_test\b/gu) ?? [])
       .length === 1 &&
-    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_helper_manifests_for_test\(\s*digests: \[\[u8; 32\]; REQUIRED_HELPER_MANIFESTS\],\s*\) -> Self\s*\{/u.test(
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_helper_manifests_for_test\(\s*artifact: ArtifactDigest,\s*digests: \[\[u8; 32\]; REQUIRED_HELPER_MANIFESTS\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
     (attestationProduction.match(/\bwith_helper_manifests_for_test\b/gu) ?? [])
-      .length === 1,
+      .length === 1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) fn for_test\(value: \[u8; 32\]\) -> Self\s*\{\s*assert!\(\s*value != \[0; 32\]/u.test(
+      attestationProduction,
+    ) &&
+    (attestationProduction.match(/\bfor_test\b/gu) ?? []).length === 1,
   "Broker/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
+);
+requireInvariant(
+  /#\[derive\(Clone,\s*Copy,\s*Eq,\s*PartialEq\)\]\s*pub\(crate\)\s+struct\s+AttestedArtifactDigest\(ArtifactDigest\)\s*;/u.test(
+    attestationReleaseCode,
+  ) &&
+    (attestationReleaseCode.match(/\bAttestedArtifactDigest\s*\(/gu) ?? [])
+      .length === 2 &&
+    evaluateReleaseAttestationAgainstPolicy.includes(
+      "attested_artifact: signing_enabled.then_some(AttestedArtifactDigest(artifact))",
+    ) &&
+    rustLexicalCode(releaseAttestationBlock).replace(/\s+/gu, "") ===
+      "pubstructReleaseAttestation{attested_artifact:Option<AttestedArtifactDigest>,allowed_helper_manifest_digests:Option<[[u8;32];REQUIRED_HELPER_MANIFESTS]>,allowed_broker_manifest_digest:Option<[u8;32]>,}" &&
+    rustLexicalCode(attestedArtifactMatches).replace(/\s+/gu, "") ===
+      "pub(crate)fnmatches(self,expected:&[u8;32])->bool{self.0.0.ct_eq(expected).into()}" &&
+    rustLexicalCode(attestedArtifactAccessor).replace(/\s+/gu, "") ===
+      "pub(crate)constfnattested_artifact(self)->Option<AttestedArtifactDigest>{self.attested_artifact}" &&
+    JSON.stringify(
+      [
+        ...rustLexicalCode(attestedArtifactDigestImpl).matchAll(
+          /\bpub(?:\s*\([^)]*\))?\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+        ),
+      ].map((match) => match.groups.name),
+    ) === JSON.stringify(["matches"]) &&
+    JSON.stringify(
+      [
+        ...rustLexicalCode(releaseAttestationImpl).matchAll(
+          /\bpub(?:\s*\([^)]*\))?\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+        ),
+      ].map((match) => match.groups.name),
+    ) ===
+      JSON.stringify([
+        "evaluate",
+        "signing_enabled",
+        "attested_artifact",
+        "allows_helper_manifest",
+        "allows_broker_manifest",
+      ]) &&
+    JSON.stringify(
+      rustImplItems(attestationRelease)
+        .filter((item) => /\bAttestedArtifactDigest\b/u.test(item.header))
+        .map((item) => item.header),
+    ) ===
+      JSON.stringify([
+        "impl AttestedArtifactDigest",
+        "impl core::fmt::Debug for AttestedArtifactDigest",
+      ]) &&
+    rustLexicalCode(attestedArtifactDigestDebugImpl).replace(/\s+/gu, "") ===
+      "implcore::fmt::DebugforAttestedArtifactDigest{fnfmt(&self,formatter:&mutcore::fmt::Formatter<'_>)->core::fmt::Result{formatter.write_str()}}" &&
+    attestation.includes("AttestedArtifactDigest([REDACTED])") &&
+    JSON.stringify(attestedArtifactDigestConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+    JSON.stringify(attestedArtifactAccessorConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+    platformWindowsProductionFiles
+      .filter(
+        (file) =>
+          file.path !== "crates/platform-windows/src/attestation.rs",
+      )
+      .every(
+        (file) =>
+          (rustLexicalCode(file.source).match(
+            /\bAttestedArtifactDigest\s*\(/gu,
+          ) ?? []).length === 0,
+      ) &&
+    !/impl\s+(?:Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\s+for\s+AttestedArtifactDigest\b/u.test(
+      attestationReleaseCode,
+    ) &&
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:raw\w*|as_bytes|into_inner|into_parts|artifact_digest|manifest_digest)\b/u.test(
+      attestedArtifactDigestImpl,
+    ) &&
+    !/\b(?:allowed_helper_manifest_digests|allowed_broker_manifest_digest)\s*:\s*Option<AttestedArtifactDigest>/u.test(
+      attestationReleaseCode,
+    ),
+  "whole-release AttestedArtifactDigest authority must be opaque, compiled-policy-minted once, raw-getter-free, and distinct from helper or Broker manifest digests",
 );
 const brokerPreflight = rustFunctionBlock(
   brokerArtifactProduction,
@@ -6543,18 +6665,49 @@ const verifiedExistingKeyAgentInstallBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+struct\s+VerifiedExistingKeyAgentInstall\s*\{/u,
 );
+const verifiedKeyAgentInstallContinuityBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+struct\s+VerifiedKeyAgentInstallContinuity\s*\{/u,
+);
+const artifactBoundExistingKeyAgentInstallBlock =
+  rustTopLevelLexicalItemBlock(
+    keyAgentInstallAdoptionRelease,
+    /pub\(crate\)\s+struct\s+ArtifactBoundExistingKeyAgentInstall\s*\{/u,
+  );
 const verifiedExistingKeyAgentInstallDebugImpl = rustLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /impl\s+fmt::Debug\s+for\s+VerifiedExistingKeyAgentInstall\s*\{/u,
+);
+const verifiedKeyAgentInstallContinuityDebugImpl = rustLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /impl\s+fmt::Debug\s+for\s+VerifiedKeyAgentInstallContinuity\s*\{/u,
+);
+const artifactBoundExistingKeyAgentInstallDebugImpl = rustLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /impl\s+fmt::Debug\s+for\s+ArtifactBoundExistingKeyAgentInstall\s*\{/u,
 );
 const keyAgentInstallAdoptionErrorBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+enum\s+KeyAgentInstallAdoptionError\s*\{/u,
 );
+const keyAgentInstallReleaseBindingErrorBlock =
+  rustTopLevelLexicalItemBlock(
+    keyAgentInstallAdoptionRelease,
+    /pub\(crate\)\s+enum\s+KeyAgentInstallReleaseBindingError\s*\{/u,
+  );
 const adoptExistingKeyAgentInstall = rustTopLevelFunctionBlock(
   keyAgentInstallAdoptionRelease,
   "adopt_existing_key_agent_install",
 );
+const bindExistingKeyAgentInstallToRelease = rustTopLevelFunctionBlock(
+  keyAgentInstallAdoptionRelease,
+  "bind_existing_key_agent_install_to_release",
+);
+const consumeArtifactBoundExistingKeyAgentInstall =
+  rustTopLevelFunctionBlock(
+    keyAgentInstallAdoptionRelease,
+    "consume_artifact_bound_existing_key_agent_install",
+  );
 const provisionFreshKeyAgentBoundary = rustFunctionBlock(
   keyAgentSupervisor,
   "provision_fresh_key_agent_boundary",
@@ -9364,11 +9517,16 @@ requireInvariant(
 const keyAgentInstallAdoptionTypeNames = [
   "ExistingInstallAdoptionSeal",
   "VerifiedExistingKeyAgentInstall",
+  "VerifiedKeyAgentInstallContinuity",
+  "ArtifactBoundExistingKeyAgentInstall",
   "KeyAgentInstallAdoptionError",
+  "KeyAgentInstallReleaseBindingError",
 ];
 const keyAgentInstallAdoptionExternalTokenNames = [
   ...keyAgentInstallAdoptionTypeNames,
   "adopt_existing_key_agent_install",
+  "bind_existing_key_agent_install_to_release",
+  "consume_artifact_bound_existing_key_agent_install",
 ];
 const keyAgentInstallAdoptionModuleConsumers = platformWindowsProductionFiles
   .filter(
@@ -9404,6 +9562,46 @@ const adoptExistingKeyAgentInstallTokenConsumers = platformWindowsProductionFile
       ),
   )
   .map((file) => file.path);
+const bindExistingKeyAgentInstallToReleaseConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        rustCallSites(file.source, "bind_existing_key_agent_install_to_release")
+          .length > 0,
+    )
+    .map((file) => file.path);
+const bindExistingKeyAgentInstallToReleaseTokenConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        /\bbind_existing_key_agent_install_to_release\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
+const consumeArtifactBoundExistingKeyAgentInstallConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        rustCallSites(
+          file.source,
+          "consume_artifact_bound_existing_key_agent_install",
+        ).length > 0,
+    )
+    .map((file) => file.path);
+const consumeArtifactBoundExistingKeyAgentInstallTokenConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        /\bconsume_artifact_bound_existing_key_agent_install\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
 const convertHeldExistingKeyAgentInstallConsumers =
   platformWindowsProductionFiles
     .filter(
@@ -9462,6 +9660,8 @@ const keyAgentInstallAdoptionTypeDefinitionCounts =
 const keyAgentInstallAdoptionConstructionCounts = [
   "ExistingInstallAdoptionSeal",
   "VerifiedExistingKeyAgentInstall",
+  "VerifiedKeyAgentInstallContinuity",
+  "ArtifactBoundExistingKeyAgentInstall",
 ].map(
   (name) =>
     rustStructLiteralSites(keyAgentInstallAdoptionRelease, name).length,
@@ -9490,6 +9690,28 @@ const verifiedExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
       ),
   )
   .map((file) => file.path);
+const verifiedKeyAgentInstallContinuityConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !== "crates/platform-windows/src/lib.rs" &&
+        /\bVerifiedKeyAgentInstallContinuity\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
+const artifactBoundExistingKeyAgentInstallConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !== "crates/platform-windows/src/lib.rs" &&
+        /\bArtifactBoundExistingKeyAgentInstall\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
 const keyAgentInstallAdoptionErrorConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
@@ -9498,6 +9720,34 @@ const keyAgentInstallAdoptionErrorConsumers = platformWindowsProductionFiles
       /\bKeyAgentInstallAdoptionError\b/u.test(rustLexicalCode(file.source)),
   )
   .map((file) => file.path);
+const keyAgentInstallReleaseBindingErrorConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !== "crates/platform-windows/src/lib.rs" &&
+        /\bKeyAgentInstallReleaseBindingError\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
+const keyAgentSupervisorBindingSealConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
+        file.path !== "crates/platform-windows/src/lib.rs" &&
+        /\bKeyAgentSupervisorBindingSeal\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
+const keyAgentSupervisorBindingSealLiteralSites =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustStructLiteralSites(file.source, "KeyAgentSupervisorBindingSeal").map(
+      (site) => ({ path: file.path, source: compactRust(site.source) }),
+    ),
+  );
 const keyAgentInstallAdoptionForbiddenProductionPatterns = [
   /\bunsafe\b/u,
   /\b(?:async|await|union|macro_rules)\b/u,
@@ -9515,7 +9765,7 @@ const keyAgentInstallAdoptionForbiddenProductionPatterns = [
   /\b(?:Create|Open|Delete|Remove|Move|Reg|CryptProtect|NCrypt|BCrypt|Tpm)\w*\s*\(/u,
 ];
 const keyAgentInstallAdoptionForbiddenTraitImpl = new RegExp(
-  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall)\\b`,
+  `impl\\s+(?:Clone|Copy|Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\\s+for\\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall|VerifiedKeyAgentInstallContinuity|ArtifactBoundExistingKeyAgentInstall|KeyAgentSupervisorBindingSeal)\\b`,
   "u",
 );
 const compactAdoptExistingKeyAgentInstall = compactRust(
@@ -9540,6 +9790,57 @@ const expectedCompactVerifiedExistingKeyAgentInstallDebugImpl = [
   "}",
   "}",
 ].join("");
+const expectedCompactVerifiedKeyAgentInstallContinuityDebugImpl = [
+  "implfmt::DebugforVerifiedKeyAgentInstallContinuity{",
+  "fnfmt(&self,formatter:&mutfmt::Formatter<'_>)->fmt::Result{",
+  "let_=(&self.installation_id,&self.release_identity,&self.journal_generation,&self.journal_record_digest,);",
+  "formatter.write_str()",
+  "}",
+  "}",
+].join("");
+const expectedCompactArtifactBoundExistingKeyAgentInstallDebugImpl = [
+  "implfmt::DebugforArtifactBoundExistingKeyAgentInstall{",
+  "fnfmt(&self,formatter:&mutfmt::Formatter<'_>)->fmt::Result{",
+  "let_=(&self.preflighted,&self.provisioning,&self.continuity);",
+  "formatter.write_str()",
+  "}",
+  "}",
+].join("");
+const compactBindExistingKeyAgentInstallToRelease = compactRust(
+  bindExistingKeyAgentInstallToRelease,
+);
+const expectedCompactBindExistingKeyAgentInstallToRelease = [
+  "pub(crate)fnbind_existing_key_agent_install_to_release(attestation:ReleaseAttestation,artifact:VerifiedHelper,verified:VerifiedExistingKeyAgentInstall,)->Result<ArtifactBoundExistingKeyAgentInstall,KeyAgentInstallReleaseBindingError>{",
+  "letpreflighted=preflight_key_agent_activation(attestation,artifact).map_err(|_|KeyAgentInstallReleaseBindingError::ReleaseUnavailable)?;",
+  "verified.provisioning.revalidate().map_err(|_|KeyAgentInstallReleaseBindingError::RecoveryRequired)?;",
+  "if!preflighted.matches_release_identity(&verified.release_identity){returnErr(KeyAgentInstallReleaseBindingError::RecoveryRequired);}",
+  "verified.provisioning.revalidate().map_err(|_|KeyAgentInstallReleaseBindingError::RecoveryRequired)?;",
+  "letVerifiedExistingKeyAgentInstall{provisioning,installation_id,release_identity,journal_generation,journal_record_digest,_not_sync:_,}=verified;",
+  "Ok(ArtifactBoundExistingKeyAgentInstall{preflighted,provisioning,continuity:VerifiedKeyAgentInstallContinuity{installation_id,release_identity,journal_generation,journal_record_digest,_not_sync:PhantomData,},})",
+  "}",
+].join("");
+const compactConsumeArtifactBoundExistingKeyAgentInstall = compactRust(
+  consumeArtifactBoundExistingKeyAgentInstall,
+);
+const expectedCompactConsumeArtifactBoundExistingKeyAgentInstall = [
+  "pub(crate)fnconsume_artifact_bound_existing_key_agent_install(bound:ArtifactBoundExistingKeyAgentInstall,_seal:KeyAgentSupervisorBindingSeal,)->(PreflightKeyAgentArtifact,PreparedKeyAgentProvisioning,VerifiedKeyAgentInstallContinuity,){",
+  "letArtifactBoundExistingKeyAgentInstall{preflighted,provisioning,continuity,}=bound;",
+  "(preflighted,provisioning,continuity)",
+  "}",
+].join("");
+const bindExistingKeyAgentInstallToReleaseOrder = [
+  "preflight_key_agent_activation(attestation,artifact)",
+  "verified.provisioning.revalidate()",
+  "preflighted.matches_release_identity(&verified.release_identity)",
+  "verified.provisioning.revalidate()",
+  "letVerifiedExistingKeyAgentInstall{",
+  "Ok(ArtifactBoundExistingKeyAgentInstall{",
+  "continuity:VerifiedKeyAgentInstallContinuity{",
+].map((marker, index) =>
+  index === 3
+    ? compactBindExistingKeyAgentInstallToRelease.lastIndexOf(marker)
+    : compactBindExistingKeyAgentInstallToRelease.indexOf(marker),
+);
 const adoptExistingKeyAgentInstallOrder = [
   compactAdoptExistingKeyAgentInstall.indexOf("held.revalidate()"),
   compactAdoptExistingKeyAgentInstall.indexOf(
@@ -9565,6 +9866,9 @@ const keyAgentInstallAdoptionExpectedTests = [
   "held_root_identity_mismatch_requires_recovery",
   "held_sid_bindings_must_match_authenticated_snapshots",
   "adoption_authority_is_send_only_noncopy_and_redacted",
+  "exact_attested_release_mints_one_artifact_bound_install",
+  "release_mismatch_and_helper_manifest_substitution_require_recovery",
+  "unavailable_release_fails_before_install_binding",
 ];
 requireInvariant(
   platformWindowsLib.includes(
@@ -9577,18 +9881,47 @@ requireInvariant(
       platformWindowsLibCode,
     ) &&
     JSON.stringify(keyAgentInstallAdoptionModuleConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
     JSON.stringify(keyAgentInstallAdoptionConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
     JSON.stringify(keyAgentInstallAdoptionSealConsumers) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
     JSON.stringify(verifiedExistingKeyAgentInstallConsumers) ===
       JSON.stringify([]) &&
+    JSON.stringify(verifiedKeyAgentInstallContinuityConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
+    JSON.stringify(artifactBoundExistingKeyAgentInstallConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
     JSON.stringify(keyAgentInstallAdoptionErrorConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(keyAgentInstallReleaseBindingErrorConsumers) ===
       JSON.stringify([]) &&
     JSON.stringify(adoptExistingKeyAgentInstallConsumers) === JSON.stringify([]) &&
     JSON.stringify(adoptExistingKeyAgentInstallTokenConsumers) ===
       JSON.stringify([]) &&
+    JSON.stringify(bindExistingKeyAgentInstallToReleaseConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(bindExistingKeyAgentInstallToReleaseTokenConsumers) ===
+      JSON.stringify([]) &&
+    JSON.stringify(consumeArtifactBoundExistingKeyAgentInstallConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
+    JSON.stringify(consumeArtifactBoundExistingKeyAgentInstallTokenConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
+    JSON.stringify(keyAgentSupervisorBindingSealConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_install_adoption.rs"]) &&
+    JSON.stringify(keyAgentSupervisorBindingSealLiteralSites) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_supervisor.rs",
+          source: "KeyAgentSupervisorBindingSeal{_private:()}",
+        },
+      ]) &&
     JSON.stringify(convertHeldExistingKeyAgentInstallConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_install_adoption.rs",
@@ -9596,7 +9929,11 @@ requireInvariant(
     JSON.stringify(keyAgentInstallAdoptionVisibleTypes) ===
       JSON.stringify(keyAgentInstallAdoptionTypeNames) &&
     JSON.stringify(keyAgentInstallAdoptionVisibleFunctions) ===
-      JSON.stringify(["adopt_existing_key_agent_install"]) &&
+      JSON.stringify([
+        "adopt_existing_key_agent_install",
+        "bind_existing_key_agent_install_to_release",
+        "consume_artifact_bound_existing_key_agent_install",
+      ]) &&
     JSON.stringify(keyAgentInstallAdoptionVisibleFunctionInventory) ===
       JSON.stringify([
         {
@@ -9606,18 +9943,40 @@ requireInvariant(
           signature:
             "fnadopt_existing_key_agent_install(initial:AuthenticatedKeyAgentInstallSnapshot,held:HeldExistingKeyAgentInstallObjects,reread:AuthenticatedKeyAgentInstallSnapshot,)->Result<VerifiedExistingKeyAgentInstall,KeyAgentInstallAdoptionError>",
         },
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "bind_existing_key_agent_install_to_release",
+          signature:
+            "fnbind_existing_key_agent_install_to_release(attestation:ReleaseAttestation,artifact:VerifiedHelper,verified:VerifiedExistingKeyAgentInstall,)->Result<ArtifactBoundExistingKeyAgentInstall,KeyAgentInstallReleaseBindingError>",
+        },
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "consume_artifact_bound_existing_key_agent_install",
+          signature:
+            "fnconsume_artifact_bound_existing_key_agent_install(bound:ArtifactBoundExistingKeyAgentInstall,_seal:KeyAgentSupervisorBindingSeal,)->(PreflightKeyAgentArtifact,PreparedKeyAgentProvisioning,VerifiedKeyAgentInstallContinuity,)",
+        },
       ]) &&
-    keyAgentInstallAdoptionPublicVisibilitySites.length === 4 &&
+    keyAgentInstallAdoptionPublicVisibilitySites.length === 9 &&
     JSON.stringify(keyAgentInstallAdoptionImplHeaders) ===
       JSON.stringify([
+        "impl fmt::Debug for VerifiedKeyAgentInstallContinuity",
+        "impl fmt::Debug for ArtifactBoundExistingKeyAgentInstall",
         "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
         "impl fmt::Display for KeyAgentInstallAdoptionError",
         "impl fmt::Debug for KeyAgentInstallAdoptionError",
         "impl core::error::Error for KeyAgentInstallAdoptionError",
+        "impl fmt::Display for KeyAgentInstallReleaseBindingError",
+        "impl fmt::Debug for KeyAgentInstallReleaseBindingError",
+        "impl core::error::Error for KeyAgentInstallReleaseBindingError",
       ]) &&
     JSON.stringify(keyAgentInstallAdoptionAttributes) ===
       JSON.stringify([
         "#[must_use=]",
+        "#[must_use=]",
+        "#[must_use=]",
+        "#[derive(Clone,Copy,Eq,PartialEq)]",
         "#[derive(Clone,Copy,Eq,PartialEq)]",
         "#[allow(clippy::needless_pass_by_value)]",
       ]) &&
@@ -9626,17 +9985,28 @@ requireInvariant(
         "usecore::cell::Cell;",
         "usecore::fmt;",
         "usecore::marker::PhantomData;",
+        "usecrate::attestation::ReleaseAttestation;",
+        "usecrate::helper::VerifiedHelper;",
+        "usecrate::key_agent_activation::{PreflightKeyAgentArtifact,preflight_key_agent_activation};",
         "usecrate::key_agent_install_provenance::{AuthenticatedKeyAgentInstallSnapshot,consume_stable_existing_key_agent_install_evidence,verify_existing_key_agent_install_snapshots,};",
         "usecrate::key_agent_lpac::{HeldExistingKeyAgentInstallObjects,PreparedKeyAgentProvisioning};",
+        "usecrate::key_agent_supervisor::KeyAgentSupervisorBindingSeal;",
       ]) &&
     JSON.stringify(keyAgentInstallAdoptionCrateModulePaths) ===
-      JSON.stringify(["key_agent_install_provenance", "key_agent_lpac"]) &&
+      JSON.stringify([
+        "attestation",
+        "helper",
+        "key_agent_activation",
+        "key_agent_install_provenance",
+        "key_agent_lpac",
+        "key_agent_supervisor",
+      ]) &&
     JSON.stringify(keyAgentInstallAdoptionTypeAliases) === JSON.stringify([]) &&
     keyAgentInstallAdoptionMacroInvocations.length === 0 &&
     JSON.stringify(keyAgentInstallAdoptionTypeDefinitionCounts) ===
-      JSON.stringify([1, 1, 1]) &&
+      JSON.stringify([1, 1, 1, 1, 1, 1]) &&
     JSON.stringify(keyAgentInstallAdoptionConstructionCounts) ===
-      JSON.stringify([1, 1]) &&
+      JSON.stringify([1, 2, 1, 2]) &&
     JSON.stringify(heldExistingKeyAgentInstallConstructionSites) ===
       JSON.stringify([]) &&
     rustStructLiteralSites(
@@ -9646,6 +10016,22 @@ requireInvariant(
     rustStructLiteralSites(
       adoptExistingKeyAgentInstall,
       "VerifiedExistingKeyAgentInstall",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      bindExistingKeyAgentInstallToRelease,
+      "VerifiedExistingKeyAgentInstall",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      bindExistingKeyAgentInstallToRelease,
+      "VerifiedKeyAgentInstallContinuity",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      bindExistingKeyAgentInstallToRelease,
+      "ArtifactBoundExistingKeyAgentInstall",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      consumeArtifactBoundExistingKeyAgentInstall,
+      "ArtifactBoundExistingKeyAgentInstall",
     ).length === 1 &&
     rustStructLiteralSites(
       adoptExistingKeyAgentInstall,
@@ -9663,16 +10049,30 @@ requireInvariant(
       "pub(crate)structExistingInstallAdoptionSeal{_private:(),}" &&
     compactRust(verifiedExistingKeyAgentInstallBlock) ===
       "pub(crate)structVerifiedExistingKeyAgentInstall{provisioning:PreparedKeyAgentProvisioning,installation_id:[u8;32],release_identity:[u8;32],journal_generation:u64,journal_record_digest:[u8;32],_not_sync:PhantomData<Cell<()>>,}" &&
+    compactRust(verifiedKeyAgentInstallContinuityBlock) ===
+      "pub(crate)structVerifiedKeyAgentInstallContinuity{installation_id:[u8;32],release_identity:[u8;32],journal_generation:u64,journal_record_digest:[u8;32],_not_sync:PhantomData<Cell<()>>,}" &&
+    compactRust(artifactBoundExistingKeyAgentInstallBlock) ===
+      "pub(crate)structArtifactBoundExistingKeyAgentInstall{preflighted:PreflightKeyAgentArtifact,provisioning:PreparedKeyAgentProvisioning,continuity:VerifiedKeyAgentInstallContinuity,}" &&
     compactRust(keyAgentInstallAdoptionErrorBlock) ===
       "pub(crate)enumKeyAgentInstallAdoptionError{RecoveryRequired,}" &&
+    compactRust(keyAgentInstallReleaseBindingErrorBlock) ===
+      "pub(crate)enumKeyAgentInstallReleaseBindingError{ReleaseUnavailable,RecoveryRequired,}" &&
     compactAdoptExistingKeyAgentInstall ===
       expectedCompactAdoptExistingKeyAgentInstall &&
+    compactBindExistingKeyAgentInstallToRelease ===
+      expectedCompactBindExistingKeyAgentInstallToRelease &&
+    compactConsumeArtifactBoundExistingKeyAgentInstall ===
+      expectedCompactConsumeArtifactBoundExistingKeyAgentInstall &&
     compactRust(verifiedExistingKeyAgentInstallDebugImpl) ===
       expectedCompactVerifiedExistingKeyAgentInstallDebugImpl &&
+    compactRust(verifiedKeyAgentInstallContinuityDebugImpl) ===
+      expectedCompactVerifiedKeyAgentInstallContinuityDebugImpl &&
+    compactRust(artifactBoundExistingKeyAgentInstallDebugImpl) ===
+      expectedCompactArtifactBoundExistingKeyAgentInstallDebugImpl &&
     !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
-    !/impl\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall)\s*\{/u.test(
+    !/impl\s+(?:ExistingInstallAdoptionSeal|VerifiedExistingKeyAgentInstall|VerifiedKeyAgentInstallContinuity|ArtifactBoundExistingKeyAgentInstall)\s*\{/u.test(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
     !keyAgentInstallAdoptionForbiddenProductionPatterns.some((pattern) =>
@@ -9689,6 +10089,58 @@ requireInvariant(
     (keyAgentInstallAdoptionReleaseCode.match(
       /\bKeyAgentInstallAdoptionError::RecoveryRequired\b/gu,
     ) ?? []).length === 4 &&
+    rustCallSites(
+      bindExistingKeyAgentInstallToRelease,
+      "preflight_key_agent_activation",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        bindExistingKeyAgentInstallToRelease,
+        "preflight_key_agent_activation",
+      ).map((call) => call.arguments),
+    ) === JSON.stringify([["attestation", "artifact"]]) &&
+    rustCallSites(bindExistingKeyAgentInstallToRelease, "revalidate").length ===
+      2 &&
+    JSON.stringify(
+      rustCallSites(bindExistingKeyAgentInstallToRelease, "revalidate").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([[], []]) &&
+    rustCallSites(
+      bindExistingKeyAgentInstallToRelease,
+      "matches_release_identity",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        bindExistingKeyAgentInstallToRelease,
+        "matches_release_identity",
+      ).map((call) => call.arguments),
+    ) === JSON.stringify([["&verified.release_identity"]]) &&
+    bindExistingKeyAgentInstallToReleaseOrder.every(
+      (position) => position !== -1,
+    ) &&
+    bindExistingKeyAgentInstallToReleaseOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > bindExistingKeyAgentInstallToReleaseOrder[index],
+      ) &&
+    !/\b(?:manifest_digest|allows_helper_manifest|ArtifactDigest|AttestedArtifactDigest)\b/u.test(
+      rustLexicalCode(bindExistingKeyAgentInstallToRelease),
+    ) &&
+    rustCallSites(
+      keyAgentSupervisorRelease,
+      "consume_artifact_bound_existing_key_agent_install",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        keyAgentSupervisorRelease,
+        "consume_artifact_bound_existing_key_agent_install",
+      ).map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["bound", "KeyAgentSupervisorBindingSeal { _private: () }"],
+      ]) &&
     rustCallSites(adoptExistingKeyAgentInstall, "revalidate").length === 2 &&
     JSON.stringify(
       rustCallSites(adoptExistingKeyAgentInstall, "revalidate").map(
@@ -9738,8 +10190,26 @@ requireInvariant(
     keyAgentInstallAdoptionReleaseCode.includes(
       "_not_sync: PhantomData<Cell<()>>",
     ) &&
+    (keyAgentInstallAdoptionReleaseCode.match(
+      /_not_sync:\s*PhantomData<Cell<\(\)>>/gu,
+    ) ?? []).length === 2 &&
+    !/\b(?:ArtifactDigest|AttestedArtifactDigest|manifest_digest|allows_helper_manifest)\b/u.test(
+      keyAgentInstallAdoptionReleaseCode.replace(
+        bindExistingKeyAgentInstallToRelease,
+        "",
+      ),
+    ) &&
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:raw\w*|as_bytes|into_inner|into_parts|release_identity|installation_id|journal_generation|journal_record_digest)\b/u.test(
+      keyAgentInstallAdoptionReleaseCode,
+    ) &&
     keyAgentInstallAdoptionSource.includes(
       'VerifiedExistingKeyAgentInstall([HELD; REDACTED])',
+    ) &&
+    keyAgentInstallAdoptionSource.includes(
+      'VerifiedKeyAgentInstallContinuity([REDACTED])',
+    ) &&
+    keyAgentInstallAdoptionSource.includes(
+      'ArtifactBoundExistingKeyAgentInstall([HELD; REDACTED])',
     ) &&
     keyAgentInstallAdoptionSource.includes(
       "future backend must enforce that temporal ordering",
@@ -9747,7 +10217,7 @@ requireInvariant(
     keyAgentInstallAdoptionExpectedTests.every((name) =>
       keyAgentInstallAdoptionSource.includes(`fn ${name}`),
     ),
-  "existing Key Agent adoption must remain a private dormant, handle-retaining, exact two-snapshot transition with no production caller or alternate authority mint",
+  "existing Key Agent adoption and release binding must remain private, linear, exact-order, whole-release-bound, sealed into one supervisor consumer, and free of raw authority escape",
 );
 const keyAgentStorageFactoryConsumers = platformWindowsProductionFiles
   .filter(
@@ -10828,6 +11298,26 @@ const bindDormantFunction = rustFunctionBlock(
   keyAgentSupervisor,
   "bind_dormant_key_agent",
 );
+const keyAgentSupervisorBindingSealBlock = rustTopLevelLexicalItemBlock(
+  keyAgentSupervisorRelease,
+  /pub\(crate\)\s+struct\s+KeyAgentSupervisorBindingSeal\s*\{/u,
+);
+const bindDormantKeyAgentConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      rustCallSites(file.source, "bind_dormant_key_agent").length > 0,
+  )
+  .map((file) => file.path);
+const bindDormantKeyAgentTokenConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bbind_dormant_key_agent\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
 const issueSupervisorLease = rustFunctionBlock(keyAgentSupervisor, "issue");
 const consumeSupervisorLease = rustFunctionBlock(
   keyAgentSupervisor,
@@ -10838,7 +11328,8 @@ const ensureSupervisorLeaseLive = rustFunctionBlock(
   "ensure_live",
 );
 const boundDormantOrder = [
-  "preflight_key_agent_activation(attestation, artifact)?",
+  "consume_artifact_bound_existing_key_agent_install(",
+  "KeyAgentSupervisorBindingSeal { _private: () }",
   "provisioning.revalidate()?",
   "SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?",
   "run_on_fresh_key_agent_debug_thread(move |fresh_thread|",
@@ -10856,6 +11347,7 @@ const boundDormantOrder = [
   "root_job.active_process_count()? != 1",
   "let (request_writer, response_reader) = pipes.into_parent()",
   "Ok(BoundDormantKeyAgent {",
+  "startup_lease,\n            install_continuity,\n            not_sync: PhantomData,\n            provisioning,",
 ].map((marker) => bindDormantFunction.indexOf(marker));
 const provisioningRevalidationPositions = [
   ...bindDormantFunction.matchAll(/provisioning\.revalidate\(\)\?/gu),
@@ -10870,9 +11362,12 @@ requireInvariant(
       "response_reader: KeyAgentStartupResponseReader",
     ) &&
     boundDormantBlock.includes("startup_lease: SupervisorActivationLease") &&
+    boundDormantBlock.includes(
+      "install_continuity: VerifiedKeyAgentInstallContinuity",
+    ) &&
     boundDormantBlock.includes("not_sync: PhantomData<Cell<()>>") &&
     boundDormantBlock.includes("provisioning: PreparedKeyAgentProvisioning") &&
-    /activation:\s*HeldKeyAgentActivation[\s\S]*root_job:\s*KeyAgentRootJob[\s\S]*request_writer:\s*KeyAgentStartupRequestWriter[\s\S]*response_reader:\s*KeyAgentStartupResponseReader[\s\S]*startup_lease:\s*SupervisorActivationLease[\s\S]*not_sync:\s*PhantomData<Cell<\(\)>>[\s\S]*provisioning:\s*PreparedKeyAgentProvisioning/u.test(
+    /activation:\s*HeldKeyAgentActivation[\s\S]*root_job:\s*KeyAgentRootJob[\s\S]*request_writer:\s*KeyAgentStartupRequestWriter[\s\S]*response_reader:\s*KeyAgentStartupResponseReader[\s\S]*startup_lease:\s*SupervisorActivationLease[\s\S]*install_continuity:\s*VerifiedKeyAgentInstallContinuity[\s\S]*not_sync:\s*PhantomData<Cell<\(\)>>[\s\S]*provisioning:\s*PreparedKeyAgentProvisioning/u.test(
       boundDormantBlock,
     ) &&
     !/\bpub(?:\([^)]*\))?\s+\w+\s*:/u.test(boundDormantBlock) &&
@@ -10882,15 +11377,51 @@ requireInvariant(
     !/impl\s+(?:Clone|Copy|Sync)\s+for\s+BoundDormantKeyAgent\b/u.test(
       keyAgentSupervisor,
     ) &&
+    !/impl\s+BoundDormantKeyAgent\s*\{/u.test(keyAgentSupervisorRelease) &&
     keyAgentSupervisor.includes("impl fmt::Debug for BoundDormantKeyAgent") &&
     keyAgentSupervisor.includes("[VERIFIED PROFILE AND HELD STORAGE ROOT]") &&
+    keyAgentSupervisor.includes(
+      "[AUTHENTICATED INSTALL/RELEASE CONTINUITY]",
+    ) &&
     boundDormantOrder.every((position) => position !== -1) &&
     boundDormantOrder
       .slice(1)
       .every((position, index) => position > boundDormantOrder[index]) &&
-    /fn\s+bind_dormant_key_agent\s*\([\s\S]*provisioning:\s*PreparedKeyAgentProvisioning/u.test(
-      bindDormantFunction,
+    /pub\(crate\)\s+fn\s+bind_dormant_key_agent\s*\(\s*bound:\s*ArtifactBoundExistingKeyAgentInstall,?\s*\)\s*->\s*Result<\s*BoundDormantKeyAgent\s*,\s*KeyAgentSupervisorError\s*>/u.test(
+      rustLexicalCode(bindDormantFunction),
     ) &&
+    !/\b(?:ReleaseAttestation|VerifiedHelper|PreparedKeyAgentProvisioning|preflight_key_agent_activation)\b/u.test(
+      rustLexicalCode(bindDormantFunction),
+    ) &&
+    !/\b(?:ArtifactDigest|AttestedArtifactDigest|ReleaseAttestation|VerifiedHelper|manifest_digest|allows_helper_manifest|preflight_key_agent_activation)\b/u.test(
+      rustLexicalCode(keyAgentSupervisorRelease),
+    ) &&
+    JSON.stringify(bindDormantKeyAgentConsumers) === JSON.stringify([]) &&
+    JSON.stringify(bindDormantKeyAgentTokenConsumers) === JSON.stringify([]) &&
+    compactRust(keyAgentSupervisorBindingSealBlock) ===
+      "pub(crate)structKeyAgentSupervisorBindingSeal{_private:(),}" &&
+    !/impl\s+(?:KeyAgentSupervisorBindingSeal|(?:Clone|Copy|Default|Drop|Deref|DerefMut|AsRef|Borrow|From|Into|TryFrom)[^\r\n{]*for\s+KeyAgentSupervisorBindingSeal)\b/u.test(
+      rustLexicalCode(keyAgentSupervisorRelease),
+    ) &&
+    rustStructLiteralSites(
+      bindDormantFunction,
+      "KeyAgentSupervisorBindingSeal",
+    ).length === 1 &&
+    rustStructLiteralSites(bindDormantFunction, "BoundDormantKeyAgent").length ===
+      1 &&
+    rustCallSites(
+      bindDormantFunction,
+      "consume_artifact_bound_existing_key_agent_install",
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        bindDormantFunction,
+        "consume_artifact_bound_existing_key_agent_install",
+      ).map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        ["bound", "KeyAgentSupervisorBindingSeal { _private: () }"],
+      ]) &&
     !/fn\s+bind_dormant_key_agent\s*\([^)]*\b(?:Instant|Duration)\b/su.test(
       bindDormantFunction,
     ) &&
@@ -11072,6 +11603,9 @@ requireInvariant(
     boundStorageProvenBlock.includes(
       "handshake: VerifiedSupervisorHandshake",
     ) &&
+    boundStorageProvenBlock.includes(
+      "install_continuity: VerifiedKeyAgentInstallContinuity",
+    ) &&
     boundStorageProvenBlock.includes("not_sync: PhantomData<Cell<()>>") &&
     boundStorageProvenBlock.includes(
       "provisioning: PreparedKeyAgentProvisioning",
@@ -11083,12 +11617,35 @@ requireInvariant(
     !/impl\s+(?:Clone|Copy|Sync)\s+for\s+BoundStorageProvenKeyAgent\b/u.test(
       keyAgentSupervisor,
     ) &&
+    !/impl\s+(?:Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\s+for\s+(?:BoundDormantKeyAgent|BoundStorageProvenKeyAgent)\b/u.test(
+      keyAgentSupervisorRelease,
+    ) &&
     !/impl\s+BoundStorageProvenKeyAgent\s*\{/u.test(keyAgentSupervisor) &&
     keyAgentSupervisor.includes(
       "impl fmt::Debug for BoundStorageProvenKeyAgent",
     ) &&
     keyAgentSupervisor.includes("[DETACHED RUNNING KEY AGENT]") &&
     keyAgentSupervisor.includes("[VERIFIED STORAGE-STARTUP TRANSCRIPT]") &&
+    (compactBindKeyAgentStorageStartupWithRequest.match(
+      /install_continuity/gu,
+    ) ?? []).length === 2 &&
+    !/install_continuity\s*\./u.test(
+      rustLexicalCode(bindKeyAgentStorageStartupWithRequest),
+    ) &&
+    compactBindKeyAgentStorageStartupWithRequest.includes(
+      "letBoundDormantKeyAgent{activation,root_job,request_writer,response_reader,startup_lease,install_continuity,not_sync:_,provisioning,}=bound;",
+    ) &&
+    compactBindKeyAgentStorageStartupWithRequest.includes(
+      "Ok(BoundStorageProvenKeyAgent{activation,root_job,request_writer,response_reader,handshake,install_continuity,not_sync:PhantomData,provisioning,})",
+    ) &&
+    rustStructLiteralSites(
+      bindKeyAgentStorageStartupWithRequest,
+      "BoundDormantKeyAgent",
+    ).length === 1 &&
+    rustStructLiteralSites(
+      bindKeyAgentStorageStartupWithRequest,
+      "BoundStorageProvenKeyAgent",
+    ).length === 1 &&
     /fn\s+startup_transcript_commitment\s*\(\s*artifact_identity:\s*\[u8;\s*24\],\s*request_frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*response_frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\],?\s*\)\s*->\s*\[u8;\s*STARTUP_TRANSCRIPT_BYTES\]/u.test(
       rustLexicalCode(keyAgentStartupTranscriptCommitment),
     ) &&
@@ -11144,6 +11701,27 @@ const suspendedDebuggeeStartupImpl = rustLexicalItemBlock(
 const resumeSuspendedDebuggeeForStorageStartup = rustFunctionBlock(
   suspendedDebuggeeStartupImpl,
   "resume_for_storage_startup",
+);
+const compactHeldKeyAgentActivationDefinition = compactRust(
+  `pub(crate) struct HeldKeyAgentActivation {${heldActivationBlock}\n}`,
+);
+const compactRunningKeyAgentActivationDefinition = compactRust(
+  `pub(crate) struct RunningKeyAgentActivation {${runningActivationBlock}\n}`,
+);
+const compactResumeHeldKeyAgentForStorageStartup = compactRust(
+  resumeHeldKeyAgentForStorageStartup,
+);
+requireInvariant(
+  compactHeldKeyAgentActivationDefinition ===
+      "pub(crate)structHeldKeyAgentActivation{process:sys::DetachedSuspendedDebuggee,artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,artifact_identity:ExactFileObjectIdentity,creation_time:u64,}" &&
+    compactRunningKeyAgentActivationDefinition ===
+      "pub(crate)structRunningKeyAgentActivation{process:sys::DetachedRunningDebuggee,artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,artifact_identity:ExactFileObjectIdentity,creation_time:u64,}",
+  "held and running Key Agent activation states must retain the pinned helper and opaque whole-release identity in exact drop order",
+);
+requireInvariant(
+  compactResumeHeldKeyAgentForStorageStartup ===
+    "pub(crate)fnresume_for_storage_startup(self,)->Result<RunningKeyAgentActivation,KeyAgentActivationError>{letSelf{process,artifact,release_identity,artifact_identity,creation_time,}=self;letprocess=process.resume_for_storage_startup()?;Ok(RunningKeyAgentActivation{process,artifact,release_identity,artifact_identity,creation_time,})}",
+  "the only held-to-running activation transition must move the opaque whole-release identity without reading or replacing it",
 );
 requireInvariant(
   heldActivationBlock.includes("process: sys::DetachedSuspendedDebuggee") &&
@@ -11228,30 +11806,105 @@ const preflightArtifactBlock =
   /pub\(crate\)\s+struct\s+PreflightKeyAgentArtifact\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
     keyAgentActivation,
   )?.groups?.body ?? "";
+const preflightArtifactImpl = rustLexicalItemBlock(
+  keyAgentActivationRelease,
+  /impl\s+PreflightKeyAgentArtifact\s*\{/u,
+);
+const matchesPreflightReleaseIdentity = rustFunctionBlock(
+  preflightArtifactImpl,
+  "matches_release_identity",
+);
+const compactPreflightActivation = compactRust(preflightActivation);
 const activationGatePositions = [
-  "if !artifact.is_key_agent()",
-  "if !attestation.signing_enabled()",
-  "if !attestation.allows_helper_manifest(artifact.manifest_digest())",
-  "if !artifact.path().is_absolute()",
-  "Ok(PreflightKeyAgentArtifact { artifact })",
-].map((marker) => preflightActivation.indexOf(marker));
+  "if!artifact.is_key_agent()",
+  "letrelease_identity=attestation.attested_artifact().ok_or(KeyAgentActivationError::ReleaseNotAttested)?",
+  "if!attestation.allows_helper_manifest(artifact.manifest_digest())",
+  "if!artifact.path().is_absolute()",
+  "Ok(PreflightKeyAgentArtifact{artifact,release_identity,})",
+].map((marker) => compactPreflightActivation.indexOf(marker));
+const preflightKeyAgentArtifactConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+      /\bPreflightKeyAgentArtifact\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const preflightKeyAgentActivationConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+      rustCallSites(file.source, "preflight_key_agent_activation").length > 0,
+  )
+  .map((file) => file.path);
+const matchesPreflightReleaseIdentityConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+        rustCallSites(file.source, "matches_release_identity").length > 0,
+    )
+    .map((file) => file.path);
 requireInvariant(
   activationGatePositions.every((position) => position !== -1) &&
     activationGatePositions
       .slice(1)
       .every((position, index) => position > activationGatePositions[index]) &&
     preflightArtifactBlock.includes("artifact: VerifiedHelper") &&
-    !/\bpub(?:\([^)]*\))?\s+artifact\s*:/u.test(preflightArtifactBlock) &&
+    preflightArtifactBlock.includes(
+      "release_identity: AttestedArtifactDigest",
+    ) &&
+    compactRust(`pub(crate) struct PreflightKeyAgentArtifact {${preflightArtifactBlock}\n}`) ===
+      "pub(crate)structPreflightKeyAgentArtifact{artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,}" &&
+    !/\bpub(?:\([^)]*\))?\s+(?:artifact|release_identity)\s*:/u.test(
+      preflightArtifactBlock,
+    ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+PreflightKeyAgentArtifact/u.test(
       keyAgentActivation,
     ) &&
-    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|raw_handle)\b/u.test(
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|raw_handle|release_identity|artifact_digest|manifest_digest|as_bytes|into_inner)\b/u.test(
       keyAgentActivation,
     ) &&
-    bindDormantFunction.indexOf(
-      "preflight_key_agent_activation(attestation, artifact)?",
-    ) < bindDormantFunction.indexOf("run_on_fresh_key_agent_debug_thread("),
-  "Key Agent role, release, manifest, and path gates must precede worker creation",
+    compactRust(matchesPreflightReleaseIdentity) ===
+      "pub(crate)fnmatches_release_identity(&self,expected:&[u8;32])->bool{self.release_identity.matches(expected)}" &&
+    JSON.stringify(
+      rustVisibleFunctionItems(preflightArtifactImpl).map((item) => item.name),
+    ) === JSON.stringify(["matches_release_identity"]) &&
+    rustStructLiteralSites(
+      preflightActivation,
+      "PreflightKeyAgentArtifact",
+    ).length === 1 &&
+    platformWindowsProductionFiles
+      .filter(
+        (file) =>
+          file.path !== "crates/platform-windows/src/key_agent_activation.rs",
+      )
+      .every(
+        (file) =>
+          rustStructLiteralSites(file.source, "PreflightKeyAgentArtifact")
+            .length === 0,
+      ) &&
+    JSON.stringify(preflightKeyAgentArtifactConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    JSON.stringify(preflightKeyAgentActivationConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    JSON.stringify(matchesPreflightReleaseIdentityConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
+    (keyAgentActivationRelease.match(/\bmanifest_digest\b/gu) ?? []).length ===
+      1 &&
+    !/\bArtifactDigest\b/u.test(keyAgentActivationRelease) &&
+    bindExistingKeyAgentInstallToRelease.indexOf(
+      "preflight_key_agent_activation(attestation, artifact)",
+    ) <
+      bindExistingKeyAgentInstallToRelease.indexOf(
+        "matches_release_identity(&verified.release_identity)",
+      ),
+  "Key Agent role, opaque whole-release evidence, helper manifest, and path gates must precede release binding and worker creation without exposing either digest",
 );
 requireInvariant(
   /#\[cfg\(test\)\]\s*supervisor_context_bypass_for_kernel_test:\s*bool/u.test(
@@ -11398,6 +12051,11 @@ const authenticateDetachAndBindActivation = rustFunctionBlock(
   keyAgentActivation,
   "authenticate_detach_and_bind_activation",
 );
+const compactFreshWorkerEntry = compactRust(freshWorkerEntry);
+const compactFreshWorkerActivation = compactRust(freshWorkerActivation);
+const compactAuthenticateDetachAndBindActivation = compactRust(
+  authenticateDetachAndBindActivation,
+);
 const debugWorkerCreationPositions = [
   "verify_empty_root_job(root_job)?",
   "sys::SuspendedDebuggee::create(",
@@ -11423,12 +12081,67 @@ requireInvariant(
     ) &&
     freshDebugRunner.includes("FnOnce(FreshKeyAgentDebugThread)") &&
     freshWorkerEntry.includes("fresh_thread: FreshKeyAgentDebugThread") &&
-    freshWorkerEntry.includes("let PreflightKeyAgentArtifact { artifact } = preflighted;") &&
+    compactFreshWorkerEntry.includes(
+      "letPreflightKeyAgentArtifact{artifact,release_identity,}=preflighted;",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        freshWorkerEntry,
+        "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+      ).map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        [
+          "fresh_thread",
+          "artifact",
+          "release_identity",
+          "artifact_identity",
+          "provisioning",
+          "pipes",
+          "root_job",
+          "root_job_attribute",
+          "coordination_deadline",
+        ],
+      ]) &&
     freshWorkerEntry.indexOf("let artifact_identity = sys::exact_file_identity") <
       freshWorkerEntry.indexOf(
         "activate_preflighted_key_agent_on_fresh_worker_with_identity(",
     ) &&
     freshWorkerActivation.includes("_fresh_thread: FreshKeyAgentDebugThread") &&
+    /fn\s+activate_preflighted_key_agent_on_fresh_worker_with_identity\s*\(\s*_fresh_thread:\s*FreshKeyAgentDebugThread,\s*artifact:\s*VerifiedHelper,\s*release_identity:\s*AttestedArtifactDigest,/u.test(
+      rustLexicalCode(freshWorkerActivation),
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        freshWorkerActivation,
+        "authenticate_detach_and_bind_activation",
+      ).map((call) => call.arguments),
+    ) ===
+      JSON.stringify([
+        [
+          "artifact",
+          "release_identity",
+          "artifact_identity",
+          "root_job",
+          "process",
+        ],
+      ]) &&
+    /fn\s+authenticate_detach_and_bind_activation\s*\(\s*artifact:\s*VerifiedHelper,\s*release_identity:\s*AttestedArtifactDigest,\s*artifact_identity:\s*ExactFileObjectIdentity,/u.test(
+      rustLexicalCode(authenticateDetachAndBindActivation),
+    ) &&
+    compactAuthenticateDetachAndBindActivation.includes(
+      "Ok(HeldKeyAgentActivation{process,artifact,release_identity,artifact_identity,creation_time:first_event.creation_time,})",
+    ) &&
+    (compactFreshWorkerEntry.match(/release_identity/gu) ?? []).length === 2 &&
+    (compactFreshWorkerActivation.match(/release_identity/gu) ?? []).length ===
+      2 &&
+    (compactAuthenticateDetachAndBindActivation.match(/release_identity/gu) ??
+      []).length === 2 &&
+    !/release_identity\s*\./u.test(
+      rustLexicalCode(
+        `${freshWorkerEntry}\n${freshWorkerActivation}\n${authenticateDetachAndBindActivation}\n${resumeHeldKeyAgentForStorageStartup}`,
+      ),
+    ) &&
     debugWorkerCreationPositions.every((position) => position !== -1) &&
     debugWorkerCreationPositions
       .slice(1)
@@ -11443,7 +12156,7 @@ requireInvariant(
           position > debugWorkerAuthenticationPositions[index],
       ) &&
     bindDormantFunction.match(/run_on_fresh_key_agent_debug_thread\(/gu)?.length === 1,
-  "one unforgeable consumed fresh-worker proof must own the complete Key Agent debug-event lifecycle",
+  "one unforgeable consumed fresh-worker proof must carry the opaque attested release identity through exact image authentication and the complete debug-event lifecycle",
 );
 const keyAgentCreationAttributeBlock =
   /struct\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'flight,\s*'job>\s*\{(?<body>[\s\S]*?)\n\s*\}/u.exec(
@@ -11832,15 +12545,57 @@ const keyAgentProvisioningAuthorityTypeNames = [
   "VerifiedKeyAgentLpac",
   "ExistingInstallAdoptionSeal",
   "VerifiedExistingKeyAgentInstall",
+  "VerifiedKeyAgentInstallContinuity",
+  "ArtifactBoundExistingKeyAgentInstall",
+  "KeyAgentSupervisorBindingSeal",
 ];
 const keyAgentProvisioningAuthorityTypePattern = new RegExp(
   `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")})\\b`,
   "u",
 );
 const keyAgentProvisioningAuthorityMacroTokenPattern = new RegExp(
-  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")}|PreparedKeyAgentProfile|key_agent_lpac|key_agent_install_adoption)\\b`,
+  `\\b(?:${keyAgentProvisioningAuthorityTypeNames.join("|")}|PreparedKeyAgentProfile|AttestedArtifactDigest|PreflightKeyAgentArtifact|HeldKeyAgentActivation|RunningKeyAgentActivation|BoundDormantKeyAgent|BoundStorageProvenKeyAgent|attestation|key_agent_activation|key_agent_lpac|key_agent_install_adoption|key_agent_supervisor)\\b`,
   "u",
 );
+const keyAgentReleaseBindingAuthorityTypeNames = [
+  "AttestedArtifactDigest",
+  "PreflightKeyAgentArtifact",
+  "HeldKeyAgentActivation",
+  "RunningKeyAgentActivation",
+  "BoundDormantKeyAgent",
+  "BoundStorageProvenKeyAgent",
+];
+const keyAgentReleaseBindingAuthorityTypePattern = new RegExp(
+  `\\b(?:${keyAgentReleaseBindingAuthorityTypeNames.join("|")})\\b`,
+  "u",
+);
+const keyAgentReleaseBindingAuthorityImplHeaders =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustImplItems(file.source)
+      .filter((item) =>
+        keyAgentReleaseBindingAuthorityTypePattern.test(item.header),
+      )
+      .map((item) => ({ path: file.path, header: item.header })),
+  );
+const keyAgentReleaseBindingAuthorityAliases =
+  platformWindowsProductionFiles.flatMap((file) => [
+    ...rustUseItems(file.source)
+      .filter((item) =>
+        keyAgentReleaseBindingAuthorityTypeNames.some((typeName) =>
+          new RegExp(`\\b${typeName}\\s+as\\b`, "u").test(
+            rustLexicalCode(item.source),
+          ),
+        ),
+      )
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+    ...rustTypeAliasItems(file.source)
+      .filter((item) =>
+        keyAgentReleaseBindingAuthorityTypePattern.test(
+          rustLexicalCode(item.source),
+        ),
+      )
+      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+  ]);
 const keyAgentProvisioningAuthorityMacroInvocations =
   platformWindowsProductionFiles.flatMap((file) =>
     rustMacroInvocations(file.source)
@@ -11938,9 +12693,12 @@ const keyAgentLpacAuthorityAttributeInventory = [
 }));
 const platformWindowsLibCodeForAttributes = rustLexicalCode(platformWindowsLib);
 const keyAgentSensitiveModuleAttributeInventory = [
+  "attestation",
+  "key_agent_activation",
   "key_agent_install_adoption",
   "key_agent_install_provenance",
   "key_agent_lpac",
+  "key_agent_supervisor",
 ].map((moduleName) => {
   const index = platformWindowsLibCodeForAttributes.search(
     new RegExp(`\\bmod\\s+${moduleName}\\s*;`, "u"),
@@ -12042,7 +12800,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
     unsafeCount: 39,
-    sha256: "aca64dc1af31a70f4e8fb1cc79ae53a6022080d2cfcf050eba52da40dbe38f92",
+    sha256: "bb42b3e715a900372ea314f2c8637fdc7a6cd39eebbf64e3510c49a7eeeeb662",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -12277,7 +13035,19 @@ const keyAgentProvisioningAdoptionMacroScannerProbeInvocations =
 mint!(HeldExistingKeyAgentInstallObjects);
 mint!(ExistingInstallAdoptionSeal);
 mint!(VerifiedExistingKeyAgentInstall);
+mint!(VerifiedKeyAgentInstallContinuity);
+mint!(ArtifactBoundExistingKeyAgentInstall);
+mint!(KeyAgentSupervisorBindingSeal);
+mint!(AttestedArtifactDigest);
+mint!(PreflightKeyAgentArtifact);
+mint!(HeldKeyAgentActivation);
+mint!(RunningKeyAgentActivation);
+mint!(BoundDormantKeyAgent);
+mint!(BoundStorageProvenKeyAgent);
+mint!(attestation);
+mint!(key_agent_activation);
 mint!(key_agent_install_adoption);
+mint!(key_agent_supervisor);
 `).filter((invocation) =>
     keyAgentProvisioningAuthorityMacroTokenPattern.test(
       rustLexicalCode(invocation.source),
@@ -12449,6 +13219,53 @@ requireInvariant(
     JSON.stringify(keyAgentProvisioningAuthorityMacroInvocations) ===
       JSON.stringify([]),
   "production Rust must not hide Key Agent provisioning authority behind declarative, include, or authority-bearing function-like macros",
+);
+requireInvariant(
+  JSON.stringify(keyAgentReleaseBindingAuthorityImplHeaders) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/attestation.rs",
+          header: "impl AttestedArtifactDigest",
+        },
+        {
+          path: "crates/platform-windows/src/attestation.rs",
+          header: "impl core::fmt::Debug for AttestedArtifactDigest",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl HeldKeyAgentActivation",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl RunningKeyAgentActivation",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl fmt::Debug for RunningKeyAgentActivation",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl fmt::Debug for HeldKeyAgentActivation",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl PreflightKeyAgentArtifact",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl fmt::Debug for PreflightKeyAgentArtifact",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_supervisor.rs",
+          header: "impl fmt::Debug for BoundDormantKeyAgent",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_supervisor.rs",
+          header: "impl fmt::Debug for BoundStorageProvenKeyAgent",
+        },
+      ]) &&
+    JSON.stringify(keyAgentReleaseBindingAuthorityAliases) === JSON.stringify([]),
+  "opaque release, preflight, activation, and bound supervisor authorities must have no alternate trait conversion or alias surface",
 );
 requireInvariant(
   JSON.stringify(platformWindowsAttributeHeadInventory) ===
@@ -12839,6 +13656,14 @@ requireInvariant(
   JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
     JSON.stringify([
       {
+        header: "impl fmt::Debug for VerifiedKeyAgentInstallContinuity",
+        attributes: [],
+      },
+      {
+        header: "impl fmt::Debug for ArtifactBoundExistingKeyAgentInstall",
+        attributes: [],
+      },
+      {
         header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
         attributes: [],
       },
@@ -12885,6 +13710,14 @@ requireInvariant(
   JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
     JSON.stringify([
       {
+        module: "attestation",
+        attributes: [],
+      },
+      {
+        module: "key_agent_activation",
+        attributes: ["#[cfg(windows)]"],
+      },
+      {
         module: "key_agent_install_adoption",
         attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
       },
@@ -12894,6 +13727,10 @@ requireInvariant(
       },
       {
         module: "key_agent_lpac",
+        attributes: ["#[cfg(windows)]"],
+      },
+      {
+        module: "key_agent_supervisor",
         attributes: ["#[cfg(windows)]"],
       },
     ]),
@@ -12969,6 +13806,14 @@ requireInvariant(
     JSON.stringify(keyAgentProvisioningImplAttributeInventory) ===
       JSON.stringify([
         {
+          header: "impl fmt::Debug for VerifiedKeyAgentInstallContinuity",
+          attributes: [],
+        },
+        {
+          header: "impl fmt::Debug for ArtifactBoundExistingKeyAgentInstall",
+          attributes: [],
+        },
+        {
           header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
           attributes: [],
         },
@@ -13012,6 +13857,14 @@ requireInvariant(
     JSON.stringify(keyAgentSensitiveModuleAttributeInventory) ===
       JSON.stringify([
         {
+          module: "attestation",
+          attributes: [],
+        },
+        {
+          module: "key_agent_activation",
+          attributes: ["#[cfg(windows)]"],
+        },
+        {
           module: "key_agent_install_adoption",
           attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
         },
@@ -13021,6 +13874,10 @@ requireInvariant(
         },
         {
           module: "key_agent_lpac",
+          attributes: ["#[cfg(windows)]"],
+        },
+        {
+          module: "key_agent_supervisor",
           attributes: ["#[cfg(windows)]"],
         },
       ]),
@@ -13060,7 +13917,55 @@ requireInvariant(
         },
         {
           path: "mint",
+          source: "mint!(VerifiedKeyAgentInstallContinuity)",
+        },
+        {
+          path: "mint",
+          source: "mint!(ArtifactBoundExistingKeyAgentInstall)",
+        },
+        {
+          path: "mint",
+          source: "mint!(KeyAgentSupervisorBindingSeal)",
+        },
+        {
+          path: "mint",
+          source: "mint!(AttestedArtifactDigest)",
+        },
+        {
+          path: "mint",
+          source: "mint!(PreflightKeyAgentArtifact)",
+        },
+        {
+          path: "mint",
+          source: "mint!(HeldKeyAgentActivation)",
+        },
+        {
+          path: "mint",
+          source: "mint!(RunningKeyAgentActivation)",
+        },
+        {
+          path: "mint",
+          source: "mint!(BoundDormantKeyAgent)",
+        },
+        {
+          path: "mint",
+          source: "mint!(BoundStorageProvenKeyAgent)",
+        },
+        {
+          path: "mint",
+          source: "mint!(attestation)",
+        },
+        {
+          path: "mint",
+          source: "mint!(key_agent_activation)",
+        },
+        {
+          path: "mint",
           source: "mint!(key_agent_install_adoption)",
+        },
+        {
+          path: "mint",
+          source: "mint!(key_agent_supervisor)",
         },
       ]) &&
     keyAgentProvisioningAttributeScannerProbe.length === 3 &&
@@ -13175,7 +14080,7 @@ requireInvariant(
         },
         {
           path: "crates/platform-windows/src/key_agent_install_adoption.rs",
-          count: 2,
+          count: 4,
         },
         {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
@@ -13183,7 +14088,7 @@ requireInvariant(
         },
         {
           path: "crates/platform-windows/src/key_agent_supervisor.rs",
-          count: 5,
+          count: 4,
         },
       ]) &&
     JSON.stringify(
@@ -13193,6 +14098,11 @@ requireInvariant(
       })),
     ) ===
       JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_install_adoption.rs",
+          source:
+            "fnconsume_artifact_bound_existing_key_agent_install(bound:ArtifactBoundExistingKeyAgentInstall,_seal:KeyAgentSupervisorBindingSeal,)->(PreflightKeyAgentArtifact,PreparedKeyAgentProvisioning,VerifiedKeyAgentInstallContinuity,)",
+        },
         {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
           source:
@@ -13265,6 +14175,14 @@ requireInvariant(
       ]) &&
     JSON.stringify(keyAgentProvisioningAuthorityImplHeaders) ===
       JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_install_adoption.rs",
+          header: "impl fmt::Debug for VerifiedKeyAgentInstallContinuity",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_install_adoption.rs",
+          header: "impl fmt::Debug for ArtifactBoundExistingKeyAgentInstall",
+        },
         {
           path: "crates/platform-windows/src/key_agent_install_adoption.rs",
           header: "impl fmt::Debug for VerifiedExistingKeyAgentInstall",
@@ -14211,7 +15129,10 @@ requireInvariant(
         /existing-root opener/iu.test(document) &&
         /exclusive installer\s+lease/iu.test(document) &&
         /canonical-path/iu.test(document) &&
-        /downstream artifact/iu.test(document),
+        document.includes("ArtifactBoundExistingKeyAgentInstall") &&
+        /whole-release/iu.test(document) &&
+        /production\s+(?:caller|call sites?)/iu.test(document) &&
+        /journal(?:\s+reader\/writer|\s+I\/O)?\s+backends?/iu.test(document),
     ) &&
     activationArchitecture.includes(
       "The private storage-startup transition now proves that this exact child opens and",

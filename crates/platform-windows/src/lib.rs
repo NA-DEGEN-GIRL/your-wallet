@@ -108,9 +108,12 @@ mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
 // Held existing-install adoption bookends the pure authenticated-snapshot
-// matcher with exact root/profile-binding revalidation. It remains dormant:
-// no production profile observer, existing-root opener, checkpoint reader,
-// exclusive installer lease, or release-artifact consumer exists yet.
+// matcher with exact root/profile-binding revalidation. Its compiled dormant
+// binding separately matches the journal's whole-release ArtifactDigest to the
+// attested release while retaining helper-manifest and file-object proofs. It
+// remains production-unreachable: no profile observer, existing-root opener,
+// installer key/checkpoint or journal I/O backend, exclusive installer lease,
+// binding caller, recovery/upgrade path, or release activation exists yet.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod key_agent_install_adoption;

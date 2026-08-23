@@ -18,14 +18,23 @@ use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
 use crate::attestation::ReleaseAttestation;
+#[cfg(test)]
 use crate::helper::VerifiedHelper;
 #[cfg(test)]
 use crate::key_agent_activation::activate_preflighted_key_agent_on_fresh_worker_for_kernel_test;
+#[cfg(test)]
+use crate::key_agent_activation::preflight_key_agent_activation;
 use crate::key_agent_activation::{
     HeldKeyAgentActivation, KeyAgentActivationError, RunningKeyAgentActivation,
-    activate_preflighted_key_agent_on_fresh_worker, preflight_key_agent_activation,
-    run_on_fresh_key_agent_debug_thread,
+    activate_preflighted_key_agent_on_fresh_worker, run_on_fresh_key_agent_debug_thread,
+};
+#[cfg(test)]
+use crate::key_agent_install_adoption::verified_install_continuity_for_supervisor_test;
+use crate::key_agent_install_adoption::{
+    ArtifactBoundExistingKeyAgentInstall, VerifiedKeyAgentInstallContinuity,
+    consume_artifact_bound_existing_key_agent_install,
 };
 use crate::key_agent_lpac::{
     KeyAgentLpacError, PendingKeyAgentProvisioning, PreparedKeyAgentProvisioning,
@@ -43,6 +52,14 @@ use crate::pipe::{
 const ACTIVATION_NONCE_BYTES: usize = 32;
 const STARTUP_TRANSCRIPT_BYTES: usize = 32;
 const STARTUP_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/key-agent-storage-startup/v1\0";
+
+/// Unforgeable permission for the adoption module's sole supervisor split.
+///
+/// The private field means only this module can mint the value. Architecture
+/// checks fix its one construction inside [`bind_dormant_key_agent`].
+pub(crate) struct KeyAgentSupervisorBindingSeal {
+    _private: (),
+}
 const MAX_STARTUP_LIFETIME: Duration = Duration::from_mins(2);
 const RANDOMNESS_ATTEMPTS: usize = 4;
 
@@ -265,10 +282,10 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
 /// This capability is crate-private, non-cloneable, and deliberately `!Sync`.
 /// It owns the detached-and-suspended exact-image proof, the two-process
 /// kill-on-close root Job, both unique parent pipe endpoints, and the one-shot
-/// startup lease, and the independently verified profile/storage proof. The
-/// short-lived inheritable child handles and creation
-/// attributes have already been dropped before this value can cross the fresh
-/// worker join.
+/// startup lease, authenticated install/release continuity, and the
+/// independently verified profile/storage proof. The short-lived inheritable
+/// child handles and creation attributes have already been dropped before this
+/// value can cross the fresh worker join.
 ///
 /// Field order is security-significant: dropping this value first aborts the
 /// exact suspended process, then terminates the root Job, then closes the
@@ -282,6 +299,7 @@ pub(crate) struct BoundDormantKeyAgent {
     request_writer: KeyAgentStartupRequestWriter,
     response_reader: KeyAgentStartupResponseReader,
     startup_lease: SupervisorActivationLease,
+    install_continuity: VerifiedKeyAgentInstallContinuity,
     not_sync: PhantomData<Cell<()>>,
     provisioning: PreparedKeyAgentProvisioning,
 }
@@ -295,6 +313,10 @@ impl fmt::Debug for BoundDormantKeyAgent {
             .field("request_writer", &"[UNIQUE STARTUP REQUEST HANDLE]")
             .field("response_reader", &"[UNIQUE STARTUP RESPONSE HANDLE]")
             .field("startup_lease", &"[ONE-SHOT NONCE AND MONOTONIC DEADLINE]")
+            .field(
+                "install_continuity",
+                &"[AUTHENTICATED INSTALL/RELEASE CONTINUITY]",
+            )
             .field("provisioning", &"[VERIFIED PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
@@ -307,7 +329,9 @@ impl fmt::Debug for BoundDormantKeyAgent {
 /// This private capability still exposes no runtime request operation and no
 /// signing authority. Field order is security-significant: the running process
 /// is synchronously terminated before the root Job, retained pipe endpoints,
-/// transcript proof, or held provisioning state are released.
+/// transcript proof, install/release continuity, or held provisioning state are
+/// released. This does not prove a child key bundle, rollback anchor, protected
+/// settings state, or runtime/signing authority.
 #[must_use = "dropping the storage-proven Key Agent terminates its process tree"]
 pub(crate) struct BoundStorageProvenKeyAgent {
     activation: RunningKeyAgentActivation,
@@ -315,6 +339,7 @@ pub(crate) struct BoundStorageProvenKeyAgent {
     request_writer: KeyAgentRequestWriter,
     response_reader: KeyAgentResponseReader,
     handshake: VerifiedSupervisorHandshake,
+    install_continuity: VerifiedKeyAgentInstallContinuity,
     not_sync: PhantomData<Cell<()>>,
     provisioning: PreparedKeyAgentProvisioning,
 }
@@ -334,6 +359,10 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
                 &"[RETAINED RESPONSE HANDLE; NO RUNTIME I/O]",
             )
             .field("handshake", &"[VERIFIED STORAGE-STARTUP TRANSCRIPT]")
+            .field(
+                "install_continuity",
+                &"[AUTHENTICATED INSTALL/RELEASE CONTINUITY]",
+            )
             .field("provisioning", &"[VERIFIED PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
@@ -352,7 +381,7 @@ pub(crate) fn provision_fresh_key_agent_boundary()
     PendingKeyAgentProvisioning::provision_fresh().map_err(Into::into)
 }
 
-/// Preflights and binds one exact Key Agent without executing its user code.
+/// Binds one release-preflighted exact Key Agent without executing user code.
 ///
 /// Release, manifest-role, allowlist, and path checks happen before the worker
 /// or any Job/pipe resource exists. The internally sampled startup deadline
@@ -361,17 +390,21 @@ pub(crate) fn provision_fresh_key_agent_boundary()
 /// attributes cannot escape the exact `CreateProcessW` call. The child remains
 /// detached with one proven suspend count when the aggregate returns.
 ///
-/// This function configures and proves the fixed zero-capability Key Agent LPAC
+/// The input has already bound durable installer provenance to the exact
+/// preflighted whole-release identity and pinned Key Agent artifact. This
+/// function then configures and proves the fixed zero-capability Key Agent LPAC
 /// plus one verified supervisor-held storage root, but stops before the sibling
-/// one-shot storage-startup transition. Production remains fail-closed while
-/// signed release evidence, durable installer-bound existing-profile
-/// provenance, protected settings, and authenticated topology are absent.
+/// one-shot storage-startup transition. Protected settings, child-side
+/// key/anchor authority, and authenticated topology remain absent, so the
+/// returned state is not runtime-ready or signing-capable.
 pub(crate) fn bind_dormant_key_agent(
-    attestation: ReleaseAttestation,
-    artifact: VerifiedHelper,
-    provisioning: PreparedKeyAgentProvisioning,
+    bound: ArtifactBoundExistingKeyAgentInstall,
 ) -> Result<BoundDormantKeyAgent, KeyAgentSupervisorError> {
-    let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+    let (preflighted, provisioning, install_continuity) =
+        consume_artifact_bound_existing_key_agent_install(
+            bound,
+            KeyAgentSupervisorBindingSeal { _private: () },
+        );
     provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
@@ -412,6 +445,7 @@ pub(crate) fn bind_dormant_key_agent(
             request_writer,
             response_reader,
             startup_lease,
+            install_continuity,
             not_sync: PhantomData,
             provisioning,
         })
@@ -491,6 +525,7 @@ fn bind_key_agent_storage_startup_with_request(
         request_writer,
         response_reader,
         startup_lease,
+        install_continuity,
         not_sync: _,
         provisioning,
     } = bound;
@@ -560,6 +595,7 @@ fn bind_key_agent_storage_startup_with_request(
         request_writer,
         response_reader,
         handshake,
+        install_continuity,
         not_sync: PhantomData,
         provisioning,
     })
@@ -662,6 +698,7 @@ fn bind_dormant_key_agent_for_kernel_test(
         .chain(core::iter::once(0))
         .collect::<Vec<_>>();
     let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+    let install_continuity = verified_install_continuity_for_supervisor_test();
     provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
@@ -696,6 +733,7 @@ fn bind_dormant_key_agent_for_kernel_test(
             request_writer,
             response_reader,
             startup_lease,
+            install_continuity,
             not_sync: PhantomData,
             provisioning,
         })
@@ -711,7 +749,7 @@ mod tests {
         bind_dormant_key_agent_for_kernel_test, bind_key_agent_storage_startup_for_kernel_test,
         startup_transcript_commitment,
     };
-    use crate::attestation::ReleaseAttestation;
+    use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::VerifiedHelper;
     use crate::key_agent_activation::KeyAgentActivationError;
     use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
@@ -746,11 +784,10 @@ mod tests {
     impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     fn attestation_for(artifact: &VerifiedHelper) -> ReleaseAttestation {
-        ReleaseAttestation::with_helper_manifests_for_test([
-            artifact.manifest_digest(),
-            [25; 32],
-            [26; 32],
-        ])
+        ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([23; 32]),
+            [artifact.manifest_digest(), [25; 32], [26; 32]],
+        )
     }
 
     #[test]

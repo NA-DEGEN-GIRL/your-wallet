@@ -330,8 +330,17 @@ phase-specific payloads and the exact `Prepared=1`, `ProfileCreated=2`,
 `RootCreated=3`, `Committed=4` sequence, checks every predecessor commitment,
 and compares the current commitment/high-water with a separately sealed
 rollback-resistant checkpoint carrying independently expected
-installation/release identities. Rollback, gaps, reorderings, same-generation
-equivocation, malformed bytes, and non-canonical unused fields fail closed.
+installation/release identities. The journal `release_identity` is exactly the
+whole-release `ReleasePolicy` `ArtifactDigest` accepted by
+`ReleaseAttestation`; it is neither the helper-manifest digest nor a Windows
+file identity. The helper manifest independently binds the child role, version,
+executable hash, and signer, while the retained file handle and full
+`FILE_ID_INFO` bind the exact child file object. A changed committed
+whole-release identity is `RecoveryRequired`, not an in-place upgrade under this
+contract. Because no exclusive installer lease serializes checkpoint,
+observation, and post-observation reread, production upgrade orchestration is
+not enabled. Rollback, gaps, reorderings, same-generation equivocation,
+malformed bytes, and non-canonical unused fields fail closed.
 The validator returns an authenticated snapshot. A pure matcher consumes two
 matching committed snapshots plus authority-free evidence copied from a
 fixed-profile-binding and held-root aggregate; only exact current `Committed=4`
@@ -339,15 +348,22 @@ consistency yields stable evidence. Its sole production-code consumer is the
 dormant adoption transition, which revalidates the profile binding and same
 no-delete-share root before and after matching, mints the prepared value through
 one private seal, and retains it inside `VerifiedExistingKeyAgentInstall`.
+The implemented dormant release-binding preflights that exact child, performs
+one constant-time comparison against the authenticated whole-release identity,
+and only then constructs `ArtifactBoundExistingKeyAgentInstall`. Only the
+supervisor's private-field seal can split that aggregate for dormant activation;
+the resulting install continuity is retained through the dormant and
+storage-proven states. It grants no general runtime/signing IPC, installer key,
+rollback-anchor, storage/AEAD-key, or protected-settings/lease authority.
 The journal validator performs no I/O and has no production key/checkpoint
 constructor, journal reader/writer backend, or caller. The adoption transition
-has no production caller, and the verified aggregate has no downstream
-artifact-binding consumer.
+and both downstream dormant binding functions have zero production call sites.
 
 Production still lacks authoritative profile-registration observation, a fixed
 existing-root opener and held-aggregate constructor, an exclusive installer
 lease enforcing the post-observation reread, canonical-path reopen identity
-comparison, downstream artifact binding, durable journal writing, and recovery.
+comparison, production installer-key/checkpoint and journal I/O backends,
+recovery, and release-activation orchestration.
 The same-user/ancestor
 race boundary, production rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
