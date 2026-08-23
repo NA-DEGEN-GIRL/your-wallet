@@ -234,7 +234,24 @@ DLL/dependency E2E, and release activation remain **STOP-SHIP**. Persistent
 startup streams prove neither a future delayed suffix nor EOF, and no generic
 runtime/signing IPC exists. `COMPILED_RELEASE_POLICY` is `None`. The central
 AppContainer profile API rejects thread impersonation before its process-wide
-non-reentrant gate; same-thread reentry and mutex poison also fail closed.
+non-reentrant gate and rechecks it after mutex wait. It also bookends every
+protected `CreateAppContainerProfile`,
+`DeriveAppContainerSidFromAppContainerName`, and
+`GetAppContainerFolderPath` call with immediate pre- and post-call checks. Any
+successful raw SID or `CoTaskMem` path enters a private RAII owner before the
+post-call check and is released if that check or subsequent validation fails.
+Except for the binding's necessary success/error split used to capture a
+successful allocation, specific native-error branching and inspection,
+pointer/SID validity, path decoding and validation, SID comparisons, and
+application use occur only after the post-call check. These bookends are
+fail-closed observations, not an atomic proof that an impersonation token could
+not be installed and removed between checks. If that check fails
+after a successful `CreateAppContainerProfile`, the code does not automatically
+call `DeleteAppContainerProfile` or roll back: fresh Key Agent provisioning may
+already have created the profile and requires recovery. This adds neither
+profile-registration authority nor production reachability, and there is no
+production `DeleteAppContainerProfile` path. Same-thread reentry and mutex
+poison also fail closed.
 
 The activation still supplies zero capabilities plus the ALL APPLICATION
 PACKAGES opt-out in its exact four-entry process-creation attribute list. While

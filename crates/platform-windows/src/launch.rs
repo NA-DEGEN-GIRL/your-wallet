@@ -632,6 +632,47 @@ mod sys {
         }
     }
 
+    /// Owns one as-yet-untrusted SID returned by a profile API.
+    ///
+    /// The native allocation is retained before the post-call impersonation
+    /// check and is released even when that check or SID validation fails.
+    struct UnvalidatedProfileApiSid {
+        raw: Option<PSID>,
+    }
+
+    impl UnvalidatedProfileApiSid {
+        const fn new(raw: PSID) -> Self {
+            Self { raw: Some(raw) }
+        }
+
+        fn into_validated(mut self) -> Result<OwnedAppContainerSid, LaunchError> {
+            let sid = self.raw.ok_or(LaunchError::SandboxVerification)?;
+            // SAFETY: the pointer is inspected only for validity before this
+            // owner transfers it to the validated wrapper.
+            if sid.is_invalid() || !unsafe { IsValidSid(sid) }.as_bool() {
+                return Err(LaunchError::SandboxVerification);
+            }
+            self.raw = None;
+            Ok(OwnedAppContainerSid(sid))
+        }
+    }
+
+    impl Drop for UnvalidatedProfileApiSid {
+        fn drop(&mut self) {
+            let Some(sid) = self.raw.take() else {
+                return;
+            };
+            if sid.is_invalid() {
+                return;
+            }
+            // SAFETY: every non-null success value remains owned by this guard
+            // until validation transfers it exactly once.
+            unsafe {
+                let _ = FreeSid(sid);
+            }
+        }
+    }
+
     struct OwnedAppContainerSid(PSID);
 
     impl OwnedAppContainerSid {
@@ -646,6 +687,9 @@ mod sys {
             let profile_api =
                 acquire_appcontainer_profile_api().map_err(|_| LaunchError::OperatingSystem)?;
 
+            profile_api
+                .recheck_thread()
+                .map_err(|_| LaunchError::OperatingSystem)?;
             // SAFETY: all strings are NUL terminated and there are deliberately no
             // capability SIDs. The returned SID is owned and freed with FreeSid.
             let created = unsafe {
@@ -655,10 +699,14 @@ mod sys {
                     PCWSTR(description_wide.as_ptr()),
                     None,
                 )
-            };
+            }
+            .map(UnvalidatedProfileApiSid::new);
+            profile_api
+                .recheck_thread()
+                .map_err(|_| LaunchError::OperatingSystem)?;
             match created {
                 Ok(created_sid) => {
-                    let created = Self::from_raw(created_sid)?;
+                    let created = created_sid.into_validated()?;
                     // Derivation is checked even on first creation so a changed OS
                     // profile contract cannot silently select a different SID.
                     let derived = Self::derive_under_guard(&profile_api, &name_wide)?;
@@ -684,30 +732,21 @@ mod sys {
         }
 
         fn derive_under_guard(
-            _profile_api: &AppContainerProfileApiGuard,
+            profile_api: &AppContainerProfileApiGuard,
             name_wide: &[u16],
         ) -> Result<Self, LaunchError> {
+            profile_api
+                .recheck_thread()
+                .map_err(|_| LaunchError::OperatingSystem)?;
             // SAFETY: `name_wide` is a live NUL-terminated profile name.
-            let sid = unsafe {
-                DeriveAppContainerSidFromAppContainerName(PCWSTR(name_wide.as_ptr()))
-                    .map_err(|_| LaunchError::OperatingSystem)?
-            };
-            Self::from_raw(sid)
-        }
-
-        fn from_raw(sid: PSID) -> Result<Self, LaunchError> {
-            // SAFETY: the SID came from a successful profile API call.
-            if sid.is_invalid() || !unsafe { IsValidSid(sid) }.as_bool() {
-                if !sid.is_invalid() {
-                    // SAFETY: even a malformed non-null SID returned by the profile
-                    // API must be released with FreeSid.
-                    unsafe {
-                        let _ = FreeSid(sid);
-                    }
-                }
-                return Err(LaunchError::SandboxVerification);
-            }
-            Ok(Self(sid))
+            let sid =
+                unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(name_wide.as_ptr())) }
+                    .map(UnvalidatedProfileApiSid::new);
+            profile_api
+                .recheck_thread()
+                .map_err(|_| LaunchError::OperatingSystem)?;
+            sid.map_err(|_| LaunchError::OperatingSystem)?
+                .into_validated()
         }
 
         const fn raw(&self) -> PSID {

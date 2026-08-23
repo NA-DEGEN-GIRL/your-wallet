@@ -1120,6 +1120,58 @@ function rustTopLevelLexicalItemBlock(source, headerPattern) {
   return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
 }
 
+function rustLexicalItemBlockAtDepth(source, headerPattern, expectedDepth) {
+  const sourceCode = rustLexicalCode(source);
+  const flags = headerPattern.flags.includes("g")
+    ? headerPattern.flags
+    : `${headerPattern.flags}g`;
+  const matches = [
+    ...sourceCode.matchAll(new RegExp(headerPattern.source, flags)),
+  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth);
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected one Rust item at brace depth ${expectedDepth}: ${headerPattern.source}`,
+    );
+  }
+  let itemStart = matches[0].index;
+  while (/\s/u.test(sourceCode[itemStart] ?? "")) {
+    itemStart += 1;
+  }
+  const openingBrace = sourceCode.indexOf("{", itemStart);
+  if (openingBrace === -1) {
+    return "";
+  }
+  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
+}
+
+function rustFunctionBlockAtDepth(source, functionName, expectedDepth) {
+  const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return rustLexicalItemBlockAtDepth(
+    source,
+    new RegExp(
+      `(?:^|\\n)\\s*(?:pub(?:\\([^\\r\\n)]*\\))?\\s+)?(?:(?:const|async|unsafe)\\s+)*(?:extern(?:\\s+"[^"\\r\\n]*")?\\s+)?fn\\s+${escapedName}\\b[^{}]*\\{`,
+      "u",
+    ),
+    expectedDepth,
+  );
+}
+
+function rustImplItemAtDepth(source, expectedHeader, expectedDepth) {
+  const sourceCode = rustLexicalCode(source);
+  const matches = rustImplItems(source).filter(
+    (item) =>
+      item.header === expectedHeader &&
+      rustBraceDepthBefore(sourceCode, item.index) === expectedDepth,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected one ${expectedHeader} at brace depth ${expectedDepth}`,
+    );
+  }
+  return matches[0].source;
+}
+
 function rustTopLevelFunctionBlock(source, functionName) {
   const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return rustTopLevelLexicalItemBlock(
@@ -7625,13 +7677,15 @@ const preparedKeyAgentProfileImpl = rustLexicalItemBlock(
   keyAgentLpacRelease,
   /impl\s+PreparedKeyAgentProfile\s*\{/u,
 );
-const ownedAppContainerSidReleaseImpl = rustLexicalItemBlock(
+const ownedAppContainerSidReleaseImpl = rustImplItemAtDepth(
   keyAgentLpacRelease,
-  /impl\s+OwnedAppContainerSid\s*\{/u,
+  "impl OwnedAppContainerSid",
+  0,
 );
-const ownedAppContainerSidTestImpl = rustLexicalItemBlock(
+const ownedAppContainerSidTestImpl = rustImplItemAtDepth(
   keyAgentLpac,
-  /impl\s+OwnedAppContainerSid\s*\{/u,
+  "impl OwnedAppContainerSid",
+  0,
 );
 const provisionFreshKeyAgent = rustFunctionBlock(
   pendingKeyAgentProvisioningImpl,
@@ -7655,9 +7709,10 @@ const prepareKeyAgentProfileFromSid = rustFunctionBlock(
   preparedKeyAgentProfileImpl,
   "from_profile_sid",
 );
-const createFreshKeyAgentProfileSid = rustFunctionBlock(
+const createFreshKeyAgentProfileSid = rustFunctionBlockAtDepth(
   ownedAppContainerSidReleaseImpl,
   "create_fresh",
+  1,
 );
 const keyAgentLpacPrepare = rustFunctionBlock(keyAgentLpac, "prepare");
 const keyAgentLpacEnvironment = rustFunctionBlock(
@@ -7672,47 +7727,225 @@ const keyAgentLpacVerifySuspended = rustFunctionBlock(
   keyAgentLpacRelease,
   "verify_suspended_process",
 );
-const keyAgentLpacOpenOrCreate = rustFunctionBlock(
+const keyAgentLpacOpenOrCreate = rustFunctionBlockAtDepth(
   ownedAppContainerSidTestImpl,
   "open_or_create",
+  1,
 );
-const keyAgentLpacDeriveUnderGuard = rustFunctionBlock(
+const keyAgentLpacDeriveUnderGuard = rustFunctionBlockAtDepth(
   keyAgentLpacRelease,
   "derive_under_guard",
+  1,
 );
-const launchProfileOpenOrCreate = rustFunctionBlock(
+const launchOwnedAppContainerSidImpl = rustImplItemAtDepth(
   restrictedLauncherRelease,
+  "impl OwnedAppContainerSid",
+  1,
+);
+const launchProfileOpenOrCreate = rustFunctionBlockAtDepth(
+  launchOwnedAppContainerSidImpl,
   "open_or_create",
+  1,
 );
-const launchProfileDeriveUnderGuard = rustFunctionBlock(
-  restrictedLauncherRelease,
+const launchProfileDeriveUnderGuard = rustFunctionBlockAtDepth(
+  launchOwnedAppContainerSidImpl,
   "derive_under_guard",
+  1,
 );
-const acquireAppContainerProfileApi = rustFunctionBlock(
+const acquireAppContainerProfileApi = rustTopLevelFunctionBlock(
   appContainerProfileApiProduction,
   "acquire_appcontainer_profile_api",
 );
-const rejectAppContainerProfileThreadImpersonation = rustFunctionBlock(
+const rejectAppContainerProfileThreadImpersonation = rustTopLevelFunctionBlock(
   appContainerProfileApiProduction,
   "reject_thread_impersonation",
 );
-const appContainerProfileApiGuardDrop = rustLexicalItemBlock(
+const appContainerProfileApiGuardDefinition = rustTopLevelLexicalItemBlock(
   appContainerProfileApiProduction,
-  /impl\s+Drop\s+for\s+AppContainerProfileApiGuard\s*\{/u,
+  /pub\(crate\)\s+struct\s+AppContainerProfileApiGuard\s*\{/u,
 );
-const appContainerProfileReentryTest = rustFunctionBlock(
+const appContainerProfileApiGuardImpl = rustImplItemAtDepth(
+  appContainerProfileApiProduction,
+  "impl AppContainerProfileApiGuard",
+  0,
+);
+const appContainerProfileRecheckThread = rustFunctionBlockAtDepth(
+  appContainerProfileApiGuardImpl,
+  "recheck_thread",
+  1,
+);
+const appContainerProfileApiGuardDrop = rustImplItemAtDepth(
+  appContainerProfileApiProduction,
+  "impl Drop for AppContainerProfileApiGuard",
+  0,
+);
+const appContainerProfileReentryTest = rustFunctionBlockAtDepth(
   appContainerProfileApiSource,
   "same_thread_reentry_fails_closed_without_poisoning_gate",
+  1,
 );
-const appContainerProfileImpersonationTest = rustFunctionBlock(
+const appContainerProfileImpersonationTest = rustFunctionBlockAtDepth(
   appContainerProfileApiSource,
   "impersonating_thread_is_rejected_before_profile_gate",
+  1,
+);
+const appContainerProfileThreadBoundTest = rustFunctionBlockAtDepth(
+  appContainerProfileApiSource,
+  "profile_api_guard_is_thread_bound_non_clone_and_non_copy",
+  1,
+);
+const profileApiTestCode = rustLexicalCode(appContainerProfileApiSource);
+const profileApiThreadBoundProofItems = [
+  [
+    rustLexicalItemBlockAtDepth(
+      appContainerProfileApiSource,
+      /trait\s+AmbiguousIfSend<A>\s*\{/u,
+      1,
+    ),
+    "traitAmbiguousIfSend<A>{fnmarker(){}}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized> AmbiguousIfSend<()> for T",
+      1,
+    ),
+    "impl<T:?Sized>AmbiguousIfSend<()>forT{}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T",
+      1,
+    ),
+    "impl<T:?Sized+Send>AmbiguousIfSend<u8>forT{}",
+  ],
+  [
+    rustLexicalItemBlockAtDepth(
+      appContainerProfileApiSource,
+      /trait\s+AmbiguousIfSync<A>\s*\{/u,
+      1,
+    ),
+    "traitAmbiguousIfSync<A>{fnmarker(){}}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized> AmbiguousIfSync<()> for T",
+      1,
+    ),
+    "impl<T:?Sized>AmbiguousIfSync<()>forT{}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T",
+      1,
+    ),
+    "impl<T:?Sized+Sync>AmbiguousIfSync<u8>forT{}",
+  ],
+  [
+    rustLexicalItemBlockAtDepth(
+      appContainerProfileApiSource,
+      /trait\s+AmbiguousIfClone<A>\s*\{/u,
+      1,
+    ),
+    "traitAmbiguousIfClone<A>{fnmarker(){}}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized> AmbiguousIfClone<()> for T",
+      1,
+    ),
+    "impl<T:?Sized>AmbiguousIfClone<()>forT{}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: Clone> AmbiguousIfClone<u8> for T",
+      1,
+    ),
+    "impl<T:Clone>AmbiguousIfClone<u8>forT{}",
+  ],
+  [
+    rustLexicalItemBlockAtDepth(
+      appContainerProfileApiSource,
+      /trait\s+AmbiguousIfCopy<A>\s*\{/u,
+      1,
+    ),
+    "traitAmbiguousIfCopy<A>{fnmarker(){}}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: ?Sized> AmbiguousIfCopy<()> for T",
+      1,
+    ),
+    "impl<T:?Sized>AmbiguousIfCopy<()>forT{}",
+  ],
+  [
+    rustImplItemAtDepth(
+      appContainerProfileApiSource,
+      "impl<T: Copy> AmbiguousIfCopy<u8> for T",
+      1,
+    ),
+    "impl<T:Copy>AmbiguousIfCopy<u8>forT{}",
+  ],
+];
+const appContainerProfileRecheckTest = rustFunctionBlockAtDepth(
+  appContainerProfileApiSource,
+  "held_guard_rechecks_thread_impersonation_around_native_call",
+  1,
+);
+const launchUnvalidatedProfileApiSidDefinition = rustLexicalItemBlockAtDepth(
+  restrictedLauncherRelease,
+  /struct\s+UnvalidatedProfileApiSid\s*\{/u,
+  1,
+);
+const launchUnvalidatedProfileApiSidImpl = rustImplItemAtDepth(
+  restrictedLauncherRelease,
+  "impl UnvalidatedProfileApiSid",
+  1,
+);
+const launchUnvalidatedProfileApiSidDrop = rustImplItemAtDepth(
+  restrictedLauncherRelease,
+  "impl Drop for UnvalidatedProfileApiSid",
+  1,
+);
+const keyAgentUnvalidatedProfileApiSidDefinition = rustTopLevelLexicalItemBlock(
+  keyAgentLpacRelease,
+  /struct\s+UnvalidatedProfileApiSid\s*\{/u,
+);
+const keyAgentUnvalidatedProfileApiSidImpl = rustImplItemAtDepth(
+  keyAgentLpacRelease,
+  "impl UnvalidatedProfileApiSid",
+  0,
+);
+const keyAgentUnvalidatedProfileApiSidDrop = rustImplItemAtDepth(
+  keyAgentLpacRelease,
+  "impl Drop for UnvalidatedProfileApiSid",
+  0,
+);
+const keyAgentUnvalidatedProfileApiFolderDefinition = rustTopLevelLexicalItemBlock(
+  keyAgentLpacRelease,
+  /struct\s+UnvalidatedProfileApiFolderPath\s*\{/u,
+);
+const keyAgentUnvalidatedProfileApiFolderImpl = rustImplItemAtDepth(
+  keyAgentLpacRelease,
+  "impl UnvalidatedProfileApiFolderPath",
+  0,
+);
+const keyAgentUnvalidatedProfileApiFolderDrop = rustImplItemAtDepth(
+  keyAgentLpacRelease,
+  "impl Drop for UnvalidatedProfileApiFolderPath",
+  0,
 );
 const concurrentKeyAgentProfilePreparationTest = rustFunctionBlock(
   keyAgentLpacSource,
   "concurrent_fixed_profile_preparation_is_process_serialized",
 );
-const requireCreatedKeyAgentSidMatchesDerived = rustFunctionBlock(
+const requireCreatedKeyAgentSidMatchesDerived = rustTopLevelFunctionBlock(
   keyAgentLpacRelease,
   "require_created_sid_matches_derived",
 );
@@ -7748,7 +7981,7 @@ const validateKeyAgentLpacToken = rustFunctionBlock(
   keyAgentLpacRelease,
   "validate_token_policy",
 );
-const keyAgentAppContainerFolder = rustFunctionBlock(
+const keyAgentAppContainerFolder = rustTopLevelFunctionBlock(
   keyAgentLpacRelease,
   "appcontainer_folder",
 );
@@ -13798,6 +14031,67 @@ const appContainerProfileNativeApiInventory =
       rustCallSites(file.source, api).map(() => ({ api, path: file.path })),
     ),
   );
+const profileApiUsageInventory = (files, names) => {
+  const namePattern = names.join("|");
+  const tokenPattern = new RegExp(`\\b(?<name>${namePattern})\\b`, "gu");
+  const qualifiedPattern = new RegExp(
+    `(?:(?:r#)?[\\p{XID_Start}_][\\p{XID_Continue}_]*\\s*::\\s*)+(?<name>${namePattern})\\s*\\(`,
+    "gu",
+  );
+  const calls = [];
+  const tokens = Object.fromEntries(names.map((name) => [name, []]));
+  const aliases = [];
+  const qualified = [];
+  const references = [];
+  for (const file of files) {
+    const code = rustLexicalCode(file.source);
+    const uses = rustUseItems(file.source);
+    const useRanges = uses.map((item) => [item.index, item.index + item.source.length]);
+    for (const name of names) {
+      calls.push(
+        ...rustCallSites(file.source, name).map((call) => ({
+          name,
+          path: file.path,
+          arguments: call.arguments,
+        })),
+      );
+    }
+    for (const item of uses) {
+      const itemCode = rustLexicalCode(item.source);
+      if (tokenPattern.test(itemCode) && /\bas\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\b/u.test(itemCode)) {
+        aliases.push({ path: file.path, source: compactRust(item.source) });
+      }
+      tokenPattern.lastIndex = 0;
+    }
+    for (const match of code.matchAll(tokenPattern)) {
+      tokens[match.groups.name].push(file.path);
+      const inUse = useRanges.some(([start, end]) => start <= match.index && match.index < end);
+      const called = /^\s*\(/u.test(code.slice(match.index + match[0].length));
+      if (!inUse && !called) {
+        references.push({ path: file.path, name: match.groups.name });
+      }
+    }
+    tokenPattern.lastIndex = 0;
+    qualified.push(
+      ...[...code.matchAll(qualifiedPattern)].map((match) => ({
+        path: file.path,
+        name: match.groups.name,
+      })),
+    );
+  }
+  for (const paths of Object.values(tokens)) {
+    paths.sort();
+  }
+  return { calls, tokens, aliases, qualified, references };
+};
+const appContainerProfileNativeUsage = profileApiUsageInventory(
+  platformWindowsProductionFiles,
+  appContainerProfileNativeApis,
+);
+const workspaceAppContainerProfileNativeUsage = profileApiUsageInventory(
+  workspaceRustProductionFiles,
+  [...appContainerProfileNativeApis, "DeleteAppContainerProfile"],
+);
 const appContainerProfileCoordinatorConsumers =
   platformWindowsProductionFiles
     .filter(
@@ -13825,13 +14119,88 @@ const compactRejectAppContainerProfileThreadImpersonation = compactRust(
 const compactAppContainerProfileGuardDrop = compactRust(
   appContainerProfileApiGuardDrop,
 );
+const compactAppContainerProfileRecheck = compactRust(
+  appContainerProfileRecheckThread,
+);
 const appContainerProfileAcquireOrder = [
   "reject_thread_impersonation()?",
   "PROFILE_API_HELD_BY_THREAD.try_with(Cell::get)",
-  "APP_CONTAINER_PROFILE_API.lock()",
+  "letmutex=APP_CONTAINER_PROFILE_API.lock().map_err(|_|AppContainerProfileApiCoordinationError::Poisoned)?;reject_thread_impersonation()?;letwas_held=",
   "PROFILE_API_HELD_BY_THREAD.try_with(|held|held.replace(true))",
-  "Ok(AppContainerProfileApiGuard{_mutex:mutex})",
+  "Ok(AppContainerProfileApiGuard{_mutex:mutex,_thread_bound:PhantomData,})",
 ].map((marker) => compactAppContainerProfileAcquire.indexOf(marker));
+const profileApiNativeCallEnvelope = (source, spec) => {
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const code = compactRust(source);
+  const argumentsPattern = spec.arguments.map((argument) => escape(compactRust(argument))).join(",");
+  const pattern = new RegExp(
+    `profile_api\\.recheck_thread\\(\\)\\.map_err\\(\\|_\\|${escape(spec.error)}\\)\\?;let${escape(spec.result)}=unsafe\\{${escape(spec.api)}\\(${argumentsPattern},?\\)\\}\\.map\\(${escape(spec.owner)}::new\\);profile_api\\.recheck_thread\\(\\)\\.map_err\\(\\|_\\|${escape(spec.error)}\\)\\?;`,
+    "u",
+  );
+  const calls = rustCallSites(source, spec.api);
+  return (
+    calls.length === 1 &&
+    JSON.stringify(calls[0].arguments.map(compactRust)) ===
+      JSON.stringify(spec.arguments.map(compactRust)) &&
+    rustCallSites(source, "recheck_thread").length === 2 &&
+    pattern.test(code)
+  );
+};
+const profileApiEnvelopeProbe = `fn probe(profile_api: &AppContainerProfileApiGuard) -> Result<(), ProbeError> {
+  profile_api.recheck_thread().map_err(|_| ProbeError)?;
+  let captured = unsafe { CreateAppContainerProfile(a, b, c, None) }.map(UnvalidatedProfileApiSid::new);
+  profile_api.recheck_thread().map_err(|_| ProbeError)?;
+  consume(captured); Ok(())
+}`;
+const profileApiEnvelopeProbeSpec = {
+  api: "CreateAppContainerProfile",
+  arguments: ["a", "b", "c", "None"],
+  result: "captured",
+  owner: "UnvalidatedProfileApiSid",
+  error: "ProbeError",
+};
+const profileApiEnvelopeMutationProbes = [
+  profileApiEnvelopeProbe.replace("  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n", ""),
+  profileApiEnvelopeProbe.replace("  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n  consume", "  consume"),
+  profileApiEnvelopeProbe.replace("}.map(UnvalidatedProfileApiSid::new);\n  profile_api", "};\n  profile_api"),
+  profileApiEnvelopeProbe.replace("unsafe { CreateAppContainerProfile(a, b, c, None) }", "unsafe { (CreateAppContainerProfile(a, b, c, None), side_effect()).0 }"),
+  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "CreateAppContainerProfile(a, side_effect(), c, None)"),
+  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "create_alias(a, b, c, None)"),
+  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "windows::Authorization::CreateAppContainerProfile(a, b, c, None)"),
+];
+const profileApiExtractionSpoofProbe = `
+// struct UnvalidatedProfileApiSid { spoofed: bool }
+mod windows {
+  fn nested() { struct UnvalidatedProfileApiSid { spoofed: bool } }
+  struct UnvalidatedProfileApiSid { raw: Option<PSID> }
+  impl UnvalidatedProfileApiSid {
+    fn earlier() { fn recheck_thread() { spoofed(); } }
+    fn recheck_thread(&self) { reviewed(); }
+  }
+}`;
+const profileApiExtractionSpoofDefinition = rustLexicalItemBlockAtDepth(
+  profileApiExtractionSpoofProbe,
+  /struct\s+UnvalidatedProfileApiSid\s*\{/u,
+  1,
+);
+const profileApiExtractionSpoofImpl = rustImplItemAtDepth(
+  profileApiExtractionSpoofProbe,
+  "impl UnvalidatedProfileApiSid",
+  1,
+);
+const profileApiExtractionSpoofFunction = rustFunctionBlockAtDepth(
+  profileApiExtractionSpoofImpl,
+  "recheck_thread",
+  1,
+);
+const expectedProfileApiRaiiBodies = [
+  [launchUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_validated(mutself)->Result<OwnedAppContainerSid,LaunchError>{letsid=self.raw.ok_or(LaunchError::SandboxVerification)?;ifsid.is_invalid()||!unsafe{IsValidSid(sid)}.as_bool(){returnErr(LaunchError::SandboxVerification);}self.raw=None;Ok(OwnedAppContainerSid(sid))}}"],
+  [launchUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
+  [keyAgentUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_owned(self)->Result<OwnedAppContainerSid,KeyAgentLpacError>{letraw=self.raw.ok_or(KeyAgentLpacError::Profile)?;ifraw.is_invalid()||!unsafe{IsValidSid(raw)}.as_bool(){returnErr(KeyAgentLpacError::Profile);}OwnedAppContainerSid::copy_from(raw)}}"],
+  [keyAgentUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
+  [keyAgentUnvalidatedProfileApiFolderImpl, "implUnvalidatedProfileApiFolderPath{constfnnew(raw:PWSTR)->Self{Self{raw:Some(raw)}}fnto_path(&self)->Result<PathBuf,KeyAgentLpacError>{letfolder=self.raw.ok_or(KeyAgentLpacError::Profile)?;iffolder.is_null(){returnErr(KeyAgentLpacError::Profile);}unsafe{folder.to_string()}.map(PathBuf::from).map_err(|_|KeyAgentLpacError::Profile)}}"],
+  [keyAgentUnvalidatedProfileApiFolderDrop, "implDropforUnvalidatedProfileApiFolderPath{fndrop(&mutself){letSome(folder)=self.raw.take()else{return;};iffolder.is_null(){return;}unsafe{CoTaskMemFree(Some(folder.0.cast::<c_void>()))};}}"],
+];
 const compactCreateFreshKeyAgentProfileSid = compactRust(
   createFreshKeyAgentProfileSid,
 );
@@ -13840,7 +14209,7 @@ const keyAgentProfileApiOrder = [
   "wide_nul_str(KEY_AGENT_PROFILE_DISPLAY_NAME)?",
   "wide_nul_str(KEY_AGENT_PROFILE_DESCRIPTION)?",
   "acquire_appcontainer_profile_api()",
-  "CreateAppContainerProfile(",
+  "}.map(UnvalidatedProfileApiSid::new);profile_api.recheck_thread().map_err(|_|KeyAgentLpacError::Profile)?;letcreated_sid=created_sid.map_err(|_|KeyAgentLpacError::Profile)?",
   "Self::derive_under_guard(&profile_api,&name)?",
   "require_created_sid_matches_derived(&created,&derived)?",
 ].map((marker) => compactCreateFreshKeyAgentProfileSid.indexOf(marker));
@@ -13853,9 +14222,10 @@ const launchProfileApiOrder = [
   "wide_nul_str(metadata.display_name)",
   "wide_nul_str(metadata.description)",
   "acquire_appcontainer_profile_api()",
-  "CreateAppContainerProfile(",
+  "}.map(UnvalidatedProfileApiSid::new);profile_api.recheck_thread().map_err(|_|LaunchError::OperatingSystem)?;matchcreated{",
   "Self::derive_under_guard(&profile_api,&name_wide)?",
   "EqualSid(created.raw(),derived.raw())",
+  "Err(error)iferror.code()==ERROR_ALREADY_EXISTS.to_hresult()",
 ].map((marker) => compactLaunchProfileOpenOrCreate.indexOf(marker));
 const compactKeyAgentAppContainerFolder = compactRust(
   keyAgentAppContainerFolder,
@@ -13863,10 +14233,16 @@ const compactKeyAgentAppContainerFolder = compactRust(
 const keyAgentAppContainerFolderOrder = [
   "sid_string(profile_sid.as_psid())?",
   "acquire_appcontainer_profile_api()",
-  "GetAppContainerFolderPath(",
-  "folder.to_string()",
-  "CoTaskMemFree(",
+  "}.map(UnvalidatedProfileApiFolderPath::new);profile_api.recheck_thread().map_err(|_|KeyAgentLpacError::Profile)?;folder.map_err(|_|KeyAgentLpacError::Profile)?.to_path()",
 ].map((marker) => compactKeyAgentAppContainerFolder.indexOf(marker));
+const profileApiEnvelopes = [
+  [launchProfileOpenOrCreate, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name_wide.as_ptr())", "PCWSTR(display_wide.as_ptr())", "PCWSTR(description_wide.as_ptr())", "None"], result: "created", owner: "UnvalidatedProfileApiSid", error: "LaunchError::OperatingSystem" }],
+  [launchProfileDeriveUnderGuard, { api: "DeriveAppContainerSidFromAppContainerName", arguments: ["PCWSTR(name_wide.as_ptr())"], result: "sid", owner: "UnvalidatedProfileApiSid", error: "LaunchError::OperatingSystem" }],
+  [createFreshKeyAgentProfileSid, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name.as_ptr())", "PCWSTR(display_name.as_ptr())", "PCWSTR(description.as_ptr())", "None"], result: "created_sid", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
+  [keyAgentLpacOpenOrCreate, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name.as_ptr())", "PCWSTR(display_name.as_ptr())", "PCWSTR(description.as_ptr())", "None"], result: "created", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
+  [keyAgentLpacDeriveUnderGuard, { api: "DeriveAppContainerSidFromAppContainerName", arguments: ["PCWSTR(name.as_ptr())"], result: "sid", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
+  [keyAgentAppContainerFolder, { api: "GetAppContainerFolderPath", arguments: ["PCWSTR(sid_text.as_ptr())"], result: "folder", owner: "UnvalidatedProfileApiFolderPath", error: "KeyAgentLpacError::Profile" }],
+];
 requireInvariant(
   platformWindowsLib.includes(
     "#[cfg(windows)]\nmod appcontainer_profile_api;",
@@ -13885,9 +14261,14 @@ requireInvariant(
     /#\[must_use\s*=\s*"[^"]+"\]\s*pub\(crate\)\s+struct\s+AppContainerProfileApiGuard/u.test(
       appContainerProfileApiProduction,
     ) &&
-    appContainerProfileApiProduction.includes(
-      "_mutex: MutexGuard<'static, ()>",
-    ) &&
+    normalizeRustFragment(rustLexicalCode(appContainerProfileApiGuardDefinition)) ===
+      "pub(crate) struct AppContainerProfileApiGuard { _mutex: MutexGuard<'static, ()>, _thread_bound: PhantomData<Rc<()>>, }" &&
+    compactAppContainerProfileRecheck ===
+      "pub(crate)fnrecheck_thread(&self)->Result<(),AppContainerProfileApiCoordinationError>{reject_thread_impersonation()}" &&
+    JSON.stringify(
+      rustStructLiteralSites(appContainerProfileApiProduction, "AppContainerProfileApiGuard")
+        .map((site) => compactRust(site.source)),
+    ) === JSON.stringify(["AppContainerProfileApiGuard{_mutex:mutex,_thread_bound:PhantomData,}"]) &&
     appContainerProfileAcquireOrder.every((position) => position !== -1) &&
     appContainerProfileAcquireOrder
       .slice(1)
@@ -13913,9 +14294,43 @@ requireInvariant(
     compactAppContainerProfileAcquire.includes("letwas_held=") &&
     compactAppContainerProfileAcquire.includes("debug_assert!(!was_held)") &&
     !appContainerProfileApiProduction.includes("into_inner") &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+AppContainerProfileApiGuard\b|unsafe\s+impl\s+(?:Send|Sync)\s+for\s+AppContainerProfileApiGuard\b|impl\s+(?:Clone|Copy)\s+for\s+AppContainerProfileApiGuard\b/u.test(
+      rustLexicalCode(appContainerProfileApiProduction),
+    ) &&
     compactAppContainerProfileGuardDrop.includes(
       "try_with(|held|held.replace(false))",
     ) &&
+    /#\s*\[\s*test\s*\]\s*fn\s+profile_api_guard_is_thread_bound_non_clone_and_non_copy\b/u.test(
+      rustLexicalCode(appContainerProfileApiSource),
+    ) &&
+    compactRust(appContainerProfileThreadBoundTest) ===
+      "fnprofile_api_guard_is_thread_bound_non_clone_and_non_copy(){let_=<AppContainerProfileApiGuardasAmbiguousIfSend<_>>::marker;let_=<AppContainerProfileApiGuardasAmbiguousIfSync<_>>::marker;let_=<AppContainerProfileApiGuardasAmbiguousIfClone<_>>::marker;let_=<AppContainerProfileApiGuardasAmbiguousIfCopy<_>>::marker;}" &&
+    profileApiThreadBoundProofItems.every(
+      ([source, expected]) =>
+        compactRust(source) === expected &&
+        profileApiTestCode.split(rustLexicalCode(source).trim()).length === 2,
+    ) &&
+    normalizeRustFragment(rustLexicalCode(launchUnvalidatedProfileApiSidDefinition)) ===
+      "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentUnvalidatedProfileApiSidDefinition)) ===
+      "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
+    normalizeRustFragment(rustLexicalCode(keyAgentUnvalidatedProfileApiFolderDefinition)) ===
+      "struct UnvalidatedProfileApiFolderPath { raw: Option<PWSTR>, }" &&
+    expectedProfileApiRaiiBodies.every(([source, expected]) => compactRust(source) === expected) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*struct\s+(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b|impl\s+(?:Clone|Copy|Deref|DerefMut|AsRef|Borrow|From|Into|TryFrom|TryInto)\b[^{}]*(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b/u.test(
+      rustLexicalCode(`${restrictedLauncherRelease}\n${keyAgentLpacRelease}`),
+    ) &&
+    ![...rustVisibleFunctionItems(restrictedLauncherRelease), ...rustVisibleFunctionItems(keyAgentLpacRelease)]
+      .some((item) => /\b(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b/u.test(item.signature)) &&
+    profileApiEnvelopes.every(([source, spec]) => profileApiNativeCallEnvelope(source, spec)) &&
+    profileApiNativeCallEnvelope(profileApiEnvelopeProbe, profileApiEnvelopeProbeSpec) &&
+    profileApiEnvelopeMutationProbes.every(
+      (probe) => !profileApiNativeCallEnvelope(probe, profileApiEnvelopeProbeSpec),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(profileApiExtractionSpoofDefinition)) ===
+      "struct UnvalidatedProfileApiSid { raw: Option<PSID> }" &&
+    compactRust(profileApiExtractionSpoofFunction) ===
+      "fnrecheck_thread(&self){reviewed();}" &&
     JSON.stringify(appContainerProfileCoordinatorConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_lpac.rs",
@@ -13935,6 +14350,52 @@ requireInvariant(
         call.path === "crates/platform-windows/src/key_agent_lpac.rs" ||
         call.path === "crates/platform-windows/src/launch.rs",
     ) &&
+    JSON.stringify(appContainerProfileNativeUsage.calls.map((call) => `${call.name}:${call.path}`).sort()) ===
+      JSON.stringify(["CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs", "CreateAppContainerProfile:crates/platform-windows/src/launch.rs", "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs", "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs", "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs"]) &&
+    JSON.stringify(appContainerProfileNativeUsage.tokens) === JSON.stringify({
+      CreateAppContainerProfile: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/launch.rs", "crates/platform-windows/src/launch.rs"],
+      DeriveAppContainerSidFromAppContainerName: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/launch.rs", "crates/platform-windows/src/launch.rs"],
+      GetAppContainerFolderPath: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs"],
+    }) &&
+    appContainerProfileNativeUsage.aliases.length === 0 &&
+    appContainerProfileNativeUsage.qualified.length === 0 &&
+    appContainerProfileNativeUsage.references.length === 0 &&
+    JSON.stringify(
+      workspaceAppContainerProfileNativeUsage.calls
+        .map((call) => `${call.name}:${call.path}:${call.arguments.map(compactRust).join(",")}`)
+        .sort(),
+    ) === JSON.stringify([
+      "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr()),PCWSTR(display_name.as_ptr()),PCWSTR(description.as_ptr()),None",
+      "CreateAppContainerProfile:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr()),PCWSTR(display_wide.as_ptr()),PCWSTR(description_wide.as_ptr()),None",
+      "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr())",
+      "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr())",
+      "DeriveAppContainerSidFromAppContainerName:crates/secret-input-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
+      "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(sid_text.as_ptr())",
+    ]) &&
+    JSON.stringify(workspaceAppContainerProfileNativeUsage.tokens) === JSON.stringify({
+      CreateAppContainerProfile: [
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/launch.rs",
+        "crates/platform-windows/src/launch.rs",
+      ],
+      DeriveAppContainerSidFromAppContainerName: [
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/launch.rs",
+        "crates/platform-windows/src/launch.rs",
+        "crates/secret-input-ui/src/bootstrap/windows.rs",
+        "crates/secret-input-ui/src/bootstrap/windows.rs",
+      ],
+      GetAppContainerFolderPath: [
+        "crates/platform-windows/src/key_agent_lpac.rs",
+        "crates/platform-windows/src/key_agent_lpac.rs",
+      ],
+      DeleteAppContainerProfile: [],
+    }) &&
+    workspaceAppContainerProfileNativeUsage.aliases.length === 0 &&
+    workspaceAppContainerProfileNativeUsage.qualified.length === 0 &&
+    workspaceAppContainerProfileNativeUsage.references.length === 0 &&
     keyAgentAppContainerFolderOrder.every((position) => position !== -1) &&
     keyAgentAppContainerFolderOrder
       .slice(1)
@@ -13942,7 +14403,7 @@ requireInvariant(
         (position, index) =>
           position > keyAgentAppContainerFolderOrder[index],
       ) &&
-    !platformWindowsProductionFiles.some((file) =>
+    !workspaceRustProductionFiles.some((file) =>
       /\bDeleteAppContainerProfile\b/u.test(rustLexicalCode(file.source)),
     ) &&
     appContainerProfileReentryTest.includes(
@@ -13954,6 +14415,22 @@ requireInvariant(
     appContainerProfileImpersonationTest.includes(
       "Err(AppContainerProfileApiCoordinationError::ThreadImpersonation)",
     ) &&
+    /#\s*\[\s*test\s*\]\s*fn\s+held_guard_rechecks_thread_impersonation_around_native_call\b/u.test(
+      rustLexicalCode(appContainerProfileApiSource),
+    ) &&
+    hasOrderedCompactRustMarkers(appContainerProfileRecheckTest, [
+      "letguard=acquire_appcontainer_profile_api()?",
+      "ImpersonateSelf(SecurityImpersonation)",
+      "guard.recheck_thread(),Err(AppContainerProfileApiCoordinationError::ThreadImpersonation)",
+      "drop(revert)",
+      "assert_eq!(guard.recheck_thread(),Ok(()))",
+    ]) &&
+    hasOrderedCompactRustMarkers(keyAgentLpacOpenOrCreate, [
+      "}.map(UnvalidatedProfileApiSid::new);profile_api.recheck_thread().map_err(|_|KeyAgentLpacError::Profile)?;matchcreated{",
+      "created_sid.into_owned()?",
+      "Self::derive_under_guard(&profile_api,&name)?",
+      "Err(error)iferror.code()==ERROR_ALREADY_EXISTS.to_hresult()",
+    ]) &&
     concurrentKeyAgentProfilePreparationTest.includes("const WORKERS: usize = 16") &&
     concurrentKeyAgentProfilePreparationTest.includes(
       "AtomicBool::new(false)",
@@ -14351,7 +14828,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/appcontainer_profile_api.rs",
     unsafeCount: 2,
-    sha256: "6bb03a36657dcf86d1ca7987fc9b3c65d2ed38b21cdcb7790836c1ffb3438194",
+    sha256: "9bfa761e154e90e4c436f38791f6c04f1d8ef68f0655fd40a90cabfb6aae4c0a",
   },
   {
     path: "crates/platform-windows/src/broker_channel.rs",
@@ -14390,8 +14867,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
-    unsafeCount: 38,
-    sha256: "55d48c05d3343d763d953a2ea39691f7213294ca614c2092936eff0a5b14222f",
+    unsafeCount: 37,
+    sha256: "512f67a0a0c357832a1bf7d7428496c37fc432c097bf3054cfe29937c74e11e1",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -14406,7 +14883,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/launch.rs",
     unsafeCount: 35,
-    sha256: "4c8771a90b1a09ff28948f95d8ae3b264ed2e4ca46442656670055a9e07a3e4e",
+    sha256: "540f596962ff7bb63c913c78c5e7268d084ea671db6f8a85859a7900e31be40d",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -15850,7 +16327,7 @@ requireInvariant(
     JSON.stringify(keyAgentProfileDerivations[0].arguments) ===
       JSON.stringify(["&profile_api", "&name"]) &&
     keyAgentLpacDeriveUnderGuard.includes(
-      "_profile_api: &AppContainerProfileApiGuard",
+      "profile_api: &AppContainerProfileApiGuard",
     ) &&
     rustCallSites(
       keyAgentLpacDeriveUnderGuard,
@@ -15887,7 +16364,7 @@ requireInvariant(
         JSON.stringify(["&profile_api", "&name_wide"]),
     ) &&
     launchProfileDeriveUnderGuard.includes(
-      "_profile_api: &AppContainerProfileApiGuard",
+      "profile_api: &AppContainerProfileApiGuard",
     ) &&
     !/pub\(crate\)\s+fn\s+(?:raw|sid|profile|name|into_sid|profile_sid)\b/u.test(
       keyAgentLpacRelease.replace(heldKeyAgentInstallObservationImpl, ""),
@@ -16039,7 +16516,7 @@ requireInvariant(
       "environment.len()>32_767||!environment.ends_with(&[0,0])",
     ) &&
     keyAgentAppContainerFolder.includes("GetAppContainerFolderPath") &&
-    keyAgentAppContainerFolder.includes("CoTaskMemFree") &&
+    keyAgentUnvalidatedProfileApiFolderDrop.includes("CoTaskMemFree") &&
     exactKeyAgentBaseEnvironment.includes("environment.ends_with(&[0, 0])") &&
     exactKeyAgentBaseEnvironment.includes('"SystemRoot=".encode_utf16()') &&
     exactKeyAgentBaseEnvironment.includes('"WINDIR=".encode_utf16()') &&

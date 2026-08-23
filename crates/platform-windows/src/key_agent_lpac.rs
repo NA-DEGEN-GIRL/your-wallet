@@ -628,6 +628,82 @@ struct KeyAgentLpacAttributeValues {
     all_application_packages_policy: u32,
 }
 
+/// Owns one as-yet-untrusted SID returned by a profile API.
+///
+/// The allocation is retained before the post-call impersonation check and is
+/// released even when that check or subsequent SID validation fails.
+struct UnvalidatedProfileApiSid {
+    raw: Option<PSID>,
+}
+
+impl UnvalidatedProfileApiSid {
+    const fn new(raw: PSID) -> Self {
+        Self { raw: Some(raw) }
+    }
+
+    fn into_owned(self) -> Result<OwnedAppContainerSid, KeyAgentLpacError> {
+        let raw = self.raw.ok_or(KeyAgentLpacError::Profile)?;
+        // SAFETY: the SID came from a successful AppContainer profile API.
+        if raw.is_invalid() || !unsafe { IsValidSid(raw) }.as_bool() {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        OwnedAppContainerSid::copy_from(raw)
+    }
+}
+
+impl Drop for UnvalidatedProfileApiSid {
+    fn drop(&mut self) {
+        let Some(sid) = self.raw.take() else {
+            return;
+        };
+        if sid.is_invalid() {
+            return;
+        }
+        // SAFETY: every non-null success value remains owned by this guard and
+        // must be released with FreeSid exactly once.
+        unsafe {
+            let _ = FreeSid(sid);
+        }
+    }
+}
+
+/// Owns one as-yet-untrusted `CoTaskMem` path returned by a profile API.
+struct UnvalidatedProfileApiFolderPath {
+    raw: Option<PWSTR>,
+}
+
+impl UnvalidatedProfileApiFolderPath {
+    const fn new(raw: PWSTR) -> Self {
+        Self { raw: Some(raw) }
+    }
+
+    fn to_path(&self) -> Result<PathBuf, KeyAgentLpacError> {
+        let folder = self.raw.ok_or(KeyAgentLpacError::Profile)?;
+        if folder.is_null() {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        // SAFETY: a successful non-null API result is NUL terminated and stays
+        // owned by this wrapper for the complete conversion.
+        unsafe { folder.to_string() }
+            .map(PathBuf::from)
+            .map_err(|_| KeyAgentLpacError::Profile)
+    }
+}
+
+impl Drop for UnvalidatedProfileApiFolderPath {
+    fn drop(&mut self) {
+        let Some(folder) = self.raw.take() else {
+            return;
+        };
+        if folder.is_null() {
+            return;
+        }
+        // SAFETY: GetAppContainerFolderPath allocates this result with
+        // CoTaskMemAlloc and ownership has not escaped this wrapper.
+        unsafe { CoTaskMemFree(Some(folder.0.cast::<c_void>())) };
+    }
+}
+
 struct OwnedAppContainerSid {
     words: Box<[usize]>,
     byte_len: usize,
@@ -641,6 +717,9 @@ impl OwnedAppContainerSid {
         let profile_api =
             acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
 
+        profile_api
+            .recheck_thread()
+            .map_err(|_| KeyAgentLpacError::Profile)?;
         // SAFETY: all strings are NUL terminated and there are deliberately no
         // capability SIDs. Only a newly-created profile may mint this proof;
         // ERROR_ALREADY_EXISTS and every other failure remain fail-closed.
@@ -652,8 +731,12 @@ impl OwnedAppContainerSid {
                 None,
             )
         }
-        .map_err(|_| KeyAgentLpacError::Profile)?;
-        let created = Self::from_profile_api(created_sid)?;
+        .map(UnvalidatedProfileApiSid::new);
+        profile_api
+            .recheck_thread()
+            .map_err(|_| KeyAgentLpacError::Profile)?;
+        let created_sid = created_sid.map_err(|_| KeyAgentLpacError::Profile)?;
+        let created = created_sid.into_owned()?;
         let derived = Self::derive_under_guard(&profile_api, &name)?;
         require_created_sid_matches_derived(&created, &derived)?;
         Ok(derived)
@@ -667,6 +750,9 @@ impl OwnedAppContainerSid {
         let profile_api =
             acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
 
+        profile_api
+            .recheck_thread()
+            .map_err(|_| KeyAgentLpacError::Profile)?;
         // SAFETY: all strings are NUL terminated and there are deliberately no
         // capability SIDs. A successful returned SID belongs to the caller.
         let created = unsafe {
@@ -676,10 +762,14 @@ impl OwnedAppContainerSid {
                 PCWSTR(description.as_ptr()),
                 None,
             )
-        };
+        }
+        .map(UnvalidatedProfileApiSid::new);
+        profile_api
+            .recheck_thread()
+            .map_err(|_| KeyAgentLpacError::Profile)?;
         match created {
             Ok(created_sid) => {
-                let created = Self::from_profile_api(created_sid)?;
+                let created = created_sid.into_owned()?;
                 let derived = Self::derive_under_guard(&profile_api, &name)?;
                 require_created_sid_matches_derived(&created, &derived)?;
                 Ok(derived)
@@ -706,34 +796,19 @@ impl OwnedAppContainerSid {
     }
 
     fn derive_under_guard(
-        _profile_api: &AppContainerProfileApiGuard,
+        profile_api: &AppContainerProfileApiGuard,
         name: &[u16],
     ) -> Result<Self, KeyAgentLpacError> {
+        profile_api
+            .recheck_thread()
+            .map_err(|_| KeyAgentLpacError::Profile)?;
         // SAFETY: callers pass a live NUL-terminated profile name.
         let sid = unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(name.as_ptr())) }
+            .map(UnvalidatedProfileApiSid::new);
+        profile_api
+            .recheck_thread()
             .map_err(|_| KeyAgentLpacError::Profile)?;
-        Self::from_profile_api(sid)
-    }
-
-    fn from_profile_api(sid: PSID) -> Result<Self, KeyAgentLpacError> {
-        // SAFETY: the SID came from a successful AppContainer profile API.
-        if sid.is_invalid() || !unsafe { IsValidSid(sid) }.as_bool() {
-            if !sid.is_invalid() {
-                // SAFETY: every non-null result from these profile APIs must be
-                // released with FreeSid, including a malformed result.
-                unsafe {
-                    let _ = FreeSid(sid);
-                }
-            }
-            return Err(KeyAgentLpacError::Profile);
-        }
-        let copied = Self::copy_from(sid);
-        // SAFETY: every valid non-null result from an AppContainer profile API
-        // is released exactly once after its bytes have been copied.
-        unsafe {
-            let _ = FreeSid(sid);
-        }
-        copied
+        sid.map_err(|_| KeyAgentLpacError::Profile)?.into_owned()
     }
 
     fn copy_from(sid: PSID) -> Result<Self, KeyAgentLpacError> {
@@ -1160,21 +1235,17 @@ fn invalid_handle(handle: HANDLE) -> bool {
 
 fn appcontainer_folder(profile_sid: &OwnedAppContainerSid) -> Result<PathBuf, KeyAgentLpacError> {
     let sid_text = wide_nul_str(&sid_string(profile_sid.as_psid())?)?;
-    let _profile_api =
-        acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
+    let profile_api = acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
+    profile_api
+        .recheck_thread()
+        .map_err(|_| KeyAgentLpacError::Profile)?;
     // SAFETY: the converted SID string is live and NUL terminated.
-    let folder_result = unsafe { GetAppContainerFolderPath(PCWSTR(sid_text.as_ptr())) };
-    let folder = folder_result.map_err(|_| KeyAgentLpacError::Profile)?;
-    if folder.is_null() {
-        return Err(KeyAgentLpacError::Profile);
-    }
-    // SAFETY: the successful API returned one NUL-terminated CoTaskMem string.
-    let path = unsafe { folder.to_string() }
-        .map(PathBuf::from)
-        .map_err(|_| KeyAgentLpacError::Profile);
-    // SAFETY: GetAppContainerFolderPath allocates with CoTaskMemAlloc.
-    unsafe { CoTaskMemFree(Some(folder.0.cast::<c_void>())) };
-    path
+    let folder = unsafe { GetAppContainerFolderPath(PCWSTR(sid_text.as_ptr())) }
+        .map(UnvalidatedProfileApiFolderPath::new);
+    profile_api
+        .recheck_thread()
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+    folder.map_err(|_| KeyAgentLpacError::Profile)?.to_path()
 }
 
 fn validated_appcontainer_folder(

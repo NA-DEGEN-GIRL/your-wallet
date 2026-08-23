@@ -640,11 +640,23 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   반환하는 Windows에서도 위의 차등 access-membership 증명은 그대로 필수입니다. 다른
   query 오류와 `(false, true)` 이외의 결과는 모두 거부합니다. opt-out만 생략한 정지
   상태 일반 AppContainer가 `(true, true)`를 내는 kernel 음성 대조군도 있으며 두
-  대조 프로세스 모두 user mode로 재개하지 않습니다. Key Agent·Approval·Secret Input
-  profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유하고, 이 central
-  API는 gate 획득 전에 thread impersonation을 거부합니다. 같은 스레드 재진입이나
-  poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를 계속하고
-  detach할 수 있으며, 그때 정확히 하나의 suspend count가 남습니다.
+  대조 프로세스 모두 user mode로 재개하지 않습니다. 부모 프로세스의 Key Agent·Approval·
+  Secret Input profile API 호출은 하나의 process-wide 비재진입 coordinator를 공유합니다.
+  이 central API는 gate 획득 전과 mutex 대기를 마친 직후 thread impersonation을 거부하고, 보호된
+  `CreateAppContainerProfile`, `DeriveAppContainerSidFromAppContainerName`,
+  `GetAppContainerFolderPath` 호출마다 직전과 직후에 다시 검사합니다. 성공 반환의 raw
+  SID 또는 `CoTaskMem` path는 직후 검사 전에 private RAII owner가 포획하므로, 그 검사나
+  이후 검증이 실패해도 해제됩니다. 바인딩이 성공 할당을 포획하기 위해 success/Err를
+  나누는 최소 분기 외의 구체 OS 오류 코드 분기, 포인터/SID validity, path 해석·검증,
+  SID 비교와 애플리케이션 사용은 직후 검사가 성공한 뒤에만 수행합니다. 이 bookend는
+  fail-closed 관찰이지만 두 검사 사이에 impersonation token이 설정됐다가 제거되는 순간
+  경합을 원자적으로 배제하는 증명은 아닙니다. `CreateAppContainerProfile` 성공 뒤
+  직후 검사가 실패해도 자동 `DeleteAppContainerProfile`이나 rollback은 하지 않습니다.
+  따라서 신규 Key Agent fresh provisioning은 profile을 이미 만들었을 수 있으며 recovery가
+  필요합니다. 이 계약은 profile-registration authority나 production reachability를 늘리지
+  않고 production `DeleteAppContainerProfile` 경로도 만들지 않습니다. 같은 스레드
+  재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를
+  계속하고 detach할 수 있으며, 그때 정확히 하나의 suspend count가 남습니다.
 - 그 dormant 상태의 유일한 consuming 전이는 private one-shot storage-startup
   증명입니다. 부모는 자식이 정지된 동안 fresh nonce, 정확한 PID와 process creation
   `FILETIME`, supervisor-held root의 volume serial과 128비트 file ID, 그리고 고정

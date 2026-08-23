@@ -548,11 +548,28 @@ signed immutable artifact and DLL/dependency E2E, and release activation remain
 EOF, expose no generic runtime/signing IPC, and `COMPILED_RELEASE_POLICY` is
 `None`.
 
-Key Agent, Approval, and Secret Input profile creation/derivation, plus Key
-Agent `GetAppContainerFolderPath`, share one process-wide non-reentrant
+Parent-side Key Agent, Approval, and Secret Input profile creation/derivation,
+plus Key Agent `GetAppContainerFolderPath`, share one process-wide non-reentrant
 coordinator. This central profile API rejects thread impersonation before gate
-acquisition. Same-thread reentry and a poisoned gate fail closed, and the gate
-is released before inherited-handle launch coordination or process creation.
+acquisition and again after waiting for the mutex. Every protected
+`CreateAppContainerProfile`, `DeriveAppContainerSidFromAppContainerName`, and
+`GetAppContainerFolderPath` call is immediately preceded and followed by the
+same check. A successful raw SID or `CoTaskMem` path is captured in a private
+RAII owner before the post-call check, so that owner releases it even when the
+check or later validation fails. Except for the binding's necessary
+success/error split used to capture a successful allocation, specific native-
+error branching and inspection, pointer/SID validity, path decoding and
+validation, SID comparisons, and application use occur only after the post-call
+check succeeds. These bookends are fail-closed observations, not an atomic
+proof that an impersonation token could not be installed and removed between
+the checks. A failed post-call check after a successful
+`CreateAppContainerProfile` deliberately performs no automatic
+`DeleteAppContainerProfile` or rollback: fresh Key Agent provisioning may
+already have created the profile and requires recovery. This contract neither
+mints profile-registration authority nor expands production reachability, and
+there is no production `DeleteAppContainerProfile` path. Same-thread reentry and
+a poisoned gate fail closed, and the gate is released before inherited-handle
+launch coordination or process creation.
 
 Restricted helpers and the Key Agent share one private immutable base process
 context. It derives exact `SystemRoot` and `WINDIR` entries from

@@ -331,6 +331,28 @@ root separately proves actual-open `DELETE` as `SHARING_VIOLATION` plus a denied
 rollback anchors and synthetic keys/payloads, so it does not prove production
 anchor or AEAD-key provisioning.
 
+Parent-side Key Agent, Approval, and Secret Input AppContainer profile
+creation/derivation, plus Key Agent `GetAppContainerFolderPath`, share one
+process-wide non-reentrant coordinator. It rejects thread impersonation before gate
+acquisition and after mutex wait, and immediately before and after every
+protected `CreateAppContainerProfile`,
+`DeriveAppContainerSidFromAppContainerName`, or
+`GetAppContainerFolderPath` call. A successful raw SID or `CoTaskMem` path is
+captured by a private RAII owner before the post-call check and is therefore
+released even if that check or later validation fails. Except for the binding's
+necessary success/error split used to capture a successful allocation, specific
+native-error branching and inspection, pointer/SID validity, path decoding and
+validation, SID comparisons, and application use occur only after the post-call
+check succeeds. These bookends are fail-closed observations rather than an
+atomic proof against an impersonation token being installed and removed between
+the checks. If that check fails after
+a successful `CreateAppContainerProfile`, there is no automatic
+`DeleteAppContainerProfile` or rollback; fresh Key Agent provisioning may
+already have created the profile and requires recovery. This protocol mints no
+profile-registration authority, adds no production reachability, and has no
+production `DeleteAppContainerProfile` path. Same-thread reentry and mutex
+poison fail closed.
+
 Fresh fixed-profile/root creation now returns a non-launchable pending type;
 only a separately prepared type can enter activation, and no direct
 pending/candidate conversion mints it. The sole production-compiled prepared
