@@ -584,6 +584,29 @@ boundary adds no `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
 `DeleteAppContainerProfile` call, profile-registration authority, or new
 production reachability. `COMPILED_PARENT_POLICY` remains `None`.
 
+The runtime-enabled Secret Input/recovery child begins its Windows bootstrap by
+validating the two unique stdio pipe objects: stdin and the single shared
+stdout/stderr handle-table entry, with exact inherit-only flags. Before any
+other Windows or CRT application operation, it attempts both
+`SetHandleInformation` clears without rollback and requires exact-zero
+readback. The parent `HANDLE_LIST` contains only those two objects. After the
+child exists suspended and its Job and LPAC token have been checked, the parent
+uses `DuplicateHandle` to inject the parent-process and image-file proof handles
+directly into that child with inheritance disabled, then resumes it. Immediately
+after the fixed parent hello, the child requires the two sealed stdio objects
+and the two proof objects to be four pairwise-distinct exact kernel objects with
+zero handle flags before using the parent proofs.
+
+A repo-local child/grandchild kernel test includes a positive inheritable
+sentinel and uses `CompareObjectHandles` to show that none of those four exact
+objects reaches a broad-inheritance grandchild. The sequential stdio clears are
+not an atomic bulk operation, do not prevent later re-enabling or explicit
+duplication, and the four-object negative is not exhaustive enumeration proving
+that no stray handle crossed the boundary. It is also not evidence for the
+exact signed helper, intended supervisor topology, immutable installation, DLL
+identity, or release activation; the parent-policy STOP-SHIP invariant below is
+unchanged.
+
 Restricted helpers and the Key Agent share one private immutable base process
 context. It derives exact `SystemRoot` and `WINDIR` entries from
 `GetSystemWindowsDirectoryW`, and supplies the `GetSystemDirectoryW` result only

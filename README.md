@@ -594,6 +594,20 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
+- runtime-enabled Secret Input/recovery 자식도 첫 Windows/CRT application 동작에서
+  stdin과 stdout=stderr인 두 unique `PIPE` 객체가 서로 다르고 flags가 정확히
+  `HANDLE_FLAG_INHERIT`인지 먼저 검증한 뒤, 두 inherit bit를 모두 제거하고 exact-zero
+  readback을 요구합니다. 부모의 `HANDLE_LIST`에는 이 두 stdio 객체만 들어가며, parent
+  process와 image-file proof handle은 자식이 아직 suspended인 동안 `DuplicateHandle`로
+  직접 주입되고 inherit flag는 처음부터 false입니다. 자식은 고정 parent hello를 읽은
+  직후 stdio 둘과 proof 둘이 네 개의 pairwise-distinct exact object이고 flags가 모두
+  0인지 검증합니다. positive sentinel을 포함한 repo-local child/grandchild 커널 테스트는
+  이 네 exact object가 broad-inheritance grandchild에 나타나지 않음을
+  `CompareObjectHandles`로 확인합니다. 두 stdio의 순차 `SetHandleInformation`은 원자적
+  bulk clear가 아니며, 이후 코드의 inherit-bit 재설정이나 explicit duplication을 막지
+  않습니다. 이 exact-object negative는 stray handle이 전혀 없었다는 exhaustive
+  enumeration, exact signed artifact/intended topology, immutable install 또는 release
+  activation 증거가 아닙니다. `COMPILED_PARENT_POLICY`는 계속 `None`입니다.
 - 별도 fresh 경계는 고정 AppContainer profile `YourWallet.KeyAgent.LPAC.v1`과 그 `AC`
   아래 고정 leaf `YourWallet.KeyAgent.Storage.v1`을 만들 수 있지만, activation에 넣을 수
   없는 `Pending` capability만 반환하며 pending/candidate의 직접 conversion은 없습니다.

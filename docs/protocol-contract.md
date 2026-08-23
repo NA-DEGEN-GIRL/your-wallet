@@ -125,17 +125,34 @@ The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
 held-child identity, and one-shot transcript. The parent-side Secret Input API
 now owns an equivalent atomic launch: separate private request/response pipes,
-an explicit child stdin/stdout/stderr handle list, canonical prompt transfer and
-request EOF, a concrete bounded response reader, and the held process/job. It
-binds the exact prompt and manifest-derived role to file/process/LPAC identity
-and a fresh OS-CSPRNG challenge. Every read is deadline-cancellable and drained;
-the parent reads through EOF with a `MAX_RESPONSE_BYTES + 1` overflow sentinel.
+an explicit `HANDLE_LIST` containing only the child stdin and shared
+stdout/stderr pipe objects, canonical prompt transfer and request EOF, a concrete
+bounded response reader, and the held process/job. Once the child exists
+suspended and its Job/LPAC token are verified, the launcher remotely duplicates
+the parent-process and image-file proof handles into it with inheritance
+disabled, before resume. It binds the exact prompt and manifest-derived role to
+file/process/LPAC identity and a fresh OS-CSPRNG challenge. Every read is
+deadline-cancellable and drained; the parent reads through EOF with a
+`MAX_RESPONSE_BYTES + 1` overflow sentinel.
+
+The runtime-enabled Secret Input/recovery child makes validation and sealing of
+its two unique stdio pipe objects the first Windows/CRT application operation:
+both must carry exact inherit-only flags before the two clears and exact-zero
+flags afterward. Immediately after the fixed parent hello, it requires those
+two objects plus the injected process/image proofs to be four pairwise-distinct
+exact objects with zero flags. A positive-control repo-local grandchild test
+uses `CompareObjectHandles` to show that none of those four exact objects
+propagates. The sequential stdio clears are non-atomic and do not prevent later
+re-enabling or explicit duplication; this is not exhaustive stray-handle
+enumeration or signed-artifact/topology/immutable-install evidence.
+
 Accepted bytes remain zeroizing, cancellation remains separate, and the
 non-clone proof can be consumed only for the same prompt. Approval and
 secret-input default executables remain disabled with exit 78, and the missing
-compiled release policy prevents restricted launch. Direct-launch parent
-identity denial and signed-artifact end-to-end tests remain stop-ship. Typed and
-kernel-level tests are necessary evidence, not an end-to-end release claim.
+compiled release policy plus `COMPILED_PARENT_POLICY = None` prevent release
+activation. Direct-launch parent identity denial and signed-artifact end-to-end
+tests remain stop-ship. Typed and kernel-level tests are necessary evidence, not
+an end-to-end release claim.
 
 ## Public framing
 

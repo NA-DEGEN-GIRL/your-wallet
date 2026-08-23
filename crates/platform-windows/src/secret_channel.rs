@@ -103,12 +103,14 @@ pub(crate) enum SecretInputLaunchError {
 /// Launches the exact verified Secret Input Frontend with two private one-shot
 /// pipe directions and returns the held process plus its concrete response end.
 ///
-/// This is the only public arming API. It creates both endpoints, includes only
-/// child stdin/stdout/stderr in the restricted launcher's handle list, closes
-/// the parent's copies of those child ends, transfers the complete canonical
-/// prompt before the supplied monotonic deadline, and closes the request writer
-/// to deliver EOF. Any failure drops the pipe owners and, after process
-/// creation, the kill-on-close held job.
+/// This is the only public arming API. It creates both endpoints and places only
+/// child stdin plus the shared stdout/stderr pipe object in the restricted
+/// launcher's handle list. The launcher separately injects non-inheritable
+/// parent-process and image-file proof handles into the still-suspended child
+/// before resume. This function then closes the parent's copies of the child
+/// pipe ends, transfers the complete canonical prompt before the supplied
+/// monotonic deadline, and closes the request writer to deliver EOF. Any failure
+/// drops the pipe owners and, after process creation, the kill-on-close held job.
 ///
 /// # Errors
 ///

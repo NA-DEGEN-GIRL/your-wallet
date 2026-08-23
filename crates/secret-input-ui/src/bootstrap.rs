@@ -78,9 +78,10 @@ enum BootstrapKind {
 
 /// The first fixed-width frame sent by the Key Agent.
 ///
-/// Handle values refer only to handles explicitly inherited into this child.
-/// The values are never accepted as identity without kernel-object, pipe-peer,
-/// and compiled artifact-policy verification in the child.
+/// Handle values refer only to non-inheritable proof handles injected into the
+/// suspended child by the restricted launcher. The values are never accepted as
+/// identity without handle-attribute, kernel-object, pipe-peer, and compiled
+/// artifact-policy verification in the child.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ParentHello {
     process_id: u32,

@@ -18,8 +18,11 @@ Implemented:
 - a non-cloneable parent-side Secret Input launch/channel API that accepts only
   a manifest-derived `secret-input-ui.exe` role and the release-attested
   restricted launcher, creates separate private request/response endpoints,
-  inherits only child stdin/stdout/stderr, transfers the canonical prompt and
-  request EOF under one monotonic deadline, then reads at most
+  places only child stdin and the shared stdout/stderr pipe object in the
+  `HANDLE_LIST`, then injects parent-process and image-file proof handles
+  directly into the still-suspended child with inheritance disabled before
+  resume. It transfers the canonical prompt and request EOF under one monotonic
+  deadline, then reads at most
   `MAX_RESPONSE_BYTES + 1` through exact EOF with cancellable/drained overlapped
   I/O. It binds held file/process/LPAC identity, the exact prompt, and a fresh
   OS-CSPRNG challenge; cancellation remains distinct and accepted bytes remain
@@ -231,6 +234,23 @@ Implemented:
   on any input byte that arrives afterward, and retains its sealed stdio and
   child-opened root until the parent request endpoint disconnects;
 
+- an earliest runtime-enabled Secret Input/recovery child bootstrap. Its first
+  Windows/CRT application operation requires stdin and the shared stdout/stderr
+  entry to be two distinct exact `PIPE` objects with exact inherit-only flags,
+  attempts both inherit-bit clears without rollback, and accepts only exact-zero
+  readback. The parent process and image-file proof handles are not in the
+  `HANDLE_LIST`: the launcher remotely duplicates them into the suspended child
+  with inheritance disabled after Job/LPAC verification and before resume.
+  Immediately after reading the fixed parent hello, the child requires the two
+  sealed stdio objects and two proof objects to be four pairwise-distinct exact
+  objects with zero flags. A repo-local child/grandchild kernel test supplies an
+  inheritable positive sentinel and uses `CompareObjectHandles` to prove that
+  none of those four exact objects reaches a broad-inheritance grandchild. The
+  sequential stdio clears are not atomic, do not prevent later re-enabling or
+  explicit duplication, and this exact-object negative is not exhaustive
+  stray-handle enumeration or signed-artifact/topology/immutable-install proof.
+  `COMPILED_PARENT_POLICY` remains `None`;
+
   **Test-only storage-startup accommodation:** the integrated kernel positive
   uses a pinned libtest terse preamble before the fixed response and permits only
   the expected fixture process plus at most the exact System32 `conhost.exe` in
@@ -326,8 +346,14 @@ Implemented:
   covers only cooperating calls through that runner type. The Key Agent child
   now does clear the inherit bit on its three received stdio handles before any
   later application operation, and the repo-local grandchild test supplies an
-  exact-object negative for that boundary. A standalone supervisor still needs
-  independently proven single-instance/process topology; signed-install,
+  exact-object negative for that boundary. The runtime-enabled Secret Input/
+  recovery child likewise seals its two unique stdio objects first, then
+  validates those objects together with two separately injected non-inheritable
+  parent proofs as one exact-zero, pairwise-distinct four-object set. Its repo-
+  local positive-sentinel grandchild test is an exact-object propagation
+  negative, not exhaustive enumeration of every child handle. A standalone
+  supervisor still needs independently proven single-instance/process topology;
+  signed-install,
   Native Host provenance, artifact-bound execution of this bootstrap, exact
   signed-artifact E2E, and DLL/dependency evidence remain absent.
 
@@ -341,7 +367,13 @@ Implemented:
   적용되며 임의의 FFI/표준 라이브러리 생성이나 다른 프로세스를 가로채지 않습니다.
   Key Agent 자식은 이제 첫 Windows application 동작에서 정확한 `PIPE`/`PIPE`/`CHAR`
   stdio 세 개를 사전검사하고 inherit bit를 모두 제거한 뒤 flags 0을 재검사하며,
-  grandchild exact-object 음성 테스트도 통과해야 합니다. 이 repo-local 경계와 별개로
+  grandchild exact-object 음성 테스트도 통과해야 합니다. runtime-enabled Secret Input/
+  recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
+  inherit bit를 제거하고, suspended 상태에서 별도로 주입된 non-inheritable parent
+  process/image proof와 합친 네 exact object가 pairwise-distinct이며 flags 0인지
+  확인합니다. positive sentinel을 둔 grandchild 테스트는 이 네 객체의 전파만 부정하며
+  stray handle 전체를 열거하지 않습니다. 순차 clear는 원자적이지 않고 이후 재설정이나
+  explicit duplication도 막지 않습니다. 이 repo-local 경계와 별개로
   독립 supervisor 단일 인스턴스와 인증된 topology, signed install/Native Host
   provenance 및 서명 artifact 기반 실행 증거는 계속 STOP-SHIP입니다.
 - an HMAC-authenticated, bounded dual-slot generation store for already-encrypted
@@ -409,7 +441,8 @@ Implemented:
   launch paths now have process-wide inheritable-handle coordination, but signed
   immutable installation, native-host provenance, cross-process supervisor
   topology/single-instance evidence, and artifact-bound execution of the
-  implemented child-side Key Agent stdio de-inheritance remain STOP-SHIP.
+  implemented child-side Key Agent and Secret Input/recovery de-inheritance
+  remain STOP-SHIP.
 
 Stop-ship before any signing-capable release:
 
@@ -422,7 +455,10 @@ Stop-ship before any signing-capable release:
 3. Run an artifact-bound child-side enumeration test proving that no handle
    except the explicit list crosses the boundary. The repo-local Key Agent
    child/grandchild test already proves that its three sealed exact stdio objects
-   do not propagate, but it is not evidence for the exact signed artifacts.
+   do not propagate. The Secret Input/recovery test likewise proves only that
+   its two sealed stdio and two non-inheritable parent-proof objects do not reach
+   one broad-inheritance grandchild. Neither exact-object negative is exhaustive
+   stray-handle enumeration or evidence for the exact signed artifacts.
 4. Exercise path/reparse/ACL tests under the release installer identity and
    secure installed ACLs, including environments where symlink creation is
    permitted. Supply separate exact-artifact DLL/dependency loading and identity
@@ -436,7 +472,8 @@ Stop-ship before any signing-capable release:
    provenance, prove the standalone supervisor's single-instance and exact
    process topology, exclude or mediate every foreign/uncoordinated inheriting
    creation path, and bind the implemented Key Agent first-operation stdio
-   sealing plus grandchild exact-object negative to the exact signed artifact.
+   sealing plus grandchild exact-object negative, and the corresponding Secret
+   Input/recovery four-object boundary, to their exact signed artifacts.
    The in-crate coordinator and repo-local child test are not signed-install,
    provenance, cross-process topology, or release-activation proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
@@ -454,8 +491,12 @@ Stop-ship before any signing-capable release:
    path plus timeout, cancellation, oversize/trailing output, helper crash,
    direct-launch/parent-identity denial, and inherited-handle enumeration
    against the exact signed `secret-input-ui.exe`. The atomic parent integration
-   and kernel pipe tests exist, but `COMPILED_RELEASE_POLICY = None` and the
-   default helper exit 78 keep ordinary builds fail closed. Direct-launch
+   and the repo-local four-object grandchild negative exist, but the latter is
+   neither exhaustive enumeration nor signed-artifact evidence. The sequential
+   stdio clears are not atomic and do not prevent later re-enabling or explicit
+   duplication. `COMPILED_RELEASE_POLICY = None`,
+   `COMPILED_PARENT_POLICY = None`, and the default helper exit 78 keep ordinary
+   builds fail closed. Direct-launch
    parent authentication remains stop-ship evidence rather than an implemented
    claim.
 9. Connect the crate-private recovery facade to a Key Agent protected-settings

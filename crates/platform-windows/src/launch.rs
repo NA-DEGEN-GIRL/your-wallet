@@ -64,7 +64,7 @@ impl VerifiedLpacRole {
         Err(LaunchError::HelperRoleNotAllowed)
     }
 
-    const fn inherits_parent_proof(self) -> bool {
+    const fn requires_parent_proof(self) -> bool {
         matches!(self, Self::SecretInputFrontend)
     }
 }
@@ -263,7 +263,9 @@ impl RestrictedLauncher {
     }
 
     /// Launches Secret Input with two additional, least-privilege proof handles
-    /// for the exact calling process and its held executable image.
+    /// for the exact calling process and its held executable image. The handles
+    /// are injected non-inheritable while the child remains suspended; only the
+    /// selected stdio objects enter the inheritable handle list.
     #[cfg(windows)]
     #[allow(dead_code)] // Reserved for the private Key Agent arming seam.
     pub(crate) fn spawn_secret_input(
@@ -375,22 +377,23 @@ pub struct LaunchedHelper {
     process: sys::OwnedWinHandle,
     job: sys::OwnedWinHandle,
     identity: HeldProcessIdentity,
-    parent_proof: Option<InheritedParentProof>,
+    parent_proof: Option<InjectedParentProof>,
 }
 
-/// Numeric values of the two proof handles inherited by one Secret Input
-/// child. Values are opaque and never formatted; the child validates the
-/// underlying kernel objects before accepting protocol bytes.
+/// Numeric values of the two non-inheritable proof handles injected into one
+/// suspended Secret Input child. Values are opaque and never formatted; the
+/// child validates the underlying kernel objects before accepting protocol
+/// bytes.
 #[cfg(windows)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) struct InheritedParentProof {
+pub(crate) struct InjectedParentProof {
     process_handle: u64,
     image_handle: u64,
     process_id: u32,
 }
 
 #[cfg(windows)]
-impl InheritedParentProof {
+impl InjectedParentProof {
     #[allow(dead_code)] // Read only by the dormant private arming seam.
     pub(crate) const fn process_handle(self) -> u64 {
         self.process_handle
@@ -408,9 +411,9 @@ impl InheritedParentProof {
 }
 
 #[cfg(windows)]
-impl fmt::Debug for InheritedParentProof {
+impl fmt::Debug for InjectedParentProof {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("InheritedParentProof([REDACTED HANDLES AND PID])")
+        formatter.write_str("InjectedParentProof([REDACTED HANDLES AND PID])")
     }
 }
 
@@ -435,7 +438,7 @@ impl LaunchedHelper {
     }
 
     #[allow(dead_code)] // Read only by the dormant private arming seam.
-    pub(crate) const fn parent_proof(&self) -> Option<InheritedParentProof> {
+    pub(crate) const fn parent_proof(&self) -> Option<InjectedParentProof> {
         self.parent_proof
     }
 
@@ -528,7 +531,7 @@ mod sys {
     use windows::core::{BOOL, PCWSTR};
 
     use super::{
-        HeldProcessIdentity, InheritedParentProof, InheritedStdio, LaunchError, LaunchedHelper,
+        HeldProcessIdentity, InheritedStdio, InjectedParentProof, LaunchError, LaunchedHelper,
         NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
     };
     use crate::appcontainer_profile_api::{
@@ -1227,8 +1230,64 @@ mod sys {
         })
     }
 
-    fn inherited_handle_value(handle: HANDLE) -> Result<u64, LaunchError> {
+    fn child_handle_value(handle: HANDLE) -> Result<u64, LaunchError> {
         u64::try_from(handle.0 as usize).map_err(|_| LaunchError::OperatingSystem)
+    }
+
+    fn require_exact_non_inheritable(handle: HANDLE) -> Result<(), LaunchError> {
+        let mut flags = u32::MAX;
+        // SAFETY: the caller retains the live source handle for this scalar
+        // query. Parent-proof sources must carry no inheritable or protected
+        // handle-table attribute before they are copied into another process.
+        unsafe { GetHandleInformation(handle, &raw mut flags) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        (flags == 0)
+            .then_some(())
+            .ok_or(LaunchError::OperatingSystem)
+    }
+
+    fn inject_parent_proof(
+        sources: &ParentProofSources,
+        child_process: HANDLE,
+    ) -> Result<InjectedParentProof, LaunchError> {
+        require_exact_non_inheritable(sources.process.raw())?;
+        require_exact_non_inheritable(sources.image.raw())?;
+
+        let duplicate_into_child = |source: HANDLE| -> Result<HANDLE, LaunchError> {
+            let mut target = HANDLE::default();
+            // SAFETY: both source handles are retained above and child_process is
+            // the still-suspended process protected by CreatedChildGuard. The
+            // returned numeric value names a new child-local handle whose inherit
+            // attribute is explicitly false. If the second duplication fails,
+            // the armed guard terminates and reaps the child, closing the first.
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    source,
+                    child_process,
+                    &raw mut target,
+                    0,
+                    false,
+                    DUPLICATE_SAME_ACCESS,
+                )
+                .map_err(|_| LaunchError::OperatingSystem)?;
+            }
+            if target.is_invalid() {
+                return Err(LaunchError::OperatingSystem);
+            }
+            Ok(target)
+        };
+
+        let process = duplicate_into_child(sources.process.raw())?;
+        let image = duplicate_into_child(sources.image.raw())?;
+        if process == image {
+            return Err(LaunchError::OperatingSystem);
+        }
+        Ok(InjectedParentProof {
+            process_handle: child_handle_value(process)?,
+            image_handle: child_handle_value(image)?,
+            process_id: sources.process_id,
+        })
     }
 
     fn restricted_job() -> Result<OwnedWinHandle, LaunchError> {
@@ -1349,7 +1408,7 @@ mod sys {
         let helper_manifest_digest = helper.manifest_digest();
         let originals = unique_raw_handles(handles);
         let parent_sources = role
-            .inherits_parent_proof()
+            .requires_parent_proof()
             .then(current_parent_proof_sources)
             .transpose()?;
         let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;
@@ -1393,19 +1452,6 @@ mod sys {
         let standard_input = map_duplicate(handles.input)?;
         let standard_output = map_duplicate(handles.output)?;
         let standard_error = map_duplicate(handles.error)?;
-        let parent_proof = if let Some(sources) = parent_sources.as_ref() {
-            let process = duplicates.duplicate(sources.process.raw())?;
-            let image = duplicates.duplicate(sources.image.raw())?;
-            let proof = InheritedParentProof {
-                process_handle: inherited_handle_value(process)?,
-                image_handle: inherited_handle_value(image)?,
-                process_id: sources.process_id,
-            };
-            Some(proof)
-        } else {
-            None
-        };
-        drop(parent_sources);
         let attributes = AttributeList::for_lpac(&duplicates, &job, profile_sid)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb =
@@ -1469,6 +1515,11 @@ mod sys {
         if verify_child_token(process.raw(), profile_sid.raw()).is_err() {
             return Err(LaunchError::SandboxVerification);
         }
+        let parent_proof = parent_sources
+            .as_ref()
+            .map(|sources| inject_parent_proof(sources, process.raw()))
+            .transpose()?;
+        drop(parent_sources);
         // SAFETY: thread is the suspended primary thread returned by CreateProcess.
         let previous_suspend_count = unsafe { ResumeThread(thread.raw()) };
         if previous_suspend_count != 1 {

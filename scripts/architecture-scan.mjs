@@ -1027,6 +1027,17 @@ function normalizedSourceSha256(source) {
     .digest("hex");
 }
 
+function rustCompilationClosureSha256(files) {
+  return normalizedSourceSha256(
+    JSON.stringify(
+      files.map(({ path, source }) => ({
+        path,
+        sha256: normalizedSourceSha256(source),
+      })),
+    ),
+  );
+}
+
 function rustUnsafeKeywordCount(source) {
   return [...rustLexicalCode(source).matchAll(/\bunsafe\b/gu)].length;
 }
@@ -1157,6 +1168,85 @@ function rustFunctionBlockAtDepth(source, functionName, expectedDepth) {
   );
 }
 
+function rustFunctionIndexAtDepth(source, functionName, expectedDepth) {
+  const sourceCode = rustLexicalCode(source);
+  const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const matches = [
+    ...sourceCode.matchAll(
+      new RegExp(
+        `(?:^|\\n)\\s*(?:pub(?:\\([^\\r\\n)]*\\))?\\s+)?(?:(?:const|async|unsafe)\\s+)*(?:extern(?:\\s+"[^"\\r\\n]*")?\\s+)?fn\\s+${escapedName}\\b[^{}]*\\{`,
+        "gu",
+      ),
+    ),
+  ].filter(
+    (match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected one function ${functionName} at brace depth ${expectedDepth}`,
+    );
+  }
+  const functionKeyword = /\bfn\b/u.exec(matches[0][0]);
+  if (functionKeyword === null) {
+    throw new Error(`architecture scan could not locate ${functionName}`);
+  }
+  return matches[0].index + functionKeyword.index;
+}
+
+function rustFunctionOuterAttributesAtDepth(source, functionName, expectedDepth) {
+  return rustAttachedOuterAttributes(
+    source,
+    rustFunctionIndexAtDepth(source, functionName, expectedDepth),
+  ).map((attribute) => normalizeRustFragment(attribute.source));
+}
+
+function rustInlineModuleOuterAttributesAtDepth(source, moduleName, expectedDepth) {
+  const sourceCode = rustLexicalCode(source);
+  const escapedName = moduleName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const matches = [
+    ...sourceCode.matchAll(
+      new RegExp(`(?:^|\\n)\\s*mod\\s+${escapedName}\\s*\\{`, "gu"),
+    ),
+  ].filter(
+    (match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `architecture scan expected one inline module ${moduleName} at brace depth ${expectedDepth}`,
+    );
+  }
+  const moduleKeyword = /\bmod\b/u.exec(matches[0][0]);
+  if (moduleKeyword === null) {
+    throw new Error(`architecture scan could not locate module ${moduleName}`);
+  }
+  return rustAttachedOuterAttributes(
+    source,
+    matches[0].index + moduleKeyword.index,
+  ).map((attribute) => normalizeRustFragment(attribute.source));
+}
+
+function orderedRustMarkersAtDepth(source, entries) {
+  const sourceCode = rustLexicalCode(source);
+  let previous = -1;
+  for (const { marker, depth } of entries) {
+    const positions = [];
+    for (
+      let position = sourceCode.indexOf(marker);
+      position !== -1;
+      position = sourceCode.indexOf(marker, position + 1)
+    ) {
+      if (rustBraceDepthBefore(sourceCode, position) === depth) {
+        positions.push(position);
+      }
+    }
+    if (positions.length !== 1 || positions[0] <= previous) {
+      return false;
+    }
+    previous = positions[0];
+  }
+  return true;
+}
+
 function rustImplItemAtDepth(source, expectedHeader, expectedDepth) {
   const sourceCode = rustLexicalCode(source);
   const matches = rustImplItems(source).filter(
@@ -1183,17 +1273,19 @@ function rustTopLevelFunctionBlock(source, functionName) {
   );
 }
 
-function rustTopLevelConstItem(source, constantName) {
+function rustConstItemAtDepth(source, constantName, expectedDepth) {
   const sourceCode = rustLexicalCode(source);
   const escapedName = constantName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const matches = [
     ...sourceCode.matchAll(
       new RegExp(`(?:^|\\n)\\s*const\\s+${escapedName}\\b`, "gu"),
     ),
-  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === 0);
+  ].filter(
+    (match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth,
+  );
   if (matches.length !== 1) {
     throw new Error(
-      `architecture scan expected exactly one top-level Rust const ${constantName}`,
+      `architecture scan expected one Rust const ${constantName} at brace depth ${expectedDepth}`,
     );
   }
 
@@ -1236,6 +1328,10 @@ function rustTopLevelConstItem(source, constantName) {
   return "";
 }
 
+function rustTopLevelConstItem(source, constantName) {
+  return rustConstItemAtDepth(source, constantName, 0);
+}
+
 function rustFunctionBlock(source, functionName) {
   const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return rustLexicalItemBlock(
@@ -1249,7 +1345,11 @@ function rustFunctionBlock(source, functionName) {
 
 async function rustProductionSources(
   relativeDirectory,
-  { withoutInlineTests = false, withTestCode = false } = {},
+  {
+    excludeDirectory = () => false,
+    withoutInlineTests = false,
+    withTestCode = false,
+  } = {},
 ) {
   const files = [];
   async function walk(directory) {
@@ -1281,9 +1381,17 @@ async function rustProductionSources(
       }
       caseFoldedEntryNames.add(caseFoldedName);
       const absolute = join(directory, entry.name);
+      const workspacePath = relative(root, absolute).replaceAll("\\", "/");
+      if (
+        (entry.isDirectory() || entry.isSymbolicLink()) &&
+        excludeDirectory(workspacePath)
+      ) {
+        continue;
+      }
       if (entry.isSymbolicLink()) {
-        const path = relative(root, absolute).replaceAll("\\", "/");
-        throw new Error(`Rust production inventory contains a symbolic link: ${path}`);
+        throw new Error(
+          `Rust production inventory contains a symbolic link: ${workspacePath}`,
+        );
       }
       if (entry.isDirectory()) {
         await walk(absolute);
@@ -4456,9 +4564,59 @@ const secretBootstrapWindows = await text("crates/secret-input-ui/src/bootstrap/
 const secretBootstrapWindowsProduction = withoutBottomTestModule(
   secretBootstrapWindows,
 );
+const approvedSecretInputProductionBoundaryRawSha256 =
+  "76599ea6b97beb5fbcc2cb39ab6e587eff65327c64fa72bb5e5b571360ccfe04";
 const recoveryNative = await text("crates/secret-input-ui/src/recovery_native.rs");
 const secretInputMain = await text("crates/secret-input-ui/src/main.rs");
+const secretInputRunOnce = rustTopLevelFunctionBlock(secretInputMain, "run_once");
+const secretInputAuthenticateInheritedRequest = rustTopLevelFunctionBlock(
+  secretBootstrap,
+  "authenticate_inherited_request",
+);
+const approvedSecretInputRuntimeEntryRawSha256 = {
+  bootstrap: "d738fe07a69b3ded3d210d0595f0c46960f6cdae91be657061cd55eb19dde8cd",
+  main: "4a7ecc6f5d71fa16576df5c3df3be2b7cbe4dc3511496dc5064733837b444936",
+};
+const approvedSecretInputRuntimeEntryLeafSha256 = {
+  authenticateInheritedRequest:
+    "995be7960c08b5587f621bb1369ed7e1313ce92f17eded313d35fda6d785717a",
+  runOnce: "712efc445d5456f8f0182bbf6e5f764c3d929d17a7101edcf95c03359fb5a981",
+};
+const secretInputRuntimeEntryMutationProbes = [
+  {
+    approved: approvedSecretInputRuntimeEntryLeafSha256.runOnce,
+    source: secretInputRunOnce.replace(
+      "fn run_once() -> Result<(), secret_input_ui::SecretInputError> {",
+      "fn run_once() -> Result<(), secret_input_ui::SecretInputError> {\n    let _preseal = std::io::stdin().lock();",
+    ),
+  },
+  {
+    approved:
+      approvedSecretInputRuntimeEntryLeafSha256.authenticateInheritedRequest,
+    source: secretInputAuthenticateInheritedRequest.replace(
+      "pub fn authenticate_inherited_request() -> Result<AuthenticatedRequestSession, SecretInputError> {",
+      "pub fn authenticate_inherited_request() -> Result<AuthenticatedRequestSession, SecretInputError> {\n    let _preseal = std::io::stdin().lock();",
+    ),
+  },
+];
 const architectureDocument = await text("docs/architecture.md");
+requireInvariant(
+  JSON.stringify({
+    bootstrap: normalizedSourceSha256(secretBootstrap),
+    main: normalizedSourceSha256(secretInputMain),
+  }) === JSON.stringify(approvedSecretInputRuntimeEntryRawSha256) &&
+    JSON.stringify({
+      authenticateInheritedRequest: normalizedSourceSha256(
+        rustLexicalCode(secretInputAuthenticateInheritedRequest),
+      ),
+      runOnce: normalizedSourceSha256(rustLexicalCode(secretInputRunOnce)),
+    }) === JSON.stringify(approvedSecretInputRuntimeEntryLeafSha256) &&
+    secretInputRuntimeEntryMutationProbes.every(
+      ({ source, approved }) =>
+        normalizedSourceSha256(rustLexicalCode(source)) !== approved,
+    ),
+  "Secret Input runtime entry must reach the Windows sealed bootstrap without any preceding application operation",
+);
 requireInvariant(
   /pub\s+struct\s+SecretPrompt\s*\{[\s\S]*?\n\}/u.test(secretInput) &&
     !/pub\s+(?:kind|minimum_bytes|maximum_bytes|anti_phishing_phrase)\s*:/u.test(
@@ -4846,6 +5004,8 @@ const exactImageVisibleFunctionNames = [
 ].map((match) => match.groups.name);
 const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction = withoutBottomTestModule(restrictedLauncher);
+const approvedRestrictedLauncherProductionBoundaryRawSha256 =
+  "b643b91e53867e3f6160f7f436debdaaa88e5ce1639b35d8f3aabee8fdf07674";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -4965,6 +5125,284 @@ const platformWindowsProductionFiles = await rustProductionSources(
 const workspaceRustProductionFiles = (
   await rustProductionSources("crates", { withoutInlineTests: true })
 ).filter((file) => /^crates\/[^/]+\/src\//u.test(file.path));
+const isWorkspaceBuildOutputPath = (path) =>
+  /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
+const workspaceRustCompilationInputs = [
+  ...(await rustProductionSources("crates", {
+    excludeDirectory: isWorkspaceBuildOutputPath,
+    withTestCode: true,
+  })),
+  ...(await rustProductionSources("demo", {
+    excludeDirectory: isWorkspaceBuildOutputPath,
+    withTestCode: true,
+  })),
+]
+  .filter((file) => !isWorkspaceBuildOutputPath(file.path))
+  .sort((left, right) => left.path.localeCompare(right.path, "en"));
+const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
+  workspaceRustCompilationInputs,
+);
+const approvedWorkspaceRustCompilationClosureSha256 =
+  "2d7e27a59673ca05e1ae352078f1a0c55a56647dab9987a9ba9efa4af32d27a8";
+const workspaceRustDynamicRebindingMutationProbe =
+  workspaceRustCompilationInputs.map((file) =>
+    file.path === "crates/approval-ui/src/native.rs"
+      ? {
+          ...file,
+          source: `${file.source}\n#[cfg(windows)]\nunsafe fn hidden_dynamic_handle_api() {\n    let symbol = b"Duplicate".iter().chain(b"Handle\\0").copied().collect::<Vec<_>>();\n    let address = GetProcAddress(GetModuleHandleW(None).unwrap(), PCSTR(symbol.as_ptr()));\n    let duplicate: unsafe extern "system" fn() = core::mem::transmute(address);\n    duplicate();\n}\n`,
+        }
+      : file,
+  );
+const workspaceBuildScriptPaths = workspaceRustCompilationInputs
+  .filter((file) => file.path.endsWith("/build.rs"))
+  .map((file) => file.path);
+const workspaceCargoManifestPaths = [
+  "Cargo.toml",
+  "crates/approval-ui/Cargo.toml",
+  "crates/approval-wire/Cargo.toml",
+  "crates/broker/Cargo.toml",
+  "crates/chain-registry/Cargo.toml",
+  "crates/dashboard/Cargo.toml",
+  "crates/eip712/Cargo.toml",
+  "crates/key-agent/Cargo.toml",
+  "crates/native-host/Cargo.toml",
+  "crates/platform-windows/Cargo.toml",
+  "crates/secret-core/Cargo.toml",
+  "crates/secret-input-ui/Cargo.toml",
+  "crates/wallet-model/Cargo.toml",
+  "crates/wallet-protocol/Cargo.toml",
+  "demo/sepolia-wallet/Cargo.toml",
+];
+const workspaceCargoManifestInventory = await Promise.all(
+  workspaceCargoManifestPaths.map(async (path) => {
+    const source = await text(path);
+    return { path, sha256: normalizedSourceSha256(source), source };
+  }),
+);
+const approvedWorkspaceCargoManifestPins = [
+  { path: "Cargo.toml", sha256: "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49" },
+  { path: "crates/approval-ui/Cargo.toml", sha256: "a45ce0f391efef8f88b5e3289aaf714521585f2106a48e0e236e78b3503d3acd" },
+  { path: "crates/approval-wire/Cargo.toml", sha256: "c4425735387a3699cd3fd51eb6ae613a7e42f23a4fa8e282406103b09230f913" },
+  { path: "crates/broker/Cargo.toml", sha256: "e3a04543f1a1ecdd559abb50541b025f601a6a1f0b0f0cb0a599fa3ba2179cf7" },
+  { path: "crates/chain-registry/Cargo.toml", sha256: "03a6ad6fa13c3b1c75e0f7b657da5d4f105ba95b31023486b739cc9de2c81928" },
+  { path: "crates/dashboard/Cargo.toml", sha256: "0d912fd1b2d9bf00147c6d2aa2de8f396524169d1385e8e4fcba22c5493e77c8" },
+  { path: "crates/eip712/Cargo.toml", sha256: "fb443a2eea397ca920a0a44b5cfc73c3e7b9a825cf49dcf95c2959bf415a2448" },
+  { path: "crates/key-agent/Cargo.toml", sha256: "2464e3b9dc86089a4d3f05cf936e3cc4988ed698215e83fb7555416bd9f62bba" },
+  { path: "crates/native-host/Cargo.toml", sha256: "5ddf3ca3c87c2b634c5a12700af2e08637612e22a3fb7afb4b9c4e4754f5d988" },
+  { path: "crates/platform-windows/Cargo.toml", sha256: "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" },
+  { path: "crates/secret-core/Cargo.toml", sha256: "18b74025d712211068ee53b1f7d4529532b1f08c781d7057d7f73a2ceef2dc82" },
+  { path: "crates/secret-input-ui/Cargo.toml", sha256: "a1fdd15bff500909518a7a9ba357775ad4bf65d40703f4db77e047a905e39572" },
+  { path: "crates/wallet-model/Cargo.toml", sha256: "1ef04a95a52064eac8bd8ca5a0d497ff2aecc5a00f1dece5be180b8d9ade5732" },
+  { path: "crates/wallet-protocol/Cargo.toml", sha256: "bac69541b0521a0dc6424e683e2dbabf80b7ab133c0f0a8bea14a0125123a36e" },
+  { path: "demo/sepolia-wallet/Cargo.toml", sha256: "6641ccb2e60910901b764ff4721f2ce96ffb5b68e66d8a9deceef3b6f8962c2f" },
+];
+const cargoManifestPinsHold = (inventory) =>
+  JSON.stringify(
+    inventory.map(({ path, sha256 }) => ({ path, sha256 })),
+  ) === JSON.stringify(approvedWorkspaceCargoManifestPins);
+const cargoNonRustTargetMutationProbe = workspaceCargoManifestInventory.map(
+  ({ path, source }) => {
+    const mutated =
+      path === "crates/native-host/Cargo.toml"
+        ? `${source.replace('unsafe_code = "deny"', 'unsafe_code = "allow"')}\n[[bin]]\nname = "hidden-handle"\npath = "src/hidden.inc"\n`
+        : source;
+    return { path, sha256: normalizedSourceSha256(mutated) };
+  },
+);
+const workspaceCompilationBindingEdges = rustCompilationBindingEdgeInventory(
+  workspaceRustCompilationInputs,
+);
+const workspaceDynamicResolverNames = [
+  "GetProcAddress",
+  "GetProcAddressForCaller",
+  "LdrGetProcedureAddress",
+  "LdrGetProcedureAddressEx",
+  "RtlFindExportedRoutineByName",
+  "LoadLibraryA",
+  "LoadLibraryW",
+  "LoadLibraryExA",
+  "LoadLibraryExW",
+  "LoadPackagedLibrary",
+  "dlopen",
+  "dlsym",
+  "dlvsym",
+];
+const workspaceInlineCodeNames = [
+  "asm",
+  "global_asm",
+  "naked_asm",
+  "llvm_asm",
+];
+const workspacePointerFabricationNames = [
+  "transmute",
+  "transmute_copy",
+  "MaybeUninit",
+  "union",
+];
+const workspaceDynamicResolverUsage = rustIdentifierUsageInventory(
+  workspaceRustCompilationInputs,
+  workspaceDynamicResolverNames,
+);
+const workspaceInlineCodeUsage = rustIdentifierUsageInventory(
+  workspaceRustCompilationInputs,
+  workspaceInlineCodeNames,
+);
+const workspacePointerFabricationUsage = rustIdentifierUsageInventory(
+  workspaceRustCompilationInputs,
+  workspacePointerFabricationNames,
+);
+const identifierUsageIsEmpty = (usage) =>
+  usage.calls.length === 0 &&
+  usage.aliases.length === 0 &&
+  usage.qualified.length === 0 &&
+  usage.references.length === 0 &&
+  Object.values(usage.tokens).every((paths) => paths.length === 0);
+const dynamicResolverUsageProbes = {
+  alias: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source:
+          "use windows::Win32::System::LibraryLoader::GetProcAddress as resolve; fn probe() { let _ = resolve; }",
+      },
+    ],
+    workspaceDynamicResolverNames,
+  ),
+  clean: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source:
+          '// GetProcAddress and DuplicateHandle\nconst NOTE: &str = "GetProcAddress DuplicateHandle";',
+      },
+    ],
+    workspaceDynamicResolverNames,
+  ),
+  qualified: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source:
+          'fn probe(module: HMODULE, name: PCSTR) { if false { let _ = windows::Win32::System::LibraryLoader::GetProcAddress(module, name); } }',
+      },
+    ],
+    workspaceDynamicResolverNames,
+  ),
+  tupleAndMethod: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source:
+          "fn probe(api: Api) { let (resolve,) = (GetProcAddress,); let _ = api.GetProcAddress(); let _ = resolve; }",
+      },
+    ],
+    workspaceDynamicResolverNames,
+  ),
+};
+const inlineCodeUsageProbes = {
+  alias: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source:
+          'use core::arch::global_asm as ga; ga!("nop");',
+      },
+    ],
+    workspaceInlineCodeNames,
+  ),
+  clean: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source: '// global_asm!("nop")\nconst NOTE: &str = "asm global_asm";',
+      },
+    ],
+    workspaceInlineCodeNames,
+  ),
+  qualified: rustIdentifierUsageInventory(
+    [
+      {
+        path: "probe.rs",
+        source: 'core::arch::global_asm!("nop");',
+      },
+    ],
+    workspaceInlineCodeNames,
+  ),
+};
+const pointerFabricationUsageProbe = rustIdentifierUsageInventory(
+  [
+    {
+      path: "probe.rs",
+      source:
+        "union Hidden { value: usize } fn probe(value: usize) { let _: usize = unsafe { core::mem::transmute(value) }; let _ = core::mem::MaybeUninit::<usize>::uninit(); }",
+    },
+  ],
+  workspacePointerFabricationNames,
+);
+const workspaceForeignBlocks = rustForeignBlockInventory(
+  workspaceRustCompilationInputs,
+);
+const approvedWorkspaceForeignBlocks = [
+  {
+    path: "crates/approval-ui/src/main.rs",
+    block:
+      'unsafe extern "C" { fn _setmode(file_descriptor: i32, mode: i32) -> i32; }',
+  },
+  {
+    path: "crates/native-host/src/lib.rs",
+    block: 'unsafe extern "C" { fn _setmode(fd: i32, mode: i32) -> i32; }',
+  },
+  {
+    path: "crates/secret-input-ui/src/bootstrap/windows.rs",
+    block:
+      'unsafe extern "C" { fn _setmode(file_descriptor: i32, mode: i32) -> i32; }',
+  },
+];
+const foreignBlockProbes = {
+  callback: rustForeignBlockInventory([
+    {
+      path: "probe.rs",
+      source: 'unsafe extern "system" fn window_proc() {}',
+    },
+  ]),
+  unreviewed: rustForeignBlockInventory([
+    {
+      path: "probe.rs",
+      source:
+        'unsafe extern "system" { fn innocent(value: usize) -> usize; }',
+    },
+  ]),
+};
+const approvedWorkspacePathAttributes = [
+  {
+    path: "crates/platform-windows/src/broker_artifact.rs",
+    attribute: '#[path = "broker_supervisor.rs"]',
+  },
+];
+const compilationBindingEdgeProbes = {
+  include: rustCompilationBindingEdgeInventory([
+    { path: "probe.rs", source: 'include!("hidden.inc");' },
+  ]),
+  linkName: rustCompilationBindingEdgeInventory([
+    {
+      path: "probe.rs",
+      source:
+        '#[link_name = "DuplicateHandle"]\nunsafe extern "system" { fn duplicate_handle(); }',
+    },
+  ]),
+  path: rustCompilationBindingEdgeInventory([
+    { path: "probe.rs", source: '#[path = "hidden.inc"]\nmod hidden;' },
+  ]),
+  linkSection: rustCompilationBindingEdgeInventory([
+    {
+      path: "probe.rs",
+      source: '#[link_section = ".drectve"]\nstatic DIRECTIVE: [u8; 1] = [0];',
+    },
+  ]),
+  naked: rustCompilationBindingEdgeInventory([
+    { path: "probe.rs", source: "#[naked]\nunsafe fn hidden() {}" },
+  ]),
+};
 const secretInputUiManifest = await text("crates/secret-input-ui/Cargo.toml");
 const platformWindowsLocalDependencyManifestInventory = [
   {
@@ -5031,11 +5469,11 @@ const approvedPlatformWindowsLocalDependencySourceInventory = [
   },
   {
     path: "crates/secret-input-ui/src/bootstrap.rs",
-    sha256: "04c65140711ed0b0725fc7d1444d1c57cff3197cc6766f4494d130e4adcfa81d",
+    sha256: "d738fe07a69b3ded3d210d0595f0c46960f6cdae91be657061cd55eb19dde8cd",
   },
   {
     path: "crates/secret-input-ui/src/bootstrap/windows.rs",
-    sha256: "d43a157b860835d27579d31fe8fe4224661f3f0e393dd0e74614164321d81505",
+    sha256: "7d62a809f8aaf1e4f4d11f0198341d4127125da548362c1c7a382c824d5b8a12",
   },
   {
     path: "crates/secret-input-ui/src/lib.rs",
@@ -5043,7 +5481,7 @@ const approvedPlatformWindowsLocalDependencySourceInventory = [
   },
   {
     path: "crates/secret-input-ui/src/main.rs",
-    sha256: "e1cece62907c531879318b64a17ada0fedee5416a35357a17e96bbba798c0fc0",
+    sha256: "4a7ecc6f5d71fa16576df5c3df3be2b7cbe4dc3511496dc5064733837b444936",
   },
   {
     path: "crates/secret-input-ui/src/recovery_native.rs",
@@ -7170,7 +7608,7 @@ requireInvariant(
   aliasedProcessCreationApis.length === 0,
   "production process-creation APIs and std::process must not be aliased around the exact callsite inventory",
 );
-const duplicateHandleInventory = platformWindowsProductionFiles.flatMap((file) =>
+const duplicateHandleInventory = workspaceRustProductionFiles.flatMap((file) =>
   rustCallSites(file.source, "DuplicateHandle").map((call) => ({
     path: file.path,
     sourceProcess: call.arguments[0],
@@ -7182,7 +7620,50 @@ const duplicateHandleInventory = platformWindowsProductionFiles.flatMap((file) =
     options: call.arguments[6],
   })),
 );
-const setHandleInformationInventory = platformWindowsProductionFiles.flatMap(
+const inheritableHandleApiUsage = rustIdentifierUsageInventory(
+  workspaceRustProductionFiles,
+  ["DuplicateHandle", "SetHandleInformation"],
+);
+const directSensitiveHandleCallProbe = `
+use windows::Win32::Foundation::DuplicateHandle;
+fn probe() {
+  unsafe { DuplicateHandle(source_process, source, target_process, target, 0, false, options) };
+}`;
+const directSensitiveHandleCallContract = (source) => {
+  const usage = rustIdentifierUsageInventory(
+    [{ path: "probe.rs", source }],
+    ["DuplicateHandle"],
+  );
+  return (
+    usage.calls.length === 1 &&
+    usage.aliases.length === 0 &&
+    usage.qualified.length === 0 &&
+    usage.references.length === 0
+  );
+};
+const indirectSensitiveHandleCallProbes = [
+  directSensitiveHandleCallProbe.replace(
+    "DuplicateHandle(source_process",
+    "(DuplicateHandle)(source_process",
+  ),
+  directSensitiveHandleCallProbe.replace(
+    "  unsafe { DuplicateHandle(source_process, source, target_process, target, 0, false, options) };",
+    "  let (duplicate,) = (DuplicateHandle,);\n  unsafe { duplicate(source_process, source, target_process, target, 0, true, options) };",
+  ),
+  directSensitiveHandleCallProbe.replace(
+    "unsafe { DuplicateHandle(",
+    "unsafe { windows::Win32::Foundation::DuplicateHandle(",
+  ),
+  directSensitiveHandleCallProbe.replace(
+    "unsafe { DuplicateHandle(",
+    "unsafe { <Shim as Api>::DuplicateHandle(",
+  ),
+  directSensitiveHandleCallProbe.replace(
+    "unsafe { DuplicateHandle(",
+    "unsafe { shim.DuplicateHandle(",
+  ),
+];
+const setHandleInformationInventory = workspaceRustProductionFiles.flatMap(
   (file) =>
     rustCallSites(file.source, "SetHandleInformation").map((call) => ({
       path: file.path,
@@ -7262,6 +7743,16 @@ const expectedDuplicateHandleInventory = [
     options: "DUPLICATE_SAME_ACCESS",
   },
   {
+    path: "crates/platform-windows/src/launch.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source",
+    targetProcess: "child_process",
+    targetHandle: "&raw mut target",
+    desiredAccess: "0",
+    inheritable: "false",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
     path: "crates/platform-windows/src/pipe.rs",
     sourceProcess: "GetCurrentProcess()",
     sourceHandle: "source.raw()",
@@ -7269,6 +7760,16 @@ const expectedDuplicateHandleInventory = [
     targetHandle: "&raw mut duplicate",
     desiredAccess: "0",
     inheritable: "true",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/secret-input-ui/src/bootstrap/windows.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "handle",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "0",
+    inheritable: "false",
     options: "DUPLICATE_SAME_ACCESS",
   },
 ];
@@ -7287,6 +7788,12 @@ const expectedSetHandleInformationInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
+    handle: "handle",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAGS(0)",
+  },
+  {
+    path: "crates/secret-input-ui/src/bootstrap/windows.rs",
     handle: "handle",
     mask: "HANDLE_FLAG_INHERIT.0",
     flags: "HANDLE_FLAGS(0)",
@@ -8057,7 +8564,1309 @@ const exactKeyAgentEnvironmentTest = rustFunctionBlock(
   keyAgentLpacSource,
   "exact_environment_has_only_three_os_scoped_names",
 );
-const compactRust = (source) => rustLexicalCode(source).replace(/\s+/gu, "");
+function compactRust(source) {
+  return rustLexicalCode(source).replace(/\s+/gu, "");
+}
+
+const secretInputChannelsDefinition = rustTopLevelLexicalItemBlock(
+  secretBootstrapWindowsProduction,
+  /struct\s+Channels\s*\{/u,
+);
+const secretInputSealedStdioDefinition = rustTopLevelLexicalItemBlock(
+  secretBootstrapWindowsProduction,
+  /struct\s+SealedSecretInputStdio\s*\{/u,
+);
+const secretInputAuthenticateRequest = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "authenticate_request",
+);
+const secretInputVerifySelfAndChannels = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "verify_self_and_channels",
+);
+const secretInputSealInheritedStdio = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "seal_inherited_secret_input_stdio",
+);
+const secretInputSealExactStdio = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "seal_exact_secret_input_stdio",
+);
+const secretInputSetBinaryStdio = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "set_binary_stdio",
+);
+const secretInputInvalidHandle = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "invalid_handle",
+);
+const secretInputSameObject = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "same_object",
+);
+const secretInputHandleFlags = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "handle_flags",
+);
+const secretInputExactObjectsDistinct = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "exact_objects_are_pairwise_distinct",
+);
+const secretInputValidateParentProofSet = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "validate_parent_proof_handle_set",
+);
+const secretInputVerifyParentHandles = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "verify_parent_handles",
+);
+const approvedSecretInputVerifyParentHandlesSha256 =
+  "3b54137c8fdb4fbf0147a4abf5bd226eeffaa3ec45ae6f976c109c83b8e7e0ff";
+const secretInputDuplicateUntrustedCandidate = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "duplicate_untrusted_candidate",
+);
+const secretInputCriticalHandleLeafSha256 = {
+  authenticateRequest: normalizedSourceSha256(
+    rustLexicalCode(secretInputAuthenticateRequest),
+  ),
+  verifySelfAndChannels: normalizedSourceSha256(
+    rustLexicalCode(secretInputVerifySelfAndChannels),
+  ),
+  sealExactStdio: normalizedSourceSha256(
+    rustLexicalCode(secretInputSealExactStdio),
+  ),
+  sealInheritedStdio: normalizedSourceSha256(
+    rustLexicalCode(secretInputSealInheritedStdio),
+  ),
+  setBinaryStdio: normalizedSourceSha256(
+    rustLexicalCode(secretInputSetBinaryStdio),
+  ),
+  invalidHandle: normalizedSourceSha256(
+    rustLexicalCode(secretInputInvalidHandle),
+  ),
+  sameObject: normalizedSourceSha256(rustLexicalCode(secretInputSameObject)),
+  handleFlags: normalizedSourceSha256(rustLexicalCode(secretInputHandleFlags)),
+  validateParentProofSet: normalizedSourceSha256(
+    rustLexicalCode(secretInputValidateParentProofSet),
+  ),
+  exactObjectsDistinct: normalizedSourceSha256(
+    rustLexicalCode(secretInputExactObjectsDistinct),
+  ),
+  duplicateUntrustedCandidate: normalizedSourceSha256(
+    rustLexicalCode(secretInputDuplicateUntrustedCandidate),
+  ),
+};
+const approvedSecretInputCriticalHandleLeafSha256 = {
+  authenticateRequest:
+    "8d66d7ac0e72efeff9aa8a956231e031f2d53d6902c1ee944017e9a01cceda7a",
+  verifySelfAndChannels:
+    "f829d30b75e410e04020844e0b8484ffa9acc9d4a20dd0ef8b59417138e3c8b5",
+  sealExactStdio:
+    "35556bca1f67f2738d258cfa798f8ba1d8d1bfa9da4bfc94c102aaa1fd6ab83a",
+  sealInheritedStdio:
+    "2a39ad89bc44e804563127ff38d689635c6a188ac7fac8d5fae6c8e835bf8aef",
+  setBinaryStdio:
+    "144656babdc2addd0dc08eee0967676f23b064c8f97def998529d70c73c4631f",
+  invalidHandle:
+    "573ba8ea915006221cd349853c7b228acf6f3a57e9c1ac6adc7682a6bc446396",
+  sameObject:
+    "f7db525f2b009057aa0c938e12e9730eda6e30863b8dde614ec5b360dce29fc1",
+  handleFlags:
+    "e06fbe2ba2fbd15a2539210c531fa68df356d1950952e67a0362961583d56a28",
+  validateParentProofSet:
+    "940453657478ad681e4bde0e8fc583db0daffaaca2f08e407aa830277f246c27",
+  exactObjectsDistinct:
+    "03e34f70609de79b6d6fcab2aa74e15c7a174c6c23fa620a20156c6f3d54a8d1",
+  duplicateUntrustedCandidate:
+    "45883b377008375d90c670bb005ce7decc101367be8d05eae2e6c8007a334a4f",
+};
+const secretInputValidateParentProofMutationProbes = [
+  secretInputValidateParentProofSet.replace(
+    "            .any(|handle| !matches!(handle_flags(*handle), Ok(0)))",
+    "            .any(|_| false)",
+  ),
+  secretInputValidateParentProofSet.replace(
+    "        || !exact_objects_are_pairwise_distinct(&handles)",
+    "        || false\n    {\n        if false {\n            let _ = !exact_objects_are_pairwise_distinct(&handles);\n        }",
+  ),
+];
+const secretInputProductionOnlyLeafMutationProbes = [
+  {
+    approved: approvedSecretInputCriticalHandleLeafSha256.sameObject,
+    source: secretInputSameObject.replace(
+      "fn same_object(first: HANDLE, second: HANDLE) -> bool {",
+      "fn same_object(first: HANDLE, second: HANDLE) -> bool {\n    if cfg!(not(test)) { return false; }",
+    ),
+  },
+  {
+    approved: approvedSecretInputCriticalHandleLeafSha256.handleFlags,
+    source: secretInputHandleFlags.replace(
+      "fn handle_flags(handle: HANDLE) -> Result<u32, SecretInputError> {",
+      "fn handle_flags(handle: HANDLE) -> Result<u32, SecretInputError> {\n    if cfg!(not(test)) { return Ok(0); }",
+    ),
+  },
+];
+const secretInputAdoptValidatedHandle = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "adopt_validated_handle",
+);
+const secretInputChannelProofTraitTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "sealed_channel_proofs_are_thread_bound_non_clone_and_non_copy",
+  1,
+);
+const secretInputTestsModule = rustLexicalItemBlockAtDepth(
+  secretBootstrapWindows,
+  /(?:^|\n)\s*mod\s+tests\s*\{/u,
+  0,
+);
+const approvedSecretInputTestsModuleRawSha256 =
+  "0e358e015ac67a10765bae678c29ad78718d30a479f861bcf768662bf3215996";
+const secretInputFixtureConstantItems = {
+  child: normalizeRustFragment(
+    rustConstItemAtDepth(secretBootstrapWindows, "CHILD_FIXTURE", 1),
+  ),
+  grandchild: normalizeRustFragment(
+    rustConstItemAtDepth(secretBootstrapWindows, "GRANDCHILD_FIXTURE", 1),
+  ),
+  challenge: normalizeRustFragment(
+    rustConstItemAtDepth(secretBootstrapWindows, "CHALLENGE", 1),
+  ),
+  acknowledgement: normalizeRustFragment(
+    rustConstItemAtDepth(secretBootstrapWindows, "ACKNOWLEDGEMENT", 1),
+  ),
+  waitMilliseconds: normalizeRustFragment(
+    rustConstItemAtDepth(
+      secretBootstrapWindows,
+      "PROCESS_WAIT_MILLISECONDS",
+      1,
+    ),
+  ),
+};
+const approvedSecretInputFixtureConstantItems = {
+  child:
+    'const CHILD_FIXTURE: &str = "bootstrap::windows::tests::inherited_secret_input_handles_child_fixture";',
+  grandchild:
+    'const GRANDCHILD_FIXTURE: &str = "bootstrap::windows::tests::secret_input_deinheritance_grandchild_fixture";',
+  challenge: 'const CHALLENGE: &[u8] = b"secret-input-four-handle-challenge";',
+  acknowledgement:
+    'const ACKNOWLEDGEMENT: &[u8] = b"secret-input-four-handles-sealed";',
+  waitMilliseconds: "const PROCESS_WAIT_MILLISECONDS: u32 = 25_000;",
+};
+const secretInputTestsModuleMutationProbes = [
+  secretInputTestsModule
+    .replace(
+      "bootstrap::windows::tests::inherited_secret_input_handles_child_fixture",
+      "bootstrap::windows::tests::nonexistent_child_fixture",
+    )
+    .replace(
+      'b"secret-input-four-handles-sealed"',
+      'b"test result: ok."',
+  ),
+  secretInputTestsModule.replace(
+    "        ) -> Result<bool, SecretInputError> {\n            let mut duplicate = HANDLE::default();",
+    "        ) -> Result<bool, SecretInputError> {\n            if std::hint::black_box(true) { return Ok(false); }\n            let mut duplicate = HANDLE::default();",
+  ),
+];
+const secretInputStdioSuccessTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "exact_secret_input_stdio_set_seals_two_unique_objects_without_closing_them",
+  1,
+);
+const secretInputStdioMutationTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "invalid_alias_or_wrong_topology_is_rejected_before_mutation",
+  1,
+);
+const secretInputFourObjectUnitTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "parent_proof_set_requires_four_distinct_exact_zero_handles",
+  1,
+);
+const secretInputHandleUnitTestSha256 = {
+  stdioSuccess: normalizedSourceSha256(rustLexicalCode(secretInputStdioSuccessTest)),
+  stdioMutation: normalizedSourceSha256(
+    rustLexicalCode(secretInputStdioMutationTest),
+  ),
+  fourObject: normalizedSourceSha256(rustLexicalCode(secretInputFourObjectUnitTest)),
+};
+const approvedSecretInputHandleUnitTestSha256 = {
+  stdioSuccess:
+    "6c0d5f03b717876c9bc9361563db98cc06a8f16264e89fcf26d79011eeabfb24",
+  stdioMutation:
+    "e9766eebd48b1fd2fe30d0e01a3c826083b9ff568e5f638f77de32760f746d91",
+  fourObject:
+    "4c1a24a63ff3005c8bb859a4d0a2edd56c9883af1f3b619a9363a766c2eb9021",
+};
+const secretInputHandleUnitTestMutationProbes = [
+  secretInputStdioSuccessTest.replace(
+    "        seal_exact_secret_input_stdio([input, output, output])?;",
+    "        if false { seal_exact_secret_input_stdio([input, output, output])?; }",
+  ),
+  secretInputFourObjectUnitTest.replace(
+    "        validate_parent_proof_handle_set(handles[2], handles[3], handles[0], handles[1])?;",
+    "        if false { validate_parent_proof_handle_set(handles[2], handles[3], handles[0], handles[1])?; }",
+  ),
+];
+const secretInputFourObjectDriver = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild",
+  1,
+);
+const secretInputFourObjectChildFixture = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "inherited_secret_input_handles_child_fixture",
+  1,
+);
+const secretInputFourObjectGrandchildFixture = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "secret_input_deinheritance_grandchild_fixture",
+  1,
+);
+const secretInputFourObjectFixtureSha256 = {
+  driver: normalizedSourceSha256(rustLexicalCode(secretInputFourObjectDriver)),
+  child: normalizedSourceSha256(
+    rustLexicalCode(secretInputFourObjectChildFixture),
+  ),
+  grandchild: normalizedSourceSha256(
+    rustLexicalCode(secretInputFourObjectGrandchildFixture),
+  ),
+};
+const approvedSecretInputFourObjectFixtureSha256 = {
+  driver: "01f9fac41d8402cb15b396a779f53544e94968865566e44c49c9d116d706f0c0",
+  child: "298eddfda46d7d6beda57f0b7ca5ab7e721fb63f32710b35e640387188c29e9c",
+  grandchild:
+    "4c88bb7ba02246999baa5a9d2d1983000f3237705d738c5ea350e89a02f92503",
+};
+const secretInputFourObjectFixtureMutationProbes = [
+  secretInputFourObjectDriver.replace(
+    "        child.wait_for_success()?;",
+    "        if false { child.wait_for_success()?; }",
+  ),
+  secretInputFourObjectChildFixture.replace(
+    "            assert!(!grandchild.names_same_object(original, original)?);",
+    "            if false { assert!(!grandchild.names_same_object(original, original)?); }",
+  ),
+];
+const secretInputBroadGrandchildImpl = rustImplItemAtDepth(
+  secretBootstrapWindows,
+  "impl BroadInheritanceGrandchild",
+  1,
+);
+const secretInputBroadGrandchildSpawn = rustFunctionBlockAtDepth(
+  secretInputBroadGrandchildImpl,
+  "spawn",
+  1,
+);
+const secretInputBroadGrandchildObjectProbe = rustFunctionBlockAtDepth(
+  secretInputBroadGrandchildImpl,
+  "names_same_object",
+  1,
+);
+const secretInputTestInjectProof = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "inject_non_inheritable_into_child",
+  1,
+);
+const secretInputTestSetInherit = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "set_inherit",
+  1,
+);
+const secretInputFixtureAttributeContract = (source) =>
+  JSON.stringify({
+    stdioSuccess: rustFunctionOuterAttributesAtDepth(
+      source,
+      "exact_secret_input_stdio_set_seals_two_unique_objects_without_closing_them",
+      1,
+    ),
+    stdioMutation: rustFunctionOuterAttributesAtDepth(
+      source,
+      "invalid_alias_or_wrong_topology_is_rejected_before_mutation",
+      1,
+    ),
+    fourObjectUnit: rustFunctionOuterAttributesAtDepth(
+      source,
+      "parent_proof_set_requires_four_distinct_exact_zero_handles",
+      1,
+    ),
+    traitProof: rustFunctionOuterAttributesAtDepth(
+      source,
+      "sealed_channel_proofs_are_thread_bound_non_clone_and_non_copy",
+      1,
+    ),
+    driver: rustFunctionOuterAttributesAtDepth(
+      source,
+      "injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild",
+      1,
+    ),
+    child: rustFunctionOuterAttributesAtDepth(
+      source,
+      "inherited_secret_input_handles_child_fixture",
+      1,
+    ),
+    grandchild: rustFunctionOuterAttributesAtDepth(
+      source,
+      "secret_input_deinheritance_grandchild_fixture",
+      1,
+    ),
+  }) ===
+  JSON.stringify({
+    stdioSuccess: ["#[test]"],
+    stdioMutation: ["#[test]"],
+    fourObjectUnit: ["#[test]"],
+    traitProof: ["#[test]"],
+    driver: ["#[test]"],
+    child: [
+      "#[test]",
+      '#[ignore = "launched only by the isolated Secret Input handle driver"]',
+    ],
+    grandchild: [
+      "#[test]",
+      '#[ignore = "launched only as the Secret Input deinheritance grandchild probe"]',
+    ],
+  });
+const secretInputTestsModuleAttributeContract = (source) =>
+  JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "tests", 0)) ===
+  JSON.stringify(["#[cfg(test)]"]);
+const secretInputTestsModuleAttributeMutationProbes = [
+  secretBootstrapWindows.replace(
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(any())]\n#[cfg(test)]\nmod tests {",
+  ),
+  secretBootstrapWindows.replace(
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(all(test, any()))]\nmod tests {",
+  ),
+];
+const secretInputDriverTestDeclaration =
+  "    #[test]\n    fn injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild";
+const secretInputFixtureAttributeMutationProbes = [
+  secretBootstrapWindows.replace(
+    "    #[test]\n    fn exact_secret_input_stdio_set_seals_two_unique_objects_without_closing_them",
+    "    fn exact_secret_input_stdio_set_seals_two_unique_objects_without_closing_them",
+  ),
+  secretBootstrapWindows.replace(
+    secretInputDriverTestDeclaration,
+    "    fn injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild",
+  ),
+  secretBootstrapWindows.replace(
+    secretInputDriverTestDeclaration,
+    "    #[test]\n    #[ignore]\n    fn injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild",
+  ),
+  secretBootstrapWindows.replace(
+    secretInputDriverTestDeclaration,
+    "    #[cfg(any())]\n    #[test]\n    fn injected_four_handle_set_does_not_reach_a_broad_inheritance_grandchild",
+  ),
+];
+const secretInputHandleApis = [
+  "CompareObjectHandles",
+  "CreateEventW",
+  "CreateProcessW",
+  "DuplicateHandle",
+  "GetFileType",
+  "GetHandleInformation",
+  "GetStdHandle",
+  "ResumeThread",
+  "SetHandleInformation",
+];
+const secretInputHandleApiUsage = rustIdentifierUsageInventory(
+  [
+    {
+      path: "crates/secret-input-ui/src/bootstrap/windows.rs",
+      source: secretBootstrapWindows,
+    },
+  ],
+  secretInputHandleApis,
+);
+const secretInputParentProofHelperUsage = rustIdentifierUsageInventory(
+  [{ path: "verify_parent_handles", source: secretInputVerifyParentHandles }],
+  ["duplicate_untrusted_candidate", "adopt_validated_handle"],
+);
+const secretInputHandleApiAliases = [
+  ...rustLexicalCode(secretBootstrapWindows).matchAll(
+    /\b(?:CompareObjectHandles|CreateEventW|CreateProcessW|DuplicateHandle|GetFileType|GetHandleInformation|GetStdHandle|ResumeThread|SetHandleInformation)\s+as\s+(?:_|[A-Za-z_]\w*)|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*(?:CompareObjectHandles|CreateEventW|CreateProcessW|DuplicateHandle|GetFileType|GetHandleInformation|GetStdHandle|ResumeThread|SetHandleInformation)\b/gu,
+  ),
+];
+const secretInputQualifiedHandleApiCalls = [
+  ...rustLexicalCode(secretBootstrapWindows).matchAll(
+    /(?:\b[A-Za-z_]\w*::)+(?:CompareObjectHandles|CreateEventW|CreateProcessW|DuplicateHandle|GetFileType|GetHandleInformation|GetStdHandle|ResumeThread|SetHandleInformation)\s*\(/gu,
+  ),
+];
+
+const secretInputFirstOperationEnvelope = (source) => {
+  let request;
+  try {
+    request = rustTopLevelFunctionBlock(source, "authenticate_request");
+  } catch {
+    return false;
+  }
+  const body = compactRust(request);
+  const opening = body.indexOf("{");
+  return (
+    opening !== -1 &&
+    body
+      .slice(opening + 1)
+      .startsWith(
+        "letsealed_stdio=seal_inherited_secret_input_stdio()?;letchannels=verify_self_and_channels(sealed_stdio)?;",
+      ) &&
+    JSON.stringify(
+      rustCallSites(request, "seal_inherited_secret_input_stdio").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(request, "verify_self_and_channels").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["sealed_stdio"]])
+  );
+};
+const secretInputFirstOperationProbe = `
+// fn authenticate_request() { spoofed(); }
+fn outer() {
+  fn authenticate_request() { spoofed(); }
+}
+fn authenticate_request() {
+  let sealed_stdio = seal_inherited_secret_input_stdio()?;
+  let channels = verify_self_and_channels(sealed_stdio)?;
+  consume(channels)
+}`;
+const secretInputFirstOperationMutationProbes = [
+  secretInputFirstOperationProbe.replace(
+    "  let sealed_stdio",
+    "  side_effect();\n  let sealed_stdio",
+  ),
+  secretInputFirstOperationProbe.replace(
+    "  let sealed_stdio = seal_inherited_secret_input_stdio()?;\n  let channels = verify_self_and_channels(sealed_stdio)?;",
+    "  let channels = verify_self_and_channels(sealed_stdio)?;\n  let sealed_stdio = seal_inherited_secret_input_stdio()?;",
+  ),
+  secretInputFirstOperationProbe.replace(
+    "seal_inherited_secret_input_stdio()?",
+    "(seal_inherited_secret_input_stdio()?, side_effect()).0",
+  ),
+  secretInputFirstOperationProbe.replace(
+    "verify_self_and_channels(sealed_stdio)?",
+    "verify_self_and_channels(side_effect(sealed_stdio))?",
+  ),
+  secretInputFirstOperationProbe.replace(
+    "seal_inherited_secret_input_stdio",
+    "seal_alias",
+  ),
+  secretInputFirstOperationProbe.replace(
+    "seal_inherited_secret_input_stdio",
+    "bootstrap::seal_inherited_secret_input_stdio",
+  ),
+];
+
+const secretInputParentProofOrderContract = (source) => {
+  const compact = compactRust(source);
+  return (
+    normalizedSourceSha256(rustLexicalCode(source)) ===
+      approvedSecretInputVerifyParentHandlesSha256 &&
+    orderedRustMarkersAtDepth(source, [
+      {
+        marker: "let process_candidate = HANDLE(process_value as RawHandle)",
+        depth: 1,
+      },
+      {
+        marker: "let image_candidate = HANDLE(image_value as RawHandle)",
+        depth: 1,
+      },
+      {
+        marker:
+          "validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?",
+        depth: 1,
+      },
+      {
+        marker:
+          "let process_copy = duplicate_untrusted_candidate(process_candidate)?",
+        depth: 1,
+      },
+      {
+        marker: "let image_copy = duplicate_untrusted_candidate(image_candidate)?",
+        depth: 1,
+      },
+      {
+        marker: "let process_id = unsafe { GetProcessId(raw(&process_copy)) }",
+        depth: 1,
+      },
+      { marker: "require_parent_created_first(&process_copy)?", depth: 1 },
+      {
+        marker: "verify_parent_artifact(&process_copy, &image_copy, policy)?",
+        depth: 1,
+      },
+      {
+        marker: "if !same_object(process_candidate, raw(&process_copy))",
+        depth: 1,
+      },
+      {
+        marker:
+          "let process = unsafe { adopt_validated_handle(process_candidate) }",
+        depth: 1,
+      },
+      {
+        marker: "let image = unsafe { adopt_validated_handle(image_candidate) }",
+        depth: 1,
+      },
+      { marker: "Ok(VerifiedParentHandles {", depth: 1 },
+    ]) &&
+    compact.includes(
+      "if!same_object(process_candidate,raw(&process_copy))||!same_object(image_candidate,raw(&image_copy))||!matches!(handle_flags(process_candidate),Ok(0))||!matches!(handle_flags(image_candidate),Ok(0)){returnErr(SecretInputError::NativeFailure);}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(source, "duplicate_untrusted_candidate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["process_candidate"], ["image_candidate"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "adopt_validated_handle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process_candidate"], ["image_candidate"]]) &&
+    rustCallSites(source, "OwnedHandle::from_raw_handle").length === 0 &&
+    rustCallSites(source, "CloseHandle").length === 0
+  );
+};
+const secretInputParentProofMutationProbes = [
+  secretInputVerifyParentHandles.replace(
+    "    validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?;\n",
+    "",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "let process_copy = duplicate_untrusted_candidate(process_candidate)?;",
+    "let process_copy = unsafe { adopt_validated_handle(process_candidate) };",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "duplicate_untrusted_candidate(process_candidate)?",
+    "(duplicate_untrusted_candidate(process_candidate)?, side_effect()).0",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "duplicate_untrusted_candidate(process_candidate)",
+    "duplicate_untrusted_candidate(side_effect(process_candidate))",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "duplicate_untrusted_candidate(process_candidate)",
+    "duplicate_alias(process_candidate)",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "duplicate_untrusted_candidate(process_candidate)",
+    "bootstrap::duplicate_untrusted_candidate(process_candidate)",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "    let process = unsafe { adopt_validated_handle(process_candidate) };\n",
+    "",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "    let process_value =",
+    "    if alternate_path() {\n        return unchecked_parent_handles();\n    }\n    let process_value =",
+  ),
+  secretInputVerifyParentHandles.replace(
+    "    validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?;",
+    "    if false {\n        validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?;\n    }",
+  ),
+];
+
+const secretInputBootstrapExtractionSpoofProbe = `
+// fn verify_parent_handles() { spoofed(); }
+fn outer() {
+  fn verify_parent_handles() { spoofed(); }
+}
+fn verify_parent_handles() { reviewed(); }
+`;
+const secretInputBootstrapExtractionSpoof = rustTopLevelFunctionBlock(
+  secretInputBootstrapExtractionSpoofProbe,
+  "verify_parent_handles",
+);
+
+const launchVerifiedRoleImpl = rustImplItemAtDepth(
+  restrictedLauncherProduction,
+  "impl VerifiedLpacRole",
+  0,
+);
+const launchRequiresParentProof = rustFunctionBlockAtDepth(
+  launchVerifiedRoleImpl,
+  "requires_parent_proof",
+  1,
+);
+const launchParentProofSourcesDefinition = rustLexicalItemBlockAtDepth(
+  restrictedLauncherProduction,
+  /struct\s+ParentProofSources\s*\{/u,
+  1,
+);
+const launchCurrentParentProofSources = rustFunctionBlockAtDepth(
+  restrictedLauncherProduction,
+  "current_parent_proof_sources",
+  1,
+);
+const approvedLaunchCurrentParentProofSourcesSha256 =
+  "88bf116fd032a2277cc58dc3900dbe4dc64c206384deff2f3c9fb8e9d17b0764";
+const launchParentSourceApiUsage = rustIdentifierUsageInventory(
+  [{ path: "current_parent_proof_sources", source: launchCurrentParentProofSources }],
+  ["OpenProcess", "CreateFileW"],
+);
+const launchCurrentParentProofSourcesMutationProbes = [
+  launchCurrentParentProofSources
+    .replace("            OpenProcess(", "            (OpenProcess)(")
+    .replace(
+      "PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE",
+      "PROCESS_ALL_ACCESS",
+    ),
+  launchCurrentParentProofSources.replace(
+    "        let process_id = unsafe { GetCurrentProcessId() };",
+    "        if alternate_path() { return parent_sources_unchecked(); }\n        let process_id = unsafe { GetCurrentProcessId() };",
+  ),
+];
+const launchRequireNonInheritableProof = rustFunctionBlockAtDepth(
+  restrictedLauncherProduction,
+  "require_exact_non_inheritable",
+  1,
+);
+const approvedLaunchRequireNonInheritableProofSha256 =
+  "3b9fb666be489502e8fbf711c790447f6cc252ff8d17886ad68f752c2cc98a3e";
+const launchInjectParentProof = rustFunctionBlockAtDepth(
+  restrictedLauncherProduction,
+  "inject_parent_proof",
+  1,
+);
+const approvedLaunchInjectParentProofSha256 =
+  "f80f2cca568bce1e8ef6eed3d61dc374ed4922b317eb3ff1d3fe8acdf6509556";
+const launchInjectParentProofReviewedMutationProbes = [
+  launchInjectParentProof.replace(
+    "        let process = duplicate_into_child(sources.process.raw())?;",
+    "        if alternate_path() {\n            return inject_unchecked(sources, child_process);\n        }\n        let process = duplicate_into_child(sources.process.raw())?;",
+  ),
+  launchInjectParentProof.replace(
+    "            unsafe {\n                DuplicateHandle(",
+    "            if false {\n                unsafe {\n                    DuplicateHandle(",
+  ),
+];
+const launchRestrictedChild = rustFunctionBlockAtDepth(
+  restrictedLauncherProduction,
+  "launch",
+  1,
+);
+const approvedLaunchRestrictedChildSha256 =
+  "d08761a1738010c366f6e9ce094d00ce503709199bbba1b5a5fe3269ebf0d9cb";
+const launchRestrictedChildMutationProbes = [
+  launchRestrictedChild.replace(
+    "        let process_context =",
+    "        if alternate_path() {\n            return launch_unchecked();\n        }\n        let process_context =",
+  ),
+];
+const launchProofHelperUsage = rustIdentifierUsageInventory(
+  [{ path: "restricted launch", source: launchRestrictedChild }],
+  ["inject_parent_proof", "ResumeThread"],
+);
+const launchAttributeListImplDepthAware = rustImplItemAtDepth(
+  restrictedLauncherProduction,
+  "impl<'handles, 'flight, 'coordinator, 'job> AttributeList<'handles, 'flight, 'coordinator, 'job>",
+  1,
+);
+const launchAttributeListForLpac = rustFunctionBlockAtDepth(
+  launchAttributeListImplDepthAware,
+  "for_lpac",
+  1,
+);
+const launchAttributeListInstall = rustFunctionBlockAtDepth(
+  launchAttributeListImplDepthAware,
+  "install_attributes",
+  1,
+);
+const launchRemoteFalseDuplicateEnvelope = (source) => {
+  const calls = rustCallSites(source, "DuplicateHandle");
+  return (
+    JSON.stringify(
+      calls.map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "source",
+          "child_process",
+          "&rawmuttarget",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    compactRust(source).includes(
+      "unsafe{DuplicateHandle(GetCurrentProcess(),source,child_process,&rawmuttarget,0,false,DUPLICATE_SAME_ACCESS,).map_err(|_|LaunchError::OperatingSystem)?;}",
+    ) &&
+    !/(?:\b[A-Za-z_]\w*::)+DuplicateHandle\s*\(/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/\bDuplicateHandle\s+as\s+(?:_|[A-Za-z_]\w*)|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*DuplicateHandle\b/u.test(
+      rustLexicalCode(source),
+    )
+  );
+};
+const launchRemoteFalseDuplicateProbe = `fn inject_parent_proof(
+  source: HANDLE,
+  child_process: HANDLE,
+) -> Result<(), LaunchError> {
+  let mut target = HANDLE::default();
+  unsafe {
+    DuplicateHandle(
+      GetCurrentProcess(), source, child_process, &raw mut target, 0, false,
+      DUPLICATE_SAME_ACCESS,
+    ).map_err(|_| LaunchError::OperatingSystem)?;
+  }
+  Ok(())
+}`;
+const launchRemoteFalseDuplicateMutationProbes = [
+  launchRemoteFalseDuplicateProbe.replace("0, false,", "0, true,"),
+  launchRemoteFalseDuplicateProbe.replace(
+    "source, child_process",
+    "source, GetCurrentProcess()",
+  ),
+  launchRemoteFalseDuplicateProbe.replace("source, child_process", "side_effect(source), child_process"),
+  launchRemoteFalseDuplicateProbe.replace(
+    "    DuplicateHandle(",
+    "    (DuplicateHandle(",
+  ).replace(
+    "      DUPLICATE_SAME_ACCESS,\n    ).map_err",
+    "      DUPLICATE_SAME_ACCESS,\n    ), side_effect()).0.map_err",
+  ),
+  launchRemoteFalseDuplicateProbe.replace("DuplicateHandle(", "duplicate_alias("),
+  launchRemoteFalseDuplicateProbe
+    .replace(
+      "  let mut target = HANDLE::default();",
+      "  let (duplicate,) = (DuplicateHandle,);\n  let mut target = HANDLE::default();",
+    )
+    .replace("    DuplicateHandle(", "    duplicate("),
+  launchRemoteFalseDuplicateProbe.replace(
+    "DuplicateHandle(",
+    "windows::Win32::Foundation::DuplicateHandle(",
+  ),
+];
+const launchProofExtractionSpoofProbe = `
+// fn inject_parent_proof() { spoofed(); }
+mod sys {
+  fn outer() { fn inject_parent_proof() { spoofed(); } }
+  fn inject_parent_proof() { reviewed(); }
+}`;
+const launchProofExtractionSpoof = rustFunctionBlockAtDepth(
+  launchProofExtractionSpoofProbe,
+  "inject_parent_proof",
+  1,
+);
+const secretInputSealValidationOrder = orderedRustMarkersAtDepth(
+  secretInputSealExactStdio,
+  [
+    { marker: "handles.iter().copied().any(invalid_handle)", depth: 1 },
+    { marker: "input == output", depth: 1 },
+    { marker: "output != error", depth: 1 },
+    { marker: "same_object(input, output)", depth: 1 },
+    { marker: "!same_object(output, error)", depth: 1 },
+    { marker: "GetFileType(input)", depth: 2 },
+    { marker: "GetFileType(output)", depth: 2 },
+    { marker: "handle_flags(*handle)", depth: 2 },
+    { marker: "for handle in unique", depth: 1 },
+    {
+      marker:
+        "SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))",
+      depth: 3,
+    },
+    { marker: "let exact_zero_flags = unique", depth: 1 },
+    { marker: "matches!(handle_flags(*handle), Ok(0))", depth: 1 },
+  ],
+);
+const lexicalDepthOrderProbeContract = (source) =>
+  orderedRustMarkersAtDepth(source, [
+    { marker: "validate_first()", depth: 1 },
+    { marker: "consume_second()", depth: 1 },
+  ]);
+const lexicalDepthOrderProbe = `fn reviewed() {
+  validate_first();
+  consume_second();
+}`;
+const lexicalDepthOrderMutationProbes = [
+  `fn reviewed() {
+  // validate_first(); consume_second();
+  consume_second();
+  validate_first();
+}`,
+  `fn reviewed() {
+  if false {
+    validate_first();
+    consume_second();
+  }
+  alternate_path();
+}`,
+];
+requireInvariant(
+  normalizedSourceSha256(secretBootstrapWindowsProduction) ===
+      approvedSecretInputProductionBoundaryRawSha256 &&
+    JSON.stringify(secretInputCriticalHandleLeafSha256) ===
+      JSON.stringify(approvedSecretInputCriticalHandleLeafSha256) &&
+    secretInputProductionOnlyLeafMutationProbes.every(
+      ({ source, approved }) =>
+        normalizedSourceSha256(rustLexicalCode(source)) !== approved,
+    ) &&
+    normalizeRustFragment(rustLexicalCode(secretInputChannelsDefinition)) ===
+      "struct Channels { stdio: SealedSecretInputStdio, parent_process_id: u32, parent_session_id: u32, }" &&
+    normalizeRustFragment(rustLexicalCode(secretInputSealedStdioDefinition)) ===
+      "struct SealedSecretInputStdio { input: HANDLE, output: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    /#\s*\[\s*must_use\s*=\s*\]\s*struct\s+Channels\b/u.test(
+      rustLexicalCode(secretBootstrapWindowsProduction),
+    ) &&
+    /#\s*\[\s*must_use\s*=\s*\]\s*struct\s+SealedSecretInputStdio\b/u.test(
+      rustLexicalCode(secretBootstrapWindowsProduction),
+    ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:Channels|SealedSecretInputStdio)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:Channels|SealedSecretInputStdio)\b/u.test(
+      rustLexicalCode(secretBootstrapWindowsProduction),
+    ) &&
+    secretInputFirstOperationEnvelope(secretBootstrapWindowsProduction) &&
+    secretInputFirstOperationEnvelope(secretInputFirstOperationProbe) &&
+    secretInputFirstOperationMutationProbes.every(
+      (probe) => !secretInputFirstOperationEnvelope(probe),
+    ) &&
+    compactRust(secretInputBootstrapExtractionSpoof) ===
+      "fnverify_parent_handles(){reviewed();}" &&
+    /^fn\s+verify_self_and_channels\s*\(\s*sealed\s*:\s*SealedSecretInputStdio\s*\)\s*->\s*Result<Channels,\s*SecretInputError>\s*\{/u.test(
+      rustLexicalCode(secretInputVerifySelfAndChannels),
+    ) &&
+    compactRust(secretInputVerifySelfAndChannels).startsWith(
+      "fnverify_self_and_channels(sealed:SealedSecretInputStdio)->Result<Channels,SecretInputError>{set_binary_stdio(&sealed)?;verify_lpac_token()?;verify_job()?;letinput=sealed.input;letoutput=sealed.output;",
+    ) &&
+    compactRust(secretInputVerifySelfAndChannels).includes(
+      "Ok(Channels{stdio:sealed,parent_process_id:input_pid,parent_session_id:input_session,})",
+    ) &&
+    JSON.stringify(
+      rustCallSites(secretInputVerifySelfAndChannels, "set_binary_stdio").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&sealed"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSealInheritedStdio, "GetStdHandle").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["STD_INPUT_HANDLE"],
+        ["STD_OUTPUT_HANDLE"],
+        ["STD_ERROR_HANDLE"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSealInheritedStdio, "seal_exact_secret_input_stdio").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["[input,output,error]"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSealExactStdio, "same_object").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input", "output"], ["output", "error"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSealExactStdio, "GetFileType").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input"], ["output"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSealExactStdio, "SetHandleInformation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["handle", "HANDLE_FLAG_INHERIT.0", "HANDLE_FLAGS(0)"],
+      ]) &&
+    secretInputSealValidationOrder &&
+    lexicalDepthOrderProbeContract(lexicalDepthOrderProbe) &&
+    lexicalDepthOrderMutationProbes.every(
+      (probe) => !lexicalDepthOrderProbeContract(probe),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(secretInputInvalidHandle)) ===
+      "fn invalid_handle(handle: HANDLE) -> bool { handle.is_invalid() || handle == INVALID_HANDLE_VALUE }" &&
+    JSON.stringify(
+      rustCallSites(secretInputSameObject, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["first", "second"]]) &&
+    rustLexicalCode(secretInputHandleFlags).includes("let mut flags = u32::MAX") &&
+    JSON.stringify(
+      rustCallSites(secretInputHandleFlags, "GetHandleInformation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutflags"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputSetBinaryStdio, "_setmode").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["file_descriptor:i32", "mode:i32"],
+        ["0", "O_BINARY"],
+        ["1", "O_BINARY"],
+      ]) &&
+    secretInputHandleApiAliases.length === 0 &&
+    secretInputQualifiedHandleApiCalls.length === 0 &&
+    secretInputHandleApiUsage.aliases.length === 0 &&
+    secretInputHandleApiUsage.qualified.length === 0 &&
+    secretInputHandleApiUsage.references.length === 0 &&
+    compactRust(secretInputChannelProofTraitTest) ===
+      "fnsealed_channel_proofs_are_thread_bound_non_clone_and_non_copy(){let_=<SealedSecretInputStdioasAmbiguousIfSend<_>>::marker;let_=<SealedSecretInputStdioasAmbiguousIfSync<_>>::marker;let_=<SealedSecretInputStdioasAmbiguousIfClone<_>>::marker;let_=<SealedSecretInputStdioasAmbiguousIfCopy<_>>::marker;let_=<ChannelsasAmbiguousIfSend<_>>::marker;let_=<ChannelsasAmbiguousIfSync<_>>::marker;let_=<ChannelsasAmbiguousIfClone<_>>::marker;let_=<ChannelsasAmbiguousIfCopy<_>>::marker;}",
+  "Secret Input must consume a linear sealed stdio proof as its first bootstrap operation, clear only the exact PIPE/PIPE alias topology, and enter binary mode only after the seal",
+);
+requireInvariant(
+  secretInputParentProofOrderContract(secretInputVerifyParentHandles) &&
+    secretInputValidateParentProofMutationProbes.every(
+      (probe) =>
+        normalizedSourceSha256(rustLexicalCode(probe)) !==
+        approvedSecretInputCriticalHandleLeafSha256.validateParentProofSet,
+    ) &&
+    secretInputParentProofHelperUsage.aliases.length === 0 &&
+    secretInputParentProofHelperUsage.qualified.length === 0 &&
+    secretInputParentProofHelperUsage.references.length === 0 &&
+    secretInputParentProofMutationProbes.every(
+      (probe) => !secretInputParentProofOrderContract(probe),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(secretInputValidateParentProofSet)).includes(
+      "let handles = [stdin, stdout, process, image];",
+    ) &&
+    rustLexicalCode(secretInputValidateParentProofSet).includes(
+      "!matches!(handle_flags(*handle), Ok(0))",
+    ) &&
+    rustLexicalCode(secretInputValidateParentProofSet).includes(
+      "!exact_objects_are_pairwise_distinct(&handles)",
+    ) &&
+    rustLexicalCode(secretInputExactObjectsDistinct).includes(".skip(index + 1)") &&
+    JSON.stringify(
+      rustCallSites(secretInputDuplicateUntrustedCandidate, "DuplicateHandle").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "handle",
+          "GetCurrentProcess()",
+          "&rawmutduplicate",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    compactRust(secretInputAdoptValidatedHandle) ===
+      "unsafefnadopt_validated_handle(handle:HANDLE)->OwnedHandle{unsafe{OwnedHandle::from_raw_handle(handle.0)}}" &&
+    compactRust(secretInputBootstrapExtractionSpoof) ===
+      "fnverify_parent_handles(){reviewed();}",
+  "Secret Input parent proof handles must remain borrowed through four-object/zero-flag validation, be inspected through non-inheritable duplicates, and be adopted only after final exact-object revalidation",
+);
+const launchProofOrder = orderedRustMarkersAtDepth(launchRestrictedChild, [
+  { marker: "let parent_sources = role", depth: 1 },
+  { marker: ".requires_parent_proof()", depth: 1 },
+  { marker: ".then(current_parent_proof_sources)", depth: 1 },
+  {
+    marker: "let mut duplicates = InheritableDuplicates::new(&flight)",
+    depth: 1,
+  },
+  { marker: ".map(|source| duplicates.duplicate(source))", depth: 1 },
+  {
+    marker: "AttributeList::for_lpac(&duplicates, &job, profile_sid)?",
+    depth: 1,
+  },
+  { marker: ".create_process_with_explicit_handle_list(", depth: 2 },
+  {
+    marker: "verify_child_token(process.raw(), profile_sid.raw())",
+    depth: 1,
+  },
+  {
+    marker: ".map(|sources| inject_parent_proof(sources, process.raw()))",
+    depth: 1,
+  },
+  { marker: "drop(parent_sources)", depth: 1 },
+  { marker: "ResumeThread(thread.raw())", depth: 2 },
+]);
+requireInvariant(
+  normalizedSourceSha256(restrictedLauncherProduction) ===
+      approvedRestrictedLauncherProductionBoundaryRawSha256 &&
+    compactRust(launchRequiresParentProof) ===
+      "constfnrequires_parent_proof(self)->bool{matches!(self,Self::SecretInputFrontend)}" &&
+    normalizeRustFragment(rustLexicalCode(launchParentProofSourcesDefinition)) ===
+      "struct ParentProofSources { process: OwnedWinHandle, image: OwnedWinHandle, process_id: u32, }" &&
+    normalizedSourceSha256(rustLexicalCode(launchCurrentParentProofSources)) ===
+      approvedLaunchCurrentParentProofSourcesSha256 &&
+    launchCurrentParentProofSourcesMutationProbes.every(
+      (probe) =>
+        normalizedSourceSha256(rustLexicalCode(probe)) !==
+        approvedLaunchCurrentParentProofSourcesSha256,
+    ) &&
+    launchParentSourceApiUsage.aliases.length === 0 &&
+    launchParentSourceApiUsage.qualified.length === 0 &&
+    launchParentSourceApiUsage.references.length === 0 &&
+    JSON.stringify(
+      rustCallSites(launchCurrentParentProofSources, "OpenProcess").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE",
+          "false",
+          "process_id",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(launchRequireNonInheritableProof, "GetHandleInformation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutflags"]]) &&
+    normalizedSourceSha256(rustLexicalCode(launchRequireNonInheritableProof)) ===
+      approvedLaunchRequireNonInheritableProofSha256 &&
+    rustLexicalCode(launchRequireNonInheritableProof).includes("flags == 0") &&
+    normalizedSourceSha256(rustLexicalCode(launchInjectParentProof)) ===
+      approvedLaunchInjectParentProofSha256 &&
+    launchInjectParentProofReviewedMutationProbes.every(
+      (probe) =>
+        normalizedSourceSha256(rustLexicalCode(probe)) !==
+        approvedLaunchInjectParentProofSha256,
+    ) &&
+    launchRemoteFalseDuplicateEnvelope(launchInjectParentProof) &&
+    launchRemoteFalseDuplicateEnvelope(launchRemoteFalseDuplicateProbe) &&
+    launchRemoteFalseDuplicateMutationProbes.every(
+      (probe) => !launchRemoteFalseDuplicateEnvelope(probe),
+    ) &&
+    compactRust(launchProofExtractionSpoof) ===
+      "fninject_parent_proof(){reviewed();}" &&
+    JSON.stringify(
+      rustCallSites(launchInjectParentProof, "require_exact_non_inheritable").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["sources.process.raw()"], ["sources.image.raw()"]]) &&
+    JSON.stringify(
+      rustCallSites(launchInjectParentProof, "duplicate_into_child").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["sources.process.raw()"], ["sources.image.raw()"]]) &&
+    launchProofOrder &&
+    normalizedSourceSha256(rustLexicalCode(launchRestrictedChild)) ===
+      approvedLaunchRestrictedChildSha256 &&
+    launchRestrictedChildMutationProbes.every(
+      (probe) =>
+        normalizedSourceSha256(rustLexicalCode(probe)) !==
+        approvedLaunchRestrictedChildSha256,
+    ) &&
+    launchProofHelperUsage.aliases.length === 0 &&
+    launchProofHelperUsage.qualified.length === 0 &&
+    launchProofHelperUsage.references.length === 0 &&
+    JSON.stringify(
+      rustCallSites(launchRestrictedChild, "inject_parent_proof").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["sources", "process.raw()"]]) &&
+    JSON.stringify(
+      rustCallSites(launchRestrictedChild, "ResumeThread").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["thread.raw()"]]) &&
+    JSON.stringify(
+      rustCallSites(launchRestrictedChild, "duplicates.duplicate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["source"]]) &&
+    rustLexicalCode(launchAttributeListForLpac).includes(
+      "let handles = duplicate_owner.raw_handles();",
+    ) &&
+    !/\b(?:parent_sources|ParentProofSources|InjectedParentProof)\b/u.test(
+      rustLexicalCode(`${launchAttributeListForLpac}\n${launchAttributeListInstall}`),
+    ) &&
+    rustLexicalCode(launchAttributeListInstall).includes(
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+    ) &&
+    rustLexicalCode(launchAttributeListInstall).includes(
+      "self.values.handles.as_ptr()",
+    ),
+  "the restricted launcher must keep proof sources out of HANDLE_LIST, inject their duplicates as exact remote non-inheritable handles while suspended, and only then resume the child",
+);
+const secretInputDriverOrder = orderedRustMarkersAtDepth(
+  secretInputFourObjectDriver,
+  [
+    {
+      marker: "TemporaryInheritFlags::set([child_input_raw, child_output_raw])",
+      depth: 1,
+    },
+    { marker: "CreateProcessW(", depth: 2 },
+    { marker: "drop(temporary_inherit)", depth: 1 },
+    {
+      marker:
+        "inject_non_inheritable_into_child(raw_test(&child.process), process_source_raw)",
+      depth: 1,
+    },
+    {
+      marker:
+        "inject_non_inheritable_into_child(raw_test(&child.process), image_source_raw)",
+      depth: 1,
+    },
+    { marker: "drop(image_source)", depth: 1 },
+    { marker: "drop(process_source)", depth: 1 },
+    { marker: "ResumeThread(raw_test(&thread))", depth: 2 },
+    { marker: "child.wait_for_success()", depth: 1 },
+  ],
+);
+const secretInputChildFixtureOrder = orderedRustMarkersAtDepth(
+  secretInputFourObjectChildFixture,
+  [
+    { marker: "let sealed = seal_inherited_secret_input_stdio()?", depth: 1 },
+    { marker: "set_binary_stdio(&sealed)?", depth: 1 },
+    {
+      marker:
+        "validate_parent_proof_handle_set(process, image, sealed.input, sealed.output)?",
+      depth: 1,
+    },
+    {
+      marker: "let process_copy = duplicate_untrusted_candidate(process)?",
+      depth: 1,
+    },
+    {
+      marker: "let image_copy = duplicate_untrusted_candidate(image)?",
+      depth: 1,
+    },
+    { marker: "set_inherit(sentinel_raw, true)?", depth: 1 },
+    { marker: "BroadInheritanceGrandchild::spawn(&executable)?", depth: 1 },
+    { marker: "set_inherit(sentinel_raw, false)?", depth: 1 },
+    { marker: "assert!(grandchild.child.is_alive())", depth: 1 },
+    {
+      marker:
+        "assert!(grandchild.names_same_object(sentinel_raw, sentinel_raw)?)",
+      depth: 1,
+    },
+    {
+      marker: "for original in [sealed.input, sealed.output, process, image]",
+      depth: 1,
+    },
+    {
+      marker: "assert!(!grandchild.names_same_object(original, original)?)",
+      depth: 2,
+    },
+    { marker: "grandchild.child.terminate_and_reap()?", depth: 1 },
+    { marker: "drop(image_copy)", depth: 1 },
+    { marker: "drop(process_copy)", depth: 1 },
+    { marker: "drop(sealed)", depth: 1 },
+  ],
+);
+requireInvariant(
+  rustCallSites(secretBootstrapWindowsProduction, "CreateProcessW").length === 0 &&
+    rustCallSites(secretBootstrapWindows, "CreateProcessW").length === 2 &&
+    secretInputTestsModuleAttributeContract(secretBootstrapWindows) &&
+    secretInputTestsModuleAttributeMutationProbes.every(
+      (probe) => !secretInputTestsModuleAttributeContract(probe),
+    ) &&
+    normalizedSourceSha256(secretInputTestsModule) ===
+      approvedSecretInputTestsModuleRawSha256 &&
+    JSON.stringify(secretInputFixtureConstantItems) ===
+      JSON.stringify(approvedSecretInputFixtureConstantItems) &&
+    secretInputTestsModuleMutationProbes.every(
+      (probe) =>
+        normalizedSourceSha256(probe) !==
+        approvedSecretInputTestsModuleRawSha256,
+    ) &&
+    secretInputFixtureAttributeContract(secretBootstrapWindows) &&
+    secretInputFixtureAttributeMutationProbes.every(
+      (probe) => !secretInputFixtureAttributeContract(probe),
+    ) &&
+    JSON.stringify(secretInputHandleUnitTestSha256) ===
+      JSON.stringify(approvedSecretInputHandleUnitTestSha256) &&
+    secretInputHandleUnitTestMutationProbes.every(
+      (probe) =>
+        !Object.values(approvedSecretInputHandleUnitTestSha256).includes(
+          normalizedSourceSha256(rustLexicalCode(probe)),
+        ),
+    ) &&
+    JSON.stringify(secretInputFourObjectFixtureSha256) ===
+      JSON.stringify(approvedSecretInputFourObjectFixtureSha256) &&
+    secretInputFourObjectFixtureMutationProbes.every(
+      (probe) =>
+        !Object.values(approvedSecretInputFourObjectFixtureSha256).includes(
+          normalizedSourceSha256(rustLexicalCode(probe)),
+        ),
+    ) &&
+    rustLexicalCode(secretInputStdioSuccessTest).includes(
+      "seal_exact_secret_input_stdio([input, output, output])?",
+    ) &&
+    rustLexicalCode(secretInputStdioMutationTest).includes(
+      "seal_exact_secret_input_stdio([input, input, output]).is_err()",
+    ) &&
+    rustLexicalCode(secretInputStdioMutationTest).includes(
+      "seal_exact_secret_input_stdio([input, output, error]).is_err()",
+    ) &&
+    rustLexicalCode(secretInputFourObjectUnitTest).includes(
+      "validate_parent_proof_handle_set(handles[2], handles[3], handles[0], handles[1])?",
+    ) &&
+    secretInputDriverOrder &&
+    secretInputChildFixtureOrder &&
+    JSON.stringify(
+      rustCallSites(secretInputTestInjectProof, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "source",
+          "child_process",
+          "&rawmuttarget",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(secretInputTestSetInherit, "SetHandleInformation").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["handle", "HANDLE_FLAG_INHERIT.0", "flags"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputBroadGrandchildSpawn, "CreateProcessW").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "PCWSTR(application.as_ptr())",
+          "Some(PWSTR(command.as_mut_ptr()))",
+          "None",
+          "None",
+          "true",
+          "CREATE_NO_WINDOW",
+          "None",
+          "PCWSTR::null()",
+          "&rawconststartup",
+          "&rawmutinformation",
+        ],
+      ]) &&
+    rustLexicalCode(secretInputBroadGrandchildSpawn).includes(
+      "let startup = STARTUPINFOW",
+    ) &&
+    !/STARTUPINFOEXW|PROC_THREAD_ATTRIBUTE_HANDLE_LIST|EXTENDED_STARTUPINFO_PRESENT/u.test(
+      rustLexicalCode(secretInputBroadGrandchildSpawn),
+    ) &&
+    JSON.stringify(
+      rustCallSites(secretInputBroadGrandchildObjectProbe, "DuplicateHandle").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "raw_test(&self.child.process)",
+          "candidate",
+          "GetCurrentProcess()",
+          "&rawmutduplicate",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    rustLexicalCode(secretInputFourObjectGrandchildFixture).includes(
+      "std::thread::sleep(std::time::Duration::from_secs(15))",
+    ),
+  "the Secret Input kernel fixture must inject exactly two non-inheritable proof handles into a suspended child and prove its sealed stdio plus all four exact objects miss a broad-inheritance grandchild while an inheritable sentinel crosses",
+);
 const keyAgentStorageImplItems = rustImplItems(keyAgentStorageRelease);
 const keyAgentStorageImplItemsWithTests = rustImplItems(keyAgentStorage);
 const heldKeyAgentStorageRootDefinition = rustTopLevelLexicalItemBlock(
@@ -9489,6 +11298,88 @@ requireInvariant(
   "the cfg(test) context bypass must retain policy coverage and at least one kernel proof must still traverse the actual coordinated Key Agent creation path",
 );
 requireInvariant(
+  workspaceBuildScriptPaths.length === 0 &&
+    cargoManifestPinsHold(workspaceCargoManifestInventory) &&
+    !cargoManifestPinsHold(cargoNonRustTargetMutationProbe),
+  "workspace Cargo manifests must be exact-pinned and may not add build scripts or non-Rust explicit target roots",
+);
+requireInvariant(
+  isWorkspaceBuildOutputPath(
+    "crates/approval-ui/target/debug/build/generated/out.rs",
+  ) &&
+    isWorkspaceBuildOutputPath(
+      "demo/sepolia-wallet/target/release/build/generated/out.rs",
+    ) &&
+    !isWorkspaceBuildOutputPath(
+      "crates/approval-ui/src/bin/target/main.rs",
+    ) &&
+    !isWorkspaceBuildOutputPath(
+      "crates/approval-ui/examples/target/main.rs",
+    ) &&
+    workspaceRustCompilationClosureSha256 ===
+      approvedWorkspaceRustCompilationClosureSha256 &&
+    rustCompilationClosureSha256(workspaceRustDynamicRebindingMutationProbe) !==
+      approvedWorkspaceRustCompilationClosureSha256,
+  "workspace first-party Rust compilation closure must exact-pin nested auto targets while excluding only crate-root build output",
+);
+requireInvariant(
+  workspaceCompilationBindingEdges.nativeBindings.length === 0,
+  "workspace Rust compilation inputs must reject native symbol rebinding",
+);
+requireInvariant(
+  compilationBindingEdgeProbes.linkName.nativeBindings.length === 1 &&
+    compilationBindingEdgeProbes.linkSection.nativeBindings.length === 1 &&
+    compilationBindingEdgeProbes.naked.nativeBindings.length === 1,
+  "native-symbol binding edge probe must remain effective",
+);
+requireInvariant(
+  identifierUsageIsEmpty(workspaceDynamicResolverUsage) &&
+    dynamicResolverUsageProbes.alias.aliases.length === 1 &&
+    dynamicResolverUsageProbes.alias.tokens.GetProcAddress.length === 1 &&
+    dynamicResolverUsageProbes.qualified.tokens.GetProcAddress.length === 1 &&
+    dynamicResolverUsageProbes.qualified.qualified.length === 1 &&
+    dynamicResolverUsageProbes.tupleAndMethod.tokens.GetProcAddress.length === 2 &&
+    dynamicResolverUsageProbes.tupleAndMethod.qualified.length === 1 &&
+    dynamicResolverUsageProbes.tupleAndMethod.references.length >= 1 &&
+    identifierUsageIsEmpty(dynamicResolverUsageProbes.clean),
+  "workspace Rust compilation inputs must reject dynamic native-symbol resolution across lexical call forms",
+);
+requireInvariant(
+  identifierUsageIsEmpty(workspaceInlineCodeUsage) &&
+    inlineCodeUsageProbes.alias.aliases.length === 1 &&
+    inlineCodeUsageProbes.alias.tokens.global_asm.length === 1 &&
+    inlineCodeUsageProbes.qualified.tokens.global_asm.length === 1 &&
+    identifierUsageIsEmpty(inlineCodeUsageProbes.clean),
+  "workspace Rust compilation inputs must reject inline machine-code escape hatches",
+);
+requireInvariant(
+  identifierUsageIsEmpty(workspacePointerFabricationUsage) &&
+    pointerFabricationUsageProbe.tokens.transmute.length === 1 &&
+    pointerFabricationUsageProbe.tokens.MaybeUninit.length === 1 &&
+    pointerFabricationUsageProbe.tokens.union.length === 1,
+  "workspace Rust compilation inputs must reject unreviewed function-pointer fabrication primitives",
+);
+requireInvariant(
+  JSON.stringify(workspaceForeignBlocks) ===
+      JSON.stringify(approvedWorkspaceForeignBlocks) &&
+    foreignBlockProbes.callback.length === 0 &&
+    foreignBlockProbes.unreviewed.length === 1,
+  "workspace Rust compilation inputs must retain only exact reviewed foreign blocks",
+);
+requireInvariant(
+  workspaceCompilationBindingEdges.includeMacros.length === 0 &&
+    workspaceCompilationBindingEdges.includeTokens.length === 0 &&
+    compilationBindingEdgeProbes.include.includeMacros.length === 1 &&
+    compilationBindingEdgeProbes.include.includeTokens.length === 1,
+  "workspace Rust compilation inputs must reject unreviewed include source edges",
+);
+requireInvariant(
+  JSON.stringify(workspaceCompilationBindingEdges.pathAttributes) ===
+      JSON.stringify(approvedWorkspacePathAttributes) &&
+    compilationBindingEdgeProbes.path.pathAttributes.length === 1,
+  "workspace Rust compilation inputs must retain only reviewed path source edges",
+);
+requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod inheritable_handle_launch;") &&
     !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*inheritable_handle_launch/u.test(
       platformWindowsLib,
@@ -9567,6 +11458,13 @@ requireInvariant(
       JSON.stringify(expectedSetHandleInformationInventory) &&
     JSON.stringify(securityAttributesInventory) ===
       JSON.stringify(expectedSecurityAttributesInventory) &&
+    inheritableHandleApiUsage.aliases.length === 0 &&
+    inheritableHandleApiUsage.qualified.length === 0 &&
+    inheritableHandleApiUsage.references.length === 0 &&
+    directSensitiveHandleCallContract(directSensitiveHandleCallProbe) &&
+    indirectSensitiveHandleCallProbes.every(
+      (probe) => !directSensitiveHandleCallContract(probe),
+    ) &&
     aliasedInheritableHandleApis.length === 0 &&
     alternativeSecurityAttributesInitialization.length === 0 &&
     rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle").length ===
@@ -13867,9 +15765,12 @@ requireInvariant(
     privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
     lowLevelLpacLaunch.includes("role: VerifiedLpacRole") &&
     lowLevelLpacLaunch.includes("let parent_sources = role") &&
-    lowLevelLpacLaunch.includes(".inherits_parent_proof()") &&
+    lowLevelLpacLaunch.includes(".requires_parent_proof()") &&
     lowLevelLpacLaunch.includes(
-      "if let Some(sources) = parent_sources.as_ref()",
+      ".then(current_parent_proof_sources)",
+    ) &&
+    lowLevelLpacLaunch.includes(
+      ".map(|sources| inject_parent_proof(sources, process.raw()))",
     ) &&
     lowLevelLpacLaunch.includes(
       "let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;",
@@ -14091,13 +15992,11 @@ const appContainerProfileNativeApiInventory =
       rustCallSites(file.source, api).map(() => ({ api, path: file.path })),
     ),
   );
-const profileApiUsageInventory = (files, names) => {
-  const namePattern = names.join("|");
+function rustIdentifierUsageInventory(files, names) {
+  const namePattern = names
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("|");
   const tokenPattern = new RegExp(`\\b(?<name>${namePattern})\\b`, "gu");
-  const qualifiedPattern = new RegExp(
-    `(?:(?:r#)?[\\p{XID_Start}_][\\p{XID_Continue}_]*\\s*::\\s*)+(?<name>${namePattern})\\s*\\(`,
-    "gu",
-  );
   const calls = [];
   const tokens = Object.fromEntries(names.map((name) => [name, []]));
   const aliases = [];
@@ -14127,28 +16026,89 @@ const profileApiUsageInventory = (files, names) => {
       tokens[match.groups.name].push(file.path);
       const inUse = useRanges.some(([start, end]) => start <= match.index && match.index < end);
       const called = /^\s*\(/u.test(code.slice(match.index + match[0].length));
+      const qualifiedCall =
+        called && /(?:::|\.|#)\s*$/u.test(code.slice(0, match.index));
+      if (qualifiedCall) {
+        qualified.push({ path: file.path, name: match.groups.name });
+      }
       if (!inUse && !called) {
         references.push({ path: file.path, name: match.groups.name });
       }
     }
     tokenPattern.lastIndex = 0;
-    qualified.push(
-      ...[...code.matchAll(qualifiedPattern)].map((match) => ({
-        path: file.path,
-        name: match.groups.name,
-      })),
-    );
   }
   for (const paths of Object.values(tokens)) {
     paths.sort();
   }
   return { calls, tokens, aliases, qualified, references };
-};
-const appContainerProfileNativeUsage = profileApiUsageInventory(
+}
+
+function rustCompilationBindingEdgeInventory(files) {
+  const nativeBindings = [];
+  const includeMacros = [];
+  const includeTokens = [];
+  const pathAttributes = [];
+  for (const file of files) {
+    const code = rustLexicalCode(file.source);
+    for (const attribute of rustAttributeItems(file.source)) {
+      const attributeCode = rustLexicalCode(attribute.source);
+      if (
+        /\b(?:link|link_name|link_ordinal|link_section|export_name|no_mangle|naked)\b/u.test(
+          attributeCode,
+        )
+      ) {
+        nativeBindings.push({
+          path: file.path,
+          attribute: normalizeRustFragment(attribute.source),
+        });
+      }
+      if (/\bpath\s*=/u.test(attributeCode)) {
+        pathAttributes.push({
+          path: file.path,
+          attribute: normalizeRustFragment(attribute.source),
+        });
+      }
+    }
+    includeMacros.push(
+      ...rustMacroInvocations(file.source)
+        .filter(
+          (invocation) =>
+            invocation.normalizedPath.split("::").at(-1) === "include",
+        )
+        .map((invocation) => ({ path: file.path, macro: invocation.path })),
+    );
+    if (/\b(?:r#)?include\b/u.test(code)) {
+      includeTokens.push(file.path);
+    }
+  }
+  return { nativeBindings, includeMacros, includeTokens, pathAttributes };
+}
+
+function rustForeignBlockInventory(files) {
+  const blocks = [];
+  const foreignBlockPattern =
+    /(?<![\p{XID_Continue}_#])(?:unsafe\s+)?extern\b(?:(?!\bfn\b)[^{};])*\{/gu;
+  for (const file of files) {
+    const code = rustLexicalCode(file.source);
+    for (const match of code.matchAll(foreignBlockPattern)) {
+      const opening = code.indexOf("{", match.index);
+      const closing = matchingRustDelimiter(code, opening, "{", "}");
+      if (closing === -1) {
+        throw new Error(`architecture scan could not bound foreign block in ${file.path}`);
+      }
+      blocks.push({
+        path: file.path,
+        block: normalizeRustFragment(file.source.slice(match.index, closing + 1)),
+      });
+    }
+  }
+  return blocks;
+}
+const appContainerProfileNativeUsage = rustIdentifierUsageInventory(
   platformWindowsProductionFiles,
   appContainerProfileNativeApis,
 );
-const workspaceAppContainerProfileNativeUsage = profileApiUsageInventory(
+const workspaceAppContainerProfileNativeUsage = rustIdentifierUsageInventory(
   workspaceRustProductionFiles,
   [...appContainerProfileNativeApis, "DeleteAppContainerProfile"],
 );
@@ -15144,8 +17104,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/launch.rs",
-    unsafeCount: 35,
-    sha256: "540f596962ff7bb63c913c78c5e7268d084ea671db6f8a85859a7900e31be40d",
+    unsafeCount: 37,
+    sha256: "ecc8cc37a435c48654f09981c61efee9ba3a253853e9130c4446078c71f0a4ea",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -17572,12 +19532,14 @@ for (const helper of [
     readCall: "approval_ui::read_request",
     presentCall: "approval_ui::present",
     writeCall: "approval_ui::write_response",
+    binaryModeSource: "main",
   },
   {
     cratePath: "crates/secret-input-ui",
     readCall: "secret_input_ui::bootstrap::authenticate_inherited_request",
     presentCall: "secret_input_ui::present_authenticated",
     writeCall: "secret_input_ui::bootstrap::write_authenticated_outcome",
+    binaryModeSource: "sealed-bootstrap",
   },
 ]) {
   const manifest = await text(`${helper.cratePath}/Cargo.toml`);
@@ -17592,7 +19554,12 @@ for (const helper of [
       mainSource.includes(helper.readCall) &&
       mainSource.includes(helper.presentCall) &&
       mainSource.includes(helper.writeCall) &&
-      mainSource.includes("fn set_binary_stdio()") &&
+      (helper.binaryModeSource === "main"
+        ? mainSource.includes("fn set_binary_stdio()")
+        : !mainSource.includes("set_binary_stdio") &&
+          secretBootstrapWindowsProduction.includes(
+            "fn set_binary_stdio(_sealed: &SealedSecretInputStdio)",
+          )) &&
       mainSource.includes(
         '#[cfg(all(feature = "runtime-contract-test-hook", debug_assertions))]',
       ) &&

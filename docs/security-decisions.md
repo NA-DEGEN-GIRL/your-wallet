@@ -297,6 +297,22 @@ checks, writes exactly one response only after those checks, fails closed on any
 input byte that arrives later, and retains its sealed handles and independently
 opened root until the parent request endpoint disconnects.
 
+The runtime-enabled Secret Input/recovery child instead has two unique stdio
+objects: stdin and one stdout/stderr pipe. Its first Windows/CRT application
+operation validates their exact shape and inherit-only flags, attempts to clear
+both inherit bits without rollback, and requires exact-zero readback. The
+parent's `HANDLE_LIST` contains only those stdio objects. While the child remains
+suspended, the parent remotely duplicates its process and image-file proof
+handles into the child with inheritance disabled, after Job/LPAC verification
+and before resume. After reading the fixed parent hello, the child requires the
+two sealed stdio objects and two proof objects to be four pairwise-distinct
+exact objects with zero flags. A positive-control child/grandchild kernel test
+uses `CompareObjectHandles` to prove that those four exact objects do not
+propagate. The sequential clear is not atomic, does not prevent later
+re-enabling or explicit duplication, and is neither exhaustive stray-handle
+enumeration nor signed-artifact, topology, immutable-install, or release proof.
+`COMPILED_PARENT_POLICY` remains `None`.
+
 The integrated kernel positive has two explicit `cfg(test)` accommodations: an
 exact pinned terse libtest preamble may precede the response, and Job topology may
 contain only the fixture process plus at most the exact System32 `conhost.exe`.
@@ -335,6 +351,10 @@ Before any real mainnet value is used, the Windows build must prove:
    `CheckTokenMembershipEx` differential remains mandatory, and the local token
    proof does not replace these signed-artifact network tests.
 2. Exact inherited-handle allowlisting and negative tests for stray handles.
+   The Key Agent three-object negative and Secret Input/recovery four-object
+   negative prove only that those selected exact objects do not reach their
+   test grandchildren; neither is exhaustive enumeration proving that no stray
+   handle entered the child.
 3. Helper executable code-signing identity, manifest hash, version, and install
    ACL verification before launch without a writable-path time-of-check race,
    plus exact loaded DLL/dependency identity and resolution evidence.
@@ -352,7 +372,13 @@ Before any real mainnet value is used, the Windows build must prove:
    inherit bit on its exact three received stdio handles as its first Windows
    application operation, and its repo-local grandchild test proves those exact
    objects do not propagate. Release evidence must still bind that behavior to
-   the exact signed image and intended supervisor. The restricted helpers'
+   the exact signed image and intended supervisor. The runtime-enabled Secret
+   Input/recovery child likewise seals its two unique stdio objects first,
+   accepts its two parent-proof handles only with exact-zero flags, validates
+   all four exact objects as pairwise distinct, and has a repo-local grandchild
+   negative for those objects. This is not atomic clearing, exhaustive stray-
+   handle enumeration, or exact signed-artifact/topology evidence. The
+   restricted helpers'
    exact two-name environment and the Key Agent's exact three-name environment,
    including OS-derived `LOCALAPPDATA`, share the same verified System32
    current-directory boundary; that policy remains repo-local and is not atomic
@@ -392,7 +418,8 @@ Before any real mainnet value is used, the Windows build must prove:
 8. Signed-artifact end-to-end tests for the implemented one-shot helper channel,
    proving exact request hash, child identity, transcript, decision, digest,
    nonce, timeout/cancellation, extra-output rejection, and inherited-handle
-   enumeration through the real helper entry point.
+   enumeration through the real helper entry point. The repo-local Secret Input
+   four-object negative does not satisfy this exact-artifact enumeration.
 9. Production wiring for the implemented sealed Key Agent settings lifecycle.
    The platform store now reserves a dedicated `LocalSettings` record class,
    and the private fixed-role adapter can open that class, but no production
