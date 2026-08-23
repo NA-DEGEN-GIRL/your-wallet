@@ -13,7 +13,7 @@ invariants, not a claim that the current binaries establish every boundary.
 | --- | --- |
 | MV3 extension | Strict top-level HTTPS routing, exact 128-bit request IDs, bounded envelopes/state, deadline checks, freeze/navigation cancellation, replay handling, and incognito rejection have unit tests. Native response sequences must now be exact rather than merely increasing. Every native reconnect samples a distinct session ID, resets the per-connection sequence, rejects responses from an earlier session, and is bounded to 4,096 attempts per worker lifetime. Default and release operation still receives only the unavailable response; an explicit debug-only subprocess contract can return only the local Sepolia chain ID. |
 | Native host | The default executable runs the bounded persistent dispatcher: strict JSON and exact version-1 envelopes, combined inbound sequencing, independent response sequencing, cancellation without response, and a 4,096-frame connection cap. Every valid request receives stable provider error 4900 and the process exits with code 78 on EOF or the first terminal error because it constructs only a disabled release attestation. A Cargo-feature **and** `debug_assertions` gated headless contract hook can spawn only the regular-file `broker` sibling beside its own executable, with hidden, cleared-environment stdio, unwind-safe child kill/wait cleanup, and a typed two-nonce/role/sequence handshake. Broker independently admits at most 4,096 post-handshake commands; the hello is outside that count and the next complete frame fails before dispatch. The local chain-ID execution surface is crate-private and absent from ordinary/release library builds. That hook can execute only Broker-owned `eth_chainId`; every other allowlisted method crosses only as a parameter-free enum plus request correlation, is recorded complete by Broker, and then receives 4900. Exact late cancellation is acknowledged internally as already completed and never produces a Chrome response. No raw unavailable-request params, messages, accounts, addresses, or origins cross that hook. A second Windows-only feature/debug hook uses an exact-image-authenticated, process-bound named pipe and a retained one-process Job instead of Broker stdio; it reuses the same payload-only typed state. Feature-enabled release binaries still take the disabled path and exit 78. Chrome-launched native-host image proof, immutable signed installation/registration, stable release extension identity, RPC, signing, and Key Agent access remain absent and stop-ship. |
-| Approval helper | `approval-wire` is the single bounded v2 codec used by the authorization TCB, Key Agent, Windows channel, and native frontend. The Key Agent creates one crate-private, non-clone `PreparedApprovalPrompt`; its exact digest, nonce, sampled expiry, locally protected anti-phishing phrase, risk, and every display field are request-hashed and retained across the interaction. The prompt additionally carries a one-shot protected-settings lease bound to the authenticated generation, phrase revision, canonical record digest, exclusive owner evidence, process instance, and a fresh nonce. Immediately before authorization or key use, the Key Agent consumes that lease and freshly reloads the exact protected record; lock, rotation, owner takeover, restart, or replay invalidates it. The Windows library gives the child exactly two inherited pipe objects—stdin plus one response-pipe entry used as the numerically equal stdout and stderr values—and launches the allowlisted LPAC helper, enforces monotonic I/O deadlines and exact response-plus-EOF, and binds held process/file/manifest/profile identity into a fresh transcript. The runtime-enabled child's first Windows/CRT application operation seals those two exact objects with exact inherit-only preflags, no-rollback sequential clears, and exact-zero readback before binary mode. Its positive-sentinel grandchild negative is non-exhaustive; the clears are non-atomic and prevent neither later re-enabling nor explicit duplication, and neither is signed-artifact or release evidence. High-risk approval requires a monotonic two-second physical pointer or Space hold. Default executable builds exit 78; the opt-in runtime contract consumes one complete bounded inherited request, invokes the native surface, and writes one exact response without diagnostics. Signed-artifact end-to-end evidence is absent. |
+| Approval helper | `approval-wire` is the single bounded v2 codec used by the authorization TCB, Key Agent, Windows channel, and native frontend. The Key Agent creates one crate-private, non-clone `PreparedApprovalPrompt`; its exact digest, nonce, sampled expiry, locally protected anti-phishing phrase, risk, and every display field are request-hashed and retained across the interaction. The prompt additionally carries a one-shot protected-settings lease bound to the authenticated generation, phrase revision, canonical record digest, exclusive owner evidence, process instance, and a fresh nonce. Immediately before authorization or key use, the Key Agent consumes that lease and freshly reloads the exact protected record; lock, rotation, owner takeover, restart, or replay invalidates it. The Approval launch target keeps `HANDLE_LIST` limited to exactly two inherited stdio `PIPE` objects—stdin plus one response-pipe entry used as numerically equal stdout and stderr. The child inherits synchronous server ends, the parent retains overlapped client ends, and non-inheritable parent-process and parent-image proof handles are remotely injected while the child is suspended. The runtime-enabled child seals stdio before binary mode or other application work, verifies the Approval LPAC, Job, and pipe peer by PID/session correlation only, and then requires stdin, the shared output pipe, the process proof, and the image proof to be four pairwise-distinct exact objects with zero flags. That correlation is not an exact endpoint/process-object capability. The image check requires case-preserving exact normalized path-string equality between the live process image path and a separate held file path after optional `\\?\` prefix and separator normalization; a casing mismatch fails closed. It then checks the held path's executable suffix/version metadata and performs held-handle-backed Authenticode/SHA-256 policy checks, but does not prove that the live image was mapped from that exact file object. Bootstrap order is a fixed 62-byte parent hello, fixed 106-byte child hello, a 110-byte parent-finish header plus exact request and request EOF, then a fixed 75-byte response plus response EOF. The request must be followed by exact EOF. The parent locally hashes the held child PID/file identity, manifest, profile, request, exact response, local challenge, and both nonces; Job is a live gate, not hashed identity. The response is ordered as magic, version, decision, request digest, and one-shot Approval request nonce; only the digest and nonce echo request fields, and neither bootstrap nonce is echoed. Replay resistance therefore also depends on the private one-shot endpoint and fresh one-shot Approval request nonce. Raw or legacy direct launch fails silently. The existing positive-sentinel grandchild test still proves only that the two sealed stdio objects do not propagate: its clears are non-atomic, it is non-exhaustive, and it supplies no signed-artifact, supervisor-topology, or release evidence. High-risk approval requires a monotonic two-second physical pointer or Space hold. Signed release-path positive evidence covering case-sensitive directories and alternate path forms, the mapped exact file object, complete DLL/dependency graph, immutable installation, supervisor-held activation capability, and endpoint topology/exclusivity remain STOP-SHIP. There are zero production orchestration callers from `launch_approval_frontend` through verified response to signing and no positive signed-handshake E2E. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default builds exit 78 and release activation stays fail closed. |
 | Secret-input helper | The library has exact prompt/outcome codecs, bounded zeroizing response reads, and a non-persisting native secret surface. Its high-level parent API requires the release-attested restricted launcher and exact manifest-derived Secret Input role, atomically owns separate request/response pipes and the held helper/job, transfers the canonical prompt plus EOF, and performs cancellable/drained bounded response reads through EOF. The proof binds the exact prompt, held file/process/LPAC identity, and a fresh OS-CSPRNG challenge, then permits consumption only for that same prompt. Default executable builds exit 78 and the compiled release policy is absent. Direct-launch parent-identity denial and immutable signed-artifact evidence remain stop-ship. |
 | Broker/key agent/Windows boundary | Method schemas, state bounds, typed chain evidence, canonical display derivation, request-hashed one-shot approval, nonce lifecycle, signer self-checks, protected pipe/helper verification, and an opaque verified-response capability exist. The Key Agent now also has a crate-private offline-lifecycle wire/controller: exact magic/version/type/request-ID/sequence/deadline/length framing, fixed 64-byte frames, exact EOF, zero reserved fields, a 64-request controller-activation lifetime across one-shot inherited request channels, and distinct duplicate/replay/out-of-order outcomes. Admission pins the bounded wall-clock remainder to a trusted monotonic `Instant`; every frontend receives the exact absolute expiry. After a frontend returns, only the controller can mint a private-field, non-clone checked-deadline capability, and every service/session mutation must consume it. The same capability owns the trusted clock borrow and rechecks the pinned expiry after KDF/derivation/seal/reseal at the last safe point before durable commit, unlock, or pending-state activation; expiry locks without advancing generation or decrypted state. Its closed command set is status, 12/24-word creation, separate backup display/confirmation stages, open, lock, and confirmed-address lookup; no password, mnemonic, confirmation answers, signing, import/export, or network payload is representable. Status, lock, and confirmed-address access use the owned `OfflineWalletService`. Secret-bearing transitions require a crate-sealed frontend capability that can acquire inputs or present a borrowed view but cannot receive the vault service. Recovery display returns a non-clone, live-session-bound capability without mutation; only the deadline-checked controller may consume it into one pending positions-only confirmation, which lock, restart, cross-stage use, or replay clears or rejects. The compiled capability returns stable `Unavailable` and locks because authenticated Secret Input/Recovery adapters and the inherited channel launcher are not wired. The anti-phishing phrase has a sealed Key Agent-only lifecycle: a five-word OS-CSPRNG cue is first committed as pending and is unavailable to prompts until a trusted exact enrollment confirmation. Rotation is a persisted old-to-new pending ceremony. Loads carry typed authenticated-empty/record state, installation/store/class identity, an exclusive owner generation, exact record digest, and previous/high-water anchor evidence; same-generation equivocation, empty-after-observed, rollback, owner takeover, or ambiguous commits lock the lifecycle. The platform storage layer now has a narrow private fixed-role Key Agent generation-store adapter, but no production protected-settings consumer or settings key provisioning is wired yet; independent settings AEAD key custody, exclusive-owner enforcement, and a release-approved non-rollbackable anchor remain blockers. The launcher uses separate deterministic revision-v1, zero-capability LPAC profiles for manifest-derived Approval and Secret Input roles; the names and derived SIDs differ and callers cannot select the profile role. The launcher verifies every suspended child against its exact expected SID, and the Secret Input/recovery bootstrap independently repeats that check. Both use an exact inherited-handle list, minimal environment, suspended token verification, process mitigations, and a single-process kill-on-close job. The authenticated dual-slot store and encrypted Key Agent journal cover reservation, approval-pending, potentially-signed, signed-unbroadcast, broadcasting, submitted, and broadcast-unknown recovery. Raw transaction bytes remain journal-owned and reach an RPC adapter only through a non-clone lease after `Broadcasting` commits. Production rollback-anchor/key provisioning and signed-artifact helper/network/RPC evidence are absent; the compiled release policy is `None`, so launch and signing remain disabled. |
 | Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and independently prepared supervisor-held fixed root before detaching with one proven suspend count. Fresh profile/root creation remains a distinct non-launchable pending path. A separate dormant storage-only opener, with zero production callers, opens only the fixed existing leaf using `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; it verifies initial security and complete `FILE_ID_INFO`, canonicalizes and reopens the path, requires identical security and identity, privately retains the canonical path/reopened handle, and revalidates both the held handle and canonical reopen. It neither creates nor repairs/deletes/adopts the root and is distinct from the child `LOCALAPPDATA`/token-derived opener. It cannot observe profile registration or construct `HeldExistingKeyAgentInstallObjects`, `PreparedKeyAgentProvisioning`, or `VerifiedExistingKeyAgentInstall`. The sole production-compiled prepared mint remains the private sealed adoption transition; whole-release binding retains helper-manifest and exact file-object proofs separately, but the opener, adoption transition, release-binding, and dormant supervisor binder all have zero production call sites. The one-shot child/root transcript requires exact request EOF before the child detaches both ambient protocol entries and closes raw stdin; raw stdout survives only in a response capability. Once response output is attempted, write/flush/close results cannot return to `main` and the child enters `Sleep(INFINITE)`. The parent's deadline-bound exact response plus EOF authoritatively proves response-endpoint closure; separate resident-process/Job revalidation completes startup. The parent consumes both endpoints and the retained aggregate has none. This dormant boundary exposes no generic runtime/signing IPC. Production installer key/checkpoint and journal I/O backends, authoritative profile-registration observation and held-aggregate construction, an exclusive installer lease covering checkpoint/observation/reread ordering, production call sites and recovery, atomic same-user/ancestor race closure, rollback-anchor and storage/AEAD-key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
@@ -596,16 +596,61 @@ both unique objects as having exactly `HANDLE_FLAG_INHERIT`, attempts both
 `SetHandleInformation` clears without rollback, and requires exact-zero flag
 readback for both.
 
+The Approval launch target does not add the parent proofs to `HANDLE_LIST`:
+that list remains exactly the two synchronous server pipe objects inherited by
+the child; the parent retains the corresponding overlapped client ends. While
+the Approval child is suspended, the launcher remotely injects parent-process
+and parent-image proof handles with inheritance disabled. After sealing stdio,
+the child verifies its Approval LPAC and Job and requires stdin, the shared
+output object, the process proof, and the image proof to be four pairwise-distinct exact kernel
+objects whose handle flags are all zero. Its pipe-peer check correlates only the
+client PID/session reported by both pipes with the process-proof PID and child
+session; it is not an exact endpoint/process-object capability. For the image
+proof, the child applies case-preserving exact normalized path-string equality:
+it strips an optional `\\?\` prefix, normalizes separators, and compares the
+live process image path with the final path of a separate held file; a casing
+mismatch fails closed. It then checks the held path's `\\key-agent.exe` suffix
+and version metadata, supplies the held handle plus path to Authenticode signer
+validation, and computes SHA-256 through a cloned held handle. That path equality
+plus those checks does not prove that the live process was
+mapped from that exact file object.
+
+The fail-closed exchange order is a fixed 62-byte parent hello, a fixed 106-byte
+child hello, a 110-byte parent-finish header plus the exact request and request
+EOF, then a fixed 75-byte response plus response EOF. The parent supplies a
+fresh nonzero nonce; the child echoes it, supplies an independently fresh
+nonzero child nonce, and binds its hello to the domain-separated SHA-256
+bootstrap transcript. The parent-finish header binds both nonces, the canonical
+Approval request hash, and the exact request length. The child accepts the
+request only after exact EOF. After response-plus-EOF, the parent locally hashes
+the held child PID and file identity, manifest digest, profile revision, request
+digest, one-shot Approval nonce and canonical request hash, exact response
+bytes, fresh local channel challenge, and both bootstrap nonces. The Job remains
+a separately checked live gate, not hashed identity. The fixed 75-byte response
+is ordered as magic, version, decision, request digest, and one-shot Approval
+request nonce. Only the digest and nonce echo request fields; neither bootstrap
+nonce is echoed. Replay resistance therefore also depends on the private one-shot
+endpoint and a fresh one-shot Approval request nonce. Raw or legacy
+direct launches cannot construct this sequence and fail silently.
+
 A repo-local Approval child/grandchild kernel test makes a separate positive
 sentinel inheritable for a broad-inheritance grandchild. It uses
 `CompareObjectHandles` to prove that the sentinel arrives while neither of the
 two original exact stdio objects does. The sequential clears are not atomic,
 do not prevent later inherit-bit re-enabling or explicit duplication, and this
 two-object negative is not exhaustive enumeration proving that no stray handle
-entered the child. It is also not evidence for the exact signed helper,
-intended supervisor topology, immutable installation, DLL/dependency identity,
-or release activation. Default Approval builds still exit 78 and
-`COMPILED_RELEASE_POLICY` remains `None`.
+entered the child; it is not a four-object grandchild proof for the injected
+parent handles. It is also not evidence for the exact signed helper, intended
+supervisor topology, immutable installation, DLL/dependency identity, or
+release activation. Signed release-path positive evidence covering
+case-sensitive directories and alternate path forms, proof of the live mapped
+exact file object and complete DLL/dependency graph, immutable installation, a
+supervisor-held activation capability, and exact endpoint topology/exclusivity
+remain **STOP-SHIP**. There are zero production orchestration callers composing
+`launch_approval_frontend` through a verified response into signing and no
+positive signed-handshake E2E. `COMPILED_PARENT_POLICY` and
+`COMPILED_RELEASE_POLICY` remain `None`, so default Approval builds still exit
+78. No signed-artifact, topology, or release-activation evidence is claimed.
 
 The runtime-enabled Secret Input/recovery child begins its Windows bootstrap by
 validating the two unique stdio pipe objects: stdin and the single shared
@@ -821,22 +866,42 @@ Agent as a workaround.
 
 ### Secret Input parent activation invariant (STOP-SHIP)
 
-`COMPILED_PARENT_POLICY` must remain `None`. A process image path and a separately
-hashed file handle do not prove that the running process was mapped from that file
-object. The policy may become `Some` only after reviewed release evidence proves
-all of the following as one fail-closed launch capability:
+Approval shares this parent-activation invariant. `COMPILED_PARENT_POLICY` must
+remain `None`. Today the Approval child normalizes only the optional `\\?\`
+prefix and separators, preserves case, and requires exact path-string equality
+between the live process image path and a separate held file's final path; an
+ambiguous casing mismatch fails closed. It then checks the held path's
+executable suffix and version metadata, uses the held handle plus path for
+Authenticode signer validation, and computes SHA-256 through a cloned held
+handle. Neither that path equality nor a separately hashed file handle proves that the running process was
+mapped from that exact file object. The child holds synchronous
+server pipe ends while the parent holds overlapped client ends; querying those
+server ends provides only the client PID/session correlation, not an exact
+endpoint/process-object capability. The policy may become `Some` only after
+reviewed release evidence proves all of the following as one fail-closed launch
+capability:
 
 - a trusted supervisor opens the exact Key Agent artifact without write or delete
   sharing before launch and retains that same handle through the helper session;
 - the supervisor binds that held artifact to the exact launched PID and process
-  creation time, not merely to an equal path string;
-- the same capability binds both inherited request/response pipe peers, the child
-  job/profile, and fresh bootstrap nonces to that launched process; and
+  creation time, and to the mapped file object, not merely to an equal path
+  string; signed release-path evidence must cover case-sensitive directories
+  and alternate path forms;
+- the same supervisor-held activation capability binds both inherited request/response pipe peers
+  as exact endpoint objects, including their
+  direction and topology/exclusivity, plus the child Job/profile and fresh
+  bootstrap nonces, to that launched process;
+- the immutable installation and complete loaded DLL/dependency graph are
+  covered by the signed release identity; and
 - adversarial replacement, rename, stale-PID, handle-substitution, and parent-exit
   tests pass against the signed release artifacts.
 
 Path equality from `QueryFullProcessImageNameW` and
-`GetFinalPathNameByHandleW` is explicitly insufficient activation evidence.
+`GetFinalPathNameByHandleW`, including the current case-preserving exact
+normalized path-string comparison, is explicitly insufficient activation
+evidence. Approval additionally has zero
+production callers composing `launch_approval_frontend` through verified
+response into signing and no positive signed-handshake E2E.
 
 ```text
 dApp -> MV3 extension -> native-host shim -> broker -> inherited private channel -> key-agent

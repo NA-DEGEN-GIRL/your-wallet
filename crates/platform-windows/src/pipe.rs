@@ -61,10 +61,11 @@ pub enum PipeError {
 
 /// Exact private pipe ends for one approval helper launch.
 ///
-/// Parent ends use overlapped I/O so a trusted monotonic deadline can cancel a
-/// pending operation. Child ends are never named or exposed outside this crate;
-/// the restricted launcher duplicates only these exact handles into its handle
-/// allowlist.
+/// Parent client ends use overlapped I/O so a trusted monotonic deadline can
+/// cancel a pending operation. Child server ends are never named or exposed
+/// outside this crate; the restricted launcher duplicates only these exact
+/// handles into its handle allowlist. The server/client orientation lets the
+/// child query the kernel for the process owning each parent endpoint.
 #[cfg(windows)]
 pub(crate) struct PrivateApprovalPipes {
     parent_request: sys::OwnedWinHandle,
@@ -79,10 +80,16 @@ impl PrivateApprovalPipes {
         let request_name = SensitivePipeName::generate("approval-request")?;
         let response_name = SensitivePipeName::generate("approval-response")?;
         let security = sys::PipeSecurity::for_current_logon()?;
-        let (parent_request, child_request) =
-            sys::create_one_way_pipe(&request_name, &security, sys::PipeDirection::ParentWrites)?;
-        let (parent_response, child_response) =
-            sys::create_one_way_pipe(&response_name, &security, sys::PipeDirection::ParentReads)?;
+        let (parent_request, child_request) = sys::create_child_server_pipe(
+            &request_name,
+            &security,
+            sys::PipeDirection::ParentWrites,
+        )?;
+        let (parent_response, child_response) = sys::create_child_server_pipe(
+            &response_name,
+            &security,
+            sys::PipeDirection::ParentReads,
+        )?;
         Ok(Self {
             parent_request,
             child_request,
@@ -151,6 +158,10 @@ pub(crate) struct ApprovalRequestWriter(sys::OwnedWinHandle);
 
 #[cfg(windows)]
 impl ApprovalRequestWriter {
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8], deadline: Instant) -> Result<(), PipeError> {
+        sys::write_all_before(self.0.raw(), bytes, deadline)
+    }
+
     pub(crate) fn write_all(self, bytes: &[u8], deadline: Instant) -> Result<(), PipeError> {
         sys::write_all_before(self.0.raw(), bytes, deadline)
     }
@@ -169,6 +180,14 @@ pub(crate) struct ApprovalResponseReader(sys::OwnedWinHandle);
 
 #[cfg(windows)]
 impl ApprovalResponseReader {
+    pub(crate) fn read_exact(
+        &self,
+        exact_bytes: usize,
+        deadline: Instant,
+    ) -> Result<Zeroizing<Vec<u8>>, PipeError> {
+        sys::read_exact_before(self.0.raw(), exact_bytes, deadline)
+    }
+
     pub(crate) fn read_exact_frame(
         self,
         exact_bytes: usize,
@@ -930,68 +949,10 @@ mod sys {
         Ok(OwnedWinHandle(handle))
     }
 
-    pub(super) fn create_one_way_pipe(
-        name: &SensitivePipeName,
-        security: &PipeSecurity,
-        direction: PipeDirection,
-    ) -> Result<(OwnedWinHandle, OwnedWinHandle), PipeError> {
-        let attributes = security.attributes();
-        let direction_flag = match direction {
-            PipeDirection::ParentWrites => PIPE_ACCESS_OUTBOUND,
-            PipeDirection::ParentReads => PIPE_ACCESS_INBOUND,
-        };
-        let open_mode = direction_flag | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED;
-        let pipe_mode =
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
-        // SAFETY: the capability name and protected security descriptor remain
-        // live throughout creation and are not retained by the API.
-        let server = unsafe {
-            CreateNamedPipeW(
-                name.as_pcwstr(),
-                open_mode,
-                pipe_mode,
-                1,
-                PIPE_BUFFER_BYTES,
-                PIPE_BUFFER_BYTES,
-                0,
-                Some(ptr::from_ref(&attributes)),
-            )
-        };
-        if server.is_invalid() {
-            return Err(PipeError::OperatingSystem);
-        }
-        let server = OwnedWinHandle(server);
-        let desired_access = match direction {
-            PipeDirection::ParentWrites => GENERIC_READ.0,
-            PipeDirection::ParentReads => GENERIC_WRITE.0,
-        };
-        // The client handle itself remains non-inheritable. RestrictedLauncher
-        // creates the only inheritable duplicate and constrains it with an
-        // explicit PROC_THREAD_ATTRIBUTE_HANDLE_LIST.
-        // SAFETY: the private NUL-terminated name remains live; all optional
-        // pointers are absent and the server instance is already held open.
-        let client = unsafe {
-            CreateFileW(
-                name.as_pcwstr(),
-                desired_access,
-                FILE_SHARE_MODE(0),
-                None,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                None,
-            )
-        }
-        .map_err(|_| PipeError::OperatingSystem)?;
-        let client = OwnedWinHandle(client);
-        finish_client_connection(server.raw())?;
-        Ok((server, client))
-    }
-
     /// Creates a one-way pair with the synchronous named-pipe server inherited
     /// by the child and the overlapped client retained by the parent. This
     /// reversed topology lets the child ask the kernel which process owns both
     /// parent endpoints before it parses or displays any prompt bytes.
-    #[allow(dead_code)] // Reserved for the private Key Agent arming seam.
     pub(super) fn create_child_server_pipe(
         name: &SensitivePipeName,
         security: &PipeSecurity,
@@ -1185,34 +1146,6 @@ mod sys {
         unsafe { GetHandleInformation(handle, &raw mut flags) }
             .map_err(|_| PipeError::OperatingSystem)?;
         Ok(flags)
-    }
-
-    fn finish_client_connection(server: HANDLE) -> Result<(), PipeError> {
-        let event = create_event()?;
-        let mut overlapped = OVERLAPPED {
-            hEvent: event.raw(),
-            ..OVERLAPPED::default()
-        };
-        // The client handle was opened immediately before this call. Windows
-        // normally reports ERROR_PIPE_CONNECTED for this documented race; a
-        // pending result is also completed and drained before stack storage dies.
-        // SAFETY: `server`, `event`, and `overlapped` remain live until the
-        // connection result is complete.
-        let connection = unsafe { ConnectNamedPipe(server, Some(&raw mut overlapped)) };
-        match connection {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == ERROR_PIPE_CONNECTED.to_hresult() => Ok(()),
-            Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => {
-                let mut transferred = 0_u32;
-                // SAFETY: the pending operation owns no caller buffer and all
-                // OVERLAPPED/event storage remains live for this blocking drain.
-                unsafe {
-                    GetOverlappedResult(server, &raw const overlapped, &raw mut transferred, true)
-                }
-                .map_err(|_| PipeError::OperatingSystem)
-            }
-            Err(_) => Err(PipeError::OperatingSystem),
-        }
     }
 
     pub(super) fn write_all_before(
@@ -1452,7 +1385,13 @@ mod sys {
         if error.code() != ERROR_IO_PENDING.to_hresult() {
             return Err(PipeError::OperatingSystem);
         }
-        let timeout_ms = remaining_milliseconds(deadline)?;
+        let timeout_ms = match remaining_milliseconds(deadline) {
+            Ok(timeout_ms) => timeout_ms,
+            Err(error) => {
+                cancel_and_drain(handle, overlapped);
+                return Err(error);
+            }
+        };
         let mut transferred = 0_u32;
         // SAFETY: this function is called only while the initiating buffer,
         // OVERLAPPED, event, and handle remain live. Timeout is followed by
@@ -1466,14 +1405,20 @@ mod sys {
                 false,
             )
         };
-        match completion {
-            Ok(()) => deadline_result(deadline, transferred),
-            Err(error) if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {
-                cancel_and_drain(handle, overlapped);
+        if let Err(error) = completion {
+            // Once an operation returned IO_PENDING, every failure exit must
+            // synchronously drain it before the OVERLAPPED and caller buffer
+            // leave scope. This is safe even if completion won the race.
+            cancel_and_drain(handle, overlapped);
+            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
                 Err(PipeError::DeadlineElapsed)
+            } else if is_pipe_end(error.code()) {
+                Err(PipeError::UnexpectedEnd)
+            } else {
+                Err(PipeError::OperatingSystem)
             }
-            Err(error) if is_pipe_end(error.code()) => Err(PipeError::UnexpectedEnd),
-            Err(_) => Err(PipeError::OperatingSystem),
+        } else {
+            deadline_result(deadline, transferred)
         }
     }
 
@@ -2318,6 +2263,46 @@ mod tests {
     }
 
     #[test]
+    fn approval_pipe_supports_staged_parent_authentication_then_exact_response_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateApprovalPipes::create()?;
+        let (mut writer, child_request, reader, child_response) = pipes.into_test_parts();
+
+        let parent_hello = [0x31_u8; 62];
+        writer.write_bytes(&parent_hello, future_deadline()?)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&child_request, parent_hello.len())?,
+            parent_hello
+        );
+
+        let child_hello = [0x42_u8; 106];
+        sys::write_child_for_test(&child_response, &child_hello)?;
+        assert_eq!(
+            reader
+                .read_exact(child_hello.len(), future_deadline()?)?
+                .as_slice(),
+            child_hello
+        );
+
+        let parent_finish = [0x53_u8; 128];
+        writer.write_all(&parent_finish, future_deadline()?)?;
+        assert_eq!(
+            sys::read_child_to_end_for_test(&child_request)?,
+            parent_finish
+        );
+        drop(child_request);
+
+        let response = [0x64_u8; 75];
+        sys::write_child_for_test(&child_response, &response)?;
+        drop(child_response);
+        assert_eq!(
+            reader.read_exact_frame(response.len(), future_deadline()?)?,
+            response
+        );
+        Ok(())
+    }
+
+    #[test]
     fn approval_pipe_rejects_truncation_and_delayed_trailing_data()
     -> Result<(), Box<dyn std::error::Error>> {
         let (_, child_request, reader, child_response) =
@@ -2411,15 +2396,30 @@ mod tests {
     }
 
     #[test]
-    fn secret_child_servers_report_one_exact_parent_peer() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let (_, child_request, _, child_response) =
+    fn frontend_child_servers_report_one_exact_parent_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let expected = (std::process::id(), sys::current_session_for_test()?);
+        let (_, approval_request, _, approval_response) =
+            PrivateApprovalPipes::create()?.into_test_parts();
+        assert_eq!(
+            sys::child_server_client_for_test(&approval_request)?,
+            expected
+        );
+        assert_eq!(
+            sys::child_server_client_for_test(&approval_response)?,
+            expected
+        );
+
+        let (_, secret_request, _, secret_response) =
             PrivateSecretInputPipes::create()?.into_test_parts();
-        let request_peer = sys::child_server_client_for_test(&child_request)?;
-        let response_peer = sys::child_server_client_for_test(&child_response)?;
-        assert_eq!(request_peer, response_peer);
-        assert_eq!(request_peer.1, sys::current_session_for_test()?);
-        assert_eq!(request_peer.0, std::process::id());
+        assert_eq!(
+            sys::child_server_client_for_test(&secret_request)?,
+            expected
+        );
+        assert_eq!(
+            sys::child_server_client_for_test(&secret_response)?,
+            expected
+        );
         Ok(())
     }
 
@@ -2450,6 +2450,25 @@ mod tests {
             .ok_or("monotonic deadline overflow")?;
         assert_eq!(
             reader.read_exact_frame(75, deadline),
+            Err(PipeError::DeadlineElapsed)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(child_response);
+        Ok(())
+    }
+
+    #[test]
+    fn already_expired_pending_read_is_cancelled_and_drained_before_return()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, child_request, reader, child_response) =
+            PrivateApprovalPipes::create()?.into_test_parts();
+        drop(child_request);
+        let started = Instant::now();
+        let deadline = started
+            .checked_sub(Duration::from_millis(1))
+            .ok_or("monotonic deadline underflow")?;
+        assert_eq!(
+            reader.read_exact_frame(1, deadline),
             Err(PipeError::DeadlineElapsed)
         );
         assert!(started.elapsed() < Duration::from_secs(2));

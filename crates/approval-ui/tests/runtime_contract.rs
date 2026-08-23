@@ -7,9 +7,14 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use approval_ui::{
-    ApprovalDisplay, ApprovalRequest, Decision, DisplayField, FieldSemantic, OperationKind,
-    RiskLevel, SimulationStatus,
+    ApprovalDisplay, ApprovalRequest, DisplayField, FieldSemantic, OperationKind, RiskLevel,
+    SimulationStatus,
 };
+
+// These tests execute the ordinary `COMPILED_PARENT_POLICY = None` binary.
+// They prove only that direct/legacy launches stay silent, fail closed, and
+// tear down within the harness bound. They do not exercise a successful parent
+// bootstrap or distinguish authenticated finish-frame rejection paths.
 
 fn field(semantic: FieldSemantic, value: &str) -> Result<DisplayField, String> {
     DisplayField::new(semantic, value, semantic != FieldSemantic::SimulationEngine)
@@ -89,9 +94,11 @@ fn run_child(input: &[u8]) -> Result<ChildOutput, String> {
         .stdin
         .take()
         .ok_or_else(|| "approval-ui stdin was not piped".to_owned())?;
-    stdin
-        .write_all(input)
-        .map_err(|_| "could not write approval request".to_owned())?;
+    if let Err(error) = stdin.write_all(input)
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err("could not write approval request".to_owned());
+    }
     drop(stdin);
     let output = child
         .wait_with_output()
@@ -109,23 +116,19 @@ fn run_child(input: &[u8]) -> Result<ChildOutput, String> {
 }
 
 #[test]
-fn inherited_stream_contract_is_exact_and_silent() -> Result<(), String> {
+fn direct_launch_with_legacy_raw_request_is_silent_and_disabled() -> Result<(), String> {
     let request = valid_request()?;
     let request_bytes = approval_wire::encode_request(&request);
     let output = run_child(&request_bytes)?;
 
-    assert!(output.succeeded);
+    assert!(!output.succeeded);
+    assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    let response = approval_wire::decode_response(&output.stdout)
-        .map_err(|_| "approval response was malformed".to_owned())?;
-    assert_eq!(response.decision(), Decision::Reject);
-    assert_eq!(response.digest(), request.digest());
-    assert_eq!(response.approval_nonce(), request.approval_nonce());
     Ok(())
 }
 
 #[test]
-fn trailing_request_byte_fails_without_output() -> Result<(), String> {
+fn direct_launch_with_trailing_bytes_is_silent_and_disabled() -> Result<(), String> {
     let request = valid_request()?;
     let mut request_bytes = approval_wire::encode_request(&request);
     request_bytes.push(0);
@@ -138,7 +141,7 @@ fn trailing_request_byte_fails_without_output() -> Result<(), String> {
 }
 
 #[test]
-fn oversized_request_fails_without_output_or_pipe_deadlock() -> Result<(), String> {
+fn direct_launch_with_oversized_input_is_silent_bounded_and_disabled() -> Result<(), String> {
     let oversized_len = usize::try_from(approval_ui::MAX_REQUEST_BYTES)
         .map_err(|_| "approval request bound did not fit usize".to_owned())?
         .checked_add(1)
@@ -306,9 +309,11 @@ mod windows_child {
         drop(thread);
 
         let mut parent_writer = File::from(parent_writer);
-        parent_writer
-            .write_all(input)
-            .map_err(|_| "could not write approval request".to_owned())?;
+        if let Err(error) = parent_writer.write_all(input)
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err("could not write approval request".to_owned());
+        }
         drop(parent_writer);
         let exit_code = child.wait_for_exit()?;
 

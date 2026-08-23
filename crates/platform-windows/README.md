@@ -260,16 +260,53 @@ Implemented:
   differs from stdout, while stdout and stderr are the same numeric handle-table
   value. Before mutation it requires both unique objects to have flags exactly
   `HANDLE_FLAG_INHERIT`; it attempts both inherit-bit clears without rollback
-  and accepts only exact-zero readback for both. A repo-local child/grandchild
-  kernel test makes a separate positive sentinel inheritable and uses
+  and accepts only exact-zero readback for both. The launcher `HANDLE_LIST`
+  remains exactly those two synchronous server pipe objects inherited by the
+  child; the parent retains the corresponding overlapped client ends. While the
+  Approval child is suspended, the launcher remotely injects parent-process and
+  parent-image proof handles with inheritance disabled. After sealing stdio,
+  the child verifies the Approval LPAC and Job and requires the sealed stdin,
+  shared output pipe, process proof, and image proof to be four pairwise-
+  distinct exact objects with zero flags. Its pipe-peer check correlates only
+  the client PID/session reported by both child-held server ends with the
+  process-proof PID and child session. It is not an exact
+  endpoint/process-object capability. The image check applies
+  case-preserving exact normalized path-string equality: it normalizes only an
+  optional `\\?\` prefix and separators and compares the live process image path with a separate
+  held file's final path; a casing mismatch fails closed. It then checks the held
+  path's `\\key-agent.exe` suffix and version metadata, supplies the held handle
+  plus path to Authenticode signer validation, and computes SHA-256 through a
+  cloned held handle against the compiled parent policy. It does not prove that the live process was mapped
+  from that exact file object. Parent-auth order is a fixed 62-byte
+  parent hello, fixed 106-byte child hello, a 110-byte parent-finish header plus
+  exact request and request EOF, then a fixed 75-byte response and response EOF.
+  After response-plus-EOF the parent locally hashes held child PID/file
+  identity, manifest digest, profile revision, request digest, one-shot Approval
+  nonce and canonical request hash, exact response bytes, fresh local channel
+  challenge, and both bootstrap nonces. Job policy/membership is a live gate,
+  not hashed identity. The fixed 75-byte response is ordered as magic, version,
+  decision, request digest, and the one-shot Approval request nonce. Only the
+  digest and nonce echo request fields; neither bootstrap nonce is echoed.
+  Replay resistance also depends on the private one-shot endpoint and a
+  fresh one-shot Approval request nonce. Raw or legacy direct launch fails
+  silently. A repo-local child/grandchild kernel test
+  makes a separate positive sentinel inheritable and uses
   `CompareObjectHandles` to prove that the sentinel reaches a broad-inheritance
   grandchild while neither original exact stdio object does. The sequential
   clears are non-atomic and do not prevent later inherit-bit re-enabling or
-  explicit duplication. This two-object negative is not exhaustive stray-handle
-  enumeration or evidence for the exact signed helper, intended supervisor
-  topology, immutable installation, DLL/dependency identity, or release
-  activation. Default `approval-ui` builds still exit 78 and
-  `COMPILED_RELEASE_POLICY` remains `None`;
+  explicit duplication. This remains a two-object negative, not a four-object
+  grandchild proof; it is neither exhaustive stray-handle enumeration nor
+  evidence for the exact signed helper, intended supervisor topology, immutable
+  installation, DLL/dependency identity, or release activation. Signed
+  release-path positive evidence covering case-sensitive directories and
+  alternate path forms, live mapped exact-file-object proof, the complete
+  DLL/dependency graph, immutable installation, a supervisor-held activation
+  capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**.
+  There are zero production orchestration callers composing
+  `launch_approval_frontend` through a verified response into signing. There is
+  no positive signed-handshake E2E. `COMPILED_PARENT_POLICY` and
+  `COMPILED_RELEASE_POLICY` remain `None`, so default `approval-ui` builds still
+  exit 78;
 
 - an earliest runtime-enabled Secret Input/recovery child bootstrap. Its first
   Windows/CRT application operation requires stdin and the shared stdout/stderr
@@ -389,12 +426,23 @@ Implemented:
   now does clear the inherit bit on its three received stdio handles before any
   later application operation, and the repo-local grandchild test supplies an
   exact-object negative for that boundary. The runtime-enabled Approval child
-  likewise seals its two unique pipe objects as its first Windows/CRT
-  application operation, requires numeric stdout/stderr aliasing, exact
-  inherit-only preflags and zero readback, and has a positive-sentinel
-  grandchild negative for those objects. That sequential clear is not atomic,
-  does not prevent later re-enabling or explicit duplication, and is not
-  exhaustive enumeration or exact signed-artifact/topology evidence. The
+  likewise seals its two unique synchronous server pipe objects as its first
+  Windows/CRT application operation, requires numeric stdout/stderr aliasing,
+  exact inherit-only preflags and zero readback; the parent retains overlapped
+  client ends. Its launch `HANDLE_LIST` contains only those two child objects;
+  two parent-identity proofs are injected non-inheritable while the child is
+  suspended. After Approval LPAC and Job verification, it requires those four
+  exact objects to be pairwise distinct with zero flags. Pipe-peer inspection
+  supplies PID/session correlation only, not an exact endpoint/process-object
+  capability. The image policy separately requires case-preserving exact
+  normalized path-string equality between live and held-file paths, checks the
+  held path's suffix/version metadata, uses held handle plus path for
+  Authenticode validation, and hashes a cloned held handle for SHA-256. It does
+  not prove the live mapped exact file object. Its
+  positive-sentinel grandchild negative still covers only the two stdio
+  objects. That sequential clear is not atomic, does not prevent later
+  re-enabling or explicit duplication, and is not exhaustive enumeration or
+  exact signed-artifact/topology evidence. The
   runtime-enabled Secret Input/
   recovery child likewise seals its two unique stdio objects first, then
   validates those objects together with two separately injected non-inheritable
@@ -403,8 +451,13 @@ Implemented:
   negative, not exhaustive enumeration of every child handle. A standalone
   supervisor still needs independently proven single-instance/process topology;
   signed-install,
-  Native Host provenance, artifact-bound execution of this bootstrap, exact
-  signed-artifact E2E, and DLL/dependency evidence remain absent.
+  Native Host provenance, signed release-path positive evidence for
+  case-sensitive directories and alternate path forms, artifact-bound execution
+  of this bootstrap, exact signed-artifact E2E, immutable installation, complete
+  DLL/dependency evidence, supervisor-held activation capability, and endpoint
+  topology/exclusivity remain absent. Approval also has zero production
+  callers composing `launch_approval_frontend` through verified response into
+  signing and no positive signed-handshake E2E.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -417,15 +470,42 @@ Implemented:
   Key Agent 자식은 이제 첫 Windows application 동작에서 정확한 `PIPE`/`PIPE`/`CHAR`
   stdio 세 개를 사전검사하고 inherit bit를 모두 제거한 뒤 flags 0을 재검사하며,
   grandchild exact-object 음성 테스트도 통과해야 합니다. runtime-enabled Approval
-  자식도 binary mode보다 앞선 첫 Windows/CRT application 동작에서 stdin과 stdout은
-  서로 다른 두 exact `PIPE` 객체이고 stdout과 stderr는 같은 숫자 handle 값인지
-  확인합니다. 두 unique 객체의 preflags가 정확히 `HANDLE_FLAG_INHERIT`인지 모두
-  사전검사하고 순차적으로 제거한 뒤 exact-zero readback을 요구합니다. 별도 inheritable
-  positive sentinel을 둔 grandchild 테스트는 sentinel이 전파되는 동안 원래 stdio 두
-  객체는 전파되지 않음을 `CompareObjectHandles`로 확인합니다. 이 순차 clear는
-  원자적이지 않고 이후 inherit-bit 재설정이나 explicit duplication을 막지 않으며,
-  exact-object 음성은 stray handle 전체 열거, exact signed artifact/topology 또는
-  릴리스 증거가 아닙니다. runtime-enabled Secret Input/
+  launcher의 `HANDLE_LIST`는 계속 stdin과 shared stdout/stderr인 두 stdio `PIPE`
+  객체만 포함합니다. 자식은 synchronous server ends를 상속하고 부모는 대응하는
+  overlapped client ends를 보유합니다. parent-process/image proof는 suspended 자식에
+  inherit 불가로 별도 주입됩니다. 자식은 첫 Windows/CRT application 동작에서 stdio를
+  봉인한 뒤 Approval LPAC과 Job을 확인하고, stdio 둘과 proof 둘이 flags 0인 네
+  pairwise-distinct exact object인지 검증합니다. pipe-peer 검사는 child-held server
+  ends가 보고한 client PID/session을 process-proof PID 및 child session과 연결할 뿐
+  exact endpoint/process-object capability는 아닙니다. image 검사는
+  case-preserving exact normalized path-string equality를 사용합니다. 즉 선택적인 `\\?\` prefix와 separator만
+  정규화해 live process image path와 별도 held file final path를 비교하며 casing
+  mismatch는 fail closed입니다. 이어 held path의 `\\key-agent.exe` suffix와 version
+  metadata, held handle+path 기반 Authenticode signer, cloned held handle 기반 SHA-256를
+  확인합니다. 이는 live
+  process가 그 exact file object에서 mapped되었다는 증명이 아닙니다. 교환 순서는 고정
+  62-byte parent hello, 고정 106-byte child hello, 110-byte finish header와 exact request
+  및 request EOF, 고정 75-byte response와 response EOF입니다. 부모가 response 뒤
+  로컬에서 계산하는 transcript는 held child PID/file identity, manifest/profile,
+request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap
+nonce를 해시합니다. Job은 live gate이지 hashed identity가 아닙니다. 고정 75-byte
+response는 magic, version, decision, request digest, one-shot Approval request nonce
+순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
+않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
+의존합니다. raw/legacy direct launch는 진단 없이
+  실패합니다.
+  별도 inheritable positive sentinel grandchild 테스트는 sentinel이 전파되는 동안
+  원래 stdio 두 객체만 전파되지 않음을 `CompareObjectHandles`로 확인하며 four-object
+  proof가 아닙니다. 이 순차 clear는 원자적이지 않고 이후 inherit-bit 재설정이나
+  explicit duplication을 막지 않으며, exact-object 음성은 stray handle 전체 열거,
+  exact signed artifact/topology 또는 릴리스 증거가 아닙니다. case-sensitive directory와
+  alternate path form을 포괄하는 signed release-path positive evidence, live mapped exact
+  file object, complete DLL/dependency graph, immutable installation, supervisor-held
+  activation capability, exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다.
+  `launch_approval_frontend`에서 verified response를 거쳐 signing까지
+  잇는 production orchestration caller는 0개이고 positive signed-handshake E2E도
+  없습니다. `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
+  default helper는 exit 78입니다. runtime-enabled Secret Input/
   recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
   inherit bit를 제거하고, suspended 상태에서 별도로 주입된 non-inheritable parent
   process/image proof와 합친 네 exact object가 pairwise-distinct이며 flags 0인지
@@ -534,21 +614,39 @@ Stop-ship before any signing-capable release:
    provenance, prove the standalone supervisor's single-instance and exact
    process topology, exclude or mediate every foreign/uncoordinated inheriting
    creation path, and bind the implemented Key Agent first-operation stdio
-   sealing plus grandchild exact-object negative, the corresponding Approval
-   two-object boundary, and the Secret Input/recovery four-object boundary, to
-   their exact signed artifacts.
+   sealing plus grandchild exact-object negative, the Approval four-object
+   runtime parent-auth check plus its separate two-stdio grandchild negative,
+   and the Secret Input/recovery four-object boundary, to their exact signed
+   artifacts.
    The in-crate coordinator and repo-local child test are not signed-install,
    provenance, cross-process topology, or release-activation proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
-   against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the
-   framing and cancellation primitives, and the repo-local positive-sentinel
-   grandchild test supplies only a non-exhaustive two-object propagation
-   negative. Its sequential clears are non-atomic and do not prevent later
-   re-enabling or explicit duplication. That test is not evidence for the exact
-   signed helper or intended release topology; the intentionally disabled
-   helper binary and absent compiled release policy still prevent that signed-
-   artifact E2E.
+   against the exact signed `approval-ui.exe`. That suite must cover the fixed
+   62-byte parent hello, fixed 106-byte child hello, two fresh nonzero nonces,
+   110-byte finish header, exact request EOF, fixed 75-byte response and response
+   EOF, plus the parent transcript's held child PID/file identity,
+   manifest/profile, request digest/one-shot nonce/hash, exact response, local
+   challenge, and both bootstrap nonces. Job policy/membership is a live gate,
+   not hashed identity. Because the response does not echo the bootstrap nonces,
+   replay evidence must also cover the private one-shot endpoint and fresh one-
+   shot Approval request nonce. Signed release evidence must prove
+   signed release-path positive evidence covering case-sensitive directories
+   and alternate path forms, that the live image was mapped from the exact held
+   file object, the complete DLL/dependency graph, immutable installation, a
+   supervisor-held activation capability, and exact endpoint
+   topology/exclusivity. Current pipe inspection provides only PID/session
+   correlation, and current held-file policy checks do not provide those proofs.
+   Kernel-level pipe tests cover the framing and cancellation primitives, and
+   the repo-local positive-sentinel grandchild test supplies only a non-
+   exhaustive two-object propagation negative. Its sequential clears are non-
+   atomic and do not prevent later re-enabling or explicit duplication. That
+   test is not evidence for the exact signed helper or intended release
+   topology. There are zero production callers composing
+   `launch_approval_frontend` through verified response into signing and no
+   positive signed-handshake E2E. Raw or legacy direct launch fails silently,
+   while `COMPILED_PARENT_POLICY = None`, `COMPILED_RELEASE_POLICY = None`, and
+   the default exit 78 prevent signed-artifact release activation.
 7. Connect the global registry model to independently reviewed, production
    non-rollbackable physical-counter and durable-slot backends (for example, a
    TPM-backed policy), derive and rotate its independent registry MAC key plus

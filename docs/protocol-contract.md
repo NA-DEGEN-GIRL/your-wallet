@@ -124,23 +124,69 @@ accounts, signing, and Key Agent access remain unrepresentable and unavailable.
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
 held-child identity, and one-shot transcript. Its `HANDLE_LIST` names exactly
-two child pipe objects: stdin and one response-pipe handle-table entry assigned
-as numerically equal stdout and stderr values.
+two synchronous server pipe objects inherited by the child: stdin and one
+response-pipe handle-table entry assigned as numerically equal stdout and
+stderr. The parent retains the corresponding overlapped client ends. It does
+not place parent-proof handles in that list. While the Approval child is still
+suspended, the launcher remotely injects parent-process and parent-image proof
+handles with inheritance disabled.
 
 The runtime-enabled Approval child makes inspection and sealing of those two
 unique objects its first Windows/CRT application operation, before binary-mode
 conversion or protocol/UI work. It requires stdin to differ from stdout,
 requires numeric `stdout == stderr`, requires both objects to be exact `PIPE`s
 with preflags exactly `HANDLE_FLAG_INHERIT`, attempts both inherit-bit clears
-without rollback, and accepts only exact-zero readback for both. A repo-local
-child/grandchild kernel test makes a separate positive sentinel inheritable and
-uses `CompareObjectHandles` to prove that the sentinel, but neither original
-stdio object, reaches a broad-inheritance grandchild. The sequential clears are
-non-atomic and do not prevent later re-enabling or explicit duplication; the
-two-object negative is not exhaustive stray-handle enumeration or evidence for
-the exact signed artifact, intended topology, immutable installation,
-DLL/dependency identity, or release activation. Default Approval builds still
-exit 78 and `COMPILED_RELEASE_POLICY` remains `None`.
+without rollback, and accepts only exact-zero readback for both. It then
+verifies the Approval LPAC, Job, and pipe peer and requires the sealed stdin,
+shared output pipe, process proof, and image proof to be four pairwise-distinct
+exact objects with zero flags. For the synchronous server ends held by the child
+(whose overlapped client ends remain with the parent),
+`GetNamedPipeClientProcessId` and `GetNamedPipeClientSessionId` correlate the
+reported client PID/session with the process-proof PID and child session. This
+is not an exact endpoint/process-object capability. The image check applies
+case-preserving exact normalized path-string equality: it normalizes only an
+optional `\\?\` prefix and separators and compares the live process image path
+with a separate held file's final path; a casing mismatch fails closed. It then
+checks the held path's `\\key-agent.exe` suffix and version metadata, supplies
+the held handle plus path to Authenticode signer validation, and computes SHA-256
+through a cloned held handle against the compiled parent policy. It does not prove that the live process was mapped
+from that exact file object.
+
+The parent-auth exchange is fixed rather than negotiated. Its order is a
+62-byte parent hello; a 106-byte child hello that echoes the fresh nonzero parent
+nonce, adds a fresh nonzero child nonce, and carries the domain-separated
+SHA-256 bootstrap-transcript hash; a 110-byte parent-finish header followed by
+the exact request and request EOF; then one fixed 75-byte response and response
+EOF. The parent-finish header binds both bootstrap nonces, the canonical
+Approval request hash, and the exact request length. Substitution, truncation,
+trailing bytes, bad lengths, or cross-frame decoding fail closed. After the
+response and EOF, the parent locally hashes the held child PID and helper file
+identity, manifest digest, profile revision, request digest, one-shot Approval
+nonce and canonical request hash, exact response bytes, fresh local channel
+challenge, and both bootstrap nonces. Job policy/membership is a live gate, not
+hashed identity. The fixed 75-byte response is ordered as magic, version,
+decision, request digest, and the one-shot Approval request nonce. Only the
+digest and nonce echo request fields; neither bootstrap nonce is echoed. Replay
+resistance therefore also depends on the private one-shot endpoint and a fresh
+one-shot Approval request nonce.
+
+A repo-local child/grandchild kernel test makes a separate positive sentinel
+inheritable and uses `CompareObjectHandles` to prove that the sentinel, but
+neither original stdio object, reaches a broad-inheritance grandchild. The
+sequential clears are non-atomic and do not prevent later re-enabling or
+explicit duplication. This remains a two-object negative, not a four-object
+grandchild proof; it is neither exhaustive stray-handle enumeration nor
+evidence for the exact signed artifact, intended topology, immutable
+installation, DLL/dependency identity, or release activation. Signed
+release-path positive evidence covering case-sensitive directories and
+alternate path forms, live mapped exact-file-object proof, the complete
+DLL/dependency graph, immutable installation, a supervisor-held activation
+capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
+are zero production orchestration callers composing `launch_approval_frontend`
+through a verified response into signing and no positive signed-handshake E2E.
+Raw or legacy direct Approval launch cannot complete the parent-auth exchange
+and fails silently. Default Approval builds still exit 78, and
+`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`.
 
 The parent-side Secret Input API now owns an equivalent atomic launch: separate
 private request/response pipes,
@@ -169,9 +215,10 @@ Accepted bytes remain zeroizing, cancellation remains separate, and the
 non-clone proof can be consumed only for the same prompt. Approval and
 secret-input default executables remain disabled with exit 78, and the missing
 compiled release policy plus `COMPILED_PARENT_POLICY = None` prevent release
-activation. Direct-launch parent identity denial and signed-artifact end-to-end
-tests remain stop-ship. Typed and kernel-level tests are necessary evidence, not
-an end-to-end release claim.
+activation. Raw or legacy Approval launch fails without diagnostics; direct-
+launch parent-identity denial and signed-artifact end-to-end tests remain
+stop-ship evidence. Typed and kernel-level tests are necessary evidence, not an
+end-to-end release claim.
 
 ## Public framing
 
@@ -535,7 +582,9 @@ canonical access list. Personal-sign displays carry every exact message byte.
 No display value is truncated. EIP-712 authorization remains fail-closed until
 the native frontend can render the exact structured document.
 
-The wire reply contains only `decision`, the exact digest, and a one-time nonce.
+The fixed wire reply is ordered as magic, version, `decision`, the exact request
+digest, and its one-time Approval nonce. Only the digest and nonce echo request
+fields.
 The Key Agent first creates one crate-private opaque `PreparedApprovalPrompt`,
 sampling expiry once and retaining the exact request and its domain-separated
 hash. Creation requires a freshly loaded, confirmed protected-settings record.
@@ -549,12 +598,14 @@ freshly reloads the same record; lock, phrase rotation, owner takeover, restart,
 record equivocation, or replay rejects the prompt. Authorization then consumes
 the same request hash and a non-clone `VerifiedApprovalResponse`. Rebuilding a
 shorter-lived request after the UI hold, or substituting any
-phrase/display/expiry byte, is rejected. Development
-builds contain no compiled release policy and default helper builds exit 78, so
-the otherwise implemented opt-in runtime entry point cannot be launched by the
-restricted release path or reach signing. A challenge expires after at most 120
-seconds and can be consumed once; the TCB clamps it to the browser request's
-remaining deadline.
+phrase/display/expiry byte, is rejected. These implemented pieces are not yet a
+production orchestration path: there are zero production callers composing
+`launch_approval_frontend` through verified response into signing, and there is
+no positive signed-handshake E2E. Development builds contain no compiled
+release policy and default helper builds exit 78, so the opt-in runtime entry
+point cannot be launched by the restricted release path or reach signing. A
+challenge expires after at most 120 seconds and can be consumed once; the TCB
+clamps it to the browser request's remaining deadline.
 
 ## Durable broadcast handoff
 

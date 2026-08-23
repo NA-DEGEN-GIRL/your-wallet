@@ -4,6 +4,20 @@
 //! Presentation labels deliberately do not exist in this crate. The wire
 //! carries only stable semantic tags, exact validated values, and an explicit
 //! security-critical bit. The approval frontend is the sole owner of labels.
+//!
+//! The bootstrap codec fixes frame sizes and order; decoding it is not parent
+//! authentication. The Windows child separately validates the live process and
+//! PID/session correlation, requires case-preserving exact normalized path-string
+//! equality between its image path and a separately held file path, checks the
+//! held path's executable suffix and version metadata, and performs held-handle-
+//! backed Authenticode and SHA-256 policy checks. Those checks do not prove that the live
+//! process was mapped from the exact held file object, nor do pipe PID/session
+//! queries create an exact endpoint/process-object capability. The fixed
+//! response echoes the request digest and one-shot Approval request nonce, but
+//! not either bootstrap nonce, so replay resistance also depends on the private
+//! one-shot endpoint and a fresh one-shot Approval request nonce. There are zero
+//! production orchestration callers composing the launcher, verified response,
+//! and signing, and there is no positive signed-handshake E2E.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -21,11 +35,24 @@ pub const MAX_PHRASE_BYTES: usize = 64;
 pub const MAX_EXPIRY_MILLISECONDS: u32 = 120_000;
 /// Fixed encoded response size.
 pub const RESPONSE_BYTES: usize = 75;
+/// Exact byte length of the Approval parent bootstrap hello.
+pub const PARENT_HELLO_BYTES: usize = 62;
+/// Exact byte length of the Approval child bootstrap hello.
+pub const CHILD_HELLO_BYTES: usize = 106;
+/// Exact byte length before the canonical request in a parent-finish frame.
+pub const PARENT_FINISH_HEADER_BYTES: usize = 110;
+/// Maximum parent-finish frame, including one maximum-size approval request.
+pub const MAX_PARENT_FINISH_BYTES: usize = PARENT_FINISH_HEADER_BYTES + MAX_REQUEST_BYTES;
 
 const REQUEST_MAGIC: &[u8; 8] = b"YWAPPR02";
 const RESPONSE_MAGIC: &[u8; 8] = b"YWAPRS02";
 const DISPLAY_MAGIC: &[u8; 8] = b"YWAPDS02";
 const VERSION: u16 = 2;
+const PARENT_HELLO_MAGIC: &[u8; 8] = b"YWAPPH01";
+const CHILD_HELLO_MAGIC: &[u8; 8] = b"YWAPCH01";
+const PARENT_FINISH_MAGIC: &[u8; 8] = b"YWAPPF01";
+const BOOTSTRAP_VERSION: u16 = 1;
+const CHILD_HELLO_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-bootstrap-child/v1\0";
 
 /// Approval-wire validation or decoding failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +76,105 @@ impl fmt::Display for WireError {
 }
 
 impl std::error::Error for WireError {}
+
+/// Fixed parent identity and nonce for one Approval bootstrap exchange.
+///
+/// The numeric handles name only the two non-inheritable proof objects already
+/// injected into the suspended child. Decoding this value does not itself
+/// authenticate either object; the child-side Windows boundary must validate
+/// their types and attributes, correlate the process and pipe PID/session, and
+/// apply policy to the separately held image file. The current path correlation
+/// and held-file checks do not prove the live mapped exact file object.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ApprovalParentHello {
+    process_id: u32,
+    process_handle: u64,
+    image_handle: u64,
+    parent_nonce: [u8; 32],
+}
+
+impl ApprovalParentHello {
+    /// Constructs one bounded parent hello.
+    pub fn new(
+        process_id: u32,
+        process_handle: u64,
+        image_handle: u64,
+        parent_nonce: [u8; 32],
+    ) -> Result<Self, WireError> {
+        if process_id == 0
+            || process_handle == 0
+            || image_handle == 0
+            || process_handle == image_handle
+            || all_zero(&parent_nonce)
+        {
+            return Err(WireError::Malformed);
+        }
+        Ok(Self {
+            process_id,
+            process_handle,
+            image_handle,
+            parent_nonce,
+        })
+    }
+
+    /// Parent process identifier bound into this exchange.
+    #[must_use]
+    pub const fn process_id(self) -> u32 {
+        self.process_id
+    }
+
+    /// Child-local value naming the injected parent process handle.
+    #[must_use]
+    pub const fn process_handle(self) -> u64 {
+        self.process_handle
+    }
+
+    /// Child-local value naming the injected parent image-file handle.
+    #[must_use]
+    pub const fn image_handle(self) -> u64 {
+        self.image_handle
+    }
+
+    /// Fresh parent nonce for this one bootstrap exchange.
+    #[must_use]
+    pub const fn parent_nonce(self) -> [u8; 32] {
+        self.parent_nonce
+    }
+}
+
+impl fmt::Debug for ApprovalParentHello {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApprovalParentHello([REDACTED HANDLES AND NONCE])")
+    }
+}
+
+/// Fresh child nonce accepted only through one parent-bound child hello.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ApprovalChildHello {
+    child_nonce: [u8; 32],
+}
+
+impl ApprovalChildHello {
+    /// Constructs the child half of one bootstrap exchange.
+    pub fn new(child_nonce: [u8; 32]) -> Result<Self, WireError> {
+        if all_zero(&child_nonce) {
+            return Err(WireError::Malformed);
+        }
+        Ok(Self { child_nonce })
+    }
+
+    /// Fresh child nonce for this one bootstrap exchange.
+    #[must_use]
+    pub const fn child_nonce(self) -> [u8; 32] {
+        self.child_nonce
+    }
+}
+
+impl fmt::Debug for ApprovalChildHello {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApprovalChildHello([REDACTED NONCE])")
+    }
+}
 
 /// Whether confirmation requires a continuous trusted-input hold.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -882,6 +1008,146 @@ pub fn decode_response(bytes: &[u8]) -> Result<ApprovalResponse, WireError> {
     })
 }
 
+/// Encodes one exact Approval parent bootstrap hello.
+#[must_use]
+pub fn encode_parent_hello(hello: &ApprovalParentHello) -> [u8; PARENT_HELLO_BYTES] {
+    let mut bytes = [0_u8; PARENT_HELLO_BYTES];
+    bytes[..8].copy_from_slice(PARENT_HELLO_MAGIC);
+    bytes[8..10].copy_from_slice(&BOOTSTRAP_VERSION.to_be_bytes());
+    bytes[10..14].copy_from_slice(&hello.process_id.to_be_bytes());
+    bytes[14..22].copy_from_slice(&hello.process_handle.to_be_bytes());
+    bytes[22..30].copy_from_slice(&hello.image_handle.to_be_bytes());
+    bytes[30..62].copy_from_slice(&hello.parent_nonce);
+    bytes
+}
+
+/// Decodes one complete Approval parent bootstrap hello with no trailing bytes.
+pub fn decode_parent_hello(bytes: &[u8]) -> Result<ApprovalParentHello, WireError> {
+    if bytes.len() != PARENT_HELLO_BYTES {
+        return Err(WireError::Malformed);
+    }
+    let mut cursor = Cursor::new(bytes);
+    if cursor.take(8)? != PARENT_HELLO_MAGIC || cursor.u16()? != BOOTSTRAP_VERSION {
+        return Err(WireError::Malformed);
+    }
+    let hello =
+        ApprovalParentHello::new(cursor.u32()?, cursor.u64()?, cursor.u64()?, cursor.array()?)?;
+    if !cursor.is_empty() {
+        return Err(WireError::Malformed);
+    }
+    Ok(hello)
+}
+
+/// Encodes one child hello bound to the exact parent hello and child nonce.
+#[must_use]
+pub fn encode_child_hello(
+    parent: &ApprovalParentHello,
+    child: &ApprovalChildHello,
+) -> [u8; CHILD_HELLO_BYTES] {
+    let mut bytes = [0_u8; CHILD_HELLO_BYTES];
+    bytes[..8].copy_from_slice(CHILD_HELLO_MAGIC);
+    bytes[8..10].copy_from_slice(&BOOTSTRAP_VERSION.to_be_bytes());
+    bytes[10..42].copy_from_slice(&parent.parent_nonce);
+    bytes[42..74].copy_from_slice(&child.child_nonce);
+    bytes[74..106].copy_from_slice(&child_hello_transcript(parent, &child.child_nonce));
+    bytes
+}
+
+/// Decodes one complete child hello only for the supplied parent hello.
+pub fn decode_child_hello(
+    parent: &ApprovalParentHello,
+    bytes: &[u8],
+) -> Result<ApprovalChildHello, WireError> {
+    if bytes.len() != CHILD_HELLO_BYTES {
+        return Err(WireError::Malformed);
+    }
+    let mut cursor = Cursor::new(bytes);
+    if cursor.take(8)? != CHILD_HELLO_MAGIC || cursor.u16()? != BOOTSTRAP_VERSION {
+        return Err(WireError::Malformed);
+    }
+    let echoed_parent_nonce: [u8; 32] = cursor.array()?;
+    let child_nonce: [u8; 32] = cursor.array()?;
+    let transcript: [u8; 32] = cursor.array()?;
+    if !cursor.is_empty()
+        || echoed_parent_nonce != parent.parent_nonce
+        || transcript != child_hello_transcript(parent, &child_nonce)
+    {
+        return Err(WireError::Malformed);
+    }
+    ApprovalChildHello::new(child_nonce)
+}
+
+/// Encodes the exact parent finish that commits one canonical approval request.
+#[must_use]
+pub fn encode_parent_finish(
+    parent: &ApprovalParentHello,
+    child: &ApprovalChildHello,
+    request: &ApprovalRequest,
+) -> Vec<u8> {
+    let request_bytes = encode_request(request);
+    let mut bytes = Vec::with_capacity(PARENT_FINISH_HEADER_BYTES + request_bytes.len());
+    bytes.extend_from_slice(PARENT_FINISH_MAGIC);
+    bytes.extend_from_slice(&BOOTSTRAP_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&parent.parent_nonce);
+    bytes.extend_from_slice(&child.child_nonce);
+    bytes.extend_from_slice(&request_hash(request));
+    bytes.extend_from_slice(
+        &u32::try_from(request_bytes.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(&request_bytes);
+    bytes
+}
+
+/// Decodes one exact parent finish for the supplied parent and child hellos.
+pub fn decode_parent_finish(
+    parent: &ApprovalParentHello,
+    child: &ApprovalChildHello,
+    bytes: &[u8],
+) -> Result<ApprovalRequest, WireError> {
+    if bytes.len() > MAX_PARENT_FINISH_BYTES {
+        return Err(WireError::TooLarge);
+    }
+    if bytes.len() < PARENT_FINISH_HEADER_BYTES {
+        return Err(WireError::Malformed);
+    }
+    let mut cursor = Cursor::new(bytes);
+    if cursor.take(8)? != PARENT_FINISH_MAGIC || cursor.u16()? != BOOTSTRAP_VERSION {
+        return Err(WireError::Malformed);
+    }
+    let encoded_parent_nonce: [u8; 32] = cursor.array()?;
+    let encoded_child_nonce: [u8; 32] = cursor.array()?;
+    let encoded_request_hash: [u8; 32] = cursor.array()?;
+    let request_length = usize::try_from(cursor.u32()?).map_err(|_| WireError::Malformed)?;
+    if request_length > MAX_REQUEST_BYTES {
+        return Err(WireError::TooLarge);
+    }
+    let request_bytes = cursor.take(request_length)?;
+    if !cursor.is_empty()
+        || encoded_parent_nonce != parent.parent_nonce
+        || encoded_child_nonce != child.child_nonce
+    {
+        return Err(WireError::Malformed);
+    }
+    let request = decode_request(request_bytes)?;
+    if encoded_request_hash != request_hash(&request)
+        || encode_request(&request).as_slice() != request_bytes
+    {
+        return Err(WireError::Malformed);
+    }
+    Ok(request)
+}
+
+fn child_hello_transcript(parent: &ApprovalParentHello, child_nonce: &[u8; 32]) -> [u8; 32] {
+    let parent_bytes = encode_parent_hello(parent);
+    let mut transcript = Sha256::new();
+    transcript.update(CHILD_HELLO_TRANSCRIPT_DOMAIN);
+    transcript.update(parent_bytes);
+    transcript.update(child_nonce);
+    transcript.finalize().into()
+}
+
 fn require(seen: u64, semantics: &[FieldSemantic]) -> Result<(), WireError> {
     if semantics.iter().all(|semantic| seen & semantic.bit() != 0) {
         Ok(())
@@ -1011,6 +1277,10 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_be_bytes(self.array()?))
     }
 
+    fn u64(&mut self) -> Result<u64, WireError> {
+        Ok(u64::from_be_bytes(self.array()?))
+    }
+
     fn text(&mut self, maximum: usize) -> Result<String, WireError> {
         let length = usize::from(self.u16()?);
         if length == 0 || length > maximum {
@@ -1031,9 +1301,13 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        ApprovalDisplay, ApprovalRequest, ApprovalResponse, Decision, DisplayField, FieldSemantic,
-        OperationKind, RiskLevel, SimulationStatus, WireError, decode_request, decode_response,
-        encode_request, encode_response, request_hash,
+        ApprovalChildHello, ApprovalDisplay, ApprovalParentHello, ApprovalRequest,
+        ApprovalResponse, CHILD_HELLO_BYTES, CHILD_HELLO_MAGIC, Decision, DisplayField,
+        FieldSemantic, MAX_PARENT_FINISH_BYTES, MAX_REQUEST_BYTES, OperationKind,
+        PARENT_FINISH_HEADER_BYTES, PARENT_FINISH_MAGIC, PARENT_HELLO_BYTES, PARENT_HELLO_MAGIC,
+        RiskLevel, SimulationStatus, WireError, decode_child_hello, decode_parent_finish,
+        decode_parent_hello, decode_request, decode_response, encode_child_hello,
+        encode_parent_finish, encode_parent_hello, encode_request, encode_response, request_hash,
     };
 
     fn field(semantic: FieldSemantic, value: &str) -> Result<DisplayField, WireError> {
@@ -1094,6 +1368,263 @@ mod tests {
 
     fn request() -> Result<ApprovalRequest, WireError> {
         ApprovalRequest::new([7; 32], [9; 32], 120_000, "blue comet", personal_display()?)
+    }
+
+    fn parent_hello() -> Result<ApprovalParentHello, WireError> {
+        ApprovalParentHello::new(42, 0x100, 0x104, [0x11; 32])
+    }
+
+    fn child_hello() -> Result<ApprovalChildHello, WireError> {
+        ApprovalChildHello::new([0x22; 32])
+    }
+
+    #[test]
+    fn bootstrap_round_trip_sizes_accessors_and_debug_are_exact() -> Result<(), WireError> {
+        assert_eq!(PARENT_HELLO_BYTES, 62);
+        assert_eq!(CHILD_HELLO_BYTES, 106);
+        assert_eq!(PARENT_FINISH_HEADER_BYTES, 110);
+        assert_eq!(MAX_PARENT_FINISH_BYTES, 110 + MAX_REQUEST_BYTES);
+
+        let parent = parent_hello()?;
+        assert_eq!(parent.process_id(), 42);
+        assert_eq!(parent.process_handle(), 0x100);
+        assert_eq!(parent.image_handle(), 0x104);
+        assert_eq!(parent.parent_nonce(), [0x11; 32]);
+        let parent_bytes = encode_parent_hello(&parent);
+        assert_eq!(decode_parent_hello(&parent_bytes)?, parent);
+
+        let child = child_hello()?;
+        assert_eq!(child.child_nonce(), [0x22; 32]);
+        let child_bytes = encode_child_hello(&parent, &child);
+        assert_eq!(decode_child_hello(&parent, &child_bytes)?, child);
+
+        let request = request()?;
+        let finish = encode_parent_finish(&parent, &child, &request);
+        assert_eq!(
+            finish.len(),
+            PARENT_FINISH_HEADER_BYTES + encode_request(&request).len()
+        );
+        assert_eq!(decode_parent_finish(&parent, &child, &finish)?, request);
+
+        assert_eq!(
+            format!("{parent:?}"),
+            "ApprovalParentHello([REDACTED HANDLES AND NONCE])"
+        );
+        assert_eq!(format!("{child:?}"), "ApprovalChildHello([REDACTED NONCE])");
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_constructors_and_parent_decode_reject_reserved_values() -> Result<(), WireError> {
+        assert_eq!(
+            ApprovalParentHello::new(0, 0x100, 0x104, [1; 32]),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            ApprovalParentHello::new(42, 0, 0x104, [1; 32]),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            ApprovalParentHello::new(42, 0x100, 0, [1; 32]),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            ApprovalParentHello::new(42, 0x100, 0x100, [1; 32]),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            ApprovalParentHello::new(42, 0x100, 0x104, [0; 32]),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(ApprovalChildHello::new([0; 32]), Err(WireError::Malformed));
+
+        let encoded = encode_parent_hello(&parent_hello()?);
+        for range in [10..14, 14..22, 22..30, 30..62] {
+            let mut changed = encoded;
+            changed[range].fill(0);
+            assert_eq!(decode_parent_hello(&changed), Err(WireError::Malformed));
+        }
+        let mut equal_handles = encoded;
+        let process_handle: [u8; 8] = encoded[14..22]
+            .try_into()
+            .map_err(|_| WireError::Malformed)?;
+        equal_handles[22..30].copy_from_slice(&process_handle);
+        assert_eq!(
+            decode_parent_hello(&equal_handles),
+            Err(WireError::Malformed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_hello_rejects_wrong_frame_shape_without_aliasing_fields() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let encoded = encode_parent_hello(&parent);
+        for length in 0..PARENT_HELLO_BYTES {
+            assert_eq!(
+                decode_parent_hello(&encoded[..length]),
+                Err(WireError::Malformed)
+            );
+        }
+        let mut trailing = encoded.to_vec();
+        trailing.push(0);
+        assert_eq!(decode_parent_hello(&trailing), Err(WireError::Malformed));
+
+        for index in 0..10 {
+            let mut changed = encoded;
+            changed[index] ^= 1;
+            assert_eq!(decode_parent_hello(&changed), Err(WireError::Malformed));
+        }
+        for index in [13, 21, 29, 61] {
+            let mut changed = encoded;
+            changed[index] ^= 1;
+            assert_ne!(decode_parent_hello(&changed)?, parent);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn child_hello_rejects_every_single_byte_substitution_and_wrong_parent() -> Result<(), WireError>
+    {
+        let parent = parent_hello()?;
+        let child = child_hello()?;
+        let encoded = encode_child_hello(&parent, &child);
+        for index in 0..CHILD_HELLO_BYTES {
+            let mut changed = encoded;
+            changed[index] ^= 1;
+            assert_eq!(
+                decode_child_hello(&parent, &changed),
+                Err(WireError::Malformed),
+                "substitution at byte {index} was accepted"
+            );
+        }
+
+        let changed_parent = ApprovalParentHello::new(
+            parent.process_id() + 1,
+            parent.process_handle(),
+            parent.image_handle(),
+            parent.parent_nonce(),
+        )?;
+        assert_eq!(
+            decode_child_hello(&changed_parent, &encoded),
+            Err(WireError::Malformed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn child_hello_rejects_every_truncation_and_trailing_data() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let encoded = encode_child_hello(&parent, &child_hello()?);
+        for length in 0..CHILD_HELLO_BYTES {
+            assert_eq!(
+                decode_child_hello(&parent, &encoded[..length]),
+                Err(WireError::Malformed)
+            );
+        }
+        let mut trailing = encoded.to_vec();
+        trailing.push(0);
+        assert_eq!(
+            decode_child_hello(&parent, &trailing),
+            Err(WireError::Malformed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_finish_rejects_every_single_byte_substitution() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let child = child_hello()?;
+        let encoded = encode_parent_finish(&parent, &child, &request()?);
+        for index in 0..encoded.len() {
+            let mut changed = encoded.clone();
+            changed[index] ^= 1;
+            assert!(
+                decode_parent_finish(&parent, &child, &changed).is_err(),
+                "substitution at byte {index} was accepted"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parent_finish_rejects_nonce_hash_length_truncation_and_trailing() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let child = child_hello()?;
+        let encoded = encode_parent_finish(&parent, &child, &request()?);
+        for length in 0..encoded.len() {
+            assert!(decode_parent_finish(&parent, &child, &encoded[..length]).is_err());
+        }
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert_eq!(
+            decode_parent_finish(&parent, &child, &trailing),
+            Err(WireError::Malformed)
+        );
+
+        let other_parent = ApprovalParentHello::new(
+            parent.process_id(),
+            parent.process_handle(),
+            parent.image_handle(),
+            [0x33; 32],
+        )?;
+        assert_eq!(
+            decode_parent_finish(&other_parent, &child, &encoded),
+            Err(WireError::Malformed)
+        );
+        let other_child = ApprovalChildHello::new([0x44; 32])?;
+        assert_eq!(
+            decode_parent_finish(&parent, &other_child, &encoded),
+            Err(WireError::Malformed)
+        );
+
+        let mut oversized = vec![0_u8; MAX_PARENT_FINISH_BYTES + 1];
+        oversized[..8].copy_from_slice(PARENT_FINISH_MAGIC);
+        assert_eq!(
+            decode_parent_finish(&parent, &child, &oversized),
+            Err(WireError::TooLarge)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_frame_types_and_magics_cannot_cross() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let child = child_hello()?;
+        let parent_bytes = encode_parent_hello(&parent);
+        let child_bytes = encode_child_hello(&parent, &child);
+        let finish_bytes = encode_parent_finish(&parent, &child, &request()?);
+
+        assert_eq!(
+            decode_child_hello(&parent, &parent_bytes),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(decode_parent_hello(&child_bytes), Err(WireError::Malformed));
+        assert_eq!(
+            decode_parent_finish(&parent, &child, &child_bytes),
+            Err(WireError::Malformed)
+        );
+
+        let mut parent_with_child_magic = parent_bytes;
+        parent_with_child_magic[..8].copy_from_slice(CHILD_HELLO_MAGIC);
+        assert_eq!(
+            decode_parent_hello(&parent_with_child_magic),
+            Err(WireError::Malformed)
+        );
+        let mut child_with_parent_magic = child_bytes;
+        child_with_parent_magic[..8].copy_from_slice(PARENT_HELLO_MAGIC);
+        assert_eq!(
+            decode_child_hello(&parent, &child_with_parent_magic),
+            Err(WireError::Malformed)
+        );
+        let mut finish_with_parent_magic = finish_bytes;
+        finish_with_parent_magic[..8].copy_from_slice(PARENT_HELLO_MAGIC);
+        assert_eq!(
+            decode_parent_finish(&parent, &child, &finish_with_parent_magic),
+            Err(WireError::Malformed)
+        );
+        Ok(())
     }
 
     #[test]

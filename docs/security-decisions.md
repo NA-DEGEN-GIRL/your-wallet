@@ -15,8 +15,12 @@ storage-object proof. The child exposes no runtime or signing protocol.
 `native-host` validates one bounded persistent stream, returns error 4900 for
 each valid request without reaching a Broker, then exits 78 on EOF or the first
 terminal error. The UI helpers have opt-in inherited-stream runtime
-entry points for contract testing, but `COMPILED_RELEASE_POLICY` is `None`, so
-no ordinary build can complete restricted launch or reach signing. Activating
+entry points for contract testing. Raw or legacy direct Approval launch cannot
+complete the parent-auth exchange and fails without diagnostics.
+`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` are `None`, so no
+ordinary build can complete restricted launch or reach signing. There are zero
+production orchestration callers composing `launch_approval_frontend` through a
+verified response into signing, and no positive signed-handshake E2E. Activating
 the helpers through exact signed-artifact attestation and the end-to-end suite
 remain release blockers.
 
@@ -331,15 +335,56 @@ conversion, it requires stdin to differ from stdout, requires stdout and stderr
 to be the same numeric handle-table value, and requires both unique objects to
 be exact `PIPE`s with preflags exactly `HANDLE_FLAG_INHERIT`. It attempts both
 inherit-bit clears without rollback and accepts only exact-zero readback for
-both. A repo-local child/grandchild kernel test makes a separate positive
-sentinel inheritable and uses `CompareObjectHandles` to prove that the sentinel
-reaches a broad-inheritance grandchild while neither original exact stdio object
-does. The sequential clears are non-atomic and do not prevent later re-enabling
-or explicit duplication. This two-object negative is not exhaustive stray-
-handle enumeration or evidence for the exact signed artifact, intended
-supervisor topology, immutable installation, DLL/dependency identity, or
-release activation. Default Approval builds still exit 78 and
-`COMPILED_RELEASE_POLICY` remains `None`.
+both. The launcher `HANDLE_LIST` remains limited to the two synchronous server
+pipe ends inherited by the child; the parent retains the corresponding
+overlapped client ends. While the child is suspended, the launcher remotely
+injects parent-process and parent-image proof handles with inheritance disabled.
+After sealing stdio, the child verifies the Approval LPAC and Job and requires
+the two stdio objects and two proof objects to be four pairwise-distinct exact
+objects with zero flags. Its pipe-peer check correlates only the client
+PID/session reported by both child-held server ends with the process-proof PID
+and child session; it is not an exact endpoint/process-object capability. The
+image check applies case-preserving exact normalized path-string equality: it
+normalizes only an optional `\\?\` prefix and separators and compares the live
+process image path with a separate held file's final path; a casing mismatch
+fails closed. It then checks the held path's `\\key-agent.exe` suffix and version
+metadata, supplies the held handle plus path to Authenticode signer validation,
+and computes SHA-256 through a cloned held handle against the compiled policy. It does not prove that the live
+process was mapped from that exact file object.
+
+The parent-auth exchange order is a fixed 62-byte parent hello, fixed 106-byte
+child hello, a 110-byte parent-finish header plus exact request and request EOF,
+then a fixed 75-byte response and response EOF. A fresh nonzero parent nonce and
+independently fresh nonzero child nonce are bound by the child's
+domain-separated SHA-256 bootstrap transcript. The parent-finish header binds
+both nonces, the canonical request hash, and the exact request length. After
+response-plus-EOF the parent locally hashes held child PID/file identity,
+manifest digest, profile revision, request digest, one-shot Approval nonce and
+canonical request hash, exact response bytes, fresh local channel challenge,
+and both bootstrap nonces. Job policy/membership is a live gate, not hashed
+identity. The fixed 75-byte response is ordered as magic, version, decision,
+request digest, and the one-shot Approval request nonce. Only the digest and
+nonce echo request fields; neither bootstrap nonce is echoed. Replay resistance
+therefore also depends on the private one-shot endpoint and a fresh one-shot
+Approval request nonce. Raw or legacy direct launch fails silently.
+
+A repo-local child/grandchild kernel test makes a separate positive sentinel
+inheritable and uses `CompareObjectHandles` to prove that the sentinel reaches
+a broad-inheritance grandchild while neither original exact stdio object does.
+The sequential clears are non-atomic and do not prevent later re-enabling or
+explicit duplication. This remains a two-object negative, not a four-object
+grandchild proof; it is not exhaustive stray-handle enumeration or evidence for
+the exact signed artifact, intended supervisor topology, immutable
+installation, DLL/dependency identity, or release activation. Signed
+release-path positive evidence covering case-sensitive directories and
+alternate path forms, live mapped exact-file-object proof, the complete
+DLL/dependency graph, immutable installation, a supervisor-held activation
+capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
+are zero production orchestration callers composing `launch_approval_frontend`
+through a verified response into signing and no positive signed-handshake E2E.
+`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default
+Approval builds still exit 78. No signed-artifact, topology, or release evidence
+is claimed.
 
 The runtime-enabled Secret Input/recovery child instead has two unique stdio
 objects: stdin and one stdout/stderr pipe. Its first Windows/CRT application
@@ -419,9 +464,21 @@ Before any real mainnet value is used, the Windows build must prove:
    the exact signed image and intended supervisor. The runtime-enabled Approval
    child likewise seals its two unique pipe objects first, requires stdout and
    stderr to be the same numeric handle value, and has a positive-sentinel
-   grandchild negative for those exact objects. Its sequential clears are not
-   atomic, do not prevent later re-enabling or explicit duplication, and are not
-   exhaustive enumeration or exact signed-artifact/topology evidence. The
+   grandchild negative for those exact objects. Its `HANDLE_LIST` still carries
+   only those two objects; the suspended child separately receives
+   non-inheritable parent-process and parent-image proofs and validates all four
+   objects as pairwise distinct with zero flags after its Approval
+   LPAC/Job/pipe-peer checks. The child holds synchronous server pipe ends and
+   the parent holds overlapped client ends, but the peer queries establish only
+   PID/session correlation, not an exact endpoint/process-object capability.
+   Likewise, the case-preserving exact normalized process/held-file path-string
+   equality, held-path suffix/version metadata, held-handle-plus-path
+   Authenticode validation, and cloned-held-handle SHA do not prove the mapped
+   exact file object. The positive-sentinel test still covers
+   only the two stdio
+   objects. Its sequential clears are not atomic, do not prevent later
+   re-enabling or explicit duplication, and are not exhaustive enumeration or
+   exact signed-artifact/topology evidence. The
    runtime-enabled Secret Input/recovery child likewise seals its two unique
    stdio objects first,
    accepts its two parent-proof handles only with exact-zero flags, validates
@@ -470,7 +527,25 @@ Before any real mainnet value is used, the Windows build must prove:
    nonce, timeout/cancellation, extra-output rejection, and inherited-handle
    enumeration through the real helper entry point. The repo-local Approval
    two-object and Secret Input four-object negatives do not satisfy this exact-
-   artifact enumeration.
+   artifact enumeration. Approval evidence must additionally exercise the fixed
+   62-byte parent hello, fixed 106-byte child hello, fresh nonzero parent and
+   child nonces, 110-byte finish header, exact request EOF, fixed 75-byte response
+   and response EOF, and the exact transcript fields: held child PID/file
+   identity, manifest/profile, request digest/one-shot nonce/hash, response,
+   local challenge, and both bootstrap nonces. Job policy/membership must remain
+   a separately revalidated live gate, not be described as hashed identity. The
+   response does not echo the bootstrap nonces, so replay evidence must also
+   cover the private one-shot endpoint and fresh one-shot Approval request nonce.
+   Signed release evidence must cover case-sensitive directories and alternate
+   path forms and prove the live mapped exact file object, complete
+   DLL/dependency graph, immutable installation, a supervisor-held activation
+   capability, and exact endpoint topology/exclusivity; PID/session pipe
+   correlation and separate held-file
+   policy checks are insufficient. There are currently zero production callers
+   composing `launch_approval_frontend` through verified response into signing
+   and no positive signed-handshake E2E. Raw/legacy silent failure and local wire
+   tests do not provide signed-artifact, supervisor-topology, or release-
+   activation evidence.
 9. Production wiring for the implemented sealed Key Agent settings lifecycle.
    The platform store now reserves a dedicated `LocalSettings` record class,
    and the private fixed-role adapter can open that class, but no production

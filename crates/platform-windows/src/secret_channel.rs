@@ -141,7 +141,7 @@ pub(crate) fn launch_secret_input_frontend(
 
     let pipes = PrivateSecretInputPipes::create().map_err(map_setup_pipe_error)?;
     let held_process = {
-        let inherited = InheritedStdio::for_secret_input_servers(
+        let inherited = InheritedStdio::for_child_pipe_servers(
             pipes.child_input(),
             pipes.child_output(),
             pipes.child_output(),

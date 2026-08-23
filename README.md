@@ -600,19 +600,57 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
-- runtime-enabled Approval 자식도 binary mode보다 앞선 첫 Windows/CRT application
-  동작에서 세 숫자 stdio 값을 가져와 정확히 두 개의 서로 다른 `PIPE` 객체를
-  요구합니다. stdin과 stdout은 다르고, stdout과 stderr는 같은 숫자 handle 값이어야
-  합니다. 두 unique 객체의 preflags가 각각 정확히 `HANDLE_FLAG_INHERIT`인지 모두
-  변경 전에 확인하고, rollback 없이 두 inherit bit 제거를 모두 시도한 뒤 양쪽의
-  exact-zero readback을 요구합니다. 별도 inheritable positive sentinel을 둔 repo-local
-  child/grandchild 커널 테스트는 broad-inheritance grandchild에 sentinel은 도달하지만
-  원래의 두 exact stdio 객체는 도달하지 않음을 `CompareObjectHandles`로 확인합니다.
-  이 순차 clear는 원자적이지 않고 이후 inherit-bit 재설정이나 explicit duplication을
-  막지 않습니다. 이 two-object 음성은 stray handle 전체의 exhaustive enumeration,
-  exact signed helper/intended supervisor topology, immutable install, DLL/dependency identity
-  또는 release activation 증거가 아닙니다. default `approval-ui`는 계속 exit 78이며
-  `COMPILED_RELEASE_POLICY`도 계속 `None`입니다.
+- runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
+  stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
+  synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
+  보유합니다. parent-process와 parent-image proof handle은 Approval 자식이 suspended인
+  동안 inherit 불가 상태로 원격 주입됩니다. 자식은 binary mode보다 앞선 첫
+  Windows/CRT application 동작에서 두 stdio 객체의 `HANDLE_FLAG_INHERIT`인 exact
+  inherit-only preflags를 확인하고 rollback 없는 순차 clear와 exact-zero readback으로
+  먼저 봉인합니다. 그 뒤 Approval LPAC, Job, pipe peer를
+  검증하고, 봉인된 stdin, shared output pipe, process proof, image proof가 모두 flags
+  0인 네 pairwise-distinct exact object인지 확인합니다. pipe peer 검사는 두 pipe가
+  보고한 client PID/session의 일치와 process proof PID 및 자식 session의 상관관계만
+  확인합니다. 이는 exact pipe endpoint/process-object capability가 아닙니다. image
+  proof는 case-preserving exact normalized path-string equality를 사용합니다. 즉 live
+  process image path와 별도 held file final path에서 선택적인 `\\?\` prefix와
+  separator만 정규화하고, ambiguous casing은 fail closed입니다. 이어 held path의
+  `\\key-agent.exe` suffix와 held-handle-derived path로 다시 조회한 version metadata를
+  검사하고, held handle+path를 사용한 Authenticode signer 검증과 cloned held handle의
+  SHA-256를 수행합니다. 따라서 live process가 그 exact file
+  object에서 mapped되었다는 증명은 아닙니다.
+
+  Parent-auth 순서는 고정 62-byte parent hello, 고정 106-byte child hello,
+  110-byte parent-finish header와 exact request 및 request EOF, 고정 75-byte response와
+  response EOF입니다. fresh nonzero parent nonce와 독립적인 fresh nonzero child nonce가
+  domain-separated SHA-256 bootstrap transcript에 묶이고, parent-finish header는 두
+  nonce, canonical request hash, exact request length를 함께 묶습니다. 자식은 그 길이의
+  request 뒤 exact EOF가 있어야만 수락합니다. 부모가 response와 EOF 뒤 로컬에서
+  계산하는 transcript는 held child PID/file identity, manifest digest, profile revision,
+  request digest/one-shot Approval nonce/canonical hash, exact response bytes, fresh local
+  channel challenge, 두 bootstrap nonce를 해시합니다. Job은 별도로 재검증되는
+  live gate이지 hashed identity가 아닙니다. 고정 75-byte response는 magic, version,
+  decision, request digest, one-shot Approval request nonce 순서이며, request에서
+  echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce는 echo하지 않습니다.
+  따라서 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request
+  nonce에도 의존합니다. raw/legacy direct launch는 이 교환을 만들 수 없어 진단 없이
+  실패합니다.
+
+  별도 inheritable positive sentinel을 둔 repo-local child/grandchild 커널 테스트는
+  sentinel은 broad-inheritance grandchild에 도달하지만 원래의 두 exact stdio
+  객체는 도달하지 않음만 `CompareObjectHandles`로 확인합니다. 주입된 두 proof까지
+  포함한 four-object grandchild 증거는 아닙니다. stdio 순차 clear는 원자적이지 않고
+  이후 inherit-bit 재설정이나 explicit duplication을 막지 않으며, 이 two-object
+  음성은 stray handle 전체의 exhaustive enumeration, exact signed artifact,
+  intended supervisor topology, immutable install, DLL/dependency identity 또는 release
+  activation 증거가 아닙니다. case-sensitive directory와 alternate path form을 포괄하는
+  signed release-path positive evidence, live mapped exact file object, complete
+  DLL/dependency graph, immutable installation, supervisor-held activation capability,
+  exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다. 현재
+  `launch_approval_frontend`에서 verified response를 거쳐 signing까지 잇는
+  production orchestration caller는 0개이고 positive signed handshake E2E도 없습니다.
+  `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고 default
+  `approval-ui`는 계속 exit 78이므로 release activation은 fail closed입니다.
 - runtime-enabled Secret Input/recovery 자식도 첫 Windows/CRT application 동작에서
   stdin과 stdout=stderr인 두 unique `PIPE` 객체가 서로 다르고 flags가 정확히
   `HANDLE_FLAG_INHERIT`인지 먼저 검증한 뒤, 두 inherit bit를 모두 제거하고 exact-zero

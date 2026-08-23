@@ -9,7 +9,14 @@
 use core::fmt;
 use std::time::{Duration, Instant};
 
-use approval_wire::{ApprovalRequest, Decision, RESPONSE_BYTES, decode_response, request_hash};
+use approval_wire::{
+    ApprovalChildHello, ApprovalParentHello, ApprovalRequest, Decision, RESPONSE_BYTES,
+    decode_response, request_hash,
+};
+#[cfg(windows)]
+use approval_wire::{
+    CHILD_HELLO_BYTES, decode_child_hello, encode_parent_finish, encode_parent_hello,
+};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -18,12 +25,15 @@ use crate::{helper::FileIdentity, launch::HeldProcessIdentity};
 #[cfg(windows)]
 use crate::{
     helper::VerifiedHelper,
-    launch::{InheritedStdio, LaunchError, LaunchedHelper, RestrictedLauncher},
+    launch::{
+        InheritedStdio, InjectedParentProof, LaunchError, LaunchedHelper, RestrictedLauncher,
+    },
     pipe::{ApprovalResponseReader, PipeError, PrivateApprovalPipes},
 };
 
-const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v2";
+const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v3";
 const CHANNEL_CHALLENGE_BYTES: usize = 32;
+const TERMINATION_GRACE: Duration = Duration::from_secs(5);
 
 /// Decision decoded from the fixed approval-helper wire format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,9 +94,11 @@ pub enum ApprovalLaunchError {
 /// two unguessable local-only pipe instances, puts only the child read/write
 /// endpoints in the restricted launcher's explicit inherited-handle list,
 /// starts the held LPAC helper, closes the parent's copies of the child ends,
-/// and writes the complete canonical request before returning. Standard error
-/// is intentionally the same child response endpoint, so any diagnostic output
-/// makes the fixed response malformed instead of bypassing transcript checks.
+/// authenticates the injected parent proof through a two-nonce bootstrap, and
+/// writes the nonce- and hash-bound canonical request before returning. Standard
+/// error is intentionally the same child response endpoint, so any diagnostic
+/// output makes the fixed response malformed instead of bypassing transcript
+/// checks.
 ///
 /// Development builds still fail in `RestrictedLauncher::spawn` because the
 /// compiled release policy is absent. Every partial resource is owned by a
@@ -111,10 +123,17 @@ pub fn launch_approval_frontend(
             request.expires_after_milliseconds(),
         )))
         .ok_or(ApprovalLaunchError::DeadlineElapsed)?;
-    let request_bytes = approval_wire::encode_request(request);
+    let mut parent_nonce = Zeroizing::new([0_u8; CHANNEL_CHALLENGE_BYTES]);
+    getrandom::fill(&mut *parent_nonce)
+        .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
+    if is_all_zero(&*parent_nonce) {
+        return Err(ApprovalLaunchError::Channel(
+            ApprovalChannelError::TranscriptFailure,
+        ));
+    }
     let pipes = PrivateApprovalPipes::create().map_err(map_setup_pipe_error)?;
     let held_process = {
-        let inherited = InheritedStdio::new(
+        let inherited = InheritedStdio::for_child_pipe_servers(
             pipes.child_input(),
             pipes.child_output(),
             pipes.child_output(),
@@ -124,25 +143,81 @@ pub fn launch_approval_frontend(
             .spawn(helper, &inherited)
             .map_err(ApprovalLaunchError::Launch)?
     };
-    let identity = held_process.identity();
-    let (writer, reader) = pipes.into_parent();
-    writer
-        .write_all(&request_bytes, expires_at)
-        .map_err(map_setup_pipe_error)?;
-    let channel = ApprovalResponseChannel::arm_from_branded_reader(
-        identity,
-        request,
-        expires_at,
-        Box::new(PlatformResponseReader(reader)),
-    )
-    .map_err(|error| match error {
-        ApprovalChannelError::DeadlineElapsed => ApprovalLaunchError::DeadlineElapsed,
-        _ => ApprovalLaunchError::Channel(error),
-    })?;
-    Ok(PendingApproval {
-        helper: held_process,
-        channel,
-    })
+    let setup = (|| -> Result<ApprovalResponseChannel, ApprovalLaunchError> {
+        let proof = require_parent_proof(held_process.parent_proof())?;
+        let parent_hello = ApprovalParentHello::new(
+            proof.process_id(),
+            proof.process_handle(),
+            proof.image_handle(),
+            *parent_nonce,
+        )
+        .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
+        let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello));
+        let (mut writer, reader) = pipes.into_parent();
+        writer
+            .write_bytes(&*encoded_parent_hello, expires_at)
+            .map_err(map_setup_pipe_error)?;
+        let child_hello_bytes = reader
+            .read_exact(CHILD_HELLO_BYTES, expires_at)
+            .map_err(map_setup_pipe_error)?;
+        let child_hello = decode_child_hello(&parent_hello, &child_hello_bytes)
+            .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
+        let bootstrap_nonces =
+            BootstrapNonces::from_hellos(*parent_nonce, &parent_hello, &child_hello)
+                .map_err(ApprovalLaunchError::Channel)?;
+        let channel = ApprovalResponseChannel::arm_from_held_helper(
+            helper,
+            &held_process,
+            request,
+            expires_at,
+            bootstrap_nonces,
+            Box::new(PlatformResponseReader(reader)),
+        )
+        .map_err(|error| match error {
+            ApprovalChannelError::DeadlineElapsed => ApprovalLaunchError::DeadlineElapsed,
+            _ => ApprovalLaunchError::Channel(error),
+        })?;
+        let parent_finish =
+            Zeroizing::new(encode_parent_finish(&parent_hello, &child_hello, request));
+        writer
+            .write_all(parent_finish.as_slice(), expires_at)
+            .map_err(map_setup_pipe_error)?;
+        Ok(channel)
+    })();
+    match setup {
+        Ok(channel) => Ok(PendingApproval {
+            helper: held_process,
+            channel,
+        }),
+        Err(error) => {
+            // Cleanup gets its own finite grace period: request expiry must not
+            // skip the synchronous reap attempt after terminating the Job.
+            let _ = held_process.terminate_and_wait(cleanup_deadline());
+            Err(error)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn require_parent_proof(
+    proof: Option<InjectedParentProof>,
+) -> Result<InjectedParentProof, ApprovalLaunchError> {
+    proof.ok_or(ApprovalLaunchError::Channel(
+        ApprovalChannelError::IdentityMismatch,
+    ))
+}
+
+#[cfg(windows)]
+fn matches_verified_approval_helper(
+    verified_helper: &VerifiedHelper,
+    helper_file: FileIdentity,
+    helper_manifest_digest: [u8; 32],
+    is_held_in_job: bool,
+) -> bool {
+    verified_helper.is_approval_frontend()
+        && helper_file == verified_helper.identity()
+        && helper_manifest_digest == verified_helper.manifest_digest()
+        && is_held_in_job
 }
 
 #[cfg(windows)]
@@ -247,6 +322,36 @@ impl VerifiedApprovalResponse {
 /// handle included in the helper's inherited list. Accepting an arbitrary file,
 /// raw handle, PID, or byte slice here would invalidate the authentication
 /// claim.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct BootstrapNonces {
+    parent: [u8; CHANNEL_CHALLENGE_BYTES],
+    child: [u8; CHANNEL_CHALLENGE_BYTES],
+}
+
+impl BootstrapNonces {
+    fn from_hellos(
+        expected_parent: [u8; CHANNEL_CHALLENGE_BYTES],
+        parent_hello: &ApprovalParentHello,
+        child_hello: &ApprovalChildHello,
+    ) -> Result<Self, ApprovalChannelError> {
+        let nonces = Self::new(parent_hello.parent_nonce(), child_hello.child_nonce())?;
+        if nonces.parent != expected_parent {
+            return Err(ApprovalChannelError::TranscriptFailure);
+        }
+        Ok(nonces)
+    }
+
+    fn new(
+        parent: [u8; CHANNEL_CHALLENGE_BYTES],
+        child: [u8; CHANNEL_CHALLENGE_BYTES],
+    ) -> Result<Self, ApprovalChannelError> {
+        if is_all_zero(&parent) || is_all_zero(&child) {
+            return Err(ApprovalChannelError::TranscriptFailure);
+        }
+        Ok(Self { parent, child })
+    }
+}
+
 struct ApprovalResponseChannel {
     bound_identity: TranscriptIdentity,
     expected_digest: [u8; 32],
@@ -254,6 +359,8 @@ struct ApprovalResponseChannel {
     expected_request_hash: [u8; 32],
     expires_at: Instant,
     channel_challenge: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
+    parent_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
+    child_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
     reader: Box<dyn OneShotResponseReader>,
 }
 
@@ -274,15 +381,26 @@ impl ApprovalResponseChannel {
         self,
         helper: LaunchedHelper,
     ) -> Result<VerifiedApprovalResponse, ApprovalChannelError> {
-        if !helper.is_held_in_job() {
-            return Err(ApprovalChannelError::IdentityMismatch);
-        }
         let actual_identity = TranscriptIdentity::from_held(helper.identity());
-        let parts = self.verify_for_identity(actual_identity);
-        // Keep both held process and job handles alive until after the response
-        // read, identity comparison, and transcript derivation have completed.
-        drop(helper);
+        let parts = helper
+            .revalidate_held_process()
+            .map_err(|_| ApprovalChannelError::IdentityMismatch)
+            .and_then(|()| self.verify_for_identity(actual_identity));
+        // Keep both exact handles alive through response verification, then
+        // terminate the one-process Job and synchronously reap the held process
+        // before releasing any approval capability. Cleanup is attempted even
+        // when live-object revalidation or response verification failed.
+        let termination =
+            helper
+                .terminate_and_wait(cleanup_deadline())
+                .map_err(|error| match error {
+                    LaunchError::TerminationDeadlineElapsed => {
+                        ApprovalChannelError::DeadlineElapsed
+                    }
+                    _ => ApprovalChannelError::ChannelFailure,
+                });
         let parts = parts?;
+        termination?;
         Ok(VerifiedApprovalResponse {
             decision: parts.decision,
             approval_digest: parts.approval_digest,
@@ -290,6 +408,29 @@ impl ApprovalResponseChannel {
             child_transcript: parts.child_transcript,
             request_hash: parts.request_hash,
         })
+    }
+
+    /// Arms a channel only after the held process still matches the verified
+    /// Approval helper artifact and its kill-on-close job remains live.
+    #[cfg(windows)]
+    fn arm_from_held_helper(
+        verified_helper: &VerifiedHelper,
+        launched_helper: &LaunchedHelper,
+        request: &ApprovalRequest,
+        expires_at: Instant,
+        bootstrap_nonces: BootstrapNonces,
+        reader: Box<dyn OneShotResponseReader>,
+    ) -> Result<Self, ApprovalChannelError> {
+        let identity = launched_helper.identity();
+        if !matches_verified_approval_helper(
+            verified_helper,
+            identity.helper_file(),
+            identity.helper_manifest_digest(),
+            launched_helper.is_held_in_job(),
+        ) {
+            return Err(ApprovalChannelError::IdentityMismatch);
+        }
+        Self::arm_from_branded_reader(identity, request, expires_at, bootstrap_nonces, reader)
     }
 
     /// Arms a channel from already branded launcher-owned resources.
@@ -300,8 +441,11 @@ impl ApprovalResponseChannel {
         bound_identity: HeldProcessIdentity,
         request: &ApprovalRequest,
         expires_at: Instant,
+        bootstrap_nonces: BootstrapNonces,
         reader: Box<dyn OneShotResponseReader>,
     ) -> Result<Self, ApprovalChannelError> {
+        let bootstrap_nonces =
+            BootstrapNonces::new(bootstrap_nonces.parent, bootstrap_nonces.child)?;
         let mut challenge = Zeroizing::new([0_u8; CHANNEL_CHALLENGE_BYTES]);
         getrandom::fill(&mut *challenge).map_err(|_| ApprovalChannelError::TranscriptFailure)?;
         if is_all_zero(&*challenge) {
@@ -317,6 +461,8 @@ impl ApprovalResponseChannel {
             expected_request_hash: request_hash(request),
             expires_at,
             channel_challenge: challenge,
+            parent_bootstrap_nonce: Zeroizing::new(bootstrap_nonces.parent),
+            child_bootstrap_nonce: Zeroizing::new(bootstrap_nonces.child),
             reader,
         })
     }
@@ -327,6 +473,12 @@ impl ApprovalResponseChannel {
     ) -> Result<VerifiedResponseParts, ApprovalChannelError> {
         if actual_identity != self.bound_identity {
             return Err(ApprovalChannelError::IdentityMismatch);
+        }
+        if is_all_zero(&*self.channel_challenge)
+            || is_all_zero(&*self.parent_bootstrap_nonce)
+            || is_all_zero(&*self.child_bootstrap_nonce)
+        {
+            return Err(ApprovalChannelError::TranscriptFailure);
         }
         if deadline_elapsed(self.expires_at) {
             return Err(ApprovalChannelError::DeadlineElapsed);
@@ -347,6 +499,8 @@ impl ApprovalResponseChannel {
             return Err(ApprovalChannelError::BindingMismatch);
         }
 
+        let bootstrap_nonces =
+            BootstrapNonces::new(*self.parent_bootstrap_nonce, *self.child_bootstrap_nonce)?;
         let child_transcript = transcript_hash(
             self.bound_identity,
             self.expected_digest,
@@ -354,6 +508,7 @@ impl ApprovalResponseChannel {
             self.expected_request_hash,
             &response_bytes,
             &self.channel_challenge,
+            bootstrap_nonces,
         )?;
         let decision = match response.decision() {
             Decision::Approve => VerifiedApprovalDecision::Approve,
@@ -394,6 +549,8 @@ impl fmt::Debug for ApprovalResponseChannel {
             .field("expected_request_hash", &"[SHA-256]")
             .field("expires_at", &"[MONOTONIC DEADLINE]")
             .field("channel_challenge", &"[REDACTED]")
+            .field("parent_bootstrap_nonce", &"[REDACTED]")
+            .field("child_bootstrap_nonce", &"[REDACTED]")
             .field("reader", &"[ONE-SHOT PRIVATE PIPE]")
             .finish()
     }
@@ -465,8 +622,13 @@ fn transcript_hash(
     request_hash: [u8; 32],
     response_bytes: &[u8],
     channel_challenge: &[u8; CHANNEL_CHALLENGE_BYTES],
+    bootstrap_nonces: BootstrapNonces,
 ) -> Result<[u8; 32], ApprovalChannelError> {
-    if response_bytes.len() != RESPONSE_BYTES || is_all_zero(channel_challenge) {
+    if response_bytes.len() != RESPONSE_BYTES
+        || is_all_zero(channel_challenge)
+        || is_all_zero(&bootstrap_nonces.parent)
+        || is_all_zero(&bootstrap_nonces.child)
+    {
         return Err(ApprovalChannelError::TranscriptFailure);
     }
     let mut transcript = Sha256::new();
@@ -487,6 +649,8 @@ fn transcript_hash(
     transcript.update(request_hash);
     transcript.update(response_bytes);
     transcript.update(channel_challenge);
+    transcript.update(bootstrap_nonces.parent);
+    transcript.update(bootstrap_nonces.child);
     let digest: [u8; 32] = transcript.finalize().into();
     if is_all_zero(&digest) {
         Err(ApprovalChannelError::TranscriptFailure)
@@ -499,6 +663,12 @@ fn deadline_elapsed(expires_at: Instant) -> bool {
     Instant::now().checked_duration_since(expires_at).is_some()
 }
 
+fn cleanup_deadline() -> Instant {
+    Instant::now()
+        .checked_add(TERMINATION_GRACE)
+        .unwrap_or_else(Instant::now)
+}
+
 fn is_all_zero(bytes: &[u8]) -> bool {
     bytes.iter().all(|byte| *byte == 0)
 }
@@ -508,17 +678,21 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use approval_wire::{
-        ApprovalDisplay, ApprovalRequest, ApprovalResponse, Decision, DisplayField, FieldSemantic,
-        OperationKind, RiskLevel, SimulationStatus, encode_response, request_hash,
+        ApprovalChildHello, ApprovalDisplay, ApprovalParentHello, ApprovalRequest,
+        ApprovalResponse, Decision, DisplayField, FieldSemantic, OperationKind, RiskLevel,
+        SimulationStatus, encode_response, request_hash,
     };
     use zeroize::Zeroizing;
 
     use super::{
-        ApprovalChannelError, ApprovalResponseChannel, CHANNEL_CHALLENGE_BYTES,
+        ApprovalChannelError, ApprovalResponseChannel, BootstrapNonces, CHANNEL_CHALLENGE_BYTES,
         OneShotResponseReader, TranscriptIdentity, VerifiedApprovalDecision,
     };
     #[cfg(windows)]
-    use super::{ApprovalLaunchError, launch_approval_frontend};
+    use super::{
+        ApprovalLaunchError, launch_approval_frontend, matches_verified_approval_helper,
+        require_parent_proof,
+    };
     use crate::helper::FileIdentity;
     #[cfg(windows)]
     use crate::{
@@ -632,6 +806,24 @@ mod tests {
         challenge_byte: u8,
         expires_at: Instant,
     ) -> Result<ApprovalResponseChannel, Box<dyn std::error::Error>> {
+        channel_with_bootstrap(
+            bytes,
+            bound_identity,
+            challenge_byte,
+            [60; CHANNEL_CHALLENGE_BYTES],
+            [70; CHANNEL_CHALLENGE_BYTES],
+            expires_at,
+        )
+    }
+
+    fn channel_with_bootstrap(
+        bytes: Vec<u8>,
+        bound_identity: TranscriptIdentity,
+        challenge_byte: u8,
+        parent_bootstrap_nonce: [u8; CHANNEL_CHALLENGE_BYTES],
+        child_bootstrap_nonce: [u8; CHANNEL_CHALLENGE_BYTES],
+        expires_at: Instant,
+    ) -> Result<ApprovalResponseChannel, Box<dyn std::error::Error>> {
         let request = request()?;
         Ok(ApprovalResponseChannel {
             bound_identity,
@@ -640,6 +832,8 @@ mod tests {
             expected_request_hash: request_hash(&request),
             expires_at,
             channel_challenge: Zeroizing::new([challenge_byte; CHANNEL_CHALLENGE_BYTES]),
+            parent_bootstrap_nonce: Zeroizing::new(parent_bootstrap_nonce),
+            child_bootstrap_nonce: Zeroizing::new(child_bootstrap_nonce),
             reader: Box::new(MemoryReader { bytes, fail: false }),
         })
     }
@@ -669,6 +863,36 @@ mod tests {
         assert_eq!(verified.approval_digest, [7; 32]);
         assert_eq!(verified.challenge_nonce, [9; 32]);
         assert!(verified.child_transcript.iter().any(|byte| *byte != 0));
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_nonce_validation_rejects_zero_and_parent_substitution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent_nonce = [60; CHANNEL_CHALLENGE_BYTES];
+        let child_nonce = [70; CHANNEL_CHALLENGE_BYTES];
+        let parent_hello = ApprovalParentHello::new(41, 42, 43, parent_nonce)?;
+        let child_hello = ApprovalChildHello::new(child_nonce)?;
+
+        let validated = BootstrapNonces::from_hellos(parent_nonce, &parent_hello, &child_hello)?;
+        assert_eq!(validated.parent, parent_nonce);
+        assert_eq!(validated.child, child_nonce);
+        assert!(matches!(
+            BootstrapNonces::from_hellos(
+                [61; CHANNEL_CHALLENGE_BYTES],
+                &parent_hello,
+                &child_hello
+            ),
+            Err(ApprovalChannelError::TranscriptFailure)
+        ));
+        assert!(matches!(
+            BootstrapNonces::new([0; CHANNEL_CHALLENGE_BYTES], child_nonce),
+            Err(ApprovalChannelError::TranscriptFailure)
+        ));
+        assert!(matches!(
+            BootstrapNonces::new(parent_nonce, [0; CHANNEL_CHALLENGE_BYTES]),
+            Err(ApprovalChannelError::TranscriptFailure)
+        ));
         Ok(())
     }
 
@@ -782,14 +1006,42 @@ mod tests {
     }
 
     #[test]
-    fn replayed_wire_bytes_have_fresh_channel_transcripts() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn direct_response_replay_and_nonce_substitution_produce_distinct_transcripts()
+    -> Result<(), Box<dyn std::error::Error>> {
         let bytes = valid_bytes(Decision::Approve)?;
-        let first = channel(bytes.clone(), identity(), 50, future_deadline()?)?
-            .verify_for_identity(identity())?;
-        let second =
-            channel(bytes, identity(), 51, future_deadline()?)?.verify_for_identity(identity())?;
-        assert_ne!(first.child_transcript, second.child_transcript);
+        let first = channel_with_bootstrap(
+            bytes.clone(),
+            identity(),
+            50,
+            [60; CHANNEL_CHALLENGE_BYTES],
+            [70; CHANNEL_CHALLENGE_BYTES],
+            future_deadline()?,
+        )?
+        .verify_for_identity(identity())?;
+        let substituted_parent = channel_with_bootstrap(
+            bytes.clone(),
+            identity(),
+            50,
+            [61; CHANNEL_CHALLENGE_BYTES],
+            [70; CHANNEL_CHALLENGE_BYTES],
+            future_deadline()?,
+        )?
+        .verify_for_identity(identity())?;
+        let substituted_child = channel_with_bootstrap(
+            bytes,
+            identity(),
+            50,
+            [60; CHANNEL_CHALLENGE_BYTES],
+            [71; CHANNEL_CHALLENGE_BYTES],
+            future_deadline()?,
+        )?
+        .verify_for_identity(identity())?;
+        assert_ne!(first.child_transcript, substituted_parent.child_transcript);
+        assert_ne!(first.child_transcript, substituted_child.child_transcript);
+        assert_ne!(
+            substituted_parent.child_transcript,
+            substituted_child.child_transcript
+        );
         Ok(())
     }
 
@@ -838,6 +1090,28 @@ mod tests {
         .verify_for_identity(identity());
         assert_eq!(zero_challenge, Err(ApprovalChannelError::TranscriptFailure));
 
+        let zero_parent = channel_with_bootstrap(
+            valid_bytes(Decision::Approve)?,
+            identity(),
+            50,
+            [0; CHANNEL_CHALLENGE_BYTES],
+            [70; CHANNEL_CHALLENGE_BYTES],
+            future_deadline()?,
+        )?
+        .verify_for_identity(identity());
+        assert_eq!(zero_parent, Err(ApprovalChannelError::TranscriptFailure));
+
+        let zero_child = channel_with_bootstrap(
+            valid_bytes(Decision::Approve)?,
+            identity(),
+            50,
+            [60; CHANNEL_CHALLENGE_BYTES],
+            [0; CHANNEL_CHALLENGE_BYTES],
+            future_deadline()?,
+        )?
+        .verify_for_identity(identity());
+        assert_eq!(zero_child, Err(ApprovalChannelError::TranscriptFailure));
+
         let request = request()?;
         let failed_reader = ApprovalResponseChannel {
             bound_identity: identity(),
@@ -846,6 +1120,8 @@ mod tests {
             expected_request_hash: request_hash(&request),
             expires_at: future_deadline()?,
             channel_challenge: Zeroizing::new([50; CHANNEL_CHALLENGE_BYTES]),
+            parent_bootstrap_nonce: Zeroizing::new([60; CHANNEL_CHALLENGE_BYTES]),
+            child_bootstrap_nonce: Zeroizing::new([70; CHANNEL_CHALLENGE_BYTES]),
             reader: Box::new(MemoryReader {
                 bytes: Vec::new(),
                 fail: true,
@@ -855,6 +1131,64 @@ mod tests {
             failed_reader.verify_for_identity(identity()),
             Err(ApprovalChannelError::ChannelFailure)
         );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_injected_parent_proof_fails_closed_before_bootstrap() {
+        assert!(matches!(
+            require_parent_proof(None),
+            Err(ApprovalLaunchError::Channel(
+                ApprovalChannelError::IdentityMismatch
+            ))
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn arming_rejects_verified_artifact_role_identity_digest_or_job_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let approval = VerifiedHelper::for_approval_channel_test(true)?;
+        let other_role = VerifiedHelper::for_approval_channel_test(false)?;
+        let expected_identity = approval.identity();
+        let expected_digest = approval.manifest_digest();
+        assert!(matches_verified_approval_helper(
+            &approval,
+            expected_identity,
+            expected_digest,
+            true
+        ));
+
+        let mut substituted_identity = expected_identity;
+        substituted_identity.file_index ^= 1;
+        assert!(!matches_verified_approval_helper(
+            &approval,
+            substituted_identity,
+            expected_digest,
+            true
+        ));
+
+        let mut substituted_digest = expected_digest;
+        substituted_digest[0] ^= 1;
+        assert!(!matches_verified_approval_helper(
+            &approval,
+            expected_identity,
+            substituted_digest,
+            true
+        ));
+        assert!(!matches_verified_approval_helper(
+            &other_role,
+            expected_identity,
+            expected_digest,
+            true
+        ));
+        assert!(!matches_verified_approval_helper(
+            &approval,
+            expected_identity,
+            expected_digest,
+            false
+        ));
         Ok(())
     }
 
@@ -880,10 +1214,14 @@ mod tests {
         for _ in 0..32 {
             let launcher =
                 RestrictedLauncher::new(ReleaseAttestation::default(), NoNetworkLpacProfile::v1());
-            assert!(matches!(
-                launch_approval_frontend(launcher, &approval_frontend, &request()?),
-                Err(ApprovalLaunchError::Launch(LaunchError::ReleaseNotAttested))
-            ));
+            let result = launch_approval_frontend(launcher, &approval_frontend, &request()?);
+            assert!(
+                matches!(
+                    &result,
+                    Err(ApprovalLaunchError::Launch(LaunchError::ReleaseNotAttested))
+                ),
+                "unexpected disabled-launch result: {result:?}"
+            );
         }
         Ok(())
     }

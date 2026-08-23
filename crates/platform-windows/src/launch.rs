@@ -65,7 +65,7 @@ impl VerifiedLpacRole {
     }
 
     const fn requires_parent_proof(self) -> bool {
-        matches!(self, Self::SecretInputFrontend)
+        matches!(self, Self::ApprovalFrontend | Self::SecretInputFrontend)
     }
 }
 
@@ -145,20 +145,19 @@ impl<'handle> InheritedStdio<'handle> {
         })
     }
 
-    /// Selects the synchronous named-pipe server ends created and retained by
-    /// the crate-private Secret Input pipe owner. Some Windows versions deny
+    /// Selects synchronous named-pipe server ends created and retained by a
+    /// crate-private frontend pipe owner. Some Windows versions deny
     /// `GetNamedPipeInfo` for direction-limited server handles, so this path
-    /// validates handle liveness and non-inheritability while relying on the
-    /// unforgeable Rust owner type for the pipe-kind invariant.
-    #[allow(dead_code)] // Reserved for the private Key Agent arming seam.
-    pub(crate) fn for_secret_input_servers(
+    /// validates liveness, non-inheritability, pipe kind, and an exact current-
+    /// process client PID/session before the handle can enter the launch set.
+    pub(crate) fn for_child_pipe_servers(
         input: std::os::windows::io::BorrowedHandle<'handle>,
         output: std::os::windows::io::BorrowedHandle<'handle>,
         error: std::os::windows::io::BorrowedHandle<'handle>,
     ) -> Result<Self, LaunchError> {
-        sys::validate_live_handle(input)?;
-        sys::validate_live_handle(output)?;
-        sys::validate_live_handle(error)?;
+        sys::validate_child_pipe_server(input)?;
+        sys::validate_child_pipe_server(output)?;
+        sys::validate_child_pipe_server(error)?;
         Ok(Self {
             input,
             output,
@@ -343,7 +342,7 @@ impl HeldProcessIdentity {
 
 #[cfg(test)]
 mod debug_tests {
-    use super::{HeldProcessIdentity, NoNetworkLpacProfile};
+    use super::{HeldProcessIdentity, NoNetworkLpacProfile, VerifiedLpacRole};
     use crate::helper::FileIdentity;
 
     #[test]
@@ -369,6 +368,12 @@ mod debug_tests {
         assert!(!rendered.contains("9000000004"));
         assert!(!rendered.contains("195, 195"));
     }
+
+    #[test]
+    fn every_lpac_frontend_requires_injected_parent_proof() {
+        assert!(VerifiedLpacRole::ApprovalFrontend.requires_parent_proof());
+        assert!(VerifiedLpacRole::SecretInputFrontend.requires_parent_proof());
+    }
 }
 
 /// A process held in a single-process kill-on-close job.
@@ -381,9 +386,9 @@ pub struct LaunchedHelper {
 }
 
 /// Numeric values of the two non-inheritable proof handles injected into one
-/// suspended Secret Input child. Values are opaque and never formatted; the
-/// child validates the underlying kernel objects before accepting protocol
-/// bytes.
+/// suspended Approval or Secret Input child. Values are opaque and never
+/// formatted; the child validates the underlying kernel objects before
+/// accepting protocol bytes.
 #[cfg(windows)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct InjectedParentProof {
@@ -431,10 +436,19 @@ impl LaunchedHelper {
         self.identity
     }
 
-    /// Returns true while the process and kill-on-close job handles are owned.
+    /// Revalidates the exact held PID, process-to-Job membership, and Job limits.
     #[must_use]
     pub fn is_held_in_job(&self) -> bool {
-        !self.process.raw().is_invalid() && !self.job.raw().is_invalid()
+        self.revalidate_held_process().is_ok()
+    }
+
+    /// Requeries the live OS objects retained by this launch capability.
+    pub(crate) fn revalidate_held_process(&self) -> Result<(), LaunchError> {
+        sys::revalidate_held_process(
+            self.process.raw(),
+            self.job.raw(),
+            self.identity.process_id(),
+        )
     }
 
     #[allow(dead_code)] // Read only by the dormant private arming seam.
@@ -508,11 +522,15 @@ mod sys {
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
     };
     use windows::Win32::System::JobObjects::{
-        CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject,
     };
-    use windows::Win32::System::Pipes::GetNamedPipeInfo;
+    use windows::Win32::System::Pipes::{
+        GetNamedPipeClientProcessId, GetNamedPipeClientSessionId, GetNamedPipeInfo,
+    };
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows::Win32::System::Threading::{
         CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
@@ -974,6 +992,39 @@ mod sys {
         Ok(())
     }
 
+    pub(super) fn validate_child_pipe_server(
+        handle: BorrowedHandle<'_>,
+    ) -> Result<(), LaunchError> {
+        validate_live_handle(handle)?;
+        let raw = HANDLE(handle.as_raw_handle());
+        let mut client_process_id = 0_u32;
+        let mut client_session_id = u32::MAX;
+        // SAFETY: the borrowed server handle remains live and both outputs are
+        // initialized exact-width values. These calls reject non-server handles.
+        unsafe {
+            GetNamedPipeClientProcessId(raw, &raw mut client_process_id)
+                .map_err(|_| LaunchError::InvalidHandle)?;
+            GetNamedPipeClientSessionId(raw, &raw mut client_session_id)
+                .map_err(|_| LaunchError::InvalidHandle)?;
+        }
+        // The parent creates and retains the connected client end before this
+        // server end can enter the restricted launch handle list.
+        // SAFETY: this scalar query takes no pointers or caller-owned resources.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let mut current_session_id = u32::MAX;
+        if current_process_id == 0 || client_process_id != current_process_id {
+            return Err(LaunchError::InvalidHandle);
+        }
+        // SAFETY: the nonzero PID is the live current process and output points
+        // to one initialized DWORD.
+        unsafe { ProcessIdToSessionId(current_process_id, &raw mut current_session_id) }
+            .map_err(|_| LaunchError::InvalidHandle)?;
+        if client_session_id == u32::MAX || client_session_id != current_session_id {
+            return Err(LaunchError::InvalidHandle);
+        }
+        Ok(())
+    }
+
     pub(super) fn unique_raw_handles(handles: &InheritedStdio<'_>) -> Vec<HANDLE> {
         let candidates = [
             HANDLE(handles.input.as_raw_handle()),
@@ -1360,10 +1411,10 @@ mod sys {
         job: HANDLE,
         deadline: Instant,
     ) -> Result<(), LaunchError> {
-        let timeout = remaining_milliseconds(deadline)?;
         // SAFETY: both handles remain owned by the consuming LaunchedHelper for
         // this call. The job contains at most the one held helper process.
         unsafe { TerminateJobObject(job, 1) }.map_err(|_| LaunchError::OperatingSystem)?;
+        let timeout = remaining_milliseconds(deadline)?;
         // SAFETY: `process` is the live held process object and the finite wait
         // is bounded by the trusted monotonic deadline calculated above.
         let wait = unsafe { WaitForSingleObject(process, timeout) };
@@ -1374,6 +1425,49 @@ mod sys {
         } else {
             Err(LaunchError::OperatingSystem)
         }
+    }
+
+    pub(super) fn revalidate_held_process(
+        process: HANDLE,
+        job: HANDLE,
+        expected_process_id: u32,
+    ) -> Result<(), LaunchError> {
+        if process.is_invalid() || job.is_invalid() || expected_process_id == 0 {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: process is retained by LaunchedHelper for this scalar query.
+        let process_id = unsafe { GetProcessId(process) };
+        if process_id == 0 || process_id != expected_process_id {
+            return Err(LaunchError::SandboxVerification);
+        }
+        let mut in_job = BOOL(0);
+        // SAFETY: both retained handles are live and output is one writable BOOL.
+        unsafe { IsProcessInJob(process, Some(job), &raw mut in_job) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if !in_job.as_bool() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: output is exact writable storage and the retained Job stays live.
+        unsafe {
+            QueryInformationJobObject(
+                Some(job),
+                JobObjectExtendedLimitInformation,
+                ptr::from_mut(&mut information).cast::<c_void>(),
+                u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                    .map_err(|_| LaunchError::SandboxVerification)?,
+                None,
+            )
+        }
+        .map_err(|_| LaunchError::SandboxVerification)?;
+        let basic = &information.BasicLimitInformation;
+        if basic.LimitFlags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS == JOB_OBJECT_LIMIT(0)
+            || basic.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == JOB_OBJECT_LIMIT(0)
+            || basic.ActiveProcessLimit != 1
+        {
+            return Err(LaunchError::SandboxVerification);
+        }
+        Ok(())
     }
 
     fn remaining_milliseconds(deadline: Instant) -> Result<u32, LaunchError> {
@@ -1704,7 +1798,7 @@ mod tests {
         }
         let public_result =
             InheritedStdio::new(read.as_handle(), write.as_handle(), write.as_handle());
-        let private_result = InheritedStdio::for_secret_input_servers(
+        let private_result = InheritedStdio::for_child_pipe_servers(
             read.as_handle(),
             write.as_handle(),
             write.as_handle(),
@@ -1730,6 +1824,14 @@ mod tests {
             InheritedStdio::new(disk.as_handle(), disk.as_handle(), disk.as_handle()),
             Err(LaunchError::InvalidHandle)
         ));
+        assert!(matches!(
+            InheritedStdio::for_child_pipe_servers(
+                disk.as_handle(),
+                disk.as_handle(),
+                disk.as_handle()
+            ),
+            Err(LaunchError::InvalidHandle)
+        ));
         Ok(())
     }
 
@@ -1743,6 +1845,10 @@ mod tests {
         let borrowed = unsafe { BorrowedHandle::borrow_raw(raw_socket as RawHandle) };
         assert!(matches!(
             InheritedStdio::new(borrowed, borrowed, borrowed),
+            Err(LaunchError::InvalidHandle)
+        ));
+        assert!(matches!(
+            InheritedStdio::for_child_pipe_servers(borrowed, borrowed, borrowed),
             Err(LaunchError::InvalidHandle)
         ));
         Ok(())

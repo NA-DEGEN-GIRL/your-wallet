@@ -23,9 +23,7 @@ function sameFileSystemObjectSnapshot(left, right) {
 
 function sameRegularFileSnapshot(left, right) {
   return (
-    left.isFile() &&
-    right.isFile() &&
-    sameFileSystemObjectSnapshot(left, right)
+    left.isFile() && right.isFile() && sameFileSystemObjectSnapshot(left, right)
   );
 }
 
@@ -45,7 +43,9 @@ async function trustedRegularFileText(path) {
     !pathBefore.isFile() ||
     pathBefore.nlink !== 1n
   ) {
-    throw new Error(`trusted input must be a regular single-link file: ${path}`);
+    throw new Error(
+      `trusted input must be a regular single-link file: ${path}`,
+    );
   }
 
   const handle = await open(absolute, "r");
@@ -74,7 +74,9 @@ async function trustedDirectoryEntryInventory(path) {
   const absolute = resolve(root, path);
   const directoryBefore = await lstat(absolute, { bigint: true });
   if (directoryBefore.isSymbolicLink() || !directoryBefore.isDirectory()) {
-    throw new Error(`trusted inventory root must be a non-link directory: ${path}`);
+    throw new Error(
+      `trusted inventory root must be a non-link directory: ${path}`,
+    );
   }
   const entries = await readdir(absolute, { withFileTypes: true });
   const inventory = [];
@@ -96,7 +98,9 @@ async function trustedDirectoryEntryInventory(path) {
   if (!sameDirectorySnapshot(directoryBefore, directoryAfter)) {
     throw new Error(`trusted inventory directory changed during scan: ${path}`);
   }
-  return inventory.sort((left, right) => left.name.localeCompare(right.name, "en"));
+  return inventory.sort((left, right) =>
+    left.name.localeCompare(right.name, "en"),
+  );
 }
 
 async function repositoryCargoOverridePaths() {
@@ -139,9 +143,8 @@ function cargoLockPackageRecords(source) {
         match.groups.body,
       )?.groups.value ?? null;
     const dependencies =
-      /^dependencies\s*=\s*\[(?<body>[\s\S]*?)^\]\s*$/mu.exec(
-        match.groups.body,
-      )?.groups.body ?? "";
+      /^dependencies\s*=\s*\[(?<body>[\s\S]*?)^\]\s*$/mu.exec(match.groups.body)
+        ?.groups.body ?? "";
     return {
       name: field("name"),
       version: field("version"),
@@ -187,7 +190,9 @@ function rustLexicalCode(source) {
         }
       }
       if (depth !== 0) {
-        throw new Error("architecture scan found an unterminated Rust block comment");
+        throw new Error(
+          "architecture scan found an unterminated Rust block comment",
+        );
       }
       maskRustRange(characters, source, index, cursor);
       index = cursor;
@@ -203,7 +208,9 @@ function rustLexicalCode(source) {
         const closing = `"${hashes}`;
         const close = source.indexOf(closing, delimiter + 1);
         if (close === -1) {
-          throw new Error("architecture scan found an unterminated Rust raw string");
+          throw new Error(
+            "architecture scan found an unterminated Rust raw string",
+          );
         }
         const exclusiveEnd = close + closing.length;
         maskRustRange(characters, source, index, exclusiveEnd);
@@ -234,9 +241,10 @@ function rustLexicalCode(source) {
       continue;
     }
     if (source[index] === "'") {
-      const character = /^'(?:[^'\\\r\n]|\\(?:x[\dA-Fa-f]{2}|u\{[\dA-Fa-f_]+\}|.))'/u.exec(
-        source.slice(index),
-      );
+      const character =
+        /^'(?:[^'\\\r\n]|\\(?:x[\dA-Fa-f]{2}|u\{[\dA-Fa-f_]+\}|.))'/u.exec(
+          source.slice(index),
+        );
       if (character !== null) {
         const exclusiveEnd = index + character[0].length;
         maskRustRange(characters, source, index, exclusiveEnd);
@@ -300,7 +308,10 @@ function rustCfgMetaCallArguments(expression, name) {
       if (depth < 0) {
         return null;
       }
-    } else if ((character === "," || index === argumentsSource.length) && depth === 0) {
+    } else if (
+      (character === "," || index === argumentsSource.length) &&
+      depth === 0
+    ) {
       const argument = argumentsSource.slice(start, index).trim();
       if (argument !== "") {
         argumentsList.push(argument);
@@ -326,9 +337,7 @@ function rustCfgExpressionRequiresTest(expression) {
   if (anyArguments !== null) {
     return (
       anyArguments.length > 0 &&
-      anyArguments.every((argument) =>
-        rustCfgExpressionRequiresTest(argument),
-      )
+      anyArguments.every((argument) => rustCfgExpressionRequiresTest(argument))
     );
   }
   return false;
@@ -349,13 +358,22 @@ function withoutBottomTestModule(source) {
     return source;
   }
   if (candidates.length !== 1) {
-    throw new Error("architecture scan requires exactly one bottom Rust test module");
+    throw new Error(
+      "architecture scan requires exactly one bottom Rust test module",
+    );
   }
   const marker = candidates[0];
   const openingBrace = sourceCode.indexOf("{", marker.index);
-  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  const closingBrace = matchingRustDelimiter(
+    sourceCode,
+    openingBrace,
+    "{",
+    "}",
+  );
   if (closingBrace === -1) {
-    throw new Error("architecture scan found an unterminated bottom Rust test module");
+    throw new Error(
+      "architecture scan found an unterminated bottom Rust test module",
+    );
   }
   if (sourceCode.slice(closingBrace + 1).trim() !== "") {
     throw new Error(
@@ -375,8 +393,7 @@ function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
     if (attachedAttribute === null) {
       break;
     }
-    const openingBracket =
-      cursor + attachedAttribute[0].lastIndexOf("[");
+    const openingBracket = cursor + attachedAttribute[0].lastIndexOf("[");
     const closingBracket = matchingRustDelimiter(
       sourceCode,
       openingBracket,
@@ -430,7 +447,12 @@ function endOfRustItemAfterAttribute(sourceCode, attributeEnd) {
           brackets === 0 &&
           braces === 0
         ) {
-          const closingBrace = matchingRustDelimiter(sourceCode, index, "{", "}");
+          const closingBrace = matchingRustDelimiter(
+            sourceCode,
+            index,
+            "{",
+            "}",
+          );
           return closingBrace === -1 ? -1 : closingBrace + 1;
         }
         braces += 1;
@@ -467,7 +489,9 @@ function withoutCfgTestItems(source) {
       continue;
     }
     if (end === -1) {
-      throw new Error("architecture scan could not bound a cfg(test) Rust item");
+      throw new Error(
+        "architecture scan could not bound a cfg(test) Rust item",
+      );
     }
     maskRustRange(characters, source, attribute.index, end);
   }
@@ -585,7 +609,11 @@ function rustImplItems(source) {
 
     const delimiters = [];
     let opening = -1;
-    header: for (let cursor = index + 4; cursor < sourceCode.length; cursor += 1) {
+    header: for (
+      let cursor = index + 4;
+      cursor < sourceCode.length;
+      cursor += 1
+    ) {
       const character = sourceCode[cursor];
       switch (character) {
         case "(":
@@ -618,7 +646,9 @@ function rustImplItems(source) {
           break;
         case ";":
           if (delimiters.length === 0) {
-            throw new Error("architecture scan found an unterminated impl item");
+            throw new Error(
+              "architecture scan found an unterminated impl item",
+            );
           }
           break;
         default:
@@ -766,10 +796,13 @@ function rustUseItems(source) {
 function rustExpansionSensitiveUseItems(source) {
   return rustUseItems(source).filter((item) => {
     const code = rustLexicalCode(item.source);
-    return /\bas\s+(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\b/u.test(
-      code,
-    ) || /\b(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\s*(?=,|\}|;|\bas\b)/u.test(
-      code,
+    return (
+      /\bas\s+(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\b/u.test(
+        code,
+      ) ||
+      /\b(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\s*(?=,|\}|;|\bas\b)/u.test(
+        code,
+      )
     );
   });
 }
@@ -906,7 +939,8 @@ function rustMacroInvocations(source) {
     }
     invocations.push({
       index: match.index,
-      absolute: sourceCode.slice(Math.max(0, match.index - 2), match.index) === "::",
+      absolute:
+        sourceCode.slice(Math.max(0, match.index - 2), match.index) === "::",
       path: match.groups.path,
       normalizedPath: match.groups.path
         .split("::")
@@ -1004,7 +1038,9 @@ function rustExternalModulePaths(filePath, source, productionPaths) {
           insideCrateSource:
             sourceRelativeTarget !== "" &&
             sourceRelativeTarget !== ".." &&
-            !sourceRelativeTarget.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
+            !sourceRelativeTarget.startsWith(
+              `..${process.platform === "win32" ? "\\" : "/"}`,
+            ) &&
             !isAbsolute(sourceRelativeTarget),
           inProductionInventory: productionPaths.has(workspaceRelativeTarget),
           attributes: attributes.map((item) => compactRust(item.source)),
@@ -1053,7 +1089,10 @@ function rustUnsafeSourceInventory(files) {
 }
 
 function isRustSourceFileName(name) {
-  return name.replace(/[ .]+$/gu, "").toLowerCase().endsWith(".rs");
+  return name
+    .replace(/[ .]+$/gu, "")
+    .toLowerCase()
+    .endsWith(".rs");
 }
 
 function isCanonicalRustSourceFileName(name) {
@@ -1101,7 +1140,12 @@ function rustLexicalItemBlock(source, headerPattern) {
   if (openingBrace === -1) {
     return "";
   }
-  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  const closingBrace = matchingRustDelimiter(
+    sourceCode,
+    openingBrace,
+    "{",
+    "}",
+  );
   return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
 }
 
@@ -1127,7 +1171,12 @@ function rustTopLevelLexicalItemBlock(source, headerPattern) {
   if (openingBrace === -1) {
     return "";
   }
-  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  const closingBrace = matchingRustDelimiter(
+    sourceCode,
+    openingBrace,
+    "{",
+    "}",
+  );
   return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
 }
 
@@ -1138,7 +1187,9 @@ function rustLexicalItemBlockAtDepth(source, headerPattern, expectedDepth) {
     : `${headerPattern.flags}g`;
   const matches = [
     ...sourceCode.matchAll(new RegExp(headerPattern.source, flags)),
-  ].filter((match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth);
+  ].filter(
+    (match) => rustBraceDepthBefore(sourceCode, match.index) === expectedDepth,
+  );
   if (matches.length !== 1) {
     throw new Error(
       `architecture scan expected one Rust item at brace depth ${expectedDepth}: ${headerPattern.source}`,
@@ -1152,7 +1203,12 @@ function rustLexicalItemBlockAtDepth(source, headerPattern, expectedDepth) {
   if (openingBrace === -1) {
     return "";
   }
-  const closingBrace = matchingRustDelimiter(sourceCode, openingBrace, "{", "}");
+  const closingBrace = matchingRustDelimiter(
+    sourceCode,
+    openingBrace,
+    "{",
+    "}",
+  );
   return closingBrace === -1 ? "" : source.slice(itemStart, closingBrace + 1);
 }
 
@@ -1193,14 +1249,22 @@ function rustFunctionIndexAtDepth(source, functionName, expectedDepth) {
   return matches[0].index + functionKeyword.index;
 }
 
-function rustFunctionOuterAttributesAtDepth(source, functionName, expectedDepth) {
+function rustFunctionOuterAttributesAtDepth(
+  source,
+  functionName,
+  expectedDepth,
+) {
   return rustAttachedOuterAttributes(
     source,
     rustFunctionIndexAtDepth(source, functionName, expectedDepth),
   ).map((attribute) => normalizeRustFragment(attribute.source));
 }
 
-function rustInlineModuleOuterAttributesAtDepth(source, moduleName, expectedDepth) {
+function rustInlineModuleOuterAttributesAtDepth(
+  source,
+  moduleName,
+  expectedDepth,
+) {
   const sourceCode = rustLexicalCode(source);
   const escapedName = moduleName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const matches = [
@@ -1356,7 +1420,9 @@ async function rustProductionSources(
     const directoryBefore = await lstat(directory, { bigint: true });
     if (directoryBefore.isSymbolicLink() || !directoryBefore.isDirectory()) {
       const path = relative(root, directory).replaceAll("\\", "/");
-      throw new Error(`Rust production inventory contains a non-directory: ${path}`);
+      throw new Error(
+        `Rust production inventory contains a non-directory: ${path}`,
+      );
     }
     const entries = await readdir(directory, { withFileTypes: true });
     const caseFoldedEntryNames = new Set();
@@ -1370,9 +1436,7 @@ async function rustProductionSources(
           `Rust production entry has a forbidden Win32 trailing-dot/space alias: ${path}`,
         );
       }
-      const caseFoldedName = entry.name
-        .replace(/[ .]+$/gu, "")
-        .toLowerCase();
+      const caseFoldedName = entry.name.replace(/[ .]+$/gu, "").toLowerCase();
       if (caseFoldedEntryNames.has(caseFoldedName)) {
         const path = relative(root, directory).replaceAll("\\", "/");
         throw new Error(
@@ -1455,7 +1519,9 @@ async function repositoryPowerShellSources() {
       }
       if (entry.isSymbolicLink()) {
         const path = relative(root, absolute).replaceAll("\\", "/");
-        throw new Error(`repository inventory contains a symbolic link: ${path}`);
+        throw new Error(
+          `repository inventory contains a symbolic link: ${path}`,
+        );
       }
       if (entry.isDirectory()) {
         await walk(absolute);
@@ -1486,9 +1552,13 @@ async function repositoryPowerShellSources() {
       let source;
       if (hasUtf8Bom) {
         try {
-          source = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(3));
+          source = new TextDecoder("utf-8", { fatal: true }).decode(
+            bytes.subarray(3),
+          );
         } catch {
-          throw new Error(`PowerShell source is not valid UTF-8 with BOM: ${path}`);
+          throw new Error(
+            `PowerShell source is not valid UTF-8 with BOM: ${path}`,
+          );
         }
       } else if (bytes.every((byte) => byte <= 0x7f)) {
         source = bytes.toString("ascii");
@@ -1527,7 +1597,9 @@ async function releasePolicyTestSources() {
         bytes[1] === 0xbb &&
         bytes[2] === 0xbf
       ) {
-        throw new Error(`release-policy test must not use a UTF-8 BOM: ${path}`);
+        throw new Error(
+          `release-policy test must not use a UTF-8 BOM: ${path}`,
+        );
       }
       let source;
       try {
@@ -1592,7 +1664,9 @@ const rustBottomTestFixture = [
 ].join("\n");
 let rustBottomTestRejectedTrailingProduction = false;
 try {
-  withoutBottomTestModule(`${rustBottomTestFixture}fn hidden_production() {}\n`);
+  withoutBottomTestModule(
+    `${rustBottomTestFixture}fn hidden_production() {}\n`,
+  );
 } catch {
   rustBottomTestRejectedTrailingProduction = true;
 }
@@ -1607,7 +1681,7 @@ const rustBottomTestRequiredCfgFixtures = [
 ];
 requireInvariant(
   withoutBottomTestModule(rustBottomTestFixture) ===
-      rustBottomTestProductionFixture &&
+    rustBottomTestProductionFixture &&
     rustBottomTestRejectedTrailingProduction &&
     rustBottomProductionCapableCfgFixtures.every(
       (fixture) => withoutBottomTestModule(fixture) === fixture,
@@ -1711,7 +1785,8 @@ function requireCustomRedactedDebug(source, typeName) {
 
 function requireStableDisplay(source, typeName, stableMessage) {
   requireInvariant(
-    source.includes(`impl fmt::Display for ${typeName}`) && source.includes(stableMessage),
+    source.includes(`impl fmt::Display for ${typeName}`) &&
+      source.includes(stableMessage),
     `${typeName} Display must remain category-only and stable`,
   );
 }
@@ -1751,11 +1826,15 @@ const sepoliaDemoMain = await text("demo/sepolia-wallet/src/main.rs");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
 const sepoliaDemoErc20 = await text("demo/sepolia-wallet/src/erc20.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
-const sepoliaDemoReceiveQr = await text("demo/sepolia-wallet/src/receive_qr.rs");
+const sepoliaDemoReceiveQr = await text(
+  "demo/sepolia-wallet/src/receive_qr.rs",
+);
 const sepoliaDemoUi = await text("demo/sepolia-wallet/src/ui.rs");
 const sepoliaDemoHeadless = await text("demo/sepolia-wallet/src/headless.rs");
 const sepoliaDemoVaultV2 = await text("demo/sepolia-wallet/src/vault_v2.rs");
-const sepoliaDemoTokenStore = await text("demo/sepolia-wallet/src/token_store.rs");
+const sepoliaDemoTokenStore = await text(
+  "demo/sepolia-wallet/src/token_store.rs",
+);
 const sepoliaDemoActivityStore = await text(
   "demo/sepolia-wallet/src/activity_store.rs",
 );
@@ -1768,7 +1847,8 @@ requireInvariant(
   "Sepolia demo must remain outside the production workspace",
 );
 requireInvariant(
-  /^publish\s*=\s*false$/mu.test(sepoliaDemoManifest) && /^\[workspace\]$/mu.test(sepoliaDemoManifest),
+  /^publish\s*=\s*false$/mu.test(sepoliaDemoManifest) &&
+    /^\[workspace\]$/mu.test(sepoliaDemoManifest),
   "Sepolia demo must remain non-publishable and independently locked",
 );
 for (const productionSecretCrate of [
@@ -1821,13 +1901,16 @@ requireInvariant(
     "const SECRET_REVEAL_DURATION: Duration = Duration::from_secs(20)",
   ) &&
     sepoliaDemoUi.includes(".selectable(false)") &&
-    !/copy_text\s*\([^)]*(?:secret|reveal|mnemonic|private_key)/isu.test(sepoliaDemoUi),
+    !/copy_text\s*\([^)]*(?:secret|reveal|mnemonic|private_key)/isu.test(
+      sepoliaDemoUi,
+    ),
   "Sepolia secret reveal must stay short-lived, non-selectable, and clipboard-free",
 );
 
 const generatedChallengeBody =
-  /pub struct GeneratedBackupChallenge\s*\{(?<body>[\s\S]*?)\n\}/u.exec(sepoliaDemoUi)
-    ?.groups?.body ?? "";
+  /pub struct GeneratedBackupChallenge\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+    sepoliaDemoUi,
+  )?.groups?.body ?? "";
 const generatedConfirmationBody =
   /fn confirm_generated\([\s\S]*?(?=\n    fn ensure_generated_confirmation_live)/u.exec(
     sepoliaDemoBackend,
@@ -1835,7 +1918,7 @@ const generatedConfirmationBody =
 requireInvariant(
   sepoliaDemoBackend.includes(
     "const GENERATED_BACKUP_TTL: Duration = Duration::from_secs(120)",
-    ) &&
+  ) &&
     sepoliaDemoBackend.includes("enum PendingGeneratedStage") &&
     sepoliaDemoBackend.includes("Display") &&
     /Challenge\s*\{\s*positions:\s*\[u8;/u.test(sepoliaDemoBackend) &&
@@ -1849,15 +1932,20 @@ requireInvariant(
     sepoliaDemoUi.includes("BeginGeneratedBackupChallenge") &&
     sepoliaDemoUi.includes("confirmation: GeneratedBackupConfirmation") &&
     sepoliaDemoUi.includes("permit: &SessionPermit<'_>") &&
-    (generatedConfirmationBody.match(/ensure_generated_confirmation_live\(/gu) ?? [])
-      .length === 5 &&
+    (
+      generatedConfirmationBody.match(
+        /ensure_generated_confirmation_live\(/gu,
+      ) ?? []
+    ).length === 5 &&
     generatedConfirmationBody.indexOf("verify_generated_backup") <
       generatedConfirmationBody.indexOf("seal_vault_v2") &&
     generatedConfirmationBody.indexOf("seal_vault_v2") <
       generatedConfirmationBody.indexOf("open_vault_v2") &&
     generatedConfirmationBody.indexOf("open_vault_v2") <
       generatedConfirmationBody.indexOf("write_new_file") &&
-    sepoliaDemoUi.includes("events.retain_mut(retain_generated_backup_event)") &&
+    sepoliaDemoUi.includes(
+      "events.retain_mut(retain_generated_backup_event)",
+    ) &&
     /Event::Paste\(text\)[\s\S]*?text\.zeroize\(\)[\s\S]*?false/u.test(
       sepoliaDemoUi,
     ) &&
@@ -1874,19 +1962,24 @@ requireInvariant(
 requireInvariant(
   sepoliaDemoBackend.includes("V2(OpenedVaultV2)") &&
     sepoliaDemoBackend.includes("selected_account_index: u8") &&
-    sepoliaDemoBackend.includes("pending_generation: Option<PendingGeneratedWallet>") &&
+    sepoliaDemoBackend.includes(
+      "pending_generation: Option<PendingGeneratedWallet>",
+    ) &&
     sepoliaDemoBackend.includes("self.ensure_management_mutation_allowed()?") &&
     sepoliaDemoBackend.includes("path_may_exist(&self.pending_path)"),
   "Sepolia v2 unlock/bounded-account/pending-quarantine management boundary changed",
 );
 
 // Sepolia authenticated saved ERC-20 transfer invariants (demo-only).
-const sepoliaDemoBackendProduction = withoutBottomTestModule(sepoliaDemoBackend);
+const sepoliaDemoBackendProduction =
+  withoutBottomTestModule(sepoliaDemoBackend);
 const sepoliaDemoErc20Production = withoutBottomTestModule(sepoliaDemoErc20);
 const sepoliaDemoRpcProduction = withoutBottomTestModule(sepoliaDemoRpc);
-const sepoliaDemoReceiveQrProduction = withoutBottomTestModule(sepoliaDemoReceiveQr);
+const sepoliaDemoReceiveQrProduction =
+  withoutBottomTestModule(sepoliaDemoReceiveQr);
 const sepoliaDemoUiProduction = withoutBottomTestModule(sepoliaDemoUi);
-const sepoliaDemoHeadlessProduction = withoutBottomTestModule(sepoliaDemoHeadless);
+const sepoliaDemoHeadlessProduction =
+  withoutBottomTestModule(sepoliaDemoHeadless);
 const sepoliaDemoUiHeadlessStart = sepoliaDemoUiProduction.indexOf(
   "pub(crate) fn run_headless_smoke",
 );
@@ -1967,7 +2060,10 @@ const scrubFrontendSessionBlock = rustFunctionBlock(
   walletAppImplBlock,
   "scrub_frontend_session",
 );
-const accountPanelBlock = rustFunctionBlock(walletAppImplBlock, "account_panel");
+const accountPanelBlock = rustFunctionBlock(
+  walletAppImplBlock,
+  "account_panel",
+);
 const walletAppNewBlock = rustFunctionBlock(walletAppImplBlock, "new");
 const walletAppUnavailableBlock = rustFunctionBlock(
   walletAppImplBlock,
@@ -2061,7 +2157,10 @@ const walletAppEframeImplBlock = rustItemBlock(
   sepoliaDemoUiProduction,
   /(?:^|\n)impl eframe::App for WalletApp\s*\{/u,
 );
-const walletAppUpdateBlock = rustFunctionBlock(walletAppEframeImplBlock, "update");
+const walletAppUpdateBlock = rustFunctionBlock(
+  walletAppEframeImplBlock,
+  "update",
+);
 const receiveQrOkUiBlock = rustItemBlock(
   receiveRevealBlock,
   /(?:^|\n)\s*Ok\(qr\)\s*=>\s*\{/u,
@@ -2132,10 +2231,14 @@ requireInvariant(
     selectAccountBlock.includes("self.pending_generation.is_some()") &&
     selectAccountBlock.includes("self.selected_account_index = index") &&
     selectAccountBlock.includes("self.last_balance = None") &&
-    !/(?:write_new_file|seal_vault|token_store|fs::write)/u.test(selectAccountBlock) &&
+    !/(?:write_new_file|seal_vault|token_store|fs::write)/u.test(
+      selectAccountBlock,
+    ) &&
     lockWalletBlock.includes("self.selected_account_index = 0") &&
     openWalletBlock.includes("self.selected_account_index = 0") &&
-    walletSnapshotBlock.includes("selected_account_index: self.selected_account_index") &&
+    walletSnapshotBlock.includes(
+      "selected_account_index: self.selected_account_index",
+    ) &&
     walletSnapshotBlock.includes("pending_broadcast:") &&
     !sepoliaDemoVaultV2.includes("selected_account_index") &&
     !sepoliaDemoTokenStore.includes("selected_account_index") &&
@@ -2147,40 +2250,72 @@ requireInvariant(
     sepoliaDemoUiProduction.includes("pub selected_account_index: u8") &&
     sepoliaDemoUiProduction.includes("pub sender_account_index: u8") &&
     sepoliaDemoBackendProduction.includes("account_index: u8") &&
-    prepareNativeAccountBlock.includes("let (account_index, sender) = self.selected_account()?") &&
-    confirmAccountBlock.includes("self.selected_account_index != prepared.account_index") &&
-    confirmAccountBlock.includes("wallet.account_address(prepared.account_index)?") &&
-    confirmAccountBlock.includes("account_private_key(u32::from(prepared.account_index))") &&
-    exportSelectedAccountBlock.includes("let (selected_index, selected_address)") &&
-    exportSelectedAccountBlock.includes("let expected_index = u32::from(selected_index)") &&
-    exportSelectedAccountBlock.includes("requested_index() != expected_index") &&
-    exportSelectedAccountBlock.includes("export_account_private_key(u32::from(selected_index))") &&
+    prepareNativeAccountBlock.includes(
+      "let (account_index, sender) = self.selected_account()?",
+    ) &&
+    confirmAccountBlock.includes(
+      "self.selected_account_index != prepared.account_index",
+    ) &&
+    confirmAccountBlock.includes(
+      "wallet.account_address(prepared.account_index)?",
+    ) &&
+    confirmAccountBlock.includes(
+      "account_private_key(u32::from(prepared.account_index))",
+    ) &&
+    exportSelectedAccountBlock.includes(
+      "let (selected_index, selected_address)",
+    ) &&
+    exportSelectedAccountBlock.includes(
+      "let expected_index = u32::from(selected_index)",
+    ) &&
+    exportSelectedAccountBlock.includes(
+      "requested_index() != expected_index",
+    ) &&
+    exportSelectedAccountBlock.includes(
+      "export_account_private_key(u32::from(selected_index))",
+    ) &&
     exportSelectedAccountBlock.includes(
       "account_private_key_reveal(export, selected_index, selected_address)",
     ) &&
     tokenAccountContextBlock.includes(
       "self.token_context_for_account(self.selected_account_index)",
     ) &&
-    tokenAccountContextForAccountBlock.includes("account(usize::from(account_index))") &&
-    tokenAccountContextForAccountBlock.includes("requested_index() != expected_index") &&
-    tokenAccountContextForAccountBlock.includes("actual_index() != expected_index") &&
+    tokenAccountContextForAccountBlock.includes(
+      "account(usize::from(account_index))",
+    ) &&
+    tokenAccountContextForAccountBlock.includes(
+      "requested_index() != expected_index",
+    ) &&
+    tokenAccountContextForAccountBlock.includes(
+      "actual_index() != expected_index",
+    ) &&
     tokenAccountContextForAccountBlock.includes("account_index,") &&
-    tokenAccountContextForAccountBlock.includes("owner: *owner.address().as_bytes()") &&
+    tokenAccountContextForAccountBlock.includes(
+      "owner: *owner.address().as_bytes()",
+    ) &&
     accountSelectedUiBlock.includes("self.reauth_password.zeroize()") &&
-    accountSelectedUiBlock.includes("self.secret_text_state_purge_pending = true") &&
+    accountSelectedUiBlock.includes(
+      "self.secret_text_state_purge_pending = true",
+    ) &&
     accountSelectedUiBlock.includes("zeroize_custom_token_snapshots") &&
-    accountSelectedUiBlock.includes("zeroize_optional_string(&mut self.last_transaction_hash)"),
+    accountSelectedUiBlock.includes(
+      "zeroize_optional_string(&mut self.last_transaction_hash)",
+    ),
   "Sepolia selected account identity must stay visible and independently rebound for balance, token, signer, export, and UI scrub paths",
 );
 requireInvariant(
   secretRevealItem.includes("account_index: Option<u8>") &&
     secretRevealItem.includes("account_address: Option<Zeroizing<String>>") &&
     accountPrivateKeyRevealBlock.includes("account_index > 1") &&
-    accountPrivateKeyRevealBlock.includes("checksum_address(account_address)") &&
+    accountPrivateKeyRevealBlock.includes(
+      "checksum_address(account_address)",
+    ) &&
     mnemonicExportUiBlock.includes(
       "completed_action == Some(PendingAction::ExportMnemonic)",
     ) &&
-    mnemonicExportUiBlock.includes("reveal.kind() == SecretRevealKind::Mnemonic") &&
+    mnemonicExportUiBlock.includes(
+      "reveal.kind() == SecretRevealKind::Mnemonic",
+    ) &&
     privateKeyExportUiBlock.includes(
       "completed_action == Some(PendingAction::ExportAccountPrivateKey)",
     ) &&
@@ -2234,7 +2369,9 @@ requireInvariant(
     exactEip55Block.includes("hex.to_ascii_lowercase()") &&
     exactEip55Block.includes("Keccak256::digest(lowercase.as_bytes())") &&
     exactEip55Block.includes("byte.is_ascii_uppercase() == (nibble >= 8)") &&
-    sepoliaDemoRpcProduction.includes("pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111"),
+    sepoliaDemoRpcProduction.includes(
+      "pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111",
+    ),
   "Sepolia Receive QR must retain strict EIP-55 and only the exact address-only or native-value Sepolia payload constructors",
 );
 requireInvariant(
@@ -2259,7 +2396,9 @@ requireInvariant(
       .length === 3 &&
     parseTokenAmountBlock.includes("input.is_empty()") &&
     parseTokenAmountBlock.includes("input.trim() != input") &&
-    parseTokenAmountBlock.includes("matches!(byte, b'+' | b'-' | b'e' | b'E' | b',')") &&
+    parseTokenAmountBlock.includes(
+      "matches!(byte, b'+' | b'-' | b'e' | b'E' | b',')",
+    ) &&
     parseTokenAmountBlock.includes("let mut parts = input.split('.')") &&
     parseTokenAmountBlock.includes("parts.next().is_some()") &&
     parseTokenAmountBlock.includes("integer.is_empty()") &&
@@ -2290,7 +2429,9 @@ requireInvariant(
     ) &&
     receiveRevealBlock.includes("ui.toggle_value(") &&
     receiveRevealBlock.includes("&mut self.receive_amount_requested") &&
-    receiveAmountToggleOffBlock.includes("self.clear_receive_amount_request()") &&
+    receiveAmountToggleOffBlock.includes(
+      "self.clear_receive_amount_request()",
+    ) &&
     receiveAmountInputUiBlock.includes(
       "egui::TextEdit::singleline(&mut *self.receive_amount_eth)",
     ) &&
@@ -2298,10 +2439,14 @@ requireInvariant(
     receiveAmountInputUiBlock.includes(
       ".char_limit(crate::receive_qr::MAX_ETH_AMOUNT_INPUT_BYTES)",
     ) &&
-    receiveAmountInputUiBlock.includes("선택 계정 주소, 고정 Sepolia 체인, 요청 금액") &&
+    receiveAmountInputUiBlock.includes(
+      "선택 계정 주소, 고정 Sepolia 체인, 요청 금액",
+    ) &&
     receiveAmountInputUiBlock.includes("운영체제 클립보드") &&
     receiveAmountInputUiBlock.includes("강제 청구서나 입금 확인이 아닙니다") &&
-    receiveAmountInputUiBlock.includes("보내는 쪽이 금액을 바꾸거나 무시할 수 있으므로") &&
+    receiveAmountInputUiBlock.includes(
+      "보내는 쪽이 금액을 바꾸거나 무시할 수 있으므로",
+    ) &&
     /let receive_qr = if self\.receive_amount_requested\s*\{\s*crate::receive_qr::ReceiveQr::new_with_native_eth_amount\(\s*selected_account\.address\.as_str\(\),\s*self\.receive_amount_eth\.as_str\(\),\s*\)\s*\}\s*else\s*\{\s*crate::receive_qr::ReceiveQr::new\(selected_account\.address\.as_str\(\)\)\s*\};/u.test(
       receiveRevealBlock,
     ) &&
@@ -2311,7 +2456,9 @@ requireInvariant(
       receiveRevealBlock.indexOf("let receive_qr =") &&
     receiveQrOkUiBlock.includes("qr.payment_uri()") &&
     receiveQrOkUiBlock.includes("qr.paint(ui)") &&
-    receiveQrOkUiBlock.includes("운영체제 클립보드는 지갑 잠금 뒤에도 남을 수 있습니다") &&
+    receiveQrOkUiBlock.includes(
+      "운영체제 클립보드는 지갑 잠금 뒤에도 남을 수 있습니다",
+    ) &&
     /if ui\.button\([^{}]*\)\.clicked\(\)\s*\{\s*ui\.ctx\(\)\.copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\);/u.test(
       receiveQrOkUiBlock,
     ) &&
@@ -2321,11 +2468,17 @@ requireInvariant(
     !/(?:payment_uri|copy_text|qr\.paint|receive_amount_eth|selected_account\.address)/u.test(
       receiveQrInvalidAmountUiBlock,
     ) &&
-    (receiveRevealBlock.match(/copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\)/gu) ?? [])
-      .length === 1 &&
+    (
+      receiveRevealBlock.match(
+        /copy_text\(qr\.payment_uri\(\)\.to_owned\(\)\)/gu,
+      ) ?? []
+    ).length === 1 &&
     (sepoliaDemoUiProduction.match(/ReceiveQr::new\(/gu) ?? []).length === 2 &&
-    (sepoliaDemoUiProduction.match(/ReceiveQr::new_with_native_eth_amount\(/gu) ?? [])
-      .length === 2,
+    (
+      sepoliaDemoUiProduction.match(
+        /ReceiveQr::new_with_native_eth_amount\(/gu,
+      ) ?? []
+    ).length === 2,
   "Sepolia Receive QR amount opt-in must stay explicit, selected-account-bound, publicly disclosed, and invalid-input fail-closed",
 );
 requireInvariant(
@@ -2361,7 +2514,9 @@ requireInvariant(
       "receive_amount_eth: Zeroizing::new(String::new())",
     ) &&
     hasSensitiveSessionStateBlock.includes("self.receive_amount_requested") &&
-    hasSensitiveSessionStateBlock.includes("!self.receive_amount_eth.is_empty()") &&
+    hasSensitiveSessionStateBlock.includes(
+      "!self.receive_amount_eth.is_empty()",
+    ) &&
     clearReceiveAmountRequestNormalized ===
       "fn clear_receive_amount_request(&mut self) { self.receive_amount_requested = false; self.receive_amount_eth.zeroize(); self.secret_text_state_purge_pending = true; }" &&
     clearReceiveRequestStateNormalized ===
@@ -2375,19 +2530,26 @@ requireInvariant(
     receiveAmountTextEditIdBlock.includes(
       'egui::Id::new("sepolia-demo-receive-amount")',
     ) &&
-    secretTextEditIdsBlock.includes("fn secret_text_edit_ids() -> [egui::Id; 16]") &&
+    secretTextEditIdsBlock.includes(
+      "fn secret_text_edit_ids() -> [egui::Id; 16]",
+    ) &&
     (secretTextEditIdsBlock.match(/receive_amount_text_edit_id\(\)/gu) ?? [])
       .length === 1 &&
     purgeQueuedSecretTextEditStateBlock.includes(
       "std::mem::take(&mut self.secret_text_state_purge_pending)",
     ) &&
-    purgeQueuedSecretTextEditStateBlock.includes("purge_secret_text_edit_state(context)") &&
+    purgeQueuedSecretTextEditStateBlock.includes(
+      "purge_secret_text_edit_state(context)",
+    ) &&
     purgeSecretTextEditStateBlock.includes("state.clear_undoer()") &&
     purgeSecretTextEditStateBlock.includes(
       "data.remove::<egui::widgets::text_edit::TextEditState>(id)",
     ) &&
-    (walletAppUpdateBlock.match(/self\.purge_queued_secret_text_edit_state\(context\)/gu) ?? [])
-      .length === 2,
+    (
+      walletAppUpdateBlock.match(
+        /self\.purge_queued_secret_text_edit_state\(context\)/gu,
+      ) ?? []
+    ).length === 2,
   "Sepolia Receive QR amount state must stay private, default-off, zeroizing, exact-ID purged on live frames, and owned-input-scrubbed on Drop",
 );
 requireInvariant(
@@ -2407,7 +2569,9 @@ const receiveAmountGoldenTestNormalized = receiveAmountGoldenTestBlock
   .trim();
 requireInvariant(
   receiveAmountBoundsTestBlock.includes('("0.000000000000000001", "1")') &&
-    receiveAmountBoundsTestBlock.includes('("1.2300", "1230000000000000000")') &&
+    receiveAmountBoundsTestBlock.includes(
+      '("1.2300", "1230000000000000000")',
+    ) &&
     receiveAmountBoundsTestBlock.includes('("0001", "1000000000000000000")') &&
     receiveAmountBoundsTestBlock.includes("(MAXIMUM_ETH, MAXIMUM_WEI)") &&
     receiveAmountBoundsTestBlock.includes('"0"') &&
@@ -2443,8 +2607,11 @@ requireInvariant(
     receiveSelectedAccountTestBlock.includes(
       '"ethereum:{}@{}?value=1250000000000000000"',
     ) &&
-    (receiveSelectedAccountTestBlock.match(/!\w*qr\.payment_uri\(\)\.contains\(other\.address\.as_str\(\)\)/gu) ?? [])
-      .length === 2,
+    (
+      receiveSelectedAccountTestBlock.match(
+        /!\w*qr\.payment_uri\(\)\.contains\(other\.address\.as_str\(\)\)/gu,
+      ) ?? []
+    ).length === 2,
   "Sepolia Receive QR amount tests must retain strict syntax/uint256 boundaries, canonical selected-account value, and exact URI/matrix goldens",
 );
 requireInvariant(
@@ -2452,21 +2619,29 @@ requireInvariant(
     receiveAmountPurgeTestBlock.includes('"turn amount request off"') &&
     receiveAmountPurgeTestBlock.includes('"start account selection"') &&
     receiveAmountPurgeTestBlock.includes('"install selected account"') &&
-    receiveAmountPurgeTestBlock.includes("0 => app.clear_receive_request_state()") &&
-    receiveAmountPurgeTestBlock.includes("1 => app.clear_receive_amount_request()") &&
+    receiveAmountPurgeTestBlock.includes(
+      "0 => app.clear_receive_request_state()",
+    ) &&
+    receiveAmountPurgeTestBlock.includes(
+      "1 => app.clear_receive_amount_request()",
+    ) &&
     receiveAmountPurgeTestBlock.includes("2 => app.select_account(1)") &&
     receiveAmountPurgeTestBlock.includes(
       "app.apply_worker_event(WorkerEvent::AccountSelected(Ok(switched)))",
     ) &&
     receiveAmountPurgeTestBlock.includes("app.receive_amount_eth.is_empty()") &&
-    receiveAmountPurgeTestBlock.includes("app.secret_text_state_purge_pending") &&
+    receiveAmountPurgeTestBlock.includes(
+      "app.secret_text_state_purge_pending",
+    ) &&
     receiveAmountPurgeTestBlock.includes(
       "app.purge_queued_secret_text_edit_state(&context)",
     ) &&
     receiveAmountPurgeTestBlock.includes(
       "TextEditState::load(&context, receive_amount_id)\n                    .is_none()",
     ) &&
-    receiveAmountPurgeTestBlock.includes("WorkerCommand::SelectAccount { index: 1 }") &&
+    receiveAmountPurgeTestBlock.includes(
+      "WorkerCommand::SelectAccount { index: 1 }",
+    ) &&
     receiveAmountPurgeTestBlock.includes("command: WorkerCommand::Refresh") &&
     receiveAmountPurgeTestBlock.includes("vec![undo_key_event()]") &&
     receiveAmountPurgeTestBlock.includes("recreated.is_empty()") &&
@@ -2479,8 +2654,12 @@ requireInvariant(
     receiveAmountPanelTestBlock.includes(
       'assert!(!rendered.contains("결제 URI 복사"))',
     ) &&
-    receiveAmountPanelTestBlock.includes('assert!(!rendered.contains("ethereum:"))') &&
-    receiveAmountPanelTestBlock.includes("assert!(copy_button_rect.is_none())") &&
+    receiveAmountPanelTestBlock.includes(
+      'assert!(!rendered.contains("ethereum:"))',
+    ) &&
+    receiveAmountPanelTestBlock.includes(
+      "assert!(copy_button_rect.is_none())",
+    ) &&
     receiveAmountPanelTestBlock.includes("assert_eq!(qr_rectangles, 0)") &&
     receiveAmountPanelTestBlock.includes(
       "ReceiveQr::new_with_native_eth_amount(\n            selected.address.as_str(),",
@@ -2494,8 +2673,11 @@ requireInvariant(
     receiveAmountPanelTestBlock.includes(
       "assert!(!notice.contains(selected.address.as_str()))",
     ) &&
-    (receiveAmountPanelTestBlock.match(/command_receiver\.try_recv\(\)\.is_err\(\)/gu) ?? [])
-      .length === 4 &&
+    (
+      receiveAmountPanelTestBlock.match(
+        /command_receiver\.try_recv\(\)\.is_err\(\)/gu,
+      ) ?? []
+    ).length === 4 &&
     runHeadlessSmokeBlock.includes(
       "let amount_request = crate::receive_qr::ReceiveQr::new_with_native_eth_amount(",
     ) &&
@@ -2506,16 +2688,26 @@ requireInvariant(
     runHeadlessSmokeBlock.includes("app.select_account(1)") &&
     runHeadlessSmokeBlock.includes("!app.receive_amount_eth.is_empty()") &&
     runHeadlessSmokeBlock.includes("transitions_checked: 105") &&
-    runHeadlessSmokeBlock.includes("backend_routes_checked: backend.calls.len()") &&
+    runHeadlessSmokeBlock.includes(
+      "backend_routes_checked: backend.calls.len()",
+    ) &&
     sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 105)") &&
     sepoliaDemoUi.includes("assert_eq!(evidence.backend_routes_checked, 37)") &&
-    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 105)") &&
-    sepoliaDemoHeadless.includes("assert_eq!(report.backend_routes_checked, 37)"),
+    sepoliaDemoHeadless.includes(
+      "assert_eq!(report.transitions_checked, 105)",
+    ) &&
+    sepoliaDemoHeadless.includes(
+      "assert_eq!(report.backend_routes_checked, 37)",
+    ),
   "Sepolia Receive QR UI/headless evidence must retain invalid suppression, exact click-only copy, four live purge paths, no undo resurrection, and 105/37 accounting",
 );
 requireInvariant(
-  sepoliaDemoReceiveQrProduction.includes("const QUIET_ZONE_MODULES: u32 = 4") &&
-    sepoliaDemoReceiveQrProduction.includes("const MIN_MODULE_PIXELS: u32 = 6") &&
+  sepoliaDemoReceiveQrProduction.includes(
+    "const QUIET_ZONE_MODULES: u32 = 4",
+  ) &&
+    sepoliaDemoReceiveQrProduction.includes(
+      "const MIN_MODULE_PIXELS: u32 = 6",
+    ) &&
     qrLayoutConstructorBlock.includes(
       "let maximum_module_pixels = available_for_modules / total_modules",
     ) &&
@@ -2573,7 +2765,8 @@ requireInvariant(
     ) &&
     walletAppBlock.includes("receive_qr_visible: bool") &&
     !/(?:payment_uri|QrCode|ReceiveQr)/u.test(walletAppBlock) &&
-    (sepoliaDemoReceiveQrProduction.match(/crate::rpc::/gu) ?? []).length === 1 &&
+    (sepoliaDemoReceiveQrProduction.match(/crate::rpc::/gu) ?? []).length ===
+      1 &&
     !/(?:\bstatic\b|thread_local!|OnceLock|LazyLock|Mutex|RwLock|RefCell)/u.test(
       sepoliaDemoReceiveQrProduction,
     ) &&
@@ -2596,14 +2789,18 @@ requireInvariant(
     ) &&
     rootReadme.includes("별도의 일반 주소 복사는 그대로 사용할 수 있으며") &&
     rootReadme.includes("강제 청구서나 입금 영수증이 아니며") &&
-    rootReadme.includes("운영체제 클립보드가 지갑 잠금이나 종료 뒤에도 남을 수 있습니다") &&
+    rootReadme.includes(
+      "운영체제 클립보드가 지갑 잠금이나 종료 뒤에도 남을 수 있습니다",
+    ) &&
     rootReadme.includes("`Zeroizing` 버퍼") &&
     rootReadme.includes("별도 포렌식 삭제를 보장하지는 않습니다") &&
     /백엔드, RPC, 저장소,\s+스키마를 건드리거나 새 의존성을 추가하지 않고/u.test(
       rootReadme,
     ) &&
     rootReadme.includes("`qrcodegen =1.8.0`") &&
-    rootReadme.includes("전체 QR이 현재 보이는 영역 안에 들어오지 않으면 그리지 않고") &&
+    rootReadme.includes(
+      "전체 QR이 현재 보이는 영역 안에 들어오지 않으면 그리지 않고",
+    ) &&
     sepoliaArchitectureDoc.includes("### Sepolia demo receive QR boundary") &&
     sepoliaArchitectureDoc.includes(
       "`ethereum:<address>@11155111?value=<canonical-decimal-wei>`",
@@ -2749,14 +2946,18 @@ requireInvariant(
     !/\bpub(?:\([^)]*\))?\s+(?:snapshot|token_owner_account_index|token_owner_address|custom_tokens|token_rows_loaded|balance_refreshed|status|deferred_token_count)\s*:/u.test(
       selectedOverviewBlock,
     ) &&
-    selectedOverviewValidationBlock.includes("self.snapshot.is_well_formed()") &&
+    selectedOverviewValidationBlock.includes(
+      "self.snapshot.is_well_formed()",
+    ) &&
     selectedOverviewValidationBlock.includes(
       "account.index == self.token_owner_account_index",
     ) &&
     selectedOverviewValidationBlock.includes(
       "account.address == self.token_owner_address",
     ) &&
-    selectedOverviewValidationBlock.includes("self.custom_tokens.len() <= 32") &&
+    selectedOverviewValidationBlock.includes(
+      "self.custom_tokens.len() <= 32",
+    ) &&
     selectedOverviewValidationBlock.includes(
       ".saturating_sub(AUTO_OVERVIEW_TOKEN_LIMIT)",
     ) &&
@@ -2766,7 +2967,9 @@ requireInvariant(
     selectedOverviewValidationBlock.includes(
       "self.snapshot.balance_eth == ACCOUNT_BALANCE_UNKNOWN",
     ) &&
-    selectedOverviewValidationBlock.includes("WalletKind::LegacyV1RawPrivateKey") &&
+    selectedOverviewValidationBlock.includes(
+      "WalletKind::LegacyV1RawPrivateKey",
+    ) &&
     runtimeBalanceValidationBlock.includes(
       "amount.len() > MAX_RUNTIME_BALANCE_BYTES",
     ) &&
@@ -2794,12 +2997,20 @@ requireInvariant(
       "TOKEN_STORE_PROCESS_LOCK.lock()",
     ) &&
     tokenObservationAcquireBlock.includes("fs::symlink_metadata(&lock_path)") &&
-    tokenObservationAcquireBlock.includes("fs::symlink_metadata(token_store_path)") &&
+    tokenObservationAcquireBlock.includes(
+      "fs::symlink_metadata(token_store_path)",
+    ) &&
     tokenObservationAcquireBlock.includes("FILE_ATTRIBUTE_REPARSE_POINT") &&
     tokenObservationAcquireBlock.includes("MAX_TOKEN_STORE_BYTES") &&
-    tokenObservationAcquireBlock.includes("TokenObservationOpenError::Contended") &&
-    tokenObservationAcquireBlock.includes("TokenObservationOpenError::NotFound") &&
-    tokenObservationAcquireBlock.includes("TokenObservationOpenError::Storage") &&
+    tokenObservationAcquireBlock.includes(
+      "TokenObservationOpenError::Contended",
+    ) &&
+    tokenObservationAcquireBlock.includes(
+      "TokenObservationOpenError::NotFound",
+    ) &&
+    tokenObservationAcquireBlock.includes(
+      "TokenObservationOpenError::Storage",
+    ) &&
     !/(?:create_new|\.write(?:_all)?\s*\(|remove_file|delete|reconcile_orphan|\.flush\s*\(|sync_all|temporary_path)/u.test(
       tokenObservationAcquireBlock,
     ) &&
@@ -2840,11 +3051,15 @@ requireInvariant(
     refreshSelectedOverviewOuterBlock.includes("if result.is_err()") &&
     refreshSelectedOverviewOuterBlock.includes("self.lock()") &&
     refreshSelectedOverviewBlock.includes("self.last_balance = None") &&
-    refreshSelectedOverviewBlock.includes("let local_snapshot = self.snapshot()?") &&
+    refreshSelectedOverviewBlock.includes(
+      "let local_snapshot = self.snapshot()?",
+    ) &&
     refreshSelectedOverviewBlock.includes(
       "TokenObservationLease::acquire(&self.token_store_path)",
     ) &&
-    refreshSelectedOverviewBlock.includes("position >= AUTO_OVERVIEW_TOKEN_LIMIT") &&
+    refreshSelectedOverviewBlock.includes(
+      "position >= AUTO_OVERVIEW_TOKEN_LIMIT",
+    ) &&
     refreshSelectedOverviewBlock.includes("AUTO_OVERVIEW_DEFERRED_ERROR") &&
     initialOverviewVerifyIndex !== -1 &&
     overviewBalanceIndex > initialOverviewVerifyIndex &&
@@ -2853,8 +3068,10 @@ requireInvariant(
     finalOverviewVerifyIndex > finalOverviewPermitIndex &&
     finalOverviewLoadIndex > finalOverviewVerifyIndex &&
     overviewCacheInstallIndex > finalOverviewLoadIndex &&
-    (refreshSelectedOverviewBlock.match(/self\.rpc\.verify_sepolia\(\)/gu) ?? [])
-      .length === 2 &&
+    (
+      refreshSelectedOverviewBlock.match(/self\.rpc\.verify_sepolia\(\)/gu) ??
+      []
+    ).length === 2 &&
     refreshSelectedOverviewBlock.includes("observed_balance = None") &&
     refreshSelectedOverviewBlock.includes(
       "final_loaded.baseline.bytes != loaded.baseline.bytes",
@@ -2881,22 +3098,29 @@ requireInvariant(
     accountSelectedUiBlock.includes("self.refresh()") &&
     migratedOverviewUiBlock.includes("self.refresh()") &&
     !generatedConfirmedUiBlock.includes("self.refresh()") &&
-    (sepoliaDemoUiProduction.match(/self\.refresh\(\);/gu) ?? []).length === 5 &&
+    (sepoliaDemoUiProduction.match(/self\.refresh\(\);/gu) ?? []).length ===
+      5 &&
     executeWorkerCommandBlock.includes(
       "WorkerCommand::Refresh => WorkerEvent::Refreshed(backend.refresh(permit))",
     ) &&
     refreshedOverviewUiBlock.includes(
       "completed_action == Some(PendingAction::Refresh)",
     ) &&
-    refreshedOverviewUiBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
+    refreshedOverviewUiBlock.includes(
+      "self.session_phase == SessionPhase::Unlocked",
+    ) &&
     refreshedOverviewUiBlock.includes(
       "current.wallet_kind == overview.snapshot.wallet_kind",
     ) &&
-    refreshedOverviewUiBlock.includes("current.accounts == overview.snapshot.accounts") &&
+    refreshedOverviewUiBlock.includes(
+      "current.accounts == overview.snapshot.accounts",
+    ) &&
     refreshedOverviewUiBlock.includes(
       "current.pending_broadcast == overview.snapshot.pending_broadcast",
     ) &&
-    refreshedOverviewUiBlock.includes("current.activity == overview.snapshot.activity") &&
+    refreshedOverviewUiBlock.includes(
+      "current.activity == overview.snapshot.activity",
+    ) &&
     refreshedOverviewUiBlock.includes(
       "selected.index == overview.token_owner_account_index",
     ) &&
@@ -2904,17 +3128,22 @@ requireInvariant(
       "selected.address == overview.token_owner_address",
     ) &&
     refreshedOverviewUiBlock.includes("!overview.is_well_formed()") &&
-    refreshedOverviewUiBlock.includes("invalidate_frontend_after_backend_error") &&
+    refreshedOverviewUiBlock.includes(
+      "invalidate_frontend_after_backend_error",
+    ) &&
     !refreshedOverviewUiBlock.includes("self.refresh()") &&
     !refreshedOverviewUiBlock.includes("WorkerCommand::Refresh") &&
-    (walletAppImplBlock.match(/\bWorkerCommand::Refresh\b/gu) ?? []).length === 1 &&
+    (walletAppImplBlock.match(/\bWorkerCommand::Refresh\b/gu) ?? []).length ===
+      1 &&
     (executeWorkerCommandBlock.match(/\bWorkerCommand::Refresh\b/gu) ?? [])
       .length === 1 &&
-    (sepoliaDemoUiRuntime.match(/\bWorkerCommand::Refresh\b/gu) ?? []).length ===
-      2 &&
-    (walletAppImplBlock.match(
-      /self\.send_command\(\s*WorkerCommand::Refresh\s*,\s*PendingAction::Refresh\s*,?\s*\)/gu,
-    ) ?? []).length === 1 &&
+    (sepoliaDemoUiRuntime.match(/\bWorkerCommand::Refresh\b/gu) ?? [])
+      .length === 2 &&
+    (
+      walletAppImplBlock.match(
+        /self\.send_command\(\s*WorkerCommand::Refresh\s*,\s*PendingAction::Refresh\s*,?\s*\)/gu,
+      ) ?? []
+    ).length === 1 &&
     (sepoliaDemoUiRuntime.match(/\.\s*refresh\s*\(\s*\)/gu) ?? []).length ===
       5 &&
     !/(?:(?:\bSelf|\bWalletApp)|<(?:Self|WalletApp)>)::refresh\b/u.test(
@@ -2933,7 +3162,9 @@ requireInvariant(
   rootReadme.includes("### 선택 계정 개요 조회 경계") &&
     rootReadme.includes("ERC-20 최대 3개만 확인합니다") &&
     rootReadme.includes("체인 identity 확인 subcall은 한 작업 안에서 최대") &&
-    rootReadme.includes("개요 작업 자체를 자동으로 다시 등록하거나 timer/polling") &&
+    rootReadme.includes(
+      "개요 작업 자체를 자동으로 다시 등록하거나 timer/polling",
+    ) &&
     rootReadme.includes("빈 목록을") &&
     rootReadme.includes("단일 Sepolia RPC에 노출합니다") &&
     sepoliaArchitectureDoc.includes(
@@ -2992,7 +3223,9 @@ for (const requiredOverviewTest of [
 requireInvariant(
   preparePendingAccountBlock.includes("self.attribute_pending_sender") &&
     preparePendingAccountBlock.includes("lease.read_record()") &&
-    retryPendingAccountBlock.includes("self.verify_frozen_pending(&mut prepared, permit)") &&
+    retryPendingAccountBlock.includes(
+      "self.verify_frozen_pending(&mut prepared, permit)",
+    ) &&
     retryPendingAccountBlock.includes("prepared.raw_transaction.as_slice()") &&
     retryPendingAccountBlock.includes("prepared.lease.delete_exact") &&
     pendingLeaseBlock.includes("file: File") &&
@@ -3006,7 +3239,9 @@ requireInvariant(
     recoverPendingSenderBlock.includes("rpc::SEPOLIA_CHAIN_ID") &&
     recoverPendingSenderBlock.includes("HALF_CURVE_ORDER") &&
     recoverPendingSenderBlock.includes("recover_ecdsa") &&
-    sepoliaDemoUiProduction.includes("같은 서명 거래 다시 제출 — 2초 동안 누르기"),
+    sepoliaDemoUiProduction.includes(
+      "같은 서명 거래 다시 제출 — 2초 동안 누르기",
+    ),
   "Sepolia pending retry must recover a canonical bounded sender, freeze exact bytes under an exact-object lease, disclose it, and require a separate hold",
 );
 
@@ -3036,12 +3271,15 @@ requireInvariant(
     prepareSavedErc20Block.includes("permit: &SessionPermit<'_>") &&
     prepareSavedErc20Block.includes("load_token_store(&context)") &&
     prepareSavedErc20Block.includes("verify_token_store_baseline(") &&
-    (prepareSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? []).length === 2 &&
+    (prepareSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? [])
+      .length === 2 &&
     prepareSavedErc20Block.indexOf("estimate_erc20_transfer_gas(") <
       prepareSavedErc20Block.indexOf("erc20_transfer_preflight(") &&
     confirmSavedErc20Block.includes("permit: &SessionPermit<'_>") &&
-    (confirmSavedErc20Block.match(/verify_token_store_baseline\(/gu) ?? []).length === 2 &&
-    (confirmSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? []).length === 2 &&
+    (confirmSavedErc20Block.match(/verify_token_store_baseline\(/gu) ?? [])
+      .length === 2 &&
+    (confirmSavedErc20Block.match(/inspect_token_with_permit\(/gu) ?? [])
+      .length === 2 &&
     confirmSavedErc20Block.indexOf("estimate_erc20_transfer_gas(") <
       confirmSavedErc20Block.indexOf("erc20_transfer_preflight(") &&
     signSavedErc20Block.includes("erc20::transfer_call_data") &&
@@ -3052,7 +3290,9 @@ requireInvariant(
   "saved ERC-20 must stay distinct, authenticated, bookended, estimate-before-exact-preflight, and internally calldata-bound",
 );
 requireInvariant(
-  retryPendingBlock.includes("self.verify_frozen_pending(&mut prepared, permit)") &&
+  retryPendingBlock.includes(
+    "self.verify_frozen_pending(&mut prepared, permit)",
+  ) &&
     retryPendingBlock.includes("prepared.raw_transaction.as_slice()") &&
     retryPendingBlock.includes("prepared.lease.delete_exact") &&
     retryPendingBlock.includes("guarded_broadcast(") &&
@@ -3060,8 +3300,12 @@ requireInvariant(
       retryPendingBlock,
     ) &&
     sepoliaDemoUiProduction.includes("let CustomTokenState::Verified") &&
-    sepoliaDemoUiProduction.includes("clear_transfer_amount_after_asset_change(") &&
-    sepoliaDemoUiProduction.includes("zeroize_custom_token_snapshots(&mut self.custom_tokens)") &&
+    sepoliaDemoUiProduction.includes(
+      "clear_transfer_amount_after_asset_change(",
+    ) &&
+    sepoliaDemoUiProduction.includes(
+      "zeroize_custom_token_snapshots(&mut self.custom_tokens)",
+    ) &&
     sepoliaDemoUiProduction.includes("확인하고 전송 — 2초 동안 누르기"),
   "saved ERC-20 UI/retry path lost verified-only selection, shared hold, stale scrub, or exact-byte no-resign recovery",
 );
@@ -3245,8 +3489,12 @@ const activityRefreshedUiEnd = applyWorkerEventAtBlock.indexOf(
   activityRefreshedUiStart,
 );
 const activityRefreshedUiBlock =
-  activityRefreshedUiStart >= 0 && activityRefreshedUiEnd > activityRefreshedUiStart
-    ? applyWorkerEventAtBlock.slice(activityRefreshedUiStart, activityRefreshedUiEnd)
+  activityRefreshedUiStart >= 0 &&
+  activityRefreshedUiEnd > activityRefreshedUiStart
+    ? applyWorkerEventAtBlock.slice(
+        activityRefreshedUiStart,
+        activityRefreshedUiEnd,
+      )
     : "";
 const walletEframeAppBlock = rustItemBlock(
   sepoliaDemoUiProduction,
@@ -3269,12 +3517,16 @@ const activityHashCopyPanelTestBlock = rustFunctionBlock(
   "activity_hash_copy_panel_filters_foreign_rows_and_never_dispatches_without_click",
 );
 requireInvariant(
-  sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_CAPACITY: usize = 64") &&
+  sepoliaDemoActivityStore.includes(
+    "pub(crate) const ACTIVITY_CAPACITY: usize = 64",
+  ) &&
     sepoliaDemoActivityStore.includes("pub(crate) const ACTIVITY_FILE_BYTES") &&
     sepoliaDemoActivityStore.includes("pub(crate) enum ActivityStatus") &&
     sepoliaDemoActivityStore.includes("DroppedCandidate") &&
     sepoliaDemoActivityStore.includes("ReplacementSuspected") &&
-    sepoliaDemoActivityStore.includes("pub(crate) fn ensure_nonce_available(") &&
+    sepoliaDemoActivityStore.includes(
+      "pub(crate) fn ensure_nonce_available(",
+    ) &&
     sepoliaDemoActivityStore.includes("pub(crate) fn can_upsert(") &&
     sepoliaDemoActivityStore.includes("pub(crate) fn upsert_submitted(") &&
     sepoliaDemoActivityStore.includes("pub(crate) fn transition(") &&
@@ -3287,7 +3539,9 @@ requireInvariant(
     activityContextBlock.includes("opened.derive_activity_store_key()") &&
     !/(?:private_key|mnemonic|LegacyV1)/u.test(activityContextBlock) &&
     loadActivityStoreBlock.includes("ActivityStore::open(") &&
-    loadActivityStoreBlock.includes("wallet.account_address(entry.identity().account_index())?") &&
+    loadActivityStoreBlock.includes(
+      "wallet.account_address(entry.identity().account_index())?",
+    ) &&
     loadActivityStoreBlock.includes("*entry.identity().sender()") &&
     loadActivityStoreBlock.includes("ActivityIdentityMismatch"),
   "Sepolia activity context must remain v2-key-derived and every authenticated row must bind sender to account 0/1",
@@ -3303,7 +3557,9 @@ requireInvariant(
     activityLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
     activityLeaseImplBlock.includes("!metadata.file_type().is_file()") &&
     activityLeaseImplBlock.includes("FILE_ATTRIBUTE_REPARSE_POINT") &&
-    activityLeaseImplBlock.includes("activity_store_temporary_path(activity_store_path)") &&
+    activityLeaseImplBlock.includes(
+      "activity_store_temporary_path(activity_store_path)",
+    ) &&
     activityLeaseImplBlock.includes("reconcile_orphan_activity_temporary") &&
     activityLeaseImplBlock.includes("parent_directory") &&
     activityLeaseImplBlock.includes(".flush()"),
@@ -3313,18 +3569,28 @@ requireInvariant(
   tokenLeaseImplBlock.includes("TOKEN_STORE_PROCESS_LOCK") &&
     tokenLeaseImplBlock.includes(".share_mode(0)") &&
     tokenLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
-    tokenLeaseImplBlock.includes("token_store_temporary_path(token_store_path)") &&
+    tokenLeaseImplBlock.includes(
+      "token_store_temporary_path(token_store_path)",
+    ) &&
     tokenLeaseImplBlock.includes("reconcile_orphan_token_temporary") &&
     newV2SidecarLeaseBlock.indexOf("_token_lease: TokenMutationLease") <
-      newV2SidecarLeaseBlock.indexOf("_activity_lease: ActivityMutationLease") &&
+      newV2SidecarLeaseBlock.indexOf(
+        "_activity_lease: ActivityMutationLease",
+      ) &&
     newV2SidecarLeaseImplBlock.indexOf("TokenMutationLease::acquire") <
       newV2SidecarLeaseImplBlock.indexOf("ActivityMutationLease::acquire") &&
     newV2SidecarLeaseImplBlock.includes("lease.verify_absent()?") &&
     newV2SidecarLeaseImplBlock.includes("read_token_store_file") &&
     newV2SidecarLeaseImplBlock.includes("read_activity_store_file") &&
-    durableNamespaceParentBlock.includes("for component in [application_root, parent]") &&
-    durableNamespaceParentBlock.includes("DurableParentDirectory::open(trusted_base)") &&
-    durableNamespaceParentBlock.includes("DurableParentDirectory::open(component)") &&
+    durableNamespaceParentBlock.includes(
+      "for component in [application_root, parent]",
+    ) &&
+    durableNamespaceParentBlock.includes(
+      "DurableParentDirectory::open(trusted_base)",
+    ) &&
+    durableNamespaceParentBlock.includes(
+      "DurableParentDirectory::open(component)",
+    ) &&
     durableNamespaceParentBlock.includes("created.flush()?") &&
     durableNamespaceParentBlock.includes("current_directory.flush()?"),
   "Sepolia new-v2 namespace must reconcile both fixed temps, acquire token before activity, and durably pin every fixed parent level",
@@ -3338,14 +3604,22 @@ requireInvariant(
     writeActivityStoreBlock.includes(
       "activity_lease: &ActivityMutationLease<'_>",
     ) &&
-    writeActivityStoreBlock.includes("activity_lease.activity_store_path != path") &&
+    writeActivityStoreBlock.includes(
+      "activity_lease.activity_store_path != path",
+    ) &&
     writeActivityStoreBlock.includes(".create_new(true)") &&
     writeActivityStoreBlock.includes("file.sync_all()") &&
-    writeActivityStoreBlock.includes("verify_exact_activity_store_readback(&temporary, bytes)") &&
-    writeActivityStoreBlock.includes("atomic_replace_activity_store(&temporary, path)") &&
+    writeActivityStoreBlock.includes(
+      "verify_exact_activity_store_readback(&temporary, bytes)",
+    ) &&
+    writeActivityStoreBlock.includes(
+      "atomic_replace_activity_store(&temporary, path)",
+    ) &&
     writeActivityStoreBlock.includes("parent_directory") &&
     writeActivityStoreBlock.includes(".flush()") &&
-    persistActivityStoreBlock.includes("current.as_deref() != baseline.bytes.as_deref()") &&
+    persistActivityStoreBlock.includes(
+      "current.as_deref() != baseline.bytes.as_deref()",
+    ) &&
     persistActivityStoreBlock.includes(
       "activity_lease: &ActivityMutationLease<'_>",
     ) &&
@@ -3357,11 +3631,15 @@ requireInvariant(
     ) &&
     commitSubmittedActivityBlock.includes("self.persist_activity_store(") &&
     commitSubmittedActivityBlock.includes("activity_lease,") &&
-    persistActivityStoreBlock.includes("reopened.generation() != baseline.generation") &&
+    persistActivityStoreBlock.includes(
+      "reopened.generation() != baseline.generation",
+    ) &&
     persistActivityStoreBlock.indexOf("store.seal(&context.key)") <
       persistActivityStoreBlock.indexOf("write_atomic_activity_store(") &&
     persistActivityStoreBlock.indexOf("write_atomic_activity_store(") <
-      persistActivityStoreBlock.indexOf("verify_exact_activity_store_readback(") &&
+      persistActivityStoreBlock.indexOf(
+        "verify_exact_activity_store_readback(",
+      ) &&
     persistActivityStoreBlock.indexOf("verify_exact_activity_store_readback(") <
       persistActivityStoreBlock.lastIndexOf("ActivityStore::open(") &&
     persistActivityStoreBlock.includes("entry.identity() != expected_identity"),
@@ -3370,7 +3648,9 @@ requireInvariant(
 const nativeActivityLeaseIndex = confirmAccountBlock.indexOf(
   "ActivityMutationLease::acquire",
 );
-const nativeActivityLoadIndex = confirmAccountBlock.indexOf("load_activity_store(");
+const nativeActivityLoadIndex = confirmAccountBlock.indexOf(
+  "load_activity_store(",
+);
 const nativeCapacityIndex = confirmAccountBlock.indexOf(
   "entries().len() >= ACTIVITY_CAPACITY",
 );
@@ -3378,21 +3658,35 @@ const nativeNonceIndex = confirmAccountBlock.indexOf("ensure_nonce_available(");
 const nativeSignIndex = confirmAccountBlock.indexOf("self.sign_attempts += 1");
 const nativePendingIndex = confirmAccountBlock.indexOf("write_new_pending(");
 const nativeSendIndex = confirmAccountBlock.indexOf("guarded_broadcast(");
-const nativeCommitIndex = confirmAccountBlock.indexOf("commit_submitted_activity(");
-const nativeDeleteIndex = confirmAccountBlock.indexOf("pending_lease.delete_exact(");
+const nativeCommitIndex = confirmAccountBlock.indexOf(
+  "commit_submitted_activity(",
+);
+const nativeDeleteIndex = confirmAccountBlock.indexOf(
+  "pending_lease.delete_exact(",
+);
 const erc20ActivityLeaseIndex = confirmSavedErc20Block.indexOf(
   "ActivityMutationLease::acquire",
 );
-const erc20ActivityLoadIndex = confirmSavedErc20Block.indexOf("load_activity_store(");
+const erc20ActivityLoadIndex = confirmSavedErc20Block.indexOf(
+  "load_activity_store(",
+);
 const erc20CapacityIndex = confirmSavedErc20Block.indexOf(
   "entries().len() >= ACTIVITY_CAPACITY",
 );
-const erc20NonceIndex = confirmSavedErc20Block.indexOf("ensure_nonce_available(");
-const erc20SignIndex = confirmSavedErc20Block.indexOf("self.sign_attempts += 1");
+const erc20NonceIndex = confirmSavedErc20Block.indexOf(
+  "ensure_nonce_available(",
+);
+const erc20SignIndex = confirmSavedErc20Block.indexOf(
+  "self.sign_attempts += 1",
+);
 const erc20PendingIndex = confirmSavedErc20Block.indexOf("write_new_pending(");
 const erc20SendIndex = confirmSavedErc20Block.indexOf("guarded_broadcast(");
-const erc20CommitIndex = confirmSavedErc20Block.indexOf("commit_submitted_activity(");
-const erc20DeleteIndex = confirmSavedErc20Block.indexOf("pending_lease.delete_exact(");
+const erc20CommitIndex = confirmSavedErc20Block.indexOf(
+  "commit_submitted_activity(",
+);
+const erc20DeleteIndex = confirmSavedErc20Block.indexOf(
+  "pending_lease.delete_exact(",
+);
 requireInvariant(
   [
     nativeActivityLeaseIndex,
@@ -3436,7 +3730,7 @@ requireInvariant(
 );
 requireInvariant(
   retryPendingBlock.indexOf("ActivityMutationLease::acquire") <
-      retryPendingBlock.indexOf("load_activity_store(") &&
+    retryPendingBlock.indexOf("load_activity_store(") &&
     retryPendingBlock.indexOf("load_activity_store(") <
       retryPendingBlock.indexOf("can_upsert(&identity)") &&
     retryPendingBlock.indexOf("can_upsert(&identity)") <
@@ -3464,47 +3758,79 @@ requireInvariant(
   sepoliaDemoRpcProduction.includes("pub y_parity: u8") &&
     sepoliaDemoRpcProduction.includes("pub r: Quantity256") &&
     sepoliaDemoRpcProduction.includes("pub s: Quantity256") &&
-    (sepoliaDemoBackendProduction.match(/\.transaction_by_hash\(/gu) ?? []).length === 1 &&
+    (sepoliaDemoBackendProduction.match(/\.transaction_by_hash\(/gu) ?? [])
+      .length === 1 &&
     liveRpcImplBlock.includes(".transaction_by_hash(") &&
     liveRpcImplBlock.includes("y_parity: transaction.y_parity") &&
     liveRpcImplBlock.includes("r: Word::from_be_bytes") &&
     liveRpcImplBlock.includes("s: Word::from_be_bytes") &&
-    liveRpcImplBlock.includes("canonical_observed_type_two_bytes(&transaction)") &&
+    liveRpcImplBlock.includes(
+      "canonical_observed_type_two_bytes(&transaction)",
+    ) &&
     canonicalObservedTransactionBlock.includes("transaction.y_parity > 1") &&
     canonicalObservedTransactionBlock.includes("transaction.r.is_zero()") &&
     canonicalObservedTransactionBlock.includes("transaction.s.is_zero()") &&
     canonicalObservedTransactionBlock.includes("rpc::SEPOLIA_CHAIN_ID") &&
     canonicalObservedTransactionBlock.includes("rlp_list(&[])") &&
     canonicalObservedTransactionBlock.includes("MAX_PENDING_RAW_BYTES") &&
-    canonicalObservedTransactionBlock.includes("keccak32(raw.as_slice()) != transaction.hash") &&
-    canonicalObservedTransactionBlock.includes("recover_signed_type_two_sender(raw.as_slice())") &&
+    canonicalObservedTransactionBlock.includes(
+      "keccak32(raw.as_slice()) != transaction.hash",
+    ) &&
+    canonicalObservedTransactionBlock.includes(
+      "recover_signed_type_two_sender(raw.as_slice())",
+    ) &&
     observedPendingBlock.includes("expected_raw: &[u8]") &&
-    observedPendingBlock.includes("canonical_observed_type_two_bytes(&transaction)?") &&
+    observedPendingBlock.includes(
+      "canonical_observed_type_two_bytes(&transaction)?",
+    ) &&
     observedPendingBlock.includes("canonical.as_slice() != expected_raw"),
   "Sepolia raw transaction observations must have one reviewed RPC consumer and locally prove canonical hash, low-S sender recovery, and pending byte identity",
 );
 requireInvariant(
   migrateLegacyActivityBlock.includes("NewV2SidecarNamespaceLease::acquire(") &&
-    migrateLegacyActivityBlock.includes("PendingFileLease::open(&self.pending_path)") &&
+    migrateLegacyActivityBlock.includes(
+      "PendingFileLease::open(&self.pending_path)",
+    ) &&
     migrateLegacyActivityBlock.includes("recover_signed_type_two_sender(") &&
     migrateLegacyActivityBlock.includes("recovered != legacy_address") &&
     migrateLegacyActivityBlock.includes("DecodedPendingTransfer::Native") &&
-    (migrateLegacyActivityBlock.match(/verify_pending_lease\(/gu) ?? []).length >= 3 &&
-    migrateLegacyActivityBlock.includes("else if self.pending_broadcast_exists()") &&
-    migrateLegacyActivityBlock.includes("LegacyVaultMigrationLease::open(&self.vault_path)") &&
-    migrateLegacyActivityBlock.includes("CreatedV2VaultMigrationLease::create(") &&
-    migrateLegacyActivityBlock.indexOf("CreatedV2VaultMigrationLease::create(") <
-      migrateLegacyActivityBlock.indexOf("sidecar_namespace_lease.verify_absent()?") &&
-    migrateLegacyActivityBlock.indexOf("sidecar_namespace_lease.verify_absent()?") <
+    (migrateLegacyActivityBlock.match(/verify_pending_lease\(/gu) ?? [])
+      .length >= 3 &&
+    migrateLegacyActivityBlock.includes(
+      "else if self.pending_broadcast_exists()",
+    ) &&
+    migrateLegacyActivityBlock.includes(
+      "LegacyVaultMigrationLease::open(&self.vault_path)",
+    ) &&
+    migrateLegacyActivityBlock.includes(
+      "CreatedV2VaultMigrationLease::create(",
+    ) &&
+    migrateLegacyActivityBlock.indexOf(
+      "CreatedV2VaultMigrationLease::create(",
+    ) <
+      migrateLegacyActivityBlock.indexOf(
+        "sidecar_namespace_lease.verify_absent()?",
+      ) &&
+    migrateLegacyActivityBlock.indexOf(
+      "sidecar_namespace_lease.verify_absent()?",
+    ) <
       migrateLegacyActivityBlock.indexOf("persisted_v2_lease.install_exact(") &&
     migrateLegacyActivityBlock.indexOf("persisted_v2_lease.install_exact(") <
       migrateLegacyActivityBlock.lastIndexOf("verify_pending_lease(") &&
     migrateLegacyActivityBlock.lastIndexOf("verify_pending_lease(") <
-      migrateLegacyActivityBlock.indexOf("persisted_v2_lease.mark_committed()?") &&
+      migrateLegacyActivityBlock.indexOf(
+        "persisted_v2_lease.mark_committed()?",
+      ) &&
     migrateLegacyActivityBlock.indexOf("persisted_v2_lease.mark_committed()?") <
-      migrateLegacyActivityBlock.indexOf("legacy_lease.delete_exact(&self.vault_path)") &&
-    migrateLegacyActivityBlock.indexOf("legacy_lease.delete_exact(&self.vault_path)") <
-      migrateLegacyActivityBlock.indexOf("self.unlocked = Some(UnlockedWallet::V2(opened))") &&
+      migrateLegacyActivityBlock.indexOf(
+        "legacy_lease.delete_exact(&self.vault_path)",
+      ) &&
+    migrateLegacyActivityBlock.indexOf(
+      "legacy_lease.delete_exact(&self.vault_path)",
+    ) <
+      migrateLegacyActivityBlock.indexOf(
+        "self.unlocked = Some(UnlockedWallet::V2(opened))",
+      ) &&
     migrateLegacyActivityBlock.indexOf("self.snapshot_or_lock()") <
       migrateLegacyActivityBlock.indexOf("drop(persisted_v2_lease)") &&
     migrateLegacyActivityBlock.indexOf("drop(persisted_v2_lease)") <
@@ -3513,13 +3839,19 @@ requireInvariant(
     legacyMigrationLeaseImplBlock.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
     legacyMigrationLeaseImplBlock.includes("SetFileInformationByHandle(") &&
     legacyMigrationLeaseImplBlock.includes("FileDispositionInfo") &&
-    createdV2MigrationLeaseImplBlock.includes("vault_v2_migration_temporary_path(path)") &&
-    createdV2MigrationLeaseImplBlock.includes("reconcile_orphan_v2_migration_temporary") &&
+    createdV2MigrationLeaseImplBlock.includes(
+      "vault_v2_migration_temporary_path(path)",
+    ) &&
+    createdV2MigrationLeaseImplBlock.includes(
+      "reconcile_orphan_v2_migration_temporary",
+    ) &&
     createdV2MigrationLeaseImplBlock.includes(".create_new(true)") &&
     createdV2MigrationLeaseImplBlock.includes(".share_mode(0)") &&
     createdV2MigrationLeaseImplBlock.includes("FileRenameInfo") &&
     createdV2MigrationLeaseImplBlock.includes("ReplaceIfExists = false") &&
-    createdV2MigrationLeaseImplBlock.includes("self.parent_directory.flush()?") &&
+    createdV2MigrationLeaseImplBlock.includes(
+      "self.parent_directory.flush()?",
+    ) &&
     createdV2MigrationLeaseImplBlock.includes("self.committed = true") &&
     createdV2MigrationLeaseDropBlock.includes("let _ = self.abort()") &&
     migrateLegacyActivityBlock.includes(
@@ -3532,10 +3864,16 @@ requireInvariant(
 );
 requireInvariant(
   refreshActivityBlock.includes("ActivityMutationLease::acquire") &&
-    refreshActivityBlock.includes("entry.identity().account_index() != self.selected_account_index") &&
-    refreshActivityBlock.includes("account_address(self.selected_account_index)?") &&
+    refreshActivityBlock.includes(
+      "entry.identity().account_index() != self.selected_account_index",
+    ) &&
+    refreshActivityBlock.includes(
+      "account_address(self.selected_account_index)?",
+    ) &&
     refreshActivityBlock.includes("self.observe_activity(entry, permit)?") &&
-    refreshActivityBlock.includes(".transition(&hash, next_status, next_observations)") &&
+    refreshActivityBlock.includes(
+      ".transition(&hash, next_status, next_observations)",
+    ) &&
     observeActivityBlock.indexOf("activity_head()") <
       observeActivityBlock.indexOf("activity_transaction(") &&
     observeActivityBlock.indexOf("activity_transaction(") <
@@ -3547,7 +3885,9 @@ requireInvariant(
     observeActivityBlock.includes("head_before != head_after") &&
     observeActivityBlock.includes("activity_transaction_matches_identity") &&
     observeActivityBlock.includes("activity_receipt_matches_identity") &&
-    observeActivityBlock.includes("transaction.transaction_index != Some(receipt.transaction_index)") &&
+    observeActivityBlock.includes(
+      "transaction.transaction_index != Some(receipt.transaction_index)",
+    ) &&
     observeActivityBlock.includes("former_reorg_proven") &&
     observeActivityBlock.includes("record_present(head_before.number)") &&
     observeActivityBlock.includes("record_missing(head_before.number)") &&
@@ -3557,7 +3897,9 @@ requireInvariant(
   "Sepolia activity refresh must stay manual-row scoped, stable-head bookended, immutable/tx-index exact, and fail closed on ambiguous reorg evidence",
 );
 const activityHashCopyPanelIndexes = [
-  activityPanelBlock.indexOf("let selected_account_index = snapshot.selected_account_index"),
+  activityPanelBlock.indexOf(
+    "let selected_account_index = snapshot.selected_account_index",
+  ),
   activityPanelBlock.indexOf("let activity = snapshot.activity.clone()"),
   activityPanelBlock.indexOf(
     ".filter(|row| row.sender_account_index == selected_account_index)",
@@ -3575,14 +3917,17 @@ const activityHashCopyChecks = [
     !/(?:WorkerCommand|WorkerEvent|PendingAction|send_command|OpenUrl|open_url|hyperlink|Command::new|CreateProcess|ureq|https?:)/iu.test(
       renderActivityTransactionHashBlock,
     ) &&
-      (sepoliaDemoUiRuntime.match(/\brender_activity_transaction_hash\b/gu) ?? [])
-        .length === 2,
+      (
+        sepoliaDemoUiRuntime.match(/\brender_activity_transaction_hash\b/gu) ??
+        []
+      ).length === 2,
   ],
   [
     "selected row call",
     activityHashCopyPanelIndexes.every((index) => index >= 0) &&
       activityHashCopyPanelIndexes.every(
-        (index, position) => position === 0 || activityHashCopyPanelIndexes[position - 1] < index,
+        (index, position) =>
+          position === 0 || activityHashCopyPanelIndexes[position - 1] < index,
       ) &&
       /if render_activity_transaction_hash\(ui,\s*&row\)\.clicked\(\)\s*\{\s*self\.notice\s*=\s*Some\(ACTIVITY_HASH_COPIED_NOTICE\.to_owned\(\)\);\s*\}/u.test(
         activityPanelBlock,
@@ -3608,16 +3953,21 @@ const activityHashCopyChecks = [
       !/(?:hash|activity|transaction)\w*(?:copy|copied|clipboard|explorer|url)\w*\s*:/iu.test(
         walletAppBlock,
       ) &&
-      (walletAppBlock.match(/^[ \t]{4}[A-Za-z_]\w*\s*:/gmu) ?? []).length === 43,
+      (walletAppBlock.match(/^[ \t]{4}[A-Za-z_]\w*\s*:/gmu) ?? []).length ===
+        43,
   ],
   [
     "click evidence",
     activityHashCopyClickTestBlock.includes("assert!(!clicked)") &&
       activityHashCopyClickTestBlock.includes("assert!(commands.is_empty())") &&
-      activityHashCopyClickTestBlock.includes("egui::OutputCommand::CopyText(") &&
-      activityHashCopyClickTestBlock.includes("activity.transaction_hash.clone()") &&
       activityHashCopyClickTestBlock.includes(
-        "assert!(!ACTIVITY_HASH_COPIED_NOTICE.contains(\"0x\"))",
+        "egui::OutputCommand::CopyText(",
+      ) &&
+      activityHashCopyClickTestBlock.includes(
+        "activity.transaction_hash.clone()",
+      ) &&
+      activityHashCopyClickTestBlock.includes(
+        'assert!(!ACTIVITY_HASH_COPIED_NOTICE.contains("0x"))',
       ),
   ],
   [
@@ -3625,10 +3975,16 @@ const activityHashCopyChecks = [
     activityHashCopyPanelTestBlock.includes(
       "!rendered.contains(foreign.transaction_hash.as_str())",
     ) &&
-      activityHashCopyPanelTestBlock.includes("app.snapshot == snapshot_before") &&
+      activityHashCopyPanelTestBlock.includes(
+        "app.snapshot == snapshot_before",
+      ) &&
       activityHashCopyPanelTestBlock.includes("app.pending.is_none()") &&
-      activityHashCopyPanelTestBlock.includes("app.activity_refresh_target.is_none()") &&
-      activityHashCopyPanelTestBlock.includes("app.activity_refresh_batch.is_none()") &&
+      activityHashCopyPanelTestBlock.includes(
+        "app.activity_refresh_target.is_none()",
+      ) &&
+      activityHashCopyPanelTestBlock.includes(
+        "app.activity_refresh_batch.is_none()",
+      ) &&
       activityHashCopyPanelTestBlock.includes(
         'const PRIOR_TRANSACTION_HASH_SENTINEL: &str = "public-prior-transaction-hash"',
       ) &&
@@ -3638,8 +3994,12 @@ const activityHashCopyChecks = [
       activityHashCopyPanelTestBlock.includes(
         "app.last_transaction_hash.as_deref(),\n            Some(PRIOR_TRANSACTION_HASH_SENTINEL)",
       ) &&
-      activityHashCopyPanelTestBlock.includes("app.last_activity_at == inactivity_before") &&
-      activityHashCopyPanelTestBlock.includes("command_receiver.try_recv().is_err()"),
+      activityHashCopyPanelTestBlock.includes(
+        "app.last_activity_at == inactivity_before",
+      ) &&
+      activityHashCopyPanelTestBlock.includes(
+        "command_receiver.try_recv().is_err()",
+      ),
   ],
   [
     "README",
@@ -3648,15 +4008,21 @@ const activityHashCopyChecks = [
   ],
   [
     "architecture",
-    sepoliaArchitectureDoc.includes("already validated full transaction hash") &&
-      /The\s+OS clipboard\s+may outlive the wallet lock/u.test(sepoliaArchitectureDoc) &&
+    sepoliaArchitectureDoc.includes(
+      "already validated full transaction hash",
+    ) &&
+      /The\s+OS clipboard\s+may outlive the wallet lock/u.test(
+        sepoliaArchitectureDoc,
+      ) &&
       /Merely rendering the panel, pressing without completing a click, and foreign-\s*account rows do not copy anything/u.test(
         sepoliaArchitectureDoc,
       ) &&
       /Lock\/session transitions never trigger this\s+copy/u.test(
         sepoliaArchitectureDoc,
       ) &&
-      /copy affordance itself enqueues no worker work/u.test(sepoliaArchitectureDoc) &&
+      /copy affordance itself enqueues no worker work/u.test(
+        sepoliaArchitectureDoc,
+      ) &&
       /copy affordance deliberately\s+neither constructs nor\s+opens\s+an\s+explorer URL/u.test(
         sepoliaArchitectureDoc,
       ),
@@ -3674,7 +4040,9 @@ requireInvariant(
   sepoliaDemoUiProduction.includes(
     "const ACTIVITY_BATCH_DELAY: Duration = Duration::from_secs(2)",
   ) &&
-    sepoliaDemoUiProduction.includes("const MAX_ACTIVITY_BATCH_ROWS: usize = 64") &&
+    sepoliaDemoUiProduction.includes(
+      "const MAX_ACTIVITY_BATCH_ROWS: usize = 64",
+    ) &&
     pendingActionBlock.includes("RefreshActivityBatchWait") &&
     activityRefreshOriginBlock.includes("ManualRow") &&
     activityRefreshOriginBlock.includes("origin_epoch: u64") &&
@@ -3683,7 +4051,9 @@ requireInvariant(
     /^\s*enum ActivityRefreshOrigin\s*\{\s*ManualRow,\s*Batch\s*\{\s*origin_epoch:\s*u64,\s*selected_account_index:\s*u8,\s*submission_sequence:\s*u64,?\s*\},?\s*\}$/u.test(
       activityRefreshOriginBlock,
     ) &&
-    activityRefreshTargetBlock.includes("transaction_hash: Zeroizing<String>") &&
+    activityRefreshTargetBlock.includes(
+      "transaction_hash: Zeroizing<String>",
+    ) &&
     activityRefreshTargetBlock.includes("origin: ActivityRefreshOrigin") &&
     /^\s*struct ActivityRefreshTarget\s*\{\s*transaction_hash:\s*Zeroizing<String>,\s*origin:\s*ActivityRefreshOrigin,?\s*\}$/u.test(
       activityRefreshTargetBlock,
@@ -3691,7 +4061,9 @@ requireInvariant(
     !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*struct ActivityRefreshTarget/u.test(
       sepoliaDemoUiProduction,
     ) &&
-    activityRefreshTargetDropBlock.includes("self.transaction_hash.zeroize()") &&
+    activityRefreshTargetDropBlock.includes(
+      "self.transaction_hash.zeroize()",
+    ) &&
     activityRefreshTargetDropBlock.includes("*origin_epoch = 0") &&
     activityRefreshTargetDropBlock.includes("*selected_account_index = 0") &&
     activityRefreshTargetDropBlock.includes("*submission_sequence = 0") &&
@@ -3712,19 +4084,31 @@ requireInvariant(
       sepoliaDemoUiProduction,
     ) &&
     activityRefreshBatchImplBlock.includes("self.total != 0") &&
-    activityRefreshBatchImplBlock.includes("self.total <= MAX_ACTIVITY_BATCH_ROWS") &&
+    activityRefreshBatchImplBlock.includes(
+      "self.total <= MAX_ACTIVITY_BATCH_ROWS",
+    ) &&
     activityRefreshBatchImplBlock.includes("self.completed < self.total") &&
-    activityRefreshBatchImplBlock.includes("self.completed + self.remaining_sequences.len() == self.total") &&
+    activityRefreshBatchImplBlock.includes(
+      "self.completed + self.remaining_sequences.len() == self.total",
+    ) &&
     activityRefreshBatchImplBlock.includes(".all(|sequence| sequence != 0)") &&
-    activityRefreshBatchImplBlock.includes(".all(|(left, right)| left < right)") &&
+    activityRefreshBatchImplBlock.includes(
+      ".all(|(left, right)| left < right)",
+    ) &&
     activityRefreshBatchImplBlock.includes(
       "match (self.in_flight_sequence, self.next_dispatch_at)",
     ) &&
     activityRefreshBatchImplBlock.includes("(Some(in_flight), None)") &&
-    activityRefreshBatchImplBlock.includes("self.remaining_sequences.front().copied() == Some(in_flight)") &&
+    activityRefreshBatchImplBlock.includes(
+      "self.remaining_sequences.front().copied() == Some(in_flight)",
+    ) &&
     activityRefreshBatchImplBlock.includes("(None, Some(_)) => true") &&
-    activityRefreshBatchImplBlock.includes("(Some(_), Some(_)) | (None, None) => false") &&
-    activityRefreshBatchImplBlock.includes("self.origin_epoch == origin_epoch") &&
+    activityRefreshBatchImplBlock.includes(
+      "(Some(_), Some(_)) | (None, None) => false",
+    ) &&
+    activityRefreshBatchImplBlock.includes(
+      "self.origin_epoch == origin_epoch",
+    ) &&
     activityRefreshBatchImplBlock.includes(
       "self.selected_account_index == selected_account_index",
     ) &&
@@ -3735,19 +4119,32 @@ requireInvariant(
       "self.remaining_sequences.front().copied() == Some(submission_sequence)",
     ) &&
     activityRefreshBatchImplBlock.includes("fn scrub(&mut self)") &&
-    activityRefreshBatchImplBlock.includes("self.remaining_sequences.clear()") &&
+    activityRefreshBatchImplBlock.includes(
+      "self.remaining_sequences.clear()",
+    ) &&
     activityRefreshBatchDropBlock.includes("self.scrub()") &&
-    walletAppBlock.includes("activity_refresh_target: Option<ActivityRefreshTarget>") &&
-    walletAppBlock.includes("activity_refresh_batch: Option<ActivityRefreshBatch>"),
+    walletAppBlock.includes(
+      "activity_refresh_target: Option<ActivityRefreshTarget>",
+    ) &&
+    walletAppBlock.includes(
+      "activity_refresh_batch: Option<ActivityRefreshBatch>",
+    ),
   "Sepolia activity batch state must remain bounded, move-only, sequence-only, and explicitly scrubbed",
 );
 requireInvariant(
   activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Submitted") &&
     activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Pending") &&
-    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Reorged(_)") &&
-    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::DroppedCandidate") &&
-    activityBatchCandidateBlock.includes("ActivityStatusSnapshot::ReplacementSuspected") &&
-    (activityBatchCandidateBlock.match(/ActivityStatusSnapshot::/gu) ?? []).length === 5 &&
+    activityBatchCandidateBlock.includes(
+      "ActivityStatusSnapshot::Reorged(_)",
+    ) &&
+    activityBatchCandidateBlock.includes(
+      "ActivityStatusSnapshot::DroppedCandidate",
+    ) &&
+    activityBatchCandidateBlock.includes(
+      "ActivityStatusSnapshot::ReplacementSuspected",
+    ) &&
+    (activityBatchCandidateBlock.match(/ActivityStatusSnapshot::/gu) ?? [])
+      .length === 5 &&
     !activityBatchCandidateBlock.includes("ActivityStatusSnapshot::Included") &&
     /^\s*const fn activity_is_batch_candidate\(status:\s*&ActivityStatusSnapshot\)\s*->\s*bool\s*\{\s*matches!\(\s*status,\s*ActivityStatusSnapshot::Submitted\s*\|\s*ActivityStatusSnapshot::Pending\s*\|\s*ActivityStatusSnapshot::Reorged\(_\)\s*\|\s*ActivityStatusSnapshot::DroppedCandidate\s*\|\s*ActivityStatusSnapshot::ReplacementSuspected\s*\)\s*\}\s*$/u.test(
       activityBatchCandidateBlock,
@@ -3760,64 +4157,108 @@ requireInvariant(
     startActivityBatchBlock.includes("snapshot.pending_broadcast.is_some()") &&
     startActivityBatchBlock.includes("snapshot.is_well_formed()") &&
     startActivityBatchBlock.includes("snapshot.selected_account_index") &&
-    startActivityBatchBlock.includes("activity_is_batch_candidate(&row.status)") &&
+    startActivityBatchBlock.includes(
+      "activity_is_batch_candidate(&row.status)",
+    ) &&
     startActivityBatchBlock.includes(".map(|row| row.submission_sequence)") &&
     startActivityBatchBlock.includes("sequences.sort_unstable()") &&
-    startActivityBatchBlock.includes("sequences.truncate(MAX_ACTIVITY_BATCH_ROWS)") &&
+    startActivityBatchBlock.includes(
+      "sequences.truncate(MAX_ACTIVITY_BATCH_ROWS)",
+    ) &&
     startActivityBatchBlock.includes("next_dispatch_at: Some(now)") &&
-    startActivityBatchBlock.includes("PendingAction::RefreshActivityBatchWait") &&
-    startActivityBatchBlock.includes("self.drive_activity_refresh_batch(now)") &&
-    (sepoliaDemoUiRuntime.match(/self\.start_activity_refresh_batch_at\s*\(/gu) ?? [])
-      .length === 1 &&
+    startActivityBatchBlock.includes(
+      "PendingAction::RefreshActivityBatchWait",
+    ) &&
+    startActivityBatchBlock.includes(
+      "self.drive_activity_refresh_batch(now)",
+    ) &&
+    (
+      sepoliaDemoUiRuntime.match(
+        /self\.start_activity_refresh_batch_at\s*\(/gu,
+      ) ?? []
+    ).length === 1 &&
     (sepoliaDemoUiRuntime.match(/\bstart_activity_refresh_batch_at\b/gu) ?? [])
       .length === 2 &&
-    (sepoliaDemoUiRuntime.match(/ActivityRefreshBatch\s*\{\s*origin_epoch:/gu) ?? [])
-      .length === 2 &&
-    (sepoliaDemoUiRuntime.match(/activity_refresh_batch\s*=\s*Some\s*\(/gu) ?? [])
-      .length === 1 &&
+    (
+      sepoliaDemoUiRuntime.match(
+        /ActivityRefreshBatch\s*\{\s*origin_epoch:/gu,
+      ) ?? []
+    ).length === 2 &&
+    (
+      sepoliaDemoUiRuntime.match(/activity_refresh_batch\s*=\s*Some\s*\(/gu) ??
+      []
+    ).length === 1 &&
     /start_batch\s*=\s*ui[\s\S]*?\.clicked\(\);[\s\S]*?if start_batch\s*\{\s*self\.start_activity_refresh_batch_at\(Instant::now\(\)\)/u.test(
       activityPanelBlock,
     ) &&
-    driveActivityBatchBlock.includes("self.pending != Some(PendingAction::RefreshActivityBatchWait)") &&
+    driveActivityBatchBlock.includes(
+      "self.pending != Some(PendingAction::RefreshActivityBatchWait)",
+    ) &&
     driveActivityBatchBlock.includes("if batch.in_flight_sequence.is_some()") &&
     driveActivityBatchBlock.includes("if now < deadline") &&
-    driveActivityBatchBlock.includes("batch.remaining_sequences.front().copied()") &&
+    driveActivityBatchBlock.includes(
+      "batch.remaining_sequences.front().copied()",
+    ) &&
     driveActivityBatchBlock.includes("origin_epoch == self.session_epoch") &&
-    driveActivityBatchBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
-    driveActivityBatchBlock.includes("snapshot.selected_account_index != selected_account_index") &&
-    driveActivityBatchBlock.includes("row.sender_address == selected.address") &&
-    driveActivityBatchBlock.includes("activity_is_batch_candidate(&row.status)") &&
-    driveActivityBatchBlock.includes("transaction_hash: Zeroizing::new(transaction_hash.clone())") &&
-    driveActivityBatchBlock.includes("WorkerCommand::RefreshActivity { transaction_hash }") &&
+    driveActivityBatchBlock.includes(
+      "self.session_phase == SessionPhase::Unlocked",
+    ) &&
+    driveActivityBatchBlock.includes(
+      "snapshot.selected_account_index != selected_account_index",
+    ) &&
+    driveActivityBatchBlock.includes(
+      "row.sender_address == selected.address",
+    ) &&
+    driveActivityBatchBlock.includes(
+      "activity_is_batch_candidate(&row.status)",
+    ) &&
+    driveActivityBatchBlock.includes(
+      "transaction_hash: Zeroizing::new(transaction_hash.clone())",
+    ) &&
+    driveActivityBatchBlock.includes(
+      "WorkerCommand::RefreshActivity { transaction_hash }",
+    ) &&
     driveActivityBatchBlock.includes("PendingAction::RefreshActivity") &&
-    driveActivityBatchBlock.indexOf("batch.in_flight_sequence = Some(submission_sequence)") >= 0 &&
-    driveActivityBatchBlock.indexOf("batch.in_flight_sequence = Some(submission_sequence)") <
-      driveActivityBatchBlock.indexOf("self.activity_refresh_target = Some(ActivityRefreshTarget") &&
-    driveActivityBatchBlock.indexOf("self.activity_refresh_target = Some(ActivityRefreshTarget") <
-      driveActivityBatchBlock.indexOf("self.send_command(") &&
+    driveActivityBatchBlock.indexOf(
+      "batch.in_flight_sequence = Some(submission_sequence)",
+    ) >= 0 &&
+    driveActivityBatchBlock.indexOf(
+      "batch.in_flight_sequence = Some(submission_sequence)",
+    ) <
+      driveActivityBatchBlock.indexOf(
+        "self.activity_refresh_target = Some(ActivityRefreshTarget",
+      ) &&
+    driveActivityBatchBlock.indexOf(
+      "self.activity_refresh_target = Some(ActivityRefreshTarget",
+    ) < driveActivityBatchBlock.indexOf("self.send_command(") &&
     !/(?:thread::sleep|std::thread::sleep|last_activity_at)/u.test(
       `${startActivityBatchBlock}\n${driveActivityBatchBlock}`,
     ) &&
-    (sepoliaDemoUiRuntime.match(/WorkerCommand::RefreshActivity\s*\{/gu) ?? []).length === 3 &&
+    (sepoliaDemoUiRuntime.match(/WorkerCommand::RefreshActivity\s*\{/gu) ?? [])
+      .length === 3 &&
     /RefreshActivity\s*\{\s*transaction_hash:\s*String,?\s*\}/u.test(
       workerCommandBlock,
     ) &&
-    (workerCommandBlock.match(/\b[A-Za-z_]\w*Activity\w*\b/gu) ?? []).length === 1 &&
-    walletBackendTraitBlock.includes(
-      "fn refresh_activity(",
-    ) &&
-    (walletBackendTraitBlock.match(/\bfn\s+\w*activity\w*\s*\(/gu) ?? []).length === 1 &&
+    (workerCommandBlock.match(/\b[A-Za-z_]\w*Activity\w*\b/gu) ?? []).length ===
+      1 &&
+    walletBackendTraitBlock.includes("fn refresh_activity(") &&
+    (walletBackendTraitBlock.match(/\bfn\s+\w*activity\w*\s*\(/gu) ?? [])
+      .length === 1 &&
     !/(?:refresh_activity_batch|activity_batch)/u.test(
       `${sepoliaDemoBackendProduction}\n${sepoliaDemoRpcProduction}\n${sepoliaDemoActivityStore}`,
     ) &&
-    (sepoliaDemoUiRuntime.match(/self\.drive_activity_refresh_batch\s*\(/gu) ?? [])
-      .length === 2,
+    (
+      sepoliaDemoUiRuntime.match(/self\.drive_activity_refresh_batch\s*\(/gu) ??
+      []
+    ).length === 2,
   "Sepolia activity batch must be explicit-click only, freeze the five unresolved states, and reuse exactly one existing row request at a time",
 );
 const activityUpdateFirstLock = walletEframeAppBlock.indexOf(
   "self.observe_automatic_lock(context, now)",
 );
-const activityUpdateEvents = walletEframeAppBlock.indexOf("self.process_events_at(now)");
+const activityUpdateEvents = walletEframeAppBlock.indexOf(
+  "self.process_events_at(now)",
+);
 const activityUpdateSecondLock = walletEframeAppBlock.lastIndexOf(
   "self.observe_automatic_lock(context, now)",
 );
@@ -3836,34 +4277,69 @@ requireInvariant(
     activityUpdateSecondLock < activityUpdateDrive &&
     walletEframeAppBlock.includes("context.request_repaint_after(") &&
     walletEframeAppBlock.includes("deadline.saturating_duration_since(now)") &&
-    activityRefreshedUiBlock.includes("completed_action == Some(PendingAction::RefreshActivity)") &&
+    activityRefreshedUiBlock.includes(
+      "completed_action == Some(PendingAction::RefreshActivity)",
+    ) &&
     activityRefreshedUiBlock.includes("batch.matches_in_flight(") &&
-    activityRefreshedUiBlock.includes("batch.origin_epoch == self.session_epoch") &&
-    activityRefreshedUiBlock.includes("snapshot.selected_account_index != selected_account_index") &&
-    activityRefreshedUiBlock.includes("prior.sender_address == selected.address") &&
-    activityRefreshedUiBlock.includes("same_activity_identity(prior, &refreshed)") &&
-    activityRefreshedUiBlock.includes("now.checked_add(ACTIVITY_BATCH_DELAY)") &&
-    activityRefreshedUiBlock.includes("PendingAction::RefreshActivityBatchWait") &&
+    activityRefreshedUiBlock.includes(
+      "batch.origin_epoch == self.session_epoch",
+    ) &&
+    activityRefreshedUiBlock.includes(
+      "snapshot.selected_account_index != selected_account_index",
+    ) &&
+    activityRefreshedUiBlock.includes(
+      "prior.sender_address == selected.address",
+    ) &&
+    activityRefreshedUiBlock.includes(
+      "same_activity_identity(prior, &refreshed)",
+    ) &&
+    activityRefreshedUiBlock.includes(
+      "now.checked_add(ACTIVITY_BATCH_DELAY)",
+    ) &&
+    activityRefreshedUiBlock.includes(
+      "PendingAction::RefreshActivityBatchWait",
+    ) &&
     activityRefreshedUiBlock.includes("let category = safe_error(error)") &&
-    activityRefreshedUiBlock.includes("self.stop_activity_refresh_batch_with_error(category.as_str())") &&
-    (activityRefreshedUiBlock.match(/batch\.matches_in_flight\s*\(/gu) ?? []).length === 2 &&
+    activityRefreshedUiBlock.includes(
+      "self.stop_activity_refresh_batch_with_error(category.as_str())",
+    ) &&
+    (activityRefreshedUiBlock.match(/batch\.matches_in_flight\s*\(/gu) ?? [])
+      .length === 2 &&
     /Err\(error\),[\s\S]*?ActivityRefreshOrigin::Batch[\s\S]*?request_matches[\s\S]*?batch\.matches_in_flight\([\s\S]*?origin_epoch[\s\S]*?selected_account_index[\s\S]*?submission_sequence[\s\S]*?batch\.origin_epoch\s*==\s*self\.session_epoch[\s\S]*?let category = safe_error\(error\)/u.test(
       activityRefreshedUiBlock,
     ) &&
-    clearActivityRefreshStateBlock.includes("self.activity_refresh_target = None") &&
-    clearActivityRefreshStateBlock.includes("self.activity_refresh_batch = None") &&
-    clearActivityRefreshStateBlock.includes("PendingAction::RefreshActivityBatchWait") &&
-    stopActivityBatchErrorBlock.includes("zeroize_optional_string(&mut self.notice)") &&
+    clearActivityRefreshStateBlock.includes(
+      "self.activity_refresh_target = None",
+    ) &&
+    clearActivityRefreshStateBlock.includes(
+      "self.activity_refresh_batch = None",
+    ) &&
+    clearActivityRefreshStateBlock.includes(
+      "PendingAction::RefreshActivityBatchWait",
+    ) &&
+    stopActivityBatchErrorBlock.includes(
+      "zeroize_optional_string(&mut self.notice)",
+    ) &&
     stopActivityBatchErrorBlock.includes("현재 행의 내구 상태") &&
-    stopActivityBatchErrorBlock.includes("이후 대기 행은 요청하지 않았습니다") &&
-    stopActivityBatchUserBlock.includes("self.pending != Some(PendingAction::RefreshActivityBatchWait)") &&
+    stopActivityBatchErrorBlock.includes(
+      "이후 대기 행은 요청하지 않았습니다",
+    ) &&
+    stopActivityBatchUserBlock.includes(
+      "self.pending != Some(PendingAction::RefreshActivityBatchWait)",
+    ) &&
     activityBatchWaitMatchesBlock.includes(
       "self.pending == Some(PendingAction::RefreshActivityBatchWait)",
     ) &&
-    activityBatchWaitMatchesBlock.includes("self.session_phase == SessionPhase::Unlocked") &&
+    activityBatchWaitMatchesBlock.includes(
+      "self.session_phase == SessionPhase::Unlocked",
+    ) &&
     activityBatchWaitMatchesBlock.includes("batch.is_well_formed()") &&
-    activityBatchWaitMatchesBlock.includes("batch.origin_epoch == self.session_epoch") &&
-    activityBatchWaitMatchesBlock.includes("batch.in_flight_sequence.is_none()") &&
+    activityBatchWaitMatchesBlock.includes(
+      "batch.origin_epoch == self.session_epoch",
+    ) &&
+    activityBatchWaitMatchesBlock.includes(
+      "batch.in_flight_sequence.is_none()",
+    ) &&
     activityBatchWaitMatchesBlock.includes("snapshot.is_well_formed()") &&
     activityBatchWaitMatchesBlock.includes(
       "snapshot.selected_account_index == batch.selected_account_index",
@@ -3872,20 +4348,29 @@ requireInvariant(
       accountPanelBlock,
     ) &&
     accountPanelBlock.includes("ui.add_enabled_ui(selection_allowed") &&
-    accountPanelBlock.includes("if requested_index != snapshot.selected_account_index") &&
+    accountPanelBlock.includes(
+      "if requested_index != snapshot.selected_account_index",
+    ) &&
     accountPanelBlock.includes("self.select_account(requested_index)") &&
     [
       selectAccountActivityBatchBlock.indexOf(
         "self.activity_refresh_batch_wait_matches_current()",
       ),
-      selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()"),
+      selectAccountActivityBatchBlock.indexOf(
+        "self.stop_activity_refresh_batch_by_user()",
+      ),
       selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()"),
       selectAccountActivityBatchBlock.indexOf("WorkerCommand::SelectAccount"),
     ].every((index) => index >= 0) &&
-    selectAccountActivityBatchBlock.indexOf("self.activity_refresh_batch_wait_matches_current()") <
-      selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()") &&
-    selectAccountActivityBatchBlock.indexOf("self.stop_activity_refresh_batch_by_user()") <
-      selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()") &&
+    selectAccountActivityBatchBlock.indexOf(
+      "self.activity_refresh_batch_wait_matches_current()",
+    ) <
+      selectAccountActivityBatchBlock.indexOf(
+        "self.stop_activity_refresh_batch_by_user()",
+      ) &&
+    selectAccountActivityBatchBlock.indexOf(
+      "self.stop_activity_refresh_batch_by_user()",
+    ) < selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()") &&
     selectAccountActivityBatchBlock.indexOf("if self.pending.is_some()") <
       selectAccountActivityBatchBlock.indexOf("WorkerCommand::SelectAccount") &&
     !/(?:thread::sleep|std::thread::sleep|last_activity_at)/u.test(
@@ -3896,22 +4381,35 @@ requireInvariant(
 requireInvariant(
   activityPanelBlock.includes("이 행만 Sepolia에서 새로고침") &&
     activityPanelBlock.includes("고정된 Sepolia RPC") &&
-    activityPanelBlock.includes("자동 새로고침, 자동 재시작, nonce 자동 재사용은 하지 않습니다") &&
-    activityPanelBlock.includes("Submitted/Pending/Reorged/DroppedCandidate/ReplacementSuspected") &&
+    activityPanelBlock.includes(
+      "자동 새로고침, 자동 재시작, nonce 자동 재사용은 하지 않습니다",
+    ) &&
+    activityPanelBlock.includes(
+      "Submitted/Pending/Reorged/DroppedCandidate/ReplacementSuspected",
+    ) &&
     activityPanelBlock.includes("최대 64개 고정") &&
     activityPanelBlock.includes("Included 행은 포함하지 않으며") &&
-    activityPanelBlock.includes("선택한 발신 주소와 최대 64개 거래 해시, 요청 간격") &&
+    activityPanelBlock.includes(
+      "선택한 발신 주소와 최대 64개 거래 해시, 요청 간격",
+    ) &&
     activityPanelBlock.includes("한 번에 한 행만 요청") &&
     activityPanelBlock.includes("최소 2초") &&
-    activityPanelBlock.includes("현재 조회 행의 내구 상태는 응답 전까지 알 수 없으며") &&
+    activityPanelBlock.includes(
+      "현재 조회 행의 내구 상태는 응답 전까지 알 수 없으며",
+    ) &&
     activityPanelBlock.includes("다음 행 조회 전 순차 작업 중지") &&
     activityPanelBlock.includes("외부 단조 앵커") &&
     activityPanelBlock.includes("저장된 high-water보다 낮으면") &&
     activityPanelBlock.includes("전체 거래 해시") &&
     activityPanelBlock.includes("신뢰하지 않는 과거 컨트랙트 라벨") &&
-    (sepoliaDemoUiProduction.match(/self\.refresh_activity_row\(/gu) ?? []).length === 1 &&
-    sepoliaDemoUiProduction.includes("WorkerCommand::RefreshActivity { transaction_hash }") &&
-    sepoliaDemoUiProduction.includes("same_activity_identity(prior, &refreshed)") &&
+    (sepoliaDemoUiProduction.match(/self\.refresh_activity_row\(/gu) ?? [])
+      .length === 1 &&
+    sepoliaDemoUiProduction.includes(
+      "WorkerCommand::RefreshActivity { transaction_hash }",
+    ) &&
+    sepoliaDemoUiProduction.includes(
+      "same_activity_identity(prior, &refreshed)",
+    ) &&
     sepoliaDemoUiProduction.includes("zeroize_activity_snapshot") &&
     sepoliaDemoUi.includes(
       "fn activity_batch_dispatch_deadline_is_inclusive_exactly_once_and_sleep_free()",
@@ -3944,25 +4442,39 @@ requireInvariant(
       "fn activity_batch_panel_discloses_scope_privacy_and_manual_only_controls()",
     ) &&
     headlessSmokeBlock.includes("let batch_started_at = Instant::now()") &&
-    headlessSmokeBlock.includes("app.start_activity_refresh_batch_at(batch_started_at)") &&
+    headlessSmokeBlock.includes(
+      "app.start_activity_refresh_batch_at(batch_started_at)",
+    ) &&
     headlessSmokeBlock.includes("batch.total == 2") &&
     headlessSmokeBlock.includes("batch.in_flight_sequence == Some(1)") &&
-    headlessSmokeBlock.includes("batch.remaining_sequences.iter().copied().eq([1, 2])") &&
+    headlessSmokeBlock.includes(
+      "batch.remaining_sequences.iter().copied().eq([1, 2])",
+    ) &&
     headlessSmokeBlock.includes("first_completed_at + ACTIVITY_BATCH_DELAY") &&
     headlessSmokeBlock.includes("next_deadline - Duration::from_nanos(1)") &&
     headlessSmokeBlock.includes("command_receiver.try_recv().is_ok()") &&
-    headlessSmokeBlock.includes("app.drive_activity_refresh_batch(next_deadline)") &&
+    headlessSmokeBlock.includes(
+      "app.drive_activity_refresh_batch(next_deadline)",
+    ) &&
     headlessSmokeBlock.includes("batch.in_flight_sequence == Some(2)") &&
     headlessSmokeBlock.includes("submission_sequence: 2") &&
     headlessSmokeBlock.includes("app.activity_refresh_batch.is_some()") &&
     headlessSmokeBlock.includes("app.activity_refresh_target.is_some()") &&
-    headlessSmokeBlock.includes("notice.contains(\"2/2 응답 확인·화면 반영 완료\")") &&
+    headlessSmokeBlock.includes(
+      'notice.contains("2/2 응답 확인·화면 반영 완료")',
+    ) &&
     headlessSmokeBlock.includes("transitions_checked: 105") &&
-    headlessSmokeBlock.includes("backend_routes_checked: backend.calls.len()") &&
+    headlessSmokeBlock.includes(
+      "backend_routes_checked: backend.calls.len()",
+    ) &&
     sepoliaDemoUi.includes("assert_eq!(evidence.transitions_checked, 105)") &&
     sepoliaDemoUi.includes("assert_eq!(evidence.backend_routes_checked, 37)") &&
-    sepoliaDemoHeadless.includes("assert_eq!(report.transitions_checked, 105)") &&
-    sepoliaDemoHeadless.includes("assert_eq!(report.backend_routes_checked, 37)") &&
+    sepoliaDemoHeadless.includes(
+      "assert_eq!(report.transitions_checked, 105)",
+    ) &&
+    sepoliaDemoHeadless.includes(
+      "assert_eq!(report.backend_routes_checked, 37)",
+    ) &&
     sepoliaDemoHeadlessProduction.includes("ui::run_headless_smoke()") &&
     rootReadme.includes("activity-v1.bin") &&
     /현재 남아 있는\s*행만 nonce 충돌을 막습니다/u.test(rootReadme) &&
@@ -3973,16 +4485,22 @@ requireInvariant(
     /at\s+most 64 start-of-run/u.test(sepoliaArchitectureDoc) &&
     sepoliaArchitectureDoc.includes("one at a time") &&
     sepoliaArchitectureDoc.includes("at least two seconds") &&
-    sepoliaArchitectureDoc.includes("A failing row may already have reached durable storage"),
+    sepoliaArchitectureDoc.includes(
+      "A failing row may already have reached durable storage",
+    ),
   "Sepolia activity UI/docs lost exact identifiers, bounded explicit sequencing, privacy disclosure, scrubbing, rollback honesty, or high-water delay disclosure",
 );
 requireInvariant(
   sepoliaDemoUiProduction.includes("BackendStateInvalidated") &&
-    sepoliaDemoUiProduction.includes("fn invalidate_frontend_after_backend_error(") &&
+    sepoliaDemoUiProduction.includes(
+      "fn invalidate_frontend_after_backend_error(",
+    ) &&
     sepoliaDemoUiProduction.includes(
       "self.request_lock(LockReason::BackendStateInvalidated)",
     ) &&
-    accountSelectedEventBlock.includes("invalidate_frontend_after_backend_error") &&
+    accountSelectedEventBlock.includes(
+      "invalidate_frontend_after_backend_error",
+    ) &&
     refreshedEventBlock.includes("invalidate_frontend_after_backend_error") &&
     sepoliaDemoUi.includes(
       "fn account_select_or_refresh_backend_invalidation_scrubs_and_locks_frontend()",
@@ -3996,9 +4514,13 @@ requireInvariant(
     rootReadme.includes("canonical transaction 재구성") &&
     rootReadme.includes("실제 전파·포함 여부") &&
     sepoliaArchitectureDoc.includes("token-then-activity namespaces") &&
-    sepoliaArchitectureDoc.includes("exact same-directory `vault-v2.migrating` handle") &&
+    sepoliaArchitectureDoc.includes(
+      "exact same-directory `vault-v2.migrating` handle",
+    ) &&
     sepoliaArchitectureDoc.includes("HMAC/PRK context implements neither") &&
-    sepoliaArchitectureDoc.includes("single fixed TLS RPC remains a trust boundary") &&
+    sepoliaArchitectureDoc.includes(
+      "single fixed TLS RPC remains a trust boundary",
+    ) &&
     sepoliaArchitectureDoc.includes("local envelope self-consistency") &&
     /isolated Key Agent(?: execution)? and a zeroizing\s+KDF implementation/u.test(
       sepoliaArchitectureDoc,
@@ -4042,11 +4564,15 @@ const guardedRpcSendBlock = rustFunctionBlock(
   sepoliaDemoRpcProduction,
   "send_raw_transaction",
 );
-const guardedPermitIndex = guardedRpcSendBlock.indexOf("if !permit.is_current()");
+const guardedPermitIndex = guardedRpcSendBlock.indexOf(
+  "if !permit.is_current()",
+);
 requireInvariant(
-  exactErc20PreflightBlock.includes("value: \"0x0\"") &&
-    exactErc20PreflightBlock.includes("input: encode_prefixed_hex(&calldata)") &&
-    exactErc20PreflightBlock.includes("transaction_type: \"0x2\"") &&
+  exactErc20PreflightBlock.includes('value: "0x0"') &&
+    exactErc20PreflightBlock.includes(
+      "input: encode_prefixed_hex(&calldata)",
+    ) &&
+    exactErc20PreflightBlock.includes('transaction_type: "0x2"') &&
     exactErc20PreflightBlock.includes("nonce: encode_quantity(nonce)") &&
     exactErc20PreflightBlock.includes("gas: encode_quantity(gas_limit)") &&
     exactErc20PreflightBlock.includes("access_list: &[]") &&
@@ -4054,9 +4580,12 @@ requireInvariant(
     !/gas_price/u.test(exactErc20PreflightBlock) &&
     guardedRpcSendBlock.includes("permit: &SessionPermit<'_>") &&
     guardedRpcSendBlock.indexOf("self.verify_sepolia()?") !== -1 &&
-    guardedPermitIndex > guardedRpcSendBlock.indexOf("self.verify_sepolia()?") &&
-    guardedRpcSendBlock.indexOf("RpcMethod::SendRawTransaction") > guardedPermitIndex &&
-    (sepoliaDemoRpcProduction.match(/pub fn send_raw_transaction\s*\(/gu) ?? []).length === 1 &&
+    guardedPermitIndex >
+      guardedRpcSendBlock.indexOf("self.verify_sepolia()?") &&
+    guardedRpcSendBlock.indexOf("RpcMethod::SendRawTransaction") >
+      guardedPermitIndex &&
+    (sepoliaDemoRpcProduction.match(/pub fn send_raw_transaction\s*\(/gu) ?? [])
+      .length === 1 &&
     !/pub fn (?:unguarded_|raw_)?broadcast/u.test(sepoliaDemoRpcProduction),
   "typed ERC-20 preflight or the sole post-reverify concrete-permit broadcast guard changed",
 );
@@ -4068,7 +4597,14 @@ const noNetworkManifests = [
   "crates/approval-ui/Cargo.toml",
   "crates/secret-input-ui/Cargo.toml",
 ];
-const networkCrates = ["reqwest", "hyper", "ureq", "curl", "tonic", "tungstenite"];
+const networkCrates = [
+  "reqwest",
+  "hyper",
+  "ureq",
+  "curl",
+  "tonic",
+  "tungstenite",
+];
 for (const manifestPath of noNetworkManifests) {
   const manifest = await text(manifestPath);
   for (const crateName of networkCrates) {
@@ -4080,7 +4616,10 @@ for (const manifestPath of noNetworkManifests) {
 }
 
 const extensionManifest = JSON.parse(await text("extension/manifest.json"));
-requireInvariant(extensionManifest.manifest_version === 3, "extension must remain MV3");
+requireInvariant(
+  extensionManifest.manifest_version === 3,
+  "extension must remain MV3",
+);
 requireInvariant(
   extensionManifest.incognito === "not_allowed",
   "incognito must be explicitly disabled",
@@ -4095,7 +4634,10 @@ requireInvariant(
   "extension must not gain broad host_permissions",
 );
 for (const script of extensionManifest.content_scripts ?? []) {
-  requireInvariant(script.all_frames === false, "content scripts must remain top-frame only");
+  requireInvariant(
+    script.all_frames === false,
+    "content scripts must remain top-frame only",
+  );
   requireInvariant(
     JSON.stringify(script.matches) === JSON.stringify(["https://*/*"]),
     "content-script origin scope changed",
@@ -4117,7 +4659,10 @@ for (const sourcePath of [
     /WebAssembly\s*\.\s*(?:compile|instantiate)/u,
     /document\s*\.\s*write\s*\(/u,
   ]) {
-    requireInvariant(!forbidden.test(source), `${sourcePath} contains remote-code primitive`);
+    requireInvariant(
+      !forbidden.test(source),
+      `${sourcePath} contains remote-code primitive`,
+    );
   }
 }
 
@@ -4136,7 +4681,8 @@ for (const forbiddenExport of [
 
 const approval = await text("crates/wallet-protocol/src/approval.rs");
 requireInvariant(
-  /pub\(crate\)\s+lease_id\s*:/u.test(approval) && /pub\(crate\)\s+nonce\s*:/u.test(approval),
+  /pub\(crate\)\s+lease_id\s*:/u.test(approval) &&
+    /pub\(crate\)\s+nonce\s*:/u.test(approval),
   "nonce lease fields must not be caller-constructible",
 );
 const approvalWireManifest = await text("crates/approval-wire/Cargo.toml");
@@ -4146,7 +4692,9 @@ requireInvariant(
   "approval wire must not accept caller-provided labels",
 );
 requireInvariant(
-  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+struct\s+ApprovalRequest/su.test(approvalWire) &&
+  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+struct\s+ApprovalRequest/su.test(
+    approvalWire,
+  ) &&
     /impl\s+core::fmt::Debug\s+for\s+ApprovalRequest[\s\S]*?anti_phishing_phrase[\s\S]*?\[REDACTED\]/u.test(
       approvalWire,
     ),
@@ -4166,6 +4714,341 @@ requireInvariant(
   !hasDependency(approvalWireManifest, "wallet-model") &&
     !hasDependency(approvalWireManifest, "wallet-protocol"),
   "approval-wire must remain an independent leaf protocol crate",
+);
+const approvalBootstrapWireContract = (source) => {
+  let parentImpl;
+  let childImpl;
+  let parentNew;
+  let childNew;
+  let encodeParentHello;
+  let decodeParentHello;
+  let encodeChildHello;
+  let decodeChildHello;
+  let encodeParentFinish;
+  let decodeParentFinish;
+  let childTranscript;
+  let bootstrapRoundTripTest;
+  let bootstrapConstructorTest;
+  let parentShapeTest;
+  let childSubstitutionTest;
+  let childTruncationTest;
+  let finishSubstitutionTest;
+  let finishShapeTest;
+  try {
+    parentImpl = rustImplItemAtDepth(source, "impl ApprovalParentHello", 0);
+    childImpl = rustImplItemAtDepth(source, "impl ApprovalChildHello", 0);
+    parentNew = rustFunctionBlockAtDepth(parentImpl, "new", 1);
+    childNew = rustFunctionBlockAtDepth(childImpl, "new", 1);
+    encodeParentHello = rustTopLevelFunctionBlock(
+      source,
+      "encode_parent_hello",
+    );
+    decodeParentHello = rustTopLevelFunctionBlock(
+      source,
+      "decode_parent_hello",
+    );
+    encodeChildHello = rustTopLevelFunctionBlock(source, "encode_child_hello");
+    decodeChildHello = rustTopLevelFunctionBlock(source, "decode_child_hello");
+    encodeParentFinish = rustTopLevelFunctionBlock(
+      source,
+      "encode_parent_finish",
+    );
+    decodeParentFinish = rustTopLevelFunctionBlock(
+      source,
+      "decode_parent_finish",
+    );
+    childTranscript = rustTopLevelFunctionBlock(
+      source,
+      "child_hello_transcript",
+    );
+    bootstrapRoundTripTest = rustFunctionBlockAtDepth(
+      source,
+      "bootstrap_round_trip_sizes_accessors_and_debug_are_exact",
+      1,
+    );
+    bootstrapConstructorTest = rustFunctionBlockAtDepth(
+      source,
+      "bootstrap_constructors_and_parent_decode_reject_reserved_values",
+      1,
+    );
+    parentShapeTest = rustFunctionBlockAtDepth(
+      source,
+      "parent_hello_rejects_wrong_frame_shape_without_aliasing_fields",
+      1,
+    );
+    childSubstitutionTest = rustFunctionBlockAtDepth(
+      source,
+      "child_hello_rejects_every_single_byte_substitution_and_wrong_parent",
+      1,
+    );
+    childTruncationTest = rustFunctionBlockAtDepth(
+      source,
+      "child_hello_rejects_every_truncation_and_trailing_data",
+      1,
+    );
+    finishSubstitutionTest = rustFunctionBlockAtDepth(
+      source,
+      "parent_finish_rejects_every_single_byte_substitution",
+      1,
+    );
+    finishShapeTest = rustFunctionBlockAtDepth(
+      source,
+      "parent_finish_rejects_nonce_hash_length_truncation_and_trailing",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  const orderedCompactMarkers = (item, markers) => {
+    const compact = compactRust(item);
+    let cursor = 0;
+    return markers.every((marker) => {
+      const index = compact.indexOf(marker, cursor);
+      if (index === -1) {
+        return false;
+      }
+      cursor = index + marker.length;
+      return true;
+    });
+  };
+  return (
+    source.includes("pub const PARENT_HELLO_BYTES: usize = 62;") &&
+    source.includes("pub const CHILD_HELLO_BYTES: usize = 106;") &&
+    source.includes("pub const PARENT_FINISH_HEADER_BYTES: usize = 110;") &&
+    source.includes(
+      "pub const MAX_PARENT_FINISH_BYTES: usize = PARENT_FINISH_HEADER_BYTES + MAX_REQUEST_BYTES;",
+    ) &&
+    source.includes('const PARENT_HELLO_MAGIC: &[u8; 8] = b"YWAPPH01";') &&
+    source.includes('const CHILD_HELLO_MAGIC: &[u8; 8] = b"YWAPCH01";') &&
+    source.includes('const PARENT_FINISH_MAGIC: &[u8; 8] = b"YWAPPF01";') &&
+    source.includes("const BOOTSTRAP_VERSION: u16 = 1;") &&
+    source.includes(
+      'const CHILD_HELLO_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-bootstrap-child/v1\\0";',
+    ) &&
+    /pub\s+struct\s+ApprovalParentHello\s*\{\s*process_id:\s*u32,\s*process_handle:\s*u64,\s*image_handle:\s*u64,\s*parent_nonce:\s*\[u8;\s*32\],\s*\}/u.test(
+      code,
+    ) &&
+    /pub\s+struct\s+ApprovalChildHello\s*\{\s*child_nonce:\s*\[u8;\s*32\],\s*\}/u.test(
+      code,
+    ) &&
+    !/pub\s+(?:process_id|process_handle|image_handle|parent_nonce|child_nonce)\s*:/u.test(
+      code,
+    ) &&
+    /impl\s+fmt::Debug\s+for\s+ApprovalParentHello[\s\S]*?REDACTED HANDLES AND NONCE/u.test(
+      source,
+    ) &&
+    /impl\s+fmt::Debug\s+for\s+ApprovalChildHello[\s\S]*?REDACTED NONCE/u.test(
+      source,
+    ) &&
+    compactRust(parentNew).includes(
+      "ifprocess_id==0||process_handle==0||image_handle==0||process_handle==image_handle||all_zero(&parent_nonce){returnErr(WireError::Malformed);}",
+    ) &&
+    compactRust(childNew).includes(
+      "ifall_zero(&child_nonce){returnErr(WireError::Malformed);}",
+    ) &&
+    orderedCompactMarkers(encodeParentHello, [
+      "bytes[..8].copy_from_slice(PARENT_HELLO_MAGIC)",
+      "bytes[8..10].copy_from_slice(&BOOTSTRAP_VERSION.to_be_bytes())",
+      "bytes[10..14].copy_from_slice(&hello.process_id.to_be_bytes())",
+      "bytes[14..22].copy_from_slice(&hello.process_handle.to_be_bytes())",
+      "bytes[22..30].copy_from_slice(&hello.image_handle.to_be_bytes())",
+      "bytes[30..62].copy_from_slice(&hello.parent_nonce)",
+    ]) &&
+    compactRust(decodeParentHello).includes(
+      "ifbytes.len()!=PARENT_HELLO_BYTES{",
+    ) &&
+    compactRust(decodeParentHello).includes(
+      "ifcursor.take(8)?!=PARENT_HELLO_MAGIC||cursor.u16()?!=BOOTSTRAP_VERSION{",
+    ) &&
+    compactRust(decodeParentHello).includes(
+      "ApprovalParentHello::new(cursor.u32()?,cursor.u64()?,cursor.u64()?,cursor.array()?)?",
+    ) &&
+    compactRust(decodeParentHello).includes("if!cursor.is_empty(){") &&
+    orderedCompactMarkers(encodeChildHello, [
+      "bytes[..8].copy_from_slice(CHILD_HELLO_MAGIC)",
+      "bytes[8..10].copy_from_slice(&BOOTSTRAP_VERSION.to_be_bytes())",
+      "bytes[10..42].copy_from_slice(&parent.parent_nonce)",
+      "bytes[42..74].copy_from_slice(&child.child_nonce)",
+      "bytes[74..106].copy_from_slice(&child_hello_transcript(parent,&child.child_nonce))",
+    ]) &&
+    compactRust(decodeChildHello).includes(
+      "ifbytes.len()!=CHILD_HELLO_BYTES{",
+    ) &&
+    compactRust(decodeChildHello).includes(
+      "ifcursor.take(8)?!=CHILD_HELLO_MAGIC||cursor.u16()?!=BOOTSTRAP_VERSION{",
+    ) &&
+    compactRust(decodeChildHello).includes(
+      "if!cursor.is_empty()||echoed_parent_nonce!=parent.parent_nonce||transcript!=child_hello_transcript(parent,&child_nonce){",
+    ) &&
+    compactRust(decodeChildHello).endsWith(
+      "ApprovalChildHello::new(child_nonce)}",
+    ) &&
+    orderedCompactMarkers(encodeParentFinish, [
+      "letrequest_bytes=encode_request(request)",
+      "bytes.extend_from_slice(PARENT_FINISH_MAGIC)",
+      "bytes.extend_from_slice(&BOOTSTRAP_VERSION.to_be_bytes())",
+      "bytes.extend_from_slice(&parent.parent_nonce)",
+      "bytes.extend_from_slice(&child.child_nonce)",
+      "bytes.extend_from_slice(&request_hash(request))",
+      "u32::try_from(request_bytes.len())",
+      "bytes.extend_from_slice(&request_bytes)",
+    ]) &&
+    compactRust(decodeParentFinish).includes(
+      "ifbytes.len()>MAX_PARENT_FINISH_BYTES{",
+    ) &&
+    compactRust(decodeParentFinish).includes(
+      "ifbytes.len()<PARENT_FINISH_HEADER_BYTES{",
+    ) &&
+    compactRust(decodeParentFinish).includes(
+      "ifcursor.take(8)?!=PARENT_FINISH_MAGIC||cursor.u16()?!=BOOTSTRAP_VERSION{",
+    ) &&
+    orderedCompactMarkers(decodeParentFinish, [
+      "letencoded_parent_nonce:[u8;32]=cursor.array()?",
+      "letencoded_child_nonce:[u8;32]=cursor.array()?",
+      "letencoded_request_hash:[u8;32]=cursor.array()?",
+      "letrequest_length=usize::try_from(cursor.u32()?)",
+      "ifrequest_length>MAX_REQUEST_BYTES",
+      "letrequest_bytes=cursor.take(request_length)?",
+      "encoded_parent_nonce!=parent.parent_nonce",
+      "encoded_child_nonce!=child.child_nonce",
+      "letrequest=decode_request(request_bytes)?",
+      "encoded_request_hash!=request_hash(&request)",
+      "encode_request(&request).as_slice()!=request_bytes",
+    ]) &&
+    compactRust(decodeParentFinish).includes(
+      "if!cursor.is_empty()||encoded_parent_nonce!=parent.parent_nonce||encoded_child_nonce!=child.child_nonce{",
+    ) &&
+    orderedCompactMarkers(childTranscript, [
+      "transcript.update(CHILD_HELLO_TRANSCRIPT_DOMAIN)",
+      "transcript.update(parent_bytes)",
+      "transcript.update(child_nonce)",
+    ]) &&
+    [
+      "bootstrap_round_trip_sizes_accessors_and_debug_are_exact",
+      "bootstrap_constructors_and_parent_decode_reject_reserved_values",
+      "parent_hello_rejects_wrong_frame_shape_without_aliasing_fields",
+      "child_hello_rejects_every_single_byte_substitution_and_wrong_parent",
+      "child_hello_rejects_every_truncation_and_trailing_data",
+      "parent_finish_rejects_every_single_byte_substitution",
+      "parent_finish_rejects_nonce_hash_length_truncation_and_trailing",
+    ].every(
+      (testName) =>
+        JSON.stringify(
+          rustFunctionOuterAttributesAtDepth(source, testName, 1),
+        ) === JSON.stringify(["#[test]"]),
+    ) &&
+    compactRust(bootstrapRoundTripTest).includes(
+      "assert_eq!(PARENT_HELLO_BYTES,62)",
+    ) &&
+    compactRust(bootstrapRoundTripTest).includes(
+      "assert_eq!(CHILD_HELLO_BYTES,106)",
+    ) &&
+    compactRust(bootstrapRoundTripTest).includes(
+      "assert_eq!(PARENT_FINISH_HEADER_BYTES,110)",
+    ) &&
+    compactRust(bootstrapRoundTripTest).includes(
+      "assert_eq!(decode_parent_finish(&parent,&child,&finish)?,request)",
+    ) &&
+    compactRust(bootstrapConstructorTest).includes(
+      "ApprovalParentHello::new(42,0x100,0x100,[1;32])",
+    ) &&
+    compactRust(bootstrapConstructorTest).includes(
+      "ApprovalChildHello::new([0;32])",
+    ) &&
+    compactRust(parentShapeTest).includes(
+      "forlengthin0..PARENT_HELLO_BYTES{",
+    ) &&
+    compactRust(parentShapeTest).includes("trailing.push(0)") &&
+    compactRust(childSubstitutionTest).includes(
+      "forindexin0..CHILD_HELLO_BYTES{",
+    ) &&
+    compactRust(childSubstitutionTest).includes(
+      "decode_child_hello(&changed_parent,&encoded)",
+    ) &&
+    compactRust(childTruncationTest).includes(
+      "forlengthin0..CHILD_HELLO_BYTES{",
+    ) &&
+    compactRust(childTruncationTest).includes("trailing.push(0)") &&
+    compactRust(finishSubstitutionTest).includes(
+      "forindexin0..encoded.len(){",
+    ) &&
+    compactRust(finishSubstitutionTest).includes(
+      "decode_parent_finish(&parent,&child,&changed).is_err()",
+    ) &&
+    compactRust(finishShapeTest).includes("forlengthin0..encoded.len(){") &&
+    compactRust(finishShapeTest).includes("trailing.push(0)") &&
+    compactRust(finishShapeTest).includes("MAX_PARENT_FINISH_BYTES+1") &&
+    [
+      bootstrapRoundTripTest,
+      bootstrapConstructorTest,
+      parentShapeTest,
+      childSubstitutionTest,
+      childTruncationTest,
+      finishSubstitutionTest,
+      finishShapeTest,
+    ].every((testBody) => !hasVacuousRustTestEscape(testBody))
+  );
+};
+const approvalBootstrapWireMutationProbes = [
+  approvalWire.replace(
+    "pub const PARENT_HELLO_BYTES: usize = 62;",
+    "pub const PARENT_HELLO_BYTES: usize = 61;",
+  ),
+  approvalWire.replace("process_handle == image_handle", "false"),
+  approvalWire.replace("if all_zero(&child_nonce)", "if false"),
+  approvalWire.replace(
+    "transcript.update(CHILD_HELLO_TRANSCRIPT_DOMAIN);",
+    'transcript.update(b"unbound");',
+  ),
+  approvalWire.replace(
+    "        || echoed_parent_nonce != parent.parent_nonce\n",
+    "",
+  ),
+  approvalWire.replace(
+    "        || transcript != child_hello_transcript(parent, &child_nonce)\n",
+    "",
+  ),
+  approvalWire.replace(
+    "    bytes.extend_from_slice(&request_hash(request));",
+    "    bytes.extend_from_slice(&[0_u8; 32]);",
+  ),
+  approvalWire.replace(
+    "        || encoded_child_nonce != child.child_nonce\n",
+    "",
+  ),
+  approvalWire.replace(
+    "    if !cursor.is_empty()\n        || encoded_parent_nonce != parent.parent_nonce",
+    "    if false\n        || encoded_parent_nonce != parent.parent_nonce",
+  ),
+  approvalWire.replace(
+    "    if encoded_request_hash != request_hash(&request)\n",
+    "    if false\n",
+  ),
+  approvalWire.replace(
+    "        || encode_request(&request).as_slice() != request_bytes\n",
+    "",
+  ),
+  approvalWire.replace(
+    "    if bytes.len() > MAX_PARENT_FINISH_BYTES {",
+    "    if false {",
+  ),
+  approvalWire.replace(
+    "    #[test]\n    fn parent_finish_rejects_every_single_byte_substitution",
+    "    fn parent_finish_rejects_every_single_byte_substitution",
+  ),
+  approvalWire.replace(
+    "        for index in 0..encoded.len() {\n            let mut changed = encoded.clone();",
+    "        for index in 0..0 {\n            let mut changed = encoded.clone();",
+  ),
+];
+requireInvariant(
+  approvalBootstrapWireContract(approvalWire) &&
+    approvalBootstrapWireMutationProbes.every(
+      (probe) =>
+        probe !== approvalWire && !approvalBootstrapWireContract(probe),
+    ),
+  "Approval bootstrap wire must remain exact-frame, parent/child-nonce-bound, request-hash-bound, canonical, bounded, and mutation-tested",
 );
 const protocolExports = await text("crates/wallet-protocol/src/lib.rs");
 requireInvariant(
@@ -4190,7 +5073,9 @@ const signer = await text("crates/secret-core/src/signing.rs");
 const bip32 = await text("crates/secret-core/src/bip32.rs");
 const signerProduction = withoutBottomTestModule(signer);
 const bip32Production = withoutBottomTestModule(bip32);
-const secretCoreProductionFiles = await rustProductionSources("crates/secret-core/src");
+const secretCoreProductionFiles = await rustProductionSources(
+  "crates/secret-core/src",
+);
 const secretCoreProduction = secretCoreProductionFiles
   .map((file) => `// ${file.path}\n${file.source}`)
   .join("\n");
@@ -4198,7 +5083,10 @@ requireInvariant(
   signer.includes("AuthorizedOperation"),
   "secret signer must require an authorization capability",
 );
-requireInvariant(!/pub\s+fn\s+sign_(?:hash|prehash|digest)/u.test(signer), "raw signer API exposed");
+requireInvariant(
+  !/pub\s+fn\s+sign_(?:hash|prehash|digest)/u.test(signer),
+  "raw signer API exposed",
+);
 
 const ephemeralImpl = rustItemBlock(
   bip32Production,
@@ -4211,15 +5099,24 @@ const rawPrivateKeyImpl = rustItemBlock(
   /(?:^|\n)\s*impl\s+RawPrivateKey\s*\{/u,
 );
 const rawKeyImport = rustFunctionBlock(rawPrivateKeyImpl, "import");
-const ethereumAddress = rustFunctionBlock(rawPrivateKeyImpl, "ethereum_address");
-const recoverableSigner = rustFunctionBlock(rawPrivateKeyImpl, "sign_recoverable_prehash");
+const ethereumAddress = rustFunctionBlock(
+  rawPrivateKeyImpl,
+  "ethereum_address",
+);
+const recoverableSigner = rustFunctionBlock(
+  rawPrivateKeyImpl,
+  "sign_recoverable_prehash",
+);
 const extendedPrivateKeyImpl = rustItemBlock(
   bip32Production,
   /(?:^|\n)\s*impl\s+ExtendedPrivateKey\s*\{/u,
 );
 const extendedFromSeed = rustFunctionBlock(extendedPrivateKeyImpl, "from_seed");
 const deriveChild = rustFunctionBlock(extendedPrivateKeyImpl, "derive_child");
-const authorizedSigner = rustFunctionBlock(signerProduction, "sign_authorized_operation");
+const authorizedSigner = rustFunctionBlock(
+  signerProduction,
+  "sign_authorized_operation",
+);
 
 function hasOneScopedEphemeralUse(functionBlock, consumerName) {
   const bindings = [
@@ -4230,7 +5127,10 @@ function hasOneScopedEphemeralUse(functionBlock, consumerName) {
   if (bindings.length !== 1) {
     return false;
   }
-  const binding = bindings[0].groups.binding.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const binding = bindings[0].groups.binding.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  );
   const accessorUses = functionBlock.match(
     new RegExp(`\\b${binding}\\s*\\.\\s*as_secret\\s*\\(\\s*\\)`, "gu"),
   );
@@ -4244,11 +5144,14 @@ function hasOneScopedEphemeralUse(functionBlock, consumerName) {
 }
 
 const directSecretKeyConstructors = [
-  ...bip32Production.matchAll(/\bSecretKey\s*::\s*(?<constructor>(?:from_[A-Za-z_]\w*|new))\s*\(/gu),
+  ...bip32Production.matchAll(
+    /\bSecretKey\s*::\s*(?<constructor>(?:from_[A-Za-z_]\w*|new))\s*\(/gu,
+  ),
 ];
-const ephemeralDeclaration = /(?<attributes>(?:\s*#\s*\[[^\]]*\]\s*)*)struct\s+EphemeralSecpSecret\s*\(\s*SecretKey\s*\)\s*;/u.exec(
-  bip32Production,
-);
+const ephemeralDeclaration =
+  /(?<attributes>(?:\s*#\s*\[[^\]]*\]\s*)*)struct\s+EphemeralSecpSecret\s*\(\s*SecretKey\s*\)\s*;/u.exec(
+    bip32Production,
+  );
 const visibleSecretKeySignature =
   /(?:^|\n)\s*pub(?:\s*\([^)]*\))?\s+(?:(?:const|async|unsafe)\s+)*fn\s+[A-Za-z_]\w*\b[^{}]*\b(?:SecretKey|EphemeralSecpSecret)\b[^{}]*\{/u;
 requireInvariant(
@@ -4257,15 +5160,18 @@ requireInvariant(
       bip32Production,
     ) &&
     !/\b(?:Clone|Copy)\b/u.test(ephemeralDeclaration.groups.attributes) &&
-    !/\bimpl\s+(?:Clone|Copy)\s+for\s+EphemeralSecpSecret\b/u.test(bip32Production) &&
-    (bip32Production.match(/\bEphemeralSecpSecret\s*\(/gu) ?? []).length === 1 &&
+    !/\bimpl\s+(?:Clone|Copy)\s+for\s+EphemeralSecpSecret\b/u.test(
+      bip32Production,
+    ) &&
+    (bip32Production.match(/\bEphemeralSecpSecret\s*\(/gu) ?? []).length ===
+      1 &&
     !/\bSelf\s*\(/u.test(ephemeralImpl),
   "the ephemeral secp256k1 wrapper must remain private and non-cloneable",
 );
 requireInvariant(
   /(?:^|\n)\s*fn\s+new\b[^;{]*->\s*Result\s*<\s*Self\s*,\s*SecretError\s*>\s*\{/u.test(
-      ephemeralConstructor,
-    ) &&
+    ephemeralConstructor,
+  ) &&
     /(?:^|\n)\s*(?:const\s+)?fn\s+as_secret\b[^;{]*->\s*&\s*SecretKey\s*\{/u.test(
       ephemeralAccessor,
     ) &&
@@ -4273,15 +5179,21 @@ requireInvariant(
       ephemeralImpl,
     ) &&
     bip32Production.includes("impl Drop for EphemeralSecpSecret") &&
-    /\bself\s*\.\s*0\s*\.\s*non_secure_erase\s*\(\s*\)\s*;/u.test(bip32Production),
+    /\bself\s*\.\s*0\s*\.\s*non_secure_erase\s*\(\s*\)\s*;/u.test(
+      bip32Production,
+    ),
   "the ephemeral secp256k1 constructor, accessor, and erasing Drop must remain private",
 );
 requireInvariant(
-  (bip32Production.match(/\bEphemeralSecpSecret\s*::\s*new\s*\(/gu) ?? []).length === 2,
+  (bip32Production.match(/\bEphemeralSecpSecret\s*::\s*new\s*\(/gu) ?? [])
+    .length === 2,
   "the ephemeral secp256k1 wrapper must be constructed at exactly two reviewed sites",
 );
 requireInvariant(
-  hasOneScopedEphemeralUse(ethereumAddress, "PublicKey\\s*::\\s*from_secret_key"),
+  hasOneScopedEphemeralUse(
+    ethereumAddress,
+    "PublicKey\\s*::\\s*from_secret_key",
+  ),
   "address derivation must use one scoped ephemeral secp256k1 key",
 );
 requireInvariant(
@@ -4289,7 +5201,8 @@ requireInvariant(
   "raw signing must use one scoped ephemeral secp256k1 key",
 );
 requireInvariant(
-  (secretCoreProduction.match(/\.\s*sign_recoverable_prehash\s*\(/gu) ?? []).length === 1 &&
+  (secretCoreProduction.match(/\.\s*sign_recoverable_prehash\s*\(/gu) ?? [])
+    .length === 1 &&
     /\bself\s*\.\s*sign_recoverable_prehash\s*\(\s*signing_prehash\s*\)\s*\?/u.test(
       authorizedSigner,
     ),
@@ -4300,10 +5213,16 @@ requireInvariant(
     directSecretKeyConstructors.every(
       (match) => match.groups.constructor === "from_byte_array",
     ) &&
-    (ephemeralConstructor.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? []).length === 1 &&
-    (rawKeyImport.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? []).length === 1 &&
-    (extendedFromSeed.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? []).length === 1 &&
-    (deriveChild.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? []).length === 2,
+    (
+      ephemeralConstructor.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ??
+      []
+    ).length === 1 &&
+    (rawKeyImport.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? [])
+      .length === 1 &&
+    (extendedFromSeed.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? [])
+      .length === 1 &&
+    (deriveChild.match(/\bSecretKey\s*::\s*from_byte_array\s*\(/gu) ?? [])
+      .length === 2,
   "direct secp256k1 key reconstruction must remain at the five reviewed sites",
 );
 requireInvariant(
@@ -4320,11 +5239,16 @@ requireInvariant(
 
 const keyAgent = await text("crates/key-agent/src/lib.rs");
 const keyMaterial = await text("crates/key-agent/src/key_material.rs");
-const keyAgentProductionFiles = await rustProductionSources("crates/key-agent/src");
+const keyAgentProductionFiles = await rustProductionSources(
+  "crates/key-agent/src",
+);
 const keyMaterialProduction = keyAgentProductionFiles.find(
   (file) => file.path === "crates/key-agent/src/key_material.rs",
 )?.source;
-requireInvariant(keyMaterialProduction !== undefined, "key material production source is missing");
+requireInvariant(
+  keyMaterialProduction !== undefined,
+  "key material production source is missing",
+);
 const keyAgentProduction = keyAgentProductionFiles
   .map((file) => `// ${file.path}\n${file.source}`)
   .join("\n");
@@ -4364,8 +5288,12 @@ requireInvariant(
     keyMaterial.includes("RotationPending") &&
     keyMaterial.includes("pub(crate) fn open_anchored") &&
     !/pub\(crate\)\s+fn\s+open\s*[<(]/u.test(keyMaterialProduction) &&
-    /impl PcpWrappingKeyIdentity \{[\s\S]*?\n\s+fn new\(/u.test(keyMaterialProduction) &&
-    /impl PcpSigningKeyIdentity \{[\s\S]*?\n\s+fn new\(/u.test(keyMaterialProduction) &&
+    /impl PcpWrappingKeyIdentity \{[\s\S]*?\n\s+fn new\(/u.test(
+      keyMaterialProduction,
+    ) &&
+    /impl PcpSigningKeyIdentity \{[\s\S]*?\n\s+fn new\(/u.test(
+      keyMaterialProduction,
+    ) &&
     !/impl Pcp(?:Wrapping|Signing)KeyIdentity \{[\s\S]*?\n\s+pub(?:\(crate\))?\s+fn new\(/u.test(
       keyMaterialProduction,
     ) &&
@@ -4373,7 +5301,9 @@ requireInvariant(
     keyMaterial.includes("P256SpkiDerSha256V1") &&
     keyMaterial.includes("BCRYPT_RSAPUBLIC_BLOB") &&
     keyMaterial.includes("BCRYPT_ECCPUBLIC_BLOB") &&
-    keyMaterial.includes("RSA3072_OAEP_SHA256_MGF1_SHA256_EMPTY_LABEL_ALGORITHM_ID") &&
+    keyMaterial.includes(
+      "RSA3072_OAEP_SHA256_MGF1_SHA256_EMPTY_LABEL_ALGORITHM_ID",
+    ) &&
     keyMaterial.includes("ECDSA_P256_SHA256_P1363_ALGORITHM_ID") &&
     keyMaterial.includes("MICROSOFT_PCP_TPM_NONEXPORTABLE_V1_PROVENANCE_ID") &&
     keyMaterial.includes("canonical_p256_p1363_signature") &&
@@ -4479,7 +5409,9 @@ for (const lifecycleInvariant of [
   );
 }
 requireInvariant(
-  /pub\s+fn\s+copyable_address[\s\S]*?SessionState::Unlocked/su.test(vaultSession) &&
+  /pub\s+fn\s+copyable_address[\s\S]*?SessionState::Unlocked/su.test(
+    vaultSession,
+  ) &&
     /pub\(crate\)\s+fn\s+with_signing_key_checked[\s\S]*?SessionState::Unlocked/su.test(
       vaultSession,
     ),
@@ -4487,8 +5419,12 @@ requireInvariant(
 );
 requireInvariant(
   vaultCore.includes("pub const fn new_unconfirmed") &&
-    !/pub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+set_backup_state\b/u.test(vaultCore) &&
-    !/pub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+new_with_state\b/u.test(vaultCore) &&
+    !/pub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+set_backup_state\b/u.test(
+      vaultCore,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+new_with_state\b/u.test(
+      vaultCore,
+    ) &&
     vaultCore.includes("pub fn verify_and_confirm_bip39_backup") &&
     vaultCore.includes("const BACKUP_CHALLENGE_WORDS: usize = 4") &&
     vaultCore.includes("let [persisted_zero, persisted_one]") &&
@@ -4507,10 +5443,13 @@ for (const privateRecoveryType of [
   "RecoveryChallenge",
 ]) {
   requireInvariant(
-    new RegExp(`pub\\(crate\\)\\s+struct\\s+${privateRecoveryType}\\b`, "u").test(
-      vaultSession,
-    ) &&
-      !new RegExp(`pub\\s+struct\\s+${privateRecoveryType}\\b`, "u").test(vaultSession),
+    new RegExp(
+      `pub\\(crate\\)\\s+struct\\s+${privateRecoveryType}\\b`,
+      "u",
+    ).test(vaultSession) &&
+      !new RegExp(`pub\\s+struct\\s+${privateRecoveryType}\\b`, "u").test(
+        vaultSession,
+      ),
     `recovery capability must remain Key-Agent-internal: ${privateRecoveryType}`,
   );
 }
@@ -4519,7 +5458,9 @@ for (const privateRecoveryMethod of ["present_recovery", "confirm_backup"]) {
     new RegExp(`pub\\(crate\\)\\s+fn\\s+${privateRecoveryMethod}\\b`, "u").test(
       vaultSession,
     ) &&
-      !new RegExp(`pub\\s+fn\\s+${privateRecoveryMethod}\\b`, "u").test(vaultSession),
+      !new RegExp(`pub\\s+fn\\s+${privateRecoveryMethod}\\b`, "u").test(
+        vaultSession,
+      ),
     `recovery operation must remain Key-Agent-internal: ${privateRecoveryMethod}`,
   );
 }
@@ -4546,7 +5487,9 @@ requireInvariant(
     recoveryChallengeBody.includes("binding:") &&
     !recoveryChallengeBody.includes("address") &&
     vaultSession.includes("presenter: impl FnOnce(RecoveryDisplayView<'_>)") &&
-    !vaultSession.includes("presenter: impl FnOnce(RecoveryDisplayView<'_>) ->"),
+    !vaultSession.includes(
+      "presenter: impl FnOnce(RecoveryDisplayView<'_>) ->",
+    ),
   "recovery display and later confirmation challenge must remain stage-separated",
 );
 for (const capability of [
@@ -4571,15 +5514,22 @@ const approvalRuntimeContract = await text(
 const secretInput = await text("crates/secret-input-ui/src/lib.rs");
 const recoveryProtocol = await text("crates/secret-input-ui/src/recovery.rs");
 const secretBootstrap = await text("crates/secret-input-ui/src/bootstrap.rs");
-const secretBootstrapWindows = await text("crates/secret-input-ui/src/bootstrap/windows.rs");
+const secretBootstrapWindows = await text(
+  "crates/secret-input-ui/src/bootstrap/windows.rs",
+);
 const secretBootstrapWindowsProduction = withoutBottomTestModule(
   secretBootstrapWindows,
 );
 const approvedSecretInputProductionBoundaryRawSha256 =
   "76599ea6b97beb5fbcc2cb39ab6e587eff65327c64fa72bb5e5b571360ccfe04";
-const recoveryNative = await text("crates/secret-input-ui/src/recovery_native.rs");
+const recoveryNative = await text(
+  "crates/secret-input-ui/src/recovery_native.rs",
+);
 const secretInputMain = await text("crates/secret-input-ui/src/main.rs");
-const secretInputRunOnce = rustTopLevelFunctionBlock(secretInputMain, "run_once");
+const secretInputRunOnce = rustTopLevelFunctionBlock(
+  secretInputMain,
+  "run_once",
+);
 const secretInputAuthenticateInheritedRequest = rustTopLevelFunctionBlock(
   secretBootstrap,
   "authenticate_inherited_request",
@@ -4638,11 +5588,15 @@ requireInvariant(
   "secret prompt fields and kind-specific byte policy must remain canonical",
 );
 requireInvariant(
-  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+enum\s+SecretOutcome/su.test(secretInput),
+  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+enum\s+SecretOutcome/su.test(
+    secretInput,
+  ),
   "secret input result must not derive a payload-revealing Debug implementation",
 );
 
-const secretChannel = await text("crates/platform-windows/src/secret_channel.rs");
+const secretChannel = await text(
+  "crates/platform-windows/src/secret_channel.rs",
+);
 const recoveryChannel = await text(
   "crates/platform-windows/src/recovery_channel.rs",
 );
@@ -4650,11 +5604,13 @@ const ceremonyIdImpl =
   /impl\s+RecoveryCeremonyId\s*\{(?<body>[\s\S]*?)\n\}/u.exec(recoveryProtocol)
     ?.groups?.body ?? "";
 const ceremonyPublicMethods = [
-  ...ceremonyIdImpl.matchAll(/\bpub\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu),
+  ...ceremonyIdImpl.matchAll(
+    /\bpub\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
+  ),
 ].map((match) => match.groups.name);
 const displayLinkBody =
-  /struct\s+DisplayLink\s*\{(?<body>[\s\S]*?)\n\}/u.exec(recoveryChannel)?.groups
-    ?.body ?? "";
+  /struct\s+DisplayLink\s*\{(?<body>[\s\S]*?)\n\}/u.exec(recoveryChannel)
+    ?.groups?.body ?? "";
 requireInvariant(
   secretChannel.includes("fn arm_from_held_helper(") &&
     !secretChannel.includes("pub fn arm_from_held_helper(") &&
@@ -4670,12 +5626,18 @@ requireInvariant(
 );
 requireInvariant(
   recoveryChannel.includes("pub(crate) fn launch_recovery_display_frontend(") &&
-    recoveryChannel.includes("pub(crate) fn launch_recovery_confirm_frontend(") &&
-    recoveryChannel.includes("acknowledgement: RecoveryDisplayAcknowledgement") &&
+    recoveryChannel.includes(
+      "pub(crate) fn launch_recovery_confirm_frontend(",
+    ) &&
+    recoveryChannel.includes(
+      "acknowledgement: RecoveryDisplayAcknowledgement",
+    ) &&
     recoveryChannel.includes("ceremony_id: RecoveryCeremonyId") &&
     displayLinkBody.includes("ceremony_id: RecoveryCeremonyId") &&
     displayLinkBody.includes("expires_at: Instant") &&
-    recoveryChannel.includes("request.matches_ceremony(&display_link.ceremony_id)") &&
+    recoveryChannel.includes(
+      "request.matches_ceremony(&display_link.ceremony_id)",
+    ) &&
     recoveryChannel.includes(
       "clamped_deadline_capped(requested_duration, display_link.expires_at)",
     ) &&
@@ -4706,11 +5668,15 @@ requireInvariant(
   "recovery launch facade must remain crate-private until settings-lease provenance exists",
 );
 requireInvariant(
-  /impl\s+fmt::Debug\s+for\s+SecretOutcome[\s\S]*?Accepted\(_\)[\s\S]*?\[REDACTED\]/u.test(secretInput),
+  /impl\s+fmt::Debug\s+for\s+SecretOutcome[\s\S]*?Accepted\(_\)[\s\S]*?\[REDACTED\]/u.test(
+    secretInput,
+  ),
   "accepted secret input Debug output must be explicitly redacted",
 );
 requireInvariant(
-  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+struct\s+SecretPrompt/su.test(secretInput) &&
+  !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*pub\s+struct\s+SecretPrompt/su.test(
+    secretInput,
+  ) &&
     /impl\s+fmt::Debug\s+for\s+SecretPrompt[\s\S]*?anti_phishing_phrase[\s\S]*?\[REDACTED\]/u.test(
       secretInput,
     ),
@@ -4723,7 +5689,9 @@ requireInvariant(
   "secret helper response writer must enforce the global 1024-byte bound",
 );
 requireInvariant(
-  /pub\s+fn\s+encode_prompt[\s\S]*?validate_prompt\(prompt\)/su.test(secretInput) &&
+  /pub\s+fn\s+encode_prompt[\s\S]*?validate_prompt\(prompt\)/su.test(
+    secretInput,
+  ) &&
     /pub\s+fn\s+decode_outcome[\s\S]*?Zeroizing<Vec<u8>>[\s\S]*?MAX_RESPONSE_BYTES[\s\S]*?copy_within[\s\S]*?zeroize\(\)/su.test(
       secretInput,
     ) &&
@@ -4770,7 +5738,9 @@ requireInvariant(
     /struct\s+RecoveryDisplayRequest\s*\{[^}]*first_address:[^}]*mnemonic:[^}]*\}/u.test(
       recoveryProtocol,
     ) &&
-    !/struct\s+RecoveryDisplayRequest\s*\{[^}]*positions:/u.test(recoveryProtocol) &&
+    !/struct\s+RecoveryDisplayRequest\s*\{[^}]*positions:/u.test(
+      recoveryProtocol,
+    ) &&
     /struct\s+RecoveryConfirmRequest\s*\{[^}]*positions:\s*\[u8;\s*CHALLENGE_WORDS\][^}]*\}/u.test(
       recoveryProtocol,
     ) &&
@@ -4796,7 +5766,9 @@ requireInvariant(
     secretBootstrap.includes("RECOVERY_DISPLAY_OUTCOME_MAGIC") &&
     secretBootstrap.includes("RECOVERY_CONFIRM_OUTCOME_MAGIC") &&
     secretBootstrap.includes("pub fn authenticate_inherited_request") &&
-    /verify_parent_handles[\s\S]*?decode_recovery_parent_finish/u.test(secretBootstrapWindows),
+    /verify_parent_handles[\s\S]*?decode_recovery_parent_finish/u.test(
+      secretBootstrapWindows,
+    ),
   "recovery stages must use distinct authenticated domains and verify the exact parent before request decode",
 );
 requireInvariant(
@@ -4809,9 +5781,7 @@ requireInvariant(
     architectureDocument.includes(
       "opens the exact Key Agent artifact without write or delete",
     ) &&
-    architectureDocument.includes(
-      "exact launched PID and process",
-    ) &&
+    architectureDocument.includes("exact launched PID and process") &&
     architectureDocument.includes(
       "both inherited request/response pipe peers",
     ) &&
@@ -4848,12 +5818,16 @@ requireInvariant(
     recoveryNative.includes("Zeroizing<Vec<u8>>") &&
     recoveryNative.includes("DrawTextW") &&
     recoveryNative.includes("is_blocked_secret_message") &&
-    recoveryNative.includes("headless_confirmation_state_collects_only_owned_zeroizing_buffers"),
+    recoveryNative.includes(
+      "headless_confirmation_state_collects_only_owned_zeroizing_buffers",
+    ),
   "native recovery UI must install capture resistance before attaching custom-drawn zeroizing state, require a hold, and expose no OS-owned secret text control",
 );
 requireInvariant(
   secretInputMain.includes("AuthenticatedRequestSession::Secret(session)") &&
-    secretInputMain.includes("AuthenticatedRequestSession::Recovery(session)") &&
+    secretInputMain.includes(
+      "AuthenticatedRequestSession::Recovery(session)",
+    ) &&
     secretInputMain.includes("present_authenticated_recovery") &&
     secretInputMain.includes("write_authenticated_recovery_outcome"),
   "secret-input runtime must dispatch only authenticated typed capabilities",
@@ -4886,10 +5860,15 @@ for (const invariant of [
   "ReloadRequired",
   "XChaCha20Poly1305",
 ]) {
-  requireInvariant(durableSigner.includes(invariant), `durable signer invariant missing: ${invariant}`);
+  requireInvariant(
+    durableSigner.includes(invariant),
+    `durable signer invariant missing: ${invariant}`,
+  );
 }
 const signedArtifactBlock =
-  keyAgent.match(/pub\s+struct\s+SignedTransactionArtifact\s*\{[\s\S]*?\n\}/u)?.[0] ?? "";
+  keyAgent.match(
+    /pub\s+struct\s+SignedTransactionArtifact\s*\{[\s\S]*?\n\}/u,
+  )?.[0] ?? "";
 requireInvariant(
   !keyAgent.includes("pub trait SignedCandidateJournal") &&
     signedArtifactBlock.length > 0 &&
@@ -4912,23 +5891,26 @@ for (const ownedField of [
   );
 }
 requireInvariant(
-  brokerTransport.includes('impl fmt::Debug for AuthorizedDispatch') &&
-    brokerTransport.includes('[VALIDATED BROWSER CONTEXT]') &&
-    brokerTransport.includes('[BOUNDED JSON REDACTED]'),
+  brokerTransport.includes("impl fmt::Debug for AuthorizedDispatch") &&
+    brokerTransport.includes("[VALIDATED BROWSER CONTEXT]") &&
+    brokerTransport.includes("[BOUNDED JSON REDACTED]"),
   "authorized broker dispatch Debug output must redact context and parameters",
 );
 
 const windowsStorage = await text("crates/platform-windows/src/storage/sys.rs");
-const windowsStorageFacade = await text("crates/platform-windows/src/storage.rs");
+const windowsStorageFacade = await text(
+  "crates/platform-windows/src/storage.rs",
+);
 const windowsStorageProduction = withoutBottomTestModule(windowsStorage);
 const windowsStorageRelease = withoutCfgTestItems(windowsStorageProduction);
-const windowsStorageFacadeProduction = withoutBottomTestModule(
-  windowsStorageFacade,
-);
+const windowsStorageFacadeProduction =
+  withoutBottomTestModule(windowsStorageFacade);
 const windowsStorageFacadeRelease = withoutCfgTestItems(
   windowsStorageFacadeProduction,
 );
-const anchorRegistry = await text("crates/platform-windows/src/anchor_registry.rs");
+const anchorRegistry = await text(
+  "crates/platform-windows/src/anchor_registry.rs",
+);
 const keyAgentDurable = await text("crates/key-agent/src/durable.rs");
 requireInvariant(
   !/(?:use\s+[^;]*\bREPLACEFILE_WRITE_THROUGH\b|[|,]\s*REPLACEFILE_WRITE_THROUGH\b)/su.test(
@@ -5014,9 +5996,10 @@ const exactImageVisibleFunctionNames = [
   ),
 ].map((match) => match.groups.name);
 const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
-const restrictedLauncherProduction = withoutBottomTestModule(restrictedLauncher);
+const restrictedLauncherProduction =
+  withoutBottomTestModule(restrictedLauncher);
 const approvedRestrictedLauncherProductionBoundaryRawSha256 =
-  "b643b91e53867e3f6160f7f436debdaaa88e5ce1639b35d8f3aabee8fdf07674";
+  "4ae7c143e1ffbdba71bf51e435d5bb81f0177f1bcae0546bf876ca549b59242c";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -5154,7 +6137,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "32a3899e6be03861b26c93d06bdb626f59d37f3746ec664cb5b5b8182f0c918b";
+  "77086c79f063be981eadf4bb5aaed090606734a92047a98b9a64806e46a46ada";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -5191,26 +6174,70 @@ const workspaceCargoManifestInventory = await Promise.all(
   }),
 );
 const approvedWorkspaceCargoManifestPins = [
-  { path: "Cargo.toml", sha256: "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49" },
-  { path: "crates/approval-ui/Cargo.toml", sha256: "a45ce0f391efef8f88b5e3289aaf714521585f2106a48e0e236e78b3503d3acd" },
-  { path: "crates/approval-wire/Cargo.toml", sha256: "c4425735387a3699cd3fd51eb6ae613a7e42f23a4fa8e282406103b09230f913" },
-  { path: "crates/broker/Cargo.toml", sha256: "e3a04543f1a1ecdd559abb50541b025f601a6a1f0b0f0cb0a599fa3ba2179cf7" },
-  { path: "crates/chain-registry/Cargo.toml", sha256: "03a6ad6fa13c3b1c75e0f7b657da5d4f105ba95b31023486b739cc9de2c81928" },
-  { path: "crates/dashboard/Cargo.toml", sha256: "0d912fd1b2d9bf00147c6d2aa2de8f396524169d1385e8e4fcba22c5493e77c8" },
-  { path: "crates/eip712/Cargo.toml", sha256: "fb443a2eea397ca920a0a44b5cfc73c3e7b9a825cf49dcf95c2959bf415a2448" },
-  { path: "crates/key-agent/Cargo.toml", sha256: "2464e3b9dc86089a4d3f05cf936e3cc4988ed698215e83fb7555416bd9f62bba" },
-  { path: "crates/native-host/Cargo.toml", sha256: "5ddf3ca3c87c2b634c5a12700af2e08637612e22a3fb7afb4b9c4e4754f5d988" },
-  { path: "crates/platform-windows/Cargo.toml", sha256: "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" },
-  { path: "crates/secret-core/Cargo.toml", sha256: "18b74025d712211068ee53b1f7d4529532b1f08c781d7057d7f73a2ceef2dc82" },
-  { path: "crates/secret-input-ui/Cargo.toml", sha256: "a1fdd15bff500909518a7a9ba357775ad4bf65d40703f4db77e047a905e39572" },
-  { path: "crates/wallet-model/Cargo.toml", sha256: "1ef04a95a52064eac8bd8ca5a0d497ff2aecc5a00f1dece5be180b8d9ade5732" },
-  { path: "crates/wallet-protocol/Cargo.toml", sha256: "bac69541b0521a0dc6424e683e2dbabf80b7ab133c0f0a8bea14a0125123a36e" },
-  { path: "demo/sepolia-wallet/Cargo.toml", sha256: "6641ccb2e60910901b764ff4721f2ce96ffb5b68e66d8a9deceef3b6f8962c2f" },
+  {
+    path: "Cargo.toml",
+    sha256: "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49",
+  },
+  {
+    path: "crates/approval-ui/Cargo.toml",
+    sha256: "f7e488de5ee55f38317cbba00b24cc28b51a9cfc61b1cd2c4a25fe22962618bd",
+  },
+  {
+    path: "crates/approval-wire/Cargo.toml",
+    sha256: "c4425735387a3699cd3fd51eb6ae613a7e42f23a4fa8e282406103b09230f913",
+  },
+  {
+    path: "crates/broker/Cargo.toml",
+    sha256: "e3a04543f1a1ecdd559abb50541b025f601a6a1f0b0f0cb0a599fa3ba2179cf7",
+  },
+  {
+    path: "crates/chain-registry/Cargo.toml",
+    sha256: "03a6ad6fa13c3b1c75e0f7b657da5d4f105ba95b31023486b739cc9de2c81928",
+  },
+  {
+    path: "crates/dashboard/Cargo.toml",
+    sha256: "0d912fd1b2d9bf00147c6d2aa2de8f396524169d1385e8e4fcba22c5493e77c8",
+  },
+  {
+    path: "crates/eip712/Cargo.toml",
+    sha256: "fb443a2eea397ca920a0a44b5cfc73c3e7b9a825cf49dcf95c2959bf415a2448",
+  },
+  {
+    path: "crates/key-agent/Cargo.toml",
+    sha256: "2464e3b9dc86089a4d3f05cf936e3cc4988ed698215e83fb7555416bd9f62bba",
+  },
+  {
+    path: "crates/native-host/Cargo.toml",
+    sha256: "5ddf3ca3c87c2b634c5a12700af2e08637612e22a3fb7afb4b9c4e4754f5d988",
+  },
+  {
+    path: "crates/platform-windows/Cargo.toml",
+    sha256: "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc",
+  },
+  {
+    path: "crates/secret-core/Cargo.toml",
+    sha256: "18b74025d712211068ee53b1f7d4529532b1f08c781d7057d7f73a2ceef2dc82",
+  },
+  {
+    path: "crates/secret-input-ui/Cargo.toml",
+    sha256: "a1fdd15bff500909518a7a9ba357775ad4bf65d40703f4db77e047a905e39572",
+  },
+  {
+    path: "crates/wallet-model/Cargo.toml",
+    sha256: "1ef04a95a52064eac8bd8ca5a0d497ff2aecc5a00f1dece5be180b8d9ade5732",
+  },
+  {
+    path: "crates/wallet-protocol/Cargo.toml",
+    sha256: "bac69541b0521a0dc6424e683e2dbabf80b7ab133c0f0a8bea14a0125123a36e",
+  },
+  {
+    path: "demo/sepolia-wallet/Cargo.toml",
+    sha256: "6641ccb2e60910901b764ff4721f2ce96ffb5b68e66d8a9deceef3b6f8962c2f",
+  },
 ];
 const cargoManifestPinsHold = (inventory) =>
-  JSON.stringify(
-    inventory.map(({ path, sha256 }) => ({ path, sha256 })),
-  ) === JSON.stringify(approvedWorkspaceCargoManifestPins);
+  JSON.stringify(inventory.map(({ path, sha256 }) => ({ path, sha256 }))) ===
+  JSON.stringify(approvedWorkspaceCargoManifestPins);
 const cargoNonRustTargetMutationProbe = workspaceCargoManifestInventory.map(
   ({ path, source }) => {
     const mutated =
@@ -5238,12 +6265,7 @@ const workspaceDynamicResolverNames = [
   "dlsym",
   "dlvsym",
 ];
-const workspaceInlineCodeNames = [
-  "asm",
-  "global_asm",
-  "naked_asm",
-  "llvm_asm",
-];
+const workspaceInlineCodeNames = ["asm", "global_asm", "naked_asm", "llvm_asm"];
 const workspacePointerFabricationNames = [
   "transmute",
   "transmute_copy",
@@ -5294,7 +6316,7 @@ const dynamicResolverUsageProbes = {
       {
         path: "probe.rs",
         source:
-          'fn probe(module: HMODULE, name: PCSTR) { if false { let _ = windows::Win32::System::LibraryLoader::GetProcAddress(module, name); } }',
+          "fn probe(module: HMODULE, name: PCSTR) { if false { let _ = windows::Win32::System::LibraryLoader::GetProcAddress(module, name); } }",
       },
     ],
     workspaceDynamicResolverNames,
@@ -5315,8 +6337,7 @@ const inlineCodeUsageProbes = {
     [
       {
         path: "probe.rs",
-        source:
-          'use core::arch::global_asm as ga; ga!("nop");',
+        source: 'use core::arch::global_asm as ga; ga!("nop");',
       },
     ],
     workspaceInlineCodeNames,
@@ -5379,8 +6400,7 @@ const foreignBlockProbes = {
   unreviewed: rustForeignBlockInventory([
     {
       path: "probe.rs",
-      source:
-        'unsafe extern "system" { fn innocent(value: usize) -> usize; }',
+      source: 'unsafe extern "system" { fn innocent(value: usize) -> usize; }',
     },
   ]),
 };
@@ -5476,7 +6496,7 @@ const approvedPlatformWindowsLocalDependencyCrateRootInventory = [
 const approvedPlatformWindowsLocalDependencySourceInventory = [
   {
     path: "crates/approval-wire/src/lib.rs",
-    sha256: "d4c288cfa442d9e8efc3a008071e057d1607ffc9276265ecddd0c8a07ac28d37",
+    sha256: "4f341589057aea14af86a39dd744c7c6d42d71e994e54b976c14b4d061fb8185",
   },
   {
     path: "crates/secret-input-ui/src/bootstrap.rs",
@@ -5510,8 +6530,9 @@ const platformWindowsManifest = await trustedRegularFileText(
 const platformWindowsManifestSha256 = normalizedSourceSha256(
   platformWindowsManifest,
 );
-const platformWindowsCrateRootInventory =
-  await trustedDirectoryEntryInventory("crates/platform-windows");
+const platformWindowsCrateRootInventory = await trustedDirectoryEntryInventory(
+  "crates/platform-windows",
+);
 const workspaceManifest = rootManifest;
 const workspaceLock = await trustedRegularFileText("Cargo.lock");
 const workspaceLockSha256 = normalizedSourceSha256(workspaceLock);
@@ -5569,9 +6590,7 @@ const attestedArtifactAccessorConsumers = platformWindowsProductionFiles
   )
   .map((file) => file.path);
 const attestedArtifactAccessorTokenConsumers = platformWindowsProductionFiles
-  .filter(
-    (file) => file.path !== "crates/platform-windows/src/attestation.rs",
-  )
+  .filter((file) => file.path !== "crates/platform-windows/src/attestation.rs")
   .flatMap((file) =>
     [...rustLexicalCode(file.source).matchAll(/\battested_artifact\b/gu)].map(
       () => file.path,
@@ -5588,7 +6607,8 @@ requireInvariant(
   /#\[cfg\(test\)\]\s*pub\(crate\) fn for_broker_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*broker_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
     activationHelper,
   ) &&
-    (activationHelper.match(/\bfor_broker_artifact_test\b/gu) ?? []).length === 1 &&
+    (activationHelper.match(/\bfor_broker_artifact_test\b/gu) ?? []).length ===
+      1 &&
     /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
@@ -5671,14 +6691,15 @@ requireInvariant(
       ]) &&
     platformWindowsProductionFiles
       .filter(
-        (file) =>
-          file.path !== "crates/platform-windows/src/attestation.rs",
+        (file) => file.path !== "crates/platform-windows/src/attestation.rs",
       )
       .every(
         (file) =>
-          (rustLexicalCode(file.source).match(
-            /\bAttestedArtifactDigest\s*\(/gu,
-          ) ?? []).length === 0,
+          (
+            rustLexicalCode(file.source).match(
+              /\bAttestedArtifactDigest\s*\(/gu,
+            ) ?? []
+          ).length === 0,
       ) &&
     !/impl\s+(?:Default|Drop|Deref|DerefMut|AsRef|Borrow|From(?:<[^>]+>)?|Into(?:<[^>]+>)?|TryFrom(?:<[^>]+>)?)\s+for\s+AttestedArtifactDigest\b/u.test(
       attestationReleaseCode,
@@ -5722,8 +6743,7 @@ const preparedReleaseBrokerSupervisorImpl =
 const preparedReleaseBrokerSupervisorDebug =
   releaseBrokerSupervisorImplItems.find(
     (item) =>
-      item.header ===
-      "impl fmt::Debug for PreparedReleaseBrokerSupervisor",
+      item.header === "impl fmt::Debug for PreparedReleaseBrokerSupervisor",
   )?.source ?? "";
 const preparedReleaseBrokerSupervisorDrop =
   releaseBrokerSupervisorImplItems.find(
@@ -5827,9 +6847,8 @@ const preflightBrokerArtifactNormalized = rustLexicalCode(
 )
   .replace(/\s+/gu, " ")
   .trim();
-const preparedReleaseBrokerSupervisorNormalized = preparedReleaseBrokerSupervisor
-  .replace(/\s+/gu, " ")
-  .trim();
+const preparedReleaseBrokerSupervisorNormalized =
+  preparedReleaseBrokerSupervisor.replace(/\s+/gu, " ").trim();
 const preflightBrokerArtifactDebugNormalized = preflightBrokerArtifactDebug
   .replace(/\s+/gu, " ")
   .trim();
@@ -5848,11 +6867,12 @@ const brokerAdmissionAndPreparedSurface = [
   prepareReleaseBrokerSupervisor,
   heldHelperFileIdentity,
 ].join("\n");
-const brokerReleaseIdentityAuthorityFiles = platformWindowsProductionFiles.filter(
-  (file) =>
-    file.path === "crates/platform-windows/src/broker_artifact.rs" ||
-    file.path === "crates/platform-windows/src/broker_supervisor.rs",
-);
+const brokerReleaseIdentityAuthorityFiles =
+  platformWindowsProductionFiles.filter(
+    (file) =>
+      file.path === "crates/platform-windows/src/broker_artifact.rs" ||
+      file.path === "crates/platform-windows/src/broker_supervisor.rs",
+  );
 const brokerReleaseIdentityAuthorityCode = rustLexicalCode(
   brokerReleaseIdentityAuthorityFiles.map((file) => file.source).join("\n"),
 );
@@ -5913,11 +6933,7 @@ const brokerReleaseAuthorityInventory = (
         });
       }
       const prefix = sourceCode.slice(0, item.index);
-      if (
-        /(?<![\p{XID_Continue}_#])pub(?:\s*\([^)]*\))?\s*$/u.test(
-          prefix,
-        )
-      ) {
+      if (/(?<![\p{XID_Continue}_#])pub(?:\s*\([^)]*\))?\s*$/u.test(prefix)) {
         reexports.push({
           path: file.path,
           source: itemCode.replace(/\s+/gu, ""),
@@ -5993,8 +7009,9 @@ const preparedBrokerProductionTypeTokenInventory = brokerLexicalTokenInventory(
   platformWindowsProductionFiles,
   "PreparedReleaseBrokerSupervisor",
 );
-const preparedBrokerProductionUseItemInventory =
-  preparedBrokerUseItemInventory(platformWindowsProductionFiles);
+const preparedBrokerProductionUseItemInventory = preparedBrokerUseItemInventory(
+  platformWindowsProductionFiles,
+);
 const brokerArtifactNewTokenInventory = brokerNewTokenInventory(
   platformWindowsProductionFiles.filter(
     (file) => file.path === "crates/platform-windows/src/broker_artifact.rs",
@@ -6012,24 +7029,23 @@ const brokerReleaseMatchesTokenInventory =
       ),
     ].map(() => file.path),
   );
-const preflightBrokerStructSiteInventory = platformWindowsProductionFiles.flatMap(
-  (file) =>
+const preflightBrokerStructSiteInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
     rustStructLiteralSites(file.source, "PreflightBrokerArtifact").map(
       (site) => ({
         path: file.path,
         source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
       }),
     ),
-);
+  );
 const preparedBrokerNamedStructSiteInventory =
   platformWindowsProductionFiles.flatMap((file) =>
-    rustStructLiteralSites(
-      file.source,
-      "PreparedReleaseBrokerSupervisor",
-    ).map((site) => ({
-      path: file.path,
-      source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
-    })),
+    rustStructLiteralSites(file.source, "PreparedReleaseBrokerSupervisor").map(
+      (site) => ({
+        path: file.path,
+        source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
+      }),
+    ),
   );
 const runningBrokerStructSiteInventory = platformWindowsProductionFiles.flatMap(
   (file) =>
@@ -6041,9 +7057,10 @@ const runningBrokerStructSiteInventory = platformWindowsProductionFiles.flatMap(
 const preparedReleaseBrokerSupervisorMethodNames = rustFunctionSignatures(
   preparedReleaseBrokerSupervisorImpl,
 ).map((signature) => {
-  const match = /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
-    rustLexicalCode(signature.source),
-  );
+  const match =
+    /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+      rustLexicalCode(signature.source),
+    );
   return match?.groups.name ?? "[UNPARSED]";
 });
 const preparedReleaseBrokerSupervisorSelfSites = rustStructLiteralSites(
@@ -6064,12 +7081,16 @@ const brokerPreparedVariantLexicalSiteInventory = [
 const brokerActivationImageUseInventory = rustUseItems(
   releaseBrokerSupervisorRelease,
 )
-  .filter((item) => /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)))
+  .filter((item) =>
+    /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)),
+  )
   .map((item) => rustLexicalCode(item.source).replace(/\s+/gu, ""));
 const brokerActivationImageTypeAliasInventory = rustTypeAliasItems(
   releaseBrokerSupervisorRelease,
 )
-  .filter((item) => /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)))
+  .filter((item) =>
+    /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)),
+  )
   .map((item) => rustLexicalCode(item.source).replace(/\s+/gu, ""));
 const brokerActivationImageFunctionSurface = rustFunctionSignatures(
   releaseBrokerSupervisorRelease,
@@ -6088,9 +7109,10 @@ const brokerActivationImageFunctionSurface = rustFunctionSignatures(
   ) {
     return [];
   }
-  const name = /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
-    signatureCode,
-  )?.groups.name;
+  const name =
+    /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+      signatureCode,
+    )?.groups.name;
   return [
     {
       owner: owner ?? "free",
@@ -6348,9 +7370,7 @@ requireInvariant(
         "prepared-use-offset-probe",
       ]) &&
     JSON.stringify(
-      preparedBrokerUseItemInventory(
-        preparedBrokerUseOffsetBaselineProbeFiles,
-      ),
+      preparedBrokerUseItemInventory(preparedBrokerUseOffsetBaselineProbeFiles),
     ) ===
       JSON.stringify([
         {
@@ -6444,13 +7464,17 @@ requireInvariant(
     ) &&
     brokerPreflightOrder.every((position) => position !== -1) &&
     brokerPreflightOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     rustCallSites(brokerPreflight, "attested_artifact").length === 1 &&
     rustCallSites(brokerPreflight, "allows_broker_manifest").length === 1 &&
     !/\bsigning_enabled\b/u.test(rustLexicalCode(brokerPreflight)) &&
-    (rustLexicalCode(brokerArtifactProduction).match(/\brelease_identity\b/gu) ?? [])
-      .length === 5 &&
+    (
+      rustLexicalCode(brokerArtifactProduction).match(
+        /\brelease_identity\b/gu,
+      ) ?? []
+    ).length === 5 &&
     rustCallSites(brokerArtifactProduction, "preflight_broker_artifact")
       .length === 1 &&
     JSON.stringify(preflightBrokerProductionCallers) === JSON.stringify([]) &&
@@ -6568,14 +7592,15 @@ requireInvariant(
     ) &&
     preparedReleaseBrokerSupervisorDebugNormalized ===
       'impl fmt::Debug for PreparedReleaseBrokerSupervisor { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/RELEASE/FILE_ID_INFO])") } }' &&
-    preparedReleaseBrokerSupervisorDrop
-      .replace(/\s+/gu, " ")
-      .trim() ===
+    preparedReleaseBrokerSupervisorDrop.replace(/\s+/gu, " ").trim() ===
       "impl Drop for PreparedReleaseBrokerSupervisor { fn drop(&mut self) { self.identity.zeroize(); } }" &&
     preparedReleaseBrokerSupervisorNewNormalized ===
       "pub(super) fn new( artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, identity: ExactFileIdentity, ) -> Self { Self { artifact, release_identity, identity, } }" &&
-    (releaseBrokerSupervisorProduction.match(/\bfn new\(\s*artifact: VerifiedHelper,\s*release_identity: AttestedArtifactDigest,\s*identity: ExactFileIdentity,\s*\)/gu) ?? [])
-      .length === 1 &&
+    (
+      releaseBrokerSupervisorProduction.match(
+        /\bfn new\(\s*artifact: VerifiedHelper,\s*release_identity: AttestedArtifactDigest,\s*identity: ExactFileIdentity,\s*\)/gu,
+      ) ?? []
+    ).length === 1 &&
     JSON.stringify(preparedReleaseBrokerSupervisorMethodNames) ===
       JSON.stringify(["new"]) &&
     JSON.stringify(preparedReleaseBrokerSupervisorSelfSites) ===
@@ -6596,9 +7621,11 @@ requireInvariant(
     JSON.stringify(prepareBrokerProductionCallers) === JSON.stringify([]) &&
     JSON.stringify(prepareBrokerProductionTokenInventory) ===
       JSON.stringify(["crates/platform-windows/src/broker_artifact.rs"]) &&
-    (rustLexicalCode(releaseBrokerSupervisorProduction).match(
-      /\brelease_identity\b/gu,
-    ) ?? []).length === 3 &&
+    (
+      rustLexicalCode(releaseBrokerSupervisorProduction).match(
+        /\brelease_identity\b/gu,
+      ) ?? []
+    ).length === 3 &&
     heldHelperFileIdentityNormalized ===
       "pub(super) fn held_helper_file_identity( artifact: &VerifiedHelper, ) -> Result<ExactFileIdentity, ExactImageError> { sys::exact_file_identity(artifact.raw_handle()) }" &&
     /enum BrokerSupervisorPreflightError\s*\{[^}]*IdentityUnavailable/u.test(
@@ -6640,7 +7667,8 @@ requireInvariant(
       ) &&
     preparedBrokerTestOrder.every((position) => position !== -1) &&
     preparedBrokerTestOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ),
   "Broker admission must be the sole prepared-state minting authority and move one opaque whole-release identity with the same-handle, non-cloneable, redacted capability",
 );
@@ -6754,9 +7782,8 @@ requireInvariant(
           call: true,
         },
       ]) &&
-    JSON.stringify(
-      launchPreparedBrokerProductionTokenInventory,
-    ) === JSON.stringify(["crates/platform-windows/src/broker_supervisor.rs"]) &&
+    JSON.stringify(launchPreparedBrokerProductionTokenInventory) ===
+      JSON.stringify(["crates/platform-windows/src/broker_supervisor.rs"]) &&
     rustCallSites(
       releaseBrokerSupervisorProduction,
       "launch_prepared_release_broker_channel",
@@ -6768,7 +7795,8 @@ requireInvariant(
 requireInvariant(
   preparedBrokerActivationOrder.every((position) => position !== -1) &&
     preparedBrokerActivationOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     normalizedRunningBrokerDefinition ===
       "pub(super) struct RunningBroker { process: OwnedWinHandle, job: BrokerJob, _image: BrokerActivationImage, shut_down: bool, }" &&
@@ -6808,10 +7836,13 @@ requireInvariant(
       JSON.stringify([
         "RunningBroker{process,job,_image:image,shut_down:false,}",
       ]) &&
-    releaseBrokerProcessCreation.includes("debuggee.authenticate_first_event(&image") &&
+    releaseBrokerProcessCreation.includes(
+      "debuggee.authenticate_first_event(&image",
+    ) &&
     releaseBrokerProcessCreation.includes("_image: image") &&
-    releaseBrokerProcessCreation.indexOf("debuggee.authenticate_first_event(&image") <
-      releaseBrokerProcessCreation.indexOf("debuggee.start_user_mode()") &&
+    releaseBrokerProcessCreation.indexOf(
+      "debuggee.authenticate_first_event(&image",
+    ) < releaseBrokerProcessCreation.indexOf("debuggee.start_user_mode()") &&
     !/pub(?:\([^)]*\))?\s+use\s+[^;]*(?:PreparedReleaseBrokerSupervisor|launch_prepared_release_broker_channel)/u.test(
       platformWindowsLib,
     ),
@@ -6832,13 +7863,17 @@ requireInvariant(
     preparedReleaseBrokerDeadlineTest.includes(
       "launch_prepared_release_broker_channel(prepared, Instant::now())",
     ) &&
-    preparedReleaseBrokerDeadlineTest.includes("DormantBrokerError::Deadline") &&
+    preparedReleaseBrokerDeadlineTest.includes(
+      "DormantBrokerError::Deadline",
+    ) &&
     /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(attestation),
   "prepared Broker activation must retain round-trip, mismatch, cleanup, panic, pre-allocation deadline, and release-disabled evidence",
 );
 requireInvariant(
   activationArchitecture.includes("private, dormant Broker") &&
-    activationArchitecture.includes("exactly three signing-TCB helper manifests") &&
+    activationArchitecture.includes(
+      "exactly three signing-TCB helper manifests",
+    ) &&
     activationArchitecture.includes("`PreflightBrokerArtifact`") &&
     activationArchitecture.includes("`AttestedArtifactDigest`") &&
     activationArchitecture.includes("overall `ReleasePolicy`") &&
@@ -6856,10 +7891,14 @@ requireInvariant(
     activationArchitecture.includes(
       "production-compiled, crate-private Broker activation core",
     ) &&
-    activationArchitecture.includes("deadline-bound process-wide coordinator") &&
+    activationArchitecture.includes(
+      "deadline-bound process-wide coordinator",
+    ) &&
     activationArchitecture.includes("one loaded crate instance") &&
     activationArchitecture.includes("separate matching static lock") &&
-    activationArchitecture.includes("`COMPILED_RELEASE_POLICY` remains `None`") &&
+    activationArchitecture.includes(
+      "`COMPILED_RELEASE_POLICY` remains `None`",
+    ) &&
     activationArchitecture.includes("4900/exit-78") &&
     activationReadme.includes("private dormant Broker artifact preflight") &&
     activationReadme.includes("`PreflightBrokerArtifact`") &&
@@ -6873,7 +7912,9 @@ requireInvariant(
     activationReadme.includes("`prepare_release_broker_supervisor`") &&
     activationReadme.includes("same already-held file handle") &&
     activationReadme.includes("non-cloneable and drop-only") &&
-    activationReadme.includes("production-compiled, crate-private exact-image") &&
+    activationReadme.includes(
+      "production-compiled, crate-private exact-image",
+    ) &&
     activationReadme.includes("deadline-bound process-wide flight") &&
     activationReadme.includes("one loaded `platform-windows` crate") &&
     activationReadme.includes("separate matching static lock") &&
@@ -6976,7 +8017,9 @@ const sealedKeyAgentStdioTraitImplementations = [
   ),
 ].map((match) => normalizeRustFragment(match.groups.trait));
 requireInvariant(
-  platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_child_bootstrap;") &&
+  platformWindowsLib.includes(
+    "#[cfg(windows)]\nmod key_agent_child_bootstrap;",
+  ) &&
     platformWindowsLib.includes(
       "KeyAgentChildBootstrapError, serve_inherited_key_agent_storage_startup,",
     ) &&
@@ -7071,17 +8114,29 @@ requireInvariant(
     keyAgentStartupRelease.includes(
       "pub(crate) const KEY_AGENT_STARTUP_RESPONSE_BYTES: usize = 88;",
     ) &&
-    keyAgentStartupRelease.includes('const REQUEST_MAGIC: [u8; 8] = *b"YWKSREQ1";') &&
-    keyAgentStartupRelease.includes('const RESPONSE_MAGIC: [u8; 8] = *b"YWKSRES1";') &&
-    normalizeRustFragment(rustLexicalCode(keyAgentStartupRequestFrameDefinition)) ===
+    keyAgentStartupRelease.includes(
+      'const REQUEST_MAGIC: [u8; 8] = *b"YWKSREQ1";',
+    ) &&
+    keyAgentStartupRelease.includes(
+      'const RESPONSE_MAGIC: [u8; 8] = *b"YWKSRES1";',
+    ) &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentStartupRequestFrameDefinition),
+    ) ===
       "pub(crate) struct KeyAgentStartupRequestFrame { bytes: Zeroizing<[u8; KEY_AGENT_STARTUP_REQUEST_BYTES]>, }" &&
-    normalizeRustFragment(rustLexicalCode(keyAgentStartupResponseFrameDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentStartupResponseFrameDefinition),
+    ) ===
       "pub(crate) struct KeyAgentStartupResponseFrame { bytes: Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, }" &&
     normalizeRustFragment(rustLexicalCode(keyAgentStartupRequestDefinition)) ===
       "pub(crate) struct KeyAgentStartupRequest { nonce: Zeroizing<[u8; NONCE_BYTES]>, expected_process_id: u32, expected_creation_time: u64, storage_root_identity: KeyAgentStorageRootIdentity, storage_leaf: String, }" &&
-    normalizeRustFragment(rustLexicalCode(keyAgentStartupResponseDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentStartupResponseDefinition),
+    ) ===
       "pub(crate) struct KeyAgentStartupResponse { echoed_nonce: Zeroizing<[u8; NONCE_BYTES]>, actual_process_id: u32, actual_creation_time: u64, storage_root_identity: KeyAgentStorageRootIdentity, }" &&
-    keyAgentStartupRequestEncode.includes("FrameBuilder::<KEY_AGENT_STARTUP_REQUEST_BYTES>::new()") &&
+    keyAgentStartupRequestEncode.includes(
+      "FrameBuilder::<KEY_AGENT_STARTUP_REQUEST_BYTES>::new()",
+    ) &&
     keyAgentStartupRequestEncode.includes(".push(&188_u32.to_be_bytes())") &&
     keyAgentStartupRequestDecode.includes(
       "frame.len() != KEY_AGENT_STARTUP_REQUEST_BYTES",
@@ -7224,7 +8279,10 @@ const keyAgentChildStartupContract = (source) => {
   let responseDefinition;
   let residentDefinition;
   try {
-    serve = rustFunctionBlock(source, "serve_inherited_key_agent_storage_startup");
+    serve = rustFunctionBlock(
+      source,
+      "serve_inherited_key_agent_storage_startup",
+    );
     readExact = rustFunctionBlock(source, "read_exact_synchronous");
     readEof = rustFunctionBlock(source, "read_exact_eof_synchronous");
     writeExact = rustFunctionBlock(source, "write_exact_synchronous");
@@ -7335,16 +8393,15 @@ const keyAgentChildStartupContract = (source) => {
       ]) &&
     compactCloseRequest === exactKeyAgentChildCloseRequest &&
     JSON.stringify(
-      rustCallSites(closeRequest, "detach_and_close_standard_handle").map((call) =>
-        call.arguments.map(compactRust),
+      rustCallSites(closeRequest, "detach_and_close_standard_handle").map(
+        (call) => call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([]) &&
     JSON.stringify(
       rustCallSites(closeRequest, "detach_standard_handle").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([["STD_INPUT_HANDLE"], ["STD_OUTPUT_HANDLE"]]) &&
+    ) === JSON.stringify([["STD_INPUT_HANDLE"], ["STD_OUTPUT_HANDLE"]]) &&
     JSON.stringify(
       rustCallSites(closeRequest, "close_raw_handle").map((call) =>
         call.arguments.map(compactRust),
@@ -7383,9 +8440,10 @@ const keyAgentChildStartupContract = (source) => {
     !/[?]|\b(?:return|Err|Result|ExitProcess)\b|std::process::exit/u.test(
       postResponseCommit,
     ) &&
-    responseCommit > compactServe.indexOf(
-      "letresponse_stdio=close_startup_request(sealed_stdio)?",
-    ) &&
+    responseCommit >
+      compactServe.indexOf(
+        "letresponse_stdio=close_startup_request(sealed_stdio)?",
+      ) &&
     normalizeRustFragment(linearBoundarySource) ===
       "struct SealedKeyAgentStdio { stdin: HANDLE, stdout: HANDLE, stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, } struct KeyAgentStartupResponseStdio { stdout: HANDLE, stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, } struct ResidentKeyAgentBoundary { stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
     !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:SealedKeyAgentStdio|KeyAgentStartupResponseStdio|ResidentKeyAgentBoundary)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:SealedKeyAgentStdio|KeyAgentStartupResponseStdio|ResidentKeyAgentBoundary)\b/u.test(
@@ -7398,7 +8456,9 @@ const keyAgentChildStartupContract = (source) => {
       ),
     ) === JSON.stringify([["&resident_proofs"]]) &&
     JSON.stringify(
-      rustCallSites(remainInert, "Sleep").map((call) => call.arguments.map(compactRust)),
+      rustCallSites(remainInert, "Sleep").map((call) =>
+        call.arguments.map(compactRust),
+      ),
     ) === JSON.stringify([["INFINITE"]]) &&
     !/\b(?:PeekNamedPipe|reject_buffered_key_agent_startup_bytes|wait_for_parent_disconnect|ReadFile|WriteFile|CreateFileW|sign|runtime_request)\b/u.test(
       rustLexicalCode(remainInert),
@@ -7533,9 +8593,13 @@ const keyAgentChildStartupTestsContract = (source) => {
     ) &&
     compactDelayed.includes("std::sync::mpsc::sync_channel::<()>(0)") &&
     writerOrder.every((position) => position !== -1) &&
-    writerOrder.slice(1).every((position, index) => position > writerOrder[index]) &&
+    writerOrder
+      .slice(1)
+      .every((position, index) => position > writerOrder[index]) &&
     readerOrder.every((position) => position !== -1) &&
-    readerOrder.slice(1).every((position, index) => position > readerOrder[index]) &&
+    readerOrder
+      .slice(1)
+      .every((position, index) => position > readerOrder[index]) &&
     compactDelayed.includes("writer.join()")
   );
 };
@@ -7559,12 +8623,12 @@ const keyAgentChildStartupTestMutationProbes = [
     "    fn startup_request_rejects_a_suffix_released_after_the_fixed_frame()\n    -> Result<(), Box<dyn std::error::Error>> {\n        return Ok(());\n",
   ),
   keyAgentChildBootstrapSource.replace(
-    "            wait_for_frame\n                .recv()\n                .map_err(|_| std::io::Error::other(\"request-frame barrier closed\"))?;\n",
+    '            wait_for_frame\n                .recv()\n                .map_err(|_| std::io::Error::other("request-frame barrier closed"))?;\n',
     "",
   ),
   keyAgentChildBootstrapSource.replace(
     "        let reader_handle = HANDLE(reader.as_raw_handle());\n        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];\n        read_exact_synchronous(reader_handle, &mut received)?;\n        assert_eq!(received, frame);",
-    "        let reader_handle = HANDLE(reader.as_raw_handle());\n        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];\n        release_suffix.send(()).map_err(|_| std::io::Error::other(\"early release\"))?;\n        read_exact_synchronous(reader_handle, &mut received)?;\n        assert_eq!(received, frame);",
+    '        let reader_handle = HANDLE(reader.as_raw_handle());\n        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];\n        release_suffix.send(()).map_err(|_| std::io::Error::other("early release"))?;\n        read_exact_synchronous(reader_handle, &mut received)?;\n        assert_eq!(received, frame);',
   ),
   keyAgentChildBootstrapSource.replace(
     "            read_exact_eof_synchronous(reader_handle),\n            Err(KeyAgentChildBootstrapError)",
@@ -7603,15 +8667,15 @@ const keyAgentBootstrapClearCalls = rustCallSites(
   sealExactKeyAgentStandardHandleSet,
   "SetHandleInformation",
 );
-const keyAgentBootstrapPreFlagCheck = sealExactKeyAgentStandardHandleSet.indexOf(
-  "handle_flags(*handle) != Ok(HANDLE_FLAG_INHERIT.0)",
-);
+const keyAgentBootstrapPreFlagCheck =
+  sealExactKeyAgentStandardHandleSet.indexOf(
+    "handle_flags(*handle) != Ok(HANDLE_FLAG_INHERIT.0)",
+  );
 const keyAgentBootstrapClearLoop = sealExactKeyAgentStandardHandleSet.indexOf(
   "for handle in handles",
 );
-const keyAgentBootstrapPostFlagCheck = sealExactKeyAgentStandardHandleSet.indexOf(
-  "handle_flags(*handle) == Ok(0)",
-);
+const keyAgentBootstrapPostFlagCheck =
+  sealExactKeyAgentStandardHandleSet.indexOf("handle_flags(*handle) == Ok(0)");
 const keyAgentBootstrapValidationPositions = [
   sealExactKeyAgentStandardHandleSet.indexOf(
     "handles.iter().copied().any(invalid)",
@@ -7634,8 +8698,9 @@ requireInvariant(
         ["stdin", "stderr"],
         ["stdout", "stderr"],
       ]) &&
-    JSON.stringify(keyAgentBootstrapFileTypeCalls.map((call) => call.arguments)) ===
-      JSON.stringify([["stdin"], ["stdout"], ["stderr"]]) &&
+    JSON.stringify(
+      keyAgentBootstrapFileTypeCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["stdin"], ["stdout"], ["stderr"]]) &&
     sealExactKeyAgentStandardHandleSet.includes(
       "file_type(stdin) != FILE_TYPE_PIPE",
     ) &&
@@ -7677,7 +8742,9 @@ requireInvariant(
     keyAgentBootstrapClearLoop !== -1 &&
     keyAgentBootstrapClearLoop < keyAgentBootstrapClearCalls[0].index &&
     keyAgentBootstrapPostFlagCheck > keyAgentBootstrapClearCalls[0].index &&
-    sealExactKeyAgentStandardHandleSet.includes("let mut clear_failed = false") &&
+    sealExactKeyAgentStandardHandleSet.includes(
+      "let mut clear_failed = false",
+    ) &&
     sealExactKeyAgentStandardHandleSet.includes("clear_failed = true") &&
     sealExactKeyAgentStandardHandleSet.includes(
       "if clear_failed || !exact_zero_flags",
@@ -7799,19 +8866,19 @@ const keyAgentBootstrapSentinelZeroAssertion =
   keyAgentBootstrapChildFixtureCode.indexOf(
     "assert_eq!(handle_flags(sentinel_handle)?, 0)",
   );
-const keyAgentBootstrapAliveAssertion = keyAgentBootstrapChildFixtureCode.indexOf(
-  "assert!(grandchild.is_alive())",
-);
-const keyAgentBootstrapExactTermination = keyAgentBootstrapChildFixtureCode.indexOf(
-  "grandchild.terminate_and_reap()?;",
-);
+const keyAgentBootstrapAliveAssertion =
+  keyAgentBootstrapChildFixtureCode.indexOf("assert!(grandchild.is_alive())");
+const keyAgentBootstrapExactTermination =
+  keyAgentBootstrapChildFixtureCode.indexOf(
+    "grandchild.terminate_and_reap()?;",
+  );
 const keyAgentChildBootstrapCode = rustLexicalCode(
   keyAgentChildBootstrapSource,
 );
 const keyAgentBootstrapDriverOrder = [
   "acquire_inheritable_handle_launch(deadline())",
   "let mut command = Command::new(executable)",
-  ".env(CHILD_FIXTURE_ENV, \"1\")",
+  '.env(CHILD_FIXTURE_ENV, "1")',
   "let child = command.spawn()?",
   "drop(command)",
   "drop(flight)",
@@ -7862,8 +8929,10 @@ requireInvariant(
       '#[ignore = "launched only as the Key Agent stdio grandchild probe"]',
     ) &&
     rustCallSites(keyAgentChildBootstrapSource, "Command::new").length === 1 &&
-    rustCallSites(keyAgentChildBootstrapProduction, "CreateProcessW").length === 0 &&
-    rustCallSites(keyAgentChildBootstrapSource, "CreateProcessW").length === 1 &&
+    rustCallSites(keyAgentChildBootstrapProduction, "CreateProcessW").length ===
+      0 &&
+    rustCallSites(keyAgentChildBootstrapSource, "CreateProcessW").length ===
+      1 &&
     rustCallSites(keyAgentChildBootstrapSource, "GetStdHandle").length === 6 &&
     JSON.stringify(
       keyAgentBootstrapTestGetStdHandleCalls.map((call) => call.arguments),
@@ -7879,15 +8948,21 @@ requireInvariant(
     keyAgentBootstrapDriverOrder.every((position) => position !== -1) &&
     keyAgentBootstrapDriverOrder
       .slice(1)
-      .every((position, index) => position > keyAgentBootstrapDriverOrder[index]) &&
+      .every(
+        (position, index) => position > keyAgentBootstrapDriverOrder[index],
+      ) &&
     keyAgentBootstrapChildOrder.every((position) => position !== -1) &&
     keyAgentBootstrapChildOrder
       .slice(1)
-      .every((position, index) => position > keyAgentBootstrapChildOrder[index]) &&
+      .every(
+        (position, index) => position > keyAgentBootstrapChildOrder[index],
+      ) &&
     keyAgentBootstrapSubprocessTest.includes(".stdin(Stdio::piped())") &&
     keyAgentBootstrapSubprocessTest.includes(".stdout(Stdio::piped())") &&
     keyAgentBootstrapSubprocessTest.includes(".stderr(Stdio::null())") &&
-    keyAgentBootstrapSubprocessTest.includes("child_input.write_all(CHALLENGE)?") &&
+    keyAgentBootstrapSubprocessTest.includes(
+      "child_input.write_all(CHALLENGE)?",
+    ) &&
     keyAgentBootstrapSubprocessTest.includes("window == ACKNOWLEDGEMENT") &&
     keyAgentBootstrapGrandchildFixture.includes(
       "std::thread::sleep(Duration::from_secs(15))",
@@ -7908,8 +8983,12 @@ requireInvariant(
       ]) &&
     keyAgentBootstrapGrandchildSpawn.includes("let startup = STARTUPINFOW") &&
     !keyAgentBootstrapGrandchildSpawn.includes("STARTUPINFOEXW") &&
-    !keyAgentBootstrapGrandchildSpawn.includes("PROC_THREAD_ATTRIBUTE_HANDLE_LIST") &&
-    !keyAgentBootstrapGrandchildSpawn.includes("EXTENDED_STARTUPINFO_PRESENT") &&
+    !keyAgentBootstrapGrandchildSpawn.includes(
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+    ) &&
+    !keyAgentBootstrapGrandchildSpawn.includes(
+      "EXTENDED_STARTUPINFO_PRESENT",
+    ) &&
     JSON.stringify(
       keyAgentBootstrapSentinelFlagChanges.map((call) => call.arguments),
     ) ===
@@ -7928,10 +9007,14 @@ requireInvariant(
       JSON.stringify(["&executable"]) &&
     keyAgentBootstrapChildAliveCalls.length === 1 &&
     keyAgentBootstrapChildAliveCalls[0]?.arguments.length === 0 &&
-    (rustLexicalCode(keyAgentBootstrapGrandchildImplementation).match(
-      /\bfn\s+is_alive\b/gu,
-    ) ?? []).length === 1 &&
-    normalizeRustFragment(rustLexicalCode(keyAgentBootstrapGrandchildIsAlive)) ===
+    (
+      rustLexicalCode(keyAgentBootstrapGrandchildImplementation).match(
+        /\bfn\s+is_alive\b/gu,
+      ) ?? []
+    ).length === 1 &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentBootstrapGrandchildIsAlive),
+    ) ===
       "fn is_alive(&self) -> bool { (unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), 0) }) == WAIT_TIMEOUT }" &&
     keyAgentBootstrapAliveAssertion !== -1 &&
     keyAgentBootstrapSentinelZeroAssertion >
@@ -7979,7 +9062,8 @@ requireInvariant(
     keyAgentBootstrapTerminationOrder
       .slice(1)
       .every(
-        (position, index) => position > keyAgentBootstrapTerminationOrder[index],
+        (position, index) =>
+          position > keyAgentBootstrapTerminationOrder[index],
       ) &&
     keyAgentBootstrapGrandchildTermination.includes(
       "let state = unsafe { WaitForSingleObject(process, 0) }",
@@ -8027,12 +9111,13 @@ requireInvariant(
     ),
   "the production Key Agent binary and child bootstrap must not gain descendant process creation",
 );
-const aliasedProcessCreationApis = workspaceRustProductionFiles.flatMap((file) =>
-  [
-    ...file.source.matchAll(
-      /\b(?:CreateProcess(?:AsUser|WithToken|WithLogon)?[WA]?|ShellExecute(?:Ex)?[WA]?|WinExec|Command|std::process)\s+as\s+\w+/gu,
-    ),
-  ].map((match) => ({ path: file.path, alias: match[0] })),
+const aliasedProcessCreationApis = workspaceRustProductionFiles.flatMap(
+  (file) =>
+    [
+      ...file.source.matchAll(
+        /\b(?:CreateProcess(?:AsUser|WithToken|WithLogon)?[WA]?|ShellExecute(?:Ex)?[WA]?|WinExec|Command|std::process)\s+as\s+\w+/gu,
+      ),
+    ].map((match) => ({ path: file.path, alias: match[0] })),
 );
 requireInvariant(
   aliasedProcessCreationApis.length === 0,
@@ -8104,13 +9189,15 @@ const setHandleInformationInventory = workspaceRustProductionFiles.flatMap(
 );
 const securityAttributesInventory = platformWindowsProductionFiles.flatMap(
   (file) =>
-    rustStructLiteralSites(file.source, "SECURITY_ATTRIBUTES").map((literal) => ({
-      path: file.path,
-      inherit:
-        /\bbInheritHandle\s*:\s*(?<value>[^,}\r\n]+)/u.exec(
-          rustLexicalCode(literal.source),
-        )?.groups?.value.trim() ?? "",
-    })),
+    rustStructLiteralSites(file.source, "SECURITY_ATTRIBUTES").map(
+      (literal) => ({
+        path: file.path,
+        inherit:
+          /\bbInheritHandle\s*:\s*(?<value>[^,}\r\n]+)/u
+            .exec(rustLexicalCode(literal.source))
+            ?.groups?.value.trim() ?? "",
+      }),
+    ),
 );
 const aliasedInheritableHandleApis = platformWindowsProductionFiles.flatMap(
   (file) => {
@@ -8132,6 +9219,16 @@ const alternativeSecurityAttributesInitialization =
     ].map((match) => ({ path: file.path, initialization: match[0] }));
   });
 const expectedDuplicateHandleInventory = [
+  {
+    path: "crates/approval-ui/src/bootstrap/windows.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "handle",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "0",
+    inheritable: "false",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
   {
     path: "crates/platform-windows/src/broker_channel.rs",
     sourceProcess: "GetCurrentProcess()",
@@ -8253,18 +9350,22 @@ const expectedSecurityAttributesInventory = [
     inherit: "BOOL(0)",
   },
 ];
-const coordinatorConsumers = platformWindowsProductionFiles.filter(
-  (file) =>
-    file.path !==
-      "crates/platform-windows/src/inheritable_handle_launch.rs" &&
-    file.source.includes("acquire_inheritable_handle_launch("),
-).map((file) => file.path);
-const coordinatorCreateConsumers = platformWindowsProductionFiles.filter(
-  (file) =>
-    file.path !==
-      "crates/platform-windows/src/inheritable_handle_launch.rs" &&
-    file.source.includes(".create_process_with_explicit_handle_list("),
-).map((file) => file.path);
+const coordinatorConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/inheritable_handle_launch.rs" &&
+      file.source.includes("acquire_inheritable_handle_launch("),
+  )
+  .map((file) => file.path);
+const coordinatorCreateConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !==
+        "crates/platform-windows/src/inheritable_handle_launch.rs" &&
+      file.source.includes(".create_process_with_explicit_handle_list("),
+  )
+  .map((file) => file.path);
 const coordinatorAcquireCallSites = platformWindowsProductionFiles.flatMap(
   (file) =>
     file.path === "crates/platform-windows/src/inheritable_handle_launch.rs"
@@ -8290,8 +9391,14 @@ const inheritableCoordinatorImplementation = rustLexicalItemBlock(
   inheritableHandleLaunch,
   /(?:^|\n)\s*impl InheritableHandleLaunchCoordinator\s*\{/u,
 );
-const coordinatorAcquire = rustFunctionBlock(inheritableHandleLaunch, "acquire");
-const coordinatorRelease = rustFunctionBlock(inheritableHandleLaunch, "release");
+const coordinatorAcquire = rustFunctionBlock(
+  inheritableHandleLaunch,
+  "acquire",
+);
+const coordinatorRelease = rustFunctionBlock(
+  inheritableHandleLaunch,
+  "release",
+);
 const coordinatorWaiterRegister = rustFunctionBlock(
   inheritableHandleLaunch,
   "register",
@@ -8359,7 +9466,10 @@ const restrictedLaunchLeaf = rustFunctionBlock(
   restrictedLauncherProduction,
   "launch",
 );
-const keyAgentCreateInner = rustFunctionBlock(keyAgentActivation, "create_inner");
+const keyAgentCreateInner = rustFunctionBlock(
+  keyAgentActivation,
+  "create_inner",
+);
 const keyAgentCreateProcess = rustFunctionBlock(
   keyAgentActivation,
   "create_suspended_debuggee_process",
@@ -8371,10 +9481,11 @@ const installerJournalAuthenticationKeyBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /struct\s+InstallerJournalAuthenticationKey\s*\{/u,
 );
-const authenticatedKeyAgentInstallCheckpointBlock = rustTopLevelLexicalItemBlock(
-  keyAgentInstallProvenanceRelease,
-  /struct\s+AuthenticatedKeyAgentInstallCheckpoint\s*\{/u,
-);
+const authenticatedKeyAgentInstallCheckpointBlock =
+  rustTopLevelLexicalItemBlock(
+    keyAgentInstallProvenanceRelease,
+    /struct\s+AuthenticatedKeyAgentInstallCheckpoint\s*\{/u,
+  );
 const authenticatedKeyAgentInstallJournalBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+AuthenticatedKeyAgentInstallJournal\s*\{/u,
@@ -8395,10 +9506,11 @@ const uninitializedKeyAgentInstallCandidateBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+UninitializedKeyAgentInstallCandidate\s*\{/u,
 );
-const consistentExistingKeyAgentInstallCandidateBlock = rustTopLevelLexicalItemBlock(
-  keyAgentInstallProvenanceRelease,
-  /pub\(crate\)\s+struct\s+ConsistentExistingKeyAgentInstallCandidate\s*\{/u,
-);
+const consistentExistingKeyAgentInstallCandidateBlock =
+  rustTopLevelLexicalItemBlock(
+    keyAgentInstallProvenanceRelease,
+    /pub\(crate\)\s+struct\s+ConsistentExistingKeyAgentInstallCandidate\s*\{/u,
+  );
 const stableExistingKeyAgentInstallEvidenceBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallProvenanceRelease,
   /pub\(crate\)\s+struct\s+StableExistingKeyAgentInstallEvidence\s*\{/u,
@@ -8463,14 +9575,16 @@ const verifyKeyAgentInstallJournalRecordMac = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "verify_install_journal_record_mac",
 );
-const decodeAuthenticatedKeyAgentInstallJournalRecord = rustTopLevelFunctionBlock(
-  keyAgentInstallProvenanceRelease,
-  "decode_authenticated_install_journal_record",
-);
-const authenticatedKeyAgentInstallJournalRecordDigest = rustTopLevelFunctionBlock(
-  keyAgentInstallProvenanceRelease,
-  "authenticated_install_journal_record_digest",
-);
+const decodeAuthenticatedKeyAgentInstallJournalRecord =
+  rustTopLevelFunctionBlock(
+    keyAgentInstallProvenanceRelease,
+    "decode_authenticated_install_journal_record",
+  );
+const authenticatedKeyAgentInstallJournalRecordDigest =
+  rustTopLevelFunctionBlock(
+    keyAgentInstallProvenanceRelease,
+    "authenticated_install_journal_record_digest",
+  );
 const keyAgentInstallCheckpointCommitment = rustTopLevelFunctionBlock(
   keyAgentInstallProvenanceRelease,
   "install_checkpoint_commitment",
@@ -8518,11 +9632,10 @@ const verifiedKeyAgentInstallContinuityBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+struct\s+VerifiedKeyAgentInstallContinuity\s*\{/u,
 );
-const artifactBoundExistingKeyAgentInstallBlock =
-  rustTopLevelLexicalItemBlock(
-    keyAgentInstallAdoptionRelease,
-    /pub\(crate\)\s+struct\s+ArtifactBoundExistingKeyAgentInstall\s*\{/u,
-  );
+const artifactBoundExistingKeyAgentInstallBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+struct\s+ArtifactBoundExistingKeyAgentInstall\s*\{/u,
+);
 const verifiedExistingKeyAgentInstallDebugImpl = rustLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /impl\s+fmt::Debug\s+for\s+VerifiedExistingKeyAgentInstall\s*\{/u,
@@ -8539,11 +9652,10 @@ const keyAgentInstallAdoptionErrorBlock = rustTopLevelLexicalItemBlock(
   keyAgentInstallAdoptionRelease,
   /pub\(crate\)\s+enum\s+KeyAgentInstallAdoptionError\s*\{/u,
 );
-const keyAgentInstallReleaseBindingErrorBlock =
-  rustTopLevelLexicalItemBlock(
-    keyAgentInstallAdoptionRelease,
-    /pub\(crate\)\s+enum\s+KeyAgentInstallReleaseBindingError\s*\{/u,
-  );
+const keyAgentInstallReleaseBindingErrorBlock = rustTopLevelLexicalItemBlock(
+  keyAgentInstallAdoptionRelease,
+  /pub\(crate\)\s+enum\s+KeyAgentInstallReleaseBindingError\s*\{/u,
+);
 const adoptExistingKeyAgentInstall = rustTopLevelFunctionBlock(
   keyAgentInstallAdoptionRelease,
   "adopt_existing_key_agent_install",
@@ -8552,11 +9664,10 @@ const bindExistingKeyAgentInstallToRelease = rustTopLevelFunctionBlock(
   keyAgentInstallAdoptionRelease,
   "bind_existing_key_agent_install_to_release",
 );
-const consumeArtifactBoundExistingKeyAgentInstall =
-  rustTopLevelFunctionBlock(
-    keyAgentInstallAdoptionRelease,
-    "consume_artifact_bound_existing_key_agent_install",
-  );
+const consumeArtifactBoundExistingKeyAgentInstall = rustTopLevelFunctionBlock(
+  keyAgentInstallAdoptionRelease,
+  "consume_artifact_bound_existing_key_agent_install",
+);
 const provisionFreshKeyAgentBoundary = rustFunctionBlock(
   keyAgentSupervisor,
   "provision_fresh_key_agent_boundary",
@@ -8930,10 +10041,11 @@ const keyAgentUnvalidatedProfileApiSidDrop = rustImplItemAtDepth(
   "impl Drop for UnvalidatedProfileApiSid",
   0,
 );
-const keyAgentUnvalidatedProfileApiFolderDefinition = rustTopLevelLexicalItemBlock(
-  keyAgentLpacRelease,
-  /struct\s+UnvalidatedProfileApiFolderPath\s*\{/u,
-);
+const keyAgentUnvalidatedProfileApiFolderDefinition =
+  rustTopLevelLexicalItemBlock(
+    keyAgentLpacRelease,
+    /struct\s+UnvalidatedProfileApiFolderPath\s*\{/u,
+  );
 const keyAgentUnvalidatedProfileApiFolderImpl = rustImplItemAtDepth(
   keyAgentLpacRelease,
   "impl UnvalidatedProfileApiFolderPath",
@@ -9222,10 +10334,7 @@ const secretInputTestsModuleMutationProbes = [
       "bootstrap::windows::tests::inherited_secret_input_handles_child_fixture",
       "bootstrap::windows::tests::nonexistent_child_fixture",
     )
-    .replace(
-      'b"secret-input-four-handles-sealed"',
-      'b"test result: ok."',
-  ),
+    .replace('b"secret-input-four-handles-sealed"', 'b"test result: ok."'),
   secretInputTestsModule.replace(
     "        ) -> Result<bool, SecretInputError> {\n            let mut duplicate = HANDLE::default();",
     "        ) -> Result<bool, SecretInputError> {\n            if std::hint::black_box(true) { return Ok(false); }\n            let mut duplicate = HANDLE::default();",
@@ -9247,11 +10356,15 @@ const secretInputFourObjectUnitTest = rustFunctionBlockAtDepth(
   1,
 );
 const secretInputHandleUnitTestSha256 = {
-  stdioSuccess: normalizedSourceSha256(rustLexicalCode(secretInputStdioSuccessTest)),
+  stdioSuccess: normalizedSourceSha256(
+    rustLexicalCode(secretInputStdioSuccessTest),
+  ),
   stdioMutation: normalizedSourceSha256(
     rustLexicalCode(secretInputStdioMutationTest),
   ),
-  fourObject: normalizedSourceSha256(rustLexicalCode(secretInputFourObjectUnitTest)),
+  fourObject: normalizedSourceSha256(
+    rustLexicalCode(secretInputFourObjectUnitTest),
+  ),
 };
 const approvedSecretInputHandleUnitTestSha256 = {
   stdioSuccess:
@@ -9547,7 +10660,8 @@ const secretInputParentProofOrderContract = (source) => {
         depth: 1,
       },
       {
-        marker: "let image_copy = duplicate_untrusted_candidate(image_candidate)?",
+        marker:
+          "let image_copy = duplicate_untrusted_candidate(image_candidate)?",
         depth: 1,
       },
       {
@@ -9569,7 +10683,8 @@ const secretInputParentProofOrderContract = (source) => {
         depth: 1,
       },
       {
-        marker: "let image = unsafe { adopt_validated_handle(image_candidate) }",
+        marker:
+          "let image = unsafe { adopt_validated_handle(image_candidate) }",
         depth: 1,
       },
       { marker: "Ok(VerifiedParentHandles {", depth: 1 },
@@ -9581,8 +10696,7 @@ const secretInputParentProofOrderContract = (source) => {
       rustCallSites(source, "duplicate_untrusted_candidate").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([["process_candidate"], ["image_candidate"]]) &&
+    ) === JSON.stringify([["process_candidate"], ["image_candidate"]]) &&
     JSON.stringify(
       rustCallSites(source, "adopt_validated_handle").map((call) =>
         call.arguments.map(compactRust),
@@ -9666,7 +10780,12 @@ const launchCurrentParentProofSources = rustFunctionBlockAtDepth(
 const approvedLaunchCurrentParentProofSourcesSha256 =
   "88bf116fd032a2277cc58dc3900dbe4dc64c206384deff2f3c9fb8e9d17b0764";
 const launchParentSourceApiUsage = rustIdentifierUsageInventory(
-  [{ path: "current_parent_proof_sources", source: launchCurrentParentProofSources }],
+  [
+    {
+      path: "current_parent_proof_sources",
+      source: launchCurrentParentProofSources,
+    },
+  ],
   ["OpenProcess", "CreateFileW"],
 );
 const launchCurrentParentProofSourcesMutationProbes = [
@@ -9740,9 +10859,7 @@ const launchAttributeListInstall = rustFunctionBlockAtDepth(
 const launchRemoteFalseDuplicateEnvelope = (source) => {
   const calls = rustCallSites(source, "DuplicateHandle");
   return (
-    JSON.stringify(
-      calls.map((call) => call.arguments.map(compactRust)),
-    ) ===
+    JSON.stringify(calls.map((call) => call.arguments.map(compactRust))) ===
       JSON.stringify([
         [
           "GetCurrentProcess()",
@@ -9784,15 +10901,20 @@ const launchRemoteFalseDuplicateMutationProbes = [
     "source, child_process",
     "source, GetCurrentProcess()",
   ),
-  launchRemoteFalseDuplicateProbe.replace("source, child_process", "side_effect(source), child_process"),
   launchRemoteFalseDuplicateProbe.replace(
-    "    DuplicateHandle(",
-    "    (DuplicateHandle(",
-  ).replace(
-    "      DUPLICATE_SAME_ACCESS,\n    ).map_err",
-    "      DUPLICATE_SAME_ACCESS,\n    ), side_effect()).0.map_err",
+    "source, child_process",
+    "side_effect(source), child_process",
   ),
-  launchRemoteFalseDuplicateProbe.replace("DuplicateHandle(", "duplicate_alias("),
+  launchRemoteFalseDuplicateProbe
+    .replace("    DuplicateHandle(", "    (DuplicateHandle(")
+    .replace(
+      "      DUPLICATE_SAME_ACCESS,\n    ).map_err",
+      "      DUPLICATE_SAME_ACCESS,\n    ), side_effect()).0.map_err",
+    ),
+  launchRemoteFalseDuplicateProbe.replace(
+    "DuplicateHandle(",
+    "duplicate_alias(",
+  ),
   launchRemoteFalseDuplicateProbe
     .replace(
       "  let mut target = HANDLE::default();",
@@ -9861,7 +10983,7 @@ const lexicalDepthOrderMutationProbes = [
 ];
 requireInvariant(
   normalizedSourceSha256(secretBootstrapWindowsProduction) ===
-      approvedSecretInputProductionBoundaryRawSha256 &&
+    approvedSecretInputProductionBoundaryRawSha256 &&
     JSON.stringify(secretInputCriticalHandleLeafSha256) ===
       JSON.stringify(approvedSecretInputCriticalHandleLeafSha256) &&
     secretInputProductionOnlyLeafMutationProbes.every(
@@ -9903,8 +11025,8 @@ requireInvariant(
       ),
     ) === JSON.stringify([["&sealed"]]) &&
     JSON.stringify(
-      rustCallSites(secretInputSealInheritedStdio, "GetStdHandle").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(secretInputSealInheritedStdio, "GetStdHandle").map((call) =>
+        call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
@@ -9913,15 +11035,20 @@ requireInvariant(
         ["STD_ERROR_HANDLE"],
       ]) &&
     JSON.stringify(
-      rustCallSites(secretInputSealInheritedStdio, "seal_exact_secret_input_stdio").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        secretInputSealInheritedStdio,
+        "seal_exact_secret_input_stdio",
+      ).map((call) => call.arguments.map(compactRust)),
     ) === JSON.stringify([["[input,output,error]"]]) &&
     JSON.stringify(
       rustCallSites(secretInputSealExactStdio, "same_object").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["input", "output"], ["output", "error"]]) &&
+    ) ===
+      JSON.stringify([
+        ["input", "output"],
+        ["output", "error"],
+      ]) &&
     JSON.stringify(
       rustCallSites(secretInputSealExactStdio, "GetFileType").map((call) =>
         call.arguments.map(compactRust),
@@ -9947,7 +11074,9 @@ requireInvariant(
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["first", "second"]]) &&
-    rustLexicalCode(secretInputHandleFlags).includes("let mut flags = u32::MAX") &&
+    rustLexicalCode(secretInputHandleFlags).includes(
+      "let mut flags = u32::MAX",
+    ) &&
     JSON.stringify(
       rustCallSites(secretInputHandleFlags, "GetHandleInformation").map(
         (call) => call.arguments.map(compactRust),
@@ -9985,20 +11114,23 @@ requireInvariant(
     secretInputParentProofMutationProbes.every(
       (probe) => !secretInputParentProofOrderContract(probe),
     ) &&
-    normalizeRustFragment(rustLexicalCode(secretInputValidateParentProofSet)).includes(
-      "let handles = [stdin, stdout, process, image];",
-    ) &&
+    normalizeRustFragment(
+      rustLexicalCode(secretInputValidateParentProofSet),
+    ).includes("let handles = [stdin, stdout, process, image];") &&
     rustLexicalCode(secretInputValidateParentProofSet).includes(
       "!matches!(handle_flags(*handle), Ok(0))",
     ) &&
     rustLexicalCode(secretInputValidateParentProofSet).includes(
       "!exact_objects_are_pairwise_distinct(&handles)",
     ) &&
-    rustLexicalCode(secretInputExactObjectsDistinct).includes(".skip(index + 1)") &&
+    rustLexicalCode(secretInputExactObjectsDistinct).includes(
+      ".skip(index + 1)",
+    ) &&
     JSON.stringify(
-      rustCallSites(secretInputDuplicateUntrustedCandidate, "DuplicateHandle").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        secretInputDuplicateUntrustedCandidate,
+        "DuplicateHandle",
+      ).map((call) => call.arguments.map(compactRust)),
     ) ===
       JSON.stringify([
         [
@@ -10044,10 +11176,12 @@ const launchProofOrder = orderedRustMarkersAtDepth(launchRestrictedChild, [
 ]);
 requireInvariant(
   normalizedSourceSha256(restrictedLauncherProduction) ===
-      approvedRestrictedLauncherProductionBoundaryRawSha256 &&
+    approvedRestrictedLauncherProductionBoundaryRawSha256 &&
     compactRust(launchRequiresParentProof) ===
-      "constfnrequires_parent_proof(self)->bool{matches!(self,Self::SecretInputFrontend)}" &&
-    normalizeRustFragment(rustLexicalCode(launchParentProofSourcesDefinition)) ===
+      "constfnrequires_parent_proof(self)->bool{matches!(self,Self::ApprovalFrontend|Self::SecretInputFrontend)}" &&
+    normalizeRustFragment(
+      rustLexicalCode(launchParentProofSourcesDefinition),
+    ) ===
       "struct ParentProofSources { process: OwnedWinHandle, image: OwnedWinHandle, process_id: u32, }" &&
     normalizedSourceSha256(rustLexicalCode(launchCurrentParentProofSources)) ===
       approvedLaunchCurrentParentProofSourcesSha256 &&
@@ -10060,8 +11194,8 @@ requireInvariant(
     launchParentSourceApiUsage.qualified.length === 0 &&
     launchParentSourceApiUsage.references.length === 0 &&
     JSON.stringify(
-      rustCallSites(launchCurrentParentProofSources, "OpenProcess").map((call) =>
-        call.arguments.map(compactRust),
+      rustCallSites(launchCurrentParentProofSources, "OpenProcess").map(
+        (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
@@ -10072,12 +11206,14 @@ requireInvariant(
         ],
       ]) &&
     JSON.stringify(
-      rustCallSites(launchRequireNonInheritableProof, "GetHandleInformation").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        launchRequireNonInheritableProof,
+        "GetHandleInformation",
+      ).map((call) => call.arguments.map(compactRust)),
     ) === JSON.stringify([["handle", "&rawmutflags"]]) &&
-    normalizedSourceSha256(rustLexicalCode(launchRequireNonInheritableProof)) ===
-      approvedLaunchRequireNonInheritableProofSha256 &&
+    normalizedSourceSha256(
+      rustLexicalCode(launchRequireNonInheritableProof),
+    ) === approvedLaunchRequireNonInheritableProofSha256 &&
     rustLexicalCode(launchRequireNonInheritableProof).includes("flags == 0") &&
     normalizedSourceSha256(rustLexicalCode(launchInjectParentProof)) ===
       approvedLaunchInjectParentProofSha256 &&
@@ -10094,14 +11230,15 @@ requireInvariant(
     compactRust(launchProofExtractionSpoof) ===
       "fninject_parent_proof(){reviewed();}" &&
     JSON.stringify(
-      rustCallSites(launchInjectParentProof, "require_exact_non_inheritable").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        launchInjectParentProof,
+        "require_exact_non_inheritable",
+      ).map((call) => call.arguments.map(compactRust)),
     ) ===
       JSON.stringify([["sources.process.raw()"], ["sources.image.raw()"]]) &&
     JSON.stringify(
-      rustCallSites(launchInjectParentProof, "duplicate_into_child").map((call) =>
-        call.arguments.map(compactRust),
+      rustCallSites(launchInjectParentProof, "duplicate_into_child").map(
+        (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([["sources.process.raw()"], ["sources.image.raw()"]]) &&
@@ -10135,7 +11272,9 @@ requireInvariant(
       "let handles = duplicate_owner.raw_handles();",
     ) &&
     !/\b(?:parent_sources|ParentProofSources|InjectedParentProof)\b/u.test(
-      rustLexicalCode(`${launchAttributeListForLpac}\n${launchAttributeListInstall}`),
+      rustLexicalCode(
+        `${launchAttributeListForLpac}\n${launchAttributeListInstall}`,
+      ),
     ) &&
     rustLexicalCode(launchAttributeListInstall).includes(
       "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
@@ -10212,7 +11351,8 @@ const secretInputChildFixtureOrder = orderedRustMarkersAtDepth(
   ],
 );
 requireInvariant(
-  rustCallSites(secretBootstrapWindowsProduction, "CreateProcessW").length === 0 &&
+  rustCallSites(secretBootstrapWindowsProduction, "CreateProcessW").length ===
+    0 &&
     rustCallSites(secretBootstrapWindows, "CreateProcessW").length === 2 &&
     secretInputTestsModuleAttributeContract(secretBootstrapWindows) &&
     secretInputTestsModuleAttributeMutationProbes.every(
@@ -10281,8 +11421,7 @@ requireInvariant(
       rustCallSites(secretInputTestSetInherit, "SetHandleInformation").map(
         (call) => call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([["handle", "HANDLE_FLAG_INHERIT.0", "flags"]]) &&
+    ) === JSON.stringify([["handle", "HANDLE_FLAG_INHERIT.0", "flags"]]) &&
     JSON.stringify(
       rustCallSites(secretInputBroadGrandchildSpawn, "CreateProcessW").map(
         (call) => call.arguments.map(compactRust),
@@ -10309,9 +11448,10 @@ requireInvariant(
       rustLexicalCode(secretInputBroadGrandchildSpawn),
     ) &&
     JSON.stringify(
-      rustCallSites(secretInputBroadGrandchildObjectProbe, "DuplicateHandle").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        secretInputBroadGrandchildObjectProbe,
+        "DuplicateHandle",
+      ).map((call) => call.arguments.map(compactRust)),
     ) ===
       JSON.stringify([
         [
@@ -10879,12 +12019,12 @@ const restrictedContextConsumers = platformWindowsProductionFiles
       ),
   )
   .map((file) => file.path);
-const restrictedContextPrepareCallSites = platformWindowsProductionFiles.flatMap(
-  (file) =>
+const restrictedContextPrepareCallSites =
+  platformWindowsProductionFiles.flatMap((file) =>
     rustCallSites(file.source, "RestrictedProcessContext::prepare").map(
       (call) => ({ path: file.path, arguments: call.arguments }),
     ),
-);
+  );
 const systemDirectoryApiInventory = platformWindowsProductionFiles.flatMap(
   (file) =>
     [
@@ -10969,11 +12109,12 @@ const keyAgentCreateCalls = rustCallSites(
 const restrictedLaunchCreateIndex = restrictedLaunchLeaf.indexOf(
   ".create_process_with_explicit_handle_list(",
 );
-const restrictedLaunchFinalContextIndex = [
-  ...rustLexicalCode(restrictedLaunchLeaf).matchAll(
-    /\bprocess_context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
-  ),
-].at(-1)?.index ?? -1;
+const restrictedLaunchFinalContextIndex =
+  [
+    ...rustLexicalCode(restrictedLaunchLeaf).matchAll(
+      /\bprocess_context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
+    ),
+  ].at(-1)?.index ?? -1;
 const restrictedLaunchFinalContextGap = compactRust(
   restrictedLaunchLeaf.slice(
     restrictedLaunchFinalContextIndex,
@@ -10983,11 +12124,12 @@ const restrictedLaunchFinalContextGap = compactRust(
 const keyAgentCreateIndex = keyAgentCreateProcess.indexOf(
   ".create_process_with_explicit_handle_list(",
 );
-const keyAgentFinalContextIndex = [
-  ...rustLexicalCode(keyAgentCreateProcess).matchAll(
-    /\bprepared_process\s*\.\s*context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
-  ),
-].at(-1)?.index ?? -1;
+const keyAgentFinalContextIndex =
+  [
+    ...rustLexicalCode(keyAgentCreateProcess).matchAll(
+      /\bprepared_process\s*\.\s*context\s*\.\s*recheck_thread\s*\(\s*\)/gu,
+    ),
+  ].at(-1)?.index ?? -1;
 const keyAgentFinalContextGap = compactRust(
   keyAgentCreateProcess.slice(keyAgentFinalContextIndex, keyAgentCreateIndex),
 );
@@ -11007,7 +12149,9 @@ const restrictedContextImpersonationOrder = [
   "drop(guard)",
   "reject_thread_impersonation_for_test(),Ok(())",
   "context.recheck_thread(),Ok(())",
-].map((marker) => compactRust(restrictedContextImpersonationTest).indexOf(marker));
+].map((marker) =>
+  compactRust(restrictedContextImpersonationTest).indexOf(marker),
+);
 const restrictedContextRightSetsTest = rustFunctionBlock(
   restrictedProcessContextSource,
   "ancestor_replacement_and_protected_content_right_sets_are_distinct",
@@ -11056,9 +12200,9 @@ const inheritedStdioConstructor = rustFunctionBlock(
   restrictedLauncherProduction,
   "new",
 );
-const secretInputStdioConstructor = rustFunctionBlock(
+const childPipeServerStdioConstructor = rustFunctionBlock(
   restrictedLauncherProduction,
-  "for_secret_input_servers",
+  "for_child_pipe_servers",
 );
 const validateRestrictedSourceHandle = rustFunctionBlock(
   restrictedLauncherProduction,
@@ -11146,7 +12290,7 @@ const inheritableStdioSourceTestOrder = [
   "let (read, write) = anonymous_pipe()?",
   "HANDLE_FLAG_INHERIT",
   "InheritedStdio::new(",
-  "let private_result = InheritedStdio::for_secret_input_servers(",
+  "let private_result = InheritedStdio::for_child_pipe_servers(",
   "HANDLE_FLAGS(0)",
   "drop(flight)",
 ].map((marker) => inheritableStdioSourceTest.indexOf(marker));
@@ -11283,7 +12427,9 @@ requireInvariant(
     !/\bpub(?:\([^)]*\))?\s+use\s+[^;]*\brestricted_process_context\b/u.test(
       rustLexicalCode(platformWindowsLib),
     ) &&
-    normalizeRustFragment(rustLexicalCode(restrictedProcessContextDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(restrictedProcessContextDefinition),
+    ) ===
       "pub(crate) struct RestrictedProcessContext { environment: Box<[u16]>, current_directory: Box<[u16]>, _same_thread: PhantomData<Rc<()>>, }" &&
     normalizeRustFragment(rustLexicalCode(systemProcessPathsDefinition)) ===
       "struct SystemProcessPaths { windows_root: PathBuf, current_directory: PathBuf, }" &&
@@ -11297,9 +12443,10 @@ requireInvariant(
       ]) &&
     normalizeRustFragment(
       rustLexicalCode(restrictedContextEnvironmentAccessor),
+    ) === "pub(crate) fn environment(&self) -> &[u16] { &self.environment }" &&
+    normalizeRustFragment(
+      rustLexicalCode(restrictedContextDirectoryAccessor),
     ) ===
-      "pub(crate) fn environment(&self) -> &[u16] { &self.environment }" &&
-    normalizeRustFragment(rustLexicalCode(restrictedContextDirectoryAccessor)) ===
       "pub(crate) fn current_directory(&self) -> &[u16] { &self.current_directory }" &&
     !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\(crate\)\s+struct\s+RestrictedProcessContext\b/u.test(
       restrictedProcessContext,
@@ -11363,7 +12510,9 @@ requireInvariant(
     ) &&
     normalizeRustFragment(rustLexicalCode(restrictedContextFromPaths)) ===
       "fn from_system_paths( paths: &SystemProcessPaths, ) -> Result<Self, RestrictedProcessContextError> { Ok(Self { environment: minimal_environment_block(&paths.windows_root)?.into_boxed_slice(), current_directory: wide_nul_path(&paths.current_directory).into_boxed_slice(), _same_thread: PhantomData, }) }" &&
-    normalizeRustFragment(rustLexicalCode(preparedKeyAgentProcessDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(preparedKeyAgentProcessDefinition),
+    ) ===
       "struct PreparedKeyAgentProcess { application: Vec<u16>, context: RestrictedProcessContext, environment: Box<[u16]>, lpac: PreparedKeyAgentLpac, }" &&
     /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare_for_kernel_test\(\s*\)\s*;/u.test(
       rustLexicalCode(prepareKeyAgentProcess),
@@ -11371,21 +12520,27 @@ requireInvariant(
     /#\s*\[\s*cfg\s*\(\s*not\s*\(\s*test\s*\)\s*\)\s*\]\s*let\s+context\s*=\s*RestrictedProcessContext::prepare\(\s*\)\s*;/u.test(
       rustLexicalCode(prepareKeyAgentProcess),
     ) &&
-    (prepareKeyAgentProcessRelease.match(
-      /\bRestrictedProcessContext::prepare_for_kernel_test\(\s*\)/gu,
-    ) ?? []).length === 1 &&
-    (prepareKeyAgentProcessRelease.match(
-      /\bRestrictedProcessContext::prepare\(\s*\)/gu,
-    ) ?? []).length === 1 &&
+    (
+      prepareKeyAgentProcessRelease.match(
+        /\bRestrictedProcessContext::prepare_for_kernel_test\(\s*\)/gu,
+      ) ?? []
+    ).length === 1 &&
+    (
+      prepareKeyAgentProcessRelease.match(
+        /\bRestrictedProcessContext::prepare\(\s*\)/gu,
+      ) ?? []
+    ).length === 1 &&
     (keyAgentActivationRelease.match(/\bprepare_for_kernel_test\b/gu) ?? [])
       .length === 1 &&
     JSON.stringify(
       platformWindowsProductionFiles
         .map((file) => ({
           path: file.path,
-          count: (rustLexicalCode(file.source).match(
-            /\bprepare_for_kernel_test\b/gu,
-          ) ?? []).length,
+          count: (
+            rustLexicalCode(file.source).match(
+              /\bprepare_for_kernel_test\b/gu,
+            ) ?? []
+          ).length,
         }))
         .filter((file) => file.count > 0),
     ) ===
@@ -11438,7 +12593,9 @@ requireInvariant(
     querySystemPath.includes(
       "let mut buffer = vec![0_u16; MAX_SYSTEM_PATH_UNITS]",
     ) &&
-    querySystemPath.includes("let length = unsafe { getter(Some(&mut buffer)) }") &&
+    querySystemPath.includes(
+      "let length = unsafe { getter(Some(&mut buffer)) }",
+    ) &&
     querySystemPath.includes(
       "if length == 0 || length >= buffer.len() || buffer[..length].contains(&0)",
     ) &&
@@ -11455,7 +12612,7 @@ requireInvariant(
   "restricted child paths must remain plain local absolute DOS paths without slash or dot-component ambiguity",
 );
 requireInvariant(
-    validateExistingDirectoryOrder.every((position) => position !== -1) &&
+  validateExistingDirectoryOrder.every((position) => position !== -1) &&
     validateExistingDirectoryOrder
       .slice(1)
       .every(
@@ -11468,16 +12625,14 @@ requireInvariant(
   "restricted child paths must exist as directories and every ancestor must remain reparse-free",
 );
 requireInvariant(
-    normalizeRustFragment(rustLexicalCode(rejectReplaceableAncestors)) ===
-      "fn reject_replaceable_ancestors(path: &Path) -> Result<(), RestrictedProcessContextError> { for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() { reject_dangerous_directory_rights(ancestor, &PATH_REPLACEMENT_RIGHTS)?; } Ok(()) }" &&
-    normalizeRustFragment(
-      rustLexicalCode(rejectContentWritableDirectory),
-    ) ===
+  normalizeRustFragment(rustLexicalCode(rejectReplaceableAncestors)) ===
+    "fn reject_replaceable_ancestors(path: &Path) -> Result<(), RestrictedProcessContextError> { for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() { reject_dangerous_directory_rights(ancestor, &PATH_REPLACEMENT_RIGHTS)?; } Ok(()) }" &&
+    normalizeRustFragment(rustLexicalCode(rejectContentWritableDirectory)) ===
       "fn reject_content_writable_directory(path: &Path) -> Result<(), RestrictedProcessContextError> { reject_dangerous_directory_rights(path, &PROTECTED_DIRECTORY_CONTENT_RIGHTS) }",
   "restricted child path replacement and protected-directory content checks must remain separate exact leaves",
 );
 requireInvariant(
-    systemLayoutOrdinalCalls.length === 2 &&
+  systemLayoutOrdinalCalls.length === 2 &&
     JSON.stringify(systemLayoutOrdinalCalls[0]?.arguments) ===
       JSON.stringify(["parent.as_os_str()", "windows_root.as_os_str()"]) &&
     JSON.stringify(systemLayoutOrdinalCalls[1]?.arguments) ===
@@ -11505,25 +12660,23 @@ requireInvariant(
     JSON.stringify(
       replaceableAncestorPrepareCalls.map((call) => call.arguments),
     ) ===
-      JSON.stringify([
-        ["&paths.windows_root"],
-        ["&paths.current_directory"],
-      ]) &&
+      JSON.stringify([["&paths.windows_root"], ["&paths.current_directory"]]) &&
     protectedContentPrepareCalls.length === 2 &&
-    JSON.stringify(protectedContentPrepareCalls.map((call) => call.arguments)) ===
-      JSON.stringify([
-        ["&paths.windows_root"],
-        ["&paths.current_directory"],
-      ]) &&
+    JSON.stringify(
+      protectedContentPrepareCalls.map((call) => call.arguments),
+    ) ===
+      JSON.stringify([["&paths.windows_root"], ["&paths.current_directory"]]) &&
     replacementRightsLeafCalls.length === 1 &&
     JSON.stringify(replacementRightsLeafCalls[0]?.arguments) ===
       JSON.stringify(["ancestor", "&PATH_REPLACEMENT_RIGHTS"]) &&
     protectedContentRightsLeafCalls.length === 1 &&
     JSON.stringify(protectedContentRightsLeafCalls[0]?.arguments) ===
       JSON.stringify(["path", "&PROTECTED_DIRECTORY_CONTENT_RIGHTS"]) &&
-    (rustLexicalCode(restrictedProcessContextProduction).match(
-      /\breject_dangerous_directory_rights\b/gu,
-    ) ?? []).length === 3 &&
+    (
+      rustLexicalCode(restrictedProcessContextProduction).match(
+        /\breject_dangerous_directory_rights\b/gu,
+      ) ?? []
+    ).length === 3 &&
     dangerousDirectoryOpenCalls.length === 1 &&
     JSON.stringify(dangerousDirectoryOpenCalls[0]?.arguments) ===
       JSON.stringify([
@@ -11566,9 +12719,7 @@ requireInvariant(
     rejectThreadImpersonation.includes(
       "ERROR_NO_TOKEN.to_hresult() => Ok(())",
     ) &&
-    restrictedContextRecheck.includes(
-      "!self.environment.ends_with(&[0, 0])",
-    ) &&
+    restrictedContextRecheck.includes("!self.environment.ends_with(&[0, 0])") &&
     restrictedContextRecheck.includes(
       "self.current_directory.last() != Some(&0)",
     ) &&
@@ -11595,8 +12746,11 @@ requireInvariant(
     restrictedEnvironmentOrder.every((position) => position !== -1) &&
     restrictedEnvironmentOrder
       .slice(1)
-      .every((position, index) => position > restrictedEnvironmentOrder[index]) &&
-    (minimalRestrictedEnvironment.match(/"SystemRoot="/gu) ?? []).length === 1 &&
+      .every(
+        (position, index) => position > restrictedEnvironmentOrder[index],
+      ) &&
+    (minimalRestrictedEnvironment.match(/"SystemRoot="/gu) ?? []).length ===
+      1 &&
     (minimalRestrictedEnvironment.match(/"WINDIR="/gu) ?? []).length === 1 &&
     environmentNulPushes.length === 2 &&
     environmentNulPushes.every(
@@ -11633,15 +12787,15 @@ requireInvariant(
     restrictedEnvironmentBoundsTest.includes(
       "let maximum_root_units = (MAX_ENVIRONMENT_UNITS - 21) / 2",
     ) &&
-    restrictedEnvironmentBoundsTest.includes(
-      "Ok(MAX_ENVIRONMENT_UNITS)",
-    ) &&
+    restrictedEnvironmentBoundsTest.includes("Ok(MAX_ENVIRONMENT_UNITS)") &&
     restrictedEnvironmentBoundsTest.includes(
       "minimal_environment_block(&oversized_root)",
     ) &&
-    (restrictedEnvironmentBoundsTest.match(
-      /Err\(RestrictedProcessContextError::OperatingSystem\)/gu,
-    ) ?? []).length === 2,
+    (
+      restrictedEnvironmentBoundsTest.match(
+        /Err\(RestrictedProcessContextError::OperatingSystem\)/gu,
+      ) ?? []
+    ).length === 2,
   "restricted child environment storage must remain the bounded SystemRoot-then-WINDIR double-NUL Unicode allowlist",
 );
 requireInvariant(
@@ -11656,7 +12810,7 @@ requireInvariant(
       .every(
         (position, index) =>
           position > restrictedLaunchContextPreparationOrder[index],
-    ) &&
+      ) &&
     keyAgentCreateInner.indexOf(
       "let prepared_process = prepare_key_agent_process(artifact, provisioning)?",
     ) !== -1 &&
@@ -11702,7 +12856,8 @@ requireInvariant(
   (restrictedLaunchLeaf.match(/\.recheck_thread\(\)/gu) ?? []).length === 1 &&
     restrictedLaunchFinalContextGap ===
       "process_context.recheck_thread().map_err(map_process_context_error)?;letmutprocess_information=PROCESS_INFORMATION::default();unsafe{flight" &&
-    (keyAgentCreateProcess.match(/\.recheck_thread\(\)/gu) ?? []).length === 1 &&
+    (keyAgentCreateProcess.match(/\.recheck_thread\(\)/gu) ?? []).length ===
+      1 &&
     keyAgentFinalContextGap ===
       "prepared_process.context.recheck_thread().map_err(|_|KeyAgentActivationError::ProcessContextPolicy)?;unsafe{flight",
   "both restricted launchers must make the thread-context recheck the final operation immediately before the coordinated process-create call",
@@ -11725,9 +12880,11 @@ requireInvariant(
     restrictedContextImpersonationTest.includes(
       "RestrictedProcessContext::prepare_for_kernel_test()",
     ) &&
-    (restrictedContextImpersonationTest.match(
-      /\bcontext\.recheck_thread\(\)/gu,
-    ) ?? []).length === 2 &&
+    (
+      restrictedContextImpersonationTest.match(
+        /\bcontext\.recheck_thread\(\)/gu,
+      ) ?? []
+    ).length === 2 &&
     restrictedContextImpersonationOrder.every((position) => position !== -1) &&
     restrictedContextImpersonationOrder
       .slice(1)
@@ -11772,12 +12929,8 @@ requireInvariant(
     isWorkspaceBuildOutputPath(
       "demo/sepolia-wallet/target/release/build/generated/out.rs",
     ) &&
-    !isWorkspaceBuildOutputPath(
-      "crates/approval-ui/src/bin/target/main.rs",
-    ) &&
-    !isWorkspaceBuildOutputPath(
-      "crates/approval-ui/examples/target/main.rs",
-    ) &&
+    !isWorkspaceBuildOutputPath("crates/approval-ui/src/bin/target/main.rs") &&
+    !isWorkspaceBuildOutputPath("crates/approval-ui/examples/target/main.rs") &&
     workspaceRustCompilationClosureSha256 ===
       approvedWorkspaceRustCompilationClosureSha256 &&
     rustCompilationClosureSha256(workspaceRustDynamicRebindingMutationProbe) !==
@@ -11800,7 +12953,8 @@ requireInvariant(
     dynamicResolverUsageProbes.alias.tokens.GetProcAddress.length === 1 &&
     dynamicResolverUsageProbes.qualified.tokens.GetProcAddress.length === 1 &&
     dynamicResolverUsageProbes.qualified.qualified.length === 1 &&
-    dynamicResolverUsageProbes.tupleAndMethod.tokens.GetProcAddress.length === 2 &&
+    dynamicResolverUsageProbes.tupleAndMethod.tokens.GetProcAddress.length ===
+      2 &&
     dynamicResolverUsageProbes.tupleAndMethod.qualified.length === 1 &&
     dynamicResolverUsageProbes.tupleAndMethod.references.length >= 1 &&
     identifierUsageIsEmpty(dynamicResolverUsageProbes.clean),
@@ -11823,7 +12977,7 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(workspaceForeignBlocks) ===
-      JSON.stringify(approvedWorkspaceForeignBlocks) &&
+    JSON.stringify(approvedWorkspaceForeignBlocks) &&
     foreignBlockProbes.callback.length === 0 &&
     foreignBlockProbes.unreviewed.length === 1,
   "workspace Rust compilation inputs must retain only exact reviewed foreign blocks",
@@ -11837,18 +12991,22 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(workspaceCompilationBindingEdges.pathAttributes) ===
-      JSON.stringify(approvedWorkspacePathAttributes) &&
+    JSON.stringify(approvedWorkspacePathAttributes) &&
     compilationBindingEdgeProbes.path.pathAttributes.length === 1,
   "workspace Rust compilation inputs must retain only reviewed path source edges",
 );
 requireInvariant(
-  platformWindowsLib.includes("#[cfg(windows)]\nmod inheritable_handle_launch;") &&
+  platformWindowsLib.includes(
+    "#[cfg(windows)]\nmod inheritable_handle_launch;",
+  ) &&
     !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*inheritable_handle_launch/u.test(
       platformWindowsLib,
     ) &&
-    (inheritableHandleLaunch.match(
-      /static PROCESS_WIDE_INHERITABLE_LAUNCH:/gu,
-    ) ?? []).length === 1 &&
+    (
+      inheritableHandleLaunch.match(
+        /static PROCESS_WIDE_INHERITABLE_LAUNCH:/gu,
+      ) ?? []
+    ).length === 1 &&
     /^struct InheritableHandleLaunchCoordinator\s*\{\s*occupied: AtomicBool,\s*poisoned: AtomicBool,\s*generation: AtomicU64,\s*active_generation: AtomicU64,\s*waiters: AtomicUsize,\s*\}$/u.test(
       inheritableCoordinatorDefinition,
     ) &&
@@ -11858,17 +13016,25 @@ requireInvariant(
     inheritableCoordinatorImplementation.includes(
       "poisoned: AtomicBool::new(false)",
     ) &&
-    inheritableCoordinatorImplementation.includes("generation: AtomicU64::new(0)") &&
+    inheritableCoordinatorImplementation.includes(
+      "generation: AtomicU64::new(0)",
+    ) &&
     inheritableCoordinatorImplementation.includes(
       "active_generation: AtomicU64::new(0)",
     ) &&
-    inheritableCoordinatorImplementation.includes("waiters: AtomicUsize::new(0)") &&
+    inheritableCoordinatorImplementation.includes(
+      "waiters: AtomicUsize::new(0)",
+    ) &&
     /thread_local!\s*\{\s*static OWNED_COORDINATORS:\s*Cell<\[usize; 4\]>\s*=\s*const\s*\{\s*Cell::new\(\[0; 4\]\)\s*\};\s*\}/u.test(
       inheritableHandleLaunch,
     ) &&
     !/\b(?:Mutex|Condvar|RefCell)\b/u.test(inheritableHandleLaunch) &&
-    inheritableHandleLaunch.includes("InheritableHandleLaunchError::Reentrant") &&
-    inheritableHandleLaunch.includes("InheritableHandleLaunchError::Poisoned") &&
+    inheritableHandleLaunch.includes(
+      "InheritableHandleLaunchError::Reentrant",
+    ) &&
+    inheritableHandleLaunch.includes(
+      "InheritableHandleLaunchError::Poisoned",
+    ) &&
     /^pub\(crate\) struct InheritableHandleLaunchFlight<'coordinator>\s*\{\s*coordinator: &'coordinator InheritableHandleLaunchCoordinator,\s*owner: ThreadId,\s*generation: u64,\s*deadline: Instant,\s*_not_send_or_sync: PhantomData<Rc<\(\)>>,\s*\}$/u.test(
       inheritableFlightDefinition,
     ) &&
@@ -11901,7 +13067,8 @@ requireInvariant(
     inheritableHandleLaunch.includes(
       "None,\n                None,\n                true,",
     ) &&
-    JSON.stringify(coordinatorTests) === JSON.stringify(expectedCoordinatorTests) &&
+    JSON.stringify(coordinatorTests) ===
+      JSON.stringify(expectedCoordinatorTests) &&
     inheritableHandleLaunchSource.includes("wait_until_waiter_is_parked") &&
     rustFunctionBlock(
       inheritableHandleLaunchSource,
@@ -11929,14 +13096,15 @@ requireInvariant(
     ) &&
     aliasedInheritableHandleApis.length === 0 &&
     alternativeSecurityAttributesInitialization.length === 0 &&
-    rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle").length ===
-      1 &&
+    rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle")
+      .length === 1 &&
     rustCallSites(restrictedInheritableDuplicateLeaf, "DuplicateHandle")[0]
       ?.arguments[5] === "true" &&
     restrictedInheritableDuplicateLeaf.includes(
       "_flight: &InheritableHandleLaunchFlight<'_>",
     ) &&
-    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle").length === 1 &&
+    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle")
+      .length === 1 &&
     rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle")[0]
       ?.arguments[5] === "true" &&
     keyAgentInheritableDuplicateLeaf.includes(
@@ -11946,8 +13114,8 @@ requireInvariant(
       "flight: &'flight InheritableHandleLaunchFlight<'static>",
     ) &&
     rustCallSites(brokerInheritedParentLeaf, "DuplicateHandle").length === 1 &&
-    rustCallSites(brokerInheritedParentLeaf, "DuplicateHandle")[0]?.arguments[5] ===
-      "true" &&
+    rustCallSites(brokerInheritedParentLeaf, "DuplicateHandle")[0]
+      ?.arguments[5] === "true" &&
     /flight:\s*&'flight InheritableHandleLaunchFlight<'static>/u.test(
       brokerInheritedParentLeaf,
     ) &&
@@ -11956,35 +13124,44 @@ requireInvariant(
     brokerInheritedNullDefinition.includes(
       "flight: &'flight InheritableHandleLaunchFlight<'static>",
     ) &&
-    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation").length === 1 &&
-    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation")[0]?.arguments[2] ===
-      "HANDLE_FLAG_INHERIT" &&
+    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation").length ===
+      1 &&
+    rustCallSites(brokerInheritedNullLeaf, "SetHandleInformation")[0]
+      ?.arguments[2] === "HANDLE_FLAG_INHERIT" &&
     /flight:\s*&'flight InheritableHandleLaunchFlight<'static>/u.test(
       brokerInheritedNullLeaf,
     ) &&
     brokerInheritedNullLeaf.includes("Ok(Self { handle, flight })") &&
     brokerInheritedNullLeaf.includes("let _ = self.flight") &&
     inheritedStdioConstructor.match(/sys::validate_handle\(/gu)?.length === 3 &&
-    secretInputStdioConstructor.match(/sys::validate_live_handle\(/gu)?.length === 3 &&
+    childPipeServerStdioConstructor.match(/sys::validate_child_pipe_server\(/gu)
+      ?.length === 3 &&
     validateRestrictedSourceHandle.includes(
       "flags & HANDLE_FLAG_INHERIT.0 != 0",
     ) &&
-    validateRestrictedSourceHandle.includes("Err(LaunchError::InvalidHandle)") &&
-    restrictedLaunchLeaf.match(/validate_live_handle\(handles\.(?:input|output|error)\)\?/gu)
-      ?.length === 6 &&
+    validateRestrictedSourceHandle.includes(
+      "Err(LaunchError::InvalidHandle)",
+    ) &&
+    restrictedLaunchLeaf.match(
+      /validate_live_handle\(handles\.(?:input|output|error)\)\?/gu,
+    )?.length === 6 &&
     restrictedLateSourceChecks.every(
       (position) => position > restrictedAcquireIndex,
     ) &&
     restrictedLateSourceChecks.every(
       (position) =>
-        position < restrictedLaunchLeaf.indexOf("InheritableDuplicates::new(&flight)"),
+        position <
+        restrictedLaunchLeaf.indexOf("InheritableDuplicates::new(&flight)"),
     ) &&
     inheritableStdioSourceTestOrder.every((position) => position !== -1) &&
     inheritableStdioSourceTestOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
-    (inheritableStdioSourceTest.match(/Err\(LaunchError::InvalidHandle\)/gu) ?? [])
-      .length === 2 &&
+    (
+      inheritableStdioSourceTest.match(/Err\(LaunchError::InvalidHandle\)/gu) ??
+      []
+    ).length === 2 &&
     prepareKeyAgentInheritance.includes(
       "fn prepare_child_inheritance<'pipes, 'flight>",
     ) &&
@@ -12021,7 +13198,9 @@ requireInvariant(
       restrictedLaunchLeaf.indexOf("InheritableDuplicates::new(&flight)") &&
     restrictedDeadlineChecks.length === 2 &&
     restrictedDeadlineChecks[1] <
-      restrictedLaunchLeaf.indexOf(".create_process_with_explicit_handle_list(") &&
+      restrictedLaunchLeaf.indexOf(
+        ".create_process_with_explicit_handle_list(",
+      ) &&
     keyAgentCreateInner.indexOf("if Instant::now() >= coordination_deadline") >
       keyAgentCreateInner.indexOf(
         "acquire_inheritable_handle_launch(coordination_deadline)",
@@ -12037,7 +13216,9 @@ requireInvariant(
       ) &&
     brokerCoordinatedCreate.indexOf(
       "check_deadline(deadline)?",
-      brokerCoordinatedCreate.indexOf("acquire_inheritable_handle_launch(deadline)"),
+      brokerCoordinatedCreate.indexOf(
+        "acquire_inheritable_handle_launch(deadline)",
+      ),
     ) <
       brokerCoordinatedCreate.indexOf(
         "InheritedParentProcess::duplicate_current(&flight)",
@@ -12063,7 +13244,8 @@ requireInvariant(
     duplicateInheritedParentProcessOrder
       .slice(1)
       .every(
-        (position, index) => position > duplicateInheritedParentProcessOrder[index],
+        (position, index) =>
+          position > duplicateInheritedParentProcessOrder[index],
       ) &&
     duplicateInheritedParentOriginalFlagQueries.length === 2 &&
     duplicateInheritedParentOriginalFlagQueries[0] <
@@ -12074,14 +13256,16 @@ requireInvariant(
       duplicateInheritedParentProcess.indexOf(
         "let desired = (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
       ) &&
-    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle").length === 1 &&
+    rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle").length ===
+      1 &&
     rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
       ?.arguments[4] === "desired" &&
     rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
       ?.arguments[5] === "false" &&
     rustCallSites(duplicateInheritedParentProcess, "DuplicateHandle")[0]
       ?.arguments[6] === "DUPLICATE_HANDLE_OPTIONS(0)" &&
-    rustCallSites(duplicateInheritedParentProcess, "from_raw_handle").length === 1 &&
+    rustCallSites(duplicateInheritedParentProcess, "from_raw_handle").length ===
+      1 &&
     rustCallSites(duplicateInheritedParentProcess, "from_raw_handle")[0]
       ?.arguments[0] === "duplicate.0" &&
     duplicateInheritedParentProcess.includes("Ok(duplicate)") &&
@@ -12098,9 +13282,11 @@ requireInvariant(
     ) &&
     restrictedAttributeValuesImplementation.includes("job: [job]") &&
     restrictedAttributeListDefinition.includes(
-    "duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>",
-  ) &&
-    restrictedAttributeListDefinition.includes("job_owner: &'job OwnedWinHandle") &&
+      "duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>",
+    ) &&
+    restrictedAttributeListDefinition.includes(
+      "job_owner: &'job OwnedWinHandle",
+    ) &&
     restrictedAttributeListImplementation.includes(
       "duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>",
     ) &&
@@ -12115,8 +13301,8 @@ requireInvariant(
     /AttributeValues::new\(\s*handles,\s*job_owner\.raw\(\),\s*profile_sid\.raw\(\),?\s*\)/u.test(
       restrictedAttributeListImplementation,
     ) &&
-    (restrictedAttributeListImplementation.match(/self\.update\(/gu) ?? []).length ===
-      6 &&
+    (restrictedAttributeListImplementation.match(/self\.update\(/gu) ?? [])
+      .length === 6 &&
     restrictedAttributeListImplementation.indexOf(
       "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
     ) <
@@ -12126,7 +13312,9 @@ requireInvariant(
     restrictedAttributeListImplementation.includes(
       "self.values.job.as_ptr().cast::<c_void>()",
     ) &&
-    restrictedAttributeListImplementation.includes("size_of_val(&self.values.job)") &&
+    restrictedAttributeListImplementation.includes(
+      "size_of_val(&self.values.job)",
+    ) &&
     restrictedAttributeListImplementation.includes(
       "self.duplicate_owner.handles.len()",
     ) &&
@@ -12144,9 +13332,7 @@ requireInvariant(
       "IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job)",
     ) &&
     restrictedLaunchLeaf.includes("if !in_job.as_bool()") &&
-    restrictedCreatedChildGuard.includes(
-      "process: &'process OwnedWinHandle",
-    ) &&
+    restrictedCreatedChildGuard.includes("process: &'process OwnedWinHandle") &&
     restrictedCreatedChildGuard.includes("job: &'job OwnedWinHandle") &&
     restrictedCreatedChildGuard.includes("armed: bool") &&
     restrictedCreatedChildGuardImplementation.includes(
@@ -12168,7 +13354,8 @@ requireInvariant(
     restrictedCreatedChildCleanupOrder
       .slice(1)
       .every(
-        (position, index) => position > restrictedCreatedChildCleanupOrder[index],
+        (position, index) =>
+          position > restrictedCreatedChildCleanupOrder[index],
       ),
   "restricted AttributeList must retain both duplicate and Job owners, atomically install the exact JOB_LIST, and guard every suspended child until Job/token verification and resume succeed",
 );
@@ -12198,11 +13385,17 @@ const keyAgentStartupModuleConsumers = platformWindowsProductionFiles
   .map((file) => file.path);
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_activation;") &&
-    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_activation\b/u.test(platformWindowsLib) &&
-    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_activation/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_activation\b/u.test(
+      platformWindowsLib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_activation/u.test(
+      platformWindowsLib,
+    ) &&
     platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_lpac;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+key_agent_lpac\b/u.test(platformWindowsLib) &&
-    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_lpac/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_lpac/u.test(
+      platformWindowsLib,
+    ) &&
     JSON.stringify(keyAgentLpacModuleConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/helper.rs",
@@ -12218,7 +13411,9 @@ requireInvariant(
       ),
     ) &&
     platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_storage;") &&
-    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_storage\b/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_storage\b/u.test(
+      platformWindowsLib,
+    ) &&
     !/pub(?:\([^)]*\))?\s+use\s+[^;]*\bkey_agent_storage\b/u.test(
       platformWindowsLib,
     ) &&
@@ -12238,8 +13433,12 @@ requireInvariant(
       "use platform_windows::key_agent_activation::activate_key_agent;",
     ) &&
     platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_supervisor;") &&
-    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_supervisor\b/u.test(platformWindowsLib) &&
-    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_supervisor/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_supervisor\b/u.test(
+      platformWindowsLib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_supervisor/u.test(
+      platformWindowsLib,
+    ) &&
     platformWindowsLib.includes(
       "use platform_windows::key_agent_supervisor::BoundDormantKeyAgent;",
     ) &&
@@ -12250,8 +13449,12 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsLib.includes("#[cfg(windows)]\nmod key_agent_startup;") &&
-    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_startup\b/u.test(platformWindowsLib) &&
-    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_startup/u.test(platformWindowsLib) &&
+    !/pub(?:\([^)]*\))?\s+mod\s+key_agent_startup\b/u.test(
+      platformWindowsLib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*key_agent_startup/u.test(
+      platformWindowsLib,
+    ) &&
     JSON.stringify(keyAgentStartupModuleConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -12327,10 +13530,8 @@ const validateAuthenticatedKeyAgentInstallJournalConsumers =
       (file) =>
         file.path !==
           "crates/platform-windows/src/key_agent_install_provenance.rs" &&
-        rustCallSites(
-          file.source,
-          "validate_authenticated_install_journal",
-        ).length > 0,
+        rustCallSites(file.source, "validate_authenticated_install_journal")
+          .length > 0,
     )
     .map((file) => file.path);
 const verifyExistingKeyAgentInstallSnapshotsConsumers =
@@ -12361,7 +13562,8 @@ const freshKeyAgentBoundaryConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
       file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
-      rustCallSites(file.source, "provision_fresh_key_agent_boundary").length > 0,
+      rustCallSites(file.source, "provision_fresh_key_agent_boundary").length >
+        0,
   )
   .map((file) => file.path);
 const pendingToPreparedConsumers = platformWindowsProductionFiles
@@ -12742,7 +13944,8 @@ requireInvariant(
       observedInstallObjectsFromCanonical,
       "ObservedKeyAgentInstallObjects",
     ).length === 1 &&
-    rustStructLiteralSites(keyAgentInstallProvenanceRelease, "Self").length === 0 &&
+    rustStructLiteralSites(keyAgentInstallProvenanceRelease, "Self").length ===
+      0 &&
     rustCallSites(
       keyAgentInstallProvenanceRelease,
       "classify_key_agent_install",
@@ -12759,9 +13962,11 @@ requireInvariant(
     JSON.stringify(provenanceTypeAliases) ===
       JSON.stringify(["typeInstallerJournalHmacSha256=Hmac<Sha256>;"]) &&
     provenanceMacroInvocations.length === 0 &&
-    (keyAgentInstallProvenanceReleaseCode.match(
-      /\bKeyAgentStorageRootIdentity::decode_be\s*\(/gu,
-    ) ?? []).length === 1 &&
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        /\bKeyAgentStorageRootIdentity::decode_be\s*\(/gu,
+      ) ?? []
+    ).length === 1 &&
     decodeKeyAgentInstallJournalRoot.includes(
       "KeyAgentStorageRootIdentity::decode_be(root_identity)",
     ) &&
@@ -12835,13 +14040,23 @@ requireInvariant(
     !/impl\s+(?:InstallerJournalAuthenticationKey|AuthenticatedKeyAgentInstallCheckpoint|AuthenticatedKeyAgentInstallJournal|AuthenticatedKeyAgentInstallSnapshot|ExpectedKeyAgentInstallIdentities|ObservedKeyAgentInstallObjects|UninitializedKeyAgentInstallCandidate|ConsistentExistingKeyAgentInstallCandidate|StableExistingKeyAgentInstallEvidence)\s*\{/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
-    (keyAgentInstallProvenanceReleaseCode.match(
-      /_not_send_or_sync:\s*PhantomData<\*mut \(\)>/gu,
-    ) ?? []).length === 9 &&
-    keyAgentInstallProvenanceReleaseCode.includes("struct JournalEvidenceSeal;") &&
-    keyAgentInstallProvenanceReleaseCode.includes("struct ExpectedIdentitySeal;") &&
-    keyAgentInstallProvenanceReleaseCode.includes("struct OsObservationSeal;") &&
-    keyAgentInstallProvenanceReleaseCode.includes("struct CheckpointEvidenceSeal;") &&
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        /_not_send_or_sync:\s*PhantomData<\*mut \(\)>/gu,
+      ) ?? []
+    ).length === 9 &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "struct JournalEvidenceSeal;",
+    ) &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "struct ExpectedIdentitySeal;",
+    ) &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "struct OsObservationSeal;",
+    ) &&
+    keyAgentInstallProvenanceReleaseCode.includes(
+      "struct CheckpointEvidenceSeal;",
+    ) &&
     keyAgentInstallProvenanceReleaseCode.includes(
       "struct InstallerJournalAuthenticationKeySeal;",
     ) &&
@@ -12879,8 +14094,9 @@ requireInvariant(
     /pub\(crate\)\s+fn\s+verify_existing_key_agent_install_snapshots\s*\(\s*initial:\s*AuthenticatedKeyAgentInstallSnapshot,\s*reread:\s*AuthenticatedKeyAgentInstallSnapshot,\s*observation:\s*KeyAgentHeldInstallObservation,?\s*\)\s*->\s*Option<\s*StableExistingKeyAgentInstallEvidence\s*>/u.test(
       verifyExistingKeyAgentInstallSnapshots,
     ) &&
-    JSON.stringify(verifyExistingSnapshotSameCalls.map((call) => call.arguments)) ===
-      JSON.stringify([["&initial", "&reread"]]) &&
+    JSON.stringify(
+      verifyExistingSnapshotSameCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["&initial", "&reread"]]) &&
     JSON.stringify(
       verifyExistingSnapshotObservationCalls.map((call) => call.arguments),
     ) === JSON.stringify([["&observation"]]) &&
@@ -12958,9 +14174,11 @@ requireInvariant(
     compactEncodeKeyAgentInstallJournalRecordBody.includes(
       "common.journal_generation.to_be_bytes()",
     ) &&
-    (keyAgentInstallProvenanceReleaseCode.match(
-      /\b(?:u16|u64)::from_be_bytes\s*\(/gu,
-    ) ?? []).length === 3 &&
+    (
+      keyAgentInstallProvenanceReleaseCode.match(
+        /\b(?:u16|u64)::from_be_bytes\s*\(/gu,
+      ) ?? []
+    ).length === 3 &&
     !/\b(?:from|to)_le_bytes\s*\(/u.test(
       keyAgentInstallProvenanceReleaseCode,
     ) &&
@@ -12984,7 +14202,9 @@ requireInvariant(
           "&release_identity",
         ],
       ]) &&
-    JSON.stringify(validateNonemptyHistoryCalls.map((call) => call.arguments)) ===
+    JSON.stringify(
+      validateNonemptyHistoryCalls.map((call) => call.arguments),
+    ) ===
       JSON.stringify([
         [
           "encoded_journal",
@@ -13009,12 +14229,12 @@ requireInvariant(
       ]) &&
     JSON.stringify(historyRecordDigestCalls.map((call) => call.arguments)) ===
       JSON.stringify([["&encoded_record"]]) &&
-    JSON.stringify(authenticatedDecodeMacCalls.map((call) => call.arguments)) ===
-      JSON.stringify([
-        ["&body", "&encoded[RECORD_MAC_OFFSET..]", "key"],
-      ]) &&
-    JSON.stringify(authenticatedDecodeBodyCalls.map((call) => call.arguments)) ===
-      JSON.stringify([["&body"]]) &&
+    JSON.stringify(
+      authenticatedDecodeMacCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["&body", "&encoded[RECORD_MAC_OFFSET..]", "key"]]) &&
+    JSON.stringify(
+      authenticatedDecodeBodyCalls.map((call) => call.arguments),
+    ) === JSON.stringify([["&body"]]) &&
     compactValidateAuthenticatedKeyAgentInstallJournal.includes(
       "letexpected_commitment=install_checkpoint_commitment(high_water_generation,&current_record_digest,&installation_id,&release_identity,);",
     ) &&
@@ -13108,18 +14328,18 @@ requireInvariant(
       "ConsistentExistingKeyAgentInstallCandidate",
       "KeyAgentInstallDisposition",
       "PreparedKeyAgentProvisioning",
-    ].some((name) => validateAuthenticatedKeyAgentInstallJournal.includes(name)) &&
-    keyAgentInstallProvenanceSource.includes(
-      'InstallerJournalAuthenticationKey([REDACTED])',
+    ].some((name) =>
+      validateAuthenticatedKeyAgentInstallJournal.includes(name),
     ) &&
     keyAgentInstallProvenanceSource.includes(
-      'AuthenticatedKeyAgentInstallCheckpoint([REDACTED])',
+      "InstallerJournalAuthenticationKey([REDACTED])",
+    ) &&
+    keyAgentInstallProvenanceSource.includes(
+      "AuthenticatedKeyAgentInstallCheckpoint([REDACTED])",
     ) &&
     keyAgentInstallProvenanceSource.includes("compiled fixed profile name") &&
     keyAgentInstallProvenanceSource.includes("fixed storage leaf") &&
-    keyAgentInstallProvenanceSource.includes(
-      "retains no root handle",
-    ) &&
+    keyAgentInstallProvenanceSource.includes("retains no root handle") &&
     expectedKeyAgentInstallProvenanceTests.every((name) =>
       keyAgentInstallProvenanceSource.includes(`fn ${name}`),
     ) &&
@@ -13151,7 +14371,8 @@ const keyAgentInstallAdoptionExternalTokenNames = [
 const keyAgentInstallAdoptionModuleConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       file.path !== "crates/platform-windows/src/lib.rs" &&
       /\bkey_agent_install_adoption\b/u.test(rustLexicalCode(file.source)),
   )
@@ -13159,7 +14380,8 @@ const keyAgentInstallAdoptionModuleConsumers = platformWindowsProductionFiles
 const keyAgentInstallAdoptionConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       file.path !== "crates/platform-windows/src/lib.rs" &&
       keyAgentInstallAdoptionExternalTokenNames.some((name) =>
         new RegExp(`\\b${name}\\b`, "u").test(rustLexicalCode(file.source)),
@@ -13169,24 +14391,28 @@ const keyAgentInstallAdoptionConsumers = platformWindowsProductionFiles
 const adoptExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       rustCallSites(file.source, "adopt_existing_key_agent_install").length > 0,
   )
   .map((file) => file.path);
-const adoptExistingKeyAgentInstallTokenConsumers = platformWindowsProductionFiles
-  .filter(
-    (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
-      /\badopt_existing_key_agent_install\b/u.test(
-        rustLexicalCode(file.source),
-      ),
-  )
-  .map((file) => file.path);
+const adoptExistingKeyAgentInstallTokenConsumers =
+  platformWindowsProductionFiles
+    .filter(
+      (file) =>
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        /\badopt_existing_key_agent_install\b/u.test(
+          rustLexicalCode(file.source),
+        ),
+    )
+    .map((file) => file.path);
 const bindExistingKeyAgentInstallToReleaseConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         rustCallSites(file.source, "bind_existing_key_agent_install_to_release")
           .length > 0,
     )
@@ -13195,7 +14421,8 @@ const bindExistingKeyAgentInstallToReleaseTokenConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         /\bbind_existing_key_agent_install_to_release\b/u.test(
           rustLexicalCode(file.source),
         ),
@@ -13205,7 +14432,8 @@ const consumeArtifactBoundExistingKeyAgentInstallConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         rustCallSites(
           file.source,
           "consume_artifact_bound_existing_key_agent_install",
@@ -13216,7 +14444,8 @@ const consumeArtifactBoundExistingKeyAgentInstallTokenConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         /\bconsume_artifact_bound_existing_key_agent_install\b/u.test(
           rustLexicalCode(file.source),
         ),
@@ -13240,9 +14469,8 @@ const keyAgentInstallAdoptionVisibleFunctions = [
     /\bpub(?:\s*\([^\r\n)]*\))?\s+(?:(?:const|async|unsafe)\s+)*(?:extern(?:\s+"[^"\r\n]*")?\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
   ),
 ].map((match) => match.groups.name);
-const keyAgentInstallAdoptionVisibleFunctionInventory = rustVisibleFunctionItems(
-  keyAgentInstallAdoptionRelease,
-);
+const keyAgentInstallAdoptionVisibleFunctionInventory =
+  rustVisibleFunctionItems(keyAgentInstallAdoptionRelease);
 const keyAgentInstallAdoptionPublicVisibilitySites = [
   ...keyAgentInstallAdoptionReleaseCode.matchAll(
     /\bpub(?:\s*\([^\r\n)]*\))?/gu,
@@ -13283,19 +14511,20 @@ const keyAgentInstallAdoptionConstructionCounts = [
   "VerifiedKeyAgentInstallContinuity",
   "ArtifactBoundExistingKeyAgentInstall",
 ].map(
-  (name) =>
-    rustStructLiteralSites(keyAgentInstallAdoptionRelease, name).length,
+  (name) => rustStructLiteralSites(keyAgentInstallAdoptionRelease, name).length,
 );
 const heldExistingKeyAgentInstallConstructionSites =
   platformWindowsProductionFiles.flatMap((file) =>
-    rustStructLiteralSites(file.source, "HeldExistingKeyAgentInstallObjects").map(
-      () => file.path,
-    ),
+    rustStructLiteralSites(
+      file.source,
+      "HeldExistingKeyAgentInstallObjects",
+    ).map(() => file.path),
   );
 const keyAgentInstallAdoptionSealConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       file.path !== "crates/platform-windows/src/lib.rs" &&
       /\bExistingInstallAdoptionSeal\b/u.test(rustLexicalCode(file.source)),
   )
@@ -13303,18 +14532,18 @@ const keyAgentInstallAdoptionSealConsumers = platformWindowsProductionFiles
 const verifiedExistingKeyAgentInstallConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       file.path !== "crates/platform-windows/src/lib.rs" &&
-      /\bVerifiedExistingKeyAgentInstall\b/u.test(
-        rustLexicalCode(file.source),
-      ),
+      /\bVerifiedExistingKeyAgentInstall\b/u.test(rustLexicalCode(file.source)),
   )
   .map((file) => file.path);
 const verifiedKeyAgentInstallContinuityConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         file.path !== "crates/platform-windows/src/lib.rs" &&
         /\bVerifiedKeyAgentInstallContinuity\b/u.test(
           rustLexicalCode(file.source),
@@ -13325,7 +14554,8 @@ const artifactBoundExistingKeyAgentInstallConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         file.path !== "crates/platform-windows/src/lib.rs" &&
         /\bArtifactBoundExistingKeyAgentInstall\b/u.test(
           rustLexicalCode(file.source),
@@ -13335,7 +14565,8 @@ const artifactBoundExistingKeyAgentInstallConsumers =
 const keyAgentInstallAdoptionErrorConsumers = platformWindowsProductionFiles
   .filter(
     (file) =>
-      file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+      file.path !==
+        "crates/platform-windows/src/key_agent_install_adoption.rs" &&
       file.path !== "crates/platform-windows/src/lib.rs" &&
       /\bKeyAgentInstallAdoptionError\b/u.test(rustLexicalCode(file.source)),
   )
@@ -13344,24 +14575,22 @@ const keyAgentInstallReleaseBindingErrorConsumers =
   platformWindowsProductionFiles
     .filter(
       (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_install_adoption.rs" &&
+        file.path !==
+          "crates/platform-windows/src/key_agent_install_adoption.rs" &&
         file.path !== "crates/platform-windows/src/lib.rs" &&
         /\bKeyAgentInstallReleaseBindingError\b/u.test(
           rustLexicalCode(file.source),
         ),
     )
     .map((file) => file.path);
-const keyAgentSupervisorBindingSealConsumers =
-  platformWindowsProductionFiles
-    .filter(
-      (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
-        file.path !== "crates/platform-windows/src/lib.rs" &&
-        /\bKeyAgentSupervisorBindingSeal\b/u.test(
-          rustLexicalCode(file.source),
-        ),
-    )
-    .map((file) => file.path);
+const keyAgentSupervisorBindingSealConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_supervisor.rs" &&
+      file.path !== "crates/platform-windows/src/lib.rs" &&
+      /\bKeyAgentSupervisorBindingSeal\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
 const keyAgentSupervisorBindingSealLiteralSites =
   platformWindowsProductionFiles.flatMap((file) =>
     rustStructLiteralSites(file.source, "KeyAgentSupervisorBindingSeal").map(
@@ -13522,7 +14751,8 @@ requireInvariant(
       JSON.stringify([]) &&
     JSON.stringify(keyAgentInstallReleaseBindingErrorConsumers) ===
       JSON.stringify([]) &&
-    JSON.stringify(adoptExistingKeyAgentInstallConsumers) === JSON.stringify([]) &&
+    JSON.stringify(adoptExistingKeyAgentInstallConsumers) ===
+      JSON.stringify([]) &&
     JSON.stringify(adoptExistingKeyAgentInstallTokenConsumers) ===
       JSON.stringify([]) &&
     JSON.stringify(bindExistingKeyAgentInstallToReleaseConsumers) ===
@@ -13531,10 +14761,14 @@ requireInvariant(
       JSON.stringify([]) &&
     JSON.stringify(consumeArtifactBoundExistingKeyAgentInstallConsumers) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
-    JSON.stringify(consumeArtifactBoundExistingKeyAgentInstallTokenConsumers) ===
+    JSON.stringify(
+      consumeArtifactBoundExistingKeyAgentInstallTokenConsumers,
+    ) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_supervisor.rs"]) &&
     JSON.stringify(keyAgentSupervisorBindingSealConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_install_adoption.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_install_adoption.rs",
+      ]) &&
     JSON.stringify(keyAgentSupervisorBindingSealLiteralSites) ===
       JSON.stringify([
         {
@@ -13701,14 +14935,17 @@ requireInvariant(
     !keyAgentInstallAdoptionForbiddenTraitImpl.test(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
-    rustAuthorityTypeErasureSites(keyAgentInstallAdoptionRelease).length === 0 &&
+    rustAuthorityTypeErasureSites(keyAgentInstallAdoptionRelease).length ===
+      0 &&
     !/\btrait\b/u.test(keyAgentInstallAdoptionReleaseCode) &&
     !/\b(?:unwrap|expect|panic)\s*!?\s*\(/u.test(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
-    (keyAgentInstallAdoptionReleaseCode.match(
-      /\bKeyAgentInstallAdoptionError::RecoveryRequired\b/gu,
-    ) ?? []).length === 4 &&
+    (
+      keyAgentInstallAdoptionReleaseCode.match(
+        /\bKeyAgentInstallAdoptionError::RecoveryRequired\b/gu,
+      ) ?? []
+    ).length === 4 &&
     rustCallSites(
       bindExistingKeyAgentInstallToRelease,
       "preflight_key_agent_activation",
@@ -13767,8 +15004,8 @@ requireInvariant(
         (call) => call.arguments,
       ),
     ) === JSON.stringify([[], []]) &&
-    rustCallSites(adoptExistingKeyAgentInstall, "install_observation").length ===
-      1 &&
+    rustCallSites(adoptExistingKeyAgentInstall, "install_observation")
+      .length === 1 &&
     JSON.stringify(
       rustCallSites(adoptExistingKeyAgentInstall, "install_observation").map(
         (call) => call.arguments,
@@ -13810,9 +15047,11 @@ requireInvariant(
     keyAgentInstallAdoptionReleaseCode.includes(
       "_not_sync: PhantomData<Cell<()>>",
     ) &&
-    (keyAgentInstallAdoptionReleaseCode.match(
-      /_not_sync:\s*PhantomData<Cell<\(\)>>/gu,
-    ) ?? []).length === 2 &&
+    (
+      keyAgentInstallAdoptionReleaseCode.match(
+        /_not_sync:\s*PhantomData<Cell<\(\)>>/gu,
+      ) ?? []
+    ).length === 2 &&
     !/\b(?:ArtifactDigest|AttestedArtifactDigest|manifest_digest|allows_helper_manifest)\b/u.test(
       keyAgentInstallAdoptionReleaseCode.replace(
         bindExistingKeyAgentInstallToRelease,
@@ -13823,13 +15062,13 @@ requireInvariant(
       keyAgentInstallAdoptionReleaseCode,
     ) &&
     keyAgentInstallAdoptionSource.includes(
-      'VerifiedExistingKeyAgentInstall([HELD; REDACTED])',
+      "VerifiedExistingKeyAgentInstall([HELD; REDACTED])",
     ) &&
     keyAgentInstallAdoptionSource.includes(
-      'VerifiedKeyAgentInstallContinuity([REDACTED])',
+      "VerifiedKeyAgentInstallContinuity([REDACTED])",
     ) &&
     keyAgentInstallAdoptionSource.includes(
-      'ArtifactBoundExistingKeyAgentInstall([HELD; REDACTED])',
+      "ArtifactBoundExistingKeyAgentInstall([HELD; REDACTED])",
     ) &&
     keyAgentInstallAdoptionSource.includes(
       "future backend must enforce that temporal ordering",
@@ -13874,19 +15113,19 @@ const openExistingFixedKeyAgentStorageRootAttributes =
     openExistingFixedKeyAgentStorageRootItemIndex,
   ).map((attribute) => compactRust(attribute.source));
 const keyAgentStorageCode = rustLexicalCode(keyAgentStorage);
-const openExistingKeyAgentStorageRootForTestItemIndex = keyAgentStorageCode.search(
-  /(?<![\p{XID_Continue}_#])pub\(crate\)\s+unsafe\s+fn\s+open_existing_key_agent_storage_root_for_test\b/u,
-);
+const openExistingKeyAgentStorageRootForTestItemIndex =
+  keyAgentStorageCode.search(
+    /(?<![\p{XID_Continue}_#])pub\(crate\)\s+unsafe\s+fn\s+open_existing_key_agent_storage_root_for_test\b/u,
+  );
 const openExistingKeyAgentStorageRootForTestAttributes =
   rustAttachedOuterAttributes(
     keyAgentStorage,
     openExistingKeyAgentStorageRootForTestItemIndex,
   ).map((attribute) => compactRust(attribute.source));
-const keyAgentStorageExistingOpenerTokenInventory =
-  brokerLexicalTokenInventory(
-    platformWindowsProductionFiles,
-    "open_existing_fixed_key_agent_storage_root",
-  );
+const keyAgentStorageExistingOpenerTokenInventory = brokerLexicalTokenInventory(
+  platformWindowsProductionFiles,
+  "open_existing_fixed_key_agent_storage_root",
+);
 const keyAgentStorageExistingOpenerUseInventory =
   platformWindowsProductionFiles.flatMap((file) =>
     rustUseItems(file.source)
@@ -13918,9 +15157,7 @@ const heldKeyAgentStorageRootTokenInventory = platformWindowsProductionFiles
   .map((file) => ({
     path: file.path,
     count: [
-      ...rustLexicalCode(file.source).matchAll(
-        /\bHeldKeyAgentStorageRoot\b/gu,
-      ),
+      ...rustLexicalCode(file.source).matchAll(/\bHeldKeyAgentStorageRoot\b/gu),
     ].length,
   }))
   .filter((entry) => entry.count > 0);
@@ -13931,7 +15168,7 @@ const heldKeyAgentStorageRootLiteralInventory =
         path: file.path,
         source: compactRust(literal.source),
       }),
-      ),
+    ),
   );
 const heldKeyAgentStorageRootFunctionSurface =
   platformWindowsProductionFiles.flatMap((file) =>
@@ -13940,9 +15177,7 @@ const heldKeyAgentStorageRootFunctionSurface =
         path: file.path,
         signature: compactRust(signature.source),
       }))
-      .filter(({ signature }) =>
-        signature.includes("HeldKeyAgentStorageRoot"),
-      ),
+      .filter(({ signature }) => signature.includes("HeldKeyAgentStorageRoot")),
   );
 const heldKeyAgentStorageRootForbiddenAccessors =
   platformWindowsProductionFiles.flatMap((file) =>
@@ -14022,9 +15257,7 @@ const keyAgentExistingStorageReviewedBodySha256 = {
   tokenUserSid: normalizedSourceSha256(
     rustLexicalCode(keyAgentStorageTokenUserSid),
   ),
-  volume: normalizedSourceSha256(
-    rustLexicalCode(verifyKeyAgentStorageVolume),
-  ),
+  volume: normalizedSourceSha256(rustLexicalCode(verifyKeyAgentStorageVolume)),
 };
 const keyAgentExistingStorageKernelEvidenceSha256 = {
   deleteHelper: normalizedSourceSha256(
@@ -14142,9 +15375,7 @@ requireInvariant(
   normalizedKeyAgentStorageRootLeafDefinition ===
     'const KEY_AGENT_STORAGE_ROOT_LEAF: &str = "YourWallet.KeyAgent.Storage.v1";' &&
     JSON.stringify(openExistingFixedKeyAgentStorageRootAttributes) ===
-      JSON.stringify([
-        "#[allow(dead_code,reason=)]",
-      ]) &&
+      JSON.stringify(["#[allow(dead_code,reason=)]"]) &&
     JSON.stringify(keyAgentExistingStorageReviewedBodySha256) ===
       JSON.stringify({
         common:
@@ -14161,8 +15392,7 @@ requireInvariant(
           "bc794e522902f7487dc9511e1484d685f00559633a62162921019d7b00c48218",
         directory:
           "b198b02595e18869b832eec01927d3c29784c774409a0357a894cde580e2e8de",
-        dacl:
-          "dc5f3430c0a87c317101409d7cc040a31aa979a7977fd1fd68e6eca1ce6017e1",
+        dacl: "dc5f3430c0a87c317101409d7cc040a31aa979a7977fd1fd68e6eca1ce6017e1",
         handleDescriptor:
           "e2fd5ca5d944c1eb8ded0f9197d3c314949b1f21e72b964826426765b4ba8df7",
         heldImpl:
@@ -14200,10 +15430,8 @@ requireInvariant(
         "crates/platform-windows/src/key_agent_storage.rs",
         "crates/platform-windows/src/key_agent_storage.rs",
       ]) &&
-    rustCallSites(
-      createKeyAgentStorageRoot,
-      "open_and_verify_storage_root",
-    ).length === 1 &&
+    rustCallSites(createKeyAgentStorageRoot, "open_and_verify_storage_root")
+      .length === 1 &&
     rustCallSites(
       openExistingFixedKeyAgentStorageRoot,
       "open_and_verify_storage_root",
@@ -14218,7 +15446,9 @@ requireInvariant(
       JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
     keyAgentStorageFactoryCalls.length === 1 &&
     JSON.stringify(
-      keyAgentStorageFactoryCalls[0].arguments.map((argument) => compactRust(argument)),
+      keyAgentStorageFactoryCalls[0].arguments.map((argument) =>
+        compactRust(argument),
+      ),
     ) ===
       JSON.stringify([
         "validated_ac_folder",
@@ -14257,14 +15487,10 @@ requireInvariant(
       openAndVerifyKeyAgentStorageRoot,
       "validate_held_storage_root_path",
     ).length === 2 &&
-    rustCallSites(
-      openAndVerifyKeyAgentStorageRoot,
-      "open_storage_root_handle",
-    ).length === 2 &&
-    rustCallSites(
-      openAndVerifyKeyAgentStorageRoot,
-      "verify_open_storage_root",
-    ).length === 4 &&
+    rustCallSites(openAndVerifyKeyAgentStorageRoot, "open_storage_root_handle")
+      .length === 2 &&
+    rustCallSites(openAndVerifyKeyAgentStorageRoot, "verify_open_storage_root")
+      .length === 4 &&
     hasOrderedCompactRustMarkers(openAndVerifyKeyAgentStorageRoot, [
       "reject_thread_impersonation()?",
       "validate_held_storage_root_path(path)?",
@@ -14301,7 +15527,9 @@ requireInvariant(
     ) &&
     (compactKeyAgentStorageRelease.match(/\bfs::canonicalize\(/gu) ?? [])
       .length === 1 &&
-    compactValidateKeyAgentStorageProfileFolder.includes("!path.is_absolute()") &&
+    compactValidateKeyAgentStorageProfileFolder.includes(
+      "!path.is_absolute()",
+    ) &&
     validateKeyAgentStorageProfileFolder.includes(
       '!name.eq_ignore_ascii_case("AC")',
     ) &&
@@ -14317,7 +15545,9 @@ requireInvariant(
     compactVerifyKeyAgentStorageVolume.includes("GetDriveTypeW(") &&
     compactVerifyKeyAgentStorageVolume.includes("!=DRIVE_FIXED") &&
     compactVerifyKeyAgentStorageVolume.includes("FileRemoteProtocolInfo") &&
-    compactVerifyKeyAgentStorageVolume.includes("GetVolumeInformationByHandleW(") &&
+    compactVerifyKeyAgentStorageVolume.includes(
+      "GetVolumeInformationByHandleW(",
+    ) &&
     compactVerifyKeyAgentStorageVolume.includes("FILE_PERSISTENT_ACLS==0") &&
     compactVerifyKeyAgentStorageVolume.includes(
       "!is_exact_ntfs_name(&filesystem_name)",
@@ -14353,9 +15583,7 @@ requireInvariant(
     compactInspectExactKeyAgentStorageDacl.includes(
       "inspect_acl_header(dacl,2)?",
     ) &&
-    compactInspectExactKeyAgentStorageDacl.includes(
-      "FILE_ALL_ACCESS.0",
-    ) &&
+    compactInspectExactKeyAgentStorageDacl.includes("FILE_ALL_ACCESS.0") &&
     compactInspectExactKeyAgentStorageDacl.includes(
       "KEY_AGENT_STORAGE_ROOT_ACCESS",
     ) &&
@@ -14379,7 +15607,9 @@ requireInvariant(
         "fninstall_observation(&self,)->Result<KeyAgentHeldRootObservation,KeyAgentStorageError>",
         "fnrevalidate(&self)->Result<(),KeyAgentStorageError>",
       ]) &&
-    normalizeRustFragment(rustLexicalCode(heldKeyAgentRootObservationDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(heldKeyAgentRootObservationDefinition),
+    ) ===
       "pub(crate) struct KeyAgentHeldRootObservation { root_identity: KeyAgentStorageRootIdentity, stable_user_sid_len: u8, stable_user_sid: [u8; MAX_BINARY_SID_BYTES], profile_sid_len: u8, profile_sid: [u8; MAX_BINARY_SID_BYTES], }" &&
     JSON.stringify(heldKeyAgentRootObservationMethods) ===
       JSON.stringify(["root_identity", "stable_user_sid", "profile_sid"]) &&
@@ -14396,10 +15626,10 @@ requireInvariant(
     keyAgentStorageSource.includes(
       "KeyAgentHeldRootObservation([REDACTED IDENTITIES])",
     ) &&
-    keyAgentStorage.includes(
-      "#[cfg(test)]\n    pub(crate) fn path_for_test",
-    ) &&
-    normalizeRustFragment(rustLexicalCode(heldKeyAgentStorageRootDefinition)) ===
+    keyAgentStorage.includes("#[cfg(test)]\n    pub(crate) fn path_for_test") &&
+    normalizeRustFragment(
+      rustLexicalCode(heldKeyAgentStorageRootDefinition),
+    ) ===
       "pub(crate) struct HeldKeyAgentStorageRoot { handle: Option<std::fs::File>, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, path: PathBuf, #[cfg(test)] cleanup_on_drop: bool, }" &&
     JSON.stringify(heldKeyAgentStorageRootAttributes) ===
       JSON.stringify(["#[must_use=]"]) &&
@@ -14477,14 +15707,10 @@ requireInvariant(
       revalidateHeldKeyAgentStorageRoot,
       "validate_held_storage_root_path",
     ).length === 1 &&
-    rustCallSites(
-      revalidateHeldKeyAgentStorageRoot,
-      "open_storage_root_handle",
-    ).length === 1 &&
-    rustCallSites(
-      revalidateHeldKeyAgentStorageRoot,
-      "verify_open_storage_root",
-    ).length === 3 &&
+    rustCallSites(revalidateHeldKeyAgentStorageRoot, "open_storage_root_handle")
+      .length === 1 &&
+    rustCallSites(revalidateHeldKeyAgentStorageRoot, "verify_open_storage_root")
+      .length === 3 &&
     hasOrderedCompactRustMarkers(revalidateHeldKeyAgentStorageRoot, [
       "reject_thread_impersonation()?",
       "lethandle=self.handle.as_ref().ok_or(KeyAgentStorageError::Identity)?",
@@ -14504,10 +15730,10 @@ requireInvariant(
     compactRust(heldKeyAgentStorageRootDrop) ===
       "implDropforHeldKeyAgentStorageRoot{fndrop(&mutself){drop(self.handle.take());#[cfg(test)]ifself.cleanup_on_drop{let_=fs::remove_dir(&self.path);}}}" &&
     heldKeyAgentStorageRootDropWithTests.includes("drop(self.handle.take())") &&
+    heldKeyAgentStorageRootDropWithTests.includes("if self.cleanup_on_drop") &&
     heldKeyAgentStorageRootDropWithTests.includes(
-      "if self.cleanup_on_drop",
+      "fs::remove_dir(&self.path)",
     ) &&
-    heldKeyAgentStorageRootDropWithTests.includes("fs::remove_dir(&self.path)") &&
     !heldKeyAgentStorageRootDropWithTests.includes("remove_dir_all") &&
     JSON.stringify(keyAgentLpacTestsModuleAttributes) ===
       JSON.stringify(["#[cfg(test)]"]) &&
@@ -14542,17 +15768,17 @@ requireInvariant(
       openExistingKeyAgentStorageRootForTest,
       "open_and_verify_storage_root",
     ).length === 1 &&
-    rustCallSites(
-      openExistingKeyAgentStorageRootForTest,
-      "revalidate",
-    ).length === 1 &&
+    rustCallSites(openExistingKeyAgentStorageRootForTest, "revalidate")
+      .length === 1 &&
     rustCallSites(
       existingKeyAgentStorageRootReopenKernelTest,
       "create_unique_key_agent_storage_root_for_test",
     ).length === 1 &&
-    (rustLexicalCode(keyAgentLpacSource).match(
-      /\bexisting_storage_root_reopen_retains_identity_path_and_delete_pin\b/gu,
-    ) ?? []).length === 1 &&
+    (
+      rustLexicalCode(keyAgentLpacSource).match(
+        /\bexisting_storage_root_reopen_retains_identity_path_and_delete_pin\b/gu,
+      ) ?? []
+    ).length === 1 &&
     rustCallSites(
       existingKeyAgentStorageRootReopenKernelTest,
       "open_existing_key_agent_storage_root_for_test",
@@ -14561,46 +15787,40 @@ requireInvariant(
       existingKeyAgentStorageRootReopenKernelTest,
       "require_delete_sharing_violation",
     ).length === 1 &&
-    hasOrderedCompactRustMarkers(
-      existingKeyAgentStorageRootReopenKernelTest,
-      [
-        "letprofile=PreparedKeyAgentProfile::open_or_create()?",
-        "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
-        "letcreator_path=creator.path_for_test().to_path_buf()",
-        "letcreator_leaf=creator_path.file_name()",
-        "letcreator_identity=creator.identity()",
-        "assert_eq!(std::fs::canonicalize(&creator_path)?,creator_path)",
-        "creator.revalidate()?",
-        "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}?",
-        "assert_eq!(reopened.identity(),creator_identity)",
-        "assert_eq!(reopened.path_for_test(),creator_path)",
-        "assert_eq!(std::fs::canonicalize(reopened.path_for_test())?,creator_path)",
-        "reopened.revalidate()?",
-        "require_delete_sharing_violation(&creator_path)?",
-        "ifstd::fs::rename(&creator_path,&replacement_path).is_ok()",
-        "ifstd::fs::remove_dir(&creator_path).is_ok()",
-        "assert_eq!(creator.identity(),creator_identity)",
-        "assert_eq!(reopened.identity(),creator_identity)",
-        "creator.revalidate()?",
-        "reopened.revalidate()?",
-        "drop(reopened)",
-        "creator.revalidate()?",
-        "drop(creator)",
-        "assert!(!creator_path.exists())",
-        "assert!(!replacement_path.exists())",
-      ],
-    ) &&
-    hasOrderedCompactRustMarkers(
-      requireKeyAgentStorageDeleteSharingViolation,
-      [
-        "OpenOptions::new()",
-        ".access_mode(DELETE.0)",
-        ".share_mode((FILE_SHARE_READ|FILE_SHARE_WRITE).0)",
-        ".custom_flags((FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT).0)",
-        ".open(path)",
-        "ERROR_SHARING_VIOLATION.0",
-      ],
-    ) &&
+    hasOrderedCompactRustMarkers(existingKeyAgentStorageRootReopenKernelTest, [
+      "letprofile=PreparedKeyAgentProfile::open_or_create()?",
+      "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
+      "letcreator_path=creator.path_for_test().to_path_buf()",
+      "letcreator_leaf=creator_path.file_name()",
+      "letcreator_identity=creator.identity()",
+      "assert_eq!(std::fs::canonicalize(&creator_path)?,creator_path)",
+      "creator.revalidate()?",
+      "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}?",
+      "assert_eq!(reopened.identity(),creator_identity)",
+      "assert_eq!(reopened.path_for_test(),creator_path)",
+      "assert_eq!(std::fs::canonicalize(reopened.path_for_test())?,creator_path)",
+      "reopened.revalidate()?",
+      "require_delete_sharing_violation(&creator_path)?",
+      "ifstd::fs::rename(&creator_path,&replacement_path).is_ok()",
+      "ifstd::fs::remove_dir(&creator_path).is_ok()",
+      "assert_eq!(creator.identity(),creator_identity)",
+      "assert_eq!(reopened.identity(),creator_identity)",
+      "creator.revalidate()?",
+      "reopened.revalidate()?",
+      "drop(reopened)",
+      "creator.revalidate()?",
+      "drop(creator)",
+      "assert!(!creator_path.exists())",
+      "assert!(!replacement_path.exists())",
+    ]) &&
+    hasOrderedCompactRustMarkers(requireKeyAgentStorageDeleteSharingViolation, [
+      "OpenOptions::new()",
+      ".access_mode(DELETE.0)",
+      ".share_mode((FILE_SHARE_READ|FILE_SHARE_WRITE).0)",
+      ".custom_flags((FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT).0)",
+      ".open(path)",
+      "ERROR_SHARING_VIOLATION.0",
+    ]) &&
     !compactRust(requireKeyAgentStorageDeleteSharingViolation).includes(
       "FILE_SHARE_DELETE",
     ) &&
@@ -14608,28 +15828,27 @@ requireInvariant(
       missingExistingKeyAgentStorageRootKernelTest,
       "create_unique_key_agent_storage_root_for_test",
     ).length === 1 &&
-    (rustLexicalCode(keyAgentLpacSource).match(
-      /\bexisting_storage_root_opener_does_not_recreate_cleaned_root\b/gu,
-    ) ?? []).length === 1 &&
+    (
+      rustLexicalCode(keyAgentLpacSource).match(
+        /\bexisting_storage_root_opener_does_not_recreate_cleaned_root\b/gu,
+      ) ?? []
+    ).length === 1 &&
     rustCallSites(
       missingExistingKeyAgentStorageRootKernelTest,
       "open_existing_key_agent_storage_root_for_test",
     ).length === 1 &&
-    hasOrderedCompactRustMarkers(
-      missingExistingKeyAgentStorageRootKernelTest,
-      [
-        "letprofile=PreparedKeyAgentProfile::open_or_create()?",
-        "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
-        "letcreator_path=creator.path_for_test().to_path_buf()",
-        "letcreator_leaf=creator_path.file_name()",
-        "assert!(creator_path.is_dir())",
-        "drop(creator)",
-        "assert!(!creator_path.exists())",
-        "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}",
-        "assert!(matches!(reopened,Err(KeyAgentStorageError::Creation)))",
-        "assert!(!creator_path.exists())",
-      ],
-    ) &&
+    hasOrderedCompactRustMarkers(missingExistingKeyAgentStorageRootKernelTest, [
+      "letprofile=PreparedKeyAgentProfile::open_or_create()?",
+      "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
+      "letcreator_path=creator.path_for_test().to_path_buf()",
+      "letcreator_leaf=creator_path.file_name()",
+      "assert!(creator_path.is_dir())",
+      "drop(creator)",
+      "assert!(!creator_path.exists())",
+      "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}",
+      "assert!(matches!(reopened,Err(KeyAgentStorageError::Creation)))",
+      "assert!(!creator_path.exists())",
+    ]) &&
     keyAgentStorageDocumentation.every(
       (document) =>
         document.includes("open_existing_fixed_key_agent_storage_root") &&
@@ -14647,10 +15866,16 @@ requireInvariant(
     keyAgentProvisioningKernelTest.includes("provisioning.revalidate()?") &&
     keyAgentProvisioningKernelTest.includes("assert!(storage_root.is_dir())") &&
     keyAgentProvisioningKernelTest.includes("drop(provisioning)") &&
-    keyAgentProvisioningKernelTest.includes("assert!(!storage_root.exists())") &&
-    integratedKeyAgentStorageBindingTest.includes("assert!(storage_root.is_dir())") &&
+    keyAgentProvisioningKernelTest.includes(
+      "assert!(!storage_root.exists())",
+    ) &&
+    integratedKeyAgentStorageBindingTest.includes(
+      "assert!(storage_root.is_dir())",
+    ) &&
     integratedKeyAgentStorageBindingTest.includes("drop(bound)") &&
-    integratedKeyAgentStorageBindingTest.includes("assert!(!storage_root.exists())") &&
+    integratedKeyAgentStorageBindingTest.includes(
+      "assert!(!storage_root.exists())",
+    ) &&
     !/\b(?:HeldExistingKeyAgentInstallObjects|PreparedKeyAgentProvisioning|VerifiedExistingKeyAgentInstall|ArtifactBoundExistingKeyAgentInstall)\b/u.test(
       keyAgentStorageReleaseCode,
     ) &&
@@ -14663,7 +15888,7 @@ requireInvariant(
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(keyAgentStorageIdentityDefinition)) ===
-      "pub(crate) struct KeyAgentStorageRootIdentity { volume_serial_number: u64, file_id: [u8; 16], }" &&
+    "pub(crate) struct KeyAgentStorageRootIdentity { volume_serial_number: u64, file_id: [u8; 16], }" &&
     keyAgentStorageIdentityImpl.includes(
       "pub(crate) fn encode_be(self) -> [u8; 24]",
     ) &&
@@ -14673,7 +15898,9 @@ requireInvariant(
     keyAgentStorageIdentityImpl.includes("volume_serial_number == 0") &&
     keyAgentStorageIdentityImpl.includes("file_id == [0; 16]") &&
     keyAgentStorageIdentityImpl.includes("file_id == [u8::MAX; 16]") &&
-    normalizeRustFragment(rustLexicalCode(heldChildKeyAgentStorageRootDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(heldChildKeyAgentStorageRootDefinition),
+    ) ===
       "pub(crate) struct HeldChildKeyAgentStorageRoot { handle: std::fs::File, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, #[allow(dead_code)] path: PathBuf, }" &&
     JSON.stringify(heldChildKeyAgentStorageRootMethods) ===
       JSON.stringify([
@@ -14697,9 +15924,7 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
       ]) &&
-    openChildKeyAgentStorageRoot.includes(
-      'std::env::var_os("LOCALAPPDATA")',
-    ) &&
+    openChildKeyAgentStorageRoot.includes('std::env::var_os("LOCALAPPDATA")') &&
     openChildKeyAgentStorageRoot.includes("reject_thread_impersonation()?") &&
     openChildKeyAgentStorageRoot.includes("current_process_token()?") &&
     openChildKeyAgentStorageRoot.includes("token_user_sid(token.0)?") &&
@@ -14717,7 +15942,9 @@ requireInvariant(
     validateChildKeyAgentStorageProfileFolder.includes(
       '!packages_name.eq_ignore_ascii_case("Packages")',
     ) &&
-    verifyChildKeyAgentStorageRoot.includes("verify_directory_object(handle)?") &&
+    verifyChildKeyAgentStorageRoot.includes(
+      "verify_directory_object(handle)?",
+    ) &&
     verifyChildKeyAgentStorageRoot.includes(
       "verify_handle_security(handle, stable_user_sid, profile_sid)?",
     ) &&
@@ -14738,8 +15965,7 @@ const fixedKeyAgentBackendOpenProductionConsumers =
       (file) =>
         file.path !== "crates/platform-windows/src/storage/sys.rs" &&
         file.path !== "crates/platform-windows/src/storage.rs" &&
-        rustCallSites(file.source, "WindowsBackend::open_key_agent").length >
-          0,
+        rustCallSites(file.source, "WindowsBackend::open_key_agent").length > 0,
     )
     .map((file) => file.path);
 const fixedKeyAgentBackendFacadeProductionCalls = rustCallSites(
@@ -15135,7 +16361,9 @@ requireInvariant(
       compactFixedKeyAgentGenerationStoreCommitWithFault.indexOf(
         "FaultPoint::AfterAnchorAdvance",
       ) &&
-    !compactFixedKeyAgentGenerationStoreCommitWithFault.includes("fault.hit(") &&
+    !compactFixedKeyAgentGenerationStoreCommitWithFault.includes(
+      "fault.hit(",
+    ) &&
     fixedKeyAgentGenerationStoreFaultPoints.includes(
       "FaultPoint::SlotTempCreated",
     ) &&
@@ -15187,9 +16415,7 @@ requireInvariant(
     fixedKeyAgentGenerationStoreDaclNegativeTest.includes(
       "KEY_AGENT_FILE_ACCESS | WRITE_DAC.0",
     ) &&
-    fixedKeyAgentGenerationStoreDaclNegativeTest.includes(
-      "(A;;FR;;;WD)",
-    ) &&
+    fixedKeyAgentGenerationStoreDaclNegativeTest.includes("(A;;FR;;;WD)") &&
     fixedKeyAgentGenerationStoreDaclNegativeTest.includes("(A;ID;") &&
     fixedKeyAgentGenerationStoreDaclNegativeTest.includes("(D;;") &&
     fixedKeyAgentGenerationStoreLabelNegativeTest.includes(
@@ -15219,9 +16445,7 @@ requireInvariant(
     fixedKeyAgentGenerationStoreKernelSurface.includes(
       "all_paths.extend(temp_paths.iter().cloned());",
     ) &&
-    fixedKeyAgentGenerationStoreKernelSurface.includes(
-      "forpathin&all_paths",
-    ) &&
+    fixedKeyAgentGenerationStoreKernelSurface.includes("forpathin&all_paths") &&
     fixedKeyAgentGenerationStoreKernelSurface.includes(
       "forforbidden_accessin[WRITE_DAC.0,WRITE_OWNER.0,FILE_EXECUTE.0,ACCESS_SYSTEM_SECURITY,]",
     ) &&
@@ -15255,7 +16479,9 @@ requireInvariant(
     compactFixedKeyAgentGenerationStoreExercise.includes(
       "ifstore.commit(None,&payload)?.generation()!=1||store.load()?.generation()!=1",
     ) &&
-    compactFixedKeyAgentGenerationStoreExercise.includes("drop(first_stores);") &&
+    compactFixedKeyAgentGenerationStoreExercise.includes(
+      "drop(first_stores);",
+    ) &&
     compactFixedKeyAgentGenerationStoreExercise.includes(
       "ifstore.load()?.generation()!=1||store.commit(Some(1),&payload)?.generation()!=2||store.load()?.generation()!=2",
     ) &&
@@ -15424,8 +16650,14 @@ const keyAgentStartupPipeContract = (source) => {
   let deadlineResult;
   let intoParent;
   try {
-    requestImpl = rustItemBlock(source, /impl\s+KeyAgentStartupRequestWriter\s*\{/u);
-    responseImpl = rustItemBlock(source, /impl\s+KeyAgentStartupResponseReader\s*\{/u);
+    requestImpl = rustItemBlock(
+      source,
+      /impl\s+KeyAgentStartupRequestWriter\s*\{/u,
+    );
+    responseImpl = rustItemBlock(
+      source,
+      /impl\s+KeyAgentStartupResponseReader\s*\{/u,
+    );
     send = rustFunctionBlock(requestImpl, "send");
     receive = rustFunctionBlock(responseImpl, "receive");
     readExactFrameAndEof = rustFunctionBlock(
@@ -15466,12 +16698,16 @@ const keyAgentStartupPipeContract = (source) => {
     !/\b(?:KeyAgentRequestWriter|KeyAgentResponseReader)\b/u.test(
       rustLexicalCode(source),
     ) &&
-    (rustLexicalCode(source).match(
-      /pub\(crate\)\s+struct\s+KeyAgentStartupRequestWriter\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
-    ) ?? []).length === 1 &&
-    (rustLexicalCode(source).match(
-      /pub\(crate\)\s+struct\s+KeyAgentStartupResponseReader\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
-    ) ?? []).length === 1 &&
+    (
+      rustLexicalCode(source).match(
+        /pub\(crate\)\s+struct\s+KeyAgentStartupRequestWriter\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
+      ) ?? []
+    ).length === 1 &&
+    (
+      rustLexicalCode(source).match(
+        /pub\(crate\)\s+struct\s+KeyAgentStartupResponseReader\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
+      ) ?? []
+    ).length === 1 &&
     JSON.stringify(requestMethods) === JSON.stringify(["send"]) &&
     JSON.stringify(responseMethods) === JSON.stringify(["receive"]) &&
     /fn\s+send\s*\(\s*self,\s*frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*deadline:\s*Instant,?\s*\)\s*->\s*Result<\s*\(\s*\)\s*,\s*PipeError\s*>/u.test(
@@ -15499,10 +16735,9 @@ const keyAgentStartupPipeContract = (source) => {
       ]) &&
     compactReadExactFrameAndEof === exactKeyAgentStartupFrameAndEofRead &&
     JSON.stringify(
-      rustCallSites(
-        readExactFrameAndEofWithHook,
-        "read_exact_before",
-      ).map((call) => call.arguments.map(compactRust)),
+      rustCallSites(readExactFrameAndEofWithHook, "read_exact_before").map(
+        (call) => call.arguments.map(compactRust),
+      ),
     ) === JSON.stringify([["handle", "exact_bytes", "deadline"]]) &&
     JSON.stringify(
       rustCallSites(readExactFrameAndEofWithHook, "require_end_before").map(
@@ -15523,7 +16758,11 @@ const keyAgentStartupPipeContract = (source) => {
       rustCallSites(readOnce, "deadline_result").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["deadline", "0"], ["deadline", "0"]]) &&
+    ) ===
+      JSON.stringify([
+        ["deadline", "0"],
+        ["deadline", "0"],
+      ]) &&
     intoParent.includes(
       "(KeyAgentStartupRequestWriter, KeyAgentStartupResponseReader)",
     ) &&
@@ -15581,7 +16820,10 @@ const keyAgentStartupPipeMutationProbes = [
     "            IoRead::Bytes(_) => Err(PipeError::TrailingData),",
     "            IoRead::Bytes(_) => Ok(()),",
   ),
-  keyAgentPipeRelease.replace("            deadline_result(deadline, 0)?;\n", ""),
+  keyAgentPipeRelease.replace(
+    "            deadline_result(deadline, 0)?;\n",
+    "",
+  ),
   keyAgentPipeRelease.replace(
     "            Err(PipeError::UnexpectedEnd) => {\n                deadline_result(deadline, 0)?;",
     "            Err(PipeError::UnexpectedEnd) => {",
@@ -15645,8 +16887,12 @@ const keyAgentStartupPipeTestsContract = (source) => {
   const openResponseWrite = compactOpenWithoutEof.indexOf(
     "sys::write_child_for_test(&child_response,&[0x56;KEY_AGENT_STARTUP_RESPONSE_BYTES])?",
   );
-  const openResponseReceive = compactOpenWithoutEof.indexOf("reader.receive(deadline)");
-  const openResponseDrop = compactOpenWithoutEof.indexOf("drop(child_response)");
+  const openResponseReceive = compactOpenWithoutEof.indexOf(
+    "reader.receive(deadline)",
+  );
+  const openResponseDrop = compactOpenWithoutEof.indexOf(
+    "drop(child_response)",
+  );
   const eofAfterDeadlineOrder = [
     "sys::write_child_for_test(&child_response,&[0x46;KEY_AGENT_STARTUP_RESPONSE_BYTES])?",
     "letafter_frame=Arc::new(Barrier::new(2))",
@@ -15669,7 +16915,9 @@ const keyAgentStartupPipeTestsContract = (source) => {
       eofAfterDeadline,
       openWithoutEof,
     ].every((testBody) => !hasVacuousRustTestEscape(testBody)) &&
-    compactRequestCloses.includes("writer.send(&request,future_deadline()?)?;") &&
+    compactRequestCloses.includes(
+      "writer.send(&request,future_deadline()?)?;",
+    ) &&
     compactRequestCloses.includes(
       "sys::read_child_to_end_for_test(&child_request)?,request",
     ) &&
@@ -15725,11 +16973,7 @@ const keyAgentStartupPipeTestMutationProbes = [
     "key_agent_response_eof_observed_after_deadline_is_rejected",
     "key_agent_full_response_without_eof_cancels_and_drains_at_deadline",
   ].map((functionName) =>
-    withVacuousRustEarlyOk(
-      keyAgentPipeSource,
-      functionName,
-      "Result::Ok(())",
-    ),
+    withVacuousRustEarlyOk(keyAgentPipeSource, functionName, "Result::Ok(())"),
   ),
   keyAgentPipeSource.replace(
     "        after_frame.wait();\n        sys::write_child_for_test(&child_response, &[0x45])?;",
@@ -15763,12 +17007,14 @@ const keyAgentStartupPipeTestMutationProbes = [
 requireInvariant(
   keyAgentStartupPipeContract(keyAgentPipeRelease) &&
     keyAgentStartupPipeMutationProbes.every(
-      (probe) => probe !== keyAgentPipeRelease && !keyAgentStartupPipeContract(probe),
+      (probe) =>
+        probe !== keyAgentPipeRelease && !keyAgentStartupPipeContract(probe),
     ) &&
     keyAgentStartupPipeTestsContract(keyAgentPipeSource) &&
     keyAgentStartupPipeTestMutationProbes.every(
       (probe) =>
-        probe !== keyAgentPipeSource && !keyAgentStartupPipeTestsContract(probe),
+        probe !== keyAgentPipeSource &&
+        !keyAgentStartupPipeTestsContract(probe),
     ) &&
     keyAgentPipeSource.includes(
       "fn key_agent_parent_endpoints_transfer_once_to_a_fresh_thread()",
@@ -15865,9 +17111,7 @@ requireInvariant(
     !/impl\s+BoundDormantKeyAgent\s*\{/u.test(keyAgentSupervisorRelease) &&
     keyAgentSupervisor.includes("impl fmt::Debug for BoundDormantKeyAgent") &&
     keyAgentSupervisor.includes("[VERIFIED PROFILE AND HELD STORAGE ROOT]") &&
-    keyAgentSupervisor.includes(
-      "[AUTHENTICATED INSTALL/RELEASE CONTINUITY]",
-    ) &&
+    keyAgentSupervisor.includes("[AUTHENTICATED INSTALL/RELEASE CONTINUITY]") &&
     boundDormantOrder.every((position) => position !== -1) &&
     boundDormantOrder
       .slice(1)
@@ -15888,12 +17132,10 @@ requireInvariant(
     !/impl\s+(?:KeyAgentSupervisorBindingSeal|(?:Clone|Copy|Default|Drop|Deref|DerefMut|AsRef|Borrow|From|Into|TryFrom)[^\r\n{]*for\s+KeyAgentSupervisorBindingSeal)\b/u.test(
       rustLexicalCode(keyAgentSupervisorRelease),
     ) &&
-    rustStructLiteralSites(
-      bindDormantFunction,
-      "KeyAgentSupervisorBindingSeal",
-    ).length === 1 &&
-    rustStructLiteralSites(bindDormantFunction, "BoundDormantKeyAgent").length ===
-      1 &&
+    rustStructLiteralSites(bindDormantFunction, "KeyAgentSupervisorBindingSeal")
+      .length === 1 &&
+    rustStructLiteralSites(bindDormantFunction, "BoundDormantKeyAgent")
+      .length === 1 &&
     rustCallSites(
       bindDormantFunction,
       "consume_artifact_bound_existing_key_agent_install",
@@ -15910,9 +17152,12 @@ requireInvariant(
     !/fn\s+bind_dormant_key_agent\s*\([^)]*\b(?:Instant|Duration)\b/su.test(
       bindDormantFunction,
     ) &&
-    bindDormantFunction.match(/startup_lease\.ensure_live\(\)\?/gu)?.length === 2 &&
+    bindDormantFunction.match(/startup_lease\.ensure_live\(\)\?/gu)?.length ===
+      2 &&
     bindDormantFunction.indexOf("startup_lease.ensure_live()?") <
-      bindDormantFunction.indexOf("let root_job = KeyAgentRootJob::create()?") &&
+      bindDormantFunction.indexOf(
+        "let root_job = KeyAgentRootJob::create()?",
+      ) &&
     bindDormantFunction.lastIndexOf("startup_lease.ensure_live()?") >
       bindDormantFunction.indexOf(
         "let (request_writer, response_reader) = pipes.into_parent()",
@@ -15923,13 +17168,17 @@ requireInvariant(
         "SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?",
       ) &&
     provisioningRevalidationPositions[1] <
-      bindDormantFunction.indexOf("let root_job = KeyAgentRootJob::create()?") &&
+      bindDormantFunction.indexOf(
+        "let root_job = KeyAgentRootJob::create()?",
+      ) &&
     provisioningRevalidationPositions[2] >
       bindDormantFunction.indexOf(
         "let (request_writer, response_reader) = pipes.into_parent()",
       ) &&
     issueSupervisorLease.includes("Instant::now()") &&
-    issueSupervisorLease.includes("requested_lifetime.min(MAX_STARTUP_LIFETIME)") &&
+    issueSupervisorLease.includes(
+      "requested_lifetime.min(MAX_STARTUP_LIFETIME)",
+    ) &&
     /fn\s+verify_and_consume\s*\(\s*self,/su.test(consumeSupervisorLease) &&
     consumeSupervisorLease.includes("self.ensure_live()?") &&
     ensureSupervisorLeaseLive.includes("Instant::now()") &&
@@ -16014,9 +17263,7 @@ bindKeyAgentStorageStartupOrder.push(
     compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
   ),
   postStartupStateRevalidationPositions[1] ?? -1,
-  ...[
-    "Ok(BoundStorageProvenKeyAgent{",
-  ].map((marker) =>
+  ...["Ok(BoundStorageProvenKeyAgent{"].map((marker) =>
     compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
   ),
 );
@@ -16026,8 +17273,7 @@ requireInvariant(
     bindKeyAgentStorageStartupOrder
       .slice(1)
       .every(
-        (position, index) =>
-          position > bindKeyAgentStorageStartupOrder[index],
+        (position, index) => position > bindKeyAgentStorageStartupOrder[index],
       ),
   "the one Key Agent storage-startup transition must consume request/response endpoints and preserve request, resume, exact EOF, validation, liveness/membership, transcript, final revalidation, and endpoint-free minting order",
 );
@@ -16050,15 +17296,17 @@ const residentProcessRevalidationPositions = [
 const revalidatePostKeyAgentStartupOrder = [
   residentProcessRevalidationPositions[0] ?? -1,
   ...[
-  "provisioning.revalidate()?",
-  "root_job.recheck_supervisor_context()?",
-  "root_job.verify_effective_limits()?",
-  "if!activation.is_member_of_root_job(root_job)?",
-  "lettopology_is_valid=matchresponse_transport",
-  "StartupResponseTransport::Exact=>root_job.active_process_count().map(|count|count==1)",
-  "topology_is_valid.then_some(()).ok_or(KeyAgentSupervisorError::RootJobPolicy)",
+    "provisioning.revalidate()?",
+    "root_job.recheck_supervisor_context()?",
+    "root_job.verify_effective_limits()?",
+    "if!activation.is_member_of_root_job(root_job)?",
+    "lettopology_is_valid=matchresponse_transport",
+    "StartupResponseTransport::Exact=>root_job.active_process_count().map(|count|count==1)",
+    "topology_is_valid.then_some(()).ok_or(KeyAgentSupervisorError::RootJobPolicy)",
   ].map((marker) =>
-    compactRust(revalidatePostKeyAgentStartupState).indexOf(compactRust(marker)),
+    compactRust(revalidatePostKeyAgentStartupState).indexOf(
+      compactRust(marker),
+    ),
   ),
   residentProcessRevalidationPositions[1] ?? -1,
 ];
@@ -16072,7 +17320,8 @@ requireInvariant(
     !/\bKeyAgentResponseReader\b/u.test(
       rustLexicalCode(receiveKeyAgentStorageStartupResponse),
     ) &&
-    rustCallSites(receiveKeyAgentStorageStartupResponse, "receive").length === 1 &&
+    rustCallSites(receiveKeyAgentStorageStartupResponse, "receive").length ===
+      1 &&
     receiveKeyAgentStorageStartupResponse.includes(
       "StartupResponseTransport::Exact => response_reader.receive(deadline)",
     ) &&
@@ -16103,15 +17352,12 @@ requireInvariant(
     bindKeyAgentStorageStartup.includes(
       "bound.provisioning.storage_root_identity()",
     ) &&
-    bindKeyAgentStorageStartup.includes(
-      "StartupResponseTransport::Exact",
-    ) &&
-    rustCallSites(keyAgentSupervisor, "resume_for_storage_startup").length === 1 &&
+    bindKeyAgentStorageStartup.includes("StartupResponseTransport::Exact") &&
+    rustCallSites(keyAgentSupervisor, "resume_for_storage_startup").length ===
+      1 &&
     compactBoundStorageProvenDefinition ===
       "pub(crate)structBoundStorageProvenKeyAgent{activation:RunningKeyAgentActivation,root_job:KeyAgentRootJob,handshake:VerifiedSupervisorHandshake,install_continuity:VerifiedKeyAgentInstallContinuity,not_sync:PhantomData<Cell<()>>,provisioning:PreparedKeyAgentProvisioning,}" &&
-    boundStorageProvenBlock.includes(
-      "activation: RunningKeyAgentActivation",
-    ) &&
+    boundStorageProvenBlock.includes("activation: RunningKeyAgentActivation") &&
     boundStorageProvenBlock.includes("root_job: KeyAgentRootJob") &&
     !/\bKeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
       rustLexicalCode(boundStorageProvenBlock),
@@ -16143,9 +17389,11 @@ requireInvariant(
     keyAgentSupervisor.includes("[DETACHED RUNNING KEY AGENT]") &&
     keyAgentSupervisor.includes("[EXACT EOF; NO RETAINED ENDPOINTS]") &&
     keyAgentSupervisor.includes("[VERIFIED STORAGE-STARTUP TRANSCRIPT]") &&
-    (compactBindKeyAgentStorageStartupWithRequest.match(
-      /install_continuity/gu,
-    ) ?? []).length === 2 &&
+    (
+      compactBindKeyAgentStorageStartupWithRequest.match(
+        /install_continuity/gu,
+      ) ?? []
+    ).length === 2 &&
     !/install_continuity\s*\./u.test(
       rustLexicalCode(bindKeyAgentStorageStartupWithRequest),
     ) &&
@@ -16226,7 +17474,10 @@ const keyAgentStorageProvenContract = (source) => {
       source,
       "bind_key_agent_storage_startup_with_request",
     );
-    receiveResponse = rustFunctionBlock(source, "receive_storage_startup_response");
+    receiveResponse = rustFunctionBlock(
+      source,
+      "receive_storage_startup_response",
+    );
     revalidate = rustFunctionBlock(source, "revalidate_post_startup_state");
   } catch {
     return false;
@@ -16242,7 +17493,9 @@ const keyAgentStorageProvenContract = (source) => {
     ),
   ].map((match) => match.index);
   const residentRevalidations = [
-    ...compactRevalidate.matchAll(/activation\.revalidate_resident_process\(\)/gu),
+    ...compactRevalidate.matchAll(
+      /activation\.revalidate_resident_process\(\)/gu,
+    ),
   ].map((match) => match.index);
   const membership = compactRevalidate.indexOf(
     "if!activation.is_member_of_root_job(root_job)?",
@@ -16272,8 +17525,10 @@ const keyAgentStorageProvenContract = (source) => {
     ) &&
     !/\bKeyAgentResponseReader\b/u.test(rustLexicalCode(receiveResponse)) &&
     residentRevalidations.length === 2 &&
-    residentRevalidations[0] < compactRevalidate.indexOf("provisioning.revalidate()?") &&
-    membership > compactRevalidate.indexOf("root_job.verify_effective_limits()?") &&
+    residentRevalidations[0] <
+      compactRevalidate.indexOf("provisioning.revalidate()?") &&
+    membership >
+      compactRevalidate.indexOf("root_job.verify_effective_limits()?") &&
     membership < exactTopology &&
     exactTopology < residentRevalidations[1] &&
     compactRevalidate.includes(
@@ -16282,15 +17537,15 @@ const keyAgentStorageProvenContract = (source) => {
   );
 };
 const keyAgentStorageProvenMutationProbes = [
-  withVacuousRustEarlyOk(
-    keyAgentSupervisor,
-    "revalidate_post_startup_state",
-  ),
+  withVacuousRustEarlyOk(keyAgentSupervisor, "revalidate_post_startup_state"),
   keyAgentSupervisor.replace(
     "    root_job: KeyAgentRootJob,\n    handshake: VerifiedSupervisorHandshake,",
     "    root_job: KeyAgentRootJob,\n    response_reader: KeyAgentStartupResponseReader,\n    handshake: VerifiedSupervisorHandshake,",
   ),
-  keyAgentSupervisor.replace("    activation.revalidate_resident_process()?;\n", ""),
+  keyAgentSupervisor.replace(
+    "    activation.revalidate_resident_process()?;\n",
+    "",
+  ),
   keyAgentSupervisor.replace(
     "    if !activation.is_member_of_root_job(root_job)? {",
     "    if false {",
@@ -16436,9 +17691,9 @@ const heldActivationImpl = rustItemBlock(
   keyAgentActivation,
   /impl\s+HeldKeyAgentActivation\s*\{/u,
 );
-const heldActivationMethods = [...heldActivationImpl.matchAll(
-  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
+const heldActivationMethods = [
+  ...heldActivationImpl.matchAll(/pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+].map((match) => match[1]);
 const resumeHeldKeyAgentForStorageStartup = rustFunctionBlock(
   heldActivationImpl,
   "resume_for_storage_startup",
@@ -16451,9 +17706,9 @@ const runningActivationImpl = rustItemBlock(
   keyAgentActivation,
   /impl\s+RunningKeyAgentActivation\s*\{/u,
 );
-const runningActivationMethods = [...runningActivationImpl.matchAll(
-  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
+const runningActivationMethods = [
+  ...runningActivationImpl.matchAll(/pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+].map((match) => match[1]);
 const exactRunningKeyAgentResidentRevalidation = compactRust(`
 pub(crate) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
     self.process.revalidate_resident_process()
@@ -16510,7 +17765,7 @@ const compactResumeHeldKeyAgentForStorageStartup = compactRust(
 );
 requireInvariant(
   compactHeldKeyAgentActivationDefinition ===
-      "pub(crate)structHeldKeyAgentActivation{process:sys::DetachedSuspendedDebuggee,artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,artifact_identity:ExactFileObjectIdentity,creation_time:u64,}" &&
+    "pub(crate)structHeldKeyAgentActivation{process:sys::DetachedSuspendedDebuggee,artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,artifact_identity:ExactFileObjectIdentity,creation_time:u64,}" &&
     compactRunningKeyAgentActivationDefinition ===
       "pub(crate)structRunningKeyAgentActivation{process:sys::DetachedRunningDebuggee,artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,artifact_identity:ExactFileObjectIdentity,creation_time:u64,}",
   "held and running Key Agent activation states must retain the pinned helper and opaque whole-release identity in exact drop order",
@@ -16542,9 +17797,7 @@ requireInvariant(
     /fn\s+resume_for_storage_startup\s*\(\s*self,?\s*\)\s*->\s*Result<\s*RunningKeyAgentActivation\s*,\s*KeyAgentActivationError\s*>/u.test(
       rustLexicalCode(resumeHeldKeyAgentForStorageStartup),
     ) &&
-    !/impl\s+Drop\s+for\s+HeldKeyAgentActivation\b/u.test(
-      keyAgentActivation,
-    ) &&
+    !/impl\s+Drop\s+for\s+HeldKeyAgentActivation\b/u.test(keyAgentActivation) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+HeldKeyAgentActivation/u.test(
       keyAgentActivation,
     ),
@@ -16590,7 +17843,8 @@ requireInvariant(
     !/impl\s+(?:Clone|Copy|Sync|AsRawHandle)\s+for\s+RunningKeyAgentActivation\b/u.test(
       keyAgentActivation,
     ) &&
-    rustCallSites(resumeSuspendedDebuggeeForStorageStartup, "ResumeThread").length === 1 &&
+    rustCallSites(resumeSuspendedDebuggeeForStorageStartup, "ResumeThread")
+      .length === 1 &&
     resumeSuspendedDebuggeeForStorageStartup.includes(
       "if previous_suspend_count != 1",
     ) &&
@@ -16644,24 +17898,20 @@ const preflightKeyAgentActivationConsumers = platformWindowsProductionFiles
       rustCallSites(file.source, "preflight_key_agent_activation").length > 0,
   )
   .map((file) => file.path);
-const preflightKeyAgentActivationTokenConsumers =
-  platformWindowsProductionFiles
-    .filter(
-      (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
-        /\bpreflight_key_agent_activation\b/u.test(
-          rustLexicalCode(file.source),
-        ),
-    )
-    .map((file) => file.path);
-const matchesPreflightReleaseIdentityConsumers =
-  platformWindowsProductionFiles
-    .filter(
-      (file) =>
-        file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
-        rustCallSites(file.source, "matches_release_identity").length > 0,
-    )
-    .map((file) => file.path);
+const preflightKeyAgentActivationTokenConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+      /\bpreflight_key_agent_activation\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const matchesPreflightReleaseIdentityConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/key_agent_activation.rs" &&
+      rustCallSites(file.source, "matches_release_identity").length > 0,
+  )
+  .map((file) => file.path);
 const matchesPreflightReleaseIdentityTokenConsumers =
   platformWindowsProductionFiles
     .filter(
@@ -16679,7 +17929,9 @@ requireInvariant(
     preflightArtifactBlock.includes(
       "release_identity: AttestedArtifactDigest",
     ) &&
-    compactRust(`pub(crate) struct PreflightKeyAgentArtifact {${preflightArtifactBlock}\n}`) ===
+    compactRust(
+      `pub(crate) struct PreflightKeyAgentArtifact {${preflightArtifactBlock}\n}`,
+    ) ===
       "pub(crate)structPreflightKeyAgentArtifact{artifact:VerifiedHelper,release_identity:AttestedArtifactDigest,}" &&
     !/\bpub(?:\([^)]*\))?\s+(?:artifact|release_identity)\s*:/u.test(
       preflightArtifactBlock,
@@ -16695,10 +17947,8 @@ requireInvariant(
     JSON.stringify(
       rustVisibleFunctionItems(preflightArtifactImpl).map((item) => item.name),
     ) === JSON.stringify(["matches_release_identity"]) &&
-    rustStructLiteralSites(
-      preflightActivation,
-      "PreflightKeyAgentArtifact",
-    ).length === 1 &&
+    rustStructLiteralSites(preflightActivation, "PreflightKeyAgentArtifact")
+      .length === 1 &&
     platformWindowsProductionFiles
       .filter(
         (file) =>
@@ -16767,7 +18017,10 @@ const secretInputRoleGate = rustFunctionBlock(
   restrictedLauncherProduction,
   "require_secret_input_frontend",
 );
-const publicGenericSpawn = rustFunctionBlock(restrictedLauncherProduction, "spawn");
+const publicGenericSpawn = rustFunctionBlock(
+  restrictedLauncherProduction,
+  "spawn",
+);
 const privateSecretSpawn = rustFunctionBlock(
   restrictedLauncherProduction,
   "spawn_secret_input",
@@ -16806,9 +18059,7 @@ requireInvariant(
     derivedLpacRole.includes("if helper.is_approval_frontend()") &&
     derivedLpacRole.includes("if helper.is_secret_input_frontend()") &&
     derivedLpacRole.includes("if helper.is_key_agent()") &&
-    derivedLpacRole.includes(
-      "Err(LaunchError::HelperRoleNotAllowed)",
-    ) &&
+    derivedLpacRole.includes("Err(LaunchError::HelperRoleNotAllowed)") &&
     derivedLpacRole.includes(
       "Err(LaunchError::KeyAgentRequiresSupervisorActivation)",
     ) &&
@@ -16820,17 +18071,20 @@ requireInvariant(
     secretInputGatePositions
       .slice(1)
       .every((position, index) => position > secretInputGatePositions[index]) &&
-    restrictedLauncherProduction.match(/sys::launch\(helper,/gu)?.length === 2 &&
+    restrictedLauncherProduction.match(/sys::launch\(helper,/gu)?.length ===
+      2 &&
     publicGenericSpawn.indexOf("self.require_approval_frontend(helper)?") <
-      publicGenericSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
+      publicGenericSpawn.indexOf(
+        "sys::launch(helper, handles, self.profile, role)",
+      ) &&
     privateSecretSpawn.indexOf("self.require_secret_input_frontend(helper)?") <
-    privateSecretSpawn.indexOf("sys::launch(helper, handles, self.profile, role)") &&
+      privateSecretSpawn.indexOf(
+        "sys::launch(helper, handles, self.profile, role)",
+      ) &&
     lowLevelLpacLaunch.includes("role: VerifiedLpacRole") &&
     lowLevelLpacLaunch.includes("let parent_sources = role") &&
     lowLevelLpacLaunch.includes(".requires_parent_proof()") &&
-    lowLevelLpacLaunch.includes(
-      ".then(current_parent_proof_sources)",
-    ) &&
+    lowLevelLpacLaunch.includes(".then(current_parent_proof_sources)") &&
     lowLevelLpacLaunch.includes(
       ".map(|sources| inject_parent_proof(sources, process.raw()))",
     ) &&
@@ -16839,21 +18093,16 @@ requireInvariant(
     ) &&
     lowLevelLpacLaunch.indexOf(
       "let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;",
-    ) <
-      lowLevelLpacLaunch.indexOf("acquire_inheritable_handle_launch(") &&
+    ) < lowLevelLpacLaunch.indexOf("acquire_inheritable_handle_launch(") &&
     lowLevelLpacLaunch.includes(
       "AttributeList::for_lpac(&duplicates, &job, profile_sid)?",
     ) &&
-    lpacAttributeConstruction.includes(
-      "profile_sid: OwnedAppContainerSid",
-    ) &&
+    lpacAttributeConstruction.includes("profile_sid: OwnedAppContainerSid") &&
     /AttributeValues::new\(\s*handles,\s*job_owner\.raw\(\),\s*profile_sid\.raw\(\),?\s*\)/u.test(
       lpacAttributeConstruction,
     ) &&
     lpacProfileOpen.includes("profile_metadata(profile, role)?") &&
-    lpacProfileMetadata.includes(
-      "(1, VerifiedLpacRole::ApprovalFrontend)",
-    ) &&
+    lpacProfileMetadata.includes("(1, VerifiedLpacRole::ApprovalFrontend)") &&
     lpacProfileMetadata.includes(
       "(1, VerifiedLpacRole::SecretInputFrontend)",
     ) &&
@@ -16909,7 +18158,8 @@ requireInvariant(
   freshDebugRunner.includes("std::thread::Builder::new()") &&
     freshDebugRunner.includes(".spawn(move ||") &&
     freshDebugRunner.includes(".join()") &&
-    freshDebugRunner.match(/KeyAgentActivationError::ActivationWorker/gu)?.length === 2 &&
+    freshDebugRunner.match(/KeyAgentActivationError::ActivationWorker/gu)
+      ?.length === 2 &&
     /pub\(crate\)\s+struct\s+FreshKeyAgentDebugThread\s*\{\s*_not_send_or_sync:\s*PhantomData<Rc<\(\)>>/su.test(
       keyAgentActivation,
     ) &&
@@ -16940,10 +18190,12 @@ requireInvariant(
           "coordination_deadline",
         ],
       ]) &&
-    freshWorkerEntry.indexOf("let artifact_identity = sys::exact_file_identity") <
+    freshWorkerEntry.indexOf(
+      "let artifact_identity = sys::exact_file_identity",
+    ) <
       freshWorkerEntry.indexOf(
         "activate_preflighted_key_agent_on_fresh_worker_with_identity(",
-    ) &&
+      ) &&
     freshWorkerActivation.includes("_fresh_thread: FreshKeyAgentDebugThread") &&
     /fn\s+activate_preflighted_key_agent_on_fresh_worker_with_identity\s*\(\s*_fresh_thread:\s*FreshKeyAgentDebugThread,\s*artifact:\s*VerifiedHelper,\s*release_identity:\s*AttestedArtifactDigest,/u.test(
       rustLexicalCode(freshWorkerActivation),
@@ -16972,8 +18224,10 @@ requireInvariant(
     (compactFreshWorkerEntry.match(/release_identity/gu) ?? []).length === 2 &&
     (compactFreshWorkerActivation.match(/release_identity/gu) ?? []).length ===
       2 &&
-    (compactAuthenticateDetachAndBindActivation.match(/release_identity/gu) ??
-      []).length === 2 &&
+    (
+      compactAuthenticateDetachAndBindActivation.match(/release_identity/gu) ??
+      []
+    ).length === 2 &&
     !/release_identity\s*\./u.test(
       rustLexicalCode(
         `${freshWorkerEntry}\n${freshWorkerActivation}\n${authenticateDetachAndBindActivation}\n${resumeHeldKeyAgentForStorageStartup}`,
@@ -16992,7 +18246,8 @@ requireInvariant(
         (position, index) =>
           position > debugWorkerAuthenticationPositions[index],
       ) &&
-    bindDormantFunction.match(/run_on_fresh_key_agent_debug_thread\(/gu)?.length === 1,
+    bindDormantFunction.match(/run_on_fresh_key_agent_debug_thread\(/gu)
+      ?.length === 1,
   "one unforgeable consumed fresh-worker proof must carry the opaque attested release identity through exact image authentication and the complete debug-event lifecycle",
 );
 const keyAgentCreationAttributeBlock =
@@ -17067,7 +18322,10 @@ function rustIdentifierUsageInventory(files, names) {
   for (const file of files) {
     const code = rustLexicalCode(file.source);
     const uses = rustUseItems(file.source);
-    const useRanges = uses.map((item) => [item.index, item.index + item.source.length]);
+    const useRanges = uses.map((item) => [
+      item.index,
+      item.index + item.source.length,
+    ]);
     for (const name of names) {
       calls.push(
         ...rustCallSites(file.source, name).map((call) => ({
@@ -17079,14 +18337,19 @@ function rustIdentifierUsageInventory(files, names) {
     }
     for (const item of uses) {
       const itemCode = rustLexicalCode(item.source);
-      if (tokenPattern.test(itemCode) && /\bas\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\b/u.test(itemCode)) {
+      if (
+        tokenPattern.test(itemCode) &&
+        /\bas\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\b/u.test(itemCode)
+      ) {
         aliases.push({ path: file.path, source: compactRust(item.source) });
       }
       tokenPattern.lastIndex = 0;
     }
     for (const match of code.matchAll(tokenPattern)) {
       tokens[match.groups.name].push(file.path);
-      const inUse = useRanges.some(([start, end]) => start <= match.index && match.index < end);
+      const inUse = useRanges.some(
+        ([start, end]) => start <= match.index && match.index < end,
+      );
       const called = /^\s*\(/u.test(code.slice(match.index + match[0].length));
       const qualifiedCall =
         called && /(?:::|\.|#)\s*$/u.test(code.slice(0, match.index));
@@ -17156,11 +18419,15 @@ function rustForeignBlockInventory(files) {
       const opening = code.indexOf("{", match.index);
       const closing = matchingRustDelimiter(code, opening, "{", "}");
       if (closing === -1) {
-        throw new Error(`architecture scan could not bound foreign block in ${file.path}`);
+        throw new Error(
+          `architecture scan could not bound foreign block in ${file.path}`,
+        );
       }
       blocks.push({
         path: file.path,
-        block: normalizeRustFragment(file.source.slice(match.index, closing + 1)),
+        block: normalizeRustFragment(
+          file.source.slice(match.index, closing + 1),
+        ),
       });
     }
   }
@@ -17174,16 +18441,14 @@ const workspaceAppContainerProfileNativeUsage = rustIdentifierUsageInventory(
   workspaceRustProductionFiles,
   [...appContainerProfileNativeApis, "DeleteAppContainerProfile"],
 );
-const appContainerProfileCoordinatorConsumers =
-  platformWindowsProductionFiles
-    .filter(
-      (file) =>
-        file.path !==
-          "crates/platform-windows/src/appcontainer_profile_api.rs" &&
-        rustCallSites(file.source, "acquire_appcontainer_profile_api").length > 0,
-    )
-    .map((file) => file.path)
-    .sort();
+const appContainerProfileCoordinatorConsumers = platformWindowsProductionFiles
+  .filter(
+    (file) =>
+      file.path !== "crates/platform-windows/src/appcontainer_profile_api.rs" &&
+      rustCallSites(file.source, "acquire_appcontainer_profile_api").length > 0,
+  )
+  .map((file) => file.path)
+  .sort();
 const compactKeyAgentCreationAttributeImpl = compactRust(
   keyAgentCreationAttributeImpl,
 );
@@ -17214,7 +18479,9 @@ const appContainerProfileAcquireOrder = [
 const profileApiNativeCallEnvelope = (source, spec) => {
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const code = compactRust(source);
-  const argumentsPattern = spec.arguments.map((argument) => escape(compactRust(argument))).join(",");
+  const argumentsPattern = spec.arguments
+    .map((argument) => escape(compactRust(argument)))
+    .join(",");
   const pattern = new RegExp(
     `profile_api\\.recheck_thread\\(\\)\\.map_err\\(\\|_\\|${escape(spec.error)}\\)\\?;let${escape(spec.result)}=unsafe\\{${escape(spec.api)}\\(${argumentsPattern},?\\)\\}\\.map\\(${escape(spec.owner)}::new\\);profile_api\\.recheck_thread\\(\\)\\.map_err\\(\\|_\\|${escape(spec.error)}\\)\\?;`,
     "u",
@@ -17242,13 +18509,34 @@ const profileApiEnvelopeProbeSpec = {
   error: "ProbeError",
 };
 const profileApiEnvelopeMutationProbes = [
-  profileApiEnvelopeProbe.replace("  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n", ""),
-  profileApiEnvelopeProbe.replace("  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n  consume", "  consume"),
-  profileApiEnvelopeProbe.replace("}.map(UnvalidatedProfileApiSid::new);\n  profile_api", "};\n  profile_api"),
-  profileApiEnvelopeProbe.replace("unsafe { CreateAppContainerProfile(a, b, c, None) }", "unsafe { (CreateAppContainerProfile(a, b, c, None), side_effect()).0 }"),
-  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "CreateAppContainerProfile(a, side_effect(), c, None)"),
-  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "create_alias(a, b, c, None)"),
-  profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "windows::Authorization::CreateAppContainerProfile(a, b, c, None)"),
+  profileApiEnvelopeProbe.replace(
+    "  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n",
+    "",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "  profile_api.recheck_thread().map_err(|_| ProbeError)?;\n  consume",
+    "  consume",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "}.map(UnvalidatedProfileApiSid::new);\n  profile_api",
+    "};\n  profile_api",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "unsafe { CreateAppContainerProfile(a, b, c, None) }",
+    "unsafe { (CreateAppContainerProfile(a, b, c, None), side_effect()).0 }",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "CreateAppContainerProfile(a, b, c, None)",
+    "CreateAppContainerProfile(a, side_effect(), c, None)",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "CreateAppContainerProfile(a, b, c, None)",
+    "create_alias(a, b, c, None)",
+  ),
+  profileApiEnvelopeProbe.replace(
+    "CreateAppContainerProfile(a, b, c, None)",
+    "windows::Authorization::CreateAppContainerProfile(a, b, c, None)",
+  ),
 ];
 const secretInputProfileApiNativeCallEnvelope = (source) => {
   const calls = rustCallSites(
@@ -17276,10 +18564,7 @@ const secretInputProfileApiEnvelopeProbe = `fn probe(
 }`;
 const secretInputDelayedProfileApiCaptureProbe =
   secretInputProfileApiEnvelopeProbe
-    .replace(
-      "    .map(UnvalidatedProfileApiSid::new);",
-      ";",
-    )
+    .replace("    .map(UnvalidatedProfileApiSid::new);", ";")
     .replace(
       "  reject_thread_impersonation()?;\n  expected.map_err",
       "  reject_thread_impersonation()?;\n  let expected = expected.map(UnvalidatedProfileApiSid::new);\n  expected.map_err",
@@ -17387,16 +18672,40 @@ const expectedSecretInputRejectThreadImpersonation =
 const expectedSecretInputDeriveExpectedProfileSid =
   "fnderive_expected_profile_sid(profile:&[u16],)->Result<UnvalidatedProfileApiSid,SecretInputError>{ifprofile.last().copied()!=Some(0){returnErr(SecretInputError::NativeFailure);}reject_thread_impersonation()?;letexpected=unsafe{DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr()))}.map(UnvalidatedProfileApiSid::new);reject_thread_impersonation()?;expected.map_err(|_|SecretInputError::NativeFailure)}";
 const expectedSecretInputProfileApiRaiiBodies = [
-  [secretInputUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fnmatches(&self,actual:PSID)->Result<bool,SecretInputError>{letexpected=self.raw.ok_or(SecretInputError::NativeFailure)?;ifactual.is_invalid()||expected.is_invalid(){returnErr(SecretInputError::NativeFailure);}letactual_is_valid=unsafe{IsValidSid(actual)}.as_bool();letexpected_is_valid=unsafe{IsValidSid(expected)}.as_bool();if!actual_is_valid||!expected_is_valid{returnErr(SecretInputError::NativeFailure);}Ok(unsafe{EqualSid(actual,expected)}.is_ok())}}"],
-  [secretInputUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
+  [
+    secretInputUnvalidatedProfileApiSidImpl,
+    "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fnmatches(&self,actual:PSID)->Result<bool,SecretInputError>{letexpected=self.raw.ok_or(SecretInputError::NativeFailure)?;ifactual.is_invalid()||expected.is_invalid(){returnErr(SecretInputError::NativeFailure);}letactual_is_valid=unsafe{IsValidSid(actual)}.as_bool();letexpected_is_valid=unsafe{IsValidSid(expected)}.as_bool();if!actual_is_valid||!expected_is_valid{returnErr(SecretInputError::NativeFailure);}Ok(unsafe{EqualSid(actual,expected)}.is_ok())}}",
+  ],
+  [
+    secretInputUnvalidatedProfileApiSidDrop,
+    "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}",
+  ],
 ];
 const expectedProfileApiRaiiBodies = [
-  [launchUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_validated(mutself)->Result<OwnedAppContainerSid,LaunchError>{letsid=self.raw.ok_or(LaunchError::SandboxVerification)?;ifsid.is_invalid()||!unsafe{IsValidSid(sid)}.as_bool(){returnErr(LaunchError::SandboxVerification);}self.raw=None;Ok(OwnedAppContainerSid(sid))}}"],
-  [launchUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
-  [keyAgentUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_owned(self)->Result<OwnedAppContainerSid,KeyAgentLpacError>{letraw=self.raw.ok_or(KeyAgentLpacError::Profile)?;ifraw.is_invalid()||!unsafe{IsValidSid(raw)}.as_bool(){returnErr(KeyAgentLpacError::Profile);}OwnedAppContainerSid::copy_from(raw)}}"],
-  [keyAgentUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
-  [keyAgentUnvalidatedProfileApiFolderImpl, "implUnvalidatedProfileApiFolderPath{constfnnew(raw:PWSTR)->Self{Self{raw:Some(raw)}}fnto_path(&self)->Result<PathBuf,KeyAgentLpacError>{letfolder=self.raw.ok_or(KeyAgentLpacError::Profile)?;iffolder.is_null(){returnErr(KeyAgentLpacError::Profile);}unsafe{folder.to_string()}.map(PathBuf::from).map_err(|_|KeyAgentLpacError::Profile)}}"],
-  [keyAgentUnvalidatedProfileApiFolderDrop, "implDropforUnvalidatedProfileApiFolderPath{fndrop(&mutself){letSome(folder)=self.raw.take()else{return;};iffolder.is_null(){return;}unsafe{CoTaskMemFree(Some(folder.0.cast::<c_void>()))};}}"],
+  [
+    launchUnvalidatedProfileApiSidImpl,
+    "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_validated(mutself)->Result<OwnedAppContainerSid,LaunchError>{letsid=self.raw.ok_or(LaunchError::SandboxVerification)?;ifsid.is_invalid()||!unsafe{IsValidSid(sid)}.as_bool(){returnErr(LaunchError::SandboxVerification);}self.raw=None;Ok(OwnedAppContainerSid(sid))}}",
+  ],
+  [
+    launchUnvalidatedProfileApiSidDrop,
+    "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}",
+  ],
+  [
+    keyAgentUnvalidatedProfileApiSidImpl,
+    "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_owned(self)->Result<OwnedAppContainerSid,KeyAgentLpacError>{letraw=self.raw.ok_or(KeyAgentLpacError::Profile)?;ifraw.is_invalid()||!unsafe{IsValidSid(raw)}.as_bool(){returnErr(KeyAgentLpacError::Profile);}OwnedAppContainerSid::copy_from(raw)}}",
+  ],
+  [
+    keyAgentUnvalidatedProfileApiSidDrop,
+    "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}",
+  ],
+  [
+    keyAgentUnvalidatedProfileApiFolderImpl,
+    "implUnvalidatedProfileApiFolderPath{constfnnew(raw:PWSTR)->Self{Self{raw:Some(raw)}}fnto_path(&self)->Result<PathBuf,KeyAgentLpacError>{letfolder=self.raw.ok_or(KeyAgentLpacError::Profile)?;iffolder.is_null(){returnErr(KeyAgentLpacError::Profile);}unsafe{folder.to_string()}.map(PathBuf::from).map_err(|_|KeyAgentLpacError::Profile)}}",
+  ],
+  [
+    keyAgentUnvalidatedProfileApiFolderDrop,
+    "implDropforUnvalidatedProfileApiFolderPath{fndrop(&mutself){letSome(folder)=self.raw.take()else{return;};iffolder.is_null(){return;}unsafe{CoTaskMemFree(Some(folder.0.cast::<c_void>()))};}}",
+  ],
 ];
 const compactCreateFreshKeyAgentProfileSid = compactRust(
   createFreshKeyAgentProfileSid,
@@ -17410,9 +18719,7 @@ const keyAgentProfileApiOrder = [
   "Self::derive_under_guard(&profile_api,&name)?",
   "require_created_sid_matches_derived(&created,&derived)?",
 ].map((marker) => compactCreateFreshKeyAgentProfileSid.indexOf(marker));
-const compactLaunchProfileOpenOrCreate = compactRust(
-  launchProfileOpenOrCreate,
-);
+const compactLaunchProfileOpenOrCreate = compactRust(launchProfileOpenOrCreate);
 const launchProfileApiOrder = [
   "profile_metadata(profile,role)?",
   "wide_nul_str(metadata.name)",
@@ -17433,12 +18740,81 @@ const keyAgentAppContainerFolderOrder = [
   "}.map(UnvalidatedProfileApiFolderPath::new);profile_api.recheck_thread().map_err(|_|KeyAgentLpacError::Profile)?;folder.map_err(|_|KeyAgentLpacError::Profile)?.to_path()",
 ].map((marker) => compactKeyAgentAppContainerFolder.indexOf(marker));
 const profileApiEnvelopes = [
-  [launchProfileOpenOrCreate, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name_wide.as_ptr())", "PCWSTR(display_wide.as_ptr())", "PCWSTR(description_wide.as_ptr())", "None"], result: "created", owner: "UnvalidatedProfileApiSid", error: "LaunchError::OperatingSystem" }],
-  [launchProfileDeriveUnderGuard, { api: "DeriveAppContainerSidFromAppContainerName", arguments: ["PCWSTR(name_wide.as_ptr())"], result: "sid", owner: "UnvalidatedProfileApiSid", error: "LaunchError::OperatingSystem" }],
-  [createFreshKeyAgentProfileSid, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name.as_ptr())", "PCWSTR(display_name.as_ptr())", "PCWSTR(description.as_ptr())", "None"], result: "created_sid", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
-  [keyAgentLpacOpenOrCreate, { api: "CreateAppContainerProfile", arguments: ["PCWSTR(name.as_ptr())", "PCWSTR(display_name.as_ptr())", "PCWSTR(description.as_ptr())", "None"], result: "created", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
-  [keyAgentLpacDeriveUnderGuard, { api: "DeriveAppContainerSidFromAppContainerName", arguments: ["PCWSTR(name.as_ptr())"], result: "sid", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
-  [keyAgentAppContainerFolder, { api: "GetAppContainerFolderPath", arguments: ["PCWSTR(sid_text.as_ptr())"], result: "folder", owner: "UnvalidatedProfileApiFolderPath", error: "KeyAgentLpacError::Profile" }],
+  [
+    launchProfileOpenOrCreate,
+    {
+      api: "CreateAppContainerProfile",
+      arguments: [
+        "PCWSTR(name_wide.as_ptr())",
+        "PCWSTR(display_wide.as_ptr())",
+        "PCWSTR(description_wide.as_ptr())",
+        "None",
+      ],
+      result: "created",
+      owner: "UnvalidatedProfileApiSid",
+      error: "LaunchError::OperatingSystem",
+    },
+  ],
+  [
+    launchProfileDeriveUnderGuard,
+    {
+      api: "DeriveAppContainerSidFromAppContainerName",
+      arguments: ["PCWSTR(name_wide.as_ptr())"],
+      result: "sid",
+      owner: "UnvalidatedProfileApiSid",
+      error: "LaunchError::OperatingSystem",
+    },
+  ],
+  [
+    createFreshKeyAgentProfileSid,
+    {
+      api: "CreateAppContainerProfile",
+      arguments: [
+        "PCWSTR(name.as_ptr())",
+        "PCWSTR(display_name.as_ptr())",
+        "PCWSTR(description.as_ptr())",
+        "None",
+      ],
+      result: "created_sid",
+      owner: "UnvalidatedProfileApiSid",
+      error: "KeyAgentLpacError::Profile",
+    },
+  ],
+  [
+    keyAgentLpacOpenOrCreate,
+    {
+      api: "CreateAppContainerProfile",
+      arguments: [
+        "PCWSTR(name.as_ptr())",
+        "PCWSTR(display_name.as_ptr())",
+        "PCWSTR(description.as_ptr())",
+        "None",
+      ],
+      result: "created",
+      owner: "UnvalidatedProfileApiSid",
+      error: "KeyAgentLpacError::Profile",
+    },
+  ],
+  [
+    keyAgentLpacDeriveUnderGuard,
+    {
+      api: "DeriveAppContainerSidFromAppContainerName",
+      arguments: ["PCWSTR(name.as_ptr())"],
+      result: "sid",
+      owner: "UnvalidatedProfileApiSid",
+      error: "KeyAgentLpacError::Profile",
+    },
+  ],
+  [
+    keyAgentAppContainerFolder,
+    {
+      api: "GetAppContainerFolderPath",
+      arguments: ["PCWSTR(sid_text.as_ptr())"],
+      result: "folder",
+      owner: "UnvalidatedProfileApiFolderPath",
+      error: "KeyAgentLpacError::Profile",
+    },
+  ],
 ];
 requireInvariant(
   normalizeRustFragment(
@@ -17473,8 +18849,10 @@ requireInvariant(
     compactRust(secretInputProfileApiExtractionSpoofDerive) ===
       "fnderive_expected_profile_sid(){reviewed();}" &&
     JSON.stringify(
-      rustCallSites(secretInputVerifyLpacToken, "derive_expected_profile_sid")
-        .map((call) => call.arguments.map(compactRust)),
+      rustCallSites(
+        secretInputVerifyLpacToken,
+        "derive_expected_profile_sid",
+      ).map((call) => call.arguments.map(compactRust)),
     ) === JSON.stringify([["&profile"]]) &&
     JSON.stringify(
       rustCallSites(secretInputVerifyLpacToken, "matches").map((call) =>
@@ -17498,12 +18876,15 @@ requireInvariant(
     rustCallSites(secretInputDeriveExpectedProfileSid, "FreeSid").length ===
       0 &&
     JSON.stringify(
-      rustCallSites(secretInputUnvalidatedProfileApiSidMatches, "IsValidSid")
-        .map((call) => call.arguments.map(compactRust)),
+      rustCallSites(
+        secretInputUnvalidatedProfileApiSidMatches,
+        "IsValidSid",
+      ).map((call) => call.arguments.map(compactRust)),
     ) === JSON.stringify([["actual"], ["expected"]]) &&
     JSON.stringify(
-      rustCallSites(secretInputUnvalidatedProfileApiSidMatches, "EqualSid")
-        .map((call) => call.arguments.map(compactRust)),
+      rustCallSites(secretInputUnvalidatedProfileApiSidMatches, "EqualSid").map(
+        (call) => call.arguments.map(compactRust),
+      ),
     ) === JSON.stringify([["actual", "expected"]]) &&
     rustCallSites(secretBootstrapWindowsProduction, "FreeSid").length === 1 &&
     JSON.stringify(
@@ -17545,20 +18926,26 @@ requireInvariant(
     /#\[must_use\s*=\s*"[^"]+"\]\s*pub\(crate\)\s+struct\s+AppContainerProfileApiGuard/u.test(
       appContainerProfileApiProduction,
     ) &&
-    normalizeRustFragment(rustLexicalCode(appContainerProfileApiGuardDefinition)) ===
+    normalizeRustFragment(
+      rustLexicalCode(appContainerProfileApiGuardDefinition),
+    ) ===
       "pub(crate) struct AppContainerProfileApiGuard { _mutex: MutexGuard<'static, ()>, _thread_bound: PhantomData<Rc<()>>, }" &&
     compactAppContainerProfileRecheck ===
       "pub(crate)fnrecheck_thread(&self)->Result<(),AppContainerProfileApiCoordinationError>{reject_thread_impersonation()}" &&
     JSON.stringify(
-      rustStructLiteralSites(appContainerProfileApiProduction, "AppContainerProfileApiGuard")
-        .map((site) => compactRust(site.source)),
-    ) === JSON.stringify(["AppContainerProfileApiGuard{_mutex:mutex,_thread_bound:PhantomData,}"]) &&
+      rustStructLiteralSites(
+        appContainerProfileApiProduction,
+        "AppContainerProfileApiGuard",
+      ).map((site) => compactRust(site.source)),
+    ) ===
+      JSON.stringify([
+        "AppContainerProfileApiGuard{_mutex:mutex,_thread_bound:PhantomData,}",
+      ]) &&
     appContainerProfileAcquireOrder.every((position) => position !== -1) &&
     appContainerProfileAcquireOrder
       .slice(1)
       .every(
-        (position, index) =>
-          position > appContainerProfileAcquireOrder[index],
+        (position, index) => position > appContainerProfileAcquireOrder[index],
       ) &&
     compactAppContainerProfileAcquire.includes(
       "Err(AppContainerProfileApiCoordinationError::Reentrant)",
@@ -17594,25 +18981,43 @@ requireInvariant(
         compactRust(source) === expected &&
         profileApiTestCode.split(rustLexicalCode(source).trim()).length === 2,
     ) &&
-    normalizeRustFragment(rustLexicalCode(launchUnvalidatedProfileApiSidDefinition)) ===
-      "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
-    normalizeRustFragment(rustLexicalCode(keyAgentUnvalidatedProfileApiSidDefinition)) ===
-      "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
-    normalizeRustFragment(rustLexicalCode(keyAgentUnvalidatedProfileApiFolderDefinition)) ===
-      "struct UnvalidatedProfileApiFolderPath { raw: Option<PWSTR>, }" &&
-    expectedProfileApiRaiiBodies.every(([source, expected]) => compactRust(source) === expected) &&
+    normalizeRustFragment(
+      rustLexicalCode(launchUnvalidatedProfileApiSidDefinition),
+    ) === "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentUnvalidatedProfileApiSidDefinition),
+    ) === "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(keyAgentUnvalidatedProfileApiFolderDefinition),
+    ) === "struct UnvalidatedProfileApiFolderPath { raw: Option<PWSTR>, }" &&
+    expectedProfileApiRaiiBodies.every(
+      ([source, expected]) => compactRust(source) === expected,
+    ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*struct\s+(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b|impl\s+(?:Clone|Copy|Deref|DerefMut|AsRef|Borrow|From|Into|TryFrom|TryInto)\b[^{}]*(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b/u.test(
       rustLexicalCode(`${restrictedLauncherRelease}\n${keyAgentLpacRelease}`),
     ) &&
-    ![...rustVisibleFunctionItems(restrictedLauncherRelease), ...rustVisibleFunctionItems(keyAgentLpacRelease)]
-      .some((item) => /\b(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b/u.test(item.signature)) &&
-    profileApiEnvelopes.every(([source, spec]) => profileApiNativeCallEnvelope(source, spec)) &&
-    profileApiNativeCallEnvelope(profileApiEnvelopeProbe, profileApiEnvelopeProbeSpec) &&
-    profileApiEnvelopeMutationProbes.every(
-      (probe) => !profileApiNativeCallEnvelope(probe, profileApiEnvelopeProbeSpec),
+    ![
+      ...rustVisibleFunctionItems(restrictedLauncherRelease),
+      ...rustVisibleFunctionItems(keyAgentLpacRelease),
+    ].some((item) =>
+      /\b(?:UnvalidatedProfileApiSid|UnvalidatedProfileApiFolderPath)\b/u.test(
+        item.signature,
+      ),
     ) &&
-    normalizeRustFragment(rustLexicalCode(profileApiExtractionSpoofDefinition)) ===
-      "struct UnvalidatedProfileApiSid { raw: Option<PSID> }" &&
+    profileApiEnvelopes.every(([source, spec]) =>
+      profileApiNativeCallEnvelope(source, spec),
+    ) &&
+    profileApiNativeCallEnvelope(
+      profileApiEnvelopeProbe,
+      profileApiEnvelopeProbeSpec,
+    ) &&
+    profileApiEnvelopeMutationProbes.every(
+      (probe) =>
+        !profileApiNativeCallEnvelope(probe, profileApiEnvelopeProbeSpec),
+    ) &&
+    normalizeRustFragment(
+      rustLexicalCode(profileApiExtractionSpoofDefinition),
+    ) === "struct UnvalidatedProfileApiSid { raw: Option<PSID> }" &&
     compactRust(profileApiExtractionSpoofFunction) ===
       "fnrecheck_thread(&self){reviewed();}" &&
     JSON.stringify(appContainerProfileCoordinatorConsumers) ===
@@ -17634,49 +19039,81 @@ requireInvariant(
         call.path === "crates/platform-windows/src/key_agent_lpac.rs" ||
         call.path === "crates/platform-windows/src/launch.rs",
     ) &&
-    JSON.stringify(appContainerProfileNativeUsage.calls.map((call) => `${call.name}:${call.path}`).sort()) ===
-      JSON.stringify(["CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs", "CreateAppContainerProfile:crates/platform-windows/src/launch.rs", "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs", "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs", "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs"]) &&
-    JSON.stringify(appContainerProfileNativeUsage.tokens) === JSON.stringify({
-      CreateAppContainerProfile: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/launch.rs", "crates/platform-windows/src/launch.rs"],
-      DeriveAppContainerSidFromAppContainerName: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/launch.rs", "crates/platform-windows/src/launch.rs"],
-      GetAppContainerFolderPath: ["crates/platform-windows/src/key_agent_lpac.rs", "crates/platform-windows/src/key_agent_lpac.rs"],
-    }) &&
+    JSON.stringify(
+      appContainerProfileNativeUsage.calls
+        .map((call) => `${call.name}:${call.path}`)
+        .sort(),
+    ) ===
+      JSON.stringify([
+        "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs",
+        "CreateAppContainerProfile:crates/platform-windows/src/launch.rs",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs",
+        "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs",
+      ]) &&
+    JSON.stringify(appContainerProfileNativeUsage.tokens) ===
+      JSON.stringify({
+        CreateAppContainerProfile: [
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        DeriveAppContainerSidFromAppContainerName: [
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        GetAppContainerFolderPath: [
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+        ],
+      }) &&
     appContainerProfileNativeUsage.aliases.length === 0 &&
     appContainerProfileNativeUsage.qualified.length === 0 &&
     appContainerProfileNativeUsage.references.length === 0 &&
     JSON.stringify(
       workspaceAppContainerProfileNativeUsage.calls
-        .map((call) => `${call.name}:${call.path}:${call.arguments.map(compactRust).join(",")}`)
+        .map(
+          (call) =>
+            `${call.name}:${call.path}:${call.arguments.map(compactRust).join(",")}`,
+        )
         .sort(),
-    ) === JSON.stringify([
-      "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr()),PCWSTR(display_name.as_ptr()),PCWSTR(description.as_ptr()),None",
-      "CreateAppContainerProfile:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr()),PCWSTR(display_wide.as_ptr()),PCWSTR(description_wide.as_ptr()),None",
-      "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr())",
-      "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr())",
-      "DeriveAppContainerSidFromAppContainerName:crates/secret-input-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
-      "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(sid_text.as_ptr())",
-    ]) &&
-    JSON.stringify(workspaceAppContainerProfileNativeUsage.tokens) === JSON.stringify({
-      CreateAppContainerProfile: [
-        "crates/platform-windows/src/key_agent_lpac.rs",
-        "crates/platform-windows/src/key_agent_lpac.rs",
-        "crates/platform-windows/src/launch.rs",
-        "crates/platform-windows/src/launch.rs",
-      ],
-      DeriveAppContainerSidFromAppContainerName: [
-        "crates/platform-windows/src/key_agent_lpac.rs",
-        "crates/platform-windows/src/key_agent_lpac.rs",
-        "crates/platform-windows/src/launch.rs",
-        "crates/platform-windows/src/launch.rs",
-        "crates/secret-input-ui/src/bootstrap/windows.rs",
-        "crates/secret-input-ui/src/bootstrap/windows.rs",
-      ],
-      GetAppContainerFolderPath: [
-        "crates/platform-windows/src/key_agent_lpac.rs",
-        "crates/platform-windows/src/key_agent_lpac.rs",
-      ],
-      DeleteAppContainerProfile: [],
-    }) &&
+    ) ===
+      JSON.stringify([
+        "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr()),PCWSTR(display_name.as_ptr()),PCWSTR(description.as_ptr()),None",
+        "CreateAppContainerProfile:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr()),PCWSTR(display_wide.as_ptr()),PCWSTR(description_wide.as_ptr()),None",
+        "DeriveAppContainerSidFromAppContainerName:crates/approval-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr())",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr())",
+        "DeriveAppContainerSidFromAppContainerName:crates/secret-input-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
+        "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(sid_text.as_ptr())",
+      ]) &&
+    JSON.stringify(workspaceAppContainerProfileNativeUsage.tokens) ===
+      JSON.stringify({
+        CreateAppContainerProfile: [
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        DeriveAppContainerSidFromAppContainerName: [
+          "crates/approval-ui/src/bootstrap/windows.rs",
+          "crates/approval-ui/src/bootstrap/windows.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/secret-input-ui/src/bootstrap/windows.rs",
+          "crates/secret-input-ui/src/bootstrap/windows.rs",
+        ],
+        GetAppContainerFolderPath: [
+          "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_lpac.rs",
+        ],
+        DeleteAppContainerProfile: [],
+      }) &&
     workspaceAppContainerProfileNativeUsage.aliases.length === 0 &&
     workspaceAppContainerProfileNativeUsage.qualified.length === 0 &&
     workspaceAppContainerProfileNativeUsage.references.length === 0 &&
@@ -17684,8 +19121,7 @@ requireInvariant(
     keyAgentAppContainerFolderOrder
       .slice(1)
       .every(
-        (position, index) =>
-          position > keyAgentAppContainerFolderOrder[index],
+        (position, index) => position > keyAgentAppContainerFolderOrder[index],
       ) &&
     !workspaceRustProductionFiles.some((file) =>
       /\bDeleteAppContainerProfile\b/u.test(rustLexicalCode(file.source)),
@@ -17715,7 +19151,9 @@ requireInvariant(
       "Self::derive_under_guard(&profile_api,&name)?",
       "Err(error)iferror.code()==ERROR_ALREADY_EXISTS.to_hresult()",
     ]) &&
-    concurrentKeyAgentProfilePreparationTest.includes("const WORKERS: usize = 16") &&
+    concurrentKeyAgentProfilePreparationTest.includes(
+      "const WORKERS: usize = 16",
+    ) &&
     concurrentKeyAgentProfilePreparationTest.includes(
       "AtomicBool::new(false)",
     ) &&
@@ -17823,8 +19261,10 @@ const platformWindowsCfgAttrInventory = [
 ].sort();
 const platformWindowsExpansionSensitiveUseInventory =
   platformWindowsProductionFiles.flatMap((file) =>
-    rustExpansionSensitiveUseItems(file.source)
-      .map((item) => ({ path: file.path, source: compactRust(item.source) })),
+    rustExpansionSensitiveUseItems(file.source).map((item) => ({
+      path: file.path,
+      source: compactRust(item.source),
+    })),
   );
 const platformWindowsGlobUseInventory = platformWindowsProductionFiles.flatMap(
   (file) =>
@@ -17836,8 +19276,10 @@ const platformWindowsForbiddenExpansionNamespaces =
   platformWindowsProductionFiles
     .filter((file) => {
       const code = rustLexicalCode(file.source);
-      return /\bextern\s+crate\b/u.test(code) ||
-        /\bmod\s+(?:r#)?(?:core|ptr|std|thiserror)\b/u.test(code);
+      return (
+        /\bextern\s+crate\b/u.test(code) ||
+        /\bmod\s+(?:r#)?(?:core|ptr|std|thiserror)\b/u.test(code)
+      );
     })
     .map((file) => file.path);
 const platformWindowsDependencySectionMatch =
@@ -17856,7 +19298,9 @@ const platformWindowsDependencySectionInventory = [
     /^\[(?<section>[^\]]*dependencies[^\]]*)\]\s*$/gmu,
   ),
 ].map((match) => match.groups.section);
-const approvedThiserrorLockRecords = cargoLockPackageRecords(workspaceLock).filter(
+const approvedThiserrorLockRecords = cargoLockPackageRecords(
+  workspaceLock,
+).filter(
   (record) =>
     (record.name === "thiserror" || record.name === "thiserror-impl") &&
     record.version === "2.0.12",
@@ -17978,15 +19422,16 @@ const keyAgentLpacVisibilityCount = [
     /(?<![\p{XID_Continue}_#])pub(?:\s*\([^)]*\))?/gu,
   ),
 ].length;
-const keyAgentLpacVisibleFunctionInventory = rustVisibleFunctionItems(
-  keyAgentLpacRelease,
-);
+const keyAgentLpacVisibleFunctionInventory =
+  rustVisibleFunctionItems(keyAgentLpacRelease);
 const keyAgentLpacVisibleNonFunctionInventory = [
   ...keyAgentLpacReleaseCode.matchAll(
     /(?<![\p{XID_Continue}_#])pub(?<scope>\s*\([^)]*\))?\s+(?<kind>const|static|struct|enum|trait|type|mod|use)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
   ),
 ]
-  .filter((match) => !(match.groups.kind === "const" && match.groups.name === "fn"))
+  .filter(
+    (match) => !(match.groups.kind === "const" && match.groups.name === "fn"),
+  )
   .map((match) => ({
     visibility: `pub${compactRust(match.groups.scope ?? "")}`,
     kind: match.groups.kind,
@@ -18019,7 +19464,9 @@ const keyAgentLpacAuthorityAttributeInventory = [
   },
   {
     target: "PreparedKeyAgentProfile",
-    index: keyAgentLpacReleaseCode.search(/\bstruct\s+PreparedKeyAgentProfile\b/u),
+    index: keyAgentLpacReleaseCode.search(
+      /\bstruct\s+PreparedKeyAgentProfile\b/u,
+    ),
   },
   {
     target: "AppContainerMembershipEvidence",
@@ -18063,17 +19510,16 @@ const preparedKeyAgentProvisioningTokenInventory =
       ].length,
     }))
     .filter((entry) => entry.count > 0);
-const pendingKeyAgentProvisioningTokenInventory =
-  platformWindowsProductionFiles
-    .map((file) => ({
-      path: file.path,
-      count: [
-        ...rustLexicalCode(file.source).matchAll(
-          /\bPendingKeyAgentProvisioning\b/gu,
-        ),
-      ].length,
-    }))
-    .filter((entry) => entry.count > 0);
+const pendingKeyAgentProvisioningTokenInventory = platformWindowsProductionFiles
+  .map((file) => ({
+    path: file.path,
+    count: [
+      ...rustLexicalCode(file.source).matchAll(
+        /\bPendingKeyAgentProvisioning\b/gu,
+      ),
+    ].length,
+  }))
+  .filter((entry) => entry.count > 0);
 const platformWindowsAuthorityTypeErasureInventory =
   platformWindowsProductionFiles
     .map((file) => ({
@@ -18088,9 +19534,7 @@ const platformWindowsVisibleGenericFunctionInventory =
   platformWindowsProductionFiles.flatMap((file) =>
     rustVisibleFunctionItems(file.source)
       .filter((item) =>
-        /^fn(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*</u.test(
-          item.signature,
-        ),
+        /^fn(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*</u.test(item.signature),
       )
       .map((item) => ({ path: file.path, ...item })),
   );
@@ -18104,7 +19548,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 18 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
-  { path: "crates/platform-windows/src/launch.rs", sites: 15 },
+  { path: "crates/platform-windows/src/launch.rs", sites: 16 },
   { path: "crates/platform-windows/src/pipe.rs", sites: 4 },
   { path: "crates/platform-windows/src/storage/sys.rs", sites: 18 },
 ];
@@ -18117,7 +19561,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/broker_channel.rs",
     unsafeCount: 54,
-    sha256: "71b01b9d71c9c6920c06118c3b7a65cd571743246c4e28270ea530c08388cf52",
+    sha256: "a2f856e988280d0aea9de814bb51b40969642eb4dbe0b8e8f12441d37a6fed83",
   },
   {
     path: "crates/platform-windows/src/broker_supervisor.rs",
@@ -18166,13 +19610,13 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/launch.rs",
-    unsafeCount: 37,
-    sha256: "ecc8cc37a435c48654f09981c61efee9ba3a253853e9130c4446078c71f0a4ea",
+    unsafeCount: 43,
+    sha256: "ad6cd71331936d49d46436342f55c8ef788d48fa2f7de1868b8a84064c753c28",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
-    unsafeCount: 37,
-    sha256: "8ac14453458ed8597f8f0868f29e9c723291ccea54727562c400c05c7cc81a0c",
+    unsafeCount: 33,
+    sha256: "c34e282b99633d0d095dea1a2b765e86f383472bde498d0555fdf17513fa0cd8",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -18219,8 +19663,8 @@ const preparedKeyAgentProvisioningConstructionSites =
       () => file.path,
     ),
   );
-const preparedKeyAgentProvisioningAliases = platformWindowsProductionFiles.flatMap(
-  (file) => {
+const preparedKeyAgentProvisioningAliases =
+  platformWindowsProductionFiles.flatMap((file) => {
     const code = rustLexicalCode(file.source);
     return [
       ...[
@@ -18236,8 +19680,7 @@ const preparedKeyAgentProvisioningAliases = platformWindowsProductionFiles.flatM
         )
         .map(() => file.path),
     ];
-  },
-);
+  });
 const preparedKeyAgentProvisioningImplItems =
   platformWindowsProductionFiles.flatMap((file) =>
     rustImplItems(file.source)
@@ -18294,18 +19737,18 @@ const keyAgentProvisioningAuthorityAliases =
   ]);
 const keyAgentProvisioningImplAttributeInventory =
   keyAgentProvisioningAuthorityImplItems.map((item) => {
-  const source = platformWindowsProductionFiles.find(
-    (file) => file.path === item.path,
-  )?.source;
-  if (source === undefined) {
-    throw new Error("architecture scan lost a provisioning impl source");
-  }
-  return {
-    header: item.header,
-    attributes: rustAttachedOuterAttributes(source, item.index).map(
-      (attribute) => compactRust(attribute.source),
-    ),
-  };
+    const source = platformWindowsProductionFiles.find(
+      (file) => file.path === item.path,
+    )?.source;
+    if (source === undefined) {
+      throw new Error("architecture scan lost a provisioning impl source");
+    }
+    return {
+      header: item.header,
+      attributes: rustAttachedOuterAttributes(source, item.index).map(
+        (attribute) => compactRust(attribute.source),
+      ),
+    };
   });
 const preparedKeyAgentProvisioningSelfConstructionSites =
   preparedKeyAgentProvisioningImplItems.flatMap((item) =>
@@ -18500,20 +19943,22 @@ const keyAgentProvisioningUnsafeSourceOriginal =
   platformWindowsUnsafeSourceInventory.find(
     (file) => file.path === "crates/platform-windows/src/helper.rs",
   );
-const keyAgentProvisioningUnsafeSourceMutationProbe = rustUnsafeSourceInventory([
-  {
-    path: "crates/platform-windows/src/helper.rs",
-    source: `${
-      platformWindowsProductionFiles.find(
-        (file) => file.path === "crates/platform-windows/src/helper.rs",
-      )?.source ?? ""
-    }
+const keyAgentProvisioningUnsafeSourceMutationProbe = rustUnsafeSourceInventory(
+  [
+    {
+      path: "crates/platform-windows/src/helper.rs",
+      source: `${
+        platformWindowsProductionFiles.find(
+          (file) => file.path === "crates/platform-windows/src/helper.rs",
+        )?.source ?? ""
+      }
 pub(crate) fn hidden_raw_move<T, U>(pointer: *const U) -> U {
     unsafe { *pointer }
 }
 `,
-  },
-]).at(0);
+    },
+  ],
+).at(0);
 const keyAgentProvisioningDeriveAliasScannerProbe =
   rustExpansionSensitiveUseItems(`
 use approval_wire::Mint as Clone;
@@ -18528,16 +19973,16 @@ const keyAgentFreshProvisioningOrder = [
 ].map((marker) => compactProvisionFreshKeyAgent.indexOf(marker));
 requireInvariant(
   JSON.stringify(pendingKeyAgentProvisioningTokenInventory) ===
-      JSON.stringify([
-        {
-          path: "crates/platform-windows/src/key_agent_lpac.rs",
-          count: 3,
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_supervisor.rs",
-          count: 3,
-        },
-      ]) &&
+    JSON.stringify([
+      {
+        path: "crates/platform-windows/src/key_agent_lpac.rs",
+        count: 3,
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_supervisor.rs",
+        count: 3,
+      },
+    ]) &&
     JSON.stringify(platformWindowsAuthorityTypeErasureInventory) ===
       JSON.stringify(approvedPlatformWindowsAuthorityTypeErasureInventory) &&
     JSON.stringify(platformWindowsUnsafeSourceInventory) ===
@@ -18552,7 +19997,8 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(platformWindowsMacroRulesDefinitions) === JSON.stringify([]) &&
-    JSON.stringify(platformWindowsMacroItemDefinitions) === JSON.stringify([]) &&
+    JSON.stringify(platformWindowsMacroItemDefinitions) ===
+      JSON.stringify([]) &&
     JSON.stringify(platformWindowsMacroNamespaceAttributes) ===
       JSON.stringify([]) &&
     JSON.stringify(platformWindowsIncludeMacroInvocations) ===
@@ -18564,49 +20010,50 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(keyAgentReleaseBindingAuthorityImplHeaders) ===
-      JSON.stringify([
-        {
-          path: "crates/platform-windows/src/attestation.rs",
-          header: "impl AttestedArtifactDigest",
-        },
-        {
-          path: "crates/platform-windows/src/attestation.rs",
-          header: "impl core::fmt::Debug for AttestedArtifactDigest",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl HeldKeyAgentActivation",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl RunningKeyAgentActivation",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl fmt::Debug for RunningKeyAgentActivation",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl fmt::Debug for HeldKeyAgentActivation",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl PreflightKeyAgentArtifact",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_activation.rs",
-          header: "impl fmt::Debug for PreflightKeyAgentArtifact",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_supervisor.rs",
-          header: "impl fmt::Debug for BoundDormantKeyAgent",
-        },
-        {
-          path: "crates/platform-windows/src/key_agent_supervisor.rs",
-          header: "impl fmt::Debug for BoundStorageProvenKeyAgent",
-        },
-      ]) &&
-    JSON.stringify(keyAgentReleaseBindingAuthorityAliases) === JSON.stringify([]),
+    JSON.stringify([
+      {
+        path: "crates/platform-windows/src/attestation.rs",
+        header: "impl AttestedArtifactDigest",
+      },
+      {
+        path: "crates/platform-windows/src/attestation.rs",
+        header: "impl core::fmt::Debug for AttestedArtifactDigest",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl HeldKeyAgentActivation",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl RunningKeyAgentActivation",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl fmt::Debug for RunningKeyAgentActivation",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl fmt::Debug for HeldKeyAgentActivation",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl PreflightKeyAgentArtifact",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        header: "impl fmt::Debug for PreflightKeyAgentArtifact",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_supervisor.rs",
+        header: "impl fmt::Debug for BoundDormantKeyAgent",
+      },
+      {
+        path: "crates/platform-windows/src/key_agent_supervisor.rs",
+        header: "impl fmt::Debug for BoundStorageProvenKeyAgent",
+      },
+    ]) &&
+    JSON.stringify(keyAgentReleaseBindingAuthorityAliases) ===
+      JSON.stringify([]),
   "opaque release, preflight, activation, and bound supervisor authorities must have no alternate trait conversion or alias surface",
 );
 requireInvariant(
@@ -18633,8 +20080,7 @@ requireInvariant(
         declaringFile: "crates/platform-windows/src/broker_artifact.rs",
         module: "broker_supervisor",
         literal: "broker_supervisor.rs",
-        resolvedTarget:
-          "crates/platform-windows/src/broker_supervisor.rs",
+        resolvedTarget: "crates/platform-windows/src/broker_supervisor.rs",
         insideCrateSource: true,
         inProductionInventory: true,
         attributes: ["#[cfg(windows)]", "#[path=]"],
@@ -18650,8 +20096,7 @@ requireInvariant(
           owner: "impl PendingKeyAgentProvisioning",
           visibility: "pub(crate)",
           name: "provision_fresh",
-          signature:
-            "fnprovision_fresh()->Result<Self,KeyAgentLpacError>",
+          signature: "fnprovision_fresh()->Result<Self,KeyAgentLpacError>",
         },
         {
           owner: "impl HeldExistingKeyAgentInstallObjects",
@@ -18702,8 +20147,7 @@ requireInvariant(
           owner: "impl PreparedKeyAgentProvisioning",
           visibility: "pub(crate)",
           name: "revalidate",
-          signature:
-            "fnrevalidate(&self)->Result<(),KeyAgentLpacError>",
+          signature: "fnrevalidate(&self)->Result<(),KeyAgentLpacError>",
         },
         {
           owner: "impl PreparedKeyAgentProvisioning",
@@ -18788,23 +20232,23 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(platformWindowsFunctionLikeMacroPathInventory) ===
-      JSON.stringify([
-        "assert",
-        "assert_eq",
-        "assert_ne",
-        "core::mem::offset_of",
-        "debug_assert",
-        "debug_assert_eq",
-        "format",
-        "matches",
-        "offset_of",
-        "ptr::addr_of",
-        "std::vec",
-        "thread_local",
-        "unreachable",
-        "vec",
-        "write",
-      ]) &&
+    JSON.stringify([
+      "assert",
+      "assert_eq",
+      "assert_ne",
+      "core::mem::offset_of",
+      "debug_assert",
+      "debug_assert_eq",
+      "format",
+      "matches",
+      "offset_of",
+      "ptr::addr_of",
+      "std::vec",
+      "thread_local",
+      "unreachable",
+      "vec",
+      "write",
+    ]) &&
     JSON.stringify(platformWindowsDerivePathInventory) ===
       JSON.stringify([
         "Clone",
@@ -18842,7 +20286,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-      "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" &&
+    "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -18852,7 +20296,9 @@ requireInvariant(
     JSON.stringify(platformWindowsLocalDependencyManifestInventory) ===
       JSON.stringify(approvedPlatformWindowsLocalDependencyManifestInventory) &&
     JSON.stringify(platformWindowsLocalDependencyCrateRootInventory) ===
-      JSON.stringify(approvedPlatformWindowsLocalDependencyCrateRootInventory) &&
+      JSON.stringify(
+        approvedPlatformWindowsLocalDependencyCrateRootInventory,
+      ) &&
     JSON.stringify(platformWindowsLocalDependencySourceInventory) ===
       JSON.stringify(approvedPlatformWindowsLocalDependencySourceInventory) &&
     [approvalWireManifest, secretInputUiManifest].every((manifest) =>
@@ -18892,7 +20338,7 @@ requireInvariant(
     rootManifestSha256 ===
       "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49" &&
     workspaceLockSha256 ===
-      "8ff742854955e290a3d5b5c502221c7fb6829d82931f50f838d849648d9fe483" &&
+      "97051fb94d4acfb1cc6e7ae05e826e36cdf9ed4e3225da9ed2b77c529ba8c69f" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -18921,18 +20367,18 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(keyAgentLpacMacroInvocationInventory) ===
-      JSON.stringify([
-        {
-          absolute: true,
-          path: "std::vec",
-          source: "std::vec![0_usize;word_count]",
-        },
-        {
-          absolute: true,
-          path: "std::vec",
-          source: "std::vec![0_usize;word_count]",
-        },
-      ]) &&
+    JSON.stringify([
+      {
+        absolute: true,
+        path: "std::vec",
+        source: "std::vec![0_usize;word_count]",
+      },
+      {
+        absolute: true,
+        path: "std::vec",
+        source: "std::vec![0_usize;word_count]",
+      },
+    ]) &&
     JSON.stringify(keyAgentLpacCopySidMacroInventory) ===
       JSON.stringify([
         {
@@ -19080,18 +20526,18 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(keyAgentLpacMacroInvocationInventory) ===
-      JSON.stringify([
-        {
-          absolute: true,
-          path: "std::vec",
-          source: "std::vec![0_usize;word_count]",
-        },
-        {
-          absolute: true,
-          path: "std::vec",
-          source: "std::vec![0_usize;word_count]",
-        },
-      ]) &&
+    JSON.stringify([
+      {
+        absolute: true,
+        path: "std::vec",
+        source: "std::vec![0_usize;word_count]",
+      },
+      {
+        absolute: true,
+        path: "std::vec",
+        source: "std::vec![0_usize;word_count]",
+      },
+    ]) &&
     JSON.stringify(keyAgentLpacCopySidMacroInventory) ===
       JSON.stringify([
         {
@@ -19323,8 +20769,8 @@ requireInvariant(
       rustLexicalCode(keyAgentProvisioningMacroItemScannerProbe),
     ) &&
     JSON.stringify(
-      keyAgentProvisioningMacroNamespaceAttributeScannerProbe.map(
-        (attribute) => compactRust(attribute.source),
+      keyAgentProvisioningMacroNamespaceAttributeScannerProbe.map((attribute) =>
+        compactRust(attribute.source),
       ),
     ) === JSON.stringify(["#[macro_export]", "#![macro_use]"]) &&
     keyAgentProvisioningAttachedModuleScannerProbeAttributes.length === 2 &&
@@ -19463,9 +20909,7 @@ requireInvariant(
       /\bPreparedKeyAgentProvisioning\b/u.test(item.header),
     ).length === 1 &&
     preparedKeyAgentProvisioningNestedImplScannerProbe
-      .filter((item) =>
-        /\bPreparedKeyAgentProvisioning\b/u.test(item.header),
-      )
+      .filter((item) => /\bPreparedKeyAgentProvisioning\b/u.test(item.header))
       .every(
         (item) => rustStructLiteralSites(item.source, "Self").length === 1,
       ) &&
@@ -19492,7 +20936,8 @@ requireInvariant(
       JSON.stringify(["revalidate", "prepare_lpac", "storage_root_identity"]) &&
     JSON.stringify(preparedKeyAgentProvisioningConstructionSites) ===
       JSON.stringify(["crates/platform-windows/src/key_agent_lpac.rs"]) &&
-    JSON.stringify(preparedKeyAgentProvisioningAliases) === JSON.stringify([]) &&
+    JSON.stringify(preparedKeyAgentProvisioningAliases) ===
+      JSON.stringify([]) &&
     JSON.stringify(preparedKeyAgentProvisioningImplHeaders) ===
       JSON.stringify([
         {
@@ -19574,10 +21019,8 @@ requireInvariant(
       observeHeldExistingKeyAgentInstallObjects,
       "KeyAgentHeldInstallObservation",
     ).length === 1 &&
-    rustStructLiteralSites(
-      keyAgentLpacRelease,
-      "ExistingInstallAdoptionSeal",
-    ).length === 0 &&
+    rustStructLiteralSites(keyAgentLpacRelease, "ExistingInstallAdoptionSeal")
+      .length === 0 &&
     revalidateHeldExistingKeyAgentInstallObjects.includes(
       "self.profile.revalidate()?",
     ) &&
@@ -19597,9 +21040,15 @@ requireInvariant(
     keyAgentFreshProvisioningOrder.every((position) => position !== -1) &&
     keyAgentFreshProvisioningOrder
       .slice(1)
-      .every((position, index) => position > keyAgentFreshProvisioningOrder[index]) &&
-    provisionFreshKeyAgentProfile.includes("OwnedAppContainerSid::create_fresh()?") &&
-    provisionFreshKeyAgentProfile.includes("Self::from_profile_sid(profile_sid)") &&
+      .every(
+        (position, index) => position > keyAgentFreshProvisioningOrder[index],
+      ) &&
+    provisionFreshKeyAgentProfile.includes(
+      "OwnedAppContainerSid::create_fresh()?",
+    ) &&
+    provisionFreshKeyAgentProfile.includes(
+      "Self::from_profile_sid(profile_sid)",
+    ) &&
     keyAgentProfileCreation.length === 1 &&
     keyAgentProfileCreation[0].arguments.length === 4 &&
     keyAgentProfileCreation[0].arguments[3] === "None" &&
@@ -19635,7 +21084,9 @@ requireInvariant(
       preparedKeyAgentProvisioningImpl,
     ) &&
     keyAgentLpacOpenOrCreate.includes("ERROR_ALREADY_EXISTS.to_hresult()") &&
-    keyAgentLpacPrepare.includes("PreparedKeyAgentProfile::open_or_create()?") &&
+    keyAgentLpacPrepare.includes(
+      "PreparedKeyAgentProfile::open_or_create()?",
+    ) &&
     launchProfileApiOrder.every((position) => position !== -1) &&
     launchProfileApiOrder
       .slice(1)
@@ -19659,14 +21110,18 @@ requireInvariant(
   "release Key Agent provisioning must quarantine fresh fixed objects as Pending, permit only the sealed dormant held-object Prepared transition, validate created-versus-derived SID equality, and expose only exact authority-free observations",
 );
 requireInvariant(
-  keyAgentCreationAttributeBlock.includes("inherited_handles: Box<[HANDLE; 3]>") &&
+  keyAgentCreationAttributeBlock.includes(
+    "inherited_handles: Box<[HANDLE; 3]>",
+  ) &&
     keyAgentCreationAttributeBlock.includes(
       "_inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>",
     ) &&
     keyAgentCreationAttributeBlock.includes(
       "root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>",
     ) &&
-    keyAgentCreationAttributeBlock.includes("lpac: &'resources PreparedKeyAgentLpac") &&
+    keyAgentCreationAttributeBlock.includes(
+      "lpac: &'resources PreparedKeyAgentLpac",
+    ) &&
     keyAgentAttributeListInitializations.length === 2 &&
     keyAgentAttributeListInitializations.every(
       (call) => call.arguments.length === 4 && call.arguments[1] === "4",
@@ -19676,8 +21131,11 @@ requireInvariant(
     keyAgentCreationAttributeImpl.includes(
       "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
     ) &&
-    (keyAgentCreationAttributeImpl.match(/\bUpdateProcThreadAttribute\s*\(/gu) ?? [])
-      .length === 1 &&
+    (
+      keyAgentCreationAttributeImpl.match(
+        /\bUpdateProcThreadAttribute\s*\(/gu,
+      ) ?? []
+    ).length === 1 &&
     keyAgentCreationAttributeOrder.every((position) => position !== -1) &&
     keyAgentCreationAttributeOrder
       .slice(1)
@@ -19696,7 +21154,9 @@ requireInvariant(
       "size_of::<SECURITY_CAPABILITIES>()" &&
     keyAgentLpacAttributeUpdates[1].arguments[3] === "size_of::<u32>()" &&
     /const\s+CAPABILITY_COUNT:\s*u32\s*=\s*0\s*;/u.test(keyAgentLpacRelease) &&
-    keyAgentLpacAttributeValues.includes("AppContainerSid: profile_sid.as_psid()") &&
+    keyAgentLpacAttributeValues.includes(
+      "AppContainerSid: profile_sid.as_psid()",
+    ) &&
     keyAgentLpacAttributeValues.includes("Capabilities: ptr::null_mut()") &&
     keyAgentLpacAttributeValues.includes("CapabilityCount: CAPABILITY_COUNT") &&
     keyAgentLpacAttributeValues.includes("Reserved: 0") &&
@@ -19709,13 +21169,27 @@ requireInvariant(
     keyAgentActivation.includes(
       "impl Drop for KeyAgentCreationAttributes<'_, '_, '_, '_>",
     ) &&
-    keyAgentActivation.includes("DeleteProcThreadAttributeList(self.pointer)") &&
-    keyAgentCreateProcess.includes("let mut startup = STARTUPINFOEXW::default();") &&
-    keyAgentCreateProcess.includes("startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;") &&
-    keyAgentCreateProcess.includes("startup.StartupInfo.hStdInput = attributes.stdin();") &&
-    keyAgentCreateProcess.includes("startup.StartupInfo.hStdOutput = attributes.stdout();") &&
-    keyAgentCreateProcess.includes("startup.StartupInfo.hStdError = attributes.stderr();") &&
-    keyAgentCreateProcess.includes("startup.lpAttributeList = attributes.pointer();") &&
+    keyAgentActivation.includes(
+      "DeleteProcThreadAttributeList(self.pointer)",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "let mut startup = STARTUPINFOEXW::default();",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "startup.StartupInfo.hStdInput = attributes.stdin();",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "startup.StartupInfo.hStdOutput = attributes.stdout();",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "startup.StartupInfo.hStdError = attributes.stderr();",
+    ) &&
+    keyAgentCreateProcess.includes(
+      "startup.lpAttributeList = attributes.pointer();",
+    ) &&
     keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") !== -1 &&
     keyAgentCreateProcess.indexOf(".recheck_supervisor_context()") <
       keyAgentCreateProcess.indexOf(
@@ -19735,7 +21209,9 @@ requireInvariant(
     verifyBoundRootProcess.includes("active_processes == 1"),
   "dormant Key Agent creation must atomically bind three stdio handles, one root Job, and the exact zero-capability LPAC attributes without descendant policy",
 );
-const compactPrepareKeyAgentProcess = compactRust(prepareKeyAgentProcessRelease);
+const compactPrepareKeyAgentProcess = compactRust(
+  prepareKeyAgentProcessRelease,
+);
 const keyAgentProcessPreparationOrder = [
   "RestrictedProcessContext::prepare()",
   "provisioning.revalidate()",
@@ -19855,7 +21331,9 @@ requireInvariant(
     keyAgentLpacVerifySuspended.includes(
       "verify_process_token(process, self.profile_sid.as_psid())?",
     ) &&
-    keyAgentLpacVerifySuspended.includes("Ok(VerifiedKeyAgentLpac { _private: () })") &&
+    keyAgentLpacVerifySuspended.includes(
+      "Ok(VerifiedKeyAgentLpac { _private: () })",
+    ) &&
     /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{\s*_private:\s*\(\),\s*\}/su.test(
       keyAgentLpacRelease,
     ) &&
@@ -19864,7 +21342,7 @@ requireInvariant(
       .slice(1)
       .every(
         (position, index) => position > keyAgentLpacTokenQueryOrder[index],
-    ) &&
+      ) &&
     compactVerifyKeyAgentLpacToken.includes(
       "OpenProcessToken(HANDLE(process.as_raw_handle()),TOKEN_QUERY|TOKEN_DUPLICATE,&rawmutraw_token,)",
     ) &&
@@ -19898,18 +21376,16 @@ requireInvariant(
     ) ===
       "enum AppContainerMembershipEvidence { Lpac, RegularAppContainer, Neither, Inverted, }" &&
     keyAgentMembershipEvidenceCalls.length === 2 &&
-    (rustLexicalCode(keyAgentLpacRelease).match(
-      /\bcheck_token_membership\s*\(/gu,
-    ) ?? []).length === 3 &&
+    (
+      rustLexicalCode(keyAgentLpacRelease).match(
+        /\bcheck_token_membership\s*\(/gu,
+      ) ?? []
+    ).length === 3 &&
     JSON.stringify(
       keyAgentMembershipEvidenceCalls.map((call) => call.arguments),
     ) ===
       JSON.stringify([
-        [
-          "impersonation_token.0",
-          "user.User.Sid",
-          "CTMF_INCLUDE_APPCONTAINER",
-        ],
+        ["impersonation_token.0", "user.User.Sid", "CTMF_INCLUDE_APPCONTAINER"],
         [
           "impersonation_token.0",
           "user.User.Sid",
@@ -19938,15 +21414,21 @@ requireInvariant(
       "Some(is_lpac)=>is_lpac.value==1&&is_lpac.returned_bytes==size_of::<u32>()",
     ) &&
     compactKeyAgentTokenValidation.includes("None=>true") &&
-    compactKeyAgentTokenValidation.includes("evidence.is_appcontainer.value!=1") &&
+    compactKeyAgentTokenValidation.includes(
+      "evidence.is_appcontainer.value!=1",
+    ) &&
     compactKeyAgentTokenValidation.includes(
       "evidence.is_appcontainer.returned_bytes!=size_of::<u32>()",
     ) &&
     compactKeyAgentTokenValidation.includes(
       "evidence.membership!=AppContainerMembershipEvidence::Lpac",
     ) &&
-    compactKeyAgentTokenValidation.includes("!evidence.appcontainer_sid_valid") &&
-    compactKeyAgentTokenValidation.includes("!evidence.appcontainer_sid_matches") &&
+    compactKeyAgentTokenValidation.includes(
+      "!evidence.appcontainer_sid_valid",
+    ) &&
+    compactKeyAgentTokenValidation.includes(
+      "!evidence.appcontainer_sid_matches",
+    ) &&
     compactKeyAgentTokenValidation.includes(
       "evidence.capability_count!=CAPABILITY_COUNT",
     ),
@@ -20014,9 +21496,11 @@ requireInvariant(
     !rustLexicalCode(regularAppContainerAttributeList).includes(
       "PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY",
     ) &&
-    (regularAppContainerAttributeList.match(
-      /\bUpdateProcThreadAttribute\s*\(/gu,
-    ) ?? []).length === 1 &&
+    (
+      regularAppContainerAttributeList.match(
+        /\bUpdateProcThreadAttribute\s*\(/gu,
+      ) ?? []
+    ).length === 1 &&
     regularAppContainerCreateCalls.length === 1 &&
     regularAppContainerCreateCalls[0].arguments.length === 10 &&
     regularAppContainerCreateCalls[0].arguments[1] === "None" &&
@@ -20041,9 +21525,12 @@ requireInvariant(
     regularAppContainerNegativeControl.includes(
       "AppContainerMembershipEvidence::RegularAppContainer",
     ) &&
-    regularAppContainerNegativeControl.includes("process.terminate_and_wait()?") &&
-    regularAppContainerNegativeControl.indexOf("process.terminate_and_wait()?") <
-      regularAppContainerNegativeControl.indexOf("Ok(())") &&
+    regularAppContainerNegativeControl.includes(
+      "process.terminate_and_wait()?",
+    ) &&
+    regularAppContainerNegativeControl.indexOf(
+      "process.terminate_and_wait()?",
+    ) < regularAppContainerNegativeControl.indexOf("Ok(())") &&
     tokenPolicyNegativeControl.includes(
       "membership: AppContainerMembershipEvidence::RegularAppContainer",
     ) &&
@@ -20135,7 +21622,9 @@ requireInvariant(
     keyAgentDetachedSuspensionProof.includes(
       "self.phase == LaunchPhase::DetachedSuspended",
     ) &&
-    keyAgentDetachedSuspensionProof.includes("self.proven_suspend_count == 1") &&
+    keyAgentDetachedSuspensionProof.includes(
+      "self.proven_suspend_count == 1",
+    ) &&
     keyAgentDetachedSuspensionProof.includes("self.prepared_lpac.is_none()") &&
     keyAgentDetachedSuspensionProof.includes("self.lpac.is_some()"),
   "mapped-image authentication and an explicit suspend count must precede LPAC token proof, debug continuation, detachment, and detached type-state export",
@@ -20165,9 +21654,7 @@ const keyAgentActivationTestArtifact = rustFunctionBlock(
   activationHelper,
   "for_key_agent_activation_test",
 );
-const compactKeyAgentLpacFixtureCreate = compactRust(
-  keyAgentLpacFixtureCreate,
-);
+const compactKeyAgentLpacFixtureCreate = compactRust(keyAgentLpacFixtureCreate);
 const keyAgentFixtureCreationOrder = [
   "OwnedAppContainerSid::open_or_create()?",
   "appcontainer_folder(&profile_sid)?",
@@ -20194,10 +21681,16 @@ requireInvariant(
     keyAgentLpacFixtureCreate.includes(
       'directory.join("key-agent-kernel-test.exe")',
     ) &&
-    compactKeyAgentLpacFixtureCreate.includes("!profile_folder.is_absolute()") &&
+    compactKeyAgentLpacFixtureCreate.includes(
+      "!profile_folder.is_absolute()",
+    ) &&
     compactKeyAgentLpacFixtureCreate.includes("!profile_folder.is_dir()") &&
-    createUniqueKeyAgentFixtureDirectory.includes("getrandom::fill(&mut random)") &&
-    createUniqueKeyAgentFixtureDirectory.includes("std::fs::create_dir(&candidate)") &&
+    createUniqueKeyAgentFixtureDirectory.includes(
+      "getrandom::fill(&mut random)",
+    ) &&
+    createUniqueKeyAgentFixtureDirectory.includes(
+      "std::fs::create_dir(&candidate)",
+    ) &&
     !createUniqueKeyAgentFixtureDirectory.includes("create_dir_all") &&
     copyCurrentKeyAgentTestImage.includes("std::env::current_exe()") &&
     copyCurrentKeyAgentTestImage.includes(".create_new(true)") &&
@@ -20223,22 +21716,31 @@ requireInvariant(
     ) &&
     keyAgentActivationTestArtifact.includes("fixture.path().to_path_buf()") &&
     keyAgentActivationTestArtifact.includes(".share_mode(FILE_SHARE_READ.0)") &&
-    keyAgentActivationTestArtifact.includes("_key_agent_lpac_fixture: Some(fixture)"),
+    keyAgentActivationTestArtifact.includes(
+      "_key_agent_lpac_fixture: Some(fixture)",
+    ),
   "the Key Agent LPAC launchability fixture must remain test-only, profile-folder confined, CSPRNG-unique, exact-ACL protected, pinned, redacted, and non-recursively cleaned up",
 );
-const detachedImplStart = keyAgentActivation.indexOf("impl DetachedSuspendedDebuggee {");
+const detachedImplStart = keyAgentActivation.indexOf(
+  "impl DetachedSuspendedDebuggee {",
+);
 const detachedImplEnd = keyAgentActivation.indexOf(
   "impl fmt::Debug for DetachedSuspendedDebuggee",
 );
-const detachedImpl = keyAgentActivation.slice(detachedImplStart, detachedImplEnd);
-const detachedMethods = [...detachedImpl.matchAll(
-  /pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
+const detachedImpl = keyAgentActivation.slice(
+  detachedImplStart,
+  detachedImplEnd,
+);
+const detachedMethods = [
+  ...detachedImpl.matchAll(/pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+].map((match) => match[1]);
 requireInvariant(
   keyAgentActivation.includes(
     "pub(super) struct DetachedSuspendedDebuggee(SuspendedDebuggee);",
   ) &&
-    keyAgentActivation.includes("unsafe impl Send for DetachedSuspendedDebuggee {}") &&
+    keyAgentActivation.includes(
+      "unsafe impl Send for DetachedSuspendedDebuggee {}",
+    ) &&
     !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+SuspendedDebuggee\b/u.test(
       keyAgentActivation,
     ) &&
@@ -20287,9 +21789,9 @@ const detachedRunningImpl = keyAgentActivation.slice(
   detachedRunningImplStart,
   detachedRunningImplEnd,
 );
-const detachedRunningMethods = [...detachedRunningImpl.matchAll(
-  /pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
+const detachedRunningMethods = [
+  ...detachedRunningImpl.matchAll(/pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+].map((match) => match[1]);
 const exactDetachedKeyAgentResidentRevalidation = compactRust(`
 pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
     if !self.is_detached_and_running() {
@@ -20362,7 +21864,9 @@ requireInvariant(
   keyAgentActivation.includes(
     "pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);",
   ) &&
-    keyAgentActivation.includes("unsafe impl Send for DetachedRunningDebuggee {}") &&
+    keyAgentActivation.includes(
+      "unsafe impl Send for DetachedRunningDebuggee {}",
+    ) &&
     !/unsafe\s+impl\s+Sync\s+for\s+DetachedRunningDebuggee\b/u.test(
       keyAgentActivation,
     ) &&
@@ -20381,7 +21885,8 @@ requireInvariant(
     detachedKeyAgentResidentContract(detachedRunningImpl) &&
     detachedKeyAgentResidentMutationProbes.every(
       (probe) =>
-        probe !== detachedRunningImpl && !detachedKeyAgentResidentContract(probe),
+        probe !== detachedRunningImpl &&
+        !detachedKeyAgentResidentContract(probe),
     ) &&
     !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedRunningDebuggee/u.test(
       keyAgentActivation,
@@ -20405,7 +21910,9 @@ requireInvariant(
 );
 requireInvariant(
   /(?:^|\n)enum\s+HelperRole\s*\{/u.test(activationHelper) &&
-    !/(?:^|\n)pub(?:\([^)]*\))?\s+enum\s+HelperRole\s*\{/u.test(activationHelper) &&
+    !/(?:^|\n)pub(?:\([^)]*\))?\s+enum\s+HelperRole\s*\{/u.test(
+      activationHelper,
+    ) &&
     activationHelper.includes("matches!(self.role, HelperRole::KeyAgent)") &&
     activationHelper.includes(
       "role: HelperRole::from_release_file_name(&verifier.manifest.file_name)",
@@ -20420,7 +21927,9 @@ const keyAgentBoundaryDocumentation = [
   keyAgentProtocolDocumentation,
 ].join("\n");
 requireInvariant(
-    activationArchitecture.includes("### Key Agent activation invariant (STOP-SHIP)") &&
+  activationArchitecture.includes(
+    "### Key Agent activation invariant (STOP-SHIP)",
+  ) &&
     /fresh\s+dedicated OS thread/u.test(activationArchitecture) &&
     /all-zero[\s\S]{0,100}all-`FF`/u.test(activationArchitecture) &&
     activationArchitecture.includes("YourWallet.KeyAgent.LPAC.v1") &&
@@ -20444,13 +21953,17 @@ requireInvariant(
     activationReadme.includes("`registryRead`") &&
     activationArchitecture.includes("**STOP-SHIP (English):**") &&
     activationArchitecture.includes("**릴리스 차단 조건 (한국어):**") &&
-    activationArchitecture.includes("deadline-bound process-wide coordinator") &&
+    activationArchitecture.includes(
+      "deadline-bound process-wide coordinator",
+    ) &&
     activationArchitecture.includes("one loaded crate instance") &&
     activationArchitecture.includes("separate matching static lock") &&
     activationArchitecture.includes("supervisor is single-instance") &&
     activationArchitecture.includes("receives inheritable stdio handles") &&
     activationReadme.includes("**Implemented Rust coordination boundary:**") &&
-    activationReadme.includes("**Scope and remaining STOP-SHIP conditions:**") &&
+    activationReadme.includes(
+      "**Scope and remaining STOP-SHIP conditions:**",
+    ) &&
     activationReadme.includes("**구현 범위와 남은 릴리스 차단 조건:**") &&
     activationReadme.includes("one loaded `platform-windows` crate") &&
     activationReadme.includes("`std::process::Command`") &&
@@ -20460,7 +21973,9 @@ requireInvariant(
     keyAgentBoundaryDocumentation.includes("CheckTokenMembershipEx") &&
     keyAgentBoundaryDocumentation.includes("(false, true)") &&
     keyAgentBoundaryDocumentation.includes("(true, true)") &&
-    !/\bToken(?:Groups|RestrictedSids)\b/u.test(keyAgentBoundaryDocumentation) &&
+    !/\bToken(?:Groups|RestrictedSids)\b/u.test(
+      keyAgentBoundaryDocumentation,
+    ) &&
     !/Keep zero-capability Key Agent LPAC activation and profile provisioning\s+\*\*STOP-SHIP\*\* until a distinct Key Agent profile is provisioned/iu.test(
       keyAgentBoundaryDocumentation,
     ) &&
@@ -20478,9 +21993,13 @@ requireInvariant(
       "The sole production-compiled mint is the private sealed existing-install",
     ) &&
     activationArchitecture.includes("VerifiedExistingKeyAgentInstall") &&
-    /activation에 넣을 수\s+없는 `Pending` capability만 반환/u.test(rootReadme) &&
+    /activation에 넣을 수\s+없는 `Pending` capability만 반환/u.test(
+      rootReadme,
+    ) &&
     rootReadme.includes("pending/candidate의 직접 conversion") &&
-    rootReadme.includes("production에 컴파일되는 `PreparedKeyAgentProvisioning` mint는 정확히 하나") &&
+    rootReadme.includes(
+      "production에 컴파일되는 `PreparedKeyAgentProvisioning` mint는 정확히 하나",
+    ) &&
     securityDecisions.includes(
       "returns only a non-launchable pending capability",
     ) &&
@@ -20564,10 +22083,7 @@ requireInvariant(
     /public\s+`WindowsGenerationStore` (?:is unchanged and\s+)?remains\s+stable-`TokenUser`-only/u.test(
       activationArchitecture,
     ) &&
-    [
-      activationArchitecture,
-      activationReadme,
-    ].every(
+    [activationArchitecture, activationReadme].every(
       (document) =>
         /request[^\n]{0,120}EOF/iu.test(document) &&
         /response[^\n]{0,120}EOF/iu.test(document) &&
@@ -20646,7 +22162,9 @@ requireInvariant(
     activationReadme.includes("suffix and missing-EOF negatives") &&
     activationReadme.includes("no generic Key Agent runtime or") &&
     activationReadme.includes("signing IPC exists") &&
-    /not a production fresh\s+fixed profile\/root E2E/u.test(activationReadme) &&
+    /not a production fresh\s+fixed profile\/root E2E/u.test(
+      activationReadme,
+    ) &&
     !/Generation-file adaptation\/file DACLs[^\n]*STOP-SHIP/iu.test(
       keyAgentBoundaryDocumentation,
     ) &&
@@ -20657,7 +22175,9 @@ requireInvariant(
     !/(?:generation-file|generation-store)[^\n]{0,100}(?:adapter|DACL)[^\n]{0,100}(?:absent|missing|pending|unimplemented)/iu.test(
       keyAgentBoundaryDocumentation,
     ) &&
-    keyAgentBoundaryDocumentation.includes("durable installer provenance/recovery") &&
+    keyAgentBoundaryDocumentation.includes(
+      "durable installer provenance/recovery",
+    ) &&
     keyAgentBoundaryDocumentation.includes("same-user mutation") &&
     /CSPRNG(?:-named)?\s+(?:test|storage)\s+leaf/u.test(
       keyAgentBoundaryDocumentation,
@@ -20686,6 +22206,20 @@ requireInvariant(
 );
 
 const approvalRunOnce = rustTopLevelFunctionBlock(approvalMain, "run_once");
+const approvalAuthenticateInheritedParent = rustTopLevelFunctionBlock(
+  approvalBootstrap,
+  "authenticate_inherited_parent",
+);
+const approvalAuthenticatedRequestImpl = rustImplItemAtDepth(
+  approvalBootstrap,
+  "impl AuthenticatedApprovalRequest",
+  0,
+);
+const approvalAuthenticatedRequestNew = rustFunctionBlockAtDepth(
+  approvalAuthenticatedRequestImpl,
+  "new",
+  1,
+);
 const approvalRuntimeMainFirstOperationContract = (source) => {
   const expected = `#[cfg(feature = "runtime-entrypoint")]
 fn main() {
@@ -20695,14 +22229,20 @@ fn main() {
     };
     std::process::exit(exit_code);
 }`;
-  return source.includes(expected) && source.indexOf(expected) === source.lastIndexOf(expected);
+  return (
+    source.includes(expected) &&
+    source.indexOf(expected) === source.lastIndexOf(expected)
+  );
 };
 const approvalRuntimeMainFirstOperationMutationProbes = [
   approvalMain.replace(
     "fn main() {\n    let exit_code = match run_once() {",
     "fn main() {\n    side_effect();\n    let exit_code = match run_once() {",
   ),
-  approvalMain.replace("match run_once()", "match (side_effect(), run_once()).1"),
+  approvalMain.replace(
+    "match run_once()",
+    "match (side_effect(), run_once()).1",
+  ),
 ];
 const approvalSealedStdioDefinition = rustTopLevelLexicalItemBlock(
   approvalBootstrapWindowsProduction,
@@ -20733,6 +22273,543 @@ const approvalHandleFlags = rustTopLevelFunctionBlock(
   "handle_flags",
 );
 
+const approvalParentAuthenticationContract = (source) => {
+  let channelsDefinition;
+  let profileConst;
+  let parentPolicyConst;
+  let authenticated;
+  let verifyParentProcessId;
+  let verifySelfAndChannels;
+  let pipeClient;
+  let validateParentProofSet;
+  let exactObjectsDistinct;
+  let rejectThreadImpersonation;
+  let deriveExpectedProfileSid;
+  let verifyLpacToken;
+  let verifyJob;
+  let verifyParentHandles;
+  let requireParentCreatedFirst;
+  let verifyParentArtifact;
+  let tokenDword;
+  let tokenInformation;
+  let processImagePath;
+  let finalHandlePath;
+  let fileVersion;
+  let decodeFixedFileVersion;
+  let normalizePath;
+  let verifyAuthenticode;
+  let signerCertificateHash;
+  let duplicateUntrustedCandidate;
+  let adoptValidatedHandle;
+  let sidImpl;
+  let sidDrop;
+  try {
+    channelsDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+Channels\s*\{/u,
+    );
+    profileConst = rustConstItemAtDepth(source, "PROFILE_V1_NAME", 0);
+    parentPolicyConst = rustConstItemAtDepth(
+      source,
+      "COMPILED_PARENT_POLICY",
+      0,
+    );
+    authenticated = rustTopLevelFunctionBlock(source, "authenticate_request");
+    verifyParentProcessId = rustTopLevelFunctionBlock(
+      source,
+      "verify_parent_process_id",
+    );
+    verifySelfAndChannels = rustTopLevelFunctionBlock(
+      source,
+      "verify_self_and_channels",
+    );
+    pipeClient = rustTopLevelFunctionBlock(source, "pipe_client");
+    validateParentProofSet = rustTopLevelFunctionBlock(
+      source,
+      "validate_parent_proof_handle_set",
+    );
+    exactObjectsDistinct = rustTopLevelFunctionBlock(
+      source,
+      "exact_objects_are_pairwise_distinct",
+    );
+    rejectThreadImpersonation = rustTopLevelFunctionBlock(
+      source,
+      "reject_thread_impersonation",
+    );
+    deriveExpectedProfileSid = rustTopLevelFunctionBlock(
+      source,
+      "derive_expected_profile_sid",
+    );
+    verifyLpacToken = rustTopLevelFunctionBlock(source, "verify_lpac_token");
+    verifyJob = rustTopLevelFunctionBlock(source, "verify_job");
+    verifyParentHandles = rustTopLevelFunctionBlock(
+      source,
+      "verify_parent_handles",
+    );
+    requireParentCreatedFirst = rustTopLevelFunctionBlock(
+      source,
+      "require_parent_created_first",
+    );
+    verifyParentArtifact = rustTopLevelFunctionBlock(
+      source,
+      "verify_parent_artifact",
+    );
+    tokenDword = rustTopLevelFunctionBlock(source, "token_dword");
+    tokenInformation = rustTopLevelFunctionBlock(source, "token_information");
+    processImagePath = rustTopLevelFunctionBlock(source, "process_image_path");
+    finalHandlePath = rustTopLevelFunctionBlock(source, "final_handle_path");
+    fileVersion = rustTopLevelFunctionBlock(source, "file_version");
+    decodeFixedFileVersion = rustTopLevelFunctionBlock(
+      source,
+      "decode_fixed_file_version",
+    );
+    normalizePath = rustTopLevelFunctionBlock(source, "normalize_path");
+    verifyAuthenticode = rustTopLevelFunctionBlock(
+      source,
+      "verify_authenticode",
+    );
+    signerCertificateHash = rustTopLevelFunctionBlock(
+      source,
+      "signer_certificate_hash",
+    );
+    duplicateUntrustedCandidate = rustTopLevelFunctionBlock(
+      source,
+      "duplicate_untrusted_candidate",
+    );
+    adoptValidatedHandle = rustTopLevelFunctionBlock(
+      source,
+      "adopt_validated_handle",
+    );
+    sidImpl = rustImplItemAtDepth(source, "impl UnvalidatedProfileApiSid", 0);
+    sidDrop = rustImplItemAtDepth(
+      source,
+      "impl Drop for UnvalidatedProfileApiSid",
+      0,
+    );
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  const authenticatedCompact = compactRust(authenticated);
+  const selfCompact = compactRust(verifySelfAndChannels);
+  const lpacCompact = compactRust(verifyLpacToken);
+  const parentCompact = compactRust(verifyParentHandles);
+  const artifactCompact = compactRust(verifyParentArtifact);
+  return (
+    normalizeRustFragment(profileConst) ===
+      'const PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";' &&
+    normalizeRustFragment(parentPolicyConst) ===
+      "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;" &&
+    source.includes("const VS_FIXEDFILEINFO_SIGNATURE: u32 = 0xFEEF_04BD;") &&
+    [...code.matchAll(/(?:^|\n)\s*const\s+COMPILED_PARENT_POLICY\b/gu)].filter(
+      (match) => rustBraceDepthBefore(code, match.index) === 0,
+    ).length === 1 &&
+    normalizeRustFragment(rustLexicalCode(channelsDefinition)) ===
+      "struct Channels { stdio: SealedApprovalStdio, parent_process_id: u32, parent_session_id: u32, }" &&
+    /#\s*\[\s*must_use\s*=/u.test(code) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:Channels|SealedApprovalStdio|VerifiedParentHandles)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:Channels|SealedApprovalStdio|VerifiedParentHandles)\b/u.test(
+      code,
+    ) &&
+    authenticatedCompact.startsWith(
+      "pub(super)fnauthenticate_request()->Result<AuthenticatedApprovalRequest,approval_ui::ApprovalError>{letsealed_stdio=seal_inherited_approval_stdio()?;letchannels=verify_self_and_channels(sealed_stdio)?;letSome(policy)=COMPILED_PARENT_POLICYelse{returnErr(native_failure(()));};",
+    ) &&
+    orderedRustMarkersAtDepth(authenticated, [
+      {
+        marker: "let sealed_stdio = seal_inherited_approval_stdio()?",
+        depth: 1,
+      },
+      {
+        marker: "let channels = verify_self_and_channels(sealed_stdio)?",
+        depth: 1,
+      },
+      { marker: "let Some(policy) = COMPILED_PARENT_POLICY else", depth: 1 },
+      { marker: "let input = std::io::stdin()", depth: 1 },
+      { marker: "let mut reader = input.lock()", depth: 1 },
+      {
+        marker:
+          "let mut encoded_parent = Zeroizing::new([0_u8; PARENT_HELLO_BYTES])",
+        depth: 1,
+      },
+      { marker: "reader.read_exact(&mut *encoded_parent)?", depth: 1 },
+      {
+        marker: "let parent_hello = decode_parent_hello(&*encoded_parent)?",
+        depth: 1,
+      },
+      {
+        marker:
+          "verify_parent_process_id(&parent_hello, channels.parent_process_id)?",
+        depth: 1,
+      },
+      { marker: "let parent_handles = verify_parent_handles(", depth: 1 },
+      { marker: "getrandom::fill(&mut child_nonce)", depth: 1 },
+      {
+        marker: "let child_hello = ApprovalChildHello::new(child_nonce)?",
+        depth: 1,
+      },
+      { marker: "child_nonce.zeroize()", depth: 1 },
+      {
+        marker:
+          "let encoded_child = encode_child_hello(&parent_hello, &child_hello)",
+        depth: 1,
+      },
+      { marker: "writer.write_all(&encoded_child)?", depth: 1 },
+      { marker: "writer.flush()?", depth: 1 },
+      { marker: "let maximum_finish = PARENT_FINISH_HEADER_BYTES", depth: 1 },
+      { marker: "if maximum_finish != MAX_PARENT_FINISH_BYTES", depth: 1 },
+      { marker: "let read_bound = u64::try_from(maximum_finish)", depth: 1 },
+      { marker: "let mut finish = Zeroizing::new(Vec::new())", depth: 1 },
+      { marker: "reader.take(read_bound).read_to_end(&mut finish)?", depth: 1 },
+      { marker: "if finish.len() > maximum_finish", depth: 1 },
+      {
+        marker:
+          "let request = decode_parent_finish(&parent_hello, &child_hello, finish.as_slice())?",
+        depth: 1,
+      },
+      { marker: "drop(parent_handles)", depth: 1 },
+      { marker: "Ok(AuthenticatedApprovalRequest::new(request))", depth: 1 },
+    ]) &&
+    rustCallSites(authenticated, "seal_inherited_approval_stdio").length ===
+      1 &&
+    rustCallSites(authenticated, "verify_self_and_channels").length === 1 &&
+    rustCallSites(authenticated, "decode_parent_hello").length === 1 &&
+    rustCallSites(authenticated, "verify_parent_handles").length === 1 &&
+    rustCallSites(authenticated, "decode_parent_finish").length === 1 &&
+    rustCallSites(authenticated, "read_request").length === 0 &&
+    authenticatedCompact.includes(
+      "letmaximum_finish=PARENT_FINISH_HEADER_BYTES.checked_add(usize::try_from(approval_ui::MAX_REQUEST_BYTES).map_err(native_failure)?).ok_or_else(||native_failure(()))?;",
+    ) &&
+    authenticatedCompact.includes(
+      "letread_bound=u64::try_from(maximum_finish).map_err(native_failure)?.checked_add(1).ok_or_else(||native_failure(()))?;",
+    ) &&
+    selfCompact.startsWith(
+      "fnverify_self_and_channels(sealed:SealedApprovalStdio,)->Result<Channels,approval_ui::ApprovalError>{set_binary_stdio(&sealed)?;verify_lpac_token()?;verify_job()?;",
+    ) &&
+    JSON.stringify(
+      rustCallSites(verifySelfAndChannels, "pipe_client").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input"], ["output"]]) &&
+    selfCompact.includes(
+      "ifinput_pid==0||input_pid!=output_pid||input_session!=output_session||input_session==u32::MAX{returnErr(native_failure(()));}",
+    ) &&
+    selfCompact.includes(
+      "ifparent_process_session!=input_session||child_session!=input_session{",
+    ) &&
+    JSON.stringify(
+      rustCallSites(verifySelfAndChannels, "ProcessIdToSessionId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["input_pid", "&rawmutparent_process_session"],
+        ["std::process::id()", "&rawmutchild_session"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(pipeClient, "GetNamedPipeClientProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutprocess_id"]]) &&
+    JSON.stringify(
+      rustCallSites(pipeClient, "GetNamedPipeClientSessionId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutsession_id"]]) &&
+    compactRust(verifyParentProcessId).includes(
+      "(hello.process_id()==expected_process_id).then_some(()).ok_or_else(||native_failure(()))",
+    ) &&
+    compactRust(deriveExpectedProfileSid).includes(
+      "reject_thread_impersonation()?;letexpected=unsafe{DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr()))}.map(UnvalidatedProfileApiSid::new);reject_thread_impersonation()?;expected.map_err(native_failure)",
+    ) &&
+    rustCallSites(
+      deriveExpectedProfileSid,
+      "DeriveAppContainerSidFromAppContainerName",
+    ).length === 1 &&
+    rustCallSites(deriveExpectedProfileSid, "reject_thread_impersonation")
+      .length === 2 &&
+    compactRust(rejectThreadImpersonation).includes(
+      "Err(error)iferror.code()==ERROR_NO_TOKEN.to_hresult()=>Ok(())",
+    ) &&
+    rustLexicalCode(sidImpl).includes("IsValidSid(actual)") &&
+    rustLexicalCode(sidImpl).includes("IsValidSid(expected)") &&
+    rustLexicalCode(sidImpl).includes("EqualSid(actual, expected)") &&
+    rustLexicalCode(sidDrop).includes("FreeSid(sid)") &&
+    JSON.stringify(
+      rustCallSites(verifyLpacToken, "token_dword").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&token", "TokenIsAppContainer"],
+        ["&token", "TokenIsLessPrivilegedAppContainer"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(verifyLpacToken, "token_information").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&token", "TokenCapabilities"],
+        ["&token", "TokenAppContainerSid"],
+      ]) &&
+    lpacCompact.includes(
+      "iftoken_dword(&token,TokenIsAppContainer)?!=1||token_dword(&token,TokenIsLessPrivilegedAppContainer)?!=1{",
+    ) &&
+    lpacCompact.includes("ifcount!=0{") &&
+    lpacCompact.includes("letprofile=wide_nul(PROFILE_V1_NAME)") &&
+    lpacCompact.includes(
+      "letexpected=derive_expected_profile_sid(&profile)?",
+    ) &&
+    lpacCompact.includes(".matches(container.TokenAppContainer)?") &&
+    rustLexicalCode(verifyJob).includes(
+      "IsProcessInJob(GetCurrentProcess(), None",
+    ) &&
+    rustLexicalCode(verifyJob).includes("QueryInformationJobObject(") &&
+    compactRust(verifyJob).includes(
+      "basic.LimitFlags&JOB_OBJECT_LIMIT_ACTIVE_PROCESS==JOB_OBJECT_LIMIT(0)||basic.LimitFlags&JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE==JOB_OBJECT_LIMIT(0)||basic.ActiveProcessLimit!=1",
+    ) &&
+    normalizeRustFragment(rustLexicalCode(validateParentProofSet)).includes(
+      "let handles = [stdin, stdout, process, image];",
+    ) &&
+    rustLexicalCode(validateParentProofSet).includes(
+      ".any(|handle| !matches!(handle_flags(*handle), Ok(0)))",
+    ) &&
+    rustLexicalCode(validateParentProofSet).includes(
+      "!exact_objects_are_pairwise_distinct(&handles)",
+    ) &&
+    rustLexicalCode(exactObjectsDistinct).includes(".skip(index + 1)") &&
+    orderedRustMarkersAtDepth(verifyParentHandles, [
+      {
+        marker: "let process_candidate = HANDLE(process_value as RawHandle)",
+        depth: 1,
+      },
+      {
+        marker: "let image_candidate = HANDLE(image_value as RawHandle)",
+        depth: 1,
+      },
+      {
+        marker:
+          "validate_parent_proof_handle_set(process_candidate, image_candidate, stdin, stdout)?",
+        depth: 1,
+      },
+      {
+        marker:
+          "let process_copy = duplicate_untrusted_candidate(process_candidate)?",
+        depth: 1,
+      },
+      {
+        marker:
+          "let image_copy = duplicate_untrusted_candidate(image_candidate)?",
+        depth: 1,
+      },
+      {
+        marker: "let process_id = unsafe { GetProcessId(raw(&process_copy)) }",
+        depth: 1,
+      },
+      {
+        marker:
+          "let process_wait = unsafe { WaitForSingleObject(raw(&process_copy), 0) }",
+        depth: 1,
+      },
+      {
+        marker:
+          "if process_id != hello.process_id() || process_wait != WAIT_TIMEOUT",
+        depth: 1,
+      },
+      { marker: "if session != expected_session", depth: 1 },
+      { marker: "require_parent_created_first(&process_copy)?", depth: 1 },
+      {
+        marker: "verify_parent_artifact(&process_copy, &image_copy, policy)?",
+        depth: 1,
+      },
+      {
+        marker: "if !same_object(process_candidate, raw(&process_copy))",
+        depth: 1,
+      },
+      {
+        marker:
+          "let process = unsafe { adopt_validated_handle(process_candidate) }",
+        depth: 1,
+      },
+      {
+        marker:
+          "let image = unsafe { adopt_validated_handle(image_candidate) }",
+        depth: 1,
+      },
+      { marker: "Ok(VerifiedParentHandles {", depth: 1 },
+    ]) &&
+    parentCompact.includes(
+      "if!same_object(process_candidate,raw(&process_copy))||!same_object(image_candidate,raw(&image_copy))||!matches!(handle_flags(process_candidate),Ok(0))||!matches!(handle_flags(image_candidate),Ok(0)){",
+    ) &&
+    JSON.stringify(
+      rustCallSites(duplicateUntrustedCandidate, "DuplicateHandle").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "handle",
+          "GetCurrentProcess()",
+          "&rawmutduplicate",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    compactRust(adoptValidatedHandle) ===
+      "unsafefnadopt_validated_handle(handle:HANDLE)->OwnedHandle{unsafe{OwnedHandle::from_raw_handle(handle.0)}}" &&
+    compactRust(requireParentCreatedFirst).includes(
+      "parent_creation<=child_creation",
+    ) &&
+    artifactCompact.includes(
+      "ifpolicy.executable_sha256==[0;32]||policy.signer_certificate_sha256==[0;32]||policy.version==[0;4]{",
+    ) &&
+    artifactCompact.includes("letprocess_path=process_image_path(process)?") &&
+    artifactCompact.includes("letimage_path=final_handle_path(image)?") &&
+    artifactCompact.includes("ifnormalized_process!=normalized_image") &&
+    verifyParentArtifact.includes(
+      '!normalized_image.ends_with("\\\\key-agent.exe")',
+    ) &&
+    artifactCompact.includes("file_version(&image_path)?!=policy.version") &&
+    orderedRustMarkersAtDepth(verifyParentArtifact, [
+      {
+        marker:
+          "verify_authenticode(image, &image_path, policy.signer_certificate_sha256)?",
+        depth: 1,
+      },
+      {
+        marker:
+          "let mut file = File::from(image.try_clone().map_err(native_failure)?)",
+        depth: 1,
+      },
+      { marker: "let actual: [u8; 32] = hash.finalize().into()", depth: 1 },
+      {
+        marker: "bool::from(actual.ct_eq(&policy.executable_sha256))",
+        depth: 1,
+      },
+      { marker: ".then_some(())", depth: 1 },
+      { marker: ".ok_or_else(|| native_failure(()))", depth: 1 },
+    ]) &&
+    compactRust(tokenDword).includes(
+      "ifusize::try_from(returned).map_err(native_failure)?!=size_of::<u32>(){",
+    ) &&
+    compactRust(tokenInformation).includes(
+      "ifrequired==0||required>MAX_TOKEN_INFORMATION_BYTES{",
+    ) &&
+    compactRust(tokenInformation).includes(
+      "ifreturned==0||returned>required{",
+    ) &&
+    rustCallSites(processImagePath, "QueryFullProcessImageNameW").length ===
+      1 &&
+    rustCallSites(finalHandlePath, "GetFinalPathNameByHandleW").length === 1 &&
+    rustCallSites(fileVersion, "GetFileVersionInfoW").length === 1 &&
+    rustCallSites(fileVersion, "VerQueryValueW").length === 1 &&
+    rustCallSites(fileVersion, "decode_fixed_file_version").length === 1 &&
+    compactRust(decodeFixedFileVersion).includes(
+      "iffixed.dwSignature!=VS_FIXEDFILEINFO_SIGNATURE{returnErr(native_failure(()));}",
+    ) &&
+    compactRust(normalizePath) ===
+      "fnnormalize_path(path:&str)->String{path.strip_prefix().unwrap_or(path).replace(,)}" &&
+    normalizePath.includes('strip_prefix(r"\\\\?\\")') &&
+    normalizePath.includes(".replace('/', \"\\\\\")") &&
+    !/\bto_lowercase\b/u.test(rustLexicalCode(normalizePath)) &&
+    rustCallSites(verifyAuthenticode, "WinVerifyTrust").length === 2 &&
+    compactRust(verifyAuthenticode).includes(
+      "if!signer_matches||close!=i32::try_from(ERROR_SUCCESS.0).unwrap_or(0){",
+    ) &&
+    rustCallSites(signerCertificateHash, "WTHelperProvDataFromStateData")
+      .length === 1 &&
+    rustCallSites(signerCertificateHash, "WTHelperGetProvSignerFromChain")
+      .length === 1 &&
+    compactRust(signerCertificateHash).includes(
+      "Some(Sha256::digest(bytes).into())",
+    )
+  );
+};
+const approvalParentAuthenticationMutationProbes = [
+  approvalBootstrapWindowsProduction.replace(
+    "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;",
+    "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = alternate_policy();",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "const VS_FIXEDFILEINFO_SIGNATURE: u32 = 0xFEEF_04BD;",
+    "const VS_FIXEDFILEINFO_SIGNATURE: u32 = 0;",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    decode_fixed_file_version(fixed)",
+    "    Ok([0; 4])",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if fixed.dwSignature != VS_FIXEDFILEINFO_SIGNATURE {",
+    "    if false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        .replace('/', \"\\\\\")",
+    "        .replace('/', \"\\\\\")\n        .to_lowercase()",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    let sealed_stdio = seal_inherited_approval_stdio()?;",
+    "    side_effect();\n    let sealed_stdio = seal_inherited_approval_stdio()?;",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    verify_parent_process_id(&parent_hello, channels.parent_process_id)?;\n",
+    "",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    getrandom::fill(&mut child_nonce).map_err(native_failure)?;",
+    "    child_nonce.fill(7);",
+  ),
+  approvalBootstrapWindowsProduction.replace("    writer.flush()?;\n", ""),
+  approvalBootstrapWindowsProduction.replace(
+    "    reader.take(read_bound).read_to_end(&mut finish)?;",
+    "    reader.read_to_end(&mut finish)?;",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        .checked_add(1)",
+    "        .checked_add(0)",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    drop(parent_handles);\n    Ok(AuthenticatedApprovalRequest::new(request))",
+    "    Ok(AuthenticatedApprovalRequest::new(request))",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || !exact_objects_are_pairwise_distinct(&handles)",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "            .any(|handle| !matches!(handle_flags(*handle), Ok(0)))",
+    "            .any(|_| false)",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "            false,\n            DUPLICATE_SAME_ACCESS,",
+    "            true,\n            DUPLICATE_SAME_ACCESS,",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "        || !same_object(image_candidate, raw(&image_copy))",
+    "        || false",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    reject_thread_impersonation()?;\n    expected.map_err(native_failure)",
+    "    expected.map_err(native_failure)",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if count != 0 {",
+    "    if false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "token_dword(&token, TokenIsLessPrivilegedAppContainer)? != 1",
+    "token_dword(&token, TokenIsLessPrivilegedAppContainer)? == 1",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    if usize::try_from(returned).map_err(native_failure)? != size_of::<u32>() {",
+    "    if false {",
+  ),
+  approvalBootstrapWindowsProduction.replace(
+    "    verify_authenticode(image, &image_path, policy.signer_certificate_sha256)?;",
+    "    if false { verify_authenticode(image, &image_path, policy.signer_certificate_sha256)?; }",
+  ),
+];
+
 const approvalFirstOperationEnvelope = (source) => {
   let runOnce;
   try {
@@ -20747,53 +22824,42 @@ const approvalFirstOperationEnvelope = (source) => {
     compact
       .slice(opening + 1)
       .startsWith(
-        "letsealed_stdio=bootstrap::seal_inherited_approval_stdio()?;bootstrap::set_binary_stdio(&sealed_stdio)?;",
+        "letauthenticated=bootstrap::authenticate_inherited_parent()?;letrequest=authenticated.request();",
       ) &&
     compact.includes(
-      "letresult=approval_ui::write_response(&mutwriter,response);drop(writer);drop(sealed_stdio);result}",
+      "letresult=approval_ui::write_response(&mutwriter,response);drop(writer);drop(authenticated);result}",
     ) &&
     JSON.stringify(
-      rustCallSites(runOnce, "seal_inherited_approval_stdio").map((call) =>
+      rustCallSites(runOnce, "authenticate_inherited_parent").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([[]]) &&
-    JSON.stringify(
-      rustCallSites(runOnce, "set_binary_stdio").map((call) =>
-        call.arguments.map(compactRust),
-      ),
-    ) === JSON.stringify([["&sealed_stdio"]]) &&
+    rustCallSites(runOnce, "seal_inherited_approval_stdio").length === 0 &&
+    rustCallSites(runOnce, "set_binary_stdio").length === 0 &&
+    rustCallSites(runOnce, "read_request").length === 0 &&
     JSON.stringify(
       rustCallSites(runOnce, "drop").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([
-        ["reader"],
-        ["writer"],
-        ["sealed_stdio"],
-      ])
+    ) === JSON.stringify([["writer"], ["authenticated"]])
   );
 };
 const approvalFirstOperationMutationProbes = [
   approvalMain.replace(
-    "    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
-    "    side_effect();\n    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
+    "    let authenticated = bootstrap::authenticate_inherited_parent()?;",
+    "    side_effect();\n    let authenticated = bootstrap::authenticate_inherited_parent()?;",
   ),
   approvalMain.replace(
-    "    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;\n    bootstrap::set_binary_stdio(&sealed_stdio)?;",
-    "    bootstrap::set_binary_stdio(&sealed_stdio)?;\n    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
+    "bootstrap::authenticate_inherited_parent()?",
+    "(bootstrap::authenticate_inherited_parent()?, side_effect()).0",
   ),
   approvalMain.replace(
-    "bootstrap::seal_inherited_approval_stdio()?",
-    "(bootstrap::seal_inherited_approval_stdio()?, side_effect()).0",
+    "    let request = authenticated.request();",
+    "    let request = approval_ui::read_request(&mut std::io::stdin())?;",
   ),
   approvalMain.replace(
-    "bootstrap::set_binary_stdio(&sealed_stdio)?",
-    "bootstrap::set_binary_stdio(side_effect(&sealed_stdio))?",
-  ),
-  approvalMain.replace(
-    "    let result = approval_ui::write_response(&mut writer, response);",
-    "    drop(sealed_stdio);\n    let result = approval_ui::write_response(&mut writer, response);",
+    "    drop(authenticated);",
+    "    forget(authenticated);",
   ),
 ];
 
@@ -20878,7 +22944,11 @@ const approvalSealExactContract = (source) => {
       rustCallSites(source, "same_object").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["input", "output"], ["output", "error"]]) &&
+    ) ===
+      JSON.stringify([
+        ["input", "output"],
+        ["output", "error"],
+      ]) &&
     JSON.stringify(
       rustCallSites(source, "GetFileType").map((call) =>
         call.arguments.map(compactRust),
@@ -20907,7 +22977,10 @@ const approvalSealExactContract = (source) => {
   );
 };
 const approvalSealExactMutationProbes = [
-  approvalSealExactStdio.replace("        || output != error", "        || false"),
+  approvalSealExactStdio.replace(
+    "        || output != error",
+    "        || false",
+  ),
   approvalSealExactStdio.replace(
     "unsafe { GetFileType(output) } != FILE_TYPE_PIPE",
     "unsafe { GetFileType(input) } != FILE_TYPE_PIPE",
@@ -20916,7 +22989,10 @@ const approvalSealExactMutationProbes = [
     "flags == HANDLE_FLAG_INHERIT.0",
     "flags & HANDLE_FLAG_INHERIT.0 != 0",
   ),
-  approvalSealExactStdio.replace("for handle in unique", "for handle in [unique[0]]"),
+  approvalSealExactStdio.replace(
+    "for handle in unique",
+    "for handle in [unique[0]]",
+  ),
   approvalSealExactStdio.replace(
     "let exact_zero_flags = unique",
     "let exact_zero_flags = [input]",
@@ -20938,7 +23014,7 @@ const approvalSealExactMutationProbes = [
 const approvalSetBinaryContract = (source) => {
   const compact = compactRust(source);
   return (
-    /^pub\(crate\)\s+fn\s+set_binary_stdio\s*\(\s*sealed\s*:\s*&SealedApprovalStdio\s*,?\s*\)\s*->\s*Result<\(\),\s*approval_ui::ApprovalError>\s*\{/u.test(
+    /^fn\s+set_binary_stdio\s*\(\s*sealed\s*:\s*&SealedApprovalStdio\s*,?\s*\)\s*->\s*Result<\(\),\s*approval_ui::ApprovalError>\s*\{/u.test(
       rustLexicalCode(source),
     ) &&
     JSON.stringify(
@@ -20959,14 +23035,14 @@ const approvalSetBinaryContract = (source) => {
     compact.includes(
       "letinput_still_sealed=matches!(handle_flags(sealed.input),Ok(0));letoutput_still_sealed=matches!(handle_flags(sealed.output),Ok(0));if!input_still_sealed||!output_still_sealed{returnErr(native_failure(()));}",
     ) &&
-    compact.indexOf("handle_flags(sealed.output)") < compact.indexOf("_setmode(0,O_BINARY)")
+    compact.indexOf("handle_flags(sealed.output)") <
+      compact.indexOf("_setmode(0,O_BINARY)")
   );
 };
 const approvalSetBinaryMutationProbes = [
-  approvalSetBinaryStdio.replace(
-    "sealed: &SealedApprovalStdio",
-    "_sealed: &SealedApprovalStdio",
-  ).replace("sealed.input", "GetStdHandle(STD_INPUT_HANDLE)?"),
+  approvalSetBinaryStdio
+    .replace("sealed: &SealedApprovalStdio", "_sealed: &SealedApprovalStdio")
+    .replace("sealed.input", "GetStdHandle(STD_INPUT_HANDLE)?"),
   approvalSetBinaryStdio.replace(
     "    let input_still_sealed",
     "    let _early_mode = unsafe { _setmode(0, O_BINARY) };\n    let input_still_sealed",
@@ -20975,7 +23051,10 @@ const approvalSetBinaryMutationProbes = [
     "if !input_still_sealed || !output_still_sealed",
     "if false",
   ),
-  approvalSetBinaryStdio.replace("_setmode(1, O_BINARY)", "_setmode(2, O_BINARY)"),
+  approvalSetBinaryStdio.replace(
+    "_setmode(1, O_BINARY)",
+    "_setmode(2, O_BINARY)",
+  ),
 ];
 
 const approvalTestsModule = rustLexicalItemBlockAtDepth(
@@ -21106,11 +23185,19 @@ const approvalFixtureContract = (source) => {
       "approval_deinheritance_grandchild_fixture",
       1,
     );
-    broadImpl = rustImplItemAtDepth(source, "impl BroadInheritanceGrandchild", 1);
+    broadImpl = rustImplItemAtDepth(
+      source,
+      "impl BroadInheritanceGrandchild",
+      1,
+    );
     broadSpawn = rustFunctionBlockAtDepth(broadImpl, "spawn", 1);
     objectProbe = rustFunctionBlockAtDepth(broadImpl, "names_same_object", 1);
     waitForSuccess = rustFunctionBlockAtDepth(source, "wait_for_success", 2);
-    terminateAndReap = rustFunctionBlockAtDepth(source, "terminate_and_reap", 2);
+    terminateAndReap = rustFunctionBlockAtDepth(
+      source,
+      "terminate_and_reap",
+      2,
+    );
   } catch {
     return false;
   }
@@ -21157,15 +23244,18 @@ const approvalFixtureContract = (source) => {
     { marker: "handle_flags(sentinel_raw)", depth: 1 },
     { marker: "assert!(grandchild.child.is_alive())", depth: 1 },
     {
-      marker: "assert!(grandchild.names_same_object(sentinel_raw, sentinel_raw)?)",
+      marker:
+        "assert!(grandchild.names_same_object(sentinel_raw, sentinel_raw)?)",
       depth: 1,
     },
     {
-      marker: "assert!(!grandchild.names_same_object(sealed.input, sealed.input)?)",
+      marker:
+        "assert!(!grandchild.names_same_object(sealed.input, sealed.input)?)",
       depth: 1,
     },
     {
-      marker: "assert!(!grandchild.names_same_object(sealed.output, sealed.output)?)",
+      marker:
+        "assert!(!grandchild.names_same_object(sealed.output, sealed.output)?)",
       depth: 1,
     },
     { marker: "grandchild.child.terminate_and_reap()?", depth: 1 },
@@ -21190,7 +23280,7 @@ const approvalFixtureContract = (source) => {
       "seal_exact_approval_stdio([raw(&event), output, output]).is_err()",
     ].every((marker) => rustLexicalCode(rejection).includes(marker)) &&
     compactRust(linearity) ===
-      "fnsealed_approval_stdio_is_thread_bound_non_clone_and_non_copy(){let_=<SealedApprovalStdioasAmbiguousIfSend<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfSync<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfClone<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfCopy<_>>::marker;}" &&
+      "fnsealed_approval_stdio_is_thread_bound_non_clone_and_non_copy(){let_=<SealedApprovalStdioasAmbiguousIfSend<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfSync<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfClone<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfCopy<_>>::marker;let_=<ChannelsasAmbiguousIfSend<_>>::marker;let_=<ChannelsasAmbiguousIfSync<_>>::marker;let_=<ChannelsasAmbiguousIfClone<_>>::marker;let_=<ChannelsasAmbiguousIfCopy<_>>::marker;}" &&
     driverOrder &&
     childOrder &&
     driverCompact.includes(
@@ -21268,7 +23358,11 @@ const approvalFixtureContract = (source) => {
       rustCallSites(terminateAndReap, "WaitForSingleObject").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["process", "0"], ["process", "5_000"]]) &&
+    ) ===
+      JSON.stringify([
+        ["process", "0"],
+        ["process", "5_000"],
+      ]) &&
     JSON.stringify(
       rustCallSites(terminateAndReap, "TerminateProcess").map((call) =>
         call.arguments.map(compactRust),
@@ -21358,13 +23452,42 @@ const approvalHandleApiUsage = rustIdentifierUsageInventory(
 );
 
 requireInvariant(
-  approvalMain.includes('#[cfg(feature = "runtime-entrypoint")]\nmod bootstrap;') &&
-    approvalBootstrap.includes(
-      "pub(super) use windows::{seal_inherited_approval_stdio, set_binary_stdio};",
-    ) &&
-    /^pub\(super\)\s+fn\s+set_binary_stdio\s*\(\s*_sealed\s*:\s*&SealedApprovalStdio\s*,?\s*\)\s*->\s*Result<\(\),\s*approval_ui::ApprovalError>\s*\{/mu.test(
+  approvalMain.includes(
+    '#[cfg(feature = "runtime-entrypoint")]\nmod bootstrap;',
+  ) &&
+    /#\s*\[\s*must_use\s*=/u.test(rustLexicalCode(approvalBootstrap)) &&
+    normalizeRustFragment(
+      rustLexicalCode(
+        rustTopLevelLexicalItemBlock(
+          approvalBootstrap,
+          /struct\s+AuthenticatedApprovalRequest\s*\{/u,
+        ),
+      ),
+    ) ===
+      "struct AuthenticatedApprovalRequest { request: approval_ui::ApprovalRequest, }" &&
+    /pub\s*\(\s*super\s*\)\s+struct\s+AuthenticatedApprovalRequest\s*\{/u.test(
       rustLexicalCode(approvalBootstrap),
     ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\][\s\S]{0,120}\bAuthenticatedApprovalRequest\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\bAuthenticatedApprovalRequest\b/u.test(
+      rustLexicalCode(approvalBootstrap),
+    ) &&
+    /(?:^|\n)\s*const\s+fn\s+new\s*\(/u.test(
+      rustLexicalCode(approvalAuthenticatedRequestImpl),
+    ) &&
+    !/(?:^|\n)\s*pub[^\n{;]*\bfn\s+new\s*\(/u.test(
+      rustLexicalCode(approvalAuthenticatedRequestImpl),
+    ) &&
+    compactRust(approvalAuthenticatedRequestNew).includes(
+      "constfnnew(request:approval_ui::ApprovalRequest)->Self{Self{request}}",
+    ) &&
+    rustLexicalCode(approvalAuthenticateInheritedParent).includes(
+      "windows::authenticate_request()",
+    ) &&
+    approvalAuthenticateInheritedParent.includes(
+      'Err(std::io::Error::other("Approval parent authentication failed").into())',
+    ) &&
+    rustCallSites(approvalAuthenticateInheritedParent, "authenticate_request")
+      .length === 1 &&
     normalizeRustFragment(rustLexicalCode(approvalSealedStdioDefinition)) ===
       "struct SealedApprovalStdio { input: HANDLE, output: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
     /#\s*\[\s*must_use\s*=/u.test(
@@ -21381,7 +23504,8 @@ requireInvariant(
     ) &&
     approvalFirstOperationEnvelope(approvalMain) &&
     approvalFirstOperationMutationProbes.every(
-      (probe) => probe !== approvalMain && !approvalFirstOperationEnvelope(probe),
+      (probe) =>
+        probe !== approvalMain && !approvalFirstOperationEnvelope(probe),
     ) &&
     approvalSealInheritedContract(approvalSealInheritedStdio) &&
     approvalSealInheritedMutationProbes.every(
@@ -21391,11 +23515,13 @@ requireInvariant(
     ) &&
     approvalSealExactContract(approvalSealExactStdio) &&
     approvalSealExactMutationProbes.every(
-      (probe) => probe !== approvalSealExactStdio && !approvalSealExactContract(probe),
+      (probe) =>
+        probe !== approvalSealExactStdio && !approvalSealExactContract(probe),
     ) &&
     approvalSetBinaryContract(approvalSetBinaryStdio) &&
     approvalSetBinaryMutationProbes.every(
-      (probe) => probe !== approvalSetBinaryStdio && !approvalSetBinaryContract(probe),
+      (probe) =>
+        probe !== approvalSetBinaryStdio && !approvalSetBinaryContract(probe),
     ) &&
     normalizeRustFragment(rustLexicalCode(approvalInvalidHandle)) ===
       "fn invalid_handle(handle: HANDLE) -> bool { handle.is_invalid() || handle == INVALID_HANDLE_VALUE }" &&
@@ -21416,6 +23542,75 @@ requireInvariant(
   "Approval must consume a linear sealed stdio proof as its first application operation, validate the exact two-PIPE shared-output topology, attempt both no-rollback inherit clears, require exact-zero readback, and enter binary mode only through that proof",
 );
 requireInvariant(
+  approvalParentAuthenticationContract(approvalBootstrapWindowsProduction) &&
+    approvalParentAuthenticationMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrapWindowsProduction &&
+        !approvalParentAuthenticationContract(probe),
+    ),
+  "Approval child authentication must remain policy-disabled, LPAC/Job/pipe-bound, four-object validated, duplicate-inspected, artifact-checked, nonce-bound, EOF-bounded, and proof-retaining through request decode",
+);
+const approvalArtifactCanonicalizationTestContract = (source) => {
+  let fixedVersionTest;
+  let pathTest;
+  try {
+    fixedVersionTest = rustFunctionBlockAtDepth(
+      source,
+      "fixed_file_version_requires_the_canonical_structure_signature",
+      1,
+    );
+    pathTest = rustFunctionBlockAtDepth(
+      source,
+      "path_normalization_removes_only_prefix_and_separator_aliases",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  return (
+    compactRust(fixedVersionTest).includes(
+      "dwSignature:VS_FIXEDFILEINFO_SIGNATURE,dwFileVersionMS:(1_u32<<16)|2,dwFileVersionLS:(3_u32<<16)|4",
+    ) &&
+    compactRust(fixedVersionTest).includes(
+      "assert_eq!(decode_fixed_file_version(fixed)?,[1,2,3,4])",
+    ) &&
+    compactRust(fixedVersionTest).includes(
+      "fixed.dwSignature^=1;assert!(decode_fixed_file_version(fixed).is_err())",
+    ) &&
+    pathTest.includes(
+      String.raw`normalize_path(r"\\?\C:/Program Files/YourWallet/KEY-AGENT.EXE")`,
+    ) &&
+    pathTest.includes(
+      String.raw`r"C:\Program Files\YourWallet\KEY-AGENT.EXE"`,
+    ) &&
+    pathTest.includes(
+      String.raw`r"C:\Program Files\YourWallet\key-agent.exe"`,
+    ) &&
+    compactRust(pathTest).includes(
+      "assert_ne!(normalize_path(),normalize_path())",
+    )
+  );
+};
+const approvalArtifactCanonicalizationMutationProbes = [
+  approvalBootstrapWindows.replace(
+    "fixed.dwSignature ^= 1;",
+    "fixed.dwSignature ^= 0;",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert_ne!(\n            normalize_path",
+    "        assert_eq!(\n            normalize_path",
+  ),
+];
+requireInvariant(
+  approvalArtifactCanonicalizationTestContract(approvalBootstrapWindows) &&
+    approvalArtifactCanonicalizationMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrapWindows &&
+        !approvalArtifactCanonicalizationTestContract(probe),
+    ),
+  "Approval parent artifact checks must require canonical VS_FIXEDFILEINFO signature/version decoding and preserve path case while normalizing only the extended prefix and separators",
+);
+requireInvariant(
   approvalTestsModule.length > 0 &&
     approvalTestsModuleAttributeContract(approvalBootstrapWindows) &&
     approvalTestsModuleAttributeMutationProbes.every(
@@ -21430,7 +23625,8 @@ requireInvariant(
       (probe) =>
         probe !== approvalBootstrapWindows && !approvalFixtureContract(probe),
     ) &&
-    rustCallSites(approvalBootstrapWindowsProduction, "CreateProcessW").length === 0 &&
+    rustCallSites(approvalBootstrapWindowsProduction, "CreateProcessW")
+      .length === 0 &&
     rustCallSites(approvalBootstrapWindows, "CreateProcessW").length === 2,
   "the active Approval driver and exact ignored child/grandchild fixtures must prove a positive inheritable sentinel crosses while both sealed exact stdio objects do not",
 );
@@ -21439,36 +23635,70 @@ const approvalRuntimeWindowsLauncherContract = (source) => {
   let run;
   let setInherit;
   let requireZeroFlags;
+  let legacy;
+  let trailing;
   let oversized;
   let waitForExit;
   let terminateAndReap;
   try {
     run = rustFunctionBlockAtDepth(source, "run", 1);
     setInherit = rustFunctionBlockAtDepth(source, "set_inherit", 1);
-    requireZeroFlags = rustFunctionBlockAtDepth(source, "require_zero_flags", 1);
+    requireZeroFlags = rustFunctionBlockAtDepth(
+      source,
+      "require_zero_flags",
+      1,
+    );
     waitForExit = rustFunctionBlockAtDepth(source, "wait_for_exit", 2);
-    terminateAndReap = rustFunctionBlockAtDepth(source, "terminate_and_reap", 2);
+    terminateAndReap = rustFunctionBlockAtDepth(
+      source,
+      "terminate_and_reap",
+      2,
+    );
+    legacy = rustTopLevelFunctionBlock(
+      source,
+      "direct_launch_with_legacy_raw_request_is_silent_and_disabled",
+    );
+    trailing = rustTopLevelFunctionBlock(
+      source,
+      "direct_launch_with_trailing_bytes_is_silent_and_disabled",
+    );
     oversized = rustTopLevelFunctionBlock(
       source,
-      "oversized_request_fails_without_output_or_pipe_deadlock",
+      "direct_launch_with_oversized_input_is_silent_bounded_and_disabled",
     );
   } catch {
     return false;
   }
   const compact = compactRust(run);
   return (
-    JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "windows_child", 0)) ===
-      JSON.stringify(["#[cfg(windows)]"]) &&
+    JSON.stringify(
+      rustInlineModuleOuterAttributesAtDepth(source, "windows_child", 0),
+    ) === JSON.stringify(["#[cfg(windows)]"]) &&
     normalizeRustFragment(
       rustConstItemAtDepth(source, "PROCESS_WAIT_MILLISECONDS", 1),
     ) === "const PROCESS_WAIT_MILLISECONDS: u32 = 10_000;" &&
-    JSON.stringify(
-      rustFunctionOuterAttributesAtDepth(
-        source,
-        "oversized_request_fails_without_output_or_pipe_deadlock",
-        0,
-      ),
-    ) === JSON.stringify(["#[test]"]) &&
+    [
+      "direct_launch_with_legacy_raw_request_is_silent_and_disabled",
+      "direct_launch_with_trailing_bytes_is_silent_and_disabled",
+      "direct_launch_with_oversized_input_is_silent_bounded_and_disabled",
+    ].every(
+      (functionName) =>
+        JSON.stringify(
+          rustFunctionOuterAttributesAtDepth(source, functionName, 0),
+        ) === JSON.stringify(["#[test]"]),
+    ) &&
+    source.includes(
+      "These tests execute the ordinary `COMPILED_PARENT_POLICY = None` binary.",
+    ) &&
+    source.includes(
+      "They prove only that direct/legacy launches stay silent, fail closed, and",
+    ) &&
+    source.includes(
+      "tear down within the harness bound. They do not exercise a successful parent",
+    ) &&
+    source.includes(
+      "bootstrap or distinguish authenticated finish-frame rejection paths.",
+    ) &&
     compact.includes(
       "dwFlags:STARTF_USESTDHANDLES,hStdInput:child_input_raw,hStdOutput:child_output_raw,hStdError:child_output_raw,..Default::default()",
     ) &&
@@ -21510,13 +23740,15 @@ const approvalRuntimeWindowsLauncherContract = (source) => {
     orderedRustMarkersAtDepth(run, [
       { marker: "let _inheritance_guard = INHERITANCE_TEST_LOCK", depth: 1 },
       {
-        marker: "TemporaryInheritFlags::set([child_input_raw, child_output_raw])",
+        marker:
+          "TemporaryInheritFlags::set([child_input_raw, child_output_raw])",
         depth: 1,
       },
       { marker: "CreateProcessW(", depth: 2 },
       { marker: "drop(temporary_inherit)", depth: 1 },
       {
-        marker: "let (process, thread) = owned_process_information(information)?",
+        marker:
+          "let (process, thread) = owned_process_information(information)?",
         depth: 1,
       },
       { marker: "let child = ReapedProcess { process }", depth: 1 },
@@ -21554,15 +23786,33 @@ const approvalRuntimeWindowsLauncherContract = (source) => {
       rustCallSites(terminateAndReap, "WaitForSingleObject").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["process", "0"], ["process", "5_000"]]) &&
+    ) ===
+      JSON.stringify([
+        ["process", "0"],
+        ["process", "5_000"],
+      ]) &&
     JSON.stringify(
       rustCallSites(terminateAndReap, "TerminateProcess").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["process", "1"]]) &&
+    rustCallSites(legacy, "run_child").length === 1 &&
+    rustLexicalCode(legacy).includes(
+      "approval_wire::encode_request(&request)",
+    ) &&
+    rustLexicalCode(trailing).includes("request_bytes.push(0)") &&
+    rustCallSites(trailing, "run_child").length === 1 &&
+    [legacy, trailing, oversized].every(
+      (test) =>
+        rustLexicalCode(test).includes("assert!(!output.succeeded)") &&
+        rustLexicalCode(test).includes("assert!(output.stdout.is_empty())") &&
+        rustLexicalCode(test).includes("assert!(output.stderr.is_empty())"),
+    ) &&
     rustLexicalCode(oversized).includes("approval_ui::MAX_REQUEST_BYTES") &&
     rustLexicalCode(oversized).includes(".checked_add(1)") &&
-    rustLexicalCode(oversized).includes("run_child(&vec![0_u8; oversized_len])?") &&
+    rustLexicalCode(oversized).includes(
+      "run_child(&vec![0_u8; oversized_len])?",
+    ) &&
     rustLexicalCode(oversized).includes("assert!(!output.succeeded)") &&
     rustLexicalCode(oversized).includes("assert!(output.stdout.is_empty())") &&
     rustLexicalCode(oversized).includes("assert!(output.stderr.is_empty())") &&
@@ -21587,7 +23837,7 @@ const approvalRuntimeWindowsLauncherMutationProbes = [
     "        if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {",
   ),
   approvalRuntimeContract.replace(
-    "        if unsafe { ResumeThread(raw(&thread)) } != 1 {\n            return Err(\"could not resume approval-ui exactly once\".to_owned());\n        }\n        drop(thread);\n\n        let mut parent_writer",
+    '        if unsafe { ResumeThread(raw(&thread)) } != 1 {\n            return Err("could not resume approval-ui exactly once".to_owned());\n        }\n        drop(thread);\n\n        let mut parent_writer',
     "        let mut parent_writer",
   ),
   approvalRuntimeContract.replace(
@@ -21595,13 +23845,21 @@ const approvalRuntimeWindowsLauncherMutationProbes = [
     "    let output = run_child(&[])?;",
   ),
   approvalRuntimeContract.replace(
-    "        let _inheritance_guard = INHERITANCE_TEST_LOCK\n            .lock()\n            .map_err(|_| \"approval runtime inheritance lock was poisoned\".to_owned())?;\n",
+    '        let _inheritance_guard = INHERITANCE_TEST_LOCK\n            .lock()\n            .map_err(|_| "approval runtime inheritance lock was poisoned".to_owned())?;\n',
     "",
   ),
   approvalRuntimeContract.replace("        drop(child_output);\n", ""),
   approvalRuntimeContract.replace(
     "WaitForSingleObject(raw(&self.process), PROCESS_WAIT_MILLISECONDS)",
     "WaitForSingleObject(raw(&self.process), u32::MAX)",
+  ),
+  approvalRuntimeContract.replace(
+    "They prove only that direct/legacy launches stay silent, fail closed, and",
+    "These tests prove a successful authenticated Approval handshake and",
+  ),
+  approvalRuntimeContract.replace(
+    "bootstrap or distinguish authenticated finish-frame rejection paths.",
+    "bootstrap and distinguish authenticated finish-frame rejection paths.",
   ),
 ];
 requireInvariant(
@@ -21611,10 +23869,33 @@ requireInvariant(
         probe !== approvalRuntimeContract &&
         !approvalRuntimeWindowsLauncherContract(probe),
     ),
-  "Approval runtime tests must launch the suspended Windows child with one shared stdout/stderr handle, clear and recheck both parent inherit flags, resume exactly once before writing, and cover oversized-input no-deadlock failure",
+  "Approval runtime tests must state and prove only policy-None direct/legacy silent failure with bounded teardown, while retaining suspended shared-output launch hygiene and explicitly denying positive bootstrap/finish-path E2E coverage",
 );
 
 const approvalStdioDocumentationContract = (source) => {
+  const explicitlyDeniesMappedFileObjectProof =
+    /does\s+not\s+prove[\s\S]{0,160}mapped[\s\S]{0,80}exact\s+file\s+object/iu.test(
+      source,
+    ) ||
+    /mapped[\s\S]{0,80}exact\s+file\s+object[\s\S]{0,80}증명[^.\r\n]{0,40}아닙/iu.test(
+      source,
+    ) ||
+    /exact\s+file\s+object[\s\S]{0,80}mapped[\s\S]{0,80}증명[^.\r\n]{0,40}아닙/iu.test(
+      source,
+    );
+  const explicitlyDeniesEndpointObjectCapability =
+    /not\s+an?\s+exact(?:\s+pipe)?\s+endpoint\/process-object\s+capability/iu.test(
+      source,
+    ) ||
+    /exact(?:\s+pipe)?\s+endpoint\/process-object\s+capability[^.\r\n]{0,40}아닙/iu.test(
+      source,
+    );
+  const explicitlyPinsZeroProductionOrchestration =
+    /zero\s+production\s+(?:orchestration\s+)?callers/iu.test(source) ||
+    /production\s+orchestration\s+caller[^.\r\n]{0,30}0(?:개)?/iu.test(source);
+  const explicitlyDeniesPositiveSignedHandshakeE2e =
+    /no\s+positive\s+signed[ -]handshake\s+E2E/iu.test(source) ||
+    /positive\s+signed[ -]handshake\s+E2E[^.\r\n]{0,30}없/iu.test(source);
   return (
     /runtime-enabled\s+Approval/iu.test(source) &&
     /Windows\/CRT\s+application/iu.test(source) &&
@@ -21636,11 +23917,68 @@ const approvalStdioDocumentationContract = (source) => {
       source,
     ) &&
     /release\s+(?:activation|evidence)/iu.test(source) &&
-    /COMPILED_RELEASE_POLICY[^\r\n]{0,160}(?:`None`|\bNone\b)/u.test(source) &&
-    /exit\s+78/iu.test(source)
+    /COMPILED_RELEASE_POLICY[\s\S]{0,200}(?:`None`|\bNone\b)/u.test(source) &&
+    /exit\s+78/iu.test(source) &&
+    /synchronous\s+server\s+(?:ends?|pipe\s+(?:objects?|ends?))/iu.test(
+      source,
+    ) &&
+    /overlapped\s+client\s+ends?/iu.test(source) &&
+    explicitlyDeniesEndpointObjectCapability &&
+    /case-preserving\s+exact\s+normalized\s+path-string\s+equality/iu.test(
+      source,
+    ) &&
+    source.includes("\\\\?\\") &&
+    /separators?/iu.test(source) &&
+    /casing[\s\S]{0,80}fail(?:s)?\s+closed/iu.test(source) &&
+    /held(?:-file)?\s+path(?:'s|의)?[\s\S]{0,180}suffix[\s\S]{0,180}version\s+metadata/iu.test(
+      source,
+    ) &&
+    /(?:held\s+handle\s+plus\s+path|held\s+handle\s*\+\s*path|held-handle(?:-plus-path|-backed))[\s\S]{0,100}Authenticode/iu.test(
+      source,
+    ) &&
+    /(?:cloned\s+held\s+handle[\s\S]{0,80}SHA-256|SHA-256[\s\S]{0,80}cloned\s+held\s+handle)/iu.test(
+      source,
+    ) &&
+    explicitlyDeniesMappedFileObjectProof &&
+    /62-byte[\s\S]{0,400}106-byte[\s\S]{0,400}110-byte[\s\S]{0,400}request\s+EOF[\s\S]{0,400}75-byte[\s\S]{0,400}response\s+EOF/iu.test(
+      source,
+    ) &&
+    /held\s+child\s+PID/iu.test(source) &&
+    /file\s+identity/iu.test(source) &&
+    /manifest(?:\s+digest)?/iu.test(source) &&
+    /profile(?:\s+revision)?/iu.test(source) &&
+    /request\s+digest/iu.test(source) &&
+    /canonical(?:\s+request)?\s+hash/iu.test(source) &&
+    /exact\s+response(?:\s+bytes)?/iu.test(source) &&
+    /local\s+(?:channel\s+)?challenge/iu.test(source) &&
+    /(?:both|두)\s+bootstrap\s+nonces?/iu.test(source) &&
+    /Job[\s\S]{0,100}live\s+gate[\s\S]{0,80}(?:not\s+hashed\s+identity|hashed\s+identity[^.\r\n]{0,30}아닙)/iu.test(
+      source,
+    ) &&
+    /75-byte\s+response[\s\S]{0,120}magic[\s\S]{0,40}version[\s\S]{0,40}decision[\s\S]{0,60}request\s+digest[\s\S]{0,80}one-shot\s+Approval\s+request\s+nonce/iu.test(
+      source,
+    ) &&
+    /(?:Only\s+the\s+digest\s+and\s+nonce\s+echo\s+request\s+fields|request[\s\S]{0,60}echo[\s\S]{0,60}digest[\s\S]{0,40}nonce[\s\S]{0,20}뿐)/iu.test(
+      source,
+    ) &&
+    /(?:neither\s+bootstrap\s+nonce\s+is\s+echoed|bootstrap\s+nonce[^.\r\n]{0,40}echo[^.\r\n]{0,20}않)/iu.test(
+      source,
+    ) &&
+    /(?:does\s+not\s+echo\s+either\s+bootstrap\s+nonce|neither\s+bootstrap\s+nonce\s+is\s+echoed|bootstrap\s+nonce[^.\r\n]{0,50}echo[^.\r\n]{0,30}않)/iu.test(
+      source,
+    ) &&
+    /private\s+one-shot\s+endpoint[\s\S]{0,160}fresh\s+one-shot\s+Approval\s+request\s+nonce/iu.test(
+      source,
+    ) &&
+    explicitlyPinsZeroProductionOrchestration &&
+    explicitlyDeniesPositiveSignedHandshakeE2e
   );
 };
-const approvalBoundedDocumentationSection = (source, startMarker, endMarker) => {
+const approvalBoundedDocumentationSection = (
+  source,
+  startMarker,
+  endMarker,
+) => {
   const start = source.indexOf(startMarker);
   if (start === -1 || start !== source.lastIndexOf(startMarker)) {
     return "";
@@ -21654,7 +23992,7 @@ const approvalBoundedDocumentationSection = (source, startMarker, endMarker) => 
 const approvalStdioDocumentationSections = [
   approvalBoundedDocumentationSection(
     rootReadme,
-    "- runtime-enabled Approval 자식도",
+    "- runtime-enabled Approval launcher의",
     "\n- runtime-enabled Secret Input/recovery 자식도",
   ),
   approvalBoundedDocumentationSection(
@@ -21688,6 +24026,27 @@ const approvalStdioDocumentationMutationPatterns = [
   /exhaustive/iu,
   /COMPILED_RELEASE_POLICY/u,
   /exit\s+78/iu,
+  /synchronous\s+server/iu,
+  /overlapped\s+client/iu,
+  /endpoint\/process-object\s+capability/iu,
+  /case-preserving\s+exact\s+normalized\s+path-string\s+equality/iu,
+  /\\\\\?\\/u,
+  /casing/iu,
+  /version\s+metadata/iu,
+  /Authenticode/u,
+  /cloned\s+held\s+handle/iu,
+  /\bmapped\b/iu,
+  /62-byte/iu,
+  /106-byte/iu,
+  /110-byte/iu,
+  /75-byte/iu,
+  /magic,\s+version,\s+decision,\s+request\s+digest/iu,
+  /(?:Only\s+the\s+digest\s+and\s+nonce\s+echo\s+request\s+fields|request[\s\S]{0,60}echo[\s\S]{0,60}digest[\s\S]{0,40}nonce[\s\S]{0,20}뿐)/iu,
+  /(?:neither\s+bootstrap\s+nonce\s+is\s+echoed|bootstrap\s+nonce[^.\r\n]{0,40}echo[^.\r\n]{0,20}않)/iu,
+  /Job[\s\S]{0,100}live\s+gate/iu,
+  /private\s+one-shot\s+endpoint/iu,
+  /(?:zero\s+production\s+(?:orchestration\s+)?callers|production\s+orchestration\s+caller[^.\r\n]{0,30}0(?:개)?)/iu,
+  /positive\s+signed[ -]handshake\s+E2E/iu,
 ];
 const approvalStdioDocumentationMutationProbes =
   approvalStdioDocumentationSections.flatMap((source) =>
@@ -21697,8 +24056,8 @@ const approvalStdioDocumentationMutationProbes =
     })),
   );
 const approvalArchitectureOverviewRow =
-  /^\| Approval helper \|(?<row>[^\r\n]*)\|$/mu.exec(activationArchitecture)?.groups
-    ?.row ?? "";
+  /^\| Approval helper \|(?<row>[^\r\n]*)\|$/mu.exec(activationArchitecture)
+    ?.groups?.row ?? "";
 requireInvariant(
   approvalStdioDocumentationSections.every(
     (source) => source.length > 0 && approvalStdioDocumentationContract(source),
@@ -21708,21 +24067,25 @@ requireInvariant(
         probe !== original && !approvalStdioDocumentationContract(probe),
     ) &&
     [
-      "exactly two inherited pipe objects",
-      "numerically equal stdout and stderr values",
-      "first Windows/CRT application operation",
-      "exact inherit-only preflags",
-      "no-rollback sequential clears",
-      "exact-zero readback",
-      "positive-sentinel grandchild negative",
+      "exactly two inherited stdio `PIPE` objects",
+      "numerically equal stdout and stderr",
+      "four pairwise-distinct exact objects with zero flags",
+      "fixed 62-byte parent hello",
+      "fixed 106-byte child hello",
+      "110-byte parent-finish header",
+      "both nonces",
+      "request must be followed by exact EOF",
+      "The response is ordered as magic, version, decision, request digest, and one-shot Approval request nonce",
+      "only the digest and nonce echo request fields",
+      "neither bootstrap nonce is echoed",
+      "Raw or legacy direct launch fails silently",
       "non-exhaustive",
       "non-atomic",
-      "later re-enabling",
-      "explicit duplication",
-      "signed-artifact or release evidence",
+      "signed-artifact, supervisor-topology, or release evidence",
+      "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`",
       "exit 78",
     ].every((marker) => approvalArchitectureOverviewRow.includes(marker)),
-  "Approval stdio sealing must remain documented across overview, architecture, protocol, security, and platform surfaces with release-disabled and non-exhaustive/non-atomic proof caveats",
+  "Approval stdio sealing and parent authentication must remain documented across overview, architecture, protocol, security, and platform surfaces with release-disabled and non-exhaustive/non-atomic proof caveats",
 );
 
 for (const mainPath of [
@@ -21736,19 +24099,22 @@ for (const mainPath of [
   const namedExit =
     mainSource.includes("const PRIVATE_LAUNCH_UNAVAILABLE: i32 = 78;") &&
     mainSource.includes("std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);");
-  requireInvariant(literalExit || namedExit, `${mainPath} must remain fail-closed with exit 78`);
+  requireInvariant(
+    literalExit || namedExit,
+    `${mainPath} must remain fail-closed with exit 78`,
+  );
 }
 
 for (const helper of [
   {
     cratePath: "crates/approval-ui",
-    readCall: "approval_ui::read_request",
+    readCall: "bootstrap::authenticate_inherited_parent",
     presentCall: "approval_ui::present",
     writeCall: "approval_ui::write_response",
     binaryModeSource: "sealed-bootstrap",
     bootstrapSource: approvalBootstrapWindowsProduction,
     sealedStdioType: "SealedApprovalStdio",
-    binaryModeMainCall: "bootstrap::set_binary_stdio(&sealed_stdio)?",
+    binaryModeMainCall: null,
   },
   {
     cratePath: "crates/secret-input-ui",
@@ -21764,7 +24130,8 @@ for (const helper of [
   const manifest = await text(`${helper.cratePath}/Cargo.toml`);
   const mainSource = await text(`${helper.cratePath}/src/main.rs`);
   requireInvariant(
-    manifest.includes("default = []") && manifest.includes("runtime-entrypoint = []"),
+    manifest.includes("default = []") &&
+      manifest.includes("runtime-entrypoint = []"),
     `${helper.cratePath} runtime entrypoint must remain opt-in`,
   );
   requireInvariant(
@@ -21823,9 +24190,15 @@ const brokerLibraryForContract = await text("crates/broker/src/lib.rs");
 const brokerTransportForContract = await text("crates/broker/src/transport.rs");
 const brokerIpcContract = await text("crates/broker/src/ipc.rs");
 const nativeLibraryForContract = await text("crates/native-host/src/lib.rs");
-const nativeContractBridge = await text("crates/native-host/src/contract_bridge.rs");
-const extensionBackgroundContract = await text("extension/src/background-core.js");
-const nativeProcessContractTest = await text("extension/tests/native-host-process.test.mjs");
+const nativeContractBridge = await text(
+  "crates/native-host/src/contract_bridge.rs",
+);
+const extensionBackgroundContract = await text(
+  "extension/src/background-core.js",
+);
+const nativeProcessContractTest = await text(
+  "extension/tests/native-host-process.test.mjs",
+);
 const platformManifestForWindowsBroker = await text(
   "crates/platform-windows/Cargo.toml",
 );
@@ -21833,6 +24206,110 @@ const brokerChannelSource = await text(
   "crates/platform-windows/src/broker_channel.rs",
 );
 const brokerChannelProduction = withoutBottomTestModule(brokerChannelSource);
+const brokerPendingIoDrainContract = (source) => {
+  const production = withoutBottomTestModule(source);
+  let sysModule;
+  let completePending;
+  let testReadAdapter;
+  let expiredPendingReadTest;
+  try {
+    sysModule = rustLexicalItemBlockAtDepth(
+      production,
+      /(?:^|\n)\s*mod\s+sys\s*\{/u,
+      0,
+    );
+    completePending = rustFunctionBlockAtDepth(
+      sysModule,
+      "complete_pending",
+      1,
+    );
+    testReadAdapter = rustFunctionBlockAtDepth(
+      sysModule,
+      "read_once_with_deadline_for_test",
+      1,
+    );
+    expiredPendingReadTest = rustFunctionBlockAtDepth(
+      source,
+      "already_expired_pending_read_is_cancelled_and_drained_before_scope_exit",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const completionCompact = compactRust(completePending);
+  const testCompact = compactRust(expiredPendingReadTest);
+  const pendingOrder = [
+    "matchremaining_milliseconds(deadline)",
+    "cancel_and_drain(pipe,overlapped);returnErr(error)",
+    "GetOverlappedResultEx(",
+    "matchcompleted",
+    "letcode=error.code();cancel_and_drain(pipe,overlapped)",
+  ].map((marker) => completionCompact.indexOf(marker));
+  return (
+    rustCallSites(completePending, "remaining_milliseconds").length === 1 &&
+    !completionCompact.includes("remaining_milliseconds(deadline)?") &&
+    rustCallSites(completePending, "GetOverlappedResultEx").length === 1 &&
+    rustCallSites(completePending, "cancel_and_drain").length === 2 &&
+    completionCompact.includes(
+      "lettimeout=matchremaining_milliseconds(deadline){Ok(timeout)=>timeout,Err(error)=>{cancel_and_drain(pipe,overlapped);returnErr(error);}};",
+    ) &&
+    completionCompact.includes(
+      "matchcompleted{Ok(())=>deadline_result(transferred,deadline),Err(error)=>{letcode=error.code();cancel_and_drain(pipe,overlapped);ifcode==HRESULT::from_win32(WAIT_TIMEOUT.0)",
+    ) &&
+    pendingOrder.every((position) => position !== -1) &&
+    pendingOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    compactRust(testReadAdapter).includes(
+      "read_once(pipe.raw(),bytes,deadline)",
+    ) &&
+    rustCallSites(expiredPendingReadTest, "connected_child").length === 1 &&
+    rustCallSites(
+      expiredPendingReadTest,
+      "sys::read_once_with_deadline_for_test",
+    ).length === 1 &&
+    expiredPendingReadTest.includes('connected_child("delayed-frame")') &&
+    testCompact.includes("checked_sub(Duration::from_millis(1))") &&
+    testCompact.includes("Err(BrokerChannelError::DeadlineElapsed)") &&
+    testCompact.includes("assert!(started.elapsed()<Duration::from_secs(2))") &&
+    testCompact.indexOf("checked_sub(Duration::from_millis(1))") <
+      testCompact.indexOf("sys::read_once_with_deadline_for_test(") &&
+    testCompact.indexOf("sys::read_once_with_deadline_for_test(") <
+      testCompact.indexOf("drop(channel)") &&
+    testCompact.indexOf("drop(channel)") < testCompact.indexOf("child.wait()")
+  );
+};
+const brokerPendingIoDrainMutationProbes = [
+  brokerChannelSource.replace(
+    "        let timeout = match remaining_milliseconds(deadline) {\n            Ok(timeout) => timeout,\n            Err(error) => {\n                cancel_and_drain(pipe, overlapped);\n                return Err(error);\n            }\n        };",
+    "        let timeout = remaining_milliseconds(deadline)?;",
+  ),
+  brokerChannelSource.replace(
+    "                let code = error.code();\n                cancel_and_drain(pipe, overlapped);",
+    "                let code = error.code();",
+  ),
+  brokerChannelSource.replace(
+    "already_expired_pending_read_is_cancelled_and_drained_before_scope_exit",
+    "expired_pending_read_returns",
+  ),
+  brokerChannelSource.replace(
+    ".checked_sub(Duration::from_millis(1))",
+    ".checked_add(Duration::from_millis(1))",
+  ),
+  brokerChannelSource.replace(
+    "        assert!(started.elapsed() < Duration::from_secs(2));\n        drop(channel);",
+    "        drop(channel);",
+  ),
+];
+requireInvariant(
+  brokerPendingIoDrainContract(brokerChannelSource) &&
+    brokerPendingIoDrainMutationProbes.every(
+      (probe) =>
+        probe !== brokerChannelSource && !brokerPendingIoDrainContract(probe),
+    ),
+  "Broker pending IO must synchronously cancel and drain after deadline calculation or completion failure, with an already-expired pending-read regression that stays bounded through scope exit",
+);
 const brokerSupervisor = await text(
   "crates/platform-windows/src/broker_supervisor.rs",
 );
@@ -21845,7 +24322,10 @@ const brokerTestInheritedProcessStdio = rustFunctionBlock(
   brokerChannelSource,
   "process_handle_as_inherited_stdio",
 );
-const brokerTestSpawnChild = rustFunctionBlock(brokerChannelSource, "spawn_child");
+const brokerTestSpawnChild = rustFunctionBlock(
+  brokerChannelSource,
+  "spawn_child",
+);
 const brokerTestSpawnOrder = [
   "acquire_inheritable_handle_launch(",
   "let stdin = match expected_server",
@@ -21862,8 +24342,8 @@ requireInvariant(
     !/\binheritable\s*:\s*(?:bool|BOOL)\b/u.test(
       brokerDuplicateRestrictedProcessHandle,
     ) &&
-    rustCallSites(brokerDuplicateRestrictedProcessHandle, "DuplicateHandle").length ===
-      1 &&
+    rustCallSites(brokerDuplicateRestrictedProcessHandle, "DuplicateHandle")
+      .length === 1 &&
     rustCallSites(brokerDuplicateRestrictedProcessHandle, "DuplicateHandle")[0]
       ?.arguments[5] === "false" &&
     brokerDuplicateRestrictedProcessHandle.includes(
@@ -21873,7 +24353,8 @@ requireInvariant(
     /#\[cfg\(test\)\]\s*fn process_handle_as_inherited_stdio\(\s*_flight:\s*&crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'_>/u.test(
       brokerChannelSource,
     ) &&
-    rustCallSites(brokerTestInheritedProcessStdio, "DuplicateHandle").length === 1 &&
+    rustCallSites(brokerTestInheritedProcessStdio, "DuplicateHandle").length ===
+      1 &&
     rustCallSites(brokerTestInheritedProcessStdio, "DuplicateHandle")[0]
       ?.arguments[5] === "true" &&
     brokerTestSpawnOrder.every((position) => position !== -1) &&
@@ -21887,9 +24368,8 @@ const nativeWindowsBrokerBridge = await text(
 );
 const brokerProtocolContract = await text("docs/protocol-contract.md");
 const nativeHostContractReadme = await text("extension/native-host/README.md");
-const brokerContractProductionFiles = await rustProductionSources(
-  "crates/broker/src",
-);
+const brokerContractProductionFiles =
+  await rustProductionSources("crates/broker/src");
 const nativeContractProductionFiles = await rustProductionSources(
   "crates/native-host/src",
 );
@@ -21962,11 +24442,18 @@ requireInvariant(
     /#\[cfg\(all\(\s*feature = "broker-channel-contract-test-hook",\s*debug_assertions\s*\)\)\]\s*pub\(super\) fn hold_dormant_broker\(candidate: &Path\) -> Result<VerifiedHelper, HelperError>\s*\{/u.test(
       activationHelper,
     ) &&
-    (activationHelper.match(/\bhold_dormant_broker\s*\(/gu) ?? []).length === 3 &&
-    (exactBrokerImageProduction.match(/VerifiedHelper::hold_dormant_broker\(/gu) ?? [])
-      .length === 1 &&
-    (exactBrokerImageProduction.match(/VerifiedHelper::hold_dormant_broker\b/gu) ?? [])
-      .length === 1 &&
+    (activationHelper.match(/\bhold_dormant_broker\s*\(/gu) ?? []).length ===
+      3 &&
+    (
+      exactBrokerImageProduction.match(
+        /VerifiedHelper::hold_dormant_broker\(/gu,
+      ) ?? []
+    ).length === 1 &&
+    (
+      exactBrokerImageProduction.match(
+        /VerifiedHelper::hold_dormant_broker\b/gu,
+      ) ?? []
+    ).length === 1 &&
     platformWindowsProductionFiles
       .filter(
         (file) =>
@@ -22228,10 +24715,14 @@ requireInvariant(
       "crates/platform-windows/src/broker_supervisor.rs",
       "crates/platform-windows/src/lib.rs",
     ]) &&
-    (brokerWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length === 1 &&
-    (brokerWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length === 1 &&
-    (nativeWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length === 1 &&
-    (nativeWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length === 1 &&
+    (brokerWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length ===
+      1 &&
+    (brokerWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length ===
+      1 &&
+    (nativeWindowsPayloadAdapter.match(/\.read_payload\(/gu) ?? []).length ===
+      1 &&
+    (nativeWindowsPayloadAdapter.match(/\.write_payload\(/gu) ?? []).length ===
+      1 &&
     brokerSupervisorProduction.includes(
       "cross-crate `BrokerIpcPayloads` adapters must supply framing-free JSON",
     ),
@@ -22416,7 +24907,8 @@ const brokerDebugEventOwnershipOrder = [
 requireInvariant(
   brokerDebugEventOwnershipOrder.every((position) => position !== -1) &&
     brokerDebugEventOwnershipOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     authenticateBrokerImage.includes(
       "OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)",
@@ -22429,10 +24921,13 @@ requireInvariant(
       "Err(error)",
       writeBrokerPayload.indexOf("self.close_terminal()?") + 1,
     ) > writeBrokerPayload.indexOf("self.close_terminal()?") &&
-    (readBrokerPayload.match(/self\.close_terminal\(\)\?/gu) ?? []).length === 2 &&
+    (readBrokerPayload.match(/self\.close_terminal\(\)\?/gu) ?? []).length ===
+      2 &&
     dormantBrokerPayloadDrop.includes("let _ = self.close_terminal()") &&
     terminalBrokerPayloadTest.indexOf("let observation =") <
-      terminalBrokerPayloadTest.indexOf("channel.read_payload(Instant::now())") &&
+      terminalBrokerPayloadTest.indexOf(
+        "channel.read_payload(Instant::now())",
+      ) &&
     terminalBrokerPayloadTest.indexOf("channel.read_payload(Instant::now())") <
       terminalBrokerPayloadTest.indexOf("observation.wait_terminated()") &&
     terminalBrokerPayloadTest.indexOf("observation.wait_terminated()") <
@@ -22469,13 +24964,24 @@ requireInvariant(
       "fn new(volume_serial_number: u64, file_id: [u8; 16]) -> Result<Self, ExactImageError> { if volume_serial_number == 0 || file_id == [0; 16] || file_id == [u8::MAX; 16] { return Err(ExactImageError::IdentityUnavailable); } Ok(Self { volume_serial_number, file_id, }) }" &&
     exactFileIdentityQueryNormalized ===
       "pub(super) fn exact_file_identity( handle: HANDLE, ) -> Result<ExactFileIdentity, ExactImageError> { if handle.is_invalid() || handle == INVALID_HANDLE_VALUE { return Err(ExactImageError::IdentityUnavailable); } let mut information = FILE_ID_INFO::default(); unsafe { GetFileInformationByHandleEx( handle, FileIdInfo, ptr::from_mut(&mut information).cast::<c_void>(), u32::try_from(size_of_val(&information)) .map_err(|_| ExactImageError::IdentityUnavailable)?, ) } .map_err(|_| ExactImageError::IdentityUnavailable)?; ExactFileIdentity::new( information.VolumeSerialNumber, information.FileId.Identifier, ) }" &&
-    exactMappedImageAuthentication.includes("sys::exact_file_identity(mapped_image)?") &&
+    exactMappedImageAuthentication.includes(
+      "sys::exact_file_identity(mapped_image)?",
+    ) &&
     exactMappedImageAuthentication.includes(".eq(identity)") &&
-    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(0, valid_file_id)") &&
-    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(7, [0; 16])") &&
-    exactFileIdentitySentinelTest.includes("ExactFileIdentity::new(7, [u8::MAX; 16])") &&
-    (exactFileIdentitySentinelTest.match(/ExactImageError::IdentityUnavailable/gu) ?? [])
-      .length === 3 &&
+    exactFileIdentitySentinelTest.includes(
+      "ExactFileIdentity::new(0, valid_file_id)",
+    ) &&
+    exactFileIdentitySentinelTest.includes(
+      "ExactFileIdentity::new(7, [0; 16])",
+    ) &&
+    exactFileIdentitySentinelTest.includes(
+      "ExactFileIdentity::new(7, [u8::MAX; 16])",
+    ) &&
+    (
+      exactFileIdentitySentinelTest.match(
+        /ExactImageError::IdentityUnavailable/gu,
+      ) ?? []
+    ).length === 3 &&
     exactFileIdentityEqualityTest.includes(
       "assert_eq!(expected, ExactFileIdentity::new(7, file_id)?)",
     ) &&
@@ -22503,7 +25009,9 @@ requireInvariant(
     brokerCreationAttributesDefinition.includes(
       "inherited_handles: Box<[HANDLE; 2]>",
     ) &&
-    brokerCreationAttributesDefinition.includes("job_handle: Box<[HANDLE; 1]>") &&
+    brokerCreationAttributesDefinition.includes(
+      "job_handle: Box<[HANDLE; 1]>",
+    ) &&
     brokerCreationAttributesDefinition.includes(
       "_parent: &'resources InheritedParentProcess<'flight>",
     ) &&
@@ -22516,9 +25024,11 @@ requireInvariant(
     brokerCreationAttributesImplementation.includes(
       "InitializeProcThreadAttributeList(Some(pointer), 2",
     ) &&
-    (brokerCreationAttributesImplementation.match(
-      /InitializeProcThreadAttributeList\(/gu,
-    ) ?? []).length === 2 &&
+    (
+      brokerCreationAttributesImplementation.match(
+        /InitializeProcThreadAttributeList\(/gu,
+      ) ?? []
+    ).length === 2 &&
     brokerCreationAttributesImplementation.includes(
       "Box::new([parent.raw(), stdio.raw()])",
     ) &&
@@ -22576,10 +25086,18 @@ requireInvariant(
     launchBrokerApplicationWithAfterCreate.includes(
       "debuggee.detach_while_suspended",
     ) &&
-    launchBrokerApplicationWithAfterCreate.includes("job.verify_exact_member") &&
-    launchBrokerApplicationWithAfterCreate.includes("debuggee.start_user_mode") &&
-    launchBrokerApplicationWithAfterCreate.indexOf("Debuggee::new(information)") <
-      launchBrokerApplicationWithAfterCreate.indexOf("after_create(&debuggee)") &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "job.verify_exact_member",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.includes(
+      "debuggee.start_user_mode",
+    ) &&
+    launchBrokerApplicationWithAfterCreate.indexOf(
+      "Debuggee::new(information)",
+    ) <
+      launchBrokerApplicationWithAfterCreate.indexOf(
+        "after_create(&debuggee)",
+      ) &&
     launchBrokerApplicationWithAfterCreate.indexOf("after_create(&debuggee)") <
       launchBrokerApplicationWithAfterCreate.indexOf(
         "debuggee.release_creation_suspend",
@@ -22592,9 +25110,14 @@ requireInvariant(
       ) &&
     launchBrokerApplicationWithAfterCreate.indexOf(
       "debuggee.detach_while_suspended",
-    ) < launchBrokerApplicationWithAfterCreate.indexOf("job.verify_exact_member") &&
+    ) <
+      launchBrokerApplicationWithAfterCreate.indexOf(
+        "job.verify_exact_member",
+      ) &&
     launchBrokerApplicationWithAfterCreate.indexOf("job.verify_exact_member") <
-      launchBrokerApplicationWithAfterCreate.indexOf("debuggee.start_user_mode") &&
+      launchBrokerApplicationWithAfterCreate.indexOf(
+        "debuggee.start_user_mode",
+      ) &&
     brokerChildKernelContract.includes("SetEvent(unrelated)") &&
     brokerChildKernelContract.includes(
       "[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]",
@@ -22633,7 +25156,8 @@ requireInvariant(
     brokerSentinelFixture.indexOf(
       "launch_prepared_release_broker_channel_for_test(",
     ) < brokerSentinelFixture.indexOf("assert_not_signaled()") &&
-    (brokerSupervisor.match(/arm_unrelated_sentinel\(true\)/gu) ?? []).length === 1 &&
+    (brokerSupervisor.match(/arm_unrelated_sentinel\(true\)/gu) ?? [])
+      .length === 1 &&
     brokerSentinelWait.includes("child.try_wait()") &&
     brokerSentinelWait.includes("Instant::now() < deadline") &&
     brokerSentinelWait.includes("child.kill()") &&
@@ -22643,7 +25167,9 @@ requireInvariant(
     authenticateBrokerImage.includes("GetLastError()") &&
     authenticateBrokerImage.includes("ERROR_SEM_TIMEOUT") &&
     authenticateBrokerImage.includes("classify_debug_wait_failure") &&
-    brokerDebugWaitClassifier.includes("timed_out && Instant::now() >= deadline") &&
+    brokerDebugWaitClassifier.includes(
+      "timed_out && Instant::now() >= deadline",
+    ) &&
     brokerDebugWaitClassifier.includes("DormantBrokerError::Deadline") &&
     brokerDebugWaitClassifier.includes("DormantBrokerError::ProcessProof") &&
     brokerSupervisorProduction.includes("JOB_OBJECT_LIMIT_ACTIVE_PROCESS") &&
@@ -22678,7 +25204,9 @@ const brokerChannelModuleDocs = brokerChannelProduction.slice(
   brokerChannelProduction.indexOf("use core::fmt;"),
 );
 requireInvariant(
-  brokerChannelModuleDocs.includes("persistent, secretless, process-bound multi-frame") &&
+  brokerChannelModuleDocs.includes(
+    "persistent, secretless, process-bound multi-frame",
+  ) &&
     brokerChannelModuleDocs.includes("broker_supervisor") &&
     brokerChannelModuleDocs.includes("payload-only `broker::ipc` adapters") &&
     !/(?:one-shot|unimplemented|future exact launcher|constructor intentionally does not exist)/iu.test(
@@ -22750,7 +25278,9 @@ requireInvariant(
       `${brokerIpcContract}\n${nativeLibraryForContract}`,
     ) &&
     brokerIpcContract.includes("std::error::Error::source(&error).is_none()") &&
-    nativeLibraryForContract.includes("std::error::Error::source(&error).is_none()"),
+    nativeLibraryForContract.includes(
+      "std::error::Error::source(&error).is_none()",
+    ),
   "native and Broker transport errors must retain only a stable I/O category with no raw source chain",
 );
 const unavailableWireBlock =
@@ -22764,9 +25294,7 @@ const unavailableMethodBlock =
 requireInvariant(
   brokerIpcContract.includes("MAX_BROKER_IPC_FRAME_BYTES: usize = 8_192") &&
     brokerIpcContract.includes("MAX_BROKER_IPC_COMMANDS: u64 = 4_096") &&
-    brokerIpcContract.includes(
-      "summary.commands >= MAX_BROKER_IPC_COMMANDS",
-    ) &&
+    brokerIpcContract.includes("summary.commands >= MAX_BROKER_IPC_COMMANDS") &&
     brokerIpcContract.includes(
       "server_accepts_exact_command_lifetime_and_rejects_the_next_frame_before_dispatch",
     ) &&
@@ -22790,8 +25318,12 @@ requireInvariant(
 requireInvariant(
   nativeContractBridge.includes('request.method_name() == "eth_chainId"') &&
     nativeContractBridge.includes("broker.complete_unavailable(") &&
-    nativeContractBridge.includes("TransportCancellationOutcome::AlreadyCompleted") &&
-    nativeContractBridge.includes("return Err(ProtocolError::SessionSequence.into())") &&
+    nativeContractBridge.includes(
+      "TransportCancellationOutcome::AlreadyCompleted",
+    ) &&
+    nativeContractBridge.includes(
+      "return Err(ProtocolError::SessionSequence.into())",
+    ) &&
     !/(?:KeyAgent|DownstreamExecutor|eth_sendRawTransaction|http::|https::)/u.test(
       nativeContractBridge,
     ),
@@ -22822,7 +25354,7 @@ requireInvariant(
     nativeProcessContractTest.includes('"--release"') &&
     nativeProcessContractTest.includes('"--all-features"') &&
     nativeProcessContractTest.includes("windowsHide: true") &&
-    nativeProcessContractTest.includes("cancelled.disconnect(\"navigation\")") &&
+    nativeProcessContractTest.includes('cancelled.disconnect("navigation")') &&
     nativeProcessContractTest.includes("router.reconnectNative()") &&
     nativeProcessContractTest.includes("{ code: 78, signal: null }") &&
     !/(?:puppeteer|playwright|selenium|launchPersistentContext)/iu.test(
@@ -22831,9 +25363,1009 @@ requireInvariant(
   "real bridge evidence must stay offline, headless, cancel/reconnect aware, and release-exit-78 checked",
 );
 
-const approvalChannel = await text("crates/platform-windows/src/approval_channel.rs");
+const approvalChannel = await text(
+  "crates/platform-windows/src/approval_channel.rs",
+);
+const approvalChannelProduction = withoutBottomTestModule(approvalChannel);
+const approvalParentChannelContract = (source) => {
+  let launch;
+  let requireParentProof;
+  let matchesVerifiedHelper;
+  let pendingImpl;
+  let pendingReceive;
+  let bootstrapDefinition;
+  let bootstrapImpl;
+  let bootstrapFromHellos;
+  let bootstrapNew;
+  let responseChannelDefinition;
+  let responseChannelImpl;
+  let receive;
+  let armFromHeld;
+  let verifyForIdentity;
+  let platformReaderImpl;
+  let platformReadOnce;
+  let transcriptIdentityDefinition;
+  let transcriptHash;
+  let cleanupDeadline;
+  try {
+    launch = rustTopLevelFunctionBlock(source, "launch_approval_frontend");
+    requireParentProof = rustTopLevelFunctionBlock(
+      source,
+      "require_parent_proof",
+    );
+    matchesVerifiedHelper = rustTopLevelFunctionBlock(
+      source,
+      "matches_verified_approval_helper",
+    );
+    pendingImpl = rustImplItemAtDepth(source, "impl PendingApproval", 0);
+    pendingReceive = rustFunctionBlockAtDepth(pendingImpl, "receive", 1);
+    bootstrapDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+BootstrapNonces\s*\{/u,
+    );
+    bootstrapImpl = rustImplItemAtDepth(source, "impl BootstrapNonces", 0);
+    bootstrapFromHellos = rustFunctionBlockAtDepth(
+      bootstrapImpl,
+      "from_hellos",
+      1,
+    );
+    bootstrapNew = rustFunctionBlockAtDepth(bootstrapImpl, "new", 1);
+    responseChannelDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+ApprovalResponseChannel\s*\{/u,
+    );
+    responseChannelImpl = rustImplItemAtDepth(
+      source,
+      "impl ApprovalResponseChannel",
+      0,
+    );
+    receive = rustFunctionBlockAtDepth(responseChannelImpl, "receive", 1);
+    armFromHeld = rustFunctionBlockAtDepth(
+      responseChannelImpl,
+      "arm_from_held_helper",
+      1,
+    );
+    verifyForIdentity = rustFunctionBlockAtDepth(
+      responseChannelImpl,
+      "verify_for_identity",
+      1,
+    );
+    platformReaderImpl = rustImplItemAtDepth(
+      source,
+      "impl OneShotResponseReader for PlatformResponseReader",
+      0,
+    );
+    platformReadOnce = rustFunctionBlockAtDepth(
+      platformReaderImpl,
+      "read_once",
+      1,
+    );
+    transcriptIdentityDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+TranscriptIdentity\s*\{/u,
+    );
+    transcriptHash = rustTopLevelFunctionBlock(source, "transcript_hash");
+    cleanupDeadline = rustTopLevelFunctionBlock(source, "cleanup_deadline");
+  } catch {
+    return false;
+  }
+
+  const launchCompact = compactRust(launch);
+  const receiveCompact = compactRust(receive);
+  const armCompact = compactRust(armFromHeld);
+  const transcriptCompact = compactRust(transcriptHash);
+  const transcriptUpdateOrder = [
+    "transcript.update(u32::try_from(TRANSCRIPT_DOMAIN.len())",
+    "transcript.update(TRANSCRIPT_DOMAIN)",
+    "transcript.update(identity.process_id.to_be_bytes())",
+    "transcript.update(identity.helper_file.volume_serial_number.to_be_bytes())",
+    "transcript.update(identity.helper_file.file_index.to_be_bytes())",
+    "transcript.update(identity.helper_file.file_size.to_be_bytes())",
+    "transcript.update(identity.helper_manifest_digest)",
+    "transcript.update(identity.profile_revision.to_be_bytes())",
+    "transcript.update(request_digest)",
+    "transcript.update(request_nonce)",
+    "transcript.update(request_hash)",
+    "transcript.update(response_bytes)",
+    "transcript.update(channel_challenge)",
+    "transcript.update(bootstrap_nonces.parent)",
+    "transcript.update(bootstrap_nonces.child)",
+  ].map((marker) => transcriptCompact.indexOf(marker));
+
+  return (
+    normalizeRustFragment(
+      rustConstItemAtDepth(source, "TRANSCRIPT_DOMAIN", 0),
+    ) ===
+      'const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v3";' &&
+    normalizeRustFragment(
+      rustConstItemAtDepth(source, "TERMINATION_GRACE", 0),
+    ) === "const TERMINATION_GRACE: Duration = Duration::from_secs(5);" &&
+    normalizeRustFragment(rustLexicalCode(bootstrapDefinition)) ===
+      "struct BootstrapNonces { parent: [u8; CHANNEL_CHALLENGE_BYTES], child: [u8; CHANNEL_CHALLENGE_BYTES], }" &&
+    normalizeRustFragment(rustLexicalCode(transcriptIdentityDefinition)) ===
+      "struct TranscriptIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
+    !/\bjob\b/iu.test(
+      rustLexicalCode(`${transcriptIdentityDefinition}\n${transcriptHash}`),
+    ) &&
+    rustLexicalCode(responseChannelDefinition).includes(
+      "channel_challenge: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+    ) &&
+    rustLexicalCode(responseChannelDefinition).includes(
+      "parent_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+    ) &&
+    rustLexicalCode(responseChannelDefinition).includes(
+      "child_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+    ) &&
+    orderedRustMarkersAtDepth(launch, [
+      {
+        marker:
+          "let mut parent_nonce = Zeroizing::new([0_u8; CHANNEL_CHALLENGE_BYTES])",
+        depth: 1,
+      },
+      { marker: "getrandom::fill(&mut *parent_nonce)", depth: 1 },
+      { marker: "if is_all_zero(&*parent_nonce)", depth: 1 },
+      {
+        marker: "let pipes = PrivateApprovalPipes::create()",
+        depth: 1,
+      },
+      { marker: "let held_process =", depth: 1 },
+      {
+        marker: "let inherited = InheritedStdio::for_child_pipe_servers(",
+        depth: 2,
+      },
+      { marker: ".spawn(helper, &inherited)", depth: 2 },
+      { marker: "let setup =", depth: 1 },
+      {
+        marker:
+          "let proof = require_parent_proof(held_process.parent_proof())?",
+        depth: 2,
+      },
+      { marker: "let parent_hello = ApprovalParentHello::new(", depth: 2 },
+      {
+        marker:
+          "let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello))",
+        depth: 2,
+      },
+      {
+        marker: "let (mut writer, reader) = pipes.into_parent()",
+        depth: 2,
+      },
+      {
+        marker: ".write_bytes(&*encoded_parent_hello, expires_at)",
+        depth: 2,
+      },
+      { marker: "let child_hello_bytes = reader", depth: 2 },
+      { marker: ".read_exact(CHILD_HELLO_BYTES, expires_at)", depth: 2 },
+      {
+        marker:
+          "let child_hello = decode_child_hello(&parent_hello, &child_hello_bytes)",
+        depth: 2,
+      },
+      { marker: "let bootstrap_nonces =", depth: 2 },
+      {
+        marker:
+          "BootstrapNonces::from_hellos(*parent_nonce, &parent_hello, &child_hello)",
+        depth: 2,
+      },
+      {
+        marker: "let channel = ApprovalResponseChannel::arm_from_held_helper(",
+        depth: 2,
+      },
+      { marker: "let parent_finish =", depth: 2 },
+      {
+        marker:
+          "Zeroizing::new(encode_parent_finish(&parent_hello, &child_hello, request))",
+        depth: 2,
+      },
+      {
+        marker: ".write_all(parent_finish.as_slice(), expires_at)",
+        depth: 2,
+      },
+      { marker: "Ok(channel)\n    })();", depth: 2 },
+    ]) &&
+    rustCallSites(launch, "getrandom::fill").length === 1 &&
+    rustCallSites(launch, "require_parent_proof").length === 1 &&
+    rustCallSites(launch, "decode_child_hello").length === 1 &&
+    rustCallSites(launch, "BootstrapNonces::from_hellos").length === 1 &&
+    rustCallSites(launch, "ApprovalResponseChannel::arm_from_held_helper")
+      .length === 1 &&
+    rustCallSites(launch, "write_bytes").length === 1 &&
+    rustCallSites(launch, "write_all").length === 1 &&
+    rustCallSites(launch, "terminate_and_wait").length === 1 &&
+    rustCallSites(launch, "InheritedStdio::new").length === 0 &&
+    rustCallSites(launch, "InheritedStdio::for_child_pipe_servers").length ===
+      1 &&
+    launchCompact.includes(
+      "Err(error)=>{let_=held_process.terminate_and_wait(cleanup_deadline());Err(error)}",
+    ) &&
+    compactRust(requireParentProof).includes(
+      "proof.ok_or(ApprovalLaunchError::Channel(ApprovalChannelError::IdentityMismatch,))",
+    ) &&
+    compactRust(bootstrapFromHellos).includes(
+      "letnonces=Self::new(parent_hello.parent_nonce(),child_hello.child_nonce())?;ifnonces.parent!=expected_parent{",
+    ) &&
+    compactRust(bootstrapNew).includes(
+      "ifis_all_zero(&parent)||is_all_zero(&child){returnErr(ApprovalChannelError::TranscriptFailure);}",
+    ) &&
+    compactRust(pendingReceive) ===
+      "pubfnreceive(self)->Result<VerifiedApprovalResponse,ApprovalChannelError>{self.channel.receive(self.helper)}" &&
+    orderedRustMarkersAtDepth(receive, [
+      {
+        marker:
+          "let actual_identity = TranscriptIdentity::from_held(helper.identity())",
+        depth: 1,
+      },
+      { marker: "let parts = helper", depth: 1 },
+      { marker: ".revalidate_held_process()", depth: 1 },
+      {
+        marker: ".and_then(|()| self.verify_for_identity(actual_identity))",
+        depth: 1,
+      },
+      { marker: "let termination =", depth: 1 },
+      { marker: ".terminate_and_wait(cleanup_deadline())", depth: 1 },
+      { marker: "let parts = parts?", depth: 1 },
+      { marker: "termination?", depth: 1 },
+      { marker: "Ok(VerifiedApprovalResponse {", depth: 1 },
+    ]) &&
+    rustCallSites(receive, "revalidate_held_process").length === 1 &&
+    rustCallSites(receive, "verify_for_identity").length === 1 &&
+    rustCallSites(receive, "terminate_and_wait").length === 1 &&
+    receiveCompact.includes(
+      ".map_err(|_|ApprovalChannelError::IdentityMismatch).and_then(|()|self.verify_for_identity(actual_identity));",
+    ) &&
+    receiveCompact.indexOf("letparts=parts?;") <
+      receiveCompact.indexOf("termination?;") &&
+    receiveCompact.indexOf("termination?;") <
+      receiveCompact.indexOf("Ok(VerifiedApprovalResponse{") &&
+    JSON.stringify(
+      rustCallSites(armFromHeld, "matches_verified_approval_helper").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "verified_helper",
+          "identity.helper_file()",
+          "identity.helper_manifest_digest()",
+          "launched_helper.is_held_in_job()",
+        ],
+      ]) &&
+    armCompact.indexOf("letidentity=launched_helper.identity();") <
+      armCompact.indexOf("matches_verified_approval_helper(") &&
+    armCompact.indexOf("matches_verified_approval_helper(") <
+      armCompact.indexOf("Self::arm_from_branded_reader(") &&
+    compactRust(matchesVerifiedHelper).includes(
+      "verified_helper.is_approval_frontend()&&helper_file==verified_helper.identity()&&helper_manifest_digest==verified_helper.manifest_digest()&&is_held_in_job",
+    ) &&
+    compactRust(cleanupDeadline) ===
+      "fncleanup_deadline()->Instant{Instant::now().checked_add(TERMINATION_GRACE).unwrap_or_else(Instant::now)}" &&
+    rustCallSites(platformReadOnce, "read_exact_frame").length === 1 &&
+    compactRust(platformReadOnce).includes(
+      ".read_exact_frame(RESPONSE_BYTES,deadline)",
+    ) &&
+    compactRust(verifyForIdentity).includes(
+      "BootstrapNonces::new(*self.parent_bootstrap_nonce,*self.child_bootstrap_nonce)?",
+    ) &&
+    transcriptUpdateOrder.every((position) => position !== -1) &&
+    transcriptUpdateOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    rustCallSites(transcriptHash, "transcript.update").length === 15 &&
+    transcriptCompact.includes("response_bytes.len()!=RESPONSE_BYTES") &&
+    transcriptCompact.includes("is_all_zero(&bootstrap_nonces.parent)") &&
+    transcriptCompact.includes("is_all_zero(&bootstrap_nonces.child)")
+  );
+};
+
+const approvalResponseChannelImpl = rustImplItemAtDepth(
+  approvalChannelProduction,
+  "impl ApprovalResponseChannel",
+  0,
+);
+const approvalReceive = rustFunctionBlockAtDepth(
+  approvalResponseChannelImpl,
+  "receive",
+  1,
+);
+const approvalParentChannelMutationProbes = [
+  approvalChannelProduction.replace(
+    "    getrandom::fill(&mut *parent_nonce)",
+    "    parent_nonce.fill(7)",
+  ),
+  approvalChannelProduction.replace(
+    "        let proof = require_parent_proof(held_process.parent_proof())?;\n",
+    "",
+  ),
+  approvalChannelProduction.replace(
+    "        let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello));\n        let (mut writer, reader) = pipes.into_parent();",
+    "        let (mut writer, reader) = pipes.into_parent();\n        let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello));",
+  ),
+  approvalChannelProduction.replace(
+    "let child_hello = decode_child_hello(",
+    "let child_hello = trust_child_hello(",
+  ),
+  approvalChannelProduction.replace(
+    "let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello));",
+    "let encoded_parent_hello = encode_parent_hello(&parent_hello);",
+  ),
+  approvalChannelProduction.replace(
+    "Zeroizing::new(encode_parent_finish(&parent_hello, &child_hello, request))",
+    "encode_parent_finish(&parent_hello, &child_hello, request)",
+  ),
+  approvalChannelProduction.replace(
+    ".write_all(parent_finish.as_slice(), expires_at)",
+    ".write_bytes(parent_finish.as_slice(), expires_at)",
+  ),
+  approvalChannelProduction.replace(
+    "            let _ = held_process.terminate_and_wait(cleanup_deadline());\n",
+    "",
+  ),
+  approvalChannelProduction.replace(
+    approvalReceive,
+    approvalReceive.replace(
+      ".revalidate_held_process()",
+      ".trust_held_process()",
+    ),
+  ),
+  approvalChannelProduction.replace(
+    approvalReceive,
+    approvalReceive.replace(
+      ".terminate_and_wait(cleanup_deadline())",
+      ".skip_termination(cleanup_deadline())",
+    ),
+  ),
+  approvalChannelProduction.replace(
+    "    transcript.update(request_digest);\n    transcript.update(request_nonce);",
+    "    transcript.update(request_nonce);\n    transcript.update(request_digest);",
+  ),
+  approvalChannelProduction.replace(
+    'const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v3";',
+    'const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v2";',
+  ),
+  approvalChannelProduction.replace(
+    "    transcript.update(bootstrap_nonces.child);\n",
+    "",
+  ),
+];
 requireInvariant(
-  /pub\s+struct\s+VerifiedApprovalResponse\s*\{\s*decision\s*:/su.test(approvalChannel) &&
+  approvalParentChannelContract(approvalChannelProduction) &&
+    approvalParentChannelMutationProbes.every(
+      (probe) =>
+        probe !== approvalChannelProduction &&
+        !approvalParentChannelContract(probe),
+    ),
+  "Approval parent channel must retain fresh nonzero bootstrap nonces, proof-before-hello staged IO, exact decode and identity/job arming, zeroized hello/finish buffers, independent finite cleanup, revalidate-verify-reap-before-capability receive, and transcript v3 field order",
+);
+
+const approvalHeldProcessRevalidationContract = (source) => {
+  let launchedHelperDefinition;
+  let launchedHelperImpl;
+  let isHeldInJob;
+  let revalidateMethod;
+  let heldIdentityDefinition;
+  let sysModule;
+  let sysRevalidate;
+  let launchRestrictedChild;
+  try {
+    launchedHelperDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+LaunchedHelper\s*\{/u,
+    );
+    launchedHelperImpl = rustImplItemAtDepth(source, "impl LaunchedHelper", 0);
+    isHeldInJob = rustFunctionBlockAtDepth(
+      launchedHelperImpl,
+      "is_held_in_job",
+      1,
+    );
+    revalidateMethod = rustFunctionBlockAtDepth(
+      launchedHelperImpl,
+      "revalidate_held_process",
+      1,
+    );
+    heldIdentityDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+HeldProcessIdentity\s*\{/u,
+    );
+    sysModule = rustLexicalItemBlockAtDepth(
+      source,
+      /(?:^|\n)\s*mod\s+sys\s*\{/u,
+      0,
+    );
+    sysRevalidate = rustFunctionBlockAtDepth(
+      sysModule,
+      "revalidate_held_process",
+      1,
+    );
+    launchRestrictedChild = rustFunctionBlockAtDepth(sysModule, "launch", 1);
+  } catch {
+    return false;
+  }
+  const sysCompact = compactRust(sysRevalidate);
+  const launchCompact = compactRust(launchRestrictedChild);
+  const revalidationOrder = [
+    "ifprocess.is_invalid()||job.is_invalid()||expected_process_id==0",
+    "letprocess_id=unsafe{GetProcessId(process)}",
+    "IsProcessInJob(process,Some(job),&rawmutin_job)",
+    "QueryInformationJobObject(Some(job),JobObjectExtendedLimitInformation",
+    "letbasic=&information.BasicLimitInformation",
+    "basic.LimitFlags&JOB_OBJECT_LIMIT_ACTIVE_PROCESS",
+    "basic.LimitFlags&JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+    "basic.ActiveProcessLimit!=1",
+  ].map((marker) => sysCompact.indexOf(marker));
+  return (
+    normalizeRustFragment(rustLexicalCode(launchedHelperDefinition)) ===
+      "pub struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, }" &&
+    normalizeRustFragment(rustLexicalCode(heldIdentityDefinition)) ===
+      "pub struct HeldProcessIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
+    compactRust(isHeldInJob) ===
+      "pubfnis_held_in_job(&self)->bool{self.revalidate_held_process().is_ok()}" &&
+    JSON.stringify(
+      rustCallSites(revalidateMethod, "sys::revalidate_held_process").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["self.process.raw()", "self.job.raw()", "self.identity.process_id()"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(sysRevalidate, "GetProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process"]]) &&
+    JSON.stringify(
+      rustCallSites(sysRevalidate, "IsProcessInJob").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "Some(job)", "&rawmutin_job"]]) &&
+    JSON.stringify(
+      rustCallSites(sysRevalidate, "QueryInformationJobObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "Some(job)",
+          "JobObjectExtendedLimitInformation",
+          "ptr::from_mut(&mutinformation).cast::<c_void>()",
+          "u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).map_err(|_|LaunchError::SandboxVerification)?",
+          "None",
+        ],
+      ]) &&
+    revalidationOrder.every((position) => position !== -1) &&
+    revalidationOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    sysCompact.includes("process_id==0||process_id!=expected_process_id") &&
+    sysCompact.includes("if!in_job.as_bool()") &&
+    sysCompact.includes(
+      "basic.LimitFlags&JOB_OBJECT_LIMIT_ACTIVE_PROCESS==JOB_OBJECT_LIMIT(0)||basic.LimitFlags&JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE==JOB_OBJECT_LIMIT(0)||basic.ActiveProcessLimit!=1",
+    ) &&
+    launchCompact.includes("lethelper_file=helper.identity();") &&
+    launchCompact.includes(
+      "lethelper_manifest_digest=helper.manifest_digest();",
+    ) &&
+    launchCompact.includes(
+      "identity:HeldProcessIdentity{process_id:held_process_id,helper_file,helper_manifest_digest,profile_revision:profile.revision(),}",
+    ) &&
+    launchCompact.indexOf(
+      ".map(|sources|inject_parent_proof(sources,process.raw()))",
+    ) < launchCompact.indexOf("ResumeThread(thread.raw())")
+  );
+};
+const approvalHeldProcessRevalidationMutationProbes = [
+  restrictedLauncherProduction.replace(
+    "self.revalidate_held_process().is_ok()",
+    "true",
+  ),
+  restrictedLauncherProduction.replace(
+    "let process_id = unsafe { GetProcessId(process) };",
+    "let process_id = expected_process_id;",
+  ),
+  restrictedLauncherProduction.replace(
+    "IsProcessInJob(process, Some(job)",
+    "IsProcessInJob(process, None",
+  ),
+  restrictedLauncherProduction.replace(
+    "QueryInformationJobObject(",
+    "SkipQueryInformationJobObject(",
+  ),
+  restrictedLauncherProduction.replace(
+    "basic.LimitFlags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS == JOB_OBJECT_LIMIT(0)",
+    "false",
+  ),
+  restrictedLauncherProduction.replace(
+    "basic.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == JOB_OBJECT_LIMIT(0)",
+    "false",
+  ),
+  restrictedLauncherProduction.replace(
+    "basic.ActiveProcessLimit != 1",
+    "false",
+  ),
+  restrictedLauncherProduction.replace(
+    "                helper_manifest_digest,",
+    "                helper_manifest_digest: [0; 32],",
+  ),
+];
+requireInvariant(
+  approvalHeldProcessRevalidationContract(restrictedLauncherProduction) &&
+    approvalHeldProcessRevalidationMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncherProduction &&
+        !approvalHeldProcessRevalidationContract(probe),
+    ),
+  "Approval held-process authority must retain exact process/job handles, PID requery, exact Job membership, live active-one and kill-on-close limit requery, verified file/digest identity, and proof injection before resume",
+);
+
+const approvalPipeContract = (source) => {
+  const production = withoutBottomTestModule(source);
+  let approvalPipesImpl;
+  let create;
+  let intoParent;
+  let writerImpl;
+  let writeBytes;
+  let writeAll;
+  let readerImpl;
+  let readExact;
+  let readExactFrame;
+  let sysModule;
+  let createChildServerPipe;
+  let readExactBefore;
+  let readExactFrameBefore;
+  let requireEndBefore;
+  let completeBefore;
+  let stagedTest;
+  let parentPeerTest;
+  let expiredPendingReadTest;
+  try {
+    approvalPipesImpl = rustImplItemAtDepth(
+      production,
+      "impl PrivateApprovalPipes",
+      0,
+    );
+    create = rustFunctionBlockAtDepth(approvalPipesImpl, "create", 1);
+    intoParent = rustFunctionBlockAtDepth(approvalPipesImpl, "into_parent", 1);
+    writerImpl = rustImplItemAtDepth(
+      production,
+      "impl ApprovalRequestWriter",
+      0,
+    );
+    writeBytes = rustFunctionBlockAtDepth(writerImpl, "write_bytes", 1);
+    writeAll = rustFunctionBlockAtDepth(writerImpl, "write_all", 1);
+    readerImpl = rustImplItemAtDepth(
+      production,
+      "impl ApprovalResponseReader",
+      0,
+    );
+    readExact = rustFunctionBlockAtDepth(readerImpl, "read_exact", 1);
+    readExactFrame = rustFunctionBlockAtDepth(
+      readerImpl,
+      "read_exact_frame",
+      1,
+    );
+    sysModule = rustLexicalItemBlockAtDepth(
+      production,
+      /(?:^|\n)\s*mod\s+sys\s*\{/u,
+      0,
+    );
+    createChildServerPipe = rustFunctionBlockAtDepth(
+      sysModule,
+      "create_child_server_pipe",
+      1,
+    );
+    readExactBefore = rustFunctionBlockAtDepth(
+      sysModule,
+      "read_exact_before",
+      1,
+    );
+    readExactFrameBefore = rustFunctionBlockAtDepth(
+      sysModule,
+      "read_exact_frame_before",
+      1,
+    );
+    requireEndBefore = rustFunctionBlockAtDepth(
+      sysModule,
+      "require_end_before",
+      1,
+    );
+    completeBefore = rustFunctionBlockAtDepth(sysModule, "complete_before", 1);
+    stagedTest = rustFunctionBlockAtDepth(
+      source,
+      "approval_pipe_supports_staged_parent_authentication_then_exact_response_eof",
+      1,
+    );
+    parentPeerTest = rustFunctionBlockAtDepth(
+      source,
+      "frontend_child_servers_report_one_exact_parent_peer",
+      1,
+    );
+    expiredPendingReadTest = rustFunctionBlockAtDepth(
+      source,
+      "already_expired_pending_read_is_cancelled_and_drained_before_return",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const serverCompact = compactRust(createChildServerPipe);
+  const frameCompact = compactRust(readExactFrameBefore);
+  const completionCompact = compactRust(completeBefore);
+  return (
+    JSON.stringify(
+      rustCallSites(create, "sys::create_child_server_pipe").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&request_name", "&security", "sys::PipeDirection::ParentWrites"],
+        ["&response_name", "&security", "sys::PipeDirection::ParentReads"],
+      ]) &&
+    !/\bcreate_one_way_pipe\b/u.test(rustLexicalCode(production)) &&
+    compactRust(intoParent).includes(
+      "drop(child_request);drop(child_response);(ApprovalRequestWriter(parent_request),ApprovalResponseReader(parent_response),)",
+    ) &&
+    compactRust(writeBytes).startsWith(
+      "pub(crate)fnwrite_bytes(&mutself,bytes:&[u8],deadline:Instant)->Result<(),PipeError>{",
+    ) &&
+    compactRust(writeAll).startsWith(
+      "pub(crate)fnwrite_all(self,bytes:&[u8],deadline:Instant)->Result<(),PipeError>{",
+    ) &&
+    compactRust(readExact).startsWith(
+      "pub(crate)fnread_exact(&self,exact_bytes:usize,deadline:Instant,)->Result<Zeroizing<Vec<u8>>,PipeError>{",
+    ) &&
+    compactRust(readExactFrame).startsWith(
+      "pub(crate)fnread_exact_frame(self,exact_bytes:usize,deadline:Instant,)->Result<Vec<u8>,PipeError>{",
+    ) &&
+    rustCallSites(readExact, "sys::read_exact_before").length === 1 &&
+    rustCallSites(readExactFrame, "sys::read_exact_frame_before").length ===
+      1 &&
+    compactRust(readExactBefore).includes(
+      "letmutframe=Zeroizing::new(vec![0_u8;exact_bytes])",
+    ) &&
+    frameCompact.indexOf("whileread<exact_bytes") <
+      frameCompact.indexOf("require_end_before(handle,deadline)?") &&
+    frameCompact.indexOf("require_end_before(handle,deadline)?") <
+      frameCompact.indexOf("Ok(frame)") &&
+    compactRust(requireEndBefore).includes(
+      "IoRead::End|IoRead::Bytes(0)=>Ok(()),IoRead::Bytes(_)=>Err(PipeError::TrailingData)",
+    ) &&
+    serverCompact.includes(
+      "letserver_direction=matchdirection{PipeDirection::ParentWrites=>PIPE_ACCESS_INBOUND,PipeDirection::ParentReads=>PIPE_ACCESS_OUTBOUND,};",
+    ) &&
+    serverCompact.includes(
+      "letopen_mode=server_direction|FILE_FLAG_FIRST_PIPE_INSTANCE;",
+    ) &&
+    !serverCompact.includes(
+      "letopen_mode=server_direction|FILE_FLAG_FIRST_PIPE_INSTANCE|FILE_FLAG_OVERLAPPED",
+    ) &&
+    serverCompact.includes(
+      "FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OVERLAPPED|SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION",
+    ) &&
+    serverCompact.includes(
+      "Ok((OwnedWinHandle(parent_client),child_server))",
+    ) &&
+    rustCallSites(createChildServerPipe, "CreateNamedPipeW").length === 1 &&
+    rustCallSites(createChildServerPipe, "CreateFileW").length === 1 &&
+    rustCallSites(createChildServerPipe, "ConnectNamedPipe").length === 0 &&
+    rustCallSites(completeBefore, "cancel_and_drain").length === 2 &&
+    completionCompact.includes(
+      "lettimeout_ms=matchremaining_milliseconds(deadline){Ok(timeout_ms)=>timeout_ms,Err(error)=>{cancel_and_drain(handle,overlapped);returnErr(error);}};",
+    ) &&
+    completionCompact.includes(
+      "ifletErr(error)=completion{cancel_and_drain(handle,overlapped);iferror.code()==HRESULT::from_win32(WAIT_TIMEOUT.0)",
+    ) &&
+    completionCompact.indexOf("error.code()!=ERROR_IO_PENDING.to_hresult()") <
+      completionCompact.indexOf("remaining_milliseconds(deadline)") &&
+    completionCompact.indexOf("remaining_milliseconds(deadline)") <
+      completionCompact.indexOf("GetOverlappedResultEx(") &&
+    completionCompact.indexOf("ifletErr(error)=completion") <
+      completionCompact.lastIndexOf("cancel_and_drain(handle,overlapped)") &&
+    orderedRustMarkersAtDepth(stagedTest, [
+      { marker: "writer.write_bytes(&parent_hello", depth: 1 },
+      { marker: ".read_exact(child_hello.len()", depth: 1 },
+      { marker: "writer.write_all(&parent_finish", depth: 1 },
+      { marker: "reader.read_exact_frame(response.len()", depth: 1 },
+    ]) &&
+    rustCallSites(parentPeerTest, "sys::child_server_client_for_test")
+      .length === 4 &&
+    rustCallSites(parentPeerTest, "PrivateApprovalPipes::create").length ===
+      1 &&
+    rustCallSites(parentPeerTest, "PrivateSecretInputPipes::create").length ===
+      1 &&
+    compactRust(expiredPendingReadTest).includes(
+      "checked_sub(Duration::from_millis(1))",
+    ) &&
+    compactRust(expiredPendingReadTest).includes(
+      "reader.read_exact_frame(1,deadline),Err(PipeError::DeadlineElapsed)",
+    ) &&
+    compactRust(expiredPendingReadTest).includes(
+      "assert!(started.elapsed()<Duration::from_secs(2))",
+    )
+  );
+};
+const approvalPipeMutationProbes = [
+  keyAgentPipeSource.replace(
+    "sys::create_child_server_pipe(\n            &request_name,",
+    "sys::create_one_way_pipe(\n            &request_name,",
+  ),
+  keyAgentPipeSource.replace(
+    "sys::PipeDirection::ParentReads,\n        )?;",
+    "sys::PipeDirection::ParentWrites,\n        )?;",
+  ),
+  keyAgentPipeSource.replace(
+    "pub(crate) fn write_all(self, bytes: &[u8]",
+    "pub(crate) fn write_all(&mut self, bytes: &[u8]",
+  ),
+  keyAgentPipeSource.replace(
+    "pub(crate) fn read_exact_frame(\n        self,",
+    "pub(crate) fn read_exact_frame(\n        &self,",
+  ),
+  keyAgentPipeSource.replace(
+    "let mut frame = Zeroizing::new(vec![0_u8; exact_bytes]);",
+    "let mut frame = vec![0_u8; exact_bytes];",
+  ),
+  keyAgentPipeSource.replace(
+    "        require_end_before(handle, deadline)?;\n",
+    "",
+  ),
+  keyAgentPipeSource.replace(
+    "FILE_ATTRIBUTE_NORMAL\n                    | FILE_FLAG_OVERLAPPED",
+    "FILE_ATTRIBUTE_NORMAL",
+  ),
+  keyAgentPipeSource.replace(
+    "Ok((OwnedWinHandle(parent_client), child_server))",
+    "Ok((child_server, OwnedWinHandle(parent_client)))",
+  ),
+  keyAgentPipeSource.replace(
+    "        let timeout_ms = match remaining_milliseconds(deadline) {\n            Ok(timeout_ms) => timeout_ms,\n            Err(error) => {\n                cancel_and_drain(handle, overlapped);\n                return Err(error);\n            }\n        };",
+    "        let timeout_ms = remaining_milliseconds(deadline)?;",
+  ),
+  keyAgentPipeSource.replace(
+    "            cancel_and_drain(handle, overlapped);\n            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
+    "            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
+  ),
+];
+requireInvariant(
+  approvalPipeContract(keyAgentPipeSource) &&
+    approvalPipeMutationProbes.every(
+      (probe) => probe !== keyAgentPipeSource && !approvalPipeContract(probe),
+    ),
+  "Approval pipes must retain child-server/parent-overlapped-client topology, parent-write/parent-read direction pairing, borrowed staged hello IO, consuming finish/response IO, zeroized exact child hello, and final exact EOF",
+);
+
+const approvalChildServerStdioContract = (source) => {
+  const production = withoutBottomTestModule(source);
+  let inheritedStdioImpl;
+  let constructor;
+  let sysModule;
+  let validateLiveHandle;
+  let validateChildPipeServer;
+  let inheritableTest;
+  let diskTest;
+  let socketTest;
+  try {
+    inheritedStdioImpl = rustImplItemAtDepth(
+      production,
+      "impl<'handle> InheritedStdio<'handle>",
+      0,
+    );
+    constructor = rustFunctionBlockAtDepth(
+      inheritedStdioImpl,
+      "for_child_pipe_servers",
+      1,
+    );
+    sysModule = rustLexicalItemBlockAtDepth(
+      production,
+      /(?:^|\n)\s*mod\s+sys\s*\{/u,
+      0,
+    );
+    validateLiveHandle = rustFunctionBlockAtDepth(
+      sysModule,
+      "validate_live_handle",
+      1,
+    );
+    validateChildPipeServer = rustFunctionBlockAtDepth(
+      sysModule,
+      "validate_child_pipe_server",
+      1,
+    );
+    inheritableTest = rustFunctionBlockAtDepth(
+      source,
+      "already_inheritable_stdio_sources_are_rejected_before_launch",
+      1,
+    );
+    diskTest = rustFunctionBlockAtDepth(
+      source,
+      "disk_handles_cannot_cross_the_stdio_boundary",
+      1,
+    );
+    socketTest = rustFunctionBlockAtDepth(
+      source,
+      "inherited_sockets_cannot_cross_the_stdio_boundary",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const validateCompact = compactRust(validateChildPipeServer);
+  const validationOrder = [
+    "validate_live_handle(handle)?",
+    "GetNamedPipeClientProcessId(raw,&rawmutclient_process_id)",
+    "GetNamedPipeClientSessionId(raw,&rawmutclient_session_id)",
+    "letcurrent_process_id=unsafe{GetCurrentProcessId()}",
+    "current_process_id==0||client_process_id!=current_process_id",
+    "ProcessIdToSessionId(current_process_id,&rawmutcurrent_session_id)",
+    "client_session_id==u32::MAX||client_session_id!=current_session_id",
+  ].map((marker) => validateCompact.indexOf(marker));
+  return (
+    JSON.stringify(
+      rustCallSites(constructor, "sys::validate_child_pipe_server").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input"], ["output"], ["error"]]) &&
+    JSON.stringify(
+      rustCallSites(validateLiveHandle, "GetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["HANDLE(handle.as_raw_handle())", "&rawmutflags"]]) &&
+    compactRust(validateLiveHandle).includes(
+      "ifflags&HANDLE_FLAG_INHERIT.0!=0{returnErr(LaunchError::InvalidHandle);}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(validateChildPipeServer, "GetNamedPipeClientProcessId").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["raw", "&rawmutclient_process_id"]]) &&
+    JSON.stringify(
+      rustCallSites(validateChildPipeServer, "GetNamedPipeClientSessionId").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["raw", "&rawmutclient_session_id"]]) &&
+    JSON.stringify(
+      rustCallSites(validateChildPipeServer, "GetCurrentProcessId").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(validateChildPipeServer, "ProcessIdToSessionId").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["current_process_id", "&rawmutcurrent_session_id"]]) &&
+    rustCallSites(validateChildPipeServer, "GetNamedPipeInfo").length === 0 &&
+    validationOrder.every((position) => position !== -1) &&
+    validationOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    rustCallSites(inheritableTest, "InheritedStdio::for_child_pipe_servers")
+      .length === 1 &&
+    rustCallSites(diskTest, "InheritedStdio::new").length === 1 &&
+    rustCallSites(diskTest, "InheritedStdio::for_child_pipe_servers").length ===
+      1 &&
+    rustCallSites(socketTest, "InheritedStdio::new").length === 1 &&
+    rustCallSites(socketTest, "InheritedStdio::for_child_pipe_servers")
+      .length === 1 &&
+    (diskTest.match(/Err\(LaunchError::InvalidHandle\)/gu) ?? []).length ===
+      2 &&
+    (socketTest.match(/Err\(LaunchError::InvalidHandle\)/gu) ?? []).length === 2
+  );
+};
+const approvalChildServerStdioMutationProbes = [
+  restrictedLauncher.replace(
+    "sys::validate_child_pipe_server(input)?;",
+    "sys::validate_live_handle(input)?;",
+  ),
+  restrictedLauncher.replace(
+    "GetNamedPipeClientProcessId(raw, &raw mut client_process_id)",
+    "SkipNamedPipeClientProcessId(raw, &raw mut client_process_id)",
+  ),
+  restrictedLauncher.replace(
+    "GetNamedPipeClientSessionId(raw, &raw mut client_session_id)",
+    "SkipNamedPipeClientSessionId(raw, &raw mut client_session_id)",
+  ),
+  restrictedLauncher.replace(
+    "client_process_id != current_process_id",
+    "client_process_id == current_process_id",
+  ),
+  restrictedLauncher.replace(
+    "ProcessIdToSessionId(current_process_id, &raw mut current_session_id)",
+    "SkipProcessIdToSessionId(current_process_id, &raw mut current_session_id)",
+  ),
+  restrictedLauncher.replace(
+    "client_session_id != current_session_id",
+    "client_session_id == current_session_id",
+  ),
+];
+requireInvariant(
+  approvalChildServerStdioContract(restrictedLauncher) &&
+    approvalChildServerStdioMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncher &&
+        !approvalChildServerStdioContract(probe),
+    ),
+  "private frontend stdio must validate each exact child-server handle as live/non-inheritable with a current-process client PID/session, while disk, socket, and inheritable handles remain negative",
+);
+
+const childPipeServerProductionCallers = platformWindowsProductionFiles
+  .flatMap((file) => {
+    let source = file.source;
+    if (file.path === "crates/platform-windows/src/launch.rs") {
+      const inheritedImpl = rustImplItemAtDepth(
+        source,
+        "impl<'handle> InheritedStdio<'handle>",
+        0,
+      );
+      const definition = rustFunctionBlockAtDepth(
+        inheritedImpl,
+        "for_child_pipe_servers",
+        1,
+      );
+      source = source.replace(definition, "");
+    }
+    return rustCallSites(source, "for_child_pipe_servers").map(() => file.path);
+  })
+  .sort((left, right) => left.localeCompare(right, "en"));
+const launchApprovalFrontendProductionCallers = workspaceRustProductionFiles
+  .flatMap((file) => {
+    let source = file.source;
+    if (file.path === "crates/platform-windows/src/approval_channel.rs") {
+      const definition = rustTopLevelFunctionBlock(
+        source,
+        "launch_approval_frontend",
+      );
+      source = source.replace(definition, "");
+    }
+    return rustCallSites(source, "launch_approval_frontend").map(
+      () => file.path,
+    );
+  })
+  .sort((left, right) => left.localeCompare(right, "en"));
+const approveAndSignProductionCallers = keyAgentProductionFiles
+  .flatMap((file) => {
+    let source = file.source;
+    if (file.path === "crates/key-agent/src/lib.rs") {
+      const definition = rustTopLevelFunctionBlock(source, "approve_and_sign");
+      source = source.replace(definition, "");
+    }
+    return rustCallSites(source, "approve_and_sign").map(() => file.path);
+  })
+  .sort((left, right) => left.localeCompare(right, "en"));
+const approveAndSignDeadCodeContract = (source) =>
+  (
+    rustLexicalCode(source).match(
+      /#\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]\s*pub\s*\(\s*crate\s*\)\s+fn\s+approve_and_sign\b/gu,
+    ) ?? []
+  ).length === 1;
+const approveAndSignDeadCodeMutation = keyAgent.replace(
+  "#[allow(dead_code)]\npub(crate) fn approve_and_sign",
+  "pub(crate) fn approve_and_sign",
+);
+requireInvariant(
+  JSON.stringify(childPipeServerProductionCallers) ===
+    JSON.stringify([
+      "crates/platform-windows/src/approval_channel.rs",
+      "crates/platform-windows/src/recovery_channel.rs",
+      "crates/platform-windows/src/secret_channel.rs",
+    ]) &&
+    rustCallSites(approvalChannelProduction, "InheritedStdio::new").length ===
+      0 &&
+    !platformWindowsProductionFiles.some((file) =>
+      /\bfor_secret_input_servers\b/u.test(rustLexicalCode(file.source)),
+    ) &&
+    launchApprovalFrontendProductionCallers.length === 0 &&
+    approveAndSignProductionCallers.length === 0 &&
+    approveAndSignDeadCodeContract(keyAgent) &&
+    approveAndSignDeadCodeMutation !== keyAgent &&
+    !approveAndSignDeadCodeContract(approveAndSignDeadCodeMutation),
+  "private child-server stdio must have exactly Approval/Secret/Recovery production callers; Approval may not use raw stdio construction; launch_approval_frontend and approve_and_sign must have zero production orchestration callers, with signing explicitly dead-code",
+);
+requireInvariant(
+  /pub\s+struct\s+VerifiedApprovalResponse\s*\{\s*decision\s*:/su.test(
+    approvalChannel,
+  ) &&
     !/impl\s+VerifiedApprovalResponse\s*\{[\s\S]*?pub\s+fn\s+(?:new|from_|for_)/u.test(
       approvalChannel,
     ),
@@ -22850,7 +26382,9 @@ requireInvariant(
 );
 
 const offlineWire = await text("crates/key-agent/src/offline_wire.rs");
-const offlineController = await text("crates/key-agent/src/offline_controller.rs");
+const offlineController = await text(
+  "crates/key-agent/src/offline_controller.rs",
+);
 const offlineService = await text("crates/key-agent/src/offline_service.rs");
 const offlineVaultSession = await text("crates/key-agent/src/vault_session.rs");
 const offlineControllerProduction = keyAgentProductionFiles.find(
@@ -22882,7 +26416,9 @@ for (const command of [
   );
 }
 requireInvariant(
-  !/(?:Sign|Export|Import|Network|Mnemonic|Password|PrivateKey)/u.test(offlineCommandBody) &&
+  !/(?:Sign|Export|Import|Network|Mnemonic|Password|PrivateKey)/u.test(
+    offlineCommandBody,
+  ) &&
     offlineWire.includes('const REQUEST_MAGIC: &[u8; 8] = b"YWOFREQ1"') &&
     offlineWire.includes('const RESPONSE_MAGIC: &[u8; 8] = b"YWOFRES1"') &&
     offlineWire.includes("MAX_OFFLINE_REQUEST_BYTES: usize = 64") &&
@@ -22916,7 +26452,9 @@ requireInvariant(
       offlineControllerProduction,
     ) &&
     keyAgentProductionFiles
-      .filter((file) => file.path !== "crates/key-agent/src/offline_controller.rs")
+      .filter(
+        (file) => file.path !== "crates/key-agent/src/offline_controller.rs",
+      )
       .every((file) => !file.source.includes("CheckedOfflineDeadline {")) &&
     /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+with_live_test_deadline/u.test(
       offlineControllerProduction,
@@ -22933,7 +26471,9 @@ requireInvariant(
   "offline controller must remain sealed, replay-bounded, and the sole minter of non-clone checked deadlines",
 );
 requireInvariant(
-  offlineService.includes("pending_confirmation: Option<PendingRecoveryConfirmation>") &&
+  offlineService.includes(
+    "pending_confirmation: Option<PendingRecoveryConfirmation>",
+  ) &&
     /fn\s+create_from_input\s*\([^)]*checked_deadline:\s*CheckedOfflineDeadline/u.test(
       offlineService,
     ) &&
@@ -23025,12 +26565,23 @@ requireInvariant(
   nativeHost.includes('#[error("native-messaging I/O failed")]'),
   "FrameError Display must not reproduce its retained I/O source",
 );
-requireStableDisplay(approvalUi, "ApprovalError", "approval channel I/O failed");
-requireStableDisplay(secretInput, "SecretInputError", "secret-input channel I/O failed");
+requireStableDisplay(
+  approvalUi,
+  "ApprovalError",
+  "approval channel I/O failed",
+);
+requireStableDisplay(
+  secretInput,
+  "SecretInputError",
+  "secret-input channel I/O failed",
+);
 
 const repositoryPowerShellScripts = await repositoryPowerShellSources();
 const repositoryPowerShellScriptsByPath = new Map(
-  repositoryPowerShellScripts.map((script) => [script.path.toLowerCase(), script]),
+  repositoryPowerShellScripts.map((script) => [
+    script.path.toLowerCase(),
+    script,
+  ]),
 );
 function repositoryPowerShellSource(path) {
   const script = repositoryPowerShellScriptsByPath.get(path.toLowerCase());
@@ -23071,12 +26622,18 @@ const releaseVerifierToolsetTests = repositoryPowerShellSource(
   "scripts/release/verifier-toolset.test.ps1",
 );
 const releaseCheck = repositoryPowerShellSource("scripts/release/check.ps1");
-const releaseManifestVerifier = await text("scripts/release/release-manifest.mjs");
+const releaseManifestVerifier = await text(
+  "scripts/release/release-manifest.mjs",
+);
 const releaseManifestTests = releasePolicyTestSource(
   "scripts/release/release-manifest.test.mjs",
 );
-const releaseManifestAssembler = await text("scripts/release/assemble-manifest.mjs");
-const releaseReviewEvidenceSet = await text("scripts/release/review-evidence-set.mjs");
+const releaseManifestAssembler = await text(
+  "scripts/release/assemble-manifest.mjs",
+);
+const releaseReviewEvidenceSet = await text(
+  "scripts/release/review-evidence-set.mjs",
+);
 const releaseReviewEvidenceSetWrapper = repositoryPowerShellSource(
   "scripts/release/review-evidence-set.ps1",
 );
@@ -23113,25 +26670,42 @@ const approvedRepositoryPowerShellScriptPaths = [
   ...approvedOtherPowerShellScriptPaths,
 ];
 const approvedPowerShellSourceSha256 = Object.freeze({
-  "scripts/check.ps1": "ec9f3f41d47008f2579047b4ef157af933b998c61a8a35ac37c418696810f25f",
-  "scripts/launcher-contract.test.ps1": "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
-  "scripts/release/check.ps1": "a9d5d263f07a5bd8459597e3749aa5617708ac0b87536ca6fdd3341adfcde378",
-  "scripts/release/common.ps1": "82368bd92780baaffd487c5b674203349a7a4f1ee56b9d71a4ba3e58bd3db5fb",
-  "scripts/release/common.test.ps1": "d67800a958a60df98ccbdf8d522344cc3f84d49c44b373d9dfc46faf851442a7",
-  "scripts/release/prepare-unsigned.ps1": "5b84c796d4a9899b37666f295793e193b101e0a3564d7492ea26dd00bd0cbb3b",
-  "scripts/release/prepare-verifier-toolset.ps1": "0523e4a106675d161a385e50fea097d859a9e0a3c942396ca4c1de0d0224a013",
-  "scripts/release/review-evidence-set.ps1": "1d9575c405d0c01d3787270c5d5853a13f814ac0636cb7959ef7dc0d7d8e53fa",
-  "scripts/release/verifier-toolset.test.ps1": "aa9f4e1e4a13a47dba1032c528a0f0e2febf09134653b4300cd82c57fe766945",
-  "scripts/release/verify-authenticode.ps1": "179923bb1c5cf2acd349fd97e5c7731a63fefe8627969afaf6447d4841f3bbdd",
-  "scripts/release/verify-release-offline.ps1": "8f25897182ab4da26cd40b0f8abe4259cf9d72b3d69ac2c7bd007b987fe5bff6",
-  "scripts/run-sepolia-wallet.ps1": "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
+  "scripts/check.ps1":
+    "ec9f3f41d47008f2579047b4ef157af933b998c61a8a35ac37c418696810f25f",
+  "scripts/launcher-contract.test.ps1":
+    "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
+  "scripts/release/check.ps1":
+    "a9d5d263f07a5bd8459597e3749aa5617708ac0b87536ca6fdd3341adfcde378",
+  "scripts/release/common.ps1":
+    "82368bd92780baaffd487c5b674203349a7a4f1ee56b9d71a4ba3e58bd3db5fb",
+  "scripts/release/common.test.ps1":
+    "d67800a958a60df98ccbdf8d522344cc3f84d49c44b373d9dfc46faf851442a7",
+  "scripts/release/prepare-unsigned.ps1":
+    "5b84c796d4a9899b37666f295793e193b101e0a3564d7492ea26dd00bd0cbb3b",
+  "scripts/release/prepare-verifier-toolset.ps1":
+    "0523e4a106675d161a385e50fea097d859a9e0a3c942396ca4c1de0d0224a013",
+  "scripts/release/review-evidence-set.ps1":
+    "1d9575c405d0c01d3787270c5d5853a13f814ac0636cb7959ef7dc0d7d8e53fa",
+  "scripts/release/verifier-toolset.test.ps1":
+    "aa9f4e1e4a13a47dba1032c528a0f0e2febf09134653b4300cd82c57fe766945",
+  "scripts/release/verify-authenticode.ps1":
+    "179923bb1c5cf2acd349fd97e5c7731a63fefe8627969afaf6447d4841f3bbdd",
+  "scripts/release/verify-release-offline.ps1":
+    "8f25897182ab4da26cd40b0f8abe4259cf9d72b3d69ac2c7bd007b987fe5bff6",
+  "scripts/run-sepolia-wallet.ps1":
+    "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
 });
 const approvedReleasePolicyTestSha256 = Object.freeze({
-  "scripts/release/audit-extension.test.mjs": "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906",
-  "scripts/release/generate-inventories.test.mjs": "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc",
-  "scripts/release/release-manifest.test.mjs": "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a",
-  "scripts/release/release-verifier-integration.test.mjs": "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e",
-  "scripts/release/review-evidence-set.test.mjs": "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470",
+  "scripts/release/audit-extension.test.mjs":
+    "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906",
+  "scripts/release/generate-inventories.test.mjs":
+    "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc",
+  "scripts/release/release-manifest.test.mjs":
+    "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a",
+  "scripts/release/release-verifier-integration.test.mjs":
+    "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e",
+  "scripts/release/review-evidence-set.test.mjs":
+    "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470",
 });
 const sealedReleasePowerShellEntries = approvedSealedReleasePowerShellEntryPaths
   .map((path) => repositoryPowerShellScriptsByPath.get(path.toLowerCase()))
@@ -23144,7 +26718,8 @@ const discoveredReleaseCommonConsumerPaths = repositoryPowerShellScripts
   )
   .map(({ path }) => path);
 const releaseCommonPowerShellAnalysis = analyzePowerShellSource(releaseCommon);
-const releaseCommonTestsPowerShellAnalysis = analyzePowerShellSource(releaseCommonTests);
+const releaseCommonTestsPowerShellAnalysis =
+  analyzePowerShellSource(releaseCommonTests);
 const releaseVerifierToolsetTestsPowerShellAnalysis = analyzePowerShellSource(
   releaseVerifierToolsetTests,
 );
@@ -23157,19 +26732,26 @@ const releaseWrapperCeremonyEnd = releaseCommonTests.indexOf(
   releaseWrapperCeremonyStart,
 );
 const releaseWrapperCeremonyBlock =
-  releaseWrapperCeremonyStart >= 0 && releaseWrapperCeremonyEnd > releaseWrapperCeremonyStart
-    ? releaseCommonTests.slice(releaseWrapperCeremonyStart, releaseWrapperCeremonyEnd)
+  releaseWrapperCeremonyStart >= 0 &&
+  releaseWrapperCeremonyEnd > releaseWrapperCeremonyStart
+    ? releaseCommonTests.slice(
+        releaseWrapperCeremonyStart,
+        releaseWrapperCeremonyEnd,
+      )
     : "";
-const missingHostFlagProbeStart = activePowerShellLiteralIndexes(
-  releaseVerifierToolsetTestsPowerShellAnalysis,
-  '$missingFlagProbePath = Join-Path $probeRoot "missing-host-flag.ps1"',
-)[0] ?? -1;
-const missingHostFlagProbeEnd = activePowerShellLiteralIndexes(
-  releaseVerifierToolsetTestsPowerShellAnalysis,
-  '$wrapperPath = Join-Path $PSScriptRoot "verify-release-offline.ps1"',
-).find((index) => index > missingHostFlagProbeStart) ?? -1;
+const missingHostFlagProbeStart =
+  activePowerShellLiteralIndexes(
+    releaseVerifierToolsetTestsPowerShellAnalysis,
+    '$missingFlagProbePath = Join-Path $probeRoot "missing-host-flag.ps1"',
+  )[0] ?? -1;
+const missingHostFlagProbeEnd =
+  activePowerShellLiteralIndexes(
+    releaseVerifierToolsetTestsPowerShellAnalysis,
+    '$wrapperPath = Join-Path $PSScriptRoot "verify-release-offline.ps1"',
+  ).find((index) => index > missingHostFlagProbeStart) ?? -1;
 const missingHostFlagProbeBlock =
-  missingHostFlagProbeStart >= 0 && missingHostFlagProbeEnd > missingHostFlagProbeStart
+  missingHostFlagProbeStart >= 0 &&
+  missingHostFlagProbeEnd > missingHostFlagProbeStart
     ? releaseVerifierToolsetTestsPowerShellAnalysis.commentFreeCode.slice(
         missingHostFlagProbeStart,
         missingHostFlagProbeEnd,
@@ -23188,33 +26770,40 @@ const trustedReleaseModuleNamesBlock =
     releaseCommon,
   )?.groups?.body ?? "";
 const trustedReleaseModuleNames = [
-  ...trustedReleaseModuleNamesBlock.matchAll(/"(?<name>Microsoft\.PowerShell\.[A-Za-z]+)"/gu),
+  ...trustedReleaseModuleNamesBlock.matchAll(
+    /"(?<name>Microsoft\.PowerShell\.[A-Za-z]+)"/gu,
+  ),
 ].map((match) => match.groups.name);
 const approvedReleaseEntryScriptNamesBlock =
   /foreach \(\$approvedEntryScriptName in @\((?<body>[\s\S]*?)\)\) \{/u.exec(
     releaseCommon,
   )?.groups?.body ?? "";
 const approvedReleaseEntryScriptNames = [
-  ...approvedReleaseEntryScriptNamesBlock.matchAll(/"(?<name>[A-Za-z0-9.-]+\.ps1)"/gu),
+  ...approvedReleaseEntryScriptNamesBlock.matchAll(
+    /"(?<name>[A-Za-z0-9.-]+\.ps1)"/gu,
+  ),
 ].map((match) => match.groups.name);
 const releaseBootstrapPreflightOrder = [
-  'foreach ($protectedTypeName in @(',
-  'foreach ($visibleAlias in @(',
+  "foreach ($protectedTypeName in @(",
+  "foreach ($visibleAlias in @(",
   "$getModuleCommand =",
   "@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0",
-  'foreach ($coreCommandName in @(',
-  'foreach ($moduleCommandName in @(',
+  "foreach ($coreCommandName in @(",
+  "foreach ($moduleCommandName in @(",
   "$trustedModules =",
-  'foreach ($moduleName in @(',
+  "foreach ($moduleName in @(",
 ].map((marker) => releaseCommon.indexOf(marker));
 const offlineReleaseVerificationBlock = rustItemBlock(
   releaseVerifier,
   /(?:^|\n)function Invoke-OfflineReleaseVerification\s*\{/u,
 );
 const offlineReleaseRequiredValueNamesBlock =
-  /-RequiredValueNames\s+@\((?<body>[\s\S]*?)\)\s*`/u.exec(releaseVerifier)?.groups?.body ?? "";
+  /-RequiredValueNames\s+@\((?<body>[\s\S]*?)\)\s*`/u.exec(releaseVerifier)
+    ?.groups?.body ?? "";
 const offlineReleaseRequiredValueNames = [
-  ...offlineReleaseRequiredValueNamesBlock.matchAll(/"(?<name>[A-Za-z][A-Za-z0-9]*)"/gu),
+  ...offlineReleaseRequiredValueNamesBlock.matchAll(
+    /"(?<name>[A-Za-z][A-Za-z0-9]*)"/gu,
+  ),
 ].map((match) => match.groups.name);
 const validateReleaseManifestBlock = rustItemBlock(
   releaseManifestVerifier,
@@ -23402,9 +26991,7 @@ const reviewSubjectWrapperPrivacyTestBlock = rustItemBlock(
 );
 
 function analyzePowerShellSource(source) {
-  const normalized = source
-    .replace(/^\uFEFF/u, "")
-    .replace(/\r\n?/gu, "\n");
+  const normalized = source.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n");
   const commentFree = normalized.split("");
   const executable = normalized.split("");
   const activeCode = new Uint8Array(normalized.length);
@@ -23428,9 +27015,7 @@ function analyzePowerShellSource(source) {
   const isHereStringBoundary = (index, token) => {
     if (!normalized.startsWith(token, index)) return false;
     const lineEnd = lineEndAfter(index + token.length);
-    return /^[ \t]*$/u.test(
-      normalized.slice(index + token.length, lineEnd),
-    );
+    return /^[ \t]*$/u.test(normalized.slice(index + token.length, lineEnd));
   };
 
   for (let index = 0; index < normalized.length; index += 1) {
@@ -23588,10 +27173,8 @@ function powerShellReferencesReleaseCommon(source) {
   const analysis = analyzePowerShellSource(source);
   return (
     /common[^.\r\n]{0,80}\.ps1/iu.test(analysis.commentFreeCode) ||
-    activePowerShellLiteralIndexes(
-      analysis,
-      "ReleasePowerShellEntryScriptPath",
-    ).length > 0
+    activePowerShellLiteralIndexes(analysis, "ReleasePowerShellEntryScriptPath")
+      .length > 0
   );
 }
 
@@ -23636,7 +27219,9 @@ function skipPowerShellTrivia(source, initialIndex) {
     while (/\s/u.test(source[index] ?? "")) index += 1;
     if (source[index] === "#") {
       const lineEnd = source.indexOf("\n", index + 1);
-      return lineEnd < 0 ? source.length : skipPowerShellTrivia(source, lineEnd + 1);
+      return lineEnd < 0
+        ? source.length
+        : skipPowerShellTrivia(source, lineEnd + 1);
     }
     if (source[index] === "<" && source[index + 1] === "#") {
       const commentEnd = source.indexOf("#>", index + 2);
@@ -23723,7 +27308,10 @@ function powerShellFunctionBlock(source, functionName) {
   ).exec(analysis.executableCode);
   if (header === null) return "";
   const openingBrace = analysis.executableCode.indexOf("{", header.index);
-  const closingBrace = powerShellBraceEnd(analysis.executableCode, openingBrace);
+  const closingBrace = powerShellBraceEnd(
+    analysis.executableCode,
+    openingBrace,
+  );
   return closingBrace < 0
     ? ""
     : analysis.commentFreeCode.slice(header.index, closingBrace + 1);
@@ -23775,7 +27363,8 @@ function bootstrapPrecedesPowerShellExecution(source, prefixEnd) {
   }
 
   for (;;) {
-    const functionHeader = /function\s+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*\s*\{/uy;
+    const functionHeader =
+      /function\s+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*\s*\{/uy;
     functionHeader.lastIndex = cursor;
     const match = functionHeader.exec(source);
     if (match === null) break;
@@ -23936,7 +27525,10 @@ function hasSealedPowerShellExecutablePrefix(source, prefix) {
     preamble.slice(parameterEnd + 1).trim().length === 0;
   return (
     validPreamble &&
-    bootstrapPrecedesPowerShellExecution(normalized, prefixIndex + prefix.length)
+    bootstrapPrecedesPowerShellExecution(
+      normalized,
+      prefixIndex + prefix.length,
+    )
   );
 }
 
@@ -24003,22 +27595,23 @@ const releaseCheckExactPowerShellTestLoop = [
   "        Write-Output $testOutput[0]",
   "    }",
 ].join("\n");
-const releaseCheckExactPowerShellTestLoopIndexes = activePowerShellLiteralIndexes(
-  releaseCheckInvokeTestsAnalysis,
-  releaseCheckExactPowerShellTestLoop,
-);
+const releaseCheckExactPowerShellTestLoopIndexes =
+  activePowerShellLiteralIndexes(
+    releaseCheckInvokeTestsAnalysis,
+    releaseCheckExactPowerShellTestLoop,
+  );
 const expectedReleaseCheckInvokeTestsBlock = [
   "function Invoke-Tests {",
   "    $approvedTestSha256 = [ordered]@{",
-  "        \"audit-extension.test.mjs\" = \"ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906\"",
-  "        \"generate-inventories.test.mjs\" = \"cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc\"",
-  "        \"release-manifest.test.mjs\" = \"4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a\"",
-  "        \"release-verifier-integration.test.mjs\" = \"9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e\"",
-  "        \"review-evidence-set.test.mjs\" = \"b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470\"",
+  '        "audit-extension.test.mjs" = "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906"',
+  '        "generate-inventories.test.mjs" = "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc"',
+  '        "release-manifest.test.mjs" = "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a"',
+  '        "release-verifier-integration.test.mjs" = "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e"',
+  '        "review-evidence-set.test.mjs" = "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470"',
   "    }",
-  "    $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter \"*.test.mjs\" -File | Sort-Object -Property Name | ForEach-Object { $_.FullName })",
+  '    $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.test.mjs" -File | Sort-Object -Property Name | ForEach-Object { $_.FullName })',
   "    if ($tests.Count -ne $approvedTestSha256.Count) {",
-  "        throw \"Release-policy test inventory is not approved\"",
+  '        throw "Release-policy test inventory is not approved"',
   "    }",
   "    $approvedTestNames = @($approvedTestSha256.Keys)",
   "    for ($index = 0; $index -lt $approvedTestNames.Count; $index += 1) {",
@@ -24030,7 +27623,7 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "                [System.StringComparison]::Ordinal",
   "            )",
   "        ) {",
-  "            throw \"Release-policy test inventory is not approved\"",
+  '            throw "Release-policy test inventory is not approved"',
   "        }",
   "        $sha256 = [System.Security.Cryptography.SHA256]::Create()",
   "        try {",
@@ -24039,7 +27632,7 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "        finally {",
   "            $sha256.Dispose()",
   "        }",
-  "        $actualSha256 = ([System.BitConverter]::ToString($digest)).Replace(\"-\", \"\").ToLowerInvariant()",
+  '        $actualSha256 = ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()',
   "        if (",
   "            -not [System.String]::Equals(",
   "                $actualSha256,",
@@ -24047,7 +27640,7 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "                [System.StringComparison]::Ordinal",
   "            )",
   "        ) {",
-  "            throw \"Release-policy test source is not approved\"",
+  '            throw "Release-policy test source is not approved"',
   "        }",
   "    }",
   "    $stderrRejected = $false",
@@ -24055,39 +27648,39 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "        $null = Invoke-Checked `",
   "            -Executable $NodeExecutable `",
   "            -CommandArguments @(",
-  "                \"-e\",",
-  "                'process.stdout.write(\"EXACT_STDOUT\");process.stderr.write(\"REJECTED_STDERR\")'",
+  '                "-e",',
+  '                \'process.stdout.write("EXACT_STDOUT");process.stderr.write("REJECTED_STDERR")\'',
   "            )",
   "    }",
   "    catch {",
   "        $stderrRejected = $true",
   "    }",
   "    if (-not $stderrRejected) {",
-  "        throw \"Release check accepted child stderr\"",
+  '        throw "Release check accepted child stderr"',
   "    }",
-  "    Invoke-Checked -Executable $NodeExecutable -CommandArguments (@(\"--test\") + $tests)",
+  '    Invoke-Checked -Executable $NodeExecutable -CommandArguments (@("--test") + $tests)',
   "    $systemPowerShell = [System.IO.Path]::Combine(",
   "        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System),",
-  "        \"WindowsPowerShell\",",
-  "        \"v1.0\",",
-  "        \"powershell.exe\"",
+  '        "WindowsPowerShell",',
+  '        "v1.0",',
+  '        "powershell.exe"',
   "    )",
   "    if (-not [System.IO.File]::Exists($systemPowerShell)) {",
-  "        throw \"System Windows PowerShell is unavailable\"",
+  '        throw "System Windows PowerShell is unavailable"',
   "    }",
   "    $expectedPowerShellTestSuccess = @{",
-  "        \"common.test.ps1\" = \"POWERSHELL_RELEASE_HELPERS_PASS\"",
-  "        \"verifier-toolset.test.ps1\" = \"POWERSHELL_VERIFIER_TOOLSET_PASS\"",
+  '        "common.test.ps1" = "POWERSHELL_RELEASE_HELPERS_PASS"',
+  '        "verifier-toolset.test.ps1" = "POWERSHELL_VERIFIER_TOOLSET_PASS"',
   "    }",
-  "    foreach ($testScriptName in @(\"common.test.ps1\", \"verifier-toolset.test.ps1\")) {",
+  '    foreach ($testScriptName in @("common.test.ps1", "verifier-toolset.test.ps1")) {',
   "        $testOutput = @(",
   "            Invoke-Checked -Executable $systemPowerShell -CommandArguments @(",
-  "                \"-NoLogo\",",
-  "                \"-NoProfile\",",
-  "                \"-NonInteractive\",",
-  "                \"-ExecutionPolicy\",",
-  "                \"Bypass\",",
-  "                \"-File\",",
+  '                "-NoLogo",',
+  '                "-NoProfile",',
+  '                "-NonInteractive",',
+  '                "-ExecutionPolicy",',
+  '                "Bypass",',
+  '                "-File",',
   "                (Join-Path $PSScriptRoot $testScriptName)",
   "            )",
   "        )",
@@ -24100,7 +27693,7 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "                [System.StringComparison]::Ordinal",
   "            )",
   "        ) {",
-  "            throw \"Release PowerShell behavior test did not emit its exact success sentinel\"",
+  '            throw "Release PowerShell behavior test did not emit its exact success sentinel"',
   "        }",
   "        Write-Output $testOutput[0]",
   "    }",
@@ -24154,10 +27747,11 @@ const sealedReleaseBootstrapAttackMatrix = [
   "        }",
   "    )",
 ].join("\n");
-const sealedReleaseBootstrapAttackMatrixIndexes = activePowerShellLiteralIndexes(
-  sealedReleaseBootstrapTestAnalysis,
-  sealedReleaseBootstrapAttackMatrix,
-);
+const sealedReleaseBootstrapAttackMatrixIndexes =
+  activePowerShellLiteralIndexes(
+    sealedReleaseBootstrapTestAnalysis,
+    sealedReleaseBootstrapAttackMatrix,
+  );
 const sealedReleaseBootstrapAttackExecutionMarkers = [
   "$bootstrapAttacks.Count -ne 7",
   "$executedBootstrapAttackCount = 0",
@@ -24272,18 +27866,21 @@ const sealedReleaseBootstrapTopLevelSequence = [
   '        throw "Release PowerShell bootstrap behavior tests did not complete"',
   "    }",
 ].join("\n");
-const sealedReleaseBootstrapTopLevelSequenceIndexes = activePowerShellLiteralIndexes(
-  releaseVerifierToolsetTestsPowerShellAnalysis,
-  sealedReleaseBootstrapTopLevelSequence,
-);
-const sealedReleaseBootstrapFlagInitializationIndexes = activePowerShellLiteralIndexes(
-  releaseVerifierToolsetTestsPowerShellAnalysis,
-  "$script:SealedReleasePowerShellBootstrapVerified = $false",
-);
-const sealedReleaseBootstrapFlagCompletionIndexes = activePowerShellLiteralIndexes(
-  sealedReleaseBootstrapTestAnalysis,
-  "$script:SealedReleasePowerShellBootstrapVerified = $true",
-);
+const sealedReleaseBootstrapTopLevelSequenceIndexes =
+  activePowerShellLiteralIndexes(
+    releaseVerifierToolsetTestsPowerShellAnalysis,
+    sealedReleaseBootstrapTopLevelSequence,
+  );
+const sealedReleaseBootstrapFlagInitializationIndexes =
+  activePowerShellLiteralIndexes(
+    releaseVerifierToolsetTestsPowerShellAnalysis,
+    "$script:SealedReleasePowerShellBootstrapVerified = $false",
+  );
+const sealedReleaseBootstrapFlagCompletionIndexes =
+  activePowerShellLiteralIndexes(
+    sealedReleaseBootstrapTestAnalysis,
+    "$script:SealedReleasePowerShellBootstrapVerified = $true",
+  );
 const commonPowerShellTestSuccessTail = [
   '    Write-Output "POWERSHELL_RELEASE_HELPERS_PASS"',
   "}",
@@ -24346,12 +27943,12 @@ const releaseCheckHereStringCallDecoy = analyzePowerShellSource(
 const earlyTerminationPowerShellDecoys = [
   'Write-Output "POWERSHELL_VERIFIER_TOOLSET_PASS"; return',
   'Write-Output "POWERSHELL_VERIFIER_TOOLSET_PASS"; exit 0',
-  'if ($true) { break }',
-  'if ($true) { continue }',
-  '[System.Environment]::Exit(0)',
+  "if ($true) { break }",
+  "if ($true) { continue }",
+  "[System.Environment]::Exit(0)",
 ].map((source) => analyzePowerShellSource(source));
 const namedFunctionReturnPowerShellControl = analyzePowerShellSource(
-  "function Invoke-Decoy { return }\nWrite-Output \"continued\"",
+  'function Invoke-Decoy { return }\nWrite-Output "continued"',
 );
 const powerShellUsingWhitespaceDecoys = ["\u000b", "\u000c", "\u00a0"].map(
   (whitespace) => analyzePowerShellSource(`${whitespace}using module ambient`),
@@ -24374,7 +27971,8 @@ for (const { path, source } of sealedReleasePowerShellEntries) {
     `sealed release PowerShell executable prefix is invalid: ${path}`,
   );
   requireInvariant(
-    activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource).length === 1,
+    activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource)
+      .length === 1,
     `sealed release PowerShell common binding is not unique: ${path}`,
   );
   requireInvariant(
@@ -24431,20 +28029,22 @@ requireInvariant(
       ],
       approvedRepositoryPowerShellScriptPaths,
     ) &&
-  sealedReleasePowerShellEntries.every(
-    ({ source }) => {
+    sealedReleasePowerShellEntries.every(({ source }) => {
       const analysis = analyzePowerShellSource(source);
       return (
         analysis.valid &&
-        hasSealedPowerShellExecutablePrefix(source, sealedPowerShellEntryPrefix) &&
-        activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource).length === 1 &&
+        hasSealedPowerShellExecutablePrefix(
+          source,
+          sealedPowerShellEntryPrefix,
+        ) &&
+        activePowerShellLiteralIndexes(analysis, exactReleaseCommonDotSource)
+          .length === 1 &&
         activePowerShellLiteralIndexes(
           analysis,
           '. (Join-Path $PSScriptRoot "common.ps1")',
         ).length === 0
       );
-    },
-  ) &&
+    }) &&
     sealedReleasePowerShellEntries.length ===
       approvedSealedReleasePowerShellEntryPaths.length &&
     !hasSealedPowerShellExecutablePrefix(
@@ -24546,31 +28146,48 @@ requireInvariant(
     releaseCommon.includes("function Initialize-ReleasePowerShellRuntime") &&
     releaseCommon.includes("[System.Environment]::Is64BitOperatingSystem") &&
     releaseCommon.includes("[System.Environment]::Is64BitProcess") &&
-    releaseCommon.includes('[string]$PSVersionTable.PSEdition,\n            "Desktop"') &&
+    releaseCommon.includes(
+      '[string]$PSVersionTable.PSEdition,\n            "Desktop"',
+    ) &&
     releaseCommon.includes("$PSVersionTable.PSVersion.Major -ne 5") &&
     releaseCommon.includes("$PSVersionTable.PSVersion.Minor -ne 1") &&
     releaseCommon.includes("[System.Environment]::GetCommandLineArgs()") &&
     releaseCommon.includes("$commandLine.Count -lt 8") &&
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"].every(
-      (argument) => releaseCommon.includes(`"${argument}"`),
-    ) &&
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+    ].every((argument) => releaseCommon.includes(`"${argument}"`)) &&
     releaseCommon.includes("$script:ReleasePowerShellEntryScriptPath") &&
     releaseCommon.includes("$currentProcess.MainModule.FileName") &&
     releaseCommon.includes("[System.Environment+SpecialFolder]::System") &&
     releaseCommon.includes('"WindowsPowerShell", "v1.0"') &&
     releaseCommon.includes('"powershell.exe"') &&
-    releaseCommon.includes('throw "Release PowerShell runtime bootstrap failed closed"'),
+    releaseCommon.includes(
+      'throw "Release PowerShell runtime bootstrap failed closed"',
+    ),
   "the exact approved PowerShell inventory must use one unambiguous encoding and exact reviewed raw-byte SHA-256 pins, and every sealed release entry must reject pre-execution directives, disable autoload before ambient code, and bind common.ps1 to one exact direct system Windows PowerShell 5.1 invocation",
 );
 requireInvariant(
   releaseCommon.includes('"YourWallet.ReleaseDirectoryLock"') &&
     releaseCommon.includes('"YourWallet.ReleaseToolsetProcessResult"') &&
     releaseCommon.includes('"YourWallet.ReleaseToolsetProcess"') &&
-    releaseCommon.includes("@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0") &&
-    releaseCommon.includes("[System.Management.Automation.CommandTypes]::Cmdlet") &&
+    releaseCommon.includes(
+      "@(& $getModuleCommand -All -ErrorAction Stop).Count -ne 0",
+    ) &&
+    releaseCommon.includes(
+      "[System.Management.Automation.CommandTypes]::Cmdlet",
+    ) &&
     releaseCommon.includes("$visibleCommands.Count -ne 1") &&
-    releaseCommon.includes("release core command surface is shadowed before module import") &&
-    releaseCommon.includes("release module command surface is shadowed before module import") &&
+    releaseCommon.includes(
+      "release core command surface is shadowed before module import",
+    ) &&
+    releaseCommon.includes(
+      "release module command surface is shadowed before module import",
+    ) &&
     releaseBootstrapPreflightOrder.every(
       (index, position, indexes) =>
         index >= 0 && (position === 0 || index > indexes[position - 1]),
@@ -24590,37 +28207,61 @@ requireInvariant(
     !/^\s*Import-Module\b/gmu.test(releaseCommon) &&
     !releaseCommon.includes('"Microsoft.PowerShell.Archive"') &&
     releaseCommon.includes("$expectedPowerShellHome") &&
-    releaseCommon.includes("$trustedModules.Add($moduleName, $importedModules[0])") &&
+    releaseCommon.includes(
+      "$trustedModules.Add($moduleName, $importedModules[0])",
+    ) &&
     releaseCommon.includes('"Add-Type" = "Microsoft.PowerShell.Utility"') &&
     releaseCommon.includes(
       '"Get-AuthenticodeSignature" = "Microsoft.PowerShell.Security"',
     ) &&
-    releaseCommon.includes("$script:ReleaseTrustedCommands = $trustedCommands") &&
+    releaseCommon.includes(
+      "$script:ReleaseTrustedCommands = $trustedCommands",
+    ) &&
     releaseCommon.includes('$visibleAlias.Name.Contains("-")') &&
     releaseCommon.includes("$initializeRuntimeCommands[0]") &&
     releaseCommon.includes('$trustedCommands["Add-Type"]') &&
     releaseCommon.includes('-AssemblyName "System.IO.Compression"') &&
     releaseCommon.includes("$frameworkAssembly.GlobalAssemblyCache") &&
     releaseCommon.includes("$script:ReleaseZipArchiveType = $zipArchiveType") &&
-    releaseCommon.includes("$script:ReleaseZipArchiveModeType = $zipArchiveModeType") &&
-    releaseCommon.includes("$script:ReleaseCompressionLevelType = $compressionLevelType") &&
+    releaseCommon.includes(
+      "$script:ReleaseZipArchiveModeType = $zipArchiveModeType",
+    ) &&
+    releaseCommon.includes(
+      "$script:ReleaseCompressionLevelType = $compressionLevelType",
+    ) &&
     !/^\s*Add-Type\b/gmu.test(releaseCommon) &&
     !releaseCommon.includes("[System.IO.Compression.ZipArchive]::") &&
     !releaseCommon.includes("[System.IO.Compression.ZipArchiveMode]::") &&
     !releaseCommon.includes("[System.IO.Compression.CompressionLevel]::") &&
-    !releaseCommon.includes("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature") &&
+    !releaseCommon.includes(
+      "Microsoft.PowerShell.Security\\Get-AuthenticodeSignature",
+    ) &&
     releaseCommon.includes("function Get-ReleaseAuthenticodeSignature") &&
-    releaseCommon.includes('$trustedCommand = $script:ReleaseTrustedCommands["Get-AuthenticodeSignature"]') &&
-    releaseCommon.includes("$signatures = @(& $trustedCommand -LiteralPath $LiteralPath -ErrorAction Stop)") &&
-    releaseVerifier.includes("Get-ReleaseAuthenticodeSignature -LiteralPath $filePath") &&
-    releaseAuthenticodeVerifier.includes("Get-ReleaseAuthenticodeSignature -LiteralPath $filePath"),
+    releaseCommon.includes(
+      '$trustedCommand = $script:ReleaseTrustedCommands["Get-AuthenticodeSignature"]',
+    ) &&
+    releaseCommon.includes(
+      "$signatures = @(& $trustedCommand -LiteralPath $LiteralPath -ErrorAction Stop)",
+    ) &&
+    releaseVerifier.includes(
+      "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
+    ) &&
+    releaseAuthenticodeVerifier.includes(
+      "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
+    ),
   "release PowerShell bootstrap must reject loaded modules, protected types, and command shadows, import only binary-safe exact system manifests, and retain exact Authenticode and compression identities",
 );
 requireInvariant(
   releaseCommon.includes("$script:ReleaseDirectoryLockType = $compiledType") &&
-    releaseCommon.includes("$script:ReleaseToolsetProcessType = $compiledProcessType") &&
-    releaseCommon.includes("$script:ReleaseToolsetProcessResultType = $compiledResultType") &&
-    releaseCommon.includes("[object]::ReferenceEquals($resolvedType, $compiledType)") &&
+    releaseCommon.includes(
+      "$script:ReleaseToolsetProcessType = $compiledProcessType",
+    ) &&
+    releaseCommon.includes(
+      "$script:ReleaseToolsetProcessResultType = $compiledResultType",
+    ) &&
+    releaseCommon.includes(
+      "[object]::ReferenceEquals($resolvedType, $compiledType)",
+    ) &&
     releaseCommon.includes(
       "[object]::ReferenceEquals($resolvedProcessType, $compiledProcessType)",
     ) &&
@@ -24809,13 +28450,17 @@ requireInvariant(
       1,
     ) &&
     releaseCommon.includes("function Expand-ReleaseZipArchive") &&
-    releaseCommon.includes("Release source archive contains a noncanonical path") &&
+    releaseCommon.includes(
+      "Release source archive contains a noncanonical path",
+    ) &&
     releaseCommon.includes('$segment.Contains("~")') &&
     releaseUnsignedPreparation.includes(
       "Expand-ReleaseZipArchive -LiteralPath $sourceArchive",
     ) &&
     !releaseUnsignedPreparation.includes("Expand-Archive") &&
-    releaseCommonTests.includes("Sealed release ZIP extraction accepted a traversal entry") &&
+    releaseCommonTests.includes(
+      "Sealed release ZIP extraction accepted a traversal entry",
+    ) &&
     releaseCommonTests.includes(
       "Sealed release ZIP extraction accepted an NTFS short-name alias",
     ) &&
@@ -24880,10 +28525,16 @@ requireInvariant(
   "compiled release runtime types must retain exact Type identity, the sealed release check must require an absolute Node application with empty child stderr, and behavior tests must prove fail-closure against type, module, command, argv, and PSModulePath preloads",
 );
 requireInvariant(
-  releaseSecurity.includes("Every release entry that consumes `common.ps1` sets") &&
-    releaseSecurity.includes("exact system 64-bit Desktop Windows PowerShell 5.1 image") &&
+  releaseSecurity.includes(
+    "Every release entry that consumes `common.ps1` sets",
+  ) &&
+    releaseSecurity.includes(
+      "exact system 64-bit Desktop Windows PowerShell 5.1 image",
+    ) &&
     releaseSecurity.includes("It never searches `PSModulePath`") &&
-    releaseSecurity.includes("zero pre-existing protected `YourWallet.*` types") &&
+    releaseSecurity.includes(
+      "zero pre-existing protected `YourWallet.*` types",
+    ) &&
     releaseSecurity.includes("zero long-form aliases") &&
     releaseSecurity.includes(
       "does not import the script-based `Microsoft.PowerShell.Archive` module",
@@ -24894,12 +28545,20 @@ requireInvariant(
       "no concurrent same-user mutation of its fresh temporary extraction tree",
     ) &&
     releaseSecurity.includes("verified `CmdletInfo` objects directly") &&
-    releaseSecurity.includes("module, protected-type, and command-shadow cleanliness is verified by code") &&
-    releaseSecurity.includes("absence of live same-integrity process injection") &&
+    releaseSecurity.includes(
+      "module, protected-type, and command-shadow cleanliness is verified by code",
+    ) &&
+    releaseSecurity.includes(
+      "absence of live same-integrity process injection",
+    ) &&
     releaseSecurity.includes("exact-system-host bootstrap transcript") &&
-    sepoliaArchitectureDoc.includes("Every entry that consumes `common.ps1` begins") &&
+    sepoliaArchitectureDoc.includes(
+      "Every entry that consumes `common.ps1` begins",
+    ) &&
     sepoliaArchitectureDoc.includes("`PSModulePath` is never searched") &&
-    sepoliaArchitectureDoc.includes("zero pre-existing protected `YourWallet.*` types") &&
+    sepoliaArchitectureDoc.includes(
+      "zero pre-existing protected `YourWallet.*` types",
+    ) &&
     sepoliaArchitectureDoc.includes(
       "script-based `Microsoft.PowerShell.Archive` module is not imported",
     ) &&
@@ -24917,7 +28576,9 @@ for (const pinnedInput of [
   "ExpectedSignerCertificateSha256",
 ]) {
   requireInvariant(
-    offlineReleaseVerificationBlock.includes(`[Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$${pinnedInput}`),
+    offlineReleaseVerificationBlock.includes(
+      `[Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string]$${pinnedInput}`,
+    ),
     `offline release verification must require independently pinned ${pinnedInput}`,
   );
 }
@@ -24932,26 +28593,34 @@ const offlineSequenceShapeOrder = [
   "Open-ReadOnlyReleaseTreeLocks",
 ].map((marker) => offlineReleaseVerificationBlock.indexOf(marker));
 requireInvariant(
-  JSON.stringify(offlineReleaseRequiredValueNames) === JSON.stringify([
-    "Manifest",
-    "Signature",
-    "ReleasePublicKey",
-    "BundleRoot",
-    "ExpectedReleaseSequence",
-    "ExpectedReleaseKeyIdSha256",
-    "ExpectedExtensionId",
-    "ExpectedReviewerKeyIdSha256",
-    "ExpectedSignerCertificateSha256",
-    "ExpectedVerifierToolsetSha256",
-  ]) &&
+  JSON.stringify(offlineReleaseRequiredValueNames) ===
+    JSON.stringify([
+      "Manifest",
+      "Signature",
+      "ReleasePublicKey",
+      "BundleRoot",
+      "ExpectedReleaseSequence",
+      "ExpectedReleaseKeyIdSha256",
+      "ExpectedExtensionId",
+      "ExpectedReviewerKeyIdSha256",
+      "ExpectedSignerCertificateSha256",
+      "ExpectedVerifierToolsetSha256",
+    ]) &&
     releaseVerifier.includes(
       '-OptionalValueNames @("PreviousManifest", "ExpectedPreviousManifestSha256")',
     ) &&
     offlineReleaseVerificationBlock.includes(
       '[Parameter(Mandatory = $true)][ValidatePattern("\\A[1-9][0-9]{0,31}\\z", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedReleaseSequence',
     ) &&
-    (offlineReleaseVerificationBlock.match(/\$ExpectedReleaseSequence\b/gu) ?? []).length === 3 &&
-    (offlineReleaseVerificationBlock.match(/"--expected-release-sequence"/gu) ?? []).length === 1 &&
+    (
+      offlineReleaseVerificationBlock.match(/\$ExpectedReleaseSequence\b/gu) ??
+      []
+    ).length === 3 &&
+    (
+      offlineReleaseVerificationBlock.match(
+        /"--expected-release-sequence"/gu,
+      ) ?? []
+    ).length === 1 &&
     offlineReleaseVerificationBlock.includes(
       '"--expected-release-sequence", $ExpectedReleaseSequence',
     ) &&
@@ -24966,44 +28635,65 @@ requireInvariant(
     ) &&
     offlineSequenceShapeOrder.every((position) => position !== -1) &&
     offlineSequenceShapeOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
-    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2,
+    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? [])
+      .length === 2,
   "offline release verification must require one canonical external sequence, derive exact initial/successor inputs before candidate reads, and pass one immutable sequence argument twice",
 );
 requireInvariant(
   offlineReleaseVerificationBlock.includes(
     '[Parameter(Mandatory = $true)][ValidatePattern("^[a-p]{32}$", Options = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)][string]$ExpectedExtensionId',
   ) &&
-    (offlineReleaseVerificationBlock.match(/\$ExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (offlineReleaseVerificationBlock.match(/\bExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (offlineReleaseVerificationBlock.match(/"--expected-extension-id"/gu) ?? []).length === 1 &&
-    offlineReleaseVerificationBlock.includes('"--expected-extension-id", $ExpectedExtensionId') &&
-    (offlineReleaseVerificationBlock.match(/\$verifyArguments\b/gu) ?? []).length === 4 &&
-    (offlineReleaseVerificationBlock.match(/\bverifyArguments\b/gu) ?? []).length === 4 &&
-    offlineReleaseVerificationBlock.includes("[string]$ExpectedVerifierToolsetSha256") &&
-    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2 &&
+    (offlineReleaseVerificationBlock.match(/\$ExpectedExtensionId\b/gu) ?? [])
+      .length === 2 &&
+    (offlineReleaseVerificationBlock.match(/\bExpectedExtensionId\b/gu) ?? [])
+      .length === 2 &&
+    (offlineReleaseVerificationBlock.match(/"--expected-extension-id"/gu) ?? [])
+      .length === 1 &&
+    offlineReleaseVerificationBlock.includes(
+      '"--expected-extension-id", $ExpectedExtensionId',
+    ) &&
+    (offlineReleaseVerificationBlock.match(/\$verifyArguments\b/gu) ?? [])
+      .length === 4 &&
+    (offlineReleaseVerificationBlock.match(/\bverifyArguments\b/gu) ?? [])
+      .length === 4 &&
+    offlineReleaseVerificationBlock.includes(
+      "[string]$ExpectedVerifierToolsetSha256",
+    ) &&
+    (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? [])
+      .length === 2 &&
     offlineReleaseVerificationBlock.includes("Open-VerifiedReleaseToolset") &&
     offlineReleaseVerificationBlock.includes("Assert-ReleaseTreesDisjoint") &&
     offlineReleaseVerificationBlock.includes(
       "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
     ) &&
     offlineReleaseVerificationBlock.includes(
-      'CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n',
+      "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n",
     ) &&
-    (offlineReleaseVerificationBlock.match(/\$firstPass\.(?:ExitCode|Stderr|Stdout)/gu) ?? [])
-      .length === 3 &&
-    (offlineReleaseVerificationBlock.match(/\$secondPass\.(?:ExitCode|Stderr|Stdout)/gu) ?? [])
-      .length === 3 &&
+    (
+      offlineReleaseVerificationBlock.match(
+        /\$firstPass\.(?:ExitCode|Stderr|Stdout)/gu,
+      ) ?? []
+    ).length === 3 &&
+    (
+      offlineReleaseVerificationBlock.match(
+        /\$secondPass\.(?:ExitCode|Stderr|Stdout)/gu,
+      ) ?? []
+    ).length === 3 &&
     !offlineReleaseVerificationBlock.includes('Get-Command "node"') &&
-    !offlineReleaseVerificationBlock.includes('Invoke-ReleaseCommand -Executable "node"') &&
+    !offlineReleaseVerificationBlock.includes(
+      'Invoke-ReleaseCommand -Executable "node"',
+    ) &&
     !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
       releaseVerifier,
     ),
   "offline release verification must retain one immutable two-pass argument list and authenticate a separately pinned verifier toolset",
 );
 requireInvariant(
-  (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 2 &&
+  (offlineReleaseVerificationBlock.match(/Invoke-ReleaseToolsetNode/gu) ?? [])
+    .length === 2 &&
     offlineReleaseVerificationBlock.includes("$firstPass.ExitCode -ne 0") &&
     offlineReleaseVerificationBlock.includes("$secondPass.ExitCode -ne 0") &&
     offlineReleaseVerificationBlock.includes(
@@ -25013,10 +28703,12 @@ requireInvariant(
 );
 requireInvariant(
   releaseVerifier.includes("function Invoke-OfflineReleaseVerification") &&
-    releaseVerifier.includes("Invoke-OfflineReleaseVerification @boundArguments") &&
+    releaseVerifier.includes(
+      "Invoke-OfflineReleaseVerification @boundArguments",
+    ) &&
     releaseVerifier.includes("ConvertFrom-ExactNamedArguments") &&
     releaseVerifier.includes(
-      'RELEASE_VERIFICATION_FAILED: offline release verification failed closed',
+      "RELEASE_VERIFICATION_FAILED: offline release verification failed closed",
     ) &&
     !/^\uFEFF?\[CmdletBinding\(\)\]/u.test(releaseVerifier) &&
     !releaseVerifier.includes("Resolve-Path -LiteralPath $BundleRoot") &&
@@ -25031,10 +28723,14 @@ requireInvariant(
     releaseCommon.includes("GetFinalPathNameByHandleW") &&
     releaseCommon.includes("private const uint VolumeNameGuid = 0x00000001") &&
     releaseCommon.includes("FileInfoByHandleClass.FileIdInfo") &&
-    releaseCommon.includes("information.VolumeSerialNumber == UInt64.MaxValue") &&
+    releaseCommon.includes(
+      "information.VolumeSerialNumber == UInt64.MaxValue",
+    ) &&
     releaseCommon.includes("information.FileId.LowPart == UInt64.MaxValue") &&
     releaseCommon.includes("information.FileId.HighPart == UInt64.MaxValue") &&
-    releaseCommon.includes("Release paths must canonicalize to a local volume GUID") &&
+    releaseCommon.includes(
+      "Release paths must canonicalize to a local volume GUID",
+    ) &&
     releaseCommon.includes("Open-PinnedReleaseDirectoryPath") &&
     releaseCommon.includes("Open-PinnedReleaseFilePath") &&
     releaseCommon.includes(
@@ -25042,28 +28738,40 @@ requireInvariant(
     ) &&
     releaseCommon.includes("SameIdentity($bootstrap, $fileHandle)") &&
     releaseCommon.includes("CanonicalBundleRoot = $canonicalRoot") &&
-    releaseCommon.includes("CanonicalAdditionalFiles = $canonicalAdditionalFiles.ToArray()") &&
+    releaseCommon.includes(
+      "CanonicalAdditionalFiles = $canonicalAdditionalFiles.ToArray()",
+    ) &&
     releaseCommon.includes("function Open-VerifiedReleaseToolset") &&
     releaseCommon.includes("function Invoke-ReleaseToolsetNode") &&
     releaseCommon.includes("function Close-VerifiedReleaseToolset") &&
     releaseCommon.includes("function Assert-ReleaseTreesDisjoint") &&
     releaseCommon.includes("scripts/release/review-evidence-set.ps1") &&
     releaseCommon.includes("scripts/release/verify-release-offline.ps1") &&
-    releaseCommon.includes("Release toolset files must have exactly one hard link") &&
-    releaseCommon.includes("Release toolset files may not contain alternate data streams") &&
+    releaseCommon.includes(
+      "Release toolset files must have exactly one hard link",
+    ) &&
+    releaseCommon.includes(
+      "Release toolset files may not contain alternate data streams",
+    ) &&
     releaseCommon.includes("function ConvertFrom-ExactNamedArguments") &&
     releaseCommon.includes(
       "Dictionary[string, object]]::new([System.StringComparer]::Ordinal)",
     ) &&
-    releaseCommon.includes("Release command received a duplicate value argument") &&
+    releaseCommon.includes(
+      "Release command received a duplicate value argument",
+    ) &&
     releaseCommon.includes("Release command is missing a required argument") &&
     !/\b(?:Invoke-Expression|iex)\b/iu.test(releaseCommon) &&
     releaseCommonTests.includes("function Test-ExactReviewBinding") &&
     releaseCommonTests.includes("Test-ExactReviewBinding @exactArguments") &&
     releaseCommonTests.includes('"-bundleroot", "wrong-case"') &&
-    releaseCommonTests.includes('New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetA') &&
-    releaseCommonTests.includes('[System.IO.Directory]::Delete($aliasPath)') &&
-    releaseCommonTests.includes('New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetB') &&
+    releaseCommonTests.includes(
+      "New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetA",
+    ) &&
+    releaseCommonTests.includes("[System.IO.Directory]::Delete($aliasPath)") &&
+    releaseCommonTests.includes(
+      "New-Item -ItemType Junction -Path $aliasPath -Target $aliasTargetB",
+    ) &&
     releaseCommonTests.includes("$aliasLockSet.CanonicalBundleRoot") &&
     releaseCommonTests.includes("$aliasLockSet.CanonicalAdditionalFiles") &&
     releaseCommonTests.includes(
@@ -25079,23 +28787,38 @@ requireInvariant(
     "const WINDOWS_VOLUME_GUID_PATH_RE = /^\\\\\\\\\\?\\\\Volume\\{[0-9A-Fa-f]{8}-",
   ) &&
     resolveExactReleasePathBlock.includes('process.platform === "win32"') &&
-    resolveExactReleasePathBlock.includes("WINDOWS_VOLUME_GUID_PATH_RE.test(input)") &&
-    resolveExactReleasePathBlock.includes("path.win32.normalize(input) === input") &&
-    resolveExactReleasePathBlock.includes("const entries = await readdir(current)") &&
-    resolveExactReleasePathBlock.includes("entries.filter((entry) => entry === segment).length !== 1") &&
+    resolveExactReleasePathBlock.includes(
+      "WINDOWS_VOLUME_GUID_PATH_RE.test(input)",
+    ) &&
+    resolveExactReleasePathBlock.includes(
+      "path.win32.normalize(input) === input",
+    ) &&
+    resolveExactReleasePathBlock.includes(
+      "const entries = await readdir(current)",
+    ) &&
+    resolveExactReleasePathBlock.includes(
+      "entries.filter((entry) => entry === segment).length !== 1",
+    ) &&
     resolveExactReleasePathBlock.includes("return input") &&
     resolveExactReleasePathBlock.includes("return realpath(input)") &&
-    (assertNoReparseComponentsBlock.match(/resolveExactReleasePath\(/gu) ?? []).length === 2 &&
-    (releaseReviewEvidenceSet.match(/resolveExactReleasePath\(/gu) ?? []).length === 3 &&
-    (releaseManifestAssembler.match(/resolveExactReleasePath\(/gu) ?? []).length === 2 &&
+    (assertNoReparseComponentsBlock.match(/resolveExactReleasePath\(/gu) ?? [])
+      .length === 2 &&
+    (releaseReviewEvidenceSet.match(/resolveExactReleasePath\(/gu) ?? [])
+      .length === 3 &&
+    (releaseManifestAssembler.match(/resolveExactReleasePath\(/gu) ?? [])
+      .length === 2 &&
     releaseCommonTests.includes(
       "import{resolveExactReleasePath}from'./scripts/release/release-manifest.mjs'",
     ) &&
-    releaseCommonTests.includes("await resolveExactReleasePath(process.argv[1])") &&
+    releaseCommonTests.includes(
+      "await resolveExactReleasePath(process.argv[1])",
+    ) &&
     releaseCommonTests.includes("$subjectLocks.CanonicalBundleRoot") &&
     releaseCommonTests.includes("$caseAliasCapitalized") &&
     releaseCommonTests.includes("result.status===0||result.stdout!==''") &&
-    releaseCommonTests.includes("REVIEW_EVIDENCE_SET_FAILED: staged evidence set is not exact\\n"),
+    releaseCommonTests.includes(
+      "REVIEW_EVIDENCE_SET_FAILED: staged evidence set is not exact\\n",
+    ),
   "the deterministic Node consumers must accept only normalized, exact-case local volume-GUID paths without re-resolving their pinned Windows alias, while retaining realpath elsewhere",
 );
 const releaseCreateProcessIndex = releaseCommon.indexOf("if (!CreateProcessW(");
@@ -25150,12 +28873,17 @@ const releaseCreationCriticalOrder = [
 requireInvariant(
   releaseRunOnFreshThread.length > 0 &&
     releaseFreshWorkerEntry.length > 0 &&
-    (releaseCommon.match(
-      /private static readonly object ProcessCreationSync = new object\(\);/gu,
-    ) ?? []).length === 1 &&
-    (releaseRunOnFreshThread.match(/Monitor\.TryEnter\(/gu) ?? []).length === 1 &&
-    (releaseRunOnFreshThread.match(/Monitor\.Exit\(ProcessCreationSync\)/gu) ?? [])
-      .length === 1 &&
+    (
+      releaseCommon.match(
+        /private static readonly object ProcessCreationSync = new object\(\);/gu,
+      ) ?? []
+    ).length === 1 &&
+    (releaseRunOnFreshThread.match(/Monitor\.TryEnter\(/gu) ?? []).length ===
+      1 &&
+    (
+      releaseRunOnFreshThread.match(/Monitor\.Exit\(ProcessCreationSync\)/gu) ??
+      []
+    ).length === 1 &&
     !releaseCommon.includes("lock (ProcessCreationSync)") &&
     releaseRunOnFreshThread.includes(
       "checked((int)RemainingMilliseconds(\n                        timer,",
@@ -25163,7 +28891,8 @@ requireInvariant(
     releaseRunOnFreshThread.includes("ref processCreationLockTaken") &&
     releaseRunOnFreshThread.includes("if (!processCreationLockTaken)") &&
     (releaseRunOnFreshThread.match(/CreatePipe\(out /gu) ?? []).length === 3 &&
-    (releaseRunOnFreshThread.match(/SetHandleInformation\(/gu) ?? []).length === 3 &&
+    (releaseRunOnFreshThread.match(/SetHandleInformation\(/gu) ?? []).length ===
+      3 &&
     releaseRunOnFreshThread.includes(
       "SetHandleInformation(stderrRead, HandleFlagInherit, 0)",
     ) &&
@@ -25176,29 +28905,40 @@ requireInvariant(
     releaseRunOnFreshThread.includes(
       "Marshal.WriteIntPtr(inheritedHandles, IntPtr.Size * 2, stderrWrite.DangerousGetHandle())",
     ) &&
-    (releaseRunOnFreshThread.match(/if \(!CreateProcessW\(/gu) ?? []).length === 1 &&
+    (releaseRunOnFreshThread.match(/if \(!CreateProcessW\(/gu) ?? []).length ===
+      1 &&
     releaseRunOnFreshThread.includes("rawThread = information.Thread") &&
     releaseRunOnFreshThread.includes("information.Process = IntPtr.Zero") &&
     releaseRunOnFreshThread.includes("information.Thread = IntPtr.Zero") &&
     releaseRunOnFreshThread.includes("rawEventFile = observedFile") &&
-    releaseRunOnFreshThread.includes("eventFile = AdoptRawHandle(ref rawEventFile)") &&
+    releaseRunOnFreshThread.includes(
+      "eventFile = AdoptRawHandle(ref rawEventFile)",
+    ) &&
     releaseRunOnFreshThread.includes("TerminateAndReapRaw(") &&
     releaseRunOnFreshThread.includes("CloseRawHandle(ref rawEventFile)") &&
     releaseRunOnFreshThread.includes("CloseRawHandle(ref rawThread)") &&
     releaseRunOnFreshThread.includes("CloseRawHandle(ref rawProcess)") &&
-    (releaseFreshWorkerEntry.match(/RunOnFreshThread\(/gu) ?? []).length === 1 &&
+    (releaseFreshWorkerEntry.match(/RunOnFreshThread\(/gu) ?? []).length ===
+      1 &&
     releaseFreshWorkerEntry.includes("Thread worker = new Thread(delegate()") &&
     releaseCreationCriticalOrder.every((position) => position !== -1) &&
     releaseCreationCriticalOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ),
   "the C# verifier runner must bound one fresh-thread coordination wait, create every inheritable pipe inside it, close all child ends before attribute cleanup and release, and retain raw-handle cleanup fallbacks",
 );
 requireInvariant(
-  releaseCommon.includes("private const uint DebugOnlyThisProcess = 0x00000002") &&
+  releaseCommon.includes(
+    "private const uint DebugOnlyThisProcess = 0x00000002",
+  ) &&
     releaseCommon.includes("private const uint CreateSuspended = 0x00000004") &&
-    releaseCommon.includes("private const long ProcThreadAttributeHandleList = 0x00020002") &&
-    releaseCommon.includes("private const long ProcThreadAttributeMitigationPolicy = 0x00020007") &&
+    releaseCommon.includes(
+      "private const long ProcThreadAttributeHandleList = 0x00020002",
+    ) &&
+    releaseCommon.includes(
+      "private const long ProcThreadAttributeMitigationPolicy = 0x00020007",
+    ) &&
     releaseCommon.includes("new IntPtr(IntPtr.Size * 3)") &&
     releaseCommon.includes('"PATH=" + systemDirectory') &&
     releaseCommon.includes('"SystemRoot=" + windowsDirectory') &&
@@ -25207,18 +28947,24 @@ requireInvariant(
     releaseCommon.includes("WaitForDebugEventEx(debugEvent, eventWait)") &&
     releaseCommon.includes("GetProcessIdFromEvent(eventProcess)") &&
     releaseCommon.includes("GetThreadIdFromEvent(eventThread)") &&
-    releaseCommon.includes("FileIdInformation mappedIdentity = Identity(eventFile);") &&
-    releaseCommon.includes("if (!SameIdentity(expectedIdentity, mappedIdentity))") &&
-    releaseCommon.includes('previousSuspendCount != 0') &&
-    releaseCommon.includes('previousSuspendCount != 2') &&
-    releaseCommon.includes('previousSuspendCount != 1') &&
+    releaseCommon.includes(
+      "FileIdInformation mappedIdentity = Identity(eventFile);",
+    ) &&
+    releaseCommon.includes(
+      "if (!SameIdentity(expectedIdentity, mappedIdentity))",
+    ) &&
+    releaseCommon.includes("previousSuspendCount != 0") &&
+    releaseCommon.includes("previousSuspendCount != 2") &&
+    releaseCommon.includes("previousSuspendCount != 1") &&
     releaseCommon.includes("using System.Runtime.ExceptionServices;") &&
     releaseCommon.includes("Thread worker = new Thread(delegate()") &&
     releaseCommon.includes("result = RunOnFreshThread(") &&
     releaseCommon.includes("failure = ExceptionDispatchInfo.Capture(error)") &&
     releaseCommon.includes("worker.IsBackground = false") &&
     releaseCommon.includes("worker.Join()") &&
-    releaseCommon.includes("private static ReleaseToolsetProcessResult RunOnFreshThread(") &&
+    releaseCommon.includes(
+      "private static ReleaseToolsetProcessResult RunOnFreshThread(",
+    ) &&
     releaseCommon.includes("[System.Environment]::Is64BitOperatingSystem") &&
     releaseCommon.includes("[System.Environment]::Is64BitProcess") &&
     releaseCreateProcessIndex !== -1 &&
@@ -25234,7 +28980,7 @@ requireInvariant(
   releaseCommon.includes('"--no-addons"') &&
     releaseCommon.includes('"--no-global-search-paths"') &&
     releaseCommon.includes('"--experimental-vm-modules"') &&
-    releaseCommon.includes("new TextDecoder(\"utf-8\", { fatal: true })") &&
+    releaseCommon.includes('new TextDecoder("utf-8", { fatal: true })') &&
     releaseCommon.includes("new vm.SourceTextModule(readSource(name)") &&
     releaseCommon.includes("new vm.SyntheticModule(names") &&
     releaseCommon.includes("const sealedArgv = Object.freeze([") &&
@@ -25255,12 +29001,22 @@ requireInvariant(
     releaseCommon.includes(
       'specifier === "../../extension/native-host/validate-manifest.mjs"',
     ) &&
-    releaseCommon.includes('throw new Error("sealed loader refused an unapproved module edge")') &&
-    releaseCommon.includes('importModuleDynamically() { throw new Error("dynamic module loading is disabled"); }') &&
+    releaseCommon.includes(
+      'throw new Error("sealed loader refused an unapproved module edge")',
+    ) &&
+    releaseCommon.includes(
+      'importModuleDynamically() { throw new Error("dynamic module loading is disabled"); }',
+    ) &&
     !releaseCommon.includes("process.argv = [") &&
-    releaseCommon.includes('$record.VolumePaths["extension/native-host/validate-manifest.mjs"]') &&
-    releaseCommon.includes('$record.VolumePaths["scripts/release/release-manifest.mjs"]') &&
-    releaseCommon.includes('$record.VolumePaths["scripts/release/review-evidence-set.mjs"]') &&
+    releaseCommon.includes(
+      '$record.VolumePaths["extension/native-host/validate-manifest.mjs"]',
+    ) &&
+    releaseCommon.includes(
+      '$record.VolumePaths["scripts/release/release-manifest.mjs"]',
+    ) &&
+    releaseCommon.includes(
+      '$record.VolumePaths["scripts/release/review-evidence-set.mjs"]',
+    ) &&
     /\$record\.IdentityHandles\["node\.exe"\],\r?\n\s*\$record\.DosPaths\["node\.exe"\]/u.test(
       releaseCommon,
     ),
@@ -25269,11 +29025,19 @@ requireInvariant(
 requireInvariant(
   releaseCommon.includes(".your-wallet-file-write-probe-") &&
     releaseCommon.includes(".your-wallet-directory-write-probe-") &&
-    releaseCommon.includes("[System.IO.Directory]::CreateDirectory($directoryProbePath)") &&
-    releaseCommon.includes("[System.IO.Directory]::Delete($directoryProbePath, $false)") &&
+    releaseCommon.includes(
+      "[System.IO.Directory]::CreateDirectory($directoryProbePath)",
+    ) &&
+    releaseCommon.includes(
+      "[System.IO.Directory]::Delete($directoryProbePath, $false)",
+    ) &&
     (releaseCommon.match(/\$nativeError -eq 19/gu) ?? []).length === 2 &&
-    releaseCommon.includes("could not prove that a staging directory denies file creation") &&
-    releaseCommon.includes("could not prove that a staging directory denies subdirectory creation") &&
+    releaseCommon.includes(
+      "could not prove that a staging directory denies file creation",
+    ) &&
+    releaseCommon.includes(
+      "could not prove that a staging directory denies subdirectory creation",
+    ) &&
     !releaseCommon.includes("Get-FileHash") &&
     !releaseVerifierToolsetPreparation.includes("Get-FileHash") &&
     (releaseCommon.match(/Get-Sha256Lower -LiteralPath/gu) ?? []).length >= 2 &&
@@ -25282,14 +29046,12 @@ requireInvariant(
 );
 requireInvariant(
   releaseCommonTests.includes("$wrapperJob = Start-Job -ScriptBlock") &&
-    releaseCommonTests.includes("public static class BlockingReviewNodeProxy") &&
+    releaseCommonTests.includes(
+      "public static class BlockingReviewNodeProxy",
+    ) &&
     releaseCommonTests.includes('File.WriteAllText(ReadyPath, "ready"') &&
-    releaseCommonTests.includes(
-      "while (!File.Exists(ContinuePath))",
-    ) &&
-    releaseCommonTests.includes(
-      '"-ExpectedVerifierToolsetSha256"',
-    ) &&
+    releaseCommonTests.includes("while (!File.Exists(ContinuePath))") &&
+    releaseCommonTests.includes('"-ExpectedVerifierToolsetSha256"') &&
     releaseCommonTests.includes("$wrapperToolsetHash = Get-InventorySha256") &&
     releaseCommonTests.includes("$wrapperToolsetRoot") &&
     releaseCommonTests.includes("$wrapperResult.Stdout") &&
@@ -25298,17 +29060,27 @@ requireInvariant(
     !releaseCommonTests.includes("$wrapperResult.Output.Trim()") &&
     releaseWrapperCeremonyBlock.length > 0 &&
     !/function\s+(?:global:)?node\s*\{/u.test(releaseWrapperCeremonyBlock) &&
-    releaseCommonTests.includes("if ([System.IO.File]::Exists($taskReadyPath))") &&
-    (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectRoot, \$subjectMoveProbe\)/gu) ?? [])
-      .length === 2 &&
-    (releaseCommonTests.match(/\[System\.IO\.Directory\]::Move\(\$subjectMoveProbe, \$subjectRoot\)/gu) ?? [])
-      .length === 2 &&
+    releaseCommonTests.includes(
+      "if ([System.IO.File]::Exists($taskReadyPath))",
+    ) &&
+    (
+      releaseCommonTests.match(
+        /\[System\.IO\.Directory\]::Move\(\$subjectRoot, \$subjectMoveProbe\)/gu,
+      ) ?? []
+    ).length === 2 &&
+    (
+      releaseCommonTests.match(
+        /\[System\.IO\.Directory\]::Move\(\$subjectMoveProbe, \$subjectRoot\)/gu,
+      ) ?? []
+    ).length === 2 &&
     releaseCommonTests.includes(
       "Review wrapper released canonical locks before its Node child completed",
     ) &&
-    releaseCommonTests.includes('[System.IO.Directory]::Delete($subjectAlias)') &&
     releaseCommonTests.includes(
-      'New-Item -ItemType Junction -Path $subjectAlias -Target $subjectReplacementParent',
+      "[System.IO.Directory]::Delete($subjectAlias)",
+    ) &&
+    releaseCommonTests.includes(
+      "New-Item -ItemType Junction -Path $subjectAlias -Target $subjectReplacementParent",
     ) &&
     releaseCommonTests.includes(
       '[System.IO.File]::WriteAllText($taskContinuePath, "continue")',
@@ -25335,14 +29107,20 @@ requireInvariant(
 requireInvariant(
   verifyExpectedExtensionIdBlock.replace(/\s+/gu, " ").trim() ===
     'export function verifyExpectedExtensionId(validated, expectedExtensionId) { requireString( expectedExtensionId, "independently pinned extension identifier", EXTENSION_ID_RE, 32, ); if (validated.top.extension.id !== expectedExtensionId) { fail("independently pinned extension identifier mismatch"); } }' &&
-    releaseManifestVerifier.includes('const EXTENSION_ID_RE = /^[a-p]{32}$/u;') &&
-    (releaseManifestVerifier.match(/\bverifyExpectedExtensionId\b/gu) ?? []).length === 2 &&
-    (releaseManifestVerifier.match(/\bvalidateManifest\b/gu) ?? []).length === 3 &&
+    releaseManifestVerifier.includes(
+      "const EXTENSION_ID_RE = /^[a-p]{32}$/u;",
+    ) &&
+    (releaseManifestVerifier.match(/\bverifyExpectedExtensionId\b/gu) ?? [])
+      .length === 2 &&
+    (releaseManifestVerifier.match(/\bvalidateManifest\b/gu) ?? []).length ===
+      3 &&
     !/\b(?:eval|Function)\s*\(|globalThis\s*\[/u.test(releaseManifestVerifier),
   "the final Node verifier must compare one exact lowercase candidate extension ID with one independent pin without echoing either value",
 );
 requireInvariant(
-  releaseManifestVerifier.includes("const RELEASE_SEQUENCE_RE = /^[1-9][0-9]{0,31}$/u;") &&
+  releaseManifestVerifier.includes(
+    "const RELEASE_SEQUENCE_RE = /^[1-9][0-9]{0,31}$/u;",
+  ) &&
     validateExpectedReleaseSequenceBlock.includes(
       'typeof expectedReleaseSequence !== "string"',
     ) &&
@@ -25352,7 +29130,9 @@ requireInvariant(
     validateExpectedReleaseSequenceBlock.includes(
       'fail("independently pinned release sequence has an invalid format")',
     ) &&
-    validateExpectedReleaseSequenceBlock.includes("return expectedReleaseSequence") &&
+    validateExpectedReleaseSequenceBlock.includes(
+      "return expectedReleaseSequence",
+    ) &&
     verifyExpectedReleaseSequenceBlock.includes(
       "validateExpectedReleaseSequence(expectedReleaseSequence)",
     ) &&
@@ -25362,13 +29142,23 @@ requireInvariant(
     verifyExpectedReleaseSequenceBlock.includes(
       'fail("independently pinned release sequence mismatch")',
     ) &&
-    (releaseManifestVerifier.match(/\bverifyExpectedReleaseSequence\b/gu) ?? []).length === 2 &&
-    (releaseManifestVerifier.match(/\bvalidateExpectedReleaseSequence\b/gu) ?? []).length === 3,
+    (releaseManifestVerifier.match(/\bverifyExpectedReleaseSequence\b/gu) ?? [])
+      .length === 2 &&
+    (
+      releaseManifestVerifier.match(/\bvalidateExpectedReleaseSequence\b/gu) ??
+      []
+    ).length === 3,
   "the final Node verifier must export one exact canonical external-sequence comparison with fixed non-echoing failures",
 );
-const releaseVerifyCliStart = runReleaseManifestCliBlock.indexOf('if (command === "verify")');
-const releaseVerifyCliBlock = runReleaseManifestCliBlock.slice(releaseVerifyCliStart);
-const normalizedReleaseVerifyCliBlock = releaseVerifyCliBlock.replace(/\s+/gu, " ").trim();
+const releaseVerifyCliStart = runReleaseManifestCliBlock.indexOf(
+  'if (command === "verify")',
+);
+const releaseVerifyCliBlock = runReleaseManifestCliBlock.slice(
+  releaseVerifyCliStart,
+);
+const normalizedReleaseVerifyCliBlock = releaseVerifyCliBlock
+  .replace(/\s+/gu, " ")
+  .trim();
 const releaseSequencePreReadOrder = [
   "const expectedReleaseSequence = validateExpectedReleaseSequence(",
   'requireArgument(values, "--expected-release-sequence")',
@@ -25397,7 +29187,8 @@ requireInvariant(
     releaseSequenceFirstCandidateRead !== -1 &&
     releaseSequencePreReadOrder.every((position) => position !== -1) &&
     releaseSequencePreReadOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     releaseVerifyCliBlock.includes(
       'fail("initial verification must not supply --previous or --expected-previous-manifest-sha256")',
@@ -25415,7 +29206,7 @@ requireInvariant(
   "the Node CLI must validate the external sequence, exact 9/11-value arity, and previous-input shape before every candidate read",
 );
 const externalPinCliOrder = [
-  'const validated = validateManifest(manifest, previous)',
+  "const validated = validateManifest(manifest, previous)",
   'verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id"))',
   'verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id"))',
   "verifyExpectedReleaseSequence(validated, expectedReleaseSequence)",
@@ -25430,9 +29221,12 @@ const externalPinCliOrder = [
 requireInvariant(
   externalPinCliOrder.every((position) => position !== -1) &&
     externalPinCliOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
-    releaseVerifyCliBlock.includes("const expectedValueCount = initialRelease ? 9 : 11") &&
+    releaseVerifyCliBlock.includes(
+      "const expectedValueCount = initialRelease ? 9 : 11",
+    ) &&
     normalizedReleaseVerifyCliBlock.includes(
       'verifyExpectedReleaseKeyId(validated, requireArgument(values, "--expected-release-key-id")); verifyExpectedExtensionId(validated, requireArgument(values, "--expected-extension-id")); verifyExpectedReleaseSequence(validated, expectedReleaseSequence);',
     ),
@@ -25444,8 +29238,12 @@ requireInvariant(
   ) &&
     extensionPinUnitTestBlock.includes('const alternate = "b".repeat(32)') &&
     extensionPinUnitTestBlock.includes("assert.doesNotMatch(error.message") &&
-    extensionPinUnitTestBlock.includes('verifyExpectedExtensionId(validated, "A".repeat(32))') &&
-    extensionLineageUnitTestBlock.includes('current.extension.id = "b".repeat(32)') &&
+    extensionPinUnitTestBlock.includes(
+      'verifyExpectedExtensionId(validated, "A".repeat(32))',
+    ) &&
+    extensionLineageUnitTestBlock.includes(
+      'current.extension.id = "b".repeat(32)',
+    ) &&
     extensionLineageUnitTestBlock.includes(
       "stable extension identity changed across release lineage",
     ),
@@ -25479,21 +29277,23 @@ requireInvariant(
   releaseSequenceRequiredCliTestBlock.includes(
     'argumentsList.indexOf("--expected-release-sequence")',
   ) &&
-    releaseSequenceRequiredCliTestBlock.includes("argumentsList.splice(sequenceIndex, 2)") &&
+    releaseSequenceRequiredCliTestBlock.includes(
+      "argumentsList.splice(sequenceIndex, 2)",
+    ) &&
     releaseSequenceRequiredCliTestBlock.includes(
       '"missing required argument --expected-release-sequence"',
     ) &&
     releaseSequenceArityCliTestBlock.includes(
       '[...verifyCliArguments(), "--unexpected", "value"]',
     ) &&
-    releaseSequenceArityCliTestBlock.includes('for (const malformed of ["01", "latest"])') &&
+    releaseSequenceArityCliTestBlock.includes(
+      'for (const malformed of ["01", "latest"])',
+    ) &&
     releaseSequencePairCliTestBlock.includes('verifyCliArguments("2")') &&
     releaseSequencePairCliTestBlock.includes(
       '"successor verification requires --previous and --expected-previous-manifest-sha256 from the offline checkpoint"',
     ) &&
-    releaseSequencePairCliTestBlock.includes(
-      '...verifyCliArguments("1")',
-    ) &&
+    releaseSequencePairCliTestBlock.includes('...verifyCliArguments("1")') &&
     releaseSequencePairCliTestBlock.includes(
       '"initial verification must not supply --previous or --expected-previous-manifest-sha256"',
     ) &&
@@ -25515,12 +29315,17 @@ requireInvariant(
     extensionPinArityIntegrationTestBlock.includes(
       'invocation.arguments.indexOf("--expected-extension-id")',
     ) &&
-    extensionPinArityIntegrationTestBlock.includes("missing.splice(extensionArgument, 2)") &&
+    extensionPinArityIntegrationTestBlock.includes(
+      "missing.splice(extensionArgument, 2)",
+    ) &&
     extensionPinArityIntegrationTestBlock.includes(
       'const extra = [...invocation.arguments, "--candidate-extension-id", "c".repeat(32)]',
     ) &&
-    (extensionPinArityIntegrationTestBlock.match(/await assert\.rejects\s*\(/gu) ?? [])
-      .length === 2,
+    (
+      extensionPinArityIntegrationTestBlock.match(
+        /await assert\.rejects\s*\(/gu,
+      ) ?? []
+    ).length === 2,
   "integration evidence must preserve exact success output and reject both missing and surplus extension-pin arguments",
 );
 requireInvariant(
@@ -25533,7 +29338,9 @@ requireInvariant(
     rebindSyntheticExtensionIdentityBlock.includes(
       'for (const key of ["installerAclNegative", "nativeHostRegistration"])',
     ) &&
-    rebindSyntheticExtensionIdentityBlock.includes("evidence.extensionId = extensionId") &&
+    rebindSyntheticExtensionIdentityBlock.includes(
+      "evidence.extensionId = extensionId",
+    ) &&
     rebindSyntheticExtensionIdentityBlock.includes(
       "evidence.nativeHostManifestSha256 = nativeHostManifestRecord.sha256",
     ) &&
@@ -25543,9 +29350,9 @@ requireInvariant(
   "alternate-ID evidence must rebind the signed manifest, native origin, installer ACL, registration, and exact evidence digests before the external pin rejects it",
 );
 requireInvariant(
-    extensionPinAttackerIntegrationTestBlock.includes(
-      "await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId)",
-    ) &&
+  extensionPinAttackerIntegrationTestBlock.includes(
+    "await rebindSyntheticExtensionIdentity(fixture, attackerExtensionId)",
+  ) &&
     extensionPinAttackerIntegrationTestBlock.includes(
       "await reissueIndependentReview(fixture)",
     ) &&
@@ -25563,14 +29370,22 @@ requireInvariant(
       .includes(
         'assert.equal( error.stderr, "RELEASE_INELIGIBLE: independently pinned extension identifier mismatch\\n", )',
       ) &&
-    extensionPinAttackerIntegrationTestBlock.includes('assert.equal(error.stdout, "")') &&
-    extensionPinWrapperIntegrationTestBlock.includes("RegexOptions]::CultureInvariant") &&
+    extensionPinAttackerIntegrationTestBlock.includes(
+      'assert.equal(error.stdout, "")',
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "RegexOptions]::CultureInvariant",
+    ) &&
     extensionPinWrapperIntegrationTestBlock.includes('"A".repeat(32)') &&
     extensionPinWrapperIntegrationTestBlock.includes(
       "ExpectedVerifierToolsetSha256",
     ) &&
-    extensionPinWrapperIntegrationTestBlock.includes("Open-VerifiedReleaseToolset") &&
-    extensionPinWrapperIntegrationTestBlock.includes("Invoke-ReleaseToolsetNode") &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "Open-VerifiedReleaseToolset",
+    ) &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "Invoke-ReleaseToolsetNode",
+    ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER`n",
     ) &&
@@ -25595,9 +29410,15 @@ requireInvariant(
     releaseManifestVerifier.includes(
       "...REQUIRED_WINDOWS_NEGATIVE_TESTS.map((id) => `evidence/windows-negative/${id}.json`)",
     ) &&
-    !releaseManifestVerifier.includes("your-wallet-independent-security-review-v1") &&
-    !releaseManifestAssembler.includes("your-wallet-independent-security-review-v1") &&
-    !releaseReviewEvidenceSet.includes("your-wallet-independent-security-review-v1"),
+    !releaseManifestVerifier.includes(
+      "your-wallet-independent-security-review-v1",
+    ) &&
+    !releaseManifestAssembler.includes(
+      "your-wallet-independent-security-review-v1",
+    ) &&
+    !releaseReviewEvidenceSet.includes(
+      "your-wallet-independent-security-review-v1",
+    ),
   "independent review v2 must exclude only its attestation/signature cycle while retaining every other evidence path and all Windows logs",
 );
 requireInvariant(
@@ -25630,9 +29451,8 @@ requireInvariant(
     ),
   "the reviewed evidence commitment must canonicalize the exact case-sensitive path set, lengths, and hashes without trusting caller order",
 );
-const normalizedReviewAttestationValidator = validateIndependentReviewAttestationBlock
-  .replace(/\s+/gu, " ")
-  .trim();
+const normalizedReviewAttestationValidator =
+  validateIndependentReviewAttestationBlock.replace(/\s+/gu, " ").trim();
 requireInvariant(
   normalizedReviewAttestationValidator.includes(
     '"independenceAttestation", "reviewedEvidenceSetSha256", "reviewerKeyIdSha256", "scope",',
@@ -25667,11 +29487,13 @@ const reviewAssemblyOrder = [
 requireInvariant(
   reviewVerificationOrder.every((position) => position !== -1) &&
     reviewVerificationOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     reviewAssemblyOrder.every((position) => position !== -1) &&
     reviewAssemblyOrder.every(
-      (position, index, positions) => index === 0 || positions[index - 1] < position,
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
     ) &&
     assembleReleaseManifestRunBlock.includes(
       'if (key === "reviewAttestation" && value.text !== canonicalEncode(value.value))',
@@ -25693,19 +29515,36 @@ requireInvariant(
     ) &&
     reviewEvidenceSetTreeBlock.includes("status.isSymbolicLink()") &&
     reviewEvidenceSetTreeBlock.includes("status.nlink !== 1") &&
-    reviewEvidenceSetTreeBlock.includes("seenFiles.size !== expectedFiles.size") &&
-    reviewEvidenceSetPinnedFileBlock.includes('const handle = await open(resolved, "r")') &&
-    reviewEvidenceSetPinnedFileBlock.includes('handle.stat({ bigint: true })') &&
-    (reviewEvidenceSetPinnedFileBlock.match(/handle\.stat\(\{ bigint: true \}\)/gu) ?? [])
-      .length === 2 &&
-    reviewEvidenceSetPinnedFileBlock.includes("!hasSupportedPinnedIdentity(before)") &&
+    reviewEvidenceSetTreeBlock.includes(
+      "seenFiles.size !== expectedFiles.size",
+    ) &&
+    reviewEvidenceSetPinnedFileBlock.includes(
+      'const handle = await open(resolved, "r")',
+    ) &&
+    reviewEvidenceSetPinnedFileBlock.includes(
+      "handle.stat({ bigint: true })",
+    ) &&
+    (
+      reviewEvidenceSetPinnedFileBlock.match(
+        /handle\.stat\(\{ bigint: true \}\)/gu,
+      ) ?? []
+    ).length === 2 &&
+    reviewEvidenceSetPinnedFileBlock.includes(
+      "!hasSupportedPinnedIdentity(before)",
+    ) &&
     reviewEvidenceSetPinnedFileBlock.includes(
       "!samePinnedMetadata(before, after) || bytes !== after.size",
     ) &&
     reviewEvidenceSetPinnedFileBlock.includes("await handle.close()") &&
-    reviewEvidenceSetPinnedPathBlock.includes('const pathHandle = await open(resolved, "r")') &&
-    reviewEvidenceSetPinnedPathBlock.includes('pathHandle.stat({ bigint: true })') &&
-    reviewEvidenceSetPinnedPathBlock.includes('pinned.handle.stat({ bigint: true })') &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      'const pathHandle = await open(resolved, "r")',
+    ) &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "pathHandle.stat({ bigint: true })",
+    ) &&
+    reviewEvidenceSetPinnedPathBlock.includes(
+      "pinned.handle.stat({ bigint: true })",
+    ) &&
     reviewEvidenceSetPinnedPathBlock.includes(
       "!hasSupportedPinnedIdentity(pathHandleStatus)",
     ) &&
@@ -25716,12 +29555,8 @@ requireInvariant(
       "!samePinnedMetadata(pinnedHandleStatus, pathHandleStatus)",
     ) &&
     reviewEvidenceSetPinnedPathBlock.includes("await pathHandle.close()") &&
-    reviewEvidenceSetMetadataIdentityBlock.includes(
-      "left.dev === right.dev",
-    ) &&
-    reviewEvidenceSetMetadataIdentityBlock.includes(
-      "left.ino === right.ino",
-    ) &&
+    reviewEvidenceSetMetadataIdentityBlock.includes("left.dev === right.dev") &&
+    reviewEvidenceSetMetadataIdentityBlock.includes("left.ino === right.ino") &&
     reviewEvidenceSetMetadataIdentityBlock.includes(
       "left.ctimeNs === right.ctimeNs",
     ) &&
@@ -25730,12 +29565,15 @@ requireInvariant(
     releaseReviewEvidenceSet.includes("const UINT64_MAX = (1n << 64n) - 1n;") &&
     !releaseReviewEvidenceSet.includes("samePinnedPathIdentity") &&
     !reviewEvidenceSetSupportedIdentityBlock.includes("status.dev !== 0n") &&
-    !reviewEvidenceSetSupportedIdentityBlock.includes("status.dev !== UINT64_MAX") &&
-    reviewEvidenceSetPinnedPathBlock.includes(
-      "!pathHandleStatus.isFile()",
+    !reviewEvidenceSetSupportedIdentityBlock.includes(
+      "status.dev !== UINT64_MAX",
     ) &&
-    (collectReviewedEvidenceSetSubjectBlock.match(/await verifyExactEvidenceTree\(bundleReal\)/gu) ?? [])
-      .length === 2 &&
+    reviewEvidenceSetPinnedPathBlock.includes("!pathHandleStatus.isFile()") &&
+    (
+      collectReviewedEvidenceSetSubjectBlock.match(
+        /await verifyExactEvidenceTree\(bundleReal\)/gu,
+      ) ?? []
+    ).length === 2 &&
     collectReviewedEvidenceSetSubjectBlock.includes(
       "for (const relativePath of REQUIRED_REVIEWED_EVIDENCE_PATHS)",
     ) &&
@@ -25756,47 +29594,64 @@ requireInvariant(
     ) &&
     !releaseReviewEvidenceSet.includes('"--manifest"') &&
     releaseReviewEvidenceSet.includes(
-      'process.stdout.write(`${canonicalEncode(subject)}\\n`)',
+      "process.stdout.write(`${canonicalEncode(subject)}\\n`)",
     ) &&
-    releaseReviewEvidenceSet.includes(
-      "REVIEW_EVIDENCE_SET_FAILED: ${message}",
-    ),
+    releaseReviewEvidenceSet.includes("REVIEW_EVIDENCE_SET_FAILED: ${message}"),
   "the reviewer subject command must read only an exact non-reparse non-hard-linked staging set, pin each file through hashing, and never trust a candidate manifest",
 );
 requireInvariant(
   releaseReviewEvidenceSetWrapper.includes(
     "[Parameter(Mandatory = $true)][switch]$OperatorConfirmedNetworkIsolation",
   ) &&
-    releaseReviewEvidenceSetWrapper.includes("[string]$ExpectedVerifierToolsetSha256") &&
     releaseReviewEvidenceSetWrapper.includes(
-      'if ($env:OS -ne "Windows_NT")',
+      "[string]$ExpectedVerifierToolsetSha256",
     ) &&
-    (releaseReviewEvidenceSetWrapper.match(/Assert-NoReparseTree -LiteralPath \$bundle/gu) ?? [])
-      .length === 2 &&
-    (releaseReviewEvidenceSetWrapper.match(/Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \$bundle/gu) ?? [])
-      .length === 2 &&
-    (releaseReviewEvidenceSetWrapper.match(/Open-ReadOnlyReleaseTreeLocks -BundleRoot \$BundleRoot/gu) ?? [])
-      .length === 1 &&
+    releaseReviewEvidenceSetWrapper.includes('if ($env:OS -ne "Windows_NT")') &&
+    (
+      releaseReviewEvidenceSetWrapper.match(
+        /Assert-NoReparseTree -LiteralPath \$bundle/gu,
+      ) ?? []
+    ).length === 2 &&
+    (
+      releaseReviewEvidenceSetWrapper.match(
+        /Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \$bundle/gu,
+      ) ?? []
+    ).length === 2 &&
+    (
+      releaseReviewEvidenceSetWrapper.match(
+        /Open-ReadOnlyReleaseTreeLocks -BundleRoot \$BundleRoot/gu,
+      ) ?? []
+    ).length === 1 &&
     releaseReviewEvidenceSetWrapper.includes(
       "$bundle = $releaseLocks.CanonicalBundleRoot",
     ) &&
     releaseReviewEvidenceSetWrapper.includes("Open-VerifiedReleaseToolset") &&
     releaseReviewEvidenceSetWrapper.includes("Assert-ReleaseTreesDisjoint") &&
-    (releaseReviewEvidenceSetWrapper.match(/Invoke-ReleaseToolsetNode/gu) ?? []).length === 1 &&
+    (releaseReviewEvidenceSetWrapper.match(/Invoke-ReleaseToolsetNode/gu) ?? [])
+      .length === 1 &&
     !releaseReviewEvidenceSetWrapper.includes('Get-Command "node"') &&
-    !releaseReviewEvidenceSetWrapper.includes('Invoke-ReleaseCommand -Executable "node"') &&
+    !releaseReviewEvidenceSetWrapper.includes(
+      'Invoke-ReleaseCommand -Executable "node"',
+    ) &&
     !releaseReviewEvidenceSetWrapper.includes(
       "Resolve-Path -LiteralPath $BundleRoot",
     ) &&
-    (releaseReviewEvidenceSetWrapper.match(/\$BundleRoot\b/gu) ?? []).length === 2 &&
-    releaseReviewEvidenceSetWrapper.includes("function Invoke-ReviewEvidenceSetCeremony") &&
+    (releaseReviewEvidenceSetWrapper.match(/\$BundleRoot\b/gu) ?? []).length ===
+      2 &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "function Invoke-ReviewEvidenceSetCeremony",
+    ) &&
     releaseReviewEvidenceSetWrapper.includes(
       "Invoke-ReviewEvidenceSetCeremony @boundArguments",
     ) &&
-    releaseReviewEvidenceSetWrapper.includes("ConvertFrom-ExactNamedArguments") &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "ConvertFrom-ExactNamedArguments",
+    ) &&
     !/^\uFEFF?\[CmdletBinding\(\)\]/u.test(releaseReviewEvidenceSetWrapper) &&
-    (releaseReviewEvidenceSetWrapper.match(/review-evidence-set\.mjs/gu) ?? []).length === 1 &&
-    (releaseReviewEvidenceSetWrapper.match(/"--bundle-root"/gu) ?? []).length === 1 &&
+    (releaseReviewEvidenceSetWrapper.match(/review-evidence-set\.mjs/gu) ?? [])
+      .length === 1 &&
+    (releaseReviewEvidenceSetWrapper.match(/"--bundle-root"/gu) ?? [])
+      .length === 1 &&
     releaseReviewEvidenceSetWrapper.includes("$result.ExitCode -ne 0") &&
     releaseReviewEvidenceSetWrapper.includes(
       '[string]::Equals($result.Stderr, "", [System.StringComparison]::Ordinal)',
@@ -25813,21 +29668,33 @@ requireInvariant(
     releaseReviewEvidenceSetWrapper.includes(
       "REVIEW_EVIDENCE_SET_FAILED: offline review evidence ceremony failed closed",
     ) &&
-    releaseReviewEvidenceSetWrapper.includes("[Console]::Out.Write($result.Stdout)") &&
-    (releaseReviewEvidenceSetWrapper.match(/Close-ReadOnlyReleaseTreeLocks -LockSet \$releaseLocks/gu) ?? [])
-      .length === 1 &&
-    (releaseReviewEvidenceSetWrapper.match(/Close-VerifiedReleaseToolset -Toolset \$toolset/gu) ?? [])
-      .length === 1 &&
+    releaseReviewEvidenceSetWrapper.includes(
+      "[Console]::Out.Write($result.Stdout)",
+    ) &&
+    (
+      releaseReviewEvidenceSetWrapper.match(
+        /Close-ReadOnlyReleaseTreeLocks -LockSet \$releaseLocks/gu,
+      ) ?? []
+    ).length === 1 &&
+    (
+      releaseReviewEvidenceSetWrapper.match(
+        /Close-VerifiedReleaseToolset -Toolset \$toolset/gu,
+      ) ?? []
+    ).length === 1 &&
     !/\b(?:Set|Get|New|Remove)-Variable\b|\bInvoke-Expression\b|\biex\b/iu.test(
       releaseReviewEvidenceSetWrapper,
     ),
   "the Windows reviewer wrapper must hold disjoint sealed runtime and evidence trees around one exact-byte canonical subject calculation",
 );
 requireInvariant(
-  releaseVerifierToolsetPreparation.includes("function Invoke-PrepareVerifierToolset") &&
+  releaseVerifierToolsetPreparation.includes(
+    "function Invoke-PrepareVerifierToolset",
+  ) &&
     releaseVerifierToolsetPreparation.includes("[string]$NodeExecutable") &&
     releaseVerifierToolsetPreparation.includes("[string]$OutputDirectory") &&
-    releaseVerifierToolsetPreparation.includes("[switch]$OperatorConfirmedPreparationOnly") &&
+    releaseVerifierToolsetPreparation.includes(
+      "[switch]$OperatorConfirmedPreparationOnly",
+    ) &&
     releaseVerifierToolsetPreparation.includes("Open-PinnedReleaseFilePath") &&
     releaseVerifierToolsetPreparation.includes('"node.exe" = $nodePath') &&
     releaseVerifierToolsetPreparation.includes(
@@ -25862,8 +29729,12 @@ requireInvariant(
     releaseVerifierToolsetTests.includes('Label "alternate data stream"') &&
     releaseVerifierToolsetTests.includes('Label "writable tree"') &&
     releaseVerifierToolsetTests.includes('-Label "directory-writable tree"') &&
-    releaseVerifierToolsetTests.includes("Protect-TestTree -Root $directoryWritableRoot -DenyFilesOnly") &&
-    /Name = "case-alias";[\s\S]*?Pin = "exact"/u.test(releaseVerifierToolsetTests) &&
+    releaseVerifierToolsetTests.includes(
+      "Protect-TestTree -Root $directoryWritableRoot -DenyFilesOnly",
+    ) &&
+    /Name = "case-alias";[\s\S]*?Pin = "exact"/u.test(
+      releaseVerifierToolsetTests,
+    ) &&
     releaseVerifierToolsetTests.includes("function node") &&
     releaseVerifierToolsetTests.includes(
       "Ambient Get-FileHash shadow must not be called by the verifier",
@@ -25871,7 +29742,9 @@ requireInvariant(
     releaseVerifierToolsetTests.includes("NODE_OPTIONS") &&
     releaseVerifierToolsetTests.includes("invalid-utf8") &&
     releaseVerifierToolsetTests.includes("oversize") &&
-    releaseVerifierToolsetTests.includes("Bounded verifier subprocess timeout") &&
+    releaseVerifierToolsetTests.includes(
+      "Bounded verifier subprocess timeout",
+    ) &&
     releaseVerifierToolsetTests.includes(
       "Exact-image runner accepted an executable path that did not match its expected handle",
     ) &&
@@ -25879,15 +29752,21 @@ requireInvariant(
       "Exact-image mismatch cleanup prevented a subsequent matched execution",
     ) &&
     releaseVerifierToolsetTests.includes("public static class RawProcess") &&
-    releaseVerifierToolsetTests.includes("strictUtf8.GetString(stdout.Bytes.ToArray())") &&
+    releaseVerifierToolsetTests.includes(
+      "strictUtf8.GetString(stdout.Bytes.ToArray())",
+    ) &&
     releaseVerifierToolsetTests.includes(
       "Held verifier toolset root unexpectedly allowed a concurrent rename",
     ) &&
     releaseVerifierToolsetTests.includes(
       "Disjoint-root guard accepted equal verifier and evidence roots",
     ) &&
-    releaseVerifierToolsetTests.includes("$realResultFirst = Invoke-ReleaseToolsetNode") &&
-    releaseVerifierToolsetTests.includes("$realResultSecond = Invoke-ReleaseToolsetNode") &&
+    releaseVerifierToolsetTests.includes(
+      "$realResultFirst = Invoke-ReleaseToolsetNode",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "$realResultSecond = Invoke-ReleaseToolsetNode",
+    ) &&
     releaseVerifierToolsetTests.includes(
       "Sealed real-Node review/release/validate graph was not exact and deterministic",
     ) &&
@@ -25900,15 +29779,20 @@ requireInvariant(
     releaseVerifierToolsetTests.includes('Name = "source-bom"') &&
     releaseVerifierToolsetTests.includes('Name = "source-invalid-utf8"') &&
     releaseVerifierToolsetTests.includes('Name = "unapproved-static-import"') &&
-    releaseVerifierToolsetTests.includes('Name = "unapproved-dynamic-import"') &&
+    releaseVerifierToolsetTests.includes(
+      'Name = "unapproved-dynamic-import"',
+    ) &&
     releaseVerifierToolsetTests.includes(
       "function Assert-ReleaseSequenceBinderRejectsTerminalLineFeed",
     ) &&
     releaseVerifierToolsetTests.includes(
       '$_.FullyQualifiedErrorId -like "ParameterArgumentValidationError,*"',
     ) &&
-    (releaseVerifierToolsetTests.match(/Assert-ReleaseSequenceBinderRejectsTerminalLineFeed/gu) ?? [])
-      .length === 2 &&
+    (
+      releaseVerifierToolsetTests.match(
+        /Assert-ReleaseSequenceBinderRejectsTerminalLineFeed/gu,
+      ) ?? []
+    ).length === 2 &&
     releaseVerifierToolsetTests.includes(
       "Sealed VM loader accepted a forbidden source or import graph",
     ) &&
@@ -25916,30 +29800,52 @@ requireInvariant(
   "the release gate must behaviorally reject verifier-toolset inventory, identity, ambient-runtime, output, timeout, and root-overlap attacks",
 );
 requireInvariant(
-  releaseVerifierToolsetTests.includes("$preparationResult = Invoke-TestRawProcess") &&
-    releaseVerifierToolsetTests.includes("VERIFIER_TOOLSET_SHA256=${preparedToolsetHash}`n") &&
-    releaseVerifierToolsetTests.includes("VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE`n") &&
+  releaseVerifierToolsetTests.includes(
+    "$preparationResult = Invoke-TestRawProcess",
+  ) &&
+    releaseVerifierToolsetTests.includes(
+      "VERIFIER_TOOLSET_SHA256=${preparedToolsetHash}`n",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE`n",
+    ) &&
     releaseVerifierToolsetTests.includes("$preparedFiles.Count -ne 7") &&
     releaseVerifierToolsetTests.includes("$preparedDirectories.Count -ne 4") &&
     releaseVerifierToolsetTests.includes(
       "Preparation-only output was accepted without effective write protection",
     ) &&
-    releaseVerifierToolsetTests.includes("$existingPreparationResult = Invoke-TestRawProcess") &&
-    releaseVerifierToolsetTests.includes("$invalidPreparationResult = Invoke-TestRawProcess") &&
+    releaseVerifierToolsetTests.includes(
+      "$existingPreparationResult = Invoke-TestRawProcess",
+    ) &&
+    releaseVerifierToolsetTests.includes(
+      "$invalidPreparationResult = Invoke-TestRawProcess",
+    ) &&
     releaseVerifierToolsetTests.includes(
       "Verifier toolset preparation argument failure disclosed a path or changed its fixed line",
     ),
   "the release gate must execute preparation as a non-eligible exact-shape subprocess and reject existing outputs or private malformed arguments with fixed bytes",
 );
 requireInvariant(
-  reviewEvidenceDigestUnitTestBlock.includes("reordered.windowsNegativeTests.reverse()") &&
+  reviewEvidenceDigestUnitTestBlock.includes(
+    "reordered.windowsNegativeTests.reverse()",
+  ) &&
     reviewEvidenceDigestUnitTestBlock.includes("duplicate[1] = duplicate[0]") &&
-    reviewEvidenceDigestUnitTestBlock.includes("[...reviewedRecords, reviewedRecords[0]]") &&
-    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-attestation") &&
-    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-signature") &&
-    reviewEvidenceDigestUnitTestBlock.includes("replacement-review-public-key") &&
+    reviewEvidenceDigestUnitTestBlock.includes(
+      "[...reviewedRecords, reviewedRecords[0]]",
+    ) &&
+    reviewEvidenceDigestUnitTestBlock.includes(
+      "replacement-review-attestation",
+    ) &&
+    reviewEvidenceDigestUnitTestBlock.includes(
+      "replacement-review-signature",
+    ) &&
+    reviewEvidenceDigestUnitTestBlock.includes(
+      "replacement-review-public-key",
+    ) &&
     reviewEvidenceDigestUnitTestBlock.includes("assert.notEqual(") &&
-    reviewEvidenceDigestUnitTestBlock.includes("missing.windowsNegativeTests.pop()") &&
+    reviewEvidenceDigestUnitTestBlock.includes(
+      "missing.windowsNegativeTests.pop()",
+    ) &&
     reviewEvidenceDigestUnitTestBlock.includes(".toUpperCase()") &&
     reviewAttestationV2UnitTestBlock.includes(
       'schema: "your-wallet-independent-security-review-v2"',
@@ -25954,23 +29860,33 @@ requireInvariant(
   reviewNativeReplacementTestBlock.includes(
     "await replaceNativeHostDescriptionAndBindings(fixture)",
   ) &&
-    reviewNativeReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
+    reviewNativeReplacementTestBlock.includes(
+      "await expectReviewEvidenceMismatch(fixture)",
+    ) &&
     reviewWindowsReplacementTestBlock.includes(
       "await replaceWindowsNegativeLog(fixture)",
     ) &&
-    reviewWindowsReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
+    reviewWindowsReplacementTestBlock.includes(
+      "await expectReviewEvidenceMismatch(fixture)",
+    ) &&
     reviewAdvisoryReplacementTestBlock.includes(
       "await replaceOsvEvidenceAndPolicy(fixture)",
     ) &&
-    reviewAdvisoryReplacementTestBlock.includes("await expectReviewEvidenceMismatch(fixture)") &&
-    reviewAdvisoryReplacementTestBlock.includes("await reissueIndependentReview(fixture)") &&
+    reviewAdvisoryReplacementTestBlock.includes(
+      "await expectReviewEvidenceMismatch(fixture)",
+    ) &&
+    reviewAdvisoryReplacementTestBlock.includes(
+      "await reissueIndependentReview(fixture)",
+    ) &&
     reviewAdvisoryReplacementTestBlock.includes(
       'assert.equal(stdout, "CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER\\n")',
     ) &&
     reviewV1RejectionTestBlock.includes(
       'versionOne.schema = "your-wallet-independent-security-review-v1"',
     ) &&
-    reviewV1RejectionTestBlock.includes("delete versionOne.reviewedEvidenceSetSha256") &&
+    reviewV1RejectionTestBlock.includes(
+      "delete versionOne.reviewedEvidenceSetSha256",
+    ) &&
     reviewV1RejectionTestBlock.includes("fixture.reviewerPrivateKey") &&
     reviewAssemblyIntegrationTestBlock.includes(
       "const first = await createAssembleCliInvocation(fixture)",
@@ -26028,13 +29944,19 @@ requireInvariant(
   "behavioral evidence must reach old-review-signature verification and keep all external trust pins plus self-review separation wired at the CLI boundary",
 );
 requireInvariant(
-  reviewSubjectSuccessTestBlock.includes("const before = await metadataSnapshot(stage.root)") &&
+  reviewSubjectSuccessTestBlock.includes(
+    "const before = await metadataSnapshot(stage.root)",
+  ) &&
     reviewSubjectSuccessTestBlock.includes("assert.deepEqual(after, before)") &&
-    reviewSubjectSuccessTestBlock.includes("computeReviewedEvidenceSetSha256(stage.records)") &&
-    reviewSubjectSuccessTestBlock.includes("assert.equal(cli.stderr, \"\")") &&
+    reviewSubjectSuccessTestBlock.includes(
+      "computeReviewedEvidenceSetSha256(stage.records)",
+    ) &&
+    reviewSubjectSuccessTestBlock.includes('assert.equal(cli.stderr, "")') &&
     reviewSubjectFileSetTestBlock.includes("await unlink(") &&
     reviewSubjectFileSetTestBlock.includes('"evidence", "unreviewed.txt"') &&
-    reviewSubjectFileSetTestBlock.includes("path.basename(canonicalCargoLockPath).toLowerCase()") &&
+    reviewSubjectFileSetTestBlock.includes(
+      "path.basename(canonicalCargoLockPath).toLowerCase()",
+    ) &&
     reviewSubjectFileSetTestBlock.includes(
       "for (const root of [missing.root, extra.root, caseAlias.root])",
     ) &&
@@ -26043,7 +29965,9 @@ requireInvariant(
     ) &&
     reviewSubjectHardlinkTestBlock.includes("await link(source, target)") &&
     reviewSubjectHardlinkTestBlock.includes("/hard-linked file/u") &&
-    reviewSubjectArityTestBlock.includes('["--bundle-root", ".", "--output", "ignored"]') &&
+    reviewSubjectArityTestBlock.includes(
+      '["--bundle-root", ".", "--output", "ignored"]',
+    ) &&
     reviewSubjectWrapperTestBlock.includes(
       "Open-ReadOnlyReleaseTreeLocks -BundleRoot $BundleRoot",
     ) &&
@@ -26057,7 +29981,9 @@ requireInvariant(
     reviewSubjectWrapperTestBlock.includes("Invoke-ReleaseToolsetNode") &&
     reviewSubjectWrapperTestBlock.includes("Assert-ReleaseTreesDisjoint") &&
     reviewSubjectWrapperTestBlock.includes("ExpectedVerifierToolsetSha256") &&
-    reviewSubjectWrapperTestBlock.includes("[Console]::Out.Write($result.Stdout)") &&
+    reviewSubjectWrapperTestBlock.includes(
+      "[Console]::Out.Write($result.Stdout)",
+    ) &&
     reviewSubjectWrapperTestBlock.includes(
       "Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot \\$bundle",
     ) &&
@@ -26092,7 +30018,9 @@ requireInvariant(
     extensionPinWrapperIntegrationTestBlock.includes(
       '"-ExpectedVerifierToolsetSha256", "4".repeat(64)',
     ) &&
-    extensionPinWrapperIntegrationTestBlock.includes("const sequenceValidation =") &&
+    extensionPinWrapperIntegrationTestBlock.includes(
+      "const sequenceValidation =",
+    ) &&
     extensionPinWrapperIntegrationTestBlock.includes(
       'wrapper.match(/"--expected-release-sequence", \\$ExpectedReleaseSequence/gu)?.length',
     ) &&
@@ -26118,7 +30046,9 @@ requireInvariant(
 );
 requireInvariant(
   releaseSecurity.includes("independently sourced `ExpectedExtensionId`") &&
-    releaseSecurity.includes("A mismatch is rejected before bundle/evidence reads") &&
+    releaseSecurity.includes(
+      "A mismatch is rejected before bundle/evidence reads",
+    ) &&
     releaseSecurity.includes("Every successor manifest must retain") &&
     releaseSecurity.includes(
       "-ExpectedExtensionId <independently pinned 32-lowercase-a-through-p>",
@@ -26126,12 +30056,20 @@ requireInvariant(
     releaseSecurity.includes(
       "-ExpectedVerifierToolsetSha256 <independently checkpointed 64-lower-hex>",
     ) &&
-    releaseSecurity.includes("exactly four directories and these seven files") &&
-    releaseSecurity.includes("VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE") &&
+    releaseSecurity.includes(
+      "exactly four directories and these seven files",
+    ) &&
+    releaseSecurity.includes(
+      "VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE",
+    ) &&
     releaseSecurity.includes("consistency and version pin") &&
     releaseSecurity.includes("cannot make an untrusted `common.ps1`") &&
-    releaseSecurity.includes("The toolset and candidate trees must be disjoint") &&
-    releaseSecurity.includes("first pre-user-mode `CREATE_PROCESS_DEBUG_EVENT`") &&
+    releaseSecurity.includes(
+      "The toolset and candidate trees must be disjoint",
+    ) &&
+    releaseSecurity.includes(
+      "first pre-user-mode `CREATE_PROCESS_DEBUG_EVENT`",
+    ) &&
     releaseSecurity.includes("in-memory `vm.SourceTextModule` graph") &&
     releaseSecurity.includes("ambient `NODE_OPTIONS`") &&
     releaseSecurity.includes("CRLF, a BOM, trailing bytes") &&
@@ -26140,19 +30078,31 @@ requireInvariant(
     releaseSecurity.includes("no stable production extension ID") &&
     releaseSecurity.includes("your-wallet-independent-security-review-v2") &&
     releaseSecurity.includes("reviewedEvidenceSetSha256") &&
-    releaseSecurity.includes("Do not copy a digest out of the candidate manifest") &&
+    releaseSecurity.includes(
+      "Do not copy a digest out of the candidate manifest",
+    ) &&
     releaseSecurity.includes("review-evidence-set.ps1") &&
     releaseSecurity.includes("The review entry runs exactly once") &&
     releaseSecurity.includes("no write/delete sharing") &&
     releaseSecurity.includes("handle-derived local volume-GUID path") &&
     releaseSecurity.includes("The original path alias is then discarded") &&
     releaseSecurity.includes("full canonical ancestor chain") &&
-    releaseSecurity.includes("one fixed wrapper error line without path disclosure") &&
+    releaseSecurity.includes(
+      "one fixed wrapper error line without path disclosure",
+    ) &&
     releaseSecurity.includes("ancestor junction is retargeted from tree A") &&
-    releaseSecurity.includes("rename probe proves the canonical root is still locked") &&
-    releaseSecurity.includes("merely re-signing the release manifest is insufficient") &&
-    sepoliaArchitectureDoc.includes("The independent-review attestation is schema v2") &&
-    sepoliaArchitectureDoc.includes("excluding only the review attestation and its") &&
+    releaseSecurity.includes(
+      "rename probe proves the canonical root is still locked",
+    ) &&
+    releaseSecurity.includes(
+      "merely re-signing the release manifest is insufficient",
+    ) &&
+    sepoliaArchitectureDoc.includes(
+      "The independent-review attestation is schema v2",
+    ) &&
+    sepoliaArchitectureDoc.includes(
+      "excluding only the review attestation and its",
+    ) &&
     sepoliaArchitectureDoc.includes("v1 or stale attestations fail closed") &&
     sepoliaArchitectureDoc.includes("handle-derived local volume-GUID path") &&
     sepoliaArchitectureDoc.includes("complete 128-bit") &&
@@ -26164,18 +30114,28 @@ requireInvariant(
     sepoliaArchitectureDoc.includes("without path disclosure") &&
     sepoliaArchitectureDoc.includes("retargets") &&
     sepoliaArchitectureDoc.includes("still denies rename") &&
-    sepoliaArchitectureDoc.includes("exact subject bytes to remain A plus one LF") &&
-    releaseSecurity.includes("`ExpectedReleaseSequence` is a mandatory external assertion") &&
+    sepoliaArchitectureDoc.includes(
+      "exact subject bytes to remain A plus one LF",
+    ) &&
+    releaseSecurity.includes(
+      "`ExpectedReleaseSequence` is a mandatory external assertion",
+    ) &&
     releaseSecurity.includes("`[1-9][0-9]{0,31}`") &&
-    releaseSecurity.includes("an older, correctly signed sequence-1 bundle cannot be replayed") &&
+    releaseSecurity.includes(
+      "an older, correctly signed sequence-1 bundle cannot be replayed",
+    ) &&
     sepoliaArchitectureDoc.includes(
       "rollback-resistant checkpoint-derived\n`ExpectedReleaseSequence`",
     ) &&
     releaseSecurity.includes(
       "must come only from the write-protected, rollback-resistant offline checkpoint",
     ) &&
-    releaseSecurity.includes("never from the candidate bundle, a copied command") &&
-    sepoliaArchitectureDoc.includes("exact initial/successor argument counts before any candidate file or tree") &&
+    releaseSecurity.includes(
+      "never from the candidate bundle, a copied command",
+    ) &&
+    sepoliaArchitectureDoc.includes(
+      "exact initial/successor argument counts before any candidate file or tree",
+    ) &&
     sepoliaArchitectureDoc.includes("correctly signed old sequence-1 tree") &&
     rootReadme.includes("릴리스 정책·검증기 테스트 60개 통과") &&
     rootReadme.includes("rollback-resistant offline checkpoint에서") &&
@@ -26195,23 +30155,21 @@ const releasePolicyTestCount = [
   0,
 );
 requireInvariant(
-  hasExactSourcePins(
-    releasePolicyTests,
-    approvedReleasePolicyTestSha256,
-  ) &&
+  hasExactSourcePins(releasePolicyTests, approvedReleasePolicyTestSha256) &&
     !hasExactSourcePins(
       releasePolicyTests.map((source, index) =>
         index === 0 ? { ...source, sha256: "0".repeat(64) } : source,
       ),
       approvedReleasePolicyTestSha256,
     ) &&
-    JSON.stringify(releaseTestSuiteNames) === JSON.stringify([
-      "audit-extension.test.mjs",
-      "generate-inventories.test.mjs",
-      "release-manifest.test.mjs",
-      "release-verifier-integration.test.mjs",
-      "review-evidence-set.test.mjs",
-    ]) &&
+    JSON.stringify(releaseTestSuiteNames) ===
+      JSON.stringify([
+        "audit-extension.test.mjs",
+        "generate-inventories.test.mjs",
+        "release-manifest.test.mjs",
+        "release-verifier-integration.test.mjs",
+        "review-evidence-set.test.mjs",
+      ]) &&
     releasePolicyTestCount === 60,
   "the five executed Node suites must match their exact reviewed raw-byte SHA-256 pins and documented 60-test total",
 );

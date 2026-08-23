@@ -1174,7 +1174,13 @@ mod sys {
         overlapped: &OVERLAPPED,
         deadline: Instant,
     ) -> Result<u32, BrokerChannelError> {
-        let timeout = remaining_milliseconds(deadline)?;
+        let timeout = match remaining_milliseconds(deadline) {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                cancel_and_drain(pipe, overlapped);
+                return Err(error);
+            }
+        };
         let mut transferred = 0_u32;
         // SAFETY: initiating buffers, event, OVERLAPPED, and handle remain live.
         let completed = unsafe {
@@ -1200,6 +1206,15 @@ mod sys {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_once_with_deadline_for_test(
+        pipe: &OwnedHandle,
+        bytes: &mut [u8],
+        deadline: Instant,
+    ) -> Result<usize, BrokerChannelError> {
+        read_once(pipe.raw(), bytes, deadline)
     }
 
     fn cancel_and_drain(pipe: HANDLE, overlapped: &OVERLAPPED) {
@@ -1597,6 +1612,25 @@ mod tests {
             channel.read_frame(deadline_after(40)?),
             Err(BrokerChannelError::DeadlineElapsed)
         ));
+        assert!(child.wait()?.success());
+        Ok(())
+    }
+
+    #[test]
+    fn already_expired_pending_read_is_cancelled_and_drained_before_scope_exit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (child, channel) = connected_child("delayed-frame")?;
+        let mut byte = [0_u8; 1];
+        let started = Instant::now();
+        let deadline = started
+            .checked_sub(Duration::from_millis(1))
+            .ok_or("monotonic deadline underflow")?;
+        assert!(matches!(
+            sys::read_once_with_deadline_for_test(&channel.pipe, &mut byte, deadline),
+            Err(BrokerChannelError::DeadlineElapsed)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(channel);
         assert!(child.wait()?.success());
         Ok(())
     }
