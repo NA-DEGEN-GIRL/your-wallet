@@ -6147,7 +6147,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "78ecce26bd0a337de021f4ab398da00ada9d73c43d24dd93dce6bde023aa6103";
+  "73d1f8d878fb8eff942181a0f632840afac72f42e2534b3b0163581f8e845e66";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -9275,6 +9275,16 @@ const expectedDuplicateHandleInventory = [
     targetHandle: "&raw mut duplicate",
     desiredAccess: "desired",
     inheritable: "true",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source_process",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "APPROVAL_PARENT_PROCESS_ACCESS.0",
+    inheritable: "false",
     options: "DUPLICATE_HANDLE_OPTIONS(0)",
   },
   {
@@ -19783,8 +19793,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
-    unsafeCount: 40,
-    sha256: "040341dee8dc88c68bbeffb6f63b9d56a07b3b4c71e9e89a907cd6f4f61e1acc",
+    unsafeCount: 48,
+    sha256: "584c1afd2d4d62c46892e25b8138af988810d7222097d34eab60061a60640c78",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -26834,6 +26844,11 @@ requireInvariant(
 
 const approvalSupervisorPath =
   "crates/platform-windows/src/approval_supervisor.rs";
+const approvalParentPath = "crates/platform-windows/src/approval_parent.rs";
+const approvalParentActivationPath =
+  "crates/platform-windows/src/key_agent_activation.rs";
+const approvalParentSupervisorPath =
+  "crates/platform-windows/src/key_agent_supervisor.rs";
 const preflightApprovalProductionTokens = brokerLexicalTokenInventory(
   workspaceRustProductionFiles,
   "preflight_approval_artifact",
@@ -26867,12 +26882,19 @@ const approvalSupervisorLibMutationProbes = [
 const approvalSupervisorExternalUseContract = (files) =>
   files
     .filter((file) => file.path !== approvalSupervisorPath)
-    .every((file) =>
-      rustUseItems(file.source).every(
-        (item) =>
-          !/\bapproval_supervisor\b/u.test(rustLexicalCode(item.source)),
-      ),
-    );
+    .every((file) => {
+      const uses = rustUseItems(file.source)
+        .filter((item) =>
+          /\bapproval_supervisor\b/u.test(rustLexicalCode(item.source)),
+        )
+        .map((item) => normalizeRustFragment(rustLexicalCode(item.source)));
+      return file.path === approvalParentPath
+        ? JSON.stringify(uses) ===
+            JSON.stringify([
+              "use crate::approval_supervisor::PreparedReleaseApprovalSupervisor;",
+            ])
+        : uses.length === 0;
+    });
 const approvalSupervisorExternalUseMutation = workspaceRustProductionFiles.map(
   (file) =>
     file.path === "crates/platform-windows/src/approval_channel.rs"
@@ -26897,18 +26919,141 @@ const approvalSupervisorDocumentationContract = (documents) =>
       document.includes("LaunchedHelper") &&
       document.includes("RestrictedLauncher::spawn") &&
       /mapped[- ]image/iu.test(document) &&
-      /process(?:-object)?\s+DACL/iu.test(document) &&
+      /process(?:-object)?[\s\S]{0,80}DACL/iu.test(document) &&
       /production (?:orchestration )?caller/iu.test(document) &&
       document.includes("COMPILED_PARENT_POLICY") &&
       document.includes("COMPILED_RELEASE_POLICY"),
   );
 const approvalSupervisorDocumentationMutationProbes =
   approvalSupervisorDocumentation.map((document) =>
-    document.replace(
+    document.replaceAll(
       "PreparedReleaseApprovalSupervisor",
       "UnboundApprovalArtifact",
     ),
   );
+const approvalParentDocumentationWindow = (document) => {
+  const anchor = document.indexOf("ParentBoundReleaseApprovalSupervisor");
+  return anchor === -1
+    ? ""
+    : document.slice(Math.max(0, anchor - 700), anchor + 2_200);
+};
+const approvalParentDocumentationContradiction =
+  /ParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary\.|The binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID\.|Approval LPAC handle and token usability, PROCESS_DUP_HANDLE denial, and SeDebugPrivilege absence are proven\.|The retained exact parent handle is inheritable\./u;
+const approvalParentDocumentationContract = (documents) =>
+  documents.every((document) => {
+    const window = approvalParentDocumentationWindow(document);
+    const normalizedWindow = window.replaceAll("\\|", "|");
+    const noPidReopen =
+      /(?:never|without|neither|does not|doesn't)[\s\S]{0,160}(?:reopen|PID)|(?:reopen|PID)[\s\S]{0,160}(?:never|without|does not|않고|않습니다|없)/iu.test(
+        window,
+      );
+    const zeroProductionCaller =
+      /(?:zero|no)[\s\S]{0,160}production[\s\S]{0,160}caller|production[\s\S]{0,160}(?:zero|no)[\s\S]{0,100}caller|production[\s\S]{0,160}caller[\s\S]{0,80}(?:zero|0|none)|production[\s\S]{0,160}caller-free/iu.test(
+        window,
+      );
+
+    return (
+      window.includes("ParentBoundReleaseApprovalSupervisor") &&
+      normalizedWindow.includes(
+        "PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE",
+      ) &&
+      /\bfresh\b/iu.test(window) &&
+      /(?:non-inheritable|상속\s*불가)/iu.test(window) &&
+      noPidReopen &&
+      /logical (?:parent|protocol) proof source/iu.test(window) &&
+      window.includes("PROC_THREAD_ATTRIBUTE_PARENT_PROCESS") &&
+      /(?:Windows (?:process\s+)?parent(?:age|\s+selection)|child's Windows parent)/iu.test(
+        window,
+      ) &&
+      /zero-capability\s+Approval LPAC/iu.test(window) &&
+      window.includes("PROCESS_DUP_HANDLE") &&
+      window.includes("SeDebugPrivilege") &&
+      /mapped[- ]image/iu.test(window) &&
+      /process[\s\S]{0,180}thread[\s\S]{0,180}DACL/iu.test(window) &&
+      /raw handle/iu.test(window) &&
+      zeroProductionCaller &&
+      /(?:unproved|unproven|stop-ship|blocker|remain|still|required|여전히)/iu.test(
+        window,
+      ) &&
+      !approvalParentDocumentationContradiction.test(document)
+    );
+  });
+const approvalParentDocumentationMarkerMutators = [
+  (document) =>
+    document.replaceAll(
+      "ParentBoundReleaseApprovalSupervisor",
+      "DetachedApprovalAndParent",
+    ),
+  (document) =>
+    document.replaceAll(
+      "PROCESS_QUERY_LIMITED_INFORMATION",
+      "PROCESS_ALL_ACCESS",
+    ),
+  (document) => document.replaceAll("SYNCHRONIZE", "PROCESS_ALL_ACCESS"),
+  (document) => document.replace(/\bfresh\b/giu, "stale"),
+  (document) =>
+    document.replace(
+      /(?:non-inheritable|상속\s*불가)/giu,
+      "inheritance-unspecified",
+    ),
+  (document) =>
+    document.replace(
+      /logical (?:parent|protocol) proof source/giu,
+      "unbound process hint",
+    ),
+  (document) =>
+    document.replaceAll(
+      "PROC_THREAD_ATTRIBUTE_PARENT_PROCESS",
+      "UNSPECIFIED_PARENT_ATTRIBUTE",
+    ),
+  (document) =>
+    document.replace(
+      /zero-capability\s+Approval LPAC/giu,
+      "unrestricted Approval process",
+    ),
+  (document) => document.replaceAll("PROCESS_DUP_HANDLE", "PROCESS_ALL_ACCESS"),
+  (document) => document.replaceAll("SeDebugPrivilege", "debug privilege"),
+  (document) => document.replace(/mapped[- ]image/giu, "unmapped artifact"),
+  (document) => document.replace(/\bDACLs?\b/giu, "access policy"),
+  (document) => document.replace(/raw handle/giu, "opaque value"),
+  (document) => document.replace(/caller/giu, "consumer"),
+];
+const approvalParentDocumentationMutationProbes =
+  approvalSupervisorDocumentation.flatMap((document, index) => [
+    ...approvalParentDocumentationMarkerMutators.map((mutate) => ({
+      index,
+      document: mutate(document),
+    })),
+    {
+      index,
+      document: `${document}\nParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary.\n`,
+    },
+    {
+      index,
+      document: `${document}\nThe binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID.\n`,
+    },
+    {
+      index,
+      document: `${document}\nApproval LPAC handle and token usability, PROCESS_DUP_HANDLE denial, and SeDebugPrivilege absence are proven.\n`,
+    },
+    {
+      index,
+      document: `${document}\nThe retained exact parent handle is inheritable.\n`,
+    },
+  ]);
+requireInvariant(
+  approvalParentDocumentationContract(approvalSupervisorDocumentation) &&
+    approvalParentDocumentationMutationProbes.every(
+      (probe) =>
+        probe.document !== approvalSupervisorDocumentation[probe.index] &&
+        !approvalParentDocumentationContract(
+          approvalSupervisorDocumentation.map((document, index) =>
+            index === probe.index ? probe.document : document,
+          ),
+        ),
+    ),
+  "all five architecture documents must keep the dormant exact Approval parent proof, zero caller, and unproven runtime/security-boundary limits explicit",
+);
 const stalePublicApprovalLaunchClaim =
   /public generic (?:restricted|helper) launcher|public restricted-launch|Public launch|Public fail-closed entry point for one-shot release helper launch|public entry point accepts only Approval/iu;
 requireInvariant(
@@ -26939,14 +27084,1048 @@ requireInvariant(
       `${restrictedLauncher}\n${attestation}\n${activationHelper}\n${activationReadme}`,
     ) &&
     platformWindowsProductionFiles
-      .filter((file) => file.path !== approvalSupervisorPath)
+      .filter(
+        (file) =>
+          file.path !== approvalSupervisorPath &&
+          file.path !== approvalParentPath,
+      )
       .every(
         (file) =>
           !/(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)/u.test(
             rustLexicalCode(file.source),
           ),
+      ) &&
+    !/\bPreflightApprovalArtifact\b/u.test(
+      rustLexicalCode(
+        platformWindowsProductionFiles.find(
+          (file) => file.path === approvalParentPath,
+        )?.source ?? "",
       ),
+    ),
   "Approval supervisor authority must remain in one private dormant module with zero production caller, alias, re-export, or legacy broad-launch surface",
+);
+
+const approvalParentSource = await text(approvalParentPath);
+const approvalParentProduction = withoutBottomTestModule(approvalParentSource);
+const approvalParentRelease = withoutCfgTestItems(approvalParentProduction);
+const approvalParentContract = (source) => {
+  let errorDefinition;
+  let boundDefinition;
+  let bind;
+  let conversion;
+  let debug;
+  let implItems;
+  try {
+    errorDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+enum\s+ApprovalParentBindingError\s*\{/u,
+    );
+    boundDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ParentBoundReleaseApprovalSupervisor\s*\{/u,
+    );
+    bind = rustTopLevelFunctionBlock(source, "bind_release_approval_parent");
+    implItems = rustImplItems(source);
+    conversion =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl From<KeyAgentSupervisorError> for ApprovalParentBindingError",
+      )?.source ?? "";
+    debug =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl fmt::Debug for ParentBoundReleaseApprovalSupervisor",
+      )?.source ?? "";
+  } catch {
+    return false;
+  }
+
+  const authorityPattern =
+    /\b(?:ApprovalParentBindingError|ParentBoundReleaseApprovalSupervisor)\b/u;
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: approvalParentPath, source }],
+    authorityPattern,
+  );
+  const visibleFunctions = rustVisibleFunctionItems(source).map(
+    ({ owner, visibility, name }) => ({ owner, visibility, name }),
+  );
+  const completeFunctionSurface = rustFunctionSignatures(source).map(
+    (signature) => {
+      const signatureCode = rustLexicalCode(signature.source);
+      const owner = implItems
+        .filter(
+          (item) =>
+            item.index < signature.index &&
+            signature.index < item.index + item.source.length,
+        )
+        .at(-1)?.header;
+      const name =
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          signatureCode,
+        )?.groups.name;
+      return { owner: owner ?? "free", name: name ?? "[UNPARSED]" };
+    },
+  );
+  const bindCompact = compactRust(bind);
+  const resourcePattern =
+    /\b(?:CreateProcess\w*|OpenProcess|DuplicateHandle|CreateThread|CreateRemoteThread|CreateJobObject\w*|CreatePipe|CreateNamedPipe\w*|OpenProcessToken|ShellExecute\w*|WinExec)\s*\(|\b(?:std::process|std::thread|thread::Builder|Command::new|PrivateApprovalPipes|PendingApproval|RestrictedLauncher|LaunchedHelper)\b/u;
+
+  return (
+    normalizeRustFragment(rustLexicalCode(errorDefinition)) ===
+      "pub(crate) enum ApprovalParentBindingError { #[error( )] ParentSourceUnavailable, }" &&
+    source.includes('#[error("Approval parent source is unavailable")]') &&
+    normalizeRustFragment(rustLexicalCode(boundDefinition)) ===
+      "pub(crate) struct ParentBoundReleaseApprovalSupervisor { parent_source: ApprovalParentSourcePreparedKeyAgent, approval: PreparedReleaseApprovalSupervisor, }" &&
+    /#\[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"\]\s*pub\(crate\) struct ParentBoundReleaseApprovalSupervisor/u.test(
+      source,
+    ) &&
+    compactRust(conversion) ===
+      "implFrom<KeyAgentSupervisorError>forApprovalParentBindingError{fnfrom(_error:KeyAgentSupervisorError)->Self{Self::ParentSourceUnavailable}}" &&
+    /formatter\s*\.\s*write_str\(\s*"ParentBoundReleaseApprovalSupervisor\(\[HELD APPROVAL; STORAGE-PROVEN EXACT KEY AGENT PARENT SOURCE\]\)"\s*,?\s*\)/u.test(
+      debug,
+    ) &&
+    bindCompact ===
+      "pub(crate)fnbind_release_approval_parent(approval:PreparedReleaseApprovalSupervisor,storage_proven:BoundStorageProvenKeyAgent,)->Result<ParentBoundReleaseApprovalSupervisor,ApprovalParentBindingError>{letparent_source=prepare_approval_parent_source(storage_proven)?;Ok(ParentBoundReleaseApprovalSupervisor{parent_source,approval,})}" &&
+    JSON.stringify(
+      rustCallSites(bind, "prepare_approval_parent_source").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["storage_proven"]]) &&
+    JSON.stringify(visibleFunctions) ===
+      JSON.stringify([
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "bind_release_approval_parent",
+        },
+      ]) &&
+    JSON.stringify(completeFunctionSurface) ===
+      JSON.stringify([
+        {
+          owner:
+            "impl From<KeyAgentSupervisorError> for ApprovalParentBindingError",
+          name: "from",
+        },
+        {
+          owner: "impl fmt::Debug for ParentBoundReleaseApprovalSupervisor",
+          name: "fmt",
+        },
+        { owner: "free", name: "bind_release_approval_parent" },
+      ]) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) ===
+      JSON.stringify([
+        {
+          path: approvalParentPath,
+          header:
+            "impl From<KeyAgentSupervisorError> for ApprovalParentBindingError",
+        },
+      ]) &&
+    JSON.stringify(authorityInventory.impls) ===
+      JSON.stringify([
+        {
+          path: approvalParentPath,
+          header:
+            "impl From<KeyAgentSupervisorError> for ApprovalParentBindingError",
+        },
+        {
+          path: approvalParentPath,
+          header: "impl fmt::Debug for ParentBoundReleaseApprovalSupervisor",
+        },
+      ]) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Debug|Serialize)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+ParentBoundReleaseApprovalSupervisor\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/\b(?:raw_handle|as_handle|process_id|creation_time|artifact|identity|path)\s*\(/u.test(
+      rustLexicalCode(bind),
+    ) &&
+    !resourcePattern.test(rustLexicalCode(source)) &&
+    !/\bunsafe\b/u.test(rustLexicalCode(source))
+  );
+};
+const approvalParentMutationProbes = [
+  approvalParentRelease.replace(
+    "let parent_source = prepare_approval_parent_source(storage_proven)?;",
+    "let parent_source = unreachable!();",
+  ),
+  approvalParentRelease.replace(
+    '#[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"]',
+    '#[derive(Clone)]\n#[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"]',
+  ),
+  `${approvalParentRelease}\ntype ParentAlias = ParentBoundReleaseApprovalSupervisor;\n`,
+  `${approvalParentRelease}\nimpl ParentBoundReleaseApprovalSupervisor { pub(crate) fn raw_handle(&self) -> usize { 1 } }\n`,
+  `${approvalParentRelease}\nfn hidden_activation() { std::thread::spawn(|| {}); }\n`,
+];
+const approvalParentLibContract = (source) =>
+  /#\[cfg\(windows\)\]\s*#\[allow\(dead_code\)\]\s*mod approval_parent;/u.test(
+    source,
+  ) &&
+  !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*\bapproval_parent\b/u.test(
+    rustLexicalCode(source),
+  );
+const approvalParentLibMutationProbes = [
+  platformWindowsLib.replace(
+    "mod approval_parent;",
+    "pub mod approval_parent;",
+  ),
+  `${platformWindowsLib}\npub use approval_parent::bind_release_approval_parent;\n`,
+  `${platformWindowsLib}\npub use approval_parent::*;\n`,
+];
+const bindReleaseApprovalParentProductionCallers =
+  workspaceRustProductionFiles.flatMap((file) =>
+    rustCallSites(file.source, "bind_release_approval_parent").map(
+      () => file.path,
+    ),
+  );
+const parentBoundApprovalProductionConsumers = workspaceRustProductionFiles
+  .filter((file) =>
+    /\bParentBoundReleaseApprovalSupervisor\b/u.test(
+      rustLexicalCode(file.source),
+    ),
+  )
+  .map((file) => file.path);
+const prepareApprovalParentSourceProductionCallers =
+  workspaceRustProductionFiles.flatMap((file) =>
+    rustCallSites(file.source, "prepare_approval_parent_source").map(
+      () => file.path,
+    ),
+  );
+const approvalParentSourceTypeProductionConsumers = workspaceRustProductionFiles
+  .filter((file) =>
+    /\bApprovalParentSourcePreparedKeyAgent\b/u.test(
+      rustLexicalCode(file.source),
+    ),
+  )
+  .map((file) => file.path);
+const approvalParentExternalUseContract = (files) =>
+  files
+    .filter((file) => file.path !== approvalParentPath)
+    .every((file) =>
+      rustUseItems(file.source).every(
+        (item) => !/\bapproval_parent\b/u.test(rustLexicalCode(item.source)),
+      ),
+    );
+const approvalParentExternalUseMutation = workspaceRustProductionFiles.map(
+  (file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nuse crate::approval_parent::bind_release_approval_parent;\n`,
+        }
+      : file,
+);
+const approvalParentAuthorityTokenContract = (files) =>
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "bind_release_approval_parent"),
+  ) === JSON.stringify([approvalParentPath]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "ParentBoundReleaseApprovalSupervisor"),
+  ) ===
+    JSON.stringify([
+      approvalParentPath,
+      approvalParentPath,
+      approvalParentPath,
+      approvalParentPath,
+    ]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "ApprovalParentBindingError"),
+  ) ===
+    JSON.stringify([
+      approvalParentPath,
+      approvalParentPath,
+      approvalParentPath,
+    ]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "prepare_approval_parent_source"),
+  ) ===
+    JSON.stringify([
+      approvalParentPath,
+      approvalParentPath,
+      approvalParentSupervisorPath,
+    ]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "ApprovalParentSourcePreparedKeyAgent"),
+  ) ===
+    JSON.stringify([
+      approvalParentPath,
+      approvalParentPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+    ]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "prepare_approval_parent_process"),
+  ) ===
+    JSON.stringify([
+      approvalParentActivationPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+    ]) &&
+  JSON.stringify(
+    brokerLexicalTokenInventory(files, "PreparedApprovalParentProcess"),
+  ) ===
+    JSON.stringify([
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentActivationPath,
+      approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+    ]);
+const approvalParentAuthorityTokenMutationProbes = [
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_parent_binder_reference() { let invoke = crate::approval_parent::bind_release_approval_parent; let _ = invoke; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === approvalParentPath
+      ? {
+          ...file,
+          source: `${file.source}\npub(crate) use bind_release_approval_parent as hidden_bind;\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_parent_source_reference() { let prepare = crate::key_agent_supervisor::prepare_approval_parent_source; let _ = prepare; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_parent_process_reference() { let prepare = crate::key_agent_activation::prepare_approval_parent_process; let _ = prepare; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === approvalParentSupervisorPath
+      ? {
+          ...file,
+          source: `${file.source}\npub(crate) fn split_parent_source(value: ApprovalParentSourcePreparedKeyAgent) -> PreparedApprovalParentProcess { let ApprovalParentSourcePreparedKeyAgent { storage_proven: _, parent_process } = value; parent_process }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === approvalParentActivationPath
+      ? {
+          ...file,
+          source: `${file.source}\npub(crate) fn inspect_parent_process(_value: &PreparedApprovalParentProcess) {}\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === approvalParentPath
+      ? {
+          ...file,
+          source: `${file.source}\nfn consume_hidden_parent_binding(_value: ParentBoundReleaseApprovalSupervisor) {}\n`,
+        }
+      : file,
+  ),
+];
+requireInvariant(
+  approvalParentContract(approvalParentRelease) &&
+    approvalParentMutationProbes.every(
+      (probe) =>
+        probe !== approvalParentRelease && !approvalParentContract(probe),
+    ) &&
+    approvalParentLibContract(platformWindowsLib) &&
+    approvalParentLibMutationProbes.every(
+      (probe) =>
+        probe !== platformWindowsLib && !approvalParentLibContract(probe),
+    ) &&
+    JSON.stringify(bindReleaseApprovalParentProductionCallers) ===
+      JSON.stringify([approvalParentPath]) &&
+    JSON.stringify(parentBoundApprovalProductionConsumers) ===
+      JSON.stringify([approvalParentPath]) &&
+    JSON.stringify(prepareApprovalParentSourceProductionCallers) ===
+      JSON.stringify([
+        approvalParentPath,
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
+    JSON.stringify(approvalParentSourceTypeProductionConsumers) ===
+      JSON.stringify([
+        approvalParentPath,
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
+    approvalParentAuthorityTokenContract(workspaceRustProductionFiles) &&
+    approvalParentAuthorityTokenMutationProbes.every(
+      (probe) =>
+        probe.some(
+          (file, index) =>
+            file.source !== workspaceRustProductionFiles[index].source,
+        ) && !approvalParentAuthorityTokenContract(probe),
+    ) &&
+    approvalParentExternalUseContract(workspaceRustProductionFiles) &&
+    !approvalParentExternalUseContract(approvalParentExternalUseMutation),
+  "the exact Key Agent parent proof and release Approval must compose only into one private dormant non-operational ownership binding with zero production caller",
+);
+
+const preparedApprovalParentProcessContract = (source) => {
+  let prepare;
+  let sysDefinition;
+  let outerDebug;
+  let outerImpl;
+  let sysImpl;
+  let duplicate;
+  let revalidate;
+  let processSynchronizeDefinition;
+  let approvalParentProcessAccessDefinition;
+  let maxProcessImagePathUnitsDefinition;
+  let processSynchronizeAttributes;
+  let approvalParentProcessAccessAttributes;
+  let maxProcessImagePathUnitsAttributes;
+  const implItems = rustImplItems(source);
+  try {
+    prepare = rustTopLevelFunctionBlock(
+      source,
+      "prepare_approval_parent_process",
+    );
+    sysDefinition = rustLexicalItemBlock(
+      source,
+      /pub\(super\)\s+struct\s+PreparedApprovalParentProcess\s*\{/u,
+    );
+    const inherentImpls = implItems.filter(
+      (item) => item.header === "impl PreparedApprovalParentProcess",
+    );
+    if (inherentImpls.length !== 2) {
+      return false;
+    }
+    [outerImpl, sysImpl] = inherentImpls;
+    outerDebug =
+      implItems.find(
+        (item) =>
+          item.header === "impl fmt::Debug for PreparedApprovalParentProcess",
+      )?.source ?? "";
+    processSynchronizeDefinition = rustConstItemAtDepth(
+      source,
+      "PROCESS_SYNCHRONIZE",
+      1,
+    );
+    approvalParentProcessAccessDefinition = rustConstItemAtDepth(
+      source,
+      "APPROVAL_PARENT_PROCESS_ACCESS",
+      1,
+    );
+    maxProcessImagePathUnitsDefinition = rustConstItemAtDepth(
+      source,
+      "MAX_PROCESS_IMAGE_PATH_UNITS",
+      1,
+    );
+    processSynchronizeAttributes = rustAttachedOuterAttributes(
+      source,
+      source.indexOf(processSynchronizeDefinition),
+    ).map((attribute) => compactRust(attribute.source));
+    approvalParentProcessAccessAttributes = rustAttachedOuterAttributes(
+      source,
+      source.indexOf(approvalParentProcessAccessDefinition),
+    ).map((attribute) => compactRust(attribute.source));
+    maxProcessImagePathUnitsAttributes = rustAttachedOuterAttributes(
+      source,
+      source.indexOf(maxProcessImagePathUnitsDefinition),
+    ).map((attribute) => compactRust(attribute.source));
+    duplicate = rustFunctionBlockAtDepth(sysImpl.source, "duplicate", 1);
+    revalidate = rustFunctionBlockAtDepth(sysImpl.source, "revalidate", 1);
+  } catch {
+    return false;
+  }
+
+  const code = rustLexicalCode(source);
+  const duplicateCompact = compactRust(duplicate);
+  const revalidateCompact = compactRust(revalidate);
+  const expectedDuplicateCompact =
+    "pub(super)fnduplicate(source:&DetachedRunningDebuggee,expected_creation_time:u64,)->Result<Self,KeyAgentActivationError>{" +
+    "if!source.is_detached_and_running()||expected_creation_time==0{returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
+    "letsource_process=source.0.process.raw();letexpected_process_id=source.process_id();letmutduplicate=HANDLE::default();" +
+    "unsafe{DuplicateHandle(GetCurrentProcess(),source_process,GetCurrentProcess(),&rawmutduplicate,APPROVAL_PARENT_PROCESS_ACCESS.0,false,DUPLICATE_HANDLE_OPTIONS(0),)}" +
+    ".map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;ifinvalid(duplicate){returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
+    "letprocess=unsafe{OwnedHandle::from_raw_handle(duplicate.0)};" +
+    "if!unsafe{CompareObjectHandles(source_process,windows_handle(process.as_handle()))}.as_bool(){returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
+    "letprepared=Self{process,process_id:expected_process_id,creation_time:expected_creation_time,};prepared.revalidate()?;Ok(prepared)}";
+  const expectedRevalidateCompact =
+    "pub(super)fnrevalidate(&self)->Result<(),KeyAgentActivationError>{letmutflags=u32::MAX;letprocess=windows_handle(self.process.as_handle());" +
+    "unsafe{GetHandleInformation(process,&rawmutflags)}.map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "letprocess_id=unsafe{GetProcessId(process)};letwait=unsafe{WaitForSingleObject(process,0)};" +
+    "letcreation_time=process_creation_time(process).map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "ifflags!=0||process_id==0||process_id!=self.process_id||creation_time!=self.creation_time||wait!=WAIT_TIMEOUT{returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
+    "letmuttoken=HANDLE::default();unsafe{OpenProcessToken(process,TOKEN_QUERY,&rawmuttoken)}.map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "lettoken=OwnedWinHandle::new(token).ok_or(KeyAgentActivationError::ApprovalParentCapability)?;drop(token);" +
+    "letmutimage_path=vec![0_u16;MAX_PROCESS_IMAGE_PATH_UNITS];" +
+    "letmutimage_path_units=u32::try_from(image_path.len()).map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "unsafe{QueryFullProcessImageNameW(process,PROCESS_NAME_WIN32,PWSTR(image_path.as_mut_ptr()),&rawmutimage_path_units,)}.map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "letimage_path_units=usize::try_from(image_path_units).map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;" +
+    "ifimage_path_units==0||image_path_units>=image_path.len(){returnErr(KeyAgentActivationError::ApprovalParentCapability);}Ok(())}";
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        source,
+      },
+    ],
+    /\bPreparedApprovalParentProcess\b/u,
+  );
+  const duplicateOrder = [
+    "if!source.is_detached_and_running()||expected_creation_time==0",
+    "letsource_process=source.0.process.raw()",
+    "letexpected_process_id=source.process_id()",
+    "DuplicateHandle(",
+    "ifinvalid(duplicate)",
+    "letprocess=unsafe{OwnedHandle::from_raw_handle(duplicate.0)}",
+    "CompareObjectHandles(source_process,windows_handle(process.as_handle()))",
+    "letprepared=Self{process,process_id:expected_process_id,creation_time:expected_creation_time,}",
+    "prepared.revalidate()?",
+    "Ok(prepared)",
+  ].map((marker) => duplicateCompact.indexOf(marker));
+  const revalidateOrder = [
+    "letmutflags=u32::MAX",
+    "letprocess=windows_handle(self.process.as_handle())",
+    "GetHandleInformation(process,&rawmutflags)",
+    "letprocess_id=unsafe{GetProcessId(process)}",
+    "letwait=unsafe{WaitForSingleObject(process,0)}",
+    "letcreation_time=process_creation_time(process)",
+    "ifflags!=0||process_id==0||process_id!=self.process_id||creation_time!=self.creation_time||wait!=WAIT_TIMEOUT",
+    "OpenProcessToken(process,TOKEN_QUERY,&rawmuttoken)",
+    "drop(token)",
+    "QueryFullProcessImageNameW(process,PROCESS_NAME_WIN32,PWSTR(image_path.as_mut_ptr()),&rawmutimage_path_units,)",
+    "ifimage_path_units==0||image_path_units>=image_path.len()",
+    "Ok(())",
+  ].map((marker) => revalidateCompact.indexOf(marker));
+  const outerMethods = rustFunctionSignatures(outerImpl.source).map(
+    (signature) =>
+      /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+        rustLexicalCode(signature.source),
+      )?.groups.name ?? "[UNPARSED]",
+  );
+  const sysMethods = rustFunctionSignatures(sysImpl.source).map(
+    (signature) =>
+      /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+        rustLexicalCode(signature.source),
+      )?.groups.name ?? "[UNPARSED]",
+  );
+
+  return (
+    /pub\(crate\)\s+struct\s+PreparedApprovalParentProcess\s*\(\s*sys::PreparedApprovalParentProcess\s*\)\s*;/u.test(
+      code,
+    ) &&
+    normalizeRustFragment(rustLexicalCode(sysDefinition)) ===
+      "pub(super) struct PreparedApprovalParentProcess { process: OwnedHandle, process_id: u32, creation_time: u64, }" &&
+    compactRust(processSynchronizeDefinition) ===
+      "constPROCESS_SYNCHRONIZE:PROCESS_ACCESS_RIGHTS=PROCESS_ACCESS_RIGHTS(0x0010_0000);" &&
+    compactRust(approvalParentProcessAccessDefinition) ===
+      "constAPPROVAL_PARENT_PROCESS_ACCESS:PROCESS_ACCESS_RIGHTS=PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0|PROCESS_SYNCHRONIZE.0);" &&
+    compactRust(maxProcessImagePathUnitsDefinition) ===
+      "constMAX_PROCESS_IMAGE_PATH_UNITS:usize=32_768;" &&
+    JSON.stringify(processSynchronizeAttributes) === JSON.stringify([]) &&
+    JSON.stringify(approvalParentProcessAccessAttributes) ===
+      JSON.stringify([]) &&
+    JSON.stringify(maxProcessImagePathUnitsAttributes) === JSON.stringify([]) &&
+    (code.match(/\bPROCESS_SYNCHRONIZE\b/gu) ?? []).length === 2 &&
+    (code.match(/\bAPPROVAL_PARENT_PROCESS_ACCESS\b/gu) ?? []).length === 2 &&
+    (code.match(/\bMAX_PROCESS_IMAGE_PATH_UNITS\b/gu) ?? []).length === 2 &&
+    source.includes(
+      '#[error("Approval parent process capability is unavailable")]\n    ApprovalParentCapability,',
+    ) &&
+    JSON.stringify(outerMethods) === JSON.stringify(["revalidate"]) &&
+    JSON.stringify(sysMethods) ===
+      JSON.stringify(["duplicate", "revalidate"]) &&
+    compactRust(prepare) ===
+      "pub(crate)fnprepare_approval_parent_process(activation:&RunningKeyAgentActivation,)->Result<PreparedApprovalParentProcess,KeyAgentActivationError>{activation.revalidate_resident_process()?;sys::PreparedApprovalParentProcess::duplicate(&activation.process,activation.creation_time).map(PreparedApprovalParentProcess)}" &&
+    compactRust(outerImpl.source) ===
+      "implPreparedApprovalParentProcess{pub(crate)fnrevalidate(&self)->Result<(),KeyAgentActivationError>{self.0.revalidate()}}" &&
+    duplicateCompact === expectedDuplicateCompact &&
+    revalidateCompact === expectedRevalidateCompact &&
+    /formatter\s*\.\s*write_str\(\s*"PreparedApprovalParentProcess\(\[EXACT QLI\+SYNCHRONIZE KEY AGENT\]\)"\s*\)/u.test(
+      outerDebug,
+    ) &&
+    duplicateOrder.every((position) => position !== -1) &&
+    duplicateOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    revalidateOrder.every((position) => position !== -1) &&
+    revalidateOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    JSON.stringify(
+      rustCallSites(duplicate, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "source_process",
+          "GetCurrentProcess()",
+          "&rawmutduplicate",
+          "APPROVAL_PARENT_PROCESS_ACCESS.0",
+          "false",
+          "DUPLICATE_HANDLE_OPTIONS(0)",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(duplicate, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["source_process", "windows_handle(process.as_handle())"],
+      ]) &&
+    rustCallSites(duplicate, "OpenProcess").length === 0 &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(rustLexicalCode(duplicate)) &&
+    !/\bif\s+false\b/u.test(rustLexicalCode(duplicate)) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "GetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "&rawmutflags"]]) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "GetProcessId").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process"]]) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "0"]]) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "process_creation_time").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process"]]) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "OpenProcessToken").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "TOKEN_QUERY", "&rawmuttoken"]]) &&
+    JSON.stringify(
+      rustCallSites(revalidate, "QueryFullProcessImageNameW").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "process",
+          "PROCESS_NAME_WIN32",
+          "PWSTR(image_path.as_mut_ptr())",
+          "&rawmutimage_path_units",
+        ],
+      ]) &&
+    !/\bif\s+false\b/u.test(rustLexicalCode(revalidate)) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*(?:pub\(crate\)|pub\(super\))\s+struct\s+PreparedApprovalParentProcess\b/u.test(
+      code,
+    ) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl PreparedApprovalParentProcess",
+        "impl fmt::Debug for PreparedApprovalParentProcess",
+        "impl PreparedApprovalParentProcess",
+      ])
+  );
+};
+const preparedApprovalParentProcessMutationProbes = [
+  keyAgentActivationRelease.replace(
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+    "    mod broad_parent_access {\n        use super::{PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE};\n        pub(super) const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n            PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | 0x0040);\n    }\n    use broad_parent_access::APPROVAL_PARENT_PROCESS_ACCESS;\n    #[cfg(any())]\n    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+  ),
+  keyAgentActivationRelease.replace(
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | 0x0040);\n    #[cfg(any())]\n    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+  ),
+  keyAgentActivationRelease.replace(
+    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0",
+    "PROCESS_ALL_ACCESS.0",
+  ),
+  keyAgentActivationRelease.replace(
+    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0",
+    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | PROCESS_DUP_HANDLE.0",
+  ),
+  keyAgentActivationRelease.replace(
+    "                    false,\n                    DUPLICATE_HANDLE_OPTIONS(0),",
+    "                    true,\n                    DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  keyAgentActivationRelease.replace(
+    "                    DUPLICATE_HANDLE_OPTIONS(0),",
+    "                    DUPLICATE_SAME_ACCESS,",
+  ),
+  keyAgentActivationRelease.replace(
+    "if !unsafe { CompareObjectHandles(source_process, windows_handle(process.as_handle())) }",
+    "if false",
+  ),
+  keyAgentActivationRelease.replace(
+    "                .as_bool()\n            {",
+    "                .as_bool() && false\n            {",
+  ),
+  keyAgentActivationRelease.replace(
+    "        pub(super) fn revalidate(&self) -> Result<(), KeyAgentActivationError> {\n            let mut flags = u32::MAX;",
+    "        pub(super) fn revalidate(&self) -> Result<(), KeyAgentActivationError> {\n            if self.creation_time != 0 { return Ok(()); }\n            let mut flags = u32::MAX;",
+  ),
+  keyAgentActivationRelease.replace(
+    "                return Err(KeyAgentActivationError::ApprovalParentCapability);\n            }\n\n            let prepared = Self {",
+    "                return Err(KeyAgentActivationError::ApprovalParentCapability);\n            }\n\n            let process = unsafe { OwnedHandle::from_raw_handle(source_process.0) };\n            let prepared = Self {",
+  ),
+  keyAgentActivationRelease.replace(
+    "            if flags != 0",
+    "            if false",
+  ),
+  keyAgentActivationRelease.replace(
+    "                || process_id != self.process_id",
+    "",
+  ),
+  keyAgentActivationRelease.replace(
+    "                || creation_time != self.creation_time",
+    "",
+  ),
+  keyAgentActivationRelease.replace(
+    "                || wait != WAIT_TIMEOUT",
+    "",
+  ),
+  keyAgentActivationRelease.replace(
+    "            unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }",
+    "            Ok(())",
+  ),
+  keyAgentActivationRelease.replace(
+    "            unsafe {\n                QueryFullProcessImageNameW(",
+    "            if false {\n                QueryFullProcessImageNameW(",
+  ),
+  keyAgentActivationRelease.replace(
+    "    activation.revalidate_resident_process()?;",
+    "",
+  ),
+  keyAgentActivationRelease.replace("            prepared.revalidate()?;", ""),
+  `${keyAgentActivationRelease}\nimpl Clone for PreparedApprovalParentProcess { fn clone(&self) -> Self { unreachable!() } }\n`,
+  `${keyAgentActivationRelease}\ntype ParentProcessAlias = PreparedApprovalParentProcess;\n`,
+];
+const preparedApprovalParentAuthorityInventory =
+  brokerReleaseAuthorityInventory(
+    platformWindowsProductionFiles,
+    /\bPreparedApprovalParentProcess\b/u,
+  );
+const prepareApprovalParentProcessProductionCallers =
+  workspaceRustProductionFiles.flatMap((file) =>
+    rustCallSites(file.source, "prepare_approval_parent_process").map(
+      () => file.path,
+    ),
+  );
+const preparedApprovalParentProcessProductionConsumers =
+  workspaceRustProductionFiles
+    .filter((file) =>
+      /\bPreparedApprovalParentProcess\b/u.test(rustLexicalCode(file.source)),
+    )
+    .map((file) => file.path);
+
+const approvalParentSourcePreparedContract = (source) => {
+  let definition;
+  let debug;
+  let prepare;
+  let prepareWithTransport;
+  const implItems = rustImplItems(source);
+  try {
+    definition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ApprovalParentSourcePreparedKeyAgent\s*\{/u,
+    );
+    debug =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent",
+      )?.source ?? "";
+    prepare = rustTopLevelFunctionBlock(
+      source,
+      "prepare_approval_parent_source",
+    );
+    prepareWithTransport = rustTopLevelFunctionBlock(
+      source,
+      "prepare_approval_parent_source_with_transport",
+    );
+  } catch {
+    return false;
+  }
+
+  const prepareCompact = compactRust(prepare);
+  const transitionCompact = compactRust(prepareWithTransport);
+  const order = [
+    "revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?",
+    "letparent_process=prepare_approval_parent_process(&storage_proven.activation)?",
+    "revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?",
+    "parent_process.revalidate()?",
+    "Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,})",
+  ].map((marker, index) =>
+    transitionCompact.indexOf(marker, index === 2 ? orderFirstEnd() : 0),
+  );
+  function orderFirstEnd() {
+    const first = transitionCompact.indexOf(
+      "revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?",
+    );
+    return first === -1 ? 0 : first + 1;
+  }
+  const authorityImpls = implItems.filter((item) =>
+    /\bApprovalParentSourcePreparedKeyAgent\b/u.test(item.header),
+  );
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [
+      {
+        path: "crates/platform-windows/src/key_agent_supervisor.rs",
+        source,
+      },
+    ],
+    /\bApprovalParentSourcePreparedKeyAgent\b/u,
+  );
+
+  return (
+    normalizeRustFragment(rustLexicalCode(definition)) ===
+      "pub(crate) struct ApprovalParentSourcePreparedKeyAgent { storage_proven: BoundStorageProvenKeyAgent, parent_process: PreparedApprovalParentProcess, }" &&
+    /#\[must_use = "dropping the prepared parent source terminates its exact Key Agent process tree"\]\s*pub\(crate\) struct ApprovalParentSourcePreparedKeyAgent/u.test(
+      source,
+    ) &&
+    /formatter\s*\.\s*write_str\(\s*"ApprovalParentSourcePreparedKeyAgent\(\[STORAGE-PROVEN KEY AGENT; EXACT QLI\+SYNCHRONIZE PARENT SOURCE\]\)"\s*,?\s*\)/u.test(
+      debug,
+    ) &&
+    JSON.stringify(authorityImpls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent",
+      ]) &&
+    prepareCompact ===
+      "pub(crate)fnprepare_approval_parent_source(storage_proven:BoundStorageProvenKeyAgent,)->Result<ApprovalParentSourcePreparedKeyAgent,KeyAgentSupervisorError>{prepare_approval_parent_source_with_transport(storage_proven,StartupResponseTransport::Exact)}" &&
+    transitionCompact ===
+      "fnprepare_approval_parent_source_with_transport(storage_proven:BoundStorageProvenKeyAgent,response_transport:StartupResponseTransport,)->Result<ApprovalParentSourcePreparedKeyAgent,KeyAgentSupervisorError>{revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;letparent_process=prepare_approval_parent_process(&storage_proven.activation)?;revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;parent_process.revalidate()?;Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,})}" &&
+    order.every((position) => position !== -1) &&
+    order.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    rustCallSites(prepareWithTransport, "revalidate_post_startup_state")
+      .length === 2 &&
+    JSON.stringify(
+      rustCallSites(
+        prepareWithTransport,
+        "prepare_approval_parent_process",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["&storage_proven.activation"]]) &&
+    JSON.stringify(
+      rustCallSites(prepareWithTransport, "revalidate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    !/\bPinnedLibtestTerse\b/u.test(rustLexicalCode(prepare)) &&
+    !/\b(?:forget|ManuallyDrop|leak|OpenProcess|DuplicateHandle|CreateProcess\w*)\b/u.test(
+      rustLexicalCode(`${prepare}\n${prepareWithTransport}`),
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+ApprovalParentSourcePreparedKeyAgent\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent",
+      ])
+  );
+};
+const approvalParentSourcePreparedMutationProbes = [
+  keyAgentSupervisorRelease.replace(
+    "prepare_approval_parent_source_with_transport(storage_proven, StartupResponseTransport::Exact)",
+    "prepare_approval_parent_source_with_transport(storage_proven, StartupResponseTransport::PinnedLibtestTerse)",
+  ),
+  keyAgentSupervisorRelease.replace(
+    "    revalidate_post_startup_state(\n        &storage_proven.provisioning,",
+    "    if false { revalidate_post_startup_state(\n        &storage_proven.provisioning,",
+  ),
+  keyAgentSupervisorRelease.replace("    parent_process.revalidate()?;", ""),
+  keyAgentSupervisorRelease.replace(
+    "        storage_proven,\n        parent_process,",
+    "        storage_proven: unreachable!(),\n        parent_process,",
+  ),
+  `${keyAgentSupervisorRelease}\nimpl Clone for ApprovalParentSourcePreparedKeyAgent { fn clone(&self) -> Self { unreachable!() } }\n`,
+  `${keyAgentSupervisorRelease}\ntype PreparedParentAlias = ApprovalParentSourcePreparedKeyAgent;\n`,
+];
+requireInvariant(
+  preparedApprovalParentProcessContract(keyAgentActivationRelease) &&
+    preparedApprovalParentProcessMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentActivationRelease &&
+        !preparedApprovalParentProcessContract(probe),
+    ) &&
+    JSON.stringify(preparedApprovalParentAuthorityInventory.typeAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(preparedApprovalParentAuthorityInventory.useAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(preparedApprovalParentAuthorityInventory.reexports) ===
+      JSON.stringify([]) &&
+    JSON.stringify(preparedApprovalParentAuthorityInventory.conversions) ===
+      JSON.stringify([]) &&
+    JSON.stringify(
+      preparedApprovalParentAuthorityInventory.impls.map((item) => ({
+        path: item.path,
+        header: item.header,
+      })),
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl PreparedApprovalParentProcess",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl fmt::Debug for PreparedApprovalParentProcess",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_activation.rs",
+          header: "impl PreparedApprovalParentProcess",
+        },
+      ]) &&
+    JSON.stringify(prepareApprovalParentProcessProductionCallers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
+    JSON.stringify(preparedApprovalParentProcessProductionConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+      ]) &&
+    approvalParentSourcePreparedContract(keyAgentSupervisorRelease) &&
+    approvalParentSourcePreparedMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentSupervisorRelease &&
+        !approvalParentSourcePreparedContract(probe),
+    ),
+  "the Approval logical-parent capability must remain exact QLI+SYNCHRONIZE, same-object, non-inheritable, PID-and-creation-bound, and owned only by the intact storage-proven Key Agent transition",
+);
+const approvalParentSourceKernelTest = rustFunctionBlockAtDepth(
+  keyAgentSupervisorSource,
+  "approval_parent_source_retains_the_complete_storage_proof_and_exact_narrow_process",
+  1,
+);
+const approvalParentBindingKernelTest = rustFunctionBlockAtDepth(
+  keyAgentSupervisorSource,
+  "release_approval_and_exact_key_agent_parent_form_only_one_dormant_owned_state",
+  1,
+);
+const approvalParentKernelEvidenceContract = (sourceTest, bindingTest) => {
+  const sourceCompact = compactRust(sourceTest);
+  const bindingCompact = compactRust(bindingTest);
+  return (
+    sourceCompact.includes(
+      "assert_eq!(PreparedApprovalParentProcess::access_mask_for_test(),0x0010_1000);",
+    ) &&
+    rustCallSites(sourceTest, "prepare_approval_parent_source_for_kernel_test")
+      .length === 1 &&
+    sourceCompact.includes("prepared.parent_process.revalidate()?;") &&
+    sourceCompact.includes(
+      "prepared.storage_proven.activation.revalidate_resident_process()?;",
+    ) &&
+    sourceCompact.includes(
+      "assert!(prepared.storage_proven.provisioning.revalidate().is_ok());",
+    ) &&
+    sourceCompact.includes(
+      "assert!(prepared.storage_proven.handshake.is_live());",
+    ) &&
+    sourceCompact.includes(
+      "verify_kernel_fixture_topology_for_test(process_id)?",
+    ) &&
+    sourceCompact.includes("drop(prepared);") &&
+    sourceCompact.includes("assert!(!storage_root.exists());") &&
+    sourceCompact.includes(
+      "assert_eq!(observation.rejected_exit_code()?,REJECTED_PROCESS_EXIT_CODE);",
+    ) &&
+    rustCallSites(bindingTest, "bind_release_approval_parent_for_kernel_test")
+      .length === 1 &&
+    rustCallSites(bindingTest, "preflight_approval_artifact").length === 1 &&
+    rustCallSites(bindingTest, "prepare_release_approval_supervisor").length ===
+      1 &&
+    bindingTest.includes(
+      "ParentBoundReleaseApprovalSupervisor([HELD APPROVAL; STORAGE-PROVEN EXACT KEY AGENT PARENT SOURCE])",
+    ) &&
+    bindingCompact.includes("drop(bound);") &&
+    bindingCompact.includes("assert!(!storage_root.exists());") &&
+    bindingCompact.includes(
+      "assert_eq!(observation.rejected_exit_code()?,REJECTED_PROCESS_EXIT_CODE);",
+    ) &&
+    !/\b(?:forget|ManuallyDrop|leak)\b/u.test(
+      rustLexicalCode(`${sourceTest}\n${bindingTest}`),
+    )
+  );
+};
+const approvalParentKernelEvidenceMutationProbes = [
+  {
+    source: approvalParentSourceKernelTest.replace("0x0010_1000", "0"),
+    binding: approvalParentBindingKernelTest,
+  },
+  {
+    source: approvalParentSourceKernelTest.replace(
+      "drop(prepared);",
+      "core::mem::forget(prepared);",
+    ),
+    binding: approvalParentBindingKernelTest,
+  },
+  {
+    source: approvalParentSourceKernelTest.replace(
+      "assert!(!storage_root.exists());",
+      "assert!(true);",
+    ),
+    binding: approvalParentBindingKernelTest,
+  },
+  {
+    source: approvalParentSourceKernelTest.replace(
+      "assert_eq!(\n            observation.rejected_exit_code()?,\n            REJECTED_PROCESS_EXIT_CODE\n        );",
+      "assert!(true);",
+    ),
+    binding: approvalParentBindingKernelTest,
+  },
+  {
+    source: approvalParentSourceKernelTest,
+    binding: approvalParentBindingKernelTest.replace(
+      "drop(bound);",
+      "core::mem::forget(bound);",
+    ),
+  },
+  {
+    source: approvalParentSourceKernelTest,
+    binding: approvalParentBindingKernelTest.replace(
+      "assert!(!storage_root.exists());",
+      "assert!(true);",
+    ),
+  },
+];
+requireInvariant(
+  approvalParentKernelEvidenceContract(
+    approvalParentSourceKernelTest,
+    approvalParentBindingKernelTest,
+  ) &&
+    approvalParentKernelEvidenceMutationProbes.every(
+      ({ source, binding }) =>
+        (source !== approvalParentSourceKernelTest ||
+          binding !== approvalParentBindingKernelTest) &&
+        !approvalParentKernelEvidenceContract(source, binding),
+    ),
+  "kernel evidence must pin the exact 0x00101000 parent handle, retained storage proof, dormant Approval composition, redaction, and synchronous process/storage cleanup",
 );
 
 const approvalChannel = await text(

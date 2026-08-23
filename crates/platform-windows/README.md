@@ -264,12 +264,28 @@ Implemented:
   Job, pipe, channel, thread, launch state, or second file handle and exposes no
   artifact, path, identity, PID, or raw-handle accessor. The legacy
   `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`, and
-  `RestrictedLauncher::spawn` surfaces are no longer externally callable.
-  This is type-state preparation only: it does not authenticate a mapped image,
-  establish a separate supervisor principal or protected creation-time process
-  DACL, bind the exact Key Agent parent capability or endpoint topology, or
-  provide cleanup, production orchestration, signing, or release activation.
-  It has zero production callers and both compiled policies remain `None`;
+  `RestrictedLauncher::spawn` surfaces are no longer externally callable. A
+  second private transition consumes this complete Approval proof together with
+  the intact `BoundStorageProvenKeyAgent`. From that same running Key Agent
+  process object it mints one fresh, non-inheritable duplicate with exactly
+  `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`, without reopening by PID,
+  and retains both complete aggregates in the opaque, non-cloneable
+  `ParentBoundReleaseApprovalSupervisor`. Neither the narrow process capability
+  nor the final binding exposes a PID, path, raw handle, constituent, generic
+  desired-access input, or launch operation. No process, thread, Job, pipe,
+  channel, attribute list, or persistent token handle is created; the narrow
+  duplicate is the only newly retained OS resource. The final production binder
+  has zero callers and both compiled policies remain `None`.
+
+  This is an ownership-bound logical parent proof source, not a Windows parent
+  selection or an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
+  It is not a runtime-ready security boundary. Release evidence must still show
+  that the actual zero-capability Approval LPAC can use the exact handle and
+  query the parent token, while stronger token-DACL rights and
+  `PROCESS_DUP_HANDLE` fail and `SeDebugPrivilege` is absent. Mapped-image
+  provenance, a distinct supervisor principal, protected process and thread
+  DACLs supplied at creation, endpoint topology/exclusivity, complete cleanup,
+  production orchestration, signing, and release activation remain blockers;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three
@@ -688,11 +704,17 @@ Stop-ship before any signing-capable release:
    revalidates the binding through response write. That blocks PID-reuse
    substitution while the handle is live, but transferable/duplicable pipe
    handles still leave exclusive endpoint ownership, topology/exclusivity, and
-   per-write attribution unproven. No positive kernel availability test shows
-   that the zero-capability Approval LPAC can complete
-   `OpenProcessToken(parent)`, so the handle-first path remains release-unproven.
-   Current held-file policy checks likewise do not provide the mapped-image,
-   immutable-install, DLL-graph, or supervisor-lineage proofs.
+   per-write attribution unproven. The dormant logical-parent binder now owns a
+   fresh non-inheritable exact Key Agent process duplicate with only
+   `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`, but it neither sets
+   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` nor launches Approval. No positive
+   kernel availability test shows that the actual zero-capability Approval LPAC
+   can use that handle and complete `OpenProcessToken(parent)`; token-DACL
+   stronger-right and `PROCESS_DUP_HANDLE` denial plus `SeDebugPrivilege`
+   absence are also unproved. The handle-first path therefore remains
+   release-unproven. Current held-file policy checks likewise do not provide the
+   mapped-image, immutable-install, DLL-graph, distinct-supervisor-principal, or
+   process-and-thread creation-time DACL proofs.
    Kernel-level pipe tests cover the framing and cancellation primitives, and
    the repo-local positive-sentinel grandchild test supplies only a non-
    exhaustive two-object propagation negative. Its sequential clears are non-

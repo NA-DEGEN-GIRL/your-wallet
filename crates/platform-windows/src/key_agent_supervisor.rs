@@ -27,8 +27,9 @@ use crate::key_agent_activation::activate_preflighted_key_agent_on_fresh_worker_
 #[cfg(test)]
 use crate::key_agent_activation::preflight_key_agent_activation;
 use crate::key_agent_activation::{
-    HeldKeyAgentActivation, KeyAgentActivationError, RunningKeyAgentActivation,
-    activate_preflighted_key_agent_on_fresh_worker, run_on_fresh_key_agent_debug_thread,
+    HeldKeyAgentActivation, KeyAgentActivationError, PreparedApprovalParentProcess,
+    RunningKeyAgentActivation, activate_preflighted_key_agent_on_fresh_worker,
+    prepare_approval_parent_process, run_on_fresh_key_agent_debug_thread,
 };
 #[cfg(test)]
 use crate::key_agent_install_adoption::verified_install_continuity_for_supervisor_test;
@@ -357,6 +358,75 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
             .field("provisioning", &"[VERIFIED PROFILE AND HELD STORAGE ROOT]")
             .finish_non_exhaustive()
     }
+}
+
+/// One intact storage-proven Key Agent plus a least-authority proof source for
+/// a future Approval parent binding.
+///
+/// The aggregate is non-cloneable and exposes neither its process capability
+/// nor any retained proof. The exact Key Agent remains owned first so drop or
+/// unwind synchronously terminates its process tree before the narrow duplicate
+/// handle and all later-held evidence are released. This state does not prove
+/// that an Approval LPAC can use the handle or that a process DACL, distinct
+/// supervisor principal, mapped image, or endpoint topology exists.
+#[must_use = "dropping the prepared parent source terminates its exact Key Agent process tree"]
+pub(crate) struct ApprovalParentSourcePreparedKeyAgent {
+    storage_proven: BoundStorageProvenKeyAgent,
+    parent_process: PreparedApprovalParentProcess,
+}
+
+impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "ApprovalParentSourcePreparedKeyAgent([STORAGE-PROVEN KEY AGENT; EXACT QLI+SYNCHRONIZE PARENT SOURCE])",
+        )
+    }
+}
+
+/// Consumes the complete storage-proven aggregate and mints one exact,
+/// non-inheritable `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` duplicate.
+///
+/// All resident, storage, root-Job membership, limit, and topology checks run
+/// both before and after duplication. No PID reopen, raw handle, launch state,
+/// or general desired-access argument crosses this boundary.
+pub(crate) fn prepare_approval_parent_source(
+    storage_proven: BoundStorageProvenKeyAgent,
+) -> Result<ApprovalParentSourcePreparedKeyAgent, KeyAgentSupervisorError> {
+    prepare_approval_parent_source_with_transport(storage_proven, StartupResponseTransport::Exact)
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_approval_parent_source_for_kernel_test(
+    storage_proven: BoundStorageProvenKeyAgent,
+) -> Result<ApprovalParentSourcePreparedKeyAgent, KeyAgentSupervisorError> {
+    prepare_approval_parent_source_with_transport(
+        storage_proven,
+        StartupResponseTransport::PinnedLibtestTerse,
+    )
+}
+
+fn prepare_approval_parent_source_with_transport(
+    storage_proven: BoundStorageProvenKeyAgent,
+    response_transport: StartupResponseTransport,
+) -> Result<ApprovalParentSourcePreparedKeyAgent, KeyAgentSupervisorError> {
+    revalidate_post_startup_state(
+        &storage_proven.provisioning,
+        &storage_proven.root_job,
+        &storage_proven.activation,
+        response_transport,
+    )?;
+    let parent_process = prepare_approval_parent_process(&storage_proven.activation)?;
+    revalidate_post_startup_state(
+        &storage_proven.provisioning,
+        &storage_proven.root_job,
+        &storage_proven.activation,
+        response_transport,
+    )?;
+    parent_process.revalidate()?;
+    Ok(ApprovalParentSourcePreparedKeyAgent {
+        storage_proven,
+        parent_process,
+    })
 }
 
 /// Performs the one-time fresh profile and fixed storage-root ceremony.
@@ -737,15 +807,19 @@ fn bind_dormant_key_agent_for_kernel_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVATION_NONCE_BYTES, BoundDormantKeyAgent, BoundStorageProvenKeyAgent,
-        KeyAgentStartupCodecError, KeyAgentSupervisorError, MAX_STARTUP_LIFETIME,
-        STARTUP_TRANSCRIPT_BYTES, SupervisorActivationLease,
+        ACTIVATION_NONCE_BYTES, ApprovalParentSourcePreparedKeyAgent, BoundDormantKeyAgent,
+        BoundStorageProvenKeyAgent, KeyAgentStartupCodecError, KeyAgentSupervisorError,
+        MAX_STARTUP_LIFETIME, STARTUP_TRANSCRIPT_BYTES, SupervisorActivationLease,
         bind_dormant_key_agent_for_kernel_test, bind_key_agent_storage_startup_for_kernel_test,
-        startup_transcript_commitment,
+        prepare_approval_parent_source_for_kernel_test, startup_transcript_commitment,
+    };
+    use crate::approval_parent::bind_release_approval_parent_for_kernel_test;
+    use crate::approval_supervisor::{
+        preflight_approval_artifact, prepare_release_approval_supervisor,
     };
     use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::VerifiedHelper;
-    use crate::key_agent_activation::KeyAgentActivationError;
+    use crate::key_agent_activation::{KeyAgentActivationError, PreparedApprovalParentProcess};
     use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobError};
     use crate::key_agent_startup::{
@@ -755,6 +829,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
+    const APPROVAL_MANIFEST: [u8; 32] = [0x71; 32];
 
     trait AmbiguousIfSync<A> {
         fn marker() {}
@@ -920,12 +995,16 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<BoundDormantKeyAgent>();
         assert_send::<BoundStorageProvenKeyAgent>();
+        assert_send::<ApprovalParentSourcePreparedKeyAgent>();
         let _ = <BoundDormantKeyAgent as AmbiguousIfSync<_>>::marker;
         let _ = <BoundDormantKeyAgent as AmbiguousIfClone<_>>::marker;
         let _ = <BoundDormantKeyAgent as AmbiguousIfCopy<_>>::marker;
         let _ = <BoundStorageProvenKeyAgent as AmbiguousIfSync<_>>::marker;
         let _ = <BoundStorageProvenKeyAgent as AmbiguousIfClone<_>>::marker;
         let _ = <BoundStorageProvenKeyAgent as AmbiguousIfCopy<_>>::marker;
+        let _ = <ApprovalParentSourcePreparedKeyAgent as AmbiguousIfSync<_>>::marker;
+        let _ = <ApprovalParentSourcePreparedKeyAgent as AmbiguousIfClone<_>>::marker;
+        let _ = <ApprovalParentSourcePreparedKeyAgent as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]
@@ -1068,6 +1147,101 @@ mod tests {
         assert!(storage_root.is_dir());
 
         let observation = bound.activation.duplicate_process_observation()?;
+        drop(bound);
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approval_parent_source_retains_the_complete_storage_proof_and_exact_narrow_process()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let attestation = attestation_for(&artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
+        let storage_proven = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let process_id = storage_proven.activation.process_id();
+        let creation_time = storage_proven.activation.creation_time();
+        let observation = storage_proven.activation.duplicate_process_observation()?;
+
+        let prepared = prepare_approval_parent_source_for_kernel_test(storage_proven)?;
+        assert_eq!(
+            PreparedApprovalParentProcess::access_mask_for_test(),
+            0x0010_1000
+        );
+        prepared.parent_process.revalidate()?;
+        prepared
+            .storage_proven
+            .activation
+            .revalidate_resident_process()?;
+        assert!(prepared.storage_proven.provisioning.revalidate().is_ok());
+        assert!(prepared.storage_proven.handshake.is_live());
+        assert!(
+            prepared
+                .storage_proven
+                .root_job
+                .verify_kernel_fixture_topology_for_test(process_id)?
+        );
+        let rendered = format!("{prepared:?}");
+        assert!(rendered.contains("ApprovalParentSourcePreparedKeyAgent"));
+        assert!(rendered.contains("EXACT QLI+SYNCHRONIZE PARENT SOURCE"));
+        assert!(!rendered.contains(&process_id.to_string()));
+        assert!(!rendered.contains(&creation_time.to_string()));
+
+        drop(prepared);
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn release_approval_and_exact_key_agent_parent_form_only_one_dormant_owned_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let key_agent_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let key_agent_attestation = attestation_for(&key_agent_artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(
+            key_agent_attestation,
+            key_agent_artifact,
+            provisioning,
+        )?;
+        let storage_proven = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let process_id = storage_proven.activation.process_id();
+        let creation_time = storage_proven.activation.creation_time();
+        let observation = storage_proven.activation.duplicate_process_observation()?;
+
+        let approval_artifact = VerifiedHelper::for_approval_artifact_test(
+            std::env::current_exe()?,
+            APPROVAL_MANIFEST,
+            true,
+        )?;
+        let approval_attestation = ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([0x70; 32]),
+            [APPROVAL_MANIFEST, [0x72; 32], [0x73; 32]],
+        );
+        let approval = prepare_release_approval_supervisor(preflight_approval_artifact(
+            approval_attestation,
+            approval_artifact,
+        )?)?;
+
+        let bound = bind_release_approval_parent_for_kernel_test(approval, storage_proven)?;
+        let rendered = format!("{bound:?}");
+        assert_eq!(
+            rendered,
+            "ParentBoundReleaseApprovalSupervisor([HELD APPROVAL; STORAGE-PROVEN EXACT KEY AGENT PARENT SOURCE])"
+        );
+        assert!(!rendered.contains(&process_id.to_string()));
+        assert!(!rendered.contains(&creation_time.to_string()));
+
         drop(bound);
         assert!(!storage_root.exists());
         assert_eq!(

@@ -77,6 +77,10 @@ pub(crate) enum KeyAgentActivationError {
     /// The exact post-startup process was no longer live in its resident phase.
     #[error("Key Agent resident process state is invalid")]
     ResidentState,
+    /// The exact running Key Agent could not mint the least-authority Approval
+    /// parent process capability.
+    #[error("Approval parent process capability is unavailable")]
+    ApprovalParentCapability,
     /// The first debug event did not arrive inside the fixed bound.
     #[error("Key Agent process-creation debug event timed out")]
     DebugEventTimeout,
@@ -339,6 +343,44 @@ impl fmt::Debug for RunningKeyAgentActivation {
             .field("creation_time", &"[REDACTED]")
             .finish_non_exhaustive()
     }
+}
+
+/// One exact running Key Agent process object held only with the rights needed
+/// by a future Approval parent binding.
+///
+/// The non-cloneable capability is a fresh, non-inheritable duplicate with
+/// exactly `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`. It exposes no
+/// PID, path, raw handle, duplication, termination, VM, or launch operation.
+#[must_use = "dropping the Approval parent process capability closes its exact narrow handle"]
+pub(crate) struct PreparedApprovalParentProcess(sys::PreparedApprovalParentProcess);
+
+impl PreparedApprovalParentProcess {
+    /// Revalidates exact PID, zero handle flags, liveness, process-token query,
+    /// and image-path query through only the retained least-authority handle.
+    pub(crate) fn revalidate(&self) -> Result<(), KeyAgentActivationError> {
+        self.0.revalidate()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn access_mask_for_test() -> u32 {
+        sys::approval_parent_process_access_for_test()
+    }
+}
+
+impl fmt::Debug for PreparedApprovalParentProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedApprovalParentProcess([EXACT QLI+SYNCHRONIZE KEY AGENT])")
+    }
+}
+
+/// Mints one least-authority parent process capability from the exact running
+/// Key Agent without exposing or reopening by PID.
+pub(crate) fn prepare_approval_parent_process(
+    activation: &RunningKeyAgentActivation,
+) -> Result<PreparedApprovalParentProcess, KeyAgentActivationError> {
+    activation.revalidate_resident_process()?;
+    sys::PreparedApprovalParentProcess::duplicate(&activation.process, activation.creation_time)
+        .map(PreparedApprovalParentProcess)
 }
 
 /// Test-only, observation-only duplicate of the exact activated process.
@@ -663,17 +705,17 @@ mod sys {
     use core::mem::{size_of, size_of_val};
     use core::ptr;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, BorrowedHandle};
-    #[cfg(test)]
-    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::time::Instant;
 
+    #[cfg(test)]
+    use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
     use windows::Win32::Foundation::{
-        CloseHandle, DBG_CONTINUE, ERROR_SEM_TIMEOUT, FILETIME, GetLastError, HANDLE,
+        CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
+        ERROR_SEM_TIMEOUT, FILETIME, GetHandleInformation, GetLastError, HANDLE,
         INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    #[cfg(test)]
-    use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
+    use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::Storage::FileSystem::{
         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
     };
@@ -681,16 +723,15 @@ mod sys {
         CREATE_PROCESS_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcessStop,
         LOAD_DLL_DEBUG_EVENT, WaitForDebugEventEx,
     };
-    #[cfg(test)]
-    use windows::Win32::System::Threading::GetCurrentProcess;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
         DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-        GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, SuspendThread, TerminateProcess, UpdateProcThreadAttribute,
-        WaitForSingleObject,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread, TerminateProcess,
+        UpdateProcThreadAttribute, WaitForSingleObject,
     };
     use windows::core::{PCWSTR, PWSTR};
 
@@ -708,6 +749,10 @@ mod sys {
 
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
+    const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =
+        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);
+    const MAX_PROCESS_IMAGE_PATH_UNITS: usize = 32_768;
 
     /// Initialized four-slot process-creation policy retained through one call.
     ///
@@ -1723,6 +1768,122 @@ mod sys {
                 self.0 = HANDLE::default();
             }
         }
+    }
+
+    pub(super) struct PreparedApprovalParentProcess {
+        process: OwnedHandle,
+        process_id: u32,
+        creation_time: u64,
+    }
+
+    impl PreparedApprovalParentProcess {
+        pub(super) fn duplicate(
+            source: &DetachedRunningDebuggee,
+            expected_creation_time: u64,
+        ) -> Result<Self, KeyAgentActivationError> {
+            if !source.is_detached_and_running() || expected_creation_time == 0 {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+
+            let source_process = source.0.process.raw();
+            let expected_process_id = source.process_id();
+            let mut duplicate = HANDLE::default();
+            // SAFETY: both process parameters name the current supervisor; the
+            // source is the live exact Key Agent process handle. Windows writes
+            // at most one duplicate handle into initialized output storage.
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    source_process,
+                    GetCurrentProcess(),
+                    &raw mut duplicate,
+                    APPROVAL_PARENT_PROCESS_ACCESS.0,
+                    false,
+                    DUPLICATE_HANDLE_OPTIONS(0),
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            if invalid(duplicate) {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+            // SAFETY: successful duplication returned one newly owned handle,
+            // and this transfers its sole ownership into the standard wrapper.
+            let process = unsafe { OwnedHandle::from_raw_handle(duplicate.0) };
+
+            // SAFETY: both handles are live process handles owned or borrowed
+            // by this supervisor for the duration of the comparison.
+            if !unsafe { CompareObjectHandles(source_process, windows_handle(process.as_handle())) }
+                .as_bool()
+            {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+
+            let prepared = Self {
+                process,
+                process_id: expected_process_id,
+                creation_time: expected_creation_time,
+            };
+            prepared.revalidate()?;
+            Ok(prepared)
+        }
+
+        pub(super) fn revalidate(&self) -> Result<(), KeyAgentActivationError> {
+            let mut flags = u32::MAX;
+            let process = windows_handle(self.process.as_handle());
+            // SAFETY: the capability owns a live process handle and the flags
+            // pointer names initialized writable storage.
+            unsafe { GetHandleInformation(process, &raw mut flags) }
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            // SAFETY: the capability owns the queried process handle.
+            let process_id = unsafe { GetProcessId(process) };
+            // SAFETY: zero-timeout waiting only observes this live handle.
+            let wait = unsafe { WaitForSingleObject(process, 0) };
+            let creation_time = process_creation_time(process)
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            if flags != 0
+                || process_id == 0
+                || process_id != self.process_id
+                || creation_time != self.creation_time
+                || wait != WAIT_TIMEOUT
+            {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+
+            let mut token = HANDLE::default();
+            // SAFETY: the process handle has query-limited-information rights;
+            // the output points to initialized handle storage.
+            unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            let token = OwnedWinHandle::new(token)
+                .ok_or(KeyAgentActivationError::ApprovalParentCapability)?;
+            drop(token);
+
+            let mut image_path = vec![0_u16; MAX_PROCESS_IMAGE_PATH_UNITS];
+            let mut image_path_units = u32::try_from(image_path.len())
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            // SAFETY: the process handle has query-limited-information rights;
+            // the mutable UTF-16 buffer and its in/out length are valid.
+            unsafe {
+                QueryFullProcessImageNameW(
+                    process,
+                    PROCESS_NAME_WIN32,
+                    PWSTR(image_path.as_mut_ptr()),
+                    &raw mut image_path_units,
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            let image_path_units = usize::try_from(image_path_units)
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            if image_path_units == 0 || image_path_units >= image_path.len() {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn approval_parent_process_access_for_test() -> u32 {
+        APPROVAL_PARENT_PROCESS_ACCESS.0
     }
 
     impl fmt::Debug for OwnedWinHandle {

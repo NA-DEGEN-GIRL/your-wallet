@@ -609,9 +609,20 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   만들지 않고 path/PID/raw-handle accessor도 제공하지 않습니다. 기존
   `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`,
   `RestrictedLauncher::spawn`은 외부 crate에서 더 이상 호출하거나 보유할 수 없습니다.
-  이는 mapped-image 검증이나 별도 supervisor principal·생성 시 protected process DACL,
-  exact Key Agent parent capability, endpoint topology, cleanup, production orchestration 또는
-  signing을 완성하지 않으며 production caller도 0개입니다.
+  이어지는 비공개 전이는 이 준비 상태와 분해하지 않은 전체
+  `BoundStorageProvenKeyAgent`를 함께 소비합니다. 같은 실행 중인 storage-proven Key Agent
+  process object에서 PID로 다시 열지 않고, 상속 불가이며 접근권이 정확히
+  `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`인 fresh duplicate 하나만 만들어
+  `ParentBoundReleaseApprovalSupervisor` 안에 보유합니다. 이 opaque 상태는 constituent,
+  PID, path 또는 raw handle accessor와 launch operation을 제공하지 않으며, 새로 보유하는
+  OS 자원도 그 narrow handle 하나뿐입니다. production binder caller는 0개입니다. 이
+  handle은 향후 Approval이 인증할 logical parent proof source일 뿐이고
+  `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`를 설정하거나 Windows process parentage를
+  확립하는 capability가 아닙니다. 따라서 actual zero-capability Approval LPAC가 이
+  handle과 parent token을 사용할 수 있다는 positive proof, token-DACL stronger-right 및
+  `PROCESS_DUP_HANDLE` denial, `SeDebugPrivilege` 부재, mapped-image provenance, 별도
+  supervisor principal, process와 thread 양쪽의 creation-time DACL, endpoint topology와
+  cleanup, production orchestration 및 signing은 여전히 release blocker입니다.
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
   stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
   synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
@@ -638,9 +649,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `\\key-agent.exe` suffix와 held-handle-derived path로 다시 조회한 version metadata를
   검사하고, held handle+path를 사용한 Authenticode signer 검증과 cloned held handle의
   SHA-256를 수행합니다. 따라서 live process가 그 exact file
-  object에서 mapped되었다는 증명은 아닙니다. zero-capability Approval LPAC에서
-  `OpenProcessToken(parent)` 성공을 입증하는 positive kernel availability test도 아직
-  없고 compiled policies는 `None`이므로, 이 handle-first 성공 경로는 release에서
+  object에서 mapped되었다는 증명은 아닙니다. dormant binder가 보유하는 정확한
+  `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` Key Agent handle도 logical proof
+  source일 뿐입니다. zero-capability Approval LPAC에서 그 exact handle과
+  `OpenProcessToken(parent)`를 실제로 사용할 수 있다는 positive kernel proof,
+  token-DACL stronger-right 및 `PROCESS_DUP_HANDLE` negative, `SeDebugPrivilege` 부재가
+  아직 없고 compiled policies는 `None`이므로, 이 handle-first 성공 경로는 release에서
   검증되지 않았습니다.
 
   Parent-auth 순서는 고정 62-byte parent hello, 고정 106-byte child hello,

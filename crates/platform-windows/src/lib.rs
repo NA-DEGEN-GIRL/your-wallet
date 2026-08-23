@@ -91,6 +91,9 @@ mod approval_channel;
 // topology, cleanup, and complete runtime composition before activation.
 #[cfg(windows)]
 #[allow(dead_code)]
+mod approval_parent;
+#[cfg(windows)]
+#[allow(dead_code)]
 mod approval_supervisor;
 pub mod attestation;
 pub mod helper;

@@ -226,6 +226,16 @@ production key/checkpoint constructor, journal reader/writer backend, or caller.
 The adoption transition, release-binding, and dormant supervisor binder all have
 zero production call sites.
 
+Once storage startup has produced `BoundStorageProvenKeyAgent`, a separate
+private transition can preserve that whole aggregate while minting one exact
+Approval logical-parent process capability. It duplicates the already retained
+running process object directly with inheritance disabled and the fixed access
+mask `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it takes no PID or
+caller-selected access mask and never reopens the process. Its pre/post
+revalidation and opaque ownership are useful type-state evidence, but the final
+Approval/Key Agent binder remains unreachable from production and grants no
+launch or runtime authority.
+
 The separate dormant `open_existing_fixed_key_agent_storage_root` is only a
 root-object proof and also has zero production callers. It accepts an
 observer-validated `AC` folder and live fixed-profile SID but hard-codes the
@@ -341,19 +351,36 @@ module allocates no process, Job, pipe, channel, thread, launch state, or second
 file handle. The legacy Approval launcher, pending response state, and broad
 `LaunchedHelper` are crate-private. `RestrictedLauncher::spawn` is crate-private
 too, and its only remaining call site is inside that dormant legacy launcher.
-The launcher has zero production callers. This does not yet prove mapped-image
-identity or
-separate the supervisor from a hostile launcher with a distinct principal and
-protected process-object DACL supplied at creation. Exact Key Agent parent
-capability, endpoint topology, cleanup, DLL graph, production orchestration,
-signing, and release activation remain unimplemented; both compiled policies
-remain `None`. A supervisor and hostile launcher running as the same
-unrestricted owner SID cannot be strongly separated by an ordinary process
-DACL: the owner can reacquire ACL-changing authority, and a caller retaining or
-reacquiring `PROCESS_DUP_HANDLE` can still target child-local proof handles.
-Release activation therefore requires a separately principaled supervisor (or
-an explicitly narrower threat model), creation-time ACL evidence, denial tests,
-and absence of ambient debug privilege.
+The launcher has zero production callers.
+
+The following private type-state edge consumes both that complete Approval proof
+and the intact `BoundStorageProvenKeyAgent`. It obtains a fresh,
+non-inheritable duplicate of the same already held running Key Agent process
+object with exactly `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it neither
+accepts nor reopens a PID. Pre/post checks cover the resident process, storage,
+root-Job membership/limits, and permitted Key Agent root-Job topology. The opaque
+`ParentBoundReleaseApprovalSupervisor` preserves both full aggregates, exposes
+no constituent, identity, PID, path, raw handle, generic access mask, resource
+operation, or launch operation, and retains no newly allocated OS resource
+except that narrow handle. Its production binder has zero callers.
+
+This handle records only the intended logical parent proof source. It is not a
+`PROCESS_CREATE_PROCESS` capability, does not set
+`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and does not establish Windows process
+parentage, a security boundary, or runtime readiness. Release activation still
+needs a positive kernel proof that the actual zero-capability Approval LPAC can
+use the exact handle and query the parent token; token-DACL stronger-right and
+`PROCESS_DUP_HANDLE` denial tests; and proof that `SeDebugPrivilege` is absent.
+Mapped-image provenance, endpoint topology/exclusivity and cleanup, DLL graph,
+production orchestration, signing, and release activation remain unimplemented;
+both compiled policies remain `None`. A supervisor and hostile launcher running
+as the same unrestricted owner SID cannot be strongly separated by an ordinary
+process DACL: the owner can reacquire ACL-changing authority, and a caller
+retaining or reacquiring `PROCESS_DUP_HANDLE` can still target child-local proof
+handles. Release activation therefore requires a distinct supervisor principal
+(or an explicitly narrower threat model), protected process and thread DACLs
+supplied at creation, corresponding denial evidence, and the debug-privilege
+absence proof.
 
 The runtime-enabled Approval child has exactly two unique inherited stdio pipe
 objects. As its first Windows/CRT application operation, before binary-mode
@@ -416,10 +443,13 @@ release-path positive evidence covering case-sensitive directories and
 alternate path forms, live mapped exact-file-object proof, the complete
 DLL/dependency graph, immutable installation, a supervisor-held activation
 capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
-is no positive kernel availability test proving that the zero-capability
-Approval LPAC can complete `OpenProcessToken(parent)`, so this handle-first
-success path remains release-unproven. The repository has zero production
-orchestration callers composing `launch_approval_frontend`
+is no positive kernel availability test proving that the actual zero-capability
+Approval LPAC can use the new exact QLI-plus-synchronize Key Agent handle and
+complete `OpenProcessToken(parent)`. Token-DACL stronger-right and
+`PROCESS_DUP_HANDLE` negative tests and `SeDebugPrivilege` absence are also
+missing, so this handle-first success path remains release-unproven. The
+repository has zero production orchestration callers composing
+`launch_approval_frontend`
 through a verified response into signing and no positive signed-handshake E2E.
 `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default
 Approval builds still exit 78. No signed-artifact, topology, or release evidence

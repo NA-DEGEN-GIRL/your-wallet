@@ -132,11 +132,27 @@ handle. The legacy launch, pending response owner, and broad `LaunchedHelper`
 type are crate-private. `RestrictedLauncher::spawn` is crate-private too, and
 its only remaining call site is inside that dormant legacy launcher. The
 launcher has zero production callers.
-This preparation proves neither mapped-image identity nor a separately
-principaled supervisor with a protected creation-time process DACL. Exact Key
-Agent parent capability, endpoint topology/exclusivity, cleanup, DLL graph,
-production orchestration, signing, and both disabled compiled policies remain
-separate release blockers.
+
+A second dormant transition consumes that whole Approval preparation together
+with the intact `BoundStorageProvenKeyAgent`. It duplicates the same retained
+running Key Agent process object directly, without a PID reopen, into one fresh
+non-inheritable handle whose exact access mask is
+`PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`. The opaque
+`ParentBoundReleaseApprovalSupervisor` owns both complete proof aggregates and
+that narrow capability but exposes no constituent, PID, path, raw handle,
+desired-access selector, resource operation, or launch operation. It retains no
+new OS resource except the narrow duplicate, and its production binder has zero
+callers.
+
+This is only a logical parent proof source for a future protocol. It neither
+sets `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` nor chooses or proves Windows process
+parentage, and it is not a runtime-ready security boundary. Positive proof that
+the actual zero-capability Approval LPAC can use the exact handle and query the
+parent token, token-DACL stronger-right and `PROCESS_DUP_HANDLE` negatives,
+absence of `SeDebugPrivilege`, mapped-image and DLL/dependency provenance, a
+distinct supervisor principal, protected process and thread DACLs supplied at
+creation, endpoint topology/exclusivity and cleanup, production orchestration,
+signing, and both disabled compiled policies remain separate release blockers.
 
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
@@ -533,6 +549,22 @@ rollback-anchor, storage/AEAD-key, or protected-settings/lease authority.
 The journal validator performs no I/O and has no production key/checkpoint
 constructor, journal reader/writer backend, or caller. The adoption transition
 and both downstream dormant binding functions have zero production call sites.
+
+After the one-shot storage-startup join has produced the complete
+`BoundStorageProvenKeyAgent`, a private preparation may consume that aggregate
+without splitting it. Resident process, storage, root-Job membership, limits,
+and permitted Key Agent root-Job topology are revalidated before and after a
+direct duplicate of the already held process object. The only new retained
+resource is a fresh,
+non-inheritable process handle with exactly
+`PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; the transition accepts no PID
+or access mask, performs no PID reopen, and exposes no raw handle. Its aggregate
+then binds by ownership to the complete `PreparedReleaseApprovalSupervisor`.
+This type-state edge has no production caller and allocates no Approval process,
+thread, Job, endpoint, channel, attribute list, or launch state. In particular,
+the handle is a future logical parent-authentication proof source and is not the
+`PROCESS_CREATE_PROCESS` handle required by
+`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
 
 A separate dormant `open_existing_fixed_key_agent_storage_root` has zero
 production callers and produces only a root capability. Given an
