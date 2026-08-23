@@ -123,8 +123,27 @@ accounts, signing, and Key Agent access remain unrepresentable and unavailable.
 
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
-held-child identity, and one-shot transcript. The parent-side Secret Input API
-now owns an equivalent atomic launch: separate private request/response pipes,
+held-child identity, and one-shot transcript. Its `HANDLE_LIST` names exactly
+two child pipe objects: stdin and one response-pipe handle-table entry assigned
+as numerically equal stdout and stderr values.
+
+The runtime-enabled Approval child makes inspection and sealing of those two
+unique objects its first Windows/CRT application operation, before binary-mode
+conversion or protocol/UI work. It requires stdin to differ from stdout,
+requires numeric `stdout == stderr`, requires both objects to be exact `PIPE`s
+with preflags exactly `HANDLE_FLAG_INHERIT`, attempts both inherit-bit clears
+without rollback, and accepts only exact-zero readback for both. A repo-local
+child/grandchild kernel test makes a separate positive sentinel inheritable and
+uses `CompareObjectHandles` to prove that the sentinel, but neither original
+stdio object, reaches a broad-inheritance grandchild. The sequential clears are
+non-atomic and do not prevent later re-enabling or explicit duplication; the
+two-object negative is not exhaustive stray-handle enumeration or evidence for
+the exact signed artifact, intended topology, immutable installation,
+DLL/dependency identity, or release activation. Default Approval builds still
+exit 78 and `COMPILED_RELEASE_POLICY` remains `None`.
+
+The parent-side Secret Input API now owns an equivalent atomic launch: separate
+private request/response pipes,
 an explicit `HANDLE_LIST` containing only the child stdin and shared
 stdout/stderr pipe objects, canonical prompt transfer and request EOF, a concrete
 bounded response reader, and the held process/job. Once the child exists

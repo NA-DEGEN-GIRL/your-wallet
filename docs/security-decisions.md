@@ -297,6 +297,22 @@ checks, writes exactly one response only after those checks, fails closed on any
 input byte that arrives later, and retains its sealed handles and independently
 opened root until the parent request endpoint disconnects.
 
+The runtime-enabled Approval child has exactly two unique inherited stdio pipe
+objects. As its first Windows/CRT application operation, before binary-mode
+conversion, it requires stdin to differ from stdout, requires stdout and stderr
+to be the same numeric handle-table value, and requires both unique objects to
+be exact `PIPE`s with preflags exactly `HANDLE_FLAG_INHERIT`. It attempts both
+inherit-bit clears without rollback and accepts only exact-zero readback for
+both. A repo-local child/grandchild kernel test makes a separate positive
+sentinel inheritable and uses `CompareObjectHandles` to prove that the sentinel
+reaches a broad-inheritance grandchild while neither original exact stdio object
+does. The sequential clears are non-atomic and do not prevent later re-enabling
+or explicit duplication. This two-object negative is not exhaustive stray-
+handle enumeration or evidence for the exact signed artifact, intended
+supervisor topology, immutable installation, DLL/dependency identity, or
+release activation. Default Approval builds still exit 78 and
+`COMPILED_RELEASE_POLICY` remains `None`.
+
 The runtime-enabled Secret Input/recovery child instead has two unique stdio
 objects: stdin and one stdout/stderr pipe. Its first Windows/CRT application
 operation validates their exact shape and inherit-only flags, attempts to clear
@@ -351,10 +367,10 @@ Before any real mainnet value is used, the Windows build must prove:
    `CheckTokenMembershipEx` differential remains mandatory, and the local token
    proof does not replace these signed-artifact network tests.
 2. Exact inherited-handle allowlisting and negative tests for stray handles.
-   The Key Agent three-object negative and Secret Input/recovery four-object
-   negative prove only that those selected exact objects do not reach their
-   test grandchildren; neither is exhaustive enumeration proving that no stray
-   handle entered the child.
+   The Key Agent three-object, Approval two-object, and Secret Input/recovery
+   four-object negatives prove only that those selected exact objects do not
+   reach their test grandchildren; none is exhaustive enumeration proving that
+   no stray handle entered the child.
 3. Helper executable code-signing identity, manifest hash, version, and install
    ACL verification before launch without a writable-path time-of-check race,
    plus exact loaded DLL/dependency identity and resolution evidence.
@@ -372,8 +388,14 @@ Before any real mainnet value is used, the Windows build must prove:
    inherit bit on its exact three received stdio handles as its first Windows
    application operation, and its repo-local grandchild test proves those exact
    objects do not propagate. Release evidence must still bind that behavior to
-   the exact signed image and intended supervisor. The runtime-enabled Secret
-   Input/recovery child likewise seals its two unique stdio objects first,
+   the exact signed image and intended supervisor. The runtime-enabled Approval
+   child likewise seals its two unique pipe objects first, requires stdout and
+   stderr to be the same numeric handle value, and has a positive-sentinel
+   grandchild negative for those exact objects. Its sequential clears are not
+   atomic, do not prevent later re-enabling or explicit duplication, and are not
+   exhaustive enumeration or exact signed-artifact/topology evidence. The
+   runtime-enabled Secret Input/recovery child likewise seals its two unique
+   stdio objects first,
    accepts its two parent-proof handles only with exact-zero flags, validates
    all four exact objects as pairwise distinct, and has a repo-local grandchild
    negative for those objects. This is not atomic clearing, exhaustive stray-
@@ -418,8 +440,9 @@ Before any real mainnet value is used, the Windows build must prove:
 8. Signed-artifact end-to-end tests for the implemented one-shot helper channel,
    proving exact request hash, child identity, transcript, decision, digest,
    nonce, timeout/cancellation, extra-output rejection, and inherited-handle
-   enumeration through the real helper entry point. The repo-local Secret Input
-   four-object negative does not satisfy this exact-artifact enumeration.
+   enumeration through the real helper entry point. The repo-local Approval
+   two-object and Secret Input four-object negatives do not satisfy this exact-
+   artifact enumeration.
 9. Production wiring for the implemented sealed Key Agent settings lifecycle.
    The platform store now reserves a dedicated `LocalSettings` record class,
    and the private fixed-role adapter can open that class, but no production

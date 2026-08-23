@@ -9,8 +9,10 @@ Implemented:
 - random one-shot named-pipe capabilities, a protected current-logon-SID DACL,
   local-only/first-instance flags, and connected-client PID/session validation;
 - a role-checked approval launch API that creates separate private request and
-  response endpoints, inherits only their child ends, transfers the canonical
-  bounded v2 request, and consumes the held helper/job with an overlapped,
+  response endpoints and supplies an exact `HANDLE_LIST` with two child `PIPE`
+  objects: stdin plus one response-pipe handle-table entry used as the
+  numerically equal stdout and stderr values. It transfers the canonical bounded
+  v2 request and consumes the held helper/job with an overlapped,
   monotonic-deadline response reader. The reader cancels and drains pending I/O,
   requires the exact fixed response followed by EOF, and binds file identity,
   manifest, LPAC profile, process object, request digest/nonce, response bytes,
@@ -234,6 +236,23 @@ Implemented:
   on any input byte that arrives afterward, and retains its sealed stdio and
   child-opened root until the parent request endpoint disconnects;
 
+- an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
+  application operation, before binary-mode conversion, retrieves all three
+  numeric stdio values and requires exactly two distinct `PIPE` objects: stdin
+  differs from stdout, while stdout and stderr are the same numeric handle-table
+  value. Before mutation it requires both unique objects to have flags exactly
+  `HANDLE_FLAG_INHERIT`; it attempts both inherit-bit clears without rollback
+  and accepts only exact-zero readback for both. A repo-local child/grandchild
+  kernel test makes a separate positive sentinel inheritable and uses
+  `CompareObjectHandles` to prove that the sentinel reaches a broad-inheritance
+  grandchild while neither original exact stdio object does. The sequential
+  clears are non-atomic and do not prevent later inherit-bit re-enabling or
+  explicit duplication. This two-object negative is not exhaustive stray-handle
+  enumeration or evidence for the exact signed helper, intended supervisor
+  topology, immutable installation, DLL/dependency identity, or release
+  activation. Default `approval-ui` builds still exit 78 and
+  `COMPILED_RELEASE_POLICY` remains `None`;
+
 - an earliest runtime-enabled Secret Input/recovery child bootstrap. Its first
   Windows/CRT application operation requires stdin and the shared stdout/stderr
   entry to be two distinct exact `PIPE` objects with exact inherit-only flags,
@@ -346,7 +365,14 @@ Implemented:
   covers only cooperating calls through that runner type. The Key Agent child
   now does clear the inherit bit on its three received stdio handles before any
   later application operation, and the repo-local grandchild test supplies an
-  exact-object negative for that boundary. The runtime-enabled Secret Input/
+  exact-object negative for that boundary. The runtime-enabled Approval child
+  likewise seals its two unique pipe objects as its first Windows/CRT
+  application operation, requires numeric stdout/stderr aliasing, exact
+  inherit-only preflags and zero readback, and has a positive-sentinel
+  grandchild negative for those objects. That sequential clear is not atomic,
+  does not prevent later re-enabling or explicit duplication, and is not
+  exhaustive enumeration or exact signed-artifact/topology evidence. The
+  runtime-enabled Secret Input/
   recovery child likewise seals its two unique stdio objects first, then
   validates those objects together with two separately injected non-inheritable
   parent proofs as one exact-zero, pairwise-distinct four-object set. Its repo-
@@ -367,7 +393,16 @@ Implemented:
   적용되며 임의의 FFI/표준 라이브러리 생성이나 다른 프로세스를 가로채지 않습니다.
   Key Agent 자식은 이제 첫 Windows application 동작에서 정확한 `PIPE`/`PIPE`/`CHAR`
   stdio 세 개를 사전검사하고 inherit bit를 모두 제거한 뒤 flags 0을 재검사하며,
-  grandchild exact-object 음성 테스트도 통과해야 합니다. runtime-enabled Secret Input/
+  grandchild exact-object 음성 테스트도 통과해야 합니다. runtime-enabled Approval
+  자식도 binary mode보다 앞선 첫 Windows/CRT application 동작에서 stdin과 stdout은
+  서로 다른 두 exact `PIPE` 객체이고 stdout과 stderr는 같은 숫자 handle 값인지
+  확인합니다. 두 unique 객체의 preflags가 정확히 `HANDLE_FLAG_INHERIT`인지 모두
+  사전검사하고 순차적으로 제거한 뒤 exact-zero readback을 요구합니다. 별도 inheritable
+  positive sentinel을 둔 grandchild 테스트는 sentinel이 전파되는 동안 원래 stdio 두
+  객체는 전파되지 않음을 `CompareObjectHandles`로 확인합니다. 이 순차 clear는
+  원자적이지 않고 이후 inherit-bit 재설정이나 explicit duplication을 막지 않으며,
+  exact-object 음성은 stray handle 전체 열거, exact signed artifact/topology 또는
+  릴리스 증거가 아닙니다. runtime-enabled Secret Input/
   recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
   inherit bit를 제거하고, suspended 상태에서 별도로 주입된 non-inheritable parent
   process/image proof와 합친 네 exact object가 pairwise-distinct이며 flags 0인지
@@ -441,7 +476,8 @@ Implemented:
   launch paths now have process-wide inheritable-handle coordination, but signed
   immutable installation, native-host provenance, cross-process supervisor
   topology/single-instance evidence, and artifact-bound execution of the
-  implemented child-side Key Agent and Secret Input/recovery de-inheritance
+  implemented child-side Key Agent, Approval, and Secret Input/recovery
+  de-inheritance
   remain STOP-SHIP.
 
 Stop-ship before any signing-capable release:
@@ -455,10 +491,13 @@ Stop-ship before any signing-capable release:
 3. Run an artifact-bound child-side enumeration test proving that no handle
    except the explicit list crosses the boundary. The repo-local Key Agent
    child/grandchild test already proves that its three sealed exact stdio objects
-   do not propagate. The Secret Input/recovery test likewise proves only that
+   do not propagate. The Approval test proves that its positive sentinel reaches
+   the broad-inheritance grandchild while its two sealed exact stdio objects do
+   not. The Secret Input/recovery test likewise proves only that
    its two sealed stdio and two non-inheritable parent-proof objects do not reach
-   one broad-inheritance grandchild. Neither exact-object negative is exhaustive
-   stray-handle enumeration or evidence for the exact signed artifacts.
+   one broad-inheritance grandchild. None of these exact-object negatives is
+   exhaustive stray-handle enumeration or evidence for the exact signed
+   artifacts.
 4. Exercise path/reparse/ACL tests under the release installer identity and
    secure installed ACLs, including environments where symlink creation is
    permitted. Supply separate exact-artifact DLL/dependency loading and identity
@@ -472,15 +511,21 @@ Stop-ship before any signing-capable release:
    provenance, prove the standalone supervisor's single-instance and exact
    process topology, exclude or mediate every foreign/uncoordinated inheriting
    creation path, and bind the implemented Key Agent first-operation stdio
-   sealing plus grandchild exact-object negative, and the corresponding Secret
-   Input/recovery four-object boundary, to their exact signed artifacts.
+   sealing plus grandchild exact-object negative, the corresponding Approval
+   two-object boundary, and the Secret Input/recovery four-object boundary, to
+   their exact signed artifacts.
    The in-crate coordinator and repo-local child test are not signed-install,
    provenance, cross-process topology, or release-activation proof.
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. Kernel-level pipe tests cover the
-   framing and cancellation primitives, but the intentionally disabled helper
-   binary and absent compiled release policy prevent that signed-artifact E2E.
+   framing and cancellation primitives, and the repo-local positive-sentinel
+   grandchild test supplies only a non-exhaustive two-object propagation
+   negative. Its sequential clears are non-atomic and do not prevent later
+   re-enabling or explicit duplication. That test is not evidence for the exact
+   signed helper or intended release topology; the intentionally disabled
+   helper binary and absent compiled release policy still prevent that signed-
+   artifact E2E.
 7. Connect the global registry model to independently reviewed, production
    non-rollbackable physical-counter and durable-slot backends (for example, a
    TPM-backed policy), derive and rotate its independent registry MAC key plus

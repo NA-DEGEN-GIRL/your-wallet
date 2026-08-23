@@ -594,6 +594,19 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
+- runtime-enabled Approval 자식도 binary mode보다 앞선 첫 Windows/CRT application
+  동작에서 세 숫자 stdio 값을 가져와 정확히 두 개의 서로 다른 `PIPE` 객체를
+  요구합니다. stdin과 stdout은 다르고, stdout과 stderr는 같은 숫자 handle 값이어야
+  합니다. 두 unique 객체의 preflags가 각각 정확히 `HANDLE_FLAG_INHERIT`인지 모두
+  변경 전에 확인하고, rollback 없이 두 inherit bit 제거를 모두 시도한 뒤 양쪽의
+  exact-zero readback을 요구합니다. 별도 inheritable positive sentinel을 둔 repo-local
+  child/grandchild 커널 테스트는 broad-inheritance grandchild에 sentinel은 도달하지만
+  원래의 두 exact stdio 객체는 도달하지 않음을 `CompareObjectHandles`로 확인합니다.
+  이 순차 clear는 원자적이지 않고 이후 inherit-bit 재설정이나 explicit duplication을
+  막지 않습니다. 이 two-object 음성은 stray handle 전체의 exhaustive enumeration,
+  exact signed helper/intended supervisor topology, immutable install, DLL/dependency identity
+  또는 release activation 증거가 아닙니다. default `approval-ui`는 계속 exit 78이며
+  `COMPILED_RELEASE_POLICY`도 계속 `None`입니다.
 - runtime-enabled Secret Input/recovery 자식도 첫 Windows/CRT application 동작에서
   stdin과 stdout=stderr인 두 unique `PIPE` 객체가 서로 다르고 flags가 정확히
   `HANDLE_FLAG_INHERIT`인지 먼저 검증한 뒤, 두 inherit bit를 모두 제거하고 exact-zero

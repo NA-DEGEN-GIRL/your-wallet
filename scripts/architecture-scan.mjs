@@ -4557,6 +4557,17 @@ for (const capability of [
   requireCustomRedactedDebug(vaultSession, capability);
 }
 
+const approvalMain = await text("crates/approval-ui/src/main.rs");
+const approvalBootstrap = await text("crates/approval-ui/src/bootstrap.rs");
+const approvalBootstrapWindows = await text(
+  "crates/approval-ui/src/bootstrap/windows.rs",
+);
+const approvalBootstrapWindowsProduction = withoutBottomTestModule(
+  approvalBootstrapWindows,
+);
+const approvalRuntimeContract = await text(
+  "crates/approval-ui/tests/runtime_contract.rs",
+);
 const secretInput = await text("crates/secret-input-ui/src/lib.rs");
 const recoveryProtocol = await text("crates/secret-input-ui/src/recovery.rs");
 const secretBootstrap = await text("crates/secret-input-ui/src/bootstrap.rs");
@@ -5143,7 +5154,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "2d7e27a59673ca05e1ae352078f1a0c55a56647dab9987a9ba9efa4af32d27a8";
+  "abd2ce8dfe1717de22ff16e9914a99f2e0554928f167f6260edd9dbb5900bfd9";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -5344,7 +5355,7 @@ const workspaceForeignBlocks = rustForeignBlockInventory(
 );
 const approvedWorkspaceForeignBlocks = [
   {
-    path: "crates/approval-ui/src/main.rs",
+    path: "crates/approval-ui/src/bootstrap/windows.rs",
     block:
       'unsafe extern "C" { fn _setmode(file_descriptor: i32, mode: i32) -> i32; }',
   },
@@ -7774,6 +7785,12 @@ const expectedDuplicateHandleInventory = [
   },
 ];
 const expectedSetHandleInformationInventory = [
+  {
+    path: "crates/approval-ui/src/bootstrap/windows.rs",
+    handle: "handle",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAGS(0)",
+  },
   {
     path: "crates/platform-windows/src/broker_supervisor.rs",
     handle: "handle",
@@ -19512,6 +19529,1046 @@ requireInvariant(
   "Key Agent fixed-LPAC proof and exact membership semantics must be documented without weakening storage, startup/topology, signed-install, or release-disabled STOP-SHIP claims",
 );
 
+const approvalRunOnce = rustTopLevelFunctionBlock(approvalMain, "run_once");
+const approvalRuntimeMainFirstOperationContract = (source) => {
+  const expected = `#[cfg(feature = "runtime-entrypoint")]
+fn main() {
+    let exit_code = match run_once() {
+        Ok(()) => 0,
+        Err(_) => RUNTIME_FAILURE,
+    };
+    std::process::exit(exit_code);
+}`;
+  return source.includes(expected) && source.indexOf(expected) === source.lastIndexOf(expected);
+};
+const approvalRuntimeMainFirstOperationMutationProbes = [
+  approvalMain.replace(
+    "fn main() {\n    let exit_code = match run_once() {",
+    "fn main() {\n    side_effect();\n    let exit_code = match run_once() {",
+  ),
+  approvalMain.replace("match run_once()", "match (side_effect(), run_once()).1"),
+];
+const approvalSealedStdioDefinition = rustTopLevelLexicalItemBlock(
+  approvalBootstrapWindowsProduction,
+  /struct\s+SealedApprovalStdio\s*\{/u,
+);
+const approvalSealInheritedStdio = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "seal_inherited_approval_stdio",
+);
+const approvalSealExactStdio = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "seal_exact_approval_stdio",
+);
+const approvalSetBinaryStdio = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "set_binary_stdio",
+);
+const approvalInvalidHandle = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "invalid_handle",
+);
+const approvalSameObject = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "same_object",
+);
+const approvalHandleFlags = rustTopLevelFunctionBlock(
+  approvalBootstrapWindowsProduction,
+  "handle_flags",
+);
+
+const approvalFirstOperationEnvelope = (source) => {
+  let runOnce;
+  try {
+    runOnce = rustTopLevelFunctionBlock(source, "run_once");
+  } catch {
+    return false;
+  }
+  const compact = compactRust(runOnce);
+  const opening = compact.indexOf("{");
+  return (
+    opening !== -1 &&
+    compact
+      .slice(opening + 1)
+      .startsWith(
+        "letsealed_stdio=bootstrap::seal_inherited_approval_stdio()?;bootstrap::set_binary_stdio(&sealed_stdio)?;",
+      ) &&
+    compact.includes(
+      "letresult=approval_ui::write_response(&mutwriter,response);drop(writer);drop(sealed_stdio);result}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "seal_inherited_approval_stdio").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "set_binary_stdio").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&sealed_stdio"]]) &&
+    JSON.stringify(
+      rustCallSites(runOnce, "drop").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["reader"],
+        ["writer"],
+        ["sealed_stdio"],
+      ])
+  );
+};
+const approvalFirstOperationMutationProbes = [
+  approvalMain.replace(
+    "    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
+    "    side_effect();\n    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
+  ),
+  approvalMain.replace(
+    "    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;\n    bootstrap::set_binary_stdio(&sealed_stdio)?;",
+    "    bootstrap::set_binary_stdio(&sealed_stdio)?;\n    let sealed_stdio = bootstrap::seal_inherited_approval_stdio()?;",
+  ),
+  approvalMain.replace(
+    "bootstrap::seal_inherited_approval_stdio()?",
+    "(bootstrap::seal_inherited_approval_stdio()?, side_effect()).0",
+  ),
+  approvalMain.replace(
+    "bootstrap::set_binary_stdio(&sealed_stdio)?",
+    "bootstrap::set_binary_stdio(side_effect(&sealed_stdio))?",
+  ),
+  approvalMain.replace(
+    "    let result = approval_ui::write_response(&mut writer, response);",
+    "    drop(sealed_stdio);\n    let result = approval_ui::write_response(&mut writer, response);",
+  ),
+];
+
+const approvalSealInheritedContract = (source) => {
+  const compact = compactRust(source);
+  const opening = compact.indexOf("{");
+  return (
+    opening !== -1 &&
+    compact
+      .slice(opening + 1)
+      .startsWith(
+        "letinput=unsafe{GetStdHandle(STD_INPUT_HANDLE)}.map_err(native_failure)?;letoutput=unsafe{GetStdHandle(STD_OUTPUT_HANDLE)}.map_err(native_failure)?;leterror=unsafe{GetStdHandle(STD_ERROR_HANDLE)}.map_err(native_failure)?;seal_exact_approval_stdio([input,output,error])?;",
+      ) &&
+    JSON.stringify(
+      rustCallSites(source, "GetStdHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["STD_INPUT_HANDLE"],
+        ["STD_OUTPUT_HANDLE"],
+        ["STD_ERROR_HANDLE"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(source, "seal_exact_approval_stdio").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["[input,output,error]"]]) &&
+    compact.includes(
+      "Ok(SealedApprovalStdio{input,output,_not_send_or_sync:PhantomData,})",
+    )
+  );
+};
+const approvalSealInheritedMutationProbes = [
+  approvalSealInheritedStdio.replace(
+    "    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) }",
+    "    side_effect();\n    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) }",
+  ),
+  approvalSealInheritedStdio.replace(
+    "    let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }",
+    "    side_effect();\n    let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }",
+  ),
+];
+
+const approvalSealExactContract = (source) => {
+  const compact = compactRust(source);
+  let clearLoop;
+  try {
+    clearLoop = rustLexicalItemBlockAtDepth(
+      source,
+      /(?:^|\n)\s*for\s+handle\s+in\s+unique\s*\{/u,
+      1,
+    );
+  } catch {
+    return false;
+  }
+  return (
+    orderedRustMarkersAtDepth(source, [
+      { marker: "let [input, output, error] = handles", depth: 1 },
+      { marker: "let unique = [input, output]", depth: 1 },
+      { marker: "handles.iter().copied().any(invalid_handle)", depth: 1 },
+      { marker: "input == output", depth: 1 },
+      { marker: "output != error", depth: 1 },
+      { marker: "same_object(input, output)", depth: 1 },
+      { marker: "!same_object(output, error)", depth: 1 },
+      { marker: "GetFileType(input)", depth: 2 },
+      { marker: "GetFileType(output)", depth: 2 },
+      { marker: "handle_flags(*handle)", depth: 2 },
+      { marker: "let mut clear_failed = false", depth: 1 },
+      { marker: "for handle in unique", depth: 1 },
+      {
+        marker:
+          "SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))",
+        depth: 3,
+      },
+      { marker: "clear_failed = true", depth: 3 },
+      { marker: "let exact_zero_flags = unique", depth: 1 },
+      { marker: "matches!(handle_flags(*handle), Ok(0))", depth: 1 },
+      { marker: "if clear_failed || !exact_zero_flags", depth: 1 },
+    ]) &&
+    JSON.stringify(
+      rustCallSites(source, "same_object").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input", "output"], ["output", "error"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "GetFileType").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["input"], ["output"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "SetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["handle", "HANDLE_FLAG_INHERIT.0", "HANDLE_FLAGS(0)"],
+      ]) &&
+    rustCallSites(source, "handle_flags").length === 2 &&
+    compact.includes(
+      "!matches!(handle_flags(*handle),Ok(flags)ifflags==HANDLE_FLAG_INHERIT.0)",
+    ) &&
+    compact.includes(
+      "ifunsafe{SetHandleInformation(handle,HANDLE_FLAG_INHERIT.0,HANDLE_FLAGS(0))}.is_err(){clear_failed=true;}",
+    ) &&
+    compactRust(clearLoop) ===
+      "forhandleinunique{ifunsafe{SetHandleInformation(handle,HANDLE_FLAG_INHERIT.0,HANDLE_FLAGS(0))}.is_err(){clear_failed=true;}}" &&
+    compact.includes(
+      "letexact_zero_flags=unique.iter().all(|handle|matches!(handle_flags(*handle),Ok(0)));ifclear_failed||!exact_zero_flags{returnErr(native_failure(()));}Ok(())",
+    )
+  );
+};
+const approvalSealExactMutationProbes = [
+  approvalSealExactStdio.replace("        || output != error", "        || false"),
+  approvalSealExactStdio.replace(
+    "unsafe { GetFileType(output) } != FILE_TYPE_PIPE",
+    "unsafe { GetFileType(input) } != FILE_TYPE_PIPE",
+  ),
+  approvalSealExactStdio.replace(
+    "flags == HANDLE_FLAG_INHERIT.0",
+    "flags & HANDLE_FLAG_INHERIT.0 != 0",
+  ),
+  approvalSealExactStdio.replace("for handle in unique", "for handle in [unique[0]]"),
+  approvalSealExactStdio.replace(
+    "let exact_zero_flags = unique",
+    "let exact_zero_flags = [input]",
+  ),
+  approvalSealExactStdio.replace(
+    "if clear_failed || !exact_zero_flags",
+    "if clear_failed && !exact_zero_flags",
+  ),
+  approvalSealExactStdio.replace(
+    "            clear_failed = true;\n        }\n    }\n    let exact_zero_flags",
+    "            clear_failed = true;\n        }\n        break;\n    }\n    let exact_zero_flags",
+  ),
+  approvalSealExactStdio.replace(
+    "    for handle in unique {",
+    "    for handle in unique {\n        if handle == unique[0] { return Ok(()); }",
+  ),
+];
+
+const approvalSetBinaryContract = (source) => {
+  const compact = compactRust(source);
+  return (
+    /^pub\(crate\)\s+fn\s+set_binary_stdio\s*\(\s*sealed\s*:\s*&SealedApprovalStdio\s*,?\s*\)\s*->\s*Result<\(\),\s*approval_ui::ApprovalError>\s*\{/u.test(
+      rustLexicalCode(source),
+    ) &&
+    JSON.stringify(
+      rustCallSites(source, "handle_flags").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["sealed.input"], ["sealed.output"]]) &&
+    JSON.stringify(
+      rustCallSites(source, "_setmode").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["file_descriptor:i32", "mode:i32"],
+        ["0", "O_BINARY"],
+        ["1", "O_BINARY"],
+      ]) &&
+    compact.includes(
+      "letinput_still_sealed=matches!(handle_flags(sealed.input),Ok(0));letoutput_still_sealed=matches!(handle_flags(sealed.output),Ok(0));if!input_still_sealed||!output_still_sealed{returnErr(native_failure(()));}",
+    ) &&
+    compact.indexOf("handle_flags(sealed.output)") < compact.indexOf("_setmode(0,O_BINARY)")
+  );
+};
+const approvalSetBinaryMutationProbes = [
+  approvalSetBinaryStdio.replace(
+    "sealed: &SealedApprovalStdio",
+    "_sealed: &SealedApprovalStdio",
+  ).replace("sealed.input", "GetStdHandle(STD_INPUT_HANDLE)?"),
+  approvalSetBinaryStdio.replace(
+    "    let input_still_sealed",
+    "    let _early_mode = unsafe { _setmode(0, O_BINARY) };\n    let input_still_sealed",
+  ),
+  approvalSetBinaryStdio.replace(
+    "if !input_still_sealed || !output_still_sealed",
+    "if false",
+  ),
+  approvalSetBinaryStdio.replace("_setmode(1, O_BINARY)", "_setmode(2, O_BINARY)"),
+];
+
+const approvalTestsModule = rustLexicalItemBlockAtDepth(
+  approvalBootstrapWindows,
+  /(?:^|\n)\s*mod\s+tests\s*\{/u,
+  0,
+);
+const approvalFixtureConstantItems = {
+  child: normalizeRustFragment(
+    rustConstItemAtDepth(approvalBootstrapWindows, "CHILD_FIXTURE", 1),
+  ),
+  grandchild: normalizeRustFragment(
+    rustConstItemAtDepth(approvalBootstrapWindows, "GRANDCHILD_FIXTURE", 1),
+  ),
+  challenge: normalizeRustFragment(
+    rustConstItemAtDepth(approvalBootstrapWindows, "CHALLENGE", 1),
+  ),
+  acknowledgement: normalizeRustFragment(
+    rustConstItemAtDepth(approvalBootstrapWindows, "ACKNOWLEDGEMENT", 1),
+  ),
+  waitMilliseconds: normalizeRustFragment(
+    rustConstItemAtDepth(
+      approvalBootstrapWindows,
+      "PROCESS_WAIT_MILLISECONDS",
+      1,
+    ),
+  ),
+};
+const approvedApprovalFixtureConstantItems = {
+  child:
+    'const CHILD_FIXTURE: &str = "bootstrap::windows::tests::inherited_approval_stdio_child_fixture";',
+  grandchild:
+    'const GRANDCHILD_FIXTURE: &str = "bootstrap::windows::tests::approval_deinheritance_grandchild_fixture";',
+  challenge: 'const CHALLENGE: &[u8] = b"approval-two-handle-challenge";',
+  acknowledgement:
+    'const ACKNOWLEDGEMENT: &[u8] = b"approval-two-handles-sealed";',
+  waitMilliseconds: "const PROCESS_WAIT_MILLISECONDS: u32 = 25_000;",
+};
+
+const approvalFixtureAttributeContract = (source) =>
+  JSON.stringify({
+    success: rustFunctionOuterAttributesAtDepth(
+      source,
+      "exact_approval_stdio_set_seals_two_unique_objects_without_closing_them",
+      1,
+    ),
+    rejection: rustFunctionOuterAttributesAtDepth(
+      source,
+      "invalid_alias_type_or_flags_are_rejected_before_mutation",
+      1,
+    ),
+    linearity: rustFunctionOuterAttributesAtDepth(
+      source,
+      "sealed_approval_stdio_is_thread_bound_non_clone_and_non_copy",
+      1,
+    ),
+    driver: rustFunctionOuterAttributesAtDepth(
+      source,
+      "inherited_approval_stdio_is_sealed_before_descendant_creation",
+      1,
+    ),
+    child: rustFunctionOuterAttributesAtDepth(
+      source,
+      "inherited_approval_stdio_child_fixture",
+      1,
+    ),
+    grandchild: rustFunctionOuterAttributesAtDepth(
+      source,
+      "approval_deinheritance_grandchild_fixture",
+      1,
+    ),
+  }) ===
+  JSON.stringify({
+    success: ["#[test]"],
+    rejection: ["#[test]"],
+    linearity: ["#[test]"],
+    driver: ["#[test]"],
+    child: [
+      "#[test]",
+      '#[ignore = "launched only by the isolated Approval handle driver"]',
+    ],
+    grandchild: [
+      "#[test]",
+      '#[ignore = "launched only as the Approval deinheritance grandchild probe"]',
+    ],
+  });
+
+const approvalFixtureContract = (source) => {
+  let success;
+  let rejection;
+  let linearity;
+  let driver;
+  let child;
+  let grandchild;
+  let broadImpl;
+  let broadSpawn;
+  let objectProbe;
+  let waitForSuccess;
+  let terminateAndReap;
+  try {
+    success = rustFunctionBlockAtDepth(
+      source,
+      "exact_approval_stdio_set_seals_two_unique_objects_without_closing_them",
+      1,
+    );
+    rejection = rustFunctionBlockAtDepth(
+      source,
+      "invalid_alias_type_or_flags_are_rejected_before_mutation",
+      1,
+    );
+    linearity = rustFunctionBlockAtDepth(
+      source,
+      "sealed_approval_stdio_is_thread_bound_non_clone_and_non_copy",
+      1,
+    );
+    driver = rustFunctionBlockAtDepth(
+      source,
+      "inherited_approval_stdio_is_sealed_before_descendant_creation",
+      1,
+    );
+    child = rustFunctionBlockAtDepth(
+      source,
+      "inherited_approval_stdio_child_fixture",
+      1,
+    );
+    grandchild = rustFunctionBlockAtDepth(
+      source,
+      "approval_deinheritance_grandchild_fixture",
+      1,
+    );
+    broadImpl = rustImplItemAtDepth(source, "impl BroadInheritanceGrandchild", 1);
+    broadSpawn = rustFunctionBlockAtDepth(broadImpl, "spawn", 1);
+    objectProbe = rustFunctionBlockAtDepth(broadImpl, "names_same_object", 1);
+    waitForSuccess = rustFunctionBlockAtDepth(source, "wait_for_success", 2);
+    terminateAndReap = rustFunctionBlockAtDepth(source, "terminate_and_reap", 2);
+  } catch {
+    return false;
+  }
+  const driverOrder = orderedRustMarkersAtDepth(driver, [
+    { marker: "let _inheritance_guard = INHERITANCE_TEST_LOCK", depth: 1 },
+    {
+      marker: "TemporaryInheritFlags::set([child_input_raw, child_output_raw])",
+      depth: 1,
+    },
+    { marker: "CreateProcessW(", depth: 2 },
+    { marker: "drop(temporary_inherit)", depth: 1 },
+    {
+      marker: "let (process, thread) = owned_process_information(information)?",
+      depth: 1,
+    },
+    { marker: "let child = ReapedTestProcess { process }", depth: 1 },
+    { marker: "handle_flags(child_input_raw)", depth: 1 },
+    { marker: "handle_flags(child_output_raw)", depth: 1 },
+    { marker: "drop(child_input)", depth: 1 },
+    { marker: "drop(child_output)", depth: 1 },
+    { marker: "parent_writer.write_all(CHALLENGE)", depth: 1 },
+    { marker: "ResumeThread(raw(&thread))", depth: 2 },
+    { marker: "child.wait_for_success()", depth: 1 },
+    { marker: "window == ACKNOWLEDGEMENT", depth: 1 },
+  ]);
+  const childOrder = orderedRustMarkersAtDepth(child, [
+    { marker: "let sealed = seal_inherited_approval_stdio()?", depth: 1 },
+    { marker: "set_binary_stdio(&sealed)?", depth: 1 },
+    { marker: "handle_flags(sealed.input)", depth: 1 },
+    { marker: "handle_flags(sealed.output)", depth: 1 },
+    {
+      marker:
+        ".take(u64::try_from(CHALLENGE.len()).map_err(super::native_failure)? + 1)",
+      depth: 1,
+    },
+    { marker: ".read_to_end(&mut request)?", depth: 1 },
+    { marker: "if request.as_slice() != CHALLENGE", depth: 1 },
+    {
+      marker: "TemporaryInheritFlags::set([sentinel_raw])",
+      depth: 1,
+    },
+    { marker: "BroadInheritanceGrandchild::spawn(&executable)?", depth: 1 },
+    { marker: "drop(sentinel_inherit)", depth: 1 },
+    { marker: "handle_flags(sentinel_raw)", depth: 1 },
+    { marker: "assert!(grandchild.child.is_alive())", depth: 1 },
+    {
+      marker: "assert!(grandchild.names_same_object(sentinel_raw, sentinel_raw)?)",
+      depth: 1,
+    },
+    {
+      marker: "assert!(!grandchild.names_same_object(sealed.input, sealed.input)?)",
+      depth: 1,
+    },
+    {
+      marker: "assert!(!grandchild.names_same_object(sealed.output, sealed.output)?)",
+      depth: 1,
+    },
+    { marker: "grandchild.child.terminate_and_reap()?", depth: 1 },
+    { marker: "std::io::stdout().write_all(ACKNOWLEDGEMENT)?", depth: 1 },
+    { marker: "drop(sealed)", depth: 1 },
+  ]);
+  const driverCompact = compactRust(driver);
+  return (
+    approvalFixtureAttributeContract(source) &&
+    rustLexicalCode(success).includes(
+      "seal_exact_approval_stdio([input, output, output])?",
+    ) &&
+    rustLexicalCode(success).includes(
+      "seal_exact_approval_stdio([input, output, output]).is_err()",
+    ) &&
+    [
+      "seal_exact_approval_stdio([input, input, output]).is_err()",
+      "seal_exact_approval_stdio([input, output, distinct_error]).is_err()",
+      "seal_exact_approval_stdio([HANDLE::default(), output, output]).is_err()",
+      "seal_exact_approval_stdio([input, output, raw(&output_alias)]).is_err()",
+      "seal_exact_approval_stdio([raw(&input_alias), output, output]).is_err()",
+      "seal_exact_approval_stdio([raw(&event), output, output]).is_err()",
+    ].every((marker) => rustLexicalCode(rejection).includes(marker)) &&
+    compactRust(linearity) ===
+      "fnsealed_approval_stdio_is_thread_bound_non_clone_and_non_copy(){let_=<SealedApprovalStdioasAmbiguousIfSend<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfSync<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfClone<_>>::marker;let_=<SealedApprovalStdioasAmbiguousIfCopy<_>>::marker;}" &&
+    driverOrder &&
+    childOrder &&
+    driverCompact.includes(
+      "dwFlags:STARTF_USESTDHANDLES,hStdInput:child_input_raw,hStdOutput:child_output_raw,hStdError:child_output_raw,..Default::default()",
+    ) &&
+    JSON.stringify(
+      rustCallSites(driver, "CreateProcessW").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "PCWSTR(application.as_ptr())",
+          "Some(PWSTR(command.as_mut_ptr()))",
+          "None",
+          "None",
+          "true",
+          "CREATE_SUSPENDED|CREATE_NO_WINDOW",
+          "None",
+          "PCWSTR::null()",
+          "&rawconststartup",
+          "&rawmutinformation",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(broadSpawn, "CreateProcessW").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "PCWSTR(application.as_ptr())",
+          "Some(PWSTR(command.as_mut_ptr()))",
+          "None",
+          "None",
+          "true",
+          "CREATE_NO_WINDOW",
+          "None",
+          "PCWSTR::null()",
+          "&rawconststartup",
+          "&rawmutinformation",
+        ],
+      ]) &&
+    rustLexicalCode(broadSpawn).includes("let startup = STARTUPINFOW") &&
+    !/STARTUPINFOEXW|PROC_THREAD_ATTRIBUTE_HANDLE_LIST|EXTENDED_STARTUPINFO_PRESENT/u.test(
+      rustLexicalCode(broadSpawn),
+    ) &&
+    JSON.stringify(
+      rustCallSites(objectProbe, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "raw(&self.child.process)",
+          "candidate",
+          "GetCurrentProcess()",
+          "&rawmutduplicate",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    compactRust(objectProbe).includes(
+      "Ok(super::same_object(raw(&duplicate),expected))",
+    ) &&
+    JSON.stringify(
+      rustCallSites(waitForSuccess, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["raw(&self.process)", "PROCESS_WAIT_MILLISECONDS"]]) &&
+    compactRust(waitForSuccess).includes("ifstate!=WAIT_OBJECT_0{") &&
+    JSON.stringify(
+      rustCallSites(terminateAndReap, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "0"], ["process", "5_000"]]) &&
+    JSON.stringify(
+      rustCallSites(terminateAndReap, "TerminateProcess").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "1"]]) &&
+    rustLexicalCode(grandchild).includes(
+      "std::thread::sleep(std::time::Duration::from_secs(15))",
+    )
+  );
+};
+const approvalFixtureMutationProbes = [
+  approvalBootstrapWindows.replace(
+    "    #[test]\n    fn inherited_approval_stdio_is_sealed_before_descendant_creation",
+    "    #[test]\n    #[ignore]\n    fn inherited_approval_stdio_is_sealed_before_descendant_creation",
+  ),
+  approvalBootstrapWindows.replace(
+    "        seal_exact_approval_stdio([input, output, output])?;",
+    "        bypass_seal()?;",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert!(grandchild.names_same_object(sentinel_raw, sentinel_raw)?);",
+    "        assert!(true);",
+  ),
+  approvalBootstrapWindows.replace(
+    "        assert!(!grandchild.names_same_object(sealed.input, sealed.input)?);",
+    "        assert!(true);",
+  ),
+  approvalBootstrapWindows.replace(
+    "            Ok(super::same_object(raw(&duplicate), expected))",
+    "            Ok(candidate == expected)",
+  ),
+  approvalBootstrapWindows.replace(
+    "            hStdError: child_output_raw,",
+    "            hStdError: child_input_raw,",
+  ),
+  approvalBootstrapWindows.replace(
+    "                true,\n                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+    "                false,\n                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+  ),
+  approvalBootstrapWindows.replace(
+    "                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+    "                CREATE_NO_WINDOW,",
+  ),
+  approvalBootstrapWindows.replace(
+    "        let _inheritance_guard = INHERITANCE_TEST_LOCK\n            .lock()\n            .map_err(super::native_failure)?;\n",
+    "",
+  ),
+  approvalBootstrapWindows.replace("        drop(child_output);\n", ""),
+  approvalBootstrapWindows.replace(
+    "WaitForSingleObject(raw(&self.process), PROCESS_WAIT_MILLISECONDS)",
+    "WaitForSingleObject(raw(&self.process), u32::MAX)",
+  ),
+];
+
+const approvalTestsModuleAttributeContract = (source) =>
+  JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "tests", 0)) ===
+  JSON.stringify(["#[cfg(test)]"]);
+const approvalTestsModuleAttributeMutationProbes = [
+  approvalBootstrapWindows.replace(
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(any())]\n#[cfg(test)]\nmod tests {",
+  ),
+  approvalBootstrapWindows.replace(
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(all(test, any()))]\nmod tests {",
+  ),
+];
+const approvalHandleApis = [
+  "CompareObjectHandles",
+  "CreateEventW",
+  "CreateProcessW",
+  "DuplicateHandle",
+  "GetFileType",
+  "GetHandleInformation",
+  "GetStdHandle",
+  "ResumeThread",
+  "SetHandleInformation",
+];
+const approvalHandleApiUsage = rustIdentifierUsageInventory(
+  [
+    {
+      path: "crates/approval-ui/src/bootstrap/windows.rs",
+      source: approvalBootstrapWindows,
+    },
+  ],
+  approvalHandleApis,
+);
+
+requireInvariant(
+  approvalMain.includes('#[cfg(feature = "runtime-entrypoint")]\nmod bootstrap;') &&
+    approvalBootstrap.includes(
+      "pub(super) use windows::{seal_inherited_approval_stdio, set_binary_stdio};",
+    ) &&
+    /^pub\(super\)\s+fn\s+set_binary_stdio\s*\(\s*_sealed\s*:\s*&SealedApprovalStdio\s*,?\s*\)\s*->\s*Result<\(\),\s*approval_ui::ApprovalError>\s*\{/mu.test(
+      rustLexicalCode(approvalBootstrap),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(approvalSealedStdioDefinition)) ===
+      "struct SealedApprovalStdio { input: HANDLE, output: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    /#\s*\[\s*must_use\s*=/u.test(
+      rustLexicalCode(approvalBootstrapWindowsProduction),
+    ) &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*pub\(crate\)\s+struct\s+SealedApprovalStdio\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\bSealedApprovalStdio\b/u.test(
+      rustLexicalCode(approvalBootstrapWindowsProduction),
+    ) &&
+    approvalRuntimeMainFirstOperationContract(approvalMain) &&
+    approvalRuntimeMainFirstOperationMutationProbes.every(
+      (probe) =>
+        probe !== approvalMain &&
+        !approvalRuntimeMainFirstOperationContract(probe),
+    ) &&
+    approvalFirstOperationEnvelope(approvalMain) &&
+    approvalFirstOperationMutationProbes.every(
+      (probe) => probe !== approvalMain && !approvalFirstOperationEnvelope(probe),
+    ) &&
+    approvalSealInheritedContract(approvalSealInheritedStdio) &&
+    approvalSealInheritedMutationProbes.every(
+      (probe) =>
+        probe !== approvalSealInheritedStdio &&
+        !approvalSealInheritedContract(probe),
+    ) &&
+    approvalSealExactContract(approvalSealExactStdio) &&
+    approvalSealExactMutationProbes.every(
+      (probe) => probe !== approvalSealExactStdio && !approvalSealExactContract(probe),
+    ) &&
+    approvalSetBinaryContract(approvalSetBinaryStdio) &&
+    approvalSetBinaryMutationProbes.every(
+      (probe) => probe !== approvalSetBinaryStdio && !approvalSetBinaryContract(probe),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(approvalInvalidHandle)) ===
+      "fn invalid_handle(handle: HANDLE) -> bool { handle.is_invalid() || handle == INVALID_HANDLE_VALUE }" &&
+    JSON.stringify(
+      rustCallSites(approvalSameObject, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["first", "second"]]) &&
+    rustLexicalCode(approvalHandleFlags).includes("let mut flags = u32::MAX") &&
+    JSON.stringify(
+      rustCallSites(approvalHandleFlags, "GetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutflags"]]) &&
+    approvalHandleApiUsage.aliases.length === 0 &&
+    approvalHandleApiUsage.qualified.length === 0 &&
+    approvalHandleApiUsage.references.length === 0,
+  "Approval must consume a linear sealed stdio proof as its first application operation, validate the exact two-PIPE shared-output topology, attempt both no-rollback inherit clears, require exact-zero readback, and enter binary mode only through that proof",
+);
+requireInvariant(
+  approvalTestsModule.length > 0 &&
+    approvalTestsModuleAttributeContract(approvalBootstrapWindows) &&
+    approvalTestsModuleAttributeMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrapWindows &&
+        !approvalTestsModuleAttributeContract(probe),
+    ) &&
+    JSON.stringify(approvalFixtureConstantItems) ===
+      JSON.stringify(approvedApprovalFixtureConstantItems) &&
+    approvalFixtureContract(approvalBootstrapWindows) &&
+    approvalFixtureMutationProbes.every(
+      (probe) =>
+        probe !== approvalBootstrapWindows && !approvalFixtureContract(probe),
+    ) &&
+    rustCallSites(approvalBootstrapWindowsProduction, "CreateProcessW").length === 0 &&
+    rustCallSites(approvalBootstrapWindows, "CreateProcessW").length === 2,
+  "the active Approval driver and exact ignored child/grandchild fixtures must prove a positive inheritable sentinel crosses while both sealed exact stdio objects do not",
+);
+
+const approvalRuntimeWindowsLauncherContract = (source) => {
+  let run;
+  let setInherit;
+  let requireZeroFlags;
+  let oversized;
+  let waitForExit;
+  let terminateAndReap;
+  try {
+    run = rustFunctionBlockAtDepth(source, "run", 1);
+    setInherit = rustFunctionBlockAtDepth(source, "set_inherit", 1);
+    requireZeroFlags = rustFunctionBlockAtDepth(source, "require_zero_flags", 1);
+    waitForExit = rustFunctionBlockAtDepth(source, "wait_for_exit", 2);
+    terminateAndReap = rustFunctionBlockAtDepth(source, "terminate_and_reap", 2);
+    oversized = rustTopLevelFunctionBlock(
+      source,
+      "oversized_request_fails_without_output_or_pipe_deadlock",
+    );
+  } catch {
+    return false;
+  }
+  const compact = compactRust(run);
+  return (
+    JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "windows_child", 0)) ===
+      JSON.stringify(["#[cfg(windows)]"]) &&
+    normalizeRustFragment(
+      rustConstItemAtDepth(source, "PROCESS_WAIT_MILLISECONDS", 1),
+    ) === "const PROCESS_WAIT_MILLISECONDS: u32 = 10_000;" &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        source,
+        "oversized_request_fails_without_output_or_pipe_deadlock",
+        0,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    compact.includes(
+      "dwFlags:STARTF_USESTDHANDLES,hStdInput:child_input_raw,hStdOutput:child_output_raw,hStdError:child_output_raw,..Default::default()",
+    ) &&
+    JSON.stringify(
+      rustCallSites(run, "TemporaryInheritFlags::set").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["[child_input_raw,child_output_raw]"]]) &&
+    JSON.stringify(
+      rustCallSites(run, "CreateProcessW").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "PCWSTR(application.as_ptr())",
+          "Some(PWSTR(command.as_mut_ptr()))",
+          "None",
+          "None",
+          "true",
+          "CREATE_SUSPENDED|CREATE_NO_WINDOW",
+          "None",
+          "PCWSTR::null()",
+          "&rawconststartup",
+          "&rawmutinformation",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(run, "require_zero_flags").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["child_input_raw"], ["child_output_raw"]]) &&
+    JSON.stringify(
+      rustCallSites(run, "ResumeThread").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["raw(&thread)"]]) &&
+    compact.includes("ifunsafe{ResumeThread(raw(&thread))}!=1{") &&
+    orderedRustMarkersAtDepth(run, [
+      { marker: "let _inheritance_guard = INHERITANCE_TEST_LOCK", depth: 1 },
+      {
+        marker: "TemporaryInheritFlags::set([child_input_raw, child_output_raw])",
+        depth: 1,
+      },
+      { marker: "CreateProcessW(", depth: 2 },
+      { marker: "drop(temporary_inherit)", depth: 1 },
+      {
+        marker: "let (process, thread) = owned_process_information(information)?",
+        depth: 1,
+      },
+      { marker: "let child = ReapedProcess { process }", depth: 1 },
+      { marker: "require_zero_flags(child_input_raw)?", depth: 1 },
+      { marker: "require_zero_flags(child_output_raw)?", depth: 1 },
+      { marker: "drop(child_input)", depth: 1 },
+      { marker: "drop(child_output)", depth: 1 },
+      { marker: "ResumeThread(raw(&thread))", depth: 2 },
+      { marker: "drop(thread)", depth: 1 },
+      { marker: ".write_all(input)", depth: 1 },
+      { marker: "drop(parent_writer)", depth: 1 },
+      { marker: "child.wait_for_exit()?", depth: 1 },
+      { marker: ".read_to_end(&mut stdout)", depth: 1 },
+      { marker: "stderr: Vec::new()", depth: 2 },
+    ]) &&
+    JSON.stringify(
+      rustCallSites(setInherit, "SetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "HANDLE_FLAG_INHERIT.0", "flags"]]) &&
+    JSON.stringify(
+      rustCallSites(requireZeroFlags, "GetHandleInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&rawmutflags"]]) &&
+    compactRust(requireZeroFlags).includes("(flags==0).then_some(())") &&
+    JSON.stringify(
+      rustCallSites(waitForExit, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["raw(&self.process)", "PROCESS_WAIT_MILLISECONDS"]]) &&
+    compactRust(waitForExit).includes("ifstate!=WAIT_OBJECT_0{") &&
+    JSON.stringify(
+      rustCallSites(terminateAndReap, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "0"], ["process", "5_000"]]) &&
+    JSON.stringify(
+      rustCallSites(terminateAndReap, "TerminateProcess").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "1"]]) &&
+    rustLexicalCode(oversized).includes("approval_ui::MAX_REQUEST_BYTES") &&
+    rustLexicalCode(oversized).includes(".checked_add(1)") &&
+    rustLexicalCode(oversized).includes("run_child(&vec![0_u8; oversized_len])?") &&
+    rustLexicalCode(oversized).includes("assert!(!output.succeeded)") &&
+    rustLexicalCode(oversized).includes("assert!(output.stdout.is_empty())") &&
+    rustLexicalCode(oversized).includes("assert!(output.stderr.is_empty())") &&
+    rustCallSites(source, "CreateProcessW").length === 1
+  );
+};
+const approvalRuntimeWindowsLauncherMutationProbes = [
+  approvalRuntimeContract.replace(
+    "            hStdError: child_output_raw,",
+    "            hStdError: child_input_raw,",
+  ),
+  approvalRuntimeContract.replace(
+    "                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+    "                CREATE_NO_WINDOW,",
+  ),
+  approvalRuntimeContract.replace(
+    "                true,\n                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+    "                false,\n                CREATE_SUSPENDED | CREATE_NO_WINDOW,",
+  ),
+  approvalRuntimeContract.replace(
+    "        if unsafe { ResumeThread(raw(&thread)) } != 1 {",
+    "        if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {",
+  ),
+  approvalRuntimeContract.replace(
+    "        if unsafe { ResumeThread(raw(&thread)) } != 1 {\n            return Err(\"could not resume approval-ui exactly once\".to_owned());\n        }\n        drop(thread);\n\n        let mut parent_writer",
+    "        let mut parent_writer",
+  ),
+  approvalRuntimeContract.replace(
+    "    let output = run_child(&vec![0_u8; oversized_len])?;",
+    "    let output = run_child(&[])?;",
+  ),
+  approvalRuntimeContract.replace(
+    "        let _inheritance_guard = INHERITANCE_TEST_LOCK\n            .lock()\n            .map_err(|_| \"approval runtime inheritance lock was poisoned\".to_owned())?;\n",
+    "",
+  ),
+  approvalRuntimeContract.replace("        drop(child_output);\n", ""),
+  approvalRuntimeContract.replace(
+    "WaitForSingleObject(raw(&self.process), PROCESS_WAIT_MILLISECONDS)",
+    "WaitForSingleObject(raw(&self.process), u32::MAX)",
+  ),
+];
+requireInvariant(
+  approvalRuntimeWindowsLauncherContract(approvalRuntimeContract) &&
+    approvalRuntimeWindowsLauncherMutationProbes.every(
+      (probe) =>
+        probe !== approvalRuntimeContract &&
+        !approvalRuntimeWindowsLauncherContract(probe),
+    ),
+  "Approval runtime tests must launch the suspended Windows child with one shared stdout/stderr handle, clear and recheck both parent inherit flags, resume exactly once before writing, and cover oversized-input no-deadlock failure",
+);
+
+const approvalStdioDocumentationContract = (source) => {
+  return (
+    /runtime-enabled\s+Approval/iu.test(source) &&
+    /Windows\/CRT\s+application/iu.test(source) &&
+    /(?:exactly\s+two|two\s+unique|two-object|정확히\s*두)/iu.test(source) &&
+    /stdout/iu.test(source) &&
+    /stderr/iu.test(source) &&
+    /PIPE/u.test(source) &&
+    /HANDLE_FLAG_INHERIT/u.test(source) &&
+    /(?:without\s+|no-)?rollback/iu.test(source) &&
+    /exact-zero/iu.test(source) &&
+    /positive\s+sentinel/iu.test(source) &&
+    /CompareObjectHandles/u.test(source) &&
+    /(?:non-atomic|not\s+atomic|원자적이지)/iu.test(source) &&
+    /(?:re-enabl|inherit-bit)/iu.test(source) &&
+    /explicit\s+duplication/iu.test(source) &&
+    /exhaustive/iu.test(source) &&
+    /signed[ -](?:artifact|helper)/iu.test(source) &&
+    /(?:intended\s+(?:supervisor\s+)?topology|release\s+topology)/iu.test(
+      source,
+    ) &&
+    /release\s+(?:activation|evidence)/iu.test(source) &&
+    /COMPILED_RELEASE_POLICY[^\r\n]{0,160}(?:`None`|\bNone\b)/u.test(source) &&
+    /exit\s+78/iu.test(source)
+  );
+};
+const approvalBoundedDocumentationSection = (source, startMarker, endMarker) => {
+  const start = source.indexOf(startMarker);
+  if (start === -1 || start !== source.lastIndexOf(startMarker)) {
+    return "";
+  }
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end === -1 || end <= start) {
+    return "";
+  }
+  return source.slice(start, end);
+};
+const approvalStdioDocumentationSections = [
+  approvalBoundedDocumentationSection(
+    rootReadme,
+    "- runtime-enabled Approval 자식도",
+    "\n- runtime-enabled Secret Input/recovery 자식도",
+  ),
+  approvalBoundedDocumentationSection(
+    activationArchitecture,
+    "The runtime-enabled Approval child begins its Windows bootstrap",
+    "\nThe runtime-enabled Secret Input/recovery child begins its Windows bootstrap",
+  ),
+  approvalBoundedDocumentationSection(
+    keyAgentProtocolDocumentation,
+    "The runtime-enabled Approval child makes inspection and sealing",
+    "\nThe parent-side Secret Input API",
+  ),
+  approvalBoundedDocumentationSection(
+    securityDecisions,
+    "The runtime-enabled Approval child has exactly two unique inherited stdio pipe",
+    "\nThe runtime-enabled Secret Input/recovery child instead",
+  ),
+  approvalBoundedDocumentationSection(
+    activationReadme,
+    "- an earliest runtime-enabled Approval child bootstrap.",
+    "\n- an earliest runtime-enabled Secret Input/recovery child bootstrap.",
+  ),
+];
+const approvalStdioDocumentationMutationPatterns = [
+  /HANDLE_FLAG_INHERIT/u,
+  /exact-zero/iu,
+  /positive\s+sentinel/iu,
+  /CompareObjectHandles/u,
+  /(?:non-atomic|not\s+atomic|원자적이지)/iu,
+  /explicit\s+duplication/iu,
+  /exhaustive/iu,
+  /COMPILED_RELEASE_POLICY/u,
+  /exit\s+78/iu,
+];
+const approvalStdioDocumentationMutationProbes =
+  approvalStdioDocumentationSections.flatMap((source) =>
+    approvalStdioDocumentationMutationPatterns.map((pattern) => ({
+      original: source,
+      probe: source.replace(pattern, "REMOVED_APPROVAL_CONTRACT_MARKER"),
+    })),
+  );
+const approvalArchitectureOverviewRow =
+  /^\| Approval helper \|(?<row>[^\r\n]*)\|$/mu.exec(activationArchitecture)?.groups
+    ?.row ?? "";
+requireInvariant(
+  approvalStdioDocumentationSections.every(
+    (source) => source.length > 0 && approvalStdioDocumentationContract(source),
+  ) &&
+    approvalStdioDocumentationMutationProbes.every(
+      ({ original, probe }) =>
+        probe !== original && !approvalStdioDocumentationContract(probe),
+    ) &&
+    [
+      "exactly two inherited pipe objects",
+      "numerically equal stdout and stderr values",
+      "first Windows/CRT application operation",
+      "exact inherit-only preflags",
+      "no-rollback sequential clears",
+      "exact-zero readback",
+      "positive-sentinel grandchild negative",
+      "non-exhaustive",
+      "non-atomic",
+      "later re-enabling",
+      "explicit duplication",
+      "signed-artifact or release evidence",
+      "exit 78",
+    ].every((marker) => approvalArchitectureOverviewRow.includes(marker)),
+  "Approval stdio sealing must remain documented across overview, architecture, protocol, security, and platform surfaces with release-disabled and non-exhaustive/non-atomic proof caveats",
+);
+
 for (const mainPath of [
   "crates/broker/src/main.rs",
   "crates/key-agent/src/main.rs",
@@ -19532,7 +20589,10 @@ for (const helper of [
     readCall: "approval_ui::read_request",
     presentCall: "approval_ui::present",
     writeCall: "approval_ui::write_response",
-    binaryModeSource: "main",
+    binaryModeSource: "sealed-bootstrap",
+    bootstrapSource: approvalBootstrapWindowsProduction,
+    sealedStdioType: "SealedApprovalStdio",
+    binaryModeMainCall: "bootstrap::set_binary_stdio(&sealed_stdio)?",
   },
   {
     cratePath: "crates/secret-input-ui",
@@ -19540,6 +20600,9 @@ for (const helper of [
     presentCall: "secret_input_ui::present_authenticated",
     writeCall: "secret_input_ui::bootstrap::write_authenticated_outcome",
     binaryModeSource: "sealed-bootstrap",
+    bootstrapSource: secretBootstrapWindowsProduction,
+    sealedStdioType: "SealedSecretInputStdio",
+    binaryModeMainCall: null,
   },
 ]) {
   const manifest = await text(`${helper.cratePath}/Cargo.toml`);
@@ -19554,12 +20617,15 @@ for (const helper of [
       mainSource.includes(helper.readCall) &&
       mainSource.includes(helper.presentCall) &&
       mainSource.includes(helper.writeCall) &&
-      (helper.binaryModeSource === "main"
-        ? mainSource.includes("fn set_binary_stdio()")
-        : !mainSource.includes("set_binary_stdio") &&
-          secretBootstrapWindowsProduction.includes(
-            "fn set_binary_stdio(_sealed: &SealedSecretInputStdio)",
-          )) &&
+      helper.binaryModeSource === "sealed-bootstrap" &&
+      !mainSource.includes("fn set_binary_stdio") &&
+      new RegExp(
+        `fn\\s+set_binary_stdio\\s*\\(\\s*_?sealed\\s*:\\s*&${helper.sealedStdioType}\\s*,?\\s*\\)`,
+        "u",
+      ).test(rustLexicalCode(helper.bootstrapSource)) &&
+      (helper.binaryModeMainCall === null
+        ? !mainSource.includes("::set_binary_stdio(")
+        : mainSource.includes(helper.binaryModeMainCall)) &&
       mainSource.includes(
         '#[cfg(all(feature = "runtime-contract-test-hook", debug_assertions))]',
       ) &&
