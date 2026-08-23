@@ -7,9 +7,11 @@ security review.
 **Current release status: STOP-SHIP.** `broker` and default builds of
 `approval-ui` and `secret-input-ui` exit with code 78 immediately. A directly
 started `key-agent` also fails closed; only the private inherited startup shape
-can make it seal stdio, complete one storage-object proof, and wait for its
-supervisor endpoint to close before it exits 78. It exposes no runtime or signing
-protocol.
+can make it seal stdio, require exact request EOF, close startup stdin and detach
+the ambient stdout entry before root work, attempt one response, and enter an
+inert `Sleep(INFINITE)` loop under the supervisor's kill-on-close Job. Only the
+parent's deadline-bound exact response-plus-EOF observation completes the
+storage-object proof. The child exposes no runtime or signing protocol.
 `native-host` validates one bounded persistent stream, returns error 4900 for
 each valid request without reaching a Broker, then exits 78 on EOF or the first
 terminal error. The UI helpers have opt-in inherited-stream runtime
@@ -109,24 +111,41 @@ The parent writes a fixed request while the exact child is still suspended; it
 contains a fresh nonce, the held PID and process creation `FILETIME`, the full
 volume-serial/128-bit root identity, and only the compiled production leaf or
 exact `cfg(test)` leaf grammar. Only then does the consuming transition release
-the sole verified suspend count. After reading the exact 188-byte request, the
-child immediately uses `PeekNamedPipe` to reject any already-buffered suffix. It
-then resolves the leaf beneath the exact OS-rerouted `LOCALAPPDATA`, derives
+the sole verified suspend count; the consumed parent writer closes after the
+exact request, so the child must read both the fixed 188-byte frame and EOF
+before decoding or opening the root. Any suffix or missing EOF fails closed
+before a response. The child then detaches both ambient protocol entries, closes
+the raw startup-stdin handle, and retains the now-non-ambient raw response handle
+inside a response-only capability. This preflight must succeed before request
+decoding or root work. The child then resolves the leaf beneath the exact
+OS-rerouted `LOCALAPPDATA`, derives
 `TokenUser` and the AppContainer SID from its own process token, and checks the
 directory object, owner, protected two-ACE DACL, inherited Low/`NW` label, and
-complete `FILE_ID_INFO` before returning one response that echoes the nonce and
+complete `FILE_ID_INFO` before constructing one response that echoes the nonce and
 binds its PID, creation time, and root identity.
 
-After reading the exact 88-byte response, the parent immediately uses
-`PeekNamedPipe` to reject any already-buffered suffix. It then independently
-compares every response field, revalidates the held root's
-volume/security/identity, Job context/limits/topology, and monotonic lease, and
-commits the held artifact identity plus the exact request and response into a
+Once response output is attempted, no fallible result returns to `main`. The
+child attempts the exact 88-byte write, `FlushFileBuffers`, and `CloseHandle` on
+the retained response handle, ignores all three results, and unconditionally
+leaves the startup-only lexical scope. The live `request_frame`, decoded
+`request`, `response`, and `response_frame` owners therefore run their
+`Zeroizing` drops before only the resident stderr boundary and fixed store
+bindings escape into the non-alertable `Sleep(INFINITE)` loop. A failed write or close therefore
+cannot turn into a post-output exit-78 path. The parent requires the complete
+frame followed by EOF within the original startup deadline before it decodes or
+accepts the response. That exact response-plus-EOF observation is the
+authoritative protocol proof that the response endpoint closed. It then
+independently compares every response field and revalidates the held root's
+volume/security/identity, exact resident-process liveness and root-Job
+membership, and Job context/limits/topology before and again after consuming the
+monotonic lease; an exited child cannot cross this join merely by producing EOF.
+The parent commits the held artifact identity plus the exact request and response into a
 domain-separated SHA-256 transcript commitment. The resulting private aggregate
-retains the process, Job, parent pipe endpoints, handshake, and no-delete-share
-root handle while the child retains its own root handle. These immediate peeks on
-persistent open streams prove neither the absence of a future delayed suffix nor
-EOF. Neither side exposes generic runtime I/O or signing authority.
+retains the process, Job, handshake, and no-delete-share root handle, but no
+startup endpoint. The child retains only sealed stderr and fixed generation-store
+bindings derived from its independently opened root in that infinite-sleep loop
+until Job termination. Neither side exposes generic runtime I/O or signing
+authority, and the startup streams are never reused as a runtime channel.
 
 The narrow generation-file boundary is now implemented without changing the
 public facade. Consuming the child-held root mints one private, unconstructible
@@ -230,9 +249,12 @@ canonical-path comparison detects mismatch but does not atomically close
 same-user/ancestor races. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process
 topology and single-instance enforcement, signed immutable artifacts and
-DLL/dependency E2E, and release activation remain **STOP-SHIP**. Persistent
-startup streams prove neither a future delayed suffix nor EOF, and no generic
-runtime/signing IPC exists. `COMPILED_RELEASE_POLICY` is `None`. The central
+DLL/dependency E2E, and release activation remain **STOP-SHIP**. The exact
+request EOF and parent-authoritative response-plus-EOF checks are repo-local
+startup-framing proof only; they do
+not provide a runtime channel, signing authority, signed-artifact evidence, or
+release activation. No generic runtime/signing IPC exists.
+`COMPILED_RELEASE_POLICY` is `None`. The central
 AppContainer profile API rejects thread impersonation before its process-wide
 non-reentrant gate and rechecks it after mutex wait. It also bookends every
 protected `CreateAppContainerProfile`,
@@ -292,10 +314,16 @@ operation. An isolated child/grandchild kernel test uses exact object comparison
 to prove that none of the original three stdio objects propagates. This is a
 repo-local implementation proof, not signed-artifact, supervisor-topology, or
 release-activation evidence. Immediately afterward the child reads exactly one
-startup request, rejects an already-buffered suffix before its process/root
-checks, writes exactly one response only after those checks, fails closed on any
-input byte that arrives later, and retains its sealed handles and independently
-opened root until the parent request endpoint disconnects.
+startup request and requires EOF before decoding or opening the root. It then
+detaches the ambient stdin/stdout entries and closes raw stdin before decoding or
+root work, while retaining the raw response handle only inside a response-only
+capability. After its process/root checks it attempts exactly one response, then
+attempts to flush and close that handle without propagating any result to
+`main`, and enters a non-alertable `Sleep(INFINITE)` loop. It retains sealed
+stderr and fixed generation-store bindings derived from its independently opened
+root until Job termination; no startup handle is reused for runtime I/O. The
+parent's exact response plus EOF under the original deadline is authoritative
+for successful response-handle closure.
 
 The runtime-enabled Approval child has exactly two unique inherited stdio pipe
 objects. As its first Windows/CRT application operation, before binary-mode

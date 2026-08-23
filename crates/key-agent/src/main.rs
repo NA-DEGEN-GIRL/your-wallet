@@ -1,9 +1,10 @@
 //! Key Agent process entrypoint.
 //!
 //! On Windows, the binary's only application operation seals the exact inherited
-//! standard handles, proves the fixed storage-startup transcript, and then waits
-//! for the supervisor to close its retained request endpoint. It always exits
-//! fail-closed afterward; no public or accidental signing interface exists.
+//! standard handles, proves the fixed storage-startup transcript through exact
+//! request and response EOF, and then remains inert while the supervisor owns
+//! its kill-on-close Job. Startup streams are closed and no public or
+//! accidental signing interface exists.
 
 #[cfg(windows)]
 fn main() {

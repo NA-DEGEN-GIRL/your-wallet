@@ -20,17 +20,6 @@ use zeroize::Zeroizing;
 #[cfg(windows)]
 use crate::key_agent_startup::{KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES};
 
-/// Rejects bytes already buffered beyond a fixed Key Agent startup frame.
-///
-/// This is a boundary check, not an EOF proof: the exact-image and consuming
-/// endpoint typestates prevent the trusted peer from writing a later frame.
-#[cfg(windows)]
-pub(crate) fn reject_buffered_key_agent_startup_bytes(
-    handle: BorrowedHandle<'_>,
-) -> Result<(), PipeError> {
-    sys::reject_buffered_bytes(handle)
-}
-
 /// Maximum bytes buffered by the operating system in either direction.
 pub const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 
@@ -515,8 +504,8 @@ impl fmt::Debug for PreparedKeyAgentInheritance<'_, '_> {
 pub(crate) struct KeyAgentStartupRequestWriter(sys::OwnedWinHandle);
 
 // SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, contains no
-// borrowed or thread-affine state, and its sole consuming method keeps the
-// endpoint private while moving it into the post-startup type state.
+// borrowed or thread-affine state, and its sole method consumes the wrapper so
+// the request endpoint closes before the call returns.
 #[allow(unsafe_code)]
 unsafe impl Send for KeyAgentStartupRequestWriter {}
 
@@ -527,9 +516,8 @@ impl KeyAgentStartupRequestWriter {
         self,
         frame: &[u8; KEY_AGENT_STARTUP_REQUEST_BYTES],
         deadline: Instant,
-    ) -> Result<KeyAgentRequestWriter, PipeError> {
-        sys::write_all_before(self.0.raw(), frame, deadline)?;
-        Ok(KeyAgentRequestWriter(self.0))
+    ) -> Result<(), PipeError> {
+        sys::write_all_before(self.0.raw(), frame, deadline)
     }
 }
 
@@ -540,35 +528,14 @@ impl fmt::Debug for KeyAgentStartupRequestWriter {
     }
 }
 
-/// Parent request endpoint retained after the exact startup frame.
-#[cfg(windows)]
-#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-pub(crate) struct KeyAgentRequestWriter(sys::OwnedWinHandle);
-
-// SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, has no
-// borrowed or thread-affine state, is non-cloneable, and exposes only a
-// post-startup retention state. Windows permits the owned HANDLE to be used and
-// closed by a different thread. This narrow transfer permission deliberately
-// does not apply to `OwnedWinHandle`, prepared inheritable handles, or pipe
-// owners that still retain child sources.
-#[allow(unsafe_code)]
-unsafe impl Send for KeyAgentRequestWriter {}
-
-#[cfg(windows)]
-impl fmt::Debug for KeyAgentRequestWriter {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("KeyAgentRequestWriter([HANDLE])")
-    }
-}
-
 /// Parent response endpoint before the exact storage-startup frame is received.
 #[cfg(windows)]
 #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
 pub(crate) struct KeyAgentStartupResponseReader(sys::OwnedWinHandle);
 
 // SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, contains no
-// borrowed or thread-affine state, and its sole consuming method keeps the
-// endpoint private while moving it into the post-startup type state.
+// borrowed or thread-affine state, and every method consumes the wrapper so the
+// response endpoint closes before the call returns.
 #[allow(unsafe_code)]
 unsafe impl Send for KeyAgentStartupResponseReader {}
 
@@ -578,19 +545,13 @@ impl KeyAgentStartupResponseReader {
     pub(crate) fn receive(
         self,
         deadline: Instant,
-    ) -> Result<
-        (
-            Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>,
-            KeyAgentResponseReader,
-        ),
-        PipeError,
-    > {
-        let frame =
-            sys::read_exact_before(self.0.raw(), KEY_AGENT_STARTUP_RESPONSE_BYTES, deadline)?;
-        reject_buffered_key_agent_startup_bytes(self.0.as_handle())?;
-        let mut exact = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]);
-        exact.copy_from_slice(frame.as_slice());
-        Ok((exact, KeyAgentResponseReader(self.0)))
+    ) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {
+        let frame = sys::read_exact_zeroizing_frame_before(
+            self.0.raw(),
+            KEY_AGENT_STARTUP_RESPONSE_BYTES,
+            deadline,
+        )?;
+        Ok(exact_key_agent_startup_response(&frame))
     }
 
     /// Test-only adapter for the pinned libtest fixture. Production callers
@@ -600,13 +561,7 @@ impl KeyAgentStartupResponseReader {
     pub(crate) fn receive_after_exact_libtest_terse_preamble_for_test(
         self,
         deadline: Instant,
-    ) -> Result<
-        (
-            Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>,
-            KeyAgentResponseReader,
-        ),
-        PipeError,
-    > {
+    ) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {
         const EXACT_PINNED_LIBTEST_PREFIX: &[u8; 16] = b"\nrunning 1 test\n";
         let prefix =
             sys::read_exact_before(self.0.raw(), EXACT_PINNED_LIBTEST_PREFIX.len(), deadline)?;
@@ -615,6 +570,33 @@ impl KeyAgentStartupResponseReader {
         }
         self.receive(deadline)
     }
+
+    #[cfg(test)]
+    fn receive_with_after_frame_hook_for_test<F>(
+        self,
+        deadline: Instant,
+        after_frame: F,
+    ) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError>
+    where
+        F: FnOnce(),
+    {
+        let frame = sys::read_exact_zeroizing_frame_before_with_hook_for_test(
+            self.0.raw(),
+            KEY_AGENT_STARTUP_RESPONSE_BYTES,
+            deadline,
+            after_frame,
+        )?;
+        Ok(exact_key_agent_startup_response(&frame))
+    }
+}
+
+#[cfg(windows)]
+fn exact_key_agent_startup_response(
+    frame: &Zeroizing<Vec<u8>>,
+) -> Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]> {
+    let mut exact = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]);
+    exact.copy_from_slice(frame.as_slice());
+    exact
 }
 
 #[cfg(windows)]
@@ -622,36 +604,6 @@ impl fmt::Debug for KeyAgentStartupResponseReader {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyAgentStartupResponseReader([HANDLE])")
     }
-}
-
-/// Parent response endpoint retained after the exact startup frame.
-#[cfg(windows)]
-#[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-pub(crate) struct KeyAgentResponseReader(sys::OwnedWinHandle);
-
-// SAFETY: this wrapper uniquely owns one named-pipe client HANDLE, has no
-// borrowed or thread-affine state, is non-cloneable, and exposes only a
-// post-startup retention state. Windows permits the owned HANDLE to be used and
-// closed by a different thread. This narrow transfer permission deliberately
-// does not apply to `OwnedWinHandle`, prepared inheritable handles, or pipe
-// owners that still retain child sources.
-#[allow(unsafe_code)]
-unsafe impl Send for KeyAgentResponseReader {}
-
-#[cfg(windows)]
-impl fmt::Debug for KeyAgentResponseReader {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("KeyAgentResponseReader([HANDLE])")
-    }
-}
-
-#[cfg(all(test, windows))]
-pub(crate) fn key_agent_parent_endpoints_are_noninheritable_for_test(
-    writer: &KeyAgentRequestWriter,
-    reader: &KeyAgentResponseReader,
-) -> Result<bool, PipeError> {
-    Ok(!sys::handle_inheritable_for_test(&writer.0)?
-        && !sys::handle_inheritable_for_test(&reader.0)?)
 }
 
 #[cfg(all(test, windows))]
@@ -828,7 +780,7 @@ mod sys {
     use core::ffi::c_void;
     use core::mem::size_of;
     use core::ptr;
-    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, RawHandle};
+    use std::os::windows::io::{AsHandle, BorrowedHandle, RawHandle};
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
@@ -857,7 +809,7 @@ mod sys {
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId,
         GetNamedPipeClientSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-        PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+        PIPE_TYPE_BYTE, PIPE_WAIT,
     };
     use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows::Win32::System::SystemServices::SE_GROUP_LOGON_ID;
@@ -1297,14 +1249,8 @@ mod sys {
             }
         }
 
-        // A valid one-shot helper writes one frame and then closes its inherited
-        // response endpoint. Waiting for EOF (within the same deadline) makes a
-        // delayed trailing byte just as invalid as an immediately buffered one.
-        let mut trailing = [0_u8; 1];
-        match read_once_before(handle, &mut trailing, deadline)? {
-            IoRead::End | IoRead::Bytes(0) => Ok(frame),
-            IoRead::Bytes(_) => Err(PipeError::TrailingData),
-        }
+        require_end_before(handle, deadline)?;
+        Ok(frame)
     }
 
     #[allow(dead_code)] // Reserved for the private Key Agent arming seam.
@@ -1326,33 +1272,51 @@ mod sys {
         Ok(frame)
     }
 
-    pub(super) fn reject_buffered_bytes(handle: BorrowedHandle<'_>) -> Result<(), PipeError> {
-        let mut available = 0_u32;
-        // SAFETY: `handle` is a live borrowed readable pipe endpoint. No output
-        // buffer is supplied; PeekNamedPipe writes only the available-byte
-        // count and returns immediately without consuming stream data.
-        let result = unsafe {
-            PeekNamedPipe(
-                HANDLE(handle.as_raw_handle()),
-                None,
-                0,
-                None,
-                Some(&raw mut available),
-                None,
-            )
-        };
-        if let Err(error) = result {
-            if error.code() == ERROR_BROKEN_PIPE.to_hresult()
-                || error.code() == ERROR_HANDLE_EOF.to_hresult()
-            {
-                return Ok(());
-            }
-            return Err(PipeError::OperatingSystem);
-        }
-        if available == 0 {
-            Ok(())
-        } else {
-            Err(PipeError::TrailingData)
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn read_exact_zeroizing_frame_before(
+        handle: HANDLE,
+        exact_bytes: usize,
+        deadline: Instant,
+    ) -> Result<Zeroizing<Vec<u8>>, PipeError> {
+        read_exact_zeroizing_frame_before_with_hook(handle, exact_bytes, deadline, || {})
+    }
+
+    fn read_exact_zeroizing_frame_before_with_hook<F>(
+        handle: HANDLE,
+        exact_bytes: usize,
+        deadline: Instant,
+        after_frame: F,
+    ) -> Result<Zeroizing<Vec<u8>>, PipeError>
+    where
+        F: FnOnce(),
+    {
+        let frame = read_exact_before(handle, exact_bytes, deadline)?;
+        after_frame();
+        require_end_before(handle, deadline)?;
+        Ok(frame)
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_exact_zeroizing_frame_before_with_hook_for_test<F>(
+        handle: HANDLE,
+        exact_bytes: usize,
+        deadline: Instant,
+        after_frame: F,
+    ) -> Result<Zeroizing<Vec<u8>>, PipeError>
+    where
+        F: FnOnce(),
+    {
+        read_exact_zeroizing_frame_before_with_hook(handle, exact_bytes, deadline, after_frame)
+    }
+
+    fn require_end_before(handle: HANDLE, deadline: Instant) -> Result<(), PipeError> {
+        // A valid one-shot peer writes one frame and then closes its endpoint.
+        // Waiting for EOF within the original deadline makes a delayed trailing
+        // byte just as invalid as an immediately buffered byte.
+        let mut trailing = [0_u8; 1];
+        match read_once_before(handle, &mut trailing, deadline)? {
+            IoRead::End | IoRead::Bytes(0) => Ok(()),
+            IoRead::Bytes(_) => Err(PipeError::TrailingData),
         }
     }
 
@@ -1458,11 +1422,15 @@ mod sys {
         if let Err(error) = &started
             && is_pipe_end(error.code())
         {
+            deadline_result(deadline, 0)?;
             return Ok(IoRead::End);
         }
         match complete_before(handle, &overlapped, started, transferred, deadline) {
             Ok(count) => Ok(IoRead::Bytes(usize::try_from(count).unwrap_or(usize::MAX))),
-            Err(PipeError::UnexpectedEnd) => Ok(IoRead::End),
+            Err(PipeError::UnexpectedEnd) => {
+                deadline_result(deadline, 0)?;
+                Ok(IoRead::End)
+            }
             Err(error) => Err(error),
         }
     }
@@ -1883,7 +1851,8 @@ mod sys {
 #[cfg(all(test, windows))]
 mod tests {
     use std::collections::HashSet;
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use std::os::windows::io::AsRawHandle as _;
+    use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
     use windows::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
@@ -2122,29 +2091,36 @@ mod tests {
         drop(writer);
         drop(child_request_source);
         drop(child_response_source);
-        let (received, retained_reader) = reader.receive(future_deadline()?)?;
+        let received = reader.receive(future_deadline()?)?;
         assert_eq!(received.as_slice(), response);
-        drop(retained_reader);
         Ok(())
     }
 
     #[test]
-    fn key_agent_parent_endpoints_transfer_exact_startup_frames_and_retain_channels()
+    fn key_agent_request_writer_writes_exact_frame_then_closes()
     -> Result<(), Box<dyn std::error::Error>> {
         let (writer, child_request, reader, child_response) =
             PrivateKeyAgentPipes::create()?.into_test_parts();
+        drop(reader);
+        drop(child_response);
         let request = [0x42_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
-        let retained_writer = writer.send(&request, future_deadline()?)?;
-        drop(retained_writer);
+        writer.send(&request, future_deadline()?)?;
         assert_eq!(sys::read_child_to_end_for_test(&child_request)?, request);
-        drop(child_request);
+        Ok(())
+    }
 
+    #[test]
+    fn key_agent_response_reader_requires_exact_frame_plus_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (writer, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        drop(writer);
+        drop(child_request);
         let response = [0x57_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES];
         sys::write_child_for_test(&child_response, &response)?;
-        let (received, retained_reader) = reader.receive(future_deadline()?)?;
-        assert_eq!(received.as_slice(), response);
-        drop(retained_reader);
         drop(child_response);
+        let received = reader.receive(future_deadline()?)?;
+        assert_eq!(received.as_slice(), response);
         Ok(())
     }
 
@@ -2158,15 +2134,15 @@ mod tests {
         let response = [0x58_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES];
         sys::write_child_for_test(&child_response, b"\nrunning 1 test\n")?;
         sys::write_child_for_test(&child_response, &response)?;
-        let (received, retained_reader) =
+        drop(child_response);
+        let received =
             reader.receive_after_exact_libtest_terse_preamble_for_test(future_deadline()?)?;
         assert_eq!(received.as_slice(), response);
-        drop(retained_reader);
-        drop(child_response);
 
         let (_writer, _child_request, wrong_reader, wrong_child_response) =
             PrivateKeyAgentPipes::create()?.into_test_parts();
         sys::write_child_for_test(&wrong_child_response, b"\nrunning 2 test\n")?;
+        drop(wrong_child_response);
         assert!(matches!(
             wrong_reader.receive_after_exact_libtest_terse_preamble_for_test(future_deadline()?),
             Err(PipeError::TrailingData)
@@ -2180,8 +2156,6 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<super::KeyAgentStartupRequestWriter>();
         assert_send::<super::KeyAgentStartupResponseReader>();
-        assert_send::<super::KeyAgentRequestWriter>();
-        assert_send::<super::KeyAgentResponseReader>();
 
         let (writer, reader) = PrivateKeyAgentPipes::create()?.into_parent();
         let worker = std::thread::spawn(move || -> Result<(), PipeError> {
@@ -2229,61 +2203,80 @@ mod tests {
     }
 
     #[test]
-    fn key_agent_startup_transport_rejects_buffered_response_suffix()
+    fn key_agent_startup_transport_rejects_delayed_response_suffix_after_exact_frame()
     -> Result<(), Box<dyn std::error::Error>> {
         let (writer, child_request, reader, child_response) =
             PrivateKeyAgentPipes::create()?.into_test_parts();
         drop(writer);
         drop(child_request);
 
-        let response_with_suffix = vec![
-            0x44_u8;
-            KEY_AGENT_STARTUP_RESPONSE_BYTES
-                .checked_add(1)
-                .ok_or("overflow")?
-        ];
-        sys::write_child_for_test(&child_response, &response_with_suffix)?;
+        let response = [0x44_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES];
+        sys::write_child_for_test(&child_response, &response)?;
+        let after_frame = Arc::new(Barrier::new(2));
+        let reader_after_frame = Arc::clone(&after_frame);
+        let deadline = future_deadline()?;
+        let worker = std::thread::spawn(move || {
+            reader.receive_with_after_frame_hook_for_test(deadline, || {
+                reader_after_frame.wait();
+            })
+        });
+
+        // The test-only hook runs only after the exact fixed frame has been
+        // consumed. Releasing this barrier before writing proves that a suffix
+        // arriving later is rejected rather than merely caught while buffered.
+        after_frame.wait();
+        sys::write_child_for_test(&child_response, &[0x45])?;
         drop(child_response);
         assert!(matches!(
-            reader.receive(future_deadline()?),
+            worker.join().map_err(|_| "response reader panicked")?,
             Err(PipeError::TrailingData)
         ));
         Ok(())
     }
 
     #[test]
-    fn key_agent_child_boundary_detects_buffered_request_suffix()
+    fn key_agent_response_eof_observed_after_deadline_is_rejected()
     -> Result<(), Box<dyn std::error::Error>> {
         let (writer, child_request, reader, child_response) =
             PrivateKeyAgentPipes::create()?.into_test_parts();
-        drop(reader);
-        drop(child_response);
-
-        let request_with_suffix = vec![
-            0x45_u8;
-            KEY_AGENT_STARTUP_REQUEST_BYTES
-                .checked_add(1)
-                .ok_or("overflow")?
-        ];
-        sys::write_all_before(writer.0.raw(), &request_with_suffix, future_deadline()?)?;
         drop(writer);
-        assert_eq!(
-            sys::read_child_exact_for_test(&child_request, KEY_AGENT_STARTUP_REQUEST_BYTES)?,
-            request_with_suffix[..KEY_AGENT_STARTUP_REQUEST_BYTES]
-        );
-        assert_eq!(
-            sys::reject_buffered_bytes(child_request.as_handle()),
-            Err(PipeError::TrailingData)
-        );
+        drop(child_request);
+
+        sys::write_child_for_test(&child_response, &[0x46; KEY_AGENT_STARTUP_RESPONSE_BYTES])?;
+        let after_frame = Arc::new(Barrier::new(2));
+        let release_eof_read = Arc::new(Barrier::new(2));
+        let reader_after_frame = Arc::clone(&after_frame);
+        let reader_release = Arc::clone(&release_eof_read);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(20))
+            .ok_or("monotonic deadline overflow")?;
+        let worker = std::thread::spawn(move || {
+            reader.receive_with_after_frame_hook_for_test(deadline, || {
+                reader_after_frame.wait();
+                reader_release.wait();
+            })
+        });
+
+        after_frame.wait();
+        while Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        drop(child_response);
+        release_eof_read.wait();
+        assert!(matches!(
+            worker.join().map_err(|_| "response reader panicked")?,
+            Err(PipeError::DeadlineElapsed)
+        ));
         Ok(())
     }
 
     #[test]
-    fn key_agent_overlapped_response_read_cancels_and_drains_at_deadline()
+    fn key_agent_full_response_without_eof_cancels_and_drains_at_deadline()
     -> Result<(), Box<dyn std::error::Error>> {
         let (_, child_request, reader, child_response) =
             PrivateKeyAgentPipes::create()?.into_test_parts();
         drop(child_request);
+        sys::write_child_for_test(&child_response, &[0x56; KEY_AGENT_STARTUP_RESPONSE_BYTES])?;
         let started = Instant::now();
         let deadline = started
             .checked_add(Duration::from_millis(20))

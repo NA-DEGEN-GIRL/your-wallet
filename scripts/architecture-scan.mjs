@@ -5154,7 +5154,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "abd2ce8dfe1717de22ff16e9914a99f2e0554928f167f6260edd9dbb5900bfd9";
+  "32a3899e6be03861b26c93d06bdb626f59d37f3746ec664cb5b5b8182f0c918b";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6947,7 +6947,7 @@ const keyAgentBootstrapExportMembers = normalizeRustFragment(
 );
 const keyAgentBootstrapApiAliases = [
   ...rustLexicalCode(keyAgentChildBootstrapProduction).matchAll(
-    /\b(?:CompareObjectHandles|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation)\s+as\s+(?:_|[A-Za-z_]\w*)|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*(?:CompareObjectHandles|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation)\b/gu,
+    /\b(?:CloseHandle|CompareObjectHandles|FlushFileBuffers|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation|SetStdHandle|Sleep)\s+as\s+(?:_|[A-Za-z_]\w*)|\b(?:let|const|static)\s+(?:mut\s+)?[A-Za-z_]\w*(?:\s*:[^=;]+)?\s*=\s*(?:[A-Za-z_]\w*::)*(?:CloseHandle|CompareObjectHandles|FlushFileBuffers|GetFileType|GetHandleInformation|GetStdHandle|SetHandleInformation|SetStdHandle|Sleep)\b/gu,
   ),
 ];
 const keyAgentBootstrapGetStdHandleCalls = rustCallSites(
@@ -7112,25 +7112,6 @@ requireInvariant(
   "the Key Agent storage-startup slice must not regain YWKSDIAG or last_storage diagnostic state",
 );
 
-const keyAgentChildStartupOrder = [
-  "let sealed_stdio = seal_inherited_key_agent_stdio()?",
-  "let mut request_frame = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES])",
-  "read_exact_synchronous(sealed_stdio.stdin, &mut request_frame)?",
-  "reject_buffered_key_agent_startup_bytes(stdin)",
-  "KeyAgentStartupRequest::decode(request_frame.as_slice())",
-  "let actual_process_id = current_process_id()?",
-  "let actual_creation_time = current_process_creation_time()?",
-  "open_fixed_key_agent_storage_root_for_child()",
-  "let actual_storage_identity = child_root.identity()",
-  "request.storage_root_identity() != actual_storage_identity",
-  ".revalidate()",
-  "let generation_store_bindings =",
-  ".into_fixed_generation_store_bindings()",
-  "KeyAgentStartupResponse::from_validated_request(",
-  "let response_frame = response.encode()",
-  "write_exact_synchronous(sealed_stdio.stdout, response_frame.as_bytes())?",
-  "wait_for_parent_disconnect(&sealed_stdio, &generation_store_bindings)",
-].map((marker) => serveInheritedKeyAgentStorageStartup.indexOf(marker));
 const readExactKeyAgentStartupRequest = rustFunctionBlock(
   keyAgentChildBootstrapProduction,
   "read_exact_synchronous",
@@ -7139,33 +7120,471 @@ const writeExactKeyAgentStartupResponse = rustFunctionBlock(
   keyAgentChildBootstrapProduction,
   "write_exact_synchronous",
 );
-const waitForKeyAgentParentDisconnect = rustFunctionBlock(
-  keyAgentChildBootstrapProduction,
-  "wait_for_parent_disconnect",
-);
-requireInvariant(
-  keyAgentChildStartupOrder.every((position) => position !== -1) &&
-    keyAgentChildStartupOrder
+const exactKeyAgentChildServeSha256 =
+  "60ee08cd3143e7e8340c09a66e1d196c025d1e1794eeac54d7678a1134f5f11f";
+const exactKeyAgentChildReadEof = compactRust(`
+fn read_exact_eof_synchronous(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {
+    let mut byte = [0_u8; 1];
+    let mut transferred = 0_u32;
+    let result = unsafe { ReadFile(handle, Some(&mut byte), Some(&raw mut transferred), None) };
+    if transferred != 0 {
+        return Err(KeyAgentChildBootstrapError);
+    }
+    match result {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.code() == ERROR_BROKEN_PIPE.to_hresult()
+                || error.code() == ERROR_HANDLE_EOF.to_hresult() =>
+        {
+            Ok(())
+        }
+        Err(_) => Err(KeyAgentChildBootstrapError),
+    }
+}
+`);
+const exactKeyAgentChildCloseRequest = compactRust(`
+fn close_startup_request(
+    sealed: SealedKeyAgentStdio,
+) -> Result<KeyAgentStartupResponseStdio, KeyAgentChildBootstrapError> {
+    let SealedKeyAgentStdio {
+        stdin,
+        stdout,
+        stderr,
+        _not_send_or_sync: _,
+    } = sealed;
+    let stdin_detached = detach_standard_handle(STD_INPUT_HANDLE);
+    let stdout_detached = detach_standard_handle(STD_OUTPUT_HANDLE);
+    let stdin_closed = close_raw_handle(stdin);
+    if stdin_detached.is_err() || stdout_detached.is_err() || stdin_closed.is_err() {
+        let _ = close_raw_handle(stdout);
+        return Err(KeyAgentChildBootstrapError);
+    }
+    Ok(KeyAgentStartupResponseStdio {
+        stdout,
+        stderr,
+        _not_send_or_sync: PhantomData,
+    })
+}
+`);
+const exactKeyAgentChildCloseResponse = compactRust(`
+fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> ResidentKeyAgentBoundary {
+    let KeyAgentStartupResponseStdio {
+        stdout,
+        stderr,
+        _not_send_or_sync: _,
+    } = sealed;
+    let _ = unsafe { FlushFileBuffers(stdout) };
+    let _ = close_raw_handle(stdout);
+    ResidentKeyAgentBoundary {
+        stderr,
+        _not_send_or_sync: PhantomData,
+    }
+}
+`);
+const exactKeyAgentChildDetachStandard = compactRust(`
+fn detach_standard_handle(
+    standard_handle: windows::Win32::System::Console::STD_HANDLE,
+) -> Result<(), KeyAgentChildBootstrapError> {
+    unsafe { SetStdHandle(standard_handle, HANDLE::default()) }
+        .map_err(|_| KeyAgentChildBootstrapError)
+}
+`);
+const exactKeyAgentChildCloseRaw = compactRust(`
+fn close_raw_handle(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {
+    unsafe { CloseHandle(handle) }.map_err(|_| KeyAgentChildBootstrapError)
+}
+`);
+const exactKeyAgentChildRemainInert = compactRust(`
+fn remain_inert(
+    resident_boundary: ResidentKeyAgentBoundary,
+    generation_store_bindings: FixedKeyAgentGenerationStoreBindings,
+) -> ! {
+    let ResidentKeyAgentBoundary {
+        stderr,
+        _not_send_or_sync: _,
+    } = resident_boundary;
+    let resident_proofs = (stderr, generation_store_bindings);
+    loop {
+        core::hint::black_box(&resident_proofs);
+        unsafe { Sleep(INFINITE) };
+    }
+}
+`);
+const keyAgentChildStartupContract = (source) => {
+  let serve;
+  let readExact;
+  let readEof;
+  let writeExact;
+  let closeRequest;
+  let closeResponse;
+  let detachStandard;
+  let closeRaw;
+  let remainInert;
+  let sealedDefinition;
+  let responseDefinition;
+  let residentDefinition;
+  try {
+    serve = rustFunctionBlock(source, "serve_inherited_key_agent_storage_startup");
+    readExact = rustFunctionBlock(source, "read_exact_synchronous");
+    readEof = rustFunctionBlock(source, "read_exact_eof_synchronous");
+    writeExact = rustFunctionBlock(source, "write_exact_synchronous");
+    closeRequest = rustFunctionBlock(source, "close_startup_request");
+    closeResponse = rustFunctionBlock(source, "close_startup_response");
+    detachStandard = rustFunctionBlock(source, "detach_standard_handle");
+    closeRaw = rustFunctionBlock(source, "close_raw_handle");
+    remainInert = rustFunctionBlock(source, "remain_inert");
+    sealedDefinition = rustLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*struct\s+SealedKeyAgentStdio\s*\{/u,
+    );
+    responseDefinition = rustLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*struct\s+KeyAgentStartupResponseStdio\s*\{/u,
+    );
+    residentDefinition = rustLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*struct\s+ResidentKeyAgentBoundary\s*\{/u,
+    );
+  } catch {
+    return false;
+  }
+
+  const compactServe = compactRust(serve);
+  const transcriptOwnerUseSequence = [
+    ...rustLexicalCode(serve).matchAll(
+      /\b(?:request_frame|request|response_frame|response)\b/gu,
+    ),
+  ].map((match) => match[0]);
+  const startupOrder = [
+    "let(resident_boundary,generation_store_bindings)={",
+    "letsealed_stdio=seal_inherited_key_agent_stdio()?",
+    "letmutrequest_frame=Zeroizing::new([0_u8;KEY_AGENT_STARTUP_REQUEST_BYTES])",
+    "read_exact_synchronous(sealed_stdio.stdin,&mutrequest_frame)?",
+    "read_exact_eof_synchronous(sealed_stdio.stdin)?",
+    "letresponse_stdio=close_startup_request(sealed_stdio)?",
+    "letrequest=KeyAgentStartupRequest::decode(request_frame.as_slice())",
+    "letactual_process_id=current_process_id()?",
+    "letactual_creation_time=current_process_creation_time()?",
+    "open_fixed_key_agent_storage_root_for_child()",
+    "letactual_storage_identity=child_root.identity()",
+    "request.storage_root_identity()!=actual_storage_identity",
+    "child_root.revalidate()",
+    "letgeneration_store_bindings=child_root.into_fixed_generation_store_bindings()",
+    "KeyAgentStartupResponse::from_validated_request(",
+    "letresponse_frame=response.encode()",
+    "let_=write_exact_synchronous(response_stdio.stdout,response_frame.as_bytes())",
+    "letresident_boundary=close_startup_response(response_stdio)",
+    "(resident_boundary,generation_store_bindings)}",
+    "remain_inert(resident_boundary,generation_store_bindings)",
+  ].map((marker) => compactServe.indexOf(marker));
+  const compactReadEof = compactRust(readEof);
+  const compactCloseRequest = compactRust(closeRequest);
+  const compactCloseResponse = compactRust(closeResponse);
+  const compactDetachStandard = compactRust(detachStandard);
+  const compactCloseRaw = compactRust(closeRaw);
+  const compactRemainInert = compactRust(remainInert);
+  const responseCommit = compactServe.indexOf(
+    "let_=write_exact_synchronous(response_stdio.stdout,response_frame.as_bytes())",
+  );
+  const postResponseCommit =
+    responseCommit === -1 ? "" : compactServe.slice(responseCommit);
+  const linearBoundarySource = rustLexicalCode(
+    `${sealedDefinition}\n${responseDefinition}\n${residentDefinition}`,
+  );
+
+  return (
+    normalizedSourceSha256(compactServe) === exactKeyAgentChildServeSha256 &&
+    !hasRustUnitSuccessReturn(serve) &&
+    !/\b(?:forget|ManuallyDrop|leak)\b/u.test(rustLexicalCode(serve)) &&
+    JSON.stringify(transcriptOwnerUseSequence) ===
+      JSON.stringify([
+        "request_frame",
+        "request_frame",
+        "request",
+        "request_frame",
+        "request",
+        "request",
+        "request",
+        "request",
+        "request",
+        "request",
+        "response",
+        "request",
+        "response_frame",
+        "response",
+        "response_frame",
+      ]) &&
+    startupOrder.every((position) => position !== -1) &&
+    startupOrder
       .slice(1)
-      .every(
-        (position, index) => position > keyAgentChildStartupOrder[index],
-      ) &&
+      .every((position, index) => position > startupOrder[index]) &&
     /fn\s+read_exact_synchronous\s*\([\s\S]*bytes:\s*&mut\s*\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\]/u.test(
-      readExactKeyAgentStartupRequest,
+      readExact,
     ) &&
     /fn\s+write_exact_synchronous\s*\([\s\S]*bytes:\s*&\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\]/u.test(
-      writeExactKeyAgentStartupResponse,
+      writeExact,
     ) &&
-    waitForKeyAgentParentDisconnect.includes(
-      "sealed_stdio: &SealedKeyAgentStdio",
+    compactReadEof === exactKeyAgentChildReadEof &&
+    JSON.stringify(
+      rustCallSites(readEof, "ReadFile").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["handle", "Some(&mutbyte)", "Some(&rawmuttransferred)", "None"],
+      ]) &&
+    compactCloseRequest === exactKeyAgentChildCloseRequest &&
+    JSON.stringify(
+      rustCallSites(closeRequest, "detach_and_close_standard_handle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([]) &&
+    JSON.stringify(
+      rustCallSites(closeRequest, "detach_standard_handle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["STD_INPUT_HANDLE"], ["STD_OUTPUT_HANDLE"]]) &&
+    JSON.stringify(
+      rustCallSites(closeRequest, "close_raw_handle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["stdin"], ["stdout"]]) &&
+    compactDetachStandard === exactKeyAgentChildDetachStandard &&
+    JSON.stringify(
+      rustCallSites(detachStandard, "SetStdHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["standard_handle", "HANDLE::default()"]]) &&
+    compactCloseRaw === exactKeyAgentChildCloseRaw &&
+    JSON.stringify(
+      rustCallSites(closeRaw, "CloseHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle"]]) &&
+    compactCloseResponse === exactKeyAgentChildCloseResponse &&
+    /^fn\s+close_startup_response\s*\([\s\S]*sealed:\s*KeyAgentStartupResponseStdio[\s\S]*\)\s*->\s*ResidentKeyAgentBoundary\s*\{/u.test(
+      rustLexicalCode(closeResponse),
     ) &&
-    waitForKeyAgentParentDisconnect.includes(
-      "_generation_store_bindings: &FixedKeyAgentGenerationStoreBindings",
+    JSON.stringify(
+      rustCallSites(closeResponse, "FlushFileBuffers").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["stdout"]]) &&
+    JSON.stringify(
+      rustCallSites(closeResponse, "close_raw_handle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["stdout"]]) &&
+    !/[?]|\b(?:return|Err|Result)\b/u.test(rustLexicalCode(closeResponse)) &&
+    postResponseCommit.includes(
+      "let_=write_exact_synchronous(response_stdio.stdout,response_frame.as_bytes());letresident_boundary=close_startup_response(response_stdio);(resident_boundary,generation_store_bindings)};remain_inert(resident_boundary,generation_store_bindings)",
     ) &&
-    waitForKeyAgentParentDisconnect.includes(
-      "reject_nonzero_post_startup_bytes(transferred)?",
+    !/[?]|\b(?:return|Err|Result|ExitProcess)\b|std::process::exit/u.test(
+      postResponseCommit,
+    ) &&
+    responseCommit > compactServe.indexOf(
+      "letresponse_stdio=close_startup_request(sealed_stdio)?",
+    ) &&
+    normalizeRustFragment(linearBoundarySource) ===
+      "struct SealedKeyAgentStdio { stdin: HANDLE, stdout: HANDLE, stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, } struct KeyAgentStartupResponseStdio { stdout: HANDLE, stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, } struct ResidentKeyAgentBoundary { stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    !/#\s*\[\s*derive\s*\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*struct\s+(?:SealedKeyAgentStdio|KeyAgentStartupResponseStdio|ResidentKeyAgentBoundary)\b|\b(?:unsafe\s+)?impl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Send|Sync|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:SealedKeyAgentStdio|KeyAgentStartupResponseStdio|ResidentKeyAgentBoundary)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    compactRemainInert === exactKeyAgentChildRemainInert &&
+    JSON.stringify(
+      rustCallSites(remainInert, "black_box").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&resident_proofs"]]) &&
+    JSON.stringify(
+      rustCallSites(remainInert, "Sleep").map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["INFINITE"]]) &&
+    !/\b(?:PeekNamedPipe|reject_buffered_key_agent_startup_bytes|wait_for_parent_disconnect|ReadFile|WriteFile|CreateFileW|sign|runtime_request)\b/u.test(
+      rustLexicalCode(remainInert),
+    ) &&
+    !/\b(?:PeekNamedPipe|reject_buffered_key_agent_startup_bytes|wait_for_parent_disconnect)\b/u.test(
+      rustLexicalCode(source),
+    )
+  );
+};
+const keyAgentChildStartupMutationProbes = [
+  keyAgentChildBootstrapProduction.replace(
+    "pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {\n",
+    "pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {\n    return Ok(());\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {\n",
+    "pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {\n    return Result::Ok(());\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    read_exact_eof_synchronous(sealed_stdio.stdin)?;\n",
+    "",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "fn read_exact_eof_synchronous(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {\n",
+    "fn read_exact_eof_synchronous(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {\n    if handle != HANDLE::default() { return Ok(()); }\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "        Err(_) => Err(KeyAgentChildBootstrapError),",
+    "        Err(_) => Ok(()),",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "        read_exact_eof_synchronous(sealed_stdio.stdin)?;\n        let response_stdio = close_startup_request(sealed_stdio)?;\n        let request = KeyAgentStartupRequest::decode(request_frame.as_slice())\n            .map_err(|_| KeyAgentChildBootstrapError)?;",
+    "        let request = KeyAgentStartupRequest::decode(request_frame.as_slice())\n            .map_err(|_| KeyAgentChildBootstrapError)?;\n        read_exact_eof_synchronous(sealed_stdio.stdin)?;\n        let response_stdio = close_startup_request(sealed_stdio)?;",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "SetStdHandle(standard_handle, HANDLE::default())",
+    "SetStdHandle(standard_handle, HANDLE(1))",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "CloseHandle(handle)",
+    "CloseHandle(HANDLE::default())",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "fn detach_standard_handle(\n    standard_handle: windows::Win32::System::Console::STD_HANDLE,\n) -> Result<(), KeyAgentChildBootstrapError> {\n",
+    "fn detach_standard_handle(\n    standard_handle: windows::Win32::System::Console::STD_HANDLE,\n) -> Result<(), KeyAgentChildBootstrapError> {\n    if standard_handle == STD_INPUT_HANDLE { return Ok(()); }\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "fn close_raw_handle(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {\n",
+    "fn close_raw_handle(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {\n    if handle == HANDLE::default() { return Ok(()); }\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    } = sealed;\n    // Detach both ambient protocol entries before any response byte can be",
+    "    } = sealed;\n    if stdin != HANDLE::default() {\n        return Ok(KeyAgentStartupResponseStdio { stdout, stderr, _not_send_or_sync: PhantomData });\n    }\n    // Detach both ambient protocol entries before any response byte can be",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    let resident_proofs = (stderr, generation_store_bindings);",
+    "    let resident_proofs = (stderr,);\n    drop(generation_store_bindings);",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "        unsafe { Sleep(INFINITE) };",
+    "        return;",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    let ResidentKeyAgentBoundary {\n",
+    "    std::process::exit(0);\n    let ResidentKeyAgentBoundary {\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    let _ = write_exact_synchronous(response_stdio.stdout, response_frame.as_bytes());",
+    "    write_exact_synchronous(response_stdio.stdout, response_frame.as_bytes())?;",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    let resident_boundary = close_startup_response(response_stdio);\n",
+    "    core::mem::forget(response_frame);\n    let resident_boundary = close_startup_response(response_stdio);\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "        let response_frame = response.encode().map_err(|_| KeyAgentChildBootstrapError)?;\n",
+    "        let _escaped_request = std::thread::spawn(move || loop { core::hint::black_box(&request); });\n        let response_frame = response.encode().map_err(|_| KeyAgentChildBootstrapError)?;\n",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "        let response = KeyAgentStartupResponse::from_validated_request(\n            &request,\n            actual_process_id,\n            actual_creation_time,\n            actual_storage_identity,\n        )\n        .map_err(|_| KeyAgentChildBootstrapError)?;",
+    "        let response = (|r: KeyAgentStartupRequest| {\n            let built = KeyAgentStartupResponse::from_validated_request(\n                &r,\n                actual_process_id,\n                actual_creation_time,\n                actual_storage_identity,\n            )\n            .map_err(|_| KeyAgentChildBootstrapError)?;\n            let _guard = std::thread::spawn(move || loop { core::hint::black_box(&r); });\n            Ok::<KeyAgentStartupResponse, KeyAgentChildBootstrapError>(built)\n        })(request)?;",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "    let stdout_detached = detach_standard_handle(STD_OUTPUT_HANDLE);",
+    "    let stdout_detached = Ok(());",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> ResidentKeyAgentBoundary {",
+    "fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> Result<ResidentKeyAgentBoundary, KeyAgentChildBootstrapError> {",
+  ),
+  keyAgentChildBootstrapProduction.replace(
+    "fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> ResidentKeyAgentBoundary {\n",
+    "fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> ResidentKeyAgentBoundary {\n    std::process::exit(0);\n",
+  ),
+];
+const keyAgentChildStartupTestsContract = (source) => {
+  let exactRequest;
+  let delayedSuffix;
+  try {
+    exactRequest = rustFunctionBlock(
+      source,
+      "startup_request_requires_the_exact_frame_followed_by_eof",
+    );
+    delayedSuffix = rustFunctionBlock(
+      source,
+      "startup_request_rejects_a_suffix_released_after_the_fixed_frame",
+    );
+  } catch {
+    return false;
+  }
+  const compactExact = compactRust(exactRequest);
+  const compactDelayed = compactRust(delayedSuffix);
+  const writerOrder = [
+    "writer.write_all(&frame)?",
+    "wait_for_frame.recv()",
+    "writer.write_all(&[0x7f])?",
+  ].map((marker) => compactDelayed.indexOf(marker));
+  const readerOrder = [
+    "read_exact_synchronous(reader_handle,&mutreceived)?",
+    "release_suffix.send(())",
+    "read_exact_eof_synchronous(reader_handle)",
+    "Err(KeyAgentChildBootstrapError)",
+  ].map((marker) => compactDelayed.indexOf(marker));
+  return (
+    !hasVacuousRustTestEscape(exactRequest) &&
+    !hasVacuousRustTestEscape(delayedSuffix) &&
+    compactExact.includes("writer.write_all(&frame)?;drop(writer);") &&
+    compactExact.includes("read_exact_eof_synchronous(reader_handle),Ok(())") &&
+    compactExact.includes("frame[..KEY_AGENT_STARTUP_REQUEST_BYTES-1]") &&
+    compactExact.includes(
+      "read_exact_synchronous(HANDLE(reader.as_raw_handle()),&muttruncated),Err(KeyAgentChildBootstrapError)",
+    ) &&
+    compactDelayed.includes("std::sync::mpsc::sync_channel::<()>(0)") &&
+    writerOrder.every((position) => position !== -1) &&
+    writerOrder.slice(1).every((position, index) => position > writerOrder[index]) &&
+    readerOrder.every((position) => position !== -1) &&
+    readerOrder.slice(1).every((position, index) => position > readerOrder[index]) &&
+    compactDelayed.includes("writer.join()")
+  );
+};
+const keyAgentChildStartupTestMutationProbes = [
+  withVacuousRustEarlyOk(
+    keyAgentChildBootstrapSource,
+    "startup_request_requires_the_exact_frame_followed_by_eof",
+    "Result::Ok(())",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentChildBootstrapSource,
+    "startup_request_rejects_a_suffix_released_after_the_fixed_frame",
+    "Result::Ok(())",
+  ),
+  keyAgentChildBootstrapSource.replace(
+    "    fn startup_request_requires_the_exact_frame_followed_by_eof()\n    -> Result<(), Box<dyn std::error::Error>> {\n",
+    "    fn startup_request_requires_the_exact_frame_followed_by_eof()\n    -> Result<(), Box<dyn std::error::Error>> {\n        return Ok(());\n",
+  ),
+  keyAgentChildBootstrapSource.replace(
+    "    fn startup_request_rejects_a_suffix_released_after_the_fixed_frame()\n    -> Result<(), Box<dyn std::error::Error>> {\n",
+    "    fn startup_request_rejects_a_suffix_released_after_the_fixed_frame()\n    -> Result<(), Box<dyn std::error::Error>> {\n        return Ok(());\n",
+  ),
+  keyAgentChildBootstrapSource.replace(
+    "            wait_for_frame\n                .recv()\n                .map_err(|_| std::io::Error::other(\"request-frame barrier closed\"))?;\n",
+    "",
+  ),
+  keyAgentChildBootstrapSource.replace(
+    "        let reader_handle = HANDLE(reader.as_raw_handle());\n        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];\n        read_exact_synchronous(reader_handle, &mut received)?;\n        assert_eq!(received, frame);",
+    "        let reader_handle = HANDLE(reader.as_raw_handle());\n        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];\n        release_suffix.send(()).map_err(|_| std::io::Error::other(\"early release\"))?;\n        read_exact_synchronous(reader_handle, &mut received)?;\n        assert_eq!(received, frame);",
+  ),
+  keyAgentChildBootstrapSource.replace(
+    "            read_exact_eof_synchronous(reader_handle),\n            Err(KeyAgentChildBootstrapError)",
+    "            read_exact_eof_synchronous(reader_handle),\n            Ok(())",
+  ),
+];
+requireInvariant(
+  keyAgentChildStartupContract(keyAgentChildBootstrapProduction) &&
+    keyAgentChildStartupMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentChildBootstrapProduction &&
+        !keyAgentChildStartupContract(probe),
+    ) &&
+    keyAgentChildStartupTestsContract(keyAgentChildBootstrapSource) &&
+    keyAgentChildStartupTestMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentChildBootstrapSource &&
+        !keyAgentChildStartupTestsContract(probe),
     ),
-  "the sole child bootstrap service must seal first, exchange exactly one 188/88 frame pair, prove the child-opened full storage identity, consume it into fixed generation-store bindings, and retain both child capabilities until disconnect",
+  "the sole child bootstrap must consume request EOF before decode/root open, finish every fallible ambient detach before response output, ignore terminal write/flush/close results so only parent-observed EOF can prove success, retain storage bindings in an allocation-free inert Sleep(INFINITE) boundary, and keep exact/premature/delayed-suffix tests mutation-sensitive",
 );
 
 const keyAgentBootstrapSameObjectCalls = rustCallSites(
@@ -7267,7 +7686,7 @@ requireInvariant(
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(sealedKeyAgentStdioDefinition)) ===
-    "struct SealedKeyAgentStdio { stdin: HANDLE, stdout: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
+    "struct SealedKeyAgentStdio { stdin: HANDLE, stdout: HANDLE, stderr: HANDLE, _not_send_or_sync: PhantomData<Rc<()>>, }" &&
     keyAgentChildBootstrapProduction.includes(
       '#[must_use = "the Key Agent must retain its sealed stdio proof through startup"]',
     ) &&
@@ -7285,7 +7704,7 @@ requireInvariant(
     !/\bimpl\s+(?:AsHandle|AsRawHandle|IntoRawHandle)\s+for\s+SealedKeyAgentStdio\b/u.test(
       rustLexicalCode(keyAgentChildBootstrapProduction),
     ),
-  "the private SealedKeyAgentStdio must retain only the request/response peers and expose no raw, clone, or thread-transfer capability",
+  "the private SealedKeyAgentStdio must retain exactly stdin/stdout/stderr until their linear startup transitions and expose no raw, clone, or thread-transfer capability",
 );
 
 const keyAgentBootstrapSubprocessTest = rustFunctionBlock(
@@ -8583,6 +9002,32 @@ const exactKeyAgentEnvironmentTest = rustFunctionBlock(
 );
 function compactRust(source) {
   return rustLexicalCode(source).replace(/\s+/gu, "");
+}
+
+function withVacuousRustEarlyOk(
+  source,
+  functionName,
+  successExpression = "Ok(())",
+) {
+  const functionBlock = rustFunctionBlock(source, functionName);
+  const openingBrace = functionBlock.indexOf("{");
+  if (openingBrace === -1) {
+    return source;
+  }
+  const mutatedFunction = `${functionBlock.slice(0, openingBrace + 1)}\n    if std::hint::black_box(true) { return ${successExpression}; }${functionBlock.slice(openingBrace + 1)}`;
+  return source.replace(functionBlock, mutatedFunction);
+}
+
+function hasRustUnitSuccessReturn(source) {
+  return /\breturn(?:(?:core::result::Result::|std::result::Result::|Result::))?Ok(?:::<[^;{}]*>)?\(\(\)\)/u.test(
+    compactRust(source),
+  );
+}
+
+function hasVacuousRustTestEscape(source) {
+  return /\breturn\b|\b(?:ExitProcess|std\s*::\s*process\s*::\s*exit)\b/u.test(
+    rustLexicalCode(source),
+  );
 }
 
 const secretInputChannelsDefinition = rustTopLevelLexicalItemBlock(
@@ -14875,183 +15320,460 @@ requireInvariant(
     ),
   "the cfg(test) integrated zero-capability LPAC helper must exercise four fixed stores across close/reopen, the exact per-store seven-file by four-right kernel-denial matrix, and the root open/AccessCheck denial split",
 );
-const keyAgentRequestWriterImpl = rustItemBlock(
-  keyAgentPipeRelease,
-  /impl\s+KeyAgentRequestWriter\s*\{/u,
-);
-const keyAgentResponseReaderImpl = rustItemBlock(
-  keyAgentPipeRelease,
-  /impl\s+KeyAgentResponseReader\s*\{/u,
-);
-const keyAgentStartupRequestWriterImpl = rustItemBlock(
-  keyAgentPipeRelease,
-  /impl\s+KeyAgentStartupRequestWriter\s*\{/u,
-);
-const keyAgentStartupResponseReaderImpl = rustItemBlock(
-  keyAgentPipeRelease,
-  /impl\s+KeyAgentStartupResponseReader\s*\{/u,
-);
-const keyAgentRequestWriterMethods = [...keyAgentRequestWriterImpl.matchAll(
-  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
-const keyAgentResponseReaderMethods = [...keyAgentResponseReaderImpl.matchAll(
-  /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-)].map((match) => match[1]);
-const keyAgentStartupRequestWriterMethods = [
-  ...keyAgentStartupRequestWriterImpl.matchAll(
-    /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-  ),
-].map((match) => match[1]);
-const keyAgentStartupResponseReaderMethods = [
-  ...keyAgentStartupResponseReaderImpl.matchAll(
-    /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
-  ),
-].map((match) => match[1]);
-const keyAgentStartupRequestSend = rustFunctionBlock(
-  keyAgentStartupRequestWriterImpl,
-  "send",
-);
-const keyAgentStartupResponseReceive = rustFunctionBlock(
-  keyAgentStartupResponseReaderImpl,
-  "receive",
-);
-const rejectBufferedKeyAgentStartupBytes = rustFunctionBlock(
-  keyAgentPipeRelease,
-  "reject_buffered_key_agent_startup_bytes",
-);
-const rejectBufferedPipeBytes = rustFunctionBlock(
-  keyAgentPipeRelease,
-  "reject_buffered_bytes",
-);
-const rejectBufferedPipeBytesPeekCalls = rustCallSites(
-  rejectBufferedPipeBytes,
-  "PeekNamedPipe",
-);
-const bufferedKeyAgentResponseSuffixTest = rustFunctionBlock(
-  keyAgentPipeSource,
-  "key_agent_startup_transport_rejects_buffered_response_suffix",
-);
-const bufferedKeyAgentRequestSuffixTest = rustFunctionBlock(
-  keyAgentPipeSource,
-  "key_agent_child_boundary_detects_buffered_request_suffix",
-);
-const keyAgentStartupResponseReceiveOrder = [
-  "sys::read_exact_before(self.0.raw(), KEY_AGENT_STARTUP_RESPONSE_BYTES, deadline)?",
-  "reject_buffered_key_agent_startup_bytes(self.0.as_handle())?",
-  "exact.copy_from_slice(frame.as_slice())",
-  "Ok((exact, KeyAgentResponseReader(self.0)))",
-].map((marker) => keyAgentStartupResponseReceive.indexOf(marker));
-const privateKeyAgentPipesIntoParent = rustFunctionBlock(
-  rustLexicalItemBlock(
-    keyAgentPipeRelease,
-    /impl\s+PrivateKeyAgentPipes\s*\{/u,
-  ),
-  "into_parent",
-);
-requireInvariant(
-  keyAgentPipeProduction.includes(
-    "unsafe impl Send for KeyAgentStartupRequestWriter {}",
-  ) &&
-    keyAgentPipeProduction.includes(
-      "unsafe impl Send for KeyAgentStartupResponseReader {}",
+const exactKeyAgentStartupResponseReceive = compactRust(`
+pub(crate) fn receive(
+    self,
+    deadline: Instant,
+) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {
+    let frame = sys::read_exact_zeroizing_frame_before(
+        self.0.raw(),
+        KEY_AGENT_STARTUP_RESPONSE_BYTES,
+        deadline,
+    )?;
+    Ok(exact_key_agent_startup_response(&frame))
+}
+`);
+const exactKeyAgentStartupFrameAndEofRead = compactRust(`
+pub(super) fn read_exact_zeroizing_frame_before(
+    handle: HANDLE,
+    exact_bytes: usize,
+    deadline: Instant,
+) -> Result<Zeroizing<Vec<u8>>, PipeError> {
+    read_exact_zeroizing_frame_before_with_hook(handle, exact_bytes, deadline, || {})
+}
+`);
+const exactKeyAgentStartupFrameAndEofReadWithHook = compactRust(`
+fn read_exact_zeroizing_frame_before_with_hook<F>(
+    handle: HANDLE,
+    exact_bytes: usize,
+    deadline: Instant,
+    after_frame: F,
+) -> Result<Zeroizing<Vec<u8>>, PipeError>
+where
+    F: FnOnce(),
+{
+    let frame = read_exact_before(handle, exact_bytes, deadline)?;
+    after_frame();
+    require_end_before(handle, deadline)?;
+    Ok(frame)
+}
+`);
+const exactKeyAgentStartupRequireEof = compactRust(`
+fn require_end_before(handle: HANDLE, deadline: Instant) -> Result<(), PipeError> {
+    let mut trailing = [0_u8; 1];
+    match read_once_before(handle, &mut trailing, deadline)? {
+        IoRead::End | IoRead::Bytes(0) => Ok(()),
+        IoRead::Bytes(_) => Err(PipeError::TrailingData),
+    }
+}
+`);
+const exactKeyAgentStartupReadOnce = compactRust(`
+fn read_once_before(
+    handle: HANDLE,
+    bytes: &mut [u8],
+    deadline: Instant,
+) -> Result<IoRead, PipeError> {
+    let event = create_event()?;
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.raw(),
+        ..OVERLAPPED::default()
+    };
+    let mut transferred = 0_u32;
+    let started = unsafe {
+        ReadFile(
+            handle,
+            Some(bytes),
+            Some(&raw mut transferred),
+            Some(&raw mut overlapped),
+        )
+    };
+    if let Err(error) = &started
+        && is_pipe_end(error.code())
+    {
+        deadline_result(deadline, 0)?;
+        return Ok(IoRead::End);
+    }
+    match complete_before(handle, &overlapped, started, transferred, deadline) {
+        Ok(count) => Ok(IoRead::Bytes(usize::try_from(count).unwrap_or(usize::MAX))),
+        Err(PipeError::UnexpectedEnd) => {
+            deadline_result(deadline, 0)?;
+            Ok(IoRead::End)
+        }
+        Err(error) => Err(error),
+    }
+}
+`);
+const exactKeyAgentStartupDeadlineResult = compactRust(`
+fn deadline_result(deadline: Instant, transferred: u32) -> Result<u32, PipeError> {
+    if Instant::now().checked_duration_since(deadline).is_some() {
+        Err(PipeError::DeadlineElapsed)
+    } else {
+        Ok(transferred)
+    }
+}
+`);
+const keyAgentStartupPipeContract = (source) => {
+  let requestImpl;
+  let responseImpl;
+  let send;
+  let receive;
+  let readExactFrameAndEof;
+  let readExactFrameAndEofWithHook;
+  let requireEof;
+  let readOnce;
+  let deadlineResult;
+  let intoParent;
+  try {
+    requestImpl = rustItemBlock(source, /impl\s+KeyAgentStartupRequestWriter\s*\{/u);
+    responseImpl = rustItemBlock(source, /impl\s+KeyAgentStartupResponseReader\s*\{/u);
+    send = rustFunctionBlock(requestImpl, "send");
+    receive = rustFunctionBlock(responseImpl, "receive");
+    readExactFrameAndEof = rustFunctionBlock(
+      source,
+      "read_exact_zeroizing_frame_before",
+    );
+    readExactFrameAndEofWithHook = rustFunctionBlock(
+      source,
+      "read_exact_zeroizing_frame_before_with_hook",
+    );
+    requireEof = rustFunctionBlock(source, "require_end_before");
+    readOnce = rustFunctionBlock(source, "read_once_before");
+    deadlineResult = rustFunctionBlock(source, "deadline_result");
+    intoParent = rustFunctionBlock(
+      rustLexicalItemBlock(source, /impl\s+PrivateKeyAgentPipes\s*\{/u),
+      "into_parent",
+    );
+  } catch {
+    return false;
+  }
+  const requestMethods = [
+    ...requestImpl.matchAll(/pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+  ].map((match) => match[1]);
+  const responseMethods = [
+    ...responseImpl.matchAll(/pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu),
+  ].map((match) => match[1]);
+  const compactSend = compactRust(send);
+  const compactReceive = compactRust(receive);
+  const compactReadExactFrameAndEof = compactRust(readExactFrameAndEof);
+  const compactReadExactFrameAndEofWithHook = compactRust(
+    readExactFrameAndEofWithHook,
+  );
+  const compactRequireEof = compactRust(requireEof);
+  const compactReadOnce = compactRust(readOnce);
+  const compactDeadlineResult = compactRust(deadlineResult);
+
+  return (
+    !/\b(?:KeyAgentRequestWriter|KeyAgentResponseReader)\b/u.test(
+      rustLexicalCode(source),
     ) &&
-  keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentRequestWriter {}") &&
-    keyAgentPipeProduction.includes("unsafe impl Send for KeyAgentResponseReader {}") &&
-    keyAgentPipeProduction.includes(
-      "Windows permits the owned HANDLE to be used and",
+    (rustLexicalCode(source).match(
+      /pub\(crate\)\s+struct\s+KeyAgentStartupRequestWriter\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
+    ) ?? []).length === 1 &&
+    (rustLexicalCode(source).match(
+      /pub\(crate\)\s+struct\s+KeyAgentStartupResponseReader\s*\(\s*sys::OwnedWinHandle\s*\)\s*;/gu,
+    ) ?? []).length === 1 &&
+    JSON.stringify(requestMethods) === JSON.stringify(["send"]) &&
+    JSON.stringify(responseMethods) === JSON.stringify(["receive"]) &&
+    /fn\s+send\s*\(\s*self,\s*frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*deadline:\s*Instant,?\s*\)\s*->\s*Result<\s*\(\s*\)\s*,\s*PipeError\s*>/u.test(
+      rustLexicalCode(send),
     ) &&
-    !/unsafe\s+impl\s+Sync\s+for\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
-      keyAgentPipeProduction,
+    compactSend.endsWith(
+      "{sys::write_all_before(self.0.raw(),frame,deadline)}",
     ) &&
-    !/unsafe\s+impl\s+Send\s+for\s+(?:OwnedWinHandle|PrivateKeyAgentPipes|PreparedKeyAgentInheritance)\b/u.test(
-      keyAgentPipeProduction,
+    JSON.stringify(
+      rustCallSites(send, "write_all_before").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.0.raw()", "frame", "deadline"]]) &&
+    /fn\s+receive\s*\(\s*self,\s*deadline:\s*Instant,?\s*\)\s*->\s*Result<\s*Zeroizing<\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\]>,\s*PipeError\s*>/u.test(
+      rustLexicalCode(receive),
     ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
-      keyAgentPipeProduction,
-    ) &&
-    !/impl\s+(?:Clone|Copy)\s+for\s+KeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
-      keyAgentPipeProduction,
-    ) &&
-    JSON.stringify(keyAgentStartupRequestWriterMethods) ===
-      JSON.stringify(["send"]) &&
-    JSON.stringify(keyAgentStartupResponseReaderMethods) ===
-      JSON.stringify(["receive"]) &&
-    keyAgentRequestWriterMethods.length === 0 &&
-    keyAgentResponseReaderMethods.length === 0 &&
-    /fn\s+send\s*\(\s*self,\s*frame:\s*&\[u8;\s*KEY_AGENT_STARTUP_REQUEST_BYTES\],\s*deadline:\s*Instant,?\s*\)\s*->\s*Result<\s*KeyAgentRequestWriter\s*,\s*PipeError\s*>/u.test(
-      rustLexicalCode(keyAgentStartupRequestSend),
-    ) &&
-    keyAgentStartupRequestSend.includes(
-      "sys::write_all_before(self.0.raw(), frame, deadline)?",
-    ) &&
-    /fn\s+receive\s*\(\s*self,\s*deadline:\s*Instant,?\s*\)/u.test(
-      rustLexicalCode(keyAgentStartupResponseReceive),
-    ) &&
-    keyAgentStartupResponseReceive.includes(
-      "sys::read_exact_before(self.0.raw(), KEY_AGENT_STARTUP_RESPONSE_BYTES, deadline)?",
-    ) &&
-    keyAgentStartupResponseReceiveOrder.every((position) => position !== -1) &&
-    keyAgentStartupResponseReceiveOrder
-      .slice(1)
-      .every(
-        (position, index) =>
-          position > keyAgentStartupResponseReceiveOrder[index],
-      ) &&
-    keyAgentStartupResponseReceive.includes(
-      "Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>",
-    ) &&
-    keyAgentStartupResponseReceive.includes("KeyAgentResponseReader") &&
-    privateKeyAgentPipesIntoParent.includes(
+    compactReceive === exactKeyAgentStartupResponseReceive &&
+    JSON.stringify(
+      rustCallSites(receive, "read_exact_zeroizing_frame_before").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["self.0.raw()", "KEY_AGENT_STARTUP_RESPONSE_BYTES", "deadline"],
+      ]) &&
+    compactReadExactFrameAndEof === exactKeyAgentStartupFrameAndEofRead &&
+    JSON.stringify(
+      rustCallSites(
+        readExactFrameAndEofWithHook,
+        "read_exact_before",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["handle", "exact_bytes", "deadline"]]) &&
+    JSON.stringify(
+      rustCallSites(readExactFrameAndEofWithHook, "require_end_before").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "deadline"]]) &&
+    compactReadExactFrameAndEofWithHook ===
+      exactKeyAgentStartupFrameAndEofReadWithHook &&
+    compactRequireEof === exactKeyAgentStartupRequireEof &&
+    JSON.stringify(
+      rustCallSites(requireEof, "read_once_before").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["handle", "&muttrailing", "deadline"]]) &&
+    compactReadOnce === exactKeyAgentStartupReadOnce &&
+    compactDeadlineResult === exactKeyAgentStartupDeadlineResult &&
+    JSON.stringify(
+      rustCallSites(readOnce, "deadline_result").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["deadline", "0"], ["deadline", "0"]]) &&
+    intoParent.includes(
       "(KeyAgentStartupRequestWriter, KeyAgentStartupResponseReader)",
     ) &&
-    !/\b(?:write_bounded|read_bounded_to_end)\b/u.test(
-      `${keyAgentStartupRequestWriterImpl}\n${keyAgentStartupResponseReaderImpl}\n${keyAgentRequestWriterImpl}\n${keyAgentResponseReaderImpl}`,
+    source.includes("unsafe impl Send for KeyAgentStartupRequestWriter {}") &&
+    source.includes("unsafe impl Send for KeyAgentStartupResponseReader {}") &&
+    !/unsafe\s+impl\s+Sync\s+for\s+KeyAgentStartup(?:RequestWriter|ResponseReader)\b/u.test(
+      source,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+KeyAgentStartup(?:RequestWriter|ResponseReader)\b/u.test(
+      source,
+    ) &&
+    !/impl\s+(?:Clone|Copy)\s+for\s+KeyAgentStartup(?:RequestWriter|ResponseReader)\b/u.test(
+      source,
+    ) &&
+    !/\b(?:PeekNamedPipe|reject_buffered_bytes|reject_buffered_key_agent_startup_bytes)\b/u.test(
+      rustLexicalCode(source),
+    )
+  );
+};
+const keyAgentStartupPipeMutationProbes = [
+  keyAgentPipeRelease.replace(
+    "    pub(crate) fn receive(\n        self,\n        deadline: Instant,\n    ) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {\n",
+    "    pub(crate) fn receive(\n        self,\n        deadline: Instant,\n    ) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {\n        if deadline > Instant::now() { return Ok(Zeroizing::new([0_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES])); }\n",
+  ),
+  keyAgentPipeRelease.replace(
+    "    pub(super) fn read_exact_zeroizing_frame_before(\n        handle: HANDLE,\n        exact_bytes: usize,\n        deadline: Instant,\n    ) -> Result<Zeroizing<Vec<u8>>, PipeError> {\n",
+    "    pub(super) fn read_exact_zeroizing_frame_before(\n        handle: HANDLE,\n        exact_bytes: usize,\n        deadline: Instant,\n    ) -> Result<Zeroizing<Vec<u8>>, PipeError> {\n        if exact_bytes != 0 { return read_exact_before(handle, exact_bytes, deadline); }\n",
+  ),
+  keyAgentPipeRelease.replace(
+    "    where\n        F: FnOnce(),\n    {\n        let frame = read_exact_before(handle, exact_bytes, deadline)?;",
+    "    where\n        F: FnOnce(),\n    {\n        if exact_bytes != 0 { return read_exact_before(handle, exact_bytes, deadline); }\n        let frame = read_exact_before(handle, exact_bytes, deadline)?;",
+  ),
+  withVacuousRustEarlyOk(keyAgentPipeRelease, "require_end_before"),
+  keyAgentPipeRelease.replace(
+    "    ) -> Result<IoRead, PipeError> {\n        let event = create_event()?;",
+    "    ) -> Result<IoRead, PipeError> {\n        if bytes.len() == 1 { return Ok(IoRead::End); }\n        let event = create_event()?;",
+  ),
+  keyAgentPipeRelease.replace(
+    "    fn deadline_result(deadline: Instant, transferred: u32) -> Result<u32, PipeError> {\n        if Instant::now().checked_duration_since(deadline).is_some() {",
+    "    fn deadline_result(deadline: Instant, transferred: u32) -> Result<u32, PipeError> {\n        let _ = deadline;\n        return Ok(transferred);\n        if Instant::now().checked_duration_since(deadline).is_some() {",
+  ),
+  keyAgentPipeRelease.replace(
+    ") -> Result<(), PipeError> {\n        sys::write_all_before(self.0.raw(), frame, deadline)",
+    ") -> Result<KeyAgentStartupRequestWriter, PipeError> {\n        sys::write_all_before(self.0.raw(), frame, deadline)?;\n        Ok(self)",
+  ),
+  keyAgentPipeRelease.replace(
+    "        self,\n        frame: &[u8; KEY_AGENT_STARTUP_REQUEST_BYTES]",
+    "        &mut self,\n        frame: &[u8; KEY_AGENT_STARTUP_REQUEST_BYTES]",
+  ),
+  keyAgentPipeRelease.replace(
+    "sys::read_exact_zeroizing_frame_before(\n            self.0.raw(),",
+    "sys::read_exact_before(\n            self.0.raw(),",
+  ),
+  keyAgentPipeRelease.replace(
+    "            IoRead::Bytes(_) => Err(PipeError::TrailingData),",
+    "            IoRead::Bytes(_) => Ok(()),",
+  ),
+  keyAgentPipeRelease.replace("            deadline_result(deadline, 0)?;\n", ""),
+  keyAgentPipeRelease.replace(
+    "            Err(PipeError::UnexpectedEnd) => {\n                deadline_result(deadline, 0)?;",
+    "            Err(PipeError::UnexpectedEnd) => {",
+  ),
+  keyAgentPipeRelease.replace(
+    "deadline_result(deadline, 0)?;",
+    "deadline_result(Instant::now(), 0)?;",
+  ),
+];
+const keyAgentStartupPipeTestsContract = (source) => {
+  let requestCloses;
+  let responseEof;
+  let prematureEof;
+  let delayedSuffix;
+  let eofAfterDeadline;
+  let openWithoutEof;
+  try {
+    requestCloses = rustFunctionBlock(
+      source,
+      "key_agent_request_writer_writes_exact_frame_then_closes",
+    );
+    responseEof = rustFunctionBlock(
+      source,
+      "key_agent_response_reader_requires_exact_frame_plus_eof",
+    );
+    prematureEof = rustFunctionBlock(
+      source,
+      "key_agent_startup_transport_rejects_early_response",
+    );
+    delayedSuffix = rustFunctionBlock(
+      source,
+      "key_agent_startup_transport_rejects_delayed_response_suffix_after_exact_frame",
+    );
+    eofAfterDeadline = rustFunctionBlock(
+      source,
+      "key_agent_response_eof_observed_after_deadline_is_rejected",
+    );
+    openWithoutEof = rustFunctionBlock(
+      source,
+      "key_agent_full_response_without_eof_cancels_and_drains_at_deadline",
+    );
+  } catch {
+    return false;
+  }
+  const compactRequestCloses = compactRust(requestCloses);
+  const compactResponseEof = compactRust(responseEof);
+  const compactPrematureEof = compactRust(prematureEof);
+  const compactDelayedSuffix = compactRust(delayedSuffix);
+  const compactEofAfterDeadline = compactRust(eofAfterDeadline);
+  const compactOpenWithoutEof = compactRust(openWithoutEof);
+  const delayedSuffixOrder = [
+    "sys::write_child_for_test(&child_response,&response)?",
+    "letafter_frame=Arc::new(Barrier::new(2))",
+    "reader.receive_with_after_frame_hook_for_test(deadline,||",
+    "reader_after_frame.wait()",
+    "});after_frame.wait()",
+    "sys::write_child_for_test(&child_response,&[0x45])?",
+    "drop(child_response)",
+    "Err(PipeError::TrailingData)",
+  ].map((marker) => compactDelayedSuffix.indexOf(marker));
+  const openResponseWrite = compactOpenWithoutEof.indexOf(
+    "sys::write_child_for_test(&child_response,&[0x56;KEY_AGENT_STARTUP_RESPONSE_BYTES])?",
+  );
+  const openResponseReceive = compactOpenWithoutEof.indexOf("reader.receive(deadline)");
+  const openResponseDrop = compactOpenWithoutEof.indexOf("drop(child_response)");
+  const eofAfterDeadlineOrder = [
+    "sys::write_child_for_test(&child_response,&[0x46;KEY_AGENT_STARTUP_RESPONSE_BYTES])?",
+    "letafter_frame=Arc::new(Barrier::new(2))",
+    "letrelease_eof_read=Arc::new(Barrier::new(2))",
+    "reader.receive_with_after_frame_hook_for_test(deadline,||",
+    "reader_after_frame.wait()",
+    "reader_release.wait()",
+    "});after_frame.wait()",
+    "whileInstant::now()<deadline",
+    "drop(child_response)",
+    "release_eof_read.wait()",
+    "Err(PipeError::DeadlineElapsed)",
+  ].map((marker) => compactEofAfterDeadline.indexOf(marker));
+  return (
+    [
+      requestCloses,
+      responseEof,
+      prematureEof,
+      delayedSuffix,
+      eofAfterDeadline,
+      openWithoutEof,
+    ].every((testBody) => !hasVacuousRustTestEscape(testBody)) &&
+    compactRequestCloses.includes("writer.send(&request,future_deadline()?)?;") &&
+    compactRequestCloses.includes(
+      "sys::read_child_to_end_for_test(&child_request)?,request",
+    ) &&
+    compactResponseEof.includes(
+      "sys::write_child_for_test(&child_response,&response)?;drop(child_response);letreceived=reader.receive(future_deadline()?)?",
+    ) &&
+    compactPrematureEof.includes(
+      "&[0x33;KEY_AGENT_STARTUP_RESPONSE_BYTES-1]",
+    ) &&
+    compactPrematureEof.includes(
+      "drop(child_response);assert!(matches!(reader.receive(future_deadline()?),Err(PipeError::UnexpectedEnd)))",
+    ) &&
+    delayedSuffixOrder.every((position) => position !== -1) &&
+    delayedSuffixOrder
+      .slice(1)
+      .every((position, index) => position > delayedSuffixOrder[index]) &&
+    compactDelayedSuffix.includes(
+      "});after_frame.wait();sys::write_child_for_test(&child_response,&[0x45])?;",
+    ) &&
+    eofAfterDeadlineOrder.every((position) => position !== -1) &&
+    eofAfterDeadlineOrder
+      .slice(1)
+      .every((position, index) => position > eofAfterDeadlineOrder[index]) &&
+    compactEofAfterDeadline.includes(
+      "drop(child_response);release_eof_read.wait();assert!(matches!(worker.join()",
+    ) &&
+    openResponseWrite !== -1 &&
+    openResponseWrite < openResponseReceive &&
+    openResponseReceive < openResponseDrop &&
+    compactOpenWithoutEof.includes("Duration::from_millis(20)") &&
+    compactOpenWithoutEof.includes("Err(PipeError::DeadlineElapsed)") &&
+    compactOpenWithoutEof.includes(
+      "assert!(started.elapsed()<Duration::from_secs(2))",
+    )
+  );
+};
+const keyAgentStartupPipeTestMutationProbes = [
+  ...[
+    "key_agent_request_writer_writes_exact_frame_then_closes",
+    "key_agent_response_reader_requires_exact_frame_plus_eof",
+    "key_agent_startup_transport_rejects_early_response",
+    "key_agent_startup_transport_rejects_delayed_response_suffix_after_exact_frame",
+    "key_agent_response_eof_observed_after_deadline_is_rejected",
+    "key_agent_full_response_without_eof_cancels_and_drains_at_deadline",
+  ].map((functionName) =>
+    withVacuousRustEarlyOk(keyAgentPipeSource, functionName),
+  ),
+  ...[
+    "key_agent_request_writer_writes_exact_frame_then_closes",
+    "key_agent_response_reader_requires_exact_frame_plus_eof",
+    "key_agent_startup_transport_rejects_early_response",
+    "key_agent_startup_transport_rejects_delayed_response_suffix_after_exact_frame",
+    "key_agent_response_eof_observed_after_deadline_is_rejected",
+    "key_agent_full_response_without_eof_cancels_and_drains_at_deadline",
+  ].map((functionName) =>
+    withVacuousRustEarlyOk(
+      keyAgentPipeSource,
+      functionName,
+      "Result::Ok(())",
+    ),
+  ),
+  keyAgentPipeSource.replace(
+    "        after_frame.wait();\n        sys::write_child_for_test(&child_response, &[0x45])?;",
+    "        sys::write_child_for_test(&child_response, &[0x45])?;\n        after_frame.wait();",
+  ),
+  keyAgentPipeSource.replace(
+    "        sys::write_child_for_test(&child_response, &[0x56; KEY_AGENT_STARTUP_RESPONSE_BYTES])?;\n        let started = Instant::now();",
+    "        sys::write_child_for_test(&child_response, &[0x56; KEY_AGENT_STARTUP_RESPONSE_BYTES])?;\n        drop(child_response);\n        let started = Instant::now();",
+  ),
+  keyAgentPipeSource.replace(
+    "&[0x33; KEY_AGENT_STARTUP_RESPONSE_BYTES - 1]",
+    "&[0x33; KEY_AGENT_STARTUP_RESPONSE_BYTES]",
+  ),
+  keyAgentPipeSource.replace(
+    "        drop(child_response);\n        let received = reader.receive(future_deadline()?)?;",
+    "        let received = reader.receive(future_deadline()?)?;",
+  ),
+  keyAgentPipeSource.replace(
+    "        while Instant::now() < deadline {\n            std::thread::yield_now();\n        }\n        drop(child_response);\n        release_eof_read.wait();",
+    "        drop(child_response);\n        release_eof_read.wait();",
+  ),
+  keyAgentPipeSource.replace(
+    "        drop(child_response);\n        release_eof_read.wait();\n        assert!(matches!(",
+    "        release_eof_read.wait();\n        drop(child_response);\n        assert!(matches!(",
+  ),
+  keyAgentPipeSource.replace(
+    "            Err(PipeError::DeadlineElapsed)\n        ));\n        Ok(())\n    }\n\n    #[test]\n    fn key_agent_full_response_without_eof",
+    "            Err(PipeError::TrailingData)\n        ));\n        Ok(())\n    }\n\n    #[test]\n    fn key_agent_full_response_without_eof",
+  ),
+];
+requireInvariant(
+  keyAgentStartupPipeContract(keyAgentPipeRelease) &&
+    keyAgentStartupPipeMutationProbes.every(
+      (probe) => probe !== keyAgentPipeRelease && !keyAgentStartupPipeContract(probe),
+    ) &&
+    keyAgentStartupPipeTestsContract(keyAgentPipeSource) &&
+    keyAgentStartupPipeTestMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentPipeSource && !keyAgentStartupPipeTestsContract(probe),
     ) &&
     keyAgentPipeSource.includes(
       "fn key_agent_parent_endpoints_transfer_once_to_a_fresh_thread()",
     ),
-  "only the unique consuming 188/88-byte Key Agent startup typestates may perform pipe I/O, while retained parent endpoints expose no operational methods",
-);
-requireInvariant(
-  /pub\(crate\)\s+fn\s+reject_buffered_key_agent_startup_bytes\s*\(\s*handle:\s*BorrowedHandle<'_>,?\s*\)\s*->\s*Result<\(\),\s*PipeError>\s*\{\s*sys::reject_buffered_bytes\(handle\)\s*\}/u.test(
-    rustLexicalCode(rejectBufferedKeyAgentStartupBytes),
-  ),
-  "the Key Agent startup buffered-byte wrapper must remain one exact crate-private forwarding function",
-);
-requireInvariant(
-  rejectBufferedPipeBytesPeekCalls.length === 1 &&
-    JSON.stringify(rejectBufferedPipeBytesPeekCalls[0]?.arguments) ===
-      JSON.stringify([
-        "HANDLE(handle.as_raw_handle())",
-        "None",
-        "0",
-        "None",
-        "Some(&raw mut available)",
-        "None",
-      ]),
-  "the Key Agent startup buffered-byte probe must make one exact non-consuming PeekNamedPipe call",
-);
-requireInvariant(
-  rejectBufferedPipeBytes.includes("let mut available = 0_u32") &&
-    rejectBufferedPipeBytes.includes("if available == 0") &&
-    rejectBufferedPipeBytes.includes("Err(PipeError::TrailingData)"),
-  "the Key Agent startup buffered-byte probe must accept only an empty immediate queue and reject a suffix",
-);
-requireInvariant(
-  bufferedKeyAgentResponseSuffixTest.includes(
-      "KEY_AGENT_STARTUP_RESPONSE_BYTES",
-    ) &&
-    bufferedKeyAgentResponseSuffixTest.includes(".checked_add(1)") &&
-    bufferedKeyAgentResponseSuffixTest.includes("Err(PipeError::TrailingData)") &&
-    bufferedKeyAgentRequestSuffixTest.includes(
-      "KEY_AGENT_STARTUP_REQUEST_BYTES",
-    ) &&
-    bufferedKeyAgentRequestSuffixTest.includes(".checked_add(1)") &&
-    bufferedKeyAgentRequestSuffixTest.includes(
-      "sys::reject_buffered_bytes(child_request.as_handle())",
-    ) &&
-    bufferedKeyAgentRequestSuffixTest.includes("Err(PipeError::TrailingData)"),
-  "the Key Agent startup boundary must keep exact request/response buffered-suffix negative tests",
+  "Key Agent startup request send must consume and close exactly, response receive must consume frame plus EOF under one authoritative deadline including the instant EOF is observed, no post-startup endpoint type may survive, and exact/premature/delayed/late-EOF/open-without-EOF tests must remain mutation-sensitive",
 );
 const boundDormantBlock =
   /pub\(crate\)\s+struct\s+BoundDormantKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
@@ -15218,6 +15940,9 @@ const boundStorageProvenBlock =
   /pub\(crate\)\s+struct\s+BoundStorageProvenKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
     keyAgentSupervisor,
   )?.groups?.body ?? "";
+const compactBoundStorageProvenDefinition = compactRust(
+  `pub(crate) struct BoundStorageProvenKeyAgent {${boundStorageProvenBlock}\n}`,
+);
 const bindKeyAgentStorageStartup = rustFunctionBlock(
   keyAgentSupervisor,
   "bind_key_agent_storage_startup",
@@ -15249,6 +15974,11 @@ const firstPostSendProvisioningRevalidation =
   compactBindKeyAgentStorageStartupWithRequest.indexOf(
     "ifletErr(error)=provisioning.revalidate()",
   );
+const postStartupStateRevalidationPositions = [
+  ...compactBindKeyAgentStorageStartupWithRequest.matchAll(
+    /revalidate_post_startup_state\(&provisioning,&root_job,&activation,response_transport\)/gu,
+  ),
+].map((match) => match.index);
 const bindKeyAgentStorageStartupOrder = [
   "bound.startup_lease.ensure_live()?",
   "bound.provisioning.revalidate()?",
@@ -15261,6 +15991,7 @@ const bindKeyAgentStorageStartupOrder = [
   "letartifact_identity=bound.activation.artifact_identity()",
   "letBoundDormantKeyAgent{",
   "request_writer.send(request_frame.as_bytes(),deadline)",
+  "Ok(())=>{}",
   "ifletErr(error)=startup_lease.ensure_live()",
 ].map((marker) =>
   compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
@@ -15272,27 +16003,33 @@ bindKeyAgentStorageStartupOrder.push(
     "receive_storage_startup_response(response_reader,deadline,response_transport)",
     "KeyAgentStartupResponse::decode(response_frame.as_slice())",
     "validate_storage_startup_response(request,&response)",
-    "revalidate_post_startup_state(&provisioning,&root_job,&activation,response_transport)",
   ].map((marker) =>
     compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
   ),
+  postStartupStateRevalidationPositions[0] ?? -1,
   ...[
     "startup_transcript_commitment(",
     "startup_lease.verify_and_consume(response.echoed_nonce(),transcript_commitment)",
+  ].map((marker) =>
+    compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
+  ),
+  postStartupStateRevalidationPositions[1] ?? -1,
+  ...[
     "Ok(BoundStorageProvenKeyAgent{",
   ].map((marker) =>
     compactBindKeyAgentStorageStartupWithRequest.indexOf(compactRust(marker)),
   ),
 );
 requireInvariant(
-  bindKeyAgentStorageStartupOrder.every((position) => position !== -1) &&
+  postStartupStateRevalidationPositions.length === 2 &&
+    bindKeyAgentStorageStartupOrder.every((position) => position !== -1) &&
     bindKeyAgentStorageStartupOrder
       .slice(1)
       .every(
         (position, index) =>
           position > bindKeyAgentStorageStartupOrder[index],
       ),
-  "the one Key Agent storage-startup transition must preserve request, resume, response, revalidation, topology, transcript, and minting order",
+  "the one Key Agent storage-startup transition must consume request/response endpoints and preserve request, resume, exact EOF, validation, liveness/membership, transcript, final revalidation, and endpoint-free minting order",
 );
 const validateKeyAgentStorageStartupResponseOrder = [
   "request.nonce().ct_eq(response.echoed_nonce())",
@@ -15305,16 +16042,26 @@ const validateKeyAgentStorageStartupResponseOrder = [
     compactRust(marker),
   ),
 );
+const residentProcessRevalidationPositions = [
+  ...compactRust(revalidatePostKeyAgentStartupState).matchAll(
+    /activation\.revalidate_resident_process\(\)/gu,
+  ),
+].map((match) => match.index);
 const revalidatePostKeyAgentStartupOrder = [
+  residentProcessRevalidationPositions[0] ?? -1,
+  ...[
   "provisioning.revalidate()?",
   "root_job.recheck_supervisor_context()?",
   "root_job.verify_effective_limits()?",
+  "if!activation.is_member_of_root_job(root_job)?",
   "lettopology_is_valid=matchresponse_transport",
   "StartupResponseTransport::Exact=>root_job.active_process_count().map(|count|count==1)",
   "topology_is_valid.then_some(()).ok_or(KeyAgentSupervisorError::RootJobPolicy)",
-].map((marker) =>
-  compactRust(revalidatePostKeyAgentStartupState).indexOf(compactRust(marker)),
-);
+  ].map((marker) =>
+    compactRust(revalidatePostKeyAgentStartupState).indexOf(compactRust(marker)),
+  ),
+  residentProcessRevalidationPositions[1] ?? -1,
+];
 requireInvariant(
   /response_reader:\s*KeyAgentStartupResponseReader/u.test(
     rustLexicalCode(receiveKeyAgentStorageStartupResponse),
@@ -15322,7 +16069,9 @@ requireInvariant(
     receiveKeyAgentStorageStartupResponse.includes(
       "Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>",
     ) &&
-    receiveKeyAgentStorageStartupResponse.includes("KeyAgentResponseReader") &&
+    !/\bKeyAgentResponseReader\b/u.test(
+      rustLexicalCode(receiveKeyAgentStorageStartupResponse),
+    ) &&
     rustCallSites(receiveKeyAgentStorageStartupResponse, "receive").length === 1 &&
     receiveKeyAgentStorageStartupResponse.includes(
       "StartupResponseTransport::Exact => response_reader.receive(deadline)",
@@ -15336,6 +16085,7 @@ requireInvariant(
         (position, index) =>
           position > validateKeyAgentStorageStartupResponseOrder[index],
       ) &&
+    residentProcessRevalidationPositions.length === 2 &&
     revalidatePostKeyAgentStartupOrder.every((position) => position !== -1) &&
     revalidatePostKeyAgentStartupOrder
       .slice(1)
@@ -15343,7 +16093,7 @@ requireInvariant(
         (position, index) =>
           position > revalidatePostKeyAgentStartupOrder[index],
       ),
-  "the storage-startup response helper must consume one exact 88-byte frame before full nonce/process/storage validation and post-resume provisioning/Job/topology revalidation",
+  "the storage-startup response helper must return only an exact-frame-plus-EOF result before full nonce/process/storage validation and exact resident liveness/root-Job membership/topology revalidation",
 );
 requireInvariant(
   /fn\s+bind_key_agent_storage_startup\s*\(\s*bound:\s*BoundDormantKeyAgent,?\s*\)\s*->\s*Result<\s*BoundStorageProvenKeyAgent\s*,\s*KeyAgentSupervisorError\s*>/u.test(
@@ -15357,12 +16107,15 @@ requireInvariant(
       "StartupResponseTransport::Exact",
     ) &&
     rustCallSites(keyAgentSupervisor, "resume_for_storage_startup").length === 1 &&
+    compactBoundStorageProvenDefinition ===
+      "pub(crate)structBoundStorageProvenKeyAgent{activation:RunningKeyAgentActivation,root_job:KeyAgentRootJob,handshake:VerifiedSupervisorHandshake,install_continuity:VerifiedKeyAgentInstallContinuity,not_sync:PhantomData<Cell<()>>,provisioning:PreparedKeyAgentProvisioning,}" &&
     boundStorageProvenBlock.includes(
       "activation: RunningKeyAgentActivation",
     ) &&
     boundStorageProvenBlock.includes("root_job: KeyAgentRootJob") &&
-    boundStorageProvenBlock.includes("request_writer: KeyAgentRequestWriter") &&
-    boundStorageProvenBlock.includes("response_reader: KeyAgentResponseReader") &&
+    !/\bKeyAgent(?:Startup)?(?:RequestWriter|ResponseReader)\b/u.test(
+      rustLexicalCode(boundStorageProvenBlock),
+    ) &&
     boundStorageProvenBlock.includes(
       "handshake: VerifiedSupervisorHandshake",
     ) &&
@@ -15388,6 +16141,7 @@ requireInvariant(
       "impl fmt::Debug for BoundStorageProvenKeyAgent",
     ) &&
     keyAgentSupervisor.includes("[DETACHED RUNNING KEY AGENT]") &&
+    keyAgentSupervisor.includes("[EXACT EOF; NO RETAINED ENDPOINTS]") &&
     keyAgentSupervisor.includes("[VERIFIED STORAGE-STARTUP TRANSCRIPT]") &&
     (compactBindKeyAgentStorageStartupWithRequest.match(
       /install_continuity/gu,
@@ -15399,7 +16153,7 @@ requireInvariant(
       "letBoundDormantKeyAgent{activation,root_job,request_writer,response_reader,startup_lease,install_continuity,not_sync:_,provisioning,}=bound;",
     ) &&
     compactBindKeyAgentStorageStartupWithRequest.includes(
-      "Ok(BoundStorageProvenKeyAgent{activation,root_job,request_writer,response_reader,handshake,install_continuity,not_sync:PhantomData,provisioning,})",
+      "Ok(BoundStorageProvenKeyAgent{activation,root_job,handshake,install_continuity,not_sync:PhantomData,provisioning,})",
     ) &&
     rustStructLiteralSites(
       bindKeyAgentStorageStartupWithRequest,
@@ -15429,7 +16183,250 @@ requireInvariant(
         `${bindKeyAgentStorageStartup}\n${bindKeyAgentStorageStartupWithRequest}\n${keyAgentStartupTranscriptCommitment}`,
       ),
     ),
-  "one consuming supervisor transition must bind the exact storage-startup transcript and mint only BoundStorageProvenKeyAgent with retained non-operational endpoints",
+  "one consuming supervisor transition must bind the exact storage-startup transcript and mint only an endpoint-free BoundStorageProvenKeyAgent after exact EOF, resident liveness, exact Job membership, and topology revalidation",
+);
+const exactPostKeyAgentStartupRevalidation = compactRust(`
+fn revalidate_post_startup_state(
+    provisioning: &PreparedKeyAgentProvisioning,
+    root_job: &KeyAgentRootJob,
+    #[cfg_attr(not(test), allow(unused_variables))] activation: &RunningKeyAgentActivation,
+    response_transport: StartupResponseTransport,
+) -> Result<(), KeyAgentSupervisorError> {
+    activation.revalidate_resident_process()?;
+    provisioning.revalidate()?;
+    root_job.recheck_supervisor_context()?;
+    root_job.verify_effective_limits()?;
+    if !activation.is_member_of_root_job(root_job)? {
+        return Err(KeyAgentSupervisorError::RootJobPolicy);
+    }
+    let topology_is_valid = match response_transport {
+        StartupResponseTransport::Exact => root_job.active_process_count().map(|count| count == 1),
+        #[cfg(test)]
+        StartupResponseTransport::PinnedLibtestTerse => {
+            root_job.verify_kernel_fixture_topology_for_test(activation.process_id())
+        }
+    }?;
+    topology_is_valid
+        .then_some(())
+        .ok_or(KeyAgentSupervisorError::RootJobPolicy)?;
+    activation.revalidate_resident_process().map_err(Into::into)
+}
+`);
+const keyAgentStorageProvenContract = (source) => {
+  let aggregateBody;
+  let transition;
+  let receiveResponse;
+  let revalidate;
+  try {
+    aggregateBody =
+      /pub\(crate\)\s+struct\s+BoundStorageProvenKeyAgent\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
+        source,
+      )?.groups?.body ?? "";
+    transition = rustFunctionBlock(
+      source,
+      "bind_key_agent_storage_startup_with_request",
+    );
+    receiveResponse = rustFunctionBlock(source, "receive_storage_startup_response");
+    revalidate = rustFunctionBlock(source, "revalidate_post_startup_state");
+  } catch {
+    return false;
+  }
+  const compactAggregate = compactRust(
+    `pub(crate) struct BoundStorageProvenKeyAgent {${aggregateBody}\n}`,
+  );
+  const compactTransition = compactRust(transition);
+  const compactRevalidate = compactRust(revalidate);
+  const transitionRevalidations = [
+    ...compactTransition.matchAll(
+      /revalidate_post_startup_state\(&provisioning,&root_job,&activation,response_transport\)/gu,
+    ),
+  ].map((match) => match.index);
+  const residentRevalidations = [
+    ...compactRevalidate.matchAll(/activation\.revalidate_resident_process\(\)/gu),
+  ].map((match) => match.index);
+  const membership = compactRevalidate.indexOf(
+    "if!activation.is_member_of_root_job(root_job)?",
+  );
+  const exactTopology = compactRevalidate.indexOf(
+    "StartupResponseTransport::Exact=>root_job.active_process_count().map(|count|count==1)",
+  );
+  const mint = compactTransition.indexOf("Ok(BoundStorageProvenKeyAgent{");
+  return (
+    compactAggregate ===
+      "pub(crate)structBoundStorageProvenKeyAgent{activation:RunningKeyAgentActivation,root_job:KeyAgentRootJob,handshake:VerifiedSupervisorHandshake,install_continuity:VerifiedKeyAgentInstallContinuity,not_sync:PhantomData<Cell<()>>,provisioning:PreparedKeyAgentProvisioning,}" &&
+    compactRevalidate === exactPostKeyAgentStartupRevalidation &&
+    !/\b(?:KeyAgentRequestWriter|KeyAgentResponseReader)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    compactTransition.includes(
+      "matchrequest_writer.send(request_frame.as_bytes(),deadline){Ok(())=>{}Err(error)=>{drop(activation);returnErr(error.into());}}",
+    ) &&
+    transitionRevalidations.length === 2 &&
+    transitionRevalidations[0] < transitionRevalidations[1] &&
+    transitionRevalidations[1] < mint &&
+    compactTransition.includes(
+      "Ok(BoundStorageProvenKeyAgent{activation,root_job,handshake,install_continuity,not_sync:PhantomData,provisioning,})",
+    ) &&
+    /fn\s+receive_storage_startup_response\s*\([\s\S]*response_reader:\s*KeyAgentStartupResponseReader,[\s\S]*\)\s*->\s*Result<\s*Zeroizing<\[u8;\s*KEY_AGENT_STARTUP_RESPONSE_BYTES\]>,\s*PipeError\s*>/u.test(
+      rustLexicalCode(receiveResponse),
+    ) &&
+    !/\bKeyAgentResponseReader\b/u.test(rustLexicalCode(receiveResponse)) &&
+    residentRevalidations.length === 2 &&
+    residentRevalidations[0] < compactRevalidate.indexOf("provisioning.revalidate()?") &&
+    membership > compactRevalidate.indexOf("root_job.verify_effective_limits()?") &&
+    membership < exactTopology &&
+    exactTopology < residentRevalidations[1] &&
+    compactRevalidate.includes(
+      "topology_is_valid.then_some(()).ok_or(KeyAgentSupervisorError::RootJobPolicy)?;activation.revalidate_resident_process().map_err(Into::into)",
+    )
+  );
+};
+const keyAgentStorageProvenMutationProbes = [
+  withVacuousRustEarlyOk(
+    keyAgentSupervisor,
+    "revalidate_post_startup_state",
+  ),
+  keyAgentSupervisor.replace(
+    "    root_job: KeyAgentRootJob,\n    handshake: VerifiedSupervisorHandshake,",
+    "    root_job: KeyAgentRootJob,\n    response_reader: KeyAgentStartupResponseReader,\n    handshake: VerifiedSupervisorHandshake,",
+  ),
+  keyAgentSupervisor.replace("    activation.revalidate_resident_process()?;\n", ""),
+  keyAgentSupervisor.replace(
+    "    if !activation.is_member_of_root_job(root_job)? {",
+    "    if false {",
+  ),
+  keyAgentSupervisor.replace("count == 1", "count <= 2"),
+  (() => {
+    const needle =
+      "revalidate_post_startup_state(&provisioning, &root_job, &activation, response_transport)";
+    const index = keyAgentSupervisor.lastIndexOf(needle);
+    return index === -1
+      ? keyAgentSupervisor
+      : `${keyAgentSupervisor.slice(0, index)}bypass_post_startup_state_revalidation()${keyAgentSupervisor.slice(index + needle.length)}`;
+  })(),
+];
+const keyAgentStorageProvenUnwindTestContract = (source) => {
+  let unwindTest;
+  try {
+    unwindTest = rustFunctionBlock(
+      source,
+      "storage_proven_aggregate_unwind_synchronously_aborts_the_exact_process",
+    );
+  } catch {
+    return false;
+  }
+  const compact = compactRust(unwindTest);
+  const order = [
+    "letbound=bind_key_agent_storage_startup_for_kernel_test(dormant)?",
+    "letobservation=bound.activation.duplicate_process_observation()?",
+    "letworker=std::thread::spawn(move||",
+    "let_resident_cleanup_guard=bound",
+    "std::panic::resume_unwind(",
+    "assert!(worker.join().is_err())",
+    "assert!(!storage_root.exists())",
+    "observation.rejected_exit_code()?",
+    "REJECTED_PROCESS_EXIT_CODE",
+  ].map((marker) => compact.indexOf(marker));
+  return (
+    !hasVacuousRustTestEscape(unwindTest) &&
+    order.every((position) => position !== -1) &&
+    order.slice(1).every((position, index) => position > order[index])
+  );
+};
+const keyAgentStorageProvenUnwindTest = rustFunctionBlock(
+  keyAgentSupervisorSource,
+  "storage_proven_aggregate_unwind_synchronously_aborts_the_exact_process",
+);
+const keyAgentStorageProvenUnwindTestMutationProbes = [
+  withVacuousRustEarlyOk(
+    keyAgentStorageProvenUnwindTest,
+    "storage_proven_aggregate_unwind_synchronously_aborts_the_exact_process",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentStorageProvenUnwindTest,
+    "storage_proven_aggregate_unwind_synchronously_aborts_the_exact_process",
+    "Result::Ok(())",
+  ),
+  keyAgentStorageProvenUnwindTest.replace(
+    "            let _resident_cleanup_guard = bound;",
+    "            core::mem::forget(bound);",
+  ),
+  keyAgentStorageProvenUnwindTest.replace(
+    "        assert!(worker.join().is_err());\n        assert!(!storage_root.exists());",
+    "        assert!(worker.join().is_ok());\n        assert!(!storage_root.exists());",
+  ),
+  keyAgentStorageProvenUnwindTest.replace(
+    "            observation.rejected_exit_code()?,\n            REJECTED_PROCESS_EXIT_CODE",
+    "            0,\n            0",
+  ),
+];
+const keyAgentResidentExitTestContract = (source) => {
+  let residentExitTest;
+  try {
+    residentExitTest = rustFunctionBlock(
+      source,
+      "resident_revalidation_rejects_the_exact_process_after_exit",
+    );
+  } catch {
+    return false;
+  }
+  const compact = compactRust(residentExitTest);
+  const order = [
+    "letdormant=bind_dormant_key_agent_for_kernel_test(",
+    "letbound=bind_key_agent_storage_startup_for_kernel_test(dormant)?",
+    "letobservation=bound.activation.duplicate_process_observation()?",
+    "observation.terminate_for_resident_revalidation_test()?",
+    "bound.activation.revalidate_resident_process()",
+    "Err(KeyAgentActivationError::ResidentState)",
+    "observation.rejected_exit_code()?",
+    "REJECTED_PROCESS_EXIT_CODE",
+    "drop(bound)",
+    "assert!(!storage_root.exists())",
+  ].map((marker) => compact.indexOf(marker));
+  return (
+    !hasVacuousRustTestEscape(residentExitTest) &&
+    order.every((position) => position !== -1) &&
+    order.slice(1).every((position, index) => position > order[index])
+  );
+};
+const keyAgentResidentExitTestMutationProbes = [
+  withVacuousRustEarlyOk(
+    keyAgentSupervisorSource,
+    "resident_revalidation_rejects_the_exact_process_after_exit",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentSupervisorSource,
+    "resident_revalidation_rejects_the_exact_process_after_exit",
+    "Result::Ok(())",
+  ),
+  keyAgentSupervisorSource.replace(
+    "        observation.terminate_for_resident_revalidation_test()?;\n",
+    "",
+  ),
+  keyAgentSupervisorSource.replace(
+    "            Err(KeyAgentActivationError::ResidentState)\n",
+    "            Ok(())\n",
+  ),
+];
+requireInvariant(
+  keyAgentStorageProvenContract(keyAgentSupervisor) &&
+    keyAgentStorageProvenMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentSupervisor && !keyAgentStorageProvenContract(probe),
+    ) &&
+    keyAgentStorageProvenUnwindTestContract(keyAgentStorageProvenUnwindTest) &&
+    keyAgentStorageProvenUnwindTestMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentStorageProvenUnwindTest &&
+        !keyAgentStorageProvenUnwindTestContract(probe),
+    ) &&
+    keyAgentResidentExitTestContract(keyAgentSupervisorSource) &&
+    keyAgentResidentExitTestMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentSupervisorSource &&
+        !keyAgentResidentExitTestContract(probe),
+    ),
+  "the storage-proven aggregate must remain endpoint-free, require exact process liveness and root-Job membership twice before mint, reject a second member, and synchronously kill/clean up the exact resident process on unwind",
 );
 const heldActivationBlock =
   /pub\(crate\)\s+struct\s+HeldKeyAgentActivation\s*\{(?<body>[\s\S]*?)\n\}/u.exec(
@@ -15457,6 +16454,43 @@ const runningActivationImpl = rustItemBlock(
 const runningActivationMethods = [...runningActivationImpl.matchAll(
   /pub\(crate\)\s+(?:const\s+)?fn\s+(\w+)/gu,
 )].map((match) => match[1]);
+const exactRunningKeyAgentResidentRevalidation = compactRust(`
+pub(crate) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
+    self.process.revalidate_resident_process()
+}
+`);
+const exactRunningKeyAgentRootJobMembership = compactRust(`
+pub(crate) fn is_member_of_root_job(
+    &self,
+    root_job: &KeyAgentRootJob,
+) -> Result<bool, KeyAgentActivationError> {
+    self.process.is_member_of_root_job(root_job)
+}
+`);
+const runningKeyAgentResidentDelegationContract = (source) => {
+  let revalidate;
+  let membership;
+  try {
+    revalidate = rustFunctionBlock(source, "revalidate_resident_process");
+    membership = rustFunctionBlock(source, "is_member_of_root_job");
+  } catch {
+    return false;
+  }
+  return (
+    compactRust(revalidate) === exactRunningKeyAgentResidentRevalidation &&
+    compactRust(membership) === exactRunningKeyAgentRootJobMembership
+  );
+};
+const runningKeyAgentResidentDelegationMutationProbes = [
+  runningActivationImpl.replace(
+    "        self.process.revalidate_resident_process()\n",
+    "        let _ = self.process.revalidate_resident_process();\n        Ok(())\n",
+  ),
+  runningActivationImpl.replace(
+    "        self.process.is_member_of_root_job(root_job)\n",
+    "        let _ = self.process.is_member_of_root_job(root_job);\n        Ok(true)\n",
+  ),
+];
 const suspendedDebuggeeStartupImpl = rustLexicalItemBlock(
   keyAgentActivation,
   /impl\s+SuspendedDebuggee\s*\{/u,
@@ -15530,9 +16564,20 @@ requireInvariant(
         "creation_time",
         "artifact_identity",
         "is_detached_and_running",
+        "revalidate_resident_process",
+        "is_member_of_root_job",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
       ]) &&
+    runningKeyAgentResidentDelegationContract(runningActivationImpl) &&
+    runningKeyAgentResidentDelegationMutationProbes.every(
+      (probe) =>
+        probe !== runningActivationImpl &&
+        !runningKeyAgentResidentDelegationContract(probe),
+    ) &&
+    !/#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+(?:revalidate_resident_process|is_member_of_root_job)\b/u.test(
+      runningActivationImpl,
+    ) &&
     /#\[cfg\(test\)\]\s*pub\(crate\)\s+fn\s+duplicate_process_observation/u.test(
       runningActivationImpl,
     ) &&
@@ -17096,13 +18141,13 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
-    unsafeCount: 39,
-    sha256: "bb42b3e715a900372ea314f2c8637fdc7a6cd39eebbf64e3510c49a7eeeeb662",
+    unsafeCount: 40,
+    sha256: "040341dee8dc88c68bbeffb6f63b9d56a07b3b4c71e9e89a907cd6f4f61e1acc",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
-    unsafeCount: 13,
-    sha256: "a009b6553c58a1cb378f45c1316cd1249d3ce5623350f25a2a79353b2712de1d",
+    unsafeCount: 16,
+    sha256: "a14338fd720d4ff27180b23b4379f21464607c97e7b4093fa8bb1ed30898290a",
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
@@ -17126,8 +18171,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
-    unsafeCount: 40,
-    sha256: "4ac64730478967df6cf904269156a3a71ebb43a23bd7b2cb1944e218d4947fa7",
+    unsafeCount: 37,
+    sha256: "8ac14453458ed8597f8f0868f29e9c723291ccea54727562c400c05c7cc81a0c",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -19245,6 +20290,74 @@ const detachedRunningImpl = keyAgentActivation.slice(
 const detachedRunningMethods = [...detachedRunningImpl.matchAll(
   /pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu,
 )].map((match) => match[1]);
+const exactDetachedKeyAgentResidentRevalidation = compactRust(`
+pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
+    if !self.is_detached_and_running() {
+        return Err(KeyAgentActivationError::ResidentState);
+    }
+    if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
+        return Err(KeyAgentActivationError::ResidentState);
+    }
+    Ok(())
+}
+`);
+const exactDetachedKeyAgentRootJobMembership = compactRust(`
+pub(super) fn is_member_of_root_job(
+    &self,
+    root_job: &KeyAgentRootJob,
+) -> Result<bool, KeyAgentActivationError> {
+    root_job
+        .contains_process(self.0.process_handle())
+        .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+}
+`);
+const detachedKeyAgentResidentContract = (source) => {
+  let revalidate;
+  let membership;
+  try {
+    revalidate = rustFunctionBlock(source, "revalidate_resident_process");
+    membership = rustFunctionBlock(source, "is_member_of_root_job");
+  } catch {
+    return false;
+  }
+  return (
+    compactRust(revalidate) === exactDetachedKeyAgentResidentRevalidation &&
+    compactRust(membership) === exactDetachedKeyAgentRootJobMembership &&
+    JSON.stringify(
+      rustCallSites(revalidate, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.0.process.raw()", "0"]]) &&
+    JSON.stringify(
+      rustCallSites(membership, "contains_process").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.0.process_handle()"]])
+  );
+};
+const detachedKeyAgentResidentMutationProbes = [
+  detachedRunningImpl.replace(
+    "    if !self.is_detached_and_running() {\n",
+    "    if false {\n",
+  ),
+  detachedRunningImpl.replace(
+    "WaitForSingleObject(self.0.process.raw(), 0)",
+    "WaitForSingleObject(self.0.process.raw(), 1)",
+  ),
+  detachedRunningImpl.replace("!= WAIT_TIMEOUT", "== WAIT_TIMEOUT"),
+  detachedRunningImpl.replace(
+    "contains_process(self.0.process_handle())",
+    "contains_process(GetCurrentProcess())",
+  ),
+  detachedRunningImpl.replace(
+    "            if !self.is_detached_and_running() {\n",
+    "            if self.process_id() != 0 { return Ok(()); }\n            if !self.is_detached_and_running() {\n",
+  ),
+  detachedRunningImpl.replace(
+    "            root_job\n                .contains_process(self.0.process_handle())\n                .map_err(|_| KeyAgentActivationError::RootJobPolicy)\n",
+    "            let _ = root_job\n                .contains_process(self.0.process_handle())\n                .map_err(|_| KeyAgentActivationError::RootJobPolicy);\n            Ok(true)\n",
+  ),
+];
 requireInvariant(
   keyAgentActivation.includes(
     "pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);",
@@ -19260,9 +20373,16 @@ requireInvariant(
       JSON.stringify([
         "process_id",
         "is_detached_and_running",
+        "revalidate_resident_process",
+        "is_member_of_root_job",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
       ]) &&
+    detachedKeyAgentResidentContract(detachedRunningImpl) &&
+    detachedKeyAgentResidentMutationProbes.every(
+      (probe) =>
+        probe !== detachedRunningImpl && !detachedKeyAgentResidentContract(probe),
+    ) &&
     !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedRunningDebuggee/u.test(
       keyAgentActivation,
     ) &&
@@ -19272,7 +20392,7 @@ requireInvariant(
     keyAgentActivation.includes(
       'formatter.write_str("DetachedRunningDebuggee([REDACTED HANDLES AND IDENTITY])")',
     ),
-  "the detached-running Key Agent type-state must remain a non-cloneable, non-Sync, observation-only proof with no second transition or operational I/O",
+  "the detached-running Key Agent type-state must remain a non-cloneable, non-Sync, observation-only proof that rechecks exact zero-time liveness and exact root-Job membership with no second transition or operational I/O",
 );
 requireInvariant(
   keyAgentActivation.includes("volume_serial_number == 0") &&
@@ -19438,14 +20558,50 @@ requireInvariant(
     ) &&
     activationArchitecture.includes("complete 188-byte") &&
     activationArchitecture.includes("one exact 88-byte") &&
-    /offers neither a follow-on read\/write\s+method nor signing authority/u.test(
+    /offers neither a\s+follow-on read\/write\s+method nor signing authority/u.test(
       activationArchitecture,
     ) &&
     /public\s+`WindowsGenerationStore` (?:is unchanged and\s+)?remains\s+stable-`TokenUser`-only/u.test(
       activationArchitecture,
     ) &&
-    /immediate\s+buffered-byte snapshots/u.test(activationArchitecture) &&
-    /do not prove the absence\s+of a future delayed suffix or EOF/u.test(
+    [
+      activationArchitecture,
+      activationReadme,
+    ].every(
+      (document) =>
+        /request[^\n]{0,120}EOF/iu.test(document) &&
+        /response[^\n]{0,120}EOF/iu.test(document) &&
+        document.includes("Sleep(INFINITE)") &&
+        /authoritative/iu.test(document) &&
+        /no\s+startup endpoint/iu.test(document) &&
+        /exact\s+resident-process liveness[\s\S]{0,80}root-Job\s+membership/iu.test(
+          document,
+        ),
+    ) &&
+    /exact EOF before decoding, opening the root, or responding/u.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    /complete 88-byte frame and exact EOF within the original\s+startup deadline/u.test(
+      keyAgentProtocolDocumentation,
+    ) &&
+    keyAgentProtocolDocumentation.includes("Sleep(INFINITE)") &&
+    /authoritative protocol proof/u.test(keyAgentProtocolDocumentation) &&
+    /exact resident-process liveness and root-Job\s+membership/u.test(
+      securityDecisions,
+    ) &&
+    /no\s+startup endpoint/u.test(securityDecisions) &&
+    securityDecisions.includes("Sleep(INFINITE)") &&
+    /authoritative protocol proof/u.test(securityDecisions) &&
+    /정확한 188-byte 요청과 EOF를 모두 확인/u.test(rootReadme) &&
+    /정확한 88-byte response와 EOF를 모두 받아야/u.test(rootReadme) &&
+    /exact resident process의 생존과 root Job\s+membership/u.test(rootReadme) &&
+    /startup endpoint는 하나도 보유하지/u.test(rootReadme) &&
+    /Sleep\(INFINITE\).*inert/u.test(rootReadme) &&
+    /authoritative protocol proof/u.test(rootReadme) &&
+    /A future runtime transition[\s\S]{0,30}must establish a separate authenticated bounded channel\./u.test(
+      keyAgentChildBootstrapSource,
+    ) &&
+    !/immediate\s+buffered-byte snapshots|do not prove the absence\s+of a future delayed suffix or EOF/u.test(
       activationArchitecture,
     ) &&
     keyAgentBoundaryDocumentation.includes("WindowsBackend::open_key_agent") &&
@@ -19487,7 +20643,7 @@ requireInvariant(
     ) &&
     activationReadme.includes("signed immutable artifacts") &&
     activationReadme.includes("exact DLL/dependency E2E evidence") &&
-    activationReadme.includes("future-delayed") &&
+    activationReadme.includes("suffix and missing-EOF negatives") &&
     activationReadme.includes("no generic Key Agent runtime or") &&
     activationReadme.includes("signing IPC exists") &&
     /not a production fresh\s+fixed profile\/root E2E/u.test(activationReadme) &&

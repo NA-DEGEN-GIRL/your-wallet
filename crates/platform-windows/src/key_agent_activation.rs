@@ -74,6 +74,9 @@ pub(crate) enum KeyAgentActivationError {
     /// The exact detached primary thread could not enter the storage probe.
     #[error("Key Agent storage-startup resume failed")]
     StartupResume,
+    /// The exact post-startup process was no longer live in its resident phase.
+    #[error("Key Agent resident process state is invalid")]
+    ResidentState,
     /// The first debug event did not arrive inside the fixed bound.
     #[error("Key Agent process-creation debug event timed out")]
     DebugEventTimeout,
@@ -292,6 +295,21 @@ impl RunningKeyAgentActivation {
         self.process.is_detached_and_running()
     }
 
+    /// Revalidates that the exact detached process is still live after both
+    /// startup streams reached EOF.
+    pub(crate) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
+        self.process.revalidate_resident_process()
+    }
+
+    /// Revalidates membership of this exact retained process in the supplied
+    /// root Job rather than trusting only an aggregate active-process count.
+    pub(crate) fn is_member_of_root_job(
+        &self,
+        root_job: &KeyAgentRootJob,
+    ) -> Result<bool, KeyAgentActivationError> {
+        self.process.is_member_of_root_job(root_job)
+    }
+
     #[cfg(test)]
     pub(crate) fn duplicate_process_observation(
         &self,
@@ -306,7 +324,7 @@ impl RunningKeyAgentActivation {
         &self,
         root_job: &KeyAgentRootJob,
     ) -> Result<bool, KeyAgentActivationError> {
-        self.process.is_member_of_root_job_for_test(root_job)
+        self.is_member_of_root_job(root_job)
     }
 }
 
@@ -325,9 +343,10 @@ impl fmt::Debug for RunningKeyAgentActivation {
 
 /// Test-only, observation-only duplicate of the exact activated process.
 ///
-/// This capability exposes no handle, process identifier, termination, suspend,
-/// resume, or duplication operation. It exists only so integrated kernel tests
-/// can prove that dropping the dormant aggregate synchronously kills the child.
+/// This capability exposes no handle, process identifier, suspend, resume, or
+/// duplication operation. It exists only so integrated kernel tests can prove
+/// synchronous aggregate cleanup and force the exact resident process to exit
+/// before exercising fail-closed liveness revalidation.
 #[cfg(test)]
 pub(crate) struct KeyAgentProcessObservation(sys::TestProcessObservation);
 
@@ -335,6 +354,12 @@ pub(crate) struct KeyAgentProcessObservation(sys::TestProcessObservation);
 impl KeyAgentProcessObservation {
     pub(crate) fn rejected_exit_code(&self) -> Result<u32, KeyAgentActivationError> {
         self.0.rejected_exit_code()
+    }
+
+    pub(crate) fn terminate_for_resident_revalidation_test(
+        &self,
+    ) -> Result<(), KeyAgentActivationError> {
+        self.0.terminate_for_resident_revalidation_test()
     }
 }
 
@@ -1469,6 +1494,27 @@ mod sys {
             self.0.is_detached_and_running()
         }
 
+        pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
+            if !self.is_detached_and_running() {
+                return Err(KeyAgentActivationError::ResidentState);
+            }
+            // SAFETY: a zero-time wait only observes the exact retained process
+            // object. A valid resident Key Agent must remain nonsignaled.
+            if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
+                return Err(KeyAgentActivationError::ResidentState);
+            }
+            Ok(())
+        }
+
+        pub(super) fn is_member_of_root_job(
+            &self,
+            root_job: &KeyAgentRootJob,
+        ) -> Result<bool, KeyAgentActivationError> {
+            root_job
+                .contains_process(self.0.process_handle())
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+        }
+
         #[cfg(test)]
         pub(super) fn duplicate_process_observation(
             &self,
@@ -1481,9 +1527,7 @@ mod sys {
             &self,
             root_job: &KeyAgentRootJob,
         ) -> Result<bool, KeyAgentActivationError> {
-            root_job
-                .contains_process(self.0.process_handle())
-                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+            self.is_member_of_root_job(root_job)
         }
     }
 
@@ -1537,6 +1581,23 @@ mod sys {
             unsafe { GetExitCodeProcess(handle, &raw mut exit_code) }
                 .map_err(|_| KeyAgentActivationError::Cleanup)?;
             Ok(exit_code)
+        }
+
+        pub(super) fn terminate_for_resident_revalidation_test(
+            &self,
+        ) -> Result<(), KeyAgentActivationError> {
+            let handle = HANDLE(self.0.as_raw_handle());
+            // SAFETY: this test-only capability owns a duplicate of the exact
+            // process handle and waits for that same object before returning.
+            unsafe { TerminateProcess(handle, REJECTED_PROCESS_EXIT_CODE) }
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            // SAFETY: the duplicate remains live for this bounded wait on the
+            // exact process just terminated above.
+            if unsafe { WaitForSingleObject(handle, CLEANUP_TIMEOUT_MILLISECONDS) } != WAIT_OBJECT_0
+            {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            Ok(())
         }
     }
 

@@ -292,38 +292,54 @@ attempt nonce, the supervisor-observed nonzero PID and process creation
 can encode only `YourWallet.KeyAgent.Storage.v1`; `cfg(test)` adds only the exact
 CSPRNG test-leaf grammar. Unknown flags, malformed ASCII, nonzero padding,
 sentinel identities, and any request slice whose length is not exactly 188 bytes
-are rejected. On the live pipe the child reads that fixed frame and immediately
-uses `PeekNamedPipe` to reject any suffix already buffered at that boundary,
-before decoding, opening the root, or responding. A byte arriving after the peek
-is detected only during the later disconnect wait and therefore may be detected
-after the success response.
+are rejected. On the live pipe the child must read that fixed frame followed by
+exact EOF before decoding, opening the root, or responding. Any suffix, missing
+EOF, or read failure is rejected before a success response. After that proof the
+child must detach the ambient stdin and stdout entries and close the raw stdin
+handle. The raw stdout pipe survives only as a response-capability handle; it is
+no longer discoverable through `STD_OUTPUT_HANDLE`.
 
 The parent writes that complete request while the exact-image/LPAC-proven child
-still has one verified suspend count. The only consuming resume transition then
-releases that count for this handshake; no raw-thread or caller-selected generic
-resume exists. After sealing its three inherited standard handles as its first
-Windows application operation, the child reads the one request and opens the
-fixed/test leaf beneath the exact OS-rerouted `LOCALAPPDATA` locator. It validates
+still has one verified suspend count. That consuming write closes the sole
+parent request endpoint, and only then does the consuming resume transition
+release the suspend count for this handshake; no raw-thread or caller-selected
+generic resume exists. After sealing its three inherited standard handles as its
+first Windows application operation, the child reads the request plus EOF and
+must complete that stdin-close/stdout-ambient-detach preflight before decoding
+the request or opening the fixed/test leaf beneath the exact OS-rerouted
+`LOCALAPPDATA` locator. It validates
 the `Packages` / fixed-profile / `AC` shape, derives `TokenUser` and the
 AppContainer SID from its own process token, and checks the directory object,
 owner, protected two-ACE DACL, inherited Low/`NW` label, and full file identity.
 
 Only an exact match may produce the 88-byte `YWKSRES1` version-1 success frame.
 That response echoes the nonce and reports the child's own PID, creation time,
-and complete root identity; the parent decodes and compares them independently.
-It then revalidates its no-delete-share root handle, the Job context/limits and
-permitted topology, and the monotonic one-attempt lease. A domain-separated
+and complete root identity. The first response-write attempt is the child-side
+commit point: its result is ignored, as are the following `FlushFileBuffers` and
+`CloseHandle` results for the retained response handle. No error may return to
+`main` after output begins. After those attempts the child leaves a lexical
+startup-only scope, which runs the `Zeroizing` drops for the live request frame,
+decoded request, response, and response frame; only the resident stderr boundary
+and fixed store bindings escape into a non-alertable `Sleep(INFINITE)` loop with
+no further protocol operation. The
+parent requires the complete 88-byte frame and exact EOF within the original
+startup deadline before decoding and comparing the fields independently. That
+exact response-plus-EOF observation is the authoritative protocol proof that the
+child response endpoint closed. It then revalidates its no-delete-share root handle, exact
+resident-process liveness and root-Job membership, Job context/limits, and
+permitted topology before and again after consuming the monotonic one-attempt
+lease, so an exited child cannot cross the join merely by producing EOF. A domain-separated
 SHA-256 transcript commitment covers the held artifact identity and the exact
 request and response frames. The resulting private state retains the running
-process, Job, both parent endpoints, handshake, and root proof; the child
-retains its root and sealed handles until the parent request endpoint closes,
-and it rejects any later input byte without another response. Neither state
-exposes follow-on runtime I/O, a protected-settings capability, or signing
-authority. The parent intentionally consumes exactly 88 response bytes,
-immediately uses `PeekNamedPipe` to reject an already-buffered suffix, and
-retains that endpoint. Because the byte stream stays open, this snapshot does
-not prove that a future delayed response suffix is absent or establish response
-EOF; signed-artifact trailing-output negative evidence remains separate.
+process, Job, handshake, and root proof, but no startup endpoint. The child
+retains sealed stderr and fixed generation-store bindings derived from its
+independently opened root in that infinite-sleep loop until the supervisor Job
+terminates it. A write/flush/close failure yields no successful parent aggregate:
+an incomplete frame or missing EOF fails or times out and the Job tears the child
+down. Neither state exposes follow-on runtime I/O, a protected-settings capability, or signing
+authority, and neither startup stream is a latent command channel. These exact
+EOF checks are repo-local startup-framing proof; signed-artifact trailing-output
+and lifecycle evidence remain separate.
 
 The integrated kernel positive uses a persistent test profile/CSPRNG leaf and two
 `cfg(test)`-only adapters: the response reader consumes one pinned terse libtest
@@ -468,8 +484,9 @@ not atomically close the same-user/ancestor race boundary. Production
 rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
 single-instance, and signed immutable artifact/DLL/dependency E2E remain
-STOP-SHIP. The persistent startup stream still proves neither a future delayed
-suffix nor EOF, and there is no generic runtime/signing IPC.
+STOP-SHIP. Exact request EOF and the parent's authoritative response-plus-EOF
+check do not provide a runtime channel, signing authority, or release evidence;
+there is no generic runtime/signing IPC.
 `COMPILED_RELEASE_POLICY` remains `None`.
 
 The crate-private Key Agent offline-lifecycle channel is a separate closed
@@ -504,8 +521,10 @@ restart, cross-stage use, or replay clears or rejects the pending challenge.
 The compiled offline-lifecycle capability is intentionally unavailable until
 authenticated one-shot helper adapters and its inherited Windows command channel
 are implemented. The Key Agent executable can perform only the separate
-storage-startup proof above, then remains fail-closed and ultimately exits 78;
-it never serves this offline-lifecycle protocol.
+storage-startup attempt above. It preflights stdin close and stdout ambient
+detachment, attempts the response handle's write/flush/close without returning an
+error to `main`, and remains in `Sleep(INFINITE)` under the supervisor Job; it
+never serves this offline-lifecycle protocol.
 
 The display projection separately carries origin/provenance, account, network,
 chain ID, genesis and rule-set identity, RPC observation digest, operation kind,

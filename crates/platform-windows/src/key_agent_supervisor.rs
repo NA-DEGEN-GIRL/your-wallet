@@ -45,8 +45,7 @@ use crate::key_agent_startup::{
     KeyAgentStartupRequest, KeyAgentStartupResponse,
 };
 use crate::pipe::{
-    KeyAgentRequestWriter, KeyAgentResponseReader, KeyAgentStartupRequestWriter,
-    KeyAgentStartupResponseReader, PipeError, PrivateKeyAgentPipes,
+    KeyAgentStartupRequestWriter, KeyAgentStartupResponseReader, PipeError, PrivateKeyAgentPipes,
 };
 
 const ACTIVATION_NONCE_BYTES: usize = 32;
@@ -326,18 +325,17 @@ impl fmt::Debug for BoundDormantKeyAgent {
 /// reopened the supervisor-held storage root and observed the same process
 /// instance and startup nonce.
 ///
-/// This private capability still exposes no runtime request operation and no
-/// signing authority. Field order is security-significant: the running process
-/// is synchronously terminated before the root Job, retained pipe endpoints,
-/// transcript proof, install/release continuity, or held provisioning state are
-/// released. This does not prove a child key bundle, rollback anchor, protected
-/// settings state, or runtime/signing authority.
+/// Both startup connection epochs have ended in exact EOF before this private
+/// capability is minted, and it exposes no runtime request operation or signing
+/// authority. Field order is security-significant: the running process is
+/// synchronously terminated before the root Job, transcript proof,
+/// install/release continuity, or held provisioning state are released. This
+/// does not prove a child key bundle, rollback anchor, protected settings state,
+/// or runtime/signing authority.
 #[must_use = "dropping the storage-proven Key Agent terminates its process tree"]
 pub(crate) struct BoundStorageProvenKeyAgent {
     activation: RunningKeyAgentActivation,
     root_job: KeyAgentRootJob,
-    request_writer: KeyAgentRequestWriter,
-    response_reader: KeyAgentResponseReader,
     handshake: VerifiedSupervisorHandshake,
     install_continuity: VerifiedKeyAgentInstallContinuity,
     not_sync: PhantomData<Cell<()>>,
@@ -350,14 +348,7 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
             .debug_struct("BoundStorageProvenKeyAgent")
             .field("activation", &"[DETACHED RUNNING KEY AGENT]")
             .field("root_job", &"[TWO-PROCESS KILL-ON-CLOSE ROOT JOB]")
-            .field(
-                "request_writer",
-                &"[RETAINED REQUEST HANDLE; NO RUNTIME I/O]",
-            )
-            .field(
-                "response_reader",
-                &"[RETAINED RESPONSE HANDLE; NO RUNTIME I/O]",
-            )
+            .field("startup_streams", &"[EXACT EOF; NO RETAINED ENDPOINTS]")
             .field("handshake", &"[VERIFIED STORAGE-STARTUP TRANSCRIPT]")
             .field(
                 "install_continuity",
@@ -530,13 +521,13 @@ fn bind_key_agent_storage_startup_with_request(
         provisioning,
     } = bound;
 
-    let request_writer = match request_writer.send(request_frame.as_bytes(), deadline) {
-        Ok(writer) => writer,
+    match request_writer.send(request_frame.as_bytes(), deadline) {
+        Ok(()) => {}
         Err(error) => {
             drop(activation);
             return Err(error.into());
         }
-    };
+    }
     if let Err(error) = startup_lease.ensure_live() {
         drop(activation);
         return Err(error);
@@ -549,7 +540,7 @@ fn bind_key_agent_storage_startup_with_request(
     let activation = activation.resume_for_storage_startup()?;
     let response_result =
         receive_storage_startup_response(response_reader, deadline, response_transport);
-    let (response_frame, response_reader) = match response_result {
+    let response_frame = match response_result {
         Ok(response) => response,
         Err(error) => {
             drop(activation);
@@ -588,12 +579,16 @@ fn bind_key_agent_storage_startup_with_request(
                 return Err(error);
             }
         };
+    if let Err(error) =
+        revalidate_post_startup_state(&provisioning, &root_job, &activation, response_transport)
+    {
+        drop(activation);
+        return Err(error);
+    }
 
     Ok(BoundStorageProvenKeyAgent {
         activation,
         root_job,
-        request_writer,
-        response_reader,
         handshake,
         install_continuity,
         not_sync: PhantomData,
@@ -605,13 +600,7 @@ fn receive_storage_startup_response(
     response_reader: KeyAgentStartupResponseReader,
     deadline: Instant,
     response_transport: StartupResponseTransport,
-) -> Result<
-    (
-        Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>,
-        KeyAgentResponseReader,
-    ),
-    PipeError,
-> {
+) -> Result<Zeroizing<[u8; KEY_AGENT_STARTUP_RESPONSE_BYTES]>, PipeError> {
     match response_transport {
         StartupResponseTransport::Exact => response_reader.receive(deadline),
         #[cfg(test)]
@@ -643,9 +632,13 @@ fn revalidate_post_startup_state(
     #[cfg_attr(not(test), allow(unused_variables))] activation: &RunningKeyAgentActivation,
     response_transport: StartupResponseTransport,
 ) -> Result<(), KeyAgentSupervisorError> {
+    activation.revalidate_resident_process()?;
     provisioning.revalidate()?;
     root_job.recheck_supervisor_context()?;
     root_job.verify_effective_limits()?;
+    if !activation.is_member_of_root_job(root_job)? {
+        return Err(KeyAgentSupervisorError::RootJobPolicy);
+    }
     let topology_is_valid = match response_transport {
         StartupResponseTransport::Exact => root_job.active_process_count().map(|count| count == 1),
         #[cfg(test)]
@@ -655,7 +648,8 @@ fn revalidate_post_startup_state(
     }?;
     topology_is_valid
         .then_some(())
-        .ok_or(KeyAgentSupervisorError::RootJobPolicy)
+        .ok_or(KeyAgentSupervisorError::RootJobPolicy)?;
+    activation.revalidate_resident_process().map_err(Into::into)
 }
 
 fn startup_transcript_commitment(
@@ -753,14 +747,11 @@ mod tests {
     use crate::helper::VerifiedHelper;
     use crate::key_agent_activation::KeyAgentActivationError;
     use crate::key_agent_lpac::{KeyAgentLpacError, PreparedKeyAgentProvisioning};
-    use crate::key_agent_root_job::KeyAgentRootJobError;
+    use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobError};
     use crate::key_agent_startup::{
         KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES,
     };
-    use crate::pipe::{
-        PipeError, key_agent_parent_endpoints_are_noninheritable_for_test,
-        key_agent_startup_parent_endpoints_are_noninheritable_for_test,
-    };
+    use crate::pipe::{PipeError, key_agent_startup_parent_endpoints_are_noninheritable_for_test};
     use std::time::{Duration, Instant};
 
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
@@ -1043,6 +1034,12 @@ mod tests {
                 .activation
                 .is_member_of_root_job_for_test(&bound.root_job)?
         );
+        let unrelated_root_job = KeyAgentRootJob::create_for_kernel_test()?;
+        assert!(
+            !bound
+                .activation
+                .is_member_of_root_job_for_test(&unrelated_root_job)?
+        );
         assert!(
             bound
                 .root_job
@@ -1050,10 +1047,7 @@ mod tests {
         );
         assert!(bound.root_job.verify_effective_limits().is_ok());
         assert!(bound.provisioning.revalidate().is_ok());
-        assert!(key_agent_parent_endpoints_are_noninheritable_for_test(
-            &bound.request_writer,
-            &bound.response_reader,
-        )?);
+        assert!(bound.activation.revalidate_resident_process().is_ok());
         assert!(bound.handshake.is_live());
         assert!(
             bound
@@ -1068,12 +1062,63 @@ mod tests {
         let rendered = format!("{bound:?}");
         assert!(rendered.contains("BoundStorageProvenKeyAgent"));
         assert!(rendered.contains("VERIFIED STORAGE-STARTUP TRANSCRIPT"));
+        assert!(rendered.contains("EXACT EOF; NO RETAINED ENDPOINTS"));
         assert!(!rendered.contains(&process_id.to_string()));
         assert!(!rendered.contains(&creation_time.to_string()));
         assert!(storage_root.is_dir());
 
         let observation = bound.activation.duplicate_process_observation()?;
         drop(bound);
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resident_revalidation_rejects_the_exact_process_after_exit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let attestation = attestation_for(&artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
+        let bound = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let observation = bound.activation.duplicate_process_observation()?;
+
+        observation.terminate_for_resident_revalidation_test()?;
+        assert!(matches!(
+            bound.activation.revalidate_resident_process(),
+            Err(KeyAgentActivationError::ResidentState)
+        ));
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+
+        drop(bound);
+        assert!(!storage_root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn storage_proven_aggregate_unwind_synchronously_aborts_the_exact_process()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let attestation = attestation_for(&artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(attestation, artifact, provisioning)?;
+        let bound = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let observation = bound.activation.duplicate_process_observation()?;
+
+        let worker = std::thread::spawn(move || {
+            let _resident_cleanup_guard = bound;
+            std::panic::resume_unwind(Box::new("intentional storage-proven aggregate unwind test"));
+        });
+        assert!(worker.join().is_err());
         assert!(!storage_root.exists());
         assert_eq!(
             observation.rejected_exit_code()?,

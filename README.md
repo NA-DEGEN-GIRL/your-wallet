@@ -521,7 +521,13 @@ cargo test --manifest-path demo/sepolia-wallet/Cargo.toml --locked
 Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. 프로덕션 경로의
 보안 잠금은 그대로 유지됩니다.
 
-- Broker, Key Agent, 승인 UI, 비밀 입력 UI는 종료 코드 `78`로 닫혀 있습니다.
+- Broker와 기본 빌드의 승인 UI·비밀 입력 UI는 종료 코드 `78`로 닫혀 있습니다.
+  Key Agent도 직접 실행하거나 startup 모양이 틀리면 `78`로 닫힙니다. 정확한 private
+  inherited startup만 request exact EOF 뒤 ambient stdin/stdout을 분리하고 raw stdin을
+  닫은 뒤 root work로 진행합니다. response write/flush/close를 시도한 뒤에는 오류를
+  `main`으로 돌려보내지 않고 `Sleep(INFINITE)`에 들어갑니다. 부모가 deadline 안에서
+  exact response와 EOF를 모두 관찰해야만 storage 증명이 완성됩니다. runtime이나 signing
+  protocol은 제공하지 않습니다.
 - Native Host는 하나의 제한된 연결을 유지하며 각 유효 요청에
   `4900 Wallet unavailable`을 반환하고, 입력 종료나 첫 프로토콜 오류 뒤 종료 코드
   `78`로 닫힙니다. 현재 실행 경로의 릴리스 증명은 항상 비활성이라 Broker나 후속
@@ -699,27 +705,41 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   증명입니다. 부모는 자식이 정지된 동안 fresh nonce, 정확한 PID와 process creation
   `FILETIME`, supervisor-held root의 volume serial과 128비트 file ID, 그리고 고정
   production leaf(또는 `cfg(test)`의 정확한 CSPRNG test leaf)를 담은 고정
-  `YWKSREQ1` frame을 먼저 씁니다. 그 뒤에만 검증된 suspend count 하나를 해제합니다.
+  `YWKSREQ1` frame을 먼저 쓰고 parent request writer를 consume해 닫습니다. 그 뒤에만
+  검증된 suspend count 하나를 해제합니다.
   raw thread handle이나 caller-selectable path를 받는 generic resume API는 없습니다.
-- 자식은 stdio sealing 직후 정확한 188-byte 요청 하나를 읽고 즉시
-  `PeekNamedPipe`를 호출해 그 시점에 이미 buffered된 suffix를 root open이나 response
-  전에 거부합니다. 이어 OS가 해당 AppContainer에 대해 돌려준 `LOCALAPPDATA`의 정확한
+- 자식은 stdio sealing 직후 정확한 188-byte 요청과 EOF를 모두 확인하기 전에는 decode나
+  root open을 하지 않습니다. suffix, EOF 부재, read 실패는 response 전에 닫히며, 성공한
+  EOF 뒤에는 ambient stdin/stdout entry를 모두 detach하고 raw stdin을 실제로 닫습니다.
+  raw stdout은 더 이상 `STD_OUTPUT_HANDLE`로 찾을 수 없고 response-only capability 안에만
+  남습니다. 이 preflight가 끝난 뒤에만 OS가 해당 AppContainer에 대해 돌려준
+  `LOCALAPPDATA`의 정확한
   `Packages/<fixed-profile>/AC` 모양을 다시 확인하고, 그 아래 고정/test leaf를 직접
   엽니다. 현재 process token에서 얻은 `TokenUser`와 AppContainer SID를 기준으로
   directory object, owner, protected two-ACE DACL, inherited Low/`NW` label과 전체
   `FILE_ID_INFO`를 검사하고 handle을 유지합니다. 요청과 실제 nonce·PID·creation
-  time·root identity가 모두 같을 때만 정확한 88-byte `YWKSRES1` response를 한 번
-  쓰며, 이후 도착한 request byte는 fail-closed하고 부모 request handle이 닫힐 때까지
-  root와 sealed handles를 유지합니다.
-- 부모도 정확한 88-byte response를 읽은 직후 `PeekNamedPipe`로 이미 buffered된 suffix를
-  거부한 다음 nonce, PID, creation time과 전체 root identity를 독립적으로 비교합니다.
-  이어 held root의 volume/security/identity와 Job context·limits·topology 및 monotonic
-  startup lease를 다시 검사합니다. 성공 증명은 domain, held artifact identity, exact
+  time·root identity가 모두 같을 때만 정확한 88-byte `YWKSRES1` response를 만듭니다.
+  첫 response write 시도가 commit point입니다. 자식은 write 결과와 이어지는
+  `FlushFileBuffers`·`CloseHandle` 결과를 모두 무시하고, output 시작 뒤에는 `main`으로
+  오류를 반환하지 않습니다. 이어 startup 전용 lexical scope를 벗어나면서
+  `request_frame`·`request`·`response`·`response_frame`의 `Zeroizing` owner를 모두
+  drop한 뒤, 그 scope에서 유일하게 빠져나온 sealed stderr 경계와 고정 store binding만
+  들고 non-alertable `Sleep(INFINITE)` loop에 들어갑니다.
+- 부모는 원래 startup deadline 안에서 정확한 88-byte response와 EOF를 모두 받아야
+  decode나 성공 전이를 할 수 있습니다. 이 exact response-plus-EOF 관찰이 child response
+  endpoint close의 authoritative protocol proof입니다. 그 뒤 nonce, PID, creation time과
+  전체 root identity를 독립적으로 비교합니다.
+  이어 held root의 volume/security/identity, exact resident process의 생존과 root Job
+  membership과 Job context·limits·topology를 monotonic startup lease 소비 전과 후에
+  다시 검사하므로, 자식이 종료돼 생긴 EOF만으로는 성공 join을 통과할 수 없습니다.
+  성공 증명은 domain, held artifact identity, exact
   request와 exact response를 SHA-256 transcript commitment로 묶고 running process, root
-  Job, 양쪽 parent pipe endpoint와 no-delete-share root handle을 함께 보유합니다. 두
-  peek은 그 순간의 buffered suffix만 검사하며, 계속 열린 persistent byte stream의
-  future delayed trailing byte나 EOF를 증명하지 않습니다. 이 private 상태에는 generic
-  runtime request나 signing API가 없습니다.
+  Job과 no-delete-share root handle을 보유하지만 startup endpoint는 하나도 보유하지
+  않습니다. 자식은 sealed stderr와 독립적으로 연 root에서 만든 고정 generation-store
+  binding을 유지한 채 Job이 종료할 때까지 `Sleep(INFINITE)`에서 inert하게 남습니다.
+  write/flush/close 실패로 frame이나 EOF가 빠지면 부모는 성공 aggregate를 만들지 않고
+  실패 또는 timeout으로 Job을 정리합니다. startup stream은 runtime channel로 재사용되지
+  않으며 generic runtime request나 signing API도 없습니다.
 - 통합 kernel positive test는 persistent test profile의 CSPRNG leaf를 사용하고, 고정된
   libtest terse preamble과 test process 옆의 선택적 exact System32 `conhost.exe`만
   `cfg(test)` accommodation으로 허용합니다. production parser는 response magic을 byte
@@ -774,8 +794,11 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
   provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
   single-instance, signed immutable artifact 및 DLL/dependency E2E도 모두 남아 있습니다.
-  one-shot stream의 future delayed suffix/EOF도 증명되지 않고 generic runtime/signing IPC도
-  없습니다. `COMPILED_RELEASE_POLICY`는 계속 `None`이며 이 항목들은 **STOP-SHIP**입니다.
+  구현된 request exact EOF와 부모가 authoritative하게 판정하는
+  response-plus-EOF/deadline은 repo-local startup framing 증명일 뿐 runtime channel,
+  signing authority, signed-artifact 증거나 release activation을 제공하지 않습니다.
+  generic runtime/signing IPC도 없고 `COMPILED_RELEASE_POLICY`는 계속 `None`이며 남은
+  항목들은 **STOP-SHIP**입니다.
 - 실제 릴리스 정책과 서명된 설치 증거가 없으면 helper를 실행할 수 없습니다.
 - 실제 signed-artifact E2E와 DLL/dependency 로딩·신원 증거도 아직 없습니다.
 - 독립 보안 검토와 Windows 격리 E2E 증거가 없으면 메인넷 서명이 불가능합니다.

@@ -3,29 +3,32 @@
 //! The parent must temporarily mark the three explicit standard handles as
 //! inheritable so Windows can place them in the new process. The child clears
 //! those bits before any descendant creation can occur. It then accepts only
-//! the fixed storage-startup request, opens and retains the bound root, writes
-//! one response, and waits for the parent disconnect. This module borrows the
-//! process standard handles; it never adopts or closes them.
+//! the fixed storage-startup request through exact EOF, opens and retains the
+//! bound root, writes one response through exact EOF, closes both startup
+//! handles, and remains inert. Startup stdio is never reused as an ad hoc
+//! runtime channel.
 
 #![allow(unsafe_code)]
 
 use core::fmt;
 use core::marker::PhantomData;
-use std::os::windows::io::{BorrowedHandle, RawHandle};
 use std::rc::Rc;
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
-    CompareObjectHandles, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, FILETIME, GetHandleInformation,
-    HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, INVALID_HANDLE_VALUE, SetHandleInformation,
+    CloseHandle, CompareObjectHandles, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, FILETIME,
+    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, INVALID_HANDLE_VALUE,
+    SetHandleInformation,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_TYPE, FILE_TYPE_CHAR, FILE_TYPE_PIPE, GetFileType, ReadFile, WriteFile,
+    FILE_TYPE, FILE_TYPE_CHAR, FILE_TYPE_PIPE, FlushFileBuffers, GetFileType, ReadFile, WriteFile,
 };
 use windows::Win32::System::Console::{
-    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, INFINITE, Sleep,
+};
 use zeroize::Zeroizing;
 
 use crate::key_agent_startup::{
@@ -37,8 +40,6 @@ use crate::key_agent_storage::open_test_key_agent_storage_root_for_child;
 use crate::key_agent_storage::{
     FixedKeyAgentGenerationStoreBindings, open_fixed_key_agent_storage_root_for_child,
 };
-use crate::pipe::reject_buffered_key_agent_startup_bytes;
-
 /// Stable failure category for the Key Agent's earliest child-side boundary.
 ///
 /// The error intentionally retains no raw handle or operating-system details.
@@ -55,12 +56,48 @@ pub struct KeyAgentChildBootstrapError;
 struct SealedKeyAgentStdio {
     stdin: HANDLE,
     stdout: HANDLE,
+    stderr: HANDLE,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl fmt::Debug for SealedKeyAgentStdio {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("SealedKeyAgentStdio([BORROWED NON-INHERITABLE STDIO])")
+    }
+}
+
+/// Sealed stdio after request close and response-table detachment.
+///
+/// Only direct I/O through the retained response handle may still carry bytes;
+/// ambient stdout can no longer reach it. This linear proof is neither
+/// cloneable nor transferable to another thread.
+struct KeyAgentStartupResponseStdio {
+    stdout: HANDLE,
+    stderr: HANDLE,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl fmt::Debug for KeyAgentStartupResponseStdio {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentStartupResponseStdio([REQUEST EOF; DETACHED DIRECT RESPONSE])")
+    }
+}
+
+/// Terminal child state after startup response close was attempted.
+///
+/// Parent-observed exact EOF is the authoritative close proof. Ambient stdin and
+/// stdout are already detached, the raw response handle is no longer retained,
+/// and stderr remains sealed. A future runtime transition must consume this
+/// proof and establish fresh, authenticated, bounded connection epochs. No I/O
+/// operation is exposed here.
+struct ResidentKeyAgentBoundary {
+    stderr: HANDLE,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl fmt::Debug for ResidentKeyAgentBoundary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResidentKeyAgentBoundary([DETACHED STARTUP STREAMS])")
     }
 }
 
@@ -97,6 +134,7 @@ fn seal_inherited_key_agent_stdio() -> Result<SealedKeyAgentStdio, KeyAgentChild
     Ok(SealedKeyAgentStdio {
         stdin,
         stdout,
+        stderr,
         _not_send_or_sync: PhantomData,
     })
 }
@@ -104,82 +142,92 @@ fn seal_inherited_key_agent_stdio() -> Result<SealedKeyAgentStdio, KeyAgentChild
 /// Serves the exact inherited Key Agent storage-startup handshake.
 ///
 /// Standard handles are sealed before any other operation. The function then
-/// reads one fixed request, binds it to this process and the freshly opened
-/// storage root, writes one fixed response, and retains both child proofs until
-/// the parent disconnects its request pipe. Any post-startup input byte fails
-/// closed without another response.
+/// reads one fixed request through exact EOF, binds it to this process and the
+/// freshly opened storage root, attempts one fixed response, and remains inert
+/// while retaining both child proofs. Only the parent may accept that response,
+/// after observing the exact frame through EOF. A future runtime transition
+/// must establish a separate authenticated bounded channel.
 ///
 /// # Errors
 ///
-/// Returns [`KeyAgentChildBootstrapError`] when stdio sealing, exact pipe I/O,
-/// request decoding, process identity, storage opening or revalidation, request
-/// binding, response construction, or the final disconnect contract fails.
+/// Returns [`KeyAgentChildBootstrapError`] when pre-response stdio sealing,
+/// request I/O, request-side startup-handle detachment/close, decoding, process
+/// identity, storage opening or revalidation, request binding, or response
+/// construction fails. No error returns after response output begins.
 pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {
-    let sealed_stdio = seal_inherited_key_agent_stdio()?;
+    let (resident_boundary, generation_store_bindings) = {
+        let sealed_stdio = seal_inherited_key_agent_stdio()?;
 
-    let mut request_frame = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES]);
-    read_exact_synchronous(sealed_stdio.stdin, &mut request_frame)?;
-    // SAFETY: the sealed proof retains this borrowed process-table handle for
-    // the complete call and never adopts or closes it.
-    let stdin = unsafe { BorrowedHandle::borrow_raw(sealed_stdio.stdin.0 as RawHandle) };
-    reject_buffered_key_agent_startup_bytes(stdin).map_err(|_| KeyAgentChildBootstrapError)?;
-    let request = KeyAgentStartupRequest::decode(request_frame.as_slice())
-        .map_err(|_| KeyAgentChildBootstrapError)?;
-
-    let actual_process_id = current_process_id()?;
-    let actual_creation_time = current_process_creation_time()?;
-    #[cfg(test)]
-    let child_root = if request.is_test_mode() {
-        open_test_key_agent_storage_root_for_child(request.storage_leaf())
-    } else {
-        open_fixed_key_agent_storage_root_for_child()
-    }
-    .map_err(|_| KeyAgentChildBootstrapError)?;
-    #[cfg(not(test))]
-    let child_root =
-        open_fixed_key_agent_storage_root_for_child().map_err(|_| KeyAgentChildBootstrapError)?;
-    let actual_storage_identity = child_root.identity();
-
-    if request.expected_process_id() != actual_process_id
-        || request.expected_creation_time() != actual_creation_time
-        || request.storage_root_identity() != actual_storage_identity
-    {
-        return Err(KeyAgentChildBootstrapError);
-    }
-    child_root
-        .revalidate()
-        .map_err(|_| KeyAgentChildBootstrapError)?;
-    let generation_store_bindings = child_root
-        .into_fixed_generation_store_bindings()
-        .map_err(|_| KeyAgentChildBootstrapError)?;
-    #[cfg(test)]
-    if request.is_test_mode() {
-        generation_store_bindings
-            .verify_forbidden_root_rights_for_test()
+        let mut request_frame = Zeroizing::new([0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES]);
+        read_exact_synchronous(sealed_stdio.stdin, &mut request_frame)?;
+        read_exact_eof_synchronous(sealed_stdio.stdin)?;
+        let response_stdio = close_startup_request(sealed_stdio)?;
+        let request = KeyAgentStartupRequest::decode(request_frame.as_slice())
             .map_err(|_| KeyAgentChildBootstrapError)?;
-        crate::storage::exercise_fixed_key_agent_generation_stores_for_test(
-            &generation_store_bindings,
-        )
+
+        let actual_process_id = current_process_id()?;
+        let actual_creation_time = current_process_creation_time()?;
+        #[cfg(test)]
+        let child_root = if request.is_test_mode() {
+            open_test_key_agent_storage_root_for_child(request.storage_leaf())
+        } else {
+            open_fixed_key_agent_storage_root_for_child()
+        }
         .map_err(|_| KeyAgentChildBootstrapError)?;
-        generation_store_bindings
-            .revalidate()
+        #[cfg(not(test))]
+        let child_root = open_fixed_key_agent_storage_root_for_child()
             .map_err(|_| KeyAgentChildBootstrapError)?;
-        if generation_store_bindings.identity() != actual_storage_identity {
+        let actual_storage_identity = child_root.identity();
+
+        if request.expected_process_id() != actual_process_id
+            || request.expected_creation_time() != actual_creation_time
+            || request.storage_root_identity() != actual_storage_identity
+        {
             return Err(KeyAgentChildBootstrapError);
         }
-    }
+        child_root
+            .revalidate()
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+        let generation_store_bindings = child_root
+            .into_fixed_generation_store_bindings()
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+        #[cfg(test)]
+        if request.is_test_mode() {
+            generation_store_bindings
+                .verify_forbidden_root_rights_for_test()
+                .map_err(|_| KeyAgentChildBootstrapError)?;
+            crate::storage::exercise_fixed_key_agent_generation_stores_for_test(
+                &generation_store_bindings,
+            )
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+            generation_store_bindings
+                .revalidate()
+                .map_err(|_| KeyAgentChildBootstrapError)?;
+            if generation_store_bindings.identity() != actual_storage_identity {
+                return Err(KeyAgentChildBootstrapError);
+            }
+        }
 
-    let response = KeyAgentStartupResponse::from_validated_request(
-        &request,
-        actual_process_id,
-        actual_creation_time,
-        actual_storage_identity,
-    )
-    .map_err(|_| KeyAgentChildBootstrapError)?;
-    let response_frame = response.encode().map_err(|_| KeyAgentChildBootstrapError)?;
-    write_exact_synchronous(sealed_stdio.stdout, response_frame.as_bytes())?;
+        let response = KeyAgentStartupResponse::from_validated_request(
+            &request,
+            actual_process_id,
+            actual_creation_time,
+            actual_storage_identity,
+        )
+        .map_err(|_| KeyAgentChildBootstrapError)?;
+        let response_frame = response.encode().map_err(|_| KeyAgentChildBootstrapError)?;
+        // Response output is the child-side commit point. Once any response write
+        // is attempted, no fallible path may return to `main`: the parent alone
+        // decides success from the exact frame plus EOF, otherwise its deadline and
+        // kill-on-close Job terminate this inert process.
+        let _ = write_exact_synchronous(response_stdio.stdout, response_frame.as_bytes());
+        let resident_boundary = close_startup_response(response_stdio);
+        // This is the only escape from the startup-transcript scope. All four
+        // nonce/frame owners drop and zeroize in place before residence begins.
+        (resident_boundary, generation_store_bindings)
+    };
 
-    wait_for_parent_disconnect(&sealed_stdio, &generation_store_bindings)
+    remain_inert(resident_boundary, generation_store_bindings)
 }
 
 fn current_process_id() -> Result<u32, KeyAgentChildBootstrapError> {
@@ -269,24 +317,17 @@ fn write_exact_synchronous(
     Ok(())
 }
 
-fn wait_for_parent_disconnect(
-    sealed_stdio: &SealedKeyAgentStdio,
-    _generation_store_bindings: &FixedKeyAgentGenerationStoreBindings,
-) -> Result<(), KeyAgentChildBootstrapError> {
+fn read_exact_eof_synchronous(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {
     let mut byte = [0_u8; 1];
     let mut transferred = 0_u32;
-    // SAFETY: the sealed proof retains the borrowed synchronous stdin pipe;
-    // the one-byte destination and count remain live for the complete call,
-    // and no OVERLAPPED is supplied.
-    let result = unsafe {
-        ReadFile(
-            sealed_stdio.stdin,
-            Some(&mut byte),
-            Some(&raw mut transferred),
-            None,
-        )
-    };
-    reject_nonzero_post_startup_bytes(transferred)?;
+    // SAFETY: the sealed proof retains the borrowed synchronous request server;
+    // the one-byte destination and count remain live for the complete call. The
+    // parent closes its client immediately after the fixed request, so this read
+    // waits for exact EOF and turns every delayed suffix into a rejection.
+    let result = unsafe { ReadFile(handle, Some(&mut byte), Some(&raw mut transferred), None) };
+    if transferred != 0 {
+        return Err(KeyAgentChildBootstrapError);
+    }
     match result {
         Ok(()) => Ok(()),
         Err(error)
@@ -299,10 +340,94 @@ fn wait_for_parent_disconnect(
     }
 }
 
-fn reject_nonzero_post_startup_bytes(transferred: u32) -> Result<(), KeyAgentChildBootstrapError> {
-    (transferred == 0)
-        .then_some(())
-        .ok_or(KeyAgentChildBootstrapError)
+// The sealed proof is intentionally consumed so request-close cannot be replayed
+// while the response-only proof exists.
+#[allow(clippy::needless_pass_by_value)]
+fn close_startup_request(
+    sealed: SealedKeyAgentStdio,
+) -> Result<KeyAgentStartupResponseStdio, KeyAgentChildBootstrapError> {
+    let SealedKeyAgentStdio {
+        stdin,
+        stdout,
+        stderr,
+        _not_send_or_sync: _,
+    } = sealed;
+    // Detach both ambient protocol entries before any response byte can be
+    // written. Every operation is attempted without rollback; on failure the
+    // exact response handle is also closed and no response is emitted.
+    let stdin_detached = detach_standard_handle(STD_INPUT_HANDLE);
+    let stdout_detached = detach_standard_handle(STD_OUTPUT_HANDLE);
+    let stdin_closed = close_raw_handle(stdin);
+    if stdin_detached.is_err() || stdout_detached.is_err() || stdin_closed.is_err() {
+        let _ = close_raw_handle(stdout);
+        return Err(KeyAgentChildBootstrapError);
+    }
+    Ok(KeyAgentStartupResponseStdio {
+        stdout,
+        stderr,
+        _not_send_or_sync: PhantomData,
+    })
+}
+
+// The response-only proof is intentionally consumed. No error may escape after
+// output begins: close success is proven externally by parent-observed EOF, and
+// close failure leaves the parent waiting until its deadline kills this process.
+#[allow(clippy::needless_pass_by_value)]
+fn close_startup_response(sealed: KeyAgentStartupResponseStdio) -> ResidentKeyAgentBoundary {
+    let KeyAgentStartupResponseStdio {
+        stdout,
+        stderr,
+        _not_send_or_sync: _,
+    } = sealed;
+    // SAFETY: stdout is the exact sealed synchronous response-pipe handle. The
+    // parent is already performing its bounded read, so this waits only for the
+    // fixed response to be consumed; every failure still closes the handle.
+    let _ = unsafe { FlushFileBuffers(stdout) };
+    let _ = close_raw_handle(stdout);
+    ResidentKeyAgentBoundary {
+        stderr,
+        _not_send_or_sync: PhantomData,
+    }
+}
+
+fn detach_standard_handle(
+    standard_handle: windows::Win32::System::Console::STD_HANDLE,
+) -> Result<(), KeyAgentChildBootstrapError> {
+    // SAFETY: this is one of the exact de-inherited startup table entries.
+    // Clearing it before any associated close prevents later numeric-handle
+    // reuse from becoming accidental startup-stream access.
+    unsafe { SetStdHandle(standard_handle, HANDLE::default()) }
+        .map_err(|_| KeyAgentChildBootstrapError)
+}
+
+fn close_raw_handle(handle: HANDLE) -> Result<(), KeyAgentChildBootstrapError> {
+    // SAFETY: no Rust owner exists for this exact inherited process-table
+    // handle. Each transition calls this helper at most once for that value.
+    unsafe { CloseHandle(handle) }.map_err(|_| KeyAgentChildBootstrapError)
+}
+
+// Both resident proofs are intentionally consumed and retained for the entire
+// process lifetime; accepting borrows would not encode that ownership boundary.
+#[allow(clippy::needless_pass_by_value)]
+fn remain_inert(
+    resident_boundary: ResidentKeyAgentBoundary,
+    generation_store_bindings: FixedKeyAgentGenerationStoreBindings,
+) -> ! {
+    let ResidentKeyAgentBoundary {
+        stderr,
+        _not_send_or_sync: _,
+    } = resident_boundary;
+    let resident_proofs = (stderr, generation_store_bindings);
+    loop {
+        // Keep both proofs observably live. The supervisor-owned kill-on-close
+        // Job terminates this exact process; there is deliberately no runtime
+        // request or signing operation here.
+        core::hint::black_box(&resident_proofs);
+        // SAFETY: an infinite non-alertable sleep has no failure result and
+        // allocates no post-response synchronization state. If it ever returns,
+        // the loop immediately re-enters it.
+        unsafe { Sleep(INFINITE) };
+    }
 }
 
 fn seal_exact_standard_handle_set(handles: [HANDLE; 3]) -> Result<(), KeyAgentChildBootstrapError> {
@@ -375,9 +500,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT,
+        HANDLE_FLAGS, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
+    use windows::Win32::System::Pipes::CreatePipe;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CreateEventW, CreateProcessW, GetCurrentProcess, PROCESS_INFORMATION,
         STARTUPINFOW, TerminateProcess, WaitForSingleObject,
@@ -386,10 +512,12 @@ mod tests {
 
     use super::{
         KeyAgentChildBootstrapError, current_process_creation_time, handle_flags, invalid,
-        reject_nonzero_post_startup_bytes, same_object, seal_exact_standard_handle_set,
-        seal_inherited_key_agent_stdio, serve_inherited_key_agent_storage_startup,
+        read_exact_eof_synchronous, read_exact_synchronous, same_object,
+        seal_exact_standard_handle_set, seal_inherited_key_agent_stdio,
+        serve_inherited_key_agent_storage_startup,
     };
     use crate::inheritable_handle_launch::acquire_inheritable_handle_launch;
+    use crate::key_agent_startup::KEY_AGENT_STARTUP_REQUEST_BYTES;
     use crate::pipe::{PipeError, PrivateKeyAgentPipes};
 
     const CHILD_FIXTURE: &str = "key_agent_child_bootstrap::tests::inherited_stdio_child_fixture";
@@ -600,14 +728,63 @@ mod tests {
     }
 
     #[test]
-    fn post_startup_input_contract_accepts_only_zero_bytes() {
-        assert_eq!(reject_nonzero_post_startup_bytes(0), Ok(()));
-        for transferred in [1, u32::MAX] {
-            assert_eq!(
-                reject_nonzero_post_startup_bytes(transferred),
-                Err(KeyAgentChildBootstrapError)
-            );
-        }
+    fn startup_request_requires_the_exact_frame_followed_by_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (reader, writer) = anonymous_pipe()?;
+        let frame = [0x41_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        let mut writer = std::fs::File::from(writer);
+        writer.write_all(&frame)?;
+        drop(writer);
+
+        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        let reader_handle = HANDLE(reader.as_raw_handle());
+        read_exact_synchronous(reader_handle, &mut received)?;
+        assert_eq!(received, frame);
+        assert_eq!(read_exact_eof_synchronous(reader_handle), Ok(()));
+
+        let (reader, writer) = anonymous_pipe()?;
+        let mut writer = std::fs::File::from(writer);
+        writer.write_all(&frame[..KEY_AGENT_STARTUP_REQUEST_BYTES - 1])?;
+        drop(writer);
+        let mut truncated = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        assert_eq!(
+            read_exact_synchronous(HANDLE(reader.as_raw_handle()), &mut truncated),
+            Err(KeyAgentChildBootstrapError)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_request_rejects_a_suffix_released_after_the_fixed_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (reader, writer) = anonymous_pipe()?;
+        let (release_suffix, wait_for_frame) = std::sync::mpsc::sync_channel::<()>(0);
+        let frame = [0x42_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        let writer = std::thread::spawn(move || -> std::io::Result<()> {
+            let mut writer = std::fs::File::from(writer);
+            writer.write_all(&frame)?;
+            wait_for_frame
+                .recv()
+                .map_err(|_| std::io::Error::other("request-frame barrier closed"))?;
+            writer.write_all(&[0x7f])?;
+            Ok(())
+        });
+
+        let reader_handle = HANDLE(reader.as_raw_handle());
+        let mut received = [0_u8; KEY_AGENT_STARTUP_REQUEST_BYTES];
+        read_exact_synchronous(reader_handle, &mut received)?;
+        assert_eq!(received, frame);
+        release_suffix
+            .send(())
+            .map_err(|_| std::io::Error::other("request-suffix barrier closed"))?;
+        assert_eq!(
+            read_exact_eof_synchronous(reader_handle),
+            Err(KeyAgentChildBootstrapError)
+        );
+        writer
+            .join()
+            .map_err(|_| std::io::Error::other("request-suffix writer panicked"))??;
+        Ok(())
     }
 
     #[test]
@@ -796,5 +973,27 @@ mod tests {
         let stderr = unsafe { super::GetStdHandle(super::STD_ERROR_HANDLE) }
             .map_err(|_| KeyAgentChildBootstrapError)?;
         Ok([stdin, stdout, stderr])
+    }
+
+    fn anonymous_pipe() -> Result<(OwnedHandle, OwnedHandle), KeyAgentChildBootstrapError> {
+        let mut read = HANDLE::default();
+        let mut write = HANDLE::default();
+        // SAFETY: both output pointers name initialized storage. Successful raw
+        // handles are transferred exactly once into independent owners below.
+        unsafe { CreatePipe(&raw mut read, &raw mut write, None, 0) }
+            .map_err(|_| KeyAgentChildBootstrapError)?;
+        if invalid(read) || invalid(write) {
+            for handle in [read, write].into_iter().filter(|handle| !invalid(*handle)) {
+                // SAFETY: this branch retains each fresh valid raw handle and
+                // transfers none of them into an owner.
+                let _ = unsafe { CloseHandle(handle) };
+            }
+            return Err(KeyAgentChildBootstrapError);
+        }
+        // SAFETY: successful CreatePipe returned two fresh owned handles.
+        let read = unsafe { OwnedHandle::from_raw_handle(read.0) };
+        // SAFETY: same unique ownership transfer for the write endpoint.
+        let write = unsafe { OwnedHandle::from_raw_handle(write.0) };
+        Ok((read, write))
     }
 }

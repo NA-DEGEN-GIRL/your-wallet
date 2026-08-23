@@ -16,7 +16,7 @@ invariants, not a claim that the current binaries establish every boundary.
 | Approval helper | `approval-wire` is the single bounded v2 codec used by the authorization TCB, Key Agent, Windows channel, and native frontend. The Key Agent creates one crate-private, non-clone `PreparedApprovalPrompt`; its exact digest, nonce, sampled expiry, locally protected anti-phishing phrase, risk, and every display field are request-hashed and retained across the interaction. The prompt additionally carries a one-shot protected-settings lease bound to the authenticated generation, phrase revision, canonical record digest, exclusive owner evidence, process instance, and a fresh nonce. Immediately before authorization or key use, the Key Agent consumes that lease and freshly reloads the exact protected record; lock, rotation, owner takeover, restart, or replay invalidates it. The Windows library gives the child exactly two inherited pipe objects—stdin plus one response-pipe entry used as the numerically equal stdout and stderr values—and launches the allowlisted LPAC helper, enforces monotonic I/O deadlines and exact response-plus-EOF, and binds held process/file/manifest/profile identity into a fresh transcript. The runtime-enabled child's first Windows/CRT application operation seals those two exact objects with exact inherit-only preflags, no-rollback sequential clears, and exact-zero readback before binary mode. Its positive-sentinel grandchild negative is non-exhaustive; the clears are non-atomic and prevent neither later re-enabling nor explicit duplication, and neither is signed-artifact or release evidence. High-risk approval requires a monotonic two-second physical pointer or Space hold. Default executable builds exit 78; the opt-in runtime contract consumes one complete bounded inherited request, invokes the native surface, and writes one exact response without diagnostics. Signed-artifact end-to-end evidence is absent. |
 | Secret-input helper | The library has exact prompt/outcome codecs, bounded zeroizing response reads, and a non-persisting native secret surface. Its high-level parent API requires the release-attested restricted launcher and exact manifest-derived Secret Input role, atomically owns separate request/response pipes and the held helper/job, transfers the canonical prompt plus EOF, and performs cancellable/drained bounded response reads through EOF. The proof binds the exact prompt, held file/process/LPAC identity, and a fresh OS-CSPRNG challenge, then permits consumption only for that same prompt. Default executable builds exit 78 and the compiled release policy is absent. Direct-launch parent-identity denial and immutable signed-artifact evidence remain stop-ship. |
 | Broker/key agent/Windows boundary | Method schemas, state bounds, typed chain evidence, canonical display derivation, request-hashed one-shot approval, nonce lifecycle, signer self-checks, protected pipe/helper verification, and an opaque verified-response capability exist. The Key Agent now also has a crate-private offline-lifecycle wire/controller: exact magic/version/type/request-ID/sequence/deadline/length framing, fixed 64-byte frames, exact EOF, zero reserved fields, a 64-request controller-activation lifetime across one-shot inherited request channels, and distinct duplicate/replay/out-of-order outcomes. Admission pins the bounded wall-clock remainder to a trusted monotonic `Instant`; every frontend receives the exact absolute expiry. After a frontend returns, only the controller can mint a private-field, non-clone checked-deadline capability, and every service/session mutation must consume it. The same capability owns the trusted clock borrow and rechecks the pinned expiry after KDF/derivation/seal/reseal at the last safe point before durable commit, unlock, or pending-state activation; expiry locks without advancing generation or decrypted state. Its closed command set is status, 12/24-word creation, separate backup display/confirmation stages, open, lock, and confirmed-address lookup; no password, mnemonic, confirmation answers, signing, import/export, or network payload is representable. Status, lock, and confirmed-address access use the owned `OfflineWalletService`. Secret-bearing transitions require a crate-sealed frontend capability that can acquire inputs or present a borrowed view but cannot receive the vault service. Recovery display returns a non-clone, live-session-bound capability without mutation; only the deadline-checked controller may consume it into one pending positions-only confirmation, which lock, restart, cross-stage use, or replay clears or rejects. The compiled capability returns stable `Unavailable` and locks because authenticated Secret Input/Recovery adapters and the inherited channel launcher are not wired. The anti-phishing phrase has a sealed Key Agent-only lifecycle: a five-word OS-CSPRNG cue is first committed as pending and is unavailable to prompts until a trusted exact enrollment confirmation. Rotation is a persisted old-to-new pending ceremony. Loads carry typed authenticated-empty/record state, installation/store/class identity, an exclusive owner generation, exact record digest, and previous/high-water anchor evidence; same-generation equivocation, empty-after-observed, rollback, owner takeover, or ambiguous commits lock the lifecycle. The platform storage layer now has a narrow private fixed-role Key Agent generation-store adapter, but no production protected-settings consumer or settings key provisioning is wired yet; independent settings AEAD key custody, exclusive-owner enforcement, and a release-approved non-rollbackable anchor remain blockers. The launcher uses separate deterministic revision-v1, zero-capability LPAC profiles for manifest-derived Approval and Secret Input roles; the names and derived SIDs differ and callers cannot select the profile role. The launcher verifies every suspended child against its exact expected SID, and the Secret Input/recovery bootstrap independently repeats that check. Both use an exact inherited-handle list, minimal environment, suspended token verification, process mitigations, and a single-process kill-on-close job. The authenticated dual-slot store and encrypted Key Agent journal cover reservation, approval-pending, potentially-signed, signed-unbroadcast, broadcasting, submitted, and broadcast-unknown recovery. Raw transaction bytes remain journal-owned and reach an RPC adapter only through a non-clone lease after `Broadcasting` commits. Production rollback-anchor/key provisioning and signed-artifact helper/network/RPC evidence are absent; the compiled release policy is `None`, so launch and signing remain disabled. |
-| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and independently prepared supervisor-held fixed root before detaching with one proven suspend count. Fresh profile/root creation remains a distinct non-launchable pending path. A separate dormant storage-only opener, with zero production callers, opens only the fixed existing leaf using `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; it verifies initial security and complete `FILE_ID_INFO`, canonicalizes and reopens the path, requires identical security and identity, privately retains the canonical path/reopened handle, and revalidates both the held handle and canonical reopen. It neither creates nor repairs/deletes/adopts the root and is distinct from the child `LOCALAPPDATA`/token-derived opener. It cannot observe profile registration or construct `HeldExistingKeyAgentInstallObjects`, `PreparedKeyAgentProvisioning`, or `VerifiedExistingKeyAgentInstall`. The sole production-compiled prepared mint remains the private sealed adoption transition; whole-release binding retains helper-manifest and exact file-object proofs separately, but the opener, adoption transition, release-binding, and dormant supervisor binder all have zero production call sites. The one-shot child/root transcript and private fixed-role store policy remain dormant and expose no generic runtime/signing IPC. Production installer key/checkpoint and journal I/O backends, authoritative profile-registration observation and held-aggregate construction, an exclusive installer lease covering checkpoint/observation/reread ordering, production call sites and recovery, atomic same-user/ancestor race closure, rollback-anchor and storage/AEAD-key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, delayed-suffix/EOF proof, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
+| Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and independently prepared supervisor-held fixed root before detaching with one proven suspend count. Fresh profile/root creation remains a distinct non-launchable pending path. A separate dormant storage-only opener, with zero production callers, opens only the fixed existing leaf using `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; it verifies initial security and complete `FILE_ID_INFO`, canonicalizes and reopens the path, requires identical security and identity, privately retains the canonical path/reopened handle, and revalidates both the held handle and canonical reopen. It neither creates nor repairs/deletes/adopts the root and is distinct from the child `LOCALAPPDATA`/token-derived opener. It cannot observe profile registration or construct `HeldExistingKeyAgentInstallObjects`, `PreparedKeyAgentProvisioning`, or `VerifiedExistingKeyAgentInstall`. The sole production-compiled prepared mint remains the private sealed adoption transition; whole-release binding retains helper-manifest and exact file-object proofs separately, but the opener, adoption transition, release-binding, and dormant supervisor binder all have zero production call sites. The one-shot child/root transcript requires exact request EOF before the child detaches both ambient protocol entries and closes raw stdin; raw stdout survives only in a response capability. Once response output is attempted, write/flush/close results cannot return to `main` and the child enters `Sleep(INFINITE)`. The parent's deadline-bound exact response plus EOF authoritatively proves response-endpoint closure; separate resident-process/Job revalidation completes startup. The parent consumes both endpoints and the retained aggregate has none. This dormant boundary exposes no generic runtime/signing IPC. Production installer key/checkpoint and journal I/O backends, authoritative profile-registration observation and held-aggregate construction, an exclusive installer lease covering checkpoint/observation/reread ordering, production call sites and recovery, atomic same-user/ancestor race closure, rollback-anchor and storage/AEAD-key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
 | Device key protection | The crate-private model generates epoch-1 installation bundles with six pairwise-distinct role secrets and releases them only through role-typed views after an anchored open. Rotation preserves the installation ID, advances the key epoch exactly once, rekeys every role, and remains pending until opaque external evidence binds the exact predecessor commitment to the exact new canonical signed envelope at a strictly newer shared-anchor generation. RSA-3072 OAEP-SHA-256/empty-label and low-S P-256 P1363 identities hash one canonical RFC 5280 SPKI form; CNG blobs are adapter-internal inputs only. The raw identity constructors and sealing markers are private to the key-material module, and the architecture gate scans every production Rust source under `key-agent` for an unreviewed PCP implementation. No production PCP or rollback-anchor adapter exists, so this path remains fail-closed and release-blocking. |
 
 ### Sepolia demo durable activity boundary
@@ -443,13 +443,15 @@ The private storage-startup transition now proves that this exact child opens an
 retains the same root object. While the child remains suspended, the parent sends
 one fixed request containing a fresh nonce, its held PID and process creation
 `FILETIME`, the complete volume-serial/128-bit file identity, and only the fixed
-production leaf or exact test-leaf grammar. The transition then releases the sole
-verified suspend count. The child resolves the leaf through its OS-rerouted
-`LOCALAPPDATA`, derives `TokenUser` and the AppContainer SID from its own token,
-but only after an immediate `PeekNamedPipe` proves that no suffix was already
-buffered after the 188-byte request. It then verifies the directory object, exact
-owner, protected DACL, inherited Low/`NW` mandatory label, and full
-`FILE_ID_INFO` before answering.
+production leaf or exact test-leaf grammar. The consuming write closes the sole
+parent request endpoint, and only then does the transition release the verified
+suspend count. The child requires the exact 188-byte request followed by EOF
+before decoding or opening the root. It then detaches both ambient protocol
+entries, closes the raw stdin handle, and retains raw stdout only in a
+response-capability object. Only after that preflight does it resolve the leaf
+through its OS-rerouted `LOCALAPPDATA`, derive `TokenUser` and the AppContainer
+SID from its own token, and verify the directory object, exact owner, protected
+DACL, inherited Low/`NW` mandatory label, and full `FILE_ID_INFO`.
 
 The child then consumes its held-root capability into exactly four private,
 non-cloneable, thread-bound bindings. `Vault`, `NonceLedger`,
@@ -544,9 +546,10 @@ ancestor path validation is metadata-based rather than atomic. Production
 rollback-anchor and storage/AEAD-key provisioning, protected settings and its
 live lease, authenticated Broker/supervisor topology and single-instance,
 signed immutable artifact and DLL/dependency E2E, and release activation remain
-**STOP-SHIP**. The startup streams still do not prove a future delayed suffix or
-EOF, expose no generic runtime/signing IPC, and `COMPILED_RELEASE_POLICY` is
-`None`.
+**STOP-SHIP**. Exact request EOF and the parent's authoritative
+response-plus-EOF/deadline proof provide only repo-local startup framing; they
+add no generic runtime/signing IPC, signed-artifact evidence, or release
+authority. `COMPILED_RELEASE_POLICY` is `None`.
 
 Parent-side Key Agent, Approval, and Secret Input profile creation/derivation,
 plus Key Agent `GetAppContainerFolderPath`, share one process-wide non-reentrant
@@ -685,23 +688,38 @@ is still suspended, and once more before the aggregate crosses the join. Exactly
 one active Job member is required. The aggregate is non-clone, `!Sync`,
 externally private, has no raw-handle or generic resume operation, and aborts the
 process tree on drop. Its sole consuming transition writes the complete 188-byte
-`YWKSREQ1` request before resume and then releases exactly the verified suspend
-count for storage startup.
+`YWKSREQ1` request while suspended, consumes and closes the request writer, and
+then releases exactly the verified suspend count for storage startup. The child
+must observe exact request EOF, detach the ambient stdin/stdout entries, and
+close raw stdin before decoding or opening the root. Raw stdout remains only as
+the response-capability handle.
 
-The child returns one exact 88-byte `YWKSRES1` response only when the request's
+The child constructs one exact 88-byte `YWKSRES1` response only when the request's
 nonce, PID, creation time, and complete root identity equal its own observations.
-Immediately after reading those 88 bytes, the parent uses `PeekNamedPipe` to
-reject any suffix already buffered at that boundary. It then decodes and compares
-all four fields again, revalidates the held root's volume/security/identity,
-supervisor/Job context and limits, permitted Job topology, and monotonic startup
-lease. It computes a domain-separated SHA-256 commitment over the held artifact
+Its first write attempt is a commit point: it ignores that result and the results
+of `FlushFileBuffers` and `CloseHandle` on the retained response handle, returns
+no post-output error to `main`, and leaves a startup-only lexical scope. The live
+request frame, decoded request, response, and response frame run their
+`Zeroizing` drops at that boundary; only the resident stderr proof and fixed
+store bindings escape into a non-alertable `Sleep(INFINITE)` loop.
+The parent requires the whole response followed by EOF within the original
+startup deadline before decoding. That exact response-plus-EOF observation is
+the authoritative protocol proof that the child response endpoint closed. It
+compares all four fields again and revalidates the held root's volume/security/identity,
+exact resident-process liveness and root-Job membership, supervisor/Job context
+and limits, and permitted Job topology before and again after consuming the
+monotonic startup lease, so an exited child cannot cross the join merely by
+producing EOF. It computes a
+domain-separated SHA-256 commitment over the held artifact
 `FILE_ID_INFO`, exact request frame, and exact response frame. The resulting
-private type retains the running process, root Job, both non-inheritable parent
-endpoints, verified handshake, and parent-held no-delete-share root while the
-child retains its independently opened root. Because these are immediate
-buffered-byte snapshots on persistent open streams, they do not prove the absence
-of a future delayed suffix or EOF. The type offers neither a follow-on read/write
-method nor signing authority.
+private type retains the running process, root Job, verified handshake, and
+parent-held no-delete-share root, but no startup endpoint. The child retains
+sealed stderr and fixed generation-store bindings derived from its independently
+opened root in that infinite-sleep loop until Job termination. A failed or
+partial write, flush failure, or close failure cannot mint this aggregate: the
+parent rejects or times out and tears down the Job. The type offers neither a
+follow-on read/write method nor signing authority; the startup streams are not
+reused as a runtime channel.
 
 At process creation the Key Agent child receives inheritable stdio handles.
 Its entrypoint now makes child-side sealing the first Windows application
@@ -716,11 +734,16 @@ three object identities and proves with `CompareObjectHandles` that no matching
 object exists in the grandchild.
 
 Immediately after sealing, the Key Agent reads exactly one 188-byte startup
-request, rejects any suffix already buffered at its immediate peek, performs the
-process/root checks, writes exactly one response, and waits for the parent request
-endpoint to disconnect while retaining the sealed handles and child-opened root.
-An input byte arriving after that peek fails closed, possibly after the response,
-without producing another response.
+request followed by EOF, then detaches the ambient stdin/stdout entries and closes
+raw stdin before decoding or root work. It retains raw stdout only inside a
+response capability. After the process/root checks, it attempts one exact
+response, ignores the write/flush/close results, and leaves the lexical scope
+that owns all four zeroizing startup transcript values before entering a non-alertable
+`Sleep(INFINITE)` loop rather than returning an error to `main`. It retains
+sealed stderr and fixed generation-store bindings derived from the child-opened
+root until Job termination. Only the parent's exact response plus EOF under the
+startup deadline proves response-handle closure; no startup handle is reused for
+runtime I/O.
 The integrated kernel fixture has two explicit `cfg(test)` accommodations: its
 reader consumes only the pinned terse libtest preamble before the exact response,
 and its Job topology permits only the fixture plus at most the exact

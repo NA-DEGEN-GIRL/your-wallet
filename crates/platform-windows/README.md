@@ -128,19 +128,31 @@ Implemented:
 
   A private one-shot storage-startup transition now closes the former child-open
   and transcript-binding gap for this narrow object proof. The parent writes the
-  fixed request while the exact child is still suspended and only then releases
-  its sole verified suspend count. The child opens the compiled production leaf,
-  or the exact `cfg(test)` CSPRNG-leaf grammar, through its OS-rerouted
-  `LOCALAPPDATA` locator. It obtains `TokenUser` and the AppContainer SID from its
-  own process token, checks the directory object and exact owner/protected DACL/
-  inherited Low/`NW` label, obtains the complete volume-serial plus 128-bit
-  `FILE_ID_INFO`, and retains that independently opened handle. Its one response
-  binds the fresh nonce, PID, process creation time, and root identity. Immediately
-  after each side reads its fixed 188-byte request or 88-byte response,
-  `PeekNamedPipe` must report no already-buffered suffix. The parent then
-  independently compares the response fields, revalidates the held root, Job,
-  topology, and lease, and commits the artifact identity plus exact request and
-  response into a domain-separated SHA-256 startup transcript commitment.
+  fixed request while the exact child is still suspended, consumes and closes
+  that writer, and only then releases its sole verified suspend count. The child
+  requires the fixed 188-byte request followed by EOF before decoding or opening
+  the root. It then detaches both ambient protocol entries, closes raw stdin, and
+  retains raw stdout only in a response-capability object. After that preflight
+  it opens the compiled production leaf, or the exact `cfg(test)` CSPRNG-leaf
+  grammar, through its OS-rerouted `LOCALAPPDATA` locator. It obtains `TokenUser`
+  and the AppContainer SID from its own process token, checks the directory object and exact
+  owner/protected DACL/inherited Low/`NW` label, obtains the complete
+  volume-serial plus 128-bit `FILE_ID_INFO`, and retains that independently opened
+  handle. Its one response binds the fresh nonce, PID, process creation time, and
+  root identity. The first response-write attempt is a commit point: its result
+  and the following `FlushFileBuffers`/`CloseHandle` results are ignored, no error
+  returns to `main`, and the child leaves a startup-only lexical scope. The live
+  request frame, decoded request, response, and response frame run their
+  `Zeroizing` drops there; only the resident stderr boundary and fixed store
+  bindings escape into a non-alertable `Sleep(INFINITE)` loop.
+  The parent requires the exact 88-byte frame followed by EOF within the original
+  startup deadline. That observation is authoritative for complete output and
+  response-handle closure. It then independently compares the fields and
+  revalidates the held root, exact resident-process liveness, root-Job membership,
+  and Job topology before and again after consuming the startup lease, so process
+  exit alone cannot satisfy the join. It then commits the
+  artifact identity plus exact request and response into a domain-separated
+  SHA-256 startup transcript commitment.
 
   Parent-side Key Agent and frontend profile APIs share one process-wide non-reentrant,
   poison-fail-closed coordinator; the central profile API rejects thread
@@ -175,10 +187,11 @@ Implemented:
   independently verified profile/root proof. It is non-clone, `!Sync`, exposes no raw handle or
   generic resume API, and its only consuming resume transition is the fixed
   storage-startup proof above. The resulting private post-startup aggregate
-  retains the running process, Job, both now-non-inheritable parent endpoints,
-  transcript commitment, and parent-held root proof while the running child
-  separately retains its independently opened root handle; the aggregate exposes
-  no runtime I/O or signing operation. Drop synchronously terminates the exact
+  retains the running process, Job, transcript commitment, and parent-held root
+  proof, but no startup endpoint. The running child retains sealed stderr and the
+  fixed generation-store bindings derived from its independently opened root and
+  remains inert in `Sleep(INFINITE)` until Job termination; the aggregate exposes no runtime I/O or
+  signing operation. Drop synchronously terminates the exact
   process tree before closing the held storage root. The suspended token must
   prove the fixed SID, zero capabilities, and the exact
   `CheckTokenMembershipEx`
@@ -230,11 +243,16 @@ Implemented:
   zero. The returned non-clone, `!Send + !Sync` proof exposes no handle. An
   isolated child/grandchild kernel test uses `CompareObjectHandles` to prove
   that none of the three original exact stdio objects reaches the grandchild.
-  The entrypoint then reads exactly one fixed startup request and rejects an
-  already-buffered suffix before opening the root or responding. It writes
-  exactly one response only after the process/root checks succeed, fails closed
-  on any input byte that arrives afterward, and retains its sealed stdio and
-  child-opened root until the parent request endpoint disconnects;
+  The entrypoint then requires exactly one fixed startup request followed by EOF
+  before decoding or opening the root. It detaches ambient stdin/stdout, closes
+  raw stdin, and keeps raw stdout only in a response capability before root work.
+  After the process/root checks it attempts one exact response, ignores the
+  write/flush/close results, and leaves the lexical scope that owns all four
+  zeroizing startup transcript values before entering a non-alertable
+  `Sleep(INFINITE)` loop without returning a post-output error to `main`. It retains sealed stderr and
+  fixed generation-store bindings derived from the child-opened root. The
+  parent's deadline-bound exact response plus EOF is authoritative for successful
+  response-handle closure; no startup handle is reused for runtime I/O;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three
@@ -277,11 +295,15 @@ Implemented:
   response magic at byte zero and exactly one active Job member, so this fixture
   is not production fresh-fixed-root or signed-artifact release evidence;
 
-  **Immediate-suffix boundary:** both `PeekNamedPipe` checks are snapshots of
-  bytes already queued immediately after their fixed frame. Because both parent
-  endpoints remain open and retained, they are not proof of a future delayed
-  trailing byte's absence or of EOF. Signed-artifact E2E must still cover that
-  temporal boundary;
+  **Exact startup-EOF boundary:** the consumed parent request writer closes
+  before resume, and the child requires exact request EOF before root work and
+  preflights ambient stdin/stdout detachment plus raw-stdin close. Its retained
+  response handle is write/flush/close-attempted without a result escaping to
+  `main`, after which the child sleeps inert. The parent requires the exact
+  response plus EOF under the original deadline before accepting it; that is the
+  authoritative response-close proof. The post-startup aggregate retains no endpoint. This is
+  repo-local framing proof; signed-artifact E2E must still cover the exact binary
+  and lifecycle;
 
   **Private fixed generation-store proof:** the child-held root can now be
   consumed only into one crate-private set of four non-cloneable, thread-bound
@@ -336,9 +358,10 @@ Implemented:
   non-atomic. Production rollback-anchor and storage/AEAD-key provisioning,
   live protected-settings/lease authority, authenticated Broker/supervisor
   topology and single-instance enforcement, signed immutable artifacts, and
-  exact DLL/dependency E2E evidence are not connected. The future-delayed
-  suffix/EOF boundary remains unproved and no generic Key Agent runtime or
-  signing IPC exists. `COMPILED_RELEASE_POLICY` remains `None`;
+  exact DLL/dependency E2E evidence are not connected. Exact request EOF and the
+  parent's authoritative response-plus-EOF proof do not create a runtime channel or signing authority;
+  no generic Key Agent runtime or signing IPC exists.
+  `COMPILED_RELEASE_POLICY` remains `None`;
 
   **Implemented Rust coordination boundary:** the dormant Broker activation,
   dormant Key Agent activation, and restricted helper launcher are the three
@@ -555,11 +578,14 @@ Stop-ship before any signing-capable release:
     protocol/process topology and a live protected-settings lease without adding
     a generic Key Agent runtime or signing API. Repeat request-before-resume,
     nonce/PID/creation-time/root-identity mismatch, transcript, caller-event
-    contamination, concurrent activation, worker panic/error cleanup, timeout,
-    image mismatch, post-return supervisor Job assignment, and pre-user-mode
-    sentinel tests against the exact signed `key-agent.exe`. The pinned libtest
-    preamble and optional exact System32 `conhost.exe` topology accommodation are
-    test-only and are not release attestation.
+    contamination, exact request/response EOF, suffix and missing-EOF negatives,
+    ambient stdin/stdout detach and raw-stdin-close failures, partial/failed
+    response writes, ignored flush/close results, parent-authoritative EOF, inert
+    `Sleep(INFINITE)` residence, concurrent activation, worker panic/error cleanup,
+    timeout, image mismatch, post-return supervisor Job assignment, and pre-user-mode sentinel tests against the exact signed
+    `key-agent.exe`. The pinned libtest preamble and optional exact System32
+    `conhost.exe` topology accommodation are test-only and are not release
+    attestation.
 11. Non-launchable fresh fixed-profile/root creation, the pure non-authoritative
     provenance classifier, private dormant sealed adoption and whole-release
     artifact-binding transitions, fixed zero-capability LPAC token verification,
@@ -581,9 +607,11 @@ Stop-ship before any signing-capable release:
     Broker/supervisor/single-instance topology consumes the sealed bindings. The
     public `WindowsGenerationStore` remains `TokenUser`-only; no frontend profile
     is granted access. This test proof does not establish a production fresh-root
-    or signed-artifact/DLL/dependency E2E, and it does not close the delayed
-    suffix/EOF boundary. Helper trust/profile setup must not depend on file,
-    certificate-store, registry, or profile APIs unavailable inside the LPAC.
+    or signed-artifact/DLL/dependency E2E. The implemented exact request EOF and
+    parent-authoritative response-plus-EOF boundary remain repo-local evidence
+    only. Helper trust/profile setup must
+    not depend on file, certificate-store, registry, or profile APIs unavailable
+    inside the LPAC.
     Do not add `registryRead`, reuse either frontend profile for the Key Agent,
     add generic runtime/signing IPC, or activate the dormant Key Agent to work
     around these blockers.
