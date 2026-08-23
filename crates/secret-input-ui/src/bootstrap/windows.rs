@@ -11,7 +11,10 @@ use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, Ra
 
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
-use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME, HANDLE, HWND, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_NO_TOKEN, ERROR_SUCCESS, FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE,
+    WAIT_TIMEOUT,
+};
 use windows::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
 use windows::Win32::Security::WinTrust::{
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
@@ -21,7 +24,7 @@ use windows::Win32::Security::WinTrust::{
     WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 use windows::Win32::Security::{
-    EqualSid, FreeSid, GetTokenInformation, IsValidSid, TOKEN_APPCONTAINER_INFORMATION,
+    EqualSid, FreeSid, GetTokenInformation, IsValidSid, PSID, TOKEN_APPCONTAINER_INFORMATION,
     TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
     TokenIsLessPrivilegedAppContainer,
 };
@@ -40,8 +43,8 @@ use windows::Win32::System::JobObjects::{
 use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId};
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessId, GetProcessTimes, OpenProcessToken, PROCESS_NAME_WIN32,
-    QueryFullProcessImageNameW, WaitForSingleObject,
+    GetCurrentProcess, GetCurrentThread, GetProcessId, GetProcessTimes, OpenProcessToken,
+    OpenThreadToken, PROCESS_NAME_WIN32, QueryFullProcessImageNameW, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 use zeroize::Zeroizing;
@@ -223,6 +226,88 @@ fn pipe_client(handle: HANDLE) -> Result<(u32, u32), SecretInputError> {
     Ok((process_id, session_id))
 }
 
+/// Owns one as-yet-untrusted SID returned by the child-side profile API call.
+///
+/// The allocation is captured before the post-call impersonation check and is
+/// released even when that check, SID validation, or comparison fails.
+struct UnvalidatedProfileApiSid {
+    raw: Option<PSID>,
+}
+
+impl UnvalidatedProfileApiSid {
+    const fn new(raw: PSID) -> Self {
+        Self { raw: Some(raw) }
+    }
+
+    fn matches(&self, actual: PSID) -> Result<bool, SecretInputError> {
+        let expected = self.raw.ok_or(SecretInputError::NativeFailure)?;
+        if actual.is_invalid() || expected.is_invalid() {
+            return Err(SecretInputError::NativeFailure);
+        }
+        // SAFETY: the non-null actual SID points into the caller's still-live
+        // token-information buffer.
+        let actual_is_valid = unsafe { IsValidSid(actual) }.as_bool();
+        // SAFETY: the non-null expected SID remains owned by this wrapper.
+        let expected_is_valid = unsafe { IsValidSid(expected) }.as_bool();
+        if !actual_is_valid || !expected_is_valid {
+            return Err(SecretInputError::NativeFailure);
+        }
+        // SAFETY: both SIDs were validated above and remain live for this call.
+        Ok(unsafe { EqualSid(actual, expected) }.is_ok())
+    }
+}
+
+impl Drop for UnvalidatedProfileApiSid {
+    fn drop(&mut self) {
+        let Some(sid) = self.raw.take() else {
+            return;
+        };
+        if sid.is_invalid() {
+            return;
+        }
+        // SAFETY: every non-null success result remains exclusively owned by
+        // this wrapper and is released with FreeSid exactly once.
+        unsafe {
+            let _ = FreeSid(sid);
+        }
+    }
+}
+
+fn reject_thread_impersonation() -> Result<(), SecretInputError> {
+    let mut token = HANDLE::default();
+    // SAFETY: the current pseudo-thread handle is valid for this scalar query;
+    // OpenAsSelf makes the query itself independent of impersonation level.
+    let result = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &raw mut token) };
+    match result {
+        Ok(()) if token.is_invalid() || token == INVALID_HANDLE_VALUE => {
+            Err(SecretInputError::NativeFailure)
+        }
+        Ok(()) => {
+            // SAFETY: successful OpenThreadToken returned one fresh owned handle.
+            unsafe {
+                let _ = CloseHandle(token);
+            }
+            Err(SecretInputError::NativeFailure)
+        }
+        Err(error) if error.code() == ERROR_NO_TOKEN.to_hresult() => Ok(()),
+        Err(_) => Err(SecretInputError::NativeFailure),
+    }
+}
+
+fn derive_expected_profile_sid(
+    profile: &[u16],
+) -> Result<UnvalidatedProfileApiSid, SecretInputError> {
+    if profile.last().copied() != Some(0) {
+        return Err(SecretInputError::NativeFailure);
+    }
+    reject_thread_impersonation()?;
+    // SAFETY: profile is a live NUL-terminated deterministic name.
+    let expected = unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr())) }
+        .map(UnvalidatedProfileApiSid::new);
+    reject_thread_impersonation()?;
+    expected.map_err(|_| SecretInputError::NativeFailure)
+}
+
 fn verify_lpac_token() -> Result<(), SecretInputError> {
     let mut raw_token = HANDLE::default();
     // SAFETY: output receives one owned token handle for the current process.
@@ -254,28 +339,9 @@ fn verify_lpac_token() -> Result<(), SecretInputError> {
     let container = unsafe {
         ptr::read_unaligned(sid_buffer.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>())
     };
-    if container.TokenAppContainer.is_invalid() {
-        return Err(SecretInputError::NativeFailure);
-    }
-    // SAFETY: the non-null SID pointer belongs to the still-live token
-    // information buffer.
-    let valid_container_sid = unsafe { IsValidSid(container.TokenAppContainer) }.as_bool();
-    if !valid_container_sid {
-        return Err(SecretInputError::NativeFailure);
-    }
     let profile = wide_nul(PROFILE_V1_NAME);
-    // SAFETY: profile is a live NUL-terminated deterministic name.
-    let expected = unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr())) }
-        .map_err(|_| SecretInputError::NativeFailure)?;
-    if expected.is_invalid() {
-        return Err(SecretInputError::NativeFailure);
-    }
-    // SAFETY: both SIDs are live and valid for the comparison.
-    let matches = unsafe { EqualSid(container.TokenAppContainer, expected) }.is_ok();
-    // SAFETY: the derived SID is owned by the caller and released with FreeSid.
-    unsafe {
-        let _ = FreeSid(expected);
-    }
+    let expected = derive_expected_profile_sid(&profile)?;
+    let matches = expected.matches(container.TokenAppContainer)?;
     matches.then_some(()).ok_or(SecretInputError::NativeFailure)
 }
 
@@ -693,7 +759,22 @@ fn wide_nul(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPILED_PARENT_POLICY, PROFILE_V1_NAME, normalize_path};
+    use super::{
+        COMPILED_PARENT_POLICY, PROFILE_V1_NAME, SecretInputError, UnvalidatedProfileApiSid,
+        derive_expected_profile_sid, normalize_path, reject_thread_impersonation, wide_nul,
+    };
+    use windows::Win32::Security::{ImpersonateSelf, PSID, RevertToSelf, SecurityImpersonation};
+
+    struct RevertImpersonation;
+
+    impl Drop for RevertImpersonation {
+        fn drop(&mut self) {
+            // SAFETY: this guard exists only after ImpersonateSelf succeeded.
+            unsafe {
+                let _ = RevertToSelf();
+            }
+        }
+    }
 
     #[test]
     fn ordinary_build_has_no_parent_trust_policy() {
@@ -711,5 +792,43 @@ mod tests {
             normalize_path(r"\\?\C:\Program Files\YourWallet\KEY-AGENT.EXE"),
             r"c:\program files\yourwallet\key-agent.exe"
         );
+    }
+
+    #[test]
+    fn derived_profile_sid_rejects_invalid_inputs() {
+        let sid = UnvalidatedProfileApiSid::new(PSID::default());
+        assert!(matches!(
+            sid.matches(PSID::default()),
+            Err(SecretInputError::NativeFailure)
+        ));
+    }
+
+    #[test]
+    fn fixed_profile_derivation_is_valid_owned_and_deterministic() -> Result<(), SecretInputError> {
+        let profile = wide_nul(PROFILE_V1_NAME);
+        let first = derive_expected_profile_sid(&profile)?;
+        let second = derive_expected_profile_sid(&profile)?;
+        let second_raw = second.raw.ok_or(SecretInputError::NativeFailure)?;
+
+        assert!(first.matches(second_raw)?);
+        Ok(())
+    }
+
+    #[test]
+    fn profile_derivation_check_rejects_thread_impersonation() -> windows::core::Result<()> {
+        assert!(reject_thread_impersonation().is_ok());
+
+        // SAFETY: the test immediately installs an unwind-safe RevertToSelf guard.
+        unsafe { ImpersonateSelf(SecurityImpersonation) }?;
+        let revert = RevertImpersonation;
+
+        assert!(matches!(
+            reject_thread_impersonation(),
+            Err(SecretInputError::NativeFailure)
+        ));
+
+        drop(revert);
+        assert!(reject_thread_impersonation().is_ok());
+        Ok(())
     }
 }

@@ -253,6 +253,19 @@ profile-registration authority nor production reachability, and there is no
 production `DeleteAppContainerProfile` path. Same-thread reentry and mutex
 poison also fail closed.
 
+The separate Secret Input child process does not share that parent-side mutex.
+Its sole deterministic `DeriveAppContainerSidFromAppContainerName` call uses
+child-local pre- and post-call thread-impersonation checks and captures any
+successful raw SID in a private RAII owner before the post-call check. Except
+for the minimal success/error split needed for that capture, native-error
+interpretation, SID-validity checking, and `EqualSid` occur only after the
+post-call check succeeds; the owner releases the SID on every failure path.
+These bookends are likewise fail-closed observations, not atomic proof that an
+impersonation token could not be installed and removed between them. This child
+boundary adds no `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
+`DeleteAppContainerProfile` call, profile-registration authority, or new
+production reachability. `COMPILED_PARENT_POLICY` remains `None`.
+
 The activation still supplies zero capabilities plus the ALL APPLICATION
 PACKAGES opt-out in its exact four-entry process-creation attribute list. While
 the first pre-user-mode create event remains held, it authenticates the mapped

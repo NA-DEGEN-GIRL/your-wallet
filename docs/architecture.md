@@ -571,6 +571,19 @@ there is no production `DeleteAppContainerProfile` path. Same-thread reentry and
 a poisoned gate fail closed, and the gate is released before inherited-handle
 launch coordination or process creation.
 
+The separate Secret Input child process does not share that parent-side mutex.
+Its sole deterministic `DeriveAppContainerSidFromAppContainerName` call uses
+child-local pre- and post-call thread-impersonation checks and captures any
+successful raw SID in a private RAII owner before the post-call check. Except
+for the minimal success/error split needed for that capture, native-error
+interpretation, SID-validity checking, and `EqualSid` occur only after the
+post-call check succeeds; the owner releases the SID on every failure path.
+These bookends are likewise fail-closed observations, not atomic proof that an
+impersonation token could not be installed and removed between them. This child
+boundary adds no `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
+`DeleteAppContainerProfile` call, profile-registration authority, or new
+production reachability. `COMPILED_PARENT_POLICY` remains `None`.
+
 Restricted helpers and the Key Agent share one private immutable base process
 context. It derives exact `SystemRoot` and `WINDIR` entries from
 `GetSystemWindowsDirectoryW`, and supplies the `GetSystemDirectoryW` result only

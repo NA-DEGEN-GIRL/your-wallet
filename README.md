@@ -657,6 +657,17 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   않고 production `DeleteAppContainerProfile` 경로도 만들지 않습니다. 같은 스레드
   재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를
   계속하고 detach할 수 있으며, 그때 정확히 하나의 suspend count가 남습니다.
+  별도 Secret Input child 프로세스는 이 parent-side mutex를 공유하지 않습니다. 그
+  프로세스의 유일한 deterministic `DeriveAppContainerSidFromAppContainerName` 호출은
+  child-local thread-impersonation 검사를 직전과 직후에 수행하고, 성공한 raw SID를
+  직후 검사 전에 private RAII owner로 포획합니다. 최소 success/error 분기 외의 native
+  오류 해석, SID validity 검사와 `EqualSid` 비교는 직후 검사가 성공한 뒤에만 수행하며,
+  실패 경로에서는 owner가 SID를 해제합니다. 이 bookend 역시 fail-closed 관찰일 뿐 두
+  검사 사이에 impersonation token이 설정됐다가 제거되는 순간 경합을 원자적으로
+  배제하는 증명은 아닙니다. 이 child 경계에는 `CreateAppContainerProfile`,
+  `GetAppContainerFolderPath`, `DeleteAppContainerProfile` 호출이 없고,
+  profile-registration authority나 새 production reachability를 추가하지 않습니다.
+  `COMPILED_PARENT_POLICY`는 계속 `None`입니다.
 - 그 dormant 상태의 유일한 consuming 전이는 private one-shot storage-startup
   증명입니다. 부모는 자식이 정지된 동안 fresh nonce, 정확한 PID와 process creation
   `FILETIME`, supervisor-held root의 volume serial과 128비트 file ID, 그리고 고정

@@ -4453,6 +4453,9 @@ const secretInput = await text("crates/secret-input-ui/src/lib.rs");
 const recoveryProtocol = await text("crates/secret-input-ui/src/recovery.rs");
 const secretBootstrap = await text("crates/secret-input-ui/src/bootstrap.rs");
 const secretBootstrapWindows = await text("crates/secret-input-ui/src/bootstrap/windows.rs");
+const secretBootstrapWindowsProduction = withoutBottomTestModule(
+  secretBootstrapWindows,
+);
 const recoveryNative = await text("crates/secret-input-ui/src/recovery_native.rs");
 const secretInputMain = await text("crates/secret-input-ui/src/main.rs");
 const architectureDocument = await text("docs/architecture.md");
@@ -5032,7 +5035,7 @@ const approvedPlatformWindowsLocalDependencySourceInventory = [
   },
   {
     path: "crates/secret-input-ui/src/bootstrap/windows.rs",
-    sha256: "5ef8c130bbade022f8948aaa3917d2eb71c794e457502bbffa67443fba6a034c",
+    sha256: "d43a157b860835d27579d31fe8fe4224661f3f0e393dd0e74614164321d81505",
   },
   {
     path: "crates/secret-input-ui/src/lib.rs",
@@ -7896,6 +7899,63 @@ const profileApiThreadBoundProofItems = [
 const appContainerProfileRecheckTest = rustFunctionBlockAtDepth(
   appContainerProfileApiSource,
   "held_guard_rechecks_thread_impersonation_around_native_call",
+  1,
+);
+const secretInputUnvalidatedProfileApiSidDefinition =
+  rustTopLevelLexicalItemBlock(
+    secretBootstrapWindowsProduction,
+    /struct\s+UnvalidatedProfileApiSid\s*\{/u,
+  );
+const secretInputUnvalidatedProfileApiSidImpl = rustImplItemAtDepth(
+  secretBootstrapWindowsProduction,
+  "impl UnvalidatedProfileApiSid",
+  0,
+);
+const secretInputUnvalidatedProfileApiSidMatches = rustFunctionBlockAtDepth(
+  secretInputUnvalidatedProfileApiSidImpl,
+  "matches",
+  1,
+);
+const secretInputUnvalidatedProfileApiSidDrop = rustImplItemAtDepth(
+  secretBootstrapWindowsProduction,
+  "impl Drop for UnvalidatedProfileApiSid",
+  0,
+);
+const secretInputUnvalidatedProfileApiSidImplHeaders = rustImplItems(
+  secretBootstrapWindowsProduction,
+)
+  .filter((item) => /\bUnvalidatedProfileApiSid\b/u.test(item.header))
+  .map((item) => item.header);
+const secretInputRejectThreadImpersonation = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "reject_thread_impersonation",
+);
+const secretInputDeriveExpectedProfileSid = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "derive_expected_profile_sid",
+);
+const secretInputVerifyLpacToken = rustTopLevelFunctionBlock(
+  secretBootstrapWindowsProduction,
+  "verify_lpac_token",
+);
+const secretInputRevertImpersonationDrop = rustImplItemAtDepth(
+  secretBootstrapWindows,
+  "impl Drop for RevertImpersonation",
+  1,
+);
+const secretInputInvalidDerivedSidTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "derived_profile_sid_rejects_invalid_inputs",
+  1,
+);
+const secretInputDeterministicDerivedSidTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "fixed_profile_derivation_is_valid_owned_and_deterministic",
+  1,
+);
+const secretInputProfileImpersonationTest = rustFunctionBlockAtDepth(
+  secretBootstrapWindows,
+  "profile_derivation_check_rejects_thread_impersonation",
   1,
 );
 const launchUnvalidatedProfileApiSidDefinition = rustLexicalItemBlockAtDepth(
@@ -14168,6 +14228,78 @@ const profileApiEnvelopeMutationProbes = [
   profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "create_alias(a, b, c, None)"),
   profileApiEnvelopeProbe.replace("CreateAppContainerProfile(a, b, c, None)", "windows::Authorization::CreateAppContainerProfile(a, b, c, None)"),
 ];
+const secretInputProfileApiNativeCallEnvelope = (source) => {
+  const calls = rustCallSites(
+    source,
+    "DeriveAppContainerSidFromAppContainerName",
+  );
+  return (
+    calls.length === 1 &&
+    JSON.stringify(calls[0].arguments.map(compactRust)) ===
+      JSON.stringify(["PCWSTR(profile.as_ptr())"]) &&
+    rustCallSites(source, "reject_thread_impersonation").length === 2 &&
+    compactRust(source).includes(
+      "reject_thread_impersonation()?;letexpected=unsafe{DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr()))}.map(UnvalidatedProfileApiSid::new);reject_thread_impersonation()?;expected.map_err(|_|SecretInputError::NativeFailure)",
+    )
+  );
+};
+const secretInputProfileApiEnvelopeProbe = `fn probe(
+  profile: &[u16],
+) -> Result<UnvalidatedProfileApiSid, SecretInputError> {
+  reject_thread_impersonation()?;
+  let expected = unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr())) }
+    .map(UnvalidatedProfileApiSid::new);
+  reject_thread_impersonation()?;
+  expected.map_err(|_| SecretInputError::NativeFailure)
+}`;
+const secretInputDelayedProfileApiCaptureProbe =
+  secretInputProfileApiEnvelopeProbe
+    .replace(
+      "    .map(UnvalidatedProfileApiSid::new);",
+      ";",
+    )
+    .replace(
+      "  reject_thread_impersonation()?;\n  expected.map_err",
+      "  reject_thread_impersonation()?;\n  let expected = expected.map(UnvalidatedProfileApiSid::new);\n  expected.map_err",
+    );
+const secretInputPrecheckedProfileApiErrorProbe =
+  secretInputProfileApiEnvelopeProbe
+    .replace(
+      "    .map(UnvalidatedProfileApiSid::new);",
+      "    .map(UnvalidatedProfileApiSid::new)\n    .map_err(|_| SecretInputError::NativeFailure)?;",
+    )
+    .replace(
+      "  expected.map_err(|_| SecretInputError::NativeFailure)",
+      "  Ok(expected)",
+    );
+const secretInputProfileApiEnvelopeMutationProbes = [
+  secretInputProfileApiEnvelopeProbe.replace(
+    "  reject_thread_impersonation()?;\n",
+    "",
+  ),
+  secretInputProfileApiEnvelopeProbe.replace(
+    "  reject_thread_impersonation()?;\n  expected.map_err",
+    "  expected.map_err",
+  ),
+  secretInputDelayedProfileApiCaptureProbe,
+  secretInputPrecheckedProfileApiErrorProbe,
+  secretInputProfileApiEnvelopeProbe.replace(
+    "unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr())) }",
+    "unsafe { (DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr())), side_effect()).0 }",
+  ),
+  secretInputProfileApiEnvelopeProbe.replace(
+    "PCWSTR(profile.as_ptr())",
+    "PCWSTR(side_effect(profile.as_ptr()))",
+  ),
+  secretInputProfileApiEnvelopeProbe.replace(
+    "DeriveAppContainerSidFromAppContainerName",
+    "derive_alias",
+  ),
+  secretInputProfileApiEnvelopeProbe.replace(
+    "DeriveAppContainerSidFromAppContainerName",
+    "windows::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName",
+  ),
+];
 const profileApiExtractionSpoofProbe = `
 // struct UnvalidatedProfileApiSid { spoofed: bool }
 mod windows {
@@ -14193,6 +14325,49 @@ const profileApiExtractionSpoofFunction = rustFunctionBlockAtDepth(
   "recheck_thread",
   1,
 );
+const secretInputProfileApiExtractionSpoofProbe = `
+// struct UnvalidatedProfileApiSid { spoofed: bool }
+// fn derive_expected_profile_sid() { spoofed(); }
+fn outer() {
+  struct UnvalidatedProfileApiSid { spoofed: bool }
+  impl UnvalidatedProfileApiSid {
+    fn matches(&self) { spoofed(); }
+  }
+  fn derive_expected_profile_sid() { spoofed(); }
+}
+struct UnvalidatedProfileApiSid { raw: Option<PSID> }
+impl UnvalidatedProfileApiSid {
+  fn matches(&self) { reviewed(); }
+}
+fn derive_expected_profile_sid() { reviewed(); }
+`;
+const secretInputProfileApiExtractionSpoofDefinition =
+  rustTopLevelLexicalItemBlock(
+    secretInputProfileApiExtractionSpoofProbe,
+    /struct\s+UnvalidatedProfileApiSid\s*\{/u,
+  );
+const secretInputProfileApiExtractionSpoofImpl = rustImplItemAtDepth(
+  secretInputProfileApiExtractionSpoofProbe,
+  "impl UnvalidatedProfileApiSid",
+  0,
+);
+const secretInputProfileApiExtractionSpoofMatches = rustFunctionBlockAtDepth(
+  secretInputProfileApiExtractionSpoofImpl,
+  "matches",
+  1,
+);
+const secretInputProfileApiExtractionSpoofDerive = rustTopLevelFunctionBlock(
+  secretInputProfileApiExtractionSpoofProbe,
+  "derive_expected_profile_sid",
+);
+const expectedSecretInputRejectThreadImpersonation =
+  "fnreject_thread_impersonation()->Result<(),SecretInputError>{letmuttoken=HANDLE::default();letresult=unsafe{OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,true,&rawmuttoken)};matchresult{Ok(())iftoken.is_invalid()||token==INVALID_HANDLE_VALUE=>{Err(SecretInputError::NativeFailure)}Ok(())=>{unsafe{let_=CloseHandle(token);}Err(SecretInputError::NativeFailure)}Err(error)iferror.code()==ERROR_NO_TOKEN.to_hresult()=>Ok(()),Err(_)=>Err(SecretInputError::NativeFailure),}}";
+const expectedSecretInputDeriveExpectedProfileSid =
+  "fnderive_expected_profile_sid(profile:&[u16],)->Result<UnvalidatedProfileApiSid,SecretInputError>{ifprofile.last().copied()!=Some(0){returnErr(SecretInputError::NativeFailure);}reject_thread_impersonation()?;letexpected=unsafe{DeriveAppContainerSidFromAppContainerName(PCWSTR(profile.as_ptr()))}.map(UnvalidatedProfileApiSid::new);reject_thread_impersonation()?;expected.map_err(|_|SecretInputError::NativeFailure)}";
+const expectedSecretInputProfileApiRaiiBodies = [
+  [secretInputUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fnmatches(&self,actual:PSID)->Result<bool,SecretInputError>{letexpected=self.raw.ok_or(SecretInputError::NativeFailure)?;ifactual.is_invalid()||expected.is_invalid(){returnErr(SecretInputError::NativeFailure);}letactual_is_valid=unsafe{IsValidSid(actual)}.as_bool();letexpected_is_valid=unsafe{IsValidSid(expected)}.as_bool();if!actual_is_valid||!expected_is_valid{returnErr(SecretInputError::NativeFailure);}Ok(unsafe{EqualSid(actual,expected)}.is_ok())}}"],
+  [secretInputUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
+];
 const expectedProfileApiRaiiBodies = [
   [launchUnvalidatedProfileApiSidImpl, "implUnvalidatedProfileApiSid{constfnnew(raw:PSID)->Self{Self{raw:Some(raw)}}fninto_validated(mutself)->Result<OwnedAppContainerSid,LaunchError>{letsid=self.raw.ok_or(LaunchError::SandboxVerification)?;ifsid.is_invalid()||!unsafe{IsValidSid(sid)}.as_bool(){returnErr(LaunchError::SandboxVerification);}self.raw=None;Ok(OwnedAppContainerSid(sid))}}"],
   [launchUnvalidatedProfileApiSidDrop, "implDropforUnvalidatedProfileApiSid{fndrop(&mutself){letSome(sid)=self.raw.take()else{return;};ifsid.is_invalid(){return;}unsafe{let_=FreeSid(sid);}}}"],
@@ -14243,6 +14418,93 @@ const profileApiEnvelopes = [
   [keyAgentLpacDeriveUnderGuard, { api: "DeriveAppContainerSidFromAppContainerName", arguments: ["PCWSTR(name.as_ptr())"], result: "sid", owner: "UnvalidatedProfileApiSid", error: "KeyAgentLpacError::Profile" }],
   [keyAgentAppContainerFolder, { api: "GetAppContainerFolderPath", arguments: ["PCWSTR(sid_text.as_ptr())"], result: "folder", owner: "UnvalidatedProfileApiFolderPath", error: "KeyAgentLpacError::Profile" }],
 ];
+requireInvariant(
+  normalizeRustFragment(
+    rustLexicalCode(secretInputUnvalidatedProfileApiSidDefinition),
+  ) === "struct UnvalidatedProfileApiSid { raw: Option<PSID>, }" &&
+    expectedSecretInputProfileApiRaiiBodies.every(
+      ([source, expected]) => compactRust(source) === expected,
+    ) &&
+    JSON.stringify(secretInputUnvalidatedProfileApiSidImplHeaders) ===
+      JSON.stringify([
+        "impl UnvalidatedProfileApiSid",
+        "impl Drop for UnvalidatedProfileApiSid",
+      ]) &&
+    compactRust(secretInputRejectThreadImpersonation) ===
+      expectedSecretInputRejectThreadImpersonation &&
+    compactRust(secretInputDeriveExpectedProfileSid) ===
+      expectedSecretInputDeriveExpectedProfileSid &&
+    secretInputProfileApiNativeCallEnvelope(
+      secretInputDeriveExpectedProfileSid,
+    ) &&
+    secretInputProfileApiNativeCallEnvelope(
+      secretInputProfileApiEnvelopeProbe,
+    ) &&
+    secretInputProfileApiEnvelopeMutationProbes.every(
+      (probe) => !secretInputProfileApiNativeCallEnvelope(probe),
+    ) &&
+    normalizeRustFragment(
+      rustLexicalCode(secretInputProfileApiExtractionSpoofDefinition),
+    ) === "struct UnvalidatedProfileApiSid { raw: Option<PSID> }" &&
+    compactRust(secretInputProfileApiExtractionSpoofMatches) ===
+      "fnmatches(&self){reviewed();}" &&
+    compactRust(secretInputProfileApiExtractionSpoofDerive) ===
+      "fnderive_expected_profile_sid(){reviewed();}" &&
+    JSON.stringify(
+      rustCallSites(secretInputVerifyLpacToken, "derive_expected_profile_sid")
+        .map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["&profile"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputVerifyLpacToken, "matches").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["container.TokenAppContainer"]]) &&
+    hasOrderedCompactRustMarkers(secretInputVerifyLpacToken, [
+      "letcontainer=unsafe{ptr::read_unaligned(sid_buffer.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>())}",
+      "letprofile=wide_nul(PROFILE_V1_NAME)",
+      "letexpected=derive_expected_profile_sid(&profile)?",
+      "letmatches=expected.matches(container.TokenAppContainer)?",
+      "matches.then_some(()).ok_or(SecretInputError::NativeFailure)",
+    ]) &&
+    rustCallSites(secretInputDeriveExpectedProfileSid, "IsValidSid").length ===
+      0 &&
+    rustCallSites(secretInputDeriveExpectedProfileSid, "EqualSid").length ===
+      0 &&
+    rustCallSites(secretInputVerifyLpacToken, "IsValidSid").length === 0 &&
+    rustCallSites(secretInputVerifyLpacToken, "EqualSid").length === 0 &&
+    rustCallSites(secretInputVerifyLpacToken, "FreeSid").length === 0 &&
+    rustCallSites(secretInputDeriveExpectedProfileSid, "FreeSid").length ===
+      0 &&
+    JSON.stringify(
+      rustCallSites(secretInputUnvalidatedProfileApiSidMatches, "IsValidSid")
+        .map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["actual"], ["expected"]]) &&
+    JSON.stringify(
+      rustCallSites(secretInputUnvalidatedProfileApiSidMatches, "EqualSid")
+        .map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["actual", "expected"]]) &&
+    rustCallSites(secretBootstrapWindowsProduction, "FreeSid").length === 1 &&
+    JSON.stringify(
+      rustCallSites(secretInputUnvalidatedProfileApiSidDrop, "FreeSid").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["sid"]]) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*struct\s+UnvalidatedProfileApiSid\b|impl\s+(?:Clone|Copy|Deref|DerefMut|From)\b[^{}]*\bUnvalidatedProfileApiSid\b/u.test(
+      rustLexicalCode(secretBootstrapWindowsProduction),
+    ) &&
+    !rustVisibleFunctionItems(secretBootstrapWindowsProduction).some((item) =>
+      /\bUnvalidatedProfileApiSid\b/u.test(item.signature),
+    ) &&
+    compactRust(secretInputRevertImpersonationDrop) ===
+      "implDropforRevertImpersonation{fndrop(&mutself){unsafe{let_=RevertToSelf();}}}" &&
+    compactRust(secretInputInvalidDerivedSidTest) ===
+      "fnderived_profile_sid_rejects_invalid_inputs(){letsid=UnvalidatedProfileApiSid::new(PSID::default());assert!(matches!(sid.matches(PSID::default()),Err(SecretInputError::NativeFailure)));}" &&
+    compactRust(secretInputDeterministicDerivedSidTest) ===
+      "fnfixed_profile_derivation_is_valid_owned_and_deterministic()->Result<(),SecretInputError>{letprofile=wide_nul(PROFILE_V1_NAME);letfirst=derive_expected_profile_sid(&profile)?;letsecond=derive_expected_profile_sid(&profile)?;letsecond_raw=second.raw.ok_or(SecretInputError::NativeFailure)?;assert!(first.matches(second_raw)?);Ok(())}" &&
+    compactRust(secretInputProfileImpersonationTest) ===
+      "fnprofile_derivation_check_rejects_thread_impersonation()->windows::core::Result<()>{assert!(reject_thread_impersonation().is_ok());unsafe{ImpersonateSelf(SecurityImpersonation)}?;letrevert=RevertImpersonation;assert!(matches!(reject_thread_impersonation(),Err(SecretInputError::NativeFailure)));drop(revert);assert!(reject_thread_impersonation().is_ok());Ok(())}",
+  "the Secret Input child must independently bookend its sole deterministic profile derivation, capture the SID before post-check interpretation, and release it through one private RAII owner",
+);
 requireInvariant(
   platformWindowsLib.includes(
     "#[cfg(windows)]\nmod appcontainer_profile_api;",

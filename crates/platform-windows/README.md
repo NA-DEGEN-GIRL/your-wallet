@@ -137,9 +137,22 @@ Implemented:
   topology, and lease, and commits the artifact identity plus exact request and
   response into a domain-separated SHA-256 startup transcript commitment.
 
-  Key Agent and frontend profile APIs share one process-wide non-reentrant,
+  Parent-side Key Agent and frontend profile APIs share one process-wide non-reentrant,
   poison-fail-closed coordinator; the central profile API rejects thread
-  impersonation before acquiring it. The Key Agent's explicit three-name
+  impersonation before acquiring it. The separate Secret Input child process
+  does not share that parent-side mutex. Its sole deterministic
+  `DeriveAppContainerSidFromAppContainerName` call uses child-local pre- and
+  post-call thread-impersonation checks and captures any successful raw SID in
+  a private RAII owner before the post-call check. Except for the minimal
+  success/error split needed for that capture, native-error interpretation,
+  SID-validity checking, and `EqualSid` occur only after the post-call check;
+  the owner releases the SID on every failure path. These bookends are
+  fail-closed observations, not atomic proof that an impersonation token could
+  not be installed and removed between them. This child boundary adds no
+  `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
+  `DeleteAppContainerProfile` call, profile-registration authority, or new
+  production reachability. `COMPILED_PARENT_POLICY` remains `None`. The Key
+  Agent's explicit three-name
   Unicode environment sets `LOCALAPPDATA` directly to the exact profile `AC`
   path returned by `GetAppContainerFolderPath`, alongside OS-derived
   `SystemRoot` and `WINDIR`. The Restricted helpers prepare this context before
