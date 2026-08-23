@@ -8,7 +8,7 @@ Implemented:
 
 - random one-shot named-pipe capabilities, a protected current-logon-SID DACL,
   local-only/first-instance flags, and connected-client PID/session validation;
-- a role-checked approval launch API that creates separate private request and
+- a crate-private legacy, role-checked approval launch seam that creates separate private request and
   response endpoints and supplies an exact `HANDLE_LIST` with two child `PIPE`
   objects: stdin plus one response-pipe handle-table entry used as the
   numerically equal stdout and stderr values. It transfers the canonical bounded
@@ -54,8 +54,8 @@ Implemented:
   manifest-derived Approval Frontend and Secret Input Frontend roles. Their
   profile names and derived SIDs differ, so the helpers do not share an
   AppContainer profile directory or per-profile registry state. Callers cannot
-  select a role: the public entry point accepts only Approval Frontend and the
-  crate-private secret/recovery entry point accepts only Secret Input Frontend,
+  select a role: the crate-private Approval entry point accepts only Approval
+  Frontend and the crate-private secret/recovery entry point accepts only Secret Input Frontend,
   with cross-role, Other, and Key Agent artifacts rejected before release-policy
   evaluation or Win32 process/profile calls. Both profiles have zero capability
   SIDs, an explicit `ALL APPLICATION PACKAGES` opt-out, child-process
@@ -76,8 +76,8 @@ Implemented:
   verifier handle by volume serial plus all 128 `FILE_ID_INFO` bits; zero volume,
   all-zero and all-`FF` non-unique identifiers fail closed. Only successful
   debugger detach followed by an exact one-count suspend probe creates the
-  non-clone detached capability. The public generic restricted launcher rejects
-  the manifest-derived Key Agent role before release evaluation or process
+  non-clone detached capability. The crate-private generic restricted launcher
+  rejects the manifest-derived Key Agent role before release evaluation or process
   creation, so the shared artifact allowlist cannot bypass this seam. The
   activation-owned fresh worker now also creates the exact two-process
   kill-on-close root Job and private Key Agent pipes. One `STARTUPINFOEXW` call
@@ -253,6 +253,23 @@ Implemented:
   fixed generation-store bindings derived from the child-opened root. The
   parent's deadline-bound exact response plus EOF is authoritative for successful
   response-handle closure; no startup handle is reused for runtime I/O;
+
+- a dormant, crate-private Approval release-admission seam. It checks the
+  manifest-derived Approval Frontend role, complete release attestation, exact
+  helper-manifest allowlist membership, and an absolute verified path in that
+  order. `PreflightApprovalArtifact` retains the already pinned artifact and
+  opaque whole-release `AttestedArtifactDigest`; its sole consuming transition
+  derives `FILE_ID_INFO` from that same held file and produces non-cloneable
+  `PreparedReleaseApprovalSupervisor`. This preparation allocates no process,
+  Job, pipe, channel, thread, launch state, or second file handle and exposes no
+  artifact, path, identity, PID, or raw-handle accessor. The legacy
+  `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`, and
+  `RestrictedLauncher::spawn` surfaces are no longer externally callable.
+  This is type-state preparation only: it does not authenticate a mapped image,
+  establish a separate supervisor principal or protected creation-time process
+  DACL, bind the exact Key Agent parent capability or endpoint topology, or
+  provide cleanup, production orchestration, signing, or release activation.
+  It has zero production callers and both compiled policies remain `None`;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three

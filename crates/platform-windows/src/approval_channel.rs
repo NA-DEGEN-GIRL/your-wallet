@@ -1,10 +1,12 @@
 //! Authenticated, one-shot approval-response verification.
 //!
 //! The internal channel deliberately has no public constructor.
-//! [`launch_approval_frontend`] is the only API that can combine its parent
-//! response end with the exact held helper process that inherited the matching
-//! child end. The release still fails closed because no immutable compiled
-//! release policy is present and the helper binary remains disabled.
+//! [`launch_approval_frontend`] is a crate-private legacy seam that can combine
+//! its parent response end with the exact held helper process that inherited the
+//! matching child end. It remains compiled for contract tests but has no
+//! production caller and is not a release activation path. The release still
+//! fails closed because no immutable compiled release policy is present and the
+//! helper binary remains disabled.
 
 use core::fmt;
 use std::time::{Duration, Instant};
@@ -90,7 +92,7 @@ pub enum ApprovalLaunchError {
 /// Launches the exact verified approval frontend with a private one-shot
 /// request/response channel.
 ///
-/// This is the only public API that can arm a [`PendingApproval`]. It creates
+/// This is the only crate-private API that can arm a [`PendingApproval`]. It creates
 /// two unguessable local-only pipe instances, puts only the child read/write
 /// endpoints in the restricted launcher's explicit inherited-handle list,
 /// starts the held LPAC helper, closes the parent's copies of the child ends,
@@ -110,7 +112,7 @@ pub enum ApprovalLaunchError {
 /// Returns [`ApprovalLaunchError`] for a wrong helper role, disabled/failed
 /// restricted launch, pipe construction or transfer failure, or deadline.
 #[cfg(windows)]
-pub fn launch_approval_frontend(
+pub(crate) fn launch_approval_frontend(
     launcher: RestrictedLauncher,
     helper: &VerifiedHelper,
     request: &ApprovalRequest,
@@ -234,7 +236,7 @@ fn map_setup_pipe_error(error: PipeError) -> ApprovalLaunchError {
 /// This type is non-cloneable. Receiving consumes both the helper/job handles
 /// and the channel, so neither a response nor its process identity can be reused.
 #[cfg(windows)]
-pub struct PendingApproval {
+pub(crate) struct PendingApproval {
     helper: LaunchedHelper,
     channel: ApprovalResponseChannel,
 }
@@ -248,15 +250,8 @@ impl PendingApproval {
     /// Fails closed on timeout, cancellation, malformed or trailing bytes,
     /// request mismatch, channel failure, or held-identity mismatch.
     ///
-    /// ```compile_fail
-    /// use platform_windows::PendingApproval;
-    ///
-    /// fn cannot_reuse(pending: PendingApproval) {
-    ///     let _first = pending.receive();
-    ///     let _second = pending.receive();
-    /// }
-    /// ```
-    pub fn receive(self) -> Result<VerifiedApprovalResponse, ApprovalChannelError> {
+    /// Consuming the private pending state makes reuse impossible in safe Rust.
+    pub(crate) fn receive(self) -> Result<VerifiedApprovalResponse, ApprovalChannelError> {
         self.channel.receive(self.helper)
     }
 }

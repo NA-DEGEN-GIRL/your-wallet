@@ -23,8 +23,9 @@ struct ReleasePolicy {
     handle_suite_digest: [u8; 32],
     broker_transport_suite_digest: [u8; 32],
     // Key Agent, approval UI, and secret-input UI. This is an artifact allowlist,
-    // not launch-role authority: the public generic helper launcher separately
-    // rejects the Key Agent, whose private supervisor seam owns its activation.
+    // not launch-role authority: the crate-private generic helper launcher
+    // separately rejects the Key Agent, whose private supervisor seam owns its
+    // activation.
     helper_manifest_digests: [[u8; 32]; REQUIRED_HELPER_MANIFESTS],
     // Broker is deliberately separate from the three signing-TCB helpers. Its
     // manifest may authorize only the private Broker admission boundary.

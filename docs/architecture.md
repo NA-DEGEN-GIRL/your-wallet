@@ -587,6 +587,24 @@ boundary adds no `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
 `DeleteAppContainerProfile` call, profile-registration authority, or new
 production reachability. `COMPILED_PARENT_POLICY` remains `None`.
 
+Approval now has a separate dormant release-admission type state before any
+activation machinery. It consumes a pinned `VerifiedHelper` into
+`PreflightApprovalArtifact` only after the manifest-derived Approval role,
+complete release attestation, helper-manifest allowlist, and absolute path pass
+in that order. Its sole preparation transition
+queries `FILE_ID_INFO` from the same retained file handle and moves the artifact,
+opaque whole-release identity, and exact file identity into the non-cloneable
+`PreparedReleaseApprovalSupervisor`. The module allocates no process, Job, pipe,
+channel, thread, launch state, or second file handle and exposes no artifact,
+path, identity, PID, or raw-handle accessor. The legacy direct Approval launcher,
+pending response owner, broad `LaunchedHelper`, and `RestrictedLauncher::spawn`
+are crate-private and have no production orchestration caller. This preparation
+does not authenticate a mapped image or establish the required separate
+supervisor principal and creation-time protected process DACL. Exact Key Agent
+parent capability, endpoint topology/exclusivity, supervisor cleanup, DLL graph,
+production composition, and signing remain absent. Both compiled policies stay
+`None`, so this type state cannot activate release code.
+
 The runtime-enabled Approval child begins its Windows bootstrap by retrieving
 the three numeric standard-handle values and requiring exactly two distinct
 `PIPE` objects: stdin must differ from stdout, while stdout and stderr must be

@@ -167,7 +167,7 @@ function maskRustRange(characters, source, start, end) {
 
 function rustLexicalCode(source) {
   const characters = source.split("");
-  for (let index = 0; index < source.length; ) {
+  for (let index = 0; index < source.length;) {
     if (source.startsWith("//", index)) {
       const end = source.indexOf("\n", index + 2);
       const exclusiveEnd = end === -1 ? source.length : end;
@@ -6009,7 +6009,7 @@ const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction =
   withoutBottomTestModule(restrictedLauncher);
 const approvedRestrictedLauncherProductionBoundaryRawSha256 =
-  "f3d6a9c3d51fc93a9809090837ce969c6acfd97db774e0d045ce530db2e30485";
+  "a24ebb10c369b5ed78ff44e5a03c5ddb472307a32db6b1f1c99ed45b29099049";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -6147,7 +6147,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "be770810af7bdc7a08e2794017449da1e36ff9a28ec0ad1e8e385781a00097fb";
+  "78ecce26bd0a337de021f4ab398da00ada9d73c43d24dd93dce6bde023aa6103";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6619,6 +6619,11 @@ requireInvariant(
   ) &&
     (activationHelper.match(/\bfor_broker_artifact_test\b/gu) ?? []).length ===
       1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) fn for_approval_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*approval_frontend_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
+      activationHelper,
+    ) &&
+    (activationHelper.match(/\bfor_approval_artifact_test\b/gu) ?? [])
+      .length === 1 &&
     /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
@@ -6633,7 +6638,7 @@ requireInvariant(
       attestationProduction,
     ) &&
     (attestationProduction.match(/\bfor_test\b/gu) ?? []).length === 1,
-  "Broker/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
+  "Broker/Approval/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
 );
 requireInvariant(
   /#\[derive\(Clone,\s*Copy,\s*Eq,\s*PartialEq\)\]\s*pub\(crate\)\s+struct\s+AttestedArtifactDigest\(ArtifactDigest\)\s*;/u.test(
@@ -6685,17 +6690,20 @@ requireInvariant(
     attestation.includes("AttestedArtifactDigest([REDACTED])") &&
     JSON.stringify(attestedArtifactDigestConsumers) ===
       JSON.stringify([
+        "crates/platform-windows/src/approval_supervisor.rs",
         "crates/platform-windows/src/broker_artifact.rs",
         "crates/platform-windows/src/broker_supervisor.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
       ]) &&
     JSON.stringify(attestedArtifactAccessorConsumers) ===
       JSON.stringify([
+        "crates/platform-windows/src/approval_supervisor.rs",
         "crates/platform-windows/src/broker_artifact.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
       ]) &&
     JSON.stringify(attestedArtifactAccessorTokenConsumers) ===
       JSON.stringify([
+        "crates/platform-windows/src/approval_supervisor.rs",
         "crates/platform-windows/src/broker_artifact.rs",
         "crates/platform-windows/src/key_agent_activation.rs",
       ]) &&
@@ -10819,7 +10827,10 @@ const launchCurrentParentProofSourcesContract = (source) => {
   const compact = compactRust(source);
   return (
     orderedRustMarkersAtDepth(source, [
-      { marker: "let current_process = unsafe { GetCurrentProcess() }", depth: 1 },
+      {
+        marker: "let current_process = unsafe { GetCurrentProcess() }",
+        depth: 1,
+      },
       { marker: "let mut process = HANDLE::default()", depth: 1 },
       { marker: "DuplicateHandle(", depth: 2 },
       { marker: "if process.is_invalid()", depth: 1 },
@@ -10889,9 +10900,7 @@ const launchCurrentParentProofSourcesContract = (source) => {
     compact.includes(
       "ifflags!=0||process_id==0||process_id!=current_process_id||!exact_current_process{returnErr(LaunchError::OperatingSystem);}",
     ) &&
-    compact.includes(
-      "Ok(ParentProofSources{process,image,process_id,})",
-    )
+    compact.includes("Ok(ParentProofSources{process,image,process_id,})")
   );
 };
 const launchCurrentParentProofSourcesMutationProbes = [
@@ -10911,7 +10920,10 @@ const launchCurrentParentProofSourcesMutationProbes = [
     "unsafe { CompareObjectHandles(process.raw(), current_process) }.as_bool()",
     "true",
   ),
-  launchCurrentParentProofSources.replace("        if flags != 0", "        if false"),
+  launchCurrentParentProofSources.replace(
+    "        if flags != 0",
+    "        if false",
+  ),
   launchCurrentParentProofSources.replace(
     "            || process_id != current_process_id",
     "            || false",
@@ -11381,7 +11393,8 @@ requireInvariant(
     launchParentSourceApiUsage.aliases.length === 0 &&
     launchParentSourceApiUsage.qualified.length === 0 &&
     launchParentSourceApiUsage.references.length === 0 &&
-    rustCallSites(launchCurrentParentProofSources, "OpenProcess").length === 0 &&
+    rustCallSites(launchCurrentParentProofSources, "OpenProcess").length ===
+      0 &&
     launchParentProofKernelTestContract(
       restrictedLauncherProduction,
       restrictedLauncher,
@@ -19761,7 +19774,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/helper.rs",
     unsafeCount: 15,
-    sha256: "2beb23ad76a85190e9b972d70e35c6ed0a3d0084994158d9736c0ed92cbdd879",
+    sha256: "522a9813feb6bf0ce4d7c48e38ae6f042efeac963075b4b010fe9472c41764e4",
   },
   {
     path: "crates/platform-windows/src/inheritable_handle_launch.rs",
@@ -19796,7 +19809,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/launch.rs",
     unsafeCount: 47,
-    sha256: "108bad146bf907ab8fdee6f29fb1e0f481cf64718837ae0381f8e3fb251f9748",
+    sha256: "0263cc07a91723ddde9b68d03f018f072bd9e8f3c2353a23a1df6a95237f900b",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -22584,11 +22597,7 @@ const approvalParentAuthenticationContract = (source) => {
       "impl VerifiedParentChannelBinding",
       0,
     );
-    bindingRevalidate = rustFunctionBlockAtDepth(
-      bindingImpl,
-      "revalidate",
-      1,
-    );
+    bindingRevalidate = rustFunctionBlockAtDepth(bindingImpl, "revalidate", 1);
     profileConst = rustConstItemAtDepth(source, "PROFILE_V1_NAME", 0);
     parentPolicyConst = rustConstItemAtDepth(
       source,
@@ -22620,10 +22629,7 @@ const approvalParentAuthenticationContract = (source) => {
     );
     verifyLpacToken = rustTopLevelFunctionBlock(source, "verify_lpac_token");
     verifyJob = rustTopLevelFunctionBlock(source, "verify_job");
-    processSessionId = rustTopLevelFunctionBlock(
-      source,
-      "process_session_id",
-    );
+    processSessionId = rustTopLevelFunctionBlock(source, "process_session_id");
     liveProcessObservation = rustTopLevelFunctionBlock(
       source,
       "live_process_observation",
@@ -22778,8 +22784,7 @@ const approvalParentAuthenticationContract = (source) => {
       rustCallSites(authenticated, "bind_channels_to_parent").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([["&parent_hello", "sealed_stdio", "policy"]]) &&
+    ) === JSON.stringify([["&parent_hello", "sealed_stdio", "policy"]]) &&
     rustCallSites(authenticated, "decode_parent_finish").length === 1 &&
     JSON.stringify(
       rustCallSites(authenticated, "revalidate").map((call) =>
@@ -22833,13 +22838,17 @@ const approvalParentAuthenticationContract = (source) => {
       ),
     ) === JSON.stringify([["process"]]) &&
     JSON.stringify(
-      rustCallSites(liveProcessObservation, "WaitForSingleObject").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(liveProcessObservation, "WaitForSingleObject").map((call) =>
+        call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["process", "0"], ["process", "0"]]) &&
+    ) ===
+      JSON.stringify([
+        ["process", "0"],
+        ["process", "0"],
+      ]) &&
     JSON.stringify(
-      rustCallSites(liveProcessObservation, "process_session_id").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(liveProcessObservation, "process_session_id").map((call) =>
+        call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["process"]]) &&
     observationCompact ===
@@ -22858,8 +22867,8 @@ const approvalParentAuthenticationContract = (source) => {
         ],
       ]) &&
     JSON.stringify(
-      rustCallSites(bindingRevalidate, "live_process_observation").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(bindingRevalidate, "live_process_observation").map((call) =>
+        call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["raw(&self.process)"]]) &&
     bindingCompact ===
@@ -22925,8 +22934,7 @@ const approvalParentAuthenticationContract = (source) => {
     !/\b(?:owned_handle|from_raw_handle|CloseHandle)\b/u.test(bindCode) &&
     orderedRustMarkersAtDepth(bindChannelsToParent, [
       {
-        marker:
-          "let process_value = usize::try_from(hello.process_handle())",
+        marker: "let process_value = usize::try_from(hello.process_handle())",
         depth: 1,
       },
       {
@@ -22999,17 +23007,13 @@ const approvalParentAuthenticationContract = (source) => {
       "ifprocess_value==stdin_value||process_value==stdout_value||image_value==stdin_value||image_value==stdout_value||process_value==image_value{returnErr(native_failure(()));}",
     ) &&
     JSON.stringify(
-      rustCallSites(bindChannelsToParent, "validate_parent_proof_handle_set").map(
-        (call) => call.arguments.map(compactRust),
-      ),
+      rustCallSites(
+        bindChannelsToParent,
+        "validate_parent_proof_handle_set",
+      ).map((call) => call.arguments.map(compactRust)),
     ) ===
       JSON.stringify([
-        [
-          "process_candidate",
-          "image_candidate",
-          "stdio.input",
-          "stdio.output",
-        ],
+        ["process_candidate", "image_candidate", "stdio.input", "stdio.output"],
         [
           "raw(&process_copy)",
           "raw(&image_copy)",
@@ -23032,11 +23036,7 @@ const approvalParentAuthenticationContract = (source) => {
       rustCallSites(bindChannelsToParent, "live_process_observation").map(
         (call) => call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([
-        ["raw(&process_copy)"],
-        ["raw(&process_copy)"],
-      ]) &&
+    ) === JSON.stringify([["raw(&process_copy)"], ["raw(&process_copy)"]]) &&
     JSON.stringify(
       rustCallSites(bindChannelsToParent, "process_session_id").map((call) =>
         call.arguments.map(compactRust),
@@ -23068,7 +23068,8 @@ const approvalParentAuthenticationContract = (source) => {
     bindCompact.includes(
       "Ok(VerifiedParentChannelBinding{stdio,process:process_copy,image:image_copy,parent,})",
     ) &&
-    rustCallSites(bindChannelsToParent, "adopt_validated_handle").length === 0 &&
+    rustCallSites(bindChannelsToParent, "adopt_validated_handle").length ===
+      0 &&
     rustCallSites(bindChannelsToParent, "from_raw_handle").length === 0 &&
     rustCallSites(bindChannelsToParent, "CloseHandle").length === 0 &&
     !/\badopt_validated_handle\b/u.test(rustLexicalCode(source)) &&
@@ -23350,10 +23351,7 @@ const approvalParentAuthenticationMutationProbes = [
     "    let session_id = process_session_id(process)?;",
     "    let session_id = process_session_id(process)?;\n    if std::hint::black_box(true) { return Ok(ProcessObservation { process_id, session_id }); }",
   ),
-  withVacuousRustEarlyOk(
-    approvalBootstrapWindowsProduction,
-    "revalidate",
-  ),
+  withVacuousRustEarlyOk(approvalBootstrapWindowsProduction, "revalidate"),
   approvalBootstrapWindowsProduction.replace(
     "        )?;\n        (live_process_observation(raw(&self.process))? == self.parent)",
     "        )?;\n        if std::hint::black_box(true) { return Ok(()); }\n        (live_process_observation(raw(&self.process))? == self.parent)",
@@ -23427,8 +23425,8 @@ const approvalParentObservationTestsContract = (source) => {
     ) &&
     tests.every((test) => !hasVacuousRustTestEscape(test)) &&
     JSON.stringify(
-      rustCallSites(duplicateTest, "duplicate_untrusted_candidate").map((call) =>
-        call.arguments.map(compactRust),
+      rustCallSites(duplicateTest, "duplicate_untrusted_candidate").map(
+        (call) => call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["raw(&original)"]]) &&
     JSON.stringify(
@@ -23489,14 +23487,29 @@ const approvalParentObservationTestsContract = (source) => {
       ),
     ) === JSON.stringify([[]]) &&
     orderedRustMarkersAtDepth(liveTest, [
-      { marker: "let first = live_process_observation(current_process)?", depth: 1 },
-      { marker: "let second = live_process_observation(current_process)?", depth: 1 },
+      {
+        marker: "let first = live_process_observation(current_process)?",
+        depth: 1,
+      },
+      {
+        marker: "let second = live_process_observation(current_process)?",
+        depth: 1,
+      },
       { marker: "assert!(first == second)", depth: 1 },
       { marker: "assert_eq!(first.process_id, current_process_id)", depth: 1 },
-      { marker: "let before_exit = live_process_observation(child_process)?", depth: 1 },
-      { marker: "assert_ne!(before_exit.process_id, current_process_id)", depth: 1 },
+      {
+        marker: "let before_exit = live_process_observation(child_process)?",
+        depth: 1,
+      },
+      {
+        marker: "assert_ne!(before_exit.process_id, current_process_id)",
+        depth: 1,
+      },
       { marker: "child.child.terminate_and_reap()?", depth: 1 },
-      { marker: "assert!(live_process_observation(child_process).is_err())", depth: 1 },
+      {
+        marker: "assert!(live_process_observation(child_process).is_err())",
+        depth: 1,
+      },
     ]) &&
     JSON.stringify(
       rustCallSites(sessionTest, "process_session_id").map((call) =>
@@ -23517,8 +23530,7 @@ const approvalParentObservationTestsContract = (source) => {
       rustCallSites(sessionTest, "ProcessIdToSessionId").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([["current_process_id", "&rawmutpid_session"]]) &&
+    ) === JSON.stringify([["current_process_id", "&rawmutpid_session"]]) &&
     sessionCompact.includes("assert_ne!(token_session,u32::MAX)") &&
     sessionCompact.includes("assert_eq!(token_session,pid_session)")
   );
@@ -23536,7 +23548,10 @@ const approvalParentObservationTestMutationProbes = [
     "        assert!(same_object(raw(&original), raw(&duplicate)));",
     "        assert!(true);",
   ),
-  approvalBootstrapWindows.replace("            (0, parent, 7, parent, parent),\n", ""),
+  approvalBootstrapWindows.replace(
+    "            (0, parent, 7, parent, parent),\n",
+    "",
+  ),
   approvalBootstrapWindows.replace(
     "                    process_id: 0,\n                    ..parent",
     "                    process_id: 42,\n                    ..parent",
@@ -23620,8 +23635,8 @@ const approvalFirstOperationEnvelope = (source) => {
       ),
     ) === JSON.stringify([[]]) &&
     JSON.stringify(
-      rustCallSites(runOnce, "for_request").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(runOnce, "for_request").map((call) =>
+        call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["decision", "request"]]) &&
     JSON.stringify(
@@ -24409,8 +24424,7 @@ requireInvariant(
         probe !== approvalSetBinaryStdio && !approvalSetBinaryContract(probe),
     ) &&
     Object.entries(approvalCriticalHandleLeafSha256).every(
-      ([name, sha256]) =>
-        sha256 === approvedApprovalCriticalLeafSha256[name],
+      ([name, sha256]) => sha256 === approvedApprovalCriticalLeafSha256[name],
     ) &&
     approvalCriticalHandleLeafMutationProbes.every(
       ({ source, approved }) =>
@@ -25966,16 +25980,22 @@ const exactFileIdentityEncodingContract = (production, fullSource) => {
     encodingCompact.includes("expected_volume_mutation[7]^=1") &&
     encodingCompact.includes("forindexin[0_usize,8,15]") &&
     encodingCompact.includes("expected_mutation[8+index]^=1") &&
-    (rustCallSites(encodingTest, "encode_be").length === 3)
+    rustCallSites(encodingTest, "encode_be").length === 3
   );
 };
 const exactFileIdentityEncodingMutationProbes = [
   {
-    production: exactBrokerImageProduction.replace("to_be_bytes()", "to_le_bytes()"),
+    production: exactBrokerImageProduction.replace(
+      "to_be_bytes()",
+      "to_le_bytes()",
+    ),
     full: exactBrokerImage.replace("to_be_bytes()", "to_le_bytes()"),
   },
   {
-    production: exactBrokerImageProduction.replace("encoded[8..]", "encoded[8..16]"),
+    production: exactBrokerImageProduction.replace(
+      "encoded[8..]",
+      "encoded[8..16]",
+    ),
     full: exactBrokerImage.replace("encoded[8..]", "encoded[8..16]"),
   },
   {
@@ -25990,7 +26010,10 @@ const exactFileIdentityEncodingMutationProbes = [
   },
   {
     production: exactBrokerImageProduction,
-    full: exactBrokerImage.replace("        non_sentinel_near_zero[0] = 1;\n", ""),
+    full: exactBrokerImage.replace(
+      "        non_sentinel_near_zero[0] = 1;\n",
+      "",
+    ),
   },
   {
     production: exactBrokerImageProduction,
@@ -26060,11 +26083,10 @@ requireInvariant(
       exactBrokerImageProduction,
       exactBrokerImage,
     ) &&
-    exactFileIdentityEncodingMutationProbes.every(
-      ({ production, full }) =>
-        production !== exactBrokerImageProduction || full !== exactBrokerImage
-          ? !exactFileIdentityEncodingContract(production, full)
-          : false,
+    exactFileIdentityEncodingMutationProbes.every(({ production, full }) =>
+      production !== exactBrokerImageProduction || full !== exactBrokerImage
+        ? !exactFileIdentityEncodingContract(production, full)
+        : false,
     ) &&
     exactBrokerImageProduction.includes(
       "VerifiedHelper::hold_dormant_broker(path)",
@@ -26493,6 +26515,440 @@ requireInvariant(
   "real bridge evidence must stay offline, headless, cancel/reconnect aware, and release-exit-78 checked",
 );
 
+const approvalSupervisorSource = await text(
+  "crates/platform-windows/src/approval_supervisor.rs",
+);
+const approvalSupervisorProduction = withoutBottomTestModule(
+  approvalSupervisorSource,
+);
+const approvalSupervisorContract = (source) => {
+  let artifactError;
+  let preflightError;
+  let preflightDefinition;
+  let preparedDefinition;
+  let preflight;
+  let prepare;
+  let exactImageErrorConversion;
+  let preflightDebug;
+  let preparedDebug;
+  let preparedDrop;
+  let implItems;
+  try {
+    artifactError = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+enum\s+ApprovalArtifactError\s*\{/u,
+    );
+    preflightError = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+enum\s+ApprovalSupervisorPreflightError\s*\{/u,
+    );
+    preflightDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PreflightApprovalArtifact\s*\{/u,
+    );
+    preparedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PreparedReleaseApprovalSupervisor\s*\{/u,
+    );
+    preflight = rustTopLevelFunctionBlock(
+      source,
+      "preflight_approval_artifact",
+    );
+    prepare = rustTopLevelFunctionBlock(
+      source,
+      "prepare_release_approval_supervisor",
+    );
+    implItems = rustImplItems(source);
+    exactImageErrorConversion =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl From<ExactImageError> for ApprovalSupervisorPreflightError",
+      )?.source ?? "";
+    preflightDebug =
+      implItems.find(
+        (item) =>
+          item.header === "impl fmt::Debug for PreflightApprovalArtifact",
+      )?.source ?? "";
+    preparedDebug =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl fmt::Debug for PreparedReleaseApprovalSupervisor",
+      )?.source ?? "";
+    preparedDrop =
+      implItems.find(
+        (item) =>
+          item.header === "impl Drop for PreparedReleaseApprovalSupervisor",
+      )?.source ?? "";
+  } catch {
+    return false;
+  }
+
+  const code = rustLexicalCode(source);
+  const preflightCompact = compactRust(preflight);
+  const prepareCompact = compactRust(prepare);
+  const gateOrder = [
+    "if!artifact.is_approval_frontend()",
+    "letrelease_identity=attestation.attested_artifact().ok_or(ApprovalArtifactError::ReleaseNotAttested)?",
+    "if!attestation.allows_helper_manifest(artifact.manifest_digest())",
+    "if!artifact.path().is_absolute()",
+    "Ok(PreflightApprovalArtifact{artifact,release_identity,})",
+  ].map((marker) => preflightCompact.indexOf(marker));
+  const preparationOrder = [
+    "letidentity=held_helper_file_identity(&artifact.artifact)?",
+    "letPreflightApprovalArtifact{artifact,release_identity,}=artifact",
+    "Ok(PreparedReleaseApprovalSupervisor{artifact,release_identity,identity,})",
+  ].map((marker) => prepareCompact.indexOf(marker));
+  const authorityPattern =
+    /\b(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)\b/u;
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: "crates/platform-windows/src/approval_supervisor.rs", source }],
+    authorityPattern,
+  );
+  const authorityImpls = authorityInventory.impls.filter(
+    (item) =>
+      item.path === "crates/platform-windows/src/approval_supervisor.rs",
+  );
+  const visibleFunctions = rustVisibleFunctionItems(source).map(
+    ({ owner, visibility, name }) => ({ owner, visibility, name }),
+  );
+  const completeFunctionSurface = rustFunctionSignatures(source).map(
+    (signature) => {
+      const signatureCode = rustLexicalCode(signature.source);
+      const owner = implItems
+        .filter(
+          (item) =>
+            item.index < signature.index &&
+            signature.index < item.index + item.source.length,
+        )
+        .at(-1)?.header;
+      const name =
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          signatureCode,
+        )?.groups.name;
+      return { owner: owner ?? "free", name: name ?? "[UNPARSED]" };
+    },
+  );
+  const preflightSites = rustStructLiteralSites(
+    source,
+    "PreflightApprovalArtifact",
+  ).map((site) => compactRust(site.source));
+  const preparedSites = rustStructLiteralSites(
+    source,
+    "PreparedReleaseApprovalSupervisor",
+  ).map((site) => compactRust(site.source));
+  const admissionSurface = `${preflight}\n${prepare}`;
+
+  return (
+    normalizeRustFragment(rustLexicalCode(artifactError)) ===
+      "pub(crate) enum ApprovalArtifactError { #[error( )] WrongRole, #[error( )] ReleaseNotAttested, #[error( )] ManifestNotAllowed, #[error( )] InvalidPath, }" &&
+    normalizeRustFragment(rustLexicalCode(preflightError)) ===
+      "pub(crate) enum ApprovalSupervisorPreflightError { #[error( )] IdentityUnavailable, }" &&
+    source.includes(
+      '#[error("verified artifact is not the Approval Frontend")]',
+    ) &&
+    source.includes('#[error("Approval release evidence is unavailable")]') &&
+    source.includes('#[error("Approval manifest is not release-allowed")]') &&
+    source.includes('#[error("verified Approval path is invalid")]') &&
+    source.includes(
+      '#[error("held Approval artifact identity is unavailable")]',
+    ) &&
+    normalizeRustFragment(rustLexicalCode(preflightDefinition)) ===
+      "pub(crate) struct PreflightApprovalArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, }" &&
+    normalizeRustFragment(rustLexicalCode(preparedDefinition)) ===
+      "pub(crate) struct PreparedReleaseApprovalSupervisor { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, identity: ExactFileIdentity, }" &&
+    /#\[must_use = "dropping the Approval preflight capability closes its pinned file"\]\s*pub\(crate\) struct PreflightApprovalArtifact/u.test(
+      source,
+    ) &&
+    /#\[must_use = "dropping the prepared Approval supervisor closes its pinned file"\]\s*pub\(crate\) struct PreparedReleaseApprovalSupervisor/u.test(
+      source,
+    ) &&
+    /formatter\s*\.\s*write_str\(\s*"PreflightApprovalArtifact\(\[PINNED VERIFIED APPROVAL\]\)"\s*\)/u.test(
+      preflightDebug,
+    ) &&
+    /formatter\s*\.\s*write_str\(\s*"PreparedReleaseApprovalSupervisor\(\[HELD APPROVAL\/RELEASE\/FILE_ID_INFO\]\)"\s*\)/u.test(
+      preparedDebug,
+    ) &&
+    compactRust(preparedDrop) ===
+      "implDropforPreparedReleaseApprovalSupervisor{fndrop(&mutself){self.identity.zeroize();}}" &&
+    compactRust(exactImageErrorConversion) ===
+      "implFrom<ExactImageError>forApprovalSupervisorPreflightError{fnfrom(_error:ExactImageError)->Self{Self::IdentityUnavailable}}" &&
+    preflightCompact ===
+      "pub(crate)fnpreflight_approval_artifact(attestation:ReleaseAttestation,artifact:VerifiedHelper,)->Result<PreflightApprovalArtifact,ApprovalArtifactError>{if!artifact.is_approval_frontend(){returnErr(ApprovalArtifactError::WrongRole);}letrelease_identity=attestation.attested_artifact().ok_or(ApprovalArtifactError::ReleaseNotAttested)?;if!attestation.allows_helper_manifest(artifact.manifest_digest()){returnErr(ApprovalArtifactError::ManifestNotAllowed);}if!artifact.path().is_absolute(){returnErr(ApprovalArtifactError::InvalidPath);}Ok(PreflightApprovalArtifact{artifact,release_identity,})}" &&
+    prepareCompact ===
+      "pub(crate)fnprepare_release_approval_supervisor(artifact:PreflightApprovalArtifact,)->Result<PreparedReleaseApprovalSupervisor,ApprovalSupervisorPreflightError>{letidentity=held_helper_file_identity(&artifact.artifact)?;letPreflightApprovalArtifact{artifact,release_identity,}=artifact;Ok(PreparedReleaseApprovalSupervisor{artifact,release_identity,identity,})}" &&
+    gateOrder.every((position) => position !== -1) &&
+    gateOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    preparationOrder.every((position) => position !== -1) &&
+    preparationOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    rustCallSites(preflight, "attested_artifact").length === 1 &&
+    rustCallSites(preflight, "allows_helper_manifest").length === 1 &&
+    rustCallSites(prepare, "held_helper_file_identity").length === 1 &&
+    JSON.stringify(
+      rustCallSites(prepare, "held_helper_file_identity").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&artifact.artifact"]]) &&
+    !/\bsigning_enabled\b/u.test(rustLexicalCode(preflight)) &&
+    JSON.stringify(preflightSites) ===
+      JSON.stringify([
+        "PreflightApprovalArtifact{artifact,release_identity,}",
+        "PreflightApprovalArtifact{artifact,release_identity,}",
+      ]) &&
+    JSON.stringify(preparedSites) ===
+      JSON.stringify([
+        "PreparedReleaseApprovalSupervisor{artifact,release_identity,identity,}",
+      ]) &&
+    JSON.stringify(visibleFunctions) ===
+      JSON.stringify([
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "preflight_approval_artifact",
+        },
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "prepare_release_approval_supervisor",
+        },
+      ]) &&
+    JSON.stringify(completeFunctionSurface) ===
+      JSON.stringify([
+        {
+          owner:
+            "impl From<ExactImageError> for ApprovalSupervisorPreflightError",
+          name: "from",
+        },
+        {
+          owner: "impl fmt::Debug for PreflightApprovalArtifact",
+          name: "fmt",
+        },
+        {
+          owner: "impl fmt::Debug for PreparedReleaseApprovalSupervisor",
+          name: "fmt",
+        },
+        {
+          owner: "impl Drop for PreparedReleaseApprovalSupervisor",
+          name: "drop",
+        },
+        { owner: "free", name: "preflight_approval_artifact" },
+        { owner: "free", name: "prepare_release_approval_supervisor" },
+      ]) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityImpls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/approval_supervisor.rs",
+          header: "impl fmt::Debug for PreflightApprovalArtifact",
+        },
+        {
+          path: "crates/platform-windows/src/approval_supervisor.rs",
+          header: "impl fmt::Debug for PreparedReleaseApprovalSupervisor",
+        },
+        {
+          path: "crates/platform-windows/src/approval_supervisor.rs",
+          header: "impl Drop for PreparedReleaseApprovalSupervisor",
+        },
+      ]) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Debug|Serialize)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)\b/u.test(
+      code,
+    ) &&
+    !/(?:^|\n)\s*impl\s+(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)\b[^\{]*\{/u.test(
+      code,
+    ) &&
+    !/(?:std::fs|OpenOptions|File::open|CreateFile\w*|OpenProcess|CreateProcess\w*|DuplicateHandle|ShellExecute\w*|WinExec|Command::new|std::process|std::thread|thread::Builder|\bmpsc\b|\b(?:sync_)?channel\s*\(|CreateNamedPipe\w*|CreatePipe|PrivateApprovalPipes|InheritedStdio|PendingApproval|ApprovalResponseChannel|LaunchedHelper|RestrictedLauncher|JobObject|raw_handle|launch_approval_frontend|\b(?:launch|spawn)\w*\s*\()/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/(?:\.path\s*\(|canonicalize\s*\(|\bopen\s*\(|\bhold\s*\(|raw_handle|\bpid\b)/iu.test(
+      rustLexicalCode(prepare),
+    ) &&
+    !/\bpub\(in\s+[^)]+\)/u.test(code) &&
+    !/\brelease_identity\s*\.\s*(?:matches|eq|ct_eq|as_ref|as_bytes|into_inner|into_parts)\s*\(/u.test(
+      code,
+    ) &&
+    admissionSurface.length > 0
+  );
+};
+const approvalSupervisorMutationProbes = [
+  approvalSupervisorProduction.replace(
+    "if !artifact.is_approval_frontend() {",
+    "if false {",
+  ),
+  approvalSupervisorProduction.replace(
+    "        return Err(ApprovalArtifactError::WrongRole);",
+    "        if false { return Err(ApprovalArtifactError::WrongRole); }",
+  ),
+  approvalSupervisorProduction.replace(
+    "        .attested_artifact()",
+    "        .unattested_artifact()",
+  ),
+  approvalSupervisorProduction.replace(
+    "if !attestation.allows_helper_manifest(artifact.manifest_digest()) {",
+    "if false {",
+  ),
+  approvalSupervisorProduction.replace(
+    "        return Err(ApprovalArtifactError::ManifestNotAllowed);",
+    "        if false { return Err(ApprovalArtifactError::ManifestNotAllowed); }",
+  ),
+  approvalSupervisorProduction.replace(
+    "        return Err(ApprovalArtifactError::InvalidPath);",
+    "        if false { return Err(ApprovalArtifactError::InvalidPath); }",
+  ),
+  approvalSupervisorProduction.replace(
+    "    if !attestation.allows_helper_manifest(artifact.manifest_digest()) {\n        return Err(ApprovalArtifactError::ManifestNotAllowed);\n    }\n    if !artifact.path().is_absolute() {",
+    "    if !artifact.path().is_absolute() {\n        return Err(ApprovalArtifactError::InvalidPath);\n    }\n    if !attestation.allows_helper_manifest(artifact.manifest_digest()) {",
+  ),
+  approvalSupervisorProduction.replace(
+    "let identity = held_helper_file_identity(&artifact.artifact)?;",
+    "let identity = ExactFileIdentity::default();",
+  ),
+  approvalSupervisorProduction.replace(
+    '#[must_use = "dropping the Approval preflight capability closes its pinned file"]',
+    '#[derive(Clone)]\n#[must_use = "dropping the Approval preflight capability closes its pinned file"]',
+  ),
+  `${approvalSupervisorProduction}\nimpl Clone for PreflightApprovalArtifact { fn clone(&self) -> Self { unreachable!() } }\n`,
+  `${approvalSupervisorProduction}\ntype ApprovalAuthorityAlias = PreparedReleaseApprovalSupervisor;\n`,
+  `${approvalSupervisorProduction}\npub(crate) fn leak_approval_path(value: &PreflightApprovalArtifact) { let _ = value.artifact.path(); }\n`,
+  `${approvalSupervisorProduction}\nfn hidden_activation() { std::thread::spawn(|| {}); }\n`,
+  `${approvalSupervisorProduction}\nuse std::{thread as execution}; fn aliased_activation() { let run = execution::spawn; let _ = run(|| ()); }\n`,
+];
+requireInvariant(
+  approvalSupervisorContract(approvalSupervisorProduction) &&
+    approvalSupervisorMutationProbes.every(
+      (probe) =>
+        probe !== approvalSupervisorProduction &&
+        !approvalSupervisorContract(probe),
+    ),
+  "private dormant Approval admission must retain ordered role/release/manifest/path gates and same-handle FILE_ID_INFO in one non-cloneable, redacted, resource-free prepared supervisor",
+);
+
+const approvalSupervisorPath =
+  "crates/platform-windows/src/approval_supervisor.rs";
+const preflightApprovalProductionTokens = brokerLexicalTokenInventory(
+  workspaceRustProductionFiles,
+  "preflight_approval_artifact",
+);
+const prepareApprovalProductionTokens = brokerLexicalTokenInventory(
+  workspaceRustProductionFiles,
+  "prepare_release_approval_supervisor",
+);
+const approvalSupervisorLibContract = (source) =>
+  /#\[cfg\(windows\)\]\s*#\[allow\(dead_code\)\]\s*mod approval_supervisor;/u.test(
+    source,
+  ) &&
+  !/pub(?:\([^)]*\))?\s+mod\s+approval_supervisor\b/u.test(
+    rustLexicalCode(source),
+  ) &&
+  !/pub(?:\([^)]*\))?\s+use\s+[^;]*\bapproval_supervisor\b/u.test(
+    rustLexicalCode(source),
+  ) &&
+  !/pub(?:\([^)]*\))?\s+use\s+[^;]*(?:PendingApproval|launch_approval_frontend|LaunchedHelper)/u.test(
+    rustLexicalCode(source),
+  );
+const approvalSupervisorLibMutationProbes = [
+  platformWindowsLib.replace(
+    "mod approval_supervisor;",
+    "pub mod approval_supervisor;",
+  ),
+  `${platformWindowsLib}\npub use approval_supervisor::prepare_release_approval_supervisor;\n`,
+  `${platformWindowsLib}\npub use approval_supervisor::*;\n`,
+  `${platformWindowsLib}\npub use approval_channel::{PendingApproval, launch_approval_frontend};\n`,
+];
+const approvalSupervisorExternalUseContract = (files) =>
+  files
+    .filter((file) => file.path !== approvalSupervisorPath)
+    .every((file) =>
+      rustUseItems(file.source).every(
+        (item) =>
+          !/\bapproval_supervisor\b/u.test(rustLexicalCode(item.source)),
+      ),
+    );
+const approvalSupervisorExternalUseMutation = workspaceRustProductionFiles.map(
+  (file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nuse crate::approval_supervisor as approval_authority;\n`,
+        }
+      : file,
+);
+const approvalSupervisorDocumentation = [
+  rootReadme,
+  activationReadme,
+  activationArchitecture,
+  keyAgentProtocolDocumentation,
+  securityDecisions,
+];
+const approvalSupervisorDocumentationContract = (documents) =>
+  documents.every(
+    (document) =>
+      document.includes("PreflightApprovalArtifact") &&
+      document.includes("PreparedReleaseApprovalSupervisor") &&
+      document.includes("LaunchedHelper") &&
+      document.includes("RestrictedLauncher::spawn") &&
+      /mapped[- ]image/iu.test(document) &&
+      /process(?:-object)?\s+DACL/iu.test(document) &&
+      /production (?:orchestration )?caller/iu.test(document) &&
+      document.includes("COMPILED_PARENT_POLICY") &&
+      document.includes("COMPILED_RELEASE_POLICY"),
+  );
+const approvalSupervisorDocumentationMutationProbes =
+  approvalSupervisorDocumentation.map((document) =>
+    document.replace(
+      "PreparedReleaseApprovalSupervisor",
+      "UnboundApprovalArtifact",
+    ),
+  );
+const stalePublicApprovalLaunchClaim =
+  /public generic (?:restricted|helper) launcher|public restricted-launch|Public launch|Public fail-closed entry point for one-shot release helper launch|public entry point accepts only Approval/iu;
+requireInvariant(
+  approvalSupervisorLibContract(platformWindowsLib) &&
+    approvalSupervisorLibMutationProbes.every(
+      (probe) =>
+        probe !== platformWindowsLib && !approvalSupervisorLibContract(probe),
+    ) &&
+    JSON.stringify(preflightApprovalProductionTokens) ===
+      JSON.stringify([approvalSupervisorPath]) &&
+    JSON.stringify(prepareApprovalProductionTokens) ===
+      JSON.stringify([approvalSupervisorPath]) &&
+    approvalSupervisorExternalUseContract(workspaceRustProductionFiles) &&
+    !approvalSupervisorExternalUseContract(
+      approvalSupervisorExternalUseMutation,
+    ) &&
+    approvalSupervisorDocumentationContract(approvalSupervisorDocumentation) &&
+    approvalSupervisorDocumentationMutationProbes.every(
+      (probe, index) =>
+        probe !== approvalSupervisorDocumentation[index] &&
+        !approvalSupervisorDocumentationContract(
+          approvalSupervisorDocumentation.map((document, documentIndex) =>
+            documentIndex === index ? probe : document,
+          ),
+        ),
+    ) &&
+    !stalePublicApprovalLaunchClaim.test(
+      `${restrictedLauncher}\n${attestation}\n${activationHelper}\n${activationReadme}`,
+    ) &&
+    platformWindowsProductionFiles
+      .filter((file) => file.path !== approvalSupervisorPath)
+      .every(
+        (file) =>
+          !/(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)/u.test(
+            rustLexicalCode(file.source),
+          ),
+      ),
+  "Approval supervisor authority must remain in one private dormant module with zero production caller, alias, re-export, or legacy broad-launch surface",
+);
+
 const approvalChannel = await text(
   "crates/platform-windows/src/approval_channel.rs",
 );
@@ -26501,6 +26957,7 @@ const approvalParentChannelContract = (source) => {
   let launch;
   let requireParentProof;
   let matchesVerifiedHelper;
+  let pendingDefinition;
   let pendingImpl;
   let pendingReceive;
   let bootstrapDefinition;
@@ -26528,6 +26985,10 @@ const approvalParentChannelContract = (source) => {
     matchesVerifiedHelper = rustTopLevelFunctionBlock(
       source,
       "matches_verified_approval_helper",
+    );
+    pendingDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PendingApproval\s*\{/u,
     );
     pendingImpl = rustImplItemAtDepth(source, "impl PendingApproval", 0);
     pendingReceive = rustFunctionBlockAtDepth(pendingImpl, "receive", 1);
@@ -26615,6 +27076,11 @@ const approvalParentChannelContract = (source) => {
   ].map((marker) => transcriptCompact.indexOf(marker));
 
   return (
+    /#\[cfg\(windows\)\]\s*pub\(crate\) fn launch_approval_frontend\(/u.test(
+      rustLexicalCode(source),
+    ) &&
+    normalizeRustFragment(rustLexicalCode(pendingDefinition)) ===
+      "pub(crate) struct PendingApproval { helper: LaunchedHelper, channel: ApprovalResponseChannel, }" &&
     normalizeRustFragment(
       rustConstItemAtDepth(source, "TRANSCRIPT_DOMAIN", 0),
     ) ===
@@ -26732,7 +27198,7 @@ const approvalParentChannelContract = (source) => {
       "ifis_all_zero(&parent)||is_all_zero(&child){returnErr(ApprovalChannelError::TranscriptFailure);}",
     ) &&
     compactRust(pendingReceive) ===
-      "pubfnreceive(self)->Result<VerifiedApprovalResponse,ApprovalChannelError>{self.channel.receive(self.helper)}" &&
+      "pub(crate)fnreceive(self)->Result<VerifiedApprovalResponse,ApprovalChannelError>{self.channel.receive(self.helper)}" &&
     orderedRustMarkersAtDepth(receive, [
       {
         marker:
@@ -26813,6 +27279,18 @@ const approvalReceive = rustFunctionBlockAtDepth(
   1,
 );
 const approvalParentChannelMutationProbes = [
+  approvalChannelProduction.replace(
+    "pub(crate) fn launch_approval_frontend(",
+    "pub fn launch_approval_frontend(",
+  ),
+  approvalChannelProduction.replace(
+    "pub(crate) struct PendingApproval {",
+    "pub struct PendingApproval {",
+  ),
+  approvalChannelProduction.replace(
+    "    pub(crate) fn receive(self) -> Result<VerifiedApprovalResponse, ApprovalChannelError> {",
+    "    pub fn receive(self) -> Result<VerifiedApprovalResponse, ApprovalChannelError> {",
+  ),
   approvalChannelProduction.replace(
     "    getrandom::fill(&mut *parent_nonce)",
     "    parent_nonce.fill(7)",
@@ -26915,7 +27393,7 @@ const approvalHeldProcessRevalidationContract = (source) => {
   try {
     launchedHelperDefinition = rustTopLevelLexicalItemBlock(
       source,
-      /pub\s+struct\s+LaunchedHelper\s*\{/u,
+      /pub\(crate\)\s+struct\s+LaunchedHelper\s*\{/u,
     );
     launchedHelperImpl = rustImplItemAtDepth(source, "impl LaunchedHelper", 0);
     isHeldInJob = rustFunctionBlockAtDepth(
@@ -26930,7 +27408,7 @@ const approvalHeldProcessRevalidationContract = (source) => {
     );
     heldIdentityDefinition = rustTopLevelLexicalItemBlock(
       source,
-      /pub\s+struct\s+HeldProcessIdentity\s*\{/u,
+      /pub\(crate\)\s+struct\s+HeldProcessIdentity\s*\{/u,
     );
     heldIdentityImpl = rustImplItemAtDepth(
       source,
@@ -26984,20 +27462,31 @@ const approvalHeldProcessRevalidationContract = (source) => {
     "basic.ActiveProcessLimit!=1",
   ].map((marker) => sysCompact.indexOf(marker));
   return (
+    (rustLexicalCode(source).match(/\bpub\(crate\)\s+fn\s+spawn\s*\(/gu) ?? [])
+      .length === 2 &&
+    !/\bpub\s+fn\s+spawn\s*\(/u.test(rustLexicalCode(source)) &&
+    (
+      rustLexicalCode(source).match(
+        /\bpub\(crate\)\s+struct\s+LaunchedHelper\b/gu,
+      ) ?? []
+    ).length === 2 &&
+    !/\bpub\s+struct\s+(?:LaunchedHelper|HeldProcessIdentity)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
     normalizeRustFragment(rustLexicalCode(launchedHelperDefinition)) ===
-      "pub struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, }" &&
+      "pub(crate) struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, }" &&
     normalizeRustFragment(rustLexicalCode(heldIdentityDefinition)) ===
-      "pub struct HeldProcessIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
+      "pub(crate) struct HeldProcessIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
     compactRust(heldProcessIdAccessor) ===
-      "pubconstfnprocess_id(self)->u32{self.process_id}" &&
+      "pub(crate)constfnprocess_id(self)->u32{self.process_id}" &&
     compactRust(heldHelperFileAccessor) ===
-      "pubconstfnhelper_file(self)->FileIdentity{self.helper_file}" &&
+      "pub(crate)constfnhelper_file(self)->FileIdentity{self.helper_file}" &&
     compactRust(heldManifestDigestAccessor) ===
-      "pubconstfnhelper_manifest_digest(self)->[u8;32]{self.helper_manifest_digest}" &&
+      "pub(crate)constfnhelper_manifest_digest(self)->[u8;32]{self.helper_manifest_digest}" &&
     compactRust(heldProfileRevisionAccessor) ===
-      "pubconstfnprofile_revision(self)->u32{self.profile_revision}" &&
+      "pub(crate)constfnprofile_revision(self)->u32{self.profile_revision}" &&
     compactRust(isHeldInJob) ===
-      "pubfnis_held_in_job(&self)->bool{self.revalidate_held_process().is_ok()}" &&
+      "pub(crate)fnis_held_in_job(&self)->bool{self.revalidate_held_process().is_ok()}" &&
     JSON.stringify(
       rustCallSites(revalidateMethod, "sys::revalidate_held_process").map(
         (call) => call.arguments.map(compactRust),
@@ -27054,6 +27543,22 @@ const approvalHeldProcessRevalidationContract = (source) => {
 };
 const approvalHeldProcessRevalidationMutationProbes = [
   restrictedLauncherProduction.replace(
+    "    pub(crate) fn spawn(",
+    "    pub fn spawn(",
+  ),
+  restrictedLauncherProduction.replace(
+    "pub(crate) struct LaunchedHelper {",
+    "pub struct LaunchedHelper {",
+  ),
+  restrictedLauncherProduction.replace(
+    "pub(crate) struct HeldProcessIdentity {",
+    "pub struct HeldProcessIdentity {",
+  ),
+  restrictedLauncherProduction.replace(
+    "    pub(crate) const fn helper_manifest_digest(self) -> [u8; 32] {",
+    "    pub const fn helper_manifest_digest(self) -> [u8; 32] {",
+  ),
+  restrictedLauncherProduction.replace(
     "self.revalidate_held_process().is_ok()",
     "true",
   ),
@@ -27098,8 +27603,8 @@ const approvalHeldProcessRevalidationMutationProbes = [
     "        [0; 32]\n",
   ),
   restrictedLauncherProduction.replace(
-    "    pub const fn profile_revision(self) -> u32 {\n        self.profile_revision\n    }",
-    "    pub const fn profile_revision(self) -> u32 {\n        0\n    }",
+    "    pub(crate) const fn profile_revision(self) -> u32 {\n        self.profile_revision\n    }",
+    "    pub(crate) const fn profile_revision(self) -> u32 {\n        0\n    }",
   ),
 ];
 requireInvariant(
@@ -27586,9 +28091,12 @@ requireInvariant(
   "verified approval response must remain opaque and externally unconstructible",
 );
 requireInvariant(
-  /pub\s+fn\s+receive\s*\(\s*self\s*\)[\s\S]*?self\.channel\.receive\(self\.helper\)/su.test(
+  /pub\(crate\)\s+fn\s+receive\s*\(\s*self\s*\)[\s\S]*?self\.channel\.receive\(self\.helper\)/su.test(
     approvalChannel,
   ) &&
+    !/pub\s+fn\s+(?:launch_approval_frontend|receive)\b/u.test(
+      rustLexicalCode(approvalChannelProduction),
+    ) &&
     approvalChannel.includes("RESPONSE_BYTES") &&
     approvalChannel.includes("DeadlineElapsed") &&
     approvalChannel.includes("BindingMismatch"),

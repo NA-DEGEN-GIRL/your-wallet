@@ -61,8 +61,18 @@
 //! use platform_windows::broker_artifact::prepare_release_broker_supervisor;
 //! ```
 //!
-//! The public one-shot helper launcher also rejects the manifest-derived Key
-//! Agent role; an allowlisted Key Agent cannot use that resumed-process path.
+//! The crate-private one-shot helper launcher also rejects the manifest-derived
+//! Key Agent role; an allowlisted Key Agent cannot use that resumed-process path.
+//! The legacy Approval launcher and its broad held-process result are now
+//! crate-private as well; external crates cannot start or retain that path:
+//!
+//! ```compile_fail
+//! use platform_windows::launch_approval_frontend;
+//! ```
+//!
+//! ```compile_fail
+//! use platform_windows::launch::LaunchedHelper;
+//! ```
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -70,7 +80,18 @@
 mod anchor_registry;
 #[cfg(windows)]
 mod appcontainer_profile_api;
+#[allow(dead_code)]
 mod approval_channel;
+// Approval release admission is deliberately dormant. It retains one verified,
+// pinned Approval artifact, the opaque whole-release identity, and same-handle
+// FILE_ID_INFO, while allocating no process, Job, pipe, channel, thread, or
+// launch state and exposing no artifact/path/identity/raw-handle accessor. A
+// later separately isolated supervisor must still prove the mapped image,
+// process-object DACL/principal split, Key Agent parent capability, endpoint
+// topology, cleanup, and complete runtime composition before activation.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod approval_supervisor;
 pub mod attestation;
 pub mod helper;
 // This dormant admission seam checks Broker role, complete release evidence, its
@@ -176,8 +197,6 @@ pub mod storage;
 pub use approval_channel::{
     ApprovalChannelError, ApprovalLaunchError, VerifiedApprovalDecision, VerifiedApprovalResponse,
 };
-#[cfg(windows)]
-pub use approval_channel::{PendingApproval, launch_approval_frontend};
 #[cfg(all(
     windows,
     feature = "broker-channel-contract-test-hook",

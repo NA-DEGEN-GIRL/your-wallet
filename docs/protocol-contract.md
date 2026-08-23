@@ -121,6 +121,23 @@ release extension ID, and end-to-end signed artifact evidence are external
 blockers. The debug-held Broker is not an Authenticode release allowlist. RPC,
 accounts, signing, and Key Agent access remain unrepresentable and unavailable.
 
+Before that channel can ever become a release path, a dormant private Approval
+admission seam now consumes one pinned helper into `PreflightApprovalArtifact`
+only after Approval-role, complete release-attestation, exact helper-manifest,
+and absolute-path checks. Its only transition derives `FILE_ID_INFO` from that
+same held file and moves the pinned artifact, opaque whole-release identity, and exact file identity into
+`PreparedReleaseApprovalSupervisor`. It creates no process, Job, pipe, channel,
+thread, launch state, or second file handle and exposes no artifact/path/PID/raw
+handle. The legacy launch, pending response owner, and broad `LaunchedHelper`
+type are crate-private. `RestrictedLauncher::spawn` is crate-private too, and
+its only remaining call site is inside that dormant legacy launcher. The
+launcher has zero production callers.
+This preparation proves neither mapped-image identity nor a separately
+principaled supervisor with a protected creation-time process DACL. Exact Key
+Agent parent capability, endpoint topology/exclusivity, cleanup, DLL graph,
+production orchestration, signing, and both disabled compiled policies remain
+separate release blockers.
+
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
 held-child identity, and one-shot transcript. Its `HANDLE_LIST` names exactly

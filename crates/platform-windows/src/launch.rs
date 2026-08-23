@@ -6,8 +6,8 @@
 //! explicit inherited-handle list and minimal environment, start suspended,
 //! verify the resulting `AppContainer` token, and enter a kill-on-close
 //! single-process job before resume. There is deliberately no unsandboxed
-//! fallback. Public launch also remains disabled until release evidence for the
-//! exact signed artifact is compiled into [`ReleaseAttestation`].
+//! fallback. Crate-private launch also remains disabled until release evidence
+//! for the exact signed artifact is compiled into [`ReleaseAttestation`].
 
 use core::fmt;
 #[cfg(windows)]
@@ -185,7 +185,7 @@ impl fmt::Debug for InheritedStdio<'_> {
     }
 }
 
-/// Public fail-closed entry point for one-shot release helper launch.
+/// Public fail-closed policy carrier whose launch operations are crate-private.
 #[derive(Clone, Copy, Debug)]
 pub struct RestrictedLauncher {
     attestation: ReleaseAttestation,
@@ -252,7 +252,7 @@ impl RestrictedLauncher {
     /// Profile, current-directory, operating-system, or post-creation token
     /// verification failures all fail closed before the child is resumed.
     #[cfg(windows)]
-    pub fn spawn(
+    pub(crate) fn spawn(
         self,
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
@@ -278,7 +278,7 @@ impl RestrictedLauncher {
 
     /// Refuses launch on non-Windows platforms.
     #[cfg(not(windows))]
-    pub fn spawn(self, helper: &VerifiedHelper) -> Result<LaunchedHelper, LaunchError> {
+    pub(crate) fn spawn(self, helper: &VerifiedHelper) -> Result<LaunchedHelper, LaunchError> {
         let role = VerifiedLpacRole::from_helper(helper)?;
         if role != VerifiedLpacRole::ApprovalFrontend {
             return Err(LaunchError::HelperRoleNotAllowed);
@@ -295,7 +295,7 @@ impl RestrictedLauncher {
 /// role plus profile revision deterministically bind the sandbox identity used
 /// at creation.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct HeldProcessIdentity {
+pub(crate) struct HeldProcessIdentity {
     process_id: u32,
     helper_file: FileIdentity,
     helper_manifest_digest: [u8; 32],
@@ -317,25 +317,25 @@ impl fmt::Debug for HeldProcessIdentity {
 impl HeldProcessIdentity {
     /// Returns the child process identifier.
     #[must_use]
-    pub const fn process_id(self) -> u32 {
+    pub(crate) const fn process_id(self) -> u32 {
         self.process_id
     }
 
     /// Returns the verified executable file identity.
     #[must_use]
-    pub const fn helper_file(self) -> FileIdentity {
+    pub(crate) const fn helper_file(self) -> FileIdentity {
         self.helper_file
     }
 
     /// Returns the verified helper-manifest digest.
     #[must_use]
-    pub const fn helper_manifest_digest(self) -> [u8; 32] {
+    pub(crate) const fn helper_manifest_digest(self) -> [u8; 32] {
         self.helper_manifest_digest
     }
 
     /// Returns the no-network LPAC profile revision used for creation.
     #[must_use]
-    pub const fn profile_revision(self) -> u32 {
+    pub(crate) const fn profile_revision(self) -> u32 {
         self.profile_revision
     }
 }
@@ -378,7 +378,7 @@ mod debug_tests {
 
 /// A process held in a single-process kill-on-close job.
 #[cfg(windows)]
-pub struct LaunchedHelper {
+pub(crate) struct LaunchedHelper {
     process: sys::OwnedWinHandle,
     job: sys::OwnedWinHandle,
     identity: HeldProcessIdentity,
@@ -424,21 +424,15 @@ impl fmt::Debug for InjectedParentProof {
 
 #[cfg(windows)]
 impl LaunchedHelper {
-    /// Returns the child PID for subsequent named-pipe peer binding.
-    #[must_use]
-    pub const fn process_id(&self) -> u32 {
-        self.identity.process_id()
-    }
-
     /// Returns the held process, helper-artifact, and sandbox-profile identity.
     #[must_use]
-    pub const fn identity(&self) -> HeldProcessIdentity {
+    pub(crate) const fn identity(&self) -> HeldProcessIdentity {
         self.identity
     }
 
     /// Revalidates the exact held PID, process-to-Job membership, and Job limits.
     #[must_use]
-    pub fn is_held_in_job(&self) -> bool {
+    pub(crate) fn is_held_in_job(&self) -> bool {
         self.revalidate_held_process().is_ok()
     }
 
@@ -491,7 +485,7 @@ impl fmt::Debug for LaunchedHelper {
 
 #[cfg(not(windows))]
 #[derive(Debug)]
-pub struct LaunchedHelper;
+pub(crate) struct LaunchedHelper;
 
 #[cfg(windows)]
 mod sys {

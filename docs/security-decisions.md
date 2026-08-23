@@ -329,6 +329,32 @@ root until Job termination; no startup handle is reused for runtime I/O. The
 parent's exact response plus EOF under the original deadline is authoritative
 for successful response-handle closure.
 
+Approval release admission is now a separate dormant private type state. It
+consumes one pinned helper into `PreflightApprovalArtifact` only after the
+manifest-derived Approval role, complete release attestation, exact
+helper-manifest allowlist membership, and absolute path succeed in that order.
+Preparation derives `FILE_ID_INFO` from that same held file and moves the
+artifact, opaque whole-release identity, and exact file identity into
+non-cloneable `PreparedReleaseApprovalSupervisor`.
+Neither state exposes its artifact, path, identity, PID, or raw handle, and the
+module allocates no process, Job, pipe, channel, thread, launch state, or second
+file handle. The legacy Approval launcher, pending response state, and broad
+`LaunchedHelper` are crate-private. `RestrictedLauncher::spawn` is crate-private
+too, and its only remaining call site is inside that dormant legacy launcher.
+The launcher has zero production callers. This does not yet prove mapped-image
+identity or
+separate the supervisor from a hostile launcher with a distinct principal and
+protected process-object DACL supplied at creation. Exact Key Agent parent
+capability, endpoint topology, cleanup, DLL graph, production orchestration,
+signing, and release activation remain unimplemented; both compiled policies
+remain `None`. A supervisor and hostile launcher running as the same
+unrestricted owner SID cannot be strongly separated by an ordinary process
+DACL: the owner can reacquire ACL-changing authority, and a caller retaining or
+reacquiring `PROCESS_DUP_HANDLE` can still target child-local proof handles.
+Release activation therefore requires a separately principaled supervisor (or
+an explicitly narrower threat model), creation-time ACL evidence, denial tests,
+and absence of ambient debug privilege.
+
 The runtime-enabled Approval child has exactly two unique inherited stdio pipe
 objects. As its first Windows/CRT application operation, before binary-mode
 conversion, it requires stdin to differ from stdout, requires stdout and stderr

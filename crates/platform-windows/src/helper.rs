@@ -224,8 +224,8 @@ impl VerifiedHelper {
     }
 
     /// Returns whether the verified manifest names the one exact approval
-    /// frontend role. The public restricted-launch entry point uses this role
-    /// proof to derive its dedicated LPAC profile.
+    /// frontend role. The crate-private restricted-launch entry point uses this
+    /// role proof to derive its dedicated LPAC profile.
     pub(crate) const fn is_approval_frontend(&self) -> bool {
         matches!(self.role, HelperRole::ApprovalFrontend)
     }
@@ -363,6 +363,41 @@ impl VerifiedHelper {
             manifest_digest,
             role: if broker_role {
                 HelperRole::Broker
+            } else {
+                HelperRole::Other
+            },
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_approval_artifact_test(
+        path: PathBuf,
+        manifest_digest: [u8; 32],
+        approval_frontend_role: bool,
+    ) -> Result<Self, HelperError> {
+        let executable = std::env::current_exe().map_err(|_| HelperError::OperatingSystem)?;
+        let held_path = if path.is_absolute() {
+            path.as_path()
+        } else {
+            executable.as_path()
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(held_path)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        Ok(Self {
+            path,
+            file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
+            identity: FileIdentity {
+                volume_serial_number: 34,
+                file_index: 35,
+                file_size: 36,
+            },
+            manifest_digest,
+            role: if approval_frontend_role {
+                HelperRole::ApprovalFrontend
             } else {
                 HelperRole::Other
             },

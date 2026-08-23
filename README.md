@@ -600,6 +600,18 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   핸들의 제거를 계속 시도하며 상속을 복원하지 않고, 오류에서는 다른 동작 전에 종료
   코드 78로 닫힙니다. 별도 child/grandchild 커널 테스트는 봉인 전의 세 exact stdio
   객체가 grandchild에 하나도 나타나지 않음을 `CompareObjectHandles`로 확인합니다.
+- Windows 경계에는 비공개 Approval release-admission 준비 상태도 추가되어 있습니다.
+  역할, 완전한 release attestation, helper manifest allowlist, 절대 경로를 순서대로
+  통과한 `PreflightApprovalArtifact`만 이미 pinned된 같은 파일 핸들에서
+  `FILE_ID_INFO`를 얻어 `PreparedReleaseApprovalSupervisor`로 이동할 수 있습니다. 두
+  상태는 non-clone이며 artifact, whole-release identity, exact file identity를 별도로
+  보유하지만 process, Job, pipe, channel, thread, launch state 또는 두 번째 파일 핸들을
+  만들지 않고 path/PID/raw-handle accessor도 제공하지 않습니다. 기존
+  `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`,
+  `RestrictedLauncher::spawn`은 외부 crate에서 더 이상 호출하거나 보유할 수 없습니다.
+  이는 mapped-image 검증이나 별도 supervisor principal·생성 시 protected process DACL,
+  exact Key Agent parent capability, endpoint topology, cleanup, production orchestration 또는
+  signing을 완성하지 않으며 production caller도 0개입니다.
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
   stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
   synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
