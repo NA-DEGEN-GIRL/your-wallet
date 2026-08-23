@@ -270,12 +270,17 @@ transport-suite digest and one non-zero Broker manifest digest separately from
 the exactly three signing-TCB helper manifests. Admission consumes the pinned
 verified artifact and checks Broker role, complete compiled release evidence,
 the dedicated manifest, and an absolute verified path in that order before it
-can mint an opaque non-clone capability. A Windows-only private preparation seam
-then consumes that capability by value. It queries volume serial and all 128
-`FILE_ID_INFO` file-ID bits from the same already-held file handle and retains
-the verified artifact and opaque identity in `PreparedReleaseBrokerSupervisor`.
-Only the admission module can invoke the supervisor's `pub(super)` constructor,
-so no sibling module can combine an unadmitted artifact with an unrelated ID.
+can mint `PreflightBrokerArtifact`. That non-clone capability retains both the
+pinned Broker and the opaque whole-release `AttestedArtifactDigest` accepted by
+`ReleaseAttestation`. The latter denotes the overall `ReleasePolicy`
+`ArtifactDigest`, not the dedicated Broker/helper manifest digest or a Windows
+file-object identity, and it has no raw-digest accessor. A Windows-only private
+preparation seam then consumes that capability by value. It queries volume
+serial and all 128 `FILE_ID_INFO` file-ID bits from the same already-held file handle
+and retains the verified artifact, unchanged opaque whole-release proof,
+and separate opaque file identity in `PreparedReleaseBrokerSupervisor`. Only the
+admission module can invoke the supervisor's `pub(super)` constructor, so no
+sibling module can combine an unadmitted artifact with an unrelated ID.
 
 A production-compiled, crate-private Broker activation core consumes the whole
 prepared value exactly once. It uses the retained verified path only as the
@@ -287,6 +292,10 @@ private process-bound channel, and entire prepared value stay owned together
 through synchronous cleanup. Its release entry accepts no path, raw handle, PID,
 command line, application override, or generic launch target. The separate
 debug-only sibling-path wrapper remains behind its feature and debug assertions.
+The retained release proof is not a Broker-plus-Key-Agent same-release aggregate,
+authenticated process topology, single-instance proof, or
+runtime/signing authority. No production caller reaches this release-bound
+Broker preflight, preparation, or activation path.
 
 `COMPILED_RELEASE_POLICY` remains `None`; the default and all-feature release
 binaries therefore remain on the 4900/exit-78 path. This dormant activation core

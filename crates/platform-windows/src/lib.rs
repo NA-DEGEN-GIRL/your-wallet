@@ -73,11 +73,14 @@ mod appcontainer_profile_api;
 mod approval_channel;
 pub mod attestation;
 pub mod helper;
-// This pure admission seam checks Broker role, complete release evidence, its
-// distinct manifest allowlist, absolute verified path, and same-handle
-// FILE_ID_INFO before its private child supervisor may allocate activation
-// resources. Nesting gives only the admission module prepared-state minting
-// authority.
+// This dormant admission seam checks Broker role, complete release evidence, its
+// distinct manifest allowlist, and absolute verified path, then retains the
+// opaque whole-release identity through same-handle FILE_ID_INFO preparation.
+// The release, manifest, and exact file-object proofs remain separate before
+// its private child supervisor may allocate activation resources. Nesting gives
+// only the admission module prepared-state minting authority. It creates no
+// Broker/Key Agent same-release aggregate, authenticated topology, single-instance
+// proof, or runtime/signing authority, and no production caller exists.
 #[allow(dead_code)]
 mod broker_artifact;
 // This persistent secretless native-host/Broker transport is composed by the

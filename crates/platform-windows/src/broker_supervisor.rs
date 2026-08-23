@@ -19,6 +19,7 @@ use std::time::Instant;
 use thiserror::Error;
 use zeroize::Zeroize;
 
+use crate::attestation::AttestedArtifactDigest;
 use crate::broker_channel::{
     BrokerChannelError, BrokerEndpointCapability, DormantBrokerPipe, ExpectedBrokerPeer,
     VerifiedBrokerChannel,
@@ -33,23 +34,34 @@ const PARENT_PROCESS_HANDLE_ENV: &str = "YOUR_WALLET_DORMANT_PARENT_PROCESS_HAND
 
 /// Opaque release Broker state prepared from one already-admitted file object.
 ///
-/// The supervisor alone can inspect these fields. The value is non-cloneable,
-/// has redacted diagnostics, and remains owned through exact child cleanup.
+/// The supervisor alone can inspect these fields. The value retains the opaque
+/// whole-release identity separately from exact `FILE_ID_INFO`, is
+/// non-cloneable, has redacted diagnostics, and remains owned through exact
+/// child cleanup.
 #[must_use = "dropping the prepared Broker supervisor closes its pinned file"]
 pub(crate) struct PreparedReleaseBrokerSupervisor {
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
     identity: ExactFileIdentity,
 }
 
 impl PreparedReleaseBrokerSupervisor {
-    pub(super) fn new(artifact: VerifiedHelper, identity: ExactFileIdentity) -> Self {
-        Self { artifact, identity }
+    pub(super) fn new(
+        artifact: VerifiedHelper,
+        release_identity: AttestedArtifactDigest,
+        identity: ExactFileIdentity,
+    ) -> Self {
+        Self {
+            artifact,
+            release_identity,
+            identity,
+        }
     }
 }
 
 impl fmt::Debug for PreparedReleaseBrokerSupervisor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])")
+        formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/RELEASE/FILE_ID_INFO])")
     }
 }
 
@@ -1565,7 +1577,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_release_supervisor_retains_same_handle_and_full_file_identity()
+    fn prepared_release_supervisor_retains_same_handle_release_and_full_file_identity()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifacts = TestArtifacts::create()?;
         let broker = VerifiedHelper::for_broker_artifact_test(
@@ -1583,10 +1595,11 @@ mod tests {
 
         let prepared = prepare_release_broker_supervisor(admitted)?;
         assert_eq!(prepared.artifact.raw_handle(), held_handle);
+        assert!(prepared.release_identity.matches(&[0x40; 32]));
         assert_eq!(prepared.identity, expected_identity);
         assert_eq!(
             format!("{prepared:?}"),
-            "PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])"
+            "PreparedReleaseBrokerSupervisor([HELD BROKER/RELEASE/FILE_ID_INFO])"
         );
         drop(prepared);
         Ok(())

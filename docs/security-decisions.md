@@ -20,12 +20,17 @@ remain release blockers.
 
 A private dormant Broker preflight now distinguishes Broker transport evidence
 and the exact Broker manifest from the three signing-TCB helper manifests. It
-can only retain an opaque pinned-artifact capability after role, complete
-release evidence, manifest, and absolute-path checks. On Windows, the admission
-module alone can mint `PreparedReleaseBrokerSupervisor`, which retains volume
-serial plus all 128 `FILE_ID_INFO` file-ID bits derived from the same already-held
-handle alongside the admitted artifact. The value is non-cloneable, redacted
-under `Debug`, and drop-only.
+can only mint `PreflightBrokerArtifact` after role, complete release evidence,
+manifest, and absolute-path checks. That non-clone capability retains the pinned
+Broker plus the opaque whole-release `AttestedArtifactDigest` accepted by
+`ReleaseAttestation`. The whole-release proof denotes the overall
+`ReleasePolicy` `ArtifactDigest`, not a Broker/helper manifest digest or Windows
+file-object identity, and exposes no raw digest. On Windows, the admission module
+alone can mint `PreparedReleaseBrokerSupervisor`, which carries that same opaque
+release proof while separately retaining volume serial plus all 128
+`FILE_ID_INFO` file-ID bits derived from the same already-held handle alongside
+the admitted artifact. The value is non-cloneable, redacted under `Debug`, and
+drop-only.
 
 A production-compiled, crate-private exact-image activation core now consumes
 that whole prepared value exactly once. Before user mode it matches the first
@@ -35,6 +40,10 @@ channel through cleanup. Its release entry accepts no path, raw handle, PID,
 command line, application override, or generic launch target. The compiled
 policy remains absent, so the core is dormant and is not signed-install,
 native-host provenance, authenticated process topology, or release evidence.
+The retained identity does not establish a Broker-plus-Key-Agent same-release aggregate,
+topology, single-instance enforcement, or runtime/signing authority;
+the release-bound Broker preflight, preparation, and activation path still has
+no production caller.
 
 The three production Rust inheriting-creation paths in one loaded
 `platform-windows` crate instance use a single private, deadline-bound

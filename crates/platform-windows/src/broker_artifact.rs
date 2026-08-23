@@ -3,7 +3,7 @@
 //! This module allocates no Job, pipe, channel, thread, or process and exposes
 //! no launch operation. It first converts an already verified, pinned Broker
 //! file into an opaque release capability, then consumes that capability into
-//! the supervisor-owned same-handle file-identity state.
+//! the supervisor-owned whole-release and same-handle file-identity state.
 
 use core::fmt;
 
@@ -15,7 +15,7 @@ pub(crate) mod broker_supervisor;
 
 #[cfg(windows)]
 use self::broker_supervisor::PreparedReleaseBrokerSupervisor;
-use crate::attestation::ReleaseAttestation;
+use crate::attestation::{AttestedArtifactDigest, ReleaseAttestation};
 #[cfg(windows)]
 use crate::exact_image::{ExactImageError, held_helper_file_identity};
 use crate::helper::VerifiedHelper;
@@ -55,13 +55,15 @@ impl From<ExactImageError> for BrokerSupervisorPreflightError {
 
 /// Opaque pre-spawn proof that one pinned Broker passed every release gate.
 ///
-/// This capability is non-cloneable, exposes no artifact, path, or raw-handle
-/// accessor, and has no launch operation. Only the private prepared-supervisor
-/// conversion may consume it, without weakening the role, evidence, manifest,
-/// or path ordering here.
+/// This capability is non-cloneable and retains the opaque whole-release
+/// identity separately from the Broker manifest. It exposes no artifact,
+/// release digest, path, or raw-handle accessor and has no launch operation.
+/// Only the private prepared-supervisor conversion may consume it, without
+/// weakening the role, evidence, manifest, or path ordering here.
 #[must_use = "dropping the Broker preflight capability closes its pinned file"]
 pub(crate) struct PreflightBrokerArtifact {
     artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
 }
 
 impl fmt::Debug for PreflightBrokerArtifact {
@@ -82,9 +84,9 @@ pub(crate) fn preflight_broker_artifact(
     if !artifact.is_broker() {
         return Err(BrokerArtifactError::WrongRole);
     }
-    if !attestation.signing_enabled() {
-        return Err(BrokerArtifactError::ReleaseNotAttested);
-    }
+    let release_identity = attestation
+        .attested_artifact()
+        .ok_or(BrokerArtifactError::ReleaseNotAttested)?;
     if !attestation.allows_broker_manifest(artifact.manifest_digest()) {
         return Err(BrokerArtifactError::ManifestNotAllowed);
     }
@@ -92,21 +94,31 @@ pub(crate) fn preflight_broker_artifact(
         return Err(BrokerArtifactError::InvalidPath);
     }
 
-    Ok(PreflightBrokerArtifact { artifact })
+    Ok(PreflightBrokerArtifact {
+        artifact,
+        release_identity,
+    })
 }
 
 /// Consumes one admitted Broker capability into the private supervisor state.
 ///
 /// Identity is queried from the already retained file handle before ownership
-/// moves into the result. This allocates no pipe, Job, channel, thread, process,
-/// launch state, or second file handle.
+/// and the opaque whole-release identity move into the result. This allocates no
+/// pipe, Job, channel, thread, process, launch state, or second file handle.
 #[cfg(windows)]
 pub(crate) fn prepare_release_broker_supervisor(
     artifact: PreflightBrokerArtifact,
 ) -> Result<PreparedReleaseBrokerSupervisor, BrokerSupervisorPreflightError> {
     let identity = held_helper_file_identity(&artifact.artifact)?;
-    let PreflightBrokerArtifact { artifact } = artifact;
-    Ok(PreparedReleaseBrokerSupervisor::new(artifact, identity))
+    let PreflightBrokerArtifact {
+        artifact,
+        release_identity,
+    } = artifact;
+    Ok(PreparedReleaseBrokerSupervisor::new(
+        artifact,
+        release_identity,
+        identity,
+    ))
 }
 
 #[cfg(test)]
@@ -195,6 +207,7 @@ mod tests {
         );
         let admitted = preflight_broker_artifact(attestation, broker)?;
         assert_eq!(admitted.artifact.manifest_digest(), BROKER_MANIFEST);
+        assert!(admitted.release_identity.matches(&[0x40; 32]));
         assert_eq!(
             format!("{admitted:?}"),
             "PreflightBrokerArtifact([PINNED VERIFIED BROKER])"

@@ -542,14 +542,23 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   릴리스 Broker 시작 경로로 사용할 수 없습니다.
 - 일반 빌드에는 Broker 전송 증거와 Broker manifest를 3개 서명 helper allowlist와
   분리해 검사하는 비공개 사전검증 capability도 있습니다. 역할, 완전한 릴리스 증거,
-  정확한 manifest, 절대 경로를 순서대로 확인한 뒤에만, 그 모듈의 비공개 자식
-  supervisor가 `PreparedReleaseBrokerSupervisor`를 만들 수 있습니다. 이 non-clone
-  상태는 이미 잡아 둔 바로 그 파일 핸들과 `FILE_ID_INFO`의 volume serial 및 128비트
-  file ID를 함께 보관합니다. production-compiled exact-image 활성화 core는 prepared
-  값을 통째로 한 번 소비하고, 첫 `CREATE_PROCESS_DEBUG_EVENT`의 mapped image가 같은
+  정확한 manifest, 절대 경로를 순서대로 확인한 뒤에만 `PreflightBrokerArtifact`가
+  pinned Broker와 성공한 `ReleaseAttestation`의 opaque whole-release
+  `AttestedArtifactDigest`를 함께 보관합니다. 이 값은 전체 `ReleasePolicy`
+  `ArtifactDigest`에 대한 증거이며 Broker/helper manifest digest나 Windows file-object
+  identity가 아닙니다. 그 모듈의 비공개 자식 supervisor만 이를 소비해
+  `PreparedReleaseBrokerSupervisor`를 만들 수 있습니다. 이 non-clone 상태는 같은
+  opaque whole-release 증거, 이미 잡아 둔 바로 그 파일 핸들, `FILE_ID_INFO`의 volume
+  serial 및 128비트 file ID를 서로 별개로 보관합니다. production-compiled exact-image 활성화 core는
+  prepared 값을 통째로 한 번 소비하고, 첫
+  `CREATE_PROCESS_DEBUG_EVENT`의 mapped image가 같은
   파일 객체인지 user mode 전에 확인한 뒤 process·one-member Job·비공개 채널과 함께
   수명 끝까지 보유합니다. release 함수에는 경로, raw handle, PID, command line 또는
   generic launch 입력이 없고, 신원 검증을 위한 경로 재열기도 없습니다.
+  이 증거 보존만으로 Broker와 Key Agent의 same-release aggregate, 인증된 process
+  topology, single-instance 또는 runtime/signing authority가 생기지는 않으며, 이
+  release-bound Broker preflight·preparation·activation에는 여전히 production caller가
+  없습니다.
   `COMPILED_RELEASE_POLICY`는 계속 `None`이므로 이 core는 운영 진입점에서 도달할 수
   없으며 signed install, native-host provenance 또는 릴리스 활성화 완료의 증거도 아닙니다.
 - Broker, Key Agent, 제한 helper launcher의 세 Rust production 상속형 생성 경로는

@@ -4781,6 +4781,9 @@ const releaseBrokerSupervisorSource = await text(
 const releaseBrokerSupervisorProduction = withoutBottomTestModule(
   releaseBrokerSupervisorSource,
 );
+const releaseBrokerSupervisorRelease = withoutCfgTestItems(
+  releaseBrokerSupervisorProduction,
+);
 const exactImageVisibleFunctionNames = [
   ...exactBrokerImageProduction.matchAll(
     /(?:^|\n)\s*pub(?:\((?:crate|super|in [^)]+)\))?\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
@@ -5063,11 +5066,13 @@ const attestedArtifactAccessorConsumers = platformWindowsProductionFiles
   .map((file) => file.path);
 const attestedArtifactAccessorTokenConsumers = platformWindowsProductionFiles
   .filter(
-    (file) =>
-      file.path !== "crates/platform-windows/src/attestation.rs" &&
-      /\battested_artifact\b/u.test(rustLexicalCode(file.source)),
+    (file) => file.path !== "crates/platform-windows/src/attestation.rs",
   )
-  .map((file) => file.path);
+  .flatMap((file) =>
+    [...rustLexicalCode(file.source).matchAll(/\battested_artifact\b/gu)].map(
+      () => file.path,
+    ),
+  );
 const activationHelper = withoutBottomTestModule(
   await text("crates/platform-windows/src/helper.rs"),
 );
@@ -5145,11 +5150,21 @@ requireInvariant(
       "implcore::fmt::DebugforAttestedArtifactDigest{fnfmt(&self,formatter:&mutcore::fmt::Formatter<'_>)->core::fmt::Result{formatter.write_str()}}" &&
     attestation.includes("AttestedArtifactDigest([REDACTED])") &&
     JSON.stringify(attestedArtifactDigestConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+      ]) &&
     JSON.stringify(attestedArtifactAccessorConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+      ]) &&
     JSON.stringify(attestedArtifactAccessorTokenConsumers) ===
-      JSON.stringify(["crates/platform-windows/src/key_agent_activation.rs"]) &&
+      JSON.stringify([
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+      ]) &&
     platformWindowsProductionFiles
       .filter(
         (file) =>
@@ -5172,60 +5187,92 @@ requireInvariant(
     ),
   "whole-release AttestedArtifactDigest authority must be opaque, compiled-policy-minted once, raw-getter-free, and distinct from helper or Broker manifest digests",
 );
-const brokerPreflight = rustFunctionBlock(
+const brokerArtifactImplItems = rustImplItems(brokerArtifactProduction);
+const releaseBrokerSupervisorImplItems = rustImplItems(
+  releaseBrokerSupervisorRelease,
+);
+const brokerPreflight = rustTopLevelFunctionBlock(
   brokerArtifactProduction,
   "preflight_broker_artifact",
 );
-const prepareReleaseBrokerSupervisor = rustFunctionBlock(
+const prepareReleaseBrokerSupervisor = rustTopLevelFunctionBlock(
   brokerArtifactProduction,
   "prepare_release_broker_supervisor",
 );
-const preparedReleaseBrokerSupervisor = rustItemBlock(
-  releaseBrokerSupervisorProduction,
+const preparedReleaseBrokerSupervisor = rustTopLevelLexicalItemBlock(
+  releaseBrokerSupervisorRelease,
   /(?:^|\n)pub\(crate\)\s+struct\s+PreparedReleaseBrokerSupervisor\s*\{/u,
 );
-const preflightBrokerArtifactDebug = rustItemBlock(
+const preflightBrokerArtifact = rustTopLevelLexicalItemBlock(
   brokerArtifactProduction,
-  /(?:^|\n)impl fmt::Debug for PreflightBrokerArtifact\s*\{/u,
+  /(?:^|\n)pub\(crate\)\s+struct\s+PreflightBrokerArtifact\s*\{/u,
 );
-const preparedReleaseBrokerSupervisorDebug = rustItemBlock(
-  releaseBrokerSupervisorProduction,
-  /(?:^|\n)impl fmt::Debug for PreparedReleaseBrokerSupervisor\s*\{/u,
-);
-const preparedReleaseBrokerSupervisorDrop = rustItemBlock(
-  releaseBrokerSupervisorProduction,
-  /(?:^|\n)impl Drop for PreparedReleaseBrokerSupervisor\s*\{/u,
-);
+const preflightBrokerArtifactDebug =
+  brokerArtifactImplItems.find(
+    (item) => item.header === "impl fmt::Debug for PreflightBrokerArtifact",
+  )?.source ?? "";
+const preparedReleaseBrokerSupervisorImpl =
+  releaseBrokerSupervisorImplItems.find(
+    (item) => item.header === "impl PreparedReleaseBrokerSupervisor",
+  )?.source ?? "";
+const preparedReleaseBrokerSupervisorDebug =
+  releaseBrokerSupervisorImplItems.find(
+    (item) =>
+      item.header ===
+      "impl fmt::Debug for PreparedReleaseBrokerSupervisor",
+  )?.source ?? "";
+const preparedReleaseBrokerSupervisorDrop =
+  releaseBrokerSupervisorImplItems.find(
+    (item) => item.header === "impl Drop for PreparedReleaseBrokerSupervisor",
+  )?.source ?? "";
 const preparedReleaseBrokerSupervisorNew = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+  preparedReleaseBrokerSupervisorImpl,
   "new",
 );
-const brokerActivationImage = rustItemBlock(
-  releaseBrokerSupervisorProduction,
+const brokerActivationImage = rustTopLevelLexicalItemBlock(
+  releaseBrokerSupervisorRelease,
   /(?:^|\n)enum BrokerActivationImage\s*\{/u,
 );
+const brokerActivationImageImpl =
+  releaseBrokerSupervisorImplItems.find(
+    (item) => item.header === "impl BrokerActivationImage",
+  )?.source ?? "";
 const brokerActivationImagePath = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+  brokerActivationImageImpl,
   "path",
 );
 const brokerActivationImageAuthentication = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+  brokerActivationImageImpl,
   "authenticate_mapped_image",
 );
-const launchPreparedReleaseBroker = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+const launchPreparedReleaseBroker = rustTopLevelFunctionBlock(
+  releaseBrokerSupervisorRelease,
   "launch_prepared_release_broker_channel",
 );
-const launchBrokerImage = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+const launchBrokerImage = rustTopLevelFunctionBlock(
+  releaseBrokerSupervisorRelease,
   "launch_broker_image",
 );
-const runningBrokerDefinition = rustItemBlock(
-  releaseBrokerSupervisorProduction,
+const runningBrokerDefinition = rustLexicalItemBlock(
+  releaseBrokerSupervisorRelease,
   /(?:^|\n)\s*pub\(super\) struct RunningBroker\s*\{/u,
 );
+const runningBrokerImplHeaders = releaseBrokerSupervisorImplItems
+  .filter((item) => /\bRunningBroker\b/u.test(item.header))
+  .map((item) => item.header);
+const runningBrokerImpl =
+  releaseBrokerSupervisorImplItems.find(
+    (item) => item.header === "impl RunningBroker",
+  )?.source ?? "";
+const runningBrokerMethodSurface = rustFunctionSignatures(
+  runningBrokerImpl,
+).map((signature) => rustLexicalCode(signature.source).replace(/\s+/gu, ""));
+const runningBrokerSelfSites = rustStructLiteralSites(
+  runningBrokerImpl,
+  "Self",
+).map((site) => rustLexicalCode(site.source).replace(/\s+/gu, ""));
 const releaseBrokerProcessCreation = rustFunctionBlock(
-  releaseBrokerSupervisorProduction,
+  releaseBrokerSupervisorRelease,
   "launch_broker_application_with_after_create",
 );
 const heldHelperFileIdentity = rustFunctionBlock(
@@ -5238,7 +5285,7 @@ const exactMappedImageAuthenticationCore = rustFunctionBlock(
 );
 const preparedReleaseBrokerSupervisorTest = rustFunctionBlock(
   releaseBrokerSupervisorSource,
-  "prepared_release_supervisor_retains_same_handle_and_full_file_identity",
+  "prepared_release_supervisor_retains_same_handle_release_and_full_file_identity",
 );
 const preparedReleaseBrokerRoundTripTest = rustFunctionBlock(
   releaseBrokerSupervisorSource,
@@ -5260,13 +5307,22 @@ const preparedReleaseBrokerDeadlineTest = rustFunctionBlock(
   releaseBrokerSupervisorSource,
   "expired_release_entry_rejects_before_allocating_activation_resources",
 );
+const compactBrokerPreflight = rustLexicalCode(brokerPreflight).replace(
+  /\s+/gu,
+  "",
+);
 const brokerPreflightOrder = [
-  "if !artifact.is_broker()",
-  "if !attestation.signing_enabled()",
-  "if !attestation.allows_broker_manifest(artifact.manifest_digest())",
-  "if !artifact.path().is_absolute()",
-  "Ok(PreflightBrokerArtifact { artifact })",
-].map((marker) => brokerPreflight.indexOf(marker));
+  "if!artifact.is_broker()",
+  "letrelease_identity=attestation.attested_artifact().ok_or(BrokerArtifactError::ReleaseNotAttested)?",
+  "if!attestation.allows_broker_manifest(artifact.manifest_digest())",
+  "if!artifact.path().is_absolute()",
+  "Ok(PreflightBrokerArtifact{artifact,release_identity,})",
+].map((marker) => compactBrokerPreflight.indexOf(marker));
+const preflightBrokerArtifactNormalized = rustLexicalCode(
+  preflightBrokerArtifact,
+)
+  .replace(/\s+/gu, " ")
+  .trim();
 const preparedReleaseBrokerSupervisorNormalized = preparedReleaseBrokerSupervisor
   .replace(/\s+/gu, " ")
   .trim();
@@ -5288,6 +5344,393 @@ const brokerAdmissionAndPreparedSurface = [
   prepareReleaseBrokerSupervisor,
   heldHelperFileIdentity,
 ].join("\n");
+const brokerReleaseIdentityAuthorityFiles = platformWindowsProductionFiles.filter(
+  (file) =>
+    file.path === "crates/platform-windows/src/broker_artifact.rs" ||
+    file.path === "crates/platform-windows/src/broker_supervisor.rs",
+);
+const brokerReleaseIdentityAuthorityCode = rustLexicalCode(
+  brokerReleaseIdentityAuthorityFiles.map((file) => file.source).join("\n"),
+);
+const brokerReleaseAuthorityTypeNames = [
+  "AttestedArtifactDigest",
+  "PreflightBrokerArtifact",
+  "PreparedReleaseBrokerSupervisor",
+];
+const brokerReleaseAuthorityTypePattern = new RegExp(
+  `\\b(?:${brokerReleaseAuthorityTypeNames.join("|")})\\b`,
+  "u",
+);
+const brokerLexicalTokenInventory = (files, token) => {
+  const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const pattern = new RegExp(`\\b${escapedToken}\\b`, "gu");
+  return files.flatMap((file) =>
+    [...rustLexicalCode(file.source).matchAll(pattern)].map(() => file.path),
+  );
+};
+const brokerNewTokenInventory = (files) =>
+  files.flatMap((file) =>
+    [...rustLexicalCode(file.source).matchAll(/\b(?:r#)?new\b/gu)].map(
+      () => file.path,
+    ),
+  );
+const brokerReleaseAuthorityInventory = (
+  files,
+  authorityTypePattern = brokerReleaseAuthorityTypePattern,
+) => {
+  const typeAliases = [];
+  const useAliases = [];
+  const reexports = [];
+  const impls = [];
+  const conversions = [];
+  for (const file of files) {
+    const sourceCode = rustLexicalCode(file.source);
+    for (const item of rustTypeAliasItems(file.source)) {
+      if (authorityTypePattern.test(rustLexicalCode(item.source))) {
+        typeAliases.push({
+          path: file.path,
+          source: rustLexicalCode(item.source).replace(/\s+/gu, ""),
+        });
+      }
+    }
+    for (const item of rustUseItems(file.source)) {
+      const itemCode = rustLexicalCode(item.source);
+      if (!authorityTypePattern.test(itemCode)) {
+        continue;
+      }
+      if (
+        /\bas\s+(?:r#)?(?:[\p{XID_Start}_][\p{XID_Continue}_]*|_)\b/u.test(
+          itemCode,
+        )
+      ) {
+        useAliases.push({
+          path: file.path,
+          source: itemCode.replace(/\s+/gu, ""),
+        });
+      }
+      const prefix = sourceCode.slice(0, item.index);
+      if (
+        /(?<![\p{XID_Continue}_#])pub(?:\s*\([^)]*\))?\s*$/u.test(
+          prefix,
+        )
+      ) {
+        reexports.push({
+          path: file.path,
+          source: itemCode.replace(/\s+/gu, ""),
+        });
+      }
+    }
+    for (const item of rustImplItems(file.source)) {
+      if (!authorityTypePattern.test(item.header)) {
+        continue;
+      }
+      const entry = { path: file.path, header: item.header };
+      impls.push(entry);
+      if (
+        /(?<![\p{XID_Continue}_#])(?:r#)?(?:Deref|DerefMut|AsRef|Borrow|From|Into|TryFrom|TryInto)(?=\s*(?:<|for\b))/u.test(
+          item.header,
+        )
+      ) {
+        conversions.push(entry);
+      }
+    }
+  }
+  return { typeAliases, useAliases, reexports, impls, conversions };
+};
+const preparedBrokerConstructorReferenceInventory = (files) =>
+  files.flatMap((file) => {
+    const sourceCode = rustLexicalCode(file.source);
+    return [
+      ...sourceCode.matchAll(
+        /(?<reference>\bPreparedReleaseBrokerSupervisor\s*::\s*(?:r#)?new\b|<[^<>]*\bPreparedReleaseBrokerSupervisor\b[^<>]*>\s*::\s*(?:r#)?new\b)/gu,
+      ),
+    ].map((match) => ({
+      path: file.path,
+      reference: match.groups.reference.replace(/\s+/gu, ""),
+      call: /^\s*\(/u.test(sourceCode.slice(match.index + match[0].length)),
+    }));
+  });
+const preparedBrokerUseItemInventory = (files) =>
+  files.flatMap((file) =>
+    rustUseItems(file.source)
+      .filter((item) =>
+        /\bPreparedReleaseBrokerSupervisor\b/u.test(
+          rustLexicalCode(item.source),
+        ),
+      )
+      .map((item) => ({
+        path: file.path,
+        source: rustLexicalCode(item.source).replace(/\s+/gu, ""),
+      })),
+  );
+const preflightBrokerProductionTokenInventory = brokerLexicalTokenInventory(
+  platformWindowsProductionFiles,
+  "preflight_broker_artifact",
+);
+const prepareBrokerProductionTokenInventory = brokerLexicalTokenInventory(
+  platformWindowsProductionFiles,
+  "prepare_release_broker_supervisor",
+);
+const launchPreparedBrokerProductionTokenInventory =
+  brokerLexicalTokenInventory(
+    platformWindowsProductionFiles,
+    "launch_prepared_release_broker_channel",
+  );
+const productionBrokerReleaseAuthorityInventory =
+  brokerReleaseAuthorityInventory(platformWindowsProductionFiles);
+const productionRunningBrokerAuthorityInventory =
+  brokerReleaseAuthorityInventory(
+    platformWindowsProductionFiles,
+    /\bRunningBroker\b/u,
+  );
+const preparedBrokerProductionConstructorReferences =
+  preparedBrokerConstructorReferenceInventory(platformWindowsProductionFiles);
+const preparedBrokerProductionTypeTokenInventory = brokerLexicalTokenInventory(
+  platformWindowsProductionFiles,
+  "PreparedReleaseBrokerSupervisor",
+);
+const preparedBrokerProductionUseItemInventory =
+  preparedBrokerUseItemInventory(platformWindowsProductionFiles);
+const brokerArtifactNewTokenInventory = brokerNewTokenInventory(
+  platformWindowsProductionFiles.filter(
+    (file) => file.path === "crates/platform-windows/src/broker_artifact.rs",
+  ),
+);
+const brokerReleaseMatchesCallInventory =
+  brokerReleaseIdentityAuthorityFiles.flatMap((file) =>
+    rustCallSites(file.source, "matches").map(() => file.path),
+  );
+const brokerReleaseMatchesTokenInventory =
+  brokerReleaseIdentityAuthorityFiles.flatMap((file) =>
+    [
+      ...rustLexicalCode(file.source).matchAll(
+        /(?:\.|::)\s*(?:r#)?matches\b/gu,
+      ),
+    ].map(() => file.path),
+  );
+const preflightBrokerStructSiteInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustStructLiteralSites(file.source, "PreflightBrokerArtifact").map(
+      (site) => ({
+        path: file.path,
+        source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
+      }),
+    ),
+);
+const preparedBrokerNamedStructSiteInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustStructLiteralSites(
+      file.source,
+      "PreparedReleaseBrokerSupervisor",
+    ).map((site) => ({
+      path: file.path,
+      source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
+    })),
+  );
+const runningBrokerStructSiteInventory = platformWindowsProductionFiles.flatMap(
+  (file) =>
+    rustStructLiteralSites(file.source, "RunningBroker").map((site) => ({
+      path: file.path,
+      source: rustLexicalCode(site.source).replace(/\s+/gu, ""),
+    })),
+);
+const preparedReleaseBrokerSupervisorMethodNames = rustFunctionSignatures(
+  preparedReleaseBrokerSupervisorImpl,
+).map((signature) => {
+  const match = /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+    rustLexicalCode(signature.source),
+  );
+  return match?.groups.name ?? "[UNPARSED]";
+});
+const preparedReleaseBrokerSupervisorSelfSites = rustStructLiteralSites(
+  preparedReleaseBrokerSupervisorImpl,
+  "Self",
+).map((site) => rustLexicalCode(site.source).replace(/\s+/gu, ""));
+const normalizedRunningBrokerDefinition = normalizeRustFragment(
+  rustLexicalCode(runningBrokerDefinition),
+);
+const releaseBrokerSupervisorCode = rustLexicalCode(
+  releaseBrokerSupervisorRelease,
+);
+const brokerPreparedVariantLexicalSiteInventory = [
+  ...releaseBrokerSupervisorCode.matchAll(
+    /\b(?<owner>BrokerActivationImage|Self)\s*::\s*Prepared\b/gu,
+  ),
+].map((match) => `${match.groups.owner}::Prepared`);
+const brokerActivationImageUseInventory = rustUseItems(
+  releaseBrokerSupervisorRelease,
+)
+  .filter((item) => /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)))
+  .map((item) => rustLexicalCode(item.source).replace(/\s+/gu, ""));
+const brokerActivationImageTypeAliasInventory = rustTypeAliasItems(
+  releaseBrokerSupervisorRelease,
+)
+  .filter((item) => /\bBrokerActivationImage\b/u.test(rustLexicalCode(item.source)))
+  .map((item) => rustLexicalCode(item.source).replace(/\s+/gu, ""));
+const brokerActivationImageFunctionSurface = rustFunctionSignatures(
+  releaseBrokerSupervisorRelease,
+).flatMap((signature) => {
+  const signatureCode = rustLexicalCode(signature.source);
+  const owner = releaseBrokerSupervisorImplItems
+    .filter(
+      (item) =>
+        item.index < signature.index &&
+        signature.index < item.index + item.source.length,
+    )
+    .at(-1)?.header;
+  if (
+    owner !== "impl BrokerActivationImage" &&
+    !/\bBrokerActivationImage\b/u.test(signatureCode)
+  ) {
+    return [];
+  }
+  const name = /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+    signatureCode,
+  )?.groups.name;
+  return [
+    {
+      owner: owner ?? "free",
+      name: name ?? "[UNPARSED]",
+      signature: signatureCode.replace(/\s+/gu, ""),
+    },
+  ];
+});
+const preflightBrokerForbiddenDerivePattern =
+  /#\[derive\([^\]]*\b(?:Clone|Copy|Debug|Serialize)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+PreflightBrokerArtifact\b/u;
+const brokerFunctionItemAliasScannerProbeFiles = [
+  {
+    path: "function-item-alias-probe",
+    source: `
+fn retain_function_items() {
+    let preflight = preflight_broker_artifact;
+    let prepare = prepare_release_broker_supervisor;
+}
+`,
+  },
+];
+const preparedBrokerConstructorScannerProbeFiles = [
+  {
+    path: "prepared-constructor-probe",
+    source: `
+fn probe() {
+    type Id<T> = T;
+    PreparedReleaseBrokerSupervisor::new(a, b, c);
+    PreparedReleaseBrokerSupervisor::new(d, e, f);
+    let mint = PreparedReleaseBrokerSupervisor::new;
+    let ufcs = <self::broker_supervisor::PreparedReleaseBrokerSupervisor>::new;
+    let nested = <Id<PreparedReleaseBrokerSupervisor>>::new;
+    proof.matches(raw);
+}
+`,
+  },
+];
+const preparedBrokerConstructorScannerProbeInventory =
+  preparedBrokerConstructorReferenceInventory(
+    preparedBrokerConstructorScannerProbeFiles,
+  );
+const preparedBrokerUseOffsetBaselineProbeFiles = [
+  {
+    path: "prepared-use-offset-probe",
+    source: `
+use self::broker_supervisor::PreparedReleaseBrokerSupervisor;
+fn carry(_: PreparedReleaseBrokerSupervisor) {
+    PreparedReleaseBrokerSupervisor::new(a, b, c);
+}
+`,
+  },
+];
+const preparedBrokerUseOffsetSpoofProbeFiles = [
+  {
+    path: "prepared-use-offset-probe",
+    source: `
+use self::broker_supervisor::*;
+fn carry(_: PreparedReleaseBrokerSupervisor) {
+    type Id<T> = T;
+    PreparedReleaseBrokerSupervisor::new(a, b, c);
+    let nested = <Id<PreparedReleaseBrokerSupervisor>>::new;
+}
+`,
+  },
+];
+const brokerReleaseAuthorityScannerProbeFiles = [
+  {
+    path: "authority-alias-probe",
+    source: `
+type r#DigestAlias =
+    AttestedArtifactDigest;
+
+pub(crate)
+use crate::broker_artifact::PreflightBrokerArtifact;
+
+use crate::broker_artifact::broker_supervisor::PreparedReleaseBrokerSupervisor
+    as r#SupervisorAlias;
+
+impl<T>
+    core::convert::TryFrom<T>
+    for PreparedReleaseBrokerSupervisor
+{
+    type Error = ();
+    fn try_from(_value: T) -> Result<Self, Self::Error> {
+        unreachable!()
+    }
+}
+`,
+  },
+];
+const brokerReleaseAuthorityScannerProbeInventory =
+  brokerReleaseAuthorityInventory(brokerReleaseAuthorityScannerProbeFiles);
+const brokerStructSpliceScannerProbe = `
+fn splice_preflight(
+    old: PreflightBrokerArtifact,
+    artifact: VerifiedHelper,
+) -> PreflightBrokerArtifact {
+    PreflightBrokerArtifact { artifact, ..old }
+}
+
+fn mint_prepared(
+    artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
+    identity: ExactFileIdentity,
+) -> PreparedReleaseBrokerSupervisor {
+    PreparedReleaseBrokerSupervisor { artifact, release_identity, identity }
+}
+`;
+const brokerCommentSpoofScannerProbe = `
+// pub(crate) struct PreflightBrokerArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, }
+#[derive(Debug)]
+pub(crate) struct PreflightBrokerArtifact {
+    release_identity: AttestedArtifactDigest,
+    artifact: VerifiedHelper,
+}
+
+// impl fmt::Debug for PreflightBrokerArtifact { fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str("canonical") } }
+impl Clone for PreflightBrokerArtifact {
+    fn clone(&self) -> Self {
+        unreachable!()
+    }
+}
+`;
+const brokerCommentSpoofRawPreflight = rustItemBlock(
+  brokerCommentSpoofScannerProbe,
+  /pub\(crate\)\s+struct\s+PreflightBrokerArtifact\s*\{/u,
+);
+const brokerCommentSpoofLexicalPreflight = rustTopLevelLexicalItemBlock(
+  brokerCommentSpoofScannerProbe,
+  /pub\(crate\)\s+struct\s+PreflightBrokerArtifact\s*\{/u,
+);
+const runningBrokerFieldOrderScannerProbe = `
+pub(super) struct RunningBroker {
+    process: OwnedWinHandle,
+    _image: BrokerActivationImage,
+    job: BrokerJob,
+    shut_down: bool,
+}
+`;
+const runningBrokerFieldOrderScannerProbeDefinition =
+  rustTopLevelLexicalItemBlock(
+    runningBrokerFieldOrderScannerProbe,
+    /pub\(super\)\s+struct\s+RunningBroker\s*\{/u,
+  );
 const preflightBrokerTraitImpls = [
   ...brokerArtifactProduction.matchAll(
     /(?:^|\n)\s*(?:unsafe\s+)?impl\s+(?<trait>[^\r\n{]+?)\s+for\s+[^\r\n{]*\bPreflightBrokerArtifact\b[^\r\n{]*\{/gu,
@@ -5309,21 +5752,181 @@ const preparedBrokerTestOrder = [
   "preflight_broker_artifact(attestation, broker)?",
   "prepare_release_broker_supervisor(admitted)?",
   "assert_eq!(prepared.artifact.raw_handle(), held_handle)",
+  "assert!(prepared.release_identity.matches(&[0x40; 32]))",
   "assert_eq!(prepared.identity, expected_identity)",
   'format!("{prepared:?}")',
   "drop(prepared)",
 ].map((marker) => preparedReleaseBrokerSupervisorTest.indexOf(marker));
+const preflightBrokerProductionCallers = platformWindowsProductionFiles
+  .filter(
+    (file) => file.path !== "crates/platform-windows/src/broker_artifact.rs",
+  )
+  .flatMap((file) =>
+    rustCallSites(file.source, "preflight_broker_artifact").map(
+      () => file.path,
+    ),
+  );
+const prepareBrokerProductionCallers = platformWindowsProductionFiles
+  .filter(
+    (file) => file.path !== "crates/platform-windows/src/broker_artifact.rs",
+  )
+  .flatMap((file) =>
+    rustCallSites(file.source, "prepare_release_broker_supervisor").map(
+      () => file.path,
+    ),
+  );
+const launchPreparedBrokerProductionCallers = platformWindowsProductionFiles
+  .filter(
+    (file) => file.path !== "crates/platform-windows/src/broker_supervisor.rs",
+  )
+  .flatMap((file) =>
+    rustCallSites(file.source, "launch_prepared_release_broker_channel").map(
+      () => file.path,
+    ),
+  );
+requireInvariant(
+  JSON.stringify(
+    brokerLexicalTokenInventory(
+      brokerFunctionItemAliasScannerProbeFiles,
+      "preflight_broker_artifact",
+    ),
+  ) === JSON.stringify(["function-item-alias-probe"]) &&
+    JSON.stringify(
+      brokerLexicalTokenInventory(
+        brokerFunctionItemAliasScannerProbeFiles,
+        "prepare_release_broker_supervisor",
+      ),
+    ) === JSON.stringify(["function-item-alias-probe"]) &&
+    JSON.stringify(
+      preparedBrokerConstructorScannerProbeInventory.map(
+        (site) => `${site.reference}:${site.call}`,
+      ),
+    ) ===
+      JSON.stringify([
+        "PreparedReleaseBrokerSupervisor::new:true",
+        "PreparedReleaseBrokerSupervisor::new:true",
+        "PreparedReleaseBrokerSupervisor::new:false",
+        "<self::broker_supervisor::PreparedReleaseBrokerSupervisor>::new:false",
+      ]) &&
+    JSON.stringify(
+      brokerLexicalTokenInventory(
+        preparedBrokerConstructorScannerProbeFiles,
+        "PreparedReleaseBrokerSupervisor",
+      ),
+    ) ===
+      JSON.stringify([
+        "prepared-constructor-probe",
+        "prepared-constructor-probe",
+        "prepared-constructor-probe",
+        "prepared-constructor-probe",
+        "prepared-constructor-probe",
+      ]) &&
+    JSON.stringify(
+      brokerLexicalTokenInventory(
+        preparedBrokerUseOffsetBaselineProbeFiles,
+        "PreparedReleaseBrokerSupervisor",
+      ),
+    ) ===
+      JSON.stringify(
+        brokerLexicalTokenInventory(
+          preparedBrokerUseOffsetSpoofProbeFiles,
+          "PreparedReleaseBrokerSupervisor",
+        ),
+      ) &&
+    JSON.stringify(
+      brokerNewTokenInventory(preparedBrokerUseOffsetBaselineProbeFiles),
+    ) === JSON.stringify(["prepared-use-offset-probe"]) &&
+    JSON.stringify(
+      brokerNewTokenInventory(preparedBrokerUseOffsetSpoofProbeFiles),
+    ) ===
+      JSON.stringify([
+        "prepared-use-offset-probe",
+        "prepared-use-offset-probe",
+      ]) &&
+    JSON.stringify(
+      preparedBrokerUseItemInventory(
+        preparedBrokerUseOffsetBaselineProbeFiles,
+      ),
+    ) ===
+      JSON.stringify([
+        {
+          path: "prepared-use-offset-probe",
+          source:
+            "useself::broker_supervisor::PreparedReleaseBrokerSupervisor;",
+        },
+      ]) &&
+    JSON.stringify(
+      preparedBrokerUseItemInventory(preparedBrokerUseOffsetSpoofProbeFiles),
+    ) === JSON.stringify([]) &&
+    JSON.stringify(
+      preparedBrokerConstructorScannerProbeFiles.flatMap((file) =>
+        [
+          ...rustLexicalCode(file.source).matchAll(
+            /(?:\.|::)\s*(?:r#)?matches\b/gu,
+          ),
+        ].map(() => file.path),
+      ),
+    ) === JSON.stringify(["prepared-constructor-probe"]) &&
+    rustCallSites(
+      preparedBrokerConstructorScannerProbeFiles[0].source,
+      "matches",
+    ).length === 1 &&
+    brokerReleaseAuthorityScannerProbeInventory.typeAliases.length === 1 &&
+    brokerReleaseAuthorityScannerProbeInventory.typeAliases[0].source ===
+      "typer#DigestAlias=AttestedArtifactDigest;" &&
+    brokerReleaseAuthorityScannerProbeInventory.useAliases.length === 1 &&
+    brokerReleaseAuthorityScannerProbeInventory.useAliases[0].source.includes(
+      "PreparedReleaseBrokerSupervisorasr#SupervisorAlias",
+    ) &&
+    brokerReleaseAuthorityScannerProbeInventory.reexports.length === 1 &&
+    brokerReleaseAuthorityScannerProbeInventory.reexports[0].source ===
+      "usecrate::broker_artifact::PreflightBrokerArtifact;" &&
+    brokerReleaseAuthorityScannerProbeInventory.conversions.length === 1 &&
+    brokerReleaseAuthorityScannerProbeInventory.conversions[0].header ===
+      "impl<T> core::convert::TryFrom<T> for PreparedReleaseBrokerSupervisor" &&
+    JSON.stringify(
+      rustStructLiteralSites(
+        brokerStructSpliceScannerProbe,
+        "PreflightBrokerArtifact",
+      ).map((site) => rustLexicalCode(site.source).replace(/\s+/gu, "")),
+    ) === JSON.stringify(["PreflightBrokerArtifact{artifact,..old}"]) &&
+    JSON.stringify(
+      rustStructLiteralSites(
+        brokerStructSpliceScannerProbe,
+        "PreparedReleaseBrokerSupervisor",
+      ).map((site) => rustLexicalCode(site.source).replace(/\s+/gu, "")),
+    ) ===
+      JSON.stringify([
+        "PreparedReleaseBrokerSupervisor{artifact,release_identity,identity}",
+      ]) &&
+    normalizeRustFragment(rustLexicalCode(brokerCommentSpoofRawPreflight)) ===
+      "pub(crate) struct PreflightBrokerArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, }" &&
+    normalizeRustFragment(
+      rustLexicalCode(brokerCommentSpoofLexicalPreflight),
+    ) ===
+      "pub(crate) struct PreflightBrokerArtifact { release_identity: AttestedArtifactDigest, artifact: VerifiedHelper, }" &&
+    preflightBrokerForbiddenDerivePattern.test(
+      rustLexicalCode(brokerCommentSpoofScannerProbe),
+    ) &&
+    JSON.stringify(
+      rustImplItems(brokerCommentSpoofScannerProbe).map((item) => item.header),
+    ) === JSON.stringify(["impl Clone for PreflightBrokerArtifact"]) &&
+    normalizeRustFragment(
+      rustLexicalCode(runningBrokerFieldOrderScannerProbeDefinition),
+    ) !==
+      "pub(super) struct RunningBroker { process: OwnedWinHandle, job: BrokerJob, _image: BrokerActivationImage, shut_down: bool, }",
+  "Broker scanner probes must detect function-item and nested-qpath constructor aliases, wildcard-import token offsets, raw/multiline aliases, direct re-exports, generic conversions, comparator references, struct-update splices, field reordering, and comment-spoofed authority items",
+);
 requireInvariant(
   platformWindowsLib.includes("mod broker_artifact;") &&
     !/pub(?:\([^)]*\))?\s+mod\s+broker_artifact\b/u.test(platformWindowsLib) &&
     !/pub(?:\([^)]*\))?\s+use\s+[^;]*(?:PreflightBrokerArtifact|preflight_broker_artifact|prepare_release_broker_supervisor)/u.test(
       platformWindowsLib,
     ) &&
-    /pub\(crate\)\s+struct\s+PreflightBrokerArtifact\s*\{\s*artifact:\s*VerifiedHelper,?\s*\}/u.test(
-      brokerArtifactProduction,
-    ) &&
-    !/#\[derive\([^\]]*\bClone\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+PreflightBrokerArtifact\b/u.test(
-      brokerArtifactProduction,
+    preflightBrokerArtifactNormalized ===
+      "pub(crate) struct PreflightBrokerArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, }" &&
+    !preflightBrokerForbiddenDerivePattern.test(
+      rustLexicalCode(brokerArtifactProduction),
     ) &&
     !/impl\s+Clone\s+for\s+PreflightBrokerArtifact\b/u.test(
       brokerArtifactProduction,
@@ -5339,21 +5942,75 @@ requireInvariant(
     brokerPreflightOrder.every(
       (position, index, positions) => index === 0 || positions[index - 1] < position,
     ) &&
+    rustCallSites(brokerPreflight, "attested_artifact").length === 1 &&
+    rustCallSites(brokerPreflight, "allows_broker_manifest").length === 1 &&
+    !/\bsigning_enabled\b/u.test(rustLexicalCode(brokerPreflight)) &&
+    (rustLexicalCode(brokerArtifactProduction).match(/\brelease_identity\b/gu) ?? [])
+      .length === 5 &&
+    rustCallSites(brokerArtifactProduction, "preflight_broker_artifact")
+      .length === 1 &&
+    JSON.stringify(preflightBrokerProductionCallers) === JSON.stringify([]) &&
+    JSON.stringify(preflightBrokerProductionTokenInventory) ===
+      JSON.stringify(["crates/platform-windows/src/broker_artifact.rs"]) &&
+    JSON.stringify(preflightBrokerStructSiteInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/broker_artifact.rs",
+          source: "PreflightBrokerArtifact{artifact,release_identity,}",
+        },
+        {
+          path: "crates/platform-windows/src/broker_artifact.rs",
+          source: "PreflightBrokerArtifact{artifact,release_identity,}",
+        },
+      ]) &&
+    rustStructLiteralSites(brokerPreflight, "PreflightBrokerArtifact")
+      .length === 1 &&
+    rustStructLiteralSites(
+      prepareReleaseBrokerSupervisor,
+      "PreflightBrokerArtifact",
+    ).length === 1 &&
     activationHelper.includes("pub(crate) const fn is_broker(&self) -> bool") &&
-    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|path|raw_handle|launch|spawn)\b/u.test(
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|path|raw_handle|release_identity|attested_artifact|artifact_digest|manifest_digest|as_bytes|into_inner|into_parts|matches(?:_release_identity)?|launch|spawn)\b/u.test(
       brokerArtifactProduction,
+    ) &&
+    JSON.stringify(brokerReleaseMatchesCallInventory) === JSON.stringify([]) &&
+    JSON.stringify(brokerReleaseMatchesTokenInventory) === JSON.stringify([]) &&
+    !/\brelease_identity\s*\.\s*(?:matches|eq|ct_eq|as_ref|as_bytes|into_inner|into_parts)\s*\(/u.test(
+      brokerReleaseIdentityAuthorityCode,
     ) &&
     !/\b(?:CreateProcess\w*|ShellExecute\w*|WinExec|Command::new|std::thread::spawn)\s*\(/u.test(
       brokerArtifactProduction,
     ),
-  "private Broker preflight must own one opaque artifact and preserve role/evidence/manifest/path ordering without activation APIs",
+  "private Broker preflight must retain one opaque whole-release identity after role/evidence/manifest/path gates without exposing a comparator or activation API",
 );
 requireInvariant(
   /#\[must_use = "dropping the prepared Broker supervisor closes its pinned file"\]\s*pub\(crate\) struct PreparedReleaseBrokerSupervisor/u.test(
     releaseBrokerSupervisorProduction,
   ) &&
     preparedReleaseBrokerSupervisorNormalized ===
-      "pub(crate) struct PreparedReleaseBrokerSupervisor { artifact: VerifiedHelper, identity: ExactFileIdentity, }" &&
+      "pub(crate) struct PreparedReleaseBrokerSupervisor { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, identity: ExactFileIdentity, }" &&
+    JSON.stringify(preparedBrokerProductionTypeTokenInventory) ===
+      JSON.stringify([
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/broker_artifact.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/broker_supervisor.rs",
+      ]) &&
+    JSON.stringify(preparedBrokerProductionUseItemInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/broker_artifact.rs",
+          source:
+            "useself::broker_supervisor::PreparedReleaseBrokerSupervisor;",
+        },
+      ]) &&
+    JSON.stringify(brokerArtifactNewTokenInventory) ===
+      JSON.stringify(["crates/platform-windows/src/broker_artifact.rs"]) &&
     !/#\[derive\([^\]]*(?:Clone|Copy|Debug|Serialize)[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+PreparedReleaseBrokerSupervisor/u.test(
       releaseBrokerSupervisorProduction,
     ) &&
@@ -5364,25 +6021,63 @@ requireInvariant(
         "preflight_broker_artifact",
         "prepare_release_broker_supervisor",
       ]) &&
+    JSON.stringify(productionBrokerReleaseAuthorityInventory.typeAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionBrokerReleaseAuthorityInventory.useAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionBrokerReleaseAuthorityInventory.reexports) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionBrokerReleaseAuthorityInventory.conversions) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionBrokerReleaseAuthorityInventory.impls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/attestation.rs",
+          header: "impl AttestedArtifactDigest",
+        },
+        {
+          path: "crates/platform-windows/src/attestation.rs",
+          header: "impl core::fmt::Debug for AttestedArtifactDigest",
+        },
+        {
+          path: "crates/platform-windows/src/broker_artifact.rs",
+          header: "impl fmt::Debug for PreflightBrokerArtifact",
+        },
+        {
+          path: "crates/platform-windows/src/broker_supervisor.rs",
+          header: "impl PreparedReleaseBrokerSupervisor",
+        },
+        {
+          path: "crates/platform-windows/src/broker_supervisor.rs",
+          header: "impl fmt::Debug for PreparedReleaseBrokerSupervisor",
+        },
+        {
+          path: "crates/platform-windows/src/broker_supervisor.rs",
+          header: "impl Drop for PreparedReleaseBrokerSupervisor",
+        },
+      ]) &&
     !/pub\(in\s+[^)]+\)/u.test(
       `${brokerArtifactProduction}\n${releaseBrokerSupervisorProduction}`,
     ) &&
-    !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?type\s+\w+(?:<[^;=]*>)?\s*=\s*[^;]*\b(?:PreflightBrokerArtifact|PreparedReleaseBrokerSupervisor)\b[^;]*;/u.test(
-      `${brokerArtifactProduction}\n${releaseBrokerSupervisorProduction}`,
-    ) &&
-    !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+[^;]*\b(?:PreflightBrokerArtifact|PreparedReleaseBrokerSupervisor)\b\s+as\s+\w+[^;]*;/u.test(
-      `${brokerArtifactProduction}\n${releaseBrokerSupervisorProduction}`,
+    !/\bpub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+(?:release_identity|attested_artifact|artifact_digest|manifest_digest|raw\w*|as_bytes|into_inner|into_parts|matches(?:_release_identity)?|compare\w*)\b/u.test(
+      brokerReleaseIdentityAuthorityCode,
     ) &&
     preparedReleaseBrokerSupervisorDebugNormalized ===
-      'impl fmt::Debug for PreparedReleaseBrokerSupervisor { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/FILE_ID_INFO])") } }' &&
+      'impl fmt::Debug for PreparedReleaseBrokerSupervisor { fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("PreparedReleaseBrokerSupervisor([HELD BROKER/RELEASE/FILE_ID_INFO])") } }' &&
     preparedReleaseBrokerSupervisorDrop
       .replace(/\s+/gu, " ")
       .trim() ===
       "impl Drop for PreparedReleaseBrokerSupervisor { fn drop(&mut self) { self.identity.zeroize(); } }" &&
     preparedReleaseBrokerSupervisorNewNormalized ===
-      "pub(super) fn new(artifact: VerifiedHelper, identity: ExactFileIdentity) -> Self { Self { artifact, identity } }" &&
-    (releaseBrokerSupervisorProduction.match(/\bfn new\(artifact: VerifiedHelper, identity: ExactFileIdentity\)/gu) ?? [])
+      "pub(super) fn new( artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, identity: ExactFileIdentity, ) -> Self { Self { artifact, release_identity, identity, } }" &&
+    (releaseBrokerSupervisorProduction.match(/\bfn new\(\s*artifact: VerifiedHelper,\s*release_identity: AttestedArtifactDigest,\s*identity: ExactFileIdentity,\s*\)/gu) ?? [])
       .length === 1 &&
+    JSON.stringify(preparedReleaseBrokerSupervisorMethodNames) ===
+      JSON.stringify(["new"]) &&
+    JSON.stringify(preparedReleaseBrokerSupervisorSelfSites) ===
+      JSON.stringify(["Self{artifact,release_identity,identity,}"]) &&
+    JSON.stringify(preparedBrokerNamedStructSiteInventory) ===
+      JSON.stringify([]) &&
     brokerArtifactProduction.includes(
       '#[path = "broker_supervisor.rs"]\npub(crate) mod broker_supervisor;',
     ) &&
@@ -5391,7 +6086,15 @@ requireInvariant(
       brokerArtifactProduction,
     ) &&
     prepareReleaseBrokerSupervisorNormalized ===
-      "pub(crate) fn prepare_release_broker_supervisor( artifact: PreflightBrokerArtifact, ) -> Result<PreparedReleaseBrokerSupervisor, BrokerSupervisorPreflightError> { let identity = held_helper_file_identity(&artifact.artifact)?; let PreflightBrokerArtifact { artifact } = artifact; Ok(PreparedReleaseBrokerSupervisor::new(artifact, identity)) }" &&
+      "pub(crate) fn prepare_release_broker_supervisor( artifact: PreflightBrokerArtifact, ) -> Result<PreparedReleaseBrokerSupervisor, BrokerSupervisorPreflightError> { let identity = held_helper_file_identity(&artifact.artifact)?; let PreflightBrokerArtifact { artifact, release_identity, } = artifact; Ok(PreparedReleaseBrokerSupervisor::new( artifact, release_identity, identity, )) }" &&
+    rustCallSites(brokerArtifactProduction, "prepare_release_broker_supervisor")
+      .length === 1 &&
+    JSON.stringify(prepareBrokerProductionCallers) === JSON.stringify([]) &&
+    JSON.stringify(prepareBrokerProductionTokenInventory) ===
+      JSON.stringify(["crates/platform-windows/src/broker_artifact.rs"]) &&
+    (rustLexicalCode(releaseBrokerSupervisorProduction).match(
+      /\brelease_identity\b/gu,
+    ) ?? []).length === 3 &&
     heldHelperFileIdentityNormalized ===
       "pub(super) fn held_helper_file_identity( artifact: &VerifiedHelper, ) -> Result<ExactFileIdentity, ExactImageError> { sys::exact_file_identity(artifact.raw_handle()) }" &&
     /enum BrokerSupervisorPreflightError\s*\{[^}]*IdentityUnavailable/u.test(
@@ -5435,7 +6138,7 @@ requireInvariant(
     preparedBrokerTestOrder.every(
       (position, index, positions) => index === 0 || positions[index - 1] < position,
     ),
-  "Broker admission must be the sole prepared-state minting authority and retain one same-handle, non-cloneable, redacted capability",
+  "Broker admission must be the sole prepared-state minting authority and move one opaque whole-release identity with the same-handle, non-cloneable, redacted capability",
 );
 const preparedBrokerActivationOrder = [
   "check_deadline(deadline)?",
@@ -5449,17 +6152,81 @@ requireInvariant(
   /enum BrokerActivationImage\s*\{\s*Prepared\(PreparedReleaseBrokerSupervisor\),\s*#\[cfg\(all\(feature = "broker-channel-contract-test-hook", debug_assertions\)\)\]\s*Debug\(PinnedBrokerImage\),?\s*\}/u.test(
     brokerActivationImage,
   ) &&
+    JSON.stringify(brokerPreparedVariantLexicalSiteInventory) ===
+      JSON.stringify([
+        "Self::Prepared",
+        "Self::Prepared",
+        "BrokerActivationImage::Prepared",
+      ]) &&
+    JSON.stringify(brokerActivationImageUseInventory) ===
+      JSON.stringify([
+        "usesuper::{BROKER_ENDPOINT_ENV,BrokerActivationImage,DormantBrokerError,PARENT_PROCESS_HANDLE_ENV,};",
+      ]) &&
+    JSON.stringify(brokerActivationImageTypeAliasInventory) ===
+      JSON.stringify([]) &&
+    JSON.stringify(brokerActivationImageFunctionSurface) ===
+      JSON.stringify([
+        {
+          owner: "impl BrokerActivationImage",
+          name: "path",
+          signature: "fnpath(&self)->&Path",
+        },
+        {
+          owner: "impl BrokerActivationImage",
+          name: "authenticate_mapped_image",
+          signature:
+            "fnauthenticate_mapped_image(&self,mapped_image:windows::Win32::Foundation::HANDLE,)->Result<(),ExactImageError>",
+        },
+        {
+          owner: "free",
+          name: "launch_broker_image",
+          signature:
+            "fnlaunch_broker_image(image:BrokerActivationImage,command_line:Option<OsString>,deadline:Instant,)->Result<DormantBrokerPayloadChannel,DormantBrokerError>",
+        },
+        {
+          owner: "free",
+          name: "launch_broker",
+          signature:
+            "fnlaunch_broker(image:BrokerActivationImage,endpoint:&OsStr,command_line:Option<OsString>,deadline:Instant,)->Result<RunningBroker,DormantBrokerError>",
+        },
+        {
+          owner: "free",
+          name: "launch_broker_application",
+          signature:
+            "fnlaunch_broker_application(image:BrokerActivationImage,application_override:Option<&std::path::Path>,endpoint:&OsStr,command_line:Option<OsString>,deadline:Instant,)->Result<RunningBroker,DormantBrokerError>",
+        },
+        {
+          owner: "free",
+          name: "launch_broker_application_with_after_create",
+          signature:
+            "fnlaunch_broker_application_with_after_create<AfterCreate>(image:BrokerActivationImage,application_override:Option<&std::path::Path>,endpoint:&OsStr,command_line:Option<OsString>,deadline:Instant,after_create:AfterCreate,)->Result<RunningBroker,DormantBrokerError>whereAfterCreate:FnOnce(&Debuggee),",
+        },
+        {
+          owner: "impl Debuggee",
+          name: "authenticate_first_event",
+          signature:
+            "fnauthenticate_first_event(&mutself,image:&BrokerActivationImage,deadline:Instant,)->Result<(),DormantBrokerError>",
+        },
+      ]) &&
+    JSON.stringify(
+      releaseBrokerSupervisorImplItems
+        .filter((item) => /\bBrokerActivationImage\b/u.test(item.header))
+        .map((item) => item.header),
+    ) === JSON.stringify(["impl BrokerActivationImage"]) &&
     brokerActivationImagePath.includes(
       "Self::Prepared(prepared) => prepared.artifact.path()",
     ) &&
     brokerActivationImageAuthentication.includes(
       "authenticate_mapped_image(&prepared.identity, mapped_image)",
     ) &&
+    !/\blet\s+PreparedReleaseBrokerSupervisor\s*\{/u.test(
+      rustLexicalCode(releaseBrokerSupervisorProduction),
+    ) &&
     exactMappedImageAuthenticationCore.includes(
       "sys::exact_file_identity(mapped_image)?",
     ) &&
     exactMappedImageAuthenticationCore.includes(".eq(identity)"),
-  "prepared Broker activation image must remain a sealed prepared/debug sum with same-held-file mapped-image authentication",
+  "prepared Broker activation image must retain the whole prepared release capability as a sealed prepared/debug sum with same-held-file mapped-image authentication",
 );
 requireInvariant(
   /pub\(crate\) fn launch_prepared_release_broker_channel\(\s*prepared: PreparedReleaseBrokerSupervisor,\s*deadline: Instant,\s*\)/u.test(
@@ -5472,25 +6239,26 @@ requireInvariant(
     !/(?:PinnedBrokerImage|hold_dormant_broker|OpenOptions|File::open|CreateFile\w*|raw_handle|\bpid\b|command_line:|application_override)/iu.test(
       launchPreparedReleaseBroker,
     ) &&
-    (releaseBrokerSupervisorProduction.match(
-      /BrokerActivationImage::Prepared\(prepared\)/gu,
-    ) ?? []).length === 2 &&
     /#\[cfg\(test\)\]\s*fn launch_prepared_release_broker_channel_for_test\(/u.test(
       releaseBrokerSupervisorProduction,
     ) &&
-    (platformWindowsProductionFiles
-      .filter((file) =>
-        file.source.includes("PreparedReleaseBrokerSupervisor::new("),
-      )
-      .map((file) => file.path)
-      .join(",") === "crates/platform-windows/src/broker_artifact.rs") &&
+    JSON.stringify(preparedBrokerProductionConstructorReferences) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/broker_artifact.rs",
+          reference: "PreparedReleaseBrokerSupervisor::new",
+          call: true,
+        },
+      ]) &&
     JSON.stringify(
-      platformWindowsProductionFiles.flatMap((file) =>
-        [...file.source.matchAll(/\blaunch_prepared_release_broker_channel\b/gu)].map(
-          () => file.path,
-        ),
-      ),
-    ) === JSON.stringify(["crates/platform-windows/src/broker_supervisor.rs"]),
+      launchPreparedBrokerProductionTokenInventory,
+    ) === JSON.stringify(["crates/platform-windows/src/broker_supervisor.rs"]) &&
+    rustCallSites(
+      releaseBrokerSupervisorProduction,
+      "launch_prepared_release_broker_channel",
+    ).length === 1 &&
+    JSON.stringify(launchPreparedBrokerProductionCallers) ===
+      JSON.stringify([]),
   "prepared Broker release entry must have one admission-minted consumer and no path/raw-handle/PID/command-line launch input",
 );
 requireInvariant(
@@ -5498,7 +6266,44 @@ requireInvariant(
     preparedBrokerActivationOrder.every(
       (position, index, positions) => index === 0 || positions[index - 1] < position,
     ) &&
-    runningBrokerDefinition.includes("_image: BrokerActivationImage") &&
+    normalizedRunningBrokerDefinition ===
+      "pub(super) struct RunningBroker { process: OwnedWinHandle, job: BrokerJob, _image: BrokerActivationImage, shut_down: bool, }" &&
+    (releaseBrokerSupervisorCode.match(/\bstruct\s+RunningBroker\b/gu) ?? [])
+      .length === 1 &&
+    JSON.stringify(runningBrokerImplHeaders) ===
+      JSON.stringify([
+        "impl Send for RunningBroker",
+        "impl RunningBroker",
+        "impl Drop for RunningBroker",
+        "impl core::fmt::Debug for RunningBroker",
+      ]) &&
+    JSON.stringify(runningBrokerMethodSurface) ===
+      JSON.stringify([
+        "fnprocess_handle(&self)->BorrowedHandle<'_>",
+        "fnshutdown(&mutself)->Result<(),DormantBrokerError>",
+      ]) &&
+    JSON.stringify(runningBrokerSelfSites) === JSON.stringify([]) &&
+    JSON.stringify(productionRunningBrokerAuthorityInventory.typeAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionRunningBrokerAuthorityInventory.useAliases) ===
+      JSON.stringify([]) &&
+    JSON.stringify(productionRunningBrokerAuthorityInventory.reexports) ===
+      JSON.stringify([]) &&
+    JSON.stringify(runningBrokerStructSiteInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/broker_supervisor.rs",
+          source: "RunningBroker{process,job,_image:image,shut_down:false,}",
+        },
+      ]) &&
+    JSON.stringify(
+      rustStructLiteralSites(releaseBrokerProcessCreation, "RunningBroker").map(
+        (site) => rustLexicalCode(site.source).replace(/\s+/gu, ""),
+      ),
+    ) ===
+      JSON.stringify([
+        "RunningBroker{process,job,_image:image,shut_down:false,}",
+      ]) &&
     releaseBrokerProcessCreation.includes("debuggee.authenticate_first_event(&image") &&
     releaseBrokerProcessCreation.includes("_image: image") &&
     releaseBrokerProcessCreation.indexOf("debuggee.authenticate_first_event(&image") <
@@ -5530,6 +6335,17 @@ requireInvariant(
 requireInvariant(
   activationArchitecture.includes("private, dormant Broker") &&
     activationArchitecture.includes("exactly three signing-TCB helper manifests") &&
+    activationArchitecture.includes("`PreflightBrokerArtifact`") &&
+    activationArchitecture.includes("`AttestedArtifactDigest`") &&
+    activationArchitecture.includes("overall `ReleasePolicy`") &&
+    activationArchitecture.includes("`ArtifactDigest`") &&
+    activationArchitecture.includes(
+      "not the dedicated Broker/helper manifest digest",
+    ) &&
+    activationArchitecture.includes("`FILE_ID_INFO`") &&
+    activationArchitecture.includes("same-release aggregate") &&
+    activationArchitecture.includes("runtime/signing authority") &&
+    activationArchitecture.includes("No production caller reaches") &&
     activationArchitecture.includes("`PreparedReleaseBrokerSupervisor`") &&
     activationArchitecture.includes("same already-held file handle") &&
     activationArchitecture.includes("all 128") &&
@@ -5542,6 +6358,14 @@ requireInvariant(
     activationArchitecture.includes("`COMPILED_RELEASE_POLICY` remains `None`") &&
     activationArchitecture.includes("4900/exit-78") &&
     activationReadme.includes("private dormant Broker artifact preflight") &&
+    activationReadme.includes("`PreflightBrokerArtifact`") &&
+    activationReadme.includes("`AttestedArtifactDigest`") &&
+    activationReadme.includes("overall `ReleasePolicy` `ArtifactDigest`") &&
+    activationReadme.includes("dedicated Broker/helper manifest digest") &&
+    activationReadme.includes("`FILE_ID_INFO`") &&
+    activationReadme.includes("same-release aggregate") &&
+    activationReadme.includes("runtime/signing authority") &&
+    activationReadme.includes("no production caller") &&
     activationReadme.includes("`prepare_release_broker_supervisor`") &&
     activationReadme.includes("same already-held file handle") &&
     activationReadme.includes("non-cloneable and drop-only") &&
@@ -5551,6 +6375,15 @@ requireInvariant(
     activationReadme.includes("separate matching static lock") &&
     activationReadme.includes("`COMPILED_RELEASE_POLICY = None`") &&
     securityDecisions.includes("private dormant Broker preflight") &&
+    securityDecisions.includes("`PreflightBrokerArtifact`") &&
+    securityDecisions.includes("`AttestedArtifactDigest`") &&
+    securityDecisions.includes("overall") &&
+    securityDecisions.includes("`ReleasePolicy` `ArtifactDigest`") &&
+    securityDecisions.includes("not a Broker/helper manifest digest") &&
+    securityDecisions.includes("`FILE_ID_INFO`") &&
+    securityDecisions.includes("same-release aggregate") &&
+    securityDecisions.includes("runtime/signing authority") &&
+    securityDecisions.includes("no production caller") &&
     securityDecisions.includes("`PreparedReleaseBrokerSupervisor`") &&
     securityDecisions.includes("same already-held") &&
     securityDecisions.includes(
@@ -5560,13 +6393,22 @@ requireInvariant(
     securityDecisions.includes("one loaded") &&
     securityDecisions.includes("separate matching static lock") &&
     securityDecisions.includes("Current release status: STOP-SHIP") &&
+    rootReadme.includes("`PreflightBrokerArtifact`") &&
+    rootReadme.includes("`AttestedArtifactDigest`") &&
+    rootReadme.includes("`ReleasePolicy`") &&
+    rootReadme.includes("`ArtifactDigest`") &&
+    rootReadme.includes("Broker/helper manifest digest") &&
+    rootReadme.includes("`FILE_ID_INFO`") &&
+    rootReadme.includes("same-release aggregate") &&
+    rootReadme.includes("runtime/signing authority") &&
+    rootReadme.includes("production caller") &&
     rootReadme.includes("`PreparedReleaseBrokerSupervisor`") &&
     rootReadme.includes("경로 재열기") &&
     rootReadme.includes("production-compiled exact-image 활성화 core") &&
     rootReadme.includes("deadline-bound process-wide coordinator") &&
     rootReadme.includes("같은 `platform-windows` crate instance") &&
     rootReadme.includes("`COMPILED_RELEASE_POLICY`는 계속 `None`"),
-  "Broker preflight and dormant activation must remain documented as same-held-file, private, release-disabled, coordinator-covered within one crate instance, and STOP-SHIP",
+  "Broker preflight and dormant activation must document opaque whole-release retention separately from manifest/file identity, no cohort/runtime authority, caller zero, and existing STOP-SHIP gates",
 );
 
 const keyAgentWindowsMainNormalized = normalizeRustFragment(
@@ -12815,7 +13657,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/broker_supervisor.rs",
     unsafeCount: 54,
-    sha256: "2282924004398ace5b32135e7bfe95e9435b9d611fdb57a48c26ab672ac7b11a",
+    sha256: "5bd8464d22b6909988ae1f124c9267d8b95602037442fda1dfa94beceeff1f1b",
   },
   {
     path: "crates/platform-windows/src/exact_image.rs",

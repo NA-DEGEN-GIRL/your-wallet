@@ -357,19 +357,29 @@ Implemented:
 - a private dormant Broker artifact preflight that keeps one dedicated Broker
   transport-suite digest and manifest separate from the exactly three
   signing-TCB helpers, then checks Broker role, complete evidence, the exact
-  manifest, and an absolute retained path before minting a non-clone opaque
-  capability. On Windows, `prepare_release_broker_supervisor` consumes that
+  manifest, and an absolute retained path before `PreflightBrokerArtifact`
+  retains the pinned Broker and the opaque whole-release
+  `AttestedArtifactDigest` from the successful `ReleaseAttestation`. That proof
+  denotes the overall `ReleasePolicy` `ArtifactDigest`; it is neither the
+  dedicated Broker/helper manifest digest nor a Windows file-object identity,
+  and no raw release digest is exposed. On Windows,
+  `prepare_release_broker_supervisor` consumes that
   capability by value and derives volume serial plus all 128 `FILE_ID_INFO` file
   ID bits from the same already-held file handle. The resulting
-  `PreparedReleaseBrokerSupervisor` retains the admitted artifact and opaque
-  identity, has redacted `Debug`, and is non-cloneable and drop-only. Only the
-  admission module can mint it. A production-compiled, crate-private exact-image
+  `PreparedReleaseBrokerSupervisor` retains the admitted artifact, the same
+  opaque whole-release proof, and the separate opaque file identity, has
+  redacted `Debug`, and is non-cloneable and drop-only. Only the admission module
+  can mint it. A production-compiled, crate-private exact-image
   activation core consumes the whole value exactly once, creates the child on a
   fresh debugger thread, compares the first mapped-image handle with that same
   held identity before user mode, and retains the prepared value with the exact
   process, one-member Job, and private process-bound channel through cleanup.
   The release entry accepts no path, raw handle, PID, command line, or generic
-  launcher input and performs no identity path reopen. `COMPILED_RELEASE_POLICY = None`
+  launcher input and performs no identity path reopen. Retaining the release
+  proof does not create a Broker-plus-Key-Agent same-release aggregate,
+  authenticated topology, single-instance enforcement, or runtime/signing authority;
+  this release-bound Broker preflight, preparation, and activation
+  path still has no production caller. `COMPILED_RELEASE_POLICY = None`
   keeps the core unreachable from release execution. The three cooperating Rust
   launch paths now have process-wide inheritable-handle coordination, but signed
   immutable installation, native-host provenance, cross-process supervisor

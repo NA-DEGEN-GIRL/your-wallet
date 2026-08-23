@@ -21,6 +21,17 @@ sealed admission and does not allocate or flush the success/error response
 until the executor returns completion. The default executable cannot reach that
 seam, does not add broker IPC, and does not enable release attestation.
 
+Separately, the ordinary library's dormant Broker admission retains the opaque
+whole-release `AttestedArtifactDigest` from one successful `ReleaseAttestation`
+inside `PreflightBrokerArtifact` and carries it unchanged into
+`PreparedReleaseBrokerSupervisor`. This is the overall `ReleasePolicy`
+`ArtifactDigest`. The dedicated Broker/helper manifest digest and the same-held
+file's `FILE_ID_INFO` remain separate policy and exact-object proofs. The opaque
+release identity is not placed on the wire or exposed as raw bytes. Its
+retention does not construct a Broker-plus-Key-Agent same-release aggregate,
+topology or single-instance proof, or runtime/signing authority. No production caller
+reaches the dormant Broker path.
+
 ### Debug-only subprocess contract
 
 An explicit `broker-ipc-contract-test-hook` Cargo feature can connect the native
