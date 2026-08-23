@@ -146,13 +146,33 @@ callers.
 
 This is only a logical parent proof source for a future protocol. It neither
 sets `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` nor chooses or proves Windows process
-parentage, and it is not a runtime-ready security boundary. Positive proof that
-the actual zero-capability Approval LPAC can use the exact handle and query the
-parent token, token-DACL stronger-right and `PROCESS_DUP_HANDLE` negatives,
-absence of `SeDebugPrivilege`, mapped-image and DLL/dependency provenance, a
-distinct supervisor principal, protected process and thread DACLs supplied at
-creation, endpoint topology/exclusivity and cleanup, production orchestration,
-signing, and both disabled compiled policies remain separate release blockers.
+parentage, and it is not a runtime-ready security boundary. A repo-local
+`cfg(test)` integration copies the exact non-inheritable handle into an actual
+zero-capability Approval LPAC and requires a dedicated nonzero success exit that
+can occur only after the child proves `TOKEN_QUERY`, session/image/PID/liveness,
+zero flags, twelve token-right denials, and `SeDebugPrivilege` absence. The local
+`DuplicateHandle` denial matrix requests `PROCESS_DUP_HANDLE`,
+`PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`,
+`PROCESS_VM_READ`, `PROCESS_VM_WRITE`, `PROCESS_CREATE_PROCESS`,
+`PROCESS_QUERY_INFORMATION`, `PROCESS_SET_QUOTA`, `PROCESS_SET_INFORMATION`,
+`PROCESS_SET_LIMITED_INFORMATION` (`0x2000`), `PROCESS_SUSPEND_RESUME`,
+`WRITE_DAC`, `WRITE_OWNER`, `READ_CONTROL`, and `DELETE`. The PID-reopen denial
+matrix requests `PROCESS_DUP_HANDLE`, `PROCESS_QUERY_INFORMATION`,
+`PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION`
+(`0x2000`), `SYNCHRONIZE`, the exact query-limited/synchronize combined mask,
+and `WRITE_DAC`. Before resume, production Key Agent activation successfully
+installs a protected three-ACE token DACL for stable user all, Key Agent
+query+duplicate, and Approval query-only. The `cfg(test)` integration executes
+that production-compiled hardening and proves the Approval query-only outcome.
+Ordinary LPAC/token attributes are verified before and after installation; this
+slice does not read back the token security descriptor. The fixture does not directly read back the
+copied image's mandatory-label state. Its test-only mitigation removes only
+`NO_LOW_LABEL` to permit the profile-scoped copy; production mitigation is
+unchanged. Mapped-image and
+DLL/dependency provenance, a distinct supervisor principal and same-user owner
+separation, protected process/thread creation-time DACLs, endpoint topology and
+production cleanup/orchestration/signing remain release blockers. Both compiled
+policies remain disabled and the production binder has zero callers.
 
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,
@@ -225,9 +245,14 @@ release-path positive evidence covering case-sensitive directories and
 alternate path forms, live mapped exact-file-object proof, the complete
 DLL/dependency graph, immutable installation, a supervisor-held activation
 capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**. There
-is no positive kernel availability test proving that the zero-capability
-Approval LPAC can complete `OpenProcessToken(parent)`, so the new handle-first
-success path remains release-unproven. The repository also has zero production
+is repo-local kernel feasibility evidence that the zero-capability Approval LPAC
+can complete `OpenProcessToken(parent, TOKEN_QUERY)` for the exact injected
+handle and denies the exact local `DuplicateHandle` and PID-reopen requests
+enumerated above. The copied image's mandatory-label state is not directly read
+back, and the test-only `NO_LOW_LABEL` removal only permits the profile-scoped
+copy; production mitigation remains unchanged. This is not signed/mapped
+release evidence, so the production handle-first path remains
+release-unproven. The repository also has zero production
 orchestration callers composing `launch_approval_frontend`
 through a verified response into signing and no positive signed-handshake E2E.
 Raw or legacy direct Approval launch cannot complete the parent-auth exchange

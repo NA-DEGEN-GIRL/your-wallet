@@ -579,11 +579,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 - 제한 helper와 휴면 Key Agent 생성은 이제 같은 비공개 process-context 기반 정책을
   사용합니다. OS가 보고한 system-shared Windows root에서 정확한 `SystemRoot`와
   `WINDIR` 항목을 만들고, 그 root 바로 아래의 검증된 `System32`를 명시적 current
-  directory로 전달합니다. 제한 helper의 double-NUL Unicode environment에는 그 두
-  이름만 들어갑니다. Key Agent는 고정 profile을 준비한 뒤
-  `GetAppContainerFolderPath`가 돌려준 profile의 `...\Packages\<profile>\AC` 모양을
-  검증해 OS 유래 `LOCALAPPDATA`를 앞에 추가하므로, 정확히 `LOCALAPPDATA`,
-  `SystemRoot`, `WINDIR`만 받습니다. 어느 경로도 부모의 ambient environment나 current
+  directory로 전달합니다. 그 두 이름은 immutable base block일 뿐입니다. 제한
+  helper와 Key Agent는 각자의 고정 profile을 준비한 뒤
+  `GetAppContainerFolderPath`가 돌려준 `...\Packages\<profile>\AC` 모양을 검증하고,
+  그 상위 user-local-data base를 OS 유래 `LOCALAPPDATA`로 앞에 추가해 Windows가
+  AppContainer 내부에서 rebase하도록 합니다. 최종 전달 allowlist는 모두 정확히
+  `LOCALAPPDATA`, `SystemRoot`, `WINDIR` 세 이름입니다. 어느 경로도 부모의 ambient environment나 current
   directory를 상속하지 않습니다. 제한 helper는 이 preflight를 parent-proof, 영구
   profile, Job 작업 전에 끝내며, Key Agent도 inheritable-handle flight 획득 전에
   끝냅니다. 두 경로 모두 `CreateProcessW` 직전에 thread impersonation 부재를 다시
@@ -618,11 +619,31 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   OS 자원도 그 narrow handle 하나뿐입니다. production binder caller는 0개입니다. 이
   handle은 향후 Approval이 인증할 logical parent proof source일 뿐이고
   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`를 설정하거나 Windows process parentage를
-  확립하는 capability가 아닙니다. 따라서 actual zero-capability Approval LPAC가 이
-  handle과 parent token을 사용할 수 있다는 positive proof, token-DACL stronger-right 및
-  `PROCESS_DUP_HANDLE` denial, `SeDebugPrivilege` 부재, mapped-image provenance, 별도
-  supervisor principal, process와 thread 양쪽의 creation-time DACL, endpoint topology와
-  cleanup, production orchestration 및 signing은 여전히 release blocker입니다.
+  확립하는 capability가 아닙니다. 다만 repo-local `cfg(test)` 통합은 actual
+  zero-capability Approval LPAC에 그 exact handle을 non-inheritable로 복사하고,
+  `OpenProcessToken(parent, TOKEN_QUERY)`, session/image/PID/liveness/zero flags를 확인한
+  뒤 12개 stronger/standard token right를 거부합니다. local `DuplicateHandle` denial
+  matrix는 `PROCESS_DUP_HANDLE`, `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`,
+  `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE`,
+  `PROCESS_CREATE_PROCESS`, `PROCESS_QUERY_INFORMATION`, `PROCESS_SET_QUOTA`,
+  `PROCESS_SET_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION`(`0x2000`),
+  `PROCESS_SUSPEND_RESUME`, `WRITE_DAC`, `WRITE_OWNER`, `READ_CONTROL`, `DELETE`를
+  각각 요청합니다. PID-reopen denial matrix는 `PROCESS_DUP_HANDLE`,
+  `PROCESS_QUERY_INFORMATION`, `PROCESS_QUERY_LIMITED_INFORMATION`,
+  `PROCESS_SET_LIMITED_INFORMATION`(`0x2000`), `SYNCHRONIZE`, query-limited/synchronize의
+  exact combined mask, `WRITE_DAC`을 요청합니다. 또한 `SeDebugPrivilege` LUID가
+  없음을 증명합니다. production Key Agent activation은 resume 전에 protected three-ACE
+  token DACL(stable user all / Key Agent query+duplicate / Approval query-only)을
+  successfully installs 합니다. `cfg(test)` integration은 이 production-compiled hardening을
+  그대로 실행하고 Approval query-only 결과를 증명합니다. ordinary LPAC/token attributes를
+  설치 전후 확인하지만, 이 slice는 token security descriptor를 read back하지 않습니다.
+  fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
+  profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
+  제거하며 production mitigation은 그대로입니다.
+  이는 signed/mapped release proof가 아닙니다. mapped-image/DLL provenance, distinct supervisor
+  principal과 same-user owner 분리, process/thread creation-time DACL, endpoint topology 및
+  production cleanup/orchestration/signing은 여전히 release blocker이고, production binder
+  caller는 0개이며 두 compiled policy는 `None`입니다.
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
   stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
   synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
@@ -650,12 +671,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   검사하고, held handle+path를 사용한 Authenticode signer 검증과 cloned held handle의
   SHA-256를 수행합니다. 따라서 live process가 그 exact file
   object에서 mapped되었다는 증명은 아닙니다. dormant binder가 보유하는 정확한
-  `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` Key Agent handle도 logical proof
-  source일 뿐입니다. zero-capability Approval LPAC에서 그 exact handle과
-  `OpenProcessToken(parent)`를 실제로 사용할 수 있다는 positive kernel proof,
-  token-DACL stronger-right 및 `PROCESS_DUP_HANDLE` negative, `SeDebugPrivilege` 부재가
-  아직 없고 compiled policies는 `None`이므로, 이 handle-first 성공 경로는 release에서
-  검증되지 않았습니다.
+  `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` Key Agent handle은 별도 logical proof
+  source입니다. 위 repo-local kernel probe는 실제 zero-capability Approval LPAC에서
+  exact `TOKEN_QUERY` 사용과 위에 열거한 local `DuplicateHandle`/PID-reopen 요청의
+  거부를 증명하지만, 현재
+  channel-supervisor binding이나 signed/mapped image를 증명하지 않습니다. 따라서 두
+  compiled policy는 계속 `None`이고 handle-first production 경로는 release-unproven입니다.
 
   Parent-auth 순서는 고정 62-byte parent hello, 고정 106-byte child hello,
   110-byte parent-finish header와 exact request 및 request EOF, 고정 75-byte response와

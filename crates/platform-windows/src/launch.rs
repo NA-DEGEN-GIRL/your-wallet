@@ -10,13 +10,25 @@
 //! for the exact signed artifact is compiled into [`ReleaseAttestation`].
 
 use core::fmt;
+#[cfg(all(test, windows))]
+use std::ffi::OsString;
+#[cfg(all(test, windows))]
+use std::os::windows::ffi::OsStrExt as _;
+#[cfg(all(test, windows))]
+use std::time::Duration;
 #[cfg(windows)]
 use std::time::Instant;
 
 use thiserror::Error;
 
+#[cfg(all(test, windows))]
+use crate::attestation::ArtifactDigest;
 use crate::attestation::ReleaseAttestation;
 use crate::helper::{FileIdentity, VerifiedHelper};
+#[cfg(all(test, windows))]
+use crate::key_agent_activation::{InjectedApprovalParentProbe, PreparedApprovalParentProcess};
+#[cfg(all(test, windows))]
+use crate::pipe::PrivateApprovalPipes;
 
 /// A helper sandbox profile with no network capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,6 +273,28 @@ impl RestrictedLauncher {
         sys::launch(helper, handles, self.profile, role)
     }
 
+    /// Test-only launch of one exact ignored libtest fixture inside the real
+    /// Approval LPAC, with a separate logical Key Agent parent capability.
+    /// The ordinary channel-supervisor process/image proof remains unchanged.
+    #[cfg(all(test, windows))]
+    pub(crate) fn spawn_approval_parent_probe_for_kernel_test(
+        self,
+        helper: &VerifiedHelper,
+        handles: &InheritedStdio<'_>,
+        logical_parent: &PreparedApprovalParentProcess,
+        command_line: &mut [u16],
+    ) -> Result<LaunchedHelper, LaunchError> {
+        let role = self.require_approval_frontend(helper)?;
+        sys::launch_approval_parent_probe(
+            helper,
+            handles,
+            self.profile,
+            role,
+            logical_parent,
+            command_line,
+        )
+    }
+
     /// Launches Secret Input with two additional, least-privilege proof handles
     /// for the exact calling process and its held executable image. The handles
     /// are injected non-inheritable while the child remains suspended; only the
@@ -285,6 +319,121 @@ impl RestrictedLauncher {
         }
         Err(LaunchError::UnsupportedPlatform)
     }
+}
+
+#[cfg(all(test, windows))]
+const APPROVAL_PARENT_PROBE_CHILD_FIXTURE: &str =
+    "launch::tests::approval_lpac_parent_probe_child_fixture";
+#[cfg(all(test, windows))]
+const APPROVAL_PARENT_PROBE_MAGIC: [u8; 8] = *b"YWAPLP01";
+#[cfg(all(test, windows))]
+const APPROVAL_PARENT_PROBE_FRAME_BYTES: usize = 28;
+#[cfg(all(test, windows))]
+const APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE: u32 = 0x51A0_0001;
+
+/// Stable stage categories for the test-only Approval LPAC kernel probe.
+#[cfg(all(test, windows))]
+#[derive(Debug, Error)]
+pub(crate) enum ApprovalParentProbeError {
+    #[error("Approval parent probe source revalidation failed")]
+    ParentState,
+    #[error("Approval parent probe private pipes failed")]
+    PipeSetup,
+    #[error("Approval parent probe inherited-handle policy failed")]
+    Inheritance,
+    #[error("Approval parent probe launch failed: {0}")]
+    Launch(LaunchError),
+    #[error("Approval parent probe did not receive a child-local capability")]
+    MissingCapability,
+    #[error("Approval parent probe request write failed")]
+    RequestWrite,
+    #[error("Approval parent probe cleanup failed")]
+    Cleanup,
+    #[error("Approval parent probe child validation failed: {0}")]
+    Child(LaunchError),
+}
+
+/// Runs the exact logical-parent capability probe inside a real zero-capability
+/// Approval LPAC. This is repo-local kernel feasibility evidence only: it does
+/// not activate the production channel, prove a signed/mapped release image, or
+/// change the compiled fail-closed release policy.
+#[cfg(all(test, windows))]
+pub(crate) fn prove_approval_parent_in_lpac_for_kernel_test(
+    helper: &VerifiedHelper,
+    logical_parent: &PreparedApprovalParentProcess,
+) -> Result<(), ApprovalParentProbeError> {
+    logical_parent
+        .revalidate()
+        .map_err(|_| ApprovalParentProbeError::ParentState)?;
+    let pipes = PrivateApprovalPipes::create().map_err(|_| ApprovalParentProbeError::PipeSetup)?;
+    let inherited = InheritedStdio::for_child_pipe_servers(
+        pipes.child_input(),
+        pipes.child_output(),
+        pipes.child_output(),
+    )
+    .map_err(|_| ApprovalParentProbeError::Inheritance)?;
+    let attestation = ReleaseAttestation::with_helper_manifests_for_test(
+        ArtifactDigest::for_test([0x91; 32]),
+        [helper.manifest_digest(), [0x92; 32], [0x93; 32]],
+    );
+    let restricted_launcher = RestrictedLauncher::new(attestation, NoNetworkLpacProfile::v1());
+
+    let mut command_line = OsString::from("\"");
+    command_line.push(helper.path().as_os_str());
+    command_line.push("\" --exact ");
+    command_line.push(APPROVAL_PARENT_PROBE_CHILD_FIXTURE);
+    command_line.push(" --ignored --test-threads=1 --quiet");
+    let mut command_line = command_line.encode_wide().collect::<Vec<_>>();
+    command_line.push(0);
+    let debug_luid =
+        sys::debug_privilege_luid_for_kernel_test().map_err(ApprovalParentProbeError::Launch)?;
+    let deadline = Instant::now().checked_add(Duration::from_secs(25)).ok_or(
+        ApprovalParentProbeError::Launch(LaunchError::OperatingSystem),
+    )?;
+
+    let launched = restricted_launcher
+        .spawn_approval_parent_probe_for_kernel_test(
+            helper,
+            &inherited,
+            logical_parent,
+            &mut command_line,
+        )
+        .map_err(ApprovalParentProbeError::Launch)?;
+    let Some(proof) = launched.approval_parent_probe() else {
+        return match cleanup_approval_parent_probe(launched) {
+            Ok(()) => Err(ApprovalParentProbeError::MissingCapability),
+            Err(error) => Err(error),
+        };
+    };
+    let mut frame = [0_u8; APPROVAL_PARENT_PROBE_FRAME_BYTES];
+    frame[..8].copy_from_slice(&APPROVAL_PARENT_PROBE_MAGIC);
+    frame[8..16].copy_from_slice(&proof.process_handle().to_be_bytes());
+    frame[16..20].copy_from_slice(&proof.process_id().to_be_bytes());
+    frame[20..28].copy_from_slice(&debug_luid);
+
+    let (writer, _response_reader) = pipes.into_parent();
+    if writer.write_all(&frame, deadline).is_err() {
+        return match cleanup_approval_parent_probe(launched) {
+            Ok(()) => Err(ApprovalParentProbeError::RequestWrite),
+            Err(error) => Err(error),
+        };
+    }
+    launched
+        .wait_for_success_for_kernel_test(deadline)
+        .map_err(ApprovalParentProbeError::Child)?;
+    logical_parent
+        .revalidate()
+        .map_err(|_| ApprovalParentProbeError::ParentState)
+}
+
+#[cfg(all(test, windows))]
+fn cleanup_approval_parent_probe(launched: LaunchedHelper) -> Result<(), ApprovalParentProbeError> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .ok_or(ApprovalParentProbeError::Cleanup)?;
+    launched
+        .terminate_and_wait(deadline)
+        .map_err(|_| ApprovalParentProbeError::Cleanup)
 }
 
 /// Identity record for one held helper process.
@@ -340,6 +489,33 @@ impl HeldProcessIdentity {
     }
 }
 
+/// Test-owned Approval executable copy placed beneath the exact profile's
+/// OS-managed `AppContainer` folder.
+#[cfg(all(test, windows))]
+pub(crate) struct ApprovalLpacKernelTestFixture(sys::ApprovalLpacKernelTestFixture);
+
+#[cfg(all(test, windows))]
+impl ApprovalLpacKernelTestFixture {
+    pub(crate) fn create() -> Result<Self, LaunchError> {
+        sys::ApprovalLpacKernelTestFixture::create().map(Self)
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+
+    pub(crate) fn cleanup(self) -> Result<(), LaunchError> {
+        self.0.cleanup()
+    }
+}
+
+#[cfg(all(test, windows))]
+impl fmt::Debug for ApprovalLpacKernelTestFixture {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApprovalLpacKernelTestFixture([REDACTED PATH])")
+    }
+}
+
 #[cfg(test)]
 mod debug_tests {
     use super::{HeldProcessIdentity, NoNetworkLpacProfile, VerifiedLpacRole};
@@ -383,6 +559,8 @@ pub(crate) struct LaunchedHelper {
     job: sys::OwnedWinHandle,
     identity: HeldProcessIdentity,
     parent_proof: Option<InjectedParentProof>,
+    #[cfg(test)]
+    approval_parent_probe: Option<InjectedApprovalParentProbe>,
 }
 
 /// Numeric values of the two non-inheritable proof handles injected into one
@@ -450,6 +628,11 @@ impl LaunchedHelper {
         self.parent_proof
     }
 
+    #[cfg(test)]
+    pub(crate) const fn approval_parent_probe(&self) -> Option<InjectedApprovalParentProbe> {
+        self.approval_parent_probe
+    }
+
     /// Explicitly terminates the single-process job and waits for the exact
     /// held process object before the supplied monotonic deadline.
     ///
@@ -462,10 +645,39 @@ impl LaunchedHelper {
             job,
             identity: _,
             parent_proof: _,
+            #[cfg(test)]
+                approval_parent_probe: _,
         } = self;
         let result = sys::terminate_and_wait(process.raw(), job.raw(), deadline);
         drop(job);
         drop(process);
+        result
+    }
+
+    /// Waits for the exact test child to emit the dedicated proof-complete exit
+    /// code. Any other result attempts termination and reaping of the one-process
+    /// Job until the bounded cleanup deadline and surfaces cleanup failure.
+    #[cfg(test)]
+    pub(crate) fn wait_for_success_for_kernel_test(
+        self,
+        deadline: Instant,
+    ) -> Result<(), LaunchError> {
+        let Self {
+            process,
+            job,
+            identity: _,
+            parent_proof: _,
+            approval_parent_probe: _,
+        } = self;
+        let result = sys::wait_for_success_for_kernel_test(process.raw(), deadline);
+        let cleanup = result
+            .as_ref()
+            .err()
+            .map(|_| sys::cleanup_failed_kernel_probe(process.raw(), job.raw()))
+            .transpose();
+        drop(job);
+        drop(process);
+        cleanup?;
         result
     }
 }
@@ -473,13 +685,15 @@ impl LaunchedHelper {
 #[cfg(windows)]
 impl fmt::Debug for LaunchedHelper {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("LaunchedHelper")
+        let mut debug = formatter.debug_struct("LaunchedHelper");
+        debug
             .field("process", &"[HANDLE]")
             .field("job", &"[HANDLE]")
             .field("identity", &self.identity)
-            .field("parent_proof", &self.parent_proof)
-            .finish()
+            .field("parent_proof", &self.parent_proof);
+        #[cfg(test)]
+        debug.field("approval_parent_probe", &self.approval_parent_probe);
+        debug.finish()
     }
 }
 
@@ -495,27 +709,48 @@ mod sys {
     use core::mem::size_of;
     use core::ptr;
     use std::collections::HashSet;
+    #[cfg(test)]
+    use std::fs::{File, OpenOptions};
+    #[cfg(test)]
+    use std::io;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, BorrowedHandle};
     use std::path::Path;
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
+    #[cfg(test)]
+    use windows::Win32::Foundation::LUID;
     use windows::Win32::Foundation::{
         CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DUPLICATE_SAME_ACCESS,
-        DuplicateHandle, ERROR_ALREADY_EXISTS, GENERIC_READ, GetHandleInformation, HANDLE,
-        HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, GENERIC_READ,
+        GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    #[cfg(test)]
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::Isolation::GetAppContainerFolderPath;
     use windows::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
     };
     use windows::Win32::Security::{
-        EqualSid, FreeSid, GetTokenInformation, IsValidSid, PSID, SECURITY_CAPABILITIES,
-        TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities,
-        TokenIsAppContainer,
+        CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetTokenInformation, IsValidSid,
+        PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_APPCONTAINER_INFORMATION,
+        TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenCapabilities,
+        TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenUser,
+    };
+    #[cfg(test)]
+    use windows::Win32::Security::{
+        DACL_SECURITY_INFORMATION, IsValidSecurityDescriptor, LookupPrivilegeValueW,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW,
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
     };
+    use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::JobObjects::{
         CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -526,6 +761,9 @@ mod sys {
         GetNamedPipeClientProcessId, GetNamedPipeClientSessionId, GetNamedPipeInfo,
     };
     use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::SystemServices::{CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC};
+    #[cfg(test)]
+    use windows::Win32::System::Threading::GetExitCodeProcess;
     use windows::Win32::System::Threading::{
         CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
@@ -541,8 +779,10 @@ mod sys {
         PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
         PROCESS_CREATION_CHILD_PROCESS_RESTRICTED,
     };
-    use windows::core::{BOOL, PCWSTR};
+    use windows::core::{BOOL, PCWSTR, PWSTR};
 
+    #[cfg(test)]
+    use super::PreparedApprovalParentProcess;
     use super::{
         HeldProcessIdentity, InheritedStdio, InjectedParentProof, LaunchError, LaunchedHelper,
         NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
@@ -598,6 +838,9 @@ mod sys {
         | MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON
         | MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON
         | MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON;
+    #[cfg(test)]
+    const APPROVAL_KERNEL_FIXTURE_MITIGATION_POLICY: u64 =
+        HELPER_MITIGATION_POLICY & !MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON;
 
     pub(super) struct OwnedWinHandle(HANDLE);
 
@@ -686,6 +929,43 @@ mod sys {
             unsafe {
                 let _ = FreeSid(sid);
             }
+        }
+    }
+
+    /// Owns one as-yet-untrusted `CoTaskMem` path returned by a profile API.
+    struct UnvalidatedProfileApiFolderPath {
+        raw: Option<PWSTR>,
+    }
+
+    impl UnvalidatedProfileApiFolderPath {
+        const fn new(raw: PWSTR) -> Self {
+            Self { raw: Some(raw) }
+        }
+
+        fn to_path(&self) -> Result<PathBuf, LaunchError> {
+            let folder = self.raw.ok_or(LaunchError::OperatingSystem)?;
+            if folder.is_null() {
+                return Err(LaunchError::OperatingSystem);
+            }
+            // SAFETY: a successful non-null result is NUL terminated and stays
+            // owned by this wrapper for the complete conversion.
+            unsafe { folder.to_string() }
+                .map(PathBuf::from)
+                .map_err(|_| LaunchError::OperatingSystem)
+        }
+    }
+
+    impl Drop for UnvalidatedProfileApiFolderPath {
+        fn drop(&mut self) {
+            let Some(folder) = self.raw.take() else {
+                return;
+            };
+            if folder.is_null() {
+                return;
+            }
+            // SAFETY: GetAppContainerFolderPath allocates this result with
+            // CoTaskMemAlloc and ownership has not escaped this wrapper.
+            unsafe { CoTaskMemFree(Some(folder.0.cast::<c_void>())) };
         }
     }
 
@@ -786,6 +1066,297 @@ mod sys {
         }
     }
 
+    /// Exact executable copy used only to run the Approval LPAC kernel probe.
+    #[cfg(test)]
+    pub(super) struct ApprovalLpacKernelTestFixture {
+        directory: PathBuf,
+        executable: PathBuf,
+        cleaned: bool,
+    }
+
+    #[cfg(test)]
+    impl ApprovalLpacKernelTestFixture {
+        pub(super) fn create() -> Result<Self, LaunchError> {
+            let profile_sid = OwnedAppContainerSid::open_or_create(
+                NoNetworkLpacProfile::v1(),
+                VerifiedLpacRole::ApprovalFrontend,
+            )?;
+            let profile_folder = appcontainer_folder(profile_sid.raw())?;
+            if !profile_folder.is_absolute() || !profile_folder.is_dir() {
+                return Err(LaunchError::OperatingSystem);
+            }
+
+            let directory = create_unique_approval_fixture_directory(&profile_folder)?;
+            let executable = directory.join("approval-parent-probe.exe");
+            let fixture = Self {
+                directory,
+                executable,
+                cleaned: false,
+            };
+            apply_exact_approval_fixture_dacl(&fixture.directory, profile_sid.raw())?;
+            copy_current_test_image(&fixture.executable)?;
+            apply_exact_approval_fixture_dacl(&fixture.executable, profile_sid.raw())?;
+            Ok(fixture)
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            &self.executable
+        }
+
+        pub(super) fn cleanup(mut self) -> Result<(), LaunchError> {
+            // Both removals are attempted so a partial cleanup still leaves the
+            // Drop fallback able to retry only these exact non-recursive paths.
+            let executable = std::fs::remove_file(&self.executable);
+            let directory = std::fs::remove_dir(&self.directory);
+            if executable.is_err() || directory.is_err() {
+                return Err(LaunchError::OperatingSystem);
+            }
+            self.cleaned = true;
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for ApprovalLpacKernelTestFixture {
+        fn drop(&mut self) {
+            // These are the exact CSPRNG-named children created above. Cleanup
+            // is deliberately non-recursive and never targets the profile root.
+            if !self.cleaned {
+                let _ = std::fs::remove_file(&self.executable);
+                let _ = std::fs::remove_dir(&self.directory);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    impl core::fmt::Debug for ApprovalLpacKernelTestFixture {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str("ApprovalLpacKernelTestFixture([REDACTED PATH])")
+        }
+    }
+
+    fn appcontainer_folder(profile_sid: PSID) -> Result<PathBuf, LaunchError> {
+        let sid_text = wide_nul_str(&sid_string(profile_sid)?);
+        let profile_api =
+            acquire_appcontainer_profile_api().map_err(|_| LaunchError::OperatingSystem)?;
+        profile_api
+            .recheck_thread()
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        // SAFETY: the canonical SID string is live and NUL terminated.
+        let folder = unsafe { GetAppContainerFolderPath(PCWSTR(sid_text.as_ptr())) }
+            .map(UnvalidatedProfileApiFolderPath::new);
+        profile_api
+            .recheck_thread()
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        folder.map_err(|_| LaunchError::OperatingSystem)?.to_path()
+    }
+
+    fn sid_string(sid: PSID) -> Result<String, LaunchError> {
+        // SAFETY: callers supply a SID retained by a live token or profile owner.
+        if sid.is_invalid() || !unsafe { IsValidSid(sid) }.as_bool() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let mut text = PWSTR::null();
+        // SAFETY: the validated SID remains live and the output receives one
+        // LocalAlloc-owned NUL-terminated string.
+        unsafe { ConvertSidToStringSidW(sid, &raw mut text) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        if text.is_null() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        // SAFETY: successful conversion returned a live NUL-terminated string.
+        let converted = unsafe { text.to_string() }.map_err(|_| LaunchError::OperatingSystem);
+        // SAFETY: ConvertSidToStringSidW allocates with LocalAlloc.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(text.0.cast::<c_void>())));
+        }
+        converted
+    }
+
+    fn environment_with_local_app_data(
+        profile_sid: PSID,
+        expected_profile_name: &str,
+        base_environment: &[u16],
+    ) -> Result<Box<[u16]>, LaunchError> {
+        let appcontainer_local_data = appcontainer_folder(profile_sid)?;
+        let local_folder_name = appcontainer_local_data
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LaunchError::OperatingSystem)?;
+        let profile_folder = appcontainer_local_data
+            .parent()
+            .ok_or(LaunchError::OperatingSystem)?;
+        let profile_name = profile_folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LaunchError::OperatingSystem)?;
+        let packages = profile_folder
+            .parent()
+            .ok_or(LaunchError::OperatingSystem)?;
+        let packages_name = packages
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LaunchError::OperatingSystem)?;
+        let user_local_data = packages.parent().ok_or(LaunchError::OperatingSystem)?;
+        if !local_folder_name.eq_ignore_ascii_case("AC")
+            || !profile_name.eq_ignore_ascii_case(expected_profile_name)
+            || !packages_name.eq_ignore_ascii_case("Packages")
+            || !user_local_data.is_absolute()
+            || !base_environment_is_exact(base_environment)
+        {
+            return Err(LaunchError::OperatingSystem);
+        }
+
+        let local_value: Vec<u16> = user_local_data.as_os_str().encode_wide().collect();
+        if local_value.is_empty() || local_value.contains(&0) {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let mut environment = Vec::with_capacity(
+            "LOCALAPPDATA="
+                .encode_utf16()
+                .count()
+                .checked_add(local_value.len())
+                .and_then(|length| length.checked_add(base_environment.len() + 1))
+                .ok_or(LaunchError::OperatingSystem)?,
+        );
+        environment.extend("LOCALAPPDATA=".encode_utf16());
+        environment.extend_from_slice(&local_value);
+        environment.push(0);
+        environment.extend_from_slice(base_environment);
+        if environment.len() > 32_767 || !environment.ends_with(&[0, 0]) {
+            return Err(LaunchError::OperatingSystem);
+        }
+        Ok(environment.into_boxed_slice())
+    }
+
+    fn base_environment_is_exact(environment: &[u16]) -> bool {
+        if !environment.ends_with(&[0, 0]) {
+            return false;
+        }
+        let mut entries = environment[..environment.len() - 1].split(|unit| *unit == 0);
+        let Some(system_root) = entries.next() else {
+            return false;
+        };
+        let Some(windir) = entries.next() else {
+            return false;
+        };
+        let Some(final_empty) = entries.next() else {
+            return false;
+        };
+        entries.next().is_none()
+            && final_empty.is_empty()
+            && system_root.starts_with(&"SystemRoot=".encode_utf16().collect::<Vec<_>>())
+            && windir.starts_with(&"WINDIR=".encode_utf16().collect::<Vec<_>>())
+            && system_root.len() > "SystemRoot=".encode_utf16().count()
+            && windir.len() > "WINDIR=".encode_utf16().count()
+    }
+
+    #[cfg(test)]
+    fn current_user_sid_string_for_test() -> Result<String, LaunchError> {
+        let mut raw_token = HANDLE::default();
+        // SAFETY: the current-process pseudo handle is valid and output receives
+        // one exclusively owned query-only token handle.
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        if raw_token.is_invalid() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let token = OwnedWinHandle(raw_token);
+        let information = token_information(token.raw(), TokenUser)?;
+        if information.len().saturating_mul(size_of::<usize>()) < size_of::<TOKEN_USER>() {
+            return Err(LaunchError::OperatingSystem);
+        }
+        // SAFETY: aligned storage contains the complete returned TOKEN_USER.
+        let user = unsafe { ptr::read_unaligned(information.as_ptr().cast::<TOKEN_USER>()) };
+        sid_string(user.User.Sid)
+    }
+
+    #[cfg(test)]
+    fn apply_exact_approval_fixture_dacl(
+        path: &Path,
+        profile_sid: PSID,
+    ) -> Result<(), LaunchError> {
+        let user_sid = current_user_sid_string_for_test()?;
+        let profile_sid = sid_string(profile_sid)?;
+        let descriptor_text =
+            wide_nul_str(&format!("D:P(A;;FA;;;{user_sid})(A;;GRGX;;;{profile_sid})"));
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: SDDL is live and NUL terminated; output receives one
+        // LocalAlloc-owned self-relative descriptor.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(descriptor_text.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                None,
+            )
+        }
+        .map_err(|_| LaunchError::OperatingSystem)?;
+        // SAFETY: the conversion above returned a live descriptor allocation.
+        let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();
+        let wide_path = wide_nul_path(path);
+        let applied = if valid {
+            // SAFETY: path and descriptor stay live for the exact protected-DACL
+            // update and no owner or SACL component is selected.
+            unsafe {
+                SetFileSecurityW(
+                    PCWSTR(wide_path.as_ptr()),
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    descriptor,
+                )
+            }
+            .ok()
+            .map_err(|_| LaunchError::OperatingSystem)
+        } else {
+            Err(LaunchError::OperatingSystem)
+        };
+        // SAFETY: the SDDL conversion allocated this descriptor with LocalAlloc.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        }
+        applied
+    }
+
+    #[cfg(test)]
+    fn create_unique_approval_fixture_directory(root: &Path) -> Result<PathBuf, LaunchError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for _ in 0..16 {
+            let mut random = [0_u8; 16];
+            getrandom::fill(&mut random).map_err(|_| LaunchError::OperatingSystem)?;
+            let mut suffix = String::with_capacity(random.len() * 2);
+            for byte in random {
+                suffix.push(char::from(HEX[usize::from(byte >> 4)]));
+                suffix.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            let candidate = root.join(format!("your-wallet-approval-parent-{suffix}"));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(LaunchError::OperatingSystem),
+            }
+        }
+        Err(LaunchError::OperatingSystem)
+    }
+
+    #[cfg(test)]
+    fn copy_current_test_image(destination: &Path) -> Result<(), LaunchError> {
+        let source = std::env::current_exe().map_err(|_| LaunchError::OperatingSystem)?;
+        let mut source = File::open(source).map_err(|_| LaunchError::OperatingSystem)?;
+        let mut destination_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        let copied =
+            io::copy(&mut source, &mut destination_file).and_then(|_| destination_file.sync_all());
+        if copied.is_err() {
+            drop(destination_file);
+            let _ = std::fs::remove_file(destination);
+            return Err(LaunchError::OperatingSystem);
+        }
+        Ok(())
+    }
+
     struct AttributeValues {
         handles: Box<[HANDLE]>,
         job: [HANDLE; 1],
@@ -796,11 +1367,11 @@ mod sys {
     }
 
     impl AttributeValues {
-        fn new(handles: Box<[HANDLE]>, job: HANDLE, profile_sid: PSID) -> Self {
+        fn new(handles: Box<[HANDLE]>, job: HANDLE, profile_sid: PSID, mitigation: u64) -> Self {
             Self {
                 handles,
                 job: [job],
-                mitigation: HELPER_MITIGATION_POLICY,
+                mitigation,
                 security_capabilities: SECURITY_CAPABILITIES {
                     AppContainerSid: profile_sid,
                     Capabilities: ptr::null_mut(),
@@ -827,6 +1398,7 @@ mod sys {
             duplicate_owner: &'handles InheritableDuplicates<'flight, 'coordinator>,
             job_owner: &'job OwnedWinHandle,
             profile_sid: OwnedAppContainerSid,
+            mitigation: u64,
         ) -> Result<Self, LaunchError> {
             let handles = duplicate_owner.raw_handles();
             if handles.is_empty() {
@@ -836,6 +1408,7 @@ mod sys {
                 handles,
                 job_owner.raw(),
                 profile_sid.raw(),
+                mitigation,
             ));
             let mut bytes = 0_usize;
             // SAFETY: the documented sizing call uses a null list and initializes
@@ -1130,8 +1703,11 @@ mod sys {
         // SAFETY: `process` is the suspended child process handle and the output
         // token handle is exclusively owned below.
         unsafe {
-            OpenProcessToken(process, TOKEN_QUERY, &raw mut token)
+            OpenProcessToken(process, TOKEN_QUERY | TOKEN_DUPLICATE, &raw mut token)
                 .map_err(|_| LaunchError::SandboxVerification)?;
+        }
+        if token.is_invalid() {
+            return Err(LaunchError::SandboxVerification);
         }
         let token = OwnedWinHandle(token);
 
@@ -1154,6 +1730,30 @@ mod sys {
         {
             return Err(LaunchError::SandboxVerification);
         }
+
+        let mut is_lpac = 0_u32;
+        let mut lpac_returned = 0_u32;
+        // SAFETY: the fixed-size output matches the LPAC token-information
+        // class's DWORD ABI and the suspended child token remains live.
+        let queried_lpac = match unsafe {
+            GetTokenInformation(
+                token.raw(),
+                TokenIsLessPrivilegedAppContainer,
+                Some(ptr::from_mut(&mut is_lpac).cast::<c_void>()),
+                u32::try_from(size_of::<u32>()).map_err(|_| LaunchError::SandboxVerification)?,
+                &raw mut lpac_returned,
+            )
+        } {
+            Ok(()) => Some((is_lpac, lpac_returned)),
+            Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => None,
+            Err(_) => return Err(LaunchError::SandboxVerification),
+        };
+        if queried_lpac.is_some_and(|(value, bytes)| {
+            value != 1 || usize::try_from(bytes).ok() != Some(size_of::<u32>())
+        }) {
+            return Err(LaunchError::SandboxVerification);
+        }
+        require_lpac_membership(token.raw())?;
 
         let sid_buffer = token_information(token.raw(), TokenAppContainerSid)?;
         if sid_buffer.len().saturating_mul(size_of::<usize>())
@@ -1188,6 +1788,51 @@ mod sys {
             return Err(LaunchError::SandboxVerification);
         }
         Ok(())
+    }
+
+    fn require_lpac_membership(token: HANDLE) -> Result<(), LaunchError> {
+        let user_information = token_information(token, TokenUser)?;
+        if user_information.len().saturating_mul(size_of::<usize>()) < size_of::<TOKEN_USER>() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: aligned storage contains the complete returned TOKEN_USER
+        // prefix and remains live through both membership checks.
+        let user = unsafe { ptr::read_unaligned(user_information.as_ptr().cast::<TOKEN_USER>()) };
+        // SAFETY: the SID pointer belongs to the still-live token-information
+        // allocation populated by Windows.
+        if user.User.Sid.is_invalid() || !unsafe { IsValidSid(user.User.Sid) }.as_bool() {
+            return Err(LaunchError::SandboxVerification);
+        }
+
+        let mut impersonation = HANDLE::default();
+        // SAFETY: the source token is live and query/duplicate-authorized; the
+        // output receives one exclusively owned impersonation token.
+        unsafe { DuplicateToken(token, SecurityIdentification, &raw mut impersonation) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if impersonation.is_invalid() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        let impersonation = OwnedWinHandle(impersonation);
+        let check = |flags| -> Result<bool, LaunchError> {
+            let mut member = BOOL(0);
+            // SAFETY: the impersonation token and user SID remain live and the
+            // output BOOL is writable for this AppContainer-aware check.
+            unsafe {
+                CheckTokenMembershipEx(
+                    Some(impersonation.raw()),
+                    user.User.Sid,
+                    flags,
+                    &raw mut member,
+                )
+            }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+            Ok(member.as_bool())
+        };
+        let regular_appcontainer = check(CTMF_INCLUDE_APPCONTAINER)?;
+        let lpac = check(CTMF_INCLUDE_APPCONTAINER | CTMF_INCLUDE_LPAC)?;
+        (!regular_appcontainer && lpac)
+            .then_some(())
+            .ok_or(LaunchError::SandboxVerification)
     }
 
     fn duplicate_inheritable(
@@ -1388,14 +2033,14 @@ mod sys {
     const CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
 
     fn terminate_and_reap_created_child(process: HANDLE, job: HANDLE) {
-        // SAFETY: the guard invokes this only for the exact process returned by
-        // CreateProcessW and its atomically assigned kill-on-close Job. The
-        // process is suspended until the guard is disarmed.
-        unsafe {
-            let _ = TerminateJobObject(job, 1);
-            let _ = TerminateProcess(process, 1);
-            let _ = WaitForSingleObject(process, CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS);
-        }
+        let Some(deadline) = Instant::now().checked_add(Duration::from_millis(u64::from(
+            CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS,
+        ))) else {
+            return;
+        };
+        // Drop cannot surface cleanup failure. It nevertheless attempts both
+        // termination paths and a bounded wait on the retained exact process.
+        let _ = terminate_and_wait(process, job, deadline);
     }
 
     struct CreatedChildGuard<'process, 'job> {
@@ -1432,8 +2077,21 @@ mod sys {
         deadline: Instant,
     ) -> Result<(), LaunchError> {
         // SAFETY: both handles remain owned by the consuming LaunchedHelper for
-        // this call. The job contains at most the one held helper process.
-        unsafe { TerminateJobObject(job, 1) }.map_err(|_| LaunchError::OperatingSystem)?;
+        // this call. The job contains at most the one held helper process, and
+        // the zero-time observation never transfers handle ownership.
+        if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+            return Ok(());
+        }
+        // TerminateJobObject and TerminateProcess are asynchronous. Always try
+        // both exact retained objects; one successful request is sufficient to
+        // proceed to the mandatory process wait.
+        // SAFETY: `job` is the retained one-process Job owned by the caller.
+        let job_termination = unsafe { TerminateJobObject(job, 1) };
+        // SAFETY: `process` is the retained exact child process owned by the caller.
+        let process_termination = unsafe { TerminateProcess(process, 1) };
+        if job_termination.is_err() && process_termination.is_err() {
+            return Err(LaunchError::OperatingSystem);
+        }
         let timeout = remaining_milliseconds(deadline)?;
         // SAFETY: `process` is the live held process object and the finite wait
         // is bounded by the trusted monotonic deadline calculated above.
@@ -1511,11 +2169,63 @@ mod sys {
         profile: NoNetworkLpacProfile,
         role: VerifiedLpacRole,
     ) -> Result<LaunchedHelper, LaunchError> {
+        launch_inner(
+            helper,
+            handles,
+            profile,
+            role,
+            #[cfg(test)]
+            None,
+            #[cfg(test)]
+            None,
+            #[cfg(test)]
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn launch_approval_parent_probe(
+        helper: &VerifiedHelper,
+        handles: &InheritedStdio<'_>,
+        profile: NoNetworkLpacProfile,
+        role: VerifiedLpacRole,
+        logical_parent: &PreparedApprovalParentProcess,
+        command_line: &mut [u16],
+    ) -> Result<LaunchedHelper, LaunchError> {
+        launch_inner(
+            helper,
+            handles,
+            profile,
+            role,
+            Some(logical_parent),
+            Some(command_line),
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // Process creation is kept linear for cleanup auditing.
+    fn launch_inner(
+        helper: &VerifiedHelper,
+        handles: &InheritedStdio<'_>,
+        profile: NoNetworkLpacProfile,
+        role: VerifiedLpacRole,
+        #[cfg(test)] logical_parent: Option<&PreparedApprovalParentProcess>,
+        #[cfg(test)] command_line: Option<&mut [u16]>,
+        #[cfg(test)] kernel_test_context: bool,
+    ) -> Result<LaunchedHelper, LaunchError> {
         // Keep the identity-pinned executable file live through CreateProcessW.
         let _verified_file_handle = helper.raw_handle();
         validate_live_handle(handles.input)?;
         validate_live_handle(handles.output)?;
         validate_live_handle(handles.error)?;
+        #[cfg(test)]
+        let process_context = if kernel_test_context {
+            RestrictedProcessContext::prepare_for_kernel_test()
+        } else {
+            RestrictedProcessContext::prepare()
+        }
+        .map_err(map_process_context_error)?;
+        #[cfg(not(test))]
         let process_context =
             RestrictedProcessContext::prepare().map_err(map_process_context_error)?;
         let helper_file = helper.identity();
@@ -1525,7 +2235,13 @@ mod sys {
             .requires_parent_proof()
             .then(current_parent_proof_sources)
             .transpose()?;
+        let metadata = profile_metadata(profile, role)?;
         let profile_sid = OwnedAppContainerSid::open_or_create(profile, role)?;
+        let environment = environment_with_local_app_data(
+            profile_sid.raw(),
+            metadata.name,
+            process_context.environment(),
+        )?;
         let job = restricted_job()?;
         let application: Vec<u16> = helper
             .path()
@@ -1566,7 +2282,15 @@ mod sys {
         let standard_input = map_duplicate(handles.input)?;
         let standard_output = map_duplicate(handles.output)?;
         let standard_error = map_duplicate(handles.error)?;
-        let attributes = AttributeList::for_lpac(&duplicates, &job, profile_sid)?;
+        #[cfg(test)]
+        let mitigation = if kernel_test_context {
+            APPROVAL_KERNEL_FIXTURE_MITIGATION_POLICY
+        } else {
+            HELPER_MITIGATION_POLICY
+        };
+        #[cfg(not(test))]
+        let mitigation = HELPER_MITIGATION_POLICY;
+        let attributes = AttributeList::for_lpac(&duplicates, &job, profile_sid, mitigation)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb =
             u32::try_from(size_of::<STARTUPINFOEXW>()).map_err(|_| LaunchError::OperatingSystem)?;
@@ -1575,6 +2299,12 @@ mod sys {
         startup.StartupInfo.hStdOutput = standard_output;
         startup.StartupInfo.hStdError = standard_error;
         startup.lpAttributeList = attributes.pointer();
+
+        #[cfg(test)]
+        let command_line = command_line.map(|buffer| PWSTR(buffer.as_mut_ptr()));
+        #[cfg(not(test))]
+        let command_line = None;
+
         if Instant::now() >= coordination_deadline {
             return Err(LaunchError::OperatingSystem);
         }
@@ -1585,15 +2315,15 @@ mod sys {
         let mut process_information = PROCESS_INFORMATION::default();
         // SAFETY: helper path is verified and NUL-terminated; startup and attribute
         // storage remain live. TRUE inheritance is constrained by HANDLE_LIST.
-        // The Unicode environment is an explicit two-name allowlist, and the
+        // The Unicode environment is an exact three-name allowlist, and the
         // current directory was checked non-writable and free of reparses.
         unsafe {
             flight
                 .create_process_with_explicit_handle_list(
                     PCWSTR(application.as_ptr()),
-                    None,
+                    command_line,
                     EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                    Some(process_context.environment().as_ptr().cast::<c_void>()),
+                    Some(environment.as_ptr().cast::<c_void>()),
                     PCWSTR(process_context.current_directory().as_ptr()),
                     ptr::from_ref(&startup.StartupInfo),
                     &raw mut process_information,
@@ -1633,6 +2363,16 @@ mod sys {
             .as_ref()
             .map(|sources| inject_parent_proof(sources, process.raw()))
             .transpose()?;
+        #[cfg(test)]
+        let approval_parent_probe = logical_parent
+            .map(|parent| {
+                // SAFETY: the owned child process handle stays live and the
+                // armed guard keeps the process suspended throughout injection.
+                let child = unsafe { BorrowedHandle::borrow_raw(process.raw().0) };
+                parent.inject_into_approval_lpac_for_kernel_test(child)
+            })
+            .transpose()
+            .map_err(|_| LaunchError::SandboxVerification)?;
         drop(parent_sources);
         // SAFETY: thread is the suspended primary thread returned by CreateProcess.
         let previous_suspend_count = unsafe { ResumeThread(thread.raw()) };
@@ -1653,12 +2393,72 @@ mod sys {
                 profile_revision: profile.revision(),
             },
             parent_proof,
+            #[cfg(test)]
+            approval_parent_probe,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_success_for_kernel_test(
+        process: HANDLE,
+        deadline: Instant,
+    ) -> Result<(), LaunchError> {
+        // SAFETY: the test launch owner retains the exact process through this
+        // bounded wait and passes a validated monotonic deadline.
+        let wait = unsafe { WaitForSingleObject(process, remaining_milliseconds(deadline)?) };
+        if wait == WAIT_TIMEOUT || deadline_elapsed(deadline) {
+            return Err(LaunchError::TerminationDeadlineElapsed);
+        }
+        if wait != WAIT_OBJECT_0 {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let mut exit_code = u32::MAX;
+        // SAFETY: the exact process handle remains live and is signaled.
+        unsafe { GetExitCodeProcess(process, &raw mut exit_code) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        (exit_code == super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE)
+            .then_some(())
+            .ok_or(LaunchError::SandboxVerification)
+    }
+
+    #[cfg(test)]
+    pub(super) fn cleanup_failed_kernel_probe(
+        process: HANDLE,
+        job: HANDLE,
+    ) -> Result<(), LaunchError> {
+        // SAFETY: the consuming launch owner retains the exact process handle;
+        // a zero-time wait first distinguishes an already reaped child.
+        if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+            return Ok(());
+        }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(LaunchError::OperatingSystem)?;
+        terminate_and_wait(process, job, deadline)
+    }
+
+    #[cfg(test)]
+    pub(super) fn debug_privilege_luid_for_kernel_test() -> Result<[u8; 8], LaunchError> {
+        let name = wide_nul_str("SeDebugPrivilege");
+        let mut luid = LUID::default();
+        // SAFETY: the local-system lookup uses one NUL-terminated constant and
+        // writes the system-wide LUID into initialized storage.
+        unsafe { LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(name.as_ptr()), &raw mut luid) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        let mut encoded = [0_u8; 8];
+        encoded[..4].copy_from_slice(&luid.LowPart.to_be_bytes());
+        encoded[4..].copy_from_slice(&luid.HighPart.to_be_bytes());
+        Ok(encoded)
     }
 
     #[cfg(test)]
     pub(super) const fn mitigation_policy_for_test() -> u64 {
         HELPER_MITIGATION_POLICY
+    }
+
+    #[cfg(test)]
+    pub(super) const fn approval_kernel_fixture_mitigation_policy_for_test() -> u64 {
+        APPROVAL_KERNEL_FIXTURE_MITIGATION_POLICY
     }
 
     #[cfg(test)]
@@ -1725,6 +2525,16 @@ mod sys {
     }
 
     #[cfg(test)]
+    pub(super) fn approval_environment_for_test(root: &Path) -> Result<Box<[u16]>, LaunchError> {
+        let base = environment_for_test(root)?;
+        let profile_sid = OwnedAppContainerSid::open_or_create(
+            NoNetworkLpacProfile::v1(),
+            VerifiedLpacRole::ApprovalFrontend,
+        )?;
+        environment_with_local_app_data(profile_sid.raw(), APPROVAL_PROFILE_V1_NAME, &base)
+    }
+
+    #[cfg(test)]
     pub(super) fn validate_working_directory_for_test(path: &Path) -> Result<(), LaunchError> {
         crate::restricted_process_context::validate_working_directory_for_test(path)
             .map_err(map_process_context_error)
@@ -1761,7 +2571,10 @@ mod sys {
 mod tests {
     #![allow(unsafe_code)]
 
+    use core::mem::{offset_of, size_of};
+    use core::ptr;
     use std::fs::OpenOptions;
+    use std::io::Read as _;
     use std::net::{Ipv4Addr, TcpListener};
     use std::os::windows::io::{
         AsHandle, AsRawHandle, AsRawSocket, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
@@ -1770,19 +2583,41 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
+        CloseHandle, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, ERROR_ACCESS_DENIED,
+        GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, LUID,
+        SetHandleInformation, WAIT_TIMEOUT,
     };
+    use windows::Win32::Security::{
+        GetTokenInformation, LUID_AND_ATTRIBUTES, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
+        TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY,
+        TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_QUERY_SOURCE,
+        TokenPrivileges, TokenSessionId,
+    };
+    use windows::Win32::Storage::FileSystem::{DELETE, READ_CONTROL, WRITE_DAC, WRITE_OWNER};
     use windows::Win32::System::JobObjects::{
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Pipes::CreatePipe;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetProcessId, OpenProcess, OpenProcessToken, PROCESS_ACCESS_RIGHTS,
+        PROCESS_CREATE_PROCESS, PROCESS_CREATE_THREAD, PROCESS_DUP_HANDLE, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_SET_QUOTA, PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE, PROCESS_VM_OPERATION,
+        PROCESS_VM_READ, PROCESS_VM_WRITE, QueryFullProcessImageNameW, WaitForSingleObject,
+    };
     use windows::Win32::System::WindowsProgramming::{
         PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
         PROCESS_CREATION_CHILD_PROCESS_RESTRICTED,
     };
 
+    use windows::core::PWSTR;
+
     use super::RestrictedLauncher;
-    use super::{HeldProcessIdentity, InheritedStdio, LaunchError, NoNetworkLpacProfile, sys};
+    use super::{
+        APPROVAL_PARENT_PROBE_FRAME_BYTES, APPROVAL_PARENT_PROBE_MAGIC,
+        APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE, HeldProcessIdentity, InheritedStdio, LaunchError,
+        NoNetworkLpacProfile, sys,
+    };
     use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::{FileIdentity, VerifiedHelper};
 
@@ -1806,6 +2641,329 @@ mod tests {
             .take_while(|entry| !entry.is_empty())
             .map(String::from_utf16)
             .collect()
+    }
+
+    fn probe_token_information(
+        token: HANDLE,
+        class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
+    ) -> Result<Vec<usize>, LaunchError> {
+        let mut required = 0_u32;
+        // SAFETY: documented sizing call with a live token and writable size.
+        let _ = unsafe { GetTokenInformation(token, class, None, 0, &raw mut required) };
+        let required = usize::try_from(required).map_err(|_| LaunchError::SandboxVerification)?;
+        if required == 0 || required > 64 * 1024 {
+            return Err(LaunchError::SandboxVerification);
+        }
+        let words = required
+            .checked_add(size_of::<usize>() - 1)
+            .and_then(|bytes| bytes.checked_div(size_of::<usize>()))
+            .ok_or(LaunchError::SandboxVerification)?;
+        let mut buffer = vec![0_usize; words];
+        let mut returned = 0_u32;
+        // SAFETY: aligned storage has at least `required` writable bytes.
+        unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                Some(buffer.as_mut_ptr().cast::<core::ffi::c_void>()),
+                u32::try_from(required).map_err(|_| LaunchError::SandboxVerification)?,
+                &raw mut returned,
+            )
+        }
+        .map_err(|_| LaunchError::SandboxVerification)?;
+        let returned = usize::try_from(returned).map_err(|_| LaunchError::SandboxVerification)?;
+        if returned == 0 || returned > required {
+            return Err(LaunchError::SandboxVerification);
+        }
+        Ok(buffer)
+    }
+
+    fn require_token_right_denied(
+        process: HANDLE,
+        access: TOKEN_ACCESS_MASK,
+    ) -> Result<(), LaunchError> {
+        let mut token = HANDLE::default();
+        // SAFETY: the retained logical-parent process handle remains live. The
+        // output receives ownership only on success.
+        let result = unsafe { OpenProcessToken(process, access, &raw mut token) };
+        match result {
+            Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+            Err(_) => Err(LaunchError::SandboxVerification),
+            Ok(()) => {
+                if !token.is_invalid() {
+                    // SAFETY: unexpected success returned one fresh owned handle.
+                    unsafe {
+                        let _ = CloseHandle(token);
+                    }
+                }
+                Err(LaunchError::SandboxVerification)
+            }
+        }
+    }
+
+    fn require_process_right_denied(
+        process_id: u32,
+        access: PROCESS_ACCESS_RIGHTS,
+    ) -> Result<(), LaunchError> {
+        // SAFETY: this only requests one explicit right against the observed
+        // live PID and adopts a handle only on unexpected success.
+        match unsafe { OpenProcess(access, false, process_id) } {
+            Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+            Err(_) => Err(LaunchError::SandboxVerification),
+            Ok(handle) => {
+                if !handle.is_invalid() {
+                    // SAFETY: unexpected success returned one fresh owned handle.
+                    unsafe {
+                        let _ = CloseHandle(handle);
+                    }
+                }
+                Err(LaunchError::SandboxVerification)
+            }
+        }
+    }
+
+    fn require_local_duplicate_right_denied(
+        process: HANDLE,
+        access: u32,
+    ) -> Result<(), LaunchError> {
+        let mut amplified = HANDLE::default();
+        // SAFETY: this attempts to derive a stronger local handle from the exact
+        // injected source. Success would violate the least-authority contract;
+        // an unexpected owned result is closed below.
+        let result = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                process,
+                GetCurrentProcess(),
+                &raw mut amplified,
+                access,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        };
+        match result {
+            Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+            Err(_) => Err(LaunchError::SandboxVerification),
+            Ok(()) => {
+                if !amplified.is_invalid() {
+                    // SAFETY: unexpected success returned one fresh owned handle.
+                    unsafe {
+                        let _ = CloseHandle(amplified);
+                    }
+                }
+                Err(LaunchError::SandboxVerification)
+            }
+        }
+    }
+
+    fn require_debug_privilege_absent(debug_luid: LUID) -> Result<(), LaunchError> {
+        let mut raw_token = HANDLE::default();
+        // SAFETY: the current Approval LPAC pseudo handle is valid and output
+        // receives one fresh query-only token handle.
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if raw_token.is_invalid() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: the successful API call transferred unique ownership.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token.0) };
+        let privileges = probe_token_information(HANDLE(token.as_raw_handle()), TokenPrivileges)?;
+        let returned_bytes = privileges.len().saturating_mul(size_of::<usize>());
+        let entries_offset = offset_of!(TOKEN_PRIVILEGES, Privileges);
+        if returned_bytes < entries_offset {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: the returned aligned storage contains the leading count.
+        let count = unsafe { ptr::read_unaligned(privileges.as_ptr().cast::<u32>()) };
+        let count = usize::try_from(count).map_err(|_| LaunchError::SandboxVerification)?;
+        let required = count
+            .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+            .and_then(|bytes| entries_offset.checked_add(bytes))
+            .ok_or(LaunchError::SandboxVerification)?;
+        if required > returned_bytes {
+            return Err(LaunchError::SandboxVerification);
+        }
+
+        let entries = privileges.as_ptr().cast::<u8>();
+        for index in 0..count {
+            let offset = index
+                .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+                .and_then(|bytes| entries_offset.checked_add(bytes))
+                .ok_or(LaunchError::SandboxVerification)?;
+            // SAFETY: the complete entry range was bounds-checked above.
+            let entry =
+                unsafe { ptr::read_unaligned(entries.add(offset).cast::<LUID_AND_ATTRIBUTES>()) };
+            if entry.Luid == debug_luid {
+                return Err(LaunchError::SandboxVerification);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_logical_parent_observation(
+        process: HANDLE,
+        expected_process_id: u32,
+    ) -> Result<(), LaunchError> {
+        let mut flags = u32::MAX;
+        // SAFETY: the child owns the injected process handle for this query.
+        unsafe { GetHandleInformation(process, &raw mut flags) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        // SAFETY: the child owns and retains the injected process handle.
+        let process_id = unsafe { GetProcessId(process) };
+        // SAFETY: the child still owns that handle; a zero-time wait only
+        // observes liveness of the exact process object.
+        let wait = unsafe { WaitForSingleObject(process, 0) };
+        if flags != 0
+            || process_id == 0
+            || process_id != expected_process_id
+            || wait != WAIT_TIMEOUT
+        {
+            return Err(LaunchError::SandboxVerification);
+        }
+
+        let mut path = vec![0_u16; 32_768];
+        let mut path_units =
+            u32::try_from(path.len()).map_err(|_| LaunchError::SandboxVerification)?;
+        // SAFETY: the retained handle has QUERY_LIMITED_INFORMATION and the
+        // mutable output buffer is valid for its declared capacity.
+        unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(path.as_mut_ptr()),
+                &raw mut path_units,
+            )
+        }
+        .map_err(|_| LaunchError::SandboxVerification)?;
+        let path_units =
+            usize::try_from(path_units).map_err(|_| LaunchError::SandboxVerification)?;
+        if path_units == 0 || path_units >= path.len() {
+            return Err(LaunchError::SandboxVerification);
+        }
+
+        let mut raw_token = HANDLE::default();
+        // SAFETY: QUERY_LIMITED_INFORMATION is sufficient to request the token;
+        // TOKEN_QUERY is independently checked against the token-object DACL.
+        unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut raw_token) }
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if raw_token.is_invalid() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: successful OpenProcessToken returned one fresh owned handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token.0) };
+        let session = probe_token_information(HANDLE(token.as_raw_handle()), TokenSessionId)?;
+        if session.len().saturating_mul(size_of::<usize>()) < size_of::<u32>() {
+            return Err(LaunchError::SandboxVerification);
+        }
+        // SAFETY: the exact DWORD token information was bounds-checked above.
+        let session_id = unsafe { ptr::read_unaligned(session.as_ptr().cast::<u32>()) };
+        if session_id == u32::MAX {
+            return Err(LaunchError::SandboxVerification);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "launched only by the integrated Approval LPAC logical-parent kernel probe"]
+    fn approval_lpac_parent_probe_child_fixture() -> Result<(), LaunchError> {
+        let mut frame = Vec::new();
+        std::io::stdin()
+            .take(
+                u64::try_from(APPROVAL_PARENT_PROBE_FRAME_BYTES)
+                    .map_err(|_| LaunchError::SandboxVerification)?
+                    + 1,
+            )
+            .read_to_end(&mut frame)
+            .map_err(|_| LaunchError::SandboxVerification)?;
+        if frame.len() != APPROVAL_PARENT_PROBE_FRAME_BYTES
+            || frame[..8] != APPROVAL_PARENT_PROBE_MAGIC
+        {
+            return Err(LaunchError::SandboxVerification);
+        }
+        let process_value = u64::from_be_bytes(
+            frame[8..16]
+                .try_into()
+                .map_err(|_| LaunchError::SandboxVerification)?,
+        );
+        let process_id = u32::from_be_bytes(
+            frame[16..20]
+                .try_into()
+                .map_err(|_| LaunchError::SandboxVerification)?,
+        );
+        let debug_luid = LUID {
+            LowPart: u32::from_be_bytes(
+                frame[20..24]
+                    .try_into()
+                    .map_err(|_| LaunchError::SandboxVerification)?,
+            ),
+            HighPart: i32::from_be_bytes(
+                frame[24..28]
+                    .try_into()
+                    .map_err(|_| LaunchError::SandboxVerification)?,
+            ),
+        };
+        let process_value =
+            usize::try_from(process_value).map_err(|_| LaunchError::SandboxVerification)?;
+        let process = HANDLE(process_value as RawHandle);
+        if process.is_invalid() || process_id == 0 {
+            return Err(LaunchError::SandboxVerification);
+        }
+
+        validate_logical_parent_observation(process, process_id)?;
+        for access in [
+            TOKEN_DUPLICATE,
+            TOKEN_ASSIGN_PRIMARY,
+            TOKEN_IMPERSONATE,
+            TOKEN_ADJUST_PRIVILEGES,
+            TOKEN_ADJUST_GROUPS,
+            TOKEN_ADJUST_DEFAULT,
+            TOKEN_ADJUST_SESSIONID,
+            TOKEN_QUERY_SOURCE,
+            TOKEN_ACCESS_MASK(WRITE_DAC.0),
+            TOKEN_ACCESS_MASK(WRITE_OWNER.0),
+            TOKEN_ACCESS_MASK(READ_CONTROL.0),
+            TOKEN_ACCESS_MASK(DELETE.0),
+        ] {
+            require_token_right_denied(process, access)?;
+        }
+
+        for access in [
+            PROCESS_DUP_HANDLE.0,
+            PROCESS_TERMINATE.0,
+            PROCESS_CREATE_THREAD.0,
+            PROCESS_VM_OPERATION.0,
+            PROCESS_VM_READ.0,
+            PROCESS_VM_WRITE.0,
+            PROCESS_CREATE_PROCESS.0,
+            PROCESS_QUERY_INFORMATION.0,
+            PROCESS_SET_QUOTA.0,
+            PROCESS_SET_INFORMATION.0,
+            PROCESS_ACCESS_RIGHTS(0x0000_2000).0,
+            PROCESS_SUSPEND_RESUME.0,
+            WRITE_DAC.0,
+            WRITE_OWNER.0,
+            READ_CONTROL.0,
+            DELETE.0,
+        ] {
+            require_local_duplicate_right_denied(process, access)?;
+        }
+
+        require_process_right_denied(process_id, PROCESS_DUP_HANDLE)?;
+        require_process_right_denied(process_id, PROCESS_QUERY_INFORMATION)?;
+        require_process_right_denied(process_id, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        require_process_right_denied(process_id, PROCESS_ACCESS_RIGHTS(0x0000_2000))?;
+        require_process_right_denied(process_id, PROCESS_ACCESS_RIGHTS(0x0010_0000))?;
+        require_process_right_denied(
+            process_id,
+            PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | 0x0010_0000),
+        )?;
+        require_process_right_denied(process_id, PROCESS_ACCESS_RIGHTS(WRITE_DAC.0))?;
+        require_debug_privilege_absent(debug_luid)?;
+        validate_logical_parent_observation(process, process_id)?;
+        std::process::exit(
+            i32::try_from(APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE)
+                .map_err(|_| LaunchError::SandboxVerification)?,
+        )
     }
 
     #[test]
@@ -1903,10 +3061,13 @@ mod tests {
     #[test]
     fn mitigation_job_and_lpac_contract_is_fail_closed() {
         let mitigation = sys::mitigation_policy_for_test();
+        let kernel_fixture_mitigation = sys::approval_kernel_fixture_mitigation_policy_for_test();
         assert_ne!(mitigation & (1 << 24), 0, "strict handle checks");
         assert_ne!(mitigation & (1 << 36), 0, "dynamic code prohibited");
         assert_ne!(mitigation & (1 << 52), 0, "remote images prohibited");
         assert_ne!(mitigation & (1 << 56), 0, "low-label images prohibited");
+        assert_eq!(kernel_fixture_mitigation & (1 << 56), 0);
+        assert_eq!(mitigation ^ kernel_fixture_mitigation, 1 << 56);
         let job_flags = sys::job_flags_for_test();
         assert_ne!(job_flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0, 0);
         assert_ne!(job_flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0, 0);
@@ -1927,6 +3088,27 @@ mod tests {
     fn parent_process_proof_is_a_real_non_inheritable_exact_current_object()
     -> Result<(), Box<dyn std::error::Error>> {
         sys::verify_current_parent_proof_for_test()?;
+        Ok(())
+    }
+
+    #[test]
+    fn approval_lpac_kernel_fixture_is_profile_scoped_and_exactly_cleaned()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = super::ApprovalLpacKernelTestFixture::create()?;
+        let executable = fixture.path().to_path_buf();
+        let directory = executable
+            .parent()
+            .ok_or_else(|| std::io::Error::other("fixture executable has no parent"))?
+            .to_path_buf();
+        assert!(executable.is_file());
+        assert!(directory.is_dir());
+        assert_eq!(
+            format!("{fixture:?}"),
+            "ApprovalLpacKernelTestFixture([REDACTED PATH])"
+        );
+        fixture.cleanup()?;
+        assert!(!executable.exists());
+        assert!(!directory.exists());
         Ok(())
     }
 
@@ -1989,6 +3171,38 @@ mod tests {
             "PASSWORD",
             "SECRET",
             "TOKEN",
+        ] {
+            assert!(!decoded.contains(ambient_name));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn approval_launch_environment_adds_only_os_derived_local_app_data()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let block = sys::approval_environment_for_test(Path::new(r"C:\Windows"))?;
+        assert!(block.ends_with(&[0, 0]));
+        let entries = parse_environment(&block)?;
+        assert_eq!(entries.len(), 3);
+        let local_app_data = entries[0]
+            .strip_prefix("LOCALAPPDATA=")
+            .ok_or_else(|| std::io::Error::other("LOCALAPPDATA entry is absent"))?;
+        assert!(Path::new(local_app_data).is_absolute());
+        assert_eq!(entries[1], r"SystemRoot=C:\Windows");
+        assert_eq!(entries[2], r"WINDIR=C:\Windows");
+
+        let decoded = String::from_utf16(&block)?;
+        for ambient_name in [
+            "PATH=",
+            "TEMP=",
+            "TMP=",
+            "USERPROFILE=",
+            "HTTP_PROXY=",
+            "HTTPS_PROXY=",
+            "AUTHORIZATION=",
+            "PASSWORD=",
+            "SECRET=",
+            "TOKEN=",
         ] {
             assert!(!decoded.contains(ambient_name));
         }

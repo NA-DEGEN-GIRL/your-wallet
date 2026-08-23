@@ -29,26 +29,27 @@ use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
 };
-use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
-#[cfg(test)]
 use windows::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::Isolation::GetAppContainerFolderPath;
 use windows::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
+#[cfg(test)]
+use windows::Win32::Security::SetFileSecurityW;
 use windows::Win32::Security::{
     CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetLengthSid, GetTokenInformation,
-    IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification,
-    TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid,
-    TokenCapabilities, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenUser,
+    IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_ACCESS_MASK,
+    TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
+    TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
+    TokenIsLessPrivilegedAppContainer, TokenUser,
 };
-#[cfg(test)]
 use windows::Win32::Security::{
     DACL_SECURITY_INFORMATION, IsValidSecurityDescriptor, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, SetFileSecurityW,
+    PSECURITY_DESCRIPTOR, SetKernelObjectSecurity,
 };
+use windows::Win32::Storage::FileSystem::WRITE_DAC;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemServices::{CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC};
 #[cfg(test)]
@@ -80,12 +81,16 @@ use crate::key_agent_storage::{
 };
 
 pub(crate) const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
+const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
 const KEY_AGENT_PROFILE_DISPLAY_NAME: &str = "Your Wallet Key Agent";
 const KEY_AGENT_PROFILE_DESCRIPTION: &str =
     "Persistent zero-capability LPAC identity for Your Wallet Key Agent";
 const CAPABILITY_COUNT: u32 = 0;
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
 const MAX_INSTALL_SID_BYTES: usize = 68;
+const SUPERVISOR_TOKEN_ACCESS: u32 = TOKEN_ALL_ACCESS.0;
+const KEY_AGENT_TOKEN_SELF_ACCESS: u32 = TOKEN_QUERY.0 | TOKEN_DUPLICATE.0;
+const APPROVAL_PARENT_TOKEN_ACCESS: u32 = TOKEN_QUERY.0;
 /// Stable, non-diagnostic failures from the private Key Agent LPAC boundary.
 #[derive(Eq, PartialEq)]
 pub(crate) enum KeyAgentLpacError {
@@ -535,12 +540,15 @@ impl PreparedKeyAgentLpac {
         }
     }
 
-    /// Consumes this prepared identity after proving that the exact suspended
-    /// process has the expected zero-capability LPAC token.
-    pub(crate) fn verify_suspended_process(
+    /// Verifies the exact suspended zero-capability LPAC, installs the protected
+    /// three-principal token DACL used by production activation, then verifies
+    /// the same token identity again before returning the hardened proof.
+    pub(crate) fn verify_and_harden_suspended_process(
         self,
         process: BorrowedHandle<'_>,
     ) -> Result<VerifiedKeyAgentLpac, KeyAgentLpacError> {
+        verify_process_token(process, self.profile_sid.as_psid())?;
+        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;
         verify_process_token(process, self.profile_sid.as_psid())?;
         Ok(VerifiedKeyAgentLpac { _private: () })
     }
@@ -552,8 +560,9 @@ impl fmt::Debug for PreparedKeyAgentLpac {
     }
 }
 
-/// Opaque proof that one suspended process passed the exact Key Agent LPAC
-/// token checks. It carries no profile selector, SID, or process handle.
+/// Opaque proof that one suspended process passed the exact Key Agent LPAC token
+/// checks before and after its production token DACL was hardened. It carries no
+/// profile selector, SID, or process handle.
 pub(crate) struct VerifiedKeyAgentLpac {
     _private: (),
 }
@@ -781,7 +790,6 @@ impl OwnedAppContainerSid {
         }
     }
 
-    #[cfg(test)]
     fn derive(name: &[u16]) -> Result<Self, KeyAgentLpacError> {
         let profile_api =
             acquire_appcontainer_profile_api().map_err(|_| KeyAgentLpacError::Profile)?;
@@ -949,6 +957,73 @@ struct TokenPolicyEvidence {
     appcontainer_sid_matches: bool,
     capability_bytes: usize,
     capability_count: u32,
+}
+
+fn install_approval_token_query_dacl(
+    process: BorrowedHandle<'_>,
+    key_agent_sid: PSID,
+) -> Result<(), KeyAgentLpacError> {
+    let mut raw_token = HANDLE::default();
+    let process = HANDLE(process.as_raw_handle());
+    let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0);
+    // SAFETY: the exact suspended process is retained by its activation owner;
+    // output receives one token handle with only query and DACL-write rights.
+    unsafe { OpenProcessToken(process, desired, &raw mut raw_token) }
+        .map_err(|_| KeyAgentLpacError::Token)?;
+    let token = OwnedToken::new(raw_token)?;
+
+    let user_information = token_information(token.0, TokenUser)?;
+    if user_information.returned_bytes < size_of::<TOKEN_USER>() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: aligned storage contains the complete returned TOKEN_USER prefix.
+    let user = unsafe { ptr::read_unaligned(user_information.words.as_ptr().cast::<TOKEN_USER>()) };
+    let approval = OwnedAppContainerSid::derive(&wide_nul_str(APPROVAL_PROFILE_V1_NAME)?)?;
+    // SAFETY: both profile SID owners remain live and valid.
+    if unsafe { EqualSid(key_agent_sid, approval.as_psid()) }.is_ok() {
+        return Err(KeyAgentLpacError::Token);
+    }
+
+    let user_sid = sid_string(user.User.Sid)?;
+    let key_agent_sid = sid_string(key_agent_sid)?;
+    let approval_sid = sid_string(approval.as_psid())?;
+    let sddl = wide_nul_str(&format!(
+        "D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x};;;{user_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",
+    ))?;
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the exact generated SDDL is live and NUL terminated; output
+    // receives one LocalAlloc-owned self-relative descriptor.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            None,
+        )
+    }
+    .map_err(|_| KeyAgentLpacError::Token)?;
+    // SAFETY: the conversion above returned a live descriptor allocation.
+    let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();
+    let applied = if valid {
+        // SAFETY: the owned token and validated descriptor remain live. The
+        // protected DACL is installed while every child thread is debugger-
+        // stopped and the primary thread has an explicit suspend count.
+        unsafe {
+            SetKernelObjectSecurity(
+                token.0,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+        }
+        .map_err(|_| KeyAgentLpacError::Token)
+    } else {
+        Err(KeyAgentLpacError::Token)
+    };
+    // SAFETY: the SDDL conversion allocated this descriptor with LocalAlloc.
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    applied
 }
 
 fn verify_process_token(
@@ -1441,7 +1516,7 @@ mod tests {
         CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
     use windows::Win32::Security::{EqualSid, TOKEN_APPCONTAINER_INFORMATION};
-    use windows::Win32::Security::{TOKEN_DUPLICATE, TOKEN_QUERY};
+    use windows::Win32::Security::{TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         FILE_SHARE_WRITE,
@@ -1457,10 +1532,11 @@ mod tests {
     use windows::core::PCWSTR;
 
     use super::{
-        AppContainerMembershipEvidence, CAPABILITY_COUNT, HeldExistingKeyAgentInstallObjects,
-        KEY_AGENT_PROFILE_V1_NAME, KeyAgentLpacError, KeyAgentLpacKernelTestFixture,
-        KeyAgentStorageError, OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning,
-        PreparedKeyAgentLpac, PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword,
+        APPROVAL_PARENT_TOKEN_ACCESS, AppContainerMembershipEvidence, CAPABILITY_COUNT,
+        HeldExistingKeyAgentInstallObjects, KEY_AGENT_PROFILE_V1_NAME, KEY_AGENT_TOKEN_SELF_ACCESS,
+        KeyAgentLpacError, KeyAgentLpacKernelTestFixture, KeyAgentStorageError,
+        OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning, PreparedKeyAgentLpac,
+        PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS, TokenDword,
         TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
         appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
         open_existing_key_agent_storage_root_for_test, require_created_sid_matches_derived,
@@ -1910,6 +1986,17 @@ mod tests {
             Err(KeyAgentLpacError::Profile)
         );
         Ok(())
+    }
+
+    #[test]
+    fn key_agent_token_dacl_masks_are_exact_and_role_separated() {
+        assert_eq!(SUPERVISOR_TOKEN_ACCESS, TOKEN_ALL_ACCESS.0);
+        assert_eq!(
+            KEY_AGENT_TOKEN_SELF_ACCESS,
+            TOKEN_QUERY.0 | TOKEN_DUPLICATE.0
+        );
+        assert_eq!(APPROVAL_PARENT_TOKEN_ACCESS, TOKEN_QUERY.0);
+        assert_ne!(KEY_AGENT_TOKEN_SELF_ACCESS, APPROVAL_PARENT_TOKEN_ACCESS);
     }
 
     #[test]

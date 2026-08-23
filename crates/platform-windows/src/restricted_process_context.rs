@@ -56,6 +56,7 @@ struct SystemProcessPaths {
 }
 
 impl RestrictedProcessContext {
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn prepare() -> Result<Self, RestrictedProcessContextError> {
         let paths = prepare_system_process_paths()?;
         reject_replaceable_ancestors(&paths.windows_root)?;

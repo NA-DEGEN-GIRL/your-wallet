@@ -361,9 +361,56 @@ impl PreparedApprovalParentProcess {
         self.0.revalidate()
     }
 
+    /// Test-only sealed operation that copies this exact least-authority
+    /// process handle into one still-suspended Approval LPAC. The returned
+    /// scalar is meaningful only in that child process and exposes no source
+    /// handle to the caller.
+    #[cfg(test)]
+    pub(crate) fn inject_into_approval_lpac_for_kernel_test(
+        &self,
+        suspended_child: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> Result<InjectedApprovalParentProbe, KeyAgentActivationError> {
+        self.0.duplicate_into_suspended_child(suspended_child).map(
+            |(process_handle, process_id)| InjectedApprovalParentProbe {
+                process_handle,
+                process_id,
+            },
+        )
+    }
+
     #[cfg(test)]
     pub(crate) const fn access_mask_for_test() -> u32 {
         sys::approval_parent_process_access_for_test()
+    }
+}
+
+/// Child-local coordinates for the test-only Approval LPAC kernel probe.
+///
+/// The values are never formatted and do not grant the parent test process a
+/// raw-handle accessor. Production builds contain neither this carrier nor the
+/// injection operation that mints it.
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct InjectedApprovalParentProbe {
+    process_handle: u64,
+    process_id: u32,
+}
+
+#[cfg(test)]
+impl InjectedApprovalParentProbe {
+    pub(crate) const fn process_handle(self) -> u64 {
+        self.process_handle
+    }
+
+    pub(crate) const fn process_id(self) -> u32 {
+        self.process_id
+    }
+}
+
+#[cfg(test)]
+impl fmt::Debug for InjectedApprovalParentProbe {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InjectedApprovalParentProbe([CHILD-LOCAL HANDLE AND REDACTED PID])")
     }
 }
 
@@ -1322,7 +1369,7 @@ mod sys {
                 .take()
                 .ok_or(KeyAgentActivationError::LpacPolicy)?;
             let verified_lpac = prepared_lpac
-                .verify_suspended_process(self.process_handle())
+                .verify_and_harden_suspended_process(self.process_handle())
                 .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
             self.lpac = Some(verified_lpac);
 
@@ -1878,6 +1925,43 @@ mod sys {
                 return Err(KeyAgentActivationError::ApprovalParentCapability);
             }
             Ok(())
+        }
+
+        #[cfg(test)]
+        pub(super) fn duplicate_into_suspended_child(
+            &self,
+            suspended_child: BorrowedHandle<'_>,
+        ) -> Result<(u64, u32), KeyAgentActivationError> {
+            self.revalidate()?;
+            let target_process = windows_handle(suspended_child);
+            if invalid(target_process) {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+
+            let mut child_local_process = HANDLE::default();
+            // SAFETY: this capability retains the exact live Key Agent process
+            // handle. `suspended_child` is owned by the launch guard and has
+            // PROCESS_DUP_HANDLE from CreateProcessW. Windows writes one value
+            // valid only in that child, explicitly marked non-inheritable.
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    windows_handle(self.process.as_handle()),
+                    target_process,
+                    &raw mut child_local_process,
+                    0,
+                    false,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            if invalid(child_local_process) {
+                return Err(KeyAgentActivationError::ApprovalParentCapability);
+            }
+            self.revalidate()?;
+            let child_local_process = u64::try_from(child_local_process.0 as usize)
+                .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;
+            Ok((child_local_process, self.process_id))
         }
     }
 

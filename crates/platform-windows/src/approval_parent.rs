@@ -4,11 +4,12 @@
 //! This module allocates only one narrow process-handle duplicate inside the
 //! Key Agent supervisor transition. It creates no process, thread, Job, pipe,
 //! channel, token object, attribute list, or launch state, retains no token
-//! handle, and exposes no activation operation. The resulting private typestate
-//! is not runtime-ready: Approval LPAC usability, mapped-image provenance,
-//! separate supervisor principal,
-//! process/thread DACLs, endpoint topology, cleanup, and orchestration remain
-//! unproved.
+//! handle, and exposes no production activation operation. A `cfg(test)`-only
+//! transition now proves narrow logical-parent handle/token usability in an
+//! actual Approval LPAC. The resulting private typestate remains non-runtime-
+//! ready: mapped-image provenance, a separate supervisor principal,
+//! process/thread creation-time DACLs, endpoint topology, production cleanup,
+//! and orchestration remain unproved.
 
 use core::fmt;
 
@@ -21,6 +22,8 @@ use crate::key_agent_supervisor::{
     ApprovalParentSourcePreparedKeyAgent, BoundStorageProvenKeyAgent, KeyAgentSupervisorError,
     prepare_approval_parent_source,
 };
+#[cfg(test)]
+use crate::launch::prove_approval_parent_in_lpac_for_kernel_test;
 
 /// Stable failure at the dormant Approval/Key Agent parent-binding boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -44,7 +47,8 @@ impl From<KeyAgentSupervisorError> for ApprovalParentBindingError {
 /// PID, path, launch, or resource accessor. Field order is security-significant:
 /// drop and unwind terminate the Key Agent process tree before releasing the
 /// held Approval file. This ownership binding alone does not prove that an
-/// Approval process exists or can use the retained least-authority handle.
+/// production Approval process exists or can use the retained least-authority
+/// handle; that narrower fact is covered only by a repo-local kernel test.
 #[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"]
 pub(crate) struct ParentBoundReleaseApprovalSupervisor {
     parent_source: ApprovalParentSourcePreparedKeyAgent,
@@ -89,6 +93,27 @@ pub(crate) fn bind_release_approval_parent_for_kernel_test(
         parent_source,
         approval,
     })
+}
+
+/// Executes the test-only real Approval LPAC proof without exposing either
+/// aggregate constituent or enabling a production launch path.
+#[cfg(test)]
+pub(crate) fn verify_parent_bound_approval_lpac_for_kernel_test(
+    bound: &ParentBoundReleaseApprovalSupervisor,
+) -> Result<(), crate::launch::ApprovalParentProbeError> {
+    bound
+        .parent_source
+        .revalidate_for_lpac_probe()
+        .map_err(|_| crate::launch::ApprovalParentProbeError::ParentState)?;
+    prove_approval_parent_in_lpac_for_kernel_test(
+        bound.approval.artifact_for_parent_probe(),
+        bound.parent_source.parent_process_for_lpac_probe(),
+    )?;
+    bound
+        .parent_source
+        .revalidate_for_lpac_probe()
+        .map_err(|_| crate::launch::ApprovalParentProbeError::ParentState)?;
+    Ok(())
 }
 
 #[cfg(test)]

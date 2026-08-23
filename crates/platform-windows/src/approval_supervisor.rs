@@ -87,6 +87,16 @@ impl fmt::Debug for PreparedReleaseApprovalSupervisor {
     }
 }
 
+#[cfg(test)]
+#[cfg(windows)]
+impl PreparedReleaseApprovalSupervisor {
+    /// Borrows the already pinned Approval artifact only for the integrated
+    /// LPAC kernel probe. Production builds expose no constituent accessor.
+    pub(crate) const fn artifact_for_parent_probe(&self) -> &VerifiedHelper {
+        &self.artifact
+    }
+}
+
 #[cfg(windows)]
 impl Drop for PreparedReleaseApprovalSupervisor {
     fn drop(&mut self) {

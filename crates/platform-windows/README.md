@@ -169,10 +169,11 @@ Implemented:
   `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
   `DeleteAppContainerProfile` call, profile-registration authority, or new
   production reachability. `COMPILED_PARENT_POLICY` remains `None`. The Key
-  Agent's explicit three-name
-  Unicode environment sets `LOCALAPPDATA` directly to the exact profile `AC`
-  path returned by `GetAppContainerFolderPath`, alongside OS-derived
-  `SystemRoot` and `WINDIR`. The Restricted helpers prepare this context before
+  Agent's and restricted frontends' supplied three-name Unicode environments
+  validate the exact profile `AC` layout returned by
+  `GetAppContainerFolderPath`, derive its containing user-local-data base, and
+  pass that as `LOCALAPPDATA` for Windows to rebase inside the AppContainer,
+  alongside OS-derived `SystemRoot` and `WINDIR`. The Restricted helpers prepare this context before
   parent-proof, persistent profile, or Job work; the Key Agent prepares it
   before acquiring the inheritable-handle flight. Both recheck that the creator
   thread is not impersonating immediately before `CreateProcessW`. This context
@@ -279,13 +280,33 @@ Implemented:
 
   This is an ownership-bound logical parent proof source, not a Windows parent
   selection or an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
-  It is not a runtime-ready security boundary. Release evidence must still show
-  that the actual zero-capability Approval LPAC can use the exact handle and
-  query the parent token, while stronger token-DACL rights and
-  `PROCESS_DUP_HANDLE` fail and `SeDebugPrivilege` is absent. Mapped-image
-  provenance, a distinct supervisor principal, protected process and thread
-  DACLs supplied at creation, endpoint topology/exclusivity, complete cleanup,
-  production orchestration, signing, and release activation remain blockers;
+  A repo-local `cfg(test)` integration now copies the exact non-inheritable
+  handle into an actual zero-capability Approval LPAC. It proves `TOKEN_QUERY`,
+  session/image/PID/liveness/zero flags, twelve stronger or standard token-right
+  denials, and `SeDebugPrivilege` absence. Its local `DuplicateHandle` denial
+  matrix requests `PROCESS_DUP_HANDLE`, `PROCESS_TERMINATE`,
+  `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`,
+  `PROCESS_VM_WRITE`, `PROCESS_CREATE_PROCESS`, `PROCESS_QUERY_INFORMATION`,
+  `PROCESS_SET_QUOTA`,
+  `PROCESS_SET_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION` (`0x2000`),
+  `PROCESS_SUSPEND_RESUME`, `WRITE_DAC`,
+  `WRITE_OWNER`, `READ_CONTROL`, and `DELETE`. Its PID-reopen denial matrix
+  requests `PROCESS_DUP_HANDLE`, `PROCESS_QUERY_INFORMATION`,
+  `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION`
+  (`0x2000`), `SYNCHRONIZE`, the exact query-limited/synchronize combined mask,
+  and `WRITE_DAC`. Before resume, production Key Agent activation successfully
+  installs a protected three-ACE token DACL for stable user all, Key Agent
+  query+duplicate, and Approval query-only. The `cfg(test)` integration executes
+  that production-compiled hardening and proves the Approval query-only outcome.
+  Ordinary LPAC/token attributes are verified before and after installation;
+  this slice does not read back the token security descriptor. The fixture does not
+  directly read back the copied image's mandatory-label state either. Its
+  test-only mitigation removes only `NO_LOW_LABEL` to permit the profile-scoped
+  copy; production mitigation is unchanged. This is not
+  a runtime-ready security boundary or release proof. Mapped-image provenance,
+  same-user owner separation, a distinct supervisor principal, process/thread
+  creation-time DACLs, endpoint topology and production cleanup/orchestration,
+  signing, and release activation remain blockers;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three
@@ -319,10 +340,15 @@ Implemented:
   path's `\\key-agent.exe` suffix and version metadata, supplies the held handle
   plus path to Authenticode signer validation, and computes SHA-256 through a
   cloned held handle against the compiled parent policy. It does not prove that the live process was mapped
-  from that exact file object. No positive kernel availability test yet proves
-  that the zero-capability Approval LPAC can complete
-  `OpenProcessToken(parent)`; with the compiled policies still `None`, this
-  handle-first success path remains release-unproven. Parent-auth order is a fixed 62-byte
+  from that exact file object. A separate repo-local `cfg(test)` probe proves
+  that a real zero-capability Approval LPAC can complete
+  `OpenProcessToken(parent, TOKEN_QUERY)` for its exact injected logical handle
+  and denies the exact local `DuplicateHandle` and PID-reopen requests
+  enumerated above. The copied image's mandatory-label state is not directly
+  read back, and the test-only `NO_LOW_LABEL` removal only permits that
+  profile-scoped copy; production mitigation remains unchanged. This is not
+  mapped release evidence; compiled policies
+  remain `None`. Parent-auth order is a fixed 62-byte
   parent hello, fixed 106-byte child hello, a 110-byte parent-finish header plus
   exact request and request EOF, then a fixed 75-byte response and response EOF.
   After response-plus-EOF the parent locally hashes held child PID/file
@@ -485,10 +511,12 @@ Implemented:
   PID-reuse substitution while the handle is live and corroborates the pipe
   observations against the exact process object. It does not prove exclusive
   endpoint ownership, topology/exclusivity, or per-write attribution because
-  pipe handles remain transferable and duplicable. No positive kernel
-  availability test yet proves that the zero-capability Approval LPAC can
-  complete `OpenProcessToken(parent)`, so with the policies still `None` this
-  success path remains release-unproven. The image policy separately requires case-preserving exact
+  pipe handles remain transferable and duplicable. A separate repo-local
+  `cfg(test)` logical-parent probe proves exact `TOKEN_QUERY` availability and
+  denial of the exact local `DuplicateHandle` and PID-reopen request matrices
+  enumerated above in a real zero-capability Approval LPAC, but
+  it does not prove this channel binding or a mapped release image and leaves
+  both policies `None`. The image policy separately requires case-preserving exact
   normalized path-string equality between live and held-file paths, checks the
   held path's suffix/version metadata, uses held handle plus path for
   Authenticode validation, and hashes a cloned held handle for SHA-256. It does
@@ -706,13 +734,22 @@ Stop-ship before any signing-capable release:
    handles still leave exclusive endpoint ownership, topology/exclusivity, and
    per-write attribution unproven. The dormant logical-parent binder now owns a
    fresh non-inheritable exact Key Agent process duplicate with only
-   `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`, but it neither sets
-   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` nor launches Approval. No positive
-   kernel availability test shows that the actual zero-capability Approval LPAC
-   can use that handle and complete `OpenProcessToken(parent)`; token-DACL
-   stronger-right and `PROCESS_DUP_HANDLE` denial plus `SeDebugPrivilege`
-   absence are also unproved. The handle-first path therefore remains
-   release-unproven. Current held-file policy checks likewise do not provide the
+   `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it never reopens by PID,
+   exposes no raw handle, and does not set `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`
+   or change Windows process parentage. A repo-local `cfg(test)` integration now
+   launches an actual zero-capability Approval LPAC and proves exact handle/token
+   usability, twelve token-right denials, denial of the exact per-right local
+   `DuplicateHandle` and PID-reopen matrices enumerated above, and
+   `SeDebugPrivilege` absence. Before resume, production Key Agent activation
+   successfully installs the protected three-ACE token DACL (stable-user all /
+   Key Agent query+duplicate / Approval query-only); the integration executes
+   that production-compiled hardening and proves the query-only result. Ordinary
+   LPAC/token attributes are verified before and after, but this slice has no
+   token-descriptor readback. The copied image's
+   mandatory-label state is likewise not directly read back; the test-only
+   `NO_LOW_LABEL` removal permits the profile-scoped copy and leaves production
+   mitigation unchanged. This feasibility proof is not release activation.
+   Current held-file policy checks likewise do not provide the
    mapped-image, immutable-install, DLL-graph, distinct-supervisor-principal, or
    process-and-thread creation-time DACL proofs.
    Kernel-level pipe tests cover the framing and cancellation primitives, and

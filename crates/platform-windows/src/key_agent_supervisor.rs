@@ -383,6 +383,26 @@ impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent {
     }
 }
 
+#[cfg(test)]
+impl ApprovalParentSourcePreparedKeyAgent {
+    /// Borrows only the sealed least-authority process capability for the
+    /// integrated Approval LPAC kernel probe. Production has no accessor.
+    pub(crate) const fn parent_process_for_lpac_probe(&self) -> &PreparedApprovalParentProcess {
+        &self.parent_process
+    }
+
+    pub(crate) fn revalidate_for_lpac_probe(&self) -> Result<(), KeyAgentSupervisorError> {
+        revalidate_post_startup_state(
+            &self.storage_proven.provisioning,
+            &self.storage_proven.root_job,
+            &self.storage_proven.activation,
+            StartupResponseTransport::PinnedLibtestTerse,
+        )?;
+        self.parent_process.revalidate()?;
+        Ok(())
+    }
+}
+
 /// Consumes the complete storage-proven aggregate and mints one exact,
 /// non-inheritable `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` duplicate.
 ///
@@ -813,7 +833,10 @@ mod tests {
         bind_dormant_key_agent_for_kernel_test, bind_key_agent_storage_startup_for_kernel_test,
         prepare_approval_parent_source_for_kernel_test, startup_transcript_commitment,
     };
-    use crate::approval_parent::bind_release_approval_parent_for_kernel_test;
+    use crate::approval_parent::{
+        bind_release_approval_parent_for_kernel_test,
+        verify_parent_bound_approval_lpac_for_kernel_test,
+    };
     use crate::approval_supervisor::{
         preflight_approval_artifact, prepare_release_approval_supervisor,
     };
@@ -825,6 +848,7 @@ mod tests {
     use crate::key_agent_startup::{
         KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES,
     };
+    use crate::launch::ApprovalLpacKernelTestFixture;
     use crate::pipe::{PipeError, key_agent_startup_parent_endpoints_are_noninheritable_for_test};
     use std::time::{Duration, Instant};
 
@@ -1248,6 +1272,57 @@ mod tests {
             observation.rejected_exit_code()?,
             REJECTED_PROCESS_EXIT_CODE
         );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_approval_lpac_can_query_exact_key_agent_parent_without_amplification()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let key_agent_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let key_agent_attestation = attestation_for(&key_agent_artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(
+            key_agent_attestation,
+            key_agent_artifact,
+            provisioning,
+        )?;
+        let storage_proven = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let observation = storage_proven.activation.duplicate_process_observation()?;
+
+        let approval_fixture = ApprovalLpacKernelTestFixture::create()?;
+        let approval_executable = approval_fixture.path().to_path_buf();
+        let approval_directory = approval_executable
+            .parent()
+            .ok_or_else(|| std::io::Error::other("fixture executable has no parent"))?
+            .to_path_buf();
+        let approval_artifact = VerifiedHelper::for_approval_artifact_test(
+            approval_executable.clone(),
+            APPROVAL_MANIFEST,
+            true,
+        )?;
+        let approval_attestation = ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([0x70; 32]),
+            [APPROVAL_MANIFEST, [0x72; 32], [0x73; 32]],
+        );
+        let approval = prepare_release_approval_supervisor(preflight_approval_artifact(
+            approval_attestation,
+            approval_artifact,
+        )?)?;
+        let bound = bind_release_approval_parent_for_kernel_test(approval, storage_proven)?;
+
+        verify_parent_bound_approval_lpac_for_kernel_test(&bound)?;
+        assert!(storage_root.is_dir());
+
+        drop(bound);
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        approval_fixture.cleanup()?;
+        assert!(!approval_executable.exists());
+        assert!(!approval_directory.exists());
         Ok(())
     }
 
