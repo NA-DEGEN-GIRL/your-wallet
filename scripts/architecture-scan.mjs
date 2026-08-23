@@ -4919,7 +4919,13 @@ const approvalBootstrapWireContract = (source) => {
     compactRust(decodeParentFinish).includes(
       "if!cursor.is_empty()||encoded_parent_nonce!=parent.parent_nonce||encoded_child_nonce!=child.child_nonce{",
     ) &&
+    JSON.stringify(
+      rustCallSites(childTranscript, "encode_parent_hello").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["parent"]]) &&
     orderedCompactMarkers(childTranscript, [
+      "letparent_bytes=encode_parent_hello(parent)",
       "transcript.update(CHILD_HELLO_TRANSCRIPT_DOMAIN)",
       "transcript.update(parent_bytes)",
       "transcript.update(child_nonce)",
@@ -5000,6 +5006,10 @@ const approvalBootstrapWireMutationProbes = [
   approvalWire.replace(
     "transcript.update(CHILD_HELLO_TRANSCRIPT_DOMAIN);",
     'transcript.update(b"unbound");',
+  ),
+  approvalWire.replace(
+    "    let parent_bytes = encode_parent_hello(parent);",
+    "    let parent_bytes = [0_u8; PARENT_HELLO_BYTES];",
   ),
   approvalWire.replace(
     "        || echoed_parent_nonce != parent.parent_nonce\n",
@@ -23896,6 +23906,14 @@ const approvalStdioDocumentationContract = (source) => {
   const explicitlyDeniesPositiveSignedHandshakeE2e =
     /no\s+positive\s+signed[ -]handshake\s+E2E/iu.test(source) ||
     /positive\s+signed[ -]handshake\s+E2E[^.\r\n]{0,30}없/iu.test(source);
+  const positivelyClaimsMappedFileObjectProof =
+    /\b(?:The\s+)?current\s+(?:image\s+check|implementation|channel)\s+(?:now\s+)?(?:proves?|establishes?|authenticates?|binds?)[^.\r\n]{0,160}(?:live\s+)?mapped\s+exact\s+file\s+object/iu.test(
+      source,
+    );
+  const positivelyClaimsEndpointObjectCapability =
+    /\bPID\/session\s+correlation\s+(?:now\s+)?(?:is|provides|creates|establishes)[^.\r\n]{0,80}exact(?:\s+pipe)?\s+endpoint\/process-object\s+capability/iu.test(
+      source,
+    );
   return (
     /runtime-enabled\s+Approval/iu.test(source) &&
     /Windows\/CRT\s+application/iu.test(source) &&
@@ -23971,7 +23989,9 @@ const approvalStdioDocumentationContract = (source) => {
       source,
     ) &&
     explicitlyPinsZeroProductionOrchestration &&
-    explicitlyDeniesPositiveSignedHandshakeE2e
+    explicitlyDeniesPositiveSignedHandshakeE2e &&
+    !positivelyClaimsMappedFileObjectProof &&
+    !positivelyClaimsEndpointObjectCapability
   );
 };
 const approvalBoundedDocumentationSection = (
@@ -24055,6 +24075,28 @@ const approvalStdioDocumentationMutationProbes =
       probe: source.replace(pattern, "REMOVED_APPROVAL_CONTRACT_MARKER"),
     })),
   );
+const approvalStdioDocumentationContradictionProbes =
+  approvalStdioDocumentationSections.flatMap((source) => [
+    {
+      original: source,
+      probe: `${source}\nThe current image check proves the live mapped exact file object.`,
+    },
+    {
+      original: source,
+      probe: `${source}\nPID/session correlation is an exact endpoint/process-object capability.`,
+    },
+  ]);
+const approvalKoreanContinuationIndentationContract = (source) =>
+  source.includes(
+    "\n  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
+  ) &&
+  !source.includes(
+    "\nrequest digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
+  );
+const approvalKoreanContinuationIndentationMutation = activationReadme.replace(
+  "\n  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
+  "\nrequest digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
+);
 const approvalArchitectureOverviewRow =
   /^\| Approval helper \|(?<row>[^\r\n]*)\|$/mu.exec(activationArchitecture)
     ?.groups?.row ?? "";
@@ -24065,6 +24107,15 @@ requireInvariant(
     approvalStdioDocumentationMutationProbes.every(
       ({ original, probe }) =>
         probe !== original && !approvalStdioDocumentationContract(probe),
+    ) &&
+    approvalStdioDocumentationContradictionProbes.every(
+      ({ original, probe }) =>
+        probe !== original && !approvalStdioDocumentationContract(probe),
+    ) &&
+    approvalKoreanContinuationIndentationContract(activationReadme) &&
+    approvalKoreanContinuationIndentationMutation !== activationReadme &&
+    !approvalKoreanContinuationIndentationContract(
+      approvalKoreanContinuationIndentationMutation,
     ) &&
     [
       "exactly two inherited stdio `PIPE` objects",
@@ -25385,6 +25436,8 @@ const approvalParentChannelContract = (source) => {
   let platformReaderImpl;
   let platformReadOnce;
   let transcriptIdentityDefinition;
+  let transcriptIdentityImpl;
+  let transcriptIdentityFromHeld;
   let transcriptHash;
   let cleanupDeadline;
   try {
@@ -25444,6 +25497,16 @@ const approvalParentChannelContract = (source) => {
       source,
       /struct\s+TranscriptIdentity\s*\{/u,
     );
+    transcriptIdentityImpl = rustImplItemAtDepth(
+      source,
+      "impl TranscriptIdentity",
+      0,
+    );
+    transcriptIdentityFromHeld = rustFunctionBlockAtDepth(
+      transcriptIdentityImpl,
+      "from_held",
+      1,
+    );
     transcriptHash = rustTopLevelFunctionBlock(source, "transcript_hash");
     cleanupDeadline = rustTopLevelFunctionBlock(source, "cleanup_deadline");
   } catch {
@@ -25484,6 +25547,8 @@ const approvalParentChannelContract = (source) => {
       "struct BootstrapNonces { parent: [u8; CHANNEL_CHALLENGE_BYTES], child: [u8; CHANNEL_CHALLENGE_BYTES], }" &&
     normalizeRustFragment(rustLexicalCode(transcriptIdentityDefinition)) ===
       "struct TranscriptIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
+    compactRust(transcriptIdentityFromHeld) ===
+      "constfnfrom_held(identity:HeldProcessIdentity)->Self{Self{process_id:identity.process_id(),helper_file:identity.helper_file(),helper_manifest_digest:identity.helper_manifest_digest(),profile_revision:identity.profile_revision(),}}" &&
     !/\bjob\b/iu.test(
       rustLexicalCode(`${transcriptIdentityDefinition}\n${transcriptHash}`),
     ) &&
@@ -25727,6 +25792,22 @@ const approvalParentChannelMutationProbes = [
     "    transcript.update(bootstrap_nonces.child);\n",
     "",
   ),
+  approvalChannelProduction.replace(
+    "            process_id: identity.process_id(),",
+    "            process_id: 1,",
+  ),
+  approvalChannelProduction.replace(
+    "            helper_file: identity.helper_file(),",
+    "            helper_file: identity.unbound_helper_file(),",
+  ),
+  approvalChannelProduction.replace(
+    "            helper_manifest_digest: identity.helper_manifest_digest(),",
+    "            helper_manifest_digest: [0; 32],",
+  ),
+  approvalChannelProduction.replace(
+    "            profile_revision: identity.profile_revision(),",
+    "            profile_revision: 0,",
+  ),
 ];
 requireInvariant(
   approvalParentChannelContract(approvalChannelProduction) &&
@@ -25744,6 +25825,11 @@ const approvalHeldProcessRevalidationContract = (source) => {
   let isHeldInJob;
   let revalidateMethod;
   let heldIdentityDefinition;
+  let heldIdentityImpl;
+  let heldProcessIdAccessor;
+  let heldHelperFileAccessor;
+  let heldManifestDigestAccessor;
+  let heldProfileRevisionAccessor;
   let sysModule;
   let sysRevalidate;
   let launchRestrictedChild;
@@ -25766,6 +25852,31 @@ const approvalHeldProcessRevalidationContract = (source) => {
     heldIdentityDefinition = rustTopLevelLexicalItemBlock(
       source,
       /pub\s+struct\s+HeldProcessIdentity\s*\{/u,
+    );
+    heldIdentityImpl = rustImplItemAtDepth(
+      source,
+      "impl HeldProcessIdentity",
+      0,
+    );
+    heldProcessIdAccessor = rustFunctionBlockAtDepth(
+      heldIdentityImpl,
+      "process_id",
+      1,
+    );
+    heldHelperFileAccessor = rustFunctionBlockAtDepth(
+      heldIdentityImpl,
+      "helper_file",
+      1,
+    );
+    heldManifestDigestAccessor = rustFunctionBlockAtDepth(
+      heldIdentityImpl,
+      "helper_manifest_digest",
+      1,
+    );
+    heldProfileRevisionAccessor = rustFunctionBlockAtDepth(
+      heldIdentityImpl,
+      "profile_revision",
+      1,
     );
     sysModule = rustLexicalItemBlockAtDepth(
       source,
@@ -25798,6 +25909,14 @@ const approvalHeldProcessRevalidationContract = (source) => {
       "pub struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, }" &&
     normalizeRustFragment(rustLexicalCode(heldIdentityDefinition)) ===
       "pub struct HeldProcessIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
+    compactRust(heldProcessIdAccessor) ===
+      "pubconstfnprocess_id(self)->u32{self.process_id}" &&
+    compactRust(heldHelperFileAccessor) ===
+      "pubconstfnhelper_file(self)->FileIdentity{self.helper_file}" &&
+    compactRust(heldManifestDigestAccessor) ===
+      "pubconstfnhelper_manifest_digest(self)->[u8;32]{self.helper_manifest_digest}" &&
+    compactRust(heldProfileRevisionAccessor) ===
+      "pubconstfnprofile_revision(self)->u32{self.profile_revision}" &&
     compactRust(isHeldInJob) ===
       "pubfnis_held_in_job(&self)->bool{self.revalidate_held_process().is_ok()}" &&
     JSON.stringify(
@@ -25886,6 +26005,22 @@ const approvalHeldProcessRevalidationMutationProbes = [
   restrictedLauncherProduction.replace(
     "                helper_manifest_digest,",
     "                helper_manifest_digest: [0; 32],",
+  ),
+  restrictedLauncherProduction.replace(
+    "        self.process_id\n",
+    "        1\n",
+  ),
+  restrictedLauncherProduction.replace(
+    "        self.helper_file\n",
+    "        self.helper_file_for_unbound_test()\n",
+  ),
+  restrictedLauncherProduction.replace(
+    "        self.helper_manifest_digest\n",
+    "        [0; 32]\n",
+  ),
+  restrictedLauncherProduction.replace(
+    "    pub const fn profile_revision(self) -> u32 {\n        self.profile_revision\n    }",
+    "    pub const fn profile_revision(self) -> u32 {\n        0\n    }",
   ),
 ];
 requireInvariant(

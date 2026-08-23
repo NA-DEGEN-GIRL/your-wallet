@@ -487,12 +487,12 @@ Implemented:
   62-byte parent hello, 고정 106-byte child hello, 110-byte finish header와 exact request
   및 request EOF, 고정 75-byte response와 response EOF입니다. 부모가 response 뒤
   로컬에서 계산하는 transcript는 held child PID/file identity, manifest/profile,
-request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap
-nonce를 해시합니다. Job은 live gate이지 hashed identity가 아닙니다. 고정 75-byte
-response는 magic, version, decision, request digest, one-shot Approval request nonce
-순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
-않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
-의존합니다. raw/legacy direct launch는 진단 없이
+  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap
+  nonce를 해시합니다. Job은 live gate이지 hashed identity가 아닙니다. 고정 75-byte
+  response는 magic, version, decision, request digest, one-shot Approval request nonce
+  순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
+  않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
+  의존합니다. raw/legacy direct launch는 진단 없이
   실패합니다.
   별도 inheritable positive sentinel grandchild 테스트는 sentinel이 전파되는 동안
   원래 stdio 두 객체만 전파되지 않음을 `CompareObjectHandles`로 확인하며 four-object
