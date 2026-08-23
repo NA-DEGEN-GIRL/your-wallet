@@ -1,10 +1,11 @@
 //! Supervisor-side provisioning of the fixed Key Agent storage root.
 //!
 //! Production callers can create exactly one fixed leaf beneath the already
-//! validated fixed-profile `AppContainer` folder. Existing roots are never
-//! adopted or repaired. The returned capability keeps a no-delete-share
-//! directory handle open and retains the exact NTFS file identity and security
-//! principals used for handle-based revalidation.
+//! validated fixed-profile `AppContainer` folder. A dormant, zero-caller seam
+//! can instead open that exact existing leaf without creating, repairing, or
+//! adopting it. The returned capability keeps a no-delete-share directory
+//! handle open and privately retains its canonical path, exact NTFS file
+//! identity, and security principals for handle-and-path revalidation.
 
 #![allow(unsafe_code)]
 
@@ -134,7 +135,7 @@ pub(crate) enum KeyAgentStorageError {
     Identity,
 }
 
-/// Opaque held proof of one freshly created fixed Key Agent storage root.
+/// Opaque held proof of one exactly verified fixed Key Agent storage root.
 ///
 /// The value is deliberately non-cloneable. It exposes neither its path nor
 /// either SID and keeps the exact directory object open without delete sharing.
@@ -144,7 +145,6 @@ pub(crate) struct HeldKeyAgentStorageRoot {
     identity: KeyAgentStorageRootIdentity,
     stable_user_sid: OwnedSid,
     profile_sid: OwnedSid,
-    #[cfg(test)]
     path: PathBuf,
     #[cfg(test)]
     cleanup_on_drop: bool,
@@ -175,16 +175,36 @@ impl HeldKeyAgentStorageRoot {
         })
     }
 
-    /// Revalidates the held object's exact identity, volume, and security policy.
+    /// Revalidates the held object and its canonical path binding.
     pub(crate) fn revalidate(&self) -> Result<(), KeyAgentStorageError> {
+        reject_thread_impersonation()?;
         let handle = self.handle.as_ref().ok_or(KeyAgentStorageError::Identity)?;
-        verify_directory_object(handle)?;
-        verify_supported_local_ntfs(handle)?;
-        let identity = exact_file_identity(handle)?;
-        if identity != self.identity {
+        let held_identity =
+            verify_open_storage_root(handle, &self.stable_user_sid, &self.profile_sid)?;
+        if held_identity != self.identity {
             return Err(KeyAgentStorageError::Identity);
         }
-        verify_handle_security(handle, &self.stable_user_sid, &self.profile_sid)
+        validate_held_storage_root_path(&self.path)?;
+
+        // Keep the impersonation check adjacent to the path open whose access
+        // check must use the same stable process identity retained above.
+        reject_thread_impersonation()?;
+        let reopened_result = open_storage_root_handle(&self.path);
+        reject_thread_impersonation()?;
+        let reopened = reopened_result?;
+        let reopened_identity =
+            verify_open_storage_root(&reopened, &self.stable_user_sid, &self.profile_sid)?;
+        if reopened_identity != self.identity {
+            return Err(KeyAgentStorageError::Identity);
+        }
+
+        // Bookend the path operation with the retained handle and thread state.
+        let final_held_identity =
+            verify_open_storage_root(handle, &self.stable_user_sid, &self.profile_sid)?;
+        if final_held_identity != self.identity {
+            return Err(KeyAgentStorageError::Identity);
+        }
+        reject_thread_impersonation()
     }
 
     #[cfg(test)]
@@ -618,6 +638,46 @@ pub(crate) unsafe fn create_fixed_key_agent_storage_root(
     }
 }
 
+/// Opens and holds the one fixed existing Key Agent storage leaf.
+///
+/// This dormant seam has no production caller. It never creates, repairs,
+/// deletes, or adopts the root and cannot construct a prepared or verified
+/// installation. The fixed leaf is compiled into this module and is not
+/// caller-selectable.
+///
+/// # Safety
+///
+/// The caller contract requires `validated_ac_folder` and the SID to identify
+/// the registered fixed `YourWallet.KeyAgent.LPAC.v1` profile; this storage-only
+/// seam does not establish profile registration.
+///
+/// `fixed_profile_sid` must point to one live, valid SID allocation for the
+/// complete call. This function copies it immediately and never retains the raw
+/// pointer. Folder shape, ancestry, and the copied SID are validated at runtime.
+#[allow(
+    dead_code,
+    reason = "dormant until an authoritative profile observer and installer lease exist"
+)]
+pub(crate) unsafe fn open_existing_fixed_key_agent_storage_root(
+    validated_ac_folder: &Path,
+    fixed_profile_sid: PSID,
+) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    // SAFETY: the caller contract guarantees a readable live fixed-profile SID;
+    // copy_from validates it and retains no borrowed pointer.
+    let profile_sid = unsafe { OwnedSid::copy_from(fixed_profile_sid) }?;
+    validate_profile_folder(validated_ac_folder)?;
+    let stable_user_sid = current_stable_user_sid()?;
+    let path = validated_ac_folder.join(KEY_AGENT_STORAGE_ROOT_LEAF);
+
+    // Keep the check adjacent to the first OPEN_EXISTING access check.
+    reject_thread_impersonation()?;
+    let held = open_and_verify_storage_root(&path, stable_user_sid, profile_sid)?;
+    held.revalidate()?;
+    reject_thread_impersonation()?;
+    Ok(held)
+}
+
 /// Opens the fixed storage root from the child process's exact environment.
 ///
 /// This function accepts no caller-selected path, leaf, token, or SID. It
@@ -688,14 +748,15 @@ unsafe fn create_storage_root(
     leaf: &str,
     #[cfg_attr(not(test), allow(unused_variables))] cleanup_on_drop: bool,
 ) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    // SAFETY: the caller contract guarantees a readable live SID; copy_sid
+    // validates it and retains no borrowed pointer.
+    let profile_sid = unsafe { OwnedSid::copy_from(fixed_profile_sid) }?;
     validate_profile_folder(validated_ac_folder)?;
     if leaf.is_empty() || leaf.encode_utf16().any(|unit| unit == 0) || leaf.contains(['\\', '/']) {
         return Err(KeyAgentStorageError::ProfileBinding);
     }
 
-    // SAFETY: the caller contract guarantees a readable live SID; copy_sid
-    // validates it and retains no borrowed pointer.
-    let profile_sid = unsafe { OwnedSid::copy_from(fixed_profile_sid) }?;
     let stable_user_sid = current_stable_user_sid()?;
     let descriptor = SecurityDescriptor::for_key_agent_root(&stable_user_sid, &profile_sid)?;
     descriptor.inspect_creation(&stable_user_sid, &profile_sid)?;
@@ -703,6 +764,7 @@ unsafe fn create_storage_root(
     let path = validated_ac_folder.join(leaf);
     let wide = wide_path(&path)?;
     let attributes = descriptor.attributes();
+    reject_thread_impersonation()?;
     // SAFETY: the path and security descriptor remain live for the complete
     // call. CreateDirectoryW succeeds only for a newly created directory.
     let created =
@@ -715,7 +777,7 @@ unsafe fn create_storage_root(
         };
     }
 
-    let result = open_and_verify_created_root(&path, stable_user_sid, profile_sid);
+    let result = open_and_verify_storage_root(&path, stable_user_sid, profile_sid);
     match result {
         Ok(held) => {
             #[cfg(test)]
@@ -736,21 +798,51 @@ unsafe fn create_storage_root(
     }
 }
 
-fn open_and_verify_created_root(
+fn open_and_verify_storage_root(
     path: &Path,
     stable_user_sid: OwnedSid,
     profile_sid: OwnedSid,
 ) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
-    let handle = open_storage_root_handle(path)?;
-    let identity = verify_open_storage_root(&handle, &stable_user_sid, &profile_sid)?;
+    reject_thread_impersonation()?;
+    validate_held_storage_root_path(path)?;
+    reject_thread_impersonation()?;
+    let initially_opened_result = open_storage_root_handle(path);
+    reject_thread_impersonation()?;
+    let initially_opened = initially_opened_result?;
+    let identity = verify_open_storage_root(&initially_opened, &stable_user_sid, &profile_sid)?;
+
+    reject_thread_impersonation()?;
+    let canonical_result = fs::canonicalize(path);
+    reject_thread_impersonation()?;
+    let canonical_path = canonical_result.map_err(|_| KeyAgentStorageError::ProfileBinding)?;
+    validate_held_storage_root_path(&canonical_path)?;
+    reject_thread_impersonation()?;
+    let retained_result = open_storage_root_handle(&canonical_path);
+    reject_thread_impersonation()?;
+    let retained = retained_result?;
+    let reopened_identity = verify_open_storage_root(&retained, &stable_user_sid, &profile_sid)?;
+    if reopened_identity != identity {
+        return Err(KeyAgentStorageError::Identity);
+    }
+
+    let final_initial_identity =
+        verify_open_storage_root(&initially_opened, &stable_user_sid, &profile_sid)?;
+    if final_initial_identity != identity {
+        return Err(KeyAgentStorageError::Identity);
+    }
+    let final_retained_identity =
+        verify_open_storage_root(&retained, &stable_user_sid, &profile_sid)?;
+    if final_retained_identity != identity {
+        return Err(KeyAgentStorageError::Identity);
+    }
+    reject_thread_impersonation()?;
 
     Ok(HeldKeyAgentStorageRoot {
-        handle: Some(handle),
+        handle: Some(retained),
         identity,
         stable_user_sid,
         profile_sid,
-        #[cfg(test)]
-        path: path.to_path_buf(),
+        path: canonical_path,
         #[cfg(test)]
         cleanup_on_drop: false,
     })
@@ -1033,6 +1125,22 @@ fn validate_profile_folder(path: &Path) -> Result<(), KeyAgentStorageError> {
     }
     let metadata = fs::symlink_metadata(path).map_err(|_| KeyAgentStorageError::ProfileBinding)?;
     if !metadata.is_dir() {
+        return Err(KeyAgentStorageError::ProfileBinding);
+    }
+    Ok(())
+}
+
+fn validate_held_storage_root_path(path: &Path) -> Result<(), KeyAgentStorageError> {
+    let profile_folder = path.parent().ok_or(KeyAgentStorageError::ProfileBinding)?;
+    validate_profile_folder(profile_folder)?;
+    let leaf = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(KeyAgentStorageError::ProfileBinding)?;
+    let fixed_leaf = leaf == KEY_AGENT_STORAGE_ROOT_LEAF;
+    #[cfg(test)]
+    let fixed_leaf = fixed_leaf || is_exact_test_storage_root_leaf(leaf);
+    if !fixed_leaf {
         return Err(KeyAgentStorageError::ProfileBinding);
     }
     Ok(())
@@ -1931,19 +2039,56 @@ fn wide_nul(value: &str) -> Result<Vec<u16>, KeyAgentStorageError> {
 }
 
 #[cfg(test)]
+/// Opens one exact CSPRNG-named test root through the production verification path.
+///
+/// # Safety
+///
+/// `fixed_profile_sid` must remain a live valid SID for the complete call. The
+/// folder and exact test-leaf grammar are validated at runtime.
+pub(crate) unsafe fn open_existing_key_agent_storage_root_for_test(
+    validated_ac_folder: &Path,
+    fixed_profile_sid: PSID,
+    leaf: &str,
+) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
+    reject_thread_impersonation()?;
+    // SAFETY: the caller retains the exact live test-profile SID while it is
+    // validated and copied; no borrowed pointer escapes.
+    let profile_sid = unsafe { OwnedSid::copy_from(fixed_profile_sid) }?;
+    if !is_exact_test_storage_root_leaf(leaf) {
+        return Err(KeyAgentStorageError::ProfileBinding);
+    }
+    validate_profile_folder(validated_ac_folder)?;
+
+    let stable_user_sid = current_stable_user_sid()?;
+    let path = validated_ac_folder.join(leaf);
+
+    reject_thread_impersonation()?;
+    let held = open_and_verify_storage_root(&path, stable_user_sid, profile_sid)?;
+    held.revalidate()?;
+    reject_thread_impersonation()?;
+    Ok(held)
+}
+
+#[cfg(test)]
 pub(crate) unsafe fn create_unique_key_agent_storage_root_for_test(
     validated_ac_folder: &Path,
     fixed_profile_sid: PSID,
 ) -> Result<HeldKeyAgentStorageRoot, KeyAgentStorageError> {
+    let leaf = unique_key_agent_storage_test_leaf()?;
+    // SAFETY: identical to the public(crate) test seam contract; the generated
+    // CSPRNG leaf is not caller selectable and uses the production constructor.
+    unsafe { create_storage_root(validated_ac_folder, fixed_profile_sid, &leaf, true) }
+}
+
+#[cfg(test)]
+fn unique_key_agent_storage_test_leaf() -> Result<String, KeyAgentStorageError> {
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(|_| KeyAgentStorageError::Creation)?;
     let mut leaf = String::from("YourWallet.KeyAgent.Storage.Test.");
     for byte in random {
         write!(&mut leaf, "{byte:02x}").map_err(|_| KeyAgentStorageError::Creation)?;
     }
-    // SAFETY: identical to the public(crate) test seam contract; the generated
-    // CSPRNG leaf is not caller selectable and uses the production constructor.
-    unsafe { create_storage_root(validated_ac_folder, fixed_profile_sid, &leaf, true) }
+    Ok(leaf)
 }
 
 #[cfg(test)]
@@ -2154,6 +2299,54 @@ mod tests {
             );
         }
         assert_eq!(reject_thread_impersonation(), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn existing_root_opener_rejects_impersonation_before_path_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = StringSid::parse(PROFILE_SID)?;
+        {
+            // SAFETY: the unwind-safe guard below restores the thread token.
+            unsafe { ImpersonateSelf(SecurityImpersonation) }?;
+            let _revert = RevertImpersonation;
+            // SAFETY: profile owns one live valid SID. The intentionally invalid
+            // path proves rejection occurs before any filesystem observation.
+            let opened = unsafe {
+                super::open_existing_fixed_key_agent_storage_root(
+                    Path::new(r"C:\invalid\AC"),
+                    profile.0,
+                )
+            };
+            assert!(matches!(opened, Err(KeyAgentStorageError::Security)));
+        }
+        assert_eq!(reject_thread_impersonation(), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn existing_test_root_opener_rejects_non_csprng_leaf_grammar()
+    -> Result<(), KeyAgentStorageError> {
+        let profile = StringSid::parse(PROFILE_SID)?;
+        for rejected in [
+            "YourWallet.KeyAgent.Storage.v1",
+            "YourWallet.KeyAgent.Storage.Test.",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcde",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef0123456789abcdef0",
+            "YourWallet.KeyAgent.Storage.Test.0123456789ABCDEF0123456789ABCDEF",
+            "YourWallet.KeyAgent.Storage.Test.0123456789abcdef/123456789abcdef",
+        ] {
+            // SAFETY: profile owns one live valid SID. Exact leaf rejection is
+            // intentionally ordered before observation of this sentinel path.
+            let opened = unsafe {
+                super::open_existing_key_agent_storage_root_for_test(
+                    Path::new(r"C:\invalid\AC"),
+                    profile.0,
+                    rejected,
+                )
+            };
+            assert!(matches!(opened, Err(KeyAgentStorageError::ProfileBinding)));
+        }
         Ok(())
     }
 

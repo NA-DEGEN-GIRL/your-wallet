@@ -7765,27 +7765,36 @@ const exactKeyAgentEnvironmentTest = rustFunctionBlock(
   "exact_environment_has_only_three_os_scoped_names",
 );
 const compactRust = (source) => rustLexicalCode(source).replace(/\s+/gu, "");
-const heldKeyAgentStorageRootDefinition = rustLexicalItemBlock(
-  keyAgentStorage,
+const keyAgentStorageImplItems = rustImplItems(keyAgentStorageRelease);
+const keyAgentStorageImplItemsWithTests = rustImplItems(keyAgentStorage);
+const heldKeyAgentStorageRootDefinition = rustTopLevelLexicalItemBlock(
+  keyAgentStorageRelease,
   /pub\(crate\)\s+struct\s+HeldKeyAgentStorageRoot\s*\{/u,
 );
-const heldKeyAgentStorageRootImpl = rustLexicalItemBlock(
-  keyAgentStorage,
-  /impl\s+HeldKeyAgentStorageRoot\s*\{/u,
+const heldKeyAgentStorageRootImpl =
+  keyAgentStorageImplItems.find(
+    (item) => item.header === "impl HeldKeyAgentStorageRoot",
+  )?.source ?? "";
+const heldKeyAgentStorageRootDrop =
+  keyAgentStorageImplItems.find(
+    (item) => item.header === "impl Drop for HeldKeyAgentStorageRoot",
+  )?.source ?? "";
+const heldKeyAgentStorageRootDropWithTests =
+  keyAgentStorageImplItemsWithTests.find(
+    (item) => item.header === "impl Drop for HeldKeyAgentStorageRoot",
+  )?.source ?? "";
+const heldKeyAgentStorageRootDebug =
+  keyAgentStorageImplItems.find(
+    (item) => item.header === "impl fmt::Debug for HeldKeyAgentStorageRoot",
+  )?.source ?? "";
+const heldKeyAgentStorageRootMethodSurface = rustFunctionSignatures(
+  heldKeyAgentStorageRootImpl,
+).map((signature) => rustLexicalCode(signature.source).replace(/\s+/gu, ""));
+const heldKeyAgentStorageRootMethods = heldKeyAgentStorageRootMethodSurface.map(
+  (signature) =>
+    /\bfn(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(signature)?.groups
+      .name ?? "[UNPARSED]",
 );
-const heldKeyAgentStorageRootDrop = rustLexicalItemBlock(
-  keyAgentStorage,
-  /impl\s+Drop\s+for\s+HeldKeyAgentStorageRoot\s*\{/u,
-);
-const heldKeyAgentStorageRootDebug = rustLexicalItemBlock(
-  keyAgentStorage,
-  /impl\s+fmt::Debug\s+for\s+HeldKeyAgentStorageRoot\s*\{/u,
-);
-const heldKeyAgentStorageRootMethods = [
-  ...heldKeyAgentStorageRootImpl.matchAll(
-    /pub\(crate\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_]\w*)/gu,
-  ),
-].map((match) => match.groups.name);
 const heldKeyAgentStorageInstallObservation = rustFunctionBlock(
   heldKeyAgentStorageRootImpl,
   "install_observation",
@@ -7874,85 +7883,135 @@ const fixedKeyAgentGenerationStoreBindingsFromChildRoot = rustFunctionBlock(
   fixedKeyAgentGenerationStoreBindingsImpl,
   "from_child_root",
 );
-const createFixedKeyAgentStorageRoot = rustFunctionBlock(
+const keyAgentStorageRootLeafDefinition = rustTopLevelConstItem(
+  keyAgentStorageRelease,
+  "KEY_AGENT_STORAGE_ROOT_LEAF",
+);
+const keyAgentStorageTestRootLeafPrefixDefinition = rustTopLevelConstItem(
   keyAgentStorage,
+  "KEY_AGENT_STORAGE_TEST_ROOT_LEAF_PREFIX",
+);
+const keyAgentStorageTestRootLeafPrefixIndex = keyAgentStorage.indexOf(
+  keyAgentStorageTestRootLeafPrefixDefinition,
+);
+const keyAgentStorageTestRootLeafPrefixAttributes = rustAttachedOuterAttributes(
+  keyAgentStorage,
+  keyAgentStorageTestRootLeafPrefixIndex,
+).map((attribute) => compactRust(attribute.source));
+const createFixedKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "create_fixed_key_agent_storage_root",
 );
-const createKeyAgentStorageRoot = rustFunctionBlock(
-  keyAgentStorage,
+const openExistingFixedKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "open_existing_fixed_key_agent_storage_root",
+);
+const createKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "create_storage_root",
 );
-const openAndVerifyKeyAgentStorageRoot = rustFunctionBlock(
-  keyAgentStorage,
-  "open_and_verify_created_root",
+const openAndVerifyKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "open_and_verify_storage_root",
 );
-const openFixedKeyAgentStorageRootForChild = rustFunctionBlock(
-  keyAgentStorage,
+const openFixedKeyAgentStorageRootForChild = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "open_fixed_key_agent_storage_root_for_child",
 );
-const openChildKeyAgentStorageRoot = rustFunctionBlock(
-  keyAgentStorage,
+const openChildKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "open_child_storage_root",
 );
-const openKeyAgentStorageRootHandle = rustFunctionBlock(
-  keyAgentStorage,
+const openKeyAgentStorageRootHandle = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "open_storage_root_handle",
 );
-const verifyChildKeyAgentStorageRoot = rustFunctionBlock(
+const verifyOpenKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "verify_open_storage_root",
+);
+const openExistingKeyAgentStorageRootForTest = rustTopLevelFunctionBlock(
   keyAgentStorage,
+  "open_existing_key_agent_storage_root_for_test",
+);
+const exactTestKeyAgentStorageRootLeaf = rustTopLevelFunctionBlock(
+  keyAgentStorage,
+  "is_exact_test_storage_root_leaf",
+);
+const exactTestKeyAgentStorageRootLeafIndex = keyAgentStorage.indexOf(
+  exactTestKeyAgentStorageRootLeaf,
+);
+const exactTestKeyAgentStorageRootLeafAttributes = rustAttachedOuterAttributes(
+  keyAgentStorage,
+  exactTestKeyAgentStorageRootLeafIndex,
+).map((attribute) => compactRust(attribute.source));
+const verifyChildKeyAgentStorageRoot = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "verify_child_open_storage_root",
 );
 const validateChildKeyAgentStorageProfileFolder = rustFunctionBlock(
   keyAgentStorage,
   "validate_child_profile_folder_shape",
 );
-const validateKeyAgentStorageProfileFolder = rustFunctionBlock(
-  keyAgentStorage,
+const validateKeyAgentStorageProfileFolder = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "validate_profile_folder",
 );
-const verifyKeyAgentStorageDirectory = rustFunctionBlock(
-  keyAgentStorage,
+const validateHeldKeyAgentStorageRootPath = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "validate_held_storage_root_path",
+);
+const verifyKeyAgentStorageDirectory = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "verify_directory_object",
 );
-const queryKeyAgentStorageIdentity = rustFunctionBlock(
-  keyAgentStorage,
+const queryKeyAgentStorageIdentity = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "exact_file_identity",
 );
-const verifyKeyAgentStorageVolume = rustFunctionBlock(
-  keyAgentStorage,
+const verifyKeyAgentStorageVolume = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "verify_supported_local_ntfs",
 );
 const keyAgentStorageRootDescriptor = rustFunctionBlock(
   keyAgentStorage,
   "for_key_agent_root",
 );
-const verifyKeyAgentStorageHandleSecurity = rustFunctionBlock(
-  keyAgentStorage,
+const verifyKeyAgentStorageHandleSecurity = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "verify_handle_security",
 );
 const inspectKeyAgentStorageCreationDescriptor = rustFunctionBlock(
   keyAgentStorage,
   "inspect_creation_security_descriptor",
 );
-const inspectKeyAgentStorageHandleDescriptor = rustFunctionBlock(
-  keyAgentStorage,
+const inspectKeyAgentStorageHandleDescriptor = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "inspect_handle_security_descriptor",
 );
-const inspectExactKeyAgentStorageDacl = rustFunctionBlock(
-  keyAgentStorage,
+const inspectExactKeyAgentStorageDacl = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "inspect_exact_dacl",
 );
-const inspectExactKeyAgentStorageLowLabel = rustFunctionBlock(
-  keyAgentStorage,
+const inspectExactKeyAgentStorageLowLabel = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "inspect_exact_low_label",
 );
-const currentStableKeyAgentStorageUserSid = rustFunctionBlock(
-  keyAgentStorage,
+const currentStableKeyAgentStorageUserSid = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "current_stable_user_sid",
 );
-const currentKeyAgentStorageProcessToken = rustFunctionBlock(
-  keyAgentStorage,
+const currentKeyAgentStorageProcessToken = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
   "current_process_token",
+);
+const keyAgentStorageTokenUserSid = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "token_user_sid",
+);
+const rejectKeyAgentStorageThreadImpersonation = rustTopLevelFunctionBlock(
+  keyAgentStorageRelease,
+  "reject_thread_impersonation",
 );
 const revalidateHeldKeyAgentStorageRoot = rustFunctionBlock(
   heldKeyAgentStorageRootImpl,
@@ -8056,7 +8115,7 @@ const integratedKeyAgentGenerationStoreTest = rustFunctionBlock(
   "integrated_storage_startup_binds_child_process_and_full_root_identity",
 );
 const keyAgentStorageCreateDirectoryCalls = rustCallSites(
-  keyAgentStorage,
+  keyAgentStorageRelease,
   "CreateDirectoryW",
 );
 const keyAgentStorageFactoryCalls = rustCallSites(
@@ -8068,6 +8127,10 @@ const keyAgentStorageOpenCalls = rustCallSites(
   "CreateFileW",
 );
 const keyAgentStorageAllOpenCalls = rustCallSites(
+  keyAgentStorageRelease,
+  "CreateFileW",
+);
+const keyAgentStorageAllOpenCallsWithTests = rustCallSites(
   keyAgentStorage,
   "CreateFileW",
 );
@@ -8083,6 +8146,59 @@ const integratedKeyAgentStorageBindingTest = rustFunctionBlock(
   keyAgentSupervisorSource,
   "integrated_kernel_binding_owns_one_member_and_no_inheritable_parent_handles",
 );
+const keyAgentLpacTestsModuleIndex = rustLexicalCode(keyAgentLpacSource).search(
+  /(?<![\p{XID_Continue}_#])mod\s+tests\s*\{/u,
+);
+const keyAgentLpacTestsModuleAttributes = rustAttachedOuterAttributes(
+  keyAgentLpacSource,
+  keyAgentLpacTestsModuleIndex,
+).map((attribute) => compactRust(attribute.source));
+const keyAgentLpacTestsModule = rustTopLevelLexicalItemBlock(
+  keyAgentLpacSource,
+  /(?<![\p{XID_Continue}_#])mod\s+tests\s*\{/u,
+);
+const keyAgentLpacTestsModuleCode = rustLexicalCode(keyAgentLpacTestsModule);
+const keyAgentLpacTestsModuleOpening = keyAgentLpacTestsModuleCode.indexOf("{");
+const keyAgentLpacTestsModuleClosing = matchingRustDelimiter(
+  keyAgentLpacTestsModuleCode,
+  keyAgentLpacTestsModuleOpening,
+  "{",
+  "}",
+);
+const keyAgentLpacTestsModuleBody = keyAgentLpacTestsModule.slice(
+  keyAgentLpacTestsModuleOpening + 1,
+  keyAgentLpacTestsModuleClosing,
+);
+const existingKeyAgentStorageRootReopenKernelTest = rustTopLevelFunctionBlock(
+  keyAgentLpacTestsModuleBody,
+  "existing_storage_root_reopen_retains_identity_path_and_delete_pin",
+);
+const requireKeyAgentStorageDeleteSharingViolation = rustTopLevelFunctionBlock(
+  keyAgentLpacTestsModuleBody,
+  "require_delete_sharing_violation",
+);
+const missingExistingKeyAgentStorageRootKernelTest = rustTopLevelFunctionBlock(
+  keyAgentLpacTestsModuleBody,
+  "existing_storage_root_opener_does_not_recreate_cleaned_root",
+);
+const existingKeyAgentStorageRootReopenKernelTestIndex =
+  keyAgentLpacTestsModuleBody.indexOf(
+    existingKeyAgentStorageRootReopenKernelTest,
+  );
+const existingKeyAgentStorageRootReopenKernelTestAttributes =
+  rustAttachedOuterAttributes(
+    keyAgentLpacTestsModuleBody,
+    existingKeyAgentStorageRootReopenKernelTestIndex,
+  ).map((attribute) => compactRust(attribute.source));
+const missingExistingKeyAgentStorageRootKernelTestIndex =
+  keyAgentLpacTestsModuleBody.indexOf(
+    missingExistingKeyAgentStorageRootKernelTest,
+  );
+const missingExistingKeyAgentStorageRootKernelTestAttributes =
+  rustAttachedOuterAttributes(
+    keyAgentLpacTestsModuleBody,
+    missingExistingKeyAgentStorageRootKernelTestIndex,
+  ).map((attribute) => compactRust(attribute.source));
 const restrictedProcessContextDefinition = rustLexicalItemBlock(
   restrictedProcessContextProduction,
   /(?:^|\n)\s*pub\(crate\)\s+struct\s+RestrictedProcessContext\s*\{/u,
@@ -11087,10 +11203,207 @@ const keyAgentChildStorageOpenerConsumers = platformWindowsProductionFiles
         .length > 0,
   )
   .map((file) => file.path);
+const keyAgentStorageReleaseCode = rustLexicalCode(keyAgentStorageRelease);
+const heldKeyAgentStorageRootItemIndex = keyAgentStorageReleaseCode.search(
+  /(?<![\p{XID_Continue}_#])pub\(crate\)\s+struct\s+HeldKeyAgentStorageRoot\b/u,
+);
+const heldKeyAgentStorageRootAttributes = rustAttachedOuterAttributes(
+  keyAgentStorageRelease,
+  heldKeyAgentStorageRootItemIndex,
+).map((attribute) => compactRust(attribute.source));
+const openExistingFixedKeyAgentStorageRootItemIndex =
+  keyAgentStorageReleaseCode.search(
+    /(?<![\p{XID_Continue}_#])pub\(crate\)\s+unsafe\s+fn\s+open_existing_fixed_key_agent_storage_root\b/u,
+  );
+const openExistingFixedKeyAgentStorageRootAttributes =
+  rustAttachedOuterAttributes(
+    keyAgentStorageRelease,
+    openExistingFixedKeyAgentStorageRootItemIndex,
+  ).map((attribute) => compactRust(attribute.source));
+const keyAgentStorageCode = rustLexicalCode(keyAgentStorage);
+const openExistingKeyAgentStorageRootForTestItemIndex = keyAgentStorageCode.search(
+  /(?<![\p{XID_Continue}_#])pub\(crate\)\s+unsafe\s+fn\s+open_existing_key_agent_storage_root_for_test\b/u,
+);
+const openExistingKeyAgentStorageRootForTestAttributes =
+  rustAttachedOuterAttributes(
+    keyAgentStorage,
+    openExistingKeyAgentStorageRootForTestItemIndex,
+  ).map((attribute) => compactRust(attribute.source));
+const keyAgentStorageExistingOpenerTokenInventory =
+  brokerLexicalTokenInventory(
+    platformWindowsProductionFiles,
+    "open_existing_fixed_key_agent_storage_root",
+  );
+const keyAgentStorageExistingOpenerUseInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustUseItems(file.source)
+      .filter((item) =>
+        /\bopen_existing_fixed_key_agent_storage_root\b/u.test(
+          rustLexicalCode(item.source),
+        ),
+      )
+      .map((item) => ({
+        path: file.path,
+        source: compactRust(item.source),
+      })),
+  );
+const keyAgentStorageTestOpenerProductionTokenInventory =
+  brokerLexicalTokenInventory(
+    platformWindowsProductionFiles,
+    "open_existing_key_agent_storage_root_for_test",
+  );
+const keyAgentStorageCommonOpenerTokenInventory = brokerLexicalTokenInventory(
+  platformWindowsProductionFiles,
+  "open_and_verify_storage_root",
+);
+const heldKeyAgentStorageRootAuthorityInventory =
+  brokerReleaseAuthorityInventory(
+    platformWindowsProductionFiles,
+    /\bHeldKeyAgentStorageRoot\b/u,
+  );
+const heldKeyAgentStorageRootTokenInventory = platformWindowsProductionFiles
+  .map((file) => ({
+    path: file.path,
+    count: [
+      ...rustLexicalCode(file.source).matchAll(
+        /\bHeldKeyAgentStorageRoot\b/gu,
+      ),
+    ].length,
+  }))
+  .filter((entry) => entry.count > 0);
+const heldKeyAgentStorageRootLiteralInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustStructLiteralSites(file.source, "HeldKeyAgentStorageRoot").map(
+      (literal) => ({
+        path: file.path,
+        source: compactRust(literal.source),
+      }),
+      ),
+  );
+const heldKeyAgentStorageRootFunctionSurface =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustFunctionSignatures(file.source)
+      .map((signature) => ({
+        path: file.path,
+        signature: compactRust(signature.source),
+      }))
+      .filter(({ signature }) =>
+        signature.includes("HeldKeyAgentStorageRoot"),
+      ),
+  );
+const heldKeyAgentStorageRootForbiddenAccessors =
+  platformWindowsProductionFiles.flatMap((file) =>
+    rustFunctionSignatures(file.source)
+      .map((signature) => compactRust(signature.source))
+      .filter(
+        (signature) =>
+          signature.includes("HeldKeyAgentStorageRoot") &&
+          /->[^;{]*(?:(?:Path|BorrowedHandle|OwnedHandle)(?:Buf)?|PSID|OwnedSid|RawHandle|HANDLE|std::fs::File|c_void|usize|isize|\*(?:const|mut))\b/u.test(
+            signature,
+          ),
+      )
+      .map((signature) => ({ path: file.path, signature })),
+  );
+const heldKeyAgentStorageRootLinearityBlocks = [
+  heldKeyAgentStorageRootImpl,
+  heldKeyAgentStorageRootDrop,
+  heldKeyAgentStorageRootDebug,
+  createFixedKeyAgentStorageRoot,
+  openExistingFixedKeyAgentStorageRoot,
+  createKeyAgentStorageRoot,
+  openAndVerifyKeyAgentStorageRoot,
+].join("\n");
+const keyAgentExistingStorageReviewedBodySha256 = {
+  common: normalizedSourceSha256(
+    rustLexicalCode(openAndVerifyKeyAgentStorageRoot),
+  ),
+  createFixed: normalizedSourceSha256(
+    rustLexicalCode(createFixedKeyAgentStorageRoot),
+  ),
+  createStorage: normalizedSourceSha256(
+    rustLexicalCode(createKeyAgentStorageRoot),
+  ),
+  currentProcessToken: normalizedSourceSha256(
+    rustLexicalCode(currentKeyAgentStorageProcessToken),
+  ),
+  currentStableUserSid: normalizedSourceSha256(
+    rustLexicalCode(currentStableKeyAgentStorageUserSid),
+  ),
+  debug: normalizedSourceSha256(rustLexicalCode(heldKeyAgentStorageRootDebug)),
+  directory: normalizedSourceSha256(
+    rustLexicalCode(verifyKeyAgentStorageDirectory),
+  ),
+  dacl: normalizedSourceSha256(
+    rustLexicalCode(inspectExactKeyAgentStorageDacl),
+  ),
+  handleDescriptor: normalizedSourceSha256(
+    rustLexicalCode(inspectKeyAgentStorageHandleDescriptor),
+  ),
+  heldImpl: normalizedSourceSha256(
+    rustLexicalCode(heldKeyAgentStorageRootImpl),
+  ),
+  identity: normalizedSourceSha256(
+    rustLexicalCode(queryKeyAgentStorageIdentity),
+  ),
+  label: normalizedSourceSha256(
+    rustLexicalCode(inspectExactKeyAgentStorageLowLabel),
+  ),
+  openHandle: normalizedSourceSha256(
+    rustLexicalCode(openKeyAgentStorageRootHandle),
+  ),
+  rejectImpersonation: normalizedSourceSha256(
+    rustLexicalCode(rejectKeyAgentStorageThreadImpersonation),
+  ),
+  revalidate: normalizedSourceSha256(
+    rustLexicalCode(revalidateHeldKeyAgentStorageRoot),
+  ),
+  validateHeld: normalizedSourceSha256(
+    rustLexicalCode(validateHeldKeyAgentStorageRootPath),
+  ),
+  validateProfile: normalizedSourceSha256(
+    rustLexicalCode(validateKeyAgentStorageProfileFolder),
+  ),
+  security: normalizedSourceSha256(
+    rustLexicalCode(verifyKeyAgentStorageHandleSecurity),
+  ),
+  tokenUserSid: normalizedSourceSha256(
+    rustLexicalCode(keyAgentStorageTokenUserSid),
+  ),
+  volume: normalizedSourceSha256(
+    rustLexicalCode(verifyKeyAgentStorageVolume),
+  ),
+};
+const keyAgentExistingStorageKernelEvidenceSha256 = {
+  deleteHelper: normalizedSourceSha256(
+    rustLexicalCode(requireKeyAgentStorageDeleteSharingViolation),
+  ),
+  leafGrammar: normalizedSourceSha256(exactTestKeyAgentStorageRootLeaf),
+  missingTest: normalizedSourceSha256(
+    rustLexicalCode(missingExistingKeyAgentStorageRootKernelTest),
+  ),
+  reopenTest: normalizedSourceSha256(
+    rustLexicalCode(existingKeyAgentStorageRootReopenKernelTest),
+  ),
+};
 const compactKeyAgentStorage = compactRust(keyAgentStorage);
+const compactKeyAgentStorageRelease = compactRust(keyAgentStorageRelease);
+const normalizedKeyAgentStorageRootLeafDefinition = normalizeRustFragment(
+  keyAgentStorageRootLeafDefinition,
+);
+const normalizedKeyAgentStorageTestRootLeafPrefixDefinition =
+  normalizeRustFragment(keyAgentStorageTestRootLeafPrefixDefinition);
+const compactOpenExistingFixedKeyAgentStorageRoot = compactRust(
+  openExistingFixedKeyAgentStorageRoot,
+);
 const compactCreateKeyAgentStorageRoot = compactRust(createKeyAgentStorageRoot);
+const compactOpenAndVerifyKeyAgentStorageRoot = compactRust(
+  openAndVerifyKeyAgentStorageRoot,
+);
 const compactOpenKeyAgentStorageRootHandle = compactRust(
   openKeyAgentStorageRootHandle,
+);
+const compactVerifyOpenKeyAgentStorageRoot = compactRust(
+  verifyOpenKeyAgentStorageRoot,
 );
 const compactValidateKeyAgentStorageProfileFolder = compactRust(
   validateKeyAgentStorageProfileFolder,
@@ -11119,17 +11432,132 @@ const compactInspectExactKeyAgentStorageLowLabel = compactRust(
 const compactRevalidateHeldKeyAgentStorageRoot = compactRust(
   revalidateHeldKeyAgentStorageRoot,
 );
-const keyAgentStorageRevalidationOrder = [
-  "verify_directory_object(handle)?",
-  "verify_supported_local_ntfs(handle)?",
-  "letidentity=exact_file_identity(handle)?",
-  "ifidentity!=self.identity",
-  "verify_handle_security(handle,&self.stable_user_sid,&self.profile_sid)",
-].map((marker) => compactRevalidateHeldKeyAgentStorageRoot.indexOf(marker));
+const compactOpenExistingKeyAgentStorageRootForTest = compactRust(
+  openExistingKeyAgentStorageRootForTest,
+);
+const compactExactTestKeyAgentStorageRootLeaf = compactRust(
+  exactTestKeyAgentStorageRootLeaf,
+);
+const hasOrderedCompactRustMarkers = (source, markers) => {
+  const code = compactRust(source);
+  let cursor = 0;
+  for (const marker of markers) {
+    const position = code.indexOf(marker, cursor);
+    if (position === -1) {
+      return false;
+    }
+    cursor = position + marker.length;
+  }
+  return true;
+};
+const keyAgentExistingStorageOpenGraph = [
+  openExistingFixedKeyAgentStorageRoot,
+  openAndVerifyKeyAgentStorageRoot,
+  openKeyAgentStorageRootHandle,
+  verifyOpenKeyAgentStorageRoot,
+  verifyKeyAgentStorageDirectory,
+  queryKeyAgentStorageIdentity,
+  verifyKeyAgentStorageVolume,
+  verifyKeyAgentStorageHandleSecurity,
+  inspectKeyAgentStorageHandleDescriptor,
+  inspectExactKeyAgentStorageDacl,
+  inspectExactKeyAgentStorageLowLabel,
+  currentKeyAgentStorageProcessToken,
+  currentStableKeyAgentStorageUserSid,
+  keyAgentStorageTokenUserSid,
+  rejectKeyAgentStorageThreadImpersonation,
+  validateHeldKeyAgentStorageRootPath,
+  validateKeyAgentStorageProfileFolder,
+  revalidateHeldKeyAgentStorageRoot,
+].join("\n");
+const keyAgentExistingStorageForbiddenMutation =
+  /\b(?:CreateDirectoryW|CreateDirectoryExW|RemoveDirectoryW|SetFileSecurityW|SetNamedSecurityInfoW|SetSecurityInfo|SetEntriesInAclW|OPEN_ALWAYS|CREATE_ALWAYS|CREATE_NEW|TRUNCATE_EXISTING|DirBuilder|OpenOptions)\b|\b(?:fs|std::fs)::(?:create_dir(?:_all)?|remove_(?:dir|dir_all|file)|rename|set_permissions)\b|\b(?:File::create|adopt\w*|repair\w*)\s*\(/u;
+const keyAgentStorageDocumentation = [
+  rootReadme,
+  activationArchitecture,
+  activationReadme,
+  securityDecisions,
+  keyAgentProtocolDocumentation,
+];
+const expectedCompactOpenExistingFixedKeyAgentStorageRoot =
+  "pub(crate)unsafefnopen_existing_fixed_key_agent_storage_root(validated_ac_folder:&Path,fixed_profile_sid:PSID,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>{reject_thread_impersonation()?;letprofile_sid=unsafe{OwnedSid::copy_from(fixed_profile_sid)}?;validate_profile_folder(validated_ac_folder)?;letstable_user_sid=current_stable_user_sid()?;letpath=validated_ac_folder.join(KEY_AGENT_STORAGE_ROOT_LEAF);reject_thread_impersonation()?;letheld=open_and_verify_storage_root(&path,stable_user_sid,profile_sid)?;held.revalidate()?;reject_thread_impersonation()?;Ok(held)}";
+const expectedCompactOpenExistingKeyAgentStorageRootForTest =
+  "pub(crate)unsafefnopen_existing_key_agent_storage_root_for_test(validated_ac_folder:&Path,fixed_profile_sid:PSID,leaf:&str,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>{reject_thread_impersonation()?;letprofile_sid=unsafe{OwnedSid::copy_from(fixed_profile_sid)}?;if!is_exact_test_storage_root_leaf(leaf){returnErr(KeyAgentStorageError::ProfileBinding);}validate_profile_folder(validated_ac_folder)?;letstable_user_sid=current_stable_user_sid()?;letpath=validated_ac_folder.join(leaf);reject_thread_impersonation()?;letheld=open_and_verify_storage_root(&path,stable_user_sid,profile_sid)?;held.revalidate()?;reject_thread_impersonation()?;Ok(held)}";
+const expectedCompactVerifyOpenKeyAgentStorageRoot =
+  "fnverify_open_storage_root(handle:&std::fs::File,stable_user_sid:&OwnedSid,profile_sid:&OwnedSid,)->Result<KeyAgentStorageRootIdentity,KeyAgentStorageError>{verify_directory_object(handle)?;verify_supported_local_ntfs(handle)?;verify_handle_security(handle,stable_user_sid,profile_sid)?;exact_file_identity(handle)}";
 requireInvariant(
-  keyAgentStorage.includes(
-    'const KEY_AGENT_STORAGE_ROOT_LEAF: &str = "YourWallet.KeyAgent.Storage.v1";',
-  ) &&
+  normalizedKeyAgentStorageRootLeafDefinition ===
+    'const KEY_AGENT_STORAGE_ROOT_LEAF: &str = "YourWallet.KeyAgent.Storage.v1";' &&
+    JSON.stringify(openExistingFixedKeyAgentStorageRootAttributes) ===
+      JSON.stringify([
+        "#[allow(dead_code,reason=)]",
+      ]) &&
+    JSON.stringify(keyAgentExistingStorageReviewedBodySha256) ===
+      JSON.stringify({
+        common:
+          "343299b31ca7d180599b7c52d69479c7ca1c62cef7ff6c7e64d8f31cf3a7d1a7",
+        createFixed:
+          "6e8b4a54efa2595706aa75066d8a5da41d5bc4b5564524bee3f2d5563be7f53a",
+        createStorage:
+          "c56f0918b1c5fbcb4d126583f7baed179c6d08fb8ba7935d986fb4e894296c23",
+        currentProcessToken:
+          "a94d79bca83186925f1fd0b2691377099720b02dbf049280c528ae30705111e9",
+        currentStableUserSid:
+          "7bd62df75cdc98eaa2ac8eb5b480bdfee6a260e3912ee57305ef6cabac868fb5",
+        debug:
+          "bc794e522902f7487dc9511e1484d685f00559633a62162921019d7b00c48218",
+        directory:
+          "b198b02595e18869b832eec01927d3c29784c774409a0357a894cde580e2e8de",
+        dacl:
+          "dc5f3430c0a87c317101409d7cc040a31aa979a7977fd1fd68e6eca1ce6017e1",
+        handleDescriptor:
+          "e2fd5ca5d944c1eb8ded0f9197d3c314949b1f21e72b964826426765b4ba8df7",
+        heldImpl:
+          "1616afdb943e90720ea728d50b867bce23fd82fa505abd3cf9956bba80adb9c6",
+        identity:
+          "8db4dc5388c40c2a836505fe2500e7e6b840586280aebd4b482bf00f24754c16",
+        label:
+          "e9edf3226da75efcd9a292b2834c54e4329265de9e4a04f98dd506c436f16642",
+        openHandle:
+          "0abc72ad1d07d96744edd08aaaca1f663a5cd1d56a2cea3e67540e8669a70a12",
+        rejectImpersonation:
+          "c984e1562f3a99b566ad34afc04f5bd0a53729d6541d44d20b86d813706cb356",
+        revalidate:
+          "8ce15a09c7146ad359931efe7b8bd753df230b288a72b40b3237a7617b88f022",
+        validateHeld:
+          "9754cad3cbeac7600cb07456662ccdc302d8f98c4c99670a25c7398117b5855c",
+        validateProfile:
+          "eaa8748eb83c7d04c50d5d4714448d081690ba1ad01321fd053b5500b9d9fa22",
+        security:
+          "b527b8e4d0dc665e2cb9ea62691ed781eabf8d475948f55ee7938004d6f7a1ea",
+        tokenUserSid:
+          "cef5623bad9fdad76c1205d19d73683ae8d3c1681e246b6b850907ee91c99dfd",
+        volume:
+          "aaf69ac7b00594087b4b1abcae5fff6a544639ed20df447268c0f51210cbec02",
+      }) &&
+    compactOpenExistingFixedKeyAgentStorageRoot ===
+      expectedCompactOpenExistingFixedKeyAgentStorageRoot &&
+    JSON.stringify(keyAgentStorageExistingOpenerTokenInventory) ===
+      JSON.stringify(["crates/platform-windows/src/key_agent_storage.rs"]) &&
+    keyAgentStorageExistingOpenerUseInventory.length === 0 &&
+    keyAgentStorageTestOpenerProductionTokenInventory.length === 0 &&
+    JSON.stringify(keyAgentStorageCommonOpenerTokenInventory) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_storage.rs",
+        "crates/platform-windows/src/key_agent_storage.rs",
+        "crates/platform-windows/src/key_agent_storage.rs",
+      ]) &&
+    rustCallSites(
+      createKeyAgentStorageRoot,
+      "open_and_verify_storage_root",
+    ).length === 1 &&
+    rustCallSites(
+      openExistingFixedKeyAgentStorageRoot,
+      "open_and_verify_storage_root",
+    ).length === 1 &&
+    !keyAgentExistingStorageForbiddenMutation.test(
+      rustLexicalCode(keyAgentExistingStorageOpenGraph),
+    ) &&
     compactKeyAgentStorage.includes(
       "constKEY_AGENT_STORAGE_ROOT_ACCESS:u32=READ_CONTROL.0|SYNCHRONIZE.0|FILE_LIST_DIRECTORY.0|FILE_ADD_FILE.0|FILE_ADD_SUBDIRECTORY.0|FILE_WRITE_EA.0|FILE_TRAVERSE.0|FILE_READ_ATTRIBUTES.0|FILE_WRITE_ATTRIBUTES.0;",
     ) &&
@@ -11159,7 +11587,8 @@ requireInvariant(
     !keyAgentStorage.includes("remove_dir_all") &&
     !keyAgentStorage.includes("OPEN_ALWAYS") &&
     keyAgentStorageOpenCalls.length === 1 &&
-    keyAgentStorageAllOpenCalls.length === 2 &&
+    keyAgentStorageAllOpenCalls.length === 1 &&
+    keyAgentStorageAllOpenCallsWithTests.length === 2 &&
     keyAgentStorageOpenCalls[0].arguments.length === 7 &&
     compactRust(keyAgentStorageOpenCalls[0].arguments[1]) ===
       "FILE_READ_ATTRIBUTES.0|FILE_LIST_DIRECTORY.0|READ_CONTROL.0|GENERIC_WRITE.0" &&
@@ -11169,9 +11598,56 @@ requireInvariant(
     compactRust(keyAgentStorageOpenCalls[0].arguments[5]) ===
       "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT" &&
     !compactOpenKeyAgentStorageRootHandle.includes("FILE_SHARE_DELETE") &&
-    !/\b(?:OpenFileById|NtOpenFile|ZwOpenFile|CreateFile2|File::open|OpenOptions|canonicalize)\b/u.test(
-      rustLexicalCode(keyAgentStorage),
+    compactVerifyOpenKeyAgentStorageRoot ===
+      expectedCompactVerifyOpenKeyAgentStorageRoot &&
+    rustCallSites(
+      openAndVerifyKeyAgentStorageRoot,
+      "validate_held_storage_root_path",
+    ).length === 2 &&
+    rustCallSites(
+      openAndVerifyKeyAgentStorageRoot,
+      "open_storage_root_handle",
+    ).length === 2 &&
+    rustCallSites(
+      openAndVerifyKeyAgentStorageRoot,
+      "verify_open_storage_root",
+    ).length === 4 &&
+    hasOrderedCompactRustMarkers(openAndVerifyKeyAgentStorageRoot, [
+      "reject_thread_impersonation()?",
+      "validate_held_storage_root_path(path)?",
+      "reject_thread_impersonation()?",
+      "letinitially_opened_result=open_storage_root_handle(path)",
+      "reject_thread_impersonation()?",
+      "letinitially_opened=initially_opened_result?",
+      "letidentity=verify_open_storage_root(&initially_opened,&stable_user_sid,&profile_sid)?",
+      "reject_thread_impersonation()?",
+      "letcanonical_result=fs::canonicalize(path)",
+      "reject_thread_impersonation()?",
+      "letcanonical_path=canonical_result.map_err(|_|KeyAgentStorageError::ProfileBinding)?",
+      "validate_held_storage_root_path(&canonical_path)?",
+      "reject_thread_impersonation()?",
+      "letretained_result=open_storage_root_handle(&canonical_path)",
+      "reject_thread_impersonation()?",
+      "letretained=retained_result?",
+      "letreopened_identity=verify_open_storage_root(&retained,&stable_user_sid,&profile_sid)?",
+      "ifreopened_identity!=identity",
+      "letfinal_initial_identity=verify_open_storage_root(&initially_opened,&stable_user_sid,&profile_sid)?",
+      "iffinal_initial_identity!=identity",
+      "letfinal_retained_identity=verify_open_storage_root(&retained,&stable_user_sid,&profile_sid)?",
+      "iffinal_retained_identity!=identity",
+      "reject_thread_impersonation()?",
+      "Ok(HeldKeyAgentStorageRoot{handle:Some(retained),identity,stable_user_sid,profile_sid,path:canonical_path,#[cfg(test)]cleanup_on_drop:false,})",
+    ]) &&
+    !compactOpenAndVerifyKeyAgentStorageRoot.includes(
+      "drop(initially_opened)",
     ) &&
+    rustAuthorityTypeErasureSites(openAndVerifyKeyAgentStorageRoot).length ===
+      0 &&
+    !/\b(?:OpenFileById|NtOpenFile|ZwOpenFile|CreateFile2|OpenOptions|File::(?:open|options))\b/u.test(
+      keyAgentStorageReleaseCode,
+    ) &&
+    (compactKeyAgentStorageRelease.match(/\bfs::canonicalize\(/gu) ?? [])
+      .length === 1 &&
     compactValidateKeyAgentStorageProfileFolder.includes("!path.is_absolute()") &&
     validateKeyAgentStorageProfileFolder.includes(
       '!name.eq_ignore_ascii_case("AC")',
@@ -11243,11 +11719,12 @@ requireInvariant(
       "LOW_MANDATORY_LABEL_SID",
     ) &&
     JSON.stringify(heldKeyAgentStorageRootMethods) ===
+      JSON.stringify(["identity", "install_observation", "revalidate"]) &&
+    JSON.stringify(heldKeyAgentStorageRootMethodSurface) ===
       JSON.stringify([
-        "identity",
-        "install_observation",
-        "revalidate",
-        "path_for_test",
+        "fnidentity(&self)->KeyAgentStorageRootIdentity",
+        "fninstall_observation(&self,)->Result<KeyAgentHeldRootObservation,KeyAgentStorageError>",
+        "fnrevalidate(&self)->Result<(),KeyAgentStorageError>",
       ]) &&
     normalizeRustFragment(rustLexicalCode(heldKeyAgentRootObservationDefinition)) ===
       "pub(crate) struct KeyAgentHeldRootObservation { root_identity: KeyAgentStorageRootIdentity, stable_user_sid_len: u8, stable_user_sid: [u8; MAX_BINARY_SID_BYTES], profile_sid_len: u8, profile_sid: [u8; MAX_BINARY_SID_BYTES], }" &&
@@ -11266,33 +11743,254 @@ requireInvariant(
     keyAgentStorageSource.includes(
       "KeyAgentHeldRootObservation([REDACTED IDENTITIES])",
     ) &&
-    heldKeyAgentStorageRootImpl.includes(
+    keyAgentStorage.includes(
       "#[cfg(test)]\n    pub(crate) fn path_for_test",
     ) &&
-    heldKeyAgentStorageRootDefinition.includes("handle: Option<std::fs::File>") &&
-    heldKeyAgentStorageRootDefinition.includes(
-      "identity: KeyAgentStorageRootIdentity",
-    ) &&
-    heldKeyAgentStorageRootDefinition.includes("#[cfg(test)]\n    path: PathBuf") &&
-    heldKeyAgentStorageRootDefinition.includes(
-      "#[cfg(test)]\n    cleanup_on_drop: bool",
-    ) &&
-    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+HeldKeyAgentStorageRoot/u.test(
-      keyAgentStorage,
-    ) &&
-    !/impl\s+(?:Clone|Copy|Sync)\s+for\s+HeldKeyAgentStorageRoot\b/u.test(
-      keyAgentStorage,
-    ) &&
+    normalizeRustFragment(rustLexicalCode(heldKeyAgentStorageRootDefinition)) ===
+      "pub(crate) struct HeldKeyAgentStorageRoot { handle: Option<std::fs::File>, identity: KeyAgentStorageRootIdentity, stable_user_sid: OwnedSid, profile_sid: OwnedSid, path: PathBuf, #[cfg(test)] cleanup_on_drop: bool, }" &&
+    JSON.stringify(heldKeyAgentStorageRootAttributes) ===
+      JSON.stringify(["#[must_use=]"]) &&
+    heldKeyAgentStorageRootAuthorityInventory.typeAliases.length === 0 &&
+    heldKeyAgentStorageRootAuthorityInventory.useAliases.length === 0 &&
+    heldKeyAgentStorageRootAuthorityInventory.reexports.length === 0 &&
+    heldKeyAgentStorageRootAuthorityInventory.conversions.length === 0 &&
+    JSON.stringify(heldKeyAgentStorageRootTokenInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          count: 4,
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          count: 9,
+        },
+      ]) &&
+    JSON.stringify(heldKeyAgentStorageRootAuthorityInventory.impls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          header: "impl HeldKeyAgentStorageRoot",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          header: "impl fmt::Debug for HeldKeyAgentStorageRoot",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          header: "impl Drop for HeldKeyAgentStorageRoot",
+        },
+      ]) &&
+    JSON.stringify(heldKeyAgentStorageRootFunctionSurface) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          signature:
+            "fncreate_fixed_key_agent_storage_root(validated_ac_folder:&Path,fixed_profile_sid:PSID,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          signature:
+            "fnopen_existing_fixed_key_agent_storage_root(validated_ac_folder:&Path,fixed_profile_sid:PSID,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          signature:
+            "fncreate_storage_root(validated_ac_folder:&Path,fixed_profile_sid:PSID,leaf:&str,#[cfg_attr(not(test),allow(unused_variables))]cleanup_on_drop:bool,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          signature:
+            "fnopen_and_verify_storage_root(path:&Path,stable_user_sid:OwnedSid,profile_sid:OwnedSid,)->Result<HeldKeyAgentStorageRoot,KeyAgentStorageError>",
+        },
+      ]) &&
+    heldKeyAgentStorageRootForbiddenAccessors.length === 0 &&
+    rustAuthorityTypeErasureSites(heldKeyAgentStorageRootLinearityBlocks)
+      .length === 0 &&
+    !/\bmacro_rules\s*!/u.test(keyAgentStorageReleaseCode) &&
+    JSON.stringify(heldKeyAgentStorageRootLiteralInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_storage.rs",
+          source:
+            "HeldKeyAgentStorageRoot{handle:Some(retained),identity,stable_user_sid,profile_sid,path:canonical_path,#[cfg(test)]cleanup_on_drop:false,}",
+        },
+      ]) &&
+    rustStructLiteralSites(heldKeyAgentStorageRootImpl, "Self").length === 0 &&
     heldKeyAgentStorageRootDebug.includes("[REDACTED LOCAL PATH]") &&
-    keyAgentStorageRevalidationOrder.every((position) => position !== -1) &&
-    keyAgentStorageRevalidationOrder
-      .slice(1)
-      .every(
-        (position, index) => position > keyAgentStorageRevalidationOrder[index],
-      ) &&
-    heldKeyAgentStorageRootDrop.includes("drop(self.handle.take())") &&
-    heldKeyAgentStorageRootDrop.includes("fs::remove_dir(&self.path)") &&
-    !heldKeyAgentStorageRootDrop.includes("remove_dir_all") &&
+    !/\bself\s*\.\s*(?:path|handle)\b/u.test(
+      rustLexicalCode(heldKeyAgentStorageRootDebug),
+    ) &&
+    rustCallSites(
+      revalidateHeldKeyAgentStorageRoot,
+      "validate_held_storage_root_path",
+    ).length === 1 &&
+    rustCallSites(
+      revalidateHeldKeyAgentStorageRoot,
+      "open_storage_root_handle",
+    ).length === 1 &&
+    rustCallSites(
+      revalidateHeldKeyAgentStorageRoot,
+      "verify_open_storage_root",
+    ).length === 3 &&
+    hasOrderedCompactRustMarkers(revalidateHeldKeyAgentStorageRoot, [
+      "reject_thread_impersonation()?",
+      "lethandle=self.handle.as_ref().ok_or(KeyAgentStorageError::Identity)?",
+      "letheld_identity=verify_open_storage_root(handle,&self.stable_user_sid,&self.profile_sid)?",
+      "ifheld_identity!=self.identity",
+      "validate_held_storage_root_path(&self.path)?",
+      "reject_thread_impersonation()?",
+      "letreopened_result=open_storage_root_handle(&self.path)",
+      "reject_thread_impersonation()?",
+      "letreopened=reopened_result?",
+      "letreopened_identity=verify_open_storage_root(&reopened,&self.stable_user_sid,&self.profile_sid)?",
+      "ifreopened_identity!=self.identity",
+      "letfinal_held_identity=verify_open_storage_root(handle,&self.stable_user_sid,&self.profile_sid)?",
+      "iffinal_held_identity!=self.identity",
+      "reject_thread_impersonation()",
+    ]) &&
+    compactRust(heldKeyAgentStorageRootDrop) ===
+      "implDropforHeldKeyAgentStorageRoot{fndrop(&mutself){drop(self.handle.take());#[cfg(test)]ifself.cleanup_on_drop{let_=fs::remove_dir(&self.path);}}}" &&
+    heldKeyAgentStorageRootDropWithTests.includes("drop(self.handle.take())") &&
+    heldKeyAgentStorageRootDropWithTests.includes(
+      "if self.cleanup_on_drop",
+    ) &&
+    heldKeyAgentStorageRootDropWithTests.includes("fs::remove_dir(&self.path)") &&
+    !heldKeyAgentStorageRootDropWithTests.includes("remove_dir_all") &&
+    JSON.stringify(keyAgentLpacTestsModuleAttributes) ===
+      JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(existingKeyAgentStorageRootReopenKernelTestAttributes) ===
+      JSON.stringify(["#[test]"]) &&
+    JSON.stringify(missingExistingKeyAgentStorageRootKernelTestAttributes) ===
+      JSON.stringify(["#[test]"]) &&
+    JSON.stringify(keyAgentExistingStorageKernelEvidenceSha256) ===
+      JSON.stringify({
+        deleteHelper:
+          "64dbe46d839f4afea55b45cd53796ff4e4fa5cb38630c9a4f6611e979584150c",
+        leafGrammar:
+          "e88fd0048ac22b743367a8af3fbf5b015228644428d4db4b209fa84faa57cbaa",
+        missingTest:
+          "c811a360d7010df11a1c6631158684f61807af58984327a5eb6a0d95d3ae6bd2",
+        reopenTest:
+          "f786a9f3ec4c88e2548dc014dabfd3c9ce1334f9b6b6bdefda5a6f339578815c",
+      }) &&
+    JSON.stringify(openExistingKeyAgentStorageRootForTestAttributes) ===
+      JSON.stringify(["#[cfg(test)]"]) &&
+    compactOpenExistingKeyAgentStorageRootForTest ===
+      expectedCompactOpenExistingKeyAgentStorageRootForTest &&
+    normalizedKeyAgentStorageTestRootLeafPrefixDefinition ===
+      'const KEY_AGENT_STORAGE_TEST_ROOT_LEAF_PREFIX: &str = "YourWallet.KeyAgent.Storage.Test.";' &&
+    JSON.stringify(keyAgentStorageTestRootLeafPrefixAttributes) ===
+      JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(exactTestKeyAgentStorageRootLeafAttributes) ===
+      JSON.stringify(["#[cfg(test)]"]) &&
+    compactExactTestKeyAgentStorageRootLeaf ===
+      "fnis_exact_test_storage_root_leaf(leaf:&str)->bool{leaf.strip_prefix(KEY_AGENT_STORAGE_TEST_ROOT_LEAF_PREFIX).is_some_and(|suffix|{suffix.len()==32&&suffix.as_bytes().iter().all(|byte|byte.is_ascii_digit()||(b..=b).contains(byte))})}" &&
+    rustCallSites(
+      openExistingKeyAgentStorageRootForTest,
+      "open_and_verify_storage_root",
+    ).length === 1 &&
+    rustCallSites(
+      openExistingKeyAgentStorageRootForTest,
+      "revalidate",
+    ).length === 1 &&
+    rustCallSites(
+      existingKeyAgentStorageRootReopenKernelTest,
+      "create_unique_key_agent_storage_root_for_test",
+    ).length === 1 &&
+    (rustLexicalCode(keyAgentLpacSource).match(
+      /\bexisting_storage_root_reopen_retains_identity_path_and_delete_pin\b/gu,
+    ) ?? []).length === 1 &&
+    rustCallSites(
+      existingKeyAgentStorageRootReopenKernelTest,
+      "open_existing_key_agent_storage_root_for_test",
+    ).length === 1 &&
+    rustCallSites(
+      existingKeyAgentStorageRootReopenKernelTest,
+      "require_delete_sharing_violation",
+    ).length === 1 &&
+    hasOrderedCompactRustMarkers(
+      existingKeyAgentStorageRootReopenKernelTest,
+      [
+        "letprofile=PreparedKeyAgentProfile::open_or_create()?",
+        "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
+        "letcreator_path=creator.path_for_test().to_path_buf()",
+        "letcreator_leaf=creator_path.file_name()",
+        "letcreator_identity=creator.identity()",
+        "assert_eq!(std::fs::canonicalize(&creator_path)?,creator_path)",
+        "creator.revalidate()?",
+        "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}?",
+        "assert_eq!(reopened.identity(),creator_identity)",
+        "assert_eq!(reopened.path_for_test(),creator_path)",
+        "assert_eq!(std::fs::canonicalize(reopened.path_for_test())?,creator_path)",
+        "reopened.revalidate()?",
+        "require_delete_sharing_violation(&creator_path)?",
+        "ifstd::fs::rename(&creator_path,&replacement_path).is_ok()",
+        "ifstd::fs::remove_dir(&creator_path).is_ok()",
+        "assert_eq!(creator.identity(),creator_identity)",
+        "assert_eq!(reopened.identity(),creator_identity)",
+        "creator.revalidate()?",
+        "reopened.revalidate()?",
+        "drop(reopened)",
+        "creator.revalidate()?",
+        "drop(creator)",
+        "assert!(!creator_path.exists())",
+        "assert!(!replacement_path.exists())",
+      ],
+    ) &&
+    hasOrderedCompactRustMarkers(
+      requireKeyAgentStorageDeleteSharingViolation,
+      [
+        "OpenOptions::new()",
+        ".access_mode(DELETE.0)",
+        ".share_mode((FILE_SHARE_READ|FILE_SHARE_WRITE).0)",
+        ".custom_flags((FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT).0)",
+        ".open(path)",
+        "ERROR_SHARING_VIOLATION.0",
+      ],
+    ) &&
+    !compactRust(requireKeyAgentStorageDeleteSharingViolation).includes(
+      "FILE_SHARE_DELETE",
+    ) &&
+    rustCallSites(
+      missingExistingKeyAgentStorageRootKernelTest,
+      "create_unique_key_agent_storage_root_for_test",
+    ).length === 1 &&
+    (rustLexicalCode(keyAgentLpacSource).match(
+      /\bexisting_storage_root_opener_does_not_recreate_cleaned_root\b/gu,
+    ) ?? []).length === 1 &&
+    rustCallSites(
+      missingExistingKeyAgentStorageRootKernelTest,
+      "open_existing_key_agent_storage_root_for_test",
+    ).length === 1 &&
+    hasOrderedCompactRustMarkers(
+      missingExistingKeyAgentStorageRootKernelTest,
+      [
+        "letprofile=PreparedKeyAgentProfile::open_or_create()?",
+        "letcreator=unsafe{create_unique_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),)}?",
+        "letcreator_path=creator.path_for_test().to_path_buf()",
+        "letcreator_leaf=creator_path.file_name()",
+        "assert!(creator_path.is_dir())",
+        "drop(creator)",
+        "assert!(!creator_path.exists())",
+        "letreopened=unsafe{open_existing_key_agent_storage_root_for_test(&profile.appcontainer_local_data,profile.profile_sid.as_psid(),&creator_leaf,)}",
+        "assert!(matches!(reopened,Err(KeyAgentStorageError::Creation)))",
+        "assert!(!creator_path.exists())",
+      ],
+    ) &&
+    keyAgentStorageDocumentation.every(
+      (document) =>
+        document.includes("open_existing_fixed_key_agent_storage_root") &&
+        document.includes("production caller") &&
+        document.includes("OPEN_EXISTING") &&
+        document.includes("FILE_FLAG_OPEN_REPARSE_POINT") &&
+        document.includes("FILE_ID_INFO") &&
+        /canonical(?:-| )path|canonicalize|canonicalizes/u.test(document) &&
+        /profile(?:-| )registration observ/u.test(document) &&
+        /held(?:-| )aggregate/u.test(document) &&
+        /installer lease/u.test(document) &&
+        /runtime|activation/u.test(document) &&
+        /authority/u.test(document),
+    ) &&
     keyAgentProvisioningKernelTest.includes("provisioning.revalidate()?") &&
     keyAgentProvisioningKernelTest.includes("assert!(storage_root.is_dir())") &&
     keyAgentProvisioningKernelTest.includes("drop(provisioning)") &&
@@ -11300,9 +11998,15 @@ requireInvariant(
     integratedKeyAgentStorageBindingTest.includes("assert!(storage_root.is_dir())") &&
     integratedKeyAgentStorageBindingTest.includes("drop(bound)") &&
     integratedKeyAgentStorageBindingTest.includes("assert!(!storage_root.exists())") &&
+    !/\b(?:HeldExistingKeyAgentInstallObjects|PreparedKeyAgentProvisioning|VerifiedExistingKeyAgentInstall|ArtifactBoundExistingKeyAgentInstall)\b/u.test(
+      keyAgentStorageReleaseCode,
+    ) &&
+    !/\bkey_agent_(?:install_adoption|activation)\b/u.test(
+      keyAgentStorageReleaseCode,
+    ) &&
     !keyAgentStorage.includes("WindowsGenerationStore") &&
     !keyAgentActivationRelease.includes("HeldKeyAgentStorageRoot"),
-  "the Key Agent storage proof must fresh-create one fixed root with the exact dual-principal protected DACL, inherited Low/NW label, local NTFS identity, no-delete-share held handle, opaque revalidation authority, and real cfg(test) kernel cleanup proof",
+  "the Key Agent storage proof must keep fresh creation separate from one dormant caller-free fixed existing-root opener, with exact canonical reopen, full security/FILE_ID_INFO revalidation, sole opaque mint, no-create/no-repair call graph, and real cfg(test) kernel lifetime proofs",
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(keyAgentStorageIdentityDefinition)) ===
@@ -13687,7 +14391,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
     unsafeCount: 38,
-    sha256: "a5529179a21a58412b26e245b3edb66d179689c8ea90e45f3efaf043e6128d0a",
+    sha256: "55d48c05d3343d763d953a2ea39691f7213294ca614c2092936eff0a5b14222f",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -13696,8 +14400,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
-    unsafeCount: 56,
-    sha256: "0125c5d4c9b6c65b8afded7240ecae6ebeba43e21f7398b01b18ce97bd8aae23",
+    unsafeCount: 58,
+    sha256: "ad0d99183ed9a480f59d1a7330eba9b69139467e64d8e751f8025e4fff5e4674",
   },
   {
     path: "crates/platform-windows/src/launch.rs",
@@ -16003,7 +16707,9 @@ requireInvariant(
         document.includes("VerifiedExistingKeyAgentInstall") &&
         document.includes("post-observation") &&
         document.includes("profile-registration") &&
-        /existing-root opener/iu.test(document) &&
+        /existing-root opener|open_existing_fixed_key_agent_storage_root/iu.test(
+          document,
+        ) &&
         /exclusive installer\s+lease/iu.test(document) &&
         /canonical-path/iu.test(document) &&
         document.includes("ArtifactBoundExistingKeyAgentInstall") &&
@@ -16050,7 +16756,7 @@ requireInvariant(
     activationArchitecture.includes(
       "no production protected-settings consumer or settings key provisioning",
     ) &&
-    /pending\/launch typestate split, and compiled dormant adoption transition do\s+not supply production journal inputs, authoritative profile-registration\s+observation/iu.test(
+    /pending\/launch typestate split, dormant fixed existing-root opener with\s+canonical-path revalidation, and compiled dormant adoption transition do not\s+supply production journal inputs, authoritative profile-registration\s+observation or a held-aggregate constructor, production callers for the root\s+opener\/adoption\/whole-release binding, exclusive lease\/reread orchestration,\s+recovery, or release activation/iu.test(
       activationReadme,
     ) &&
     /same-user processes while ancestor checks remain\s+non-atomic/u.test(

@@ -609,15 +609,23 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   signer를, held handle과 `FILE_ID_INFO`는 실제 child file object를 별도로 묶습니다. 봉인된
   supervisor split만 artifact-bound 값을 소비할 수 있고 install continuity는 dormant 및
   storage-proven 상태까지 유지됩니다. 하지만 adoption transition, release-binding, dormant
-  supervisor binder의 production caller는 모두 0개입니다. production에는 held aggregate
-  constructor도 없어 기존 profile이나 leaf를 열거나 채택·복구·삭제하지 않고
-  fail-closed합니다. 향후
-  production adapter가 구성할 fixed-profile-binding/held-root aggregate는 stable current
-  `TokenUser` owner와 정확히 그 SID 및 고정 profile SID만 포함하는 protected DACL,
-  inherited Low/`NW` mandatory label, local fixed NTFS와 persistent ACL/non-reparse 상태,
-  nonzero volume 및 non-sentinel 128-bit `FILE_ID_INFO`를 검증해야 합니다. directory
-  handle은 delete sharing 없이 유지되며 binding 동안 재검증되고 cleanup에서 마지막으로
-  닫힙니다.
+  supervisor binder의 production caller는 모두 0개입니다. 이와 별개인 storage-only
+  `open_existing_fixed_key_agent_storage_root`도 dormant하게 컴파일되지만 production caller는
+  0개입니다. 이 함수는 authoritative observer가 제공해야 할 validated `AC` folder와 live
+  fixed-profile SID만 받고 leaf를 `YourWallet.KeyAgent.Storage.v1`로 고정합니다. 생성·수리·
+  삭제 없이 `OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT`와 no-delete-share로 연 initial
+  handle에서 local NTFS, exact owner/protected DACL/inherited Low-`NW` label 및 전체
+  `FILE_ID_INFO`를 검증하고, canonicalize한 path를 다시 같은 방식으로 열어 security와
+  identity가 initial handle과 같은지 확인한 뒤 reopened handle과 private canonical path를
+  보존합니다. 이후 `revalidate`도 held handle과 canonical-path reopen을 함께 대조합니다.
+  이는 `CreateDirectoryW`를 사용하는 fresh pending 경계나 자식이 OS-rerouted
+  `LOCALAPPDATA`와 자기 token으로 독립적으로 여는 child opener와 다른 경계입니다. 반환값은
+  root-only `HeldKeyAgentStorageRoot`일 뿐 profile registration, held aggregate,
+  `Prepared`/`Verified`, journal/checkpoint authority, adoption, recovery/activation,
+  signing/RPC/GUI, supervisor ownership 또는 Broker+Key Agent same-release aggregate
+  authority가 아닙니다. production에는 여전히
+  authoritative profile-registration observer와 `HeldExistingKeyAgentInstallObjects`
+  constructor가 없어 이 opener나 adoption transition에 도달하지 못합니다.
 - 같은 dormant activation은 정확한 실행 파일, 비공개 파이프 3개, 2프로세스 Windows
   Job과 위 provisioning 증명을 묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle
   allowlist, Job, null capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
@@ -706,10 +714,13 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 - 따라서 통합 증명은 여전히 persistent test profile과 CSPRNG leaf, test-only memory
   anchor와 합성 key/payload를 사용하는 `cfg(test)` 증명이지 production fresh
   profile/root E2E나 release wiring이 아닙니다. production에는 authoritative
-  profile-registration observer, fixed existing-root opener와 held-aggregate constructor,
-  post-observation reread 순서를 강제하는 exclusive installer lease, canonical-path reopen
-  identity 비교, production installer key/checkpoint 및 journal I/O backend, dormant-binding
-  caller, recovery 및 release-activation wiring이 없습니다.
+  profile-registration observer와 held-aggregate constructor가 없고, fixed existing-root
+  opener와 dormant adoption/binding의 production caller도 0개입니다. 또한
+  post-observation reread 순서를 강제하는 exclusive installer lease, production installer
+  key/checkpoint 및 journal I/O backend, recovery 및 release-activation wiring이 없습니다.
+  구현된 canonical reopen 대조는 path
+  rebinding을 fail-closed로 탐지할 뿐 same-user actor나 ancestor 교체를 원자적으로 막지
+  않습니다.
   same-user 접근 및 non-atomic ancestor race, production rollback anchor와 storage/AEAD key
   provisioning, live protected-settings lease, 인증된 Broker/supervisor topology와
   single-instance, signed immutable artifact 및 DLL/dependency E2E도 모두 남아 있습니다.

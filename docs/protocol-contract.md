@@ -370,13 +370,31 @@ The journal validator performs no I/O and has no production key/checkpoint
 constructor, journal reader/writer backend, or caller. The adoption transition
 and both downstream dormant binding functions have zero production call sites.
 
-Production still lacks authoritative profile-registration observation, a fixed
-existing-root opener and held-aggregate constructor, an exclusive installer
-lease enforcing the post-observation reread, canonical-path reopen identity
-comparison, production installer-key/checkpoint and journal I/O backends,
-recovery, and release-activation orchestration.
-The same-user/ancestor
-race boundary, production rollback-anchor and storage/AEAD-key provisioning,
+A separate dormant `open_existing_fixed_key_agent_storage_root` has zero
+production callers and produces only a root capability. Given an
+observer-validated `AC` folder and live fixed-profile SID, it hard-codes the
+fixed leaf and performs no create, repair, delete, adoption, or recovery. It
+rejects impersonation; opens with `OPEN_EXISTING`,
+`FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; validates the initial
+directory/non-reparse object, local NTFS, exact owner/protected DACL/inherited
+Low-`NW` label, and complete `FILE_ID_INFO`; canonicalizes and reopens the path;
+and requires the reopened security and identity to match. The capability
+privately retains the canonical path and reopened handle, while `revalidate`
+checks both the held handle and another canonical reopen. This is neither the
+fresh `CreateDirectoryW` pending transition nor the child opener that derives
+`LOCALAPPDATA`, `TokenUser`, and the AppContainer SID from its own process.
+
+Production still lacks authoritative profile-registration observation and a
+held-aggregate constructor, a production caller for that root opener or the
+adoption/binding path, an exclusive installer lease enforcing the
+post-observation reread, production installer-key/checkpoint and journal I/O
+backends, recovery, and release-activation orchestration. The opener cannot mint
+`HeldExistingKeyAgentInstallObjects`, `PreparedKeyAgentProvisioning`,
+`VerifiedExistingKeyAgentInstall`, any journal/checkpoint authority,
+recovery/activation/signing/RPC/GUI, supervisor ownership, or a Broker+Key Agent
+same-release aggregate. Its canonical-path comparison detects mismatch but does
+not atomically close the same-user/ancestor race boundary. Production
+rollback-anchor and storage/AEAD-key provisioning,
 protected-settings/lease authority, authenticated Broker/supervisor topology and
 single-instance, and signed immutable artifact/DLL/dependency E2E remain
 STOP-SHIP. The persistent startup stream still proves neither a future delayed

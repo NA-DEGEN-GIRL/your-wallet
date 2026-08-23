@@ -3,8 +3,10 @@
 //! The pure provenance module authenticates and compares installer snapshots;
 //! this module alone bookends that proof with revalidation of the retained OS
 //! objects. Production remains unreachable: there is no authoritative profile
-//! observer, fixed-root existing opener, journal/checkpoint reader, exclusive
-//! installer lease, or caller that can supply a post-observation reread.
+//! observer or held-aggregate constructor, and the dormant fixed-root existing
+//! opener, this transition, and its release binding have no production caller.
+//! No journal/checkpoint reader or exclusive installer lease can supply the
+//! required post-observation reread either.
 
 use core::cell::Cell;
 use core::fmt;

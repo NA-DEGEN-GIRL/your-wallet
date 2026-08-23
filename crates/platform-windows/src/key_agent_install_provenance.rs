@@ -255,8 +255,9 @@ impl fmt::Debug for ExpectedKeyAgentInstallIdentities {
 /// The type alone does not prove an OS-registered profile, exact root security,
 /// local NTFS, or a retained no-delete-share handle. Its sole compiled
 /// constructor consumes authority-free evidence copied from the typed held
-/// aggregate. Production has no authoritative profile-registration observer,
-/// existing-root opener, or constructor for that aggregate.
+/// aggregate. Production has no authoritative profile-registration observer or
+/// constructor for that aggregate, and the dormant existing-root opener has no
+/// production caller.
 pub(crate) struct ObservedKeyAgentInstallObjects {
     profile: Option<ObservedKeyAgentProfile>,
     root: Option<ObservedKeyAgentStorageRoot>,

@@ -203,15 +203,31 @@ production key/checkpoint constructor, journal reader/writer backend, or caller.
 The adoption transition, release-binding, and dormant supervisor binder all have
 zero production call sites.
 
+The separate dormant `open_existing_fixed_key_agent_storage_root` is only a
+root-object proof and also has zero production callers. It accepts an
+observer-validated `AC` folder and live fixed-profile SID but hard-codes the
+fixed leaf, performs no create/repair/delete/adoption/recovery, and opens with
+`OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing. After
+validating the initial directory/non-reparse object, local NTFS, exact owner/
+protected DACL/inherited Low-`NW` label, and complete `FILE_ID_INFO`, it
+canonicalizes and reopens the path under the same policy and requires identical
+security and full identity. The root capability privately retains the canonical
+path and reopened handle; `revalidate` checks both that held handle and another
+canonical-path reopen. This is distinct from the fresh `CreateDirectoryW`
+pending path and the child `LOCALAPPDATA`/process-token opener.
+
 The remaining limits are immediate. Existing production profiles still lack
 installer-owned key/checkpoint provisioning, authoritative profile-registration
-observation, a fixed existing-root opener and held-aggregate constructor, an
-exclusive installer lease enforcing the post-observation reread,
-canonical-path reopen identity comparison, production installer-key/checkpoint
-and journal I/O backends, recovery, and release-activation orchestration; the
-root `TokenUser` ACE leaves
-other same-user processes able to access it, and ancestor path validation is
-not atomic. Production rollback-anchor and storage/AEAD-key provisioning,
+observation and a held-aggregate constructor, a production caller for the
+dormant root opener or adoption/binding path, an exclusive installer lease
+enforcing the post-observation reread, production installer-key/checkpoint and
+journal I/O backends, recovery, and release-activation orchestration. The
+root-only seam cannot mint `HeldExistingKeyAgentInstallObjects`, `Prepared`,
+`Verified`, journal/checkpoint authority, recovery/activation/signing/RPC/GUI,
+supervisor ownership, or a Broker+Key Agent same-release aggregate. The root
+`TokenUser` ACE leaves other same-user processes able to access it, and the
+canonical-path comparison detects mismatch but does not atomically close
+same-user/ancestor races. Production rollback-anchor and storage/AEAD-key provisioning,
 protected settings and a live lease, authenticated Broker/supervisor/process
 topology and single-instance enforcement, signed immutable artifacts and
 DLL/dependency E2E, and release activation remain **STOP-SHIP**. Persistent
@@ -321,11 +337,12 @@ Before any real mainnet value is used, the Windows build must prove:
    the adoption-rule composition over test-held objects. The compiled
    whole-release binding then separates the journal `release_identity` from the
    helper-manifest and exact file-object identities and retains continuity, but
-   neither it nor the dormant supervisor binder has a production call site. It
-   cannot open or
-   adopt a production installation because authoritative profile-registration
-   observation, an existing-root opener, production snapshot/lease/reread
-   orchestration, canonical-path identity rebinding, production
+   neither it nor the dormant supervisor binder has a production call site. A
+   separate dormant root-only fixed existing-root opener implements exact
+   security/identity checking and canonical-path rebinding but likewise has no
+   production caller. It cannot open an installation into adoption because
+   authoritative profile-registration observation, a held-aggregate
+   constructor, production snapshot/lease/reread orchestration, production
    installer-key/checkpoint and journal I/O backends, recovery, and release
    activation are absent. These proofs also do not
    authenticate or anchor production installer provenance or provision a

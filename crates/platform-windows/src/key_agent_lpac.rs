@@ -69,11 +69,14 @@ use crate::appcontainer_profile_api::{
     AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
 };
 use crate::key_agent_install_adoption::ExistingInstallAdoptionSeal;
-#[cfg(test)]
-use crate::key_agent_storage::create_unique_key_agent_storage_root_for_test;
 use crate::key_agent_storage::{
     HeldKeyAgentStorageRoot, KeyAgentHeldRootObservation, KeyAgentStorageRootIdentity,
     create_fixed_key_agent_storage_root,
+};
+#[cfg(test)]
+use crate::key_agent_storage::{
+    KeyAgentStorageError, create_unique_key_agent_storage_root_for_test,
+    open_existing_key_agent_storage_root_for_test,
 };
 
 pub(crate) const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
@@ -1356,14 +1359,22 @@ mod tests {
     use core::ffi::c_void;
     use core::mem::size_of;
     use core::ptr;
+    use std::fs::OpenOptions;
     use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    };
     use windows::Win32::Security::{EqualSid, TOKEN_APPCONTAINER_INFORMATION};
     use windows::Win32::Security::{TOKEN_DUPLICATE, TOKEN_QUERY};
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
         DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
@@ -1377,10 +1388,12 @@ mod tests {
     use super::{
         AppContainerMembershipEvidence, CAPABILITY_COUNT, HeldExistingKeyAgentInstallObjects,
         KEY_AGENT_PROFILE_V1_NAME, KeyAgentLpacError, KeyAgentLpacKernelTestFixture,
-        OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning, PreparedKeyAgentLpac,
-        PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword, TokenPolicyEvidence,
-        VerifiedKeyAgentLpac, appcontainer_folder, appcontainer_membership_evidence,
-        require_created_sid_matches_derived, validate_token_policy, wide_nul_str,
+        KeyAgentStorageError, OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning,
+        PreparedKeyAgentLpac, PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, TokenDword,
+        TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
+        appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
+        open_existing_key_agent_storage_root_for_test, require_created_sid_matches_derived,
+        validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -1404,6 +1417,26 @@ mod tests {
     }
     impl<T: ?Sized> AmbiguousIfSync<()> for T {}
     impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    fn require_delete_sharing_violation(path: &Path) -> std::io::Result<()> {
+        let opened = OpenOptions::new()
+            .access_mode(DELETE.0)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
+            .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+            .open(path);
+        match opened {
+            Err(error) if error.raw_os_error() == i32::try_from(ERROR_SHARING_VIOLATION.0).ok() => {
+                Ok(())
+            }
+            Err(error) => Err(error),
+            Ok(unexpected) => {
+                drop(unexpected);
+                Err(std::io::Error::other(
+                    "held Key Agent root unexpectedly granted DELETE access",
+                ))
+            }
+        }
+    }
 
     struct TestAttributeList {
         pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
@@ -1931,6 +1964,115 @@ mod tests {
             "KeyAgentHeldInstallObservation([REDACTED IDENTITIES])"
         );
         held.revalidate()
+    }
+
+    #[test]
+    fn existing_storage_root_reopen_retains_identity_path_and_delete_pin()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = PreparedKeyAgentProfile::open_or_create()?;
+        // SAFETY: `profile` retains the exact validated profile SID while the
+        // helper copies it and creates one private CSPRNG-named empty leaf.
+        let creator = unsafe {
+            create_unique_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+            )
+        }?;
+        let creator_path = creator.path_for_test().to_path_buf();
+        let creator_leaf = creator_path
+            .file_name()
+            .and_then(|leaf| leaf.to_str())
+            .ok_or_else(|| std::io::Error::other("test storage leaf was not canonical UTF-8"))?
+            .to_owned();
+        let creator_identity = creator.identity();
+        assert_eq!(std::fs::canonicalize(&creator_path)?, creator_path);
+        creator.revalidate()?;
+
+        // SAFETY: the same validated folder and live profile SID owner remain
+        // held, and `creator_leaf` was copied from the CSPRNG creator path.
+        let reopened = unsafe {
+            open_existing_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+                &creator_leaf,
+            )
+        }?;
+        assert_eq!(reopened.identity(), creator_identity);
+        assert_eq!(reopened.path_for_test(), creator_path);
+        assert_eq!(
+            std::fs::canonicalize(reopened.path_for_test())?,
+            creator_path
+        );
+        reopened.revalidate()?;
+
+        require_delete_sharing_violation(&creator_path)?;
+        let replacement_path = creator_path.with_file_name(format!("{creator_leaf}.replacement"));
+        assert!(!replacement_path.exists());
+        if std::fs::rename(&creator_path, &replacement_path).is_ok() {
+            drop(reopened);
+            drop(creator);
+            let _ = std::fs::remove_dir(&replacement_path);
+            return Err(
+                std::io::Error::other("held Key Agent root was unexpectedly replaceable").into(),
+            );
+        }
+        if std::fs::remove_dir(&creator_path).is_ok() {
+            drop(reopened);
+            drop(creator);
+            return Err(
+                std::io::Error::other("held Key Agent root was unexpectedly deletable").into(),
+            );
+        }
+        assert!(creator_path.is_dir());
+        assert!(!replacement_path.exists());
+        assert_eq!(creator.identity(), creator_identity);
+        assert_eq!(reopened.identity(), creator_identity);
+        creator.revalidate()?;
+        reopened.revalidate()?;
+
+        drop(reopened);
+        creator.revalidate()?;
+        drop(creator);
+        assert!(!creator_path.exists());
+        assert!(!replacement_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn existing_storage_root_opener_does_not_recreate_cleaned_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = PreparedKeyAgentProfile::open_or_create()?;
+        // SAFETY: `profile` retains the exact validated profile SID while the
+        // helper copies it and creates one private CSPRNG-named empty leaf.
+        let creator = unsafe {
+            create_unique_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+            )
+        }?;
+        let creator_path = creator.path_for_test().to_path_buf();
+        let creator_leaf = creator_path
+            .file_name()
+            .and_then(|leaf| leaf.to_str())
+            .ok_or_else(|| std::io::Error::other("test storage leaf was not canonical UTF-8"))?
+            .to_owned();
+        assert!(creator_path.is_dir());
+        drop(creator);
+        assert!(!creator_path.exists());
+
+        // SAFETY: the profile SID remains valid, and the leaf was copied from
+        // the exact test creator. The opener must only observe; it cannot create
+        // or repair.
+        let reopened = unsafe {
+            open_existing_key_agent_storage_root_for_test(
+                &profile.appcontainer_local_data,
+                profile.profile_sid.as_psid(),
+                &creator_leaf,
+            )
+        };
+        assert!(matches!(reopened, Err(KeyAgentStorageError::Creation)));
+        assert!(!creator_path.exists());
+        Ok(())
     }
 
     #[test]

@@ -114,9 +114,10 @@ mod key_agent_child_bootstrap;
 // matcher with exact root/profile-binding revalidation. Its compiled dormant
 // binding separately matches the journal's whole-release ArtifactDigest to the
 // attested release while retaining helper-manifest and file-object proofs. It
-// remains production-unreachable: no profile observer, existing-root opener,
-// installer key/checkpoint or journal I/O backend, exclusive installer lease,
-// binding caller, recovery/upgrade path, or release activation exists yet.
+// remains production-unreachable: there is no authoritative profile observer
+// or production caller for the dormant existing-root opener, nor any installer
+// key/checkpoint or journal I/O backend, exclusive installer lease, binding
+// caller, recovery/upgrade path, or release activation yet.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod key_agent_install_adoption;
@@ -136,6 +137,8 @@ mod key_agent_lpac;
 #[cfg(windows)]
 mod key_agent_root_job;
 // Fresh fixed-profile/root creation yields only non-launchable pending objects.
+// A dormant zero-caller existing-root opener rebinds a fixed canonical path to
+// the same retained identity, but supplies no higher-level install authority.
 // The startup path accepts a separately prepared supervisor-held proof; the
 // child independently path-opens and retains that same object while the parent
 // retains and revalidates its peer handle.

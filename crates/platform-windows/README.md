@@ -102,15 +102,24 @@ Implemented:
   serializes checkpoint, observation, and post-observation reread, so production
   upgrade orchestration remains closed.
   The adoption transition, release-binding, and dormant supervisor binder all
-  have zero production call sites, so an existing production profile or leaf
-  still fails closed and is not opened, adopted, repaired, or deleted. A future
-  production adapter that constructs the held aggregate must validate a stable
-  current-`TokenUser` owner and exact protected
-  DACL for that SID plus the fixed profile SID, the exact inherited Low/`NW`
-  mandatory label, fixed local NTFS with persistent ACLs, non-reparse state, and
-  a nonzero-volume, non-sentinel 128-bit `FILE_ID_INFO`. Its directory handle
-  omits delete sharing, is revalidated before and throughout binding, and
-  remains held until cleanup closes it last.
+  have zero production call sites. A separate dormant storage-only
+  `open_existing_fixed_key_agent_storage_root` also has zero production callers.
+  Given only an observer-validated `AC` folder and a live fixed-profile SID, it
+  hard-codes `YourWallet.KeyAgent.Storage.v1` and performs no create, repair,
+  delete, adoption, or recovery. It opens with `OPEN_EXISTING`,
+  `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; verifies the initial
+  handle's directory/non-reparse state, local NTFS, exact owner/protected DACL/
+  inherited Low-`NW` label, and complete `FILE_ID_INFO`; canonicalizes and
+  reopens the path under the same policy; and requires identical security and
+  full identity. The resulting root-only capability privately retains the
+  canonical path and reopened handle, and `revalidate` compares both the held
+  handle and a fresh canonical-path reopen. This is neither the fresh
+  `CreateDirectoryW` pending path nor the child opener that derives its path and
+  principals from `LOCALAPPDATA` and the child token. No authoritative
+  profile-registration observer or held-aggregate constructor calls this seam,
+  so it cannot mint `Prepared`/`Verified` or journal/checkpoint authority, reach
+  adoption/recovery/activation/signing/RPC/GUI, establish supervisor ownership,
+  or create a Broker+Key Agent same-release aggregate.
 
   A private one-shot storage-startup transition now closes the former child-open
   and transcript-binding gap for this narrow object proof. The parent writes the
@@ -186,12 +195,14 @@ Implemented:
   the fixed-profile binding and same held root around the pure match and retains
   the result inside a private verified aggregate. Its one compiled downstream
   boundary performs the whole-release artifact match described above but has no
-  production caller. Production still lacks an
-  authoritative profile-registration observer, fixed existing-root opener and
-  held-aggregate constructor, an exclusive installer lease that enforces the
-  post-observation reread, canonical-path reopen identity comparison, a
+  production caller. Production still lacks an authoritative
+  profile-registration observer and held-aggregate constructor, a production
+  caller for the dormant fixed existing-root opener or adoption/binding path, an
+  exclusive installer lease that enforces the post-observation reread, a
   production installer-key/checkpoint and journal reader/writer backend,
-  recovery, and release-activation orchestration;
+  recovery, and release-activation orchestration. Canonical reopen comparison is
+  implemented inside the dormant root capability, but does not make ancestor
+  validation atomic or exclude another same-user process;
 - an earliest Key Agent child bootstrap with no caller-supplied handle input.
   The Key Agent entrypoint makes this its first Windows application operation.
   Before mutation it requires exactly three distinct kernel objects with exact
@@ -261,11 +272,12 @@ Implemented:
   fixed profile/root E2E or release activation.
 
   **Remaining storage/release boundary:** the pure candidate classifier,
-  pending/launch typestate split, and compiled dormant adoption transition do
-  not supply production journal inputs, authoritative profile-registration
-  observation, fixed existing-root opening, exclusive lease/reread
-  orchestration, canonical-path identity rebinding, a production caller for the
-  implemented dormant whole-release binding, recovery, or release activation.
+  pending/launch typestate split, dormant fixed existing-root opener with
+  canonical-path revalidation, and compiled dormant adoption transition do not
+  supply production journal inputs, authoritative profile-registration
+  observation or a held-aggregate constructor, production callers for the root
+  opener/adoption/whole-release binding, exclusive lease/reread orchestration,
+  recovery, or release activation.
   The artifact-bound continuity is not runtime/signing IPC, an installer key,
   rollback anchor, storage/AEAD key, or protected-settings authority. The root's
   `TokenUser` ACE permits other same-user processes while ancestor checks remain
@@ -451,15 +463,18 @@ Stop-ship before any signing-capable release:
     test-only and are not release attestation.
 11. Non-launchable fresh fixed-profile/root creation, the pure non-authoritative
     provenance classifier, private dormant sealed adoption and whole-release
-    artifact-binding transitions, fixed
-    zero-capability LPAC token verification,
-    test-root child open/binding, and the narrow private
-    generation-file policy are implemented and covered together by the
-    `cfg(test)` integrated LPAC fixture. Keep production storage authorization
+    artifact-binding transitions, fixed zero-capability LPAC token verification,
+    test-root child open/binding, and the narrow private generation-file policy
+    are implemented and covered together by the `cfg(test)` integrated LPAC
+    fixture. The root-only fixed existing-root opener and canonical reopen
+    revalidation are implemented separately with zero production callers and a
+    bounded exact-CSPRNG-leaf test seam. Keep production storage authorization
     **STOP-SHIP** until installer-owned authenticated and rollback-resistant
-    journal inputs, authoritative profile-registration observation, fixed-root
-    opening, and an exclusive installer lease/post-observation reread invoke the
-    already implemented dormant artifact-binding and supervisor path; production
+    journal inputs, authoritative profile-registration observation and a held-
+    aggregate constructor, production callers for the dormant root opener and
+    adoption/binding path, and an exclusive installer lease/post-observation
+    reread invoke the already implemented dormant artifact-binding and supervisor
+    path; production
     installer-key/checkpoint and journal I/O backends plus recovery and release
     activation are supplied; the production rollback
     anchor and storage/AEAD keys are
