@@ -24086,17 +24086,28 @@ const approvalStdioDocumentationContradictionProbes =
       probe: `${source}\nPID/session correlation is an exact endpoint/process-object capability.`,
     },
   ]);
-const approvalKoreanContinuationIndentationContract = (source) =>
-  source.includes(
-    "\n  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
-  ) &&
-  !source.includes(
-    "\nrequest digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
-  );
-const approvalKoreanContinuationIndentationMutation = activationReadme.replace(
-  "\n  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
-  "\nrequest digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap",
+const approvalKoreanContinuationSection = approvalBoundedDocumentationSection(
+  activationReadme,
+  "  **구현 범위와 남은 릴리스 차단 조건:**",
+  "\n- an HMAC-authenticated, bounded dual-slot generation store",
 );
+const approvalKoreanContinuationIndentationContract = (source) => {
+  const lines = source.split(/\r?\n/u);
+  return (
+    lines.length > 1 &&
+    lines.every((line) => line.length === 0 || line.startsWith("  "))
+  );
+};
+const approvalKoreanContinuationIndentationMutations =
+  approvalKoreanContinuationSection
+    .split(/\r?\n/u)
+    .map((line, index, lines) => ({ line, index, lines }))
+    .filter(({ line }) => line.length > 0)
+    .map(({ index, lines }) => {
+      const mutated = [...lines];
+      mutated[index] = mutated[index].slice(2);
+      return mutated.join("\n");
+    });
 const approvalArchitectureOverviewRow =
   /^\| Approval helper \|(?<row>[^\r\n]*)\|$/mu.exec(activationArchitecture)
     ?.groups?.row ?? "";
@@ -24112,10 +24123,15 @@ requireInvariant(
       ({ original, probe }) =>
         probe !== original && !approvalStdioDocumentationContract(probe),
     ) &&
-    approvalKoreanContinuationIndentationContract(activationReadme) &&
-    approvalKoreanContinuationIndentationMutation !== activationReadme &&
-    !approvalKoreanContinuationIndentationContract(
-      approvalKoreanContinuationIndentationMutation,
+    approvalKoreanContinuationSection.length > 0 &&
+    approvalKoreanContinuationIndentationContract(
+      approvalKoreanContinuationSection,
+    ) &&
+    approvalKoreanContinuationIndentationMutations.length > 1 &&
+    approvalKoreanContinuationIndentationMutations.every(
+      (probe) =>
+        probe !== approvalKoreanContinuationSection &&
+        !approvalKoreanContinuationIndentationContract(probe),
     ) &&
     [
       "exactly two inherited stdio `PIPE` objects",
