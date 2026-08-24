@@ -457,13 +457,32 @@ denial matrix requests `PROCESS_DUP_HANDLE`, `PROCESS_TERMINATE`,
 requests `PROCESS_DUP_HANDLE`, `PROCESS_QUERY_INFORMATION`,
 `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION`
 (`0x2000`), `SYNCHRONIZE`, the exact query-limited/synchronize combined mask,
-and `WRITE_DAC`. Before resume, production Key Agent activation successfully
-installs a protected three-ACE token DACL for the stable user `TOKEN_ALL_ACCESS`,
-Key Agent `TOKEN_QUERY | TOKEN_DUPLICATE`, and Approval exactly `TOKEN_QUERY`.
-The `cfg(test)` integration executes that production-compiled hardening and proves
-the Approval query-only outcome. Ordinary LPAC/token attributes are verified
-before and after installation; this slice does not read back the
-token security descriptor.
+and `WRITE_DAC`. The production Key Agent activation hardening step opens the
+suspended process token exactly once with
+`TOKEN_QUERY | WRITE_DAC | READ_CONTROL`. Before resume
+it installs the protected DACL and performs a bounded two-pass
+`GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)` readback through that same
+opened handle. The sizing call must fail with `ERROR_INSUFFICIENT_BUFFER` and a
+1..=64 KiB requirement; the aligned second pass, its returned size, and
+`GetSecurityDescriptorLength` must match that requirement exactly. The returned
+descriptor must be valid and self-relative, with a present/protected,
+non-defaulted, non-auto-inherited DACL. Exact self-relative bounds,
+`ACL_REVISION`, zero reserved fields, ACL size, and descriptor end admit only
+three zero-flag explicit `ACCESS_ALLOWED_ACE`s, ordered as stable `TokenUser` SID
+with `TOKEN_ALL_ACCESS`, fixed Key Agent SID with
+`TOKEN_QUERY | TOKEN_DUPLICATE`, then fixed Approval SID with exactly
+`TOKEN_QUERY`. Masks, declared SID lengths, binary SID bytes, and ACE sizes must
+consume the exact ACL/descriptor with no extra ACE, slack, or trailing byte.
+The same-handle guarantee covers only DACL Set plus kernel readback. The
+surrounding ordinary LPAC policy checks reopen the process's then-current token
+before and after hardening, but do not compare `TokenStatistics.TokenId` or
+kernel-object identity to the hardened handle. Accordingly
+`hardened-to-final-current-token continuity` remains **STOP-SHIP**. Any
+set/readback/policy-check failure occurs before `VerifiedKeyAgentLpac` is
+minted. The `cfg(test)`
+integration executes that production-compiled hardening and proves the Approval
+query-only outcome. This is point-in-time evidence about the hardened token
+handle, not same-user isolation or a process/thread creation-time DACL.
 
 That test is kernel feasibility, not release evidence. Bootstrap version 2 now
 binds the ordinary supervisor PID/process/image proof and the separately

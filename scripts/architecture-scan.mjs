@@ -6384,7 +6384,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "178ce670774684de416d95feb5420c37f1aecf680954d2bb8c2965562a72609d";
+  "6ee351cb88fbe8ed961a48e915c4b901e63782814aea6c948a6a504359c578f6";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -20905,7 +20905,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 4 },
-  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 20 },
+  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 23 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
@@ -20955,8 +20955,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
-    unsafeCount: 44,
-    sha256: "4812c329aacaa2f49cf393e261a66731d1cbde32c9d86d834b741d886a2e4ad6",
+    unsafeCount: 52,
+    sha256: "3cb1ee7c3d9d73bd189c674ef28b3509a8dea494de5b936ffda7abd6ddfc47c5",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -21740,6 +21740,17 @@ requireInvariant(
         source: "format!(,)",
       },
       {
+        absolute: false,
+        path: "matches",
+        source:
+          "matches!(size_query,Err(error)iferror.code()==ERROR_INSUFFICIENT_BUFFER.to_hresult())",
+      },
+      {
+        absolute: false,
+        path: "vec",
+        source: "vec![0_usize;word_count]",
+      },
+      {
         absolute: true,
         path: "std::vec",
         source: "std::vec![0_usize;word_count]",
@@ -21902,6 +21913,17 @@ requireInvariant(
         absolute: false,
         path: "format",
         source: "format!(,)",
+      },
+      {
+        absolute: false,
+        path: "matches",
+        source:
+          "matches!(size_query,Err(error)iferror.code()==ERROR_INSUFFICIENT_BUFFER.to_hresult())",
+      },
+      {
+        absolute: false,
+        path: "vec",
+        source: "vec![0_usize;word_count]",
       },
       {
         absolute: true,
@@ -22698,13 +22720,31 @@ const compactKeyAgentTokenValidation = compactRust(validateKeyAgentLpacToken);
 const approvedKeyAgentApprovalTokenDaclLeafSha256 = {
   verifySuspended:
     "ee25d4c96b8f29b84795bba8ed9c705036a6ef902370b1643472b349f0a667f6",
-  install: "8b66e510e1b75e3f0da6ff1666ae39e7fe7dd01e43a7b848acd3747faa4362c3",
+  install: "27a7e441000cdc4f5bb22dc825bbf83d1ae33b1f16eb5f000e3b70801505722e",
+  copiedSid:
+    "b8faf2f51fb2dfcb4cbdd1eb4172a559d13231a5b3942cddecca1b9fb7502f35",
+  readback:
+    "54284a162721df665a9cfde373d105193208e51db4c00c6925e56fd296d2f16a",
+  descriptor:
+    "c10610c8a03ba7562581106a2e12aed50b0701b921f34f7881256b46bfacb7f6",
+  validateSid:
+    "46c19139abadff6f89ae022aff102662fabf50af72882b4e937e55de240fb5cc",
+  readU16:
+    "7f5c3766627b05adbd7fa9f698111b63194dd76ba84951c6d05fcd97564df4b4",
+  readU32:
+    "b2c4e9f482801ee6dbb4a1341897a60189fc734c3c6a8c50d940a08b59a7abad",
   sidString: "fbf950591934aeff17d3a0bab67b2fe186bd35f1075c075938e2498d437a4e2d",
   tokenDrop: "2150a65db8c88185937ad0d66578137d44836add20166161c68bdde8dd967e1a",
 };
 const keyAgentApprovalTokenDaclContract = (source) => {
   let verifySuspended;
   let install;
+  let copiedSid;
+  let readback;
+  let descriptor;
+  let validateSid;
+  let readU16;
+  let readU32;
   let sidString;
   let tokenDrop;
   try {
@@ -22722,6 +22762,21 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       source,
       "install_approval_token_query_dacl",
     );
+    copiedSid = rustTopLevelFunctionBlock(source, "copied_sid_bytes");
+    readback = rustTopLevelFunctionBlock(
+      source,
+      "verify_installed_token_dacl_readback",
+    );
+    descriptor = rustTopLevelFunctionBlock(
+      source,
+      "inspect_exact_token_dacl_descriptor",
+    );
+    validateSid = rustTopLevelFunctionBlock(
+      source,
+      "validate_binary_sid_bytes",
+    );
+    readU16 = rustTopLevelFunctionBlock(source, "read_u16_at");
+    readU32 = rustTopLevelFunctionBlock(source, "read_u32_at");
     sidString = rustTopLevelFunctionBlock(source, "sid_string");
     tokenDrop = rustImplItemAtDepth(source, "impl Drop for OwnedToken", 0);
   } catch {
@@ -22730,8 +22785,17 @@ const keyAgentApprovalTokenDaclContract = (source) => {
 
   const verifyCompact = compactRust(verifySuspended);
   const installCompact = compactRust(install);
+  const copiedSidCompact = compactRust(copiedSid);
+  const readbackCompact = compactRust(readback);
+  const descriptorCompact = compactRust(descriptor);
+  const validateSidCompact = compactRust(validateSid);
+  const readU16Compact = compactRust(readU16);
+  const readU32Compact = compactRust(readU32);
   const sidStringCompact = compactRust(sidString);
   const tokenDropCompact = compactRust(tokenDrop);
+  const readbackAuthorityCode = rustLexicalCode(
+    `${copiedSid}\n${readback}\n${descriptor}\n${validateSid}\n${readU16}\n${readU32}`,
+  );
   const installMacros = rustMacroInvocations(install).map((invocation) => ({
     absolute: invocation.absolute,
     path: invocation.path,
@@ -22743,6 +22807,18 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       approvedKeyAgentApprovalTokenDaclLeafSha256.verifySuspended &&
     normalizedSourceSha256(rustLexicalCode(install)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.install &&
+    normalizedSourceSha256(rustLexicalCode(copiedSid)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.copiedSid &&
+    normalizedSourceSha256(rustLexicalCode(readback)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.readback &&
+    normalizedSourceSha256(rustLexicalCode(descriptor)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.descriptor &&
+    normalizedSourceSha256(rustLexicalCode(validateSid)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.validateSid &&
+    normalizedSourceSha256(rustLexicalCode(readU16)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.readU16 &&
+    normalizedSourceSha256(rustLexicalCode(readU32)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.readU32 &&
     normalizedSourceSha256(rustLexicalCode(sidString)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.sidString &&
     normalizedSourceSha256(rustLexicalCode(tokenDrop)) ===
@@ -22761,6 +22837,26 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     normalizeRustFragment(
       rustTopLevelConstItem(source, "APPROVAL_PARENT_TOKEN_ACCESS"),
     ) === "const APPROVAL_PARENT_TOKEN_ACCESS: u32 = TOKEN_QUERY.0;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES"),
+    ) ===
+      "const MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES: usize = 64 * 1024;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES"),
+    ) ===
+      "const SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES: usize = 20;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "ACL_HEADER_BYTES"),
+    ) === "const ACL_HEADER_BYTES: usize = 8;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "ACCESS_ALLOWED_ACE_FIXED_BYTES"),
+    ) === "const ACCESS_ALLOWED_ACE_FIXED_BYTES: usize = 8;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "MIN_BINARY_SID_BYTES"),
+    ) === "const MIN_BINARY_SID_BYTES: usize = 8;" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "MAX_INSTALL_SID_BYTES"),
+    ) === "const MAX_INSTALL_SID_BYTES: usize = 68;" &&
     JSON.stringify(
       rustCallSites(verifySuspended, "verify_process_token").map(
         (call) => call.arguments,
@@ -22784,14 +22880,17 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     (rustLexicalCode(verifySuspended).match(/\breturn\b/gu) ?? []).length ===
       0 &&
     hasOrderedCompactRustMarkers(install, [
-      "letdesired=TOKEN_ACCESS_MASK(TOKEN_QUERY.0|WRITE_DAC.0);",
+      "letdesired=TOKEN_ACCESS_MASK(TOKEN_QUERY.0|WRITE_DAC.0|READ_CONTROL.0);",
       "OpenProcessToken(process,desired,&rawmutraw_token)",
       "lettoken=OwnedToken::new(raw_token)?;",
       "token_information(token.0,TokenUser)?;",
       "letapproval=OwnedAppContainerSid::derive(&wide_nul_str(APPROVAL_PROFILE_V1_NAME)?)?;",
       "EqualSid(key_agent_sid,approval.as_psid())",
+      "letuser_sid_bytes=copied_sid_bytes(user.User.Sid)?;",
+      "letkey_agent_sid_bytes=copied_sid_bytes(key_agent_sid)?;",
+      "letapproval_sid_bytes=copied_sid_bytes(approval.as_psid())?;",
       "letuser_sid=sid_string(user.User.Sid)?;",
-      "letkey_agent_sid=sid_string(key_agent_sid)?;",
+      "letkey_agent_sid_string=sid_string(key_agent_sid)?;",
       "letapproval_sid=sid_string(approval.as_psid())?;",
       "letsddl=wide_nul_str(&format!(,))?;",
       "letmutdescriptor=PSECURITY_DESCRIPTOR::default();",
@@ -22799,7 +22898,8 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       "letvalid=unsafe{IsValidSecurityDescriptor(descriptor)}.as_bool();",
       "SetKernelObjectSecurity(",
       "LocalFree(Some(HLOCAL(descriptor.0)))",
-      "applied}",
+      "applied?;",
+      "verify_installed_token_dacl_readback(token.0,&user_sid_bytes,&key_agent_sid_bytes,&approval_sid_bytes,)",
     ]) &&
     JSON.stringify(
       rustCallSites(install, "OpenProcessToken").map((call) => call.arguments),
@@ -22824,13 +22924,36 @@ const keyAgentApprovalTokenDaclContract = (source) => {
         ["key_agent_sid"],
         ["approval.as_psid()"],
       ]) &&
+    JSON.stringify(
+      rustCallSites(install, "copied_sid_bytes").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        ["user.User.Sid"],
+        ["key_agent_sid"],
+        ["approval.as_psid()"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(install, "verify_installed_token_dacl_readback").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "token.0",
+          "&user_sid_bytes",
+          "&key_agent_sid_bytes",
+          "&approval_sid_bytes",
+        ],
+      ]) &&
     JSON.stringify(installMacros) ===
       JSON.stringify([
         {
           absolute: false,
           path: "format",
           source:
-            'format!("D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x};;;{user_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",)',
+            'format!("D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x};;;{user_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid_string})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",)',
         },
       ]) &&
     JSON.stringify(
@@ -22868,8 +22991,182 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       rustCallSites(install, "LocalFree").map((call) => call.arguments),
     ) === JSON.stringify([["Some(HLOCAL(descriptor.0))"]]) &&
     installCompact.includes(
-      "letapplied=ifvalid{unsafe{SetKernelObjectSecurity(token.0,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,descriptor,)}.map_err(|_|KeyAgentLpacError::Token)}else{Err(KeyAgentLpacError::Token)};unsafe{let_=LocalFree(Some(HLOCAL(descriptor.0)));}applied",
+      "letapplied=ifvalid{unsafe{SetKernelObjectSecurity(token.0,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,descriptor,)}.map_err(|_|KeyAgentLpacError::Token)}else{Err(KeyAgentLpacError::Token)};unsafe{let_=LocalFree(Some(HLOCAL(descriptor.0)));}applied?;verify_installed_token_dacl_readback(token.0,&user_sid_bytes,&key_agent_sid_bytes,&approval_sid_bytes,)",
     ) &&
+    JSON.stringify(
+      rustCallSites(copiedSid, "IsValidSid").map((call) => call.arguments),
+    ) === JSON.stringify([["sid"]]) &&
+    JSON.stringify(
+      rustCallSites(copiedSid, "GetLengthSid").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["sid"]]) &&
+    JSON.stringify(
+      rustCallSites(copiedSid, "from_raw_parts").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["sid.0.cast::<u8>()", "length"]]) &&
+    copiedSidCompact.includes(
+      "ifsid.0.is_null(){returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    copiedSidCompact.includes(
+      "if!(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&length){returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    copiedSidCompact.endsWith(
+      "Ok(unsafe{core::slice::from_raw_parts(sid.0.cast::<u8>(),length)}.to_vec())}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(readback, "GetKernelObjectSecurity").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "token",
+          "DACL_SECURITY_INFORMATION.0",
+          "None",
+          "0",
+          "&raw mut first_required",
+        ],
+        [
+          "token",
+          "DACL_SECURITY_INFORMATION.0",
+          "Some(descriptor)",
+          "first_required",
+          "&raw mut second_required",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(readback, "IsValidSecurityDescriptor").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["descriptor"]]) &&
+    JSON.stringify(
+      rustCallSites(readback, "GetSecurityDescriptorLength").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["descriptor"]]) &&
+    JSON.stringify(
+      rustCallSites(readback, "inspect_exact_token_dacl_descriptor").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "descriptor_bytes",
+          "expected_user_sid",
+          "expected_key_agent_sid",
+          "expected_approval_sid",
+        ],
+      ]) &&
+    hasOrderedCompactRustMarkers(readback, [
+      "letmutfirst_required=0_u32;",
+      "letsize_query=unsafe{GetKernelObjectSecurity(token,DACL_SECURITY_INFORMATION.0,None,0,&rawmutfirst_required,)};",
+      "if!matches!(size_query,Err(error)iferror.code()==ERROR_INSUFFICIENT_BUFFER.to_hresult())",
+      "letrequired=usize::try_from(first_required).map_err(|_|KeyAgentLpacError::Token)?;",
+      "ifrequired==0||required>MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES",
+      "letword_bytes=size_of::<usize>();",
+      "required.checked_add(word_bytes.saturating_sub(1)).ok_or(KeyAgentLpacError::Token)?/word_bytes;",
+      "letmutwords=vec![0_usize;word_count];",
+      "letdescriptor=PSECURITY_DESCRIPTOR(words.as_mut_ptr().cast::<c_void>());",
+      "letmutsecond_required=0_u32;",
+      "GetKernelObjectSecurity(token,DACL_SECURITY_INFORMATION.0,Some(descriptor),first_required,&rawmutsecond_required,)",
+      "ifsecond_required!=first_required",
+      "if!unsafe{IsValidSecurityDescriptor(descriptor)}.as_bool()",
+      "letreported_length=usize::try_from(unsafe{GetSecurityDescriptorLength(descriptor)}).map_err(|_|KeyAgentLpacError::Token)?;",
+      "ifreported_length!=required",
+      "core::slice::from_raw_parts(words.as_ptr().cast::<u8>(),required)",
+      "inspect_exact_token_dacl_descriptor(descriptor_bytes,expected_user_sid,expected_key_agent_sid,expected_approval_sid,)",
+    ]) &&
+    (readbackAuthorityCode.match(/\bGetKernelObjectSecurity\s*\(/gu) ?? [])
+      .length === 2 &&
+    !/\b(?:OpenProcessToken|OpenProcess|OpenThreadToken|DuplicateToken|DuplicateTokenEx|DuplicateHandle|GetCurrentProcess|GetCurrentProcessToken|CloseHandle)\s*\(/u.test(
+      readbackAuthorityCode,
+    ) &&
+    !/\b(?:from_raw_handle|borrow_raw|into_raw_handle)\s*\(/u.test(
+      readbackAuthorityCode,
+    ) &&
+    JSON.stringify(
+      rustCallSites(descriptor, "read_u16_at").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        ["descriptor", "2"],
+        ["dacl", "4"],
+        ["dacl", "6"],
+        ["dacl", "2"],
+        ["dacl", "used + 2"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(descriptor, "read_u32_at").map(
+        (call) => call.arguments,
+      ),
+    ) ===
+      JSON.stringify([
+        ["descriptor", "4"],
+        ["descriptor", "8"],
+        ["descriptor", "12"],
+        ["descriptor", "16"],
+        ["dacl", "used + 4"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(descriptor, "validate_binary_sid_bytes").map(
+        (call) => call.arguments,
+      ),
+    ) === JSON.stringify([["expected_sid"], ["actual_sid"]]) &&
+    hasOrderedCompactRustMarkers(descriptor, [
+      "ifdescriptor.len()<SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES||descriptor[0]!=u8::try_from(SECURITY_DESCRIPTOR_REVISION).unwrap_or(u8::MAX)||descriptor[1]!=0",
+      "letcontrol=read_u16_at(descriptor,2)?;",
+      "letrequired_control=SE_SELF_RELATIVE.0|SE_DACL_PRESENT.0|SE_DACL_PROTECTED.0;",
+      "ifcontrol!=required_control",
+      "ifread_u32_at(descriptor,4)?!=0||read_u32_at(descriptor,8)?!=0||read_u32_at(descriptor,12)?!=0",
+      "letdacl_offset=usize::try_from(read_u32_at(descriptor,16)?).map_err(|_|KeyAgentLpacError::Token)?;",
+      "ifdacl_offset!=SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES",
+      "letdacl=descriptor.get(dacl_offset..).ok_or(KeyAgentLpacError::Token)?;",
+      "ifdacl.len()<ACL_HEADER_BYTES||u32::from(dacl[0])!=ACL_REVISION.0||dacl[1]!=0||read_u16_at(dacl,4)?!=3||read_u16_at(dacl,6)?!=0",
+      "letacl_total=usize::from(read_u16_at(dacl,2)?);",
+      "ifacl_total!=dacl.len()",
+      "letexpected=[(expected_user_sid,SUPERVISOR_TOKEN_ACCESS),(expected_key_agent_sid,KEY_AGENT_TOKEN_SELF_ACCESS),(expected_approval_sid,APPROVAL_PARENT_TOKEN_ACCESS),];",
+      "letmutused=ACL_HEADER_BYTES;",
+      "for(expected_sid,expected_mask)inexpected",
+      "validate_binary_sid_bytes(expected_sid)?;",
+      "used.checked_add(ACCESS_ALLOWED_ACE_FIXED_BYTES).ok_or(KeyAgentLpacError::Token)?;",
+      "ifdacl[used]!=ace_type||dacl[used+1]!=0||ace_size<ACCESS_ALLOWED_ACE_FIXED_BYTES+MIN_BINARY_SID_BYTES||ace_end>acl_total||read_u32_at(dacl,used+4)?!=expected_mask",
+      "letactual_sid=&dacl[fixed_end..ace_end];",
+      "validate_binary_sid_bytes(actual_sid)?;",
+      "ifactual_sid!=expected_sid",
+      "used=ace_end;",
+      "letfree=acl_total.checked_sub(used).ok_or(KeyAgentLpacError::Token)?;",
+      "ifused!=acl_total||free!=0",
+      "Ok(())",
+    ]) &&
+    validateSidCompact.includes(
+      "if!(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&sid.len())||sid[0]!=1{returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    validateSidCompact.includes(
+      "letdeclared=usize::from(sid[1]).checked_mul(size_of::<u32>()).and_then(|bytes|bytes.checked_add(MIN_BINARY_SID_BYTES)).ok_or(KeyAgentLpacError::Token)?;",
+    ) &&
+    validateSidCompact.endsWith(
+      "ifdeclared!=sid.len(){returnErr(KeyAgentLpacError::Token);}Ok(())}",
+    ) &&
+    readU16Compact.includes(
+      "letoffset=offset;",
+    ) === false &&
+    readU16Compact.includes(
+      "letend=offset.checked_add(size_of::<u16>()).ok_or(KeyAgentLpacError::Token)?;",
+    ) &&
+    readU16Compact.includes(
+      "bytes.get(offset..end).ok_or(KeyAgentLpacError::Token)?.try_into().map_err(|_|KeyAgentLpacError::Token)?;",
+    ) &&
+    readU16Compact.endsWith("Ok(u16::from_le_bytes(encoded))}") &&
+    readU32Compact.includes(
+      "letend=offset.checked_add(size_of::<u32>()).ok_or(KeyAgentLpacError::Token)?;",
+    ) &&
+    readU32Compact.includes(
+      "bytes.get(offset..end).ok_or(KeyAgentLpacError::Token)?.try_into().map_err(|_|KeyAgentLpacError::Token)?;",
+    ) &&
+    readU32Compact.endsWith("Ok(u32::from_le_bytes(encoded))}") &&
     JSON.stringify(
       rustCallSites(sidString, "ConvertSidToStringSidW").map(
         (call) => call.arguments,
@@ -22912,8 +23209,8 @@ const keyAgentApprovalTokenDaclMutationProbes = [
     "const APPROVAL_PARENT_TOKEN_ACCESS: u32 = TOKEN_QUERY.0 | TOKEN_DUPLICATE.0;",
   ),
   keyAgentLpacRelease.replace(
-    "(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",
-    "(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid})",
+    "(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid_string})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",
+    "(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid_string})",
   ),
   keyAgentLpacRelease.replace(
     '"D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x}',
@@ -22924,7 +23221,11 @@ const keyAgentApprovalTokenDaclMutationProbes = [
     "DACL_SECURITY_INFORMATION,\n                descriptor",
   ),
   keyAgentLpacRelease.replace(
+    "let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0 | READ_CONTROL.0);",
     "let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0);",
+  ),
+  keyAgentLpacRelease.replace(
+    "let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0 | READ_CONTROL.0);",
     "let desired = TOKEN_ACCESS_MASK(TOKEN_ALL_ACCESS.0);",
   ),
   keyAgentLpacRelease.replace(
@@ -22944,8 +23245,144 @@ const keyAgentApprovalTokenDaclMutationProbes = [
     "            skipped_set_kernel_object_security(",
   ),
   keyAgentLpacRelease.replace(
-    "    unsafe {\n        let _ = LocalFree(Some(HLOCAL(descriptor.0)));\n    }\n    applied",
-    "    applied",
+    "    unsafe {\n        let _ = LocalFree(Some(HLOCAL(descriptor.0)));\n    }\n    applied?;",
+    "    applied?;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    verify_installed_token_dacl_readback(\n        token.0,\n        &user_sid_bytes,\n        &key_agent_sid_bytes,\n        &approval_sid_bytes,\n    )",
+    "    Ok(())",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();",
+    "    verify_installed_token_dacl_readback(\n        token.0,\n        &user_sid_bytes,\n        &key_agent_sid_bytes,\n        &approval_sid_bytes,\n    )?;\n    let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let user_sid_bytes = copied_sid_bytes(user.User.Sid)?;",
+    "    let user_sid_bytes = Vec::new();",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if !unsafe { IsValidSid(sid) }.as_bool() {",
+    "    if false && !unsafe { IsValidSid(sid) }.as_bool() {",
+  ),
+  keyAgentLpacRelease.replace(
+    "            token,\n            DACL_SECURITY_INFORMATION.0,\n            None,",
+    "            HANDLE::default(),\n            DACL_SECURITY_INFORMATION.0,\n            None,",
+  ),
+  keyAgentLpacRelease.replace(
+    "            token,\n            DACL_SECURITY_INFORMATION.0,\n            Some(descriptor),",
+    "            HANDLE::default(),\n            DACL_SECURITY_INFORMATION.0,\n            Some(descriptor),",
+  ),
+  keyAgentLpacRelease.replace(
+    "            DACL_SECURITY_INFORMATION.0,\n            None,",
+    "            0,\n            None,",
+  ),
+  keyAgentLpacRelease.replace(
+    "            None,\n            0,\n            &raw mut first_required,",
+    "            Some(PSECURITY_DESCRIPTOR::default()),\n            0,\n            &raw mut first_required,",
+  ),
+  keyAgentLpacRelease.replace(
+    "        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()",
+    "        Err(_)",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if required == 0 || required > MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES {",
+    "    if required == 0 {",
+  ),
+  keyAgentLpacRelease.replace(
+    "const MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES: usize = 64 * 1024;",
+    "const MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES: usize = usize::MAX;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let word_count = required\n        .checked_add(word_bytes.saturating_sub(1))\n        .ok_or(KeyAgentLpacError::Token)?\n        / word_bytes;",
+    "    let word_count = required / word_bytes;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if second_required != first_required {",
+    "    if false && second_required != first_required {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool() {",
+    "    if false && !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool() {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let reported_length = usize::try_from(unsafe { GetSecurityDescriptorLength(descriptor) })\n        .map_err(|_| KeyAgentLpacError::Token)?;",
+    "    let reported_length = required;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if reported_length != required {",
+    "    if false && reported_length != required {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    inspect_exact_token_dacl_descriptor(\n        descriptor_bytes,\n        expected_user_sid,\n        expected_key_agent_sid,\n        expected_approval_sid,\n    )",
+    "    Ok(())",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if descriptor.len() < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES",
+    "    if false && descriptor.len() < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let required_control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0;",
+    "    let required_control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if control != required_control {",
+    "    if control & required_control != required_control {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if read_u32_at(descriptor, 4)? != 0\n        || read_u32_at(descriptor, 8)? != 0\n        || read_u32_at(descriptor, 12)? != 0",
+    "    if false && (read_u32_at(descriptor, 4)? != 0\n        || read_u32_at(descriptor, 8)? != 0\n        || read_u32_at(descriptor, 12)? != 0)",
+  ),
+  keyAgentLpacRelease.replace(
+    "const SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES: usize = 20;",
+    "const SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES: usize = 24;",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || u32::from(dacl[0]) != ACL_REVISION.0",
+    "        || false && u32::from(dacl[0]) != ACL_REVISION.0",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || read_u16_at(dacl, 4)? != 3",
+    "        || read_u16_at(dacl, 4)? != 2",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || dacl[1] != 0",
+    "        || false && dacl[1] != 0",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if acl_total != dacl.len() {",
+    "    if false && acl_total != dacl.len() {",
+  ),
+  keyAgentLpacRelease.replace(
+    "        (expected_key_agent_sid, KEY_AGENT_TOKEN_SELF_ACCESS),\n        (expected_approval_sid, APPROVAL_PARENT_TOKEN_ACCESS),",
+    "        (expected_approval_sid, APPROVAL_PARENT_TOKEN_ACCESS),\n        (expected_key_agent_sid, KEY_AGENT_TOKEN_SELF_ACCESS),",
+  ),
+  keyAgentLpacRelease.replace(
+    "            || dacl[used + 1] != 0",
+    "            || false && dacl[used + 1] != 0",
+  ),
+  keyAgentLpacRelease.replace(
+    "        if actual_sid != expected_sid {",
+    "        if false && actual_sid != expected_sid {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if declared != sid.len() {",
+    "    if false && declared != sid.len() {",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if used != acl_total || free != 0 {",
+    "    if false && (used != acl_total || free != 0) {",
+  ),
+  keyAgentLpacRelease.replace(
+    "        .checked_add(size_of::<u16>())",
+    "        .saturating_add(size_of::<u16>())",
+  ),
+  keyAgentLpacRelease.replace(
+    "        .checked_add(size_of::<u32>())",
+    "        .saturating_add(size_of::<u32>())",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let mut first_required = 0_u32;",
+    "    let mut reopened = HANDLE::default();\n    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut reopened) }\n        .map_err(|_| KeyAgentLpacError::Token)?;\n    let token = reopened;\n    let mut first_required = 0_u32;",
   ),
   keyAgentLpacRelease.replace(
     "                let _ = CloseHandle(self.0);",
@@ -22964,15 +23401,150 @@ const keyAgentApprovalTokenDaclMutationProbes = [
     keyAgentLpacRelease,
     "install_approval_token_query_dacl",
   ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "copied_sid_bytes",
+    "Ok(Vec::new())",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "verify_installed_token_dacl_readback",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "inspect_exact_token_dacl_descriptor",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "validate_binary_sid_bytes",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "read_u16_at",
+    "Ok(0)",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentLpacRelease,
+    "read_u32_at",
+    "Ok(0)",
+  ),
 ];
 requireInvariant(
-  keyAgentApprovalTokenDaclContract(keyAgentLpacRelease) &&
+  keyAgentApprovalTokenDaclMutationProbes.every(
+    (mutated) => mutated !== keyAgentLpacRelease,
+  ) &&
+    keyAgentApprovalTokenDaclContract(keyAgentLpacRelease) &&
     keyAgentApprovalTokenDaclMutationProbes.every(
       (mutated) =>
-        mutated !== keyAgentLpacRelease &&
         !keyAgentApprovalTokenDaclContract(mutated),
     ),
-  "the suspended Key Agent must be verified before and after installing one protected three-principal token DACL, with exact role masks, distinct Approval SID derivation, minimal mutation authority, and unconditional native-resource cleanup",
+  "the suspended Key Agent must verify one protected three-principal token DACL through a bounded exact same-handle readback, with exact role masks/SIDs/bytes, no reopen, no slack, and unconditional native-resource cleanup",
+);
+const keyAgentTokenDaclKernelPathContract = (activationSource) => {
+  let successfulKernelTest;
+  let activateForTest;
+  let activatePrepared;
+  let activateWithIdentity;
+  let authenticateAndBind;
+  let authenticateFirstEvent;
+  try {
+    const activationProduction = withoutCfgTestItems(
+      withoutBottomTestModule(activationSource),
+    );
+    successfulKernelTest = rustFunctionBlock(
+      activationSource,
+      "successful_kernel_proof_detaches_with_one_verified_suspend_count",
+    );
+    activateForTest = rustFunctionBlock(activationSource, "activate_for_test");
+    activatePrepared = rustFunctionBlock(
+      activationProduction,
+      "activate_preflighted_key_agent_on_fresh_worker",
+    );
+    activateWithIdentity = rustFunctionBlock(
+      activationProduction,
+      "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+    );
+    authenticateAndBind = rustFunctionBlock(
+      activationProduction,
+      "authenticate_detach_and_bind_activation",
+    );
+    authenticateFirstEvent = rustFunctionBlock(
+      activationProduction,
+      "authenticate_first_event",
+    );
+  } catch {
+    return false;
+  }
+
+  return (
+    rustCallSites(successfulKernelTest, "activate_for_test").length === 1 &&
+    compactRust(successfulKernelTest).includes(
+      "activate_for_test(attestation,artifact,|activation,root_job|",
+    ) &&
+    rustCallSites(
+      activateForTest,
+      "activate_preflighted_key_agent_on_fresh_worker",
+    ).length === 1 &&
+    rustCallSites(
+      activatePrepared,
+      "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+    ).length === 1 &&
+    rustCallSites(activateWithIdentity, "SuspendedDebuggee::create")
+      .length === 1 &&
+    rustCallSites(authenticateAndBind, "authenticate_first_event").length ===
+      1 &&
+    JSON.stringify(
+      rustCallSites(
+        authenticateFirstEvent,
+        "verify_and_harden_suspended_process",
+      ).map((call) => call.arguments),
+    ) === JSON.stringify([["self.process_handle()"]]) &&
+    hasOrderedCompactRustMarkers(authenticateFirstEvent, [
+      "letprevious_suspend_count=unsafe{SuspendThread(self.primary_thread.raw())};",
+      "ifprevious_suspend_count!=0",
+      "self.proven_suspend_count=1;",
+      "letprepared_lpac=self.prepared_lpac.take().ok_or(KeyAgentActivationError::LpacPolicy)?;",
+      "letverified_lpac=prepared_lpac.verify_and_harden_suspended_process(self.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)?;",
+      "self.lpac=Some(verified_lpac);",
+      "Ok(AuthenticatedFirstEvent{creation_time})",
+    ])
+  );
+};
+const keyAgentTokenDaclKernelPathMutationProbes = [
+  keyAgentActivationSource.replace(
+    "        activate_for_test(attestation, artifact, |activation, root_job| {",
+    "        skipped_activate_for_test(attestation, artifact, |activation, root_job| {",
+  ),
+  keyAgentActivationSource.replace(
+    "            let activation = activate_preflighted_key_agent_on_fresh_worker(",
+    "            let activation = skipped_activate_preflighted_key_agent_on_fresh_worker(",
+  ),
+  keyAgentActivationSource.replace(
+    "    activate_preflighted_key_agent_on_fresh_worker_with_identity(",
+    "    skipped_activate_preflighted_key_agent_on_fresh_worker_with_identity(",
+  ),
+  keyAgentActivationSource.replace(
+    "    let process = sys::SuspendedDebuggee::create(",
+    "    let process = sys::SuspendedDebuggee::skipped_create(",
+  ),
+  keyAgentActivationSource.replace(
+    "        .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)",
+    "        .skipped_authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)",
+  ),
+  keyAgentActivationSource.replace(
+    "                .verify_and_harden_suspended_process(self.process_handle())",
+    "                .skipped_verify_and_harden_suspended_process(self.process_handle())",
+  ),
+];
+requireInvariant(
+  keyAgentTokenDaclKernelPathMutationProbes.every(
+    (mutated) => mutated !== keyAgentActivationSource,
+  ) &&
+    keyAgentTokenDaclKernelPathContract(keyAgentActivationSource) &&
+    keyAgentTokenDaclKernelPathMutationProbes.every(
+      (mutated) => !keyAgentTokenDaclKernelPathContract(mutated),
+    ),
+  "the integrated kernel proof must retain the full production activation path through the exact suspended-process token hardening and same-handle DACL readback",
 );
 requireInvariant(
   /pub\(crate\)\s+fn\s+verify_and_harden_suspended_process\(\s*self,\s*process:\s*BorrowedHandle<'_>/u.test(
@@ -28954,7 +29526,7 @@ const approvalParentDocumentationWindow = (document) => {
     .join("\n");
 };
 const approvalParentDocumentationContradiction =
-  /ParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary\.|The binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID\.|The repo-local kernel proof is release evidence for a signed mapped production image\.|The test proves a distinct supervisor principal and same-user owner separation\.|The token DACL is a process-and-thread creation-time DACL\.|The retained exact parent handle is inheritable\.|(?:test|proof)[^.]{0,100}(?:directly|successfully|actually)\s+(?:reads? back|verifies?)[^.]{0,100}token (?:security )?descriptor\.|(?:establishes|provides)[^.]{0,100}same-user[^.]{0,100}(?:isolation|separation)\./iu;
+  /ParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary\.|The binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID\.|The repo-local kernel proof is release evidence for a signed mapped production image\.|The test proves a distinct supervisor principal and same-user owner separation\.|The token DACL is a process-and-thread creation-time DACL\.|The retained exact parent handle is inheritable\.|(?:does not|doesn't|without|않)[^.]{0,120}(?:read back|readback)[^.]{0,120}token (?:security )?descriptor|token (?:security )?descriptor[^.]{0,120}(?:does not|doesn't|not|않)[^.]{0,80}(?:read back|readback)|(?:readback|read back)[^.]{0,120}(?:reopen|different|fresh|new)[^.]{0,80}token handle|(?:final|post)[^.]{0,100}(?:token|process-token)[^.]{0,100}(?:TokenId|identity) continuity|(?:establishes|provides)[^.]{0,100}same-user[^.]{0,100}(?:isolation|separation)\./iu;
 const approvalParentDocumentationContract = (documents) =>
   documents.every((document) => {
     const window = approvalParentDocumentationWindow(document);
@@ -29007,27 +29579,74 @@ const approvalParentDocumentationContract = (documents) =>
       ].every((right) => window.includes(right)) &&
       window.includes("PROCESS_DUP_HANDLE") &&
       window.includes("SeDebugPrivilege") &&
-      /protected[\s\S]{0,100}token DACL/iu.test(window) &&
+      /(?:token\s+DACL|installs?\s+the\s+protected\s+DACL)/iu.test(window) &&
       /(?:pre-user-mode|before[\s\S]{0,40}(?:user mode|resume)|(?:user mode|resume)\s*전)/iu.test(
         window,
       ) &&
-      /(?:successfully\s+install|installed\s+successfully|성공적으로\s+설치)/iu.test(
+      /(?:hardening step|hardening\s+단계)/iu.test(window) &&
+      /(?:exactly once|정확히\s+한\s+번)/iu.test(window) &&
+      normalizedWindow.includes(
+        "TOKEN_QUERY | WRITE_DAC | READ_CONTROL",
+      ) &&
+      /(?:install|set|설치)[\s\S]{0,320}(?:(?:same[\s`]+opened|같은[\s`]+opened)[\s\S]{0,160}(?:read back|readback)|(?:read back|readback)[\s\S]{0,160}(?:same[\s`]+opened|같은[\s`]+opened))/iu.test(
         window,
       ) &&
-      /production[\s\S]{0,120}Key Agent activation[\s\S]{0,160}(?:install|설치)/iu.test(
+      /(?:The same-handle guarantee covers only DACL Set plus\s+kernel\s+readback|같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용)/iu.test(
         window,
       ) &&
-      /stable\s+user[\s\S]{0,80}(?:all|TOKEN_ALL_ACCESS)/iu.test(window) &&
+      /production[\s\S]{0,120}Key Agent activation[\s\S]{0,400}(?:install|설치)/iu.test(
+        window,
+      ) &&
+      /stable[\s`]+(?:user|TokenUser)[\s\S]{0,100}(?:all|TOKEN_ALL_ACCESS)/iu.test(
+        window,
+      ) &&
       /Key Agent[\s\S]{0,100}(?:query\+duplicate|TOKEN_QUERY\s*\|\s*TOKEN_DUPLICATE)/iu.test(
         window,
       ) &&
-      /Approval[\s\S]{0,100}(?:query-only|exactly[\s`]+TOKEN_QUERY)/iu.test(
+      /Approval[\s\S]{0,120}(?:query-only|(?:exactly[\s`]+)?TOKEN_QUERY)/iu.test(
         window,
       ) &&
-      /(?:does not|doesn't)[\s\S]{0,100}read back[\s\S]{0,100}token security descriptor|(?:no|without)[\s\S]{0,60}token[- ]descriptor readback|token security descriptor[\s\S]{0,100}(?:not|않)/iu.test(
+      window.includes("DACL_SECURITY_INFORMATION") &&
+      /bounded\s+two-pass/iu.test(window) &&
+      window.includes("ERROR_INSUFFICIENT_BUFFER") &&
+      window.includes("1..=64 KiB") &&
+      /(?:second pass|2차)[\s\S]{0,160}(?:returned|result|결과|length|길이)[\s\S]{0,160}(?:exact|equal|match|같)/iu.test(
         window,
       ) &&
-      /(?:LPAC\/token|LPAC and token|LPAC\s*\/\s*token)[\s\S]{0,100}(?:before\s+and\s+after|전후)/iu.test(
+      /self-relative/iu.test(window) &&
+      /present[\s/,-]*protected/iu.test(window) &&
+      /non-defaulted/iu.test(window) &&
+      /non-auto-inherited/iu.test(window) &&
+      window.includes("ACL_REVISION") &&
+      /zero reserved/iu.test(window) &&
+      window.includes("ACCESS_ALLOWED_ACE") &&
+      /(?:(?:exactly\s+three|three|세\s*개)[\s\S]{0,120}(?:zero-flag|explicit|ACCESS_ALLOWED_ACE)|(?:zero-flag|explicit|ACCESS_ALLOWED_ACE)[\s\S]{0,120}(?:exactly\s+three|three|세\s*개))/iu.test(
+        window,
+      ) &&
+      /(?:declared SID|SID[\s\S]{0,40}length|binary SID)/iu.test(window) &&
+      /(?:extra|추가)/iu.test(window) &&
+      /slack/iu.test(window) &&
+      /trailing/iu.test(window) &&
+      window.includes("VerifiedKeyAgentLpac") &&
+      /(?:point-in-time[\s\S]{0,80}token[\s-]+(?:object|handle)|그\s+시점(?:의)?[\s\S]{0,80}token-object)/iu.test(
+        window,
+      ) &&
+      /not\s+same-user\s+isolation|same-user\s+isolation[\s\S]{0,160}(?:아니|아닙|증거가\s*아|not)/iu.test(
+        window,
+      ) &&
+      /not[\s\S]{0,80}process\/thread\s+creation-time\s+DACL|process\/thread\s+creation-time\s+DACL[\s\S]{0,160}(?:아니|아닙|증거가\s*아|not)/iu.test(
+        window,
+      ) &&
+      window.includes("TokenStatistics.TokenId") &&
+      /(?:do not compare|without comparing|비교하지)/iu.test(window) &&
+      window.includes("hardened-to-final-current-token continuity") &&
+      /hardened-to-final-current-token continuity[\s\S]{0,60}STOP-SHIP/iu.test(
+        window,
+      ) &&
+      /(?:(?:ordinary\s+)?LPAC(?:\/token)?(?:\s+(?:policy\s+checks?|attributes))?[\s\S]{0,180}(?:before\s+and\s+after|전후)|전후[\s\S]{0,100}(?:ordinary\s+)?LPAC)/iu.test(
+        window,
+      ) &&
+      /(?:reopen[\s\S]{0,100}(?:then-current|current)[\s`-]+token|그\s+시점\s+current\s+token[\s\S]{0,80}다시\s*열)/iu.test(
         window,
       ) &&
       /(?:does not|doesn't)[\s\S]{0,120}read back[\s\S]{0,120}mandatory-label\s+state|mandatory-label\s+state[\s\S]{0,120}(?:(?:not|does not|않)[\s\S]{0,80}read back|read back[\s\S]{0,40}(?:not|않|하지))/iu.test(
@@ -29104,13 +29723,48 @@ const approvalParentDocumentationMarkerMutators = [
   (document) => document.replace(/(?:\btwelve\b|\b12\b)/giu, "zero"),
   (document) =>
     document.replace(
-      /protected(?:\s+three-ACE)?(?:\s+Key\s+Agent)?\s+token DACL/giu,
+      /(?:token\s+DACL|installs?\s+the\s+protected\s+DACL)/giu,
       "ambient token policy",
+    ),
+  (document) =>
+    document.replace(
+      /(?:The same-handle guarantee covers only DACL Set plus\s+kernel\s+readback|같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용)/giu,
+      "The DACL operation has an unspecified handle scope",
     ),
   (document) => document.replaceAll("NO_LOW_LABEL", "UNSPECIFIED_MITIGATION"),
   (document) => document.replace(/mandatory-label\s+state/giu, "label state"),
   (document) =>
-    document.replace(/token security descriptor/giu, "token metadata"),
+    document.replaceAll("DACL_SECURITY_INFORMATION", "OWNER_SECURITY_INFORMATION"),
+  (document) => document.replace(/bounded\s+two-pass/giu, "unbounded one-pass"),
+  (document) =>
+    document.replaceAll("ERROR_INSUFFICIENT_BUFFER", "ERROR_SUCCESS"),
+  (document) => document.replaceAll("1..=64 KiB", "unbounded"),
+  (document) => document.replace(/self-relative/giu, "absolute"),
+  (document) => document.replace(/non-defaulted/giu, "defaulted"),
+  (document) => document.replace(/non-auto-inherited/giu, "auto-inherited"),
+  (document) => document.replaceAll("ACL_REVISION", "ACL_UNCHECKED"),
+  (document) => document.replace(/zero reserved/giu, "ignored reserved"),
+  (document) => document.replaceAll("ACCESS_ALLOWED_ACE", "ARBITRARY_ACE"),
+  (document) => document.replace(/slack/giu, "padding"),
+  (document) =>
+    document.replace(/same-user\s+isolation/giu, "same-user boundary"),
+  (document) =>
+    document.replace(
+      /process\/thread creation-time DACL/giu,
+      "runtime token policy",
+    ),
+  (document) =>
+    document.replaceAll("TokenStatistics.TokenId", "TokenStatistics.Unchecked"),
+  (document) =>
+    document.replaceAll(
+      "hardened-to-final-current-token continuity",
+      "unspecified continuity",
+    ),
+  (document) =>
+    document.replace(
+      /(?:reopen\s+the\s+process's\s+then-current\s+token|process의\s+그\s+시점\s+current\s+token을\s+다시\s+열)/giu,
+      "use an unspecified process token",
+    ),
   (document) =>
     document.replace(
       /(?:distinct|별도)\s+supervisor\s+principal/giu,
@@ -29165,11 +29819,19 @@ const approvalParentDocumentationMutationProbes =
     },
     {
       index,
-      document: `${document}\nThe test directly reads back and verifies the token security descriptor.\n`,
+      document: `${document}\nThe hardening step does not read back the token security descriptor.\n`,
     },
     {
       index,
       document: `${document}\nThe token DACL establishes same-user supervisor isolation.\n`,
+    },
+    {
+      index,
+      document: `${document}\nThe readback may reopen a different token handle.\n`,
+    },
+    {
+      index,
+      document: `${document}\nThe final process-token recheck proves TokenId continuity with the hardened token object.\n`,
     },
   ]);
 requireInvariant(

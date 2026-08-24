@@ -226,12 +226,33 @@ zero flags, twelve token-right denials, and `SeDebugPrivilege` absence. The loca
 matrix requests `PROCESS_DUP_HANDLE`, `PROCESS_QUERY_INFORMATION`,
 `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_LIMITED_INFORMATION`
 (`0x2000`), `SYNCHRONIZE`, the exact query-limited/synchronize combined mask,
-and `WRITE_DAC`. Before resume, production Key Agent activation successfully
-installs a protected three-ACE token DACL for stable user all, Key Agent
-query+duplicate, and Approval query-only. The `cfg(test)` integration executes
-that production-compiled hardening and proves the Approval query-only outcome.
-Ordinary LPAC/token attributes are verified before and after installation; this
-slice does not read back the token security descriptor. The fixture does not directly read back the
+and `WRITE_DAC`. The production Key Agent activation hardening step opens the
+suspended process token exactly once with
+`TOKEN_QUERY | WRITE_DAC | READ_CONTROL`. Before resume
+it installs the protected token DACL and immediately reads
+`DACL_SECURITY_INFORMATION` back through that same opened token handle. The
+kernel readback is a bounded two-pass contract: the sizing pass must return
+`ERROR_INSUFFICIENT_BUFFER` and 1..=64 KiB; the aligned second pass, its returned
+size, and `GetSecurityDescriptorLength` must equal the original requirement.
+The descriptor must be valid and self-relative, and its DACL must be present,
+protected, non-defaulted, and non-auto-inherited. Exact self-relative bounds,
+`ACL_REVISION`, zero reserved fields, ACL size, and descriptor end permit only
+three zero-flag explicit `ACCESS_ALLOWED_ACE`s in this order: stable `TokenUser`
+SID with `TOKEN_ALL_ACCESS`, fixed Key Agent SID with
+`TOKEN_QUERY | TOKEN_DUPLICATE`, and fixed Approval SID with exactly
+`TOKEN_QUERY`. Exact masks, declared SID lengths and bytes, and ACE sizes must
+consume the entire ACL/descriptor without extra ACEs, slack, or trailing bytes.
+The same-handle guarantee covers only DACL Set plus kernel readback. The
+surrounding ordinary LPAC policy checks reopen the process's then-current token
+before and after hardening, but do not compare `TokenStatistics.TokenId` or
+kernel-object identity to the hardened handle. Therefore
+`hardened-to-final-current-token continuity` remains **STOP-SHIP**. Any
+set/readback/policy-check failure occurs before `VerifiedKeyAgentLpac` can be
+minted. The `cfg(test)`
+integration executes that production-compiled hardening and proves the Approval
+query-only outcome. This is point-in-time evidence about the hardened token
+handle, not same-user isolation or a process/thread creation-time DACL. The
+fixture does not directly read back the
 copied image's mandatory-label state. Its test-only mitigation removes only
 `NO_LOW_LABEL` to permit the profile-scoped copy; production mitigation is
 unchanged. Mapped-image and

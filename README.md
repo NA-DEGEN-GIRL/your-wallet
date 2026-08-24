@@ -686,11 +686,26 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `PROCESS_QUERY_INFORMATION`, `PROCESS_QUERY_LIMITED_INFORMATION`,
   `PROCESS_SET_LIMITED_INFORMATION`(`0x2000`), `SYNCHRONIZE`, query-limited/synchronize의
   exact combined mask, `WRITE_DAC`을 요청합니다. 또한 `SeDebugPrivilege` LUID가
-  없음을 증명합니다. production Key Agent activation은 resume 전에 protected three-ACE
-  token DACL(stable user all / Key Agent query+duplicate / Approval query-only)을
-  successfully installs 합니다. `cfg(test)` integration은 이 production-compiled hardening을
-  그대로 실행하고 Approval query-only 결과를 증명합니다. ordinary LPAC/token attributes를
-  설치 전후 확인하지만, 이 slice는 token security descriptor를 read back하지 않습니다.
+  없음을 증명합니다. production Key Agent activation의 hardening step은 suspended
+  process token을 `TOKEN_QUERY | WRITE_DAC | READ_CONTROL`로 정확히 한 번 열고, resume 전에
+  protected three-ACE token DACL을 설치한 뒤 같은 opened token handle에서
+  `GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)`를 bounded two-pass로 즉시
+  read back합니다. 1차 조회는 `ERROR_INSUFFICIENT_BUFFER`와 1..=64 KiB의
+  필요 크기를 내야 하고, 2차 결과와 descriptor 길이는 그 크기와 정확히
+  같아야 합니다. readback은 valid self-relative이며 DACL은 present/protected,
+  non-defaulted, non-auto-inherited여야 합니다. `ACL_REVISION`과 zero reserved
+  fields, exact offset/length/end shape 안에 zero-flag explicit `ACCESS_ALLOWED_ACE` 세 개만
+  stable `TokenUser` SID + `TOKEN_ALL_ACCESS`, fixed Key Agent SID +
+  `TOKEN_QUERY | TOKEN_DUPLICATE`, fixed Approval SID + `TOKEN_QUERY` 순서로 존재해야
+  하며, mask·binary SID·ACE/ACL/descriptor byte shape의 extra/slack/trailing byte를 모두
+  거부합니다. 같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용됩니다.
+  전후 ordinary LPAC policy check는 process의 그 시점 current token을 다시 열지만,
+  hardened handle과 `TokenStatistics.TokenId` 또는 kernel-object identity를 비교하지
+  않습니다. 따라서 `hardened-to-final-current-token continuity`는 **STOP-SHIP**입니다.
+  어떤 set/readback/policy-check failure도 `VerifiedKeyAgentLpac` 생성 전에 fail closed합니다.
+  `cfg(test)` integration은 이 production-compiled set-and-readback hardening을 그대로 실행하고
+  Approval query-only 결과를 증명합니다. 이 readback은 hardened handle의 그 시점 token-object
+  evidence일 뿐 same-user isolation이나 process/thread creation-time DACL 증거가 아닙니다.
   fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
   profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
   제거하며 production mitigation은 그대로입니다.

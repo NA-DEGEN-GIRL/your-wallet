@@ -27,7 +27,7 @@ use std::{
 #[cfg(test)]
 use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -39,19 +39,23 @@ use windows::Win32::Security::Isolation::{
 #[cfg(test)]
 use windows::Win32::Security::SetFileSecurityW;
 use windows::Win32::Security::{
+    ACL_REVISION, DACL_SECURITY_INFORMATION, GetKernelObjectSecurity, GetSecurityDescriptorLength,
+    IsValidSecurityDescriptor, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_SELF_RELATIVE, SetKernelObjectSecurity,
+};
+use windows::Win32::Security::{
     CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetLengthSid, GetTokenInformation,
     IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_ACCESS_MASK,
     TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
     TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
     TokenIsLessPrivilegedAppContainer, TokenUser,
 };
-use windows::Win32::Security::{
-    DACL_SECURITY_INFORMATION, IsValidSecurityDescriptor, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, SetKernelObjectSecurity,
-};
-use windows::Win32::Storage::FileSystem::WRITE_DAC;
+use windows::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::System::SystemServices::{CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC};
+use windows::Win32::System::SystemServices::{
+    ACCESS_ALLOWED_ACE_TYPE, CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC,
+    SECURITY_DESCRIPTOR_REVISION,
+};
 #[cfg(test)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::{
@@ -87,7 +91,12 @@ const KEY_AGENT_PROFILE_DESCRIPTION: &str =
     "Persistent zero-capability LPAC identity for Your Wallet Key Agent";
 const CAPABILITY_COUNT: u32 = 0;
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
+const MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES: usize = 64 * 1024;
 const MAX_INSTALL_SID_BYTES: usize = 68;
+const SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES: usize = 20;
+const ACL_HEADER_BYTES: usize = 8;
+const ACCESS_ALLOWED_ACE_FIXED_BYTES: usize = 8;
+const MIN_BINARY_SID_BYTES: usize = 8;
 const SUPERVISOR_TOKEN_ACCESS: u32 = TOKEN_ALL_ACCESS.0;
 const KEY_AGENT_TOKEN_SELF_ACCESS: u32 = TOKEN_QUERY.0 | TOKEN_DUPLICATE.0;
 const APPROVAL_PARENT_TOKEN_ACCESS: u32 = TOKEN_QUERY.0;
@@ -540,9 +549,10 @@ impl PreparedKeyAgentLpac {
         }
     }
 
-    /// Verifies the exact suspended zero-capability LPAC, installs the protected
-    /// three-principal token DACL used by production activation, then verifies
-    /// the same token identity again before returning the hardened proof.
+    /// Verifies the exact suspended zero-capability LPAC, installs and reads
+    /// back the protected three-principal token DACL through one token handle,
+    /// then reopens and verifies the process's current token policy before
+    /// returning the proof.
     pub(crate) fn verify_and_harden_suspended_process(
         self,
         process: BorrowedHandle<'_>,
@@ -965,9 +975,10 @@ fn install_approval_token_query_dacl(
 ) -> Result<(), KeyAgentLpacError> {
     let mut raw_token = HANDLE::default();
     let process = HANDLE(process.as_raw_handle());
-    let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0);
+    let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0 | READ_CONTROL.0);
     // SAFETY: the exact suspended process is retained by its activation owner;
-    // output receives one token handle with only query and DACL-write rights.
+    // output receives one token handle with exactly the rights needed to query,
+    // install, and read back this DACL.
     unsafe { OpenProcessToken(process, desired, &raw mut raw_token) }
         .map_err(|_| KeyAgentLpacError::Token)?;
     let token = OwnedToken::new(raw_token)?;
@@ -984,11 +995,14 @@ fn install_approval_token_query_dacl(
         return Err(KeyAgentLpacError::Token);
     }
 
+    let user_sid_bytes = copied_sid_bytes(user.User.Sid)?;
+    let key_agent_sid_bytes = copied_sid_bytes(key_agent_sid)?;
+    let approval_sid_bytes = copied_sid_bytes(approval.as_psid())?;
     let user_sid = sid_string(user.User.Sid)?;
-    let key_agent_sid = sid_string(key_agent_sid)?;
+    let key_agent_sid_string = sid_string(key_agent_sid)?;
     let approval_sid = sid_string(approval.as_psid())?;
     let sddl = wide_nul_str(&format!(
-        "D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x};;;{user_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",
+        "D:P(A;;0x{SUPERVISOR_TOKEN_ACCESS:08x};;;{user_sid})(A;;0x{KEY_AGENT_TOKEN_SELF_ACCESS:08x};;;{key_agent_sid_string})(A;;0x{APPROVAL_PARENT_TOKEN_ACCESS:08x};;;{approval_sid})",
     ))?;
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: the exact generated SDDL is live and NUL terminated; output
@@ -1023,7 +1037,230 @@ fn install_approval_token_query_dacl(
     unsafe {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
-    applied
+    applied?;
+    verify_installed_token_dacl_readback(
+        token.0,
+        &user_sid_bytes,
+        &key_agent_sid_bytes,
+        &approval_sid_bytes,
+    )
+}
+
+fn copied_sid_bytes(sid: PSID) -> Result<Vec<u8>, KeyAgentLpacError> {
+    if sid.0.is_null() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: the SID pointer comes from one live token-information buffer or
+    // one retained profile SID owner.
+    if !unsafe { IsValidSid(sid) }.as_bool() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: IsValidSid accepted this complete live SID.
+    let length =
+        usize::try_from(unsafe { GetLengthSid(sid) }).map_err(|_| KeyAgentLpacError::Token)?;
+    if !(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&length) {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: the validated SID reports this exact readable byte length and
+    // its backing owner remains live for the complete copy.
+    Ok(unsafe { core::slice::from_raw_parts(sid.0.cast::<u8>(), length) }.to_vec())
+}
+
+fn verify_installed_token_dacl_readback(
+    token: HANDLE,
+    expected_user_sid: &[u8],
+    expected_key_agent_sid: &[u8],
+    expected_approval_sid: &[u8],
+) -> Result<(), KeyAgentLpacError> {
+    let mut first_required = 0_u32;
+    // SAFETY: `token` is the same live handle used to install the DACL. A null
+    // first-pass buffer is the documented bounded-size query contract.
+    let size_query = unsafe {
+        GetKernelObjectSecurity(
+            token,
+            DACL_SECURITY_INFORMATION.0,
+            None,
+            0,
+            &raw mut first_required,
+        )
+    };
+    if !matches!(
+        size_query,
+        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()
+    ) {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let required = usize::try_from(first_required).map_err(|_| KeyAgentLpacError::Token)?;
+    if required == 0 || required > MAX_TOKEN_SECURITY_DESCRIPTOR_BYTES {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let word_bytes = size_of::<usize>();
+    let word_count = required
+        .checked_add(word_bytes.saturating_sub(1))
+        .ok_or(KeyAgentLpacError::Token)?
+        / word_bytes;
+    let mut words = vec![0_usize; word_count];
+    let descriptor = PSECURITY_DESCRIPTOR(words.as_mut_ptr().cast::<c_void>());
+    let mut second_required = 0_u32;
+    // SAFETY: the aligned allocation has at least `first_required` writable
+    // bytes, and the exact same retained token handle remains live.
+    unsafe {
+        GetKernelObjectSecurity(
+            token,
+            DACL_SECURITY_INFORMATION.0,
+            Some(descriptor),
+            first_required,
+            &raw mut second_required,
+        )
+    }
+    .map_err(|_| KeyAgentLpacError::Token)?;
+    if second_required != first_required {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: the second pass initialized a complete descriptor in this live,
+    // aligned allocation.
+    if !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: IsValidSecurityDescriptor accepted the complete live descriptor.
+    let reported_length = usize::try_from(unsafe { GetSecurityDescriptorLength(descriptor) })
+        .map_err(|_| KeyAgentLpacError::Token)?;
+    if reported_length != required {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: the bounded allocation contains exactly `required` initialized
+    // descriptor bytes after the successful second pass.
+    let descriptor_bytes =
+        unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), required) };
+    inspect_exact_token_dacl_descriptor(
+        descriptor_bytes,
+        expected_user_sid,
+        expected_key_agent_sid,
+        expected_approval_sid,
+    )
+}
+
+fn inspect_exact_token_dacl_descriptor(
+    descriptor: &[u8],
+    expected_user_sid: &[u8],
+    expected_key_agent_sid: &[u8],
+    expected_approval_sid: &[u8],
+) -> Result<(), KeyAgentLpacError> {
+    if descriptor.len() < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || descriptor[0] != u8::try_from(SECURITY_DESCRIPTOR_REVISION).unwrap_or(u8::MAX)
+        || descriptor[1] != 0
+    {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let control = read_u16_at(descriptor, 2)?;
+    let required_control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0;
+    if control != required_control {
+        return Err(KeyAgentLpacError::Token);
+    }
+    if read_u32_at(descriptor, 4)? != 0
+        || read_u32_at(descriptor, 8)? != 0
+        || read_u32_at(descriptor, 12)? != 0
+    {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let dacl_offset =
+        usize::try_from(read_u32_at(descriptor, 16)?).map_err(|_| KeyAgentLpacError::Token)?;
+    if dacl_offset != SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let dacl = descriptor
+        .get(dacl_offset..)
+        .ok_or(KeyAgentLpacError::Token)?;
+    if dacl.len() < ACL_HEADER_BYTES
+        || u32::from(dacl[0]) != ACL_REVISION.0
+        || dacl[1] != 0
+        || read_u16_at(dacl, 4)? != 3
+        || read_u16_at(dacl, 6)? != 0
+    {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let acl_total = usize::from(read_u16_at(dacl, 2)?);
+    if acl_total != dacl.len() {
+        return Err(KeyAgentLpacError::Token);
+    }
+
+    let expected = [
+        (expected_user_sid, SUPERVISOR_TOKEN_ACCESS),
+        (expected_key_agent_sid, KEY_AGENT_TOKEN_SELF_ACCESS),
+        (expected_approval_sid, APPROVAL_PARENT_TOKEN_ACCESS),
+    ];
+    let mut used = ACL_HEADER_BYTES;
+    for (expected_sid, expected_mask) in expected {
+        validate_binary_sid_bytes(expected_sid)?;
+        let fixed_end = used
+            .checked_add(ACCESS_ALLOWED_ACE_FIXED_BYTES)
+            .ok_or(KeyAgentLpacError::Token)?;
+        if fixed_end > acl_total {
+            return Err(KeyAgentLpacError::Token);
+        }
+        let ace_type = u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX);
+        let ace_size = usize::from(read_u16_at(dacl, used + 2)?);
+        let ace_end = used.checked_add(ace_size).ok_or(KeyAgentLpacError::Token)?;
+        if dacl[used] != ace_type
+            || dacl[used + 1] != 0
+            || ace_size < ACCESS_ALLOWED_ACE_FIXED_BYTES + MIN_BINARY_SID_BYTES
+            || ace_end > acl_total
+            || read_u32_at(dacl, used + 4)? != expected_mask
+        {
+            return Err(KeyAgentLpacError::Token);
+        }
+        let actual_sid = &dacl[fixed_end..ace_end];
+        validate_binary_sid_bytes(actual_sid)?;
+        if actual_sid != expected_sid {
+            return Err(KeyAgentLpacError::Token);
+        }
+        used = ace_end;
+    }
+    let free = acl_total
+        .checked_sub(used)
+        .ok_or(KeyAgentLpacError::Token)?;
+    if used != acl_total || free != 0 {
+        return Err(KeyAgentLpacError::Token);
+    }
+    Ok(())
+}
+
+fn validate_binary_sid_bytes(sid: &[u8]) -> Result<(), KeyAgentLpacError> {
+    if !(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&sid.len()) || sid[0] != 1 {
+        return Err(KeyAgentLpacError::Token);
+    }
+    let declared = usize::from(sid[1])
+        .checked_mul(size_of::<u32>())
+        .and_then(|bytes| bytes.checked_add(MIN_BINARY_SID_BYTES))
+        .ok_or(KeyAgentLpacError::Token)?;
+    if declared != sid.len() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    Ok(())
+}
+
+fn read_u16_at(bytes: &[u8], offset: usize) -> Result<u16, KeyAgentLpacError> {
+    let end = offset
+        .checked_add(size_of::<u16>())
+        .ok_or(KeyAgentLpacError::Token)?;
+    let encoded: [u8; 2] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentLpacError::Token)?
+        .try_into()
+        .map_err(|_| KeyAgentLpacError::Token)?;
+    Ok(u16::from_le_bytes(encoded))
+}
+
+fn read_u32_at(bytes: &[u8], offset: usize) -> Result<u32, KeyAgentLpacError> {
+    let end = offset
+        .checked_add(size_of::<u32>())
+        .ok_or(KeyAgentLpacError::Token)?;
+    let encoded: [u8; 4] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentLpacError::Token)?
+        .try_into()
+        .map_err(|_| KeyAgentLpacError::Token)?;
+    Ok(u32::from_le_bytes(encoded))
 }
 
 fn verify_process_token(
@@ -1515,7 +1752,11 @@ mod tests {
     use windows::Win32::Foundation::{
         CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
-    use windows::Win32::Security::{EqualSid, TOKEN_APPCONTAINER_INFORMATION};
+    use windows::Win32::Security::{
+        ACL_REVISION, EqualSid, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED,
+        SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_OWNER_DEFAULTED,
+        SE_SELF_RELATIVE, TOKEN_APPCONTAINER_INFORMATION,
+    };
     use windows::Win32::Security::{TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
@@ -1539,8 +1780,8 @@ mod tests {
         PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS, TokenDword,
         TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
         appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
-        open_existing_key_agent_storage_root_for_test, require_created_sid_matches_derived,
-        validate_token_policy, wide_nul_str,
+        inspect_exact_token_dacl_descriptor, open_existing_key_agent_storage_root_for_test,
+        require_created_sid_matches_derived, validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -1997,6 +2238,194 @@ mod tests {
         );
         assert_eq!(APPROVAL_PARENT_TOKEN_ACCESS, TOKEN_QUERY.0);
         assert_ne!(KEY_AGENT_TOKEN_SELF_ACCESS, APPROVAL_PARENT_TOKEN_ACCESS);
+    }
+
+    fn synthetic_sid(sub_authority: u32) -> Vec<u8> {
+        let mut sid = vec![1, 1, 0, 0, 0, 0, 0, 5];
+        sid.extend_from_slice(&sub_authority.to_le_bytes());
+        sid
+    }
+
+    fn push_allow_ace(bytes: &mut Vec<u8>, mask: u32, sid: &[u8]) {
+        bytes.push(0);
+        bytes.push(0);
+        let ace_size = u16::try_from(8 + sid.len()).unwrap_or(u16::MAX);
+        bytes.extend_from_slice(&ace_size.to_le_bytes());
+        bytes.extend_from_slice(&mask.to_le_bytes());
+        bytes.extend_from_slice(sid);
+    }
+
+    fn exact_token_dacl_descriptor(
+        user_sid: &[u8],
+        key_agent_sid: &[u8],
+        approval_sid: &[u8],
+    ) -> Vec<u8> {
+        let mut descriptor = Vec::new();
+        descriptor.push(1);
+        descriptor.push(0);
+        let control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0;
+        descriptor.extend_from_slice(&control.to_le_bytes());
+        descriptor.extend_from_slice(&0_u32.to_le_bytes());
+        descriptor.extend_from_slice(&0_u32.to_le_bytes());
+        descriptor.extend_from_slice(&0_u32.to_le_bytes());
+        descriptor.extend_from_slice(&20_u32.to_le_bytes());
+        descriptor.push(u8::try_from(ACL_REVISION.0).unwrap_or(u8::MAX));
+        descriptor.push(0);
+        let acl_size_offset = descriptor.len();
+        descriptor.extend_from_slice(&0_u16.to_le_bytes());
+        descriptor.extend_from_slice(&3_u16.to_le_bytes());
+        descriptor.extend_from_slice(&0_u16.to_le_bytes());
+        push_allow_ace(&mut descriptor, SUPERVISOR_TOKEN_ACCESS, user_sid);
+        push_allow_ace(&mut descriptor, KEY_AGENT_TOKEN_SELF_ACCESS, key_agent_sid);
+        push_allow_ace(&mut descriptor, APPROVAL_PARENT_TOKEN_ACCESS, approval_sid);
+        let acl_size = u16::try_from(descriptor.len() - 20).unwrap_or(u16::MAX);
+        descriptor[acl_size_offset..acl_size_offset + 2].copy_from_slice(&acl_size.to_le_bytes());
+        descriptor
+    }
+
+    fn replace_u16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn token_dacl_parser_result(
+        descriptor: &[u8],
+        user_sid: &[u8],
+        key_agent_sid: &[u8],
+        approval_sid: &[u8],
+    ) -> Result<(), KeyAgentLpacError> {
+        inspect_exact_token_dacl_descriptor(descriptor, user_sid, key_agent_sid, approval_sid)
+    }
+
+    fn token_dacl_header_negative_cases(valid: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let mut cases = Vec::new();
+        cases.push(("truncated descriptor", valid[..19].to_vec()));
+        let mut changed = valid.to_vec();
+        changed[0] = 2;
+        cases.push(("descriptor revision", changed));
+        let mut changed = valid.to_vec();
+        changed[1] = 1;
+        cases.push(("descriptor reserved byte", changed));
+        for (name, removed) in [
+            ("self-relative control", SE_SELF_RELATIVE.0),
+            ("DACL-present control", SE_DACL_PRESENT.0),
+            ("DACL-protected control", SE_DACL_PROTECTED.0),
+        ] {
+            let mut changed = valid.to_vec();
+            let control = u16::from_le_bytes([changed[2], changed[3]]) & !removed;
+            replace_u16(&mut changed, 2, control);
+            cases.push((name, changed));
+        }
+        for (name, added) in [
+            ("DACL-defaulted control", SE_DACL_DEFAULTED.0),
+            (
+                "DACL-auto-inherit-request control",
+                SE_DACL_AUTO_INHERIT_REQ.0,
+            ),
+            ("DACL-auto-inherited control", SE_DACL_AUTO_INHERITED.0),
+            ("unrequested owner control", SE_OWNER_DEFAULTED.0),
+        ] {
+            let mut changed = valid.to_vec();
+            let control = u16::from_le_bytes([changed[2], changed[3]]) | added;
+            replace_u16(&mut changed, 2, control);
+            cases.push((name, changed));
+        }
+        for (name, offset) in [
+            ("owner offset", 4_usize),
+            ("group offset", 8_usize),
+            ("SACL offset", 12_usize),
+        ] {
+            let mut changed = valid.to_vec();
+            changed[offset..offset + 4].copy_from_slice(&20_u32.to_le_bytes());
+            cases.push((name, changed));
+        }
+        let mut changed = valid.to_vec();
+        changed[16..20].copy_from_slice(&24_u32.to_le_bytes());
+        cases.push(("DACL offset", changed));
+        cases
+    }
+
+    #[test]
+    fn token_dacl_readback_parser_accepts_only_the_exact_three_ace_descriptor() {
+        let user_sid = synthetic_sid(100);
+        let key_agent_sid = synthetic_sid(200);
+        let approval_sid = synthetic_sid(300);
+        let descriptor = exact_token_dacl_descriptor(&user_sid, &key_agent_sid, &approval_sid);
+
+        assert_eq!(
+            token_dacl_parser_result(&descriptor, &user_sid, &key_agent_sid, &approval_sid),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn token_dacl_readback_parser_rejects_each_single_shape_mutation() {
+        let user_sid = synthetic_sid(100);
+        let key_agent_sid = synthetic_sid(200);
+        let approval_sid = synthetic_sid(300);
+        let valid = exact_token_dacl_descriptor(&user_sid, &key_agent_sid, &approval_sid);
+        let mut negative_cases = token_dacl_header_negative_cases(&valid);
+        let mut changed = valid.clone();
+        changed[20] = u8::try_from(ACL_REVISION.0 + 2).unwrap_or(u8::MAX);
+        negative_cases.push(("ACL revision", changed));
+        let mut changed = valid.clone();
+        changed[21] = 1;
+        negative_cases.push(("ACL first reserved byte", changed));
+        let mut changed = valid.clone();
+        changed[26] = 1;
+        negative_cases.push(("ACL second reserved field", changed));
+        let mut changed = valid.clone();
+        let acl_size = u16::from_le_bytes([changed[22], changed[23]]).saturating_sub(1);
+        replace_u16(&mut changed, 22, acl_size);
+        negative_cases.push(("ACL total bytes", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 24, 2);
+        negative_cases.push(("ACE count", changed));
+        let mut changed = valid.clone();
+        changed[28] = 1;
+        negative_cases.push(("ACE type", changed));
+        let mut changed = valid.clone();
+        changed[49] = 1;
+        negative_cases.push(("ACE flags", changed));
+        let mut changed = valid.clone();
+        changed[72..76].copy_from_slice(&(APPROVAL_PARENT_TOKEN_ACCESS | 2).to_le_bytes());
+        negative_cases.push(("ACE mask", changed));
+        let mut changed = valid.clone();
+        changed[47] ^= 1;
+        negative_cases.push(("SID bytes", changed));
+        let mut changed = valid.clone();
+        let first_sid = changed[36..48].to_vec();
+        let second_sid = changed[56..68].to_vec();
+        changed[36..48].copy_from_slice(&second_sid);
+        changed[56..68].copy_from_slice(&first_sid);
+        negative_cases.push(("SID order", changed));
+        let mut changed = valid.clone();
+        changed[57] = 2;
+        negative_cases.push(("SID declared length", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 30, 24);
+        negative_cases.push(("ACE SID remainder", changed));
+        let mut changed = valid.clone();
+        changed.push(0);
+        negative_cases.push(("descriptor trailing slack", changed));
+        let mut changed = valid.clone();
+        changed.extend_from_slice(&[0, 0, 0, 0]);
+        let acl_size = u16::try_from(changed.len() - 20).unwrap_or(u16::MAX);
+        replace_u16(&mut changed, 22, acl_size);
+        negative_cases.push(("ACL free bytes", changed));
+        let mut changed = valid.clone();
+        push_allow_ace(&mut changed, APPROVAL_PARENT_TOKEN_ACCESS, &approval_sid);
+        let acl_size = u16::try_from(changed.len() - 20).unwrap_or(u16::MAX);
+        replace_u16(&mut changed, 22, acl_size);
+        replace_u16(&mut changed, 24, 4);
+        negative_cases.push(("extra ACE", changed));
+
+        for (name, descriptor) in negative_cases {
+            assert_eq!(
+                token_dacl_parser_result(&descriptor, &user_sid, &key_agent_sid, &approval_sid,),
+                Err(KeyAgentLpacError::Token),
+                "mutation unexpectedly accepted: {name}"
+            );
+        }
     }
 
     #[test]
