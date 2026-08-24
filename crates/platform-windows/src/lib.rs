@@ -82,13 +82,18 @@ mod anchor_registry;
 mod appcontainer_profile_api;
 #[allow(dead_code)]
 mod approval_channel;
-// Approval release admission is deliberately dormant. It retains one verified,
-// pinned Approval artifact, the opaque whole-release identity, and same-handle
-// FILE_ID_INFO, while allocating no process, Job, pipe, channel, thread, or
-// launch state and exposing no artifact/path/identity/raw-handle accessor. A
-// later separately isolated supervisor must still prove the mapped image,
-// process-object DACL/principal split, Key Agent parent capability, endpoint
-// topology, cleanup, and complete runtime composition before activation.
+// The only production-compiled Approval activation edge consumes the complete
+// parent-bound aggregate into a still-suspended, non-operational process plus
+// private parent endpoints. It cannot resume, exchange protocol bytes, sign, or
+// expose any constituent and remains unreachable from production orchestration.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod approval_activation;
+// Approval release admission and parent binding remain deliberately dormant.
+// They retain the verified pinned artifact, whole-release/file identities, and
+// exact Key Agent logical-parent proof without exposing raw constituents. The
+// suspended preparation above does not prove the mapped Approval image,
+// process-object DACL/principal split, endpoint topology, or runtime composition.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_parent;

@@ -1,20 +1,22 @@
 //! Dormant binding between one release-prepared Approval artifact and the
 //! exact storage-proven Key Agent selected as its future logical parent.
 //!
-//! This module allocates only one narrow process-handle duplicate inside the
-//! Key Agent supervisor transition. It creates no process, thread, Job, pipe,
-//! channel, token object, attribute list, or launch state, retains no token
-//! handle, and exposes no production activation operation. A `cfg(test)`-only
-//! transition now proves narrow logical-parent handle/token usability in an
-//! actual Approval LPAC. The resulting private typestate remains non-runtime-
-//! ready: mapped-image provenance, a separate supervisor principal,
-//! process/thread creation-time DACLs, endpoint topology, production cleanup,
-//! and orchestration remain unproved.
+//! The initial binding allocates only one narrow process-handle duplicate inside
+//! the Key Agent supervisor transition and retains no token handle. One sealed
+//! production transition may then borrow the intact aggregate to prepare a
+//! still-suspended Approval process, while a `cfg(test)`-only transition proves
+//! narrow logical-parent handle/token usability in an actual Approval LPAC. The
+//! resulting private typestate remains non-runtime-ready: mapped-image
+//! provenance, a separate supervisor principal, process/thread creation-time
+//! DACLs, endpoint topology, and runtime orchestration remain unproved.
 
 use core::fmt;
 
 use thiserror::Error;
 
+use crate::approval_activation::{
+    ApprovalActivationError, ApprovalActivationSeal, terminate_suspended_approval,
+};
 use crate::approval_supervisor::PreparedReleaseApprovalSupervisor;
 #[cfg(test)]
 use crate::key_agent_supervisor::prepare_approval_parent_source_for_kernel_test;
@@ -24,6 +26,7 @@ use crate::key_agent_supervisor::{
 };
 #[cfg(test)]
 use crate::launch::prove_approval_parent_in_lpac_for_kernel_test;
+use crate::launch::{HeldSuspendedApproval, InheritedStdio, LaunchError};
 
 /// Stable failure at the dormant Approval/Key Agent parent-binding boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -81,6 +84,52 @@ pub(crate) fn bind_release_approval_parent(
     })
 }
 
+/// Borrows the intact ownership binding for the sole dormant activation leaf.
+///
+/// The exact Key Agent process, storage, root Job, and topology are revalidated
+/// on both sides of suspended Approval preparation and again after any non-
+/// cleanup launch rejection. If the final check fails, the newly created child
+/// is synchronously terminated and reaped before the parent-state failure is
+/// returned. Cleanup failure always takes precedence. Neither constituent is
+/// exposed or split.
+pub(crate) fn prepare_parent_bound_approval_activation(
+    bound: &ParentBoundReleaseApprovalSupervisor,
+    handles: &InheritedStdio<'_>,
+    seal: &ApprovalActivationSeal,
+) -> Result<HeldSuspendedApproval, ApprovalActivationError> {
+    bound
+        .parent_source
+        .revalidate_for_approval_activation(seal)
+        .map_err(|_| ApprovalActivationError::ParentState)?;
+    let activation =
+        match bound
+            .approval
+            .prepare_parent_bound_approval(handles, &bound.parent_source, seal)
+        {
+            Ok(activation) => activation,
+            Err(LaunchError::Cleanup) => return Err(ApprovalActivationError::Cleanup),
+            Err(error) => {
+                if bound
+                    .parent_source
+                    .revalidate_for_approval_activation(seal)
+                    .is_err()
+                {
+                    return Err(ApprovalActivationError::ParentState);
+                }
+                return Err(error.into());
+            }
+        };
+    if bound
+        .parent_source
+        .revalidate_for_approval_activation(seal)
+        .is_err()
+    {
+        terminate_suspended_approval(activation)?;
+        return Err(ApprovalActivationError::ParentState);
+    }
+    Ok(activation)
+}
+
 /// Test-runner equivalent that admits only the pinned libtest topology already
 /// used by the integrated Key Agent kernel fixture.
 #[cfg(test)]
@@ -107,7 +156,7 @@ pub(crate) fn verify_parent_bound_approval_lpac_for_kernel_test(
         .map_err(|_| crate::launch::ApprovalParentProbeError::ParentState)?;
     prove_approval_parent_in_lpac_for_kernel_test(
         bound.approval.artifact_for_parent_probe(),
-        bound.parent_source.parent_process_for_lpac_probe(),
+        &bound.parent_source,
     )?;
     bound
         .parent_source

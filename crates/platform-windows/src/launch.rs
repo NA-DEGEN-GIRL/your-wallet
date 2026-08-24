@@ -21,12 +21,14 @@ use std::time::Instant;
 
 use thiserror::Error;
 
+#[cfg(windows)]
+use crate::approval_activation::ApprovalActivationSeal;
 #[cfg(all(test, windows))]
 use crate::attestation::ArtifactDigest;
 use crate::attestation::ReleaseAttestation;
 use crate::helper::{FileIdentity, VerifiedHelper};
-#[cfg(all(test, windows))]
-use crate::key_agent_activation::{InjectedApprovalParentProbe, PreparedApprovalParentProcess};
+#[cfg(windows)]
+use crate::key_agent_supervisor::ApprovalParentSourcePreparedKeyAgent;
 #[cfg(all(test, windows))]
 use crate::pipe::PrivateApprovalPipes;
 
@@ -116,6 +118,9 @@ pub enum LaunchError {
     /// A held helper did not exit within its caller-supplied monotonic deadline.
     #[error("restricted helper termination deadline elapsed")]
     TerminationDeadlineElapsed,
+    /// A rejected child could not be synchronously terminated and reaped.
+    #[error("restricted helper rejection cleanup failed")]
+    Cleanup,
     /// This launcher is available only on Windows.
     #[error("Windows restricted launcher is unavailable on this platform")]
     UnsupportedPlatform,
@@ -194,6 +199,70 @@ impl fmt::Debug for InheritedStdio<'_> {
             .field("output", &"[HANDLE]")
             .field("error", &"[HANDLE]")
             .finish()
+    }
+}
+
+/// Unforgeable permission to copy one already-proven logical Key Agent parent
+/// capability into a child that this module still holds suspended.
+///
+/// Only this module can construct the seal. Sibling modules may accept a
+/// borrow at their exact duplication leaf, but cannot independently authorize
+/// a child-local handle injection.
+#[cfg(windows)]
+pub(crate) struct ApprovalLogicalParentInjectionSeal {
+    _private: (),
+}
+
+#[cfg(windows)]
+impl ApprovalLogicalParentInjectionSeal {
+    const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Opaque child-local coordinates for the exact logical Key Agent parent.
+///
+/// The values name objects only in the suspended Approval child's handle table
+/// and are never formatted. Construction requires the launch-local injection
+/// seal, so arbitrary scalar pairs cannot enter the dormant activation state.
+#[cfg(windows)]
+#[must_use = "the injected logical parent must remain bound to its suspended Approval"]
+#[allow(dead_code)] // Child-local coordinates are consumed only by the sealed child bootstrap/test.
+pub(crate) struct InjectedApprovalLogicalParent {
+    process_handle: u64,
+    process_id: u32,
+}
+
+#[cfg(windows)]
+impl InjectedApprovalLogicalParent {
+    pub(crate) const fn from_child_local(
+        process_handle: u64,
+        process_id: u32,
+        _seal: &ApprovalLogicalParentInjectionSeal,
+    ) -> Self {
+        Self {
+            process_handle,
+            process_id,
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // Reserved for the sealed Approval child bootstrap.
+    pub(crate) const fn process_handle(&self) -> u64 {
+        self.process_handle
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // Reserved for the sealed Approval child bootstrap.
+    pub(crate) const fn process_id(&self) -> u32 {
+        self.process_id
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for InjectedApprovalLogicalParent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InjectedApprovalLogicalParent([REDACTED HANDLE AND PID])")
     }
 }
 
@@ -281,7 +350,7 @@ impl RestrictedLauncher {
         self,
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
-        logical_parent: &PreparedApprovalParentProcess,
+        logical_parent: &ApprovalParentSourcePreparedKeyAgent,
         command_line: &mut [u16],
     ) -> Result<LaunchedHelper, LaunchError> {
         let role = self.require_approval_frontend(helper)?;
@@ -319,6 +388,27 @@ impl RestrictedLauncher {
         }
         Err(LaunchError::UnsupportedPlatform)
     }
+}
+
+/// Prepares one exact Approval Frontend in the fixed no-network LPAC and keeps
+/// its primary thread suspended after both supervisor and logical Key Agent
+/// parent capabilities have been injected.
+///
+/// This sealed path deliberately accepts no attestation, generic launcher, or
+/// selectable profile. The caller already owns the pinned release Approval
+/// artifact and the intact storage-proven Key Agent aggregate.
+#[cfg(windows)]
+pub(crate) fn prepare_parent_bound_approval(
+    helper: &VerifiedHelper,
+    handles: &InheritedStdio<'_>,
+    parent_source: &ApprovalParentSourcePreparedKeyAgent,
+    _seal: &ApprovalActivationSeal,
+) -> Result<HeldSuspendedApproval, LaunchError> {
+    let role = VerifiedLpacRole::from_helper(helper)?;
+    if role != VerifiedLpacRole::ApprovalFrontend {
+        return Err(LaunchError::HelperRoleNotAllowed);
+    }
+    sys::prepare_parent_bound_approval(helper, handles, role, parent_source)
 }
 
 #[cfg(all(test, windows))]
@@ -360,10 +450,10 @@ pub(crate) enum ApprovalParentProbeError {
 #[cfg(all(test, windows))]
 pub(crate) fn prove_approval_parent_in_lpac_for_kernel_test(
     helper: &VerifiedHelper,
-    logical_parent: &PreparedApprovalParentProcess,
+    logical_parent: &ApprovalParentSourcePreparedKeyAgent,
 ) -> Result<(), ApprovalParentProbeError> {
     logical_parent
-        .revalidate()
+        .revalidate_for_lpac_probe()
         .map_err(|_| ApprovalParentProbeError::ParentState)?;
     let pipes = PrivateApprovalPipes::create().map_err(|_| ApprovalParentProbeError::PipeSetup)?;
     let inherited = InheritedStdio::for_child_pipe_servers(
@@ -422,7 +512,7 @@ pub(crate) fn prove_approval_parent_in_lpac_for_kernel_test(
         .wait_for_success_for_kernel_test(deadline)
         .map_err(ApprovalParentProbeError::Child)?;
     logical_parent
-        .revalidate()
+        .revalidate_for_lpac_probe()
         .map_err(|_| ApprovalParentProbeError::ParentState)
 }
 
@@ -518,6 +608,8 @@ impl fmt::Debug for ApprovalLpacKernelTestFixture {
 
 #[cfg(test)]
 mod debug_tests {
+    #[cfg(windows)]
+    use super::{ApprovalLogicalParentInjectionSeal, InjectedApprovalLogicalParent};
     use super::{HeldProcessIdentity, NoNetworkLpacProfile, VerifiedLpacRole};
     use crate::helper::FileIdentity;
 
@@ -550,6 +642,94 @@ mod debug_tests {
         assert!(VerifiedLpacRole::ApprovalFrontend.requires_parent_proof());
         assert!(VerifiedLpacRole::SecretInputFrontend.requires_parent_proof());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn logical_parent_coordinates_are_child_local_and_debug_redacted() {
+        let seal = ApprovalLogicalParentInjectionSeal::new();
+        let injected = InjectedApprovalLogicalParent::from_child_local(
+            0x7fff_abcd_1234_5678,
+            0xfedc_ba98,
+            &seal,
+        );
+
+        assert_eq!(injected.process_handle(), 0x7fff_abcd_1234_5678);
+        assert_eq!(injected.process_id(), 0xfedc_ba98);
+        assert_eq!(
+            format!("{injected:?}"),
+            "InjectedApprovalLogicalParent([REDACTED HANDLE AND PID])"
+        );
+    }
+}
+
+/// One parent-bound Approval held before its first user-mode instruction.
+///
+/// The owner retains the exact process, its single-process kill-on-close Job,
+/// the suspended primary thread, the pinned artifact/profile identity, and two
+/// distinct parent proofs. Production exposes no resume operation.
+#[cfg(windows)]
+#[must_use = "dropping a suspended Approval attempts bounded termination and reap"]
+pub(crate) struct HeldSuspendedApproval {
+    process: sys::OwnedWinHandle,
+    job: sys::OwnedWinHandle,
+    thread: sys::OwnedWinHandle,
+    identity: HeldProcessIdentity,
+    parent_proof: InjectedParentProof,
+    logical_parent: InjectedApprovalLogicalParent,
+    cleanup_armed: bool,
+}
+
+#[cfg(windows)]
+impl HeldSuspendedApproval {
+    /// Test-only observation that the exact child is still live in its retained
+    /// one-process Job with both mandatory Job limits intact.
+    #[cfg(test)]
+    pub(crate) fn is_live_in_job_for_test(&self) -> Result<bool, LaunchError> {
+        sys::is_live_held_process_in_job_for_test(
+            self.process.raw(),
+            self.job.raw(),
+            self.identity.process_id(),
+        )
+    }
+
+    /// Explicitly terminates the one-process Job and waits for the exact held
+    /// Approval process before the supplied monotonic deadline.
+    pub(crate) fn terminate_and_wait(mut self, deadline: Instant) -> Result<(), LaunchError> {
+        let result = sys::terminate_and_wait(self.process.raw(), self.job.raw(), deadline);
+        // The caller supplied the one explicit cleanup deadline. Do not start a
+        // second wait from Drop after that bounded attempt; closing the retained
+        // kill-on-close Job remains the final fail-closed fallback on error.
+        self.cleanup_armed = false;
+        result
+    }
+}
+
+#[cfg(windows)]
+impl Drop for HeldSuspendedApproval {
+    fn drop(&mut self) {
+        if self.cleanup_armed {
+            self.cleanup_armed = false;
+            let _ = sys::terminate_and_reap_created_child(self.process.raw(), self.job.raw());
+        }
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for HeldSuspendedApproval {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.process,
+            &self.job,
+            &self.thread,
+            &self.identity,
+            &self.parent_proof,
+            &self.logical_parent,
+            self.cleanup_armed,
+        );
+        formatter.write_str(
+            "HeldSuspendedApproval([SUSPENDED APPROVAL; HELD JOB; REDACTED PARENT PROOFS])",
+        )
+    }
 }
 
 /// A process held in a single-process kill-on-close job.
@@ -560,7 +740,7 @@ pub(crate) struct LaunchedHelper {
     identity: HeldProcessIdentity,
     parent_proof: Option<InjectedParentProof>,
     #[cfg(test)]
-    approval_parent_probe: Option<InjectedApprovalParentProbe>,
+    approval_parent_probe: Option<InjectedApprovalLogicalParent>,
 }
 
 /// Numeric values of the two non-inheritable proof handles injected into one
@@ -629,8 +809,8 @@ impl LaunchedHelper {
     }
 
     #[cfg(test)]
-    pub(crate) const fn approval_parent_probe(&self) -> Option<InjectedApprovalParentProbe> {
-        self.approval_parent_probe
+    pub(crate) fn approval_parent_probe(&self) -> Option<&InjectedApprovalLogicalParent> {
+        self.approval_parent_probe.as_ref()
     }
 
     /// Explicitly terminates the single-process job and waits for the exact
@@ -781,11 +961,10 @@ mod sys {
     };
     use windows::core::{BOOL, PCWSTR, PWSTR};
 
-    #[cfg(test)]
-    use super::PreparedApprovalParentProcess;
     use super::{
-        HeldProcessIdentity, InheritedStdio, InjectedParentProof, LaunchError, LaunchedHelper,
-        NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
+        ApprovalLogicalParentInjectionSeal, ApprovalParentSourcePreparedKeyAgent,
+        HeldProcessIdentity, HeldSuspendedApproval, InheritedStdio, InjectedParentProof,
+        LaunchError, LaunchedHelper, NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
     };
     use crate::appcontainer_profile_api::{
         AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
@@ -2032,15 +2211,18 @@ mod sys {
 
     const CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
 
-    fn terminate_and_reap_created_child(process: HANDLE, job: HANDLE) {
-        let Some(deadline) = Instant::now().checked_add(Duration::from_millis(u64::from(
-            CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS,
-        ))) else {
-            return;
-        };
+    pub(super) fn terminate_and_reap_created_child(
+        process: HANDLE,
+        job: HANDLE,
+    ) -> Result<(), LaunchError> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(u64::from(
+                CREATED_CHILD_CLEANUP_TIMEOUT_MILLISECONDS,
+            )))
+            .ok_or(LaunchError::Cleanup)?;
         // Drop cannot surface cleanup failure. It nevertheless attempts both
         // termination paths and a bounded wait on the retained exact process.
-        let _ = terminate_and_wait(process, job, deadline);
+        terminate_and_wait(process, job, deadline).map_err(|_| LaunchError::Cleanup)
     }
 
     struct CreatedChildGuard<'process, 'job> {
@@ -2061,12 +2243,22 @@ mod sys {
         fn disarm(mut self) {
             self.armed = false;
         }
+
+        /// Gives failed synchronous cleanup precedence over the rejection that
+        /// triggered it, while keeping the kill-on-close Job as a final fallback.
+        fn reject(mut self, rejection: LaunchError) -> LaunchError {
+            self.armed = false;
+            match terminate_and_reap_created_child(self.process.raw(), self.job.raw()) {
+                Ok(()) => rejection,
+                Err(_) => LaunchError::Cleanup,
+            }
+        }
     }
 
     impl Drop for CreatedChildGuard<'_, '_> {
         fn drop(&mut self) {
             if self.armed {
-                terminate_and_reap_created_child(self.process.raw(), self.job.raw());
+                let _ = terminate_and_reap_created_child(self.process.raw(), self.job.raw());
             }
         }
     }
@@ -2148,6 +2340,24 @@ mod sys {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn is_live_held_process_in_job_for_test(
+        process: HANDLE,
+        job: HANDLE,
+        expected_process_id: u32,
+    ) -> Result<bool, LaunchError> {
+        // SAFETY: the test borrows the exact process retained by the suspended
+        // capability. A zero-time wait observes liveness without changing it.
+        match unsafe { WaitForSingleObject(process, 0) } {
+            WAIT_OBJECT_0 => Ok(false),
+            WAIT_TIMEOUT => {
+                revalidate_held_process(process, job, expected_process_id)?;
+                Ok(true)
+            }
+            _ => Err(LaunchError::SandboxVerification),
+        }
+    }
+
     fn remaining_milliseconds(deadline: Instant) -> Result<u32, LaunchError> {
         let remaining = deadline
             .checked_duration_since(Instant::now())
@@ -2162,25 +2372,94 @@ mod sys {
         Instant::now().checked_duration_since(deadline).is_some()
     }
 
-    #[allow(clippy::too_many_lines)] // Process creation is kept linear for cleanup auditing.
+    struct SuspendedLaunch<LogicalParent> {
+        process: OwnedWinHandle,
+        job: OwnedWinHandle,
+        thread: OwnedWinHandle,
+        identity: HeldProcessIdentity,
+        parent_proof: InjectedParentProof,
+        logical_parent: LogicalParent,
+    }
+
     pub(super) fn launch(
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
         profile: NoNetworkLpacProfile,
         role: VerifiedLpacRole,
     ) -> Result<LaunchedHelper, LaunchError> {
-        launch_inner(
+        let suspended = prepare_suspended_inner(
             helper,
             handles,
             profile,
             role,
-            #[cfg(test)]
-            None,
+            |_child| Ok(()),
             #[cfg(test)]
             None,
             #[cfg(test)]
             false,
-        )
+        )?;
+        let suspended = resume_suspended_for_legacy(suspended)?;
+        let SuspendedLaunch {
+            process,
+            job,
+            thread,
+            identity,
+            parent_proof,
+            logical_parent: (),
+        } = suspended;
+        drop(thread);
+        Ok(LaunchedHelper {
+            process,
+            job,
+            identity,
+            parent_proof: Some(parent_proof),
+            #[cfg(test)]
+            approval_parent_probe: None,
+        })
+    }
+
+    pub(super) fn prepare_parent_bound_approval(
+        helper: &VerifiedHelper,
+        handles: &InheritedStdio<'_>,
+        role: VerifiedLpacRole,
+        parent_source: &ApprovalParentSourcePreparedKeyAgent,
+    ) -> Result<HeldSuspendedApproval, LaunchError> {
+        if role != VerifiedLpacRole::ApprovalFrontend {
+            return Err(LaunchError::HelperRoleNotAllowed);
+        }
+        let injection_seal = ApprovalLogicalParentInjectionSeal::new();
+        let suspended = prepare_suspended_inner(
+            helper,
+            handles,
+            NoNetworkLpacProfile::v1(),
+            role,
+            |child| {
+                parent_source
+                    .inject_into_suspended_approval(child, &injection_seal)
+                    .map_err(|_| LaunchError::SandboxVerification)
+            },
+            #[cfg(test)]
+            None,
+            #[cfg(test)]
+            true,
+        )?;
+        let SuspendedLaunch {
+            process,
+            job,
+            thread,
+            identity,
+            parent_proof,
+            logical_parent,
+        } = suspended;
+        Ok(HeldSuspendedApproval {
+            process,
+            job,
+            thread,
+            identity,
+            parent_proof,
+            logical_parent,
+            cleanup_armed: true,
+        })
     }
 
     #[cfg(test)]
@@ -2189,30 +2468,70 @@ mod sys {
         handles: &InheritedStdio<'_>,
         profile: NoNetworkLpacProfile,
         role: VerifiedLpacRole,
-        logical_parent: &PreparedApprovalParentProcess,
+        logical_parent: &ApprovalParentSourcePreparedKeyAgent,
         command_line: &mut [u16],
     ) -> Result<LaunchedHelper, LaunchError> {
-        launch_inner(
+        let injection_seal = ApprovalLogicalParentInjectionSeal::new();
+        let suspended = prepare_suspended_inner(
             helper,
             handles,
             profile,
             role,
-            Some(logical_parent),
+            |child| {
+                logical_parent
+                    .inject_into_suspended_approval(child, &injection_seal)
+                    .map_err(|_| LaunchError::SandboxVerification)
+            },
             Some(command_line),
             true,
-        )
+        )?;
+        let suspended = resume_suspended_for_legacy(suspended)?;
+        let SuspendedLaunch {
+            process,
+            job,
+            thread,
+            identity,
+            parent_proof,
+            logical_parent,
+        } = suspended;
+        drop(thread);
+        Ok(LaunchedHelper {
+            process,
+            job,
+            identity,
+            parent_proof: Some(parent_proof),
+            approval_parent_probe: Some(logical_parent),
+        })
+    }
+
+    /// Explicit resume is confined to the legacy launcher and the test-only
+    /// kernel probe. The production parent-bound Approval path never calls it.
+    fn resume_suspended_for_legacy<LogicalParent>(
+        suspended: SuspendedLaunch<LogicalParent>,
+    ) -> Result<SuspendedLaunch<LogicalParent>, LaunchError> {
+        {
+            let child_guard = CreatedChildGuard::new(&suspended.process, &suspended.job);
+            // SAFETY: thread is the suspended primary thread returned by
+            // CreateProcessW and is still owned by `suspended`.
+            let previous_suspend_count = unsafe { ResumeThread(suspended.thread.raw()) };
+            if previous_suspend_count != 1 {
+                return Err(child_guard.reject(LaunchError::OperatingSystem));
+            }
+            child_guard.disarm();
+        }
+        Ok(suspended)
     }
 
     #[allow(clippy::too_many_lines)] // Process creation is kept linear for cleanup auditing.
-    fn launch_inner(
+    fn prepare_suspended_inner<LogicalParent>(
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
         profile: NoNetworkLpacProfile,
         role: VerifiedLpacRole,
-        #[cfg(test)] logical_parent: Option<&PreparedApprovalParentProcess>,
+        inject_logical_parent: impl FnOnce(BorrowedHandle<'_>) -> Result<LogicalParent, LaunchError>,
         #[cfg(test)] command_line: Option<&mut [u16]>,
         #[cfg(test)] kernel_test_context: bool,
-    ) -> Result<LaunchedHelper, LaunchError> {
+    ) -> Result<SuspendedLaunch<LogicalParent>, LaunchError> {
         // Keep the identity-pinned executable file live through CreateProcessW.
         let _verified_file_handle = helper.raw_handle();
         validate_live_handle(handles.input)?;
@@ -2338,54 +2657,51 @@ mod sys {
             Err(error) => {
                 drop(duplicates);
                 drop(flight);
-                return Err(error);
+                return Err(child_guard.reject(error));
             }
         };
         drop(duplicates);
         drop(flight);
-        // SAFETY: the process handle is live and refers to the suspended child.
-        let held_process_id = unsafe { GetProcessId(process.raw()) };
-        if held_process_id == 0 || held_process_id != process_information.dwProcessId {
-            return Err(LaunchError::SandboxVerification);
-        }
-        let mut in_job = BOOL(0);
-        // SAFETY: CreateProcessW atomically assigned the suspended child through
-        // PROC_THREAD_ATTRIBUTE_JOB_LIST; both exact handles remain live.
-        unsafe { IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job) }
-            .map_err(|_| LaunchError::SandboxVerification)?;
-        if !in_job.as_bool() {
-            return Err(LaunchError::SandboxVerification);
-        }
-        if verify_child_token(process.raw(), profile_sid.raw()).is_err() {
-            return Err(LaunchError::SandboxVerification);
-        }
-        let parent_proof = parent_sources
-            .as_ref()
-            .map(|sources| inject_parent_proof(sources, process.raw()))
-            .transpose()?;
-        #[cfg(test)]
-        let approval_parent_probe = logical_parent
-            .map(|parent| {
-                // SAFETY: the owned child process handle stays live and the
-                // armed guard keeps the process suspended throughout injection.
-                let child = unsafe { BorrowedHandle::borrow_raw(process.raw().0) };
-                parent.inject_into_approval_lpac_for_kernel_test(child)
-            })
-            .transpose()
-            .map_err(|_| LaunchError::SandboxVerification)?;
-        drop(parent_sources);
-        // SAFETY: thread is the suspended primary thread returned by CreateProcess.
-        let previous_suspend_count = unsafe { ResumeThread(thread.raw()) };
-        if previous_suspend_count != 1 {
-            return Err(LaunchError::OperatingSystem);
-        }
+        let post_creation = (|| {
+            // SAFETY: the process handle is live and refers to the suspended child.
+            let held_process_id = unsafe { GetProcessId(process.raw()) };
+            if held_process_id == 0 || held_process_id != process_information.dwProcessId {
+                return Err(LaunchError::SandboxVerification);
+            }
+            let mut in_job = BOOL(0);
+            // SAFETY: CreateProcessW atomically assigned the suspended child through
+            // PROC_THREAD_ATTRIBUTE_JOB_LIST; both exact handles remain live.
+            unsafe { IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job) }
+                .map_err(|_| LaunchError::SandboxVerification)?;
+            if !in_job.as_bool() {
+                return Err(LaunchError::SandboxVerification);
+            }
+            if verify_child_token(process.raw(), profile_sid.raw()).is_err() {
+                return Err(LaunchError::SandboxVerification);
+            }
+            let parent_proof = parent_sources
+                .as_ref()
+                .map(|sources| inject_parent_proof(sources, process.raw()))
+                .transpose()?
+                .ok_or(LaunchError::SandboxVerification)?;
+            // SAFETY: the owned child process handle stays live and the armed guard
+            // keeps the exact process suspended throughout the sealed injection.
+            let child = unsafe { BorrowedHandle::borrow_raw(process.raw().0) };
+            let logical_parent = inject_logical_parent(child)?;
+            drop(parent_sources);
+            Ok((held_process_id, parent_proof, logical_parent))
+        })();
+        let (held_process_id, parent_proof, logical_parent) = match post_creation {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(child_guard.reject(error)),
+        };
         child_guard.disarm();
-        drop(thread);
         drop(profile_sid);
 
-        Ok(LaunchedHelper {
+        Ok(SuspendedLaunch {
             process,
             job,
+            thread,
             identity: HeldProcessIdentity {
                 process_id: held_process_id,
                 helper_file,
@@ -2393,8 +2709,7 @@ mod sys {
                 profile_revision: profile.revision(),
             },
             parent_proof,
-            #[cfg(test)]
-            approval_parent_probe,
+            logical_parent,
         })
     }
 

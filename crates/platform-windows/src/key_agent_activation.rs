@@ -11,6 +11,7 @@
 
 use core::fmt;
 use std::marker::PhantomData;
+use std::os::windows::io::BorrowedHandle;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use crate::{
     helper::VerifiedHelper,
     key_agent_lpac::PreparedKeyAgentProvisioning,
     key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute},
+    launch::{ApprovalLogicalParentInjectionSeal, InjectedApprovalLogicalParent},
     pipe::PrivateKeyAgentPipes,
 };
 
@@ -361,56 +363,28 @@ impl PreparedApprovalParentProcess {
         self.0.revalidate()
     }
 
-    /// Test-only sealed operation that copies this exact least-authority
-    /// process handle into one still-suspended Approval LPAC. The returned
-    /// scalar is meaningful only in that child process and exposes no source
-    /// handle to the caller.
-    #[cfg(test)]
-    pub(crate) fn inject_into_approval_lpac_for_kernel_test(
+    /// Copies this exact least-authority process handle into one still-
+    /// suspended Approval LPAC under the launch module's unforgeable seal.
+    ///
+    /// The returned opaque proof contains only child-local coordinates and
+    /// exposes no source process handle to the caller.
+    pub(crate) fn duplicate_into_suspended_approval(
         &self,
-        suspended_child: std::os::windows::io::BorrowedHandle<'_>,
-    ) -> Result<InjectedApprovalParentProbe, KeyAgentActivationError> {
-        self.0.duplicate_into_suspended_child(suspended_child).map(
-            |(process_handle, process_id)| InjectedApprovalParentProbe {
-                process_handle,
-                process_id,
-            },
-        )
+        suspended_child: BorrowedHandle<'_>,
+        seal: &ApprovalLogicalParentInjectionSeal,
+    ) -> Result<InjectedApprovalLogicalParent, KeyAgentActivationError> {
+        let (process_handle, process_id) =
+            self.0.duplicate_into_suspended_child(suspended_child)?;
+        Ok(InjectedApprovalLogicalParent::from_child_local(
+            process_handle,
+            process_id,
+            seal,
+        ))
     }
 
     #[cfg(test)]
     pub(crate) const fn access_mask_for_test() -> u32 {
         sys::approval_parent_process_access_for_test()
-    }
-}
-
-/// Child-local coordinates for the test-only Approval LPAC kernel probe.
-///
-/// The values are never formatted and do not grant the parent test process a
-/// raw-handle accessor. Production builds contain neither this carrier nor the
-/// injection operation that mints it.
-#[cfg(test)]
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) struct InjectedApprovalParentProbe {
-    process_handle: u64,
-    process_id: u32,
-}
-
-#[cfg(test)]
-impl InjectedApprovalParentProbe {
-    pub(crate) const fn process_handle(self) -> u64 {
-        self.process_handle
-    }
-
-    pub(crate) const fn process_id(self) -> u32 {
-        self.process_id
-    }
-}
-
-#[cfg(test)]
-impl fmt::Debug for InjectedApprovalParentProbe {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("InjectedApprovalParentProbe([CHILD-LOCAL HANDLE AND REDACTED PID])")
     }
 }
 
@@ -755,7 +729,6 @@ mod sys {
     use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::time::Instant;
 
-    #[cfg(test)]
     use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
     use windows::Win32::Foundation::{
         CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
@@ -1927,7 +1900,6 @@ mod sys {
             Ok(())
         }
 
-        #[cfg(test)]
         pub(super) fn duplicate_into_suspended_child(
             &self,
             suspended_child: BorrowedHandle<'_>,

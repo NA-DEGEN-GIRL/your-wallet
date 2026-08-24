@@ -6009,7 +6009,7 @@ const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction =
   withoutBottomTestModule(restrictedLauncher);
 const approvedRestrictedLauncherProductionBoundaryRawSha256 =
-  "70f7b972959a8a487ca39d1d672573bc88760c2dc0cd1cc0372a728f028e55bd";
+  "3e36d56dd6480b45702e983c306932350d2d57696198d6404fddc3a07439b8db";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -6147,7 +6147,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "01bedb36184234e121ac1519603d0d2906ef0ac5fb2a1b532a74d139a6fc842a";
+  "206b9adbc8abc3a489d30fe27f73c1ee723779c66b753a1500a445b8604ca905";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -9288,6 +9288,16 @@ const expectedDuplicateHandleInventory = [
     options: "DUPLICATE_HANDLE_OPTIONS(0)",
   },
   {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "windows_handle(self.process.as_handle())",
+    targetProcess: "target_process",
+    targetHandle: "&raw mut child_local_process",
+    desiredAccess: "0",
+    inheritable: "false",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
     path: "crates/platform-windows/src/launch.rs",
     sourceProcess: "GetCurrentProcess()",
     sourceHandle: "source",
@@ -9503,7 +9513,7 @@ const coordinatorTests = [
 ].map((match) => match.groups.name);
 const restrictedLaunchLeaf = rustFunctionBlock(
   restrictedLauncherRelease,
-  "launch_inner",
+  "prepare_suspended_inner",
 );
 const keyAgentCreateInner = rustFunctionBlock(
   keyAgentActivation,
@@ -11119,17 +11129,22 @@ const launchInjectParentProofReviewedMutationProbes = [
 ];
 const launchRestrictedChild = rustFunctionBlockAtDepth(
   restrictedLauncherRelease,
-  "launch_inner",
+  "prepare_suspended_inner",
   1,
 );
 const approvedLaunchRestrictedChildSha256 =
-  "255d16fbe50e7d7db69d7e671f72636091e7220077ca475d6036e5e2ad796248";
+  "1248adae610ed7960b3420674208cda81d92483b3b0cef3fe5fad6125766a7e0";
 const launchRestrictedChildMutationProbes = [
   launchRestrictedChild.replace(
     "        let process_context =",
     "        if alternate_path() {\n            return launch_unchecked();\n        }\n        let process_context =",
   ),
 ];
+const launchLegacyResume = rustFunctionBlockAtDepth(
+  restrictedLauncherProduction,
+  "resume_suspended_for_legacy",
+  1,
+);
 const launchProofHelperUsage = rustIdentifierUsageInventory(
   [{ path: "restricted launch", source: launchRestrictedChild }],
   ["inject_parent_proof", "ResumeThread"],
@@ -11459,14 +11474,21 @@ const launchProofOrder = orderedRustMarkersAtDepth(launchRestrictedChild, [
   { marker: ".create_process_with_explicit_handle_list(", depth: 2 },
   {
     marker: "verify_child_token(process.raw(), profile_sid.raw())",
-    depth: 1,
+    depth: 2,
   },
   {
     marker: ".map(|sources| inject_parent_proof(sources, process.raw()))",
-    depth: 1,
+    depth: 2,
   },
-  { marker: "drop(parent_sources)", depth: 1 },
-  { marker: "ResumeThread(thread.raw())", depth: 2 },
+  { marker: ".ok_or(LaunchError::SandboxVerification)?", depth: 2 },
+  {
+    marker: "let child = unsafe { BorrowedHandle::borrow_raw(process.raw().0) }",
+    depth: 2,
+  },
+  { marker: "let logical_parent = inject_logical_parent(child)?", depth: 2 },
+  { marker: "drop(parent_sources)", depth: 2 },
+  { marker: "child_guard.disarm()", depth: 1 },
+  { marker: "Ok(SuspendedLaunch", depth: 1 },
 ]);
 requireInvariant(
   normalizedSourceSha256(restrictedLauncherProduction) ===
@@ -11551,7 +11573,16 @@ requireInvariant(
       rustCallSites(launchRestrictedChild, "ResumeThread").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["thread.raw()"]]) &&
+    ) === JSON.stringify([]) &&
+    JSON.stringify(
+      rustCallSites(launchLegacyResume, "ResumeThread").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["suspended.thread.raw()"]]) &&
+    rustCallSites(restrictedLauncherRelease, "resume_suspended_for_legacy")
+      .length === 1 &&
+    rustCallSites(restrictedLauncher, "resume_suspended_for_legacy").length ===
+      2 &&
     JSON.stringify(
       rustCallSites(launchRestrictedChild, "duplicates.duplicate").map((call) =>
         call.arguments.map(compactRust),
@@ -11571,7 +11602,7 @@ requireInvariant(
     rustLexicalCode(launchAttributeListInstall).includes(
       "self.values.handles.as_ptr()",
     ),
-  "the restricted launcher must keep proof sources out of HANDLE_LIST, inject their duplicates as exact remote non-inheritable handles while suspended, and only then resume the child",
+  "the restricted launcher must keep proof sources out of HANDLE_LIST, inject exact remote non-inheritable proofs while suspended, and confine resume to the one legacy/test-only leaf",
 );
 const secretInputDriverOrder = orderedRustMarkersAtDepth(
   secretInputFourObjectDriver,
@@ -12550,6 +12581,11 @@ const restrictedCreatedChildGuardImplementation = rustLexicalItemBlock(
   restrictedLauncherProduction,
   /(?:^|\n)\s*impl<'process,\s*'job> CreatedChildGuard<'process,\s*'job>\s*\{/u,
 );
+const restrictedCreatedChildGuardReject = rustFunctionBlockAtDepth(
+  restrictedCreatedChildGuardImplementation,
+  "reject",
+  1,
+);
 const restrictedCreatedChildGuardDrop = rustLexicalItemBlock(
   restrictedLauncherProduction,
   /(?:^|\n)\s*impl Drop for CreatedChildGuard<'_,\s*'_>\s*\{/u,
@@ -12562,6 +12598,9 @@ const restrictedCreatedChildCleanup = rustFunctionBlock(
   restrictedLauncherProduction,
   "terminate_and_reap_created_child",
 );
+const restrictedCreatedChildCleanupCompact = compactRust(
+  restrictedCreatedChildCleanup,
+);
 const restrictedTerminateAndWait = rustFunctionBlockAtDepth(
   restrictedLauncherSysProduction,
   "terminate_and_wait",
@@ -12569,8 +12608,19 @@ const restrictedTerminateAndWait = rustFunctionBlockAtDepth(
 );
 const restrictedCreatedChildCleanupOrder = [
   "Instant::now().checked_add(Duration::from_millis(u64::from(",
-  "terminate_and_wait(process, job, deadline)",
-].map((marker) => restrictedCreatedChildCleanup.indexOf(marker));
+  "terminate_and_wait(process,job,deadline)",
+].map((marker) => restrictedCreatedChildCleanupCompact.indexOf(marker));
+const restrictedPostCreationCleanupCompact = compactRust(
+  restrictedLaunchLeaf,
+);
+const restrictedPostCreationCleanupOrder = [
+  "letchild_guard=CreatedChildGuard::new(&process,&job);",
+  "returnErr(child_guard.reject(error));",
+  "letpost_creation=(||{",
+  "let(held_process_id,parent_proof,logical_parent)=matchpost_creation{",
+  "Err(error)=>returnErr(child_guard.reject(error)),",
+  "child_guard.disarm();",
+].map((marker) => restrictedPostCreationCleanupCompact.indexOf(marker));
 const restrictedTerminateAndWaitOrder = [
   "WaitForSingleObject(process, 0)",
   "TerminateJobObject(job, 1)",
@@ -12614,8 +12664,8 @@ const restrictedLaunchFlightOrder = [
   "GetProcessId(process.raw())",
   "IsProcessInJob(process.raw(), Some(job.raw()), &raw mut in_job)",
   "verify_child_token",
-  "ResumeThread",
-  "if previous_suspend_count != 1",
+  ".map(|sources| inject_parent_proof(sources, process.raw()))",
+  "let logical_parent = inject_logical_parent(child)?",
   "child_guard.disarm()",
 ].map((marker) => restrictedLaunchLeaf.indexOf(marker));
 const keyAgentFlightOrder = [
@@ -13447,16 +13497,20 @@ const mitigationPolicyContract = ({
     "launch_approval_parent_probe",
     1,
   );
-  const launchInnerInvocations = rustCallSites(
+  const prepareSuspendedInvocations = rustCallSites(
     launchSys,
-    "launch_inner",
-  ).filter((call) =>
-    ["#[cfg(test)]false", "true"].includes(
+    "prepare_suspended_inner",
+  );
+  const launchInnerInvocations = prepareSuspendedInvocations.filter((call) =>
+    ["#[cfg(test)]false", "#[cfg(test)]true", "true"].includes(
       compactRust(call.arguments.at(-1) ?? ""),
     ),
   );
   const kernelContextCalls = launchInnerInvocations.filter(
-    (call) => compactRust(call.arguments.at(-1) ?? "") === "true",
+    (call) =>
+      ["#[cfg(test)]true", "true"].includes(
+        compactRust(call.arguments.at(-1) ?? ""),
+      ),
   );
   return (
     compactRust(noLowLabel) ===
@@ -13519,10 +13573,10 @@ const mitigationPolicyContract = ({
     /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*pub\s*\(\s*super\s*\)\s+fn\s+launch_approval_parent_probe\b/u.test(
       rustLexicalCode(full),
     ) &&
-    launchInnerInvocations.length === 2 &&
-    kernelContextCalls.length === 1 &&
+    launchInnerInvocations.length === 3 &&
+    kernelContextCalls.length === 2 &&
     JSON.stringify(
-      rustCallSites(approvalProbeLaunch, "launch_inner").map((call) =>
+      prepareSuspendedInvocations.map((call) =>
         call.arguments.map(compactRust),
       ),
     ) ===
@@ -13532,7 +13586,41 @@ const mitigationPolicyContract = ({
           "handles",
           "profile",
           "role",
-          "Some(logical_parent)",
+          "|_child|Ok(())",
+          "#[cfg(test)]None",
+          "#[cfg(test)]false",
+        ],
+        [
+          "helper",
+          "handles",
+          "NoNetworkLpacProfile::v1()",
+          "role",
+          "|child|{parent_source.inject_into_suspended_approval(child,&injection_seal).map_err(|_|LaunchError::SandboxVerification)}",
+          "#[cfg(test)]None",
+          "#[cfg(test)]true",
+        ],
+        [
+          "helper",
+          "handles",
+          "profile",
+          "role",
+          "|child|{logical_parent.inject_into_suspended_approval(child,&injection_seal).map_err(|_|LaunchError::SandboxVerification)}",
+          "Some(command_line)",
+          "true",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(approvalProbeLaunch, "prepare_suspended_inner").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "helper",
+          "handles",
+          "profile",
+          "role",
+          "|child|{logical_parent.inject_into_suspended_approval(child,&injection_seal).map_err(|_|LaunchError::SandboxVerification)}",
           "Some(command_line)",
           "true",
         ],
@@ -13619,6 +13707,16 @@ const mitigationPolicyMutationProbes = [
     full: restrictedLauncher.replace(
       "            Some(command_line),\n            true,",
       "            Some(command_line),\n            false,",
+    ),
+  },
+  {
+    helper: helperMitigationPolicyDefinition,
+    approval: approvalKernelMitigationDefinition,
+    launch: restrictedLaunchLeaf,
+    test: mitigationContractTest,
+    full: restrictedLauncher.replace(
+      "            #[cfg(test)]\n            None,\n            #[cfg(test)]\n            true,\n        )?;",
+      "            #[cfg(test)]\n            None,\n            #[cfg(test)]\n            false,\n        )?;",
     ),
   },
   {
@@ -14201,6 +14299,18 @@ requireInvariant(
     restrictedCreatedChildGuardImplementation.includes("armed: true") &&
     restrictedCreatedChildGuardImplementation.includes("fn disarm(mut self)") &&
     restrictedCreatedChildGuardImplementation.includes("self.armed = false") &&
+    compactRust(restrictedCreatedChildGuardReject) ===
+      "fnreject(mutself,rejection:LaunchError)->LaunchError{self.armed=false;matchterminate_and_reap_created_child(self.process.raw(),self.job.raw()){Ok(())=>rejection,Err(_)=>LaunchError::Cleanup,}}" &&
+    rustCallSites(restrictedLaunchLeaf, "reject").length === 2 &&
+    restrictedPostCreationCleanupOrder.every(
+      (position) => position !== -1,
+    ) &&
+    restrictedPostCreationCleanupOrder
+      .slice(1)
+      .every(
+        (position, index) =>
+          position > restrictedPostCreationCleanupOrder[index],
+      ) &&
     restrictedCreatedChildGuardDrop.includes("if self.armed") &&
     restrictedCreatedChildGuardDrop.includes(
       "terminate_and_reap_created_child(self.process.raw(), self.job.raw())",
@@ -14220,6 +14330,9 @@ requireInvariant(
         (call) => call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["process", "job", "deadline"]]) &&
+    restrictedCreatedChildCleanupCompact.includes(
+      ".map_err(|_|LaunchError::Cleanup)",
+    ) &&
     JSON.stringify(
       rustCallSites(restrictedTerminateAndWait, "TerminateJobObject").map(
         (call) => call.arguments.map(compactRust),
@@ -14248,7 +14361,7 @@ requireInvariant(
       .every(
         (position, index) => position > restrictedTerminateAndWaitOrder[index],
       ),
-  "restricted AttributeList must retain both duplicate and Job owners, atomically install the exact JOB_LIST, and guard every suspended child until Job/token verification and resume succeed",
+  "restricted AttributeList must retain both duplicate and Job owners, atomically install the exact JOB_LIST, and give bounded cleanup failure precedence for every rejected suspended child",
 );
 const keyAgentLpacModuleConsumers = platformWindowsProductionFiles
   .filter(
@@ -18918,7 +19031,7 @@ const privateSecretSpawn = rustFunctionBlock(
 );
 const lowLevelLpacLaunch = rustFunctionBlock(
   restrictedLauncherProduction,
-  "launch_inner",
+  "prepare_suspended_inner",
 );
 const lpacAttributeConstruction = rustFunctionBlock(
   restrictedLauncherProduction,
@@ -20515,8 +20628,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
-    unsafeCount: 48,
-    sha256: "784957b0c484ae4997c58d35d76c1b02b451a00058f5f61837b9f00beb19edb7",
+    unsafeCount: 49,
+    sha256: "7333694da2bc811a1502e8cc7afc6ec7a79e51b1d3afaede5c9a102301ea9cf0",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -20541,7 +20654,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/launch.rs",
     unsafeCount: 61,
-    sha256: "b19087c4df7939b8412fcbd320e6d68cbcb44d0c55f3aca52565d4893be9b8e0",
+    sha256: "9702527dbefd07ffdf7be3fdfe9de5c6c1258587681c7b5d3514f57d33205dfb",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -27561,6 +27674,8 @@ const approvalSupervisorContract = (source) => {
   let exactImageErrorConversion;
   let preflightDebug;
   let preparedDebug;
+  let preparedImpl;
+  let prepareParentBound;
   let preparedDrop;
   let implItems;
   try {
@@ -27606,6 +27721,18 @@ const approvalSupervisorContract = (source) => {
           item.header ===
           "impl fmt::Debug for PreparedReleaseApprovalSupervisor",
       )?.source ?? "";
+    const preparedImpls = implItems.filter(
+      (item) => item.header === "impl PreparedReleaseApprovalSupervisor",
+    );
+    if (preparedImpls.length !== 1) {
+      return false;
+    }
+    [preparedImpl] = preparedImpls;
+    prepareParentBound = rustFunctionBlockAtDepth(
+      preparedImpl.source,
+      "prepare_parent_bound_approval",
+      1,
+    );
     preparedDrop =
       implItems.find(
         (item) =>
@@ -27618,6 +27745,7 @@ const approvalSupervisorContract = (source) => {
   const code = rustLexicalCode(source);
   const preflightCompact = compactRust(preflight);
   const prepareCompact = compactRust(prepare);
+  const prepareParentBoundCompact = compactRust(prepareParentBound);
   const gateOrder = [
     "if!artifact.is_approval_frontend()",
     "letrelease_identity=attestation.attested_artifact().ok_or(ApprovalArtifactError::ReleaseNotAttested)?",
@@ -27704,6 +27832,21 @@ const approvalSupervisorContract = (source) => {
       "implDropforPreparedReleaseApprovalSupervisor{fndrop(&mutself){self.identity.zeroize();}}" &&
     compactRust(exactImageErrorConversion) ===
       "implFrom<ExactImageError>forApprovalSupervisorPreflightError{fnfrom(_error:ExactImageError)->Self{Self::IdentityUnavailable}}" &&
+    prepareParentBoundCompact ===
+      "pub(crate)fnprepare_parent_bound_approval(&self,handles:&InheritedStdio<'_>,parent_source:&ApprovalParentSourcePreparedKeyAgent,seal:&ApprovalActivationSeal,)->Result<HeldSuspendedApproval,LaunchError>{crate::launch::prepare_parent_bound_approval(&self.artifact,handles,parent_source,seal)}" &&
+    JSON.stringify(
+      rustCallSites(
+        prepareParentBound,
+        "prepare_parent_bound_approval",
+      )
+        .filter(
+          (call) => compactRust(call.arguments.at(0) ?? "") !== "&self",
+        )
+        .map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        ["&self.artifact", "handles", "parent_source", "seal"],
+      ]) &&
     preflightCompact ===
       "pub(crate)fnpreflight_approval_artifact(attestation:ReleaseAttestation,artifact:VerifiedHelper,)->Result<PreflightApprovalArtifact,ApprovalArtifactError>{if!artifact.is_approval_frontend(){returnErr(ApprovalArtifactError::WrongRole);}letrelease_identity=attestation.attested_artifact().ok_or(ApprovalArtifactError::ReleaseNotAttested)?;if!attestation.allows_helper_manifest(artifact.manifest_digest()){returnErr(ApprovalArtifactError::ManifestNotAllowed);}if!artifact.path().is_absolute(){returnErr(ApprovalArtifactError::InvalidPath);}Ok(PreflightApprovalArtifact{artifact,release_identity,})}" &&
     prepareCompact ===
@@ -27739,6 +27882,11 @@ const approvalSupervisorContract = (source) => {
     JSON.stringify(visibleFunctions) ===
       JSON.stringify([
         {
+          owner: "impl PreparedReleaseApprovalSupervisor",
+          visibility: "pub(crate)",
+          name: "prepare_parent_bound_approval",
+        },
+        {
           owner: "free",
           visibility: "pub(crate)",
           name: "preflight_approval_artifact",
@@ -27765,6 +27913,10 @@ const approvalSupervisorContract = (source) => {
           name: "fmt",
         },
         {
+          owner: "impl PreparedReleaseApprovalSupervisor",
+          name: "prepare_parent_bound_approval",
+        },
+        {
           owner: "impl Drop for PreparedReleaseApprovalSupervisor",
           name: "drop",
         },
@@ -27787,17 +27939,21 @@ const approvalSupervisorContract = (source) => {
         },
         {
           path: "crates/platform-windows/src/approval_supervisor.rs",
+          header: "impl PreparedReleaseApprovalSupervisor",
+        },
+        {
+          path: "crates/platform-windows/src/approval_supervisor.rs",
           header: "impl Drop for PreparedReleaseApprovalSupervisor",
         },
       ]) &&
     !/#\[derive\([^\]]*\b(?:Clone|Copy|Debug|Serialize)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)\b/u.test(
       code,
     ) &&
-    !/(?:^|\n)\s*impl\s+(?:PreflightApprovalArtifact|PreparedReleaseApprovalSupervisor)\b[^\{]*\{/u.test(
-      code,
-    ) &&
     !/(?:std::fs|OpenOptions|File::open|CreateFile\w*|OpenProcess|CreateProcess\w*|DuplicateHandle|ShellExecute\w*|WinExec|Command::new|std::process|std::thread|thread::Builder|\bmpsc\b|\b(?:sync_)?channel\s*\(|CreateNamedPipe\w*|CreatePipe|PrivateApprovalPipes|InheritedStdio|PendingApproval|ApprovalResponseChannel|LaunchedHelper|RestrictedLauncher|JobObject|raw_handle|launch_approval_frontend|\b(?:launch|spawn)\w*\s*\()/u.test(
-      rustLexicalCode(source),
+      rustLexicalCode(admissionSurface),
+    ) &&
+    !/\b(?:RestrictedLauncher|ReleaseAttestation|NoNetworkLpacProfile|unsafe|raw_handle|process_id|path)\b/u.test(
+      rustLexicalCode(prepareParentBound),
     ) &&
     !/(?:\.path\s*\(|canonicalize\s*\(|\bopen\s*\(|\bhold\s*\(|raw_handle|\bpid\b)/iu.test(
       rustLexicalCode(prepare),
@@ -27843,6 +27999,14 @@ const approvalSupervisorMutationProbes = [
     "let identity = ExactFileIdentity::default();",
   ),
   approvalSupervisorRelease.replace(
+    "crate::launch::prepare_parent_bound_approval(&self.artifact, handles, parent_source, seal)",
+    "crate::launch::prepare_parent_bound_approval(unpinned_artifact(), handles, parent_source, seal)",
+  ),
+  approvalSupervisorRelease.replace(
+    "crate::launch::prepare_parent_bound_approval(&self.artifact, handles, parent_source, seal)",
+    "crate::launch::prepare_parent_bound_approval(&self.artifact, handles, fallback_parent_source(), seal)",
+  ),
+  approvalSupervisorRelease.replace(
     '#[must_use = "dropping the Approval preflight capability closes its pinned file"]',
     '#[derive(Clone)]\n#[must_use = "dropping the Approval preflight capability closes its pinned file"]',
   ),
@@ -27873,6 +28037,8 @@ requireInvariant(
 const approvalSupervisorPath =
   "crates/platform-windows/src/approval_supervisor.rs";
 const approvalParentPath = "crates/platform-windows/src/approval_parent.rs";
+const dormantApprovalActivationPath =
+  "crates/platform-windows/src/approval_activation.rs";
 const approvalParentActivationPath =
   "crates/platform-windows/src/key_agent_activation.rs";
 const approvalParentSupervisorPath =
@@ -28255,6 +28421,7 @@ const approvalParentContract = (source) => {
   let errorDefinition;
   let boundDefinition;
   let bind;
+  let prepareActivation;
   let conversion;
   let debug;
   let implItems;
@@ -28268,6 +28435,10 @@ const approvalParentContract = (source) => {
       /pub\(crate\)\s+struct\s+ParentBoundReleaseApprovalSupervisor\s*\{/u,
     );
     bind = rustTopLevelFunctionBlock(source, "bind_release_approval_parent");
+    prepareActivation = rustTopLevelFunctionBlock(
+      source,
+      "prepare_parent_bound_approval_activation",
+    );
     implItems = rustImplItems(source);
     conversion =
       implItems.find(
@@ -28312,6 +28483,19 @@ const approvalParentContract = (source) => {
     },
   );
   const bindCompact = compactRust(bind);
+  const prepareActivationCompact = compactRust(prepareActivation);
+  const activationOrder = [
+    "bound.parent_source.revalidate_for_approval_activation(seal).map_err(|_|ApprovalActivationError::ParentState)?;",
+    "letactivation=matchbound.approval.prepare_parent_bound_approval(handles,&bound.parent_source,seal)",
+    "Err(LaunchError::Cleanup)=>returnErr(ApprovalActivationError::Cleanup)",
+    "Err(error)=>{",
+    "bound.parent_source.revalidate_for_approval_activation(seal).is_err()",
+    "returnErr(error.into())",
+    "ifbound.parent_source.revalidate_for_approval_activation(seal).is_err()",
+    "terminate_suspended_approval(activation)?",
+    "returnErr(ApprovalActivationError::ParentState)",
+    "Ok(activation)",
+  ];
   const resourcePattern =
     /\b(?:CreateProcess\w*|OpenProcess|DuplicateHandle|CreateThread|CreateRemoteThread|CreateJobObject\w*|CreatePipe|CreateNamedPipe\w*|OpenProcessToken|ShellExecute\w*|WinExec)\s*\(|\b(?:std::process|std::thread|thread::Builder|Command::new|PrivateApprovalPipes|PendingApproval|RestrictedLauncher|LaunchedHelper)\b/u;
 
@@ -28336,12 +28520,29 @@ const approvalParentContract = (source) => {
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["storage_proven"]]) &&
+    prepareActivationCompact ===
+      "pub(crate)fnprepare_parent_bound_approval_activation(bound:&ParentBoundReleaseApprovalSupervisor,handles:&InheritedStdio<'_>,seal:&ApprovalActivationSeal,)->Result<HeldSuspendedApproval,ApprovalActivationError>{bound.parent_source.revalidate_for_approval_activation(seal).map_err(|_|ApprovalActivationError::ParentState)?;letactivation=matchbound.approval.prepare_parent_bound_approval(handles,&bound.parent_source,seal){Ok(activation)=>activation,Err(LaunchError::Cleanup)=>returnErr(ApprovalActivationError::Cleanup),Err(error)=>{ifbound.parent_source.revalidate_for_approval_activation(seal).is_err(){returnErr(ApprovalActivationError::ParentState);}returnErr(error.into());}};ifbound.parent_source.revalidate_for_approval_activation(seal).is_err(){terminate_suspended_approval(activation)?;returnErr(ApprovalActivationError::ParentState);}Ok(activation)}" &&
+    hasOrderedCompactRustMarkers(prepareActivation, activationOrder) &&
+    rustCallSites(prepareActivation, "revalidate_for_approval_activation")
+      .length === 3 &&
+    rustCallSites(prepareActivation, "prepare_parent_bound_approval").length ===
+      1 &&
+    rustCallSites(prepareActivation, "terminate_suspended_approval").length ===
+      1 &&
+    !/\b(?:ResumeThread|resume|request|receive|sign|approve_and_sign|RestrictedLauncher|NoNetworkLpacProfile)\b/u.test(
+      rustLexicalCode(prepareActivation),
+    ) &&
     JSON.stringify(visibleFunctions) ===
       JSON.stringify([
         {
           owner: "free",
           visibility: "pub(crate)",
           name: "bind_release_approval_parent",
+        },
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "prepare_parent_bound_approval_activation",
         },
       ]) &&
     JSON.stringify(completeFunctionSurface) ===
@@ -28356,6 +28557,10 @@ const approvalParentContract = (source) => {
           name: "fmt",
         },
         { owner: "free", name: "bind_release_approval_parent" },
+        {
+          owner: "free",
+          name: "prepare_parent_bound_approval_activation",
+        },
       ]) &&
     JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
     JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
@@ -28396,6 +28601,26 @@ const approvalParentMutationProbes = [
     "let parent_source = unreachable!();",
   ),
   approvalParentRelease.replace(
+    "            Err(LaunchError::Cleanup) => return Err(ApprovalActivationError::Cleanup),",
+    "            Err(LaunchError::Cleanup) => return Err(ApprovalActivationError::Activation),",
+  ),
+  approvalParentRelease.replace(
+    "                if bound\n                    .parent_source\n                    .revalidate_for_approval_activation(seal)\n                    .is_err()\n                {\n                    return Err(ApprovalActivationError::ParentState);\n                }",
+    "                if false {\n                    return Err(ApprovalActivationError::ParentState);\n                }",
+  ),
+  approvalParentRelease.replace(
+    "                    return Err(ApprovalActivationError::ParentState);\n                }\n                return Err(error.into());",
+    "                    return Err(ApprovalActivationError::Activation);\n                }\n                return Err(error.into());",
+  ),
+  approvalParentRelease.replace(
+    "    if bound\n        .parent_source\n        .revalidate_for_approval_activation(seal)\n        .is_err()\n    {\n        terminate_suspended_approval(activation)?;",
+    "    if false {\n        terminate_suspended_approval(activation)?;",
+  ),
+  approvalParentRelease.replace(
+    "        terminate_suspended_approval(activation)?;",
+    "        drop(activation);",
+  ),
+  approvalParentRelease.replace(
     '#[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"]',
     '#[derive(Clone)]\n#[must_use = "dropping the parent-bound Approval supervisor terminates its exact Key Agent tree"]',
   ),
@@ -28424,6 +28649,13 @@ const bindReleaseApprovalParentProductionCallers =
       () => file.path,
     ),
   );
+const prepareParentBoundApprovalActivationProductionCallers =
+  workspaceRustProductionFiles.flatMap((file) =>
+    rustCallSites(
+      file.source,
+      "prepare_parent_bound_approval_activation",
+    ).map(() => file.path),
+  );
 const parentBoundApprovalProductionConsumers = workspaceRustProductionFiles
   .filter((file) =>
     /\bParentBoundReleaseApprovalSupervisor\b/u.test(
@@ -28447,11 +28679,19 @@ const approvalParentSourceTypeProductionConsumers = workspaceRustProductionFiles
 const approvalParentExternalUseContract = (files) =>
   files
     .filter((file) => file.path !== approvalParentPath)
-    .every((file) =>
-      rustUseItems(file.source).every(
-        (item) => !/\bapproval_parent\b/u.test(rustLexicalCode(item.source)),
-      ),
-    );
+    .every((file) => {
+      const imports = rustUseItems(file.source)
+        .filter((item) =>
+          /\bapproval_parent\b/u.test(rustLexicalCode(item.source)),
+        )
+        .map((item) => compactRust(item.source));
+      return file.path === dormantApprovalActivationPath
+        ? JSON.stringify(imports) ===
+            JSON.stringify([
+              "usecrate::approval_parent::{ParentBoundReleaseApprovalSupervisor,prepare_parent_bound_approval_activation,};",
+            ])
+        : imports.length === 0;
+    });
 const approvalParentExternalUseMutation = workspaceRustProductionFiles.map(
   (file) =>
     file.path === "crates/platform-windows/src/approval_channel.rs"
@@ -28469,6 +28709,10 @@ const approvalParentAuthorityTokenContract = (files) =>
     brokerLexicalTokenInventory(files, "ParentBoundReleaseApprovalSupervisor"),
   ) ===
     JSON.stringify([
+      dormantApprovalActivationPath,
+      dormantApprovalActivationPath,
+      dormantApprovalActivationPath,
+      approvalParentPath,
       approvalParentPath,
       approvalParentPath,
       approvalParentPath,
@@ -28496,11 +28740,20 @@ const approvalParentAuthorityTokenContract = (files) =>
     JSON.stringify([
       approvalParentPath,
       approvalParentPath,
+      approvalSupervisorPath,
+      approvalSupervisorPath,
       approvalParentSupervisorPath,
       approvalParentSupervisorPath,
       approvalParentSupervisorPath,
       approvalParentSupervisorPath,
       approvalParentSupervisorPath,
+      approvalParentSupervisorPath,
+      "crates/platform-windows/src/launch.rs",
+      "crates/platform-windows/src/launch.rs",
+      "crates/platform-windows/src/launch.rs",
+      "crates/platform-windows/src/launch.rs",
+      "crates/platform-windows/src/launch.rs",
+      "crates/platform-windows/src/launch.rs",
     ]) &&
   JSON.stringify(
     brokerLexicalTokenInventory(files, "prepare_approval_parent_process"),
@@ -28525,10 +28778,6 @@ const approvalParentAuthorityTokenContract = (files) =>
       approvalParentActivationPath,
       approvalParentSupervisorPath,
       approvalParentSupervisorPath,
-      "crates/platform-windows/src/launch.rs",
-      "crates/platform-windows/src/launch.rs",
-      "crates/platform-windows/src/launch.rs",
-      "crates/platform-windows/src/launch.rs",
     ]);
 const approvalParentAuthorityTokenMutationProbes = [
   workspaceRustProductionFiles.map((file) =>
@@ -28601,8 +28850,10 @@ requireInvariant(
     ) &&
     JSON.stringify(bindReleaseApprovalParentProductionCallers) ===
       JSON.stringify([approvalParentPath]) &&
+    JSON.stringify(prepareParentBoundApprovalActivationProductionCallers) ===
+      JSON.stringify([dormantApprovalActivationPath, approvalParentPath]) &&
     JSON.stringify(parentBoundApprovalProductionConsumers) ===
-      JSON.stringify([approvalParentPath]) &&
+      JSON.stringify([dormantApprovalActivationPath, approvalParentPath]) &&
     JSON.stringify(prepareApprovalParentSourceProductionCallers) ===
       JSON.stringify([
         approvalParentPath,
@@ -28611,7 +28862,9 @@ requireInvariant(
     JSON.stringify(approvalParentSourceTypeProductionConsumers) ===
       JSON.stringify([
         approvalParentPath,
+        approvalSupervisorPath,
         "crates/platform-windows/src/key_agent_supervisor.rs",
+        "crates/platform-windows/src/launch.rs",
       ]) &&
     approvalParentAuthorityTokenContract(workspaceRustProductionFiles) &&
     approvalParentAuthorityTokenMutationProbes.every(
@@ -28623,7 +28876,314 @@ requireInvariant(
     ) &&
     approvalParentExternalUseContract(workspaceRustProductionFiles) &&
     !approvalParentExternalUseContract(approvalParentExternalUseMutation),
-  "the exact Key Agent parent proof and release Approval must compose only into one private dormant non-operational ownership binding with zero production caller",
+  "the exact Key Agent parent proof and release Approval must have one sealed suspended-only consumer while the outer ownership binder remains production-caller-free",
+);
+
+const approvalActivationSource = await text(dormantApprovalActivationPath);
+const approvalActivationRelease = withoutCfgTestItems(
+  withoutBottomTestModule(approvalActivationSource),
+);
+const approvalActivationLibContract = (source) => {
+  const code = rustLexicalCode(source);
+  const declarations = [
+    ...code.matchAll(/\bmod\s+approval_activation\s*;/gu),
+  ];
+  return (
+    declarations.length === 1 &&
+    /#\[cfg\(windows\)\]\s*#\[allow\(dead_code\)\]\s*mod approval_activation;/u.test(
+      code,
+    ) &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+approval_activation\b/u.test(code) &&
+    rustUseItems(source).every(
+      (item) =>
+        !/\bapproval_activation\b/u.test(rustLexicalCode(item.source)),
+    )
+  );
+};
+const approvalActivationLibMutationProbes = [
+  platformWindowsLib.replace(
+    "mod approval_activation;",
+    "pub mod approval_activation;",
+  ),
+  `${platformWindowsLib}\npub(crate) use approval_activation::*;\n`,
+  `${platformWindowsLib}\nuse approval_activation::*;\n`,
+  `${platformWindowsLib}\npub(crate) use approval_activation::BoundDormantApproval;\n`,
+];
+const approvalActivationContract = (source) => {
+  let dormantDefinition;
+  let dormantDrop;
+  let dormantDropFunction;
+  let dormantDebug;
+  let launchErrorConversion;
+  let bindDormant;
+  let terminateSuspended;
+  try {
+    dormantDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+BoundDormantApproval\s*\{/u,
+    );
+    const implItems = rustImplItems(source);
+    dormantDrop = implItems.find(
+      (item) => item.header === "impl Drop for BoundDormantApproval",
+    )?.source;
+    dormantDebug =
+      implItems.find(
+        (item) => item.header === "impl fmt::Debug for BoundDormantApproval",
+      )?.source ?? "";
+    launchErrorConversion =
+      implItems.find(
+        (item) =>
+          item.header === "impl From<LaunchError> for ApprovalActivationError",
+      )?.source ?? "";
+    if (!dormantDrop) {
+      return false;
+    }
+    dormantDropFunction = rustFunctionBlockAtDepth(
+      dormantDrop,
+      "drop",
+      1,
+    );
+    bindDormant = rustTopLevelFunctionBlock(
+      source,
+      "bind_dormant_parent_bound_approval",
+    );
+    terminateSuspended = rustTopLevelFunctionBlock(
+      source,
+      "terminate_suspended_approval",
+    );
+  } catch {
+    return false;
+  }
+
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: dormantApprovalActivationPath, source }],
+    /\b(?:ApprovalActivationSeal|BoundDormantApproval)\b/u,
+  );
+  return (
+    normalizeRustFragment(rustLexicalCode(dormantDefinition)) ===
+      "pub(crate) struct BoundDormantApproval { activation: Option<HeldSuspendedApproval>, request_writer: ApprovalRequestWriter, response_reader: ApprovalResponseReader, bound: ParentBoundReleaseApprovalSupervisor, }" &&
+    /#\[must_use = "dropping dormant Approval state terminates its suspended process"\]\s*pub\(crate\) struct BoundDormantApproval/u.test(
+      source,
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+BoundDormantApproval\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/impl\s+BoundDormantApproval\s*\{/u.test(rustLexicalCode(source)) &&
+    compactRust(dormantDropFunction) ===
+      "fndrop(&mutself){ifletSome(activation)=self.activation.take(){let_=terminate_suspended_approval(activation);}}" &&
+    /formatter\s*\.\s*write_str\(\s*"BoundDormantApproval\(\[SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT\]\)"/u.test(
+      dormantDebug,
+    ) &&
+    compactRust(launchErrorConversion) ===
+      "implFrom<LaunchError>forApprovalActivationError{fnfrom(error:LaunchError)->Self{matcherror{LaunchError::Cleanup=>Self::Cleanup,_=>Self::Activation,}}}" &&
+    hasOrderedCompactRustMarkers(bindDormant, [
+      "letpipes=PrivateApprovalPipes::create()?;",
+      "letinherited=InheritedStdio::for_child_pipe_servers(",
+      "letseal=ApprovalActivationSeal{_private:()};",
+      "letactivation=prepare_parent_bound_approval_activation(&bound,&inherited,&seal)?;",
+      "let(request_writer,response_reader)=pipes.into_parent();",
+      "Ok(BoundDormantApproval{activation:Some(activation),request_writer,response_reader,bound,})",
+    ]) &&
+    rustCallSites(bindDormant, "prepare_parent_bound_approval_activation")
+      .length === 1 &&
+    rustCallSites(bindDormant, "for_child_pipe_servers").length === 1 &&
+    !/\b(?:ResumeThread|resume|receive|approve_and_sign|sign)\b/u.test(
+      rustLexicalCode(bindDormant),
+    ) &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "APPROVAL_CLEANUP_GRACE"),
+    ) ===
+      "const APPROVAL_CLEANUP_GRACE: Duration = Duration::from_secs(5);" &&
+    hasOrderedCompactRustMarkers(terminateSuspended, [
+      "letdeadline=Instant::now().checked_add(APPROVAL_CLEANUP_GRACE).ok_or(ApprovalActivationError::Cleanup)?;",
+      "activation.terminate_and_wait(deadline)",
+      ".map_err(|_|ApprovalActivationError::Cleanup)",
+    ]) &&
+    rustCallSites(terminateSuspended, "terminate_and_wait").length === 1 &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl fmt::Debug for BoundDormantApproval",
+        "impl Drop for BoundDormantApproval",
+      ]) &&
+    !/\bpub\s+(?:struct|fn|use)\b/u.test(rustLexicalCode(source))
+  );
+};
+const approvalActivationMutationProbes = [
+  approvalActivationRelease.replace(
+    "    activation: Option<HeldSuspendedApproval>,\n    request_writer: ApprovalRequestWriter,",
+    "    request_writer: ApprovalRequestWriter,\n    activation: Option<HeldSuspendedApproval>,",
+  ),
+  approvalActivationRelease.replace(
+    "            let _ = terminate_suspended_approval(activation);",
+    "            drop(activation);",
+  ),
+  approvalActivationRelease.replace(
+    "    let activation = prepare_parent_bound_approval_activation(&bound, &inherited, &seal)?;\n    let (request_writer, response_reader) = pipes.into_parent();",
+    "    let (request_writer, response_reader) = pipes.into_parent();\n    let activation = prepare_parent_bound_approval_activation(&bound, &inherited, &seal)?;",
+  ),
+  `${approvalActivationRelease}\nimpl BoundDormantApproval { pub(crate) fn resume(self) { unreachable!() } }\n`,
+  approvalActivationRelease.replace(
+    '#[must_use = "dropping dormant Approval state terminates its suspended process"]',
+    '#[derive(Clone)]\n#[must_use = "dropping dormant Approval state terminates its suspended process"]',
+  ),
+  approvalActivationRelease.replace(
+    "pub(crate) struct BoundDormantApproval",
+    "pub struct BoundDormantApproval",
+  ),
+  approvalActivationRelease.replace(
+    "const APPROVAL_CLEANUP_GRACE: Duration = Duration::from_secs(5);",
+    "const APPROVAL_CLEANUP_GRACE: Duration = Duration::ZERO;",
+  ),
+  approvalActivationRelease.replace(
+    "            LaunchError::Cleanup => Self::Cleanup,",
+    "            LaunchError::Cleanup => Self::Activation,",
+  ),
+  approvalActivationRelease.replace(
+    "            _ => Self::Activation,",
+    "            _ => Self::Cleanup,",
+  ),
+];
+const approvalActivationAuthorityConsumers = workspaceRustProductionFiles
+  .filter((file) =>
+    /\bBoundDormantApproval\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const approvalActivationCallSurfaceContract = (files) => {
+  const bindCallers = files.flatMap((file) => {
+    let source = file.source;
+    if (file.path === dormantApprovalActivationPath) {
+      source = source.replace(
+        rustTopLevelFunctionBlock(
+          source,
+          "bind_dormant_parent_bound_approval",
+        ),
+        "",
+      );
+    }
+    return rustCallSites(source, "bind_dormant_parent_bound_approval").map(
+      () => file.path,
+    );
+  });
+  const terminationCallers = files.flatMap((file) => {
+    let source = file.source;
+    if (file.path === dormantApprovalActivationPath) {
+      source = source.replace(
+        rustTopLevelFunctionBlock(source, "terminate_suspended_approval"),
+        "",
+      );
+    }
+    return rustCallSites(source, "terminate_suspended_approval").map(
+      () => file.path,
+    );
+  });
+  return (
+    JSON.stringify(bindCallers) === JSON.stringify([]) &&
+    JSON.stringify(terminationCallers) ===
+      JSON.stringify([dormantApprovalActivationPath, approvalParentPath])
+  );
+};
+const approvalSensitiveFunctionUsageContract = (files) => {
+  const usage = rustIdentifierUsageInventory(files, [
+    "bind_dormant_parent_bound_approval",
+    "terminate_suspended_approval",
+    "resume_suspended_for_legacy",
+  ]);
+  return (
+    JSON.stringify(usage.tokens) ===
+      JSON.stringify({
+        bind_dormant_parent_bound_approval: [dormantApprovalActivationPath],
+        terminate_suspended_approval: [
+          dormantApprovalActivationPath,
+          dormantApprovalActivationPath,
+          approvalParentPath,
+          approvalParentPath,
+        ],
+        resume_suspended_for_legacy: [
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+    }) &&
+    usage.aliases.length === 0 &&
+    usage.qualified.length === 0 &&
+    JSON.stringify(usage.references) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          name: "resume_suspended_for_legacy",
+        },
+      ])
+  );
+};
+const approvalActivationCallerMutation = workspaceRustProductionFiles.map(
+  (file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_dormant_activation(value: crate::approval_parent::ParentBoundReleaseApprovalSupervisor) { let _ = crate::approval_activation::bind_dormant_parent_bound_approval(value); }\n`,
+        }
+      : file,
+);
+const approvalSensitiveFunctionUsageMutationProbes = [
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nuse crate::approval_activation::bind_dormant_parent_bound_approval as hidden_dormant_bind;\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_termination_reference() { let terminate = crate::approval_activation::terminate_suspended_approval; let _ = terminate; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/launch.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_resume_reference() { let resume = sys::resume_suspended_for_legacy::<InjectedApprovalLogicalParent>; let _ = resume; }\n`,
+        }
+      : file,
+  ),
+];
+requireInvariant(
+  approvalActivationLibContract(platformWindowsLib) &&
+    approvalActivationLibMutationProbes.every(
+      (probe) =>
+        probe !== platformWindowsLib && !approvalActivationLibContract(probe),
+    ),
+  "dormant Approval activation must remain one exact private module with no named, aliased, wildcard, or visible re-export boundary",
+);
+requireInvariant(
+  approvalActivationContract(approvalActivationRelease) &&
+    approvalActivationMutationProbes.every(
+      (probe) =>
+        probe !== approvalActivationRelease &&
+        !approvalActivationContract(probe),
+    ) &&
+    JSON.stringify(approvalActivationAuthorityConsumers) ===
+      JSON.stringify([dormantApprovalActivationPath]) &&
+    approvalActivationCallSurfaceContract(workspaceRustProductionFiles) &&
+    !approvalActivationCallSurfaceContract(approvalActivationCallerMutation),
+  "dormant Approval activation must retain exact field/drop order, one sealed suspended binder, bounded reap-only cleanup, zero production binder callers, and no public, resumable, protocol, or signing surface",
+);
+requireInvariant(
+  approvalSensitiveFunctionUsageContract(workspaceRustProductionFiles) &&
+    approvalSensitiveFunctionUsageMutationProbes.every(
+      (probe) =>
+        probe.some(
+          (file, index) =>
+            file.source !== workspaceRustProductionFiles[index].source,
+        ) && !approvalSensitiveFunctionUsageContract(probe),
+    ),
+  "dormant Approval bind, cleanup, and legacy resume functions must have exact direct call surfaces with no aliases, function pointers, qualified escape, or extra lexical references",
 );
 
 const preparedApprovalParentProcessContract = (source) => {
@@ -28632,8 +29192,11 @@ const preparedApprovalParentProcessContract = (source) => {
   let outerDebug;
   let outerImpl;
   let sysImpl;
+  let outerRevalidate;
+  let duplicateIntoSuspendedApproval;
   let duplicate;
   let revalidate;
+  let duplicateIntoChild;
   let processSynchronizeDefinition;
   let approvalParentProcessAccessDefinition;
   let maxProcessImagePathUnitsDefinition;
@@ -28691,6 +29254,21 @@ const preparedApprovalParentProcessContract = (source) => {
     ).map((attribute) => compactRust(attribute.source));
     duplicate = rustFunctionBlockAtDepth(sysImpl.source, "duplicate", 1);
     revalidate = rustFunctionBlockAtDepth(sysImpl.source, "revalidate", 1);
+    duplicateIntoChild = rustFunctionBlockAtDepth(
+      sysImpl.source,
+      "duplicate_into_suspended_child",
+      1,
+    );
+    outerRevalidate = rustFunctionBlockAtDepth(
+      outerImpl.source,
+      "revalidate",
+      1,
+    );
+    duplicateIntoSuspendedApproval = rustFunctionBlockAtDepth(
+      outerImpl.source,
+      "duplicate_into_suspended_approval",
+      1,
+    );
   } catch {
     return false;
   }
@@ -28698,6 +29276,7 @@ const preparedApprovalParentProcessContract = (source) => {
   const code = rustLexicalCode(source);
   const duplicateCompact = compactRust(duplicate);
   const revalidateCompact = compactRust(revalidate);
+  const duplicateIntoChildCompact = compactRust(duplicateIntoChild);
   const expectedDuplicateCompact =
     "pub(super)fnduplicate(source:&DetachedRunningDebuggee,expected_creation_time:u64,)->Result<Self,KeyAgentActivationError>{" +
     "if!source.is_detached_and_running()||expected_creation_time==0{returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
@@ -28790,13 +29369,23 @@ const preparedApprovalParentProcessContract = (source) => {
     source.includes(
       '#[error("Approval parent process capability is unavailable")]\n    ApprovalParentCapability,',
     ) &&
-    JSON.stringify(outerMethods) === JSON.stringify(["revalidate"]) &&
+    JSON.stringify(outerMethods) ===
+      JSON.stringify([
+        "revalidate",
+        "duplicate_into_suspended_approval",
+      ]) &&
     JSON.stringify(sysMethods) ===
-      JSON.stringify(["duplicate", "revalidate"]) &&
+      JSON.stringify([
+        "duplicate",
+        "revalidate",
+        "duplicate_into_suspended_child",
+      ]) &&
     compactRust(prepare) ===
       "pub(crate)fnprepare_approval_parent_process(activation:&RunningKeyAgentActivation,)->Result<PreparedApprovalParentProcess,KeyAgentActivationError>{activation.revalidate_resident_process()?;sys::PreparedApprovalParentProcess::duplicate(&activation.process,activation.creation_time).map(PreparedApprovalParentProcess)}" &&
-    compactRust(outerImpl.source) ===
-      "implPreparedApprovalParentProcess{pub(crate)fnrevalidate(&self)->Result<(),KeyAgentActivationError>{self.0.revalidate()}}" &&
+    compactRust(outerRevalidate) ===
+      "pub(crate)fnrevalidate(&self)->Result<(),KeyAgentActivationError>{self.0.revalidate()}" &&
+    compactRust(duplicateIntoSuspendedApproval) ===
+      "pub(crate)fnduplicate_into_suspended_approval(&self,suspended_child:BorrowedHandle<'_>,seal:&ApprovalLogicalParentInjectionSeal,)->Result<InjectedApprovalLogicalParent,KeyAgentActivationError>{let(process_handle,process_id)=self.0.duplicate_into_suspended_child(suspended_child)?;Ok(InjectedApprovalLogicalParent::from_child_local(process_handle,process_id,seal,))}" &&
     duplicateCompact === expectedDuplicateCompact &&
     revalidateCompact === expectedRevalidateCompact &&
     /formatter\s*\.\s*write_str\(\s*"PreparedApprovalParentProcess\(\[EXACT QLI\+SYNCHRONIZE KEY AGENT\]\)"\s*\)/u.test(
@@ -28839,6 +29428,38 @@ const preparedApprovalParentProcessContract = (source) => {
     rustCallSites(duplicate, "OpenProcess").length === 0 &&
     !/\bDUPLICATE_SAME_ACCESS\b/u.test(rustLexicalCode(duplicate)) &&
     !/\bif\s+false\b/u.test(rustLexicalCode(duplicate)) &&
+    JSON.stringify(
+      rustCallSites(duplicateIntoChild, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "windows_handle(self.process.as_handle())",
+          "target_process",
+          "&rawmutchild_local_process",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+      ]) &&
+    rustCallSites(duplicateIntoChild, "revalidate").length === 2 &&
+    hasOrderedCompactRustMarkers(duplicateIntoChild, [
+      "self.revalidate()?;",
+      "lettarget_process=windows_handle(suspended_child);",
+      "ifinvalid(target_process){",
+      "letmutchild_local_process=HANDLE::default();",
+      "DuplicateHandle(",
+      "ifinvalid(child_local_process){",
+      "self.revalidate()?;",
+      "letchild_local_process=u64::try_from(child_local_process.0asusize)",
+      "Ok((child_local_process,self.process_id))",
+    ]) &&
+    !/\b(?:OpenProcess|CreateProcess\w*|SetHandleInformation)\s*\(/u.test(
+      rustLexicalCode(duplicateIntoChild),
+    ) &&
+    duplicateIntoChildCompact.length > 0 &&
     JSON.stringify(
       rustCallSites(revalidate, "GetHandleInformation").map((call) =>
         call.arguments.map(compactRust),
@@ -28963,6 +29584,30 @@ const preparedApprovalParentProcessMutationProbes = [
     "",
   ),
   keyAgentActivationRelease.replace("            prepared.revalidate()?;", ""),
+  keyAgentActivationRelease.replace(
+    "            self.revalidate()?;\n            let target_process = windows_handle(suspended_child);",
+    "            let target_process = windows_handle(suspended_child);",
+  ),
+  keyAgentActivationRelease.replace(
+    "            self.revalidate()?;\n            let child_local_process = u64::try_from(child_local_process.0 as usize)",
+    "            let child_local_process = u64::try_from(child_local_process.0 as usize)",
+  ),
+  keyAgentActivationRelease.replace(
+    "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
+    "                    target_process,\n                    &raw mut child_local_process,\n                    PROCESS_DUP_HANDLE.0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
+  ),
+  keyAgentActivationRelease.replace(
+    "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
+    "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    true,\n                    DUPLICATE_SAME_ACCESS,",
+  ),
+  keyAgentActivationRelease.replace(
+    "                    DUPLICATE_SAME_ACCESS,\n                )\n            }\n            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;\n            if invalid(child_local_process)",
+    "                    DUPLICATE_HANDLE_OPTIONS(0),\n                )\n            }\n            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;\n            if invalid(child_local_process)",
+  ),
+  keyAgentActivationRelease.replace(
+    "        Ok(InjectedApprovalLogicalParent::from_child_local(\n            process_handle,\n            process_id,\n            seal,\n        ))",
+    "        Err(KeyAgentActivationError::ApprovalParentCapability)",
+  ),
   `${keyAgentActivationRelease}\nimpl Clone for PreparedApprovalParentProcess { fn clone(&self) -> Self { unreachable!() } }\n`,
   `${keyAgentActivationRelease}\ntype ParentProcessAlias = PreparedApprovalParentProcess;\n`,
 ];
@@ -28987,6 +29632,10 @@ const preparedApprovalParentProcessProductionConsumers =
 const approvalParentSourcePreparedContract = (source) => {
   let definition;
   let debug;
+  let productionImpl;
+  let activationRevalidate;
+  let injectIntoSuspendedApproval;
+  let revalidateParentSource;
   let prepare;
   let prepareWithTransport;
   const implItems = rustImplItems(source);
@@ -29009,6 +29658,27 @@ const approvalParentSourcePreparedContract = (source) => {
       source,
       "prepare_approval_parent_source_with_transport",
     );
+    productionImpl = implItems.find(
+      (item) => item.header === "impl ApprovalParentSourcePreparedKeyAgent",
+    )?.source;
+    if (!productionImpl) {
+      return false;
+    }
+    activationRevalidate = rustFunctionBlockAtDepth(
+      productionImpl,
+      "revalidate_for_approval_activation",
+      1,
+    );
+    injectIntoSuspendedApproval = rustFunctionBlockAtDepth(
+      productionImpl,
+      "inject_into_suspended_approval",
+      1,
+    );
+    revalidateParentSource = rustFunctionBlockAtDepth(
+      productionImpl,
+      "revalidate_parent_source",
+      1,
+    );
   } catch {
     return false;
   }
@@ -29020,7 +29690,7 @@ const approvalParentSourcePreparedContract = (source) => {
     "letparent_process=prepare_approval_parent_process(&storage_proven.activation)?",
     "revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?",
     "parent_process.revalidate()?",
-    "Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,})",
+    "Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,response_transport,})",
   ].map((marker, index) =>
     transitionCompact.indexOf(marker, index === 2 ? orderFirstEnd() : 0),
   );
@@ -29045,7 +29715,7 @@ const approvalParentSourcePreparedContract = (source) => {
 
   return (
     normalizeRustFragment(rustLexicalCode(definition)) ===
-      "pub(crate) struct ApprovalParentSourcePreparedKeyAgent { storage_proven: BoundStorageProvenKeyAgent, parent_process: PreparedApprovalParentProcess, }" &&
+      "pub(crate) struct ApprovalParentSourcePreparedKeyAgent { storage_proven: BoundStorageProvenKeyAgent, parent_process: PreparedApprovalParentProcess, response_transport: StartupResponseTransport, }" &&
     /#\[must_use = "dropping the prepared parent source terminates its exact Key Agent process tree"\]\s*pub\(crate\) struct ApprovalParentSourcePreparedKeyAgent/u.test(
       source,
     ) &&
@@ -29055,11 +29725,31 @@ const approvalParentSourcePreparedContract = (source) => {
     JSON.stringify(authorityImpls.map((item) => item.header)) ===
       JSON.stringify([
         "impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent",
+        "impl ApprovalParentSourcePreparedKeyAgent",
       ]) &&
     prepareCompact ===
       "pub(crate)fnprepare_approval_parent_source(storage_proven:BoundStorageProvenKeyAgent,)->Result<ApprovalParentSourcePreparedKeyAgent,KeyAgentSupervisorError>{prepare_approval_parent_source_with_transport(storage_proven,StartupResponseTransport::Exact)}" &&
     transitionCompact ===
-      "fnprepare_approval_parent_source_with_transport(storage_proven:BoundStorageProvenKeyAgent,response_transport:StartupResponseTransport,)->Result<ApprovalParentSourcePreparedKeyAgent,KeyAgentSupervisorError>{revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;letparent_process=prepare_approval_parent_process(&storage_proven.activation)?;revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;parent_process.revalidate()?;Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,})}" &&
+      "fnprepare_approval_parent_source_with_transport(storage_proven:BoundStorageProvenKeyAgent,response_transport:StartupResponseTransport,)->Result<ApprovalParentSourcePreparedKeyAgent,KeyAgentSupervisorError>{revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;letparent_process=prepare_approval_parent_process(&storage_proven.activation)?;revalidate_post_startup_state(&storage_proven.provisioning,&storage_proven.root_job,&storage_proven.activation,response_transport,)?;parent_process.revalidate()?;Ok(ApprovalParentSourcePreparedKeyAgent{storage_proven,parent_process,response_transport,})}" &&
+    compactRust(activationRevalidate) ===
+      "pub(crate)fnrevalidate_for_approval_activation(&self,_seal:&ApprovalActivationSeal,)->Result<(),KeyAgentSupervisorError>{self.revalidate_parent_source()}" &&
+    compactRust(injectIntoSuspendedApproval) ===
+      "pub(crate)fninject_into_suspended_approval(&self,suspended_child:BorrowedHandle<'_>,seal:&ApprovalLogicalParentInjectionSeal,)->Result<InjectedApprovalLogicalParent,KeyAgentSupervisorError>{self.revalidate_parent_source()?;letinjected=self.parent_process.duplicate_into_suspended_approval(suspended_child,seal)?;self.revalidate_parent_source()?;Ok(injected)}" &&
+    compactRust(revalidateParentSource) ===
+      "fnrevalidate_parent_source(&self)->Result<(),KeyAgentSupervisorError>{revalidate_post_startup_state(&self.storage_proven.provisioning,&self.storage_proven.root_job,&self.storage_proven.activation,self.response_transport,)?;self.parent_process.revalidate().map_err(Into::into)}" &&
+    JSON.stringify(
+      rustFunctionSignatures(productionImpl).map(
+        (signature) =>
+          /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+            rustLexicalCode(signature.source),
+          )?.groups.name ?? "[UNPARSED]",
+      ),
+    ) ===
+      JSON.stringify([
+        "revalidate_for_approval_activation",
+        "inject_into_suspended_approval",
+        "revalidate_parent_source",
+      ]) &&
     order.every((position) => position !== -1) &&
     order.every(
       (position, index, positions) =>
@@ -29092,6 +29782,7 @@ const approvalParentSourcePreparedContract = (source) => {
     JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
       JSON.stringify([
         "impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent",
+        "impl ApprovalParentSourcePreparedKeyAgent",
       ])
   );
 };
@@ -29108,6 +29799,22 @@ const approvalParentSourcePreparedMutationProbes = [
   keyAgentSupervisorRelease.replace(
     "        storage_proven,\n        parent_process,",
     "        storage_proven: unreachable!(),\n        parent_process,",
+  ),
+  keyAgentSupervisorRelease.replace(
+    "        parent_process,\n        response_transport,",
+    "        parent_process,\n        response_transport: StartupResponseTransport::PinnedLibtestTerse,",
+  ),
+  keyAgentSupervisorRelease.replace(
+    "        self.revalidate_parent_source()?;\n        let injected = self",
+    "        let injected = self",
+  ),
+  keyAgentSupervisorRelease.replace(
+    "            .duplicate_into_suspended_approval(suspended_child, seal)?;\n        self.revalidate_parent_source()?;",
+    "            .duplicate_into_suspended_approval(suspended_child, seal)?;",
+  ),
+  keyAgentSupervisorRelease.replace(
+    "            self.response_transport,",
+    "            StartupResponseTransport::Exact,",
   ),
   `${keyAgentSupervisorRelease}\nimpl Clone for ApprovalParentSourcePreparedKeyAgent { fn clone(&self) -> Self { unreachable!() } }\n`,
   `${keyAgentSupervisorRelease}\ntype PreparedParentAlias = ApprovalParentSourcePreparedKeyAgent;\n`,
@@ -29156,7 +29863,6 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/key_agent_activation.rs",
         "crates/platform-windows/src/key_agent_supervisor.rs",
-        "crates/platform-windows/src/launch.rs",
       ]) &&
     approvalParentSourcePreparedContract(keyAgentSupervisorRelease) &&
     approvalParentSourcePreparedMutationProbes.every(
@@ -29276,19 +29982,91 @@ requireInvariant(
   "kernel evidence must pin the exact 0x00101000 parent handle, retained storage proof, dormant Approval composition, redaction, and synchronous process/storage cleanup",
 );
 
+const dormantApprovalIntegrationContract = (source) => {
+  let test;
+  try {
+    test = rustFunctionBlockAtDepth(
+      source,
+      "parent_bound_approval_is_live_in_job_and_drop_cleans_both_process_trees",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  return (
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        source,
+        "parent_bound_approval_is_live_in_job_and_drop_cleans_both_process_trees",
+        1,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    rustCallSites(test, "bind_dormant_parent_bound_approval").length === 1 &&
+    rustCallSites(test, "is_live_in_job_for_test").length === 1 &&
+    hasOrderedCompactRustMarkers(test, [
+      "letdormant_approval=bind_dormant_parent_bound_approval(bound)?;",
+      "assert!(dormant_approval.is_live_in_job_for_test()?);",
+      "assert!(storage_root.is_dir());",
+      "assert!(approval_executable.is_file());",
+      "drop(dormant_approval);",
+      "assert!(!storage_root.exists());",
+      "observation.rejected_exit_code()?",
+      "REJECTED_PROCESS_EXIT_CODE",
+      "approval_fixture.cleanup()?;",
+      "assert!(!approval_executable.exists());",
+      "assert!(!approval_directory.exists());",
+    ]) &&
+    test.includes(
+      "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT])",
+    ) &&
+    !hasVacuousRustTestEscape(test) &&
+    !/\b(?:forget|ManuallyDrop|leak)\b/u.test(rustLexicalCode(test))
+  );
+};
+const dormantApprovalIntegrationMutationProbes = [
+  keyAgentSupervisorSource.replace(
+    "        assert!(dormant_approval.is_live_in_job_for_test()?);",
+    "        assert!(true);",
+  ),
+  keyAgentSupervisorSource.replace(
+    "        drop(dormant_approval);",
+    "        core::mem::forget(dormant_approval);",
+  ),
+  keyAgentSupervisorSource.replaceAll(
+    "        approval_fixture.cleanup()?;\n        assert!(!approval_executable.exists());",
+    "        drop(approval_fixture);\n        assert!(!approval_executable.exists());",
+  ),
+  keyAgentSupervisorSource.replace(
+    "    fn parent_bound_approval_is_live_in_job_and_drop_cleans_both_process_trees()",
+    "    fn parent_bound_approval_stays_suspended_and_drop_cleans_both_process_trees()",
+  ),
+];
+requireInvariant(
+  dormantApprovalIntegrationContract(keyAgentSupervisorSource) &&
+    dormantApprovalIntegrationMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentSupervisorSource &&
+        !dormantApprovalIntegrationContract(probe),
+    ),
+  "the Windows dormant Approval integration test must prove exact live Job membership, redaction, and explicit Approval/Key-Agent/fixture teardown without overstating dynamic suspension evidence",
+);
+
 const approvalParentChildInjectionContract = (activationSource) => {
   let activationSys;
-  let publicImpl;
+  let outerImpl;
   let sysImpl;
-  let injectWrapper;
+  let duplicateIntoApproval;
   let duplicateIntoChild;
+  const release = withoutCfgTestItems(
+    withoutBottomTestModule(activationSource),
+  );
   try {
     activationSys = rustLexicalItemBlock(
-      activationSource,
+      release,
       /(?:^|\n)\s*mod\s+sys\s*\{/u,
     );
-    publicImpl = rustImplItemAtDepth(
-      activationSource,
+    outerImpl = rustImplItemAtDepth(
+      release,
       "impl PreparedApprovalParentProcess",
       0,
     );
@@ -29297,9 +30075,9 @@ const approvalParentChildInjectionContract = (activationSource) => {
       "impl PreparedApprovalParentProcess",
       1,
     );
-    injectWrapper = rustFunctionBlockAtDepth(
-      publicImpl,
-      "inject_into_approval_lpac_for_kernel_test",
+    duplicateIntoApproval = rustFunctionBlockAtDepth(
+      outerImpl,
+      "duplicate_into_suspended_approval",
       1,
     );
     duplicateIntoChild = rustFunctionBlockAtDepth(
@@ -29311,28 +30089,23 @@ const approvalParentChildInjectionContract = (activationSource) => {
     return false;
   }
 
-  const release = withoutCfgTestItems(
-    withoutBottomTestModule(activationSource),
-  );
   const duplicateCompact = compactRust(duplicateIntoChild);
   return (
-    /#\[cfg\(test\)\]\s*pub\(crate\) fn inject_into_approval_lpac_for_kernel_test\b/u.test(
-      rustLexicalCode(publicImpl),
-    ) &&
-    /#\[cfg\(test\)\]\s*pub\(super\) fn duplicate_into_suspended_child\b/u.test(
-      rustLexicalCode(sysImpl),
-    ) &&
-    /#\[cfg\(test\)\]\s*#\[derive\(Clone, Copy, Eq, PartialEq\)\]\s*pub\(crate\) struct InjectedApprovalParentProbe\s*\{\s*process_handle:\s*u64,\s*process_id:\s*u32,\s*\}/su.test(
-      rustLexicalCode(activationSource),
-    ) &&
+    compactRust(duplicateIntoApproval) ===
+      "pub(crate)fnduplicate_into_suspended_approval(&self,suspended_child:BorrowedHandle<'_>,seal:&ApprovalLogicalParentInjectionSeal,)->Result<InjectedApprovalLogicalParent,KeyAgentActivationError>{let(process_handle,process_id)=self.0.duplicate_into_suspended_child(suspended_child)?;Ok(InjectedApprovalLogicalParent::from_child_local(process_handle,process_id,seal,))}" &&
     JSON.stringify(
-      rustCallSites(injectWrapper, "duplicate_into_suspended_child").map(
+      rustCallSites(
+        duplicateIntoApproval,
+        "duplicate_into_suspended_child",
+      ).map(
         (call) => call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["suspended_child"]]) &&
-    compactRust(injectWrapper).includes(
-      "InjectedApprovalParentProbe{process_handle,process_id,}",
-    ) &&
+    JSON.stringify(
+      rustCallSites(duplicateIntoApproval, "from_child_local").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process_handle", "process_id", "seal"]]) &&
     JSON.stringify(
       rustCallSites(duplicateIntoChild, "DuplicateHandle").map((call) =>
         call.arguments.map(compactRust),
@@ -29361,60 +30134,69 @@ const approvalParentChildInjectionContract = (activationSource) => {
       "Ok((child_local_process,self.process_id))",
     ]) &&
     !/\b(?:OpenProcess|CreateProcess\w*|SetHandleInformation)\s*\(/u.test(
-      rustLexicalCode(`${injectWrapper}\n${duplicateIntoChild}`),
+      rustLexicalCode(`${duplicateIntoApproval}\n${duplicateIntoChild}`),
     ) &&
-    !/\bstruct\s+InjectedApprovalParentProbe\b|\bfn\s+(?:inject_into_approval_lpac_for_kernel_test|duplicate_into_suspended_child)\b/u.test(
-      rustLexicalCode(release),
+    !/\bInjectedApprovalParentProbe\b|\binject_into_approval_lpac_for_kernel_test\b/u.test(
+      rustLexicalCode(activationSource),
     ) &&
     duplicateCompact.length > 0
   );
 };
 const approvalParentChildInjectionMutationProbes = [
-  keyAgentActivationSource.replace(
+  keyAgentActivationRelease.replace(
     "            self.revalidate()?;\n            let target_process = windows_handle(suspended_child);",
     "            let target_process = windows_handle(suspended_child);",
   ),
-  keyAgentActivationSource.replace(
+  keyAgentActivationRelease.replace(
     "            self.revalidate()?;\n            let child_local_process = u64::try_from(child_local_process.0 as usize)",
     "            let child_local_process = u64::try_from(child_local_process.0 as usize)",
   ),
-  keyAgentActivationSource.replace(
+  keyAgentActivationRelease.replace(
     "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
     "                    target_process,\n                    &raw mut child_local_process,\n                    PROCESS_DUP_HANDLE.0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
   ),
-  keyAgentActivationSource.replace(
+  keyAgentActivationRelease.replace(
     "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    false,\n                    DUPLICATE_SAME_ACCESS,",
     "                    target_process,\n                    &raw mut child_local_process,\n                    0,\n                    true,\n                    DUPLICATE_SAME_ACCESS,",
   ),
-  keyAgentActivationSource.replace(
+  keyAgentActivationRelease.replace(
     "                    DUPLICATE_SAME_ACCESS,\n                )\n            }\n            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;\n            if invalid(child_local_process)",
     "                    DUPLICATE_HANDLE_OPTIONS(0),\n                )\n            }\n            .map_err(|_| KeyAgentActivationError::ApprovalParentCapability)?;\n            if invalid(child_local_process)",
   ),
-  keyAgentActivationSource.replace(
-    "    #[cfg(test)]\n    pub(crate) fn inject_into_approval_lpac_for_kernel_test(",
-    "    pub(crate) fn inject_into_approval_lpac_for_kernel_test(",
+  keyAgentActivationRelease.replace(
+    "            process_id,\n            seal,",
+    "            process_id,\n            unsafe { core::mem::transmute(seal) },",
   ),
-  keyAgentActivationSource.replace(
-    "        #[cfg(test)]\n        pub(super) fn duplicate_into_suspended_child(",
+  keyAgentActivationRelease.replace(
+    "    pub(crate) fn duplicate_into_suspended_approval(",
+    "    #[cfg(test)]\n    pub(crate) fn duplicate_into_suspended_approval(",
+  ),
+  keyAgentActivationRelease.replace(
     "        pub(super) fn duplicate_into_suspended_child(",
+    "        #[cfg(test)]\n        pub(super) fn duplicate_into_suspended_child(",
   ),
 ];
 requireInvariant(
-  approvalParentChildInjectionContract(keyAgentActivationSource) &&
+  approvalParentChildInjectionContract(keyAgentActivationRelease) &&
     approvalParentChildInjectionMutationProbes.every(
       (probe) =>
-        probe !== keyAgentActivationSource &&
+        probe !== keyAgentActivationRelease &&
         !approvalParentChildInjectionContract(probe),
     ),
-  "the test-only Approval child-local parent capability must be minted into the exact suspended child with same-access non-inheritable duplication bracketed by source revalidation",
+  "the production Approval child-local parent capability must be sealed into the exact suspended child with same-access non-inheritable duplication bracketed by source revalidation",
 );
 
 const approvalSuspendedLpacLaunchContract = (launchSource) => {
   let launchSys;
   let launcherImpl;
+  let outerPrepare;
+  let outerPrepareAttributes;
+  let sysPrepare;
+  let sysPrepareAttributes;
   let spawnProbe;
   let launchProbe;
   let launchInner;
+  let legacyResume;
   let verifyChildToken;
   let requireLpacMembership;
   try {
@@ -29427,6 +30209,23 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
       "impl RestrictedLauncher",
       0,
     );
+    outerPrepare = rustTopLevelFunctionBlock(
+      launchSource,
+      "prepare_parent_bound_approval",
+    );
+    outerPrepareAttributes = rustAttachedOuterAttributes(
+      launchSource,
+      launchSource.indexOf(outerPrepare),
+    ).map((attribute) => compactRust(attribute.source));
+    sysPrepare = rustFunctionBlockAtDepth(
+      launchSys,
+      "prepare_parent_bound_approval",
+      1,
+    );
+    sysPrepareAttributes = rustAttachedOuterAttributes(
+      launchSys,
+      launchSys.indexOf(sysPrepare),
+    ).map((attribute) => compactRust(attribute.source));
     spawnProbe = rustFunctionBlockAtDepth(
       launcherImpl,
       "spawn_approval_parent_probe_for_kernel_test",
@@ -29437,7 +30236,16 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
       "launch_approval_parent_probe",
       1,
     );
-    launchInner = rustFunctionBlockAtDepth(launchSys, "launch_inner", 1);
+    launchInner = rustFunctionBlockAtDepth(
+      launchSys,
+      "prepare_suspended_inner",
+      1,
+    );
+    legacyResume = rustFunctionBlockAtDepth(
+      launchSys,
+      "resume_suspended_for_legacy",
+      1,
+    );
     verifyChildToken = rustFunctionBlockAtDepth(
       launchSys,
       "verify_child_token",
@@ -29454,7 +30262,25 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
 
   const verifyCompact = compactRust(verifyChildToken);
   const membershipCompact = compactRust(requireLpacMembership);
+  const outerPrepareCompact = compactRust(outerPrepare);
+  const sysPrepareCompact = compactRust(sysPrepare);
   return (
+    JSON.stringify(outerPrepareAttributes) ===
+      JSON.stringify(["#[cfg(windows)]"]) &&
+    JSON.stringify(sysPrepareAttributes) === JSON.stringify([]) &&
+    outerPrepareCompact ===
+      "pub(crate)fnprepare_parent_bound_approval(helper:&VerifiedHelper,handles:&InheritedStdio<'_>,parent_source:&ApprovalParentSourcePreparedKeyAgent,_seal:&ApprovalActivationSeal,)->Result<HeldSuspendedApproval,LaunchError>{letrole=VerifiedLpacRole::from_helper(helper)?;ifrole!=VerifiedLpacRole::ApprovalFrontend{returnErr(LaunchError::HelperRoleNotAllowed);}sys::prepare_parent_bound_approval(helper,handles,role,parent_source)}" &&
+    !/\b(?:RestrictedLauncher|ReleaseAttestation|NoNetworkLpacProfile|Option|resume|ResumeThread)\b/u.test(
+      rustLexicalCode(outerPrepare),
+    ) &&
+    sysPrepareCompact ===
+      "pub(super)fnprepare_parent_bound_approval(helper:&VerifiedHelper,handles:&InheritedStdio<'_>,role:VerifiedLpacRole,parent_source:&ApprovalParentSourcePreparedKeyAgent,)->Result<HeldSuspendedApproval,LaunchError>{ifrole!=VerifiedLpacRole::ApprovalFrontend{returnErr(LaunchError::HelperRoleNotAllowed);}letinjection_seal=ApprovalLogicalParentInjectionSeal::new();letsuspended=prepare_suspended_inner(helper,handles,NoNetworkLpacProfile::v1(),role,|child|{parent_source.inject_into_suspended_approval(child,&injection_seal).map_err(|_|LaunchError::SandboxVerification)},#[cfg(test)]None,#[cfg(test)]true,)?;letSuspendedLaunch{process,job,thread,identity,parent_proof,logical_parent,}=suspended;Ok(HeldSuspendedApproval{process,job,thread,identity,parent_proof,logical_parent,cleanup_armed:true,})}" &&
+    rustCallSites(sysPrepare, "prepare_suspended_inner").length === 1 &&
+    rustCallSites(sysPrepare, "inject_into_suspended_approval").length === 1 &&
+    rustCallSites(sysPrepare, "resume_suspended_for_legacy").length === 0 &&
+    rustCallSites(sysPrepare, "ResumeThread").length === 0 &&
+    (rustLexicalCode(sysPrepare).match(/\bNoNetworkLpacProfile\s*::\s*v1\s*\(/gu) ?? [])
+      .length === 1 &&
     /#\[cfg\(all\(test, windows\)\)\]\s*pub\(crate\) fn spawn_approval_parent_probe_for_kernel_test\b/u.test(
       rustLexicalCode(launcherImpl),
     ) &&
@@ -29482,7 +30308,7 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
         ],
       ]) &&
     JSON.stringify(
-      rustCallSites(launchProbe, "launch_inner").map((call) =>
+      rustCallSites(launchProbe, "prepare_suspended_inner").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) ===
@@ -29492,30 +30318,34 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
           "handles",
           "profile",
           "role",
-          "Some(logical_parent)",
+          "|child|{logical_parent.inject_into_suspended_approval(child,&injection_seal).map_err(|_|LaunchError::SandboxVerification)}",
           "Some(command_line)",
           "true",
         ],
       ]) &&
-    /#\[cfg\(test\)\]\s*logical_parent:\s*Option<&PreparedApprovalParentProcess>/u.test(
+    /inject_logical_parent:\s*impl\s+FnOnce\(BorrowedHandle<'_>\)\s*->\s*Result<LogicalParent,\s*LaunchError>/u.test(
+      rustLexicalCode(launchInner),
+    ) &&
+    !/logical_parent:\s*Option|inject_logical_parent:\s*Option/u.test(
       rustLexicalCode(launchInner),
     ) &&
     /#\[cfg\(test\)\]\s*kernel_test_context:\s*bool/u.test(
       rustLexicalCode(launchInner),
     ) &&
     rustCallSites(launchInner, "verify_child_token").length === 1 &&
-    rustCallSites(launchInner, "inject_into_approval_lpac_for_kernel_test")
-      .length === 1 &&
+    rustCallSites(launchInner, "inject_logical_parent").length === 1 &&
+    rustCallSites(launchInner, "ResumeThread").length === 0 &&
+    rustCallSites(legacyResume, "ResumeThread").length === 1 &&
+    rustCallSites(launchProbe, "resume_suspended_for_legacy").length === 1 &&
     hasOrderedCompactRustMarkers(launchInner, [
       "letchild_guard=CreatedChildGuard::new(&process,&job);",
       "verify_child_token(process.raw(),profile_sid.raw())",
-      "letapproval_parent_probe=logical_parent.map(|parent|{",
+      "letparent_proof=parent_sources.as_ref().map(|sources|inject_parent_proof(sources,process.raw())).transpose()?.ok_or(LaunchError::SandboxVerification)?;",
       "BorrowedHandle::borrow_raw(process.raw().0)",
-      "parent.inject_into_approval_lpac_for_kernel_test(child)",
+      "letlogical_parent=inject_logical_parent(child)?;",
       "drop(parent_sources);",
-      "ResumeThread(thread.raw())",
-      "ifprevious_suspend_count!=1",
       "child_guard.disarm();",
+      "Ok(SuspendedLaunch{",
     ]) &&
     JSON.stringify(
       rustCallSites(verifyChildToken, "OpenProcessToken").map((call) =>
@@ -29568,16 +30398,32 @@ const approvalSuspendedLpacLaunchContract = (launchSource) => {
 };
 const approvalSuspendedLpacLaunchMutationProbes = [
   restrictedLauncher.replace(
-    "        if verify_child_token(process.raw(), profile_sid.raw()).is_err() {\n            return Err(LaunchError::SandboxVerification);\n        }",
-    "        if false {\n            return Err(LaunchError::SandboxVerification);\n        }",
+    "pub(crate) fn prepare_parent_bound_approval(\n",
+    "#[cfg(test)]\npub(crate) fn prepare_parent_bound_approval(\n",
   ),
   restrictedLauncher.replace(
-    "            Some(logical_parent),\n            Some(command_line),\n            true,",
-    "            None,\n            Some(command_line),\n            true,",
+    "    pub(super) fn prepare_parent_bound_approval(\n",
+    "    #[cfg(test)]\n    pub(super) fn prepare_parent_bound_approval(\n",
   ),
   restrictedLauncher.replace(
-    "            Some(logical_parent),\n            Some(command_line),\n            true,",
-    "            Some(logical_parent),\n            Some(command_line),\n            false,",
+    "            if verify_child_token(process.raw(), profile_sid.raw()).is_err() {\n                return Err(LaunchError::SandboxVerification);\n            }",
+    "            if false {\n                return Err(LaunchError::SandboxVerification);\n            }",
+  ),
+  restrictedLauncher.replace(
+    "            NoNetworkLpacProfile::v1(),\n            role,",
+    "            NoNetworkLpacProfile::v2(),\n            role,",
+  ),
+  restrictedLauncher.replace(
+    "                    .inject_into_suspended_approval(child, &injection_seal)",
+    "                    .inject_into_suspended_approval(child, unsafe { core::mem::transmute(&injection_seal) })",
+  ),
+  restrictedLauncher.replace(
+    "        let SuspendedLaunch {\n            process,\n            job,\n            thread,\n            identity,\n            parent_proof,\n            logical_parent,\n        } = suspended;\n        Ok(HeldSuspendedApproval {",
+    "        let suspended = resume_suspended_for_legacy(suspended)?;\n        let SuspendedLaunch {\n            process,\n            job,\n            thread,\n            identity,\n            parent_proof,\n            logical_parent,\n        } = suspended;\n        Ok(HeldSuspendedApproval {",
+  ),
+  restrictedLauncher.replace(
+    "            #[cfg(test)]\n            true,\n        )?;\n        let SuspendedLaunch {",
+    "            #[cfg(test)]\n            false,\n        )?;\n        let SuspendedLaunch {",
   ),
   restrictedLauncher.replace(
     "        require_lpac_membership(token.raw())?;",
@@ -29604,6 +30450,362 @@ requireInvariant(
         !approvalSuspendedLpacLaunchContract(probe),
     ),
   "the actual Approval proof must verify the same suspended process as a zero-capability LPAC before injecting the logical-parent capability and resuming its exact primary thread",
+);
+
+const heldSuspendedApprovalContract = (source) => {
+  const release = withoutCfgTestItems(withoutBottomTestModule(source));
+  let heldDefinition;
+  let heldImpl;
+  let heldTerminate;
+  let heldDrop;
+  let heldDropFunction;
+  let heldDebug;
+  let logicalDefinition;
+  let logicalImpl;
+  let logicalConstructor;
+  let logicalProcessHandle;
+  let logicalProcessId;
+  let logicalDebug;
+  let injectionSealDefinition;
+  let injectionSealImpl;
+  try {
+    heldDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /pub\(crate\)\s+struct\s+HeldSuspendedApproval\s*\{/u,
+    );
+    heldImpl = rustImplItemAtDepth(
+      release,
+      "impl HeldSuspendedApproval",
+      0,
+    );
+    heldTerminate = rustFunctionBlockAtDepth(
+      heldImpl,
+      "terminate_and_wait",
+      1,
+    );
+    heldDrop = rustImplItemAtDepth(
+      release,
+      "impl Drop for HeldSuspendedApproval",
+      0,
+    );
+    heldDropFunction = rustFunctionBlockAtDepth(heldDrop, "drop", 1);
+    heldDebug = rustImplItemAtDepth(
+      release,
+      "impl fmt::Debug for HeldSuspendedApproval",
+      0,
+    );
+    logicalDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /pub\(crate\)\s+struct\s+InjectedApprovalLogicalParent\s*\{/u,
+    );
+    logicalImpl = rustImplItemAtDepth(
+      release,
+      "impl InjectedApprovalLogicalParent",
+      0,
+    );
+    logicalConstructor = rustFunctionBlockAtDepth(
+      logicalImpl,
+      "from_child_local",
+      1,
+    );
+    logicalProcessHandle = rustFunctionBlockAtDepth(
+      logicalImpl,
+      "process_handle",
+      1,
+    );
+    logicalProcessId = rustFunctionBlockAtDepth(
+      logicalImpl,
+      "process_id",
+      1,
+    );
+    logicalDebug = rustImplItemAtDepth(
+      release,
+      "impl fmt::Debug for InjectedApprovalLogicalParent",
+      0,
+    );
+    injectionSealDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /pub\(crate\)\s+struct\s+ApprovalLogicalParentInjectionSeal\s*\{/u,
+    );
+    injectionSealImpl = rustImplItemAtDepth(
+      release,
+      "impl ApprovalLogicalParentInjectionSeal",
+      0,
+    );
+  } catch {
+    return false;
+  }
+
+  const heldMethods = rustFunctionSignatures(heldImpl).map(
+    (signature) =>
+      /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+        rustLexicalCode(signature.source),
+      )?.groups.name ?? "[UNPARSED]",
+  );
+  const authorityImplHeaders = rustImplItems(release)
+    .filter((item) =>
+      /\b(?:ApprovalLogicalParentInjectionSeal|InjectedApprovalLogicalParent|HeldSuspendedApproval)\b/u.test(
+        item.header,
+      ),
+    )
+    .map((item) => item.header);
+  const releaseCompact = compactRust(release);
+  return (
+    normalizeRustFragment(rustLexicalCode(heldDefinition)) ===
+      "pub(crate) struct HeldSuspendedApproval { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, thread: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: InjectedParentProof, logical_parent: InjectedApprovalLogicalParent, cleanup_armed: bool, }" &&
+    /#\[must_use = "dropping a suspended Approval attempts bounded termination and reap"\]\s*pub\(crate\) struct HeldSuspendedApproval/u.test(
+      release,
+    ) &&
+    JSON.stringify(heldMethods) === JSON.stringify(["terminate_and_wait"]) &&
+    JSON.stringify(authorityImplHeaders) ===
+      JSON.stringify([
+        "impl ApprovalLogicalParentInjectionSeal",
+        "impl InjectedApprovalLogicalParent",
+        "impl fmt::Debug for InjectedApprovalLogicalParent",
+        "impl HeldSuspendedApproval",
+        "impl Drop for HeldSuspendedApproval",
+        "impl fmt::Debug for HeldSuspendedApproval",
+      ]) &&
+    compactRust(heldTerminate) ===
+      "pub(crate)fnterminate_and_wait(mutself,deadline:Instant)->Result<(),LaunchError>{letresult=sys::terminate_and_wait(self.process.raw(),self.job.raw(),deadline);self.cleanup_armed=false;result}" &&
+    compactRust(heldDropFunction) ===
+      "fndrop(&mutself){ifself.cleanup_armed{self.cleanup_armed=false;let_=sys::terminate_and_reap_created_child(self.process.raw(),self.job.raw());}}" &&
+    releaseCompact.includes(
+      "Ok(HeldSuspendedApproval{process,job,thread,identity,parent_proof,logical_parent,cleanup_armed:true,})",
+    ) &&
+    /formatter\s*\.\s*write_str\(\s*"HeldSuspendedApproval\(\[SUSPENDED APPROVAL; HELD JOB; REDACTED PARENT PROOFS\]\)"/u.test(
+      heldDebug,
+    ) &&
+    normalizeRustFragment(rustLexicalCode(logicalDefinition)) ===
+      "pub(crate) struct InjectedApprovalLogicalParent { process_handle: u64, process_id: u32, }" &&
+    normalizeRustFragment(rustLexicalCode(injectionSealDefinition)) ===
+      "pub(crate) struct ApprovalLogicalParentInjectionSeal { _private: (), }" &&
+    compactRust(injectionSealImpl) ===
+      "implApprovalLogicalParentInjectionSeal{constfnnew()->Self{Self{_private:()}}}" &&
+    compactRust(logicalConstructor) ===
+      "pub(crate)constfnfrom_child_local(process_handle:u64,process_id:u32,_seal:&ApprovalLogicalParentInjectionSeal,)->Self{Self{process_handle,process_id,}}" &&
+    compactRust(logicalProcessHandle) ===
+      "pub(crate)constfnprocess_handle(&self)->u64{self.process_handle}" &&
+    compactRust(logicalProcessId) ===
+      "pub(crate)constfnprocess_id(&self)->u32{self.process_id}" &&
+    /formatter\s*\.\s*write_str\(\s*"InjectedApprovalLogicalParent\(\[REDACTED HANDLE AND PID\]\)"/u.test(
+      logicalDebug,
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+(?:HeldSuspendedApproval|InjectedApprovalLogicalParent)\b/u.test(
+      rustLexicalCode(release),
+    ) &&
+    !/\b(?:ResumeThread|resume|request|receive|approve_and_sign|sign)\b/u.test(
+      rustLexicalCode(`${heldImpl}\n${heldDrop}`),
+    ) &&
+    !/\b(?:logical_parent|injected)\s*\.\s*(?:process_handle|process_id)\s*\(/u.test(
+      rustLexicalCode(release.replace(logicalImpl, "")),
+    ) &&
+    !/\blet\s+InjectedApprovalLogicalParent\s*\{/u.test(
+      rustLexicalCode(release),
+    )
+  );
+};
+const heldSuspendedApprovalMutationProbes = [
+  restrictedLauncherProduction.replace(
+    "            logical_parent,\n            cleanup_armed: true,",
+    "            logical_parent,\n            cleanup_armed: false,",
+  ),
+  restrictedLauncherProduction.replace(
+    "        self.cleanup_armed = false;\n        result",
+    "        result",
+  ),
+  restrictedLauncherProduction.replace(
+    "            let _ = sys::terminate_and_reap_created_child(self.process.raw(), self.job.raw());",
+    "            let _ = (&self.process, &self.job);",
+  ),
+  restrictedLauncherProduction.replace(
+    "    process_handle: u64,\n    process_id: u32,",
+    "    pub(crate) process_handle: u64,\n    pub(crate) process_id: u32,",
+  ),
+  restrictedLauncherProduction.replace(
+    "        _seal: &ApprovalLogicalParentInjectionSeal,",
+    "        _seal: &(),",
+  ),
+  `${restrictedLauncherProduction}\nimpl HeldSuspendedApproval { pub(crate) fn resume(self) { unreachable!() } }\n`,
+  `${restrictedLauncherProduction}\nfn leak_logical_parent(logical_parent: &InjectedApprovalLogicalParent) { let _ = logical_parent.process_id(); }\n`,
+];
+const suspendedApprovalCarrierWorkspaceContract = (files) => {
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    files,
+    /\b(?:ApprovalLogicalParentInjectionSeal|InjectedApprovalLogicalParent|HeldSuspendedApproval)\b/u,
+  );
+  const typeUsage = rustIdentifierUsageInventory(files, [
+    "ApprovalLogicalParentInjectionSeal",
+    "InjectedApprovalLogicalParent",
+    "HeldSuspendedApproval",
+  ]);
+  const producerUsage = rustIdentifierUsageInventory(files, [
+    "from_child_local",
+    "duplicate_into_suspended_approval",
+    "inject_into_suspended_approval",
+  ]);
+  return (
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl ApprovalLogicalParentInjectionSeal",
+        },
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl InjectedApprovalLogicalParent",
+        },
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl fmt::Debug for InjectedApprovalLogicalParent",
+        },
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl HeldSuspendedApproval",
+        },
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl Drop for HeldSuspendedApproval",
+        },
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl fmt::Debug for HeldSuspendedApproval",
+        },
+      ]) &&
+    JSON.stringify(typeUsage.tokens) ===
+      JSON.stringify({
+        ApprovalLogicalParentInjectionSeal: [
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        InjectedApprovalLogicalParent: [
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        HeldSuspendedApproval: [
+          dormantApprovalActivationPath,
+          dormantApprovalActivationPath,
+          dormantApprovalActivationPath,
+          approvalParentPath,
+          approvalParentPath,
+          approvalSupervisorPath,
+          approvalSupervisorPath,
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+      }) &&
+    JSON.stringify(producerUsage.tokens) ===
+      JSON.stringify({
+        from_child_local: [
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+        duplicate_into_suspended_approval: [
+          "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+        ],
+        inject_into_suspended_approval: [
+          "crates/platform-windows/src/key_agent_supervisor.rs",
+          "crates/platform-windows/src/launch.rs",
+        ],
+      }) &&
+    producerUsage.aliases.length === 0 &&
+    producerUsage.references.length === 0
+  );
+};
+const suspendedApprovalCarrierWorkspaceMutationProbes = [
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/key_agent_activation.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn extract_child_coordinate(arbitrary_name: &InjectedApprovalLogicalParent) -> u32 { arbitrary_name.process_id() }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === dormantApprovalActivationPath
+      ? {
+          ...file,
+          source: `${file.source}\nimpl HeldSuspendedApproval { pub(crate) fn resume(self) { unreachable!() } }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/key_agent_supervisor.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_injection_reference() { let inject = ApprovalParentSourcePreparedKeyAgent::inject_into_suspended_approval; let _ = inject; }\n`,
+        }
+      : file,
+  ),
+];
+const logicalParentProductionConsumers = workspaceRustProductionFiles
+  .filter((file) =>
+    /\bInjectedApprovalLogicalParent\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+const heldSuspendedApprovalProductionConsumers = workspaceRustProductionFiles
+  .filter((file) =>
+    /\bHeldSuspendedApproval\b/u.test(rustLexicalCode(file.source)),
+  )
+  .map((file) => file.path);
+requireInvariant(
+  heldSuspendedApprovalContract(restrictedLauncherProduction) &&
+    heldSuspendedApprovalMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncherProduction &&
+        !heldSuspendedApprovalContract(probe),
+    ) &&
+    JSON.stringify(logicalParentProductionConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_supervisor.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    JSON.stringify(heldSuspendedApprovalProductionConsumers) ===
+      JSON.stringify([
+        dormantApprovalActivationPath,
+        approvalParentPath,
+        approvalSupervisorPath,
+        "crates/platform-windows/src/launch.rs",
+      ]),
+  "suspended Approval authority must keep both parent proofs private, mint child-local coordinates only under the launch seal, expose no production carrier extraction or resume, and synchronously attempt one armed bounded cleanup on Drop",
+);
+requireInvariant(
+  suspendedApprovalCarrierWorkspaceContract(workspaceRustProductionFiles) &&
+    suspendedApprovalCarrierWorkspaceMutationProbes.every(
+      (probe) =>
+        probe.some(
+          (file, index) =>
+            file.source !== workspaceRustProductionFiles[index].source,
+        ) && !suspendedApprovalCarrierWorkspaceContract(probe),
+    ),
+  "suspended Approval authority must have one workspace-wide impl surface and exact sealed producer/type-token inventories that reject external methods and carrier extraction independently of local variable names",
 );
 
 const approvedApprovalParentChildFixtureRawSha256 =
@@ -30156,12 +31358,12 @@ const approvalParentAggregateCleanupContract = (
       rustLexicalCode(launchedHelperImpl),
     ) &&
     !hasRustUnitSuccessReturn(prove) &&
-    rustCallSites(prove, "revalidate").length === 2 &&
+    rustCallSites(prove, "revalidate_for_lpac_probe").length === 2 &&
     /let\s+Some\(proof\)\s*=\s*launched\.approval_parent_probe\(\)\s*else\s*\{\s*return\s+match\s+cleanup_approval_parent_probe\(launched\)/u.test(
       rustLexicalCode(prove),
     ) &&
     hasOrderedCompactRustMarkers(prove, [
-      "logical_parent.revalidate()",
+      "logical_parent.revalidate_for_lpac_probe()",
       "PrivateApprovalPipes::create()",
       "spawn_approval_parent_probe_for_kernel_test(",
       "letSome(proof)=launched.approval_parent_probe()else{",
@@ -30170,7 +31372,7 @@ const approvalParentAggregateCleanupContract = (
       "ifwriter.write_all(&frame,deadline).is_err(){",
       "cleanup_approval_parent_probe(launched)",
       "launched.wait_for_success_for_kernel_test(deadline)",
-      "logical_parent.revalidate()",
+      "logical_parent.revalidate_for_lpac_probe()",
     ]) &&
     rustCallSites(aggregateProbe, "revalidate_for_lpac_probe").length === 2 &&
     hasOrderedCompactRustMarkers(aggregateProbe, [
@@ -30391,7 +31593,7 @@ const approvalParentAggregateCleanupMutationProbes = [
   },
   {
     launch: restrictedLauncher.replace(
-      "    logical_parent\n        .revalidate()\n        .map_err(|_| ApprovalParentProbeError::ParentState)?;\n    let pipes",
+      "    logical_parent\n        .revalidate_for_lpac_probe()\n        .map_err(|_| ApprovalParentProbeError::ParentState)?;\n    let pipes",
       "    let pipes",
     ),
     parent: approvalParentSource,
@@ -30399,7 +31601,7 @@ const approvalParentAggregateCleanupMutationProbes = [
   },
   {
     launch: restrictedLauncher.replace(
-      "    logical_parent\n        .revalidate()\n        .map_err(|_| ApprovalParentProbeError::ParentState)\n}",
+      "    logical_parent\n        .revalidate_for_lpac_probe()\n        .map_err(|_| ApprovalParentProbeError::ParentState)\n}",
       "    Ok(())\n}",
     ),
     parent: approvalParentSource,
@@ -30485,7 +31687,7 @@ const approvalParentAggregateCleanupMutationProbes = [
   {
     launch: restrictedLauncher,
     parent: approvalParentSource,
-    supervisor: keyAgentSupervisorSource.replace(
+    supervisor: keyAgentSupervisorSource.replaceAll(
       "        approval_fixture.cleanup()?;\n        assert!(!approval_executable.exists());",
       "        drop(approval_fixture);\n        assert!(!approval_executable.exists());",
     ),
@@ -31022,7 +32224,7 @@ const approvalHeldProcessRevalidationContract = (source) => {
     );
     launchRestrictedChild = rustFunctionBlockAtDepth(
       sysModule,
-      "launch_inner",
+      "prepare_suspended_inner",
       1,
     );
   } catch {
@@ -31053,7 +32255,7 @@ const approvalHeldProcessRevalidationContract = (source) => {
       rustLexicalCode(source),
     ) &&
     normalizeRustFragment(rustLexicalCode(launchedHelperDefinition)) ===
-      "pub(crate) struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, #[cfg(test)] approval_parent_probe: Option<InjectedApprovalParentProbe>, }" &&
+      "pub(crate) struct LaunchedHelper { process: sys::OwnedWinHandle, job: sys::OwnedWinHandle, identity: HeldProcessIdentity, parent_proof: Option<InjectedParentProof>, #[cfg(test)] approval_parent_probe: Option<InjectedApprovalLogicalParent>, }" &&
     normalizeRustFragment(rustLexicalCode(heldIdentityDefinition)) ===
       "pub(crate) struct HeldProcessIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
     compactRust(heldProcessIdAccessor) ===
@@ -31117,7 +32319,10 @@ const approvalHeldProcessRevalidationContract = (source) => {
     ) &&
     launchCompact.indexOf(
       ".map(|sources|inject_parent_proof(sources,process.raw()))",
-    ) < launchCompact.indexOf("ResumeThread(thread.raw())")
+    ) < launchCompact.indexOf("letlogical_parent=inject_logical_parent(child)?;") &&
+    launchCompact.indexOf("letlogical_parent=inject_logical_parent(child)?;") <
+      launchCompact.indexOf("child_guard.disarm();") &&
+    !/\bResumeThread\s*\(/u.test(rustLexicalCode(launchRestrictedChild))
   );
 };
 const approvalHeldProcessRevalidationMutationProbes = [
@@ -31170,8 +32375,8 @@ const approvalHeldProcessRevalidationMutationProbes = [
     "                helper_manifest_digest: [0; 32],",
   ),
   restrictedLauncherProduction.replace(
-    "        self.process_id\n",
-    "        1\n",
+    "    pub(crate) const fn process_id(self) -> u32 {\n        self.process_id\n    }",
+    "    pub(crate) const fn process_id(self) -> u32 {\n        1\n    }",
   ),
   restrictedLauncherProduction.replace(
     "        self.helper_file\n",
@@ -31648,6 +32853,7 @@ const approveAndSignDeadCodeMutation = keyAgent.replace(
 requireInvariant(
   JSON.stringify(childPipeServerProductionCallers) ===
     JSON.stringify([
+      "crates/platform-windows/src/approval_activation.rs",
       "crates/platform-windows/src/approval_channel.rs",
       "crates/platform-windows/src/recovery_channel.rs",
       "crates/platform-windows/src/secret_channel.rs",
@@ -31662,7 +32868,7 @@ requireInvariant(
     approveAndSignDeadCodeContract(keyAgent) &&
     approveAndSignDeadCodeMutation !== keyAgent &&
     !approveAndSignDeadCodeContract(approveAndSignDeadCodeMutation),
-  "private child-server stdio must have exactly Approval/Secret/Recovery production callers; Approval may not use raw stdio construction; launch_approval_frontend and approve_and_sign must have zero production orchestration callers, with signing explicitly dead-code",
+  "private child-server stdio must have exactly dormant Approval activation plus Approval/Secret/Recovery production callers; Approval may not use raw stdio construction; launch_approval_frontend and approve_and_sign must have zero production orchestration callers, with signing explicitly dead-code",
 );
 requireInvariant(
   /pub\s+struct\s+VerifiedApprovalResponse\s*\{\s*decision\s*:/su.test(

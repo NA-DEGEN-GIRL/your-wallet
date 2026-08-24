@@ -11,6 +11,7 @@
 use core::cell::Cell;
 use core::fmt;
 use core::marker::PhantomData;
+use std::os::windows::io::BorrowedHandle;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
@@ -18,6 +19,7 @@ use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use crate::approval_activation::ApprovalActivationSeal;
 #[cfg(test)]
 use crate::attestation::ReleaseAttestation;
 #[cfg(test)]
@@ -45,6 +47,7 @@ use crate::key_agent_startup::{
     KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES, KeyAgentStartupCodecError,
     KeyAgentStartupRequest, KeyAgentStartupResponse,
 };
+use crate::launch::{ApprovalLogicalParentInjectionSeal, InjectedApprovalLogicalParent};
 use crate::pipe::{
     KeyAgentStartupRequestWriter, KeyAgentStartupResponseReader, PipeError, PrivateKeyAgentPipes,
 };
@@ -373,6 +376,7 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
 pub(crate) struct ApprovalParentSourcePreparedKeyAgent {
     storage_proven: BoundStorageProvenKeyAgent,
     parent_process: PreparedApprovalParentProcess,
+    response_transport: StartupResponseTransport,
 }
 
 impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent {
@@ -383,23 +387,46 @@ impl fmt::Debug for ApprovalParentSourcePreparedKeyAgent {
     }
 }
 
-#[cfg(test)]
 impl ApprovalParentSourcePreparedKeyAgent {
-    /// Borrows only the sealed least-authority process capability for the
-    /// integrated Approval LPAC kernel probe. Production has no accessor.
-    pub(crate) const fn parent_process_for_lpac_probe(&self) -> &PreparedApprovalParentProcess {
-        &self.parent_process
+    /// Revalidates the complete exact Key Agent parent source while the sole
+    /// Approval activation authority is live.
+    pub(crate) fn revalidate_for_approval_activation(
+        &self,
+        _seal: &ApprovalActivationSeal,
+    ) -> Result<(), KeyAgentSupervisorError> {
+        self.revalidate_parent_source()
     }
 
-    pub(crate) fn revalidate_for_lpac_probe(&self) -> Result<(), KeyAgentSupervisorError> {
+    /// Injects the exact narrow Key Agent process handle into one still-
+    /// suspended Approval child without exposing the source handle.
+    pub(crate) fn inject_into_suspended_approval(
+        &self,
+        suspended_child: BorrowedHandle<'_>,
+        seal: &ApprovalLogicalParentInjectionSeal,
+    ) -> Result<InjectedApprovalLogicalParent, KeyAgentSupervisorError> {
+        self.revalidate_parent_source()?;
+        let injected = self
+            .parent_process
+            .duplicate_into_suspended_approval(suspended_child, seal)?;
+        self.revalidate_parent_source()?;
+        Ok(injected)
+    }
+
+    fn revalidate_parent_source(&self) -> Result<(), KeyAgentSupervisorError> {
         revalidate_post_startup_state(
             &self.storage_proven.provisioning,
             &self.storage_proven.root_job,
             &self.storage_proven.activation,
-            StartupResponseTransport::PinnedLibtestTerse,
+            self.response_transport,
         )?;
-        self.parent_process.revalidate()?;
-        Ok(())
+        self.parent_process.revalidate().map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+impl ApprovalParentSourcePreparedKeyAgent {
+    pub(crate) fn revalidate_for_lpac_probe(&self) -> Result<(), KeyAgentSupervisorError> {
+        self.revalidate_parent_source()
     }
 }
 
@@ -446,6 +473,7 @@ fn prepare_approval_parent_source_with_transport(
     Ok(ApprovalParentSourcePreparedKeyAgent {
         storage_proven,
         parent_process,
+        response_transport,
     })
 }
 
@@ -833,6 +861,7 @@ mod tests {
         bind_dormant_key_agent_for_kernel_test, bind_key_agent_storage_startup_for_kernel_test,
         prepare_approval_parent_source_for_kernel_test, startup_transcript_commitment,
     };
+    use crate::approval_activation::bind_dormant_parent_bound_approval;
     use crate::approval_parent::{
         bind_release_approval_parent_for_kernel_test,
         verify_parent_bound_approval_lpac_for_kernel_test,
@@ -1272,6 +1301,68 @@ mod tests {
             observation.rejected_exit_code()?,
             REJECTED_PROCESS_EXIT_CODE
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_bound_approval_is_live_in_job_and_drop_cleans_both_process_trees()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let key_agent_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let key_agent_attestation = attestation_for(&key_agent_artifact);
+        let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()?;
+        let storage_root = provisioning.storage_root_path_for_test().to_path_buf();
+        let dormant = bind_dormant_key_agent_for_kernel_test(
+            key_agent_attestation,
+            key_agent_artifact,
+            provisioning,
+        )?;
+        let storage_proven = bind_key_agent_storage_startup_for_kernel_test(dormant)?;
+        let process_id = storage_proven.activation.process_id();
+        let creation_time = storage_proven.activation.creation_time();
+        let observation = storage_proven.activation.duplicate_process_observation()?;
+
+        let approval_fixture = ApprovalLpacKernelTestFixture::create()?;
+        let approval_executable = approval_fixture.path().to_path_buf();
+        let approval_directory = approval_executable
+            .parent()
+            .ok_or_else(|| std::io::Error::other("fixture executable has no parent"))?
+            .to_path_buf();
+        let approval_artifact = VerifiedHelper::for_approval_artifact_test(
+            approval_executable.clone(),
+            APPROVAL_MANIFEST,
+            true,
+        )?;
+        let approval_attestation = ReleaseAttestation::with_helper_manifests_for_test(
+            ArtifactDigest::for_test([0x70; 32]),
+            [APPROVAL_MANIFEST, [0x72; 32], [0x73; 32]],
+        );
+        let approval = prepare_release_approval_supervisor(preflight_approval_artifact(
+            approval_attestation,
+            approval_artifact,
+        )?)?;
+        let bound = bind_release_approval_parent_for_kernel_test(approval, storage_proven)?;
+
+        let dormant_approval = bind_dormant_parent_bound_approval(bound)?;
+        assert!(dormant_approval.is_live_in_job_for_test()?);
+        let rendered = format!("{dormant_approval:?}");
+        assert_eq!(
+            rendered,
+            "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT])"
+        );
+        assert!(!rendered.contains(&process_id.to_string()));
+        assert!(!rendered.contains(&creation_time.to_string()));
+        assert!(storage_root.is_dir());
+        assert!(approval_executable.is_file());
+
+        drop(dormant_approval);
+        assert!(!storage_root.exists());
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            REJECTED_PROCESS_EXIT_CODE
+        );
+        approval_fixture.cleanup()?;
+        assert!(!approval_executable.exists());
+        assert!(!approval_directory.exists());
         Ok(())
     }
 

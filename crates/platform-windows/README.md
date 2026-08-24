@@ -273,13 +273,26 @@ Implemented:
   and retains both complete aggregates in the opaque, non-cloneable
   `ParentBoundReleaseApprovalSupervisor`. Neither the narrow process capability
   nor the final binding exposes a PID, path, raw handle, constituent, generic
-  desired-access input, or launch operation. No process, thread, Job, pipe,
-  channel, attribute list, or persistent token handle is created; the narrow
-  duplicate is the only newly retained OS resource. The final production binder
-  has zero callers and both compiled policies remain `None`.
+  desired-access input, or launch operation. The final production binder has one
+  private consumer. It fixes the revision-v1 Approval profile, creates the exact
+  two-object private stdio boundary, and uses the pinned verified Approval
+  artifact to create a process in its single-process Job without resuming the
+  primary thread; this is not mapped-image provenance. The ordinary
+  channel-supervisor process/image proof remains intact; the narrow Key Agent
+  handle is copied separately into the suspended child as a fifth,
+  non-inheritable logical-parent capability. The returned
+  `BoundDormantApproval` retains the suspended process/thread/Job, unused parent
+  endpoints, and complete parent-bound aggregate, exposes no resume, request,
+  response, signing, launcher, profile, PID, path, or handle operation, and
+  attempts bounded Approval termination/reap before releasing pipes and the Key
+  Agent tree. This outer transition has zero production callers and both
+  compiled policies remain `None`.
 
   This is an ownership-bound logical parent proof source, not a Windows parent
   selection or an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
+  The current Approval wire authenticates only the ordinary four-object
+  supervisor/channel binding; it does not consume this separate fifth capability,
+  so the dormant state deliberately has no resume operation.
   A repo-local `cfg(test)` integration now copies the exact non-inheritable
   handle into an actual zero-capability Approval LPAC. It proves `TOKEN_QUERY`,
   session/image/PID/liveness/zero flags, twelve stronger or standard token-right
@@ -298,15 +311,19 @@ Implemented:
   installs a protected three-ACE token DACL for stable user all, Key Agent
   query+duplicate, and Approval query-only. The `cfg(test)` integration executes
   that production-compiled hardening and proves the Approval query-only outcome.
+  Its dormant-lifecycle branch uses the pinned libtest response topology, the
+  test-only process context, and the fixture mitigation; production exact
+  response topology and the unchanged full mitigation are compile/scanner
+  evidence rather than this kernel E2E's evidence.
   Ordinary LPAC/token attributes are verified before and after installation;
-  this slice does not read back the token security descriptor. The fixture does not
-  directly read back the copied image's mandatory-label state either. Its
+  this slice does not read back the token security descriptor. The fixture does
+  not directly read back the copied image's mandatory-label state either. Its
   test-only mitigation removes only `NO_LOW_LABEL` to permit the profile-scoped
   copy; production mitigation is unchanged. This is not
   a runtime-ready security boundary or release proof. Mapped-image provenance,
   same-user owner separation, a distinct supervisor principal, process/thread
-  creation-time DACLs, endpoint topology and production cleanup/orchestration,
-  signing, and release activation remain blockers;
+  creation-time DACLs, endpoint topology, signed-artifact cleanup evidence,
+  production orchestration, signing, and release activation remain blockers;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three
@@ -536,8 +553,8 @@ Implemented:
   Native Host provenance, signed release-path positive evidence for
   case-sensitive directories and alternate path forms, artifact-bound execution
   of this bootstrap, exact signed-artifact E2E, immutable installation, complete
-  DLL/dependency evidence, supervisor-held activation capability, and endpoint
-  topology/exclusivity remain absent. Approval also has zero production
+  DLL/dependency evidence, a release-proven resumable supervisor-held activation
+  capability, and endpoint topology/exclusivity remain absent. Approval also has zero production
   callers composing `launch_approval_frontend` through verified response into
   signing and no positive signed-handshake E2E.
 
@@ -724,7 +741,7 @@ Stop-ship before any signing-capable release:
    signed release-path positive evidence covering case-sensitive directories
    and alternate path forms, that the live image was mapped from the exact held
    file object, the complete DLL/dependency graph, immutable installation, a
-   supervisor-held activation capability, and exact endpoint
+   release-proven resumable supervisor-held activation capability, and exact endpoint
    topology/exclusivity. Current pipe inspection is corroborated against a
    retained live exact parent process object: the child derives PID and
    process-token `TokenSessionId`, matches the hello, both server-end client

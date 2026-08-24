@@ -1,9 +1,11 @@
 //! Dormant release-bound admission for one exact Approval artifact.
 //!
-//! This module allocates no Job, pipe, channel, thread, or process and exposes
-//! no launch operation. It converts an already verified, pinned Approval file
-//! into an opaque release capability, then consumes that capability into a
-//! supervisor-owned same-handle file-identity state on Windows.
+//! Admission and supervisor preparation allocate no Job, pipe, channel, thread,
+//! or process. They convert an already verified, pinned Approval file into an
+//! opaque release capability and then into supervisor-owned same-handle
+//! file-identity state. The prepared value offers only one sealed borrow used by
+//! the separate dormant activation module; it exposes no artifact accessor or
+//! generic launch surface.
 
 use core::fmt;
 
@@ -11,10 +13,16 @@ use thiserror::Error;
 #[cfg(windows)]
 use zeroize::Zeroize;
 
+#[cfg(windows)]
+use crate::approval_activation::ApprovalActivationSeal;
 use crate::attestation::{AttestedArtifactDigest, ReleaseAttestation};
 #[cfg(windows)]
 use crate::exact_image::{ExactFileIdentity, ExactImageError, held_helper_file_identity};
 use crate::helper::VerifiedHelper;
+#[cfg(windows)]
+use crate::key_agent_supervisor::ApprovalParentSourcePreparedKeyAgent;
+#[cfg(windows)]
+use crate::launch::{HeldSuspendedApproval, InheritedStdio, LaunchError};
 
 /// Stable failures from the dormant Approval artifact-admission boundary.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -70,7 +78,8 @@ impl fmt::Debug for PreflightApprovalArtifact {
 ///
 /// The value retains the pinned artifact, opaque whole-release identity, and
 /// same-held-file `FILE_ID_INFO`. It is non-cloneable, exposes no resource or
-/// identity accessor, and supplies no activation operation.
+/// identity accessor, and supplies only the sealed suspended-preparation borrow
+/// below rather than a generic activation operation.
 #[cfg(windows)]
 #[must_use = "dropping the prepared Approval supervisor closes its pinned file"]
 pub(crate) struct PreparedReleaseApprovalSupervisor {
@@ -84,6 +93,21 @@ impl fmt::Debug for PreparedReleaseApprovalSupervisor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .write_str("PreparedReleaseApprovalSupervisor([HELD APPROVAL/RELEASE/FILE_ID_INFO])")
+    }
+}
+
+#[cfg(windows)]
+impl PreparedReleaseApprovalSupervisor {
+    /// Borrows the pinned Approval artifact only inside the unforgeably sealed
+    /// parent-bound dormant activation. No artifact, path, identity, policy, or
+    /// raw handle is returned to the caller.
+    pub(crate) fn prepare_parent_bound_approval(
+        &self,
+        handles: &InheritedStdio<'_>,
+        parent_source: &ApprovalParentSourcePreparedKeyAgent,
+        seal: &ApprovalActivationSeal,
+    ) -> Result<HeldSuspendedApproval, LaunchError> {
+        crate::launch::prepare_parent_bound_approval(&self.artifact, handles, parent_source, seal)
     }
 }
 

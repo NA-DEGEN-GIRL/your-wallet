@@ -616,10 +616,21 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`인 fresh duplicate 하나만 만들어
   `ParentBoundReleaseApprovalSupervisor` 안에 보유합니다. 이 opaque 상태는 constituent,
   PID, path 또는 raw handle accessor와 launch operation을 제공하지 않으며, 새로 보유하는
-  OS 자원도 그 narrow handle 하나뿐입니다. production binder caller는 0개입니다. 이
-  handle은 향후 Approval이 인증할 logical parent proof source일 뿐이고
+  OS 자원도 그 narrow handle 하나뿐입니다. production binder에는 새 비공개 consumer가
+  정확히 하나 있습니다. 이 consumer는 고정 revision-v1 Approval profile과 exact
+  two-object private stdio를 사용해 Approval process를 single-process Job 안에 만들지만
+  primary thread를 resume하지 않습니다. 기존 channel-supervisor process/image proof는
+  그대로 두고, narrow Key Agent handle은 별도의 다섯 번째 non-inheritable
+  logical-parent capability로 suspended child에 복사합니다. 결과
+  `BoundDormantApproval`은 process/thread/Job, 아직 사용하지 않은 parent endpoints와 전체
+  parent-bound aggregate를 함께 보유하고 resume/request/response/signing 또는
+  path/PID/raw-handle operation을 제공하지 않습니다. Drop은 pipe와 Key Agent tree를
+  놓기 전에 Approval을 bounded terminate/reap합니다. 이 최외곽 dormant transition의
+  production caller는 0개입니다. 이 handle은 향후 Approval이 인증할 logical parent proof source일 뿐이고
   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`를 설정하거나 Windows process parentage를
-  확립하는 capability가 아닙니다. 다만 repo-local `cfg(test)` 통합은 actual
+  확립하는 capability가 아닙니다. 현재 four-object Approval wire는 이 별도 fifth
+  capability를 아직 소비하지 않으므로 새 dormant 상태에는 resume operation이 없습니다.
+  다만 repo-local `cfg(test)` 통합은 actual
   zero-capability Approval LPAC에 그 exact handle을 non-inheritable로 복사하고,
   `OpenProcessToken(parent, TOKEN_QUERY)`, session/image/PID/liveness/zero flags를 확인한
   뒤 12개 stronger/standard token right를 거부합니다. local `DuplicateHandle` denial

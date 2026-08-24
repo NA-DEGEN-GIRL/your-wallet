@@ -23,13 +23,16 @@
 //! the held path's executable suffix and version metadata and performing held-
 //! handle-backed Authenticode and SHA-256 policy checks. Path equality plus
 //! held-file checks do not prove that the live process was mapped from that exact
-//! file object. No positive kernel availability test yet proves that the
-//! zero-capability Approval LPAC can complete `OpenProcessToken(parent)`, so this
-//! success path remains release-unproven. Signed release-path
-//! positive evidence covering case-sensitive directories and alternate path
-//! forms, immutable installation, the complete DLL/dependency graph,
-//! supervisor-held activation capability, and endpoint topology/exclusivity
-//! remain release blockers. There are zero production orchestration callers
+//! file object. A repo-local kernel test proves that a zero-capability Approval
+//! LPAC can complete `OpenProcessToken(parent, TOKEN_QUERY)` for one exact
+//! injected Key Agent logical-parent handle while stronger token/process access
+//! stays denied. That proof is neither the four-object channel-parent binding nor
+//! signed/mapped release evidence. Signed release-path positive evidence covering
+//! case-sensitive directories and alternate path forms, immutable installation,
+//! the complete DLL/dependency graph, a release-proven resumable supervisor-held
+//! activation capability, and endpoint topology/exclusivity remain release
+//! blockers. There are zero
+//! production orchestration callers
 //! composing `launch_approval_frontend` through a verified response into signing,
 //! and no positive signed-handshake E2E exists. `COMPILED_PARENT_POLICY` remains
 //! `None`; ordinary builds exit 78, and raw or legacy runtime launch fails

@@ -363,7 +363,23 @@ root-Job membership/limits, and permitted Key Agent root-Job topology. The opaqu
 `ParentBoundReleaseApprovalSupervisor` preserves both full aggregates, exposes
 no constituent, identity, PID, path, raw handle, generic access mask, resource
 operation, or launch operation, and retains no newly allocated OS resource
-except that narrow handle. Its production binder has zero callers.
+except that narrow handle. Its production binder has exactly one private
+consumer: the dormant Approval preparation below.
+
+That consumer creates the fixed private Approval pipes and exact two-object
+stdio allowlist, then uses the pinned verified Approval artifact to create a
+process suspended in the fixed revision-v1 LPAC and single-process Job. This is
+not mapped-image provenance. The ordinary channel-supervisor process
+and image proofs are still injected unchanged. In addition, a sealed
+production-compiled leaf copies the exact narrow Key Agent handle into the
+suspended child as a fifth, non-inheritable logical-parent capability. The
+resulting non-cloneable `BoundDormantApproval` retains the suspended process,
+primary thread, Job, both unused parent pipe endpoints, and the full parent-bound
+aggregate. It exposes no resume, request, response, signing, path, PID, handle,
+profile, launcher, or attestation operation. Drop first makes a bounded
+terminate-and-reap attempt for the Approval child before releasing pipes and the
+Key Agent tree. The outer dormant preparation itself has zero production
+callers.
 
 This handle records only the intended logical parent proof source. It is not a
 `PROCESS_CREATE_PROCESS` capability, does not set
@@ -391,13 +407,18 @@ the Approval query-only outcome. Ordinary LPAC/token attributes are verified
 before and after installation; this slice does not read back the
 token security descriptor.
 
-That test is kernel feasibility, not release evidence. The fixture does not
-directly read back the copied image's mandatory-label state. Its test-only
+That test is kernel feasibility, not release evidence. The new suspended-only
+preparation does not teach the current Approval wire to authenticate the fifth
+logical-parent capability and deliberately never resumes the child. Replacing
+the ordinary supervisor proof with the Key Agent proof would conflict with the
+pipe server's client-PID/session observations, so both authorities must remain
+distinct until a later topology protocol authenticates them together. The
+fixture does not directly read back the copied image's mandatory-label state. Its test-only
 mitigation removes exactly `NO_LOW_LABEL` to permit the profile-scoped copy;
 production mitigation is unchanged. Mapped-image provenance, endpoint
-topology/exclusivity and production cleanup, DLL graph, production orchestration,
-signing, and release activation remain unimplemented; both compiled policies
-remain `None`. A supervisor and hostile launcher running
+topology/exclusivity, signed-artifact cleanup evidence, DLL graph, resumable
+production orchestration, signing, and release activation remain unimplemented;
+both compiled policies remain `None`. A supervisor and hostile launcher running
 as the same unrestricted owner SID cannot be strongly separated by an ordinary
 process DACL: the owner can reacquire ACL-changing authority, and a caller
 retaining or reacquiring `PROCESS_DUP_HANDLE` can still target child-local proof
@@ -607,7 +628,9 @@ Before any real mainnet value is used, the Windows build must prove:
    the adoption-rule composition over test-held objects. The compiled
    whole-release binding then separates the journal `release_identity` from the
    helper-manifest and exact file-object identities and retains continuity, but
-   neither it nor the dormant supervisor binder has a production call site. A
+   neither it nor the dormant Key Agent supervisor binder has a production call
+   site. The Approval parent binder now has one private suspended-only consumer,
+   whose outer transition has zero production callers. A
    separate dormant root-only fixed existing-root opener implements exact
    security/identity checking and canonical-path rebinding but likewise has no
    production caller. It cannot open an installation into adoption because

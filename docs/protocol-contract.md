@@ -141,10 +141,23 @@ non-inheritable handle whose exact access mask is
 `ParentBoundReleaseApprovalSupervisor` owns both complete proof aggregates and
 that narrow capability but exposes no constituent, PID, path, raw handle,
 desired-access selector, resource operation, or launch operation. It retains no
-new OS resource except the narrow duplicate, and its production binder has zero
-callers.
+new OS resource except the narrow duplicate. Its production binder has one
+private consumer that creates a further dormant state.
 
-This is only a logical parent proof source for a future protocol. It neither
+That consumer fixes the Approval profile to revision 1, creates the private
+two-object stdio boundary, and creates but never resumes the exact Approval
+process. The existing channel-supervisor process/image proof remains intact;
+the narrow Key Agent handle is copied separately as a fifth, non-inheritable
+child-local logical-parent capability. `BoundDormantApproval` owns the suspended
+process/thread/Job, unused parent pipe endpoints, and the complete parent-bound
+aggregate. It has no production resume, request, response, receive, signing,
+profile, launcher, attestation, path, PID, or handle operation. Its Drop path
+attempts bounded Approval termination and reap before the pipes and Key Agent
+tree are released. This new outer transition has zero production callers.
+
+This remains only a logical parent proof source for a future protocol. The
+suspended-only state does not authenticate that fifth capability through the
+current four-object Approval bootstrap. It neither
 sets `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` nor chooses or proves Windows process
 parentage, and it is not a runtime-ready security boundary. A repo-local
 `cfg(test)` integration copies the exact non-inheritable handle into an actual
@@ -573,7 +586,9 @@ storage-proven states. It grants no general runtime/signing IPC, installer key,
 rollback-anchor, storage/AEAD-key, or protected-settings/lease authority.
 The journal validator performs no I/O and has no production key/checkpoint
 constructor, journal reader/writer backend, or caller. The adoption transition
-and both downstream dormant binding functions have zero production call sites.
+and both downstream Key Agent binding functions have zero production call sites.
+The later Approval parent binder has one private suspended-only consumer, whose
+outer transition has zero production call sites.
 
 After the one-shot storage-startup join has produced the complete
 `BoundStorageProvenKeyAgent`, a private preparation may consume that aggregate
