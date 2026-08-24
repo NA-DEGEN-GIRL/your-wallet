@@ -712,22 +712,47 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   current `TOKEN_QUERY` handle과 exact object 및 `TokenId`/`ModifiedId` 일치를 다시
   요구합니다. 이는 point-in-time evidence이지 atomic freeze가 아닙니다. `Hfinal` 보유가
   process current-token association이나 token contents를 freeze하지는 않습니다.
+  별도의 생성 보안 단계는 launcher current token의 `TokenOwner`와
+  `TokenPrimaryGroup`을 각각 bounded exact token query로 읽고, 서로 다른 두
+  `LocalAlloc` self-relative descriptor와 non-inheritable `SECURITY_ATTRIBUTES`를
+  만듭니다. 두 descriptor의 protected DACL은 allow ACE 없이 zero-flag
+  `OWNER RIGHTS`(`S-1-3-4`) deny ACE 하나만 가지며, exact mask `0x000e0000`은
+  `READ_CONTROL | WRITE_DAC | WRITE_OWNER`입니다. process와 primary-thread
+  attributes는 분리할 수 없는 pair로만 `CreateProcessW`의
+  `lpProcessAttributes`/`lpThreadAttributes`에 전달됩니다. 반환된 creator-owned
+  process/thread exact handle에 대해 PID/TID와 `GetHandleInformation` exact-zero
+  flags를 확인하고, bounded exact `GetKernelObjectSecurity` readback으로 captured
+  owner/group, expected self-relative/DACL-present/protected control state, 요청한
+  owner/group/DACL projection의 zero SACL offset, one-ACE ACL과 descriptor의
+  no-slack/no-trailing shape를 첫 `ResumeThread` 전에 모두 다시 확인합니다. SACL
+  자체는 요청하지 않으므로 실제 SACL 부재의 증거는 아닙니다. 불일치는 child를
+  fail-closed cleanup하며, descriptor owner는
+  resume 전에 drop됩니다. 이후 lifecycle은 `CreateProcessW`가 반환한 full-access
+  handle을 계속 보유해 수행하고 PID/TID reopen으로 대체하지 않습니다.
+  kernel test는 child의 process pseudo-handle operation과 real `CreateThread`의
+  thread pseudo-handle operation이 유지됨을 확인하고, `SeDebugPrivilege`와
+  `SeTakeOwnershipPrivilege`를 disabled로 둔 채 owner의 fresh PID/TID single-access
+  open matrix가 거부됨을 증명합니다.
   last-check/`ResumeThread` gap 및 swap-away/back race는 **STOP-SHIP**이며, DACL 변경이
   `ModifiedId`를 갱신한다고 가정하지 않습니다. preexisting same-user high-right handle을
-  배제하지 못하고 hostile same-user process에 대한 `TokenUser` owner isolation도 없습니다.
-  distinct supervisor principal과 protected process/thread creation-time DACL 요구사항도
-  여전히 **STOP-SHIP**입니다. 모든 continuity/revalidation failure는 다음
+  배제하거나 이미 반환·복제된 high-right handle을 회수하지 못합니다. 이 생성 정책은
+  initial process와 primary thread의 생성 시점에만 적용되며 이후 생성되는 thread를
+  다루지 않습니다. hostile same-user process와 supervisor/owner를 완전히 분리하지도 않고,
+  enabled debug/take-ownership privilege를 견디는 경계도 아닙니다. 따라서 distinct
+  supervisor principal과 same-user owner 분리는 여전히 **STOP-SHIP**입니다. 모든
+  continuity/revalidation failure는 다음
   typestate 또는 authority 사용 전에 fail closed합니다.
   `cfg(test)` integration은 이 production-compiled hardening/continuity ceremony를 그대로
-  실행하고 Approval query-only 결과를 증명합니다. 이 evidence는 same-user isolation이나
-  process/thread creation-time DACL 증거가 아닙니다.
+  실행하고 Approval query-only 결과와 위 생성 DACL의 kernel 동작을 증명하지만,
+  same-user isolation이나 release evidence는 아닙니다.
   fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
   profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
   제거하며 production mitigation은 그대로입니다.
   이는 signed/mapped release proof가 아닙니다. mapped-image/DLL provenance, distinct supervisor
-  principal과 same-user owner 분리, process/thread creation-time DACL, endpoint topology 및
-  production cleanup/orchestration/signing은 여전히 release blocker이고, production binder
-  caller는 0개이며 두 compiled policy는 `None`입니다.
+  principal과 same-user owner 분리, preexisting/returned/duplicated high-right handle 및
+  enabled privilege 위협, later-thread policy, bootstrap/provenance, endpoint topology 및
+  production cleanup/orchestration/signing은 여전히 release blocker이고, production
+  binder caller는 0개이며 두 compiled policy는 `None`입니다.
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
   stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
   synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
@@ -890,7 +915,13 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   필요합니다. 이 계약은 profile-registration authority나 production reachability를 늘리지
   않고 production `DeleteAppContainerProfile` 경로도 만들지 않습니다. 같은 스레드
   재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를
-  계속하고 detach할 수 있으며, 그때 정확히 하나의 suspend count가 남습니다.
+  계속할 수 있습니다. 그 뒤 모든 fallible worker 검사를 마친 fresh debugger OS thread의
+  마지막 fallible 연산은 `DebugSetProcessKillOnExit(FALSE)`입니다. 명시적 suspend count
+  하나를 유지한 opaque pending owner만 join 경계를 건너고, 전용 OS thread 종료와 join 뒤
+  같은 run의 pending·join proof·root Job witness가 모두 일치해야 합니다. 이어 retained
+  creator process handle의 `CheckRemoteDebuggerPresent == false`, retained primary-thread
+  handle의 정확한 `SuspendThread`/`ResumeThread` 1→2→1 probe, token·Job·provisioning·lease
+  재검증을 통과한 뒤에만 detached capability가 만들어집니다. PID/TID reopen은 없습니다.
   별도 Secret Input child 프로세스는 이 parent-side mutex를 공유하지 않습니다. 그
   프로세스의 유일한 deterministic `DeriveAppContainerSidFromAppContainerName` 호출은
   child-local thread-impersonation 검사를 직전과 직후에 수행하고, 성공한 raw SID를

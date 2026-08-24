@@ -251,6 +251,48 @@ on `Hfinal`, and a final exact-size statistics read must bookend those checks.
 `Hwrite` then closes before `VerifiedKeyAgentLpac` is minted, so the proof
 retains only `Hfinal` without `WRITE_DAC`.
 
+The production creation-security contract derives `TokenOwner` and
+`TokenPrimaryGroup` through bounded exact token queries and owns two distinct
+`LocalAlloc` self-relative security descriptors. Each descriptor backs one
+non-inheritable `SECURITY_ATTRIBUTES`; its protected DACL has no allow ACE and
+exactly one zero-flag `OWNER RIGHTS` (`S-1-3-4`) deny ACE whose mask is `0x000e0000`
+(`READ_CONTROL | WRITE_DAC | WRITE_OWNER`). The process and primary-thread
+attributes are exposed only as an inseparable pair and are passed together as
+the `CreateProcessW` `lpProcessAttributes` and `lpThreadAttributes`.
+
+Before the first `ResumeThread`, the creator validates the returned process and
+primary-thread handles against the returned PID/TID and requires each handle's
+`GetHandleInformation` flags to be exactly zero. Bounded exact
+`GetKernelObjectSecurity` readback must recover the captured owner and primary
+group, the exact expected self-relative/DACL-present/protected control state, a
+zero SACL offset in the requested owner/group/DACL projection, one exact no-flag
+`ACCESS_DENIED_ACE` for the binary `OWNER RIGHTS` SID and mask above, and no ACL or
+descriptor slack/trailing bytes. The readback does not request the SACL and
+therefore does not prove its actual absence.
+Any mismatch aborts and cleans up the child; descriptor owners are dropped before
+resume. The creator retains the full-access handles returned by `CreateProcessW`
+for the complete lifecycle and never replaces either with a PID/TID reopen.
+
+The same deny-only process DACL excludes PID-only `DebugActiveProcessStop` from
+the Key Agent path. One fresh debugger OS thread authenticates and continues the
+first event while an explicit primary-thread suspend count remains. After every
+other fallible worker check, `DebugSetProcessKillOnExit(FALSE)` is its final
+fallible operation. Only an opaque pending owner crosses the boundary before the
+thread exits and is joined. Post-join finalization requires the identical per-run
+witness in the pending state, non-`Send` join proof, and root Job gate; retained-
+handle `CheckRemoteDebuggerPresent == false`; an exact retained-thread 1→2→1
+suspend probe; token and root-Job revalidation; and provisioning/lease bookends.
+Only then can a detached suspended activation be minted. Pre-join cleanup never
+blocks the live debugger thread; post-join cleanup restores the ordinary bounded
+synchronous process/Job policy.
+
+Kernel tests prove child process pseudo-handle operations and a real
+`CreateThread` thread pseudo-handle operation remain usable. With
+`SeDebugPrivilege` and `SeTakeOwnershipPrivilege` disabled, fresh owner PID/TID
+single-access opens are denied. This is a point-in-time creation contract for the
+initial process and primary thread only: it does not cover later-created threads
+or revoke returned, preexisting, or duplicated high-right handles.
+
 Revalidation runs after the post-detach suspend-count probe, immediately before
 the sole `ResumeThread` that releases the final count into user mode, and at
 resident authority checks. Each pass bookends the retained `Hfinal`'s full
@@ -260,19 +302,21 @@ equality. These are fail-closed point-in-time checks, not an atomic freeze:
 holding `Hfinal` freezes neither the process's current-token association nor the
 token contents. The last-check/`ResumeThread` gap and swap-away/back races remain
 **STOP-SHIP**, and DACL changes are not assumed to update `ModifiedId`.
-Preexisting same-user high-right handles and the lack of `TokenUser` owner
-isolation from hostile same-user processes remain **STOP-SHIP**; release
-activation still requires a distinct supervisor principal and protected
-process/thread creation-time DACLs. The `cfg(test)` integration executes that
-production-compiled hardening and proves the Approval query-only outcome. The
-fixture does not directly read back the
-copied image's mandatory-label state. Its test-only mitigation removes only
+Preexisting, returned, or duplicated high-right handles and full same-user
+supervisor/owner separation remain **STOP-SHIP**, as do enabled debug or
+take-ownership privileges; release activation still requires a distinct
+supervisor principal or a narrower explicit threat model. The `cfg(test)`
+integration executes the production-compiled token and creation hardening,
+proves the Approval query-only outcome, and exercises the creation DACL kernel
+behavior. The fixture does not directly read back the copied image's
+mandatory-label state. Its test-only mitigation removes only
 `NO_LOW_LABEL` to permit the profile-scoped copy; production mitigation is
 unchanged. Mapped-image and
 DLL/dependency provenance, a distinct supervisor principal and same-user owner
-separation, protected process/thread creation-time DACLs, endpoint topology and
-production cleanup/orchestration/signing remain release blockers. Both compiled
-policies remain disabled and the production binder has zero callers.
+separation, later-thread and high-right-handle policy, enabled privileges,
+bootstrap/provenance, endpoint topology, and production
+cleanup/orchestration/signing remain release blockers. Both compiled policies
+remain disabled and the production binder has zero callers.
 
 The approval-channel library establishes the private inherited Windows pipes,
 restricted launch, exact request/response framing, monotonic deadlines,

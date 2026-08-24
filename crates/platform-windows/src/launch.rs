@@ -2969,6 +2969,7 @@ mod sys {
                 .create_process_with_explicit_handle_list(
                     PCWSTR(application.as_ptr()),
                     command_line,
+                    None,
                     EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                     Some(environment.as_ptr().cast::<c_void>()),
                     PCWSTR(process_context.current_directory().as_ptr()),

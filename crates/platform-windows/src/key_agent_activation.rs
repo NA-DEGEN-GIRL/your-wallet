@@ -14,6 +14,7 @@ use core::fmt;
 use std::marker::PhantomData;
 use std::os::windows::io::BorrowedHandle;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use thiserror::Error;
@@ -22,7 +23,7 @@ use crate::{
     attestation::{AttestedArtifactDigest, ReleaseAttestation},
     helper::VerifiedHelper,
     key_agent_lpac::PreparedKeyAgentProvisioning,
-    key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute},
+    key_agent_root_job::{KeyAgentDebugThreadWitness, KeyAgentRootJob, KeyAgentRootJobAttribute},
     launch::{ApprovalLogicalParentInjectionSeal, InjectedApprovalLogicalParent},
     pipe::PrivateKeyAgentPipes,
 };
@@ -71,6 +72,10 @@ pub(crate) enum KeyAgentActivationError {
     /// Returned process or thread objects did not match `PROCESS_INFORMATION`.
     #[error("created Key Agent process identity mismatch")]
     ProcessIdentityMismatch,
+    /// The returned process or primary-thread object did not retain the exact
+    /// creation-time owner, group, DACL, or non-inheritable handle policy.
+    #[error("created Key Agent object security policy failed")]
+    CreationSecurityPolicy,
     /// A documented suspend-count transition was not exact.
     #[error("Key Agent suspension invariant mismatch")]
     SuspensionMismatch,
@@ -103,6 +108,9 @@ pub(crate) enum KeyAgentActivationError {
     /// The debug event could not be continued and detached while suspended.
     #[error("Key Agent debugger detach failed")]
     DebugDetach,
+    /// The pending activation did not belong to the exact joined debugger run.
+    #[error("Key Agent debugger join proof mismatch")]
+    DebuggerJoinProof,
     /// A rejected suspended process could not be synchronously cleaned up.
     #[error("rejected Key Agent cleanup failed")]
     Cleanup,
@@ -154,6 +162,8 @@ enum LaunchPhase {
     AwaitingCreateEvent,
     CreateEventHeld,
     EventContinued,
+    NoKillArmedAwaitingDebuggerExit,
+    DebuggerExitedPendingVerification,
     DetachedSuspended,
     DetachedRunning,
     Aborted,
@@ -163,7 +173,9 @@ enum LaunchPhase {
 enum LaunchTransition {
     ReceiveCreateEvent,
     ContinueCreateEvent,
-    DetachDebugger,
+    ArmNoKill,
+    ObserveDebuggerExit,
+    VerifyDetached,
     ResumeStorageStartup,
     Abort,
 }
@@ -177,7 +189,15 @@ impl LaunchPhase {
             (Self::CreateEventHeld, LaunchTransition::ContinueCreateEvent) => {
                 Ok(Self::EventContinued)
             }
-            (Self::EventContinued, LaunchTransition::DetachDebugger) => Ok(Self::DetachedSuspended),
+            (Self::EventContinued, LaunchTransition::ArmNoKill) => {
+                Ok(Self::NoKillArmedAwaitingDebuggerExit)
+            }
+            (Self::NoKillArmedAwaitingDebuggerExit, LaunchTransition::ObserveDebuggerExit) => {
+                Ok(Self::DebuggerExitedPendingVerification)
+            }
+            (Self::DebuggerExitedPendingVerification, LaunchTransition::VerifyDetached) => {
+                Ok(Self::DetachedSuspended)
+            }
             (Self::DetachedSuspended, LaunchTransition::ResumeStorageStartup) => {
                 Ok(Self::DetachedRunning)
             }
@@ -185,12 +205,116 @@ impl LaunchPhase {
                 Self::AwaitingCreateEvent
                 | Self::CreateEventHeld
                 | Self::EventContinued
+                | Self::NoKillArmedAwaitingDebuggerExit
+                | Self::DebuggerExitedPendingVerification
                 | Self::DetachedSuspended
                 | Self::DetachedRunning,
                 LaunchTransition::Abort,
             ) => Ok(Self::Aborted),
             _ => Err(KeyAgentActivationError::DebugDetach),
         }
+    }
+}
+
+/// Debugger-thread-bound activation after the first event was authenticated
+/// and continued while one exact explicit primary-thread suspend count remains.
+///
+/// This state is deliberately `!Send + !Sync` through its process owner. It is
+/// the last point at which the worker may perform fallible provisioning, lease,
+/// root-Job, or endpoint preparation before arming no-kill-on-debugger-exit.
+#[must_use = "the authenticated worker-local activation must be armed or rejected"]
+pub(crate) struct AuthenticatedKeyAgentActivation {
+    process: sys::SuspendedDebuggee,
+    debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
+    artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
+    artifact_identity: ExactFileObjectIdentity,
+    creation_time: u64,
+}
+
+impl AuthenticatedKeyAgentActivation {
+    /// Revalidates every process-local and root-Job invariant available on the
+    /// debugger thread immediately before the no-kill arm.
+    pub(crate) fn revalidate_before_no_kill(
+        &self,
+        root_job: &KeyAgentRootJob,
+    ) -> Result<(), KeyAgentActivationError> {
+        self.process.revalidate_before_no_kill()?;
+        verify_bound_root_process(root_job, self.process.process_handle())
+    }
+
+    /// Arms documented debugger-thread-exit detachment as the final fallible
+    /// worker operation and returns a move-only, non-detached pending state.
+    pub(crate) fn arm_no_kill(self) -> Result<PendingKeyAgentActivation, KeyAgentActivationError> {
+        let Self {
+            process,
+            debug_thread_witness,
+            artifact,
+            release_identity,
+            artifact_identity,
+            creation_time,
+        } = self;
+        let process = process.arm_no_kill()?;
+        // No fallible operation follows the successful no-kill arm. These are
+        // ownership-only moves into a state with no detached-facing methods.
+        Ok(PendingKeyAgentActivation {
+            process,
+            debug_thread_witness,
+            artifact,
+            release_identity,
+            artifact_identity,
+            creation_time,
+        })
+    }
+}
+
+impl fmt::Debug for AuthenticatedKeyAgentActivation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "AuthenticatedKeyAgentActivation([WORKER-LOCAL CONTINUED DEBUGGEE; REDACTED])",
+        )
+    }
+}
+
+/// Opaque transfer state after no-kill was armed but before debugger-thread
+/// exit and join have been independently established.
+///
+/// It exposes no PID, process state, resume, detached, or token operation. The
+/// sole transition requires an unforgeable non-Send join proof minted only by
+/// [`run_on_fresh_key_agent_debug_thread`] after the debugger OS thread exits.
+#[must_use = "pending activation requires post-join debugger-exit verification"]
+pub(crate) struct PendingKeyAgentActivation {
+    process: sys::PendingDebuggerExitSuspendedDebuggee,
+    debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
+    artifact: VerifiedHelper,
+    release_identity: AttestedArtifactDigest,
+    artifact_identity: ExactFileObjectIdentity,
+    creation_time: u64,
+}
+
+impl PendingKeyAgentActivation {
+    /// Switches Drop to authoritative retained-handle cleanup after the exact
+    /// debugger OS thread was joined, without exposing or minting detachment.
+    pub(crate) fn observe_debugger_exit_for_cleanup(
+        &mut self,
+        root_job: &KeyAgentRootJob,
+        joined: &JoinedKeyAgentDebugThreadProof,
+    ) -> Result<(), KeyAgentActivationError> {
+        if !Arc::ptr_eq(&self.debug_thread_witness, &joined.witness)
+            || !self.debug_thread_witness.is_joined()
+            || !root_job.matches_debugger_cleanup_gate(&self.debug_thread_witness)
+        {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        self.process.observe_debugger_exit_for_cleanup()
+    }
+}
+
+impl fmt::Debug for PendingKeyAgentActivation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "PendingKeyAgentActivation([NO-KILL ARMED; DEBUGGER EXIT UNVERIFIED; REDACTED])",
+        )
     }
 }
 
@@ -507,12 +631,68 @@ pub(crate) fn preflight_key_agent_activation(
 /// consumed by the single process-creation operation, so callers cannot forge,
 /// transfer, return, or reuse the debugger-thread authority.
 pub(crate) struct FreshKeyAgentDebugThread {
+    witness: Arc<KeyAgentDebugThreadWitness>,
     _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl FreshKeyAgentDebugThread {
+    pub(crate) fn bind_root_job_cleanup(
+        self,
+        root_job: &mut KeyAgentRootJob,
+    ) -> Result<RootJobBoundFreshKeyAgentDebugThread, KeyAgentActivationError> {
+        root_job
+            .bind_debugger_cleanup_gate(Arc::clone(&self.witness))
+            .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+        Ok(RootJobBoundFreshKeyAgentDebugThread {
+            witness: self.witness,
+            _not_send_or_sync: PhantomData,
+        })
+    }
 }
 
 impl fmt::Debug for FreshKeyAgentDebugThread {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("FreshKeyAgentDebugThread([ONE-SHOT WORKER PROOF])")
+    }
+}
+
+/// One-shot fresh-thread proof after installing this run's witness into a root
+/// Job before any creation-attribute borrow can exist.
+///
+/// Detached finalization later requires the pending state, join proof, and
+/// supplied root Job to share that exact witness.
+pub(crate) struct RootJobBoundFreshKeyAgentDebugThread {
+    witness: Arc<KeyAgentDebugThreadWitness>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl RootJobBoundFreshKeyAgentDebugThread {
+    fn into_witness(self) -> Arc<KeyAgentDebugThreadWitness> {
+        self.witness
+    }
+}
+
+impl fmt::Debug for RootJobBoundFreshKeyAgentDebugThread {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RootJobBoundFreshKeyAgentDebugThread([ONE-SHOT BOUND PROOF])")
+    }
+}
+
+/// Proof minted on the caller only after the dedicated debugger OS thread was
+/// joined successfully.
+///
+/// The private constructor prevents forgery. The `Rc` marker makes the proof
+/// `!Send + !Sync`; independently, an exact shared witness identity brands it
+/// to one run so a proof from a different joined worker is rejected.
+#[must_use = "the join proof must be consumed by post-debugger-exit finalization"]
+pub(crate) struct JoinedKeyAgentDebugThreadProof {
+    witness: Arc<KeyAgentDebugThreadWitness>,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl fmt::Debug for JoinedKeyAgentDebugThreadProof {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JoinedKeyAgentDebugThreadProof([JOINED])")
     }
 }
 
@@ -524,40 +704,86 @@ impl fmt::Debug for FreshKeyAgentDebugThread {
 /// contaminate this one-event authentication protocol. `std::thread::spawn`
 /// creates a fresh OS thread and constructs the unforgeable one-shot token only
 /// inside it. Only a `Send + 'static` result can cross the join boundary.
-pub(crate) fn run_on_fresh_key_agent_debug_thread<T, E, F>(worker: F) -> Result<T, E>
+pub(crate) fn run_on_fresh_key_agent_debug_thread<T, E, F>(
+    worker: F,
+) -> Result<(T, JoinedKeyAgentDebugThreadProof), E>
 where
     T: Send + 'static,
     E: From<KeyAgentActivationError> + Send + 'static,
     F: FnOnce(FreshKeyAgentDebugThread) -> Result<T, E> + Send + 'static,
 {
+    let witness = KeyAgentDebugThreadWitness::new_shared();
+    let worker_witness = Arc::clone(&witness);
     let worker = std::thread::Builder::new()
         .name("key-agent-activation".to_owned())
         .spawn(move || {
             worker(FreshKeyAgentDebugThread {
+                witness: worker_witness,
                 _not_send_or_sync: PhantomData,
             })
         })
         .map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))?;
-    worker
-        .join()
-        .map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))?
+    let outcome = worker.join();
+    // Joining establishes that Windows has processed debugger-thread exit. The
+    // release store also switches any surviving root-Job owner back to its
+    // ordinary synchronous cleanup policy before an outcome is returned.
+    if witness.mark_joined().is_err() {
+        return Err(E::from(KeyAgentActivationError::ActivationWorker));
+    }
+    let value = outcome.map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))??;
+    Ok((
+        value,
+        JoinedKeyAgentDebugThreadProof {
+            witness,
+            _not_send_or_sync: PhantomData,
+        },
+    ))
+}
+
+/// Converts the no-kill pending state into a detached dormant activation only
+/// after the dedicated debugger thread has exited and been joined.
+pub(crate) fn finalize_pending_key_agent_activation(
+    mut pending: PendingKeyAgentActivation,
+    root_job: &KeyAgentRootJob,
+    joined: JoinedKeyAgentDebugThreadProof,
+) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+    pending.observe_debugger_exit_for_cleanup(root_job, &joined)?;
+    let PendingKeyAgentActivation {
+        process,
+        debug_thread_witness,
+        artifact,
+        release_identity,
+        artifact_identity,
+        creation_time,
+    } = pending;
+    debug_assert!(Arc::ptr_eq(&debug_thread_witness, &joined.witness));
+    drop(joined);
+    let process = process.finalize_after_debugger_exit(root_job)?;
+    Ok(HeldKeyAgentActivation {
+        process,
+        artifact,
+        release_identity,
+        artifact_identity,
+        creation_time,
+    })
 }
 
 /// Creates and exact-image authenticates one preflighted Key Agent.
 ///
 /// The one-shot debugger-thread token and both lifetime-bound creation
 /// capabilities must have been constructed inside the same fresh worker. The
-/// returned process remains detached with one proven suspend count. This
-/// function exposes neither a raw handle nor a resume/start operation.
+/// returned process remains debug-attached, with its first event continued and
+/// one proven explicit suspend count. This function exposes neither a raw
+/// handle nor a resume/start operation.
 pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
-    fresh_thread: FreshKeyAgentDebugThread,
+    fresh_thread: RootJobBoundFreshKeyAgentDebugThread,
     preflighted: PreflightKeyAgentArtifact,
     provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
     root_job: &KeyAgentRootJob,
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     coordination_deadline: Instant,
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
     let PreflightKeyAgentArtifact {
         artifact,
         release_identity,
@@ -582,7 +808,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
-    _fresh_thread: FreshKeyAgentDebugThread,
+    fresh_thread: RootJobBoundFreshKeyAgentDebugThread,
     preflighted: PreflightKeyAgentArtifact,
     provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
@@ -590,13 +816,14 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     coordination_deadline: Instant,
     command_line: &mut [u16],
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
     let PreflightKeyAgentArtifact {
         artifact,
         release_identity,
     } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     verify_empty_root_job(root_job)?;
+    let debug_thread_witness = fresh_thread.into_witness();
     let process = sys::SuspendedDebuggee::create_with_test_command_line(
         &artifact,
         provisioning,
@@ -606,10 +833,11 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
         coordination_deadline,
         command_line,
     )?;
-    authenticate_detach_and_bind_activation(
+    authenticate_and_continue_activation(
         artifact,
         release_identity,
         artifact_identity,
+        debug_thread_witness,
         root_job,
         process,
     )
@@ -619,7 +847,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
 // pipe, provisioning, and deadline inputs visible at this one testable leaf.
 #[allow(clippy::too_many_arguments)]
 fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
-    _fresh_thread: FreshKeyAgentDebugThread,
+    fresh_thread: RootJobBoundFreshKeyAgentDebugThread,
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
@@ -628,8 +856,9 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     root_job: &KeyAgentRootJob,
     root_job_attribute: &KeyAgentRootJobAttribute<'_>,
     coordination_deadline: Instant,
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
     verify_empty_root_job(root_job)?;
+    let debug_thread_witness = fresh_thread.into_witness();
     let process = sys::SuspendedDebuggee::create(
         &artifact,
         provisioning,
@@ -638,38 +867,43 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
         root_job_attribute,
         coordination_deadline,
     )?;
-    authenticate_detach_and_bind_activation(
+    authenticate_and_continue_activation(
         artifact,
         release_identity,
         artifact_identity,
+        debug_thread_witness,
         root_job,
         process,
     )
 }
 
-fn authenticate_detach_and_bind_activation(
+fn authenticate_and_continue_activation(
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
+    debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
     root_job: &KeyAgentRootJob,
     mut process: sys::SuspendedDebuggee,
-) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
     let first_event = match process
         .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)
     {
         Ok(event) => event,
         Err(error) => return fail_after_cleanup(&mut process, error),
     };
-    if let Err(error) = process.detach_still_suspended() {
+    if let Err(error) = process.continue_first_event_still_suspended() {
         return fail_after_cleanup(&mut process, error);
     }
     if let Err(error) = verify_bound_root_process(root_job, process.process_handle()) {
         return fail_after_cleanup(&mut process, error);
     }
-    let process = process.into_detached()?;
+    if let Err(error) = process.revalidate_before_no_kill() {
+        return fail_after_cleanup(&mut process, error);
+    }
 
-    Ok(HeldKeyAgentActivation {
+    Ok(AuthenticatedKeyAgentActivation {
         process,
+        debug_thread_witness,
         artifact,
         release_identity,
         artifact_identity,
@@ -743,8 +977,8 @@ mod sys {
         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
     };
     use windows::Win32::System::Diagnostics::Debug::{
-        CREATE_PROCESS_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcessStop,
-        LOAD_DLL_DEBUG_EVENT, WaitForDebugEventEx,
+        CREATE_PROCESS_DEBUG_EVENT, CheckRemoteDebuggerPresent, ContinueDebugEvent, DEBUG_EVENT,
+        DebugSetProcessKillOnExit, LOAD_DLL_DEBUG_EVENT, WaitForDebugEventEx,
     };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
@@ -756,7 +990,7 @@ mod sys {
         ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread, TerminateProcess,
         UpdateProcThreadAttribute, WaitForSingleObject,
     };
-    use windows::core::{PCWSTR, PWSTR};
+    use windows::core::{BOOL, PCWSTR, PWSTR};
 
     use super::{ExactFileObjectIdentity, KeyAgentActivationError, LaunchPhase, LaunchTransition};
     use crate::helper::VerifiedHelper;
@@ -764,7 +998,8 @@ mod sys {
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
     use crate::key_agent_lpac::{
-        PreparedKeyAgentLpac, PreparedKeyAgentProvisioning, VerifiedKeyAgentLpac,
+        PreparedKeyAgentCreationSecurity, PreparedKeyAgentLpac, PreparedKeyAgentProvisioning,
+        VerifiedKeyAgentLpac,
     };
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
     use crate::pipe::{PreparedKeyAgentInheritance, PrivateKeyAgentPipes};
@@ -905,11 +1140,12 @@ mod sys {
         context: RestrictedProcessContext,
         environment: Box<[u16]>,
         lpac: PreparedKeyAgentLpac,
+        creation_security: PreparedKeyAgentCreationSecurity,
     }
 
     impl PreparedKeyAgentProcess {
-        fn into_lpac(self) -> PreparedKeyAgentLpac {
-            self.lpac
+        fn into_security_parts(self) -> (PreparedKeyAgentLpac, PreparedKeyAgentCreationSecurity) {
+            (self.lpac, self.creation_security)
         }
     }
 
@@ -925,6 +1161,9 @@ mod sys {
         provisioning
             .revalidate()
             .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+        let creation_security = provisioning
+            .prepare_creation_security()
+            .map_err(|_| KeyAgentActivationError::CreationSecurityPolicy)?;
         let lpac = provisioning
             .prepare_lpac()
             .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
@@ -942,6 +1181,7 @@ mod sys {
             context,
             environment,
             lpac,
+            creation_security,
         })
     }
 
@@ -969,6 +1209,7 @@ mod sys {
         startup.lpAttributeList = attributes.pointer();
         let mut information = PROCESS_INFORMATION::default();
         let command_line = command_line.map(|buffer| PWSTR(buffer.as_mut_ptr()));
+        let process_thread_security = prepared_process.creation_security.creation_security();
         root_job
             .recheck_supervisor_context()
             .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
@@ -984,17 +1225,20 @@ mod sys {
         // writable and retained. `attributes` is a live initialized four-slot
         // list containing exactly HANDLE_LIST(3), JOB_LIST(1),
         // SECURITY_CAPABILITIES(zero), and the LPAC AAP opt-out policy; the three
-        // listed stdio handles are the only inheritable handles. The retained
-        // process context supplies a validated System32 current directory and
-        // an exact three-name Unicode environment: its OS-derived SystemRoot
-        // and WINDIR plus the OS-derived user LOCALAPPDATA base that Windows
-        // rebases for the AppContainer. The flags keep creation both
-        // headless and suspended before user-mode entry.
+        // listed stdio handles are the only inheritable handles. The paired
+        // non-inheritable process/thread security attributes retain their exact
+        // protected descriptors through this call. The retained process context
+        // supplies a validated System32 current directory and an exact three-name
+        // Unicode environment: its OS-derived SystemRoot and WINDIR plus the
+        // OS-derived user LOCALAPPDATA base that Windows rebases for the
+        // AppContainer. The flags keep creation both headless and suspended
+        // before user-mode entry.
         unsafe {
             flight
                 .create_process_with_explicit_handle_list(
                     PCWSTR(prepared_process.application.as_ptr()),
                     command_line,
+                    Some(process_thread_security),
                     key_agent_creation_flags(),
                     Some(prepared_process.environment.as_ptr().cast::<c_void>()),
                     PCWSTR(prepared_process.context.current_directory().as_ptr()),
@@ -1095,7 +1339,7 @@ mod sys {
                 coordination_deadline,
                 command_line,
             )?;
-            let prepared_lpac = prepared_process.into_lpac();
+            let (prepared_lpac, creation_security) = prepared_process.into_security_parts();
             let process = OwnedWinHandle::new(information.hProcess);
             let primary_thread = OwnedWinHandle::new(information.hThread);
             drop(inheritance);
@@ -1105,23 +1349,14 @@ mod sys {
                 (Some(process), Some(primary_thread)) => (process, primary_thread),
                 (process, primary_thread) => {
                     // CreateProcessW success is documented to return both
-                    // handles. If that invariant is violated, terminate
-                    // through whichever process handle exists, detach, and let
-                    // the wrappers close every valid handle.
+                    // handles. If that invariant is violated, request
+                    // termination through whichever process handle exists and
+                    // let debugger-thread exit plus Job close finish cleanup.
                     if let Some(process) = process.as_ref() {
                         // SAFETY: this is the valid process handle returned by
                         // the successful CreateProcessW call above.
                         let _ =
                             unsafe { TerminateProcess(process.raw(), REJECTED_PROCESS_EXIT_CODE) };
-                    }
-                    // SAFETY: the PID is the one returned by CreateProcessW
-                    // and this creator owns the debug relationship.
-                    let _ = unsafe { DebugActiveProcessStop(information.dwProcessId) };
-                    if let Some(process) = process.as_ref() {
-                        // SAFETY: wait is bounded and uses the same live handle.
-                        let _ = unsafe {
-                            WaitForSingleObject(process.raw(), CLEANUP_TIMEOUT_MILLISECONDS)
-                        };
                     }
                     drop(primary_thread);
                     return Err(KeyAgentActivationError::ProcessIdentityMismatch);
@@ -1166,6 +1401,16 @@ mod sys {
                 proven_suspend_count: 1,
                 cleanup_exit_code: None,
             };
+            if creation_security
+                .verify_created_objects(created.process_handle(), created.primary_thread_handle())
+                .is_err()
+            {
+                created
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::CreationSecurityPolicy);
+            }
+            drop(creation_security);
             if let Err(error) = super::verify_bound_root_process(root_job, created.process_handle())
             {
                 created
@@ -1198,6 +1443,12 @@ mod sys {
             // SAFETY: `self` uniquely owns this live process handle and the
             // returned borrow cannot outlive `self`.
             unsafe { BorrowedHandle::borrow_raw(self.process.raw().0) }
+        }
+
+        fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+            // SAFETY: `self` uniquely owns this live primary-thread handle and
+            // the returned borrow cannot outlive `self`.
+            unsafe { BorrowedHandle::borrow_raw(self.primary_thread.raw().0) }
         }
 
         pub(super) fn is_detached_and_suspended(&self) -> bool {
@@ -1372,7 +1623,9 @@ mod sys {
             Ok(AuthenticatedFirstEvent { creation_time })
         }
 
-        pub(super) fn detach_still_suspended(&mut self) -> Result<(), KeyAgentActivationError> {
+        pub(super) fn continue_first_event_still_suspended(
+            &mut self,
+        ) -> Result<(), KeyAgentActivationError> {
             if self.phase != LaunchPhase::CreateEventHeld
                 || self.proven_suspend_count != 1
                 || self.prepared_lpac.is_some()
@@ -1392,29 +1645,32 @@ mod sys {
             self.phase = self
                 .phase
                 .transition(LaunchTransition::ContinueCreateEvent)?;
+            Ok(())
+        }
 
-            // SAFETY: this thread created the exact debuggee and just continued
-            // its only pending event. The explicit suspension count installed
-            // while that event was held prevents user-mode execution.
-            unsafe { DebugActiveProcessStop(self.process_id) }
+        pub(super) fn revalidate_before_no_kill(&self) -> Result<(), KeyAgentActivationError> {
+            if self.phase != LaunchPhase::EventContinued
+                || self.pending_event.is_some()
+                || self.proven_suspend_count != 1
+                || self.prepared_lpac.is_some()
+                || self.lpac.is_none()
+            {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+            // SAFETY: a zero-time wait observes only the retained creator
+            // process handle. The explicit primary-thread count must still hold
+            // a live process before debugger-exit detachment is armed.
+            if unsafe { WaitForSingleObject(self.process.raw(), 0) } != WAIT_TIMEOUT {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+            let mut debugger_present = BOOL::default();
+            // SAFETY: the creator process handle remains live and the BOOL is
+            // exact writable storage. This worker owns the debug relationship.
+            unsafe { CheckRemoteDebuggerPresent(self.process.raw(), &raw mut debugger_present) }
                 .map_err(|_| KeyAgentActivationError::DebugDetach)?;
-            self.phase = self.phase.transition(LaunchTransition::DetachDebugger)?;
-
-            // SAFETY: the detached primary thread is still owned and explicitly
-            // suspended. A previous count of one proves that detachment did not
-            // consume the guard. Incrementing to two makes the proof observable.
-            let previous_suspend_count = unsafe { SuspendThread(self.primary_thread.raw()) };
-            if previous_suspend_count != 1 {
-                return Err(KeyAgentActivationError::SuspensionMismatch);
+            if !debugger_present.as_bool() {
+                return Err(KeyAgentActivationError::DebugDetach);
             }
-            // SAFETY: the immediately preceding exact transition established a
-            // count of two. ResumeThread must return two and restore, not remove,
-            // the one retained guard count.
-            let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };
-            if previous_suspend_count != 2 {
-                return Err(KeyAgentActivationError::SuspensionMismatch);
-            }
-            self.proven_suspend_count = 1;
             self.lpac
                 .as_ref()
                 .ok_or(KeyAgentActivationError::LpacPolicy)?
@@ -1423,10 +1679,33 @@ mod sys {
             Ok(())
         }
 
+        pub(super) fn arm_no_kill(
+            mut self,
+        ) -> Result<PendingDebuggerExitSuspendedDebuggee, KeyAgentActivationError> {
+            self.revalidate_before_no_kill()?;
+            // SAFETY: this is the dedicated debugger thread that created the
+            // exact process. Its sole event was continued, and an explicit
+            // suspend count still prevents user-mode entry. Microsoft documents
+            // FALSE as detaching this thread's debuggees when the thread exits.
+            if unsafe { DebugSetProcessKillOnExit(false) }.is_err() {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+            // From this successful arm to the returned pending value there are
+            // no fallible calls: only an exact phase write and ownership move.
+            self.phase = LaunchPhase::NoKillArmedAwaitingDebuggerExit;
+            Ok(PendingDebuggerExitSuspendedDebuggee(self))
+        }
+
         pub(super) fn abort(&mut self) -> Result<(), KeyAgentActivationError> {
             if self.phase == LaunchPhase::Aborted {
                 return Ok(());
             }
+            let debugger_thread_has_exited = matches!(
+                self.phase,
+                LaunchPhase::DebuggerExitedPendingVerification
+                    | LaunchPhase::DetachedSuspended
+                    | LaunchPhase::DetachedRunning
+            );
             // SAFETY: this is the exact still-owned process. Termination is
             // requested before a pending event is ever continued, so rejection
             // cannot release the process into user-mode code.
@@ -1451,14 +1730,15 @@ mod sys {
                     .map_err(|_| KeyAgentActivationError::Cleanup)?;
                 self.pending_event = None;
             }
-            if !matches!(
-                self.phase,
-                LaunchPhase::DetachedSuspended | LaunchPhase::DetachedRunning
-            ) {
-                // SAFETY: only the creator thread owns this debug relationship.
-                // It is best-effort because termination may already have removed
-                // the relationship; the process wait below is authoritative.
-                let _ = unsafe { DebugActiveProcessStop(self.process_id) };
+            if !debugger_thread_has_exited {
+                // Waiting here would deadlock progress: a live debugger thread
+                // must return before Windows can apply either default
+                // kill-on-exit or the successfully armed no-kill detach. The
+                // per-run root Job gate likewise avoids waiting until this exact
+                // OS thread has joined. TerminateProcess above fixes the desired
+                // exit code; join-time retained-handle tests verify the result.
+                self.phase = LaunchPhase::Aborted;
+                return Ok(());
             }
             // SAFETY: process is a live owned handle and the wait is finite.
             let wait =
@@ -1474,7 +1754,7 @@ mod sys {
                 return Err(KeyAgentActivationError::Cleanup);
             }
             self.cleanup_exit_code = Some(exit_code);
-            self.phase = self.phase.transition(LaunchTransition::Abort)?;
+            self.phase = LaunchPhase::Aborted;
             Ok(())
         }
 
@@ -1508,14 +1788,120 @@ mod sys {
         }
     }
 
+    /// Transfer-only owner after documented no-kill-on-debugger-exit arming.
+    ///
+    /// The first event has been continued, there is no pending debug event, the
+    /// exact primary thread retains one explicit count, and LPAC continuity is
+    /// held. This state is not detached and exposes no handle or resume method.
+    pub(super) struct PendingDebuggerExitSuspendedDebuggee(SuspendedDebuggee);
+
+    // SAFETY: after a successful DebugSetProcessKillOnExit(FALSE), this wrapper
+    // performs no debugger-thread-affine operation. It exposes only a consuming
+    // post-join finalizer; its inner Drop requests termination without waiting
+    // while the phase is still pending. The outer activation state separately
+    // brands it to the exact per-run join witness.
+    unsafe impl Send for PendingDebuggerExitSuspendedDebuggee {}
+
+    impl PendingDebuggerExitSuspendedDebuggee {
+        pub(super) fn observe_debugger_exit_for_cleanup(
+            &mut self,
+        ) -> Result<(), KeyAgentActivationError> {
+            if self.0.phase == LaunchPhase::DebuggerExitedPendingVerification {
+                return Ok(());
+            }
+            if self.0.phase != LaunchPhase::NoKillArmedAwaitingDebuggerExit
+                || self.0.pending_event.is_some()
+                || self.0.proven_suspend_count != 1
+                || self.0.prepared_lpac.is_some()
+                || self.0.lpac.is_none()
+            {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+            // The outer pending state has already matched its exact joined
+            // witness and root gate. This phase changes cleanup behavior only;
+            // it exposes no detached, handle, or resume capability.
+            self.0.phase = LaunchPhase::DebuggerExitedPendingVerification;
+            Ok(())
+        }
+
+        pub(super) fn finalize_after_debugger_exit(
+            self,
+            root_job: &KeyAgentRootJob,
+        ) -> Result<DetachedSuspendedDebuggee, KeyAgentActivationError> {
+            let mut process = self.0;
+            if process.phase != LaunchPhase::DebuggerExitedPendingVerification
+                || process.pending_event.is_some()
+                || process.proven_suspend_count != 1
+                || process.prepared_lpac.is_some()
+                || process.lpac.is_none()
+            {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+            let verification = (|| {
+                let mut debugger_present = BOOL::default();
+                // SAFETY: the retained creator process handle is live and BOOL
+                // is exact writable storage. The dedicated debugger thread has
+                // exited and its matching proof was consumed by the caller.
+                unsafe {
+                    CheckRemoteDebuggerPresent(process.process.raw(), &raw mut debugger_present)
+                }
+                .map_err(|_| KeyAgentActivationError::DebugDetach)?;
+                if debugger_present.as_bool() {
+                    return Err(KeyAgentActivationError::DebugDetach);
+                }
+
+                // SAFETY: the exact creator primary-thread handle remains live.
+                // One explicit guard count crossed debugger-thread exit; a 1→2
+                // increment is the first observable post-detach proof.
+                let previous_suspend_count = unsafe { SuspendThread(process.primary_thread.raw()) };
+                if previous_suspend_count != 1 {
+                    return Err(KeyAgentActivationError::SuspensionMismatch);
+                }
+                // SAFETY: the immediately preceding exact transition installed
+                // count two. This restores exactly one without entering code.
+                let previous_suspend_count = unsafe { ResumeThread(process.primary_thread.raw()) };
+                if previous_suspend_count != 2 {
+                    return Err(KeyAgentActivationError::SuspensionMismatch);
+                }
+                process.proven_suspend_count = 1;
+
+                process
+                    .lpac
+                    .as_ref()
+                    .ok_or(KeyAgentActivationError::LpacPolicy)?
+                    .revalidate_current_process_token(process.process_handle())
+                    .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+                super::verify_bound_root_process(root_job, process.process_handle())?;
+                Ok(())
+            })();
+
+            if let Err(error) = verification {
+                process
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(error);
+            }
+            process.phase = LaunchPhase::DetachedSuspended;
+            Ok(DetachedSuspendedDebuggee(process))
+        }
+    }
+
+    impl fmt::Debug for PendingDebuggerExitSuspendedDebuggee {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(
+                "PendingDebuggerExitSuspendedDebuggee([DEBUGGER EXIT UNVERIFIED; REDACTED])",
+            )
+        }
+    }
+
     /// Type-state proof that the debugger relationship has ended while the
     /// primary thread retains exactly one explicit suspend count.
     ///
-    /// Construction is possible only through `SuspendedDebuggee::into_detached`
-    /// after `ContinueDebugEvent`, `DebugActiveProcessStop`, the observable
-    /// post-detach suspend-count probe, and process-token revalidation all
-    /// succeeded. It exposes no raw handle and no creator-thread-only debug
-    /// operation.
+    /// Construction is possible only after the matching debugger OS thread was
+    /// joined, `CheckRemoteDebuggerPresent` returned false on the retained
+    /// creator handle, the observable post-detach suspend-count probe succeeded,
+    /// and LPAC/root-Job continuity was revalidated. It exposes no raw handle or
+    /// creator-thread-only debug operation.
     pub(super) struct DetachedSuspendedDebuggee(SuspendedDebuggee);
 
     // SAFETY: Win32 process and thread handles are process-wide. The only
@@ -1525,7 +1911,7 @@ mod sys {
     // creator-thread affinity. After construction, the wrapper exposes only
     // process-wide metadata, token revalidation, termination/wait cleanup, and
     // Drop; it cannot call WaitForDebugEventEx, ContinueDebugEvent, or
-    // DebugActiveProcessStop. SuspendedDebuggee itself and OwnedWinHandle
+    // DebugSetProcessKillOnExit. SuspendedDebuggee itself and OwnedWinHandle
     // intentionally remain !Send.
     unsafe impl Send for DetachedSuspendedDebuggee {}
 
@@ -2009,11 +2395,13 @@ mod tests {
     };
 
     use super::{
-        ExactFileObjectIdentity, FreshKeyAgentDebugThread, HeldKeyAgentActivation,
-        KeyAgentActivationError, LaunchPhase, LaunchTransition, PreflightKeyAgentArtifact,
-        RunningKeyAgentActivation, activate_preflighted_key_agent_on_fresh_worker,
-        activate_preflighted_key_agent_on_fresh_worker_with_identity, fail_after_cleanup,
-        preflight_key_agent_activation, run_on_fresh_key_agent_debug_thread, sys,
+        AuthenticatedKeyAgentActivation, ExactFileObjectIdentity, FreshKeyAgentDebugThread,
+        HeldKeyAgentActivation, JoinedKeyAgentDebugThreadProof, KeyAgentActivationError,
+        LaunchPhase, LaunchTransition, PendingKeyAgentActivation, PreflightKeyAgentArtifact,
+        RootJobBoundFreshKeyAgentDebugThread, RunningKeyAgentActivation,
+        activate_preflighted_key_agent_on_fresh_worker, fail_after_cleanup,
+        finalize_pending_key_agent_activation, preflight_key_agent_activation,
+        run_on_fresh_key_agent_debug_thread, sys,
     };
     use crate::{
         attestation::{ArtifactDigest, ReleaseAttestation},
@@ -2040,37 +2428,79 @@ mod tests {
         Instant::now() + Duration::from_secs(30)
     }
 
+    fn require_root_job_empty_after_join(
+        root_job: &KeyAgentRootJob,
+    ) -> Result<(), KeyAgentActivationError> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if root_job
+                .active_process_count()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?
+                == 0
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn pending_for_test(
+        attestation: ReleaseAttestation,
+        artifact: VerifiedHelper,
+    ) -> Result<
+        (
+            PendingKeyAgentActivation,
+            KeyAgentRootJob,
+            JoinedKeyAgentDebugThreadProof,
+        ),
+        KeyAgentActivationError,
+    > {
+        let preflighted = preflight_key_agent_activation(attestation, artifact)?;
+        let ((activation, root_job), joined) =
+            run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+                let provisioning = test_provisioning()?;
+                let mut root_job = test_root_job()?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let activation = activate_preflighted_key_agent_on_fresh_worker(
+                    fresh_thread,
+                    preflighted,
+                    &provisioning,
+                    &pipes,
+                    &root_job,
+                    &root_job_attribute,
+                    activation_deadline(),
+                )?;
+                drop(root_job_attribute);
+                drop(pipes);
+                provisioning
+                    .revalidate()
+                    .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+                activation.revalidate_before_no_kill(&root_job)?;
+                let activation = activation.arm_no_kill()?;
+                Ok((activation, root_job))
+            })?;
+        Ok((activation, root_job, joined))
+    }
+
     fn activate_for_test<R, F>(
         attestation: ReleaseAttestation,
         artifact: VerifiedHelper,
         inspect: F,
     ) -> Result<R, KeyAgentActivationError>
     where
-        R: Send + 'static,
-        F: FnOnce(HeldKeyAgentActivation, &KeyAgentRootJob) -> Result<R, KeyAgentActivationError>
-            + Send
-            + 'static,
+        F: FnOnce(HeldKeyAgentActivation, &KeyAgentRootJob) -> Result<R, KeyAgentActivationError>,
     {
-        let preflighted = preflight_key_agent_activation(attestation, artifact)?;
-        run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
-            let provisioning = test_provisioning()?;
-            let root_job = test_root_job()?;
-            let pipes = PrivateKeyAgentPipes::create()
-                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-            let root_job_attribute = root_job
-                .creation_attribute()
-                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-            let activation = activate_preflighted_key_agent_on_fresh_worker(
-                fresh_thread,
-                preflighted,
-                &provisioning,
-                &pipes,
-                &root_job,
-                &root_job_attribute,
-                activation_deadline(),
-            )?;
-            inspect(activation, &root_job)
-        })
+        let (activation, root_job, joined) = pending_for_test(attestation, artifact)?;
+        let activation = finalize_pending_key_agent_activation(activation, &root_job, joined)?;
+        inspect(activation, &root_job)
     }
 
     trait AmbiguousIfSend<A> {
@@ -2146,7 +2576,17 @@ mod tests {
             Ok(LaunchPhase::EventContinued)
         );
         assert_eq!(
-            LaunchPhase::EventContinued.transition(LaunchTransition::DetachDebugger),
+            LaunchPhase::EventContinued.transition(LaunchTransition::ArmNoKill),
+            Ok(LaunchPhase::NoKillArmedAwaitingDebuggerExit)
+        );
+        assert_eq!(
+            LaunchPhase::NoKillArmedAwaitingDebuggerExit
+                .transition(LaunchTransition::ObserveDebuggerExit),
+            Ok(LaunchPhase::DebuggerExitedPendingVerification)
+        );
+        assert_eq!(
+            LaunchPhase::DebuggerExitedPendingVerification
+                .transition(LaunchTransition::VerifyDetached),
             Ok(LaunchPhase::DetachedSuspended)
         );
         assert_eq!(
@@ -2162,7 +2602,7 @@ mod tests {
             Ok(LaunchPhase::Aborted)
         );
         assert_eq!(
-            LaunchPhase::AwaitingCreateEvent.transition(LaunchTransition::DetachDebugger),
+            LaunchPhase::AwaitingCreateEvent.transition(LaunchTransition::ArmNoKill),
             Err(KeyAgentActivationError::DebugDetach)
         );
         assert_eq!(
@@ -2232,6 +2672,8 @@ mod tests {
     #[test]
     fn authority_and_detached_type_states_have_exact_transfer_traits() {
         require_send::<PreflightKeyAgentArtifact>();
+        require_send::<PendingKeyAgentActivation>();
+        require_send::<sys::PendingDebuggerExitSuspendedDebuggee>();
         require_send::<sys::DetachedSuspendedDebuggee>();
         require_send::<sys::DetachedRunningDebuggee>();
         require_send::<HeldKeyAgentActivation>();
@@ -2241,6 +2683,19 @@ mod tests {
         let _ = <FreshKeyAgentDebugThread as AmbiguousIfSync<_>>::marker;
         let _ = <FreshKeyAgentDebugThread as AmbiguousIfClone<_>>::marker;
         let _ = <FreshKeyAgentDebugThread as AmbiguousIfCopy<_>>::marker;
+        let _ = <RootJobBoundFreshKeyAgentDebugThread as AmbiguousIfSend<_>>::marker;
+        let _ = <RootJobBoundFreshKeyAgentDebugThread as AmbiguousIfSync<_>>::marker;
+        let _ = <RootJobBoundFreshKeyAgentDebugThread as AmbiguousIfClone<_>>::marker;
+        let _ = <RootJobBoundFreshKeyAgentDebugThread as AmbiguousIfCopy<_>>::marker;
+        let _ = <AuthenticatedKeyAgentActivation as AmbiguousIfSend<_>>::marker;
+        let _ = <AuthenticatedKeyAgentActivation as AmbiguousIfSync<_>>::marker;
+        let _ = <JoinedKeyAgentDebugThreadProof as AmbiguousIfSend<_>>::marker;
+        let _ = <JoinedKeyAgentDebugThreadProof as AmbiguousIfSync<_>>::marker;
+        let _ = <JoinedKeyAgentDebugThreadProof as AmbiguousIfClone<_>>::marker;
+        let _ = <JoinedKeyAgentDebugThreadProof as AmbiguousIfCopy<_>>::marker;
+        let _ = <PendingKeyAgentActivation as AmbiguousIfSync<_>>::marker;
+        let _ = <PendingKeyAgentActivation as AmbiguousIfClone<_>>::marker;
+        let _ = <PendingKeyAgentActivation as AmbiguousIfCopy<_>>::marker;
         let _ = <PreflightKeyAgentArtifact as AmbiguousIfClone<_>>::marker;
         let _ = <PreflightKeyAgentArtifact as AmbiguousIfCopy<_>>::marker;
         let _ = <sys::SuspendedDebuggee as AmbiguousIfSend<_>>::marker;
@@ -2312,36 +2767,41 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[0] ^= 1;
-        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
-            move |_fresh_thread| {
-                let provisioning = test_provisioning()?;
-                let root_job = test_root_job()?;
-                let pipes = PrivateKeyAgentPipes::create()
-                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                let root_job_attribute = root_job
-                    .creation_attribute()
-                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                let mut process = sys::SuspendedDebuggee::create(
-                    &artifact,
-                    &provisioning,
-                    &pipes,
-                    &root_job,
-                    &root_job_attribute,
-                    activation_deadline(),
-                )?;
-                assert!(matches!(
-                    process.authenticate_first_event(wrong_identity, 5_000),
-                    Err(KeyAgentActivationError::MappedImageMismatch)
-                ));
-                process.abort()?;
-                assert!(process.is_aborted());
-                assert_eq!(
-                    process.cleanup_exit_code(),
-                    Some(sys::rejected_process_exit_code_for_test())
-                );
-                Ok(())
-            },
-        )?;
+        let (observation, joined) =
+            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
+                move |fresh_thread| {
+                    let provisioning = test_provisioning()?;
+                    let mut root_job = test_root_job()?;
+                    let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                    let pipes = PrivateKeyAgentPipes::create()
+                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                    let root_job_attribute = root_job
+                        .creation_attribute()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                    let mut process = sys::SuspendedDebuggee::create(
+                        &artifact,
+                        &provisioning,
+                        &pipes,
+                        &root_job,
+                        &root_job_attribute,
+                        activation_deadline(),
+                    )?;
+                    let observation = process.duplicate_process_observation()?;
+                    assert!(matches!(
+                        process.authenticate_first_event(wrong_identity, 5_000),
+                        Err(KeyAgentActivationError::MappedImageMismatch)
+                    ));
+                    process.abort()?;
+                    assert!(process.is_aborted());
+                    assert_eq!(process.cleanup_exit_code(), None);
+                    Ok(observation)
+                },
+            )?;
+        drop(joined);
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
         Ok(())
     }
 
@@ -2349,37 +2809,43 @@ mod tests {
     fn timeout_cleanup_terminates_without_dispatching_the_first_event()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
-        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
-            move |_fresh_thread| {
-                let provisioning = test_provisioning()?;
-                let root_job = test_root_job()?;
-                let pipes = PrivateKeyAgentPipes::create()
-                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                let root_job_attribute = root_job
-                    .creation_attribute()
-                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                let mut process = sys::SuspendedDebuggee::create(
-                    &artifact,
-                    &provisioning,
-                    &pipes,
-                    &root_job,
-                    &root_job_attribute,
-                    activation_deadline(),
-                )?;
-                let timeout_result: Result<(), KeyAgentActivationError> =
-                    fail_after_cleanup(&mut process, KeyAgentActivationError::DebugEventTimeout);
-                assert_eq!(
-                    timeout_result,
-                    Err(KeyAgentActivationError::DebugEventTimeout)
-                );
-                assert!(process.is_aborted());
-                assert_eq!(
-                    process.cleanup_exit_code(),
-                    Some(sys::rejected_process_exit_code_for_test())
-                );
-                Ok(())
-            },
-        )?;
+        let (observation, joined) = run_on_fresh_key_agent_debug_thread::<
+            _,
+            KeyAgentActivationError,
+            _,
+        >(move |fresh_thread| {
+            let provisioning = test_provisioning()?;
+            let mut root_job = test_root_job()?;
+            let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+            let pipes = PrivateKeyAgentPipes::create()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let root_job_attribute = root_job
+                .creation_attribute()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            let mut process = sys::SuspendedDebuggee::create(
+                &artifact,
+                &provisioning,
+                &pipes,
+                &root_job,
+                &root_job_attribute,
+                activation_deadline(),
+            )?;
+            let observation = process.duplicate_process_observation()?;
+            let timeout_result: Result<(), KeyAgentActivationError> =
+                fail_after_cleanup(&mut process, KeyAgentActivationError::DebugEventTimeout);
+            assert_eq!(
+                timeout_result,
+                Err(KeyAgentActivationError::DebugEventTimeout)
+            );
+            assert!(process.is_aborted());
+            assert_eq!(process.cleanup_exit_code(), None);
+            Ok(observation)
+        })?;
+        drop(joined);
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
         Ok(())
     }
 
@@ -2422,22 +2888,82 @@ mod tests {
     }
 
     #[test]
+    fn pending_finalization_rejects_swapped_join_and_root_job_witnesses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let first = pending_for_test(attestation_for(&first_artifact), first_artifact)?;
+        let second_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let second = pending_for_test(attestation_for(&second_artifact), second_artifact)?;
+        let third_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let third = pending_for_test(attestation_for(&third_artifact), third_artifact)?;
+
+        let (first_pending, first_root, first_joined) = first;
+        let (second_pending, second_root, second_joined) = second;
+        let (third_pending, third_root, third_joined) = third;
+        assert!(matches!(
+            finalize_pending_key_agent_activation(first_pending, &first_root, second_joined),
+            Err(KeyAgentActivationError::DebuggerJoinProof)
+        ));
+        assert!(matches!(
+            finalize_pending_key_agent_activation(third_pending, &second_root, third_joined),
+            Err(KeyAgentActivationError::DebuggerJoinProof)
+        ));
+
+        // The remaining deliberately unmatched pair is never observable as a
+        // detached capability; Drop requests termination and the joined root
+        // gate restores authoritative bounded Job cleanup.
+        drop(first_joined);
+        drop(second_pending);
+        drop(third_root);
+        drop(second_root);
+        drop(first_root);
+        Ok(())
+    }
+
+    #[test]
     fn caller_debuggee_does_not_contaminate_dedicated_activation_worker()
     -> Result<(), Box<dyn std::error::Error>> {
         let caller_artifact = VerifiedHelper::for_key_agent_activation_test()?;
-        let caller_identity = sys::exact_file_identity(caller_artifact.raw_handle())?;
-        let caller_provisioning = test_provisioning()?;
-        let caller_root_job = test_root_job()?;
-        let caller_pipes = PrivateKeyAgentPipes::create()?;
-        let caller_root_job_attribute = caller_root_job.creation_attribute()?;
-        let mut caller_debuggee = sys::SuspendedDebuggee::create(
-            &caller_artifact,
-            &caller_provisioning,
-            &caller_pipes,
-            &caller_root_job,
-            &caller_root_job_attribute,
-            activation_deadline(),
-        )?;
+        let (caller_ready_sender, caller_ready_receiver) = mpsc::sync_channel(1);
+        let (caller_release_sender, caller_release_receiver) = mpsc::sync_channel(1);
+        let caller = std::thread::spawn(move || {
+            let (observation, joined) = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+                let caller_identity = sys::exact_file_identity(caller_artifact.raw_handle())?;
+                let caller_provisioning = test_provisioning()?;
+                let mut caller_root_job = test_root_job()?;
+                let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut caller_root_job)?;
+                let caller_pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let caller_root_job_attribute = caller_root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let mut caller_debuggee = sys::SuspendedDebuggee::create(
+                    &caller_artifact,
+                    &caller_provisioning,
+                    &caller_pipes,
+                    &caller_root_job,
+                    &caller_root_job_attribute,
+                    activation_deadline(),
+                )?;
+                let observation = caller_debuggee.duplicate_process_observation()?;
+                caller_ready_sender
+                    .send(())
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                caller_release_receiver
+                    .recv()
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                let caller_event =
+                    caller_debuggee.authenticate_first_event(caller_identity, 5_000)?;
+                if caller_event.creation_time == 0 {
+                    return Err(KeyAgentActivationError::CreationTime);
+                }
+                caller_debuggee.abort()?;
+                Ok(observation)
+            })?;
+            drop(joined);
+            Ok::<_, KeyAgentActivationError>(observation)
+        });
+        caller_ready_receiver.recv()?;
 
         let activation_artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let activation_attestation = attestation_for(&activation_artifact);
@@ -2450,13 +2976,13 @@ mod tests {
                 Ok(())
             },
         )?;
-
-        let caller_event = caller_debuggee.authenticate_first_event(caller_identity, 5_000)?;
-        assert_ne!(caller_event.creation_time, 0);
-        caller_debuggee.abort()?;
+        caller_release_sender.send(())?;
+        let observation = caller
+            .join()
+            .map_err(|_| std::io::Error::other("caller debugger worker panicked"))??;
         assert_eq!(
-            caller_debuggee.cleanup_exit_code(),
-            Some(sys::rejected_process_exit_code_for_test())
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
         );
         Ok(())
     }
@@ -2514,18 +3040,19 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
-        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
-            move |fresh_thread| {
-                let provisioning = test_provisioning()?;
-                let assigned_job = test_root_job()?;
-                let checked_job = test_root_job()?;
-                let pipes = PrivateKeyAgentPipes::create()
-                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                let mismatched_attribute = assigned_job
-                    .creation_attribute()
-                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                assert!(matches!(
-                    activate_preflighted_key_agent_on_fresh_worker(
+        let ((assigned_job, checked_job), joined) =
+            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
+                move |fresh_thread| {
+                    let provisioning = test_provisioning()?;
+                    let mut assigned_job = test_root_job()?;
+                    let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut assigned_job)?;
+                    let checked_job = test_root_job()?;
+                    let pipes = PrivateKeyAgentPipes::create()
+                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                    let mismatched_attribute = assigned_job
+                        .creation_attribute()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                    let result = activate_preflighted_key_agent_on_fresh_worker(
                         fresh_thread,
                         preflighted,
                         &provisioning,
@@ -2533,24 +3060,18 @@ mod tests {
                         &checked_job,
                         &mismatched_attribute,
                         activation_deadline(),
-                    ),
-                    Err(KeyAgentActivationError::RootJobPolicy)
-                ));
-                assert_eq!(
-                    assigned_job
-                        .active_process_count()
-                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
-                    0
-                );
-                assert_eq!(
-                    checked_job
-                        .active_process_count()
-                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?,
-                    0
-                );
-                Ok(())
-            },
-        )?;
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(KeyAgentActivationError::RootJobPolicy)
+                    ));
+                    drop(mismatched_attribute);
+                    Ok((assigned_job, checked_job))
+                },
+            )?;
+        drop(joined);
+        require_root_job_empty_after_join(&assigned_job)?;
+        require_root_job_empty_after_join(&checked_job)?;
         Ok(())
     }
 
@@ -2559,35 +3080,43 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[3] ^= 1;
-        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
-        let result = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
-            let provisioning = test_provisioning()?;
-            let root_job = test_root_job()?;
-            let pipes = PrivateKeyAgentPipes::create()
-                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-            let root_job_attribute = root_job
-                .creation_attribute()
-                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-            let PreflightKeyAgentArtifact {
-                artifact,
-                release_identity,
-            } = preflighted;
-            activate_preflighted_key_agent_on_fresh_worker_with_identity(
-                fresh_thread,
-                artifact,
-                release_identity,
-                wrong_identity,
-                &provisioning,
-                &pipes,
-                &root_job,
-                &root_job_attribute,
-                activation_deadline(),
-            )
-        });
+        let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
+        let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |fresh_thread| {
+                let provisioning = test_provisioning()?;
+                let mut root_job = test_root_job()?;
+                let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let mut process = sys::SuspendedDebuggee::create(
+                    &artifact,
+                    &provisioning,
+                    &pipes,
+                    &root_job,
+                    &root_job_attribute,
+                    activation_deadline(),
+                )?;
+                observation_sender
+                    .send(process.duplicate_process_observation()?)
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                let Err(error) = process.authenticate_first_event(wrong_identity, 5_000) else {
+                    return Err(KeyAgentActivationError::MappedImageMismatch);
+                };
+                fail_after_cleanup(&mut process, error)
+            },
+        );
         assert!(matches!(
             result,
             Err(KeyAgentActivationError::MappedImageMismatch)
         ));
+        let observation = observation_receiver.recv()?;
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
         Ok(())
     }
 
@@ -2597,9 +3126,10 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
         let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
-            move |_fresh_thread| {
+            move |fresh_thread| {
                 let provisioning = test_provisioning()?;
-                let root_job = test_root_job()?;
+                let mut root_job = test_root_job()?;
+                let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
                 let root_job_attribute = root_job
@@ -2620,7 +3150,63 @@ mod tests {
                 std::panic::resume_unwind(Box::new("intentional activation worker test unwind"));
             },
         );
-        assert_eq!(result, Err(KeyAgentActivationError::ActivationWorker));
+        assert!(matches!(
+            result,
+            Err(KeyAgentActivationError::ActivationWorker)
+        ));
+        let observation = observation_receiver.recv()?;
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn worker_panic_immediately_after_no_kill_arm_cleans_up_after_join()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
+        let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |fresh_thread| {
+                let provisioning = test_provisioning()?;
+                let mut root_job = test_root_job()?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let activation = activate_preflighted_key_agent_on_fresh_worker(
+                    fresh_thread,
+                    preflighted,
+                    &provisioning,
+                    &pipes,
+                    &root_job,
+                    &root_job_attribute,
+                    activation_deadline(),
+                )?;
+                let observation = activation.process.duplicate_process_observation()?;
+                drop(root_job_attribute);
+                drop(pipes);
+                provisioning
+                    .revalidate()
+                    .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+                activation.revalidate_before_no_kill(&root_job)?;
+                let _pending = activation.arm_no_kill()?;
+                observation_sender
+                    .send(observation)
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                std::panic::resume_unwind(Box::new(
+                    "intentional post-no-kill-arm activation worker unwind",
+                ));
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(KeyAgentActivationError::ActivationWorker)
+        ));
         let observation = observation_receiver.recv()?;
         assert_eq!(
             observation.rejected_exit_code()?,
@@ -2646,36 +3232,41 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[7] ^= 1;
-        run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
-            move |_fresh_thread| {
-                let provisioning = test_provisioning()?;
-                let root_job = test_root_job()?;
-                let pipes = PrivateKeyAgentPipes::create()
-                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                let root_job_attribute = root_job
-                    .creation_attribute()
-                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
-                    &artifact,
-                    &provisioning,
-                    &pipes,
-                    &root_job,
-                    &root_job_attribute,
-                    activation_deadline(),
-                    &mut command_line,
-                )?;
-                assert!(matches!(
-                    process.authenticate_first_event(wrong_identity, 5_000),
-                    Err(KeyAgentActivationError::MappedImageMismatch)
-                ));
-                process.abort()?;
-                assert_eq!(
-                    process.cleanup_exit_code(),
-                    Some(sys::rejected_process_exit_code_for_test())
-                );
-                Ok(())
-            },
-        )?;
+        let (observation, joined) =
+            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
+                move |fresh_thread| {
+                    let provisioning = test_provisioning()?;
+                    let mut root_job = test_root_job()?;
+                    let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                    let pipes = PrivateKeyAgentPipes::create()
+                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                    let root_job_attribute = root_job
+                        .creation_attribute()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                    let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
+                        &artifact,
+                        &provisioning,
+                        &pipes,
+                        &root_job,
+                        &root_job_attribute,
+                        activation_deadline(),
+                        &mut command_line,
+                    )?;
+                    let observation = process.duplicate_process_observation()?;
+                    assert!(matches!(
+                        process.authenticate_first_event(wrong_identity, 5_000),
+                        Err(KeyAgentActivationError::MappedImageMismatch)
+                    ));
+                    process.abort()?;
+                    assert_eq!(process.cleanup_exit_code(), None);
+                    Ok(observation)
+                },
+            )?;
+        drop(joined);
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
         assert!(!sentinel.path().exists());
         Ok(())
     }

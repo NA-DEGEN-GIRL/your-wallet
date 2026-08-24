@@ -27,8 +27,8 @@ use std::{
 #[cfg(test)]
 use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
-    CloseHandle, CompareObjectHandles, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, CompareObjectHandles, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
+    GetHandleInformation, HANDLE, HANDLE_FLAGS, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -40,27 +40,27 @@ use windows::Win32::Security::Isolation::{
 #[cfg(test)]
 use windows::Win32::Security::SetFileSecurityW;
 use windows::Win32::Security::{
-    ACL_REVISION, DACL_SECURITY_INFORMATION, GetKernelObjectSecurity, GetSecurityDescriptorLength,
-    IsValidSecurityDescriptor, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_SELF_RELATIVE, SetKernelObjectSecurity,
+    ACL_REVISION, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetKernelObjectSecurity,
+    GetSecurityDescriptorLength, IsValidSecurityDescriptor, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_PRESENT, SE_DACL_PROTECTED,
+    SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, SetKernelObjectSecurity,
 };
 use windows::Win32::Security::{
     CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetLengthSid, GetTokenInformation,
     IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_ACCESS_MASK,
-    TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY,
-    TOKEN_STATISTICS, TOKEN_USER, TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-    TokenIsLessPrivilegedAppContainer, TokenPrimary, TokenStatistics, TokenUser,
+    TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_OWNER,
+    TOKEN_PRIMARY_GROUP, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER, TokenAppContainerSid,
+    TokenCapabilities, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenOwner,
+    TokenPrimary, TokenPrimaryGroup, TokenStatistics, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemServices::{
-    ACCESS_ALLOWED_ACE_TYPE, CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC,
+    ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC,
     SECURITY_DESCRIPTOR_REVISION,
 };
-#[cfg(test)]
-use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::{
-    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
+    GetCurrentProcess, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
     PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, UpdateProcThreadAttribute,
 };
@@ -97,7 +97,11 @@ const MAX_INSTALL_SID_BYTES: usize = 68;
 const SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES: usize = 20;
 const ACL_HEADER_BYTES: usize = 8;
 const ACCESS_ALLOWED_ACE_FIXED_BYTES: usize = 8;
+const ACCESS_DENIED_ACE_FIXED_BYTES: usize = 8;
 const MIN_BINARY_SID_BYTES: usize = 8;
+const MAX_CREATION_SECURITY_DESCRIPTOR_BYTES: usize = 256;
+const CREATION_SECURITY_DENIED_ACCESS: u32 = 0x000e_0000;
+const OWNER_RIGHTS_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 3, 4, 0, 0, 0];
 const SUPERVISOR_TOKEN_ACCESS: u32 = TOKEN_ALL_ACCESS.0;
 const KEY_AGENT_TOKEN_SELF_ACCESS: u32 = TOKEN_QUERY.0 | TOKEN_DUPLICATE.0;
 const APPROVAL_PARENT_TOKEN_ACCESS: u32 = TOKEN_QUERY.0;
@@ -343,6 +347,15 @@ impl PreparedKeyAgentProvisioning {
         self.profile.prepare_lpac()
     }
 
+    /// Prepares the exact process and primary-thread security descriptors for
+    /// one creation attempt while this verified installation remains held.
+    pub(crate) fn prepare_creation_security(
+        &self,
+    ) -> Result<PreparedKeyAgentCreationSecurity, KeyAgentLpacError> {
+        self.revalidate()?;
+        PreparedKeyAgentCreationSecurity::prepare()
+    }
+
     pub(crate) fn storage_root_identity(&self) -> KeyAgentStorageRootIdentity {
         self.storage_root.identity()
     }
@@ -359,6 +372,638 @@ impl fmt::Debug for PreparedKeyAgentProvisioning {
             "PreparedKeyAgentProvisioning([VERIFIED PROFILE AND HELD STORAGE ROOT; REDACTED])",
         )
     }
+}
+
+/// Opaque ownership of the exact process and primary-thread creation policy.
+///
+/// Each `SECURITY_ATTRIBUTES` value is non-inheritable and points into a
+/// distinct `LocalAlloc` descriptor retained by this value. No descriptor,
+/// token identity, SID, or raw pointer is exposed to callers.
+#[must_use = "creation security must remain live through creation and readback"]
+pub(crate) struct PreparedKeyAgentCreationSecurity {
+    process_attributes: SECURITY_ATTRIBUTES,
+    primary_thread_attributes: SECURITY_ATTRIBUTES,
+    process_descriptor: OwnedCreationSecurityDescriptor,
+    primary_thread_descriptor: OwnedCreationSecurityDescriptor,
+    expected_owner_sid: Vec<u8>,
+    expected_primary_group_sid: Vec<u8>,
+}
+
+impl PreparedKeyAgentCreationSecurity {
+    fn prepare() -> Result<Self, KeyAgentLpacError> {
+        let token = open_current_process_creation_security_token()?;
+
+        let owner_information = creation_security_token_information(token.0, TokenOwner)?;
+        if owner_information.returned_bytes < size_of::<TOKEN_OWNER>() {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        // SAFETY: aligned storage contains the complete returned TOKEN_OWNER
+        // prefix and remains live while its interior SID is validated.
+        let owner =
+            unsafe { ptr::read_unaligned(owner_information.words.as_ptr().cast::<TOKEN_OWNER>()) };
+        let expected_owner_sid = validated_creation_token_sid_bytes(
+            &owner_information,
+            owner.Owner,
+            size_of::<TOKEN_OWNER>(),
+        )?;
+        let owner_text = creation_security_sid_string(owner.Owner)?;
+
+        let primary_group_information =
+            creation_security_token_information(token.0, TokenPrimaryGroup)?;
+        if primary_group_information.returned_bytes < size_of::<TOKEN_PRIMARY_GROUP>() {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        // SAFETY: aligned storage contains the complete returned
+        // TOKEN_PRIMARY_GROUP prefix and remains live during SID validation.
+        let primary_group = unsafe {
+            ptr::read_unaligned(
+                primary_group_information
+                    .words
+                    .as_ptr()
+                    .cast::<TOKEN_PRIMARY_GROUP>(),
+            )
+        };
+        let expected_primary_group_sid = validated_creation_token_sid_bytes(
+            &primary_group_information,
+            primary_group.PrimaryGroup,
+            size_of::<TOKEN_PRIMARY_GROUP>(),
+        )?;
+        let primary_group_text = creation_security_sid_string(primary_group.PrimaryGroup)?;
+
+        let sddl = format!("O:{owner_text}G:{primary_group_text}D:P(D;;0x000e0000;;;OW)");
+        let sddl = creation_security_wide_nul(&sddl)?;
+        let process_descriptor = OwnedCreationSecurityDescriptor::from_sddl(
+            &sddl,
+            &expected_owner_sid,
+            &expected_primary_group_sid,
+        )?;
+        let primary_thread_descriptor = OwnedCreationSecurityDescriptor::from_sddl(
+            &sddl,
+            &expected_owner_sid,
+            &expected_primary_group_sid,
+        )?;
+        if process_descriptor.descriptor == primary_thread_descriptor.descriptor {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+
+        let attribute_bytes = u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+            .map_err(|_| KeyAgentLpacError::Attribute)?;
+        let process_attributes = SECURITY_ATTRIBUTES {
+            nLength: attribute_bytes,
+            lpSecurityDescriptor: process_descriptor.descriptor.0,
+            bInheritHandle: BOOL(0),
+        };
+        let primary_thread_attributes = SECURITY_ATTRIBUTES {
+            nLength: attribute_bytes,
+            lpSecurityDescriptor: primary_thread_descriptor.descriptor.0,
+            bInheritHandle: BOOL(0),
+        };
+
+        Ok(Self {
+            process_attributes,
+            primary_thread_attributes,
+            process_descriptor,
+            primary_thread_descriptor,
+            expected_owner_sid,
+            expected_primary_group_sid,
+        })
+    }
+
+    /// Borrows both creation attributes as one inseparable process/thread pair.
+    pub(crate) fn creation_security(
+        &self,
+    ) -> crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_> {
+        crate::inheritable_handle_launch::ProcessThreadCreationSecurity::new(
+            &self.process_attributes,
+            &self.primary_thread_attributes,
+        )
+    }
+
+    /// Verifies the descriptors installed on the two handles returned by the
+    /// successful creation call. The handles must be the creator-owned process
+    /// and primary-thread handles, not reopened or pseudo handles.
+    pub(crate) fn verify_created_objects(
+        &self,
+        process: BorrowedHandle<'_>,
+        primary_thread: BorrowedHandle<'_>,
+    ) -> Result<(), KeyAgentLpacError> {
+        verify_created_object_security(
+            HANDLE(process.as_raw_handle()),
+            &self.expected_owner_sid,
+            &self.expected_primary_group_sid,
+        )?;
+        verify_created_object_security(
+            HANDLE(primary_thread.as_raw_handle()),
+            &self.expected_owner_sid,
+            &self.expected_primary_group_sid,
+        )
+    }
+}
+
+impl fmt::Debug for PreparedKeyAgentCreationSecurity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (&self.process_descriptor, &self.primary_thread_descriptor);
+        formatter.write_str("PreparedKeyAgentCreationSecurity([OPAQUE PROCESS/THREAD POLICY])")
+    }
+}
+
+struct OwnedCreationSecurityDescriptor {
+    descriptor: PSECURITY_DESCRIPTOR,
+    descriptor_bytes: usize,
+}
+
+impl OwnedCreationSecurityDescriptor {
+    fn from_sddl(
+        sddl: &[u16],
+        expected_owner_sid: &[u8],
+        expected_primary_group_sid: &[u8],
+    ) -> Result<Self, KeyAgentLpacError> {
+        if !sddl.ends_with(&[0]) {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        let mut converted_bytes = 0_u32;
+        // SAFETY: the SDDL is live and NUL terminated. On success Windows
+        // returns one self-relative LocalAlloc allocation and its byte length.
+        let conversion = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl.as_ptr()),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                Some(&raw mut converted_bytes),
+            )
+        };
+        let owned = Self {
+            descriptor,
+            descriptor_bytes: usize::try_from(converted_bytes)
+                .map_err(|_| KeyAgentLpacError::Attribute)?,
+        };
+        conversion.map_err(|_| KeyAgentLpacError::Attribute)?;
+        if owned.descriptor.0.is_null()
+            || owned.descriptor_bytes < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+            || owned.descriptor_bytes > MAX_CREATION_SECURITY_DESCRIPTOR_BYTES
+            // SAFETY: the conversion succeeded and returned a live descriptor.
+            || !unsafe { IsValidSecurityDescriptor(owned.descriptor) }.as_bool()
+        {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        // SAFETY: IsValidSecurityDescriptor accepted the complete live value.
+        let reported_bytes =
+            usize::try_from(unsafe { GetSecurityDescriptorLength(owned.descriptor) })
+                .map_err(|_| KeyAgentLpacError::Attribute)?;
+        if reported_bytes != owned.descriptor_bytes {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        inspect_exact_creation_security_descriptor(
+            owned.bytes(),
+            expected_owner_sid,
+            expected_primary_group_sid,
+        )?;
+        Ok(owned)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: construction retains this LocalAlloc descriptor and records
+        // the exact validated allocation length until Drop.
+        unsafe {
+            core::slice::from_raw_parts(self.descriptor.0.cast::<u8>(), self.descriptor_bytes)
+        }
+    }
+}
+
+impl Drop for OwnedCreationSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.descriptor.0.is_null() {
+            // SAFETY: this is the one LocalAlloc allocation returned by the
+            // successful SDDL conversion and it is released exactly once.
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(self.descriptor.0)));
+            }
+            self.descriptor = PSECURITY_DESCRIPTOR::default();
+            self.descriptor_bytes = 0;
+        }
+    }
+}
+
+impl fmt::Debug for OwnedCreationSecurityDescriptor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedCreationSecurityDescriptor([REDACTED])")
+    }
+}
+
+struct CreationSecurityToken(HANDLE);
+
+impl Drop for CreationSecurityToken {
+    fn drop(&mut self) {
+        if !invalid_handle(self.0) {
+            // SAFETY: this wrapper owns the successful OpenProcessToken result.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+            self.0 = HANDLE::default();
+        }
+    }
+}
+
+struct CreationSecurityTokenInformation {
+    words: Vec<usize>,
+    returned_bytes: usize,
+}
+
+fn open_current_process_creation_security_token() -> Result<CreationSecurityToken, KeyAgentLpacError>
+{
+    let mut token = HANDLE::default();
+    // SAFETY: GetCurrentProcess is a process-local pseudo handle used only to
+    // open one real query handle; output ownership transfers to the guard.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    if invalid_handle(token) {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    Ok(CreationSecurityToken(token))
+}
+
+fn creation_security_token_information(
+    token: HANDLE,
+    class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
+) -> Result<CreationSecurityTokenInformation, KeyAgentLpacError> {
+    let mut first_required = 0_u32;
+    // SAFETY: this is the documented sizing call on a live TOKEN_QUERY handle.
+    let sizing = unsafe { GetTokenInformation(token, class, None, 0, &raw mut first_required) };
+    if !matches!(
+        sizing,
+        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()
+    ) {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let required = usize::try_from(first_required).map_err(|_| KeyAgentLpacError::Attribute)?;
+    if required == 0 || required > MAX_TOKEN_INFORMATION_BYTES {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let word_bytes = size_of::<usize>();
+    let word_count = required
+        .checked_add(word_bytes.saturating_sub(1))
+        .and_then(|rounded| rounded.checked_div(word_bytes))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let mut words = vec![0_usize; word_count];
+    let mut second_returned = 0_u32;
+    // SAFETY: aligned word storage has at least `first_required` writable
+    // bytes and the same real token handle remains live for this exact query.
+    unsafe {
+        GetTokenInformation(
+            token,
+            class,
+            Some(words.as_mut_ptr().cast::<c_void>()),
+            first_required,
+            &raw mut second_returned,
+        )
+    }
+    .map_err(|_| KeyAgentLpacError::Attribute)?;
+    if second_returned != first_required {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    Ok(CreationSecurityTokenInformation {
+        words,
+        returned_bytes: required,
+    })
+}
+
+fn validated_creation_token_sid_bytes(
+    information: &CreationSecurityTokenInformation,
+    sid: PSID,
+    structure_bytes: usize,
+) -> Result<Vec<u8>, KeyAgentLpacError> {
+    if sid.0.is_null() || structure_bytes > information.returned_bytes {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let base_address = information.words.as_ptr().cast::<u8>() as usize;
+    let sid_address = sid.0 as usize;
+    let sid_offset = sid_address
+        .checked_sub(base_address)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if sid_offset < structure_bytes || sid_offset % size_of::<u32>() != 0 {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let information_bytes = {
+        // SAFETY: the successful second query initialized exactly
+        // `returned_bytes` inside this still-live aligned allocation.
+        unsafe {
+            core::slice::from_raw_parts(
+                information.words.as_ptr().cast::<u8>(),
+                information.returned_bytes,
+            )
+        }
+    };
+    let minimum_end = sid_offset
+        .checked_add(MIN_BINARY_SID_BYTES)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if minimum_end > information_bytes.len() {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let sid_bytes = &information_bytes[sid_offset..];
+    let declared_bytes = usize::from(sid_bytes[1])
+        .checked_mul(size_of::<u32>())
+        .and_then(|bytes| bytes.checked_add(MIN_BINARY_SID_BYTES))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if !(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&declared_bytes)
+        || sid_offset
+            .checked_add(declared_bytes)
+            .ok_or(KeyAgentLpacError::Attribute)?
+            > information_bytes.len()
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    // SAFETY: the complete declared SID lies within the live token buffer.
+    if !unsafe { IsValidSid(sid) }.as_bool()
+        // SAFETY: IsValidSid accepted this complete bounded SID.
+        || usize::try_from(unsafe { GetLengthSid(sid) })
+            .map_err(|_| KeyAgentLpacError::Attribute)?
+            != declared_bytes
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    Ok(sid_bytes[..declared_bytes].to_vec())
+}
+
+fn creation_security_sid_string(sid: PSID) -> Result<String, KeyAgentLpacError> {
+    let mut text = PWSTR::null();
+    // SAFETY: the caller first bounded and validated this live token SID. The
+    // successful output is one LocalAlloc NUL-terminated string.
+    unsafe { ConvertSidToStringSidW(sid, &raw mut text) }
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    if text.is_null() {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    // SAFETY: successful conversion returned a live NUL-terminated string.
+    let converted = unsafe { text.to_string() }.map_err(|_| KeyAgentLpacError::Attribute);
+    // SAFETY: ConvertSidToStringSidW allocated this result with LocalAlloc.
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(text.0.cast::<c_void>())));
+    }
+    converted
+}
+
+fn creation_security_wide_nul(value: &str) -> Result<Vec<u16>, KeyAgentLpacError> {
+    let mut wide: Vec<u16> = value.encode_utf16().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+fn verify_created_object_security(
+    handle: HANDLE,
+    expected_owner_sid: &[u8],
+    expected_primary_group_sid: &[u8],
+) -> Result<(), KeyAgentLpacError> {
+    if invalid_handle(handle) {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let mut raw_handle_flags = u32::MAX;
+    // SAFETY: the live creator-owned handle remains borrowed and output points
+    // to exact HANDLE_FLAGS storage. No handle flag is permitted.
+    unsafe { GetHandleInformation(handle, &raw mut raw_handle_flags) }
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    validate_creation_handle_flags(HANDLE_FLAGS(raw_handle_flags))?;
+    let requested_information =
+        (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION).0;
+    let mut first_required = 0_u32;
+    // SAFETY: `handle` is the live creator-owned object handle. The null first
+    // pass is the documented security-descriptor size query.
+    let sizing = unsafe {
+        GetKernelObjectSecurity(
+            handle,
+            requested_information,
+            None,
+            0,
+            &raw mut first_required,
+        )
+    };
+    if !matches!(
+        sizing,
+        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()
+    ) {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let required = usize::try_from(first_required).map_err(|_| KeyAgentLpacError::Attribute)?;
+    if !(SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES..=MAX_CREATION_SECURITY_DESCRIPTOR_BYTES)
+        .contains(&required)
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let word_bytes = size_of::<usize>();
+    let word_count = required
+        .checked_add(word_bytes.saturating_sub(1))
+        .and_then(|rounded| rounded.checked_div(word_bytes))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let mut words = vec![0_usize; word_count];
+    let descriptor = PSECURITY_DESCRIPTOR(words.as_mut_ptr().cast::<c_void>());
+    let mut second_required = 0_u32;
+    // SAFETY: the aligned allocation has at least `first_required` writable
+    // bytes and the same live creator handle remains borrowed for this query.
+    unsafe {
+        GetKernelObjectSecurity(
+            handle,
+            requested_information,
+            Some(descriptor),
+            first_required,
+            &raw mut second_required,
+        )
+    }
+    .map_err(|_| KeyAgentLpacError::Attribute)?;
+    if second_required != first_required
+        // SAFETY: the successful second pass initialized a complete descriptor.
+        || !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool()
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    // SAFETY: IsValidSecurityDescriptor accepted the complete live descriptor.
+    let reported_length = usize::try_from(unsafe { GetSecurityDescriptorLength(descriptor) })
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    if reported_length != required {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    // SAFETY: the second pass initialized exactly `required` descriptor bytes.
+    let descriptor_bytes =
+        unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), required) };
+    inspect_exact_creation_security_descriptor(
+        descriptor_bytes,
+        expected_owner_sid,
+        expected_primary_group_sid,
+    )
+}
+
+fn validate_creation_handle_flags(handle_flags: HANDLE_FLAGS) -> Result<(), KeyAgentLpacError> {
+    if handle_flags.0 == 0 {
+        Ok(())
+    } else {
+        Err(KeyAgentLpacError::Attribute)
+    }
+}
+
+fn inspect_exact_creation_security_descriptor(
+    descriptor: &[u8],
+    expected_owner_sid: &[u8],
+    expected_primary_group_sid: &[u8],
+) -> Result<(), KeyAgentLpacError> {
+    validate_creation_security_sid_bytes(expected_owner_sid)?;
+    validate_creation_security_sid_bytes(expected_primary_group_sid)?;
+    if !(SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES..=MAX_CREATION_SECURITY_DESCRIPTOR_BYTES)
+        .contains(&descriptor.len())
+        || descriptor[0] != u8::try_from(SECURITY_DESCRIPTOR_REVISION).unwrap_or(u8::MAX)
+        || descriptor[1] != 0
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let control = read_creation_security_u16_at(descriptor, 2)?;
+    let required_control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0;
+    if control != required_control || read_creation_security_u32_at(descriptor, 12)? != 0 {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let owner_offset = usize::try_from(read_creation_security_u32_at(descriptor, 4)?)
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    let primary_group_offset = usize::try_from(read_creation_security_u32_at(descriptor, 8)?)
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    let dacl_offset = usize::try_from(read_creation_security_u32_at(descriptor, 16)?)
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    let (owner_sid, owner_end) = creation_security_sid_component(descriptor, owner_offset)?;
+    let (primary_group_sid, primary_group_end) =
+        creation_security_sid_component(descriptor, primary_group_offset)?;
+    if owner_sid != expected_owner_sid || primary_group_sid != expected_primary_group_sid {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+
+    let dacl_header_end = dacl_offset
+        .checked_add(ACL_HEADER_BYTES)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if dacl_offset < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || !dacl_offset.is_multiple_of(size_of::<u32>())
+        || dacl_header_end > descriptor.len()
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let dacl_bytes = usize::from(read_creation_security_u16_at(descriptor, dacl_offset + 2)?);
+    let dacl_end = dacl_offset
+        .checked_add(dacl_bytes)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if dacl_end > descriptor.len() {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let dacl = &descriptor[dacl_offset..dacl_end];
+    let expected_acl_bytes = ACL_HEADER_BYTES
+        .checked_add(ACCESS_DENIED_ACE_FIXED_BYTES)
+        .and_then(|bytes| bytes.checked_add(OWNER_RIGHTS_SID_BYTES.len()))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if dacl_bytes != expected_acl_bytes
+        || u32::from(dacl[0]) != ACL_REVISION.0
+        || dacl[1] != 0
+        || read_creation_security_u16_at(dacl, 4)? != 1
+        || read_creation_security_u16_at(dacl, 6)? != 0
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let ace_offset = ACL_HEADER_BYTES;
+    let ace_size = usize::from(read_creation_security_u16_at(dacl, ace_offset + 2)?);
+    let required_deny_ace_bytes = ACCESS_DENIED_ACE_FIXED_BYTES
+        .checked_add(OWNER_RIGHTS_SID_BYTES.len())
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let ace_end = ace_offset
+        .checked_add(ace_size)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if dacl[ace_offset] != u8::try_from(ACCESS_DENIED_ACE_TYPE).unwrap_or(u8::MAX)
+        || dacl[ace_offset + 1] != 0
+        || ace_size != required_deny_ace_bytes
+        || ace_end != dacl.len()
+        || read_creation_security_u32_at(dacl, ace_offset + 4)? != CREATION_SECURITY_DENIED_ACCESS
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let owner_rights_sid = &dacl[ace_offset + ACCESS_DENIED_ACE_FIXED_BYTES..ace_end];
+    validate_creation_security_sid_bytes(owner_rights_sid)?;
+    if owner_rights_sid != OWNER_RIGHTS_SID_BYTES {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+
+    let mut regions = [
+        (owner_offset, owner_end),
+        (primary_group_offset, primary_group_end),
+        (dacl_offset, dacl_end),
+    ];
+    regions.sort_unstable_by_key(|region| region.0);
+    if regions[0].0 != SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || regions[0].1 != regions[1].0
+        || regions[1].1 != regions[2].0
+        || regions[2].1 != descriptor.len()
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    Ok(())
+}
+
+fn creation_security_sid_component(
+    descriptor: &[u8],
+    offset: usize,
+) -> Result<(&[u8], usize), KeyAgentLpacError> {
+    let minimum_end = offset
+        .checked_add(MIN_BINARY_SID_BYTES)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if offset < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || !offset.is_multiple_of(size_of::<u32>())
+        || minimum_end > descriptor.len()
+    {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let declared_bytes = usize::from(descriptor[offset + 1])
+        .checked_mul(size_of::<u32>())
+        .and_then(|bytes| bytes.checked_add(MIN_BINARY_SID_BYTES))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let end = offset
+        .checked_add(declared_bytes)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let sid = descriptor
+        .get(offset..end)
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    validate_creation_security_sid_bytes(sid)?;
+    Ok((sid, end))
+}
+
+fn validate_creation_security_sid_bytes(sid: &[u8]) -> Result<(), KeyAgentLpacError> {
+    if !(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&sid.len()) || sid[0] != 1 {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    let declared_bytes = usize::from(sid[1])
+        .checked_mul(size_of::<u32>())
+        .and_then(|bytes| bytes.checked_add(MIN_BINARY_SID_BYTES))
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    if declared_bytes != sid.len() {
+        return Err(KeyAgentLpacError::Attribute);
+    }
+    Ok(())
+}
+
+fn read_creation_security_u16_at(bytes: &[u8], offset: usize) -> Result<u16, KeyAgentLpacError> {
+    let end = offset
+        .checked_add(size_of::<u16>())
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let encoded: [u8; 2] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentLpacError::Attribute)?
+        .try_into()
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    Ok(u16::from_le_bytes(encoded))
+}
+
+fn read_creation_security_u32_at(bytes: &[u8], offset: usize) -> Result<u32, KeyAgentLpacError> {
+    let end = offset
+        .checked_add(size_of::<u32>())
+        .ok_or(KeyAgentLpacError::Attribute)?;
+    let encoded: [u8; 4] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentLpacError::Attribute)?
+        .try_into()
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+    Ok(u32::from_le_bytes(encoded))
 }
 
 /// Supervisor-owned preparation of the one fixed Key Agent profile identity.
@@ -1906,7 +2551,7 @@ fn copy_current_test_image(destination: &Path) -> Result<(), KeyAgentLpacError> 
 #[cfg(test)]
 mod tests {
     use core::ffi::c_void;
-    use core::mem::size_of;
+    use core::mem::{offset_of, size_of};
     use core::ptr;
     use std::fs::OpenOptions;
     use std::os::windows::ffi::OsStrExt as _;
@@ -1914,45 +2559,62 @@ mod tests {
     use std::os::windows::io::BorrowedHandle;
     use std::path::Path;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_NO_TOKEN, ERROR_SHARING_VIOLATION, FILETIME,
+        HANDLE, HANDLE_FLAGS, INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0,
     };
     use windows::Win32::Security::{
-        ACL_REVISION, EqualSid, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED,
-        SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_OWNER_DEFAULTED,
-        SE_SELF_RELATIVE, TOKEN_APPCONTAINER_INFORMATION, TOKEN_STATISTICS, TokenImpersonation,
-        TokenPrimary,
+        ACL_REVISION, EqualSid, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+        SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
+        SE_DACL_PROTECTED, SE_OWNER_DEFAULTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE,
+        SECURITY_ATTRIBUTES, TOKEN_APPCONTAINER_INFORMATION, TOKEN_PRIVILEGES, TOKEN_STATISTICS,
+        TokenImpersonation, TokenPrimary, TokenPrivileges,
     };
     use windows::Win32::Security::{TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
+        FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     };
     use windows::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
-        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTUPINFOEXW,
-        TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW,
+        CreateProcessW, CreateThread, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        GetCurrentProcess, GetCurrentThread, GetProcessId, GetThreadId, GetThreadTimes,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+        OpenProcessToken, OpenThread, OpenThreadToken, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        PROCESS_ACCESS_RIGHTS, PROCESS_CREATE_PROCESS, PROCESS_CREATE_THREAD, PROCESS_DUP_HANDLE,
+        PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE,
+        PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, STARTUPINFOEXW, SetEvent,
+        THREAD_ACCESS_RIGHTS, THREAD_CREATION_FLAGS, THREAD_DIRECT_IMPERSONATION,
+        THREAD_GET_CONTEXT, THREAD_IMPERSONATE, THREAD_QUERY_INFORMATION,
+        THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_CONTEXT, THREAD_SET_INFORMATION,
+        THREAD_SET_LIMITED_INFORMATION, THREAD_SET_THREAD_TOKEN, THREAD_SUSPEND_RESUME,
+        THREAD_TERMINATE, TerminateProcess, TerminateThread, UpdateProcThreadAttribute,
+        WaitForSingleObject,
     };
     use windows::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
     use windows::core::PCWSTR;
 
     use super::{
         APPROVAL_PARENT_TOKEN_ACCESS, AppContainerMembershipEvidence, CAPABILITY_COUNT,
-        HeldExistingKeyAgentInstallObjects, KEY_AGENT_PROFILE_V1_NAME, KEY_AGENT_TOKEN_SELF_ACCESS,
-        KeyAgentLpacError, KeyAgentLpacKernelTestFixture, KeyAgentStorageError,
-        OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning, PreparedKeyAgentLpac,
-        PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS, TokenDword,
-        TokenIdentityBaseline, TokenLuidBaseline, TokenPolicyEvidence, VerifiedKeyAgentLpac,
-        appcontainer_folder, appcontainer_membership_evidence,
-        create_unique_key_agent_storage_root_for_test, exact_token_statistics_baseline,
-        inspect_exact_token_dacl_descriptor, open_existing_key_agent_storage_root_for_test,
-        open_process_token_with_access, require_created_sid_matches_derived,
-        require_same_token_identity, require_same_token_object, token_identity_from_statistics,
-        validate_token_policy, wide_nul_str,
+        CREATION_SECURITY_DENIED_ACCESS, HeldExistingKeyAgentInstallObjects,
+        KEY_AGENT_PROFILE_V1_NAME, KEY_AGENT_TOKEN_SELF_ACCESS, KeyAgentLpacError,
+        KeyAgentLpacKernelTestFixture, KeyAgentStorageError, OWNER_RIGHTS_SID_BYTES,
+        OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning,
+        PreparedKeyAgentCreationSecurity, PreparedKeyAgentLpac, PreparedKeyAgentProfile,
+        PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS, TokenDword, TokenIdentityBaseline,
+        TokenLuidBaseline, TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
+        appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
+        creation_security_token_information, creation_security_wide_nul,
+        exact_token_statistics_baseline, inspect_exact_creation_security_descriptor,
+        inspect_exact_token_dacl_descriptor, open_current_process_creation_security_token,
+        open_existing_key_agent_storage_root_for_test, open_process_token_with_access,
+        require_created_sid_matches_derived, require_same_token_identity,
+        require_same_token_object, token_identity_from_statistics, validate_creation_handle_flags,
+        validate_token_policy, verify_created_object_security, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -2002,6 +2664,43 @@ mod tests {
         _words: Vec<usize>,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum CreationDaclAxis {
+        DefaultBoth,
+        DenyProcessOnly,
+        DenyThreadOnly,
+        DenyBoth,
+    }
+
+    impl CreationDaclAxis {
+        const CASES: [Self; 4] = [
+            Self::DefaultBoth,
+            Self::DenyProcessOnly,
+            Self::DenyThreadOnly,
+            Self::DenyBoth,
+        ];
+
+        fn process_attributes(
+            self,
+            security: &PreparedKeyAgentCreationSecurity,
+        ) -> Option<&SECURITY_ATTRIBUTES> {
+            match self {
+                Self::DefaultBoth | Self::DenyThreadOnly => None,
+                Self::DenyProcessOnly | Self::DenyBoth => Some(&security.process_attributes),
+            }
+        }
+
+        fn primary_thread_attributes(
+            self,
+            security: &PreparedKeyAgentCreationSecurity,
+        ) -> Option<&SECURITY_ATTRIBUTES> {
+            match self {
+                Self::DefaultBoth | Self::DenyProcessOnly => None,
+                Self::DenyThreadOnly | Self::DenyBoth => Some(&security.primary_thread_attributes),
+            }
+        }
+    }
+
     impl Drop for TestAttributeList {
         fn drop(&mut self) {
             // SAFETY: construction returns only after this exact list is
@@ -2020,6 +2719,12 @@ mod tests {
             // SAFETY: this wrapper exclusively owns the live process handle and
             // bounds the returned borrow to `self`.
             unsafe { BorrowedHandle::borrow_raw(self.process.0) }
+        }
+
+        fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+            // SAFETY: this wrapper exclusively owns the live primary-thread
+            // handle and bounds the returned borrow to `self`.
+            unsafe { BorrowedHandle::borrow_raw(self.thread.0) }
         }
 
         fn terminate_and_wait(&mut self) -> Result<(), KeyAgentLpacError> {
@@ -2071,6 +2776,389 @@ mod tests {
                 self.thread = HANDLE::default();
             }
         }
+    }
+
+    const THREAD_PROBE_READY: u32 = 1;
+    const THREAD_PROBE_COMPLETE: u32 = 2;
+    const THREAD_PROBE_GET_TIMES_FAILED: u32 = 0xe0a0_0101;
+    const THREAD_PROBE_TOKEN_RESULT_FAILED: u32 = 0xe0a0_0102;
+    const THREAD_PROBE_WAIT_FAILED: u32 = 0xe0a0_0103;
+
+    struct CreationSecurityThreadProbeContext {
+        release: HANDLE,
+        state: AtomicU32,
+    }
+
+    // SAFETY: the unnamed event handle is valid process-wide and Windows
+    // permits SetEvent, WaitForSingleObject, and CloseHandle from any thread.
+    // `state` provides the only shared mutable data and is atomic.
+    unsafe impl Send for CreationSecurityThreadProbeContext {}
+
+    // SAFETY: the same process-wide event guarantee and atomic state make
+    // shared references safe across the creator and native probe threads.
+    unsafe impl Sync for CreationSecurityThreadProbeContext {}
+
+    impl Drop for CreationSecurityThreadProbeContext {
+        fn drop(&mut self) {
+            if !self.release.is_invalid() && self.release != INVALID_HANDLE_VALUE {
+                // SAFETY: the final Arc owns the unnamed event. A native probe
+                // thread retains an Arc for its complete wait, so this cannot
+                // close the event while that wait or context access is live.
+                unsafe {
+                    let _ = CloseHandle(self.release);
+                }
+                self.release = HANDLE::default();
+            }
+        }
+    }
+
+    struct CreationSecurityThreadProbeHandles {
+        thread: HANDLE,
+        release: HANDLE,
+    }
+
+    impl CreationSecurityThreadProbeHandles {
+        fn finish(&mut self) -> Result<(), KeyAgentLpacError> {
+            if self.thread.is_invalid()
+                || self.thread == INVALID_HANDLE_VALUE
+                || self.release.is_invalid()
+                || self.release == INVALID_HANDLE_VALUE
+            {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            // SAFETY: the event and thread are exclusively owned and the event
+            // is the probe routine's sole bounded release condition.
+            let signaled = unsafe { SetEvent(self.release) };
+            if signaled.is_err() {
+                // SAFETY: deterministic test-only cleanup if signaling the
+                // otherwise event-blocked probe unexpectedly fails.
+                unsafe {
+                    let _ = TerminateThread(self.thread, THREAD_PROBE_WAIT_FAILED);
+                }
+            }
+            // SAFETY: the same live creator-owned thread handle is waited with
+            // a finite bound after signal (or forced cleanup) was attempted.
+            let mut wait = unsafe { WaitForSingleObject(self.thread, 5_000) };
+            if wait != WAIT_OBJECT_0 {
+                // SAFETY: this test-only thread executes only this bounded
+                // probe. Forced termination is followed by a second join; its
+                // Arc-held context/event stays live even if that join fails.
+                unsafe {
+                    let _ = TerminateThread(self.thread, THREAD_PROBE_WAIT_FAILED);
+                    wait = WaitForSingleObject(self.thread, 5_000);
+                }
+            }
+            // SAFETY: the creator handle is exclusively owned. The context's
+            // Arc, rather than this guard, owns the release event.
+            let thread_closed = unsafe { CloseHandle(self.thread) };
+            self.thread = HANDLE::default();
+            self.release = HANDLE::default();
+            signaled.map_err(|_| KeyAgentLpacError::Attribute)?;
+            if wait != WAIT_OBJECT_0 {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            thread_closed.map_err(|_| KeyAgentLpacError::Attribute)
+        }
+    }
+
+    impl Drop for CreationSecurityThreadProbeHandles {
+        fn drop(&mut self) {
+            if !self.thread.is_invalid() && self.thread != INVALID_HANDLE_VALUE {
+                // SAFETY: best-effort bounded release of the exact test thread.
+                unsafe {
+                    if SetEvent(self.release).is_err() {
+                        let _ = TerminateThread(self.thread, THREAD_PROBE_WAIT_FAILED);
+                    }
+                    if WaitForSingleObject(self.thread, 5_000) != WAIT_OBJECT_0 {
+                        let _ = TerminateThread(self.thread, THREAD_PROBE_WAIT_FAILED);
+                        let _ = WaitForSingleObject(self.thread, 5_000);
+                    }
+                    let _ = CloseHandle(self.thread);
+                }
+                self.thread = HANDLE::default();
+            }
+            // The Arc-held context owns the release event and remains live in
+            // the native thread until its start routine exits, including every
+            // timeout/forced-cleanup path.
+            self.release = HANDLE::default();
+        }
+    }
+
+    unsafe extern "system" fn creation_security_thread_probe_start(parameter: *mut c_void) -> u32 {
+        if parameter.is_null() {
+            return THREAD_PROBE_GET_TIMES_FAILED;
+        }
+        // SAFETY: the creator passes exactly one Arc::into_raw strong reference
+        // and transfers it to this start routine. Rebuilding the Arc retains
+        // both the context and event through every return path.
+        let context =
+            unsafe { Arc::from_raw(parameter.cast::<CreationSecurityThreadProbeContext>()) };
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: GetCurrentThread returns this routine's pseudo handle and all
+        // four outputs are exact writable FILETIME values.
+        if unsafe {
+            GetThreadTimes(
+                GetCurrentThread(),
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        }
+        .is_err()
+        {
+            context
+                .state
+                .store(THREAD_PROBE_GET_TIMES_FAILED, Ordering::Release);
+            return THREAD_PROBE_GET_TIMES_FAILED;
+        }
+
+        let mut unexpected_token = HANDLE::default();
+        // SAFETY: this is the current-thread pseudo handle. `open_as_self`
+        // avoids an access check against a nonexistent impersonation context.
+        match unsafe {
+            OpenThreadToken(
+                GetCurrentThread(),
+                TOKEN_QUERY,
+                true,
+                &raw mut unexpected_token,
+            )
+        } {
+            Err(error) if error.code() == ERROR_NO_TOKEN.to_hresult() => {}
+            Ok(()) => {
+                if !unexpected_token.is_invalid() && unexpected_token != INVALID_HANDLE_VALUE {
+                    // SAFETY: unexpected success returned one owned token.
+                    unsafe {
+                        let _ = CloseHandle(unexpected_token);
+                    }
+                }
+                context
+                    .state
+                    .store(THREAD_PROBE_TOKEN_RESULT_FAILED, Ordering::Release);
+                return THREAD_PROBE_TOKEN_RESULT_FAILED;
+            }
+            Err(_) => {
+                context
+                    .state
+                    .store(THREAD_PROBE_TOKEN_RESULT_FAILED, Ordering::Release);
+                return THREAD_PROBE_TOKEN_RESULT_FAILED;
+            }
+        }
+
+        context.state.store(THREAD_PROBE_READY, Ordering::Release);
+        // SAFETY: the creator retains this exact event until the routine exits.
+        if unsafe { WaitForSingleObject(context.release, 5_000) } != WAIT_OBJECT_0 {
+            context
+                .state
+                .store(THREAD_PROBE_WAIT_FAILED, Ordering::Release);
+            return THREAD_PROBE_WAIT_FAILED;
+        }
+        context
+            .state
+            .store(THREAD_PROBE_COMPLETE, Ordering::Release);
+        0
+    }
+
+    fn creation_dacl_probe_privilege_luid(name: &str) -> Result<LUID, KeyAgentLpacError> {
+        let name = creation_security_wide_nul(name)?;
+        let mut luid = LUID::default();
+        // SAFETY: the fixed privilege name is NUL terminated and output is one
+        // exact writable LUID. Null system name selects the local system.
+        unsafe { LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(name.as_ptr()), &raw mut luid) }
+            .map_err(|_| KeyAgentLpacError::Attribute)?;
+        Ok(luid)
+    }
+
+    fn require_creation_dacl_probe_privileges_disabled() -> Result<(), KeyAgentLpacError> {
+        let debug = creation_dacl_probe_privilege_luid("SeDebugPrivilege")?;
+        let take_ownership = creation_dacl_probe_privilege_luid("SeTakeOwnershipPrivilege")?;
+        let token = open_current_process_creation_security_token()?;
+        let information = creation_security_token_information(token.0, TokenPrivileges)?;
+        let entries_offset = offset_of!(TOKEN_PRIVILEGES, Privileges);
+        if information.returned_bytes < entries_offset {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        // SAFETY: the exact returned byte count lies within the live aligned
+        // allocation and contains at least the leading privilege count.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                information.words.as_ptr().cast::<u8>(),
+                information.returned_bytes,
+            )
+        };
+        let count = usize::try_from(u32::from_le_bytes(
+            bytes[..size_of::<u32>()]
+                .try_into()
+                .map_err(|_| KeyAgentLpacError::Attribute)?,
+        ))
+        .map_err(|_| KeyAgentLpacError::Attribute)?;
+        let required = count
+            .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+            .and_then(|entry_bytes| entries_offset.checked_add(entry_bytes))
+            .ok_or(KeyAgentLpacError::Attribute)?;
+        if required != information.returned_bytes {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        for index in 0..count {
+            let offset = index
+                .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+                .and_then(|entry_bytes| entries_offset.checked_add(entry_bytes))
+                .ok_or(KeyAgentLpacError::Attribute)?;
+            // SAFETY: the exact flexible-array extent was checked above.
+            let entry = unsafe {
+                ptr::read_unaligned(bytes.as_ptr().add(offset).cast::<LUID_AND_ATTRIBUTES>())
+            };
+            let is_guarded_privilege = entry.Luid == debug || entry.Luid == take_ownership;
+            if is_guarded_privilege && entry.Attributes.0 & SE_PRIVILEGE_ENABLED.0 != 0 {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_creation_dacl_thread_reopen_denials(
+        thread_id: u32,
+    ) -> Result<(), KeyAgentLpacError> {
+        const THREAD_SYNCHRONIZE: THREAD_ACCESS_RIGHTS = THREAD_ACCESS_RIGHTS(0x0010_0000);
+        if thread_id == 0 {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        for desired_access in [
+            THREAD_TERMINATE,
+            THREAD_SUSPEND_RESUME,
+            THREAD_GET_CONTEXT,
+            THREAD_SET_CONTEXT,
+            THREAD_SET_INFORMATION,
+            THREAD_QUERY_INFORMATION,
+            THREAD_SET_THREAD_TOKEN,
+            THREAD_IMPERSONATE,
+            THREAD_DIRECT_IMPERSONATION,
+            THREAD_SET_LIMITED_INFORMATION,
+            THREAD_QUERY_LIMITED_INFORMATION,
+            THREAD_ACCESS_RIGHTS(DELETE.0),
+            THREAD_ACCESS_RIGHTS(READ_CONTROL.0),
+            THREAD_ACCESS_RIGHTS(WRITE_DAC.0),
+            THREAD_ACCESS_RIGHTS(WRITE_OWNER.0),
+            THREAD_SYNCHRONIZE,
+        ] {
+            if desired_access.0.count_ones() != 1 {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            // SAFETY: callers retain the exact live blocked or suspended thread
+            // while this fresh TID reopen is attempted without inheritance.
+            match unsafe { OpenThread(desired_access, false, thread_id) } {
+                Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {}
+                Ok(unexpected) => {
+                    if !unexpected.is_invalid() && unexpected != INVALID_HANDLE_VALUE {
+                        // SAFETY: unexpected success returned one fresh handle.
+                        unsafe {
+                            let _ = CloseHandle(unexpected);
+                        }
+                    }
+                    return Err(KeyAgentLpacError::Attribute);
+                }
+                Err(_) => return Err(KeyAgentLpacError::Attribute),
+            }
+        }
+        Ok(())
+    }
+
+    fn require_creation_dacl_thread_default_reopens(
+        thread_id: u32,
+    ) -> Result<(), KeyAgentLpacError> {
+        const THREAD_SYNCHRONIZE: THREAD_ACCESS_RIGHTS = THREAD_ACCESS_RIGHTS(0x0010_0000);
+        if thread_id == 0 {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        for desired_access in [THREAD_QUERY_LIMITED_INFORMATION, THREAD_SYNCHRONIZE] {
+            // SAFETY: callers retain the exact live blocked or suspended thread
+            // while this fresh TID reopen is attempted without inheritance.
+            let reopened = unsafe { OpenThread(desired_access, false, thread_id) }
+                .map_err(|_| KeyAgentLpacError::Attribute)?;
+            if reopened.is_invalid() || reopened == INVALID_HANDLE_VALUE {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            // SAFETY: each successful iteration owns one independently opened
+            // handle and closes it before requesting the next single right.
+            unsafe { CloseHandle(reopened) }.map_err(|_| KeyAgentLpacError::Attribute)?;
+        }
+        Ok(())
+    }
+
+    fn require_creation_dacl_process_reopen_denials(
+        process_id: u32,
+    ) -> Result<(), KeyAgentLpacError> {
+        const PROCESS_SET_LIMITED_INFORMATION: PROCESS_ACCESS_RIGHTS =
+            PROCESS_ACCESS_RIGHTS(0x0000_2000);
+        const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+        if process_id == 0 {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        for desired_access in [
+            PROCESS_TERMINATE,
+            PROCESS_CREATE_THREAD,
+            PROCESS_VM_OPERATION,
+            PROCESS_VM_READ,
+            PROCESS_VM_WRITE,
+            PROCESS_DUP_HANDLE,
+            PROCESS_CREATE_PROCESS,
+            PROCESS_SET_QUOTA,
+            PROCESS_SET_INFORMATION,
+            PROCESS_QUERY_INFORMATION,
+            PROCESS_SUSPEND_RESUME,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_LIMITED_INFORMATION,
+            PROCESS_ACCESS_RIGHTS(DELETE.0),
+            PROCESS_ACCESS_RIGHTS(READ_CONTROL.0),
+            PROCESS_ACCESS_RIGHTS(WRITE_DAC.0),
+            PROCESS_ACCESS_RIGHTS(WRITE_OWNER.0),
+            PROCESS_SYNCHRONIZE,
+        ] {
+            if desired_access.0.count_ones() != 1 {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            // SAFETY: callers retain the exact live suspended process while
+            // this fresh PID reopen is attempted without inheritance.
+            match unsafe { OpenProcess(desired_access, false, process_id) } {
+                Ok(unexpected) => {
+                    if !unexpected.is_invalid() && unexpected != INVALID_HANDLE_VALUE {
+                        // SAFETY: unexpected success returned one fresh handle.
+                        unsafe {
+                            let _ = CloseHandle(unexpected);
+                        }
+                    }
+                    return Err(KeyAgentLpacError::Attribute);
+                }
+                Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {}
+                Err(_) => return Err(KeyAgentLpacError::Attribute),
+            }
+        }
+        Ok(())
+    }
+
+    fn require_creation_dacl_process_default_reopens(
+        process_id: u32,
+    ) -> Result<(), KeyAgentLpacError> {
+        const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+        if process_id == 0 {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        for desired_access in [PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE] {
+            // SAFETY: callers retain the exact live suspended process while
+            // this fresh PID reopen is attempted without inheritance.
+            let reopened = unsafe { OpenProcess(desired_access, false, process_id) }
+                .map_err(|_| KeyAgentLpacError::Attribute)?;
+            if reopened.is_invalid() || reopened == INVALID_HANDLE_VALUE {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            // SAFETY: each successful iteration owns one independently opened
+            // handle and closes it before requesting the next single right.
+            unsafe { CloseHandle(reopened) }.map_err(|_| KeyAgentLpacError::Attribute)?;
+        }
+        Ok(())
     }
 
     fn regular_appcontainer_attribute_list(
@@ -2150,7 +3238,7 @@ mod tests {
         fixture: &KeyAgentLpacKernelTestFixture,
     ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
         let attributes = regular_appcontainer_attribute_list(prepared)?;
-        create_suspended_appcontainer(prepared, fixture, &attributes)
+        create_suspended_appcontainer(prepared, fixture, &attributes, None, None)
     }
 
     fn create_suspended_key_agent_lpac(
@@ -2158,13 +3246,31 @@ mod tests {
         fixture: &KeyAgentLpacKernelTestFixture,
     ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
         let attributes = exact_key_agent_attribute_list(prepared)?;
-        create_suspended_appcontainer(prepared, fixture, &attributes)
+        create_suspended_appcontainer(prepared, fixture, &attributes, None, None)
+    }
+
+    fn create_suspended_key_agent_lpac_for_creation_dacl_axis(
+        prepared: &PreparedKeyAgentLpac,
+        fixture: &KeyAgentLpacKernelTestFixture,
+        creation_security: &PreparedKeyAgentCreationSecurity,
+        axis: CreationDaclAxis,
+    ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
+        let attributes = exact_key_agent_attribute_list(prepared)?;
+        create_suspended_appcontainer(
+            prepared,
+            fixture,
+            &attributes,
+            axis.process_attributes(creation_security),
+            axis.primary_thread_attributes(creation_security),
+        )
     }
 
     fn create_suspended_appcontainer(
         prepared: &PreparedKeyAgentLpac,
         fixture: &KeyAgentLpacKernelTestFixture,
         attributes: &TestAttributeList,
+        process_attributes: Option<&SECURITY_ATTRIBUTES>,
+        primary_thread_attributes: Option<&SECURITY_ATTRIBUTES>,
     ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
         let context = RestrictedProcessContext::prepare_for_kernel_test()
             .map_err(|_| KeyAgentLpacError::Profile)?;
@@ -2187,8 +3293,8 @@ mod tests {
             CreateProcessW(
                 PCWSTR(application.as_ptr()),
                 None,
-                None,
-                None,
+                process_attributes.map(ptr::from_ref),
+                primary_thread_attributes.map(ptr::from_ref),
                 false,
                 CREATE_SUSPENDED
                     | CREATE_NO_WINDOW
@@ -2244,6 +3350,208 @@ mod tests {
             appcontainer_sid_matches: true,
             capability_bytes: size_of::<u32>(),
             capability_count: CAPABILITY_COUNT,
+        }
+    }
+
+    #[test]
+    fn prepared_creation_security_owns_two_exact_noninheritable_descriptors()
+    -> Result<(), KeyAgentLpacError> {
+        let prepared = PreparedKeyAgentCreationSecurity::prepare()?;
+        let attribute_bytes =
+            u32::try_from(size_of::<windows::Win32::Security::SECURITY_ATTRIBUTES>())
+                .map_err(|_| KeyAgentLpacError::Attribute)?;
+        assert_eq!(prepared.process_attributes.nLength, attribute_bytes);
+        assert_eq!(prepared.primary_thread_attributes.nLength, attribute_bytes);
+        assert!(!prepared.process_attributes.bInheritHandle.as_bool());
+        assert!(!prepared.primary_thread_attributes.bInheritHandle.as_bool());
+        assert_eq!(
+            prepared.process_attributes.lpSecurityDescriptor,
+            prepared.process_descriptor.descriptor.0
+        );
+        assert_eq!(
+            prepared.primary_thread_attributes.lpSecurityDescriptor,
+            prepared.primary_thread_descriptor.descriptor.0
+        );
+        assert_ne!(
+            prepared.process_attributes.lpSecurityDescriptor,
+            prepared.primary_thread_attributes.lpSecurityDescriptor
+        );
+        inspect_exact_creation_security_descriptor(
+            prepared.process_descriptor.bytes(),
+            &prepared.expected_owner_sid,
+            &prepared.expected_primary_group_sid,
+        )?;
+        inspect_exact_creation_security_descriptor(
+            prepared.primary_thread_descriptor.bytes(),
+            &prepared.expected_owner_sid,
+            &prepared.expected_primary_group_sid,
+        )?;
+        let _paired = prepared.creation_security();
+        assert_eq!(
+            format!("{prepared:?}"),
+            "PreparedKeyAgentCreationSecurity([OPAQUE PROCESS/THREAD POLICY])"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn creation_dacl_process_and_primary_thread_axes_are_independent()
+    -> Result<(), KeyAgentLpacError> {
+        let creation_security = PreparedKeyAgentCreationSecurity::prepare()?;
+        let prepared_lpac = PreparedKeyAgentLpac::prepare()?;
+        let fixture = KeyAgentLpacKernelTestFixture::create()?;
+        for axis in CreationDaclAxis::CASES {
+            require_creation_dacl_probe_privileges_disabled()?;
+            let mut process = create_suspended_key_agent_lpac_for_creation_dacl_axis(
+                &prepared_lpac,
+                &fixture,
+                &creation_security,
+                axis,
+            )?;
+            // SAFETY: these are the two still-suspended handles returned by the
+            // exact successful CreateProcessW call and retained by the test owner.
+            let process_id = unsafe { GetProcessId(process.process) };
+            // SAFETY: same argument for the returned primary-thread handle.
+            let primary_thread_id = unsafe { GetThreadId(process.thread) };
+
+            match axis {
+                CreationDaclAxis::DefaultBoth => {
+                    require_creation_dacl_process_default_reopens(process_id)?;
+                    require_creation_dacl_thread_default_reopens(primary_thread_id)?;
+                }
+                CreationDaclAxis::DenyProcessOnly => {
+                    verify_created_object_security(
+                        process.process,
+                        &creation_security.expected_owner_sid,
+                        &creation_security.expected_primary_group_sid,
+                    )?;
+                    require_creation_dacl_process_reopen_denials(process_id)?;
+                    require_creation_dacl_thread_default_reopens(primary_thread_id)?;
+                }
+                CreationDaclAxis::DenyThreadOnly => {
+                    verify_created_object_security(
+                        process.thread,
+                        &creation_security.expected_owner_sid,
+                        &creation_security.expected_primary_group_sid,
+                    )?;
+                    require_creation_dacl_process_default_reopens(process_id)?;
+                    require_creation_dacl_thread_reopen_denials(primary_thread_id)?;
+                }
+                CreationDaclAxis::DenyBoth => {
+                    creation_security.verify_created_objects(
+                        process.process_handle(),
+                        process.primary_thread_handle(),
+                    )?;
+                    require_creation_dacl_process_reopen_denials(process_id)?;
+                    require_creation_dacl_thread_reopen_denials(primary_thread_id)?;
+                }
+            }
+            require_creation_dacl_probe_privileges_disabled()?;
+            process.terminate_and_wait()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn created_thread_preserves_self_pseudo_access_and_denies_fresh_owner_reopens()
+    -> Result<(), KeyAgentLpacError> {
+        require_creation_dacl_probe_privileges_disabled()?;
+        let creation_security = PreparedKeyAgentCreationSecurity::prepare()?;
+        // SAFETY: default security and no name create one private,
+        // non-inheritable manual-reset event owned by this test.
+        let release = unsafe { CreateEventW(None, true, false, None) }
+            .map_err(|_| KeyAgentLpacError::Attribute)?;
+        if release.is_invalid() || release == INVALID_HANDLE_VALUE {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        let context = Arc::new(CreationSecurityThreadProbeContext {
+            release,
+            state: AtomicU32::new(0),
+        });
+        // The native routine owns a separate Arc strong reference, so every
+        // timeout/termination path preserves its context and event even if its
+        // destructor cannot run after TerminateThread.
+        let native_context = Arc::into_raw(Arc::clone(&context));
+        let mut handles = CreationSecurityThreadProbeHandles {
+            thread: HANDLE::default(),
+            release,
+        };
+        let mut thread_id = 0_u32;
+        // SAFETY: the exact non-inheritable attributes remain live for the
+        // call. `native_context` transfers one Arc strong reference to the
+        // start routine, which retains the context and event through exit.
+        let thread_result = unsafe {
+            CreateThread(
+                Some(ptr::from_ref(&creation_security.primary_thread_attributes)),
+                0,
+                Some(creation_security_thread_probe_start),
+                Some(native_context.cast::<c_void>()),
+                THREAD_CREATION_FLAGS(0),
+                Some(&raw mut thread_id),
+            )
+        };
+        let Ok(thread) = thread_result else {
+            // SAFETY: CreateThread failed, so the start routine did not
+            // consume the one Arc::into_raw strong reference.
+            unsafe {
+                drop(Arc::from_raw(native_context));
+            }
+            return Err(KeyAgentLpacError::Attribute);
+        };
+        if thread.is_invalid() || thread == INVALID_HANDLE_VALUE || thread_id == 0 {
+            if !thread.is_invalid() && thread != INVALID_HANDLE_VALUE {
+                // SAFETY: reject and close any independently valid partial result.
+                unsafe {
+                    let _ = CloseHandle(thread);
+                }
+            }
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        handles.thread = thread;
+
+        let ready_deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(KeyAgentLpacError::Attribute)?;
+        loop {
+            match context.state.load(Ordering::Acquire) {
+                THREAD_PROBE_READY => break,
+                0 => {}
+                _ => return Err(KeyAgentLpacError::Attribute),
+            }
+            // SAFETY: zero-timeout observation uses the same live creator handle.
+            if unsafe { WaitForSingleObject(handles.thread, 0) } == WAIT_OBJECT_0
+                || Instant::now() >= ready_deadline
+            {
+                return Err(KeyAgentLpacError::Attribute);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        verify_created_object_security(
+            handles.thread,
+            &creation_security.expected_owner_sid,
+            &creation_security.expected_primary_group_sid,
+        )?;
+        // The privilege bookends make debug and take-ownership bypasses
+        // (especially WRITE_OWNER) an explicit test failure, not ambiguity.
+        require_creation_dacl_thread_reopen_denials(thread_id)?;
+        require_creation_dacl_probe_privileges_disabled()?;
+
+        handles.finish()?;
+        if context.state.load(Ordering::Acquire) != THREAD_PROBE_COMPLETE {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn creation_handle_flags_must_be_exactly_zero() {
+        assert_eq!(validate_creation_handle_flags(HANDLE_FLAGS(0)), Ok(()));
+        for flags in [HANDLE_FLAGS(1), HANDLE_FLAGS(2), HANDLE_FLAGS(u32::MAX)] {
+            assert_eq!(
+                validate_creation_handle_flags(flags),
+                Err(KeyAgentLpacError::Attribute)
+            );
         }
     }
 
@@ -2569,6 +3877,165 @@ mod tests {
         let mut sid = vec![1, 1, 0, 0, 0, 0, 0, 5];
         sid.extend_from_slice(&sub_authority.to_le_bytes());
         sid
+    }
+
+    fn exact_creation_security_descriptor(owner_sid: &[u8], group_sid: &[u8]) -> Vec<u8> {
+        let mut descriptor = Vec::new();
+        descriptor.push(1);
+        descriptor.push(0);
+        let control = SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0;
+        descriptor.extend_from_slice(&control.to_le_bytes());
+        let owner_offset = 20_u32;
+        let group_offset = owner_offset + u32::try_from(owner_sid.len()).unwrap_or(u32::MAX);
+        let dacl_offset = group_offset + u32::try_from(group_sid.len()).unwrap_or(u32::MAX);
+        descriptor.extend_from_slice(&owner_offset.to_le_bytes());
+        descriptor.extend_from_slice(&group_offset.to_le_bytes());
+        descriptor.extend_from_slice(&0_u32.to_le_bytes());
+        descriptor.extend_from_slice(&dacl_offset.to_le_bytes());
+        descriptor.extend_from_slice(owner_sid);
+        descriptor.extend_from_slice(group_sid);
+        descriptor.push(u8::try_from(ACL_REVISION.0).unwrap_or(u8::MAX));
+        descriptor.push(0);
+        let acl_bytes = u16::try_from(8 + 8 + OWNER_RIGHTS_SID_BYTES.len()).unwrap_or(u16::MAX);
+        descriptor.extend_from_slice(&acl_bytes.to_le_bytes());
+        descriptor.extend_from_slice(&1_u16.to_le_bytes());
+        descriptor.extend_from_slice(&0_u16.to_le_bytes());
+        descriptor.push(1);
+        descriptor.push(0);
+        let deny_ace_bytes = u16::try_from(8 + OWNER_RIGHTS_SID_BYTES.len()).unwrap_or(u16::MAX);
+        descriptor.extend_from_slice(&deny_ace_bytes.to_le_bytes());
+        descriptor.extend_from_slice(&CREATION_SECURITY_DENIED_ACCESS.to_le_bytes());
+        descriptor.extend_from_slice(&OWNER_RIGHTS_SID_BYTES);
+        descriptor
+    }
+
+    fn creation_security_parser_result(
+        descriptor: &[u8],
+        owner_sid: &[u8],
+        group_sid: &[u8],
+    ) -> Result<(), KeyAgentLpacError> {
+        inspect_exact_creation_security_descriptor(descriptor, owner_sid, group_sid)
+    }
+
+    fn replace_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn creation_security_parser_accepts_only_owner_group_and_one_owner_rights_deny() {
+        let owner_sid = synthetic_sid(100);
+        let group_sid = synthetic_sid(200);
+        let descriptor = exact_creation_security_descriptor(&owner_sid, &group_sid);
+        assert_eq!(
+            CREATION_SECURITY_DENIED_ACCESS,
+            READ_CONTROL.0 | WRITE_DAC.0 | WRITE_OWNER.0
+        );
+        assert_eq!(OWNER_RIGHTS_SID_BYTES, [1, 1, 0, 0, 0, 0, 0, 3, 4, 0, 0, 0]);
+        assert_eq!(
+            creation_security_parser_result(&descriptor, &owner_sid, &group_sid),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn creation_security_parser_rejects_each_single_shape_mutation() {
+        let owner_sid = synthetic_sid(100);
+        let group_sid = synthetic_sid(200);
+        let valid = exact_creation_security_descriptor(&owner_sid, &group_sid);
+        let mut negative_cases = Vec::new();
+
+        negative_cases.push(("truncated descriptor", valid[..19].to_vec()));
+        for (name, index, value) in [
+            ("descriptor revision", 0_usize, 2_u8),
+            ("descriptor reserved byte", 1, 1),
+            ("owner SID revision", 20, 2),
+            ("owner SID declared length", 21, 2),
+            ("ACL reserved byte", 45, 1),
+            ("ACE type", 52, 0),
+            ("ACE flags", 53, 1),
+        ] {
+            let mut changed = valid.clone();
+            changed[index] = value;
+            negative_cases.push((name, changed));
+        }
+        for (name, removed) in [
+            ("self-relative control", SE_SELF_RELATIVE.0),
+            ("DACL-present control", SE_DACL_PRESENT.0),
+            ("DACL-protected control", SE_DACL_PROTECTED.0),
+        ] {
+            let mut changed = valid.clone();
+            let control = u16::from_le_bytes([changed[2], changed[3]]) & !removed;
+            replace_u16(&mut changed, 2, control);
+            negative_cases.push((name, changed));
+        }
+        let mut changed = valid.clone();
+        let control = u16::from_le_bytes([changed[2], changed[3]]) | SE_OWNER_DEFAULTED.0;
+        replace_u16(&mut changed, 2, control);
+        negative_cases.push(("extra control bit", changed));
+        for (name, offset) in [
+            ("missing owner", 4_usize),
+            ("missing primary group", 8_usize),
+            ("missing DACL", 16_usize),
+        ] {
+            let mut changed = valid.clone();
+            replace_u32(&mut changed, offset, 0);
+            negative_cases.push((name, changed));
+        }
+        let mut changed = valid.clone();
+        replace_u32(&mut changed, 12, 20);
+        negative_cases.push(("unexpected SACL", changed));
+        let mut changed = valid.clone();
+        replace_u32(&mut changed, 4, 21);
+        negative_cases.push(("misaligned owner", changed));
+        let mut changed = valid.clone();
+        changed[31] ^= 1;
+        negative_cases.push(("owner SID bytes", changed));
+        let mut changed = valid.clone();
+        changed[43] ^= 1;
+        negative_cases.push(("primary-group SID bytes", changed));
+        let mut changed = valid.clone();
+        changed[44] = u8::try_from(ACL_REVISION.0 + 2).unwrap_or(u8::MAX);
+        negative_cases.push(("ACL revision", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 46, 27);
+        negative_cases.push(("ACL size", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 48, 2);
+        negative_cases.push(("ACE count", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 50, 1);
+        negative_cases.push(("ACL trailing reserved field", changed));
+        let mut changed = valid.clone();
+        replace_u16(&mut changed, 54, 19);
+        negative_cases.push(("ACE size", changed));
+        let mut changed = valid.clone();
+        replace_u32(&mut changed, 56, CREATION_SECURITY_DENIED_ACCESS ^ 1);
+        negative_cases.push(("ACE mask", changed));
+        let mut changed = valid.clone();
+        changed[71] ^= 1;
+        negative_cases.push(("OWNER RIGHTS SID bytes", changed));
+        let mut changed = valid.clone();
+        changed.push(0);
+        negative_cases.push(("descriptor trailing byte", changed));
+        let mut changed = valid.clone();
+        changed.splice(44..44, [0, 0, 0, 0]);
+        replace_u32(&mut changed, 16, 48);
+        negative_cases.push(("component gap", changed));
+        let mut changed = valid.clone();
+        replace_u32(&mut changed, 16, 40);
+        negative_cases.push(("component overlap", changed));
+        let mut changed = valid.clone();
+        changed.extend_from_slice(&[0, 0, 0, 0]);
+        replace_u16(&mut changed, 46, 32);
+        negative_cases.push(("ACL slack", changed));
+
+        for (name, descriptor) in negative_cases {
+            assert_eq!(
+                creation_security_parser_result(&descriptor, &owner_sid, &group_sid),
+                Err(KeyAgentLpacError::Attribute),
+                "mutation unexpectedly accepted: {name}"
+            );
+        }
     }
 
     fn push_allow_ace(bytes: &mut Vec<u8>, mask: u32, sid: &[u8]) {

@@ -10,6 +10,10 @@
 use core::fmt;
 use std::marker::PhantomData;
 use std::os::windows::io::{AsHandle as _, BorrowedHandle, OwnedHandle};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -53,6 +57,42 @@ pub(crate) enum KeyAgentRootJobError {
     TerminationTimeout,
 }
 
+/// Per-run witness shared by the fresh debugger thread, its pending activation,
+/// the caller-side join proof, and the root Job cleanup policy.
+///
+/// Identity is significant: post-join activation finalization accepts only the
+/// exact `Arc` created for that worker. The release/acquire flag additionally
+/// makes the OS-thread join visible to root-Job Drop without exposing a generic
+/// way to disable synchronous cleanup.
+pub(crate) struct KeyAgentDebugThreadWitness {
+    joined: AtomicBool,
+}
+
+impl KeyAgentDebugThreadWitness {
+    pub(crate) fn new_shared() -> Arc<Self> {
+        Arc::new(Self {
+            joined: AtomicBool::new(false),
+        })
+    }
+
+    pub(crate) fn mark_joined(&self) -> Result<(), ()> {
+        self.joined
+            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    pub(crate) fn is_joined(&self) -> bool {
+        self.joined.load(Ordering::Acquire)
+    }
+}
+
+impl fmt::Debug for KeyAgentDebugThreadWitness {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentDebugThreadWitness([OPAQUE])")
+    }
+}
+
 /// Opaque ownership of the Key Agent's exact two-process root Job Object.
 ///
 /// This value is crate-private and non-cloneable. Safe borrows prevent a
@@ -62,6 +102,7 @@ pub(crate) enum KeyAgentRootJobError {
 pub(crate) struct KeyAgentRootJob {
     handle: OwnedHandle,
     shut_down: bool,
+    debugger_cleanup_gate: OnceLock<Arc<KeyAgentDebugThreadWitness>>,
     #[cfg(test)]
     supervisor_context_bypass_for_kernel_test: bool,
 }
@@ -80,9 +121,39 @@ impl KeyAgentRootJob {
         Ok(Self {
             handle,
             shut_down: false,
+            debugger_cleanup_gate: OnceLock::new(),
             #[cfg(test)]
             supervisor_context_bypass_for_kernel_test: false,
         })
+    }
+
+    /// Binds this otherwise-synchronous owner to one exact fresh debugger run.
+    ///
+    /// This is installed only by the one-shot activation token before process
+    /// creation. A second installation is rejected rather than silently
+    /// changing which OS-thread exit controls Drop behavior.
+    pub(crate) fn bind_debugger_cleanup_gate(
+        &mut self,
+        witness: Arc<KeyAgentDebugThreadWitness>,
+    ) -> Result<(), KeyAgentRootJobError> {
+        if self.shut_down {
+            return Err(KeyAgentRootJobError::ShutDown);
+        }
+        self.debugger_cleanup_gate
+            .set(witness)
+            .map_err(|_| KeyAgentRootJobError::Configuration)
+    }
+
+    /// Confirms this Job is gated by the exact joined debugger-run witness.
+    pub(crate) fn matches_debugger_cleanup_gate(
+        &self,
+        witness: &Arc<KeyAgentDebugThreadWitness>,
+    ) -> bool {
+        witness.is_joined()
+            && self
+                .debugger_cleanup_gate
+                .get()
+                .is_some_and(|bound| Arc::ptr_eq(bound, witness))
     }
 
     #[cfg(test)]
@@ -178,6 +249,20 @@ impl KeyAgentRootJob {
 
 impl Drop for KeyAgentRootJob {
     fn drop(&mut self) {
+        if self
+            .debugger_cleanup_gate
+            .get()
+            .is_some_and(|witness| !witness.is_joined())
+        {
+            // A live debugger cannot pump termination events while blocked in
+            // this Drop. Closing the last handle below preserves the configured
+            // KILL_ON_JOB_CLOSE fallback. When a creator process handle exists,
+            // the activation owner first requests its exact rejected exit code.
+            // The runner marks this same witness joined immediately after the
+            // OS thread exits; every later Drop therefore takes the synchronous
+            // path below.
+            return;
+        }
         // Best-effort synchronous cleanup occurs while the owned handle is
         // still live. Even if querying/waiting fails, field destruction closes
         // the last unshared handle and KILL_ON_JOB_CLOSE remains the fallback.
@@ -194,6 +279,13 @@ impl fmt::Debug for KeyAgentRootJob {
             .field("kill_on_close", &true)
             .field("breakaway", &false)
             .field("shut_down", &self.shut_down)
+            .field(
+                "debugger_thread_joined",
+                &self
+                    .debugger_cleanup_gate
+                    .get()
+                    .map(|witness| witness.is_joined()),
+            )
             .finish_non_exhaustive()
     }
 }

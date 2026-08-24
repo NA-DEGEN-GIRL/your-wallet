@@ -29,8 +29,9 @@ use crate::key_agent_activation::activate_preflighted_key_agent_on_fresh_worker_
 #[cfg(test)]
 use crate::key_agent_activation::preflight_key_agent_activation;
 use crate::key_agent_activation::{
-    HeldKeyAgentActivation, KeyAgentActivationError, PreparedApprovalParentProcess,
-    RunningKeyAgentActivation, activate_preflighted_key_agent_on_fresh_worker,
+    HeldKeyAgentActivation, JoinedKeyAgentDebugThreadProof, KeyAgentActivationError,
+    PendingKeyAgentActivation, PreparedApprovalParentProcess, RunningKeyAgentActivation,
+    activate_preflighted_key_agent_on_fresh_worker, finalize_pending_key_agent_activation,
     prepare_approval_parent_process, run_on_fresh_key_agent_debug_thread,
 };
 #[cfg(test)]
@@ -309,6 +310,72 @@ pub(crate) struct BoundDormantKeyAgent {
     provisioning: PreparedKeyAgentProvisioning,
 }
 
+/// Worker-to-caller transfer aggregate while debugger-thread exit is joined but
+/// not yet verified against the retained creator handles.
+///
+/// This private, move-only state exposes no dormant, detached, PID, handle, or
+/// resume operation. Its sole consumer requires the matching per-run join proof.
+struct PendingBoundDormantKeyAgent {
+    activation: PendingKeyAgentActivation,
+    root_job: KeyAgentRootJob,
+    request_writer: KeyAgentStartupRequestWriter,
+    response_reader: KeyAgentStartupResponseReader,
+    startup_lease: SupervisorActivationLease,
+    install_continuity: VerifiedKeyAgentInstallContinuity,
+    not_sync: PhantomData<Cell<()>>,
+    provisioning: PreparedKeyAgentProvisioning,
+}
+
+impl fmt::Debug for PendingBoundDormantKeyAgent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .write_str("PendingBoundDormantKeyAgent([DEBUGGER EXIT/DETACH UNVERIFIED; REDACTED])")
+    }
+}
+
+fn finalize_pending_bound_dormant_key_agent(
+    mut pending: PendingBoundDormantKeyAgent,
+    joined: JoinedKeyAgentDebugThreadProof,
+) -> Result<BoundDormantKeyAgent, KeyAgentSupervisorError> {
+    // Join is already complete. Switch every later error/Drop path to exact
+    // retained-process termination and bounded wait before either bookend can
+    // fail; this does not expose or mint a detached capability.
+    pending
+        .activation
+        .observe_debugger_exit_for_cleanup(&pending.root_job, &joined)?;
+    // Keep the aggregate intact for both pre-finalization bookends. If either
+    // one fails, struct-field Drop order releases the retained-process
+    // activation before the root Job, preserving exact rejected-exit cleanup.
+    pending.startup_lease.ensure_live()?;
+    pending.provisioning.revalidate()?;
+    let PendingBoundDormantKeyAgent {
+        activation,
+        root_job,
+        request_writer,
+        response_reader,
+        startup_lease,
+        install_continuity,
+        not_sync,
+        provisioning,
+    } = pending;
+    // This consumes the matching proof and, in exact order, establishes
+    // debugger absence, the 1→2→1 suspension probe, LPAC continuity, and exact
+    // root-Job membership/limits before minting a Held activation.
+    let activation = finalize_pending_key_agent_activation(activation, &root_job, joined)?;
+    provisioning.revalidate()?;
+    startup_lease.ensure_live()?;
+    Ok(BoundDormantKeyAgent {
+        activation,
+        root_job,
+        request_writer,
+        response_reader,
+        startup_lease,
+        install_continuity,
+        not_sync,
+        provisioning,
+    })
+}
+
 impl fmt::Debug for BoundDormantKeyAgent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -522,10 +589,11 @@ pub(crate) fn bind_dormant_key_agent(
     provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
-    run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+    let (pending, joined) = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
         startup_lease.ensure_live()?;
         provisioning.revalidate()?;
-        let root_job = KeyAgentRootJob::create()?;
+        let mut root_job = KeyAgentRootJob::create()?;
+        let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
         let pipes = PrivateKeyAgentPipes::create()?;
         let root_job_attribute = root_job.creation_attribute()?;
 
@@ -553,7 +621,12 @@ pub(crate) fn bind_dormant_key_agent(
         let (request_writer, response_reader) = pipes.into_parent();
         provisioning.revalidate()?;
         startup_lease.ensure_live()?;
-        Ok(BoundDormantKeyAgent {
+        activation.revalidate_before_no_kill(&root_job)?;
+        let activation = activation.arm_no_kill()?;
+        // The successful no-kill arm above is the worker's final fallible
+        // operation. Only ownership moves into an opaque pending aggregate
+        // remain before the debugger OS thread returns and exits.
+        Ok(PendingBoundDormantKeyAgent {
             activation,
             root_job,
             request_writer,
@@ -563,7 +636,8 @@ pub(crate) fn bind_dormant_key_agent(
             not_sync: PhantomData,
             provisioning,
         })
-    })
+    })?;
+    finalize_pending_bound_dormant_key_agent(pending, joined)
 }
 
 /// Executes only the fixed storage-startup probe for a dormant production Key
@@ -819,10 +893,11 @@ fn bind_dormant_key_agent_for_kernel_test(
     provisioning.revalidate()?;
     let startup_lease = SupervisorActivationLease::issue(MAX_STARTUP_LIFETIME)?;
 
-    run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
+    let (pending, joined) = run_on_fresh_key_agent_debug_thread(move |fresh_thread| {
         startup_lease.ensure_live()?;
         provisioning.revalidate()?;
-        let root_job = KeyAgentRootJob::create_for_kernel_test()?;
+        let mut root_job = KeyAgentRootJob::create_for_kernel_test()?;
+        let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
         let pipes = PrivateKeyAgentPipes::create()?;
         let root_job_attribute = root_job.creation_attribute()?;
         let activation = activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
@@ -844,7 +919,11 @@ fn bind_dormant_key_agent_for_kernel_test(
         let (request_writer, response_reader) = pipes.into_parent();
         provisioning.revalidate()?;
         startup_lease.ensure_live()?;
-        Ok(BoundDormantKeyAgent {
+        activation.revalidate_before_no_kill(&root_job)?;
+        let activation = activation.arm_no_kill()?;
+        // Keep this kernel-positive mirror exact: after the successful arm,
+        // only infallible ownership moves may precede debugger-thread exit.
+        Ok(PendingBoundDormantKeyAgent {
             activation,
             root_job,
             request_writer,
@@ -854,7 +933,8 @@ fn bind_dormant_key_agent_for_kernel_test(
             not_sync: PhantomData,
             provisioning,
         })
-    })
+    })?;
+    finalize_pending_bound_dormant_key_agent(pending, joined)
 }
 
 #[cfg(test)]

@@ -316,7 +316,7 @@ The activation still supplies zero capabilities plus the ALL APPLICATION
 PACKAGES opt-out in its exact four-entry process-creation attribute list. While
 the first pre-user-mode create event remains held, it authenticates the mapped
 image, installs one explicit suspend count, and verifies the exact primary token
-before continuation or detach. Accepted tokens must report AppContainer, match
+before continuation. Accepted tokens must report AppContainer, match
 the fixed profile SID, and have zero capabilities. The process token is
 duplicated at `SecurityIdentification`; two `CheckTokenMembershipEx` checks over
 its valid `TokenUser` SID must produce exactly false with
@@ -326,8 +326,17 @@ supported `TokenIsLessPrivilegedAppContainer` query must return an exact DWORD
 check; the exact membership differential remains mandatory and every other
 error fails closed. A suspended ordinary-AppContainer control that omits only
 the AAP opt-out must produce `(true, true)`, and neither control is resumed into
-user mode. The detached Key Agent capability exposes no generic resume API; its
-only consuming resume transition is the fixed storage-startup exchange above.
+user mode. After continuation and every other fallible worker check,
+`DebugSetProcessKillOnExit(FALSE)` is the fresh debugger OS thread's final
+fallible operation. An opaque pending owner crosses the join boundary without
+exposing detached or resume authority. The thread exits; caller-side finalization
+requires the identical pending/join/root-Job witness, debugger absence on the
+retained process handle, the retained primary thread's exact 1→2→1 suspend probe,
+and renewed token, Job, provisioning, and lease checks. This documented
+thread-exit detach avoids the PID-only `DebugActiveProcessStop` path that the
+deny-only process DACL blocks. The detached Key Agent capability exposes no
+generic resume API; its only consuming resume transition is the fixed storage-
+startup exchange above.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -482,6 +491,36 @@ on `Hfinal`, and a final exact-size statistics read must bookend those checks.
 `Hwrite` then closes before `VerifiedKeyAgentLpac` is minted, so the proof
 retains only `Hfinal` without `WRITE_DAC`.
 
+Process and primary-thread creation security is deny-only and fail-closed. The
+launcher derives `TokenOwner` and `TokenPrimaryGroup` with bounded exact token
+queries and builds two distinct `LocalAlloc` self-relative descriptors. Each
+descriptor belongs to a non-inheritable `SECURITY_ATTRIBUTES` and carries a
+protected DACL with no allow ACE and exactly one zero-flag `OWNER RIGHTS` deny
+ACE for `S-1-3-4`. Its exact mask is `0x000e0000`, meaning
+`READ_CONTROL | WRITE_DAC | WRITE_OWNER`. A caller cannot select one side: an
+inseparable pair supplies both `CreateProcessW` `lpProcessAttributes` and
+`lpThreadAttributes`.
+
+The returned creator-owned exact process and primary-thread handles are the
+authorities for pre-resume verification and the later lifecycle. Before the
+first `ResumeThread`, their PID/TID must match the returned identities, both
+`GetHandleInformation` results must be exactly zero, and bounded exact
+`GetKernelObjectSecurity` readback must match the captured owner/group, expected
+self-relative/DACL-present/protected control state, a zero SACL offset in the
+requested owner/group/DACL projection, the single exact no-flag deny ACE and mask,
+and the ACL/descriptor end with no slack or trailing bytes. The readback does not
+request the SACL and therefore does not prove its actual absence. A mismatch
+aborts and cleans up the child. Descriptor owners are dropped before resume; the full-access
+handles returned by `CreateProcessW` are retained and never replaced with a
+PID/TID reopen.
+
+Kernel evidence covers process pseudo-handle operations inside the child and a
+thread pseudo-handle operation inside a real `CreateThread` thread. It also
+disables `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` and proves fresh owner
+PID/TID single-access opens are denied. This decision applies only at creation to
+the initial process and primary thread. It neither governs later-created threads
+nor revokes returned, preexisting, or duplicated high-right handles.
+
 Revalidation runs after the post-detach suspend-count probe, immediately before
 the sole `ResumeThread` that releases the final count into user mode, and at
 resident authority checks. Each pass bookends the retained `Hfinal`'s full
@@ -491,11 +530,13 @@ equality. These are fail-closed point-in-time checks, not an atomic freeze:
 holding `Hfinal` freezes neither the process's current-token association nor the
 token contents. The last-check/`ResumeThread` gap and swap-away/back races remain
 **STOP-SHIP**, and DACL changes are not assumed to update `ModifiedId`.
-Preexisting same-user high-right handles and the lack of `TokenUser` owner
-isolation from hostile same-user processes remain **STOP-SHIP**; release
-activation still requires a distinct supervisor principal and protected
-process/thread creation-time DACLs. The `cfg(test)` integration executes that
-production-compiled hardening and proves the Approval query-only outcome.
+Preexisting, returned, or duplicated high-right handles and complete same-user
+supervisor/owner isolation remain **STOP-SHIP**, as does behavior with enabled
+debug or take-ownership privileges. Release activation still requires a distinct
+supervisor principal or an explicitly narrower threat model. The `cfg(test)`
+integration executes the production-compiled token and creation hardening,
+proves the Approval query-only result, and supplies the creation DACL kernel
+evidence.
 
 That test is kernel feasibility, not release evidence. Bootstrap version 2 now
 binds the ordinary supervisor PID/process/image proof and the separately
@@ -512,12 +553,15 @@ topology/exclusivity, signed-artifact cleanup evidence, DLL graph, resumable
 production orchestration, signing composition, and release activation remain
 unimplemented. Both compiled policies remain `None`. A supervisor and hostile launcher running
 as the same unrestricted owner SID cannot be strongly separated by an ordinary
-process DACL: the owner can reacquire ACL-changing authority, and a caller
-retaining or reacquiring `PROCESS_DUP_HANDLE` can still target child-local proof
-handles. Release activation therefore requires a distinct supervisor principal
-(or an explicitly narrower threat model), protected process and thread DACLs
-supplied at creation, corresponding denial evidence, and the debug-privilege
-absence proof.
+process DACL alone: the deny-only `OWNER RIGHTS` creation policy blocks the tested
+fresh opens but cannot revoke a returned, preexisting, or duplicated handle, and
+a caller retaining or reacquiring `PROCESS_DUP_HANDLE` can still target
+child-local proof handles. Release activation therefore requires a distinct supervisor principal
+(or an explicitly narrower threat model), a policy for later-created threads and
+existing high-right handles, disabled or otherwise constrained debug/take-owner
+privileges, and production bootstrap/provenance/endpoint composition. The
+creation DACL and corresponding disabled-privilege denial evidence are now
+implemented; they do not satisfy those remaining requirements.
 
 The runtime-enabled Approval child has exactly two unique inherited stdio pipe
 objects. As its first Windows/CRT application operation, before binary-mode

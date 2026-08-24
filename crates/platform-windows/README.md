@@ -66,12 +66,20 @@ Implemented:
   Authenticode trust, and pinned leaf-certificate SHA-256;
 - a dormant crate-private Key Agent activation proof. Role, release evidence,
   manifest allowlist, and absolute path are checked before a fresh dedicated
-  debugger OS thread owns the complete `CreateProcessW`/first-event/image-check/
-  continue/detach sequence. The debug-event image handle must match the retained
-  verifier handle by volume serial plus all 128 `FILE_ID_INFO` bits; zero volume,
-  all-zero and all-`FF` non-unique identifiers fail closed. Only successful
-  debugger detach followed by an exact one-count suspend probe creates the
-  non-clone detached capability. The crate-private generic restricted launcher
+  debugger OS thread owns `CreateProcessW`, the first event, image authentication,
+  continuation, and no-kill arming. The debug-event image handle must match the
+  retained verifier handle by volume serial plus all 128 `FILE_ID_INFO` bits;
+  zero volume, all-zero and all-`FF` non-unique identifiers fail closed. While
+  that event still holds every thread, the worker installs one explicit primary-
+  thread suspend count. After all other fallible worker checks, its final
+  fallible operation is `DebugSetProcessKillOnExit(FALSE)`; the resulting opaque
+  pending owner crosses the boundary, and the dedicated OS thread exits and is
+  joined. Finalization requires the exact matching per-run join/root-Job witness,
+  `CheckRemoteDebuggerPresent == false` on the retained creator process handle,
+  an exact `SuspendThread`/`ResumeThread` 1→2→1 probe on the retained primary-
+  thread handle, and renewed token, Job, provisioning, and lease checks. Only
+  that sequence creates the non-clone detached capability; no PID/TID reopen is
+  used. The crate-private generic restricted launcher
   rejects the manifest-derived Key Agent role before release evaluation or process
   creation, so the shared artifact allowlist cannot bypass this seam. The
   activation-owned fresh worker now also creates the exact two-process
@@ -396,17 +404,43 @@ Implemented:
   not an atomic freeze: retaining `Hfinal` freezes neither the process's
   current-token association nor the token contents. The last-check/`ResumeThread`
   gap and swap-away/back races remain **STOP-SHIP**, and DACL changes are not
-  assumed to update `ModifiedId`. Preexisting same-user high-right handles and
-  the lack of `TokenUser` owner isolation from hostile same-user processes remain
-  **STOP-SHIP**; release activation still requires a distinct supervisor
-  principal and protected process/thread creation-time DACLs. The fixture
+  assumed to update `ModifiedId`.
+  Creation security is now production-compiled. The launcher obtains
+  `TokenOwner` and `TokenPrimaryGroup` through separate bounded exact token
+  queries and owns two distinct `LocalAlloc` self-relative descriptors. Each is
+  attached to a non-inheritable `SECURITY_ATTRIBUTES` and has a protected DACL
+  containing no allow ACE and exactly one zero-flag `OWNER RIGHTS` (`S-1-3-4`)
+  deny ACE with mask `0x000e0000`
+  (`READ_CONTROL | WRITE_DAC | WRITE_OWNER`). An inseparable
+  pair supplies `CreateProcessW`'s `lpProcessAttributes` and
+  `lpThreadAttributes` together.
+  Before the first `ResumeThread`, the exact returned creator-owned process and
+  thread handles must match the returned PID/TID, return flags exactly zero from
+  `GetHandleInformation`, and read back through bounded exact
+  `GetKernelObjectSecurity` the captured owner/group, exact expected self-relative and
+  DACL-present/protected control state, a zero SACL offset in the requested
+  owner/group/DACL projection, the one-ACE ACL, and no slack or trailing descriptor
+  bytes. The readback does not request the SACL and therefore does not prove its
+  actual absence. Any mismatch fails closed through child cleanup;
+  the descriptor owners are dropped before resume. Lifecycle operations retain
+  the full-access handles returned by `CreateProcessW` and never substitute a
+  PID/TID reopen.
+  Kernel tests prove that the child process pseudo-handle operations and a real
+  `CreateThread` thread pseudo-handle operation remain usable. With
+  `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` disabled, fresh owner PID/TID
+  single-access opens are denied. This point-in-time policy covers only the
+  initial process and primary thread, not threads created later, and it cannot
+  revoke returned, preexisting, or duplicated high-right handles. Same-user
+  supervisor/owner separation, enabled-privilege behavior, and a distinct
+  supervisor principal remain **STOP-SHIP**. The fixture
   does not directly read back the copied image's mandatory-label state either.
   Its test-only mitigation removes only `NO_LOW_LABEL` to permit the profile-scoped
   copy; production mitigation is unchanged. This is not
   a runtime-ready security boundary or release proof. Mapped-image provenance,
-  same-user owner separation, a distinct supervisor principal, process/thread
-  creation-time DACLs, endpoint topology, signed-artifact cleanup evidence,
-  production orchestration, signing, and release activation remain blockers;
+  same-user owner separation, a distinct supervisor principal, later-thread and
+  preexisting/duplicated-handle policy, enabled privileges, bootstrap/provenance,
+  endpoint topology, signed-artifact cleanup evidence, production orchestration,
+  signing, and release activation remain blockers;
 
 - an earliest runtime-enabled Approval child bootstrap. Its first Windows/CRT
   application operation, before binary-mode conversion, retrieves all three
@@ -943,16 +977,21 @@ Stop-ship before any signing-capable release:
    point-in-time evidence, not an atomic freeze; holding `Hfinal` freezes neither
    current-token association nor token contents. The last-check/resume and
    swap-away/back races remain **STOP-SHIP**, and DACL changes are not assumed to
-   update `ModifiedId`. Preexisting same-user high-right handles and the lack of
-   `TokenUser` owner isolation from hostile same-user processes remain
-   **STOP-SHIP**; release activation still requires a distinct supervisor
-   principal and protected process/thread creation-time DACLs. The copied image's
+   update `ModifiedId`. The production creation-security pair described above
+   applies the exact deny-only protected DACL to the initial process and primary
+   thread, validates both creator-returned handles before resume, and retains
+   those full-access handles without PID/TID reopen. Its kernel tests cover
+   pseudo-handle usability and fresh owner PID/TID single-right denials with
+   `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` disabled. It remains
+   point-in-time and does not revoke returned, preexisting, or duplicated
+   high-right handles, cover later-created threads, separate a same-user
+   supervisor/owner, or constrain enabled privileges. The copied image's
    mandatory-label state is likewise not directly read back; the test-only
    `NO_LOW_LABEL` removal permits the profile-scoped copy and leaves production
    mitigation unchanged. This feasibility proof is not release activation.
    Current held-file policy checks likewise do not provide the
-   mapped-image, immutable-install, DLL-graph, distinct-supervisor-principal, or
-   process-and-thread creation-time DACL proofs.
+   mapped-image, immutable-install, DLL-graph, distinct-supervisor-principal,
+   endpoint, bootstrap/provenance, or production-composition proofs.
    Kernel-level pipe tests cover the framing and cancellation primitives, and
    the repo-local positive-sentinel grandchild test supplies only a non-
    exhaustive two-object propagation negative. Its sequential clears are non-

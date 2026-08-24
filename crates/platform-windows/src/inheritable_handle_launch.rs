@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Threading::{
     CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
 };
@@ -46,6 +47,25 @@ pub(crate) enum InheritableHandleCreateError {
     WrongThread,
     Poisoned,
     OperatingSystem,
+}
+
+/// Borrowed process/thread creation security attributes supplied as one unit.
+///
+/// Construction requires both values so callers cannot accidentally provide
+/// only one side of the `CreateProcessW` security contract.
+#[derive(Clone, Copy)]
+pub(crate) struct ProcessThreadCreationSecurity<'attributes> {
+    process: &'attributes SECURITY_ATTRIBUTES,
+    thread: &'attributes SECURITY_ATTRIBUTES,
+}
+
+impl<'attributes> ProcessThreadCreationSecurity<'attributes> {
+    pub(crate) const fn new(
+        process: &'attributes SECURITY_ATTRIBUTES,
+        thread: &'attributes SECURITY_ATTRIBUTES,
+    ) -> Self {
+        Self { process, thread }
+    }
 }
 
 struct InheritableHandleLaunchCoordinator {
@@ -299,6 +319,7 @@ impl InheritableHandleLaunchFlight<'_> {
         &self,
         application_name: PCWSTR,
         command_line: Option<PWSTR>,
+        process_thread_security: Option<ProcessThreadCreationSecurity<'_>>,
         creation_flags: PROCESS_CREATION_FLAGS,
         environment: Option<*const c_void>,
         current_directory: PCWSTR,
@@ -306,15 +327,23 @@ impl InheritableHandleLaunchFlight<'_> {
         process_information: *mut PROCESS_INFORMATION,
     ) -> Result<(), InheritableHandleCreateError> {
         self.validate_create_admission()?;
+        let (process_attributes, thread_attributes) =
+            process_thread_security.map_or((None, None), |security| {
+                (
+                    Some(core::ptr::from_ref(security.process)),
+                    Some(core::ptr::from_ref(security.thread)),
+                )
+            });
         // SAFETY: the caller upholds the documented pointer, attribute-list,
-        // and handle-lifetime contract. Both security descriptors are absent,
-        // while TRUE inheritance is constrained by the explicit handle list.
+        // security-attribute, and handle-lifetime contract. Security attributes
+        // are either both absent or both borrowed for this call, while TRUE
+        // inheritance is constrained by the explicit handle list.
         unsafe {
             CreateProcessW(
                 application_name,
                 command_line,
-                None,
-                None,
+                process_attributes,
+                thread_attributes,
                 true,
                 creation_flags,
                 environment,
@@ -349,13 +378,28 @@ pub(crate) fn acquire_inheritable_handle_launch(
 
 #[cfg(test)]
 mod tests {
-    use super::{InheritableHandleLaunchCoordinator, InheritableHandleLaunchError};
+    use windows::Win32::Security::SECURITY_ATTRIBUTES;
+
+    use super::{
+        InheritableHandleLaunchCoordinator, InheritableHandleLaunchError,
+        ProcessThreadCreationSecurity,
+    };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::{Duration, Instant};
 
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
+    }
+
+    #[test]
+    fn process_thread_creation_security_retains_both_borrowed_values() {
+        let process = SECURITY_ATTRIBUTES::default();
+        let thread = SECURITY_ATTRIBUTES::default();
+        let security = ProcessThreadCreationSecurity::new(&process, &thread);
+
+        assert!(core::ptr::eq(security.process, &raw const process));
+        assert!(core::ptr::eq(security.thread, &raw const thread));
     }
 
     fn wait_until_waiter_is_parked(coordinator: &InheritableHandleLaunchCoordinator) {

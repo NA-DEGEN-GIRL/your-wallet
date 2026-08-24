@@ -670,6 +670,7 @@ mod sys {
             flight.create_process_with_explicit_handle_list(
                 PCWSTR(application.as_ptr()),
                 Some(command_line_pointer).filter(|pointer| !pointer.is_null()),
+                None,
                 creation_flags(),
                 Some(environment.as_ptr().cast::<c_void>()),
                 PCWSTR::null(),
