@@ -38,8 +38,9 @@ impl AuthenticatedApprovalRequest {
         &self.request
     }
 
-    /// Revalidates that the exact retained parent process is still live before
-    /// the UI decision is released over the already-bound response channel.
+    /// Revalidates both retained process authorities—the ordinary channel
+    /// supervisor and the distinct logical Key Agent—before the UI decision is
+    /// released over the already-bound response channel.
     pub(super) fn revalidate_parent(&self) -> Result<(), approval_ui::ApprovalError> {
         #[cfg(windows)]
         {

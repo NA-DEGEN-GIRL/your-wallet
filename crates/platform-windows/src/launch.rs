@@ -14,10 +14,8 @@ use core::fmt;
 use std::ffi::OsString;
 #[cfg(all(test, windows))]
 use std::os::windows::ffi::OsStrExt as _;
-#[cfg(all(test, windows))]
-use std::time::Duration;
 #[cfg(windows)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -31,6 +29,11 @@ use crate::helper::{FileIdentity, VerifiedHelper};
 use crate::key_agent_supervisor::ApprovalParentSourcePreparedKeyAgent;
 #[cfg(all(test, windows))]
 use crate::pipe::PrivateApprovalPipes;
+#[cfg(windows)]
+use approval_wire::ApprovalParentHello;
+
+#[cfg(windows)]
+const APPROVAL_RESUME_REJECTION_GRACE: Duration = Duration::from_secs(5);
 
 /// A helper sandbox profile with no network capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +99,9 @@ pub enum LaunchError {
     /// seam that authenticates the mapped image before user-mode execution.
     #[error("Key Agent requires private supervisor activation")]
     KeyAgentRequiresSupervisorActivation,
+    /// Approval may resume only from the complete parent-bound bootstrap.
+    #[error("Approval requires private parent-bound activation")]
+    ApprovalRequiresParentBoundActivation,
     /// The verified manifest role is not accepted by the selected launch entry
     /// point.
     #[error("verified helper role is not allowed by this launch entry point")]
@@ -293,6 +299,7 @@ impl RestrictedLauncher {
         Ok(())
     }
 
+    #[cfg(all(test, windows))]
     fn require_approval_frontend(
         self,
         helper: &VerifiedHelper,
@@ -317,11 +324,11 @@ impl RestrictedLauncher {
         Ok(role)
     }
 
-    /// Launches a verified helper with only the selected handles inherited.
+    /// Rejects the parentless legacy Approval launcher before process creation.
     ///
-    /// The low-level Windows path has no non-LPAC fallback. Development builds
-    /// still return [`LaunchError::ReleaseNotAttested`] before creating a profile
-    /// or process because no immutable release policy is compiled into them.
+    /// The complete parent-bound activation path is the sole production path
+    /// permitted to create and resume Approval. This method samples no release
+    /// policy, nonce, pipe, process, or request state.
     ///
     /// # Errors
     ///
@@ -329,17 +336,21 @@ impl RestrictedLauncher {
     /// role is exactly Approval Frontend. The Key Agent receives the narrower
     /// [`LaunchError::KeyAgentRequiresSupervisorActivation`]. Both errors occur
     /// before release evaluation or process creation. Returns
-    /// [`LaunchError::ReleaseNotAttested`] until all release evidence is bound.
-    /// Profile, current-directory, operating-system, or post-creation token
-    /// verification failures all fail closed before the child is resumed.
+    /// [`LaunchError::ApprovalRequiresParentBoundActivation`] for the exact
+    /// Approval role without consulting release policy or creating resources.
     #[cfg(windows)]
+    #[allow(dead_code)] // The v2 bootstrap cannot use this parentless legacy path.
     pub(crate) fn spawn(
         self,
         helper: &VerifiedHelper,
         handles: &InheritedStdio<'_>,
     ) -> Result<LaunchedHelper, LaunchError> {
-        let role = self.require_approval_frontend(helper)?;
-        sys::launch(helper, handles, self.profile, role)
+        let role = VerifiedLpacRole::from_helper(helper)?;
+        if role != VerifiedLpacRole::ApprovalFrontend {
+            return Err(LaunchError::HelperRoleNotAllowed);
+        }
+        let _ = (self, handles);
+        Err(LaunchError::ApprovalRequiresParentBoundActivation)
     }
 
     /// Test-only launch of one exact ignored libtest fixture inside the real
@@ -666,46 +677,201 @@ mod debug_tests {
 ///
 /// The owner retains the exact process, its single-process kill-on-close Job,
 /// the suspended primary thread, the pinned artifact/profile identity, and two
-/// distinct parent proofs. Production exposes no resume operation.
+/// distinct parent proofs. Production exposes only the activation-sealed,
+/// hello-only resume used by the consuming parent-bound bootstrap transition.
 #[cfg(windows)]
 #[must_use = "dropping a suspended Approval attempts bounded termination and reap"]
 pub(crate) struct HeldSuspendedApproval {
-    process: sys::OwnedWinHandle,
-    job: sys::OwnedWinHandle,
+    guard: HeldApprovalProcessGuard,
     thread: sys::OwnedWinHandle,
-    identity: HeldProcessIdentity,
     parent_proof: InjectedParentProof,
     logical_parent: InjectedApprovalLogicalParent,
-    cleanup_armed: bool,
 }
 
 #[cfg(windows)]
 impl HeldSuspendedApproval {
+    /// Builds the only parent hello that may describe this suspended child.
+    ///
+    /// Both proof capabilities contain child-local handle-table coordinates.
+    /// Keeping construction behind the activation seal prevents either tuple
+    /// from escaping as a generic scalar/resource API.
+    pub(crate) fn parent_hello_for_bootstrap(
+        &self,
+        parent_nonce: [u8; 32],
+        _seal: &ApprovalActivationSeal,
+    ) -> Result<ApprovalParentHello, LaunchError> {
+        ApprovalParentHello::new(
+            self.parent_proof.process_id(),
+            self.parent_proof.process_handle(),
+            self.parent_proof.image_handle(),
+            self.logical_parent.process_id(),
+            self.logical_parent.process_handle(),
+            parent_nonce,
+        )
+        .map_err(|_| LaunchError::SandboxVerification)
+    }
+
+    /// Resumes the exact primary thread once for the sealed Approval bootstrap.
+    ///
+    /// No public or generic resume primitive is exposed. Consuming the suspended
+    /// typestate makes a second safe-Rust resume impossible. Any resume rejection
+    /// receives its own fixed synchronous cleanup attempt, with cleanup failure
+    /// taking precedence.
+    pub(crate) fn resume_for_bootstrap(
+        self,
+        _seal: &ApprovalActivationSeal,
+    ) -> Result<HeldRunningApproval, LaunchError> {
+        let Self {
+            guard,
+            thread,
+            parent_proof,
+            logical_parent,
+        } = self;
+        if let Err(error) = sys::resume_parent_bound_approval(
+            guard.process_raw(),
+            guard.job_raw(),
+            thread.raw(),
+            guard.identity().process_id(),
+        ) {
+            let Some(cleanup_deadline) =
+                Instant::now().checked_add(APPROVAL_RESUME_REJECTION_GRACE)
+            else {
+                drop(guard);
+                return Err(LaunchError::Cleanup);
+            };
+            return match guard.terminate_and_wait(cleanup_deadline) {
+                Ok(()) => Err(error),
+                Err(_) => Err(LaunchError::Cleanup),
+            };
+        }
+        Ok(HeldRunningApproval {
+            guard,
+            thread,
+            parent_proof,
+            logical_parent,
+        })
+    }
+
     /// Test-only observation that the exact child is still live in its retained
     /// one-process Job with both mandatory Job limits intact.
     #[cfg(test)]
     pub(crate) fn is_live_in_job_for_test(&self) -> Result<bool, LaunchError> {
         sys::is_live_held_process_in_job_for_test(
-            self.process.raw(),
-            self.job.raw(),
-            self.identity.process_id(),
+            self.guard.process_raw(),
+            self.guard.job_raw(),
+            self.guard.identity().process_id(),
         )
     }
 
     /// Explicitly terminates the one-process Job and waits for the exact held
     /// Approval process before the supplied monotonic deadline.
-    pub(crate) fn terminate_and_wait(mut self, deadline: Instant) -> Result<(), LaunchError> {
+    pub(crate) fn terminate_and_wait(self, deadline: Instant) -> Result<(), LaunchError> {
+        self.guard.terminate_and_wait(deadline)
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for HeldSuspendedApproval {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.guard,
+            &self.thread,
+            &self.parent_proof,
+            &self.logical_parent,
+        );
+        formatter.write_str(
+            "HeldSuspendedApproval([SUSPENDED APPROVAL; HELD JOB; REDACTED PARENT PROOFS])",
+        )
+    }
+}
+
+/// The unique post-resume Approval process retained only by hello bootstrap.
+#[cfg(windows)]
+#[must_use = "dropping a running Approval attempts bounded termination and reap"]
+pub(crate) struct HeldRunningApproval {
+    guard: HeldApprovalProcessGuard,
+    thread: sys::OwnedWinHandle,
+    parent_proof: InjectedParentProof,
+    logical_parent: InjectedApprovalLogicalParent,
+}
+
+#[cfg(windows)]
+impl HeldRunningApproval {
+    /// Revalidates that the exact resumed process is live in its retained Job.
+    pub(crate) fn revalidate_for_bootstrap(
+        &self,
+        _seal: &ApprovalActivationSeal,
+    ) -> Result<(), LaunchError> {
+        sys::revalidate_running_held_process(
+            self.guard.process_raw(),
+            self.guard.job_raw(),
+            self.guard.identity().process_id(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_live_in_job_for_test(&self) -> Result<bool, LaunchError> {
+        sys::is_live_held_process_in_job_for_test(
+            self.guard.process_raw(),
+            self.guard.job_raw(),
+            self.guard.identity().process_id(),
+        )
+    }
+
+    pub(crate) fn terminate_and_wait(self, deadline: Instant) -> Result<(), LaunchError> {
+        self.guard.terminate_and_wait(deadline)
+    }
+}
+
+#[cfg(windows)]
+impl fmt::Debug for HeldRunningApproval {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.guard,
+            &self.thread,
+            &self.parent_proof,
+            &self.logical_parent,
+        );
+        formatter
+            .write_str("HeldRunningApproval([RUNNING APPROVAL; HELD JOB; REDACTED PARENT PROOFS])")
+    }
+}
+
+/// Shared fail-closed process ownership beneath the suspended/running typestates.
+#[cfg(windows)]
+struct HeldApprovalProcessGuard {
+    process: sys::OwnedWinHandle,
+    job: sys::OwnedWinHandle,
+    identity: HeldProcessIdentity,
+    cleanup_armed: bool,
+}
+
+#[cfg(windows)]
+impl HeldApprovalProcessGuard {
+    fn process_raw(&self) -> windows::Win32::Foundation::HANDLE {
+        self.process.raw()
+    }
+
+    fn job_raw(&self) -> windows::Win32::Foundation::HANDLE {
+        self.job.raw()
+    }
+
+    const fn identity(&self) -> HeldProcessIdentity {
+        self.identity
+    }
+
+    fn terminate_and_wait(mut self, deadline: Instant) -> Result<(), LaunchError> {
         let result = sys::terminate_and_wait(self.process.raw(), self.job.raw(), deadline);
-        // The caller supplied the one explicit cleanup deadline. Do not start a
-        // second wait from Drop after that bounded attempt; closing the retained
-        // kill-on-close Job remains the final fail-closed fallback on error.
+        // Do not start a second bounded wait from Drop after the explicit
+        // attempt. Closing the retained kill-on-close Job remains the final
+        // fail-closed fallback if the OS reported a cleanup failure.
         self.cleanup_armed = false;
         result
     }
 }
 
 #[cfg(windows)]
-impl Drop for HeldSuspendedApproval {
+impl Drop for HeldApprovalProcessGuard {
     fn drop(&mut self) {
         if self.cleanup_armed {
             self.cleanup_armed = false;
@@ -715,20 +881,9 @@ impl Drop for HeldSuspendedApproval {
 }
 
 #[cfg(windows)]
-impl fmt::Debug for HeldSuspendedApproval {
+impl fmt::Debug for HeldApprovalProcessGuard {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (
-            &self.process,
-            &self.job,
-            &self.thread,
-            &self.identity,
-            &self.parent_proof,
-            &self.logical_parent,
-            self.cleanup_armed,
-        );
-        formatter.write_str(
-            "HeldSuspendedApproval([SUSPENDED APPROVAL; HELD JOB; REDACTED PARENT PROOFS])",
-        )
+        formatter.write_str("HeldApprovalProcessGuard([HELD PROCESS AND JOB])")
     }
 }
 
@@ -963,8 +1118,9 @@ mod sys {
 
     use super::{
         ApprovalLogicalParentInjectionSeal, ApprovalParentSourcePreparedKeyAgent,
-        HeldProcessIdentity, HeldSuspendedApproval, InheritedStdio, InjectedParentProof,
-        LaunchError, LaunchedHelper, NoNetworkLpacProfile, VerifiedHelper, VerifiedLpacRole,
+        HeldApprovalProcessGuard, HeldProcessIdentity, HeldSuspendedApproval, InheritedStdio,
+        InjectedParentProof, LaunchError, LaunchedHelper, NoNetworkLpacProfile, VerifiedHelper,
+        VerifiedLpacRole,
     };
     use crate::appcontainer_profile_api::{
         AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
@@ -2340,6 +2496,36 @@ mod sys {
         Ok(())
     }
 
+    pub(super) fn revalidate_running_held_process(
+        process: HANDLE,
+        job: HANDLE,
+        expected_process_id: u32,
+    ) -> Result<(), LaunchError> {
+        revalidate_held_process(process, job, expected_process_id)?;
+        // SAFETY: the exact retained process handle stays owned by the held
+        // Approval capability for this zero-time liveness observation.
+        if unsafe { WaitForSingleObject(process, 0) } != WAIT_TIMEOUT {
+            return Err(LaunchError::SandboxVerification);
+        }
+        Ok(())
+    }
+
+    pub(super) fn resume_parent_bound_approval(
+        process: HANDLE,
+        job: HANDLE,
+        thread: HANDLE,
+        expected_process_id: u32,
+    ) -> Result<(), LaunchError> {
+        revalidate_held_process(process, job, expected_process_id)?;
+        // SAFETY: `thread` is the retained suspended primary thread created for
+        // this exact process and no other production API can resume it.
+        let previous_suspend_count = unsafe { ResumeThread(thread) };
+        if previous_suspend_count != 1 {
+            return Err(LaunchError::OperatingSystem);
+        }
+        revalidate_running_held_process(process, job, expected_process_id)
+    }
+
     #[cfg(test)]
     pub(super) fn is_live_held_process_in_job_for_test(
         process: HANDLE,
@@ -2387,6 +2573,9 @@ mod sys {
         profile: NoNetworkLpacProfile,
         role: VerifiedLpacRole,
     ) -> Result<LaunchedHelper, LaunchError> {
+        if role != VerifiedLpacRole::SecretInputFrontend {
+            return Err(LaunchError::ApprovalRequiresParentBoundActivation);
+        }
         let suspended = prepare_suspended_inner(
             helper,
             handles,
@@ -2452,13 +2641,15 @@ mod sys {
             logical_parent,
         } = suspended;
         Ok(HeldSuspendedApproval {
-            process,
-            job,
+            guard: HeldApprovalProcessGuard {
+                process,
+                job,
+                identity,
+                cleanup_armed: true,
+            },
             thread,
-            identity,
             parent_proof,
             logical_parent,
-            cleanup_armed: true,
         })
     }
 
@@ -2504,8 +2695,8 @@ mod sys {
         })
     }
 
-    /// Explicit resume is confined to the legacy launcher and the test-only
-    /// kernel probe. The production parent-bound Approval path never calls it.
+    /// Explicit legacy resume is confined to Secret Input and the test-only
+    /// Approval kernel probe. Production Approval cannot reach this function.
     fn resume_suspended_for_legacy<LogicalParent>(
         suspended: SuspendedLaunch<LogicalParent>,
     ) -> Result<SuspendedLaunch<LogicalParent>, LaunchError> {
@@ -3641,11 +3832,11 @@ mod tests {
             Err(LaunchError::HelperRoleNotAllowed)
         ));
 
-        // The exact roles advance to the still-disabled release gate, proving
-        // the role checks do not accidentally reject their intended frontend.
+        // Approval is structurally confined to the parent-bound activation,
+        // while Secret Input advances to its still-disabled release gate.
         assert!(matches!(
             launcher.spawn(&approval, &stdio),
-            Err(LaunchError::ReleaseNotAttested)
+            Err(LaunchError::ApprovalRequiresParentBoundActivation)
         ));
         assert!(matches!(
             launcher.spawn_secret_input(&secret_input, &stdio),

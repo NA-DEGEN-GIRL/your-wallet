@@ -63,8 +63,9 @@
 //!
 //! The crate-private one-shot helper launcher also rejects the manifest-derived
 //! Key Agent role; an allowlisted Key Agent cannot use that resumed-process path.
-//! The legacy Approval launcher and its broad held-process result are now
-//! crate-private as well; external crates cannot start or retain that path:
+//! The crate-private legacy Approval entry point returns
+//! `LogicalParentUnavailable` before allocation and cannot return a held
+//! process. `LaunchedHelper` is separately crate-private for other internal paths:
 //!
 //! ```compile_fail
 //! use platform_windows::launch_approval_frontend;
@@ -82,18 +83,19 @@ mod anchor_registry;
 mod appcontainer_profile_api;
 #[allow(dead_code)]
 mod approval_channel;
-// The only production-compiled Approval activation edge consumes the complete
-// parent-bound aggregate into a still-suspended, non-operational process plus
-// private parent endpoints. It cannot resume, exchange protocol bytes, sign, or
-// expose any constituent and remains unreachable from production orchestration.
+// The only production-compiled Approval activation edge first creates the
+// complete parent-bound process suspended, then one sealed consuming transition
+// writes its five-object parent hello, resumes exactly once, and authenticates
+// the child hello. The resulting opaque state withholds parent finish, request,
+// response, and signing operations and remains unreachable from orchestration.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_activation;
 // Approval release admission and parent binding remain deliberately dormant.
 // They retain the verified pinned artifact, whole-release/file identities, and
 // exact Key Agent logical-parent proof without exposing raw constituents. The
-// suspended preparation above does not prove the mapped Approval image,
-// process-object DACL/principal split, endpoint topology, or runtime composition.
+// hello-only bootstrap above still does not prove the mapped Approval image,
+// process-object DACL/principal split, or complete runtime/signing composition.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_parent;

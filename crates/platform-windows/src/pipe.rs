@@ -162,6 +162,7 @@ impl ApprovalRequestWriter {
         sys::write_all_before(self.0.raw(), bytes, deadline)
     }
 
+    #[allow(dead_code)] // Reserved for a future consuming sealed parent-finish transition.
     pub(crate) fn write_all(self, bytes: &[u8], deadline: Instant) -> Result<(), PipeError> {
         sys::write_all_before(self.0.raw(), bytes, deadline)
     }
@@ -1800,6 +1801,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
+    use approval_wire::{CHILD_HELLO_BYTES, PARENT_HELLO_BYTES, RESPONSE_BYTES};
     use windows::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
     use windows::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
 
@@ -2255,7 +2257,7 @@ mod tests {
         assert_eq!(sys::read_child_to_end_for_test(&child_request)?, request);
         drop(child_request);
 
-        let response = [0x5a_u8; 75];
+        let response = [0x5a_u8; RESPONSE_BYTES];
         sys::write_child_for_test(&child_response, &response)?;
         drop(child_response);
         assert_eq!(reader.read_exact_frame(75, future_deadline()?)?, response);
@@ -2268,14 +2270,14 @@ mod tests {
         let pipes = PrivateApprovalPipes::create()?;
         let (mut writer, child_request, reader, child_response) = pipes.into_test_parts();
 
-        let parent_hello = [0x31_u8; 62];
+        let parent_hello = [0x31_u8; PARENT_HELLO_BYTES];
         writer.write_bytes(&parent_hello, future_deadline()?)?;
         assert_eq!(
             sys::read_child_exact_for_test(&child_request, parent_hello.len())?,
             parent_hello
         );
 
-        let child_hello = [0x42_u8; 106];
+        let child_hello = [0x42_u8; CHILD_HELLO_BYTES];
         sys::write_child_for_test(&child_response, &child_hello)?;
         assert_eq!(
             reader
@@ -2292,7 +2294,7 @@ mod tests {
         );
         drop(child_request);
 
-        let response = [0x64_u8; 75];
+        let response = [0x64_u8; RESPONSE_BYTES];
         sys::write_child_for_test(&child_response, &response)?;
         drop(child_response);
         assert_eq!(

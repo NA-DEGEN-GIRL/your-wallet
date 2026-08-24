@@ -65,8 +65,9 @@ impl fmt::Debug for PreparedApprovalPrompt {
 }
 
 impl PreparedApprovalPrompt {
-    /// Borrows the exact request that must be passed unchanged to the private
-    /// approval launch API.
+    /// Borrows the exact request that a future consuming sealed parent-finish
+    /// transition must transfer unchanged. The current Approval transition stops
+    /// after child hello and has no request-accepting production caller.
     #[must_use]
     #[allow(dead_code)]
     pub(crate) const fn request(&self) -> &ApprovalRequest {

@@ -6,31 +6,37 @@
 //! security-critical bit. The approval frontend is the sole owner of labels.
 //!
 //! The bootstrap codec fixes frame sizes and order; decoding it is not parent
-//! authentication. The Windows child makes fresh child-local duplicates of the
-//! injected proof handles; only those copies become authoritative and remain
-//! retained through response write, while the launcher-known original slots are
-//! never adopted and remain only for bounded process-exit cleanup. From the live
-//! exact parent process copy it derives the PID and process-token `TokenSessionId`, and
-//! requires the parent hello, both pipe server client PID/session observations,
-//! and the child token session to match that object. It owns and revalidates this
-//! binding across UI presentation and response write. While the retained process
-//! handle is live, that prevents PID-reuse substitution and corroborates the pipe
-//! observations against the exact live parent process object. Transferable and
+//! authentication. Its parent hello wire-binds the ordinary channel supervisor
+//! PID/process/image proof and the separately injected Key Agent logical-parent
+//! PID/process capability into the child transcript. The Windows child makes
+//! fresh child-local duplicates of the injected proof handles; only those copies
+//! become authoritative and remain retained through response write, while the
+//! launcher-known original slots are never adopted and remain only for bounded
+//! process-exit cleanup. From the live exact supervisor process copy it derives
+//! the PID and process-token `TokenSessionId`, and requires the parent hello,
+//! both pipe server client PID/session observations, and the child token session
+//! to match that object. It owns and revalidates this binding across UI
+//! presentation and response write. While the retained process handles are live,
+//! they prevent PID-reuse substitution; the supervisor process also corroborates
+//! the pipe observations against the exact live channel peer. Transferable and
 //! duplicable pipe handles still prevent proof of exclusive endpoint ownership,
 //! endpoint topology/exclusivity, or per-write attribution. The child also
 //! requires case-preserving exact normalized path-string equality between its
 //! image path and a separately held file path, checks the held path's executable
 //! suffix and version metadata, and performs held-handle-backed Authenticode and
-//! SHA-256 policy checks. Those checks do not prove that the live process was
-//! mapped from the exact held file object. No positive kernel availability test
-//! yet proves that the zero-capability Approval LPAC can complete
-//! `OpenProcessToken(parent)`; the compiled policies remain `None`, so this
-//! success path remains release-unproven. The fixed
-//! response echoes the request digest and one-shot Approval request nonce, but
-//! not either bootstrap nonce, so replay resistance also depends on the private
-//! one-shot endpoint and a fresh one-shot Approval request nonce. There are zero
-//! production orchestration callers composing the launcher, verified response,
-//! and signing, and there is no positive signed-handshake E2E.
+//! SHA-256 policy checks. Those checks do not prove that the live supervisor was
+//! mapped from the exact held file object. A positive Windows kernel probe proves
+//! that the zero-capability Approval LPAC can complete
+//! `OpenProcessToken(logical_parent, TOKEN_QUERY)` through the injected
+//! query/synchronize-only Key Agent process handle while stronger token/process
+//! rights and PID reopen attempts remain denied. The compiled policies remain
+//! `None`, so the release success path is
+//! still unproven. The fixed response echoes the request digest and one-shot
+//! Approval request nonce, but not either bootstrap nonce, so replay resistance
+//! also depends on the private one-shot endpoint and a fresh one-shot Approval
+//! request nonce. There are zero production orchestration callers composing the
+//! launcher, verified response, and signing, and there is no positive
+//! signed-handshake E2E.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -49,7 +55,7 @@ pub const MAX_EXPIRY_MILLISECONDS: u32 = 120_000;
 /// Fixed encoded response size.
 pub const RESPONSE_BYTES: usize = 75;
 /// Exact byte length of the Approval parent bootstrap hello.
-pub const PARENT_HELLO_BYTES: usize = 62;
+pub const PARENT_HELLO_BYTES: usize = 74;
 /// Exact byte length of the Approval child bootstrap hello.
 pub const CHILD_HELLO_BYTES: usize = 106;
 /// Exact byte length before the canonical request in a parent-finish frame.
@@ -61,11 +67,11 @@ const REQUEST_MAGIC: &[u8; 8] = b"YWAPPR02";
 const RESPONSE_MAGIC: &[u8; 8] = b"YWAPRS02";
 const DISPLAY_MAGIC: &[u8; 8] = b"YWAPDS02";
 const VERSION: u16 = 2;
-const PARENT_HELLO_MAGIC: &[u8; 8] = b"YWAPPH01";
-const CHILD_HELLO_MAGIC: &[u8; 8] = b"YWAPCH01";
-const PARENT_FINISH_MAGIC: &[u8; 8] = b"YWAPPF01";
-const BOOTSTRAP_VERSION: u16 = 1;
-const CHILD_HELLO_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-bootstrap-child/v1\0";
+const PARENT_HELLO_MAGIC: &[u8; 8] = b"YWAPPH02";
+const CHILD_HELLO_MAGIC: &[u8; 8] = b"YWAPCH02";
+const PARENT_FINISH_MAGIC: &[u8; 8] = b"YWAPPF02";
+const BOOTSTRAP_VERSION: u16 = 2;
+const CHILD_HELLO_TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-bootstrap-child/v2\0";
 
 /// Approval-wire validation or decoding failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,67 +98,93 @@ impl std::error::Error for WireError {}
 
 /// Fixed parent identity and nonce for one Approval bootstrap exchange.
 ///
-/// The numeric handles name only the two non-inheritable proof objects already
-/// injected into the suspended child. Decoding this value does not itself
-/// authenticate either object; the child-side Windows boundary must validate
-/// their types and attributes, copy them into fresh child-local handles, retain
-/// only those copies as authority, derive identity from the retained live exact
-/// process object, corroborate both pipe PID/session observations against it,
-/// and apply policy to the separately held image file. This prevents PID-reuse
-/// substitution while the process handle remains live, but transferable pipe
-/// handles still prevent exclusive endpoint ownership or per-write attribution.
-/// The current path correlation and held-file checks do not prove the live
-/// mapped exact file object.
+/// The numeric handles name only the three non-inheritable proof objects already
+/// injected into the suspended child: the ordinary channel supervisor process,
+/// its separately held image file, and the Key Agent logical-parent process.
+/// Decoding this value does not itself authenticate any object; the child-side
+/// Windows boundary must validate their types and attributes, copy them into
+/// fresh child-local handles, and retain only those copies as authority. The
+/// supervisor remains the pipe peer whose PID/session observations are
+/// corroborated. The distinct logical parent is independently authenticated as
+/// the Key Agent and is not used to explain the pipe observations. Retaining both
+/// exact live process objects prevents PID-reuse substitution, but transferable
+/// pipe handles still prevent exclusive endpoint ownership or per-write
+/// attribution. The current path correlation and held-file checks do not prove
+/// that the live supervisor was mapped from the exact held file object.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ApprovalParentHello {
-    process_id: u32,
-    process_handle: u64,
-    image_handle: u64,
+    supervisor_process_id: u32,
+    supervisor_process_handle: u64,
+    supervisor_image_handle: u64,
+    logical_parent_process_id: u32,
+    logical_parent_process_handle: u64,
     parent_nonce: [u8; 32],
 }
 
 impl ApprovalParentHello {
     /// Constructs one bounded parent hello.
     pub fn new(
-        process_id: u32,
-        process_handle: u64,
-        image_handle: u64,
+        supervisor_process_id: u32,
+        supervisor_process_handle: u64,
+        supervisor_image_handle: u64,
+        logical_parent_process_id: u32,
+        logical_parent_process_handle: u64,
         parent_nonce: [u8; 32],
     ) -> Result<Self, WireError> {
-        if process_id == 0
-            || process_handle == 0
-            || image_handle == 0
-            || process_handle == image_handle
+        if supervisor_process_id == 0
+            || supervisor_process_handle == 0
+            || supervisor_image_handle == 0
+            || logical_parent_process_id == 0
+            || logical_parent_process_handle == 0
+            || supervisor_process_id == logical_parent_process_id
+            || supervisor_process_handle == supervisor_image_handle
+            || supervisor_process_handle == logical_parent_process_handle
+            || supervisor_image_handle == logical_parent_process_handle
             || all_zero(&parent_nonce)
         {
             return Err(WireError::Malformed);
         }
         Ok(Self {
-            process_id,
-            process_handle,
-            image_handle,
+            supervisor_process_id,
+            supervisor_process_handle,
+            supervisor_image_handle,
+            logical_parent_process_id,
+            logical_parent_process_handle,
             parent_nonce,
         })
     }
 
-    /// Parent process identifier bound into this exchange.
+    /// Ordinary channel-supervisor process identifier bound into this exchange.
     #[must_use]
-    pub const fn process_id(self) -> u32 {
-        self.process_id
+    pub const fn supervisor_process_id(self) -> u32 {
+        self.supervisor_process_id
     }
 
-    /// Child-local source-slot value for the injected parent process handle.
+    /// Child-local source-slot value for the injected supervisor process handle.
     /// The child validates through and retains only a fresh duplicate.
     #[must_use]
-    pub const fn process_handle(self) -> u64 {
-        self.process_handle
+    pub const fn supervisor_process_handle(self) -> u64 {
+        self.supervisor_process_handle
     }
 
-    /// Child-local source-slot value for the injected parent image-file handle.
+    /// Child-local source-slot value for the injected supervisor image-file handle.
     /// The child validates through and retains only a fresh duplicate.
     #[must_use]
-    pub const fn image_handle(self) -> u64 {
-        self.image_handle
+    pub const fn supervisor_image_handle(self) -> u64 {
+        self.supervisor_image_handle
+    }
+
+    /// Key Agent logical-parent process identifier bound into this exchange.
+    #[must_use]
+    pub const fn logical_parent_process_id(self) -> u32 {
+        self.logical_parent_process_id
+    }
+
+    /// Child-local source-slot value for the injected Key Agent process handle.
+    /// The child validates through and retains only a fresh duplicate.
+    #[must_use]
+    pub const fn logical_parent_process_handle(self) -> u64 {
+        self.logical_parent_process_handle
     }
 
     /// Fresh parent nonce for this one bootstrap exchange.
@@ -858,7 +890,8 @@ impl Decision {
     }
 }
 
-/// Fixed response echoed to the Key Agent for exact binding.
+/// Fixed response emitted over ordinary supervisor transport for exact binding.
+/// Only separately verified opaque evidence may later cross into the Key Agent.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ApprovalResponse {
     decision: Decision,
@@ -1034,10 +1067,12 @@ pub fn encode_parent_hello(hello: &ApprovalParentHello) -> [u8; PARENT_HELLO_BYT
     let mut bytes = [0_u8; PARENT_HELLO_BYTES];
     bytes[..8].copy_from_slice(PARENT_HELLO_MAGIC);
     bytes[8..10].copy_from_slice(&BOOTSTRAP_VERSION.to_be_bytes());
-    bytes[10..14].copy_from_slice(&hello.process_id.to_be_bytes());
-    bytes[14..22].copy_from_slice(&hello.process_handle.to_be_bytes());
-    bytes[22..30].copy_from_slice(&hello.image_handle.to_be_bytes());
-    bytes[30..62].copy_from_slice(&hello.parent_nonce);
+    bytes[10..14].copy_from_slice(&hello.supervisor_process_id.to_be_bytes());
+    bytes[14..22].copy_from_slice(&hello.supervisor_process_handle.to_be_bytes());
+    bytes[22..30].copy_from_slice(&hello.supervisor_image_handle.to_be_bytes());
+    bytes[30..34].copy_from_slice(&hello.logical_parent_process_id.to_be_bytes());
+    bytes[34..42].copy_from_slice(&hello.logical_parent_process_handle.to_be_bytes());
+    bytes[42..74].copy_from_slice(&hello.parent_nonce);
     bytes
 }
 
@@ -1050,8 +1085,14 @@ pub fn decode_parent_hello(bytes: &[u8]) -> Result<ApprovalParentHello, WireErro
     if cursor.take(8)? != PARENT_HELLO_MAGIC || cursor.u16()? != BOOTSTRAP_VERSION {
         return Err(WireError::Malformed);
     }
-    let hello =
-        ApprovalParentHello::new(cursor.u32()?, cursor.u64()?, cursor.u64()?, cursor.array()?)?;
+    let hello = ApprovalParentHello::new(
+        cursor.u32()?,
+        cursor.u64()?,
+        cursor.u64()?,
+        cursor.u32()?,
+        cursor.u64()?,
+        cursor.array()?,
+    )?;
     if !cursor.is_empty() {
         return Err(WireError::Malformed);
     }
@@ -1391,7 +1432,7 @@ mod tests {
     }
 
     fn parent_hello() -> Result<ApprovalParentHello, WireError> {
-        ApprovalParentHello::new(42, 0x100, 0x104, [0x11; 32])
+        ApprovalParentHello::new(42, 0x100, 0x104, 84, 0x108, [0x11; 32])
     }
 
     fn child_hello() -> Result<ApprovalChildHello, WireError> {
@@ -1400,26 +1441,40 @@ mod tests {
 
     #[test]
     fn bootstrap_round_trip_sizes_accessors_and_debug_are_exact() -> Result<(), WireError> {
-        assert_eq!(PARENT_HELLO_BYTES, 62);
+        assert_eq!(PARENT_HELLO_BYTES, 74);
         assert_eq!(CHILD_HELLO_BYTES, 106);
         assert_eq!(PARENT_FINISH_HEADER_BYTES, 110);
         assert_eq!(MAX_PARENT_FINISH_BYTES, 110 + MAX_REQUEST_BYTES);
 
         let parent = parent_hello()?;
-        assert_eq!(parent.process_id(), 42);
-        assert_eq!(parent.process_handle(), 0x100);
-        assert_eq!(parent.image_handle(), 0x104);
+        assert_eq!(parent.supervisor_process_id(), 42);
+        assert_eq!(parent.supervisor_process_handle(), 0x100);
+        assert_eq!(parent.supervisor_image_handle(), 0x104);
+        assert_eq!(parent.logical_parent_process_id(), 84);
+        assert_eq!(parent.logical_parent_process_handle(), 0x108);
         assert_eq!(parent.parent_nonce(), [0x11; 32]);
         let parent_bytes = encode_parent_hello(&parent);
+        assert_eq!(&parent_bytes[..8], b"YWAPPH02");
+        assert_eq!(&parent_bytes[8..10], &2_u16.to_be_bytes());
+        assert_eq!(&parent_bytes[10..14], &42_u32.to_be_bytes());
+        assert_eq!(&parent_bytes[14..22], &0x100_u64.to_be_bytes());
+        assert_eq!(&parent_bytes[22..30], &0x104_u64.to_be_bytes());
+        assert_eq!(&parent_bytes[30..34], &84_u32.to_be_bytes());
+        assert_eq!(&parent_bytes[34..42], &0x108_u64.to_be_bytes());
+        assert_eq!(&parent_bytes[42..74], &[0x11; 32]);
         assert_eq!(decode_parent_hello(&parent_bytes)?, parent);
 
         let child = child_hello()?;
         assert_eq!(child.child_nonce(), [0x22; 32]);
         let child_bytes = encode_child_hello(&parent, &child);
+        assert_eq!(&child_bytes[..8], b"YWAPCH02");
+        assert_eq!(&child_bytes[8..10], &2_u16.to_be_bytes());
         assert_eq!(decode_child_hello(&parent, &child_bytes)?, child);
 
         let request = request()?;
         let finish = encode_parent_finish(&parent, &child, &request);
+        assert_eq!(&finish[..8], b"YWAPPF02");
+        assert_eq!(&finish[8..10], &2_u16.to_be_bytes());
         assert_eq!(
             finish.len(),
             PARENT_FINISH_HEADER_BYTES + encode_request(&request).len()
@@ -1436,41 +1491,71 @@ mod tests {
 
     #[test]
     fn bootstrap_constructors_and_parent_decode_reject_reserved_values() -> Result<(), WireError> {
+        for (supervisor_pid, supervisor_process, supervisor_image, logical_pid, logical_process) in [
+            (0, 0x100, 0x104, 84, 0x108),
+            (42, 0, 0x104, 84, 0x108),
+            (42, 0x100, 0, 84, 0x108),
+            (42, 0x100, 0x104, 0, 0x108),
+            (42, 0x100, 0x104, 84, 0),
+            (42, 0x100, 0x104, 42, 0x108),
+            (42, 0x100, 0x100, 84, 0x108),
+            (42, 0x100, 0x104, 84, 0x100),
+            (42, 0x100, 0x104, 84, 0x104),
+        ] {
+            assert_eq!(
+                ApprovalParentHello::new(
+                    supervisor_pid,
+                    supervisor_process,
+                    supervisor_image,
+                    logical_pid,
+                    logical_process,
+                    [1; 32],
+                ),
+                Err(WireError::Malformed)
+            );
+        }
         assert_eq!(
-            ApprovalParentHello::new(0, 0x100, 0x104, [1; 32]),
-            Err(WireError::Malformed)
-        );
-        assert_eq!(
-            ApprovalParentHello::new(42, 0, 0x104, [1; 32]),
-            Err(WireError::Malformed)
-        );
-        assert_eq!(
-            ApprovalParentHello::new(42, 0x100, 0, [1; 32]),
-            Err(WireError::Malformed)
-        );
-        assert_eq!(
-            ApprovalParentHello::new(42, 0x100, 0x100, [1; 32]),
-            Err(WireError::Malformed)
-        );
-        assert_eq!(
-            ApprovalParentHello::new(42, 0x100, 0x104, [0; 32]),
+            ApprovalParentHello::new(42, 0x100, 0x104, 84, 0x108, [0; 32]),
             Err(WireError::Malformed)
         );
         assert_eq!(ApprovalChildHello::new([0; 32]), Err(WireError::Malformed));
 
         let encoded = encode_parent_hello(&parent_hello()?);
-        for range in [10..14, 14..22, 22..30, 30..62] {
+        for range in [10..14, 14..22, 22..30, 30..34, 34..42, 42..74] {
             let mut changed = encoded;
             changed[range].fill(0);
             assert_eq!(decode_parent_hello(&changed), Err(WireError::Malformed));
         }
-        let mut equal_handles = encoded;
-        let process_handle: [u8; 8] = encoded[14..22]
+        let supervisor_pid: [u8; 4] = encoded[10..14]
             .try_into()
             .map_err(|_| WireError::Malformed)?;
-        equal_handles[22..30].copy_from_slice(&process_handle);
+        let supervisor_process: [u8; 8] = encoded[14..22]
+            .try_into()
+            .map_err(|_| WireError::Malformed)?;
+        let supervisor_image: [u8; 8] = encoded[22..30]
+            .try_into()
+            .map_err(|_| WireError::Malformed)?;
+
+        let mut equal_pids = encoded;
+        equal_pids[30..34].copy_from_slice(&supervisor_pid);
+        assert_eq!(decode_parent_hello(&equal_pids), Err(WireError::Malformed));
+
+        let mut equal_handles = encoded;
+        equal_handles[22..30].copy_from_slice(&supervisor_process);
         assert_eq!(
             decode_parent_hello(&equal_handles),
+            Err(WireError::Malformed)
+        );
+        let mut logical_equals_supervisor_process = encoded;
+        logical_equals_supervisor_process[34..42].copy_from_slice(&supervisor_process);
+        assert_eq!(
+            decode_parent_hello(&logical_equals_supervisor_process),
+            Err(WireError::Malformed)
+        );
+        let mut logical_equals_supervisor_image = encoded;
+        logical_equals_supervisor_image[34..42].copy_from_slice(&supervisor_image);
+        assert_eq!(
+            decode_parent_hello(&logical_equals_supervisor_image),
             Err(WireError::Malformed)
         );
         Ok(())
@@ -1495,7 +1580,7 @@ mod tests {
             changed[index] ^= 1;
             assert_eq!(decode_parent_hello(&changed), Err(WireError::Malformed));
         }
-        for index in [13, 21, 29, 61] {
+        for index in [13, 21, 29, 33, 41, 73] {
             let mut changed = encoded;
             changed[index] ^= 1;
             assert_ne!(decode_parent_hello(&changed)?, parent);
@@ -1520,13 +1605,47 @@ mod tests {
         }
 
         let changed_parent = ApprovalParentHello::new(
-            parent.process_id() + 1,
-            parent.process_handle(),
-            parent.image_handle(),
+            parent.supervisor_process_id() + 1,
+            parent.supervisor_process_handle(),
+            parent.supervisor_image_handle(),
+            parent.logical_parent_process_id(),
+            parent.logical_parent_process_handle(),
             parent.parent_nonce(),
         )?;
         assert_eq!(
             decode_child_hello(&changed_parent, &encoded),
+            Err(WireError::Malformed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn child_hello_transcript_binds_logical_parent_pid_and_handle() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let encoded = encode_child_hello(&parent, &child_hello()?);
+        let changed_logical_pid = ApprovalParentHello::new(
+            parent.supervisor_process_id(),
+            parent.supervisor_process_handle(),
+            parent.supervisor_image_handle(),
+            parent.logical_parent_process_id() + 1,
+            parent.logical_parent_process_handle(),
+            parent.parent_nonce(),
+        )?;
+        let changed_logical_handle = ApprovalParentHello::new(
+            parent.supervisor_process_id(),
+            parent.supervisor_process_handle(),
+            parent.supervisor_image_handle(),
+            parent.logical_parent_process_id(),
+            parent.logical_parent_process_handle() + 8,
+            parent.parent_nonce(),
+        )?;
+
+        assert_eq!(
+            decode_child_hello(&changed_logical_pid, &encoded),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            decode_child_hello(&changed_logical_handle, &encoded),
             Err(WireError::Malformed)
         );
         Ok(())
@@ -1584,9 +1703,11 @@ mod tests {
         );
 
         let other_parent = ApprovalParentHello::new(
-            parent.process_id(),
-            parent.process_handle(),
-            parent.image_handle(),
+            parent.supervisor_process_id(),
+            parent.supervisor_process_handle(),
+            parent.supervisor_image_handle(),
+            parent.logical_parent_process_id(),
+            parent.logical_parent_process_handle(),
             [0x33; 32],
         )?;
         assert_eq!(
@@ -1642,6 +1763,34 @@ mod tests {
         finish_with_parent_magic[..8].copy_from_slice(PARENT_HELLO_MAGIC);
         assert_eq!(
             decode_parent_finish(&parent, &child, &finish_with_parent_magic),
+            Err(WireError::Malformed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_v1_frames_are_rejected() -> Result<(), WireError> {
+        let parent = parent_hello()?;
+        let child = child_hello()?;
+
+        let mut parent_v1 = [0_u8; 62];
+        parent_v1[..8].copy_from_slice(b"YWAPPH01");
+        parent_v1[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(decode_parent_hello(&parent_v1), Err(WireError::Malformed));
+
+        let mut child_v1 = encode_child_hello(&parent, &child);
+        child_v1[..8].copy_from_slice(b"YWAPCH01");
+        child_v1[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            decode_child_hello(&parent, &child_v1),
+            Err(WireError::Malformed)
+        );
+
+        let mut finish_v1 = encode_parent_finish(&parent, &child, &request()?);
+        finish_v1[..8].copy_from_slice(b"YWAPPF01");
+        finish_v1[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            decode_parent_finish(&parent, &child, &finish_v1),
             Err(WireError::Malformed)
         );
         Ok(())

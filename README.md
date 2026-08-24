@@ -610,6 +610,11 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   만들지 않고 path/PID/raw-handle accessor도 제공하지 않습니다. 기존
   `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`,
   `RestrictedLauncher::spawn`은 외부 crate에서 더 이상 호출하거나 보유할 수 없습니다.
+  legacy launcher는 wrong role을 먼저 구분한 뒤 complete logical-parent aggregate가 없으면
+  `LogicalParentUnavailable`로 nonce/pipe/process/request 작업 전에 fail closed하며 더 이상
+  `RestrictedLauncher::spawn`을 호출하지 않습니다. 범용 `spawn` 자체도 Approval role을
+  `ApprovalRequiresParentBoundActivation`으로 생성 전에 거부하고, 내부 legacy launch leaf는
+  Secret Input role만 허용해 parentless Approval resume를 이중으로 닫습니다.
   이어지는 비공개 전이는 이 준비 상태와 분해하지 않은 전체
   `BoundStorageProvenKeyAgent`를 함께 소비합니다. 같은 실행 중인 storage-proven Key Agent
   process object에서 PID로 다시 열지 않고, 상속 불가이며 접근권이 정확히
@@ -623,16 +628,28 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   그대로 두고, narrow Key Agent handle은 별도의 다섯 번째 non-inheritable
   logical-parent capability로 suspended child에 복사합니다. 결과
   `BoundDormantApproval`은 process/thread/Job, 아직 사용하지 않은 parent endpoints와 전체
-  parent-bound aggregate를 함께 보유하고 resume/request/response/signing 또는
+  parent-bound aggregate를 함께 보유하고 자체 resume/request/response/signing 또는
   path/PID/raw-handle operation을 제공하지 않습니다. Drop은 pipe와 Key Agent tree를
-  놓기 전에 Approval을 bounded terminate/reap합니다. 이 최외곽 dormant transition의
-  production caller는 0개입니다. 이 handle은 향후 Approval이 인증할 logical parent proof source일 뿐이고
+  놓기 전에 bounded terminate/reap을 시도하며, 실패하면 retained kill-on-close Job을
+  먼저 닫는 fallback을 사용합니다. 이 최외곽 dormant transition의
+  production caller는 0개입니다. 이어지는 sealed consuming transition만 bootstrap-v2
+  parent hello를 suspended child의 stdin에 먼저 기록하고, primary thread의 정확한 suspend
+  count 하나를 한 번만 해제한 뒤 exact child hello를 읽고 transcript 및 child/Job/전체
+  parent-bound aggregate를 재검증할 수 있습니다. 성공한 opaque 상태는 실행 중인 Approval,
+  두 parent endpoint, 두 hello와 전체 Key Agent aggregate를 함께 보유하지만 parent finish,
+  request, UI, response, receive 또는 signing operation을 제공하지 않습니다. 이 두 번째
+  transition 역시 production caller가 0개입니다. 명시적 실패 경로는 Approval에 대한 bounded
+  terminate/reap을 먼저 수행하고 cleanup 실패를 원래 오류보다 우선합니다. Drop도 같은 bounded
+  cleanup을 먼저 시도하며, reap이 실패하면 retained kill-on-close Job을 닫는 fail-closed fallback을
+  거친 뒤 endpoint와 Key Agent aggregate를 필드 순서로 해제합니다. 이 handle은 Approval이
+  인증하는 logical parent proof source일 뿐이고
   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`를 설정하거나 Windows process parentage를
-  확립하는 capability가 아닙니다. 현재 four-object Approval wire는 이 별도 fifth
-  capability를 아직 소비하지 않으므로 새 dormant 상태에는 resume operation이 없습니다.
-  다만 repo-local `cfg(test)` 통합은 actual
+  확립하는 capability가 아닙니다. bootstrap v2는 ordinary supervisor와 별도 Key Agent의
+  child-local PID/handle을 함께 transcript에 묶되 pipe peer authority는 계속 supervisor로
+  유지합니다. repo-local `cfg(test)` 통합은 actual
   zero-capability Approval LPAC에 그 exact handle을 non-inheritable로 복사하고,
-  `OpenProcessToken(parent, TOKEN_QUERY)`, session/image/PID/liveness/zero flags를 확인한
+  Key Agent logical-parent process proof에 대한 `OpenProcessToken(..., TOKEN_QUERY)`,
+  session/image/PID/liveness/zero flags를 확인한
   뒤 12개 stronger/standard token right를 거부합니다. local `DuplicateHandle` denial
   matrix는 `PROCESS_DUP_HANDLE`, `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`,
   `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE`,
@@ -658,21 +675,24 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
   stdout/stderr 응답 pipe인 정확히 두 stdio `PIPE` 객체만 들어갑니다. 자식은 이
   synchronous server ends를 상속하고 부모는 대응하는 overlapped client ends를
-  보유합니다. parent-process와 parent-image proof handle은 Approval 자식이 suspended인
-  동안 inherit 불가 상태로 원격 주입됩니다. 자식은 binary mode보다 앞선 첫
+  보유합니다. supervisor process/image와 Key Agent logical-parent process proof handle은
+  Approval 자식이 suspended인 동안 inherit 불가 상태로 원격 주입됩니다. 자식은 binary mode보다 앞선 첫
   Windows/CRT application 동작에서 두 stdio 객체의 `HANDLE_FLAG_INHERIT`인 exact
   inherit-only preflags를 확인하고 rollback 없는 순차 clear와 exact-zero readback으로
   먼저 봉인합니다. 그 뒤 Approval LPAC과 Job을 검증하고, 봉인된 stdin, shared
-  output pipe, process proof, image proof가 모두 flags 0인 네 pairwise-distinct exact
-  object인지 확인합니다. Only fresh child-local duplicates become authoritative and remain
-  retained through response write; the launcher-known original injected slots are never
-  adopted and are left only for bounded process-exit cleanup. 자식은 retained live exact
-  parent process handle에서 부모
-  PID와 process-token `TokenSessionId`를 도출하고, parent hello PID, 두 pipe server가
+  output pipe, supervisor process proof, supervisor image proof, Key Agent logical-parent
+  process proof가 모두 flags 0인 다섯 pairwise-distinct exact object인지 확인합니다. 세
+  injected proof 모두 fresh child-local duplicate만 authority가 되어 response write까지
+  유지되며, launcher가 아는 원래 source slot은 adopt하지 않고 bounded process-exit
+  cleanup에만 남깁니다. 자식은 retained live exact supervisor process handle에서 부모
+  PID와 process-token `TokenSessionId`를 도출하고, parent hello의 supervisor PID, 두 pipe server가
   보고한 client PID/session, 자식 token session이 모두 그 identity와 일치해야
-  합니다. 이 binding은 UI 표시와 response write 동안 보유되고 재검증됩니다. 따라서
-  retained process handle이 live인 동안 PID-reuse substitution을 막고 pipe
-  observation을 exact live parent process object와 대조합니다. 다만 pipe handle은
+  합니다. 별도 retained Key Agent process는 hello의 logical-parent PID, 동일 session,
+  live/queryable image, 고정 `YourWallet.KeyAgent.LPAC.v1` SID, AppContainer/LPAC 상태와 zero
+  capabilities 및 least-authority denial matrix를 독립적으로 만족해야 하며 pipe PID로
+  사용하지 않습니다. 두 binding은 UI 표시와 response write 동안 보유되고 재검증됩니다. 따라서
+  retained process handles가 live인 동안 PID-reuse substitution을 막고 supervisor가 pipe
+  observation을 exact live ordinary channel-supervisor process object와 대조합니다. 다만 pipe handle은
   transferable/duplicable이므로 exclusive endpoint ownership, endpoint
   topology/exclusivity, per-write attribution은 증명하지 못합니다. image
   proof는 case-preserving exact normalized path-string equality를 사용합니다. 즉 live
@@ -689,7 +709,7 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   channel-supervisor binding이나 signed/mapped image를 증명하지 않습니다. 따라서 두
   compiled policy는 계속 `None`이고 handle-first production 경로는 release-unproven입니다.
 
-  Parent-auth 순서는 고정 62-byte parent hello, 고정 106-byte child hello,
+  wire가 정의하는 전체 Parent-auth 순서는 고정 74-byte bootstrap-v2 parent hello, 고정 106-byte child hello,
   110-byte parent-finish header와 exact request 및 request EOF, 고정 75-byte response와
   response EOF입니다. fresh nonzero parent nonce와 독립적인 fresh nonzero child nonce가
   domain-separated SHA-256 bootstrap transcript에 묶이고, parent-finish header는 두
@@ -702,13 +722,16 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   decision, request digest, one-shot Approval request nonce 순서이며, request에서
   echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce는 echo하지 않습니다.
   따라서 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request
-  nonce에도 의존합니다. raw/legacy direct launch는 이 교환을 만들 수 없어 진단 없이
-  실패합니다.
+  nonce에도 의존합니다. raw executable direct launch는 이 교환을 만들 수 없어 진단 없이
+  종료되고, legacy Rust API는 resource allocation 전에 `LogicalParentUnavailable`을
+  반환합니다. 현재 sealed parent 구현은 앞의 parent hello와 child hello까지만 수행하고
+  child를 parent finish 대기 상태로 보유합니다. finish/request/response 전송·수신 및
+  verified response/signing composition은 아직 연결되어 있지 않습니다.
 
   별도 inheritable positive sentinel을 둔 repo-local child/grandchild 커널 테스트는
   sentinel은 broad-inheritance grandchild에 도달하지만 원래의 두 exact stdio
-  객체는 도달하지 않음만 `CompareObjectHandles`로 확인합니다. 주입된 두 proof까지
-  포함한 four-object grandchild 증거는 아닙니다. stdio 순차 clear는 원자적이지 않고
+  객체는 도달하지 않음만 `CompareObjectHandles`로 확인합니다. 주입된 세 proof까지
+  포함한 five-object grandchild 증거는 아닙니다. stdio 순차 clear는 원자적이지 않고
   이후 inherit-bit 재설정이나 explicit duplication을 막지 않으며, 이 two-object
   음성은 stray handle 전체의 exhaustive enumeration, exact signed artifact,
   intended supervisor topology, immutable install, DLL/dependency identity 또는 release
@@ -716,8 +739,8 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   signed release-path positive evidence, live mapped exact file object, complete
   DLL/dependency graph, immutable installation, supervisor-held activation capability,
   exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다. 현재
-  `launch_approval_frontend`에서 verified response를 거쳐 signing까지 잇는
-  production orchestration caller는 0개이고 positive signed handshake E2E도 없습니다.
+  의도된 전체 Approval launch-to-verified-response-to-signing composition의 production
+  orchestration caller는 0개이고 positive signed handshake E2E도 없습니다.
   `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고 default
   `approval-ui`는 계속 exit 78이므로 release activation은 fail closed입니다.
 - runtime-enabled Secret Input/recovery 자식도 첫 Windows/CRT application 동작에서

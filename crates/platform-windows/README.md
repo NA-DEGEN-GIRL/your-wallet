@@ -8,15 +8,10 @@ Implemented:
 
 - random one-shot named-pipe capabilities, a protected current-logon-SID DACL,
   local-only/first-instance flags, and connected-client PID/session validation;
-- a crate-private legacy, role-checked approval launch seam that creates separate private request and
-  response endpoints and supplies an exact `HANDLE_LIST` with two child `PIPE`
-  objects: stdin plus one response-pipe handle-table entry used as the
-  numerically equal stdout and stderr values. It transfers the canonical bounded
-  v2 request and consumes the held helper/job with an overlapped,
-  monotonic-deadline response reader. The reader cancels and drains pending I/O,
-  requires the exact fixed response followed by EOF, and binds file identity,
-  manifest, LPAC profile, process object, request digest/nonce, response bytes,
-  and a fresh Key-Agent challenge into the one-shot transcript;
+- a crate-private legacy, role-checked Approval entry point. It rejects a wrong
+  helper role and otherwise returns `LogicalParentUnavailable` before nonce
+  sampling or pipe, process, and request allocation because it lacks the
+  complete logical-parent aggregate. It has zero production callers;
 - a non-cloneable parent-side Secret Input launch/channel API that accepts only
   a manifest-derived `secret-input-ui.exe` role and the release-attested
   restricted launcher, creates separate private request/response endpoints,
@@ -192,8 +187,10 @@ Implemented:
   proof, but no startup endpoint. The running child retains sealed stderr and the
   fixed generation-store bindings derived from its independently opened root and
   remains inert in `Sleep(INFINITE)` until Job termination; the aggregate exposes no runtime I/O or
-  signing operation. Drop synchronously terminates the exact
-  process tree before closing the held storage root. The suspended token must
+  signing operation. Drop first attempts bounded synchronous cleanup of the
+  exact process tree. Drop cannot report cleanup failure, so closing the retained
+  kill-on-close Job remains the fail-closed fallback before the held storage root
+  is released. The suspended token must
   prove the fixed SID, zero capabilities, and the exact
   `CheckTokenMembershipEx`
   differential: `CTMF_INCLUDE_APPCONTAINER` denies while adding
@@ -265,7 +262,13 @@ Implemented:
   Job, pipe, channel, thread, launch state, or second file handle and exposes no
   artifact, path, identity, PID, or raw-handle accessor. The legacy
   `launch_approval_frontend`, `PendingApproval`, `LaunchedHelper`, and
-  `RestrictedLauncher::spawn` surfaces are no longer externally callable. A
+  `RestrictedLauncher::spawn` surfaces are no longer externally callable. The
+  legacy launcher rejects a wrong role first, then returns
+  `LogicalParentUnavailable` before nonce, pipe, process, or request work and no
+  longer calls `RestrictedLauncher::spawn`. The generic `spawn` itself rejects
+  Approval with `ApprovalRequiresParentBoundActivation` before resource work,
+  and the internal legacy launch leaf accepts only Secret Input as a second
+  fail-closed check. A
   second private transition consumes this complete Approval proof together with
   the intact `BoundStorageProvenKeyAgent`. From that same running Key Agent
   process object it mints one fresh, non-inheritable duplicate with exactly
@@ -282,17 +285,28 @@ Implemented:
   handle is copied separately into the suspended child as a fifth,
   non-inheritable logical-parent capability. The returned
   `BoundDormantApproval` retains the suspended process/thread/Job, unused parent
-  endpoints, and complete parent-bound aggregate, exposes no resume, request,
+  endpoints, and complete parent-bound aggregate, exposes no direct resume, request,
   response, signing, launcher, profile, PID, path, or handle operation, and
   attempts bounded Approval termination/reap before releasing pipes and the Key
   Agent tree. This outer transition has zero production callers and both
   compiled policies remain `None`.
 
-  This is an ownership-bound logical parent proof source, not a Windows parent
-  selection or an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
-  The current Approval wire authenticates only the ordinary four-object
-  supervisor/channel binding; it does not consume this separate fifth capability,
-  so the dormant state deliberately has no resume operation.
+  A second sealed consuming transition writes the exact version-2 parent hello
+  before releasing exactly one primary-thread suspend count, reads and decodes
+  the exact child hello, and revalidates the running child/Job plus the intact
+  parent-bound aggregate. Its opaque result retains the running Approval, both
+  endpoints, both hellos, and the full Key Agent aggregate, but exposes no
+  parent-finish, request, UI, response, receive, or signing operation. The child
+  remains blocked awaiting parent finish. This transition also has zero
+  production callers. Explicit failures attempt bounded Approval termination and
+  reap first and give cleanup failure precedence. Drop makes the same bounded
+  attempt; if reap fails, closing the retained kill-on-close Job is the
+  fail-closed fallback before field-order release of endpoints and the Key Agent
+  tree. Bootstrap v2 binds the ordinary
+  supervisor and distinct Key Agent authority into one transcript while leaving
+  pipe-peer PID/session authority with the supervisor. This remains an
+  ownership-bound logical parent proof source, not Windows parent selection or
+  an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
   A repo-local `cfg(test)` integration now copies the exact non-inheritable
   handle into an actual zero-capability Approval LPAC. It proves `TOKEN_QUERY`,
   session/image/PID/liveness/zero flags, twelve stronger or standard token-right
@@ -334,20 +348,24 @@ Implemented:
   and accepts only exact-zero readback for both. The launcher `HANDLE_LIST`
   remains exactly those two synchronous server pipe objects inherited by the
   child; the parent retains the corresponding overlapped client ends. While the
-  Approval child is suspended, the launcher remotely injects parent-process and
-  parent-image proof handles with inheritance disabled. After sealing stdio,
-  the child verifies the Approval LPAC and Job and requires the sealed stdin,
-  shared output pipe, process proof, and image proof to be four pairwise-
-  distinct exact objects with zero flags. Only fresh child-local duplicates
+  Approval child is suspended, the launcher remotely injects supervisor-process,
+  supervisor-image, and Key Agent logical-parent process proof handles with
+  inheritance disabled. After sealing stdio, the child verifies the Approval
+  LPAC and Job and requires the sealed stdin, shared output pipe, both supervisor
+  proofs, and Key Agent process proof to be five pairwise-distinct exact objects
+  with zero flags. Only fresh child-local duplicates of all three injected proofs
   become authoritative and remain retained through response write; the
   launcher-known original injected slots are never adopted and are left only
-  for bounded process-exit cleanup. It derives the parent PID and
-  process-token `TokenSessionId` from the retained live exact parent process
-  handle and requires the parent-hello PID, both child-held server ends' client
+  for bounded process-exit cleanup. It derives the supervisor PID and
+  process-token `TokenSessionId` from the retained live exact supervisor process
+  handle and requires the parent-hello supervisor PID, both child-held server ends' client
   PID/session observations, and the child token session to match. It owns and
-  revalidates that binding across UI presentation and response write. While the
-  process handle remains live, this prevents PID-reuse substitution and
-  corroborates the pipe observations against the exact live parent process
+  revalidates that binding across UI presentation and response write. The
+  distinct Key Agent process must match the logical-parent PID, stay live and
+  image-queryable in the same session, and expose the fixed Key Agent LPAC SID,
+  AppContainer/LPAC state, zero capabilities, and least-authority denials through
+  `TOKEN_QUERY`. While both process handles remain live, this prevents PID-reuse
+  substitution and corroborates the pipe observations against the exact live supervisor process
   object. Transferable and duplicable pipe handles still prevent proof of
   exclusive endpoint ownership, endpoint topology/exclusivity, or per-write
   attribution. The image check applies
@@ -359,13 +377,14 @@ Implemented:
   cloned held handle against the compiled parent policy. It does not prove that the live process was mapped
   from that exact file object. A separate repo-local `cfg(test)` probe proves
   that a real zero-capability Approval LPAC can complete
-  `OpenProcessToken(parent, TOKEN_QUERY)` for its exact injected logical handle
+  `OpenProcessToken(..., TOKEN_QUERY)` for its exact injected Key Agent
+  logical-parent process proof
   and denies the exact local `DuplicateHandle` and PID-reopen requests
   enumerated above. The copied image's mandatory-label state is not directly
   read back, and the test-only `NO_LOW_LABEL` removal only permits that
   profile-scoped copy; production mitigation remains unchanged. This is not
   mapped release evidence; compiled policies
-  remain `None`. Parent-auth order is a fixed 62-byte
+  remain `None`. The wire and child runtime define this complete Parent-auth order: a fixed 74-byte version-2
   parent hello, fixed 106-byte child hello, a 110-byte parent-finish header plus
   exact request and request EOF, then a fixed 75-byte response and response EOF.
   After response-plus-EOF the parent locally hashes held child PID/file
@@ -376,13 +395,18 @@ Implemented:
   decision, request digest, and the one-shot Approval request nonce. Only the
   digest and nonce echo request fields; neither bootstrap nonce is echoed.
   Replay resistance also depends on the private one-shot endpoint and a
-  fresh one-shot Approval request nonce. Raw or legacy direct launch fails
-  silently. A repo-local child/grandchild kernel test
+  fresh one-shot Approval request nonce. Direct executable launch exits without
+  diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
+  before resource allocation. The current sealed parent transition performs only parent hello and
+  child hello, then retains the child blocked awaiting parent finish. No current
+  parent transition sends finish/request, receives a response, or reaches
+  signing; the legacy `launch_approval_frontend` fails before allocation with
+  `LogicalParentUnavailable`. A repo-local child/grandchild kernel test
   makes a separate positive sentinel inheritable and uses
   `CompareObjectHandles` to prove that the sentinel reaches a broad-inheritance
   grandchild while neither original exact stdio object does. The sequential
   clears are non-atomic and do not prevent later inherit-bit re-enabling or
-  explicit duplication. This remains a two-object negative, not a four-object
+  explicit duplication. This remains a two-object negative, not a five-object
   grandchild proof; it is neither exhaustive stray-handle enumeration nor
   evidence for the exact signed helper, intended supervisor topology, immutable
   installation, DLL/dependency identity, or release activation. Signed
@@ -390,8 +414,8 @@ Implemented:
   alternate path forms, live mapped exact-file-object proof, the complete
   DLL/dependency graph, immutable installation, a supervisor-held activation
   capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**.
-  There are zero production orchestration callers composing
-  `launch_approval_frontend` through a verified response into signing. There is
+  There are zero production orchestration callers for the intended full
+  Approval launch-to-verified-response-to-signing composition. There is
   no positive signed-handshake E2E. `COMPILED_PARENT_POLICY` and
   `COMPILED_RELEASE_POLICY` remain `None`, so default `approval-ui` builds still
   exit 78;
@@ -518,15 +542,19 @@ Implemented:
   Windows/CRT application operation, requires numeric stdout/stderr aliasing,
   exact inherit-only preflags and zero readback; the parent retains overlapped
   client ends. Its launch `HANDLE_LIST` contains only those two child objects;
-  two parent-identity proofs are injected non-inheritable while the child is
-  suspended. After Approval LPAC and Job verification, it requires those four
-  exact objects to be pairwise distinct with zero flags. The retained live
-  exact parent process handle supplies the authoritative PID and process-token
-  `TokenSessionId`; the parent hello, both server-end client PID/session
-  observations, and child token session must match, and the binding is retained
-  and revalidated through UI presentation and response write. This prevents
-  PID-reuse substitution while the handle is live and corroborates the pipe
-  observations against the exact process object. It does not prove exclusive
+  supervisor-process, supervisor-image, and logical Key Agent process proofs are
+  injected non-inheritable while the child is suspended. After Approval LPAC
+  and Job verification, it requires all five exact objects to be pairwise
+  distinct with zero flags. The retained live exact supervisor process handle
+  supplies the authoritative PID and process-token `TokenSessionId`; the v2
+  parent hello, both server-end client PID/session observations, and child token
+  session must match. The separate retained logical-parent process must match
+  the Key Agent PID in the hello, remain live and image-queryable in the same
+  session, and satisfy its fixed LPAC SID, AppContainer/LPAC, zero-capability,
+  and least-authority checks. Both bindings are retained and revalidated through
+  UI presentation and response write. This prevents PID-reuse substitution
+  while the process handles are live and corroborates the pipe observations
+  against the exact supervisor process object. It does not prove exclusive
   endpoint ownership, topology/exclusivity, or per-write attribution because
   pipe handles remain transferable and duplicable. A separate repo-local
   `cfg(test)` logical-parent probe proves exact `TOKEN_QUERY` availability and
@@ -554,9 +582,9 @@ Implemented:
   case-sensitive directories and alternate path forms, artifact-bound execution
   of this bootstrap, exact signed-artifact E2E, immutable installation, complete
   DLL/dependency evidence, a release-proven resumable supervisor-held activation
-  capability, and endpoint topology/exclusivity remain absent. Approval also has zero production
-  callers composing `launch_approval_frontend` through verified response into
-  signing and no positive signed-handshake E2E.
+  capability, and endpoint topology/exclusivity remain absent. Approval also has
+  zero callers for its sealed hello-only transition, no parent-finish/request/
+  verified-response/signing transition, and no positive signed-handshake E2E.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -571,27 +599,34 @@ Implemented:
   grandchild exact-object 음성 테스트도 통과해야 합니다. runtime-enabled Approval
   launcher의 `HANDLE_LIST`는 계속 stdin과 shared stdout/stderr인 두 stdio `PIPE`
   객체만 포함합니다. 자식은 synchronous server ends를 상속하고 부모는 대응하는
-  overlapped client ends를 보유합니다. parent-process/image proof는 suspended 자식에
-  inherit 불가로 별도 주입됩니다. 자식은 첫 Windows/CRT application 동작에서 stdio를
-  봉인한 뒤 Approval LPAC과 Job을 확인하고, stdio 둘과 proof 둘이 flags 0인 네
-  pairwise-distinct exact object인지 검증합니다. 자식은 retained live exact parent
-  process handle에서 authoritative PID와 process-token `TokenSessionId`를 도출하고,
-  parent hello, 두 child-held server ends의 client PID/session observation, child token
+  overlapped client ends를 보유합니다. supervisor process/image proof와 별도 Key Agent
+  logical-parent process proof는 suspended 자식에 inherit 불가로 주입됩니다. 자식은 첫
+  Windows/CRT application 동작에서 stdio를 봉인한 뒤 Approval LPAC과 Job을 확인하고,
+  stdio 둘과 proof 셋이 flags 0인 다섯 pairwise-distinct exact object인지 검증합니다.
+  자식은 retained live exact supervisor process handle에서 authoritative PID와
+  process-token `TokenSessionId`를 도출하고, parent hello의 supervisor PID, 두 child-held
+  server ends의 client PID/session observation, child token
   session이 모두 일치해야 합니다. 이 binding은 UI 표시와 response write 동안
-  보유되고 재검증됩니다. 따라서 handle이 live인 동안 PID-reuse substitution을 막고
-  pipe observation을 exact parent process object와 대조합니다. 다만 pipe handle은
+  보유되고 재검증됩니다. 별도 Key Agent handle은 logical-parent PID, same session,
+  liveness/image query, fixed Key Agent LPAC SID/zero capabilities와 least-authority denial을
+  독립적으로 만족해야 하며 pipe PID로 사용하지 않습니다. 따라서 두 handle이 live인 동안
+  PID-reuse substitution을 막고 pipe observation을 exact supervisor process object와
+  대조합니다. 다만 pipe handle은
   transferable/duplicable이므로 exclusive endpoint ownership,
-  topology/exclusivity, per-write attribution은 증명하지 못합니다. zero-capability
-  Approval LPAC에서 `OpenProcessToken(parent)` 성공을 입증하는 positive kernel
-  availability test도 아직 없고 policies는 `None`이므로 이 성공 경로는
-  release-unproven입니다. image 검사는
+  topology/exclusivity, per-write attribution은 증명하지 못합니다. 별도 repo-local
+  kernel probe가 zero-capability Approval LPAC의 exact logical-parent handle에서
+  Key Agent logical-parent process proof의 `OpenProcessToken(..., TOKEN_QUERY)` 성공과
+  stronger token/process 및 PID-reopen
+  거부를 입증하지만, policies는 `None`이고 signed/mapped release E2E가 아니므로 이
+  성공 경로는 release-unproven입니다. image 검사는
   case-preserving exact normalized path-string equality를 사용합니다. 즉 선택적인 `\\?\` prefix와 separator만
   정규화해 live process image path와 별도 held file final path를 비교하며 casing
   mismatch는 fail closed입니다. 이어 held path의 `\\key-agent.exe` suffix와 version
   metadata, held handle+path 기반 Authenticode signer, cloned held handle 기반 SHA-256를
   확인합니다. 이는 live
-  process가 그 exact file object에서 mapped되었다는 증명이 아닙니다. 교환 순서는 고정
-  62-byte parent hello, 고정 106-byte child hello, 110-byte finish header와 exact request
+  process가 그 exact file object에서 mapped되었다는 증명이 아닙니다. wire와 child runtime이
+  정의하는 전체 교환 순서는 고정
+  74-byte version-2 parent hello, 고정 106-byte child hello, 110-byte finish header와 exact request
   및 request EOF, 고정 75-byte response와 response EOF입니다. 부모가 response 뒤
   로컬에서 계산하는 transcript는 held child PID/file identity, manifest/profile,
   request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap
@@ -599,18 +634,21 @@ Implemented:
   response는 magic, version, decision, request digest, one-shot Approval request nonce
   순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
   않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
-  의존합니다. raw/legacy direct launch는 진단 없이
-  실패합니다.
+  의존합니다. raw executable direct launch는 진단 없이 종료되고, legacy Rust API는
+  resource allocation 전에 `LogicalParentUnavailable`을 반환합니다. 현재 sealed parent transition은 parent hello와 child hello까지만 수행하고
+  child를 parent finish 대기 상태로 보유합니다. finish/request/response를 보내거나 받고
+  signing으로 연결하는 parent transition은 없으며, legacy `launch_approval_frontend`는
+  `LogicalParentUnavailable`로 allocation 전에 실패합니다.
   별도 inheritable positive sentinel grandchild 테스트는 sentinel이 전파되는 동안
-  원래 stdio 두 객체만 전파되지 않음을 `CompareObjectHandles`로 확인하며 four-object
+  원래 stdio 두 객체만 전파되지 않음을 `CompareObjectHandles`로 확인하며 five-object
   proof가 아닙니다. 이 순차 clear는 원자적이지 않고 이후 inherit-bit 재설정이나
   explicit duplication을 막지 않으며, exact-object 음성은 stray handle 전체 열거,
   exact signed artifact/topology 또는 릴리스 증거가 아닙니다. case-sensitive directory와
   alternate path form을 포괄하는 signed release-path positive evidence, live mapped exact
   file object, complete DLL/dependency graph, immutable installation, supervisor-held
   activation capability, exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다.
-  `launch_approval_frontend`에서 verified response를 거쳐 signing까지
-  잇는 production orchestration caller는 0개이고 positive signed-handshake E2E도
+  의도된 전체 Approval launch-to-verified-response-to-signing composition의 production
+  orchestration caller는 0개이고 positive signed-handshake E2E도
   없습니다. `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
   default helper는 exit 78입니다. runtime-enabled Secret Input/
   recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
@@ -721,7 +759,7 @@ Stop-ship before any signing-capable release:
    provenance, prove the standalone supervisor's single-instance and exact
    process topology, exclude or mediate every foreign/uncoordinated inheriting
    creation path, and bind the implemented Key Agent first-operation stdio
-   sealing plus grandchild exact-object negative, the Approval four-object
+   sealing plus grandchild exact-object negative, the Approval five-object
    runtime parent-auth check plus its separate two-stdio grandchild negative,
    and the Secret Input/recovery four-object boundary, to their exact signed
    artifacts.
@@ -730,7 +768,7 @@ Stop-ship before any signing-capable release:
 6. Exercise the complete launch/request/gesture/response/EOF path plus timeout,
    cancellation, extra-output, helper-crash, and handle-enumeration negatives
    against the exact signed `approval-ui.exe`. That suite must cover the fixed
-   62-byte parent hello, fixed 106-byte child hello, two fresh nonzero nonces,
+   74-byte version-2 parent hello, fixed 106-byte child hello, two fresh nonzero nonces,
    110-byte finish header, exact request EOF, fixed 75-byte response and response
    EOF, plus the parent transcript's held child PID/file identity,
    manifest/profile, request digest/one-shot nonce/hash, exact response, local
@@ -743,17 +781,21 @@ Stop-ship before any signing-capable release:
    file object, the complete DLL/dependency graph, immutable installation, a
    release-proven resumable supervisor-held activation capability, and exact endpoint
    topology/exclusivity. Current pipe inspection is corroborated against a
-   retained live exact parent process object: the child derives PID and
+   retained live exact supervisor process object: the child derives PID and
    process-token `TokenSessionId`, matches the hello, both server-end client
-   PID/session observations, and child token session, and retains and
-   revalidates the binding through response write. That blocks PID-reuse
-   substitution while the handle is live, but transferable/duplicable pipe
+   PID/session observations, and child token session. It separately authenticates
+   and retains the fixed-profile Key Agent logical-parent process without using
+   it as the pipe peer, and revalidates both authorities through response write.
+   That blocks PID-reuse substitution while both handles are live, but transferable/duplicable pipe
    handles still leave exclusive endpoint ownership, topology/exclusivity, and
    per-write attribution unproven. The dormant logical-parent binder now owns a
    fresh non-inheritable exact Key Agent process duplicate with only
    `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it never reopens by PID,
    exposes no raw handle, and does not set `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`
-   or change Windows process parentage. A repo-local `cfg(test)` integration now
+   or change Windows process parentage. A sealed zero-caller transition now
+   writes the complete v2 hello before exactly one resume, validates the exact
+   child hello, and stops with the child waiting for parent finish; it exposes no
+   request, response, or signing operation. A repo-local `cfg(test)` integration now
    launches an actual zero-capability Approval LPAC and proves exact handle/token
    usability, twelve token-right denials, denial of the exact per-right local
    `DuplicateHandle` and PID-reopen matrices enumerated above, and
@@ -774,9 +816,11 @@ Stop-ship before any signing-capable release:
    exhaustive two-object propagation negative. Its sequential clears are non-
    atomic and do not prevent later re-enabling or explicit duplication. That
    test is not evidence for the exact signed helper or intended release
-   topology. There are zero production callers composing
-   `launch_approval_frontend` through verified response into signing and no
-   positive signed-handshake E2E. Raw or legacy direct launch fails silently,
+   topology. The sealed hello-only transition has zero production callers;
+   parent-finish/request/verified-response/signing composition and a positive
+   signed-handshake E2E are absent. Direct executable launch exits without
+   diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
+   before allocation,
    while `COMPILED_PARENT_POLICY = None`, `COMPILED_RELEASE_POLICY = None`, and
    the default exit 78 prevent signed-artifact release activation.
 7. Connect the global registry model to independently reviewed, production

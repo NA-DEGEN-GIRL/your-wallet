@@ -290,12 +290,14 @@ impl fmt::Debug for VerifiedSupervisorHandshake {
 /// child handles and creation attributes have already been dropped before this
 /// value can cross the fresh worker join.
 ///
-/// Field order is security-significant: dropping this value first aborts the
-/// exact suspended process, then terminates the root Job, then closes the
-/// parent channel endpoints, zeroizes the startup nonce, and finally closes the
-/// no-delete-share storage-root handle. No raw handle, path, SID, pipe name,
-/// debugger operation, or generic resume operation is exposed.
-#[must_use = "dropping the dormant Key Agent capability aborts its suspended process tree"]
+/// Field order is security-significant: Drop first releases the exact suspended
+/// activation, then the retained root Job, before closing the parent channel
+/// endpoints, zeroizing the startup nonce, and finally closing the no-delete-
+/// share storage-root handle. Those process owners attempt bounded synchronous
+/// cleanup, but Drop cannot report failure and retained kill-on-close Job closure
+/// remains the fallback. No raw handle, path, SID, pipe name, debugger operation,
+/// or generic resume operation is exposed.
+#[must_use = "dropping this state attempts bounded Key Agent cleanup before kill-on-close fallback"]
 pub(crate) struct BoundDormantKeyAgent {
     activation: HeldKeyAgentActivation,
     root_job: KeyAgentRootJob,
@@ -331,12 +333,14 @@ impl fmt::Debug for BoundDormantKeyAgent {
 ///
 /// Both startup connection epochs have ended in exact EOF before this private
 /// capability is minted, and it exposes no runtime request operation or signing
-/// authority. Field order is security-significant: the running process is
-/// synchronously terminated before the root Job, transcript proof,
-/// install/release continuity, or held provisioning state are released. This
-/// does not prove a child key bundle, rollback anchor, protected settings state,
-/// or runtime/signing authority.
-#[must_use = "dropping the storage-proven Key Agent terminates its process tree"]
+/// authority. Field order is security-significant: Drop first releases the
+/// running activation and then the retained root Job before transcript proof,
+/// install/release continuity, or held provisioning state. Those owners attempt
+/// bounded synchronous cleanup, but Drop cannot report failure and retained
+/// kill-on-close Job closure remains the fallback. This does not prove a child
+/// key bundle, rollback anchor, protected settings state, or runtime/signing
+/// authority.
+#[must_use = "dropping this state attempts bounded Key Agent cleanup before kill-on-close fallback"]
 pub(crate) struct BoundStorageProvenKeyAgent {
     activation: RunningKeyAgentActivation,
     root_job: KeyAgentRootJob,
@@ -367,12 +371,13 @@ impl fmt::Debug for BoundStorageProvenKeyAgent {
 /// a future Approval parent binding.
 ///
 /// The aggregate is non-cloneable and exposes neither its process capability
-/// nor any retained proof. The exact Key Agent remains owned first so drop or
-/// unwind synchronously terminates its process tree before the narrow duplicate
-/// handle and all later-held evidence are released. This state does not prove
-/// that an Approval LPAC can use the handle or that a process DACL, distinct
-/// supervisor principal, mapped image, or endpoint topology exists.
-#[must_use = "dropping the prepared parent source terminates its exact Key Agent process tree"]
+/// nor any retained proof. The exact Key Agent remains owned first so Drop or
+/// unwind attempts bounded cleanup and releases its retained kill-on-close Job
+/// before the narrow duplicate handle and all later-held evidence. Drop cannot
+/// report synchronous cleanup failure. This state does not prove that an
+/// Approval LPAC can use the handle or that a process DACL, distinct supervisor
+/// principal, mapped image, or endpoint topology exists.
+#[must_use = "dropping this state attempts bounded Key Agent cleanup before kill-on-close fallback"]
 pub(crate) struct ApprovalParentSourcePreparedKeyAgent {
     storage_proven: BoundStorageProvenKeyAgent,
     parent_process: PreparedApprovalParentProcess,

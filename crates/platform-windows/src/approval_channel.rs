@@ -1,12 +1,10 @@
 //! Authenticated, one-shot approval-response verification.
 //!
 //! The internal channel deliberately has no public constructor.
-//! [`launch_approval_frontend`] is a crate-private legacy seam that can combine
-//! its parent response end with the exact held helper process that inherited the
-//! matching child end. It remains compiled for contract tests but has no
-//! production caller and is not a release activation path. The release still
-//! fails closed because no immutable compiled release policy is present and the
-//! helper binary remains disabled.
+//! [`launch_approval_frontend`] is a crate-private legacy seam retained only to
+//! reject calls before nonce, pipe, or process allocation. It cannot provide the
+//! separate logical Key Agent capability required by bootstrap v2. The sealed
+//! parent-bound activation module owns the sole hello-only resume edge.
 
 use core::fmt;
 use std::time::{Duration, Instant};
@@ -14,10 +12,6 @@ use std::time::{Duration, Instant};
 use approval_wire::{
     ApprovalChildHello, ApprovalParentHello, ApprovalRequest, Decision, RESPONSE_BYTES,
     decode_response, request_hash,
-};
-#[cfg(windows)]
-use approval_wire::{
-    CHILD_HELLO_BYTES, decode_child_hello, encode_parent_finish, encode_parent_hello,
 };
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -27,10 +21,8 @@ use crate::{helper::FileIdentity, launch::HeldProcessIdentity};
 #[cfg(windows)]
 use crate::{
     helper::VerifiedHelper,
-    launch::{
-        InheritedStdio, InjectedParentProof, LaunchError, LaunchedHelper, RestrictedLauncher,
-    },
-    pipe::{ApprovalResponseReader, PipeError, PrivateApprovalPipes},
+    launch::{LaunchError, LaunchedHelper, RestrictedLauncher},
+    pipe::{ApprovalResponseReader, PipeError},
 };
 
 const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v3";
@@ -87,30 +79,24 @@ pub enum ApprovalLaunchError {
     /// Secure challenge generation or channel arming failed closed.
     #[error("approval response channel could not be armed")]
     Channel(#[source] ApprovalChannelError),
+    /// The legacy launcher has no exact logical Key Agent parent aggregate.
+    #[error("approval logical parent is unavailable on the legacy launch path")]
+    LogicalParentUnavailable,
 }
 
-/// Launches the exact verified approval frontend with a private one-shot
-/// request/response channel.
+/// Rejects the legacy Approval launch path before allocating any resource.
 ///
-/// This is the only crate-private API that can arm a [`PendingApproval`]. It creates
-/// two unguessable local-only pipe instances, puts only the child read/write
-/// endpoints in the restricted launcher's explicit inherited-handle list,
-/// starts the held LPAC helper, closes the parent's copies of the child ends,
-/// authenticates the injected parent proof through a two-nonce bootstrap, and
-/// writes the nonce- and hash-bound canonical request before returning. Standard
-/// error is intentionally the same child response endpoint, so any diagnostic
-/// output makes the fixed response malformed instead of bypassing transcript
-/// checks.
-///
-/// Development builds still fail in `RestrictedLauncher::spawn` because the
-/// compiled release policy is absent. Every partial resource is owned by a
-/// stack value, so an error closes the pipes and, after launch, the helper's
-/// kill-on-close job.
+/// Bootstrap v2 requires an ordinary channel-supervisor proof and a separately
+/// injected logical Key Agent process capability. A [`RestrictedLauncher`] has
+/// no complete parent-bound aggregate, so fabricating placeholder coordinates
+/// here would weaken the child proof. Wrong roles retain their distinct error;
+/// the correct role then fails closed without sampling a nonce, creating a pipe,
+/// or starting a process.
 ///
 /// # Errors
 ///
-/// Returns [`ApprovalLaunchError`] for a wrong helper role, disabled/failed
-/// restricted launch, pipe construction or transfer failure, or deadline.
+/// Returns [`ApprovalLaunchError::WrongHelperRole`] for a wrong helper role and
+/// [`ApprovalLaunchError::LogicalParentUnavailable`] otherwise.
 #[cfg(windows)]
 pub(crate) fn launch_approval_frontend(
     launcher: RestrictedLauncher,
@@ -120,93 +106,8 @@ pub(crate) fn launch_approval_frontend(
     if !helper.is_approval_frontend() {
         return Err(ApprovalLaunchError::WrongHelperRole);
     }
-    let expires_at = Instant::now()
-        .checked_add(Duration::from_millis(u64::from(
-            request.expires_after_milliseconds(),
-        )))
-        .ok_or(ApprovalLaunchError::DeadlineElapsed)?;
-    let mut parent_nonce = Zeroizing::new([0_u8; CHANNEL_CHALLENGE_BYTES]);
-    getrandom::fill(&mut *parent_nonce)
-        .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
-    if is_all_zero(&*parent_nonce) {
-        return Err(ApprovalLaunchError::Channel(
-            ApprovalChannelError::TranscriptFailure,
-        ));
-    }
-    let pipes = PrivateApprovalPipes::create().map_err(map_setup_pipe_error)?;
-    let held_process = {
-        let inherited = InheritedStdio::for_child_pipe_servers(
-            pipes.child_input(),
-            pipes.child_output(),
-            pipes.child_output(),
-        )
-        .map_err(ApprovalLaunchError::Launch)?;
-        launcher
-            .spawn(helper, &inherited)
-            .map_err(ApprovalLaunchError::Launch)?
-    };
-    let setup = (|| -> Result<ApprovalResponseChannel, ApprovalLaunchError> {
-        let proof = require_parent_proof(held_process.parent_proof())?;
-        let parent_hello = ApprovalParentHello::new(
-            proof.process_id(),
-            proof.process_handle(),
-            proof.image_handle(),
-            *parent_nonce,
-        )
-        .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
-        let encoded_parent_hello = Zeroizing::new(encode_parent_hello(&parent_hello));
-        let (mut writer, reader) = pipes.into_parent();
-        writer
-            .write_bytes(&*encoded_parent_hello, expires_at)
-            .map_err(map_setup_pipe_error)?;
-        let child_hello_bytes = reader
-            .read_exact(CHILD_HELLO_BYTES, expires_at)
-            .map_err(map_setup_pipe_error)?;
-        let child_hello = decode_child_hello(&parent_hello, &child_hello_bytes)
-            .map_err(|_| ApprovalLaunchError::Channel(ApprovalChannelError::TranscriptFailure))?;
-        let bootstrap_nonces =
-            BootstrapNonces::from_hellos(*parent_nonce, &parent_hello, &child_hello)
-                .map_err(ApprovalLaunchError::Channel)?;
-        let channel = ApprovalResponseChannel::arm_from_held_helper(
-            helper,
-            &held_process,
-            request,
-            expires_at,
-            bootstrap_nonces,
-            Box::new(PlatformResponseReader(reader)),
-        )
-        .map_err(|error| match error {
-            ApprovalChannelError::DeadlineElapsed => ApprovalLaunchError::DeadlineElapsed,
-            _ => ApprovalLaunchError::Channel(error),
-        })?;
-        let parent_finish =
-            Zeroizing::new(encode_parent_finish(&parent_hello, &child_hello, request));
-        writer
-            .write_all(parent_finish.as_slice(), expires_at)
-            .map_err(map_setup_pipe_error)?;
-        Ok(channel)
-    })();
-    match setup {
-        Ok(channel) => Ok(PendingApproval {
-            helper: held_process,
-            channel,
-        }),
-        Err(error) => {
-            // Cleanup gets its own finite grace period: request expiry must not
-            // skip the synchronous reap attempt after terminating the Job.
-            let _ = held_process.terminate_and_wait(cleanup_deadline());
-            Err(error)
-        }
-    }
-}
-
-#[cfg(windows)]
-fn require_parent_proof(
-    proof: Option<InjectedParentProof>,
-) -> Result<InjectedParentProof, ApprovalLaunchError> {
-    proof.ok_or(ApprovalLaunchError::Channel(
-        ApprovalChannelError::IdentityMismatch,
-    ))
+    let _ = (launcher, request);
+    Err(ApprovalLaunchError::LogicalParentUnavailable)
 }
 
 #[cfg(windows)]
@@ -220,15 +121,6 @@ fn matches_verified_approval_helper(
         && helper_file == verified_helper.identity()
         && helper_manifest_digest == verified_helper.manifest_digest()
         && is_held_in_job
-}
-
-#[cfg(windows)]
-fn map_setup_pipe_error(error: PipeError) -> ApprovalLaunchError {
-    if matches!(error, PipeError::DeadlineElapsed) {
-        ApprovalLaunchError::DeadlineElapsed
-    } else {
-        ApprovalLaunchError::Pipe(error)
-    }
 }
 
 /// A held approval frontend plus its exact branded one-shot response channel.
@@ -267,12 +159,13 @@ impl fmt::Debug for PendingApproval {
     }
 }
 
-/// Proof that one exact response arrived over the verified, one-shot helper
-/// channel owned by the Key Agent.
+/// Proof that one exact response arrived over verified one-shot helper transport.
 ///
-/// This value is non-cloneable and can be consumed only once. The current
-/// fail-closed build cannot construct it through a public API, so safe Rust
-/// callers cannot fabricate approval digest/nonce bytes and reach signing.
+/// The transport is bound to ordinary channel-supervisor evidence; it does not
+/// attribute endpoint ownership or writes to the separately proven logical Key
+/// Agent. This value is non-cloneable and can be consumed only once. No
+/// production constructor currently reaches this state, so safe Rust callers
+/// cannot fabricate approval digest/nonce bytes and reach signing.
 #[derive(Eq, PartialEq)]
 pub struct VerifiedApprovalResponse {
     decision: VerifiedApprovalDecision,
@@ -310,13 +203,10 @@ impl VerifiedApprovalResponse {
     }
 }
 
-/// Opaque, non-cloneable capability for one response from one held helper.
+/// Internal pair of authenticated, nonzero bootstrap nonces.
 ///
-/// There is intentionally no public constructor. The high-level approval
-/// launcher atomically binds its deadline-capable private reader to the exact
-/// handle included in the helper's inherited list. Accepting an arbitrary file,
-/// raw handle, PID, or byte slice here would invalidate the authentication
-/// claim.
+/// Copyability is confined to this private transcript helper and does not mint
+/// a response capability or expose either nonce outside this module.
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct BootstrapNonces {
     parent: [u8; CHANNEL_CHALLENGE_BYTES],
@@ -347,6 +237,13 @@ impl BootstrapNonces {
     }
 }
 
+/// Opaque, non-cloneable verifier state for one response from one held helper.
+///
+/// There is intentionally no public constructor, and no production path
+/// currently arms this state. A future sealed transition must bind its concrete
+/// deadline-capable reader to the exact launcher-owned response endpoint and
+/// held process identity. Accepting an arbitrary file, raw handle, PID, or byte
+/// slice here would invalidate the authentication claim.
 struct ApprovalResponseChannel {
     bound_identity: TranscriptIdentity,
     expected_digest: [u8; 32],
@@ -430,8 +327,9 @@ impl ApprovalResponseChannel {
 
     /// Arms a channel from already branded launcher-owned resources.
     ///
-    /// This stays private so only the high-level launcher can supply the exact
-    /// inherited-endpoint reader and held identity.
+    /// This remains private and currently has no production arming caller:
+    /// legacy launch rejects before allocation and sealed v2 stops after child
+    /// hello. Module-local tests alone supply these branded resources.
     fn arm_from_branded_reader(
         bound_identity: HeldProcessIdentity,
         request: &ApprovalRequest,
@@ -555,8 +453,9 @@ impl fmt::Debug for ApprovalResponseChannel {
 /// supplied trusted monotonic deadline.
 ///
 /// The trait is private: accepting caller-defined readers would turn arbitrary
-/// bytes into an authenticated-helper claim. There is no production
-/// implementation until the launcher returns a branded inherited pipe end.
+/// bytes into an authenticated-helper claim. Its concrete Windows adapter is
+/// production-compiled, but no production constructor or caller currently arms
+/// it. A future sealed parent-bound transition must supply the branded endpoint.
 trait OneShotResponseReader {
     fn read_once(self: Box<Self>, deadline: Instant) -> Result<Vec<u8>, ApprovalChannelError>;
 }
@@ -684,16 +583,13 @@ mod tests {
         OneShotResponseReader, TranscriptIdentity, VerifiedApprovalDecision,
     };
     #[cfg(windows)]
-    use super::{
-        ApprovalLaunchError, launch_approval_frontend, matches_verified_approval_helper,
-        require_parent_proof,
-    };
+    use super::{ApprovalLaunchError, launch_approval_frontend, matches_verified_approval_helper};
     use crate::helper::FileIdentity;
     #[cfg(windows)]
     use crate::{
         attestation::ReleaseAttestation,
         helper::VerifiedHelper,
-        launch::{LaunchError, NoNetworkLpacProfile, RestrictedLauncher},
+        launch::{NoNetworkLpacProfile, RestrictedLauncher},
     };
 
     #[derive(Debug)]
@@ -866,7 +762,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let parent_nonce = [60; CHANNEL_CHALLENGE_BYTES];
         let child_nonce = [70; CHANNEL_CHALLENGE_BYTES];
-        let parent_hello = ApprovalParentHello::new(41, 42, 43, parent_nonce)?;
+        let parent_hello = ApprovalParentHello::new(41, 42, 43, 44, 45, parent_nonce)?;
         let child_hello = ApprovalChildHello::new(child_nonce)?;
 
         let validated = BootstrapNonces::from_hellos(parent_nonce, &parent_hello, &child_hello)?;
@@ -1131,17 +1027,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn missing_injected_parent_proof_fails_closed_before_bootstrap() {
-        assert!(matches!(
-            require_parent_proof(None),
-            Err(ApprovalLaunchError::Channel(
-                ApprovalChannelError::IdentityMismatch
-            ))
-        ));
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn arming_rejects_verified_artifact_role_identity_digest_or_job_mismatch()
     -> Result<(), Box<dyn std::error::Error>> {
         let approval = VerifiedHelper::for_approval_channel_test(true)?;
@@ -1203,21 +1088,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn high_level_launch_cleans_private_pipes_when_release_gate_is_disabled()
+    fn high_level_launch_rejects_missing_logical_parent_before_bootstrap_resources()
     -> Result<(), Box<dyn std::error::Error>> {
         let approval_frontend = VerifiedHelper::for_approval_channel_test(true)?;
-        for _ in 0..32 {
-            let launcher =
-                RestrictedLauncher::new(ReleaseAttestation::default(), NoNetworkLpacProfile::v1());
-            let result = launch_approval_frontend(launcher, &approval_frontend, &request()?);
-            assert!(
-                matches!(
-                    &result,
-                    Err(ApprovalLaunchError::Launch(LaunchError::ReleaseNotAttested))
-                ),
-                "unexpected disabled-launch result: {result:?}"
-            );
-        }
+        let launcher =
+            RestrictedLauncher::new(ReleaseAttestation::default(), NoNetworkLpacProfile::v1());
+        assert!(matches!(
+            launch_approval_frontend(launcher, &approval_frontend, &request()?),
+            Err(ApprovalLaunchError::LogicalParentUnavailable)
+        ));
         Ok(())
     }
 }

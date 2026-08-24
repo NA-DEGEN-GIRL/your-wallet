@@ -12,7 +12,7 @@ pub use approval_wire::{
     OperationKind, RiskLevel, SimulationStatus,
 };
 
-/// Maximum bytes accepted from the inherited Key Agent channel.
+/// Maximum bytes accepted from the inherited channel-supervisor request transport.
 pub const MAX_REQUEST_BYTES: u64 = approval_wire::MAX_REQUEST_BYTES as u64;
 
 /// Continuous hold duration required for a high-risk approval.
@@ -491,7 +491,7 @@ pub fn read_request(reader: &mut impl Read) -> Result<ApprovalRequest, ApprovalE
     approval_wire::decode_request(&bytes).map_err(ApprovalError::from)
 }
 
-/// Encode the only response shape accepted by the Key Agent.
+/// Encode the only response shape accepted by the authenticated parent verifier.
 ///
 /// # Errors
 ///

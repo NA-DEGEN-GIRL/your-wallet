@@ -5,7 +5,7 @@
 use core::ffi::c_void;
 use core::fmt;
 use core::marker::PhantomData;
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 use core::ptr;
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -20,9 +20,10 @@ use approval_wire::{
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
 use windows::Win32::Foundation::{
-    CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_TOKEN,
-    ERROR_SUCCESS, FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HWND,
-    INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_TIMEOUT,
+    CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DUPLICATE_SAME_ACCESS,
+    DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_NO_TOKEN, ERROR_SUCCESS, FILETIME,
+    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HWND, INVALID_HANDLE_VALUE,
+    LUID, SetHandleInformation, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
 use windows::Win32::Security::WinTrust::{
@@ -33,13 +34,17 @@ use windows::Win32::Security::WinTrust::{
     WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 use windows::Win32::Security::{
-    EqualSid, FreeSid, GetTokenInformation, IsValidSid, PSID, TOKEN_APPCONTAINER_INFORMATION,
-    TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-    TokenIsLessPrivilegedAppContainer, TokenSessionId,
+    EqualSid, FreeSid, GetTokenInformation, IsValidSid, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+    PSID, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_ADJUST_SESSIONID, TOKEN_APPCONTAINER_INFORMATION, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+    TOKEN_IMPERSONATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_QUERY_SOURCE, TokenAppContainerSid,
+    TokenCapabilities, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenPrivileges,
+    TokenSessionId,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_TYPE_PIPE, GETFINALPATHNAMEBYHANDLE_FLAGS, GetFileType, GetFileVersionInfoSizeW,
-    GetFileVersionInfoW, GetFinalPathNameByHandleW, VS_FIXEDFILEINFO, VerQueryValueW,
+    DELETE, FILE_TYPE_PIPE, GETFINALPATHNAMEBYHANDLE_FLAGS, GetFileType, GetFileVersionInfoSizeW,
+    GetFileVersionInfoW, GetFinalPathNameByHandleW, READ_CONTROL, VS_FIXEDFILEINFO, VerQueryValueW,
+    WRITE_DAC, WRITE_OWNER,
 };
 use windows::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -51,8 +56,12 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, GetProcessId, GetProcessTimes, OpenProcessToken,
-    OpenThreadToken, PROCESS_NAME_WIN32, QueryFullProcessImageNameW, WaitForSingleObject,
+    GetCurrentProcess, GetCurrentThread, GetProcessId, GetProcessTimes, OpenProcess,
+    OpenProcessToken, OpenThreadToken, PROCESS_ACCESS_RIGHTS, PROCESS_CREATE_PROCESS,
+    PROCESS_CREATE_THREAD, PROCESS_DUP_HANDLE, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
+    PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    PROCESS_VM_WRITE, QueryFullProcessImageNameW, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -60,6 +69,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 use super::AuthenticatedApprovalRequest;
 
 const PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
+const KEY_AGENT_PROFILE_V1_NAME: &str = "YourWallet.KeyAgent.LPAC.v1";
+const DEBUG_PRIVILEGE_NAME: &str = "SeDebugPrivilege";
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
 const MAX_PATH_UNITS: usize = 32_768;
 const VS_FIXEDFILEINFO_SIGNATURE: u32 = 0xFEEF_04BD;
@@ -87,9 +98,12 @@ struct ProcessObservation {
 #[must_use = "the Approval runtime must retain its exact parent/channel binding"]
 pub(super) struct VerifiedParentChannelBinding {
     stdio: SealedApprovalStdio,
-    process: OwnedHandle,
-    image: OwnedHandle,
-    parent: ProcessObservation,
+    supervisor_process: OwnedHandle,
+    supervisor_image: OwnedHandle,
+    logical_parent_process: OwnedHandle,
+    supervisor: ProcessObservation,
+    logical_parent: ProcessObservation,
+    child: ProcessObservation,
 }
 
 #[must_use = "binary mode and request processing require the sealed Approval stdio proof"]
@@ -148,6 +162,7 @@ pub(super) fn authenticate_request()
 fn verify_self(sealed: &SealedApprovalStdio) -> Result<(), approval_ui::ApprovalError> {
     set_binary_stdio(sealed)?;
     verify_lpac_token()?;
+    require_debug_privilege_absent()?;
     verify_job()?;
     Ok(())
 }
@@ -161,14 +176,52 @@ impl fmt::Debug for VerifiedParentChannelBinding {
 impl VerifiedParentChannelBinding {
     pub(super) fn revalidate(&self) -> Result<(), approval_ui::ApprovalError> {
         validate_parent_proof_handle_set(
-            raw(&self.process),
-            raw(&self.image),
+            raw(&self.supervisor_process),
+            raw(&self.supervisor_image),
+            raw(&self.logical_parent_process),
             self.stdio.input,
             self.stdio.output,
         )?;
-        (live_process_observation(raw(&self.process))? == self.parent)
-            .then_some(())
-            .ok_or_else(|| native_failure(()))
+        let supervisor = live_process_observation(raw(&self.supervisor_process))?;
+        let logical_parent = live_process_observation(raw(&self.logical_parent_process))?;
+        // SAFETY: this pseudo handle denotes the exact current Approval process.
+        let child = live_process_observation(unsafe { GetCurrentProcess() })?;
+        if supervisor != self.supervisor
+            || logical_parent != self.logical_parent
+            || child != self.child
+        {
+            return Err(native_failure(()));
+        }
+        verify_channel_observations(
+            self.supervisor.process_id,
+            supervisor,
+            child.session_id,
+            pipe_client(self.stdio.input)?,
+            pipe_client(self.stdio.output)?,
+        )?;
+        verify_logical_parent_observations(
+            self.logical_parent.process_id,
+            supervisor,
+            logical_parent,
+            child,
+        )?;
+        verify_logical_parent_identity(&self.logical_parent_process)?;
+        validate_parent_proof_handle_set(
+            raw(&self.supervisor_process),
+            raw(&self.supervisor_image),
+            raw(&self.logical_parent_process),
+            self.stdio.input,
+            self.stdio.output,
+        )?;
+        if live_process_observation(raw(&self.supervisor_process))? != self.supervisor
+            || live_process_observation(raw(&self.logical_parent_process))?
+                != self.logical_parent
+            // SAFETY: this pseudo handle denotes the exact current Approval process.
+            || live_process_observation(unsafe { GetCurrentProcess() })? != self.child
+        {
+            return Err(native_failure(()));
+        }
+        Ok(())
     }
 }
 
@@ -287,12 +340,19 @@ fn exact_objects_are_pairwise_distinct(handles: &[HANDLE]) -> bool {
 }
 
 fn validate_parent_proof_handle_set(
-    process: HANDLE,
-    image: HANDLE,
+    supervisor_process: HANDLE,
+    supervisor_image: HANDLE,
+    logical_parent_process: HANDLE,
     stdin: HANDLE,
     stdout: HANDLE,
 ) -> Result<(), approval_ui::ApprovalError> {
-    let handles = [stdin, stdout, process, image];
+    let handles = [
+        stdin,
+        stdout,
+        supervisor_process,
+        supervisor_image,
+        logical_parent_process,
+    ];
     if handles.iter().copied().any(invalid_handle)
         || handles
             .iter()
@@ -332,6 +392,30 @@ fn verify_channel_observations(
         || child_session_id != parent.session_id
         || input_peer != parent
         || output_peer != parent
+    {
+        return Err(native_failure(()));
+    }
+    Ok(())
+}
+
+fn verify_logical_parent_observations(
+    hello_logical_parent_process_id: u32,
+    supervisor: ProcessObservation,
+    logical_parent: ProcessObservation,
+    child: ProcessObservation,
+) -> Result<(), approval_ui::ApprovalError> {
+    if supervisor.process_id == 0
+        || supervisor.session_id == u32::MAX
+        || logical_parent.process_id == 0
+        || logical_parent.session_id == u32::MAX
+        || child.process_id == 0
+        || child.session_id == u32::MAX
+        || hello_logical_parent_process_id != logical_parent.process_id
+        || logical_parent.process_id == supervisor.process_id
+        || logical_parent.process_id == child.process_id
+        || supervisor.process_id == child.process_id
+        || logical_parent.session_id != supervisor.session_id
+        || logical_parent.session_id != child.session_id
     {
         return Err(native_failure(()));
     }
@@ -416,9 +500,18 @@ fn derive_expected_profile_sid(
 }
 
 fn verify_lpac_token() -> Result<(), approval_ui::ApprovalError> {
+    // SAFETY: this pseudo handle denotes the exact current Approval process.
+    verify_process_lpac_token(unsafe { GetCurrentProcess() }, PROFILE_V1_NAME)
+}
+
+fn verify_process_lpac_token(
+    process: HANDLE,
+    profile_name: &str,
+) -> Result<(), approval_ui::ApprovalError> {
     let mut raw_token = HANDLE::default();
-    // SAFETY: output receives one owned query handle for the current process.
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) }
+    // SAFETY: process is the retained exact process object selected by the
+    // caller. Output receives one fresh query-only token handle.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut raw_token) }
         .map_err(native_failure)?;
     // SAFETY: successful OpenProcessToken returned unique ownership.
     let token = unsafe { owned_handle(raw_token.0 as usize as u64)? };
@@ -447,7 +540,7 @@ fn verify_lpac_token() -> Result<(), approval_ui::ApprovalError> {
     let container = unsafe {
         ptr::read_unaligned(sid_buffer.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>())
     };
-    let profile = wide_nul(PROFILE_V1_NAME);
+    let profile = wide_nul(profile_name);
     let expected = derive_expected_profile_sid(&profile)?;
     expected
         .matches(container.TokenAppContainer)?
@@ -545,6 +638,197 @@ fn token_information(
     Ok(buffer)
 }
 
+fn require_debug_privilege_absent() -> Result<(), approval_ui::ApprovalError> {
+    let name = wide_nul(DEBUG_PRIVILEGE_NAME);
+    let mut debug_luid = LUID::default();
+    // SAFETY: the local-system lookup reads one NUL-terminated constant and
+    // writes the stable privilege LUID into initialized storage.
+    unsafe { LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(name.as_ptr()), &raw mut debug_luid) }
+        .map_err(native_failure)?;
+
+    let mut raw_token = HANDLE::default();
+    // SAFETY: output receives one fresh query-only token handle for the exact
+    // current Approval process.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) }
+        .map_err(native_failure)?;
+    // SAFETY: successful OpenProcessToken returned unique ownership.
+    let token = unsafe { owned_handle(raw_token.0 as usize as u64)? };
+    let privileges = token_information(&token, TokenPrivileges)?;
+    let returned_bytes = privileges.len().saturating_mul(size_of::<usize>());
+    let entries_offset = offset_of!(TOKEN_PRIVILEGES, Privileges);
+    if returned_bytes < entries_offset {
+        return Err(native_failure(()));
+    }
+    // SAFETY: the aligned token buffer contains at least the leading count.
+    let count = unsafe { ptr::read_unaligned(privileges.as_ptr().cast::<u32>()) };
+    let count = usize::try_from(count).map_err(native_failure)?;
+    let required = count
+        .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+        .and_then(|bytes| entries_offset.checked_add(bytes))
+        .ok_or_else(|| native_failure(()))?;
+    if required > returned_bytes {
+        return Err(native_failure(()));
+    }
+
+    let entries = privileges.as_ptr().cast::<u8>();
+    for index in 0..count {
+        let offset = index
+            .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+            .and_then(|bytes| entries_offset.checked_add(bytes))
+            .ok_or_else(|| native_failure(()))?;
+        // SAFETY: the complete entry range was bounds-checked above.
+        let entry =
+            unsafe { ptr::read_unaligned(entries.add(offset).cast::<LUID_AND_ATTRIBUTES>()) };
+        if entry.Luid.LowPart == debug_luid.LowPart && entry.Luid.HighPart == debug_luid.HighPart {
+            return Err(native_failure(()));
+        }
+    }
+    Ok(())
+}
+
+fn require_token_right_denied(
+    process: HANDLE,
+    access: TOKEN_ACCESS_MASK,
+) -> Result<(), approval_ui::ApprovalError> {
+    let mut token = HANDLE::default();
+    // SAFETY: the retained logical-parent process handle remains live. Output
+    // receives ownership only on an unexpected success.
+    let result = unsafe { OpenProcessToken(process, access, &raw mut token) };
+    match result {
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+        Err(_) => Err(native_failure(())),
+        Ok(()) => {
+            if !invalid_handle(token) {
+                // SAFETY: unexpected success returned one fresh owned handle.
+                unsafe {
+                    let _ = CloseHandle(token);
+                }
+            }
+            Err(native_failure(()))
+        }
+    }
+}
+
+fn require_local_duplicate_right_denied(
+    process: HANDLE,
+    access: u32,
+) -> Result<(), approval_ui::ApprovalError> {
+    let mut amplified = HANDLE::default();
+    // SAFETY: this attempts to derive a stronger local handle from the exact
+    // retained source. Any unexpected owned result is closed below.
+    let result = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            process,
+            GetCurrentProcess(),
+            &raw mut amplified,
+            access,
+            false,
+            DUPLICATE_HANDLE_OPTIONS(0),
+        )
+    };
+    match result {
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+        Err(_) => Err(native_failure(())),
+        Ok(()) => {
+            if !invalid_handle(amplified) {
+                // SAFETY: unexpected success returned one fresh owned handle.
+                unsafe {
+                    let _ = CloseHandle(amplified);
+                }
+            }
+            Err(native_failure(()))
+        }
+    }
+}
+
+fn require_process_right_denied(
+    process_id: u32,
+    access: PROCESS_ACCESS_RIGHTS,
+) -> Result<(), approval_ui::ApprovalError> {
+    // SAFETY: this requests one explicit right against the observed live PID
+    // and adopts a handle only on unexpected success.
+    match unsafe { OpenProcess(access, false, process_id) } {
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+        Err(_) => Err(native_failure(())),
+        Ok(handle) => {
+            if !invalid_handle(handle) {
+                // SAFETY: unexpected success returned one fresh owned handle.
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
+            }
+            Err(native_failure(()))
+        }
+    }
+}
+
+fn verify_logical_parent_identity(process: &OwnedHandle) -> Result<(), approval_ui::ApprovalError> {
+    let normalized_path = normalize_path(&process_image_path(process)?);
+    if !is_key_agent_image_path(&normalized_path) {
+        return Err(native_failure(()));
+    }
+    verify_process_lpac_token(raw(process), KEY_AGENT_PROFILE_V1_NAME)?;
+
+    for access in [
+        TOKEN_DUPLICATE,
+        TOKEN_ASSIGN_PRIMARY,
+        TOKEN_IMPERSONATE,
+        TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_ADJUST_GROUPS,
+        TOKEN_ADJUST_DEFAULT,
+        TOKEN_ADJUST_SESSIONID,
+        TOKEN_QUERY_SOURCE,
+        TOKEN_ACCESS_MASK(WRITE_DAC.0),
+        TOKEN_ACCESS_MASK(WRITE_OWNER.0),
+        TOKEN_ACCESS_MASK(READ_CONTROL.0),
+        TOKEN_ACCESS_MASK(DELETE.0),
+    ] {
+        require_token_right_denied(raw(process), access)?;
+    }
+
+    for access in [
+        PROCESS_DUP_HANDLE.0,
+        PROCESS_TERMINATE.0,
+        PROCESS_CREATE_THREAD.0,
+        PROCESS_VM_OPERATION.0,
+        PROCESS_VM_READ.0,
+        PROCESS_VM_WRITE.0,
+        PROCESS_CREATE_PROCESS.0,
+        PROCESS_QUERY_INFORMATION.0,
+        PROCESS_SET_QUOTA.0,
+        PROCESS_SET_INFORMATION.0,
+        0x0000_2000,
+        PROCESS_SUSPEND_RESUME.0,
+        WRITE_DAC.0,
+        WRITE_OWNER.0,
+        READ_CONTROL.0,
+        DELETE.0,
+    ] {
+        require_local_duplicate_right_denied(raw(process), access)?;
+    }
+
+    let process_id = live_process_observation(raw(process))?.process_id;
+    for access in [
+        PROCESS_DUP_HANDLE,
+        PROCESS_QUERY_INFORMATION,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_ACCESS_RIGHTS(0x0000_2000),
+        PROCESS_ACCESS_RIGHTS(0x0010_0000),
+        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | 0x0010_0000),
+        PROCESS_ACCESS_RIGHTS(WRITE_DAC.0),
+    ] {
+        require_process_right_denied(process_id, access)?;
+    }
+    Ok(())
+}
+
+fn is_key_agent_image_path(path: &str) -> bool {
+    path.rsplit('\\')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("key-agent.exe"))
+}
+
 fn process_session_id(process: HANDLE) -> Result<u32, approval_ui::ApprovalError> {
     let mut token = HANDLE::default();
     // SAFETY: process is a retained process object or the current-process pseudo
@@ -582,68 +866,97 @@ fn bind_channels_to_parent(
     stdio: SealedApprovalStdio,
     policy: ParentTrustPolicy,
 ) -> Result<VerifiedParentChannelBinding, approval_ui::ApprovalError> {
-    let process_value = usize::try_from(hello.process_handle()).map_err(native_failure)?;
-    let image_value = usize::try_from(hello.image_handle()).map_err(native_failure)?;
+    let supervisor_process_value =
+        usize::try_from(hello.supervisor_process_handle()).map_err(native_failure)?;
+    let supervisor_image_value =
+        usize::try_from(hello.supervisor_image_handle()).map_err(native_failure)?;
+    let logical_parent_process_value =
+        usize::try_from(hello.logical_parent_process_handle()).map_err(native_failure)?;
     let stdin_value = stdio.input.0 as usize;
     let stdout_value = stdio.output.0 as usize;
-    if process_value == stdin_value
-        || process_value == stdout_value
-        || image_value == stdin_value
-        || image_value == stdout_value
-        || process_value == image_value
+    let values = [
+        stdin_value,
+        stdout_value,
+        supervisor_process_value,
+        supervisor_image_value,
+        logical_parent_process_value,
+    ];
+    if values
+        .iter()
+        .enumerate()
+        .any(|(index, first)| values.iter().skip(index + 1).any(|second| first == second))
     {
         return Err(native_failure(()));
     }
-    let process_candidate = HANDLE(process_value as RawHandle);
-    let image_candidate = HANDLE(image_value as RawHandle);
+    let supervisor_process_candidate = HANDLE(supervisor_process_value as RawHandle);
+    let supervisor_image_candidate = HANDLE(supervisor_image_value as RawHandle);
+    let logical_parent_process_candidate = HANDLE(logical_parent_process_value as RawHandle);
     validate_parent_proof_handle_set(
-        process_candidate,
-        image_candidate,
+        supervisor_process_candidate,
+        supervisor_image_candidate,
+        logical_parent_process_candidate,
         stdio.input,
         stdio.output,
     )?;
-    let process_copy = duplicate_untrusted_candidate(process_candidate)?;
-    let image_copy = duplicate_untrusted_candidate(image_candidate)?;
+    let supervisor_process_copy = duplicate_untrusted_candidate(supervisor_process_candidate)?;
+    let supervisor_image_copy = duplicate_untrusted_candidate(supervisor_image_candidate)?;
+    let logical_parent_process_copy =
+        duplicate_untrusted_candidate(logical_parent_process_candidate)?;
     // Only these fresh child-created duplicates become authoritative. The
-    // launcher knows the numeric injected slots and may still retain a process
-    // handle with PROCESS_DUP_HANDLE, so adopting either original after a
-    // check would reopen a remote close/reuse race. This one-shot child leaves
-    // exactly those two source slots for process-exit cleanup.
+    // launcher knows the numeric injected slots and may still retain handles
+    // with PROCESS_DUP_HANDLE, so adopting an original after a check would
+    // reopen a remote close/reuse race. This one-shot child leaves all three
+    // source slots for process-exit cleanup.
     validate_parent_proof_handle_set(
-        raw(&process_copy),
-        raw(&image_copy),
+        raw(&supervisor_process_copy),
+        raw(&supervisor_image_copy),
+        raw(&logical_parent_process_copy),
         stdio.input,
         stdio.output,
     )?;
-    let parent = live_process_observation(raw(&process_copy))?;
+    let supervisor = live_process_observation(raw(&supervisor_process_copy))?;
+    let logical_parent = live_process_observation(raw(&logical_parent_process_copy))?;
     // SAFETY: this pseudo handle denotes the exact current Approval process.
-    let child_process = unsafe { GetCurrentProcess() };
-    let child_session_id = process_session_id(child_process)?;
+    let child = live_process_observation(unsafe { GetCurrentProcess() })?;
     let input_peer = pipe_client(stdio.input)?;
     let output_peer = pipe_client(stdio.output)?;
     verify_channel_observations(
-        hello.process_id(),
-        parent,
-        child_session_id,
+        hello.supervisor_process_id(),
+        supervisor,
+        child.session_id,
         input_peer,
         output_peer,
     )?;
-    require_parent_created_first(&process_copy)?;
-    verify_parent_artifact(&process_copy, &image_copy, policy)?;
+    verify_logical_parent_observations(
+        hello.logical_parent_process_id(),
+        supervisor,
+        logical_parent,
+        child,
+    )?;
+    require_parent_created_first(&supervisor_process_copy)?;
+    require_parent_created_first(&logical_parent_process_copy)?;
+    verify_parent_artifact(&supervisor_process_copy, &supervisor_image_copy, policy)?;
+    verify_logical_parent_identity(&logical_parent_process_copy)?;
     validate_parent_proof_handle_set(
-        raw(&process_copy),
-        raw(&image_copy),
+        raw(&supervisor_process_copy),
+        raw(&supervisor_image_copy),
+        raw(&logical_parent_process_copy),
         stdio.input,
         stdio.output,
     )?;
-    if live_process_observation(raw(&process_copy))? != parent {
+    if live_process_observation(raw(&supervisor_process_copy))? != supervisor
+        || live_process_observation(raw(&logical_parent_process_copy))? != logical_parent
+    {
         return Err(native_failure(()));
     }
     Ok(VerifiedParentChannelBinding {
         stdio,
-        process: process_copy,
-        image: image_copy,
-        parent,
+        supervisor_process: supervisor_process_copy,
+        supervisor_image: supervisor_image_copy,
+        logical_parent_process: logical_parent_process_copy,
+        supervisor,
+        logical_parent,
+        child,
     })
 }
 
@@ -962,12 +1275,14 @@ mod tests {
     use std::sync::Mutex;
 
     use super::{
-        COMPILED_PARENT_POLICY, PROFILE_V1_NAME, ProcessObservation, SealedApprovalStdio,
-        UnvalidatedProfileApiSid, VS_FIXEDFILEINFO_SIGNATURE, VerifiedParentChannelBinding,
-        decode_fixed_file_version, derive_expected_profile_sid, duplicate_untrusted_candidate,
-        handle_flags, live_process_observation, normalize_path, process_session_id, same_object,
+        COMPILED_PARENT_POLICY, KEY_AGENT_PROFILE_V1_NAME, PROFILE_V1_NAME, ProcessObservation,
+        SealedApprovalStdio, UnvalidatedProfileApiSid, VS_FIXEDFILEINFO_SIGNATURE,
+        VerifiedParentChannelBinding, decode_fixed_file_version, derive_expected_profile_sid,
+        duplicate_untrusted_candidate, handle_flags, is_key_agent_image_path,
+        live_process_observation, normalize_path, process_session_id, same_object,
         seal_exact_approval_stdio, seal_inherited_approval_stdio, set_binary_stdio,
-        validate_parent_proof_handle_set, verify_channel_observations, wide_nul,
+        validate_parent_proof_handle_set, verify_channel_observations,
+        verify_logical_parent_observations, wide_nul,
     };
     use approval_ui::ApprovalError;
     use windows::Win32::Foundation::{
@@ -1369,27 +1684,46 @@ mod tests {
     }
 
     #[test]
-    fn parent_proof_set_requires_four_distinct_exact_zero_handles() -> Result<(), ApprovalError> {
+    fn parent_proof_set_requires_five_distinct_exact_zero_handles() -> Result<(), ApprovalError> {
         let (stdin, _stdin_peer) = anonymous_pipe()?;
         let (stdout, _stdout_peer) = anonymous_pipe()?;
-        let (process, _process_peer) = anonymous_pipe()?;
-        let (image, _image_peer) = anonymous_pipe()?;
-        let handles = [raw(&stdin), raw(&stdout), raw(&process), raw(&image)];
-        validate_parent_proof_handle_set(handles[2], handles[3], handles[0], handles[1])?;
-        assert!(
-            validate_parent_proof_handle_set(handles[2], handles[2], handles[0], handles[1])
+        let (supervisor_process, _supervisor_process_peer) = anonymous_pipe()?;
+        let (supervisor_image, _supervisor_image_peer) = anonymous_pipe()?;
+        let (logical_parent_process, _logical_parent_process_peer) = anonymous_pipe()?;
+        let handles = [
+            raw(&stdin),
+            raw(&stdout),
+            raw(&supervisor_process),
+            raw(&supervisor_image),
+            raw(&logical_parent_process),
+        ];
+        validate_parent_proof_handle_set(
+            handles[2], handles[3], handles[4], handles[0], handles[1],
+        )?;
+
+        for first in 0..handles.len() {
+            for second in (first + 1)..handles.len() {
+                let mut aliased = handles;
+                aliased[second] = aliased[first];
+                assert!(
+                    validate_parent_proof_handle_set(
+                        aliased[2], aliased[3], aliased[4], aliased[0], aliased[1],
+                    )
+                    .is_err()
+                );
+            }
+        }
+
+        for handle in handles {
+            set_inherit(handle, true)?;
+            assert!(
+                validate_parent_proof_handle_set(
+                    handles[2], handles[3], handles[4], handles[0], handles[1],
+                )
                 .is_err()
-        );
-        assert!(
-            validate_parent_proof_handle_set(handles[0], handles[3], handles[0], handles[1])
-                .is_err()
-        );
-        set_inherit(handles[3], true)?;
-        assert!(
-            validate_parent_proof_handle_set(handles[2], handles[3], handles[0], handles[1])
-                .is_err()
-        );
-        set_inherit(handles[3], false)?;
+            );
+            set_inherit(handle, false)?;
+        }
         Ok(())
     }
 
@@ -1495,6 +1829,148 @@ mod tests {
                 })
         );
         Ok(())
+    }
+
+    fn distinct_logical_parent_observations()
+    -> (ProcessObservation, ProcessObservation, ProcessObservation) {
+        (
+            ProcessObservation {
+                process_id: 42,
+                session_id: 7,
+            },
+            ProcessObservation {
+                process_id: 84,
+                session_id: 7,
+            },
+            ProcessObservation {
+                process_id: 126,
+                session_id: 7,
+            },
+        )
+    }
+
+    #[test]
+    fn logical_parent_observations_require_distinct_exact_process_ids() -> Result<(), ApprovalError>
+    {
+        let (supervisor, logical_parent, child) = distinct_logical_parent_observations();
+        verify_logical_parent_observations(84, supervisor, logical_parent, child)?;
+
+        let invalid = [
+            (0, supervisor, logical_parent, child),
+            (85, supervisor, logical_parent, child),
+            (
+                84,
+                ProcessObservation {
+                    process_id: 0,
+                    ..supervisor
+                },
+                logical_parent,
+                child,
+            ),
+            (
+                84,
+                supervisor,
+                ProcessObservation {
+                    process_id: 0,
+                    ..logical_parent
+                },
+                child,
+            ),
+            (
+                84,
+                supervisor,
+                ProcessObservation {
+                    process_id: supervisor.process_id,
+                    ..logical_parent
+                },
+                child,
+            ),
+            (
+                84,
+                supervisor,
+                ProcessObservation {
+                    process_id: child.process_id,
+                    ..logical_parent
+                },
+                child,
+            ),
+            (
+                84,
+                supervisor,
+                logical_parent,
+                ProcessObservation {
+                    process_id: supervisor.process_id,
+                    ..child
+                },
+            ),
+            (
+                84,
+                supervisor,
+                logical_parent,
+                ProcessObservation {
+                    process_id: 0,
+                    ..child
+                },
+            ),
+        ];
+        assert!(
+            invalid
+                .into_iter()
+                .all(|(hello, supervisor, logical, child)| {
+                    verify_logical_parent_observations(hello, supervisor, logical, child).is_err()
+                })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn logical_parent_observations_require_one_valid_session() {
+        let (supervisor, logical_parent, child) = distinct_logical_parent_observations();
+        let invalid = [
+            (
+                ProcessObservation {
+                    session_id: u32::MAX,
+                    ..supervisor
+                },
+                logical_parent,
+                child,
+            ),
+            (
+                supervisor,
+                ProcessObservation {
+                    session_id: 8,
+                    ..logical_parent
+                },
+                child,
+            ),
+            (
+                supervisor,
+                ProcessObservation {
+                    session_id: u32::MAX,
+                    ..logical_parent
+                },
+                child,
+            ),
+            (
+                supervisor,
+                logical_parent,
+                ProcessObservation {
+                    session_id: 8,
+                    ..child
+                },
+            ),
+            (
+                supervisor,
+                logical_parent,
+                ProcessObservation {
+                    session_id: u32::MAX,
+                    ..child
+                },
+            ),
+        ];
+        assert!(invalid.into_iter().all(|(supervisor, logical, child)| {
+            verify_logical_parent_observations(84, supervisor, logical, child).is_err()
+        }));
     }
 
     #[test]
@@ -1673,6 +2149,7 @@ mod tests {
     #[test]
     fn approval_profile_identity_is_revision_bound_and_stable() {
         assert_eq!(PROFILE_V1_NAME, "YourWallet.ApprovalFrontend.LPAC.v1");
+        assert_eq!(KEY_AGENT_PROFILE_V1_NAME, "YourWallet.KeyAgent.LPAC.v1");
     }
 
     #[test]
@@ -1700,6 +2177,13 @@ mod tests {
             normalize_path(r"C:\Program Files\YourWallet\KEY-AGENT.EXE"),
             normalize_path(r"C:\Program Files\YourWallet\key-agent.exe")
         );
+        assert!(is_key_agent_image_path(
+            r"C:\Program Files\YourWallet\KEY-AGENT.EXE"
+        ));
+        assert!(!is_key_agent_image_path(
+            r"C:\Program Files\YourWallet\not-key-agent.exe"
+        ));
+        assert!(!is_key_agent_image_path(r"C:\key-agent.exe.backup"));
     }
 
     #[test]
@@ -1713,12 +2197,14 @@ mod tests {
 
     #[test]
     fn fixed_profile_derivation_is_valid_owned_and_deterministic() -> Result<(), ApprovalError> {
-        let profile = wide_nul(PROFILE_V1_NAME);
-        let first = derive_expected_profile_sid(&profile)?;
-        let second = derive_expected_profile_sid(&profile)?;
-        let second_raw = second.raw.ok_or_else(test_failure)?;
+        for profile_name in [PROFILE_V1_NAME, KEY_AGENT_PROFILE_V1_NAME] {
+            let profile = wide_nul(profile_name);
+            let first = derive_expected_profile_sid(&profile)?;
+            let second = derive_expected_profile_sid(&profile)?;
+            let second_raw = second.raw.ok_or_else(test_failure)?;
 
-        assert!(first.matches(second_raw)?);
+            assert!(first.matches(second_raw)?);
+        }
         Ok(())
     }
 }

@@ -6,16 +6,23 @@
 //! inherited-stream contract. On Windows the child first seals its exact
 //! inherited synchronous server pipe objects while the parent retains the
 //! overlapped client ends. It then checks LPAC and Job policy and makes fresh
-//! child-local duplicates of the two injected proof handles. Only those copies
-//! become authoritative and remain retained through response write; the
-//! launcher-known original slots are never adopted and remain only for bounded
-//! process-exit cleanup. From the retained live exact parent process handle it
-//! derives the parent PID and process-token `TokenSessionId`, then requires the parent hello, both pipe
-//! server client PID/session observations, and the child token session to match.
-//! The binding remains owned across UI presentation and response write and is
-//! revalidated before release of the response. While that retained process
-//! handle remains live, this prevents PID-reuse substitution and corroborates
-//! the pipe observations against the exact live parent process object. Because
+//! child-local duplicates of the three injected proof handles: the ordinary
+//! channel-supervisor process, its separately held image file, and the Key Agent
+//! logical-parent process. Only those copies become authoritative and remain
+//! retained through response write; the launcher-known original slots are never
+//! adopted and remain only for bounded process-exit cleanup. From the retained
+//! live supervisor process it derives the PID and token session, then requires
+//! the parent hello and both pipe server client PID/session observations to
+//! match that ordinary supervisor. Independently, the logical-parent handle must
+//! name a distinct live same-session Key Agent process with the transcript-bound
+//! PID, `key-agent.exe` image suffix, fixed `YourWallet.KeyAgent.LPAC.v1` SID,
+//! `AppContainer` and LPAC flags, zero capabilities, query-only token access, and
+//! denial of the enumerated stronger token/process requests. The Approval LPAC
+//! must not contain `SeDebugPrivilege`. The five-object binding remains owned
+//! across UI presentation and response write and revalidates both exact process
+//! authorities before release of the response. Retaining those objects prevents
+//! PID-reuse substitution and keeps pipe evidence scoped only to the ordinary
+//! channel supervisor. Because
 //! pipe handles are transferable and duplicable, it does not prove exclusive
 //! endpoint ownership, endpoint topology/exclusivity, or per-write attribution.
 //! The child also requires case-preserving exact normalized path-string equality
@@ -24,19 +31,20 @@
 //! handle-backed Authenticode and SHA-256 policy checks. Path equality plus
 //! held-file checks do not prove that the live process was mapped from that exact
 //! file object. A repo-local kernel test proves that a zero-capability Approval
-//! LPAC can complete `OpenProcessToken(parent, TOKEN_QUERY)` for one exact
-//! injected Key Agent logical-parent handle while stronger token/process access
-//! stays denied. That proof is neither the four-object channel-parent binding nor
-//! signed/mapped release evidence. Signed release-path positive evidence covering
+//! LPAC can complete `OpenProcessToken(..., TOKEN_QUERY)` for one exact injected
+//! Key Agent logical-parent process proof while the documented stronger
+//! token/process requests are denied. The child runtime now requires the corresponding fifth-object
+//! authentication, but this remains neither signed/mapped release evidence nor a
+//! production activation path. Signed release-path positive evidence covering
 //! case-sensitive directories and alternate path forms, immutable installation,
 //! the complete DLL/dependency graph, a release-proven resumable supervisor-held
 //! activation capability, and endpoint topology/exclusivity remain release
-//! blockers. There are zero
-//! production orchestration callers
-//! composing `launch_approval_frontend` through a verified response into signing,
-//! and no positive signed-handshake E2E exists. `COMPILED_PARENT_POLICY` remains
-//! `None`; ordinary builds exit 78, and raw or legacy runtime launch fails
-//! without diagnostics.
+//! blockers. The sealed hello-only transition has zero production callers, and
+//! there is no parent-finish/request/verified-response/signing composition or
+//! positive signed-handshake E2E.
+//! `COMPILED_PARENT_POLICY` remains `None`; ordinary builds exit 78. Raw
+//! executable direct launch exits without diagnostics, while the legacy Rust API
+//! returns `LogicalParentUnavailable` before resource allocation.
 
 #[cfg(feature = "runtime-entrypoint")]
 mod bootstrap;
