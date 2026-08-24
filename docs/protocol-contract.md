@@ -160,18 +160,38 @@ profile, launcher, attestation, path, PID, or handle operation. Its Drop path
 attempts bounded Approval termination and reap before the pipes and Key Agent
 tree are released. This new outer transition has zero production callers.
 
-One further sealed, consuming transition can write the complete version-2 parent
-hello before releasing exactly one primary-thread suspend count, read and decode
-the exact child hello, and revalidate the running child plus the intact
-parent-bound aggregate. Its opaque success state owns that running child, both
-unused parent endpoints, both hellos, and the full Key Agent aggregate, but has
-no parent-finish, request, UI, response, receive, or signing operation. The child
-therefore remains blocked awaiting parent finish. This transition also has zero
-production callers. Explicit failure performs a bounded terminate/reap attempt
-first and gives cleanup failure precedence; Drop makes the same attempt and then
-uses retained kill-on-close Job closure as its fail-closed fallback before
-field-order release of endpoints and the Key Agent tree. Drop cannot report an
-unreaped failure, so unconditional reap success is not claimed.
+One further sealed, consuming transition writes the complete version-2 parent
+hello before releasing exactly one primary-thread suspend count, reads and
+decodes the exact child hello, and revalidates the running child plus the intact
+parent-bound aggregate. Its opaque `AuthenticatedApprovalBootstrap` owns that
+running child, both unused parent endpoints, both hellos, and the full Key Agent
+aggregate. It exposes no protocol or resource method; only one separate sealed
+function can consume it together with the exact `ApprovalRequest`. The bootstrap
+transition has zero production callers. Explicit bootstrap failure performs a
+bounded terminate/reap attempt first and gives cleanup failure precedence; Drop
+makes the same attempt and then uses retained kill-on-close Job closure as its
+fail-closed fallback. Drop cannot report an unreaped failure, so unconditional
+reap success is not claimed.
+
+The consuming full-exchange transition derives one monotonic transport deadline
+at its start and uses that same deadline for response arming, the consuming
+parent-finish plus canonical-request write and request EOF, fixed response plus
+response EOF verification, and the exact held child's natural-exit wait. It
+revalidates the child/Job and Key Agent aggregate before arming and before the
+response read. Response bytes and EOF produce only exit-pending evidence. The
+parent must then observe that exact process exit naturally with code 0 before
+the same deadline; it does not force-terminate a live child to manufacture
+success. Only after that natural exit does it perform the final Key Agent
+revalidation and final deadline observation. It then mints the crate-private,
+non-cloneable `VerifiedParentBoundApprovalExchange`, which co-owns the exited
+child, intact Key Agent aggregate, both hellos, and sealed response evidence but
+has no accessor or conversion into `VerifiedApprovalResponse` or signing. The
+full-exchange transition also has zero production callers. The post-exit Key
+Agent check is point-in-time evidence; any future evidence-to-authorization
+transition must revalidate the retained exact Key Agent again immediately before
+use. No such transition exists. Protocol/read errors,
+timeout, nonzero exit, and wait failure reject; a still-owned child receives a
+separate bounded terminate/reap attempt, and cleanup failure takes precedence.
 
 The version-2 bootstrap binds the ordinary channel-supervisor PID/process/image
 proof and the distinct Key Agent logical-parent PID/process capability into one
@@ -262,21 +282,39 @@ Approval request hash, and the exact request length. Substitution, truncation,
 trailing bytes, bad lengths, or cross-frame decoding fail closed. After the
 response and EOF, the parent locally hashes the held child PID and helper file
 identity, manifest digest, profile revision, request digest, one-shot Approval
-nonce and canonical request hash, exact response bytes, fresh local channel
-challenge, and both bootstrap nonces. Job policy/membership is a live gate, not
+nonce and canonical request hash, exact response bytes, a fresh parent-local
+transcript salt, and both bootstrap nonces. The salt is never sent to the child
+and is not challenge-response evidence. Job policy/membership is a live gate, not
 hashed identity. The fixed 75-byte response is ordered as magic, version,
 decision, request digest, and the one-shot Approval request nonce. Only the
 digest and nonce echo request fields; neither bootstrap nonce is echoed. Replay
 resistance therefore also depends on the private one-shot endpoint and a fresh
 one-shot Approval request nonce.
 
-The current sealed parent transition implements only the parent hello and child
-hello portion above, then retains the child blocked awaiting parent finish. The
-finish/request/response codecs and pure response verifier remain dormant
-contracts; no parent transition currently sends finish/request, receives a
-response, or composes verified output into signing. The legacy
-`launch_approval_frontend` instead fails before allocation with
+The sealed parent implements the hello bootstrap and the full exchange as two
+separate consuming typestates. The latter sends finish plus the exact request
+and request EOF, verifies the fixed response plus EOF, requires natural exit
+code 0 from the exact held child under the same transport deadline, performs
+final Key Agent revalidation after exit, and returns only
+`VerifiedParentBoundApprovalExchange`. Neither transition has a production
+caller, and the terminal value has no response/signing conversion. The ordinary
+channel supervisor remains the transport and pipe PID/session authority; the
+separately held Key Agent remains only the logical parent and is never treated
+as the pipe peer or Windows process parent. The legacy
+`launch_approval_frontend` still fails before allocation with
 `LogicalParentUnavailable`.
+
+**STOP-SHIP — transport/session lifetime mismatch:** the current full-exchange code
+resamples the wire request's relative expiry at exchange start. If that request
+originated from a `PreparedApprovalPrompt` created before bootstrap, the
+transport/UI window and terminal evidence mint can outlive the original session
+by approximately the bootstrap duration. The existing authorization TCB still
+rejects at that original expiry.
+The prompt already retains its original monotonic `Instant` transitively inside
+`PreparedAuthorization`, but the parent-bound transport neither receives nor
+enforces it. Before any signing composition is added, that expiry must cross the
+boundary without becoming caller-controlled and cap the transport deadline
+rather than reconstructing it only from the relative wire value.
 
 A repo-local child/grandchild kernel test makes a separate positive sentinel
 inheritable and uses `CompareObjectHandles` to prove that the sentinel, but
@@ -298,8 +336,9 @@ back, and the test-only `NO_LOW_LABEL` removal only permits the profile-scoped
 copy; production mitigation remains unchanged. This is not signed/mapped
 release evidence, so the production handle-first path remains
 release-unproven. The repository also has zero production orchestration callers
-for the intended full Approval launch-to-verified-response-to-signing
-composition and no positive signed-handshake E2E.
+for the sealed launch-to-`VerifiedParentBoundApprovalExchange` transition, no
+conversion from that terminal evidence into the public verified response or
+signing path, and no positive signed-handshake E2E.
 Direct executable Approval launch cannot complete the parent-auth exchange and
 exits without diagnostics; the legacy Rust API returns
 `LogicalParentUnavailable` before allocation. Default Approval builds still exit 78, and
@@ -735,13 +774,18 @@ record equivocation, or replay rejects the prompt. Authorization then consumes
 the same request hash and a non-clone `VerifiedApprovalResponse`. Rebuilding a
 shorter-lived request after the UI hold, or substituting any
 phrase/display/expiry byte, is rejected. These implemented pieces are not yet a
-production orchestration path: the sealed hello-only transition has zero
-production callers, no parent-finish/request/verified-response/signing
-transition exists, and there is no positive signed-handshake E2E. Development builds contain no compiled
-release policy and default helper builds exit 78, so the opt-in runtime entry
-point cannot be launched by the restricted release path or reach signing. A
-challenge expires after at most 120 seconds and can be consumed once; the TCB
-clamps it to the browser request's remaining deadline.
+production orchestration path: the sealed full exchange has zero production
+callers, its opaque `VerifiedParentBoundApprovalExchange` has no conversion into
+the public verified response or signing path, and there is no positive
+signed-handshake E2E. Development builds contain no compiled release policy and
+default helper builds exit 78, so the opt-in runtime entry point cannot be
+launched by the restricted release path or reach signing. A challenge expires
+after at most 120 seconds and can be consumed once. The
+`PreparedAuthorization` owned by the prompt retains the original monotonic
+expiry, but the current exchange does not receive it and instead resamples the
+request's relative expiry after bootstrap. Opaque delivery and transport
+enforcement of that original `Instant` are a **STOP-SHIP** prerequisite for
+signing.
 
 ## Durable broadcast handoff
 

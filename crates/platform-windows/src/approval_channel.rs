@@ -4,7 +4,8 @@
 //! [`launch_approval_frontend`] is a crate-private legacy seam retained only to
 //! reject calls before nonce, pipe, or process allocation. It cannot provide the
 //! separate logical Key Agent capability required by bootstrap v2. The sealed
-//! parent-bound activation module owns the sole hello-only resume edge.
+//! parent-bound activation module owns the sole hello resume and full-exchange
+//! edges; neither edge is composed into production orchestration.
 
 use core::fmt;
 use std::time::{Duration, Instant};
@@ -17,16 +18,18 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::{helper::FileIdentity, launch::HeldProcessIdentity};
 #[cfg(windows)]
 use crate::{
+    approval_activation::ApprovalActivationSeal,
     helper::VerifiedHelper,
     launch::{LaunchError, LaunchedHelper, RestrictedLauncher},
     pipe::{ApprovalResponseReader, PipeError},
 };
+use crate::{helper::FileIdentity, launch::HeldProcessIdentity};
 
 const TRANSCRIPT_DOMAIN: &[u8] = b"your-wallet/approval-child-transcript/v3";
-const CHANNEL_CHALLENGE_BYTES: usize = 32;
+const BOOTSTRAP_NONCE_BYTES: usize = 32;
+const TRANSCRIPT_SALT_BYTES: usize = 32;
 const TERMINATION_GRACE: Duration = Duration::from_secs(5);
 
 /// Decision decoded from the fixed approval-helper wire format.
@@ -56,7 +59,8 @@ pub enum ApprovalChannelError {
     /// The private channel could not produce one complete response.
     #[error("private approval response channel failed")]
     ChannelFailure,
-    /// Secure challenge generation or transcript construction failed closed.
+    /// Secure parent-local transcript-salt generation or transcript
+    /// construction failed closed.
     #[error("approval channel transcript construction failed")]
     TranscriptFailure,
 }
@@ -76,7 +80,8 @@ pub enum ApprovalLaunchError {
     /// The trusted monotonic approval deadline elapsed during setup.
     #[error("approval setup deadline elapsed")]
     DeadlineElapsed,
-    /// Secure challenge generation or channel arming failed closed.
+    /// Secure parent-local transcript-salt generation or channel arming failed
+    /// closed.
     #[error("approval response channel could not be armed")]
     Channel(#[source] ApprovalChannelError),
     /// The legacy launcher has no exact logical Key Agent parent aggregate.
@@ -209,13 +214,13 @@ impl VerifiedApprovalResponse {
 /// a response capability or expose either nonce outside this module.
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct BootstrapNonces {
-    parent: [u8; CHANNEL_CHALLENGE_BYTES],
-    child: [u8; CHANNEL_CHALLENGE_BYTES],
+    parent: [u8; BOOTSTRAP_NONCE_BYTES],
+    child: [u8; BOOTSTRAP_NONCE_BYTES],
 }
 
 impl BootstrapNonces {
     fn from_hellos(
-        expected_parent: [u8; CHANNEL_CHALLENGE_BYTES],
+        expected_parent: [u8; BOOTSTRAP_NONCE_BYTES],
         parent_hello: &ApprovalParentHello,
         child_hello: &ApprovalChildHello,
     ) -> Result<Self, ApprovalChannelError> {
@@ -227,8 +232,8 @@ impl BootstrapNonces {
     }
 
     fn new(
-        parent: [u8; CHANNEL_CHALLENGE_BYTES],
-        child: [u8; CHANNEL_CHALLENGE_BYTES],
+        parent: [u8; BOOTSTRAP_NONCE_BYTES],
+        child: [u8; BOOTSTRAP_NONCE_BYTES],
     ) -> Result<Self, ApprovalChannelError> {
         if is_all_zero(&parent) || is_all_zero(&child) {
             return Err(ApprovalChannelError::TranscriptFailure);
@@ -237,22 +242,123 @@ impl BootstrapNonces {
     }
 }
 
+/// One exact parent-bound response verifier armed before parent finish/EOF.
+///
+/// The concrete pipe reader, request binding, launcher identity, bootstrap
+/// nonces, deadline, and fresh parent-local transcript salt remain sealed. The
+/// salt is never sent to the child and is not a challenge-response primitive.
+#[cfg(windows)]
+pub(crate) struct ArmedParentBoundApprovalResponse {
+    channel: ApprovalResponseChannel,
+}
+
+#[cfg(windows)]
+impl fmt::Debug for ArmedParentBoundApprovalResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.channel;
+        formatter.write_str("ArmedParentBoundApprovalResponse([SEALED])")
+    }
+}
+
+/// Response bytes verified against the armed channel but not yet authorized as
+/// a completed exchange because natural child success is still outstanding.
+#[cfg(windows)]
+pub(crate) struct ExitPendingParentBoundApprovalResponse {
+    parts: VerifiedResponseParts,
+}
+
+#[cfg(windows)]
+impl fmt::Debug for ExitPendingParentBoundApprovalResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.parts;
+        formatter.write_str("ExitPendingParentBoundApprovalResponse([SEALED])")
+    }
+}
+
+/// Opaque response evidence minted only after natural child success and final
+/// logical Key Agent revalidation by the activation-sealed transition.
+///
+/// This value has no accessors or conversion into the public response/signing
+/// capability. It is deliberately non-cloneable and non-copyable.
+#[cfg(windows)]
+pub(crate) struct ParentBoundApprovalResponseEvidence {
+    parts: VerifiedResponseParts,
+}
+
+#[cfg(windows)]
+impl fmt::Debug for ParentBoundApprovalResponseEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.parts;
+        formatter.write_str("ParentBoundApprovalResponseEvidence([SEALED])")
+    }
+}
+
+/// Arms the existing fixed-response verifier from activation-owned resources.
+#[cfg(windows)]
+pub(crate) fn arm_parent_bound_approval_response(
+    bound_identity: HeldProcessIdentity,
+    parent_hello: &ApprovalParentHello,
+    child_hello: &ApprovalChildHello,
+    request: &ApprovalRequest,
+    expires_at: Instant,
+    reader: ApprovalResponseReader,
+    _seal: &ApprovalActivationSeal,
+) -> Result<ArmedParentBoundApprovalResponse, ApprovalChannelError> {
+    let bootstrap_nonces =
+        BootstrapNonces::from_hellos(parent_hello.parent_nonce(), parent_hello, child_hello)?;
+    let channel = ApprovalResponseChannel::arm_from_branded_reader(
+        bound_identity,
+        request,
+        expires_at,
+        bootstrap_nonces,
+        Box::new(PlatformResponseReader(reader)),
+    )?;
+    Ok(ArmedParentBoundApprovalResponse { channel })
+}
+
+/// Consumes the exact response pipe and verifies one fixed frame plus EOF.
+///
+/// The result remains exit-pending and cannot yet become completed evidence.
+#[cfg(windows)]
+pub(crate) fn verify_parent_bound_approval_response(
+    armed: ArmedParentBoundApprovalResponse,
+    actual_identity: HeldProcessIdentity,
+    _seal: &ApprovalActivationSeal,
+) -> Result<ExitPendingParentBoundApprovalResponse, ApprovalChannelError> {
+    let parts = armed
+        .channel
+        .verify_for_identity(TranscriptIdentity::from_held(actual_identity))?;
+    Ok(ExitPendingParentBoundApprovalResponse { parts })
+}
+
+/// Mints sealed evidence after the activation module has consumed the child
+/// into exit-code-zero success and revalidated the intact Key Agent aggregate.
+#[cfg(windows)]
+pub(crate) fn seal_successful_parent_bound_approval_response(
+    pending: ExitPendingParentBoundApprovalResponse,
+    _seal: &ApprovalActivationSeal,
+) -> ParentBoundApprovalResponseEvidence {
+    ParentBoundApprovalResponseEvidence {
+        parts: pending.parts,
+    }
+}
+
 /// Opaque, non-cloneable verifier state for one response from one held helper.
 ///
-/// There is intentionally no public constructor, and no production path
-/// currently arms this state. A future sealed transition must bind its concrete
-/// deadline-capable reader to the exact launcher-owned response endpoint and
-/// held process identity. Accepting an arbitrary file, raw handle, PID, or byte
-/// slice here would invalidate the authentication claim.
+/// There is intentionally no public constructor. The activation-sealed
+/// transition alone arms its concrete deadline-capable reader from the exact
+/// launcher-owned response endpoint and held process identity, and that
+/// transition has no orchestration caller. Accepting an arbitrary file, raw
+/// handle, PID, or byte slice here would invalidate the authentication claim.
 struct ApprovalResponseChannel {
     bound_identity: TranscriptIdentity,
     expected_digest: [u8; 32],
     expected_nonce: [u8; 32],
     expected_request_hash: [u8; 32],
     expires_at: Instant,
-    channel_challenge: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
-    parent_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
-    child_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>,
+    transcript_salt: Zeroizing<[u8; TRANSCRIPT_SALT_BYTES]>,
+    parent_bootstrap_nonce: Zeroizing<[u8; BOOTSTRAP_NONCE_BYTES]>,
+    child_bootstrap_nonce: Zeroizing<[u8; BOOTSTRAP_NONCE_BYTES]>,
     reader: Box<dyn OneShotResponseReader>,
 }
 
@@ -327,9 +433,9 @@ impl ApprovalResponseChannel {
 
     /// Arms a channel from already branded launcher-owned resources.
     ///
-    /// This remains private and currently has no production arming caller:
-    /// legacy launch rejects before allocation and sealed v2 stops after child
-    /// hello. Module-local tests alone supply these branded resources.
+    /// The sole production-compiled caller is the activation-sealed parent-
+    /// bound transition; it remains unreachable from orchestration. Legacy
+    /// launch still rejects before allocation.
     fn arm_from_branded_reader(
         bound_identity: HeldProcessIdentity,
         request: &ApprovalRequest,
@@ -339,9 +445,10 @@ impl ApprovalResponseChannel {
     ) -> Result<Self, ApprovalChannelError> {
         let bootstrap_nonces =
             BootstrapNonces::new(bootstrap_nonces.parent, bootstrap_nonces.child)?;
-        let mut challenge = Zeroizing::new([0_u8; CHANNEL_CHALLENGE_BYTES]);
-        getrandom::fill(&mut *challenge).map_err(|_| ApprovalChannelError::TranscriptFailure)?;
-        if is_all_zero(&*challenge) {
+        let mut transcript_salt = Zeroizing::new([0_u8; TRANSCRIPT_SALT_BYTES]);
+        getrandom::fill(&mut *transcript_salt)
+            .map_err(|_| ApprovalChannelError::TranscriptFailure)?;
+        if is_all_zero(&*transcript_salt) {
             return Err(ApprovalChannelError::TranscriptFailure);
         }
         if deadline_elapsed(expires_at) {
@@ -353,7 +460,7 @@ impl ApprovalResponseChannel {
             expected_nonce: *request.approval_nonce(),
             expected_request_hash: request_hash(request),
             expires_at,
-            channel_challenge: challenge,
+            transcript_salt,
             parent_bootstrap_nonce: Zeroizing::new(bootstrap_nonces.parent),
             child_bootstrap_nonce: Zeroizing::new(bootstrap_nonces.child),
             reader,
@@ -367,7 +474,7 @@ impl ApprovalResponseChannel {
         if actual_identity != self.bound_identity {
             return Err(ApprovalChannelError::IdentityMismatch);
         }
-        if is_all_zero(&*self.channel_challenge)
+        if is_all_zero(&*self.transcript_salt)
             || is_all_zero(&*self.parent_bootstrap_nonce)
             || is_all_zero(&*self.child_bootstrap_nonce)
         {
@@ -400,7 +507,7 @@ impl ApprovalResponseChannel {
             self.expected_nonce,
             self.expected_request_hash,
             &response_bytes,
-            &self.channel_challenge,
+            &self.transcript_salt,
             bootstrap_nonces,
         )?;
         let decision = match response.decision() {
@@ -417,7 +524,7 @@ impl ApprovalResponseChannel {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 struct VerifiedResponseParts {
     decision: VerifiedApprovalDecision,
     approval_digest: [u8; 32],
@@ -441,7 +548,7 @@ impl fmt::Debug for ApprovalResponseChannel {
             .field("expected_nonce", &"[NONCE]")
             .field("expected_request_hash", &"[SHA-256]")
             .field("expires_at", &"[MONOTONIC DEADLINE]")
-            .field("channel_challenge", &"[REDACTED]")
+            .field("transcript_salt", &"[REDACTED PARENT-LOCAL SALT]")
             .field("parent_bootstrap_nonce", &"[REDACTED]")
             .field("child_bootstrap_nonce", &"[REDACTED]")
             .field("reader", &"[ONE-SHOT PRIVATE PIPE]")
@@ -454,8 +561,7 @@ impl fmt::Debug for ApprovalResponseChannel {
 ///
 /// The trait is private: accepting caller-defined readers would turn arbitrary
 /// bytes into an authenticated-helper claim. Its concrete Windows adapter is
-/// production-compiled, but no production constructor or caller currently arms
-/// it. A future sealed parent-bound transition must supply the branded endpoint.
+/// armed only by the activation-sealed parent-bound transition.
 trait OneShotResponseReader {
     fn read_once(self: Box<Self>, deadline: Instant) -> Result<Vec<u8>, ApprovalChannelError>;
 }
@@ -515,11 +621,11 @@ fn transcript_hash(
     request_nonce: [u8; 32],
     request_hash: [u8; 32],
     response_bytes: &[u8],
-    channel_challenge: &[u8; CHANNEL_CHALLENGE_BYTES],
+    transcript_salt: &[u8; TRANSCRIPT_SALT_BYTES],
     bootstrap_nonces: BootstrapNonces,
 ) -> Result<[u8; 32], ApprovalChannelError> {
     if response_bytes.len() != RESPONSE_BYTES
-        || is_all_zero(channel_challenge)
+        || is_all_zero(transcript_salt)
         || is_all_zero(&bootstrap_nonces.parent)
         || is_all_zero(&bootstrap_nonces.child)
     {
@@ -542,7 +648,9 @@ fn transcript_hash(
     transcript.update(request_nonce);
     transcript.update(request_hash);
     transcript.update(response_bytes);
-    transcript.update(channel_challenge);
+    // This fresh value is parent-local transcript salt. It is never transmitted
+    // and therefore must not be described as child challenge-response proof.
+    transcript.update(transcript_salt);
     transcript.update(bootstrap_nonces.parent);
     transcript.update(bootstrap_nonces.child);
     let digest: [u8; 32] = transcript.finalize().into();
@@ -579,11 +687,15 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        ApprovalChannelError, ApprovalResponseChannel, BootstrapNonces, CHANNEL_CHALLENGE_BYTES,
-        OneShotResponseReader, TranscriptIdentity, VerifiedApprovalDecision,
+        ApprovalChannelError, ApprovalResponseChannel, BOOTSTRAP_NONCE_BYTES, BootstrapNonces,
+        OneShotResponseReader, TRANSCRIPT_SALT_BYTES, TranscriptIdentity, VerifiedApprovalDecision,
     };
     #[cfg(windows)]
-    use super::{ApprovalLaunchError, launch_approval_frontend, matches_verified_approval_helper};
+    use super::{
+        ApprovalLaunchError, ArmedParentBoundApprovalResponse,
+        ExitPendingParentBoundApprovalResponse, ParentBoundApprovalResponseEvidence,
+        launch_approval_frontend, matches_verified_approval_helper,
+    };
     use crate::helper::FileIdentity;
     #[cfg(windows)]
     use crate::{
@@ -591,6 +703,18 @@ mod tests {
         helper::VerifiedHelper,
         launch::{NoNetworkLpacProfile, RestrictedLauncher},
     };
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     #[derive(Debug)]
     struct MemoryReader {
@@ -694,15 +818,15 @@ mod tests {
     fn channel(
         bytes: Vec<u8>,
         bound_identity: TranscriptIdentity,
-        challenge_byte: u8,
+        salt_byte: u8,
         expires_at: Instant,
     ) -> Result<ApprovalResponseChannel, Box<dyn std::error::Error>> {
         channel_with_bootstrap(
             bytes,
             bound_identity,
-            challenge_byte,
-            [60; CHANNEL_CHALLENGE_BYTES],
-            [70; CHANNEL_CHALLENGE_BYTES],
+            salt_byte,
+            [60; BOOTSTRAP_NONCE_BYTES],
+            [70; BOOTSTRAP_NONCE_BYTES],
             expires_at,
         )
     }
@@ -710,9 +834,9 @@ mod tests {
     fn channel_with_bootstrap(
         bytes: Vec<u8>,
         bound_identity: TranscriptIdentity,
-        challenge_byte: u8,
-        parent_bootstrap_nonce: [u8; CHANNEL_CHALLENGE_BYTES],
-        child_bootstrap_nonce: [u8; CHANNEL_CHALLENGE_BYTES],
+        salt_byte: u8,
+        parent_bootstrap_nonce: [u8; BOOTSTRAP_NONCE_BYTES],
+        child_bootstrap_nonce: [u8; BOOTSTRAP_NONCE_BYTES],
         expires_at: Instant,
     ) -> Result<ApprovalResponseChannel, Box<dyn std::error::Error>> {
         let request = request()?;
@@ -722,7 +846,7 @@ mod tests {
             expected_nonce: *request.approval_nonce(),
             expected_request_hash: request_hash(&request),
             expires_at,
-            channel_challenge: Zeroizing::new([challenge_byte; CHANNEL_CHALLENGE_BYTES]),
+            transcript_salt: Zeroizing::new([salt_byte; TRANSCRIPT_SALT_BYTES]),
             parent_bootstrap_nonce: Zeroizing::new(parent_bootstrap_nonce),
             child_bootstrap_nonce: Zeroizing::new(child_bootstrap_nonce),
             reader: Box::new(MemoryReader { bytes, fail: false }),
@@ -738,6 +862,17 @@ mod tests {
         Instant::now()
             .checked_add(Duration::from_mins(1))
             .ok_or_else(|| "monotonic deadline overflow".into())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_bound_response_typestates_are_move_only() {
+        let _ = <ArmedParentBoundApprovalResponse as AmbiguousIfClone<_>>::marker;
+        let _ = <ArmedParentBoundApprovalResponse as AmbiguousIfCopy<_>>::marker;
+        let _ = <ExitPendingParentBoundApprovalResponse as AmbiguousIfClone<_>>::marker;
+        let _ = <ExitPendingParentBoundApprovalResponse as AmbiguousIfCopy<_>>::marker;
+        let _ = <ParentBoundApprovalResponseEvidence as AmbiguousIfClone<_>>::marker;
+        let _ = <ParentBoundApprovalResponseEvidence as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]
@@ -760,8 +895,8 @@ mod tests {
     #[test]
     fn bootstrap_nonce_validation_rejects_zero_and_parent_substitution()
     -> Result<(), Box<dyn std::error::Error>> {
-        let parent_nonce = [60; CHANNEL_CHALLENGE_BYTES];
-        let child_nonce = [70; CHANNEL_CHALLENGE_BYTES];
+        let parent_nonce = [60; BOOTSTRAP_NONCE_BYTES];
+        let child_nonce = [70; BOOTSTRAP_NONCE_BYTES];
         let parent_hello = ApprovalParentHello::new(41, 42, 43, 44, 45, parent_nonce)?;
         let child_hello = ApprovalChildHello::new(child_nonce)?;
 
@@ -769,19 +904,15 @@ mod tests {
         assert_eq!(validated.parent, parent_nonce);
         assert_eq!(validated.child, child_nonce);
         assert!(matches!(
-            BootstrapNonces::from_hellos(
-                [61; CHANNEL_CHALLENGE_BYTES],
-                &parent_hello,
-                &child_hello
-            ),
+            BootstrapNonces::from_hellos([61; BOOTSTRAP_NONCE_BYTES], &parent_hello, &child_hello),
             Err(ApprovalChannelError::TranscriptFailure)
         ));
         assert!(matches!(
-            BootstrapNonces::new([0; CHANNEL_CHALLENGE_BYTES], child_nonce),
+            BootstrapNonces::new([0; BOOTSTRAP_NONCE_BYTES], child_nonce),
             Err(ApprovalChannelError::TranscriptFailure)
         ));
         assert!(matches!(
-            BootstrapNonces::new(parent_nonce, [0; CHANNEL_CHALLENGE_BYTES]),
+            BootstrapNonces::new(parent_nonce, [0; BOOTSTRAP_NONCE_BYTES]),
             Err(ApprovalChannelError::TranscriptFailure)
         ));
         Ok(())
@@ -904,8 +1035,8 @@ mod tests {
             bytes.clone(),
             identity(),
             50,
-            [60; CHANNEL_CHALLENGE_BYTES],
-            [70; CHANNEL_CHALLENGE_BYTES],
+            [60; BOOTSTRAP_NONCE_BYTES],
+            [70; BOOTSTRAP_NONCE_BYTES],
             future_deadline()?,
         )?
         .verify_for_identity(identity())?;
@@ -913,8 +1044,8 @@ mod tests {
             bytes.clone(),
             identity(),
             50,
-            [61; CHANNEL_CHALLENGE_BYTES],
-            [70; CHANNEL_CHALLENGE_BYTES],
+            [61; BOOTSTRAP_NONCE_BYTES],
+            [70; BOOTSTRAP_NONCE_BYTES],
             future_deadline()?,
         )?
         .verify_for_identity(identity())?;
@@ -922,8 +1053,8 @@ mod tests {
             bytes,
             identity(),
             50,
-            [60; CHANNEL_CHALLENGE_BYTES],
-            [71; CHANNEL_CHALLENGE_BYTES],
+            [60; BOOTSTRAP_NONCE_BYTES],
+            [71; BOOTSTRAP_NONCE_BYTES],
             future_deadline()?,
         )?
         .verify_for_identity(identity())?;
@@ -971,22 +1102,22 @@ mod tests {
     }
 
     #[test]
-    fn zero_challenge_and_reader_failure_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let zero_challenge = channel(
+    fn zero_salt_and_reader_failure_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let zero_salt = channel(
             valid_bytes(Decision::Approve)?,
             identity(),
             0,
             future_deadline()?,
         )?
         .verify_for_identity(identity());
-        assert_eq!(zero_challenge, Err(ApprovalChannelError::TranscriptFailure));
+        assert_eq!(zero_salt, Err(ApprovalChannelError::TranscriptFailure));
 
         let zero_parent = channel_with_bootstrap(
             valid_bytes(Decision::Approve)?,
             identity(),
             50,
-            [0; CHANNEL_CHALLENGE_BYTES],
-            [70; CHANNEL_CHALLENGE_BYTES],
+            [0; BOOTSTRAP_NONCE_BYTES],
+            [70; BOOTSTRAP_NONCE_BYTES],
             future_deadline()?,
         )?
         .verify_for_identity(identity());
@@ -996,8 +1127,8 @@ mod tests {
             valid_bytes(Decision::Approve)?,
             identity(),
             50,
-            [60; CHANNEL_CHALLENGE_BYTES],
-            [0; CHANNEL_CHALLENGE_BYTES],
+            [60; BOOTSTRAP_NONCE_BYTES],
+            [0; BOOTSTRAP_NONCE_BYTES],
             future_deadline()?,
         )?
         .verify_for_identity(identity());
@@ -1010,9 +1141,9 @@ mod tests {
             expected_nonce: *request.approval_nonce(),
             expected_request_hash: request_hash(&request),
             expires_at: future_deadline()?,
-            channel_challenge: Zeroizing::new([50; CHANNEL_CHALLENGE_BYTES]),
-            parent_bootstrap_nonce: Zeroizing::new([60; CHANNEL_CHALLENGE_BYTES]),
-            child_bootstrap_nonce: Zeroizing::new([70; CHANNEL_CHALLENGE_BYTES]),
+            transcript_salt: Zeroizing::new([50; TRANSCRIPT_SALT_BYTES]),
+            parent_bootstrap_nonce: Zeroizing::new([60; BOOTSTRAP_NONCE_BYTES]),
+            child_bootstrap_nonce: Zeroizing::new([70; BOOTSTRAP_NONCE_BYTES]),
             reader: Box::new(MemoryReader {
                 bytes: Vec::new(),
                 fail: true,

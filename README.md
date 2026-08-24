@@ -632,16 +632,28 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   path/PID/raw-handle operation을 제공하지 않습니다. Drop은 pipe와 Key Agent tree를
   놓기 전에 bounded terminate/reap을 시도하며, 실패하면 retained kill-on-close Job을
   먼저 닫는 fallback을 사용합니다. 이 최외곽 dormant transition의
-  production caller는 0개입니다. 이어지는 sealed consuming transition만 bootstrap-v2
-  parent hello를 suspended child의 stdin에 먼저 기록하고, primary thread의 정확한 suspend
-  count 하나를 한 번만 해제한 뒤 exact child hello를 읽고 transcript 및 child/Job/전체
-  parent-bound aggregate를 재검증할 수 있습니다. 성공한 opaque 상태는 실행 중인 Approval,
-  두 parent endpoint, 두 hello와 전체 Key Agent aggregate를 함께 보유하지만 parent finish,
-  request, UI, response, receive 또는 signing operation을 제공하지 않습니다. 이 두 번째
-  transition 역시 production caller가 0개입니다. 명시적 실패 경로는 Approval에 대한 bounded
-  terminate/reap을 먼저 수행하고 cleanup 실패를 원래 오류보다 우선합니다. Drop도 같은 bounded
-  cleanup을 먼저 시도하며, reap이 실패하면 retained kill-on-close Job을 닫는 fail-closed fallback을
-  거친 뒤 endpoint와 Key Agent aggregate를 필드 순서로 해제합니다. 이 handle은 Approval이
+  production caller는 0개입니다. 이어지는 sealed consuming bootstrap transition만
+  bootstrap-v2 parent hello를 suspended child의 stdin에 먼저 기록하고, primary thread의
+  정확한 suspend count 하나를 한 번만 해제한 뒤 exact child hello를 읽고
+  transcript 및 child/Job/전체 parent-bound aggregate를 재검증합니다. 성공한
+  `AuthenticatedApprovalBootstrap`은 실행 중인 Approval, 두 parent endpoint, 두 hello와
+  전체 Key Agent aggregate를 함께 보유하며, 단 하나의 별도 sealed function만 이를
+  소비할 수 있습니다. 그 full-exchange transition은 exact request를 받고 request의 relative
+  expiry에서 단 하나의 monotonic transport deadline을 샘플합니다. 같은 deadline을
+  response arming, 110-byte finish+canonical request의 consuming write와 request EOF, 고정
+  75-byte response+EOF 검증, exact held child의 자연 종료 wait에 모두 사용합니다.
+  성공은 child/Job과 Key Agent를 finish 전과 response read 전에 재검증하고,
+  response+EOF 뒤 그 exact process가 스스로 종료하여 exit code 0을 반환하고,
+  그 자연 종료 후 Key Agent aggregate를 마지막으로 재검증하며, deadline이 아직
+  유효할 때만 승인됩니다. 그 뒤에만 crate-private opaque
+  `VerifiedParentBoundApprovalExchange`를 만들며, 이 값은 response accessor나
+  `VerifiedApprovalResponse`/signing conversion을 전혀 제공하지 않습니다. 성공 경로는
+  살아 있는 child를 강제 종료해 증거를 만들지 않습니다. malformed/truncated/trailing
+  response 또는 EOF 오류, timeout, nonzero exit, wait 오류는 실패이며, 이때만
+  별도 bounded terminate/reap을 시도하고 cleanup 실패를 원래 오류보다 우선합니다. Drop도 retained
+  kill-on-close Job을 닫는 fail-closed fallback 전에 bounded cleanup을 시도합니다.
+  bootstrap과 full-exchange transition 모두 production caller가 0개이고 signing composition은
+  없습니다. 이 handle은 Approval이
   인증하는 logical parent proof source일 뿐이고
   `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`를 설정하거나 Windows process parentage를
   확립하는 capability가 아닙니다. bootstrap v2는 ordinary supervisor와 별도 Key Agent의
@@ -716,17 +728,33 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   nonce, canonical request hash, exact request length를 함께 묶습니다. 자식은 그 길이의
   request 뒤 exact EOF가 있어야만 수락합니다. 부모가 response와 EOF 뒤 로컬에서
   계산하는 transcript는 held child PID/file identity, manifest digest, profile revision,
-  request digest/one-shot Approval nonce/canonical hash, exact response bytes, fresh local
-  channel challenge, 두 bootstrap nonce를 해시합니다. Job은 별도로 재검증되는
+  request digest/one-shot Approval nonce/canonical hash, exact response bytes, child에게
+  전송되지 않는 fresh parent-local transcript salt, 두 bootstrap nonce를 해시합니다. 이
+  salt는 challenge-response 증거가 아닙니다. Job은 별도로 재검증되는
   live gate이지 hashed identity가 아닙니다. 고정 75-byte response는 magic, version,
   decision, request digest, one-shot Approval request nonce 순서이며, request에서
   echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce는 echo하지 않습니다.
   따라서 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request
   nonce에도 의존합니다. raw executable direct launch는 이 교환을 만들 수 없어 진단 없이
   종료되고, legacy Rust API는 resource allocation 전에 `LogicalParentUnavailable`을
-  반환합니다. 현재 sealed parent 구현은 앞의 parent hello와 child hello까지만 수행하고
-  child를 parent finish 대기 상태로 보유합니다. finish/request/response 전송·수신 및
-  verified response/signing composition은 아직 연결되어 있지 않습니다.
+  반환합니다. sealed parent는 hello bootstrap과 그 값을 소비하는 full exchange를
+  별도 typestate로 구현합니다. full exchange는 한 monotonic transport deadline 안에서
+  finish+request EOF, response+EOF, exact child의 자연 exit code 0, 자연 종료 후의 final
+  Key Agent revalidation까지 완료한 뒤 accessor 없는
+  `VerifiedParentBoundApprovalExchange`만 만듭니다. 이 transition의 production caller는
+  0개이고 public `VerifiedApprovalResponse`나 signing으로의 conversion은 없습니다.
+  post-exit Key Agent 검사는 그 시점의 증거이므로, 미래에 conversion을 추가한다면
+  retained exact Key Agent를 authorization 사용 직전에 다시 검사해야 합니다.
+
+  **STOP-SHIP — transport/authorization 수명 불일치:** 현재 full exchange는 wire request의 relative
+  expiry를 exchange 시작 시점에서 다시 `Instant::now()`에 더해 transport deadline을
+  만듭니다. 이 request가 더 이른 시점에 만들어진 `PreparedApprovalPrompt`에서
+  왔다면 transport/UI window와 terminal evidence mint가 원래 session expiry를
+  bootstrap 시간만큼 지나칠 수 있습니다. 기존 authorization TCB는 그 원래
+  expiry에서 계속 거절합니다. original monotonic `Instant` 자체는 prompt가 소유한
+  `PreparedAuthorization` 안에 계속 보존되지만 parent-bound transport에는 아직
+  전달·강제되지 않습니다. signing을 연결하기 전에 caller가 바꿀 수 없는 형태로 그
+  expiry를 전달하고 transport deadline을 거기에 cap해야 합니다.
 
   별도 inheritable positive sentinel을 둔 repo-local child/grandchild 커널 테스트는
   sentinel은 broad-inheritance grandchild에 도달하지만 원래의 두 exact stdio
@@ -739,8 +767,9 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   signed release-path positive evidence, live mapped exact file object, complete
   DLL/dependency graph, immutable installation, supervisor-held activation capability,
   exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다. 현재
-  의도된 전체 Approval launch-to-verified-response-to-signing composition의 production
-  orchestration caller는 0개이고 positive signed handshake E2E도 없습니다.
+  sealed full launch-to-`VerifiedParentBoundApprovalExchange` transition의 production
+  orchestration caller는 0개이고, 이 opaque 증거를 public verified response나 signing으로
+  전환하는 composition 및 positive signed handshake E2E도 없습니다.
   `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고 default
   `approval-ui`는 계속 exit 78이므로 release activation은 fail closed입니다.
 - runtime-enabled Secret Input/recovery 자식도 첫 Windows/CRT application 동작에서

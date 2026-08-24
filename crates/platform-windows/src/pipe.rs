@@ -162,7 +162,6 @@ impl ApprovalRequestWriter {
         sys::write_all_before(self.0.raw(), bytes, deadline)
     }
 
-    #[allow(dead_code)] // Reserved for a future consuming sealed parent-finish transition.
     pub(crate) fn write_all(self, bytes: &[u8], deadline: Instant) -> Result<(), PipeError> {
         sys::write_all_before(self.0.raw(), bytes, deadline)
     }

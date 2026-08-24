@@ -34,6 +34,8 @@ use approval_wire::ApprovalParentHello;
 
 #[cfg(windows)]
 const APPROVAL_RESUME_REJECTION_GRACE: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const APPROVAL_EXCHANGE_REJECTION_GRACE: Duration = Duration::from_secs(5);
 
 /// A helper sandbox profile with no network capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -785,7 +787,8 @@ impl fmt::Debug for HeldSuspendedApproval {
     }
 }
 
-/// The unique post-resume Approval process retained only by hello bootstrap.
+/// The unique post-resume Approval process retained by sealed bootstrap and
+/// consumed only by the sealed full exchange or bounded rejection cleanup.
 #[cfg(windows)]
 #[must_use = "dropping a running Approval attempts bounded termination and reap"]
 pub(crate) struct HeldRunningApproval {
@@ -809,6 +812,44 @@ impl HeldRunningApproval {
         )
     }
 
+    /// Revalidates the exact live process/Job and returns its immutable
+    /// launcher-branded identity only to the sealed parent exchange.
+    pub(crate) fn revalidated_identity_for_exchange(
+        &self,
+        seal: &ApprovalActivationSeal,
+    ) -> Result<HeldProcessIdentity, LaunchError> {
+        self.revalidate_for_bootstrap(seal)?;
+        Ok(self.guard.identity())
+    }
+
+    /// Consumes the running Approval into one deadline-bound natural-exit
+    /// observation and requires the ordinary success exit code.
+    ///
+    /// Response-pipe EOF is not process success: the child may close stdout and
+    /// remain live or exit with a failure. On any wait, exit-code, or operating-
+    /// system rejection this consuming transition makes its own fresh bounded
+    /// terminate/reap attempt. Cleanup failure takes precedence, while closing
+    /// the retained kill-on-close Job remains the final fallback.
+    pub(crate) fn wait_for_success_for_exchange(
+        self,
+        deadline: Instant,
+        _seal: &ApprovalActivationSeal,
+    ) -> Result<HeldExitedApproval, LaunchError> {
+        let Self {
+            guard,
+            thread,
+            parent_proof,
+            logical_parent,
+        } = self;
+        let guard = guard.wait_for_success_or_cleanup(deadline)?;
+        Ok(HeldExitedApproval {
+            guard,
+            thread,
+            parent_proof,
+            logical_parent,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn is_live_in_job_for_test(&self) -> Result<bool, LaunchError> {
         sys::is_live_held_process_in_job_for_test(
@@ -820,6 +861,36 @@ impl HeldRunningApproval {
 
     pub(crate) fn terminate_and_wait(self, deadline: Instant) -> Result<(), LaunchError> {
         self.guard.terminate_and_wait(deadline)
+    }
+}
+
+/// Exact Approval process object retained after deadline-bound exit-code-zero
+/// success.
+///
+/// This terminal typestate is deliberately opaque and has no methods. It keeps
+/// the signalled process, one-process Job, immutable identity, primary thread,
+/// and both injected parent proofs alive inside the sealed exchange result.
+/// Its rejection-cleanup guard is disarmed only after exit code zero.
+#[cfg(windows)]
+#[must_use = "retain exited Approval evidence with the sealed exchange"]
+pub(crate) struct HeldExitedApproval {
+    guard: HeldApprovalProcessGuard,
+    thread: sys::OwnedWinHandle,
+    parent_proof: InjectedParentProof,
+    logical_parent: InjectedApprovalLogicalParent,
+}
+
+#[cfg(windows)]
+impl fmt::Debug for HeldExitedApproval {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.guard,
+            &self.thread,
+            &self.parent_proof,
+            &self.logical_parent,
+        );
+        formatter
+            .write_str("HeldExitedApproval([EXITED APPROVAL; HELD JOB; REDACTED PARENT PROOFS])")
     }
 }
 
@@ -847,6 +918,35 @@ struct HeldApprovalProcessGuard {
 }
 
 #[cfg(windows)]
+fn resolve_exchange_natural_exit_with_cleanup<W, C>(
+    cleanup_armed: &mut bool,
+    wait_for_natural_exit: W,
+    cleanup_rejected_child: C,
+) -> Result<(), LaunchError>
+where
+    W: FnOnce() -> Result<(), LaunchError>,
+    C: FnOnce() -> Option<Result<(), LaunchError>>,
+{
+    let wait_error = match wait_for_natural_exit() {
+        Ok(()) => {
+            *cleanup_armed = false;
+            return Ok(());
+        }
+        Err(error) => error,
+    };
+
+    let Some(cleanup_result) = cleanup_rejected_child() else {
+        // No explicit cleanup attempt occurred, so retain the Drop fallback.
+        return Err(LaunchError::Cleanup);
+    };
+    // Do not start another bounded wait from Drop after an explicit attempt.
+    // Kill-on-close remains effective when the attempt failed.
+    *cleanup_armed = false;
+    cleanup_result.map_err(|_| LaunchError::Cleanup)?;
+    Err(wait_error)
+}
+
+#[cfg(windows)]
 impl HeldApprovalProcessGuard {
     fn process_raw(&self) -> windows::Win32::Foundation::HANDLE {
         self.process.raw()
@@ -867,6 +967,21 @@ impl HeldApprovalProcessGuard {
         // fail-closed fallback if the OS reported a cleanup failure.
         self.cleanup_armed = false;
         result
+    }
+
+    fn wait_for_success_or_cleanup(mut self, deadline: Instant) -> Result<Self, LaunchError> {
+        let process = self.process.raw();
+        let job = self.job.raw();
+        resolve_exchange_natural_exit_with_cleanup(
+            &mut self.cleanup_armed,
+            || sys::wait_for_expected_exit_code(process, deadline, 0, LaunchError::OperatingSystem),
+            || {
+                Instant::now()
+                    .checked_add(APPROVAL_EXCHANGE_REJECTION_GRACE)
+                    .map(|cleanup_deadline| sys::terminate_and_wait(process, job, cleanup_deadline))
+            },
+        )?;
+        Ok(self)
     }
 }
 
@@ -1097,13 +1212,11 @@ mod sys {
     };
     use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows::Win32::System::SystemServices::{CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC};
-    #[cfg(test)]
-    use windows::Win32::System::Threading::GetExitCodeProcess;
     use windows::Win32::System::Threading::{
         CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DeleteProcThreadAttributeList,
-        EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetProcessId,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
-        PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+        EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess,
+        GetProcessId, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        OpenProcessToken, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
         PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
@@ -2453,6 +2566,30 @@ mod sys {
         }
     }
 
+    pub(super) fn wait_for_expected_exit_code(
+        process: HANDLE,
+        deadline: Instant,
+        expected_exit_code: u32,
+        unexpected_exit_error: LaunchError,
+    ) -> Result<(), LaunchError> {
+        // SAFETY: the sealed running owner retains the exact process handle for
+        // the complete bounded wait and subsequent exit-code observation.
+        let wait = unsafe { WaitForSingleObject(process, remaining_milliseconds(deadline)?) };
+        if wait == WAIT_TIMEOUT || deadline_elapsed(deadline) {
+            return Err(LaunchError::TerminationDeadlineElapsed);
+        }
+        if wait != WAIT_OBJECT_0 {
+            return Err(LaunchError::OperatingSystem);
+        }
+        let mut exit_code = u32::MAX;
+        // SAFETY: the exact process handle remains owned and is signalled.
+        unsafe { GetExitCodeProcess(process, &raw mut exit_code) }
+            .map_err(|_| LaunchError::OperatingSystem)?;
+        (exit_code == expected_exit_code)
+            .then_some(())
+            .ok_or(unexpected_exit_error)
+    }
+
     pub(super) fn revalidate_held_process(
         process: HANDLE,
         job: HANDLE,
@@ -2909,22 +3046,12 @@ mod sys {
         process: HANDLE,
         deadline: Instant,
     ) -> Result<(), LaunchError> {
-        // SAFETY: the test launch owner retains the exact process through this
-        // bounded wait and passes a validated monotonic deadline.
-        let wait = unsafe { WaitForSingleObject(process, remaining_milliseconds(deadline)?) };
-        if wait == WAIT_TIMEOUT || deadline_elapsed(deadline) {
-            return Err(LaunchError::TerminationDeadlineElapsed);
-        }
-        if wait != WAIT_OBJECT_0 {
-            return Err(LaunchError::OperatingSystem);
-        }
-        let mut exit_code = u32::MAX;
-        // SAFETY: the exact process handle remains live and is signaled.
-        unsafe { GetExitCodeProcess(process, &raw mut exit_code) }
-            .map_err(|_| LaunchError::OperatingSystem)?;
-        (exit_code == super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE)
-            .then_some(())
-            .ok_or(LaunchError::SandboxVerification)
+        wait_for_expected_exit_code(
+            process,
+            deadline,
+            super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE,
+            LaunchError::SandboxVerification,
+        )
     }
 
     #[cfg(test)]
@@ -3079,6 +3206,7 @@ mod tests {
 
     use core::mem::{offset_of, size_of};
     use core::ptr;
+    use std::cell::Cell;
     use std::fs::OpenOptions;
     use std::io::Read as _;
     use std::net::{Ipv4Addr, TcpListener};
@@ -3086,6 +3214,7 @@ mod tests {
         AsHandle, AsRawHandle, AsRawSocket, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
     };
     use std::path::Path;
+    use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
@@ -3122,10 +3251,247 @@ mod tests {
     use super::{
         APPROVAL_PARENT_PROBE_FRAME_BYTES, APPROVAL_PARENT_PROBE_MAGIC,
         APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE, HeldProcessIdentity, InheritedStdio, LaunchError,
-        NoNetworkLpacProfile, sys,
+        NoNetworkLpacProfile, resolve_exchange_natural_exit_with_cleanup, sys,
     };
     use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::{FileIdentity, VerifiedHelper};
+
+    struct ExchangeCleanupDropObserver<'a> {
+        cleanup_armed: bool,
+        cleanup_calls: &'a Cell<u32>,
+    }
+
+    const FULL_EXCHANGE_EXIT_FIXTURE_MODE: &str = "YOUR_WALLET_FULL_EXCHANGE_EXIT_FIXTURE_MODE";
+
+    struct FullExchangeExitFixture {
+        child: Child,
+    }
+
+    impl Drop for FullExchangeExitFixture {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    impl Drop for ExchangeCleanupDropObserver<'_> {
+        fn drop(&mut self) {
+            if self.cleanup_armed {
+                self.cleanup_armed = false;
+                self.cleanup_calls
+                    .set(self.cleanup_calls.get().saturating_add(1));
+            }
+        }
+    }
+
+    fn spawn_full_exchange_exit_fixture(
+        mode: &str,
+    ) -> Result<FullExchangeExitFixture, Box<dyn std::error::Error>> {
+        let executable = std::env::current_exe()?;
+        let child = Command::new(executable)
+            .arg("launch::tests::full_exchange_process_exit_fixture")
+            .arg("--exact")
+            .arg("--ignored")
+            .env(FULL_EXCHANGE_EXIT_FIXTURE_MODE, mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(FullExchangeExitFixture { child })
+    }
+
+    #[test]
+    #[ignore = "spawned only by exact full-exchange natural-exit process tests"]
+    fn full_exchange_process_exit_fixture() {
+        match std::env::var(FULL_EXCHANGE_EXIT_FIXTURE_MODE).as_deref() {
+            Ok("exit-zero") | Err(_) => {}
+            Ok("exit-nonzero") => std::process::exit(23),
+            Ok("hang") => std::thread::sleep(Duration::from_secs(30)),
+            Ok(_) => std::process::exit(24),
+        }
+    }
+
+    #[test]
+    fn full_exchange_real_held_process_exit_zero_is_observed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = spawn_full_exchange_exit_fixture("exit-zero")?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(LaunchError::TerminationDeadlineElapsed)?;
+
+        let result = sys::wait_for_expected_exit_code(
+            HANDLE(fixture.child.as_raw_handle()),
+            deadline,
+            0,
+            LaunchError::OperatingSystem,
+        );
+        let status = fixture.child.wait()?;
+
+        assert_eq!(result, Ok(()));
+        assert!(status.success());
+        Ok(())
+    }
+
+    #[test]
+    fn full_exchange_real_held_process_nonzero_exit_is_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = spawn_full_exchange_exit_fixture("exit-nonzero")?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(LaunchError::TerminationDeadlineElapsed)?;
+
+        let result = sys::wait_for_expected_exit_code(
+            HANDLE(fixture.child.as_raw_handle()),
+            deadline,
+            0,
+            LaunchError::OperatingSystem,
+        );
+        let status = fixture.child.wait()?;
+
+        assert_eq!(result, Err(LaunchError::OperatingSystem));
+        assert_eq!(status.code(), Some(23));
+        Ok(())
+    }
+
+    #[test]
+    fn full_exchange_real_held_process_hang_obeys_wait_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = spawn_full_exchange_exit_fixture("hang")?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(100))
+            .ok_or(LaunchError::TerminationDeadlineElapsed)?;
+
+        let result = sys::wait_for_expected_exit_code(
+            HANDLE(fixture.child.as_raw_handle()),
+            deadline,
+            0,
+            LaunchError::OperatingSystem,
+        );
+        let _ = fixture.child.kill();
+        let _ = fixture.child.wait();
+
+        assert_eq!(result, Err(LaunchError::TerminationDeadlineElapsed));
+        Ok(())
+    }
+
+    #[test]
+    fn full_exchange_natural_exit_zero_disarms_without_invoking_cleanup() {
+        let cleanup_calls = Cell::new(0_u32);
+        let mut cleanup_armed = true;
+
+        let result = resolve_exchange_natural_exit_with_cleanup(
+            &mut cleanup_armed,
+            || Ok(()),
+            || {
+                cleanup_calls.set(cleanup_calls.get().saturating_add(1));
+                Some(Ok(()))
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(!cleanup_armed);
+        assert_eq!(cleanup_calls.get(), 0);
+    }
+
+    #[test]
+    fn full_exchange_nonzero_exit_runs_cleanup_and_preserves_wait_error() {
+        let cleanup_calls = Cell::new(0_u32);
+        let mut cleanup_armed = true;
+
+        let result = resolve_exchange_natural_exit_with_cleanup(
+            &mut cleanup_armed,
+            || Err(LaunchError::OperatingSystem),
+            || {
+                cleanup_calls.set(cleanup_calls.get().saturating_add(1));
+                Some(Ok(()))
+            },
+        );
+
+        assert_eq!(result, Err(LaunchError::OperatingSystem));
+        assert!(!cleanup_armed);
+        assert_eq!(cleanup_calls.get(), 1);
+    }
+
+    #[test]
+    fn full_exchange_wait_error_runs_cleanup_and_preserves_wait_error() {
+        let cleanup_calls = Cell::new(0_u32);
+        let mut cleanup_armed = true;
+
+        let result = resolve_exchange_natural_exit_with_cleanup(
+            &mut cleanup_armed,
+            || Err(LaunchError::TerminationDeadlineElapsed),
+            || {
+                cleanup_calls.set(cleanup_calls.get().saturating_add(1));
+                Some(Ok(()))
+            },
+        );
+
+        assert_eq!(result, Err(LaunchError::TerminationDeadlineElapsed));
+        assert!(!cleanup_armed);
+        assert_eq!(cleanup_calls.get(), 1);
+    }
+
+    #[test]
+    fn full_exchange_cleanup_failure_precedes_natural_exit_wait_error() {
+        let cleanup_calls = Cell::new(0_u32);
+        let mut cleanup_armed = true;
+
+        let result = resolve_exchange_natural_exit_with_cleanup(
+            &mut cleanup_armed,
+            || Err(LaunchError::TerminationDeadlineElapsed),
+            || {
+                cleanup_calls.set(cleanup_calls.get().saturating_add(1));
+                Some(Err(LaunchError::OperatingSystem))
+            },
+        );
+
+        assert_eq!(result, Err(LaunchError::Cleanup));
+        assert!(!cleanup_armed);
+        assert_eq!(cleanup_calls.get(), 1);
+    }
+
+    #[test]
+    fn full_exchange_explicit_cleanup_disarms_drop_without_double_cleanup() {
+        let cleanup_calls = Cell::new(0_u32);
+        {
+            let mut observer = ExchangeCleanupDropObserver {
+                cleanup_armed: true,
+                cleanup_calls: &cleanup_calls,
+            };
+            let result = resolve_exchange_natural_exit_with_cleanup(
+                &mut observer.cleanup_armed,
+                || Err(LaunchError::OperatingSystem),
+                || {
+                    cleanup_calls.set(cleanup_calls.get().saturating_add(1));
+                    Some(Ok(()))
+                },
+            );
+
+            assert_eq!(result, Err(LaunchError::OperatingSystem));
+            assert!(!observer.cleanup_armed);
+        }
+        assert_eq!(cleanup_calls.get(), 1);
+    }
+
+    #[test]
+    fn full_exchange_missing_cleanup_deadline_keeps_drop_fallback_armed() {
+        let cleanup_calls = Cell::new(0_u32);
+        {
+            let mut observer = ExchangeCleanupDropObserver {
+                cleanup_armed: true,
+                cleanup_calls: &cleanup_calls,
+            };
+            let result = resolve_exchange_natural_exit_with_cleanup(
+                &mut observer.cleanup_armed,
+                || Err(LaunchError::TerminationDeadlineElapsed),
+                || None,
+            );
+
+            assert_eq!(result, Err(LaunchError::Cleanup));
+            assert!(observer.cleanup_armed);
+        }
+        assert_eq!(cleanup_calls.get(), 1);
+    }
 
     fn anonymous_pipe() -> Result<(OwnedHandle, OwnedHandle), Box<dyn std::error::Error>> {
         let mut read = HANDLE::default();

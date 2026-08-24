@@ -44,8 +44,14 @@ enum SigningPlan {
 }
 
 /// Opaque one-shot prompt retaining the exact request and hash across the
-/// complete UI interaction. The time-varying remaining lifetime is sampled only
-/// once here; authorization never rebuilds a different request after a hold.
+/// complete UI interaction. The wire-relative remaining lifetime is sampled
+/// once here. The owned [`PreparedAuthorization`] still retains its original
+/// monotonic expiry, but the parent exchange does not receive that value and
+/// currently resamples the relative lifetime after bootstrap. That can let
+/// transport evidence outlive the original session, although this retained
+/// authorization still rejects at its original expiry. Closing that transport
+/// gap is STOP-SHIP before signing. Authorization never rebuilds a different
+/// request after a hold.
 /// Its non-clone settings lease binds the authenticated settings generation,
 /// phrase revision, exact record digest, exclusive owner, process instance, and
 /// a fresh one-time nonce.
@@ -65,9 +71,18 @@ impl fmt::Debug for PreparedApprovalPrompt {
 }
 
 impl PreparedApprovalPrompt {
-    /// Borrows the exact request that a future consuming sealed parent-finish
-    /// transition must transfer unchanged. The current Approval transition stops
-    /// after child hello and has no request-accepting production caller.
+    /// Borrows the exact request transferred unchanged by the sealed parent-
+    /// bound full exchange. That transition has zero production callers and its
+    /// terminal evidence has no conversion into this crate's signing input.
+    ///
+    /// # Stop-ship lifetime gap
+    ///
+    /// The wire request carries only relative expiry. The current exchange
+    /// resamples it after bootstrap, which can let transport evidence outlive
+    /// this prompt's original session. The owned `PreparedAuthorization` still
+    /// retains the original monotonic `Instant` and rejects at it; before signing
+    /// is connected, that expiry must be delivered in an opaque form and must
+    /// cap the transport deadline.
     #[must_use]
     #[allow(dead_code)]
     pub(crate) const fn request(&self) -> &ApprovalRequest {

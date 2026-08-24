@@ -294,17 +294,36 @@ Implemented:
   A second sealed consuming transition writes the exact version-2 parent hello
   before releasing exactly one primary-thread suspend count, reads and decodes
   the exact child hello, and revalidates the running child/Job plus the intact
-  parent-bound aggregate. Its opaque result retains the running Approval, both
-  endpoints, both hellos, and the full Key Agent aggregate, but exposes no
-  parent-finish, request, UI, response, receive, or signing operation. The child
-  remains blocked awaiting parent finish. This transition also has zero
-  production callers. Explicit failures attempt bounded Approval termination and
-  reap first and give cleanup failure precedence. Drop makes the same bounded
-  attempt; if reap fails, closing the retained kill-on-close Job is the
-  fail-closed fallback before field-order release of endpoints and the Key Agent
-  tree. Bootstrap v2 binds the ordinary
-  supervisor and distinct Key Agent authority into one transcript while leaving
-  pipe-peer PID/session authority with the supervisor. This remains an
+  parent-bound aggregate. Its opaque `AuthenticatedApprovalBootstrap` retains
+  the running Approval, both endpoints, both hellos, and the full Key Agent
+  aggregate but exposes no protocol method. Only a separate sealed function can
+  consume it with the exact `ApprovalRequest`. This transition has zero
+  production callers. Explicit bootstrap failures attempt bounded Approval
+  termination/reap and give cleanup failure precedence. Drop retains the
+  kill-on-close fallback without claiming unconditional reap success.
+
+  The full-exchange function derives one monotonic transport deadline at its
+  start and uses that same deadline for response arming, the consuming finish
+  plus canonical request write and request EOF, fixed response plus response
+  EOF, and the exact held child's natural-exit wait. It revalidates child/Job
+  and Key Agent state before arming and before response read. Response bytes and
+  EOF remain exit-pending until the exact process exits naturally with code 0
+  before that same deadline. Final Key Agent revalidation occurs only after
+  natural exit, followed by a final deadline observation. Only then is opaque
+  crate-private `VerifiedParentBoundApprovalExchange` minted. It retains the
+  exited child, intact parent-bound aggregate, both hellos, and sealed response
+  evidence but has no response accessor or conversion to
+  `VerifiedApprovalResponse` or signing. The transition also has zero production
+  callers. The post-exit Key Agent check is point-in-time evidence; any future
+  evidence-to-authorization transition must revalidate the retained exact Key
+  Agent again immediately before use. No such transition exists. It never
+  force-terminates a live child to create success. Protocol
+  failure, timeout, nonzero exit, or wait failure rejects and uses a separate
+  bounded terminate/reap where a child remains owned; cleanup failure takes
+  precedence. Bootstrap v2 binds the ordinary
+  supervisor and distinct Key Agent authority into one transcript. The ordinary
+  supervisor remains the transport and pipe-peer PID/session authority; the Key
+  Agent remains only the separately checked logical parent. This remains an
   ownership-bound logical parent proof source, not Windows parent selection or
   an implementation of `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
   A repo-local `cfg(test)` integration now copies the exact non-inheritable
@@ -389,18 +408,23 @@ Implemented:
   exact request and request EOF, then a fixed 75-byte response and response EOF.
   After response-plus-EOF the parent locally hashes held child PID/file
   identity, manifest digest, profile revision, request digest, one-shot Approval
-  nonce and canonical request hash, exact response bytes, fresh local channel
-  challenge, and both bootstrap nonces. Job policy/membership is a live gate,
+  nonce and canonical request hash, exact response bytes, a fresh parent-local
+  transcript salt, and both bootstrap nonces. The salt is never sent to the
+  child and is not challenge-response evidence. Job policy/membership is a live gate,
   not hashed identity. The fixed 75-byte response is ordered as magic, version,
   decision, request digest, and the one-shot Approval request nonce. Only the
   digest and nonce echo request fields; neither bootstrap nonce is echoed.
   Replay resistance also depends on the private one-shot endpoint and a
   fresh one-shot Approval request nonce. Direct executable launch exits without
   diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
-  before resource allocation. The current sealed parent transition performs only parent hello and
-  child hello, then retains the child blocked awaiting parent finish. No current
-  parent transition sends finish/request, receives a response, or reaches
-  signing; the legacy `launch_approval_frontend` fails before allocation with
+  before resource allocation. The sealed parent implements hello bootstrap and
+  full exchange as separate consuming typestates. The full transition writes
+  finish plus exact request and EOF, verifies fixed response plus EOF, requires
+  natural exit code 0 from the exact held child under the same deadline, and
+  performs final Key Agent revalidation after exit. It returns only
+  `VerifiedParentBoundApprovalExchange`, which has no public response/signing
+  conversion. Both transitions have zero production callers; the legacy
+  `launch_approval_frontend` still fails before allocation with
   `LogicalParentUnavailable`. A repo-local child/grandchild kernel test
   makes a separate positive sentinel inheritable and uses
   `CompareObjectHandles` to prove that the sentinel reaches a broad-inheritance
@@ -414,11 +438,22 @@ Implemented:
   alternate path forms, live mapped exact-file-object proof, the complete
   DLL/dependency graph, immutable installation, a supervisor-held activation
   capability, and exact endpoint topology/exclusivity remain **STOP-SHIP**.
-  There are zero production orchestration callers for the intended full
-  Approval launch-to-verified-response-to-signing composition. There is
-  no positive signed-handshake E2E. `COMPILED_PARENT_POLICY` and
+  There are zero production orchestration callers for the sealed launch-to-
+  `VerifiedParentBoundApprovalExchange` transition, no conversion from that
+  evidence into the public verified response or signing, and no positive
+  signed-handshake E2E. `COMPILED_PARENT_POLICY` and
   `COMPILED_RELEASE_POLICY` remain `None`, so default `approval-ui` builds still
   exit 78;
+
+  **STOP-SHIP — transport/session lifetime mismatch:** the current full exchange samples
+  a new monotonic deadline from the wire request's relative expiry at exchange
+  start. When the request came from a `PreparedApprovalPrompt` created before
+  bootstrap, the transport/UI window and terminal evidence mint can outlive the
+  original session by the bootstrap duration; the existing authorization TCB
+  still rejects at that original expiry. The prompt already retains the original monotonic `Instant` inside
+  its `PreparedAuthorization`, but the parent-bound transport neither receives
+  nor enforces it. Before any signing composition, that expiry must cross the
+  boundary without becoming caller-controlled and cap the transport deadline;
 
 - an earliest runtime-enabled Secret Input/recovery child bootstrap. Its first
   Windows/CRT application operation requires stdin and the shared stdout/stderr
@@ -582,9 +617,15 @@ Implemented:
   case-sensitive directories and alternate path forms, artifact-bound execution
   of this bootstrap, exact signed-artifact E2E, immutable installation, complete
   DLL/dependency evidence, a release-proven resumable supervisor-held activation
-  capability, and endpoint topology/exclusivity remain absent. Approval also has
-  zero callers for its sealed hello-only transition, no parent-finish/request/
-  verified-response/signing transition, and no positive signed-handshake E2E.
+  capability, and endpoint topology/exclusivity remain absent. Approval's sealed
+  bootstrap and full exchange both have zero production callers. The full
+  exchange requires response EOF, natural child exit code 0, and post-exit final
+  Key Agent revalidation before minting opaque
+  `VerifiedParentBoundApprovalExchange`, but that evidence has no public
+  verified-response/signing conversion and there is no positive signed-handshake
+  E2E. The prompt's `PreparedAuthorization` retains its original monotonic
+  expiry, but opaque transport delivery and enforcement of that cap before
+  signing remain **STOP-SHIP**.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -629,16 +670,26 @@ Implemented:
   74-byte version-2 parent hello, 고정 106-byte child hello, 110-byte finish header와 exact request
   및 request EOF, 고정 75-byte response와 response EOF입니다. 부모가 response 뒤
   로컬에서 계산하는 transcript는 held child PID/file identity, manifest/profile,
-  request digest/one-shot nonce/hash, exact response, local channel challenge, 두 bootstrap
-  nonce를 해시합니다. Job은 live gate이지 hashed identity가 아닙니다. 고정 75-byte
+  request digest/one-shot nonce/hash, exact response, child에게 전송되지 않는 fresh
+  parent-local transcript salt, 두 bootstrap nonce를 해시합니다. 이 salt는
+  challenge-response 증거가 아닙니다. Job은 live gate이지 hashed identity가 아닙니다. 고정 75-byte
   response는 magic, version, decision, request digest, one-shot Approval request nonce
   순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
   않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
   의존합니다. raw executable direct launch는 진단 없이 종료되고, legacy Rust API는
-  resource allocation 전에 `LogicalParentUnavailable`을 반환합니다. 현재 sealed parent transition은 parent hello와 child hello까지만 수행하고
-  child를 parent finish 대기 상태로 보유합니다. finish/request/response를 보내거나 받고
-  signing으로 연결하는 parent transition은 없으며, legacy `launch_approval_frontend`는
-  `LogicalParentUnavailable`로 allocation 전에 실패합니다.
+  resource allocation 전에 `LogicalParentUnavailable`을 반환합니다. sealed parent는
+  hello bootstrap과 그 값을 exact request와 함께 소비하는 full exchange를 별도
+  typestate로 구현합니다. full exchange는 단 하나의 monotonic transport deadline을
+  response arming, finish+request EOF, 고정 response+EOF, exact child의 자연 exit wait에
+  공유합니다. response EOF만으로는 완료 증거가 아니며 exact process가 같은
+  deadline 안에서 스스로 exit code 0으로 종료해야 합니다. 그 뒤 final Key Agent
+  revalidation과 final deadline check가 성공해야 accessor 없는 crate-private
+  `VerifiedParentBoundApprovalExchange`가 만들어집니다. 살아 있는 child를 강제
+  종료해 성공 증거를 만들지 않으며, timeout/nonzero exit/wait 오류는 실패이고
+  cleanup 실패가 원래 오류보다 우선합니다. ordinary supervisor는 transport/pipe
+  authority로 남고 Key Agent는 별도 logical parent일 뿐입니다. 두 transition의 production caller는
+  모두 0개이고 public verified response/signing conversion은 없으며, legacy
+  `launch_approval_frontend`는 계속 allocation 전에 실패합니다.
   별도 inheritable positive sentinel grandchild 테스트는 sentinel이 전파되는 동안
   원래 stdio 두 객체만 전파되지 않음을 `CompareObjectHandles`로 확인하며 five-object
   proof가 아닙니다. 이 순차 clear는 원자적이지 않고 이후 inherit-bit 재설정이나
@@ -647,9 +698,15 @@ Implemented:
   alternate path form을 포괄하는 signed release-path positive evidence, live mapped exact
   file object, complete DLL/dependency graph, immutable installation, supervisor-held
   activation capability, exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다.
-  의도된 전체 Approval launch-to-verified-response-to-signing composition의 production
-  orchestration caller는 0개이고 positive signed-handshake E2E도
-  없습니다. `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
+  sealed launch-to-`VerifiedParentBoundApprovalExchange` transition의 production
+  orchestration caller는 0개이고, 그 증거를 public verified response나 signing으로
+  전환하는 composition과 positive signed-handshake E2E도 없습니다.
+  현재 exchange가 request relative expiry를 bootstrap 후 시점에서 다시 샘플하므로
+  transport/UI window와 terminal evidence mint가 원래 session expiry를 지나칠 수
+  있습니다. 기존 authorization TCB는 원래 expiry에서 계속 거절합니다. 그 prompt의
+  `PreparedAuthorization`은 original monotonic `Instant`를 계속 보존하지만, signing 전에
+  그 값을 caller-controlled deadline으로 노출하지 않고 transport에 전달·강제하는 것은
+  **STOP-SHIP**입니다. `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
   default helper는 exit 78입니다. runtime-enabled Secret Input/
   recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
   inherit bit를 제거하고, suspended 상태에서 별도로 주입된 non-inheritable parent
@@ -771,8 +828,9 @@ Stop-ship before any signing-capable release:
    74-byte version-2 parent hello, fixed 106-byte child hello, two fresh nonzero nonces,
    110-byte finish header, exact request EOF, fixed 75-byte response and response
    EOF, plus the parent transcript's held child PID/file identity,
-   manifest/profile, request digest/one-shot nonce/hash, exact response, local
-   challenge, and both bootstrap nonces. Job policy/membership is a live gate,
+   manifest/profile, request digest/one-shot nonce/hash, exact response, a fresh
+   parent-local transcript salt, and both bootstrap nonces. The salt is never
+   sent to the child and is not challenge-response evidence. Job policy/membership is a live gate,
    not hashed identity. Because the response does not echo the bootstrap nonces,
    replay evidence must also cover the private one-shot endpoint and fresh one-
    shot Approval request nonce. Signed release evidence must prove
@@ -792,10 +850,14 @@ Stop-ship before any signing-capable release:
    fresh non-inheritable exact Key Agent process duplicate with only
    `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it never reopens by PID,
    exposes no raw handle, and does not set `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`
-   or change Windows process parentage. A sealed zero-caller transition now
-   writes the complete v2 hello before exactly one resume, validates the exact
-   child hello, and stops with the child waiting for parent finish; it exposes no
-   request, response, or signing operation. A repo-local `cfg(test)` integration now
+   or change Windows process parentage. One sealed zero-caller transition writes
+   the complete v2 hello before exactly one resume and validates the exact child
+   hello. A second sealed zero-caller transition consumes that bootstrap and the
+   exact request under one monotonic transport deadline, writes finish/request
+   plus EOF, verifies fixed response plus EOF, waits for the exact held child to
+   exit naturally with code 0, and finally revalidates the Key Agent after exit.
+   Its opaque `VerifiedParentBoundApprovalExchange` exposes no public response or
+   signing conversion. A repo-local `cfg(test)` integration now
    launches an actual zero-capability Approval LPAC and proves exact handle/token
    usability, twelve token-right denials, denial of the exact per-right local
    `DuplicateHandle` and PID-reopen matrices enumerated above, and
@@ -816,9 +878,15 @@ Stop-ship before any signing-capable release:
    exhaustive two-object propagation negative. Its sequential clears are non-
    atomic and do not prevent later re-enabling or explicit duplication. That
    test is not evidence for the exact signed helper or intended release
-   topology. The sealed hello-only transition has zero production callers;
-   parent-finish/request/verified-response/signing composition and a positive
-   signed-handshake E2E are absent. Direct executable launch exits without
+   topology. Both sealed transitions have zero production callers; conversion
+   from the terminal exchange evidence into verified-response/signing and a
+   positive signed-handshake E2E are absent. The current relative-expiry
+   resampling can let the transport/UI evidence window outlive a pre-bootstrap
+   `PreparedApprovalPrompt` session; the existing authorization TCB still
+   rejects at the original expiry. Its
+   `PreparedAuthorization` still retains the original monotonic `Instant`, but
+   opaque delivery of that expiry to cap transport is **STOP-SHIP** before
+   signing. Direct executable launch exits without
    diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
    before allocation,
    while `COMPILED_PARENT_POLICY = None`, `COMPILED_RELEASE_POLICY = None`, and

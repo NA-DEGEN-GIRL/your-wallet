@@ -3,12 +3,14 @@
 //!
 //! The initial binding allocates only one narrow process-handle duplicate inside
 //! the Key Agent supervisor transition and retains no token handle. One sealed
-//! production transition may then borrow the intact aggregate to prepare a
+//! production-compiled transition may then borrow the intact aggregate to prepare a
 //! still-suspended Approval process. The activation owner can consume that
-//! dormant shell through one five-object hello exchange, while a `cfg(test)`-
-//! only transition separately proves narrow logical-parent handle/token
-//! usability in an actual Approval LPAC. The resulting private typestate still
-//! withholds parent finish, requests, responses, signing, and orchestration.
+//! dormant shell through one five-object hello bootstrap and a separate sealed
+//! full exchange, while a `cfg(test)`-only transition separately proves narrow
+//! logical-parent handle/token usability in an actual Approval LPAC. The
+//! terminal `VerifiedParentBoundApprovalExchange` remains crate-private,
+//! accessor-free, unreachable from production orchestration, and unconvertible
+//! into a public verified response or signing authority.
 
 use core::fmt;
 
@@ -49,9 +51,10 @@ impl From<KeyAgentSupervisorError> for ApprovalParentBindingError {
 /// The non-cloneable value exposes no constituent, identity, process handle,
 /// PID, path, launch, or resource accessor. Field order is security-significant:
 /// drop and unwind release retained kill-on-close Key Agent ownership before the
-/// held Approval file, without claiming synchronous reap success. This ownership binding alone does not prove that an
-/// production Approval process exists or can use the retained least-authority
-/// handle; that narrower fact is covered only by a repo-local kernel test.
+/// held Approval file, without claiming synchronous reap success. This ownership
+/// binding alone does not prove that a production Approval process exists or can
+/// use the retained least-authority handle; that narrower fact is covered only
+/// by a repo-local kernel test.
 #[must_use = "dropping the parent-bound Approval supervisor releases retained kill-on-close Key Agent ownership"]
 pub(crate) struct ParentBoundReleaseApprovalSupervisor {
     parent_source: ApprovalParentSourcePreparedKeyAgent,
@@ -130,13 +133,17 @@ pub(crate) fn prepare_parent_bound_approval_activation(
     Ok(activation)
 }
 
-/// Revalidates the intact parent-bound aggregate during sealed bootstrap.
+/// Revalidates the intact parent-bound aggregate during sealed activation,
+/// bootstrap, or full exchange.
 ///
 /// The Approval half is the same immutable pinned artifact that branded the
 /// held child at suspended creation, so retaining the complete aggregate keeps
 /// that evidence live. The mutable operating-system state belongs to the Key
-/// Agent half and is requeried without splitting either constituent.
-pub(crate) fn revalidate_parent_bound_approval_bootstrap(
+/// Agent half and is requeried without splitting either constituent. The
+/// ordinary supervisor remains the separate transport authority; this check
+/// refreshes the Key Agent logical-parent half and never treats it as the pipe
+/// peer or Windows process parent.
+pub(crate) fn revalidate_parent_bound_approval_state(
     bound: &ParentBoundReleaseApprovalSupervisor,
     seal: &ApprovalActivationSeal,
 ) -> Result<(), ApprovalActivationError> {

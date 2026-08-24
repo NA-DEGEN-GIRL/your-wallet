@@ -39,9 +39,19 @@
 //! case-sensitive directories and alternate path forms, immutable installation,
 //! the complete DLL/dependency graph, a release-proven resumable supervisor-held
 //! activation capability, and endpoint topology/exclusivity remain release
-//! blockers. The sealed hello-only transition has zero production callers, and
-//! there is no parent-finish/request/verified-response/signing composition or
-//! positive signed-handshake E2E.
+//! blockers. The sealed hello bootstrap and full exchange both have zero
+//! production callers. The full exchange shares one monotonic transport
+//! deadline across finish/request EOF, fixed response/EOF, and the exact held
+//! child's natural exit-code-zero wait, then revalidates the logical Key Agent
+//! after exit. Its opaque `VerifiedParentBoundApprovalExchange` has no public
+//! verified-response or signing conversion, and there is no positive signed-
+//! handshake E2E. The transport supervisor remains the pipe authority; the Key
+//! Agent remains only the distinct logical parent. The current relative-expiry
+//! resampling can let transport/UI evidence outlive a pre-bootstrap prompt's
+//! original session; the existing authorization TCB still rejects at that
+//! original expiry. Its
+//! `PreparedAuthorization` still retains the original monotonic expiry, but
+//! opaque delivery of that expiry to cap transport is a signing **STOP-SHIP**.
 //! `COMPILED_PARENT_POLICY` remains `None`; ordinary builds exit 78. Raw
 //! executable direct launch exits without diagnostics, while the legacy Rust API
 //! returns `LogicalParentUnavailable` before resource allocation.

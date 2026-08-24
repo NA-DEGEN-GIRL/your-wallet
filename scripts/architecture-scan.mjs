@@ -6246,7 +6246,7 @@ const restrictedLauncher = await text("crates/platform-windows/src/launch.rs");
 const restrictedLauncherProduction =
   withoutBottomTestModule(restrictedLauncher);
 const approvedRestrictedLauncherProductionBoundaryRawSha256 =
-  "6c06f00b227520b184cd29773fe503817542851d4d7be7ed20619f3c58334ecf";
+  "967276be5760ca8cd8fb3a65854c612d7da1d317bdafa9fe2030c86a91a604c7";
 const restrictedLauncherRelease = withoutCfgTestItems(
   restrictedLauncherProduction,
 );
@@ -6384,7 +6384,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "ed39ae176d331ae1c2cbce24ff445e3b59518969c34a05aa4efa70dd531e2bd5";
+  "4ca0cae8a95e6dd2bcc7cc0680e59c214723d9c556efc896c8b69d6fc5cd99da";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -20970,13 +20970,13 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/launch.rs",
-    unsafeCount: 63,
-    sha256: "18e7356f7d08d8ab4848fec6f33ee8492d9427dfa4a5af8086d406ffe2518715",
+    unsafeCount: 65,
+    sha256: "b9831c99352c98f8bf057676d0c1af736593b483f5da0fb9d479b8d9107727db",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
     unsafeCount: 33,
-    sha256: "2b844387cee14c878864e55e9fd0e6622d7a3b626ff4fb12258a3b4edfd5a780",
+    sha256: "c34e282b99633d0d095dea1a2b765e86f383472bde498d0555fdf17513fa0cd8",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -26665,7 +26665,7 @@ const approvalStdioDocumentationContract = (source) => {
     /request\s+digest/iu.test(source) &&
     /canonical(?:\s+request)?\s+hash/iu.test(source) &&
     /exact\s+response(?:\s+bytes)?/iu.test(source) &&
-    /local\s+(?:channel\s+)?challenge/iu.test(source) &&
+    /(?:parent-local|local)\s+transcript\s+salt/iu.test(source) &&
     /(?:both|두)\s+bootstrap\s+nonces?/iu.test(source) &&
     /Job[\s\S]{0,100}live\s+gate[\s\S]{0,80}(?:not\s+hashed\s+identity|hashed\s+identity[^.\r\n]{0,30}아닙)/iu.test(
       source,
@@ -26764,6 +26764,7 @@ const approvalStdioDocumentationMutationPatterns = [
   /(?:neither\s+bootstrap\s+nonce\s+is\s+echoed|bootstrap\s+nonce[^.\r\n]{0,40}echo[^.\r\n]{0,20}않)/iu,
   /Job[\s\S]{0,100}live\s+gate/iu,
   /private\s+one-shot\s+endpoint/iu,
+  /(?:parent-local|local)\s+transcript\s+salt/iu,
   /(?:zero\s+production\s+(?:orchestration\s+)?callers|production\s+orchestration\s+caller[^.\r\n]{0,30}0(?:개)?)/iu,
   /positive\s+signed[ -]handshake\s+E2E/iu,
 ];
@@ -26771,7 +26772,13 @@ const approvalStdioDocumentationMutationProbes =
   approvalStdioDocumentationSections.flatMap((source) =>
     approvalStdioDocumentationMutationPatterns.map((pattern) => ({
       original: source,
-      probe: source.replace(pattern, "REMOVED_APPROVAL_CONTRACT_MARKER"),
+      probe: source.replace(
+        new RegExp(
+          pattern.source,
+          pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+        ),
+        "REMOVED_APPROVAL_CONTRACT_MARKER",
+      ),
     })),
   );
 const approvalStdioDocumentationContradictionProbes =
@@ -26827,8 +26834,11 @@ const approvalArchitectureOverviewMarkers = [
   "106-byte child hello",
   "110-byte finish header",
   "75-byte response",
-  "private zero-caller parent transition currently performs only parent hello, one exact resume, child hello, and revalidation",
-  "exposes no finish, request, UI, response, receive, signing, or raw-resource operation",
+  "One private zero-caller transition performs parent hello, one exact resume, child hello, and revalidation",
+  "a second sealed zero-caller transition consumes that bootstrap and the exact request under one monotonic transport deadline",
+  "requires the exact held child to exit naturally with code 0 before that same deadline",
+  "crate-private opaque `VerifiedParentBoundApprovalExchange` has no response or signing conversion",
+  "ordinary supervisor remains transport authority and the Key Agent remains only the logical parent",
   "legacy launcher fails closed before resource allocation",
   "remain **STOP-SHIP**",
   "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`",
@@ -26840,13 +26850,20 @@ const approvalDormantArchitectureMarkers = [
   "separate consuming transition launches Approval suspended",
   "fifth logical-parent proof",
   "sealed, consuming, zero-caller transition writes the complete v2 parent hello before resuming the exact primary thread once",
-  "opaque state retains both hellos",
-  "has no finish/request/UI/response/receive/signing/raw-resource API",
-  "Explicit failures make a bounded terminate/reap attempt with cleanup-error precedence",
-  "Drop makes the same attempt",
-  "kill-on-close Job closure as the fail-closed fallback before field-order release",
+  "Only another sealed zero-caller transition may consume that opaque bootstrap with the exact request",
+  "one monotonic transport deadline for arming, finish/request plus request EOF, fixed response plus response EOF, and natural child exit",
+  "response EOF alone remains exit-pending",
+  "exact held child must exit naturally with code 0 before evidence",
+  "final Key Agent revalidation occurs after that exit",
+  "opaque `VerifiedParentBoundApprovalExchange` minted",
+  "no response/signing/raw-resource accessor or conversion",
+  "bounded terminate/reap with cleanup-error precedence",
+  "successful evidence is never manufactured by force-terminating a live child",
+  "Drop retains kill-on-close fallback",
   "without claiming unconditional reap success",
   "`TOKEN_QUERY` access to its token",
+  "transport/UI evidence window outlive the original authorization session",
+  "transport enforcement of that cap before signing are **STOP-SHIP**",
 ];
 requireInvariant(
   approvalStdioDocumentationSections.every(
@@ -28805,7 +28822,7 @@ const approvalParentDocumentationWindow = (document) => {
     ...document.matchAll(/ParentBoundReleaseApprovalSupervisor/gu),
   ].map((match) => match.index);
   return anchors
-    .map((anchor) => document.slice(Math.max(0, anchor - 700), anchor + 12_000))
+    .map((anchor) => document.slice(Math.max(0, anchor - 700), anchor + 20_000))
     .join("\n");
 };
 const approvalParentDocumentationContradiction =
@@ -29099,7 +29116,7 @@ const approvalParentContract = (source) => {
   let boundDefinition;
   let bind;
   let prepareActivation;
-  let revalidateBootstrap;
+  let revalidateState;
   let conversion;
   let debug;
   let implItems;
@@ -29117,9 +29134,9 @@ const approvalParentContract = (source) => {
       source,
       "prepare_parent_bound_approval_activation",
     );
-    revalidateBootstrap = rustTopLevelFunctionBlock(
+    revalidateState = rustTopLevelFunctionBlock(
       source,
-      "revalidate_parent_bound_approval_bootstrap",
+      "revalidate_parent_bound_approval_state",
     );
     implItems = rustImplItems(source);
     conversion =
@@ -29166,7 +29183,7 @@ const approvalParentContract = (source) => {
   );
   const bindCompact = compactRust(bind);
   const prepareActivationCompact = compactRust(prepareActivation);
-  const revalidateBootstrapCompact = compactRust(revalidateBootstrap);
+  const revalidateStateCompact = compactRust(revalidateState);
   const activationOrder = [
     "bound.parent_source.revalidate_for_approval_activation(seal).map_err(|_|ApprovalActivationError::ParentState)?;",
     "letactivation=matchbound.approval.prepare_parent_bound_approval(handles,&bound.parent_source,seal)",
@@ -29212,12 +29229,12 @@ const approvalParentContract = (source) => {
       1 &&
     rustCallSites(prepareActivation, "terminate_suspended_approval").length ===
       1 &&
-    revalidateBootstrapCompact ===
-      "pub(crate)fnrevalidate_parent_bound_approval_bootstrap(bound:&ParentBoundReleaseApprovalSupervisor,seal:&ApprovalActivationSeal,)->Result<(),ApprovalActivationError>{bound.parent_source.revalidate_for_approval_activation(seal).map_err(|_|ApprovalActivationError::ParentState)}" &&
-    rustCallSites(revalidateBootstrap, "revalidate_for_approval_activation")
+    revalidateStateCompact ===
+      "pub(crate)fnrevalidate_parent_bound_approval_state(bound:&ParentBoundReleaseApprovalSupervisor,seal:&ApprovalActivationSeal,)->Result<(),ApprovalActivationError>{bound.parent_source.revalidate_for_approval_activation(seal).map_err(|_|ApprovalActivationError::ParentState)}" &&
+    rustCallSites(revalidateState, "revalidate_for_approval_activation")
       .length === 1 &&
     !/\b(?:ResumeThread|resume|request|receive|sign|approve_and_sign|RestrictedLauncher|NoNetworkLpacProfile)\b/u.test(
-      rustLexicalCode(`${prepareActivation}\n${revalidateBootstrap}`),
+      rustLexicalCode(`${prepareActivation}\n${revalidateState}`),
     ) &&
     JSON.stringify(visibleFunctions) ===
       JSON.stringify([
@@ -29234,7 +29251,7 @@ const approvalParentContract = (source) => {
         {
           owner: "free",
           visibility: "pub(crate)",
-          name: "revalidate_parent_bound_approval_bootstrap",
+          name: "revalidate_parent_bound_approval_state",
         },
       ]) &&
     JSON.stringify(completeFunctionSurface) ===
@@ -29255,7 +29272,7 @@ const approvalParentContract = (source) => {
         },
         {
           owner: "free",
-          name: "revalidate_parent_bound_approval_bootstrap",
+          name: "revalidate_parent_bound_approval_state",
         },
       ]) &&
     JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
@@ -29317,8 +29334,8 @@ const approvalParentMutationProbes = [
     "        drop(activation);",
   ),
   approvalParentRelease.replace(
-    "pub(crate) fn revalidate_parent_bound_approval_bootstrap(\n    bound: &ParentBoundReleaseApprovalSupervisor,\n    seal: &ApprovalActivationSeal,\n) -> Result<(), ApprovalActivationError> {",
-    "pub(crate) fn revalidate_parent_bound_approval_bootstrap(\n    _bound: &ParentBoundReleaseApprovalSupervisor,\n    _seal: &ApprovalActivationSeal,\n) -> Result<(), ApprovalActivationError> {\n    return Ok(());",
+    "pub(crate) fn revalidate_parent_bound_approval_state(\n    bound: &ParentBoundReleaseApprovalSupervisor,\n    seal: &ApprovalActivationSeal,\n) -> Result<(), ApprovalActivationError> {",
+    "pub(crate) fn revalidate_parent_bound_approval_state(\n    _bound: &ParentBoundReleaseApprovalSupervisor,\n    _seal: &ApprovalActivationSeal,\n) -> Result<(), ApprovalActivationError> {\n    return Ok(());",
   ),
   approvalParentRelease.replace(
     '#[must_use = "dropping the parent-bound Approval supervisor releases retained kill-on-close Key Agent ownership"]',
@@ -29356,11 +29373,11 @@ const prepareParentBoundApprovalActivationProductionCallers =
       "prepare_parent_bound_approval_activation",
     ).map(() => file.path),
   );
-const revalidateParentBoundApprovalBootstrapProductionCallers =
+const revalidateParentBoundApprovalStateProductionCallers =
   workspaceRustProductionFiles.flatMap((file) =>
     rustCallSites(
       file.source,
-      "revalidate_parent_bound_approval_bootstrap",
+      "revalidate_parent_bound_approval_state",
     ).map(() => file.path),
   );
 const parentBoundApprovalProductionConsumers = workspaceRustProductionFiles
@@ -29395,7 +29412,7 @@ const approvalParentExternalUseContract = (files) =>
       return file.path === dormantApprovalActivationPath
         ? JSON.stringify(imports) ===
             JSON.stringify([
-              "usecrate::approval_parent::{ParentBoundReleaseApprovalSupervisor,prepare_parent_bound_approval_activation,revalidate_parent_bound_approval_bootstrap,};",
+              "usecrate::approval_parent::{ParentBoundReleaseApprovalSupervisor,prepare_parent_bound_approval_activation,revalidate_parent_bound_approval_state,};",
             ])
         : imports.length === 0;
     });
@@ -29416,6 +29433,7 @@ const approvalParentAuthorityTokenContract = (files) =>
     brokerLexicalTokenInventory(files, "ParentBoundReleaseApprovalSupervisor"),
   ) ===
     JSON.stringify([
+      dormantApprovalActivationPath,
       dormantApprovalActivationPath,
       dormantApprovalActivationPath,
       dormantApprovalActivationPath,
@@ -29560,8 +29578,11 @@ requireInvariant(
       JSON.stringify([approvalParentPath]) &&
     JSON.stringify(prepareParentBoundApprovalActivationProductionCallers) ===
       JSON.stringify([dormantApprovalActivationPath, approvalParentPath]) &&
-    JSON.stringify(revalidateParentBoundApprovalBootstrapProductionCallers) ===
+    JSON.stringify(revalidateParentBoundApprovalStateProductionCallers) ===
       JSON.stringify([
+        dormantApprovalActivationPath,
+        dormantApprovalActivationPath,
+        dormantApprovalActivationPath,
         dormantApprovalActivationPath,
         dormantApprovalActivationPath,
         dormantApprovalActivationPath,
@@ -29623,6 +29644,7 @@ const approvalActivationLibMutationProbes = [
   `${platformWindowsLib}\npub(crate) use approval_activation::*;\n`,
   `${platformWindowsLib}\nuse approval_activation::*;\n`,
   `${platformWindowsLib}\npub(crate) use approval_activation::BoundDormantApproval;\n`,
+  `${platformWindowsLib}\npub use approval_activation::VerifiedParentBoundApprovalExchange;\n`,
 ];
 const approvalActivationContract = (source) => {
   let dormantDefinition;
@@ -29635,6 +29657,8 @@ const approvalActivationContract = (source) => {
   let heldDebug;
   let authenticatedDefinition;
   let authenticatedDebug;
+  let verifiedDefinition;
+  let verifiedDebug;
   let launchErrorConversion;
   let bindDormant;
   let authenticateBootstrap;
@@ -29653,6 +29677,10 @@ const approvalActivationContract = (source) => {
     authenticatedDefinition = rustTopLevelLexicalItemBlock(
       source,
       /pub\(crate\)\s+struct\s+AuthenticatedApprovalBootstrap\s*\{/u,
+    );
+    verifiedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+VerifiedParentBoundApprovalExchange\s*\{/u,
     );
     dormantDrop = implItems.find(
       (item) => item.header === "impl Drop for BoundDormantApproval",
@@ -29678,6 +29706,12 @@ const approvalActivationContract = (source) => {
       implItems.find(
         (item) =>
           item.header === "impl fmt::Debug for AuthenticatedApprovalBootstrap",
+      )?.source ?? "";
+    verifiedDebug =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl fmt::Debug for VerifiedParentBoundApprovalExchange",
       )?.source ?? "";
     launchErrorConversion =
       implItems.find(
@@ -29714,12 +29748,12 @@ const approvalActivationContract = (source) => {
 
   const authorityInventory = brokerReleaseAuthorityInventory(
     [{ path: dormantApprovalActivationPath, source }],
-    /\b(?:ApprovalActivationSeal|BoundDormantApproval|HeldApprovalActivation|AuthenticatedApprovalBootstrap)\b/u,
+    /\b(?:ApprovalActivationSeal|BoundDormantApproval|HeldApprovalActivation|AuthenticatedApprovalBootstrap|VerifiedParentBoundApprovalExchange)\b/u,
   );
   const authenticateCompact = compactRust(authenticateBootstrap);
   return (
     normalizeRustFragment(rustLexicalCode(dormantDefinition)) ===
-      "pub(crate) struct BoundDormantApproval { activation: Option<HeldApprovalActivation>, request_writer: ApprovalRequestWriter, response_reader: ApprovalResponseReader, bound: ParentBoundReleaseApprovalSupervisor, }" &&
+      "pub(crate) struct BoundDormantApproval { activation: Option<HeldApprovalActivation>, request_writer: Option<ApprovalRequestWriter>, response_reader: Option<ApprovalResponseReader>, bound: Option<ParentBoundReleaseApprovalSupervisor>, }" &&
     /#\[must_use = "dropping dormant Approval only attempts bounded cleanup before kill-on-close fallback"\]\s*pub\(crate\) struct BoundDormantApproval/u.test(
       source,
     ) &&
@@ -29731,13 +29765,25 @@ const approvalActivationContract = (source) => {
       "enum HeldApprovalActivation { Suspended(HeldSuspendedApproval), Running(HeldRunningApproval), }" &&
     normalizeRustFragment(rustLexicalCode(authenticatedDefinition)) ===
       "pub(crate) struct AuthenticatedApprovalBootstrap { dormant: BoundDormantApproval, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, }" &&
+    normalizeRustFragment(rustLexicalCode(verifiedDefinition)) ===
+      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
+    source.includes("This is point-in-time terminal evidence") &&
+    source.includes(
+      "any future authorization edge must",
+    ) &&
+    source.includes(
+      "revalidate the retained exact Key Agent again immediately before use",
+    ) &&
     /#\[must_use = "dropping authenticated Approval only attempts bounded cleanup before kill-on-close fallback"\]\s*pub\(crate\) struct AuthenticatedApprovalBootstrap/u.test(
       source,
     ) &&
-    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*(?:pub\(crate\)\s+)?(?:struct\s+(?:BoundDormantApproval|AuthenticatedApprovalBootstrap)|enum\s+HeldApprovalActivation)\b/u.test(
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*(?:pub\(crate\)\s+)?(?:struct\s+(?:BoundDormantApproval|AuthenticatedApprovalBootstrap|VerifiedParentBoundApprovalExchange)|enum\s+HeldApprovalActivation)\b/u.test(
       rustLexicalCode(source),
     ) &&
     !/impl\s+AuthenticatedApprovalBootstrap\s*\{/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/impl\s+VerifiedParentBoundApprovalExchange\s*\{/u.test(
       rustLexicalCode(source),
     ) &&
     compactRust(dormantDropFunction) ===
@@ -29747,6 +29793,9 @@ const approvalActivationContract = (source) => {
     ) &&
     /formatter\s*\.\s*write_str\(\s*"AuthenticatedApprovalBootstrap\(\[RUNNING HELD APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; REDACTED HELLOS\]\)"/u.test(
       authenticatedDebug,
+    ) &&
+    /formatter\s*\.\s*write_str\(\s*"VerifiedParentBoundApprovalExchange\(\[SEALED COMPLETE EVIDENCE\]\)"/u.test(
+      verifiedDebug,
     ) &&
     /Self::Suspended\(_\)\s*=>\s*formatter\.write_str\("HeldApprovalActivation\(\[SUSPENDED\]\)"\)/u.test(
       heldDebug,
@@ -29772,7 +29821,7 @@ const approvalActivationContract = (source) => {
       "letseal=ApprovalActivationSeal{_private:()};",
       "letactivation=prepare_parent_bound_approval_activation(&bound,&inherited,&seal)?;",
       "let(request_writer,response_reader)=pipes.into_parent();",
-      "Ok(BoundDormantApproval{activation:Some(HeldApprovalActivation::Suspended(activation)),request_writer,response_reader,bound,})",
+      "Ok(BoundDormantApproval{activation:Some(HeldApprovalActivation::Suspended(activation)),request_writer:Some(request_writer),response_reader:Some(response_reader),bound:Some(bound),})",
     ]) &&
     rustCallSites(bindDormant, "prepare_parent_bound_approval_activation")
       .length === 1 &&
@@ -29799,7 +29848,7 @@ const approvalActivationContract = (source) => {
       { marker: "if is_all_zero(parent_nonce.as_slice())", depth: 2 },
       {
         marker:
-          "revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;\n        let parent_hello =",
+          "revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        let parent_hello =",
         depth: 2,
       },
       { marker: "let parent_hello = match dormant.activation.as_ref()", depth: 2 },
@@ -29812,7 +29861,7 @@ const approvalActivationContract = (source) => {
       { marker: ".write_bytes(encoded_parent_hello.as_slice(), deadline)", depth: 2 },
       {
         marker:
-          "revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;\n        let suspended =",
+          "revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        let suspended =",
         depth: 2,
       },
       { marker: "let suspended = match dormant.activation.take()", depth: 2 },
@@ -29836,7 +29885,7 @@ const approvalActivationContract = (source) => {
       { marker: "activation.revalidate_for_bootstrap(&seal)?", depth: 4 },
       {
         marker:
-          "revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;\n\n        Ok((parent_hello, child_hello))",
+          "revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        Ok((parent_hello, child_hello))",
         depth: 2,
       },
       { marker: "match bootstrap", depth: 1 },
@@ -29860,7 +29909,7 @@ const approvalActivationContract = (source) => {
       1 &&
     rustCallSites(
       authenticateBootstrap,
-      "revalidate_parent_bound_approval_bootstrap",
+      "revalidate_parent_bound_approval_state",
     ).length === 3 &&
     rustCallSites(authenticateBootstrap, "terminate_held_approval").length ===
       1 &&
@@ -29897,14 +29946,190 @@ const approvalActivationContract = (source) => {
         "impl HeldApprovalActivation",
         "impl fmt::Debug for HeldApprovalActivation",
         "impl fmt::Debug for AuthenticatedApprovalBootstrap",
+        "impl fmt::Debug for VerifiedParentBoundApprovalExchange",
       ]) &&
     !/\bpub\s+(?:struct|fn|use)\b/u.test(rustLexicalCode(source))
   );
 };
+
+const approvalFullExchangeContract = (source) => {
+  let completeExchange;
+  let verifiedDefinition;
+  let resolveAfterCleanup;
+  let mapChannelError;
+  let mapLaunchError;
+  let deadlineElapsed;
+  try {
+    completeExchange = rustTopLevelFunctionBlock(
+      source,
+      "complete_parent_bound_approval_exchange",
+    );
+    verifiedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+VerifiedParentBoundApprovalExchange\s*\{/u,
+    );
+    resolveAfterCleanup = rustTopLevelFunctionBlock(
+      source,
+      "resolve_after_cleanup",
+    );
+    mapChannelError = rustTopLevelFunctionBlock(
+      source,
+      "map_exchange_channel_error",
+    );
+    mapLaunchError = rustTopLevelFunctionBlock(
+      source,
+      "map_exchange_launch_error",
+    );
+    deadlineElapsed = rustTopLevelFunctionBlock(source, "deadline_elapsed");
+  } catch {
+    return false;
+  }
+
+  const code = rustLexicalCode(completeExchange);
+  const compact = compactRust(completeExchange);
+  const identities = rustCallSites(
+    completeExchange,
+    "revalidated_identity_for_exchange",
+  );
+  const parentRevalidations = rustCallSites(
+    completeExchange,
+    "revalidate_parent_bound_approval_state",
+  );
+  const armCalls = rustCallSites(
+    completeExchange,
+    "arm_parent_bound_approval_response",
+  );
+  const writeCalls = rustCallSites(completeExchange, "write_all");
+  const verifyCalls = rustCallSites(
+    completeExchange,
+    "verify_parent_bound_approval_response",
+  );
+  const waitCalls = rustCallSites(
+    completeExchange,
+    "wait_for_success_for_exchange",
+  );
+  const deadlineChecks = rustCallSites(completeExchange, "deadline_elapsed");
+  const mintCalls = rustCallSites(
+    completeExchange,
+    "seal_successful_parent_bound_approval_response",
+  );
+  const terminateCalls = rustCallSites(
+    completeExchange,
+    "terminate_held_approval",
+  );
+  const instantSamples = [
+    ...code.matchAll(/\bInstant\s*::\s*now\s*\(/gu),
+  ];
+  const positions = [
+    identities[0]?.index,
+    parentRevalidations[0]?.index,
+    armCalls[0]?.index,
+    writeCalls[0]?.index,
+    identities[1]?.index,
+    parentRevalidations[1]?.index,
+    verifyCalls[0]?.index,
+    waitCalls[0]?.index,
+    parentRevalidations[2]?.index,
+    deadlineChecks[0]?.index,
+    mintCalls[0]?.index,
+    terminateCalls[0]?.index,
+  ];
+  const mintIndex = mintCalls[0]?.index ?? -1;
+  const afterMint = mintIndex === -1 ? "?" : code.slice(mintIndex);
+
+  return (
+    /pub\(crate\)\s+fn\s+complete_parent_bound_approval_exchange\s*\(\s*authenticated\s*:\s*AuthenticatedApprovalBootstrap\s*,\s*request\s*:\s*&ApprovalRequest\s*,?\s*\)\s*->\s*Result\s*<\s*VerifiedParentBoundApprovalExchange\s*,\s*ApprovalActivationError\s*>/u.test(
+      code,
+    ) &&
+    normalizeRustFragment(rustLexicalCode(verifiedDefinition)) ===
+      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
+    instantSamples.length === 1 &&
+    rustCallSites(completeExchange, "expires_after_milliseconds").length ===
+      1 &&
+    rustCallSites(completeExchange, "Duration::from_millis").length === 1 &&
+    compact.includes(
+      "letexpiry_milliseconds=request.expires_after_milliseconds();if!(1..=MAX_EXPIRY_MILLISECONDS).contains(&expiry_milliseconds){returnErr(ApprovalActivationError::Exchange);}letdeadline=Instant::now().checked_add(Duration::from_millis(u64::from(expiry_milliseconds))).ok_or(ApprovalActivationError::Exchange)?;",
+    ) &&
+    identities.length === 2 &&
+    parentRevalidations.length === 3 &&
+    armCalls.length === 1 &&
+    writeCalls.length === 1 &&
+    rustCallSites(completeExchange, "write_bytes").length === 0 &&
+    verifyCalls.length === 1 &&
+    waitCalls.length === 1 &&
+    deadlineChecks.length === 1 &&
+    mintCalls.length === 1 &&
+    terminateCalls.length === 1 &&
+    positions.every((position) => Number.isInteger(position)) &&
+    positions.every(
+      (position, index) => index === 0 || positions[index - 1] < position,
+    ) &&
+    JSON.stringify(armCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify([
+        "pre_arm_identity",
+        "parent_hello.as_ref().ok_or(ApprovalActivationError::Exchange)?",
+        "child_hello.as_ref().ok_or(ApprovalActivationError::Exchange)?",
+        "request",
+        "deadline",
+        "response_reader",
+        "&seal",
+      ]) &&
+    JSON.stringify(writeCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify(["encoded_finish.as_slice()", "deadline"]) &&
+    JSON.stringify(verifyCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify(["armed_response", "pre_read_identity", "&seal"]) &&
+    JSON.stringify(waitCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify(["deadline", "&seal"]) &&
+    JSON.stringify(deadlineChecks[0].arguments.map(compactRust)) ===
+      JSON.stringify(["deadline"]) &&
+    JSON.stringify(mintCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify(["exit_pending_response", "&seal"]) &&
+    hasOrderedCompactRustMarkers(completeExchange, [
+      "letAuthenticatedApprovalBootstrap{mutdormant,parent_hello,child_hello,}=authenticated;",
+      "letmutparent_hello=Some(parent_hello);",
+      "letmutchild_hello=Some(child_hello);",
+      "letexchange=(||{",
+      "letresponse_reader=dormant.response_reader.take().ok_or(ApprovalActivationError::Activation)?;",
+      "letarmed_response=arm_parent_bound_approval_response(",
+      "letencoded_finish=Zeroizing::new(encode_parent_finish(",
+      "letrequest_writer=dormant.request_writer.take().ok_or(ApprovalActivationError::Activation)?;",
+      "request_writer.write_all(encoded_finish.as_slice(),deadline)",
+      "letexit_pending_response=verify_parent_bound_approval_response(",
+      "letrunning=matchdormant.activation.take()",
+      "letexited_child=running.wait_for_success_for_exchange(deadline,&seal)",
+      "ifdeadline_elapsed(deadline)",
+      "letbound=dormant.bound.take().ok_or(ApprovalActivationError::ParentState)?;",
+      "letparent_hello=parent_hello.take().ok_or(ApprovalActivationError::Exchange)?;",
+      "letchild_hello=child_hello.take().ok_or(ApprovalActivationError::Exchange)?;",
+      "letresponse_evidence=seal_successful_parent_bound_approval_response(exit_pending_response,&seal);",
+      "Ok(VerifiedParentBoundApprovalExchange{exited_child,bound,parent_hello,child_hello,response_evidence,})",
+      "letcleanup=matchdormant.activation.take(){Some(activation)=>terminate_held_approval(activation),None=>Ok(()),};",
+      "resolve_after_cleanup(exchange,cleanup)",
+    ]) &&
+    !afterMint.includes("?") &&
+    !/\b(?:is_live|is_running|still_running|post_eof_running|WAIT_TIMEOUT)\b/u.test(
+      code,
+    ) &&
+    !/\b(?:VerifiedApprovalResponse|approve_and_sign|signing|sign|raw_handle|as_handle|process_id|caller_deadline|caller_reader|caller_handle|caller_pid|caller_policy|caller_challenge)\b/u.test(
+      code,
+    ) &&
+    !/\b(?:approve_and_sign|sign\w*)[^;{}]*\bVerifiedParentBoundApprovalExchange\b|\bVerifiedParentBoundApprovalExchange\b[^;{}]*\b(?:approve_and_sign|sign\w*)/u.test(
+      rustLexicalCode(source),
+    ) &&
+    compactRust(resolveAfterCleanup) ===
+      "fnresolve_after_cleanup<T>(exchange:Result<T,ApprovalActivationError>,cleanup:Result<(),ApprovalActivationError>,)->Result<T,ApprovalActivationError>{cleanup?;exchange}" &&
+    compactRust(mapChannelError) ===
+      "constfnmap_exchange_channel_error(_error:ApprovalChannelError)->ApprovalActivationError{ApprovalActivationError::Exchange}" &&
+    compactRust(mapLaunchError) ===
+      "constfnmap_exchange_launch_error(error:LaunchError)->ApprovalActivationError{ifmatches!(error,LaunchError::Cleanup){ApprovalActivationError::Cleanup}else{ApprovalActivationError::Exchange}}" &&
+    compactRust(deadlineElapsed) ===
+      "fndeadline_elapsed(deadline:Instant)->bool{Instant::now().checked_duration_since(deadline).is_some()}"
+  );
+};
 const approvalActivationMutationProbes = [
   approvalActivationRelease.replace(
-    "    activation: Option<HeldApprovalActivation>,\n    request_writer: ApprovalRequestWriter,",
-    "    request_writer: ApprovalRequestWriter,\n    activation: Option<HeldSuspendedApproval>,",
+    "    activation: Option<HeldApprovalActivation>,\n    request_writer: Option<ApprovalRequestWriter>,",
+    "    request_writer: Option<ApprovalRequestWriter>,\n    activation: Option<HeldSuspendedApproval>,",
   ),
   approvalActivationRelease.replace(
     "            let _ = terminate_held_approval(activation);",
@@ -29949,19 +30174,19 @@ const approvalActivationMutationProbes = [
     "        let encoded_parent_hello = encode_parent_hello(&parent_hello);",
   ),
   approvalActivationRelease.replace(
-    "        dormant\n            .request_writer\n            .write_bytes(encoded_parent_hello.as_slice(), deadline)\n            .map_err(|_| ApprovalActivationError::Bootstrap)?;",
-    "        let suspended = match dormant.activation.take() { Some(HeldApprovalActivation::Suspended(value)) => value, _ => return Err(ApprovalActivationError::Activation) };\n        let running = suspended.resume_for_bootstrap(&seal)?;\n        dormant.activation = Some(HeldApprovalActivation::Running(running));\n        dormant.request_writer.write_bytes(encoded_parent_hello.as_slice(), deadline).map_err(|_| ApprovalActivationError::Bootstrap)?;",
+    "        dormant\n            .request_writer\n            .as_mut()\n            .ok_or(ApprovalActivationError::Activation)?\n            .write_bytes(encoded_parent_hello.as_slice(), deadline)\n            .map_err(|_| ApprovalActivationError::Bootstrap)?;",
+    "        let suspended = match dormant.activation.take() { Some(HeldApprovalActivation::Suspended(value)) => value, _ => return Err(ApprovalActivationError::Activation) };\n        let running = suspended.resume_for_bootstrap(&seal)?;\n        dormant.activation = Some(HeldApprovalActivation::Running(running));\n        dormant.request_writer.as_mut().ok_or(ApprovalActivationError::Activation)?.write_bytes(encoded_parent_hello.as_slice(), deadline).map_err(|_| ApprovalActivationError::Bootstrap)?;",
   ),
   approvalActivationRelease.replace(
-    "        revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;\n        let parent_hello = match dormant.activation.as_ref() {",
+    "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        let parent_hello = match dormant.activation.as_ref() {",
     "        let parent_hello = match dormant.activation.as_ref() {",
   ),
   approvalActivationRelease.replace(
-    "        // The complete hello must be committed to the pipe before this sole\n        // production resume edge can execute.\n        revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;",
+    "        // The complete hello must be committed to the pipe before this sole\n        // production resume edge can execute.\n        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;",
     "        // weakened\n",
   ),
   approvalActivationRelease.replace(
-    "        revalidate_parent_bound_approval_bootstrap(&dormant.bound, &seal)?;\n\n        Ok((parent_hello, child_hello))",
+    "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        Ok((parent_hello, child_hello))",
     "        Ok((parent_hello, child_hello))",
   ),
   approvalActivationRelease.replace(
@@ -29975,6 +30200,74 @@ const approvalActivationMutationProbes = [
   approvalActivationRelease.replace(
     "                terminate_held_approval(activation)?;",
     "                let _ = terminate_held_approval(activation);",
+  ),
+];
+const approvalFullExchangeMutationProbes = [
+  approvalActivationRelease.replace(
+    "    authenticated: AuthenticatedApprovalBootstrap,\n    request: &ApprovalRequest,",
+    "    authenticated: &AuthenticatedApprovalBootstrap,\n    request: &ApprovalRequest,",
+  ),
+  approvalActivationRelease.replace(
+    '#[must_use = "retain the complete parent-bound Approval exchange evidence"]\npub(crate) struct VerifiedParentBoundApprovalExchange',
+    '#[derive(Clone)]\n#[must_use = "retain the complete parent-bound Approval exchange evidence"]\npub(crate) struct VerifiedParentBoundApprovalExchange',
+  ),
+  ...[
+    "caller_deadline: Instant",
+    "caller_reader: ApprovalResponseReader",
+    "caller_handle: usize",
+    "caller_pid: u32",
+    "caller_policy: ReleasePolicy",
+    "caller_challenge: [u8; 32]",
+  ].map((parameter) =>
+    approvalActivationRelease.replace(
+      "    request: &ApprovalRequest,\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {",
+      `    request: &ApprovalRequest,\n    ${parameter},\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {`,
+    ),
+  ),
+  approvalActivationRelease.replace(
+    "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        let response_reader =",
+    "        let response_reader =",
+  ),
+  approvalActivationRelease.replace(
+    "        let exited_child = running\n            .wait_for_success_for_exchange(deadline, &seal)\n            .map_err(map_exchange_launch_error)?;\n\n        // This is point-in-time terminal evidence, not a durable liveness\n        // claim. The result has no consumer; any future authorization edge must\n        // revalidate the retained exact Key Agent again immediately before use.\n        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        if deadline_elapsed(deadline) {",
+    "        // Weakened: revalidate before observing natural exit.\n        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        let exited_child = running\n            .wait_for_success_for_exchange(deadline, &seal)\n            .map_err(map_exchange_launch_error)?;\n\n        if deadline_elapsed(deadline) {",
+  ),
+  approvalActivationRelease.replace(
+    ".write_all(encoded_finish.as_slice(), deadline)",
+    ".write_bytes(encoded_finish.as_slice(), deadline)",
+  ),
+  approvalActivationRelease.replace(
+    "        let exit_pending_response =\n            verify_parent_bound_approval_response(armed_response, pre_read_identity, &seal)\n                .map_err(map_exchange_channel_error)?;",
+    "        let exit_pending_response =\n            verify_parent_bound_approval_response(armed_response, pre_read_identity, &seal)\n                .map_err(map_exchange_channel_error)?;\n        let deadline = Instant::now()\n            .checked_add(Duration::from_millis(u64::from(expiry_milliseconds)))\n            .ok_or(ApprovalActivationError::Exchange)?;",
+  ),
+  approvalActivationRelease.replace(
+    "        let exited_child = running\n            .wait_for_success_for_exchange(deadline, &seal)\n            .map_err(map_exchange_launch_error)?;",
+    "        terminate_held_approval(HeldApprovalActivation::Running(running))?;\n        let exited_child = unreachable!();",
+  ),
+  ((source) =>
+    source
+      .replace(
+        "        let exited_child = running\n            .wait_for_success_for_exchange(deadline, &seal)",
+        "        let response_evidence =\n            seal_successful_parent_bound_approval_response(exit_pending_response, &seal);\n        let exited_child = running\n            .wait_for_success_for_exchange(deadline, &seal)",
+      )
+      .replace(
+        "        let response_evidence =\n            seal_successful_parent_bound_approval_response(exit_pending_response, &seal);\n        Ok(VerifiedParentBoundApprovalExchange {",
+        "        Ok(VerifiedParentBoundApprovalExchange {",
+      ))(approvalActivationRelease),
+  approvalActivationRelease.replace(
+    "        let running = match dormant.activation.take() {",
+    "        if !dormant.activation.as_ref().is_some_and(|activation| activation.is_running()) {\n            return Err(ApprovalActivationError::Exchange);\n        }\n        let running = match dormant.activation.take() {",
+  ),
+  approvalActivationRelease.replace(
+    "    cleanup?;\n    exchange",
+    "    let _ = cleanup;\n    exchange",
+  ),
+  `${approvalActivationRelease}\nimpl VerifiedParentBoundApprovalExchange { pub(crate) fn response(&self) -> &[u8] { &[] } }\n`,
+  `${approvalActivationRelease}\nimpl From<VerifiedParentBoundApprovalExchange> for VerifiedApprovalResponse { fn from(_value: VerifiedParentBoundApprovalExchange) -> Self { unreachable!() } }\n`,
+  `${approvalActivationRelease}\nfn sign_verified_parent_bound_exchange(_value: VerifiedParentBoundApprovalExchange) { unreachable!() }\n`,
+  approvalActivationRelease.replace(
+    "This is point-in-time terminal evidence, not a durable liveness",
+    "This is durable liveness evidence",
   ),
 ];
 const approvalActivationAuthorityConsumers = workspaceRustProductionFiles
@@ -30026,6 +30319,22 @@ const approvalActivationCallSurfaceContract = (files) => {
       "authenticate_parent_bound_approval_bootstrap",
     ).map(() => file.path);
   });
+  const completeExchangeCallers = files.flatMap((file) => {
+    let source = file.source;
+    if (file.path === dormantApprovalActivationPath) {
+      source = source.replace(
+        rustTopLevelFunctionBlock(
+          source,
+          "complete_parent_bound_approval_exchange",
+        ),
+        "",
+      );
+    }
+    return rustCallSites(
+      source,
+      "complete_parent_bound_approval_exchange",
+    ).map(() => file.path);
+  });
   const heldTerminationCallers = files.flatMap((file) => {
     let source = file.source;
     if (file.path === dormantApprovalActivationPath) {
@@ -30041,10 +30350,12 @@ const approvalActivationCallSurfaceContract = (files) => {
   return (
     JSON.stringify(bindCallers) === JSON.stringify([]) &&
     JSON.stringify(authenticateCallers) === JSON.stringify([]) &&
+    JSON.stringify(completeExchangeCallers) === JSON.stringify([]) &&
     JSON.stringify(terminationCallers) ===
       JSON.stringify([approvalParentPath]) &&
     JSON.stringify(heldTerminationCallers) ===
       JSON.stringify([
+        dormantApprovalActivationPath,
         dormantApprovalActivationPath,
         dormantApprovalActivationPath,
       ])
@@ -30054,6 +30365,7 @@ const approvalSensitiveFunctionUsageContract = (files) => {
   const usage = rustIdentifierUsageInventory(files, [
     "bind_dormant_parent_bound_approval",
     "authenticate_parent_bound_approval_bootstrap",
+    "complete_parent_bound_approval_exchange",
     "terminate_suspended_approval",
     "terminate_held_approval",
     "resume_suspended_for_legacy",
@@ -30067,6 +30379,9 @@ const approvalSensitiveFunctionUsageContract = (files) => {
       dormantApprovalActivationPath,
     ]) &&
     onlyPaths("authenticate_parent_bound_approval_bootstrap", [
+      dormantApprovalActivationPath,
+    ]) &&
+    onlyPaths("complete_parent_bound_approval_exchange", [
       dormantApprovalActivationPath,
     ]) &&
     onlyPaths("terminate_suspended_approval", [
@@ -30097,21 +30412,38 @@ const approvalSensitiveFunctionUsageContract = (files) => {
       ])
   );
 };
-const approvalActivationCallerMutation = workspaceRustProductionFiles.map(
-  (file) =>
+const approvalActivationCallerMutations = [
+  workspaceRustProductionFiles.map((file) =>
     file.path === "crates/platform-windows/src/approval_channel.rs"
       ? {
           ...file,
           source: `${file.source}\nfn hidden_dormant_activation(value: crate::approval_parent::ParentBoundReleaseApprovalSupervisor) { let _ = crate::approval_activation::bind_dormant_parent_bound_approval(value); }\n`,
         }
       : file,
-);
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_full_exchange(value: crate::approval_activation::AuthenticatedApprovalBootstrap, request: &approval_wire::ApprovalRequest) { let _ = crate::approval_activation::complete_parent_bound_approval_exchange(value, request); }\n`,
+        }
+      : file,
+  ),
+];
 const approvalSensitiveFunctionUsageMutationProbes = [
   workspaceRustProductionFiles.map((file) =>
     file.path === "crates/platform-windows/src/approval_channel.rs"
       ? {
           ...file,
           source: `${file.source}\nuse crate::approval_activation::bind_dormant_parent_bound_approval as hidden_dormant_bind;\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nuse crate::approval_activation::complete_parent_bound_approval_exchange as hidden_full_exchange;\n`,
         }
       : file,
   ),
@@ -30158,16 +30490,30 @@ requireInvariant(
 );
 requireInvariant(
   approvalActivationContract(approvalActivationRelease) &&
+    approvalFullExchangeContract(approvalActivationRelease) &&
     approvalActivationMutationProbes.every(
       (probe) =>
         probe !== approvalActivationRelease &&
-        !approvalActivationContract(probe),
+        !(
+          approvalActivationContract(probe) &&
+          approvalFullExchangeContract(probe)
+        ),
+    ) &&
+    approvalFullExchangeMutationProbes.every(
+      (probe) =>
+        probe !== approvalActivationRelease &&
+        !(
+          approvalActivationContract(probe) &&
+          approvalFullExchangeContract(probe)
+        ),
     ) &&
     JSON.stringify(approvalActivationAuthorityConsumers) ===
       JSON.stringify([dormantApprovalActivationPath]) &&
     approvalActivationCallSurfaceContract(workspaceRustProductionFiles) &&
-    !approvalActivationCallSurfaceContract(approvalActivationCallerMutation),
-  "dormant Approval activation must retain exact field/drop order, one sealed suspended binder, bounded cleanup attempts with kill-on-close fallback, zero production binder callers, and no public, resumable, protocol, or signing surface",
+    approvalActivationCallerMutations.every(
+      (probe) => !approvalActivationCallSurfaceContract(probe),
+    ),
+  "sealed Approval activation must retain exact dormant/bootstrap typestates and a zero-caller consuming full exchange with one request-derived deadline, exact revalidation/write/read/natural-exit/final-check order, cleanup precedence, and no public or signing surface",
 );
 requireInvariant(
   approvalSensitiveFunctionUsageContract(workspaceRustProductionFiles) &&
@@ -31649,7 +31995,12 @@ const heldSuspendedApprovalContract = (source) => {
         "terminate_and_wait",
       ]) &&
     JSON.stringify(runningMethods) ===
-      JSON.stringify(["revalidate_for_bootstrap", "terminate_and_wait"]) &&
+      JSON.stringify([
+        "revalidate_for_bootstrap",
+        "revalidated_identity_for_exchange",
+        "wait_for_success_for_exchange",
+        "terminate_and_wait",
+      ]) &&
     JSON.stringify(authorityImplHeaders) ===
       JSON.stringify([
         "impl ApprovalLogicalParentInjectionSeal",
@@ -31815,6 +32166,373 @@ const heldSuspendedApprovalMutationProbes = [
   ),
   `${restrictedLauncherProduction}\nimpl HeldRunningApproval { pub(crate) fn resume_again(&self) { unsafe { windows::Win32::System::Threading::ResumeThread(self.thread.raw()); } } }\n`,
 ];
+const heldApprovalNaturalExitContract = (source) => {
+  const release = withoutCfgTestItems(withoutBottomTestModule(source));
+  let exitedDefinition;
+  let exitedDebug;
+  let runningImpl;
+  let revalidatedIdentity;
+  let waitForSuccess;
+  let guardImpl;
+  let guardWait;
+  let resolveNaturalExit;
+  try {
+    exitedDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /pub\(crate\)\s+struct\s+HeldExitedApproval\s*\{/u,
+    );
+    exitedDebug = rustImplItemAtDepth(
+      release,
+      "impl fmt::Debug for HeldExitedApproval",
+      0,
+    );
+    runningImpl = rustImplItemAtDepth(
+      release,
+      "impl HeldRunningApproval",
+      0,
+    );
+    revalidatedIdentity = rustFunctionBlockAtDepth(
+      runningImpl,
+      "revalidated_identity_for_exchange",
+      1,
+    );
+    waitForSuccess = rustFunctionBlockAtDepth(
+      runningImpl,
+      "wait_for_success_for_exchange",
+      1,
+    );
+    guardImpl = rustImplItemAtDepth(
+      release,
+      "impl HeldApprovalProcessGuard",
+      0,
+    );
+    guardWait = rustFunctionBlockAtDepth(
+      guardImpl,
+      "wait_for_success_or_cleanup",
+      1,
+    );
+    resolveNaturalExit = rustTopLevelFunctionBlock(
+      release,
+      "resolve_exchange_natural_exit_with_cleanup",
+    );
+  } catch {
+    return false;
+  }
+
+  const exitedAuthority = brokerReleaseAuthorityInventory(
+    [{ path: "crates/platform-windows/src/launch.rs", source: release }],
+    /\bHeldExitedApproval\b/u,
+  );
+  const resolveCompact = compactRust(resolveNaturalExit);
+  const waitCompact = compactRust(waitForSuccess);
+  const guardWaitCompact = compactRust(guardWait);
+  const releaseWithoutResolver = release.replace(resolveNaturalExit, "");
+
+  return (
+    normalizeRustFragment(rustLexicalCode(exitedDefinition)) ===
+      "pub(crate) struct HeldExitedApproval { guard: HeldApprovalProcessGuard, thread: sys::OwnedWinHandle, parent_proof: InjectedParentProof, logical_parent: InjectedApprovalLogicalParent, }" &&
+    /#\[must_use = "retain exited Approval evidence with the sealed exchange"\]\s*pub\(crate\) struct HeldExitedApproval/u.test(
+      release,
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+HeldExitedApproval\b/u.test(
+      rustLexicalCode(release),
+    ) &&
+    JSON.stringify(exitedAuthority.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(exitedAuthority.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(exitedAuthority.reexports) === JSON.stringify([]) &&
+    JSON.stringify(exitedAuthority.conversions) === JSON.stringify([]) &&
+    JSON.stringify(exitedAuthority.impls.map((item) => item.header)) ===
+      JSON.stringify(["impl fmt::Debug for HeldExitedApproval"]) &&
+    /formatter\s*\.\s*write_str\(\s*"HeldExitedApproval\(\[EXITED APPROVAL; HELD JOB; REDACTED PARENT PROOFS\]\)"/u.test(
+      exitedDebug,
+    ) &&
+    compactRust(revalidatedIdentity) ===
+      "pub(crate)fnrevalidated_identity_for_exchange(&self,seal:&ApprovalActivationSeal,)->Result<HeldProcessIdentity,LaunchError>{self.revalidate_for_bootstrap(seal)?;Ok(self.guard.identity())}" &&
+    /pub\(crate\)\s+fn\s+wait_for_success_for_exchange\s*\(\s*self\s*,\s*deadline\s*:\s*Instant\s*,\s*_seal\s*:\s*&ApprovalActivationSeal\s*,?\s*\)\s*->\s*Result\s*<\s*HeldExitedApproval\s*,\s*LaunchError\s*>/u.test(
+      rustLexicalCode(waitForSuccess),
+    ) &&
+    hasOrderedCompactRustMarkers(waitForSuccess, [
+      "letSelf{guard,thread,parent_proof,logical_parent,}=self;",
+      "letguard=guard.wait_for_success_or_cleanup(deadline)?;",
+      "Ok(HeldExitedApproval{guard,thread,parent_proof,logical_parent,})",
+    ]) &&
+    !/\bterminate/u.test(rustLexicalCode(waitForSuccess)) &&
+    JSON.stringify(
+      rustCallSites(guardWait, "wait_for_expected_exit_code").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["process", "deadline", "0", "LaunchError::OperatingSystem"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(guardWait, "terminate_and_wait").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "job", "cleanup_deadline"]]) &&
+    (
+      guardWaitCompact.match(/Instant::now\(\)/gu) ?? []
+    ).length === 1 &&
+    hasOrderedCompactRustMarkers(guardWait, [
+      "letprocess=self.process.raw();",
+      "letjob=self.job.raw();",
+      "resolve_exchange_natural_exit_with_cleanup(",
+      "||sys::wait_for_expected_exit_code(process,deadline,0,LaunchError::OperatingSystem)",
+      "Instant::now().checked_add(APPROVAL_EXCHANGE_REJECTION_GRACE)",
+      "sys::terminate_and_wait(process,job,cleanup_deadline)",
+      "Ok(self)",
+    ]) &&
+    /fn\s+resolve_exchange_natural_exit_with_cleanup\s*<\s*W\s*,\s*C\s*>\s*\(\s*cleanup_armed\s*:\s*&mut bool\s*,\s*wait_for_natural_exit\s*:\s*W\s*,\s*cleanup_rejected_child\s*:\s*C\s*,?\s*\)\s*->\s*Result\s*<\s*\(\s*\)\s*,\s*LaunchError\s*>/u.test(
+      rustLexicalCode(resolveNaturalExit),
+    ) &&
+    hasOrderedCompactRustMarkers(resolveNaturalExit, [
+      "letwait_error=matchwait_for_natural_exit(){",
+      "Ok(())=>{*cleanup_armed=false;returnOk(());}",
+      "Err(error)=>error,",
+      "letSome(cleanup_result)=cleanup_rejected_child()else{returnErr(LaunchError::Cleanup);};",
+      "*cleanup_armed=false;",
+      "cleanup_result.map_err(|_|LaunchError::Cleanup)?;",
+      "Err(wait_error)",
+    ]) &&
+    (resolveCompact.match(/\*cleanup_armed=false;/gu) ?? []).length === 2 &&
+    rustCallSites(resolveNaturalExit, "wait_for_natural_exit").length === 1 &&
+    rustCallSites(resolveNaturalExit, "cleanup_rejected_child").length === 1 &&
+    !/\bterminate/u.test(rustLexicalCode(resolveNaturalExit)) &&
+    rustCallSites(
+      releaseWithoutResolver,
+      "resolve_exchange_natural_exit_with_cleanup",
+    ).length === 1 &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(release, "APPROVAL_EXCHANGE_REJECTION_GRACE"),
+    ) ===
+      "const APPROVAL_EXCHANGE_REJECTION_GRACE: Duration = Duration::from_secs(5);" &&
+    !/\b(?:approve_and_sign|sign\w*)[^;{}]*\bHeldExitedApproval\b|\bHeldExitedApproval\b[^;{}]*\b(?:approve_and_sign|sign\w*)/u.test(
+      rustLexicalCode(release),
+    ) &&
+    waitCompact.indexOf("wait_for_success_or_cleanup(deadline)?") <
+      waitCompact.indexOf("Ok(HeldExitedApproval{")
+  );
+};
+const heldApprovalNaturalExitMutationProbes = [
+  restrictedLauncherProduction.replace(
+    '#[must_use = "retain exited Approval evidence with the sealed exchange"]',
+    '#[derive(Clone)]\n#[must_use = "retain exited Approval evidence with the sealed exchange"]',
+  ),
+  restrictedLauncherProduction.replace(
+    "pub(crate) struct HeldExitedApproval",
+    "pub struct HeldExitedApproval",
+  ),
+  restrictedLauncherProduction.replace(
+    "        self,\n        deadline: Instant,\n        _seal: &ApprovalActivationSeal,\n    ) -> Result<HeldExitedApproval, LaunchError> {",
+    "        &self,\n        deadline: Instant,\n        _seal: &ApprovalActivationSeal,\n    ) -> Result<HeldExitedApproval, LaunchError> {",
+  ),
+  restrictedLauncherProduction.replace(
+    "sys::wait_for_expected_exit_code(process, deadline, 0, LaunchError::OperatingSystem)",
+    "sys::wait_for_expected_exit_code(process, deadline, 1, LaunchError::OperatingSystem)",
+  ),
+  restrictedLauncherProduction.replace(
+    "        Ok(()) => {\n            *cleanup_armed = false;\n            return Ok(());\n        }",
+    "        Ok(()) => {\n            let _ = cleanup_rejected_child();\n            *cleanup_armed = false;\n            return Ok(());\n        }",
+  ),
+  restrictedLauncherProduction.replace(
+    "    cleanup_result.map_err(|_| LaunchError::Cleanup)?;",
+    "    let _ = cleanup_result;",
+  ),
+  restrictedLauncherProduction.replace(
+    "        return Err(LaunchError::Cleanup);\n    };",
+    "        *cleanup_armed = false;\n        return Err(LaunchError::Cleanup);\n    };",
+  ),
+  restrictedLauncherProduction.replace(
+    "    Err(wait_error)\n}",
+    "    let _ = wait_error;\n    Ok(())\n}",
+  ),
+  restrictedLauncherProduction.replace(
+    "                Instant::now()\n                    .checked_add(APPROVAL_EXCHANGE_REJECTION_GRACE)",
+    "                Some(deadline)",
+  ),
+  `${restrictedLauncherProduction}\nimpl HeldExitedApproval { pub(crate) fn response(&self) -> &[u8] { &[] } }\n`,
+  `${restrictedLauncherProduction}\nimpl From<HeldExitedApproval> for VerifiedApprovalResponse { fn from(_value: HeldExitedApproval) -> Self { unreachable!() } }\n`,
+  `${restrictedLauncherProduction}\nfn sign_exited_approval(_value: HeldExitedApproval) { unreachable!() }\n`,
+  `${restrictedLauncherProduction}\nfn extra_natural_exit_caller(cleanup_armed: &mut bool) { let _ = resolve_exchange_natural_exit_with_cleanup(cleanup_armed, || Ok(()), || Some(Ok(()))); }\n`,
+];
+const heldApprovalExitWorkspaceContract = (files) => {
+  const inventory = brokerReleaseAuthorityInventory(
+    files,
+    /\bHeldExitedApproval\b/u,
+  );
+  const usage = rustIdentifierUsageInventory(files, ["HeldExitedApproval"]);
+  return (
+    JSON.stringify(inventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(inventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(inventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(inventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(inventory.impls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/launch.rs",
+          header: "impl fmt::Debug for HeldExitedApproval",
+        },
+      ]) &&
+    JSON.stringify(usage.tokens.HeldExitedApproval) ===
+      JSON.stringify([
+        dormantApprovalActivationPath,
+        dormantApprovalActivationPath,
+        "crates/platform-windows/src/launch.rs",
+        "crates/platform-windows/src/launch.rs",
+        "crates/platform-windows/src/launch.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
+    usage.aliases.length === 0 &&
+    usage.qualified.length === 0 &&
+    !/\b(?:approve_and_sign|sign\w*)[^;{}]*\bHeldExitedApproval\b|\bHeldExitedApproval\b[^;{}]*\b(?:approve_and_sign|sign\w*)/u.test(
+      rustLexicalCode(files.map((file) => file.source).join("\n")),
+    )
+  );
+};
+const fullExchangeLaunchTestNames = [
+  "full_exchange_process_exit_fixture",
+  "full_exchange_real_held_process_exit_zero_is_observed",
+  "full_exchange_real_held_process_nonzero_exit_is_rejected",
+  "full_exchange_real_held_process_hang_obeys_wait_deadline",
+  "full_exchange_natural_exit_zero_disarms_without_invoking_cleanup",
+  "full_exchange_nonzero_exit_runs_cleanup_and_preserves_wait_error",
+  "full_exchange_wait_error_runs_cleanup_and_preserves_wait_error",
+  "full_exchange_cleanup_failure_precedes_natural_exit_wait_error",
+  "full_exchange_explicit_cleanup_disarms_drop_without_double_cleanup",
+  "full_exchange_missing_cleanup_deadline_keeps_drop_fallback_armed",
+];
+const fullExchangeLaunchTestsContract = (source) => {
+  let tests;
+  let blocks;
+  try {
+    tests = rustLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*#\[cfg\(all\(test,\s*windows\)\)\]\s*mod\s+tests\s*\{/u,
+    );
+    blocks = Object.fromEntries(
+      fullExchangeLaunchTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(tests, name, 1),
+      ]),
+    );
+  } catch {
+    return false;
+  }
+  const compact = Object.fromEntries(
+    Object.entries(blocks).map(([name, block]) => [name, compactRust(block)]),
+  );
+  const lexicalNames = [
+    ...rustLexicalCode(tests).matchAll(/\bfn\s+(full_exchange_[A-Za-z0-9_]+)\s*\(/gu),
+  ].map((match) => match[1]);
+  return (
+    JSON.stringify(lexicalNames) === JSON.stringify(fullExchangeLaunchTestNames) &&
+    /#\[test\]\s*#\[ignore = "spawned only by exact full-exchange natural-exit process tests"\]\s*fn full_exchange_process_exit_fixture/u.test(
+      tests,
+    ) &&
+    blocks.full_exchange_process_exit_fixture.includes(
+      'Ok("exit-nonzero") => std::process::exit(23)',
+    ) &&
+    blocks.full_exchange_process_exit_fixture.includes(
+      'Ok("hang") => std::thread::sleep(Duration::from_secs(30))',
+    ) &&
+    blocks.full_exchange_real_held_process_exit_zero_is_observed.includes(
+      'spawn_full_exchange_exit_fixture("exit-zero")?',
+    ) &&
+    hasOrderedCompactRustMarkers(
+      blocks.full_exchange_real_held_process_exit_zero_is_observed,
+      [
+        "spawn_full_exchange_exit_fixture()?",
+        "sys::wait_for_expected_exit_code(",
+        "deadline,0,LaunchError::OperatingSystem",
+        "assert_eq!(result,Ok(()));",
+        "assert!(status.success());",
+      ],
+    ) &&
+    blocks.full_exchange_real_held_process_nonzero_exit_is_rejected.includes(
+      'spawn_full_exchange_exit_fixture("exit-nonzero")?',
+    ) &&
+    hasOrderedCompactRustMarkers(
+      blocks.full_exchange_real_held_process_nonzero_exit_is_rejected,
+      [
+        "spawn_full_exchange_exit_fixture()?",
+        "deadline,0,LaunchError::OperatingSystem",
+        "assert_eq!(result,Err(LaunchError::OperatingSystem));",
+        "assert_eq!(status.code(),Some(23));",
+      ],
+    ) &&
+    blocks.full_exchange_real_held_process_hang_obeys_wait_deadline.includes(
+      'spawn_full_exchange_exit_fixture("hang")?',
+    ) &&
+    hasOrderedCompactRustMarkers(
+      blocks.full_exchange_real_held_process_hang_obeys_wait_deadline,
+      [
+        "spawn_full_exchange_exit_fixture()?",
+        "Duration::from_millis(100)",
+        "deadline,0,LaunchError::OperatingSystem",
+        "fixture.child.kill()",
+        "fixture.child.wait()",
+        "assert_eq!(result,Err(LaunchError::TerminationDeadlineElapsed));",
+      ],
+    ) &&
+    compact.full_exchange_natural_exit_zero_disarms_without_invoking_cleanup.includes(
+      "||Ok(()),",
+    ) &&
+    compact.full_exchange_natural_exit_zero_disarms_without_invoking_cleanup.includes(
+      "assert_eq!(result,Ok(()));assert!(!cleanup_armed);assert_eq!(cleanup_calls.get(),0);",
+    ) &&
+    compact.full_exchange_nonzero_exit_runs_cleanup_and_preserves_wait_error.includes(
+      "||Err(LaunchError::OperatingSystem)",
+    ) &&
+    compact.full_exchange_nonzero_exit_runs_cleanup_and_preserves_wait_error.includes(
+      "assert_eq!(result,Err(LaunchError::OperatingSystem));assert!(!cleanup_armed);assert_eq!(cleanup_calls.get(),1);",
+    ) &&
+    compact.full_exchange_wait_error_runs_cleanup_and_preserves_wait_error.includes(
+      "assert_eq!(result,Err(LaunchError::TerminationDeadlineElapsed));assert!(!cleanup_armed);assert_eq!(cleanup_calls.get(),1);",
+    ) &&
+    compact.full_exchange_cleanup_failure_precedes_natural_exit_wait_error.includes(
+      "Some(Err(LaunchError::OperatingSystem))",
+    ) &&
+    compact.full_exchange_cleanup_failure_precedes_natural_exit_wait_error.includes(
+      "assert_eq!(result,Err(LaunchError::Cleanup));assert!(!cleanup_armed);assert_eq!(cleanup_calls.get(),1);",
+    ) &&
+    compact.full_exchange_explicit_cleanup_disarms_drop_without_double_cleanup.includes(
+      "assert_eq!(result,Err(LaunchError::OperatingSystem));assert!(!observer.cleanup_armed);",
+    ) &&
+    compact.full_exchange_explicit_cleanup_disarms_drop_without_double_cleanup.endsWith(
+      "assert_eq!(cleanup_calls.get(),1);}",
+    ) &&
+    compact.full_exchange_missing_cleanup_deadline_keeps_drop_fallback_armed.includes(
+      "||None,",
+    ) &&
+    compact.full_exchange_missing_cleanup_deadline_keeps_drop_fallback_armed.includes(
+      "assert_eq!(result,Err(LaunchError::Cleanup));assert!(observer.cleanup_armed);",
+    ) &&
+    compact.full_exchange_missing_cleanup_deadline_keeps_drop_fallback_armed.endsWith(
+      "assert_eq!(cleanup_calls.get(),1);}",
+    )
+  );
+};
+const fullExchangeLaunchTestsMutationProbes = [
+  ...fullExchangeLaunchTestNames.map((name) =>
+    restrictedLauncher.replace(`fn ${name}(`, `fn mutated_${name}(`),
+  ),
+  restrictedLauncher.replace(
+    "            deadline,\n            0,\n            LaunchError::OperatingSystem,",
+    "            deadline,\n            1,\n            LaunchError::OperatingSystem,",
+  ),
+  restrictedLauncher.replace(
+    "                Some(Err(LaunchError::OperatingSystem))",
+    "                Some(Ok(()))",
+  ),
+  restrictedLauncher.replace(
+    "            assert!(observer.cleanup_armed);",
+    "            assert!(!observer.cleanup_armed);",
+  ),
+  restrictedLauncher.replace(
+    "        assert_eq!(cleanup_calls.get(), 0);",
+    "        assert_eq!(cleanup_calls.get(), 1);",
+  ),
+];
 const suspendedApprovalCarrierWorkspaceContract = (files) => {
   const authorityInventory = brokerReleaseAuthorityInventory(
     files,
@@ -31905,6 +32623,7 @@ const suspendedApprovalCarrierWorkspaceContract = (files) => {
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
+          "crates/platform-windows/src/launch.rs",
         ],
         HeldSuspendedApproval: [
           dormantApprovalActivationPath,
@@ -31932,6 +32651,7 @@ const suspendedApprovalCarrierWorkspaceContract = (files) => {
           "crates/platform-windows/src/launch.rs",
         ],
         HeldApprovalProcessGuard: [
+          "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
@@ -32004,10 +32724,23 @@ const heldRunningApprovalProductionConsumers = workspaceRustProductionFiles
   .map((file) => file.path);
 requireInvariant(
   heldSuspendedApprovalContract(restrictedLauncherProduction) &&
+    heldApprovalNaturalExitContract(restrictedLauncherProduction) &&
     heldSuspendedApprovalMutationProbes.every(
       (probe) =>
         probe !== restrictedLauncherProduction &&
         !heldSuspendedApprovalContract(probe),
+    ) &&
+    heldApprovalNaturalExitMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncherProduction &&
+        !heldApprovalNaturalExitContract(probe),
+    ) &&
+    heldApprovalExitWorkspaceContract(workspaceRustProductionFiles) &&
+    fullExchangeLaunchTestsContract(restrictedLauncher) &&
+    fullExchangeLaunchTestsMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncher &&
+        !fullExchangeLaunchTestsContract(probe),
     ) &&
     JSON.stringify(logicalParentProductionConsumers) ===
       JSON.stringify([
@@ -32027,7 +32760,7 @@ requireInvariant(
         dormantApprovalActivationPath,
         "crates/platform-windows/src/launch.rs",
       ]),
-  "Approval suspended/running typestates must keep both parent proofs private, mint child-local coordinates only under the launch seal, consume the sole sealed resume exactly once, preserve cleanup-failure precedence, and retain one armed kill-on-close fallback beneath both states",
+  "Approval suspended/running/exited typestates must keep both parent proofs private, consume the sole sealed resume and exact natural-exit-zero edge, preserve cleanup-failure precedence and Drop fallback, and keep the fixture plus nine full-exchange exit tests mutation-sensitive",
 );
 requireInvariant(
   suspendedApprovalCarrierWorkspaceContract(workspaceRustProductionFiles) &&
@@ -32622,13 +33355,21 @@ const approvalParentAggregateCleanupContract = (
       "cleanup?;",
       "result",
     ]) &&
-    hasOrderedCompactRustMarkers(sysWait, [
-      "letwait=unsafe{WaitForSingleObject(process,remaining_milliseconds(deadline)?)};",
-      "ifwait==WAIT_TIMEOUT||deadline_elapsed(deadline){returnErr(LaunchError::TerminationDeadlineElapsed);}",
-      "ifwait!=WAIT_OBJECT_0{returnErr(LaunchError::OperatingSystem);}",
-      "GetExitCodeProcess(process,&rawmutexit_code)",
-      "(exit_code==super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE).then_some(()).ok_or(LaunchError::SandboxVerification)",
-    ]) &&
+    compactRust(sysWait) ===
+      "pub(super)fnwait_for_success_for_kernel_test(process:HANDLE,deadline:Instant,)->Result<(),LaunchError>{wait_for_expected_exit_code(process,deadline,super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE,LaunchError::SandboxVerification,)}" &&
+    JSON.stringify(
+      rustCallSites(sysWait, "wait_for_expected_exit_code").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "process",
+          "deadline",
+          "super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE",
+          "LaunchError::SandboxVerification",
+        ],
+      ]) &&
     hasOrderedCompactRustMarkers(terminateAndWait, [
       "ifunsafe{WaitForSingleObject(process,0)}==WAIT_OBJECT_0{returnOk(());}",
       "letjob_termination=unsafe{TerminateJobObject(job,1)};",
@@ -32858,8 +33599,8 @@ const approvalParentAggregateCleanupMutationProbes = [
   },
   {
     launch: restrictedLauncher.replace(
-      "exit_code == super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE",
-      "exit_code == 0",
+      "            super::APPROVAL_PARENT_PROBE_SUCCESS_EXIT_CODE,",
+      "            0,",
     ),
     parent: approvalParentSource,
     supervisor: keyAgentSupervisorSource,
@@ -33081,7 +33822,7 @@ const approvalParentChannelContract = (source) => {
     "transcript.update(request_nonce)",
     "transcript.update(request_hash)",
     "transcript.update(response_bytes)",
-    "transcript.update(channel_challenge)",
+    "transcript.update(transcript_salt)",
     "transcript.update(bootstrap_nonces.parent)",
     "transcript.update(bootstrap_nonces.child)",
   ].map((marker) => transcriptCompact.indexOf(marker));
@@ -33099,7 +33840,7 @@ const approvalParentChannelContract = (source) => {
       rustConstItemAtDepth(source, "TERMINATION_GRACE", 0),
     ) === "const TERMINATION_GRACE: Duration = Duration::from_secs(5);" &&
     normalizeRustFragment(rustLexicalCode(bootstrapDefinition)) ===
-      "struct BootstrapNonces { parent: [u8; CHANNEL_CHALLENGE_BYTES], child: [u8; CHANNEL_CHALLENGE_BYTES], }" &&
+      "struct BootstrapNonces { parent: [u8; BOOTSTRAP_NONCE_BYTES], child: [u8; BOOTSTRAP_NONCE_BYTES], }" &&
     normalizeRustFragment(rustLexicalCode(transcriptIdentityDefinition)) ===
       "struct TranscriptIdentity { process_id: u32, helper_file: FileIdentity, helper_manifest_digest: [u8; 32], profile_revision: u32, }" &&
     compactRust(transcriptIdentityFromHeld) ===
@@ -33108,13 +33849,13 @@ const approvalParentChannelContract = (source) => {
       rustLexicalCode(`${transcriptIdentityDefinition}\n${transcriptHash}`),
     ) &&
     rustLexicalCode(responseChannelDefinition).includes(
-      "channel_challenge: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+      "transcript_salt: Zeroizing<[u8; TRANSCRIPT_SALT_BYTES]>",
     ) &&
     rustLexicalCode(responseChannelDefinition).includes(
-      "parent_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+      "parent_bootstrap_nonce: Zeroizing<[u8; BOOTSTRAP_NONCE_BYTES]>",
     ) &&
     rustLexicalCode(responseChannelDefinition).includes(
-      "child_bootstrap_nonce: Zeroizing<[u8; CHANNEL_CHALLENGE_BYTES]>",
+      "child_bootstrap_nonce: Zeroizing<[u8; BOOTSTRAP_NONCE_BYTES]>",
     ) &&
     launchCompact ===
       "pub(crate)fnlaunch_approval_frontend(launcher:RestrictedLauncher,helper:&VerifiedHelper,request:&ApprovalRequest,)->Result<PendingApproval,ApprovalLaunchError>{if!helper.is_approval_frontend(){returnErr(ApprovalLaunchError::WrongHelperRole);}let_=(launcher,request);Err(ApprovalLaunchError::LogicalParentUnavailable)}" &&
@@ -33140,10 +33881,10 @@ const approvalParentChannelContract = (source) => {
     ).length === 1 &&
     (
       rustLexicalCode(source).match(/\barm_from_branded_reader\b/gu) ?? []
-    ).length === 2 &&
+    ).length === 3 &&
     (
       rustLexicalCode(source).match(/\bPlatformResponseReader\s*\(/gu) ?? []
-    ).length === 1 &&
+    ).length === 2 &&
     compactRust(bootstrapFromHellos).includes(
       "letnonces=Self::new(parent_hello.parent_nonce(),child_hello.child_nonce())?;ifnonces.parent!=expected_parent{",
     ) &&
@@ -33203,13 +33944,13 @@ const approvalParentChannelContract = (source) => {
     rustCallSites(armFromBranded, "BootstrapNonces::new").length === 1 &&
     rustCallSites(armFromBranded, "getrandom::fill").length === 1 &&
     brandedArmCompact.includes(
-      "getrandom::fill(&mut*challenge).map_err(|_|ApprovalChannelError::TranscriptFailure)?;",
+      "getrandom::fill(&mut*transcript_salt).map_err(|_|ApprovalChannelError::TranscriptFailure)?;",
     ) &&
     [
       "letbootstrap_nonces=BootstrapNonces::new(bootstrap_nonces.parent,bootstrap_nonces.child)?;",
-      "letmutchallenge=Zeroizing::new([0_u8;CHANNEL_CHALLENGE_BYTES]);",
-      "getrandom::fill(&mut*challenge)",
-      "ifis_all_zero(&*challenge)",
+      "letmuttranscript_salt=Zeroizing::new([0_u8;TRANSCRIPT_SALT_BYTES]);",
+      "getrandom::fill(&mut*transcript_salt)",
+      "ifis_all_zero(&*transcript_salt)",
       "ifdeadline_elapsed(expires_at)",
       "Ok(Self{",
     ]
@@ -33236,6 +33977,131 @@ const approvalParentChannelContract = (source) => {
     transcriptCompact.includes("response_bytes.len()!=RESPONSE_BYTES") &&
     transcriptCompact.includes("is_all_zero(&bootstrap_nonces.parent)") &&
     transcriptCompact.includes("is_all_zero(&bootstrap_nonces.child)")
+  );
+};
+
+const approvalSealedResponseEvidenceContract = (source) => {
+  let armedDefinition;
+  let pendingDefinition;
+  let evidenceDefinition;
+  let arm;
+  let verify;
+  let seal;
+  let readerImpl;
+  let readOnce;
+  let implItems;
+  try {
+    armedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ArmedParentBoundApprovalResponse\s*\{/u,
+    );
+    pendingDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ExitPendingParentBoundApprovalResponse\s*\{/u,
+    );
+    evidenceDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ParentBoundApprovalResponseEvidence\s*\{/u,
+    );
+    arm = rustTopLevelFunctionBlock(
+      source,
+      "arm_parent_bound_approval_response",
+    );
+    verify = rustTopLevelFunctionBlock(
+      source,
+      "verify_parent_bound_approval_response",
+    );
+    seal = rustTopLevelFunctionBlock(
+      source,
+      "seal_successful_parent_bound_approval_response",
+    );
+    implItems = rustImplItems(source);
+    readerImpl = rustImplItemAtDepth(
+      source,
+      "impl OneShotResponseReader for PlatformResponseReader",
+      0,
+    );
+    readOnce = rustFunctionBlockAtDepth(readerImpl, "read_once", 1);
+  } catch {
+    return false;
+  }
+
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: "crates/platform-windows/src/approval_channel.rs", source }],
+    /\b(?:ArmedParentBoundApprovalResponse|ExitPendingParentBoundApprovalResponse|ParentBoundApprovalResponseEvidence)\b/u,
+  );
+  const sealedTypeCode = rustLexicalCode(
+    `${armedDefinition}\n${pendingDefinition}\n${evidenceDefinition}`,
+  );
+  const wrappersCode = rustLexicalCode(`${arm}\n${verify}\n${seal}`);
+
+  return (
+    normalizeRustFragment(rustLexicalCode(armedDefinition)) ===
+      "pub(crate) struct ArmedParentBoundApprovalResponse { channel: ApprovalResponseChannel, }" &&
+    normalizeRustFragment(rustLexicalCode(pendingDefinition)) ===
+      "pub(crate) struct ExitPendingParentBoundApprovalResponse { parts: VerifiedResponseParts, }" &&
+    normalizeRustFragment(rustLexicalCode(evidenceDefinition)) ===
+      "pub(crate) struct ParentBoundApprovalResponseEvidence { parts: VerifiedResponseParts, }" &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+(?:ArmedParentBoundApprovalResponse|ExitPendingParentBoundApprovalResponse|ParentBoundApprovalResponseEvidence)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/impl\s+(?:ArmedParentBoundApprovalResponse|ExitPendingParentBoundApprovalResponse|ParentBoundApprovalResponseEvidence)\s*\{/u.test(
+      rustLexicalCode(source),
+    ) &&
+    /pub\(crate\)\s+fn\s+arm_parent_bound_approval_response\s*\(\s*bound_identity\s*:\s*HeldProcessIdentity\s*,\s*parent_hello\s*:\s*&ApprovalParentHello\s*,\s*child_hello\s*:\s*&ApprovalChildHello\s*,\s*request\s*:\s*&ApprovalRequest\s*,\s*expires_at\s*:\s*Instant\s*,\s*reader\s*:\s*ApprovalResponseReader\s*,\s*_seal\s*:\s*&ApprovalActivationSeal\s*,?\s*\)\s*->\s*Result\s*<\s*ArmedParentBoundApprovalResponse\s*,\s*ApprovalChannelError\s*>/u.test(
+      rustLexicalCode(arm),
+    ) &&
+    /pub\(crate\)\s+fn\s+verify_parent_bound_approval_response\s*\(\s*armed\s*:\s*ArmedParentBoundApprovalResponse\s*,\s*actual_identity\s*:\s*HeldProcessIdentity\s*,\s*_seal\s*:\s*&ApprovalActivationSeal\s*,?\s*\)\s*->\s*Result\s*<\s*ExitPendingParentBoundApprovalResponse\s*,\s*ApprovalChannelError\s*>/u.test(
+      rustLexicalCode(verify),
+    ) &&
+    /pub\(crate\)\s+fn\s+seal_successful_parent_bound_approval_response\s*\(\s*pending\s*:\s*ExitPendingParentBoundApprovalResponse\s*,\s*_seal\s*:\s*&ApprovalActivationSeal\s*,?\s*\)\s*->\s*ParentBoundApprovalResponseEvidence/u.test(
+      rustLexicalCode(seal),
+    ) &&
+    JSON.stringify(
+      rustCallSites(arm, "ApprovalResponseChannel::arm_from_branded_reader").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "bound_identity",
+          "request",
+          "expires_at",
+          "bootstrap_nonces",
+          "Box::new(PlatformResponseReader(reader))",
+        ],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(verify, "verify_for_identity").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["TranscriptIdentity::from_held(actual_identity)"],
+      ]) &&
+    compactRust(seal) ===
+      "pub(crate)fnseal_successful_parent_bound_approval_response(pending:ExitPendingParentBoundApprovalResponse,_seal:&ApprovalActivationSeal,)->ParentBoundApprovalResponseEvidence{ParentBoundApprovalResponseEvidence{parts:pending.parts,}}" &&
+    rustCallSites(readOnce, "read_exact_frame").length === 1 &&
+    rustCallSites(readOnce, "read_exact").length === 0 &&
+    compactRust(readOnce).includes(".read_exact_frame(RESPONSE_BYTES,deadline)") &&
+    !/\b(?:VerifiedApprovalResponse|approve_and_sign|sign\w*)\b/u.test(
+      wrappersCode,
+    ) &&
+    !/\b(?:approve_and_sign|sign\w*)[^;{}]*\b(?:ArmedParentBoundApprovalResponse|ExitPendingParentBoundApprovalResponse|ParentBoundApprovalResponseEvidence)\b|\b(?:ArmedParentBoundApprovalResponse|ExitPendingParentBoundApprovalResponse|ParentBoundApprovalResponseEvidence)\b[^;{}]*\b(?:approve_and_sign|sign\w*)/u.test(
+      rustLexicalCode(source),
+    ) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl fmt::Debug for ArmedParentBoundApprovalResponse",
+        "impl fmt::Debug for ExitPendingParentBoundApprovalResponse",
+        "impl fmt::Debug for ParentBoundApprovalResponseEvidence",
+      ]) &&
+    sealedTypeCode.length > 0 &&
+    implItems.length > 0
   );
 };
 
@@ -33280,7 +34146,7 @@ const approvalParentChannelMutationProbes = [
   ),
   approvalChannelProduction.replace(
     "    let _ = (launcher, request);",
-    "    let mut nonce = [0_u8; CHANNEL_CHALLENGE_BYTES];\n    let _ = getrandom::fill(&mut nonce);\n    let _ = (launcher, request);",
+    "    let mut nonce = [0_u8; TRANSCRIPT_SALT_BYTES];\n    let _ = getrandom::fill(&mut nonce);\n    let _ = (launcher, request);",
   ),
   approvalChannelProduction.replace(
     "    let _ = (launcher, request);",
@@ -33292,8 +34158,8 @@ const approvalParentChannelMutationProbes = [
   ),
   `${approvalChannelProduction}\n#[cfg(windows)]\nfn construct_unbranded_reader(reader: ApprovalResponseReader) { let _ = PlatformResponseReader(reader); }\n`,
   approvalChannelProduction.replace(
-    "    getrandom::fill(&mut *challenge)",
-    "    challenge.fill(7)",
+    "    getrandom::fill(&mut *transcript_salt)",
+    "    transcript_salt.fill(7)",
   ),
   approvalChannelProduction.replace(
     approvalReceive,
@@ -33338,14 +34204,67 @@ const approvalParentChannelMutationProbes = [
     "            profile_revision: 0,",
   ),
 ];
+const approvalSealedResponseEvidenceMutationProbes = [
+  ...[
+    "ArmedParentBoundApprovalResponse",
+    "ExitPendingParentBoundApprovalResponse",
+    "ParentBoundApprovalResponseEvidence",
+  ].map((typeName) =>
+    approvalChannelProduction.replace(
+      `pub(crate) struct ${typeName} {`,
+      `#[derive(Clone)]\npub(crate) struct ${typeName} {`,
+    ),
+  ),
+  ...[
+    "ArmedParentBoundApprovalResponse",
+    "ExitPendingParentBoundApprovalResponse",
+    "ParentBoundApprovalResponseEvidence",
+  ].map((typeName) =>
+    approvalChannelProduction.replace(
+      `pub(crate) struct ${typeName} {`,
+      `pub struct ${typeName} {`,
+    ),
+  ),
+  approvalChannelProduction.replace(
+    "    armed: ArmedParentBoundApprovalResponse,",
+    "    armed: &ArmedParentBoundApprovalResponse,",
+  ),
+  approvalChannelProduction.replace(
+    "    pending: ExitPendingParentBoundApprovalResponse,",
+    "    pending: &ExitPendingParentBoundApprovalResponse,",
+  ),
+  approvalChannelProduction.replace(
+    "    reader: ApprovalResponseReader,",
+    "    reader: &ApprovalResponseReader,",
+  ),
+  approvalChannelProduction.replace(
+    ".read_exact_frame(RESPONSE_BYTES, deadline)",
+    ".read_exact(RESPONSE_BYTES, deadline)",
+  ),
+  `${approvalChannelProduction}\nimpl ParentBoundApprovalResponseEvidence { pub(crate) fn response(&self) -> &[u8] { &[] } }\n`,
+  `${approvalChannelProduction}\nimpl From<ParentBoundApprovalResponseEvidence> for VerifiedApprovalResponse { fn from(_value: ParentBoundApprovalResponseEvidence) -> Self { unreachable!() } }\n`,
+  `${approvalChannelProduction}\nfn sign_parent_bound_response(_value: ParentBoundApprovalResponseEvidence) { unreachable!() }\n`,
+];
 requireInvariant(
   approvalParentChannelContract(approvalChannelProduction) &&
+    approvalSealedResponseEvidenceContract(approvalChannelProduction) &&
     approvalParentChannelMutationProbes.every(
       (probe) =>
         probe !== approvalChannelProduction &&
-        !approvalParentChannelContract(probe),
+        !(
+          approvalParentChannelContract(probe) &&
+          approvalSealedResponseEvidenceContract(probe)
+        ),
+    ) &&
+    approvalSealedResponseEvidenceMutationProbes.every(
+      (probe) =>
+        probe !== approvalChannelProduction &&
+        !(
+          approvalParentChannelContract(probe) &&
+          approvalSealedResponseEvidenceContract(probe)
+        ),
     ),
-  "Approval legacy launch must distinguish wrong roles then fail before nonce, pipe, process, hello, finish, request transfer, or response arming; the dormant branded verifier must have no production arming or concrete reader construction while retaining fresh nonzero challenges, exact identity/job binding, finite cleanup, revalidate-verify-reap-before-capability receive, and transcript v3 field order",
+  "Approval legacy launch must fail before allocation while the sealed full exchange alone consumes armed, exit-pending, and terminal response evidence through exact-frame-plus-EOF reading, with move-only crate-private typestates and no accessor, conversion, re-export, or signing surface",
 );
 
 const approvalHeldProcessRevalidationContract = (source) => {

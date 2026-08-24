@@ -83,19 +83,27 @@ mod anchor_registry;
 mod appcontainer_profile_api;
 #[allow(dead_code)]
 mod approval_channel;
-// The only production-compiled Approval activation edge first creates the
-// complete parent-bound process suspended, then one sealed consuming transition
-// writes its five-object parent hello, resumes exactly once, and authenticates
-// the child hello. The resulting opaque state withholds parent finish, request,
-// response, and signing operations and remains unreachable from orchestration.
+// The production-compiled Approval activation first creates the complete
+// parent-bound process suspended. One sealed consuming transition writes its
+// five-object parent hello, resumes exactly once, and authenticates the child
+// hello. A second sealed transition consumes that opaque bootstrap and exact
+// request under one monotonic transport deadline, verifies finish/request EOF
+// and response/EOF, requires natural child exit code zero, and finally
+// revalidates the Key Agent. The terminal
+// `VerifiedParentBoundApprovalExchange` has zero production callers and no
+// public response or signing conversion.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_activation;
 // Approval release admission and parent binding remain deliberately dormant.
 // They retain the verified pinned artifact, whole-release/file identities, and
 // exact Key Agent logical-parent proof without exposing raw constituents. The
-// hello-only bootstrap above still does not prove the mapped Approval image,
+// sealed full exchange above still does not prove the mapped Approval image,
 // process-object DACL/principal split, or complete runtime/signing composition.
+// It currently resamples relative request expiry after bootstrap. The
+// originating prompt's PreparedAuthorization still retains the original
+// monotonic expiry, but opaque delivery and transport enforcement of that cap
+// are STOP-SHIP before signing.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_parent;
