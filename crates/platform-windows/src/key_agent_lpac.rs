@@ -27,7 +27,8 @@ use std::{
 #[cfg(test)]
 use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, CompareObjectHandles, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -46,9 +47,9 @@ use windows::Win32::Security::{
 use windows::Win32::Security::{
     CheckTokenMembershipEx, DuplicateToken, EqualSid, FreeSid, GetLengthSid, GetTokenInformation,
     IsValidSid, PSID, SECURITY_CAPABILITIES, SecurityIdentification, TOKEN_ACCESS_MASK,
-    TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
-    TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-    TokenIsLessPrivilegedAppContainer, TokenUser,
+    TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE, TOKEN_QUERY,
+    TOKEN_STATISTICS, TOKEN_USER, TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
+    TokenIsLessPrivilegedAppContainer, TokenPrimary, TokenStatistics, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -558,9 +559,31 @@ impl PreparedKeyAgentLpac {
         process: BorrowedHandle<'_>,
     ) -> Result<VerifiedKeyAgentLpac, KeyAgentLpacError> {
         verify_process_token(process, self.profile_sid.as_psid())?;
-        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;
-        verify_process_token(process, self.profile_sid.as_psid())?;
-        Ok(VerifiedKeyAgentLpac { _private: () })
+        let HardenedWriteToken {
+            token: write_token,
+            principals,
+            baseline,
+        } = install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;
+
+        let final_access = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | TOKEN_DUPLICATE.0 | READ_CONTROL.0);
+        let final_token = open_process_token_with_access(process, final_access)?;
+        require_same_token_object(write_token.0, final_token.0)?;
+        let final_identity = exact_token_statistics_baseline(final_token.0)?;
+        require_same_token_identity(&baseline, &final_identity)?;
+        verify_token_policy(final_token.0, self.profile_sid.as_psid())?;
+        principals.verify_readback(final_token.0)?;
+        let final_bookend = exact_token_statistics_baseline(final_token.0)?;
+        require_same_token_identity(&baseline, &final_bookend)?;
+
+        // The WRITE_DAC authority exists only through the successful continuity
+        // ceremony above. Retain solely the fresh least-authority final handle.
+        drop(write_token);
+        Ok(VerifiedKeyAgentLpac {
+            token: final_token,
+            profile_sid: self.profile_sid,
+            principals,
+            baseline,
+        })
     }
 }
 
@@ -570,11 +593,38 @@ impl fmt::Debug for PreparedKeyAgentLpac {
     }
 }
 
-/// Opaque proof that one suspended process passed the exact Key Agent LPAC token
-/// checks before and after its production token DACL was hardened. It carries no
-/// profile selector, SID, or process handle.
+/// Opaque proof bound to the exact primary-token object whose Key Agent LPAC
+/// policy and protected production DACL were verified.
+///
+/// The retained handle has query, duplicate, and read-control rights but no
+/// DACL-writing authority. The value intentionally exposes neither its handle
+/// nor its token/profile identities and is move-only.
 pub(crate) struct VerifiedKeyAgentLpac {
-    _private: (),
+    token: OwnedToken,
+    profile_sid: OwnedAppContainerSid,
+    principals: ExactTokenDaclPrincipals,
+    baseline: TokenIdentityBaseline,
+}
+
+impl VerifiedKeyAgentLpac {
+    /// Revalidates the retained token and proves that `process` still names
+    /// that exact current primary-token object.
+    pub(crate) fn revalidate_current_process_token(
+        &self,
+        process: BorrowedHandle<'_>,
+    ) -> Result<(), KeyAgentLpacError> {
+        let retained_before = exact_token_statistics_baseline(self.token.0)?;
+        require_same_token_identity(&self.baseline, &retained_before)?;
+        verify_token_policy(self.token.0, self.profile_sid.as_psid())?;
+        self.principals.verify_readback(self.token.0)?;
+        let retained_after = exact_token_statistics_baseline(self.token.0)?;
+        require_same_token_identity(&self.baseline, &retained_after)?;
+
+        let current = open_process_token_with_access(process, TOKEN_QUERY)?;
+        require_same_token_object(self.token.0, current.0)?;
+        let current_identity = exact_token_statistics_baseline(current.0)?;
+        require_same_token_identity(&self.baseline, &current_identity)
+    }
 }
 
 impl fmt::Debug for VerifiedKeyAgentLpac {
@@ -969,19 +1019,52 @@ struct TokenPolicyEvidence {
     capability_count: u32,
 }
 
+struct ExactTokenDaclPrincipals {
+    user: Vec<u8>,
+    key_agent: Vec<u8>,
+    approval: Vec<u8>,
+}
+
+impl ExactTokenDaclPrincipals {
+    fn verify_readback(&self, token: HANDLE) -> Result<(), KeyAgentLpacError> {
+        verify_installed_token_dacl_readback(token, &self.user, &self.key_agent, &self.approval)
+    }
+}
+
+impl fmt::Debug for ExactTokenDaclPrincipals {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExactTokenDaclPrincipals([REDACTED])")
+    }
+}
+
+struct TokenLuidBaseline {
+    low_part: u32,
+    high_part: i32,
+}
+
+struct TokenIdentityBaseline {
+    token_id: TokenLuidBaseline,
+    modified_id: TokenLuidBaseline,
+}
+
+impl fmt::Debug for TokenIdentityBaseline {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TokenIdentityBaseline([REDACTED])")
+    }
+}
+
+struct HardenedWriteToken {
+    token: OwnedToken,
+    principals: ExactTokenDaclPrincipals,
+    baseline: TokenIdentityBaseline,
+}
+
 fn install_approval_token_query_dacl(
     process: BorrowedHandle<'_>,
     key_agent_sid: PSID,
-) -> Result<(), KeyAgentLpacError> {
-    let mut raw_token = HANDLE::default();
-    let process = HANDLE(process.as_raw_handle());
+) -> Result<HardenedWriteToken, KeyAgentLpacError> {
     let desired = TOKEN_ACCESS_MASK(TOKEN_QUERY.0 | WRITE_DAC.0 | READ_CONTROL.0);
-    // SAFETY: the exact suspended process is retained by its activation owner;
-    // output receives one token handle with exactly the rights needed to query,
-    // install, and read back this DACL.
-    unsafe { OpenProcessToken(process, desired, &raw mut raw_token) }
-        .map_err(|_| KeyAgentLpacError::Token)?;
-    let token = OwnedToken::new(raw_token)?;
+    let token = open_process_token_with_access(process, desired)?;
 
     let user_information = token_information(token.0, TokenUser)?;
     if user_information.returned_bytes < size_of::<TOKEN_USER>() {
@@ -995,9 +1078,11 @@ fn install_approval_token_query_dacl(
         return Err(KeyAgentLpacError::Token);
     }
 
-    let user_sid_bytes = copied_sid_bytes(user.User.Sid)?;
-    let key_agent_sid_bytes = copied_sid_bytes(key_agent_sid)?;
-    let approval_sid_bytes = copied_sid_bytes(approval.as_psid())?;
+    let principals = ExactTokenDaclPrincipals {
+        user: copied_sid_bytes(user.User.Sid)?,
+        key_agent: copied_sid_bytes(key_agent_sid)?,
+        approval: copied_sid_bytes(approval.as_psid())?,
+    };
     let user_sid = sid_string(user.User.Sid)?;
     let key_agent_sid_string = sid_string(key_agent_sid)?;
     let approval_sid = sid_string(approval.as_psid())?;
@@ -1038,12 +1123,13 @@ fn install_approval_token_query_dacl(
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
     applied?;
-    verify_installed_token_dacl_readback(
-        token.0,
-        &user_sid_bytes,
-        &key_agent_sid_bytes,
-        &approval_sid_bytes,
-    )
+    principals.verify_readback(token.0)?;
+    let baseline = exact_token_statistics_baseline(token.0)?;
+    Ok(HardenedWriteToken {
+        token,
+        principals,
+        baseline,
+    })
 }
 
 fn copied_sid_bytes(sid: PSID) -> Result<Vec<u8>, KeyAgentLpacError> {
@@ -1073,8 +1159,8 @@ fn verify_installed_token_dacl_readback(
     expected_approval_sid: &[u8],
 ) -> Result<(), KeyAgentLpacError> {
     let mut first_required = 0_u32;
-    // SAFETY: `token` is the same live handle used to install the DACL. A null
-    // first-pass buffer is the documented bounded-size query contract.
+    // SAFETY: `token` is live with READ_CONTROL. A null first-pass buffer is
+    // the documented bounded-size query contract.
     let size_query = unsafe {
         GetKernelObjectSecurity(
             token,
@@ -1103,7 +1189,7 @@ fn verify_installed_token_dacl_readback(
     let descriptor = PSECURITY_DESCRIPTOR(words.as_mut_ptr().cast::<c_void>());
     let mut second_required = 0_u32;
     // SAFETY: the aligned allocation has at least `first_required` writable
-    // bytes, and the exact same retained token handle remains live.
+    // bytes, and the same queried token handle remains live.
     unsafe {
         GetKernelObjectSecurity(
             token,
@@ -1263,27 +1349,107 @@ fn read_u32_at(bytes: &[u8], offset: usize) -> Result<u32, KeyAgentLpacError> {
     Ok(u32::from_le_bytes(encoded))
 }
 
-fn verify_process_token(
+fn open_process_token_with_access(
     process: BorrowedHandle<'_>,
-    expected_sid: PSID,
-) -> Result<(), KeyAgentLpacError> {
+    desired_access: TOKEN_ACCESS_MASK,
+) -> Result<OwnedToken, KeyAgentLpacError> {
     let mut raw_token = HANDLE::default();
-    // SAFETY: `process` is a live suspended-process borrow and the output
-    // receives one exclusively owned token handle.
+    // SAFETY: `process` is a live process-handle borrow and output receives one
+    // exclusively owned token handle with exactly `desired_access` requested.
     unsafe {
         OpenProcessToken(
             HANDLE(process.as_raw_handle()),
-            TOKEN_QUERY | TOKEN_DUPLICATE,
+            desired_access,
             &raw mut raw_token,
         )
     }
     .map_err(|_| KeyAgentLpacError::Token)?;
-    let token = OwnedToken::new(raw_token)?;
+    OwnedToken::new(raw_token)
+}
 
-    let is_appcontainer = token_dword(token.0, TokenIsAppContainer)?;
-    let is_lpac = less_privileged_appcontainer_dword(token.0)?;
+fn token_identity_from_statistics(
+    statistics: &TOKEN_STATISTICS,
+    returned_bytes: usize,
+) -> Result<TokenIdentityBaseline, KeyAgentLpacError> {
+    if returned_bytes != size_of::<TOKEN_STATISTICS>() || statistics.TokenType != TokenPrimary {
+        return Err(KeyAgentLpacError::Token);
+    }
+    Ok(TokenIdentityBaseline {
+        token_id: TokenLuidBaseline {
+            low_part: statistics.TokenId.LowPart,
+            high_part: statistics.TokenId.HighPart,
+        },
+        modified_id: TokenLuidBaseline {
+            low_part: statistics.ModifiedId.LowPart,
+            high_part: statistics.ModifiedId.HighPart,
+        },
+    })
+}
 
-    let sid_information = token_information(token.0, TokenAppContainerSid)?;
+fn exact_token_statistics_baseline(
+    token: HANDLE,
+) -> Result<TokenIdentityBaseline, KeyAgentLpacError> {
+    let mut statistics = TOKEN_STATISTICS::default();
+    let mut returned = 0_u32;
+    let exact_bytes =
+        u32::try_from(size_of::<TOKEN_STATISTICS>()).map_err(|_| KeyAgentLpacError::Token)?;
+    // SAFETY: `token` is live with TOKEN_QUERY and output is exact, aligned
+    // TOKEN_STATISTICS storage. The returned byte count is checked exactly.
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenStatistics,
+            Some(ptr::from_mut(&mut statistics).cast::<c_void>()),
+            exact_bytes,
+            &raw mut returned,
+        )
+    }
+    .map_err(|_| KeyAgentLpacError::Token)?;
+    token_identity_from_statistics(
+        &statistics,
+        usize::try_from(returned).map_err(|_| KeyAgentLpacError::Token)?,
+    )
+}
+
+fn require_same_token_identity(
+    expected: &TokenIdentityBaseline,
+    observed: &TokenIdentityBaseline,
+) -> Result<(), KeyAgentLpacError> {
+    if expected.token_id.low_part != observed.token_id.low_part
+        || expected.token_id.high_part != observed.token_id.high_part
+        || expected.modified_id.low_part != observed.modified_id.low_part
+        || expected.modified_id.high_part != observed.modified_id.high_part
+    {
+        return Err(KeyAgentLpacError::Token);
+    }
+    Ok(())
+}
+
+fn require_same_token_object(first: HANDLE, second: HANDLE) -> Result<(), KeyAgentLpacError> {
+    if invalid_handle(first) || invalid_handle(second) {
+        return Err(KeyAgentLpacError::Token);
+    }
+    // SAFETY: both handles are live for this call. BOOL false rejects either a
+    // different kernel object or an inability to establish object continuity.
+    if !unsafe { CompareObjectHandles(first, second) }.as_bool() {
+        return Err(KeyAgentLpacError::Token);
+    }
+    Ok(())
+}
+
+fn verify_process_token(
+    process: BorrowedHandle<'_>,
+    expected_sid: PSID,
+) -> Result<(), KeyAgentLpacError> {
+    let token = open_process_token_with_access(process, TOKEN_QUERY | TOKEN_DUPLICATE)?;
+    verify_token_policy(token.0, expected_sid)
+}
+
+fn verify_token_policy(token: HANDLE, expected_sid: PSID) -> Result<(), KeyAgentLpacError> {
+    let is_appcontainer = token_dword(token, TokenIsAppContainer)?;
+    let is_lpac = less_privileged_appcontainer_dword(token)?;
+
+    let sid_information = token_information(token, TokenAppContainerSid)?;
     if sid_information.returned_bytes < size_of::<TOKEN_APPCONTAINER_INFORMATION>() {
         return Err(KeyAgentLpacError::Token);
     }
@@ -1306,7 +1472,7 @@ fn verify_process_token(
         // remain live throughout the comparison.
         && unsafe { EqualSid(container.TokenAppContainer, expected_sid) }.is_ok();
 
-    let capability_information = token_information(token.0, TokenCapabilities)?;
+    let capability_information = token_information(token, TokenCapabilities)?;
     if capability_information.returned_bytes < size_of::<u32>() {
         return Err(KeyAgentLpacError::Token);
     }
@@ -1314,7 +1480,7 @@ fn verify_process_token(
     let capability_count =
         unsafe { ptr::read_unaligned(capability_information.words.as_ptr().cast::<u32>()) };
 
-    let membership = appcontainer_membership_evidence(token.0)?;
+    let membership = appcontainer_membership_evidence(token)?;
 
     let evidence = TokenPolicyEvidence {
         is_appcontainer,
@@ -1745,17 +1911,19 @@ mod tests {
     use std::fs::OpenOptions;
     use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::BorrowedHandle;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        CloseHandle, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0,
     };
     use windows::Win32::Security::{
         ACL_REVISION, EqualSid, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED,
         SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_OWNER_DEFAULTED,
-        SE_SELF_RELATIVE, TOKEN_APPCONTAINER_INFORMATION,
+        SE_SELF_RELATIVE, TOKEN_APPCONTAINER_INFORMATION, TOKEN_STATISTICS, TokenImpersonation,
+        TokenPrimary,
     };
     use windows::Win32::Security::{TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows::Win32::Storage::FileSystem::{
@@ -1764,7 +1932,7 @@ mod tests {
     };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
         InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTUPINFOEXW,
         TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
@@ -1778,10 +1946,13 @@ mod tests {
         KeyAgentLpacError, KeyAgentLpacKernelTestFixture, KeyAgentStorageError,
         OwnedAppContainerSid, OwnedToken, PendingKeyAgentProvisioning, PreparedKeyAgentLpac,
         PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS, TokenDword,
-        TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
-        appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
+        TokenIdentityBaseline, TokenLuidBaseline, TokenPolicyEvidence, VerifiedKeyAgentLpac,
+        appcontainer_folder, appcontainer_membership_evidence,
+        create_unique_key_agent_storage_root_for_test, exact_token_statistics_baseline,
         inspect_exact_token_dacl_descriptor, open_existing_key_agent_storage_root_for_test,
-        require_created_sid_matches_derived, validate_token_policy, wide_nul_str,
+        open_process_token_with_access, require_created_sid_matches_derived,
+        require_same_token_identity, require_same_token_object, token_identity_from_statistics,
+        validate_token_policy, wide_nul_str,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -1845,6 +2016,12 @@ mod tests {
     }
 
     impl TestSuspendedProcess {
+        fn process_handle(&self) -> BorrowedHandle<'_> {
+            // SAFETY: this wrapper exclusively owns the live process handle and
+            // bounds the returned borrow to `self`.
+            unsafe { BorrowedHandle::borrow_raw(self.process.0) }
+        }
+
         fn terminate_and_wait(&mut self) -> Result<(), KeyAgentLpacError> {
             if self.process.is_invalid()
                 || self.process == INVALID_HANDLE_VALUE
@@ -1938,14 +2115,60 @@ mod tests {
         Ok(attributes)
     }
 
+    fn exact_key_agent_attribute_list(
+        prepared: &PreparedKeyAgentLpac,
+    ) -> Result<TestAttributeList, KeyAgentLpacError> {
+        let mut bytes = 0_usize;
+        // SAFETY: documented sizing call with a null list and writable size.
+        let _ = unsafe { InitializeProcThreadAttributeList(None, 2, None, &raw mut bytes) };
+        if bytes == 0 {
+            return Err(KeyAgentLpacError::Attribute);
+        }
+        let word_size = size_of::<usize>();
+        let word_count = bytes
+            .checked_add(word_size - 1)
+            .and_then(|rounded| rounded.checked_div(word_size))
+            .ok_or(KeyAgentLpacError::Attribute)?;
+        let mut words = vec![0_usize; word_count];
+        let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());
+        // SAFETY: the aligned allocation has at least the sized byte count and
+        // cannot move while the returned owner is live.
+        unsafe { InitializeProcThreadAttributeList(Some(pointer), 2, None, &raw mut bytes) }
+            .map_err(|_| KeyAgentLpacError::Attribute)?;
+        let attributes = TestAttributeList {
+            pointer,
+            _words: words,
+        };
+        // SAFETY: the initialized two-slot list and prepared pointer owners
+        // remain live through the process-creation call below.
+        unsafe { prepared.install_into(attributes.pointer) }?;
+        Ok(attributes)
+    }
+
     fn create_suspended_regular_appcontainer(
         prepared: &PreparedKeyAgentLpac,
         fixture: &KeyAgentLpacKernelTestFixture,
     ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
+        let attributes = regular_appcontainer_attribute_list(prepared)?;
+        create_suspended_appcontainer(prepared, fixture, &attributes)
+    }
+
+    fn create_suspended_key_agent_lpac(
+        prepared: &PreparedKeyAgentLpac,
+        fixture: &KeyAgentLpacKernelTestFixture,
+    ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
+        let attributes = exact_key_agent_attribute_list(prepared)?;
+        create_suspended_appcontainer(prepared, fixture, &attributes)
+    }
+
+    fn create_suspended_appcontainer(
+        prepared: &PreparedKeyAgentLpac,
+        fixture: &KeyAgentLpacKernelTestFixture,
+        attributes: &TestAttributeList,
+    ) -> Result<TestSuspendedProcess, KeyAgentLpacError> {
         let context = RestrictedProcessContext::prepare_for_kernel_test()
             .map_err(|_| KeyAgentLpacError::Profile)?;
         let environment = prepared.environment_with_local_app_data(context.environment())?;
-        let attributes = regular_appcontainer_attribute_list(prepared)?;
         let application: Vec<u16> = fixture
             .path()
             .as_os_str()
@@ -2127,6 +2350,34 @@ mod tests {
     }
 
     #[test]
+    fn verified_token_retains_exact_object_and_revalidates_current_process_token()
+    -> Result<(), KeyAgentLpacError> {
+        let prepared = PreparedKeyAgentLpac::prepare()?;
+        let fixture = KeyAgentLpacKernelTestFixture::create()?;
+        let mut process = create_suspended_key_agent_lpac(&prepared, &fixture)?;
+        let verified = prepared.verify_and_harden_suspended_process(process.process_handle())?;
+
+        assert_eq!(format!("{verified:?}"), "VerifiedKeyAgentLpac([VERIFIED])");
+        verified.revalidate_current_process_token(process.process_handle())?;
+
+        let fresh_current = open_process_token_with_access(process.process_handle(), TOKEN_QUERY)?;
+        require_same_token_object(verified.token.0, fresh_current.0)?;
+        let fresh_identity = exact_token_statistics_baseline(fresh_current.0)?;
+        require_same_token_identity(&verified.baseline, &fresh_identity)?;
+
+        // SAFETY: the current-process pseudo handle is valid for this call and
+        // the borrow does not escape this test scope.
+        let supervisor_process = unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess().0) };
+        assert_eq!(
+            verified.revalidate_current_process_token(supervisor_process),
+            Err(KeyAgentLpacError::Token)
+        );
+
+        process.terminate_and_wait()?;
+        Ok(())
+    }
+
+    #[test]
     fn token_policy_rejects_each_single_invariant_break() {
         assert_eq!(validate_token_policy(&valid_policy_evidence()), Ok(()));
 
@@ -2210,6 +2461,80 @@ mod tests {
             validate_token_policy(&rejected_fallback),
             Err(KeyAgentLpacError::Token)
         );
+    }
+
+    fn synthetic_token_identity(
+        token_low: u32,
+        token_high: i32,
+        modified_low: u32,
+        modified_high: i32,
+    ) -> TokenIdentityBaseline {
+        TokenIdentityBaseline {
+            token_id: TokenLuidBaseline {
+                low_part: token_low,
+                high_part: token_high,
+            },
+            modified_id: TokenLuidBaseline {
+                low_part: modified_low,
+                high_part: modified_high,
+            },
+        }
+    }
+
+    #[test]
+    fn token_identity_comparison_rejects_each_luid_part_mutation() {
+        let expected = synthetic_token_identity(1, 2, 3, 4);
+        assert_eq!(
+            require_same_token_identity(&expected, &synthetic_token_identity(1, 2, 3, 4)),
+            Ok(())
+        );
+
+        for observed in [
+            synthetic_token_identity(9, 2, 3, 4),
+            synthetic_token_identity(1, 9, 3, 4),
+            synthetic_token_identity(1, 2, 9, 4),
+            synthetic_token_identity(1, 2, 3, 9),
+        ] {
+            assert_eq!(
+                require_same_token_identity(&expected, &observed),
+                Err(KeyAgentLpacError::Token)
+            );
+        }
+        assert_eq!(format!("{expected:?}"), "TokenIdentityBaseline([REDACTED])");
+    }
+
+    #[test]
+    fn token_statistics_identity_requires_exact_size_and_primary_type() {
+        let statistics = TOKEN_STATISTICS {
+            TokenId: LUID {
+                LowPart: 1,
+                HighPart: 2,
+            },
+            TokenType: TokenPrimary,
+            ModifiedId: LUID {
+                LowPart: 3,
+                HighPart: 4,
+            },
+            ..TOKEN_STATISTICS::default()
+        };
+        assert!(token_identity_from_statistics(&statistics, size_of::<TOKEN_STATISTICS>()).is_ok());
+        assert!(matches!(
+            token_identity_from_statistics(&statistics, size_of::<TOKEN_STATISTICS>() - 1),
+            Err(KeyAgentLpacError::Token)
+        ));
+        assert!(matches!(
+            token_identity_from_statistics(&statistics, size_of::<TOKEN_STATISTICS>() + 1),
+            Err(KeyAgentLpacError::Token)
+        ));
+
+        let impersonation = TOKEN_STATISTICS {
+            TokenType: TokenImpersonation,
+            ..statistics
+        };
+        assert!(matches!(
+            token_identity_from_statistics(&impersonation, size_of::<TOKEN_STATISTICS>()),
+            Err(KeyAgentLpacError::Token)
+        ));
     }
 
     #[test]
@@ -2526,8 +2851,6 @@ mod tests {
         let _ = <VerifiedKeyAgentLpac as AmbiguousIfClone<_>>::marker;
         let _ = <VerifiedKeyAgentLpac as AmbiguousIfCopy<_>>::marker;
 
-        let verified = VerifiedKeyAgentLpac { _private: () };
-        assert_eq!(format!("{verified:?}"), "VerifiedKeyAgentLpac([VERIFIED])");
         assert_eq!(
             format!("{:?}", KeyAgentLpacError::Profile),
             "KeyAgentLpacError([REDACTED])"

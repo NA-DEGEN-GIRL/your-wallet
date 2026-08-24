@@ -4,8 +4,9 @@
 //! The supervisor must verify and pin the Key Agent artifact before creation,
 //! then compare that held file with the image-file handle supplied by the first
 //! Windows process-creation debug event. The dormant value owns a suspended
-//! process and exposes only one consuming transition into the fixed
-//! storage-startup probe; both dormant and running proofs terminate on drop.
+//! process and a retained process-token continuity proof, and exposes only one
+//! consuming transition into the fixed storage-startup probe; both dormant and
+//! running proofs terminate on drop.
 
 #![allow(dead_code)]
 
@@ -197,8 +198,9 @@ impl LaunchPhase {
 ///
 /// This type is non-cloneable and crate-private. It retains the original
 /// `FILE_SHARE_READ`-only [`VerifiedHelper`] handle, opaque whole-release
-/// identity, exact process and primary thread handles, the 128-bit file-object
-/// proof, and process creation time.
+/// identity, exact process and primary thread handles, the retained process-wide
+/// token handle and opaque continuity evidence, the 128-bit file-object proof,
+/// and process creation time.
 /// The only consuming transition resumes it for the fixed storage-startup
 /// probe; no generic resume or raw thread operation is exposed.
 pub(crate) struct HeldKeyAgentActivation {
@@ -271,10 +273,11 @@ impl HeldKeyAgentActivation {
 /// Opaque ownership of the exact verified Key Agent after the one permitted
 /// storage-startup resume transition.
 ///
-/// It retains the pinned artifact and opaque whole-release identity, but proves
-/// only that the primary thread was released from the exact detached suspend
-/// count. The supervisor must still authenticate the startup response before
-/// wrapping it in a storage-proven aggregate.
+/// It retains the pinned artifact, opaque whole-release identity, and
+/// process-token continuity proof, but proves only that the primary thread was
+/// released from the exact detached suspend count. The supervisor must still
+/// authenticate the startup response before wrapping it in a storage-proven
+/// aggregate.
 pub(crate) struct RunningKeyAgentActivation {
     process: sys::DetachedRunningDebuggee,
     // Keep process cleanup ahead of the verified artifact pin.
@@ -301,8 +304,8 @@ impl RunningKeyAgentActivation {
         self.process.is_detached_and_running()
     }
 
-    /// Revalidates that the exact detached process is still live after both
-    /// startup streams reached EOF.
+    /// Revalidates that the exact detached process is still live and still owns
+    /// the verified token after both startup streams reached EOF.
     pub(crate) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
         self.process.revalidate_resident_process()
     }
@@ -1013,7 +1016,8 @@ mod sys {
         prepared_lpac: Option<PreparedKeyAgentLpac>,
         // Present only after the exact suspended primary token proved the
         // fixed Key Agent SID, zero capabilities, and differential LPAC
-        // access-membership behavior.
+        // access-membership behavior. The proof retains a process-wide token
+        // handle and opaque continuity evidence for every later checkpoint.
         lpac: Option<VerifiedKeyAgentLpac>,
         // CREATE_SUSPENDED starts at one, then is consumed exactly once so the
         // kernel can deliver the pre-user-mode CREATE_PROCESS debug event. A
@@ -1212,12 +1216,31 @@ mod sys {
         }
 
         fn resume_for_storage_startup(&mut self) -> Result<(), KeyAgentActivationError> {
-            if !self.is_detached_and_suspended() || self.pending_event.is_some() {
+            if self.phase != LaunchPhase::DetachedSuspended
+                || self.proven_suspend_count != 1
+                || self.prepared_lpac.is_some()
+                || self.pending_event.is_some()
+            {
                 return Err(KeyAgentActivationError::StartupResume);
+            }
+            if self
+                .lpac
+                .as_ref()
+                .ok_or(KeyAgentActivationError::LpacPolicy)
+                .and_then(|lpac| {
+                    lpac.revalidate_current_process_token(self.process_handle())
+                        .map_err(|_| KeyAgentActivationError::LpacPolicy)
+                })
+                .is_err()
+            {
+                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::LpacPolicy);
             }
             // SAFETY: the exact detached primary thread is still owned and the
             // post-detach proof established precisely one explicit suspend
-            // count. This is the only production call that releases it.
+            // count. The process token was revalidated immediately above, with
+            // no intervening fallible operation. This is the only production
+            // call that releases the detached guard count into user mode.
             let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };
             if previous_suspend_count != 1 {
                 self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
@@ -1392,6 +1415,11 @@ mod sys {
                 return Err(KeyAgentActivationError::SuspensionMismatch);
             }
             self.proven_suspend_count = 1;
+            self.lpac
+                .as_ref()
+                .ok_or(KeyAgentActivationError::LpacPolicy)?
+                .revalidate_current_process_token(self.process_handle())
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
             Ok(())
         }
 
@@ -1484,17 +1512,21 @@ mod sys {
     /// primary thread retains exactly one explicit suspend count.
     ///
     /// Construction is possible only through `SuspendedDebuggee::into_detached`
-    /// after `ContinueDebugEvent`, `DebugActiveProcessStop`, and the observable
-    /// post-detach suspend-count probe all succeeded. It exposes no raw handle
-    /// and no creator-thread-only debug operation.
+    /// after `ContinueDebugEvent`, `DebugActiveProcessStop`, the observable
+    /// post-detach suspend-count probe, and process-token revalidation all
+    /// succeeded. It exposes no raw handle and no creator-thread-only debug
+    /// operation.
     pub(super) struct DetachedSuspendedDebuggee(SuspendedDebuggee);
 
     // SAFETY: Win32 process and thread handles are process-wide. The only
     // constructor above rejects every pending/debug-attached phase and requires
-    // the post-detach suspension proof. After construction, the wrapper exposes
-    // only process-wide metadata, termination/wait cleanup, and Drop; it cannot
-    // call WaitForDebugEventEx, ContinueDebugEvent, or DebugActiveProcessStop.
-    // SuspendedDebuggee itself and OwnedWinHandle intentionally remain !Send.
+    // the post-detach suspension proof. Its verified token proof retains another
+    // process-wide handle whose query and identity-check operations have no
+    // creator-thread affinity. After construction, the wrapper exposes only
+    // process-wide metadata, token revalidation, termination/wait cleanup, and
+    // Drop; it cannot call WaitForDebugEventEx, ContinueDebugEvent, or
+    // DebugActiveProcessStop. SuspendedDebuggee itself and OwnedWinHandle
+    // intentionally remain !Send.
     unsafe impl Send for DetachedSuspendedDebuggee {}
 
     impl DetachedSuspendedDebuggee {
@@ -1542,12 +1574,14 @@ mod sys {
     }
 
     /// Type-state proof that the exact detached primary thread entered the one
-    /// permitted storage-startup probe and has no remaining suspend count.
+    /// permitted storage-startup probe after token revalidation and has no
+    /// remaining suspend count.
     pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);
 
     // SAFETY: the debug relationship ended before this wrapper was constructed.
-    // It uniquely owns process-wide handles and exposes only observation and
-    // synchronous cleanup; no creator-thread-only debugger operation remains.
+    // It uniquely owns process-wide process, thread, and retained token handles
+    // and exposes only observation, token revalidation, and synchronous cleanup;
+    // no creator-thread-only debugger operation remains.
     unsafe impl Send for DetachedRunningDebuggee {}
 
     impl DetachedRunningDebuggee {
@@ -1560,7 +1594,11 @@ mod sys {
         }
 
         pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
-            if !self.is_detached_and_running() {
+            if self.0.phase != LaunchPhase::DetachedRunning
+                || self.0.proven_suspend_count != 0
+                || self.0.prepared_lpac.is_some()
+                || self.0.pending_event.is_some()
+            {
                 return Err(KeyAgentActivationError::ResidentState);
             }
             // SAFETY: a zero-time wait only observes the exact retained process
@@ -1568,7 +1606,12 @@ mod sys {
             if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
                 return Err(KeyAgentActivationError::ResidentState);
             }
-            Ok(())
+            self.0
+                .lpac
+                .as_ref()
+                .ok_or(KeyAgentActivationError::LpacPolicy)?
+                .revalidate_current_process_token(self.0.process_handle())
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)
         }
 
         pub(super) fn is_member_of_root_job(

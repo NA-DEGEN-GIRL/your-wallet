@@ -6384,7 +6384,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "6ee351cb88fbe8ed961a48e915c4b901e63782814aea6c948a6a504359c578f6";
+  "e9d877fcc7ed68ff6404ae6fae524e6bbc7c30414e193446186708f1d215fd77";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -10081,6 +10081,20 @@ const keyAgentLpacVerifySuspended = rustFunctionBlock(
   keyAgentLpacRelease,
   "verify_and_harden_suspended_process",
 );
+const verifiedKeyAgentLpacDefinition = rustTopLevelLexicalItemBlock(
+  keyAgentLpacRelease,
+  /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{/u,
+);
+const verifiedKeyAgentLpacImpl = rustImplItemAtDepth(
+  keyAgentLpacRelease,
+  "impl VerifiedKeyAgentLpac",
+  0,
+);
+const revalidateCurrentKeyAgentProcessToken = rustFunctionBlockAtDepth(
+  verifiedKeyAgentLpacImpl,
+  "revalidate_current_process_token",
+  1,
+);
 const keyAgentLpacOpenOrCreate = rustFunctionBlockAtDepth(
   ownedAppContainerSidTestImpl,
   "open_or_create",
@@ -10379,6 +10393,10 @@ const requireCreatedKeyAgentSidMatchesDerived = rustTopLevelFunctionBlock(
 const verifyKeyAgentLpacToken = rustFunctionBlock(
   keyAgentLpacRelease,
   "verify_process_token",
+);
+const verifyKeyAgentLpacPolicy = rustFunctionBlock(
+  keyAgentLpacRelease,
+  "verify_token_policy",
 );
 const queryKeyAgentLpacDword = rustFunctionBlock(
   keyAgentLpacRelease,
@@ -20905,7 +20923,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 4 },
-  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 23 },
+  { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 24 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
@@ -20946,7 +20964,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
     unsafeCount: 49,
-    sha256: "7333694da2bc811a1502e8cc7afc6ec7a79e51b1d3afaede5c9a102301ea9cf0",
+    sha256: "40d0c3df39edba0f25f1d808e5e4109e63d5056b360ebea23bfab6ad51ccfb9d",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -20955,8 +20973,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
-    unsafeCount: 52,
-    sha256: "3cb1ee7c3d9d73bd189c674ef28b3509a8dea494de5b936ffda7abd6ddfc47c5",
+    unsafeCount: 53,
+    sha256: "8fb12920362c7ced01025974e72a91eb8c8ed2bd7c47758a498eab5f6b658377",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -21449,7 +21467,7 @@ requireInvariant(
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
 );
 requireInvariant(
-  keyAgentLpacVisibilityCount === 22 &&
+  keyAgentLpacVisibilityCount === 23 &&
     JSON.stringify(keyAgentLpacVisibleFunctionInventory) ===
       JSON.stringify([
         {
@@ -21543,6 +21561,13 @@ requireInvariant(
           name: "verify_and_harden_suspended_process",
           signature:
             "fnverify_and_harden_suspended_process(self,process:BorrowedHandle<'_>,)->Result<VerifiedKeyAgentLpac,KeyAgentLpacError>",
+        },
+        {
+          owner: "impl VerifiedKeyAgentLpac",
+          visibility: "pub(crate)",
+          name: "revalidate_current_process_token",
+          signature:
+            "fnrevalidate_current_process_token(&self,process:BorrowedHandle<'_>,)->Result<(),KeyAgentLpacError>",
         },
       ]) &&
     JSON.stringify(keyAgentLpacVisibleNonFunctionInventory) ===
@@ -21865,6 +21890,10 @@ requireInvariant(
         attributes: [],
       },
       {
+        header: "impl VerifiedKeyAgentLpac",
+        attributes: [],
+      },
+      {
         header: "impl fmt::Debug for VerifiedKeyAgentLpac",
         attributes: [],
       },
@@ -22028,6 +22057,10 @@ requireInvariant(
         },
         {
           header: "impl fmt::Debug for PreparedKeyAgentLpac",
+          attributes: [],
+        },
+        {
+          header: "impl VerifiedKeyAgentLpac",
           attributes: [],
         },
         {
@@ -22401,6 +22434,10 @@ requireInvariant(
         },
         {
           path: "crates/platform-windows/src/key_agent_lpac.rs",
+          header: "impl VerifiedKeyAgentLpac",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
           header: "impl fmt::Debug for VerifiedKeyAgentLpac",
         },
       ]) &&
@@ -22691,15 +22728,14 @@ requireInvariant(
     ),
   "Key Agent creation must use the OS-derived user local-data base that Windows rebases to the exact AppContainer AC path as LOCALAPPDATA, plus validated SystemRoot/WINDIR with no ambient inheritance",
 );
-const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacToken);
+const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacPolicy);
 const keyAgentLpacTokenQueryOrder = [
-  "OpenProcessToken(",
-  "token_dword(token.0,TokenIsAppContainer)?",
-  "less_privileged_appcontainer_dword(token.0)?",
-  "token_information(token.0,TokenAppContainerSid)?",
+  "token_dword(token,TokenIsAppContainer)?",
+  "less_privileged_appcontainer_dword(token)?",
+  "token_information(token,TokenAppContainerSid)?",
   "EqualSid(container.TokenAppContainer,expected_sid)",
-  "token_information(token.0,TokenCapabilities)?",
-  "appcontainer_membership_evidence(token.0)?",
+  "token_information(token,TokenCapabilities)?",
+  "appcontainer_membership_evidence(token)?",
   "validate_token_policy(&evidence)",
 ].map((marker) => compactVerifyKeyAgentLpacToken.indexOf(marker));
 const compactOptionalKeyAgentLpacDword = compactRust(
@@ -22719,12 +22755,30 @@ const keyAgentMembershipEvidenceCalls = rustCallSites(
 const compactKeyAgentTokenValidation = compactRust(validateKeyAgentLpacToken);
 const approvedKeyAgentApprovalTokenDaclLeafSha256 = {
   verifySuspended:
-    "ee25d4c96b8f29b84795bba8ed9c705036a6ef902370b1643472b349f0a667f6",
-  install: "27a7e441000cdc4f5bb22dc825bbf83d1ae33b1f16eb5f000e3b70801505722e",
+    "4f6417711bee45c4d589cae01a8dcd956a8a08b1670136542dd6017c0dcf186c",
+  verifiedRevalidate:
+    "9414debca9ff265f21fd2f6b4759615130594268722f35da0436badfa8b01db5",
+  principalsReadback:
+    "19961e9b31ace8ba0ca54fc6f7902769dba8fa6bb759e9d1eb0ae9a7c521f54b",
+  install: "c0a0b73b39a701b334b903223a02c98cb4f81768ca4cb7ef2edec93cea74193f",
+  openProcessToken:
+    "23ae0b57668058155b728a6d36c27177c20863153e292cb510db37434c6c01f5",
+  tokenIdentity:
+    "453bd9d186684155ed89a3ff06556163789e5f2395eddf657e10ad95726d20f9",
+  exactStatistics:
+    "045087214b1c9ace3eb7218165c5526949d06cac10486ea995d7d11a0c595057",
+  sameIdentity:
+    "100fbbe286a8ea8c0bceabdfb3fce852743eba5216c9c8b0ed4a9f42e3e4dc7a",
+  sameObject:
+    "4843ca3825e095fd65267ea9bac68ccb7d22773d57122294da8933c8ef677e48",
+  verifyProcessToken:
+    "0c5dd63b43855cd1bfde67aebf25546db84a50e2d32c54ef5d310e6fbffbbbdf",
+  verifyTokenPolicy:
+    "cf36dc0bff2d92429f7a57f505a90d90fa56490f41f6ba22fc970bee3a63066e",
   copiedSid:
     "b8faf2f51fb2dfcb4cbdd1eb4172a559d13231a5b3942cddecca1b9fb7502f35",
   readback:
-    "54284a162721df665a9cfde373d105193208e51db4c00c6925e56fd296d2f16a",
+    "ebcf0791ca6b017406b32ac31ce1f95701fdfa249efbd2db33556500966e7e4f",
   descriptor:
     "c10610c8a03ba7562581106a2e12aed50b0701b921f34f7881256b46bfacb7f6",
   validateSid:
@@ -22738,7 +22792,22 @@ const approvedKeyAgentApprovalTokenDaclLeafSha256 = {
 };
 const keyAgentApprovalTokenDaclContract = (source) => {
   let verifySuspended;
+  let verifiedDefinition;
+  let verifiedImpl;
+  let verifiedRevalidate;
+  let principalsDefinition;
+  let principalsImpl;
+  let luidDefinition;
+  let identityDefinition;
+  let hardenedWriteDefinition;
   let install;
+  let openProcessToken;
+  let tokenIdentity;
+  let exactStatistics;
+  let sameIdentity;
+  let sameObject;
+  let verifyProcessToken;
+  let verifyTokenPolicy;
   let copiedSid;
   let readback;
   let descriptor;
@@ -22758,9 +22827,72 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       "verify_and_harden_suspended_process",
       1,
     );
+    verifiedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{/u,
+    );
+    verifiedImpl = rustImplItemAtDepth(
+      source,
+      "impl VerifiedKeyAgentLpac",
+      0,
+    );
+    verifiedRevalidate = rustFunctionBlockAtDepth(
+      verifiedImpl,
+      "revalidate_current_process_token",
+      1,
+    );
+    principalsDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+ExactTokenDaclPrincipals\s*\{/u,
+    );
+    principalsImpl = rustImplItemAtDepth(
+      source,
+      "impl ExactTokenDaclPrincipals",
+      0,
+    );
+    luidDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+TokenLuidBaseline\s*\{/u,
+    );
+    identityDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+TokenIdentityBaseline\s*\{/u,
+    );
+    hardenedWriteDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+HardenedWriteToken\s*\{/u,
+    );
     install = rustTopLevelFunctionBlock(
       source,
       "install_approval_token_query_dacl",
+    );
+    openProcessToken = rustTopLevelFunctionBlock(
+      source,
+      "open_process_token_with_access",
+    );
+    tokenIdentity = rustTopLevelFunctionBlock(
+      source,
+      "token_identity_from_statistics",
+    );
+    exactStatistics = rustTopLevelFunctionBlock(
+      source,
+      "exact_token_statistics_baseline",
+    );
+    sameIdentity = rustTopLevelFunctionBlock(
+      source,
+      "require_same_token_identity",
+    );
+    sameObject = rustTopLevelFunctionBlock(
+      source,
+      "require_same_token_object",
+    );
+    verifyProcessToken = rustTopLevelFunctionBlock(
+      source,
+      "verify_process_token",
+    );
+    verifyTokenPolicy = rustTopLevelFunctionBlock(
+      source,
+      "verify_token_policy",
     );
     copiedSid = rustTopLevelFunctionBlock(source, "copied_sid_bytes");
     readback = rustTopLevelFunctionBlock(
@@ -22784,7 +22916,16 @@ const keyAgentApprovalTokenDaclContract = (source) => {
   }
 
   const verifyCompact = compactRust(verifySuspended);
+  const verifiedRevalidateCompact = compactRust(verifiedRevalidate);
+  const principalsImplCompact = compactRust(principalsImpl);
   const installCompact = compactRust(install);
+  const openProcessTokenCompact = compactRust(openProcessToken);
+  const tokenIdentityCompact = compactRust(tokenIdentity);
+  const exactStatisticsCompact = compactRust(exactStatistics);
+  const sameIdentityCompact = compactRust(sameIdentity);
+  const sameObjectCompact = compactRust(sameObject);
+  const verifyProcessTokenCompact = compactRust(verifyProcessToken);
+  const verifyTokenPolicyCompact = compactRust(verifyTokenPolicy);
   const copiedSidCompact = compactRust(copiedSid);
   const readbackCompact = compactRust(readback);
   const descriptorCompact = compactRust(descriptor);
@@ -22793,6 +22934,19 @@ const keyAgentApprovalTokenDaclContract = (source) => {
   const readU32Compact = compactRust(readU32);
   const sidStringCompact = compactRust(sidString);
   const tokenDropCompact = compactRust(tokenDrop);
+  const daclProofFunctionsWithoutEarlySuccess = [
+    install,
+    copiedSid,
+    readback,
+    descriptor,
+    validateSid,
+    readU16,
+    readU32,
+  ];
+  const hasEarlySuccessReturn = (functionBlock) =>
+    /\breturn(?:(?:core::result::Result::|std::result::Result::|Result::))?Ok(?:::[^;{}()]*)?\(/u.test(
+      compactRust(functionBlock),
+    );
   const readbackAuthorityCode = rustLexicalCode(
     `${copiedSid}\n${readback}\n${descriptor}\n${validateSid}\n${readU16}\n${readU32}`,
   );
@@ -22801,12 +22955,29 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     path: invocation.path,
     source: invocation.source.replace(/\s+/gu, ""),
   }));
-
   return (
     normalizedSourceSha256(rustLexicalCode(verifySuspended)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.verifySuspended &&
+    normalizedSourceSha256(rustLexicalCode(verifiedRevalidate)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.verifiedRevalidate &&
+    normalizedSourceSha256(rustLexicalCode(principalsImpl)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.principalsReadback &&
     normalizedSourceSha256(rustLexicalCode(install)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.install &&
+    normalizedSourceSha256(rustLexicalCode(openProcessToken)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.openProcessToken &&
+    normalizedSourceSha256(rustLexicalCode(tokenIdentity)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.tokenIdentity &&
+    normalizedSourceSha256(rustLexicalCode(exactStatistics)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.exactStatistics &&
+    normalizedSourceSha256(rustLexicalCode(sameIdentity)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.sameIdentity &&
+    normalizedSourceSha256(rustLexicalCode(sameObject)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.sameObject &&
+    normalizedSourceSha256(rustLexicalCode(verifyProcessToken)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.verifyProcessToken &&
+    normalizedSourceSha256(rustLexicalCode(verifyTokenPolicy)) ===
+      approvedKeyAgentApprovalTokenDaclLeafSha256.verifyTokenPolicy &&
     normalizedSourceSha256(rustLexicalCode(copiedSid)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.copiedSid &&
     normalizedSourceSha256(rustLexicalCode(readback)) ===
@@ -22823,6 +22994,9 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       approvedKeyAgentApprovalTokenDaclLeafSha256.sidString &&
     normalizedSourceSha256(rustLexicalCode(tokenDrop)) ===
       approvedKeyAgentApprovalTokenDaclLeafSha256.tokenDrop &&
+    daclProofFunctionsWithoutEarlySuccess.every(
+      (functionBlock) => !hasEarlySuccessReturn(functionBlock),
+    ) &&
     normalizeRustFragment(
       rustTopLevelConstItem(source, "APPROVAL_PROFILE_V1_NAME"),
     ) ===
@@ -22857,38 +23031,144 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     normalizeRustFragment(
       rustTopLevelConstItem(source, "MAX_INSTALL_SID_BYTES"),
     ) === "const MAX_INSTALL_SID_BYTES: usize = 68;" &&
+    compactRust(verifiedDefinition) ===
+      "pub(crate)structVerifiedKeyAgentLpac{token:OwnedToken,profile_sid:OwnedAppContainerSid,principals:ExactTokenDaclPrincipals,baseline:TokenIdentityBaseline,}" &&
+    compactRust(principalsDefinition) ===
+      "structExactTokenDaclPrincipals{user:Vec<u8>,key_agent:Vec<u8>,approval:Vec<u8>,}" &&
+    compactRust(luidDefinition) ===
+      "structTokenLuidBaseline{low_part:u32,high_part:i32,}" &&
+    compactRust(identityDefinition) ===
+      "structTokenIdentityBaseline{token_id:TokenLuidBaseline,modified_id:TokenLuidBaseline,}" &&
+    compactRust(hardenedWriteDefinition) ===
+      "structHardenedWriteToken{token:OwnedToken,principals:ExactTokenDaclPrincipals,baseline:TokenIdentityBaseline,}" &&
     JSON.stringify(
       rustCallSites(verifySuspended, "verify_process_token").map(
-        (call) => call.arguments,
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "self.profile_sid.as_psid()"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "install_approval_token_query_dacl").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "self.profile_sid.as_psid()"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "open_process_token_with_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "final_access"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "require_same_token_object").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["write_token.0", "final_token.0"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "exact_token_statistics_baseline").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["final_token.0"], ["final_token.0"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "require_same_token_identity").map(
+        (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
-        ["process", "self.profile_sid.as_psid()"],
-        ["process", "self.profile_sid.as_psid()"],
+        ["&baseline", "&final_identity"],
+        ["&baseline", "&final_bookend"],
       ]) &&
     JSON.stringify(
-      rustCallSites(verifySuspended, "install_approval_token_query_dacl").map(
-        (call) => call.arguments,
+      rustCallSites(verifySuspended, "verify_token_policy").map((call) =>
+        call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["process", "self.profile_sid.as_psid()"]]) &&
+    ) ===
+      JSON.stringify([["final_token.0", "self.profile_sid.as_psid()"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "verify_readback").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["final_token.0"]]) &&
+    JSON.stringify(
+      rustCallSites(verifySuspended, "drop").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["write_token"]]) &&
     hasOrderedCompactRustMarkers(verifySuspended, [
       "verify_process_token(process,self.profile_sid.as_psid())?;",
-      "install_approval_token_query_dacl(process,self.profile_sid.as_psid())?;",
-      "verify_process_token(process,self.profile_sid.as_psid())?;",
-      "Ok(VerifiedKeyAgentLpac{_private:()})",
+      "letHardenedWriteToken{token:write_token,principals,baseline,}=install_approval_token_query_dacl(process,self.profile_sid.as_psid())?;",
+      "letfinal_access=TOKEN_ACCESS_MASK(TOKEN_QUERY.0|TOKEN_DUPLICATE.0|READ_CONTROL.0);",
+      "letfinal_token=open_process_token_with_access(process,final_access)?;",
+      "require_same_token_object(write_token.0,final_token.0)?;",
+      "letfinal_identity=exact_token_statistics_baseline(final_token.0)?;",
+      "require_same_token_identity(&baseline,&final_identity)?;",
+      "verify_token_policy(final_token.0,self.profile_sid.as_psid())?;",
+      "principals.verify_readback(final_token.0)?;",
+      "letfinal_bookend=exact_token_statistics_baseline(final_token.0)?;",
+      "require_same_token_identity(&baseline,&final_bookend)?;",
+      "drop(write_token);",
+      "Ok(VerifiedKeyAgentLpac{token:final_token,profile_sid:self.profile_sid,principals,baseline,})",
     ]) &&
+    !verifyCompact.includes("WRITE_DAC") &&
     (rustLexicalCode(verifySuspended).match(/\breturn\b/gu) ?? []).length ===
       0 &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "exact_token_statistics_baseline").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([["self.token.0"], ["self.token.0"], ["current.0"]]) &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "require_same_token_identity").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&self.baseline", "&retained_before"],
+        ["&self.baseline", "&retained_after"],
+        ["&self.baseline", "&current_identity"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "verify_token_policy").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.token.0", "self.profile_sid.as_psid()"]]) &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "verify_readback").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.token.0"]]) &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "open_process_token_with_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "TOKEN_QUERY"]]) &&
+    JSON.stringify(
+      rustCallSites(verifiedRevalidate, "require_same_token_object").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.token.0", "current.0"]]) &&
+    hasOrderedCompactRustMarkers(verifiedRevalidate, [
+      "letretained_before=exact_token_statistics_baseline(self.token.0)?;",
+      "require_same_token_identity(&self.baseline,&retained_before)?;",
+      "verify_token_policy(self.token.0,self.profile_sid.as_psid())?;",
+      "self.principals.verify_readback(self.token.0)?;",
+      "letretained_after=exact_token_statistics_baseline(self.token.0)?;",
+      "require_same_token_identity(&self.baseline,&retained_after)?;",
+      "letcurrent=open_process_token_with_access(process,TOKEN_QUERY)?;",
+      "require_same_token_object(self.token.0,current.0)?;",
+      "letcurrent_identity=exact_token_statistics_baseline(current.0)?;",
+      "require_same_token_identity(&self.baseline,&current_identity)",
+    ]) &&
+    !verifiedRevalidateCompact.includes("WRITE_DAC") &&
+    !verifiedRevalidateCompact.includes("TOKEN_DUPLICATE") &&
+    principalsImplCompact.includes(
+      "verify_installed_token_dacl_readback(token,&self.user,&self.key_agent,&self.approval)",
+    ) &&
     hasOrderedCompactRustMarkers(install, [
       "letdesired=TOKEN_ACCESS_MASK(TOKEN_QUERY.0|WRITE_DAC.0|READ_CONTROL.0);",
-      "OpenProcessToken(process,desired,&rawmutraw_token)",
-      "lettoken=OwnedToken::new(raw_token)?;",
+      "lettoken=open_process_token_with_access(process,desired)?;",
       "token_information(token.0,TokenUser)?;",
       "letapproval=OwnedAppContainerSid::derive(&wide_nul_str(APPROVAL_PROFILE_V1_NAME)?)?;",
       "EqualSid(key_agent_sid,approval.as_psid())",
-      "letuser_sid_bytes=copied_sid_bytes(user.User.Sid)?;",
-      "letkey_agent_sid_bytes=copied_sid_bytes(key_agent_sid)?;",
-      "letapproval_sid_bytes=copied_sid_bytes(approval.as_psid())?;",
+      "letprincipals=ExactTokenDaclPrincipals{user:copied_sid_bytes(user.User.Sid)?,key_agent:copied_sid_bytes(key_agent_sid)?,approval:copied_sid_bytes(approval.as_psid())?,};",
       "letuser_sid=sid_string(user.User.Sid)?;",
       "letkey_agent_sid_string=sid_string(key_agent_sid)?;",
       "letapproval_sid=sid_string(approval.as_psid())?;",
@@ -22899,13 +23179,20 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       "SetKernelObjectSecurity(",
       "LocalFree(Some(HLOCAL(descriptor.0)))",
       "applied?;",
-      "verify_installed_token_dacl_readback(token.0,&user_sid_bytes,&key_agent_sid_bytes,&approval_sid_bytes,)",
+      "principals.verify_readback(token.0)?;",
+      "letbaseline=exact_token_statistics_baseline(token.0)?;",
+      "Ok(HardenedWriteToken{token,principals,baseline,})",
     ]) &&
     JSON.stringify(
-      rustCallSites(install, "OpenProcessToken").map((call) => call.arguments),
-    ) === JSON.stringify([["process", "desired", "&raw mut raw_token"]]) &&
+      rustCallSites(install, "open_process_token_with_access").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "desired"]]) &&
+    rustCallSites(install, "OpenProcessToken").length === 0 &&
     JSON.stringify(
-      rustCallSites(install, "token_information").map((call) => call.arguments),
+      rustCallSites(install, "token_information").map((call) =>
+        call.arguments.map(compactRust),
+      ),
     ) === JSON.stringify([["token.0", "TokenUser"]]) &&
     installCompact.includes(
       "ifuser_information.returned_bytes<size_of::<TOKEN_USER>(){returnErr(KeyAgentLpacError::Token);}",
@@ -22926,7 +23213,7 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       ]) &&
     JSON.stringify(
       rustCallSites(install, "copied_sid_bytes").map(
-        (call) => call.arguments,
+        (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
@@ -22935,18 +23222,15 @@ const keyAgentApprovalTokenDaclContract = (source) => {
         ["approval.as_psid()"],
       ]) &&
     JSON.stringify(
-      rustCallSites(install, "verify_installed_token_dacl_readback").map(
-        (call) => call.arguments,
+      rustCallSites(install, "verify_readback").map((call) =>
+        call.arguments.map(compactRust),
       ),
-    ) ===
-      JSON.stringify([
-        [
-          "token.0",
-          "&user_sid_bytes",
-          "&key_agent_sid_bytes",
-          "&approval_sid_bytes",
-        ],
-      ]) &&
+    ) === JSON.stringify([["token.0"]]) &&
+    JSON.stringify(
+      rustCallSites(install, "exact_token_statistics_baseline").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["token.0"]]) &&
     JSON.stringify(installMacros) ===
       JSON.stringify([
         {
@@ -22991,8 +23275,87 @@ const keyAgentApprovalTokenDaclContract = (source) => {
       rustCallSites(install, "LocalFree").map((call) => call.arguments),
     ) === JSON.stringify([["Some(HLOCAL(descriptor.0))"]]) &&
     installCompact.includes(
-      "letapplied=ifvalid{unsafe{SetKernelObjectSecurity(token.0,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,descriptor,)}.map_err(|_|KeyAgentLpacError::Token)}else{Err(KeyAgentLpacError::Token)};unsafe{let_=LocalFree(Some(HLOCAL(descriptor.0)));}applied?;verify_installed_token_dacl_readback(token.0,&user_sid_bytes,&key_agent_sid_bytes,&approval_sid_bytes,)",
+      "letapplied=ifvalid{unsafe{SetKernelObjectSecurity(token.0,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,descriptor,)}.map_err(|_|KeyAgentLpacError::Token)}else{Err(KeyAgentLpacError::Token)};unsafe{let_=LocalFree(Some(HLOCAL(descriptor.0)));}applied?;principals.verify_readback(token.0)?;letbaseline=exact_token_statistics_baseline(token.0)?;Ok(HardenedWriteToken{token,principals,baseline,})",
     ) &&
+    JSON.stringify(
+      rustCallSites(openProcessToken, "OpenProcessToken").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "HANDLE(process.as_raw_handle())",
+          "desired_access",
+          "&rawmutraw_token",
+        ],
+      ]) &&
+    openProcessTokenCompact.endsWith("OwnedToken::new(raw_token)}") &&
+    tokenIdentityCompact.includes(
+      "ifreturned_bytes!=size_of::<TOKEN_STATISTICS>()||statistics.TokenType!=TokenPrimary{returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    tokenIdentityCompact.includes(
+      "token_id:TokenLuidBaseline{low_part:statistics.TokenId.LowPart,high_part:statistics.TokenId.HighPart,}",
+    ) &&
+    tokenIdentityCompact.includes(
+      "modified_id:TokenLuidBaseline{low_part:statistics.ModifiedId.LowPart,high_part:statistics.ModifiedId.HighPart,}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(exactStatistics, "GetTokenInformation").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "token",
+          "TokenStatistics",
+          "Some(ptr::from_mut(&mutstatistics).cast::<c_void>())",
+          "exact_bytes",
+          "&rawmutreturned",
+        ],
+      ]) &&
+    exactStatisticsCompact.includes(
+      "u32::try_from(size_of::<TOKEN_STATISTICS>()).map_err(|_|KeyAgentLpacError::Token)?;",
+    ) &&
+    exactStatisticsCompact.endsWith(
+      "token_identity_from_statistics(&statistics,usize::try_from(returned).map_err(|_|KeyAgentLpacError::Token)?,)}",
+    ) &&
+    [
+      "expected.token_id.low_part!=observed.token_id.low_part",
+      "expected.token_id.high_part!=observed.token_id.high_part",
+      "expected.modified_id.low_part!=observed.modified_id.low_part",
+      "expected.modified_id.high_part!=observed.modified_id.high_part",
+    ].every((comparison) => sameIdentityCompact.includes(comparison)) &&
+    (sameIdentityCompact.match(/\|\|/gu) ?? []).length === 3 &&
+    !sameIdentityCompact.includes("&&") &&
+    JSON.stringify(
+      rustCallSites(sameObject, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["first", "second"]]) &&
+    sameObjectCompact.includes("ifinvalid_handle(first)||invalid_handle(second)") &&
+    sameObjectCompact.includes(
+      "if!unsafe{CompareObjectHandles(first,second)}.as_bool(){returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(verifyProcessToken, "open_process_token_with_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["process", "TOKEN_QUERY|TOKEN_DUPLICATE"]]) &&
+    JSON.stringify(
+      rustCallSites(verifyProcessToken, "verify_token_policy").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["token.0", "expected_sid"]]) &&
+    verifyProcessTokenCompact.endsWith("verify_token_policy(token.0,expected_sid)}") &&
+    verifyTokenPolicyCompact.length > 0 &&
+    JSON.stringify(
+      rustCallSites(principalsImpl, "verify_installed_token_dacl_readback").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["token", "&self.user", "&self.key_agent", "&self.approval"],
+      ]) &&
     JSON.stringify(
       rustCallSites(copiedSid, "IsValidSid").map((call) => call.arguments),
     ) === JSON.stringify([["sid"]]) &&
@@ -23008,6 +23371,9 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     ) === JSON.stringify([["sid.0.cast::<u8>()", "length"]]) &&
     copiedSidCompact.includes(
       "ifsid.0.is_null(){returnErr(KeyAgentLpacError::Token);}",
+    ) &&
+    copiedSidCompact.includes(
+      "if!unsafe{IsValidSid(sid)}.as_bool(){returnErr(KeyAgentLpacError::Token);}",
     ) &&
     copiedSidCompact.includes(
       "if!(MIN_BINARY_SID_BYTES..=MAX_INSTALL_SID_BYTES).contains(&length){returnErr(KeyAgentLpacError::Token);}",
@@ -23187,14 +23553,174 @@ const keyAgentApprovalTokenDaclContract = (source) => {
     verifyCompact.length > 0
   );
 };
-const keyAgentApprovalTokenDaclMutationProbes = [
+const verifiedKeyAgentLpacAuthoritySurfaceContract = (source) => {
+  let definition;
+  let inherentImpl;
+  try {
+    definition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{/u,
+    );
+    inherentImpl = rustImplItemAtDepth(
+      source,
+      "impl VerifiedKeyAgentLpac",
+      0,
+    );
+  } catch {
+    return false;
+  }
+  const implHeaders = rustImplItems(source)
+    .filter((item) => /\bVerifiedKeyAgentLpac\b/u.test(item.header))
+    .map((item) => item.header);
+  const aliases = [
+    ...rustUseItems(source).filter((item) =>
+      /\bVerifiedKeyAgentLpac\s+as\b/u.test(rustLexicalCode(item.source)),
+    ),
+    ...rustTypeAliasItems(source).filter((item) =>
+      /\bVerifiedKeyAgentLpac\b/u.test(rustLexicalCode(item.source)),
+    ),
+  ];
+  return (
+    compactRust(definition) ===
+      "pub(crate)structVerifiedKeyAgentLpac{token:OwnedToken,profile_sid:OwnedAppContainerSid,principals:ExactTokenDaclPrincipals,baseline:TokenIdentityBaseline,}" &&
+    JSON.stringify(rustVisibleFunctionItems(inherentImpl)) ===
+      JSON.stringify([
+        {
+          owner: "impl VerifiedKeyAgentLpac",
+          visibility: "pub(crate)",
+          name: "revalidate_current_process_token",
+          signature:
+            "fnrevalidate_current_process_token(&self,process:BorrowedHandle<'_>,)->Result<(),KeyAgentLpacError>",
+        },
+      ]) &&
+    JSON.stringify(implHeaders) ===
+      JSON.stringify([
+        "impl VerifiedKeyAgentLpac",
+        "impl fmt::Debug for VerifiedKeyAgentLpac",
+      ]) &&
+    aliases.length === 0 &&
+    !/#\[derive\([^\]]*(?:Clone|Copy|Default)[^\]]*\)\]\s*pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\b/u.test(
+      source,
+    ) &&
+    !implHeaders.some((header) =>
+      /\b(?:Clone|Copy|Default|Deref|DerefMut|Borrow|BorrowMut|AsRef|AsMut|From|Into)\b/u.test(
+        header.replace("impl fmt::Debug for VerifiedKeyAgentLpac", ""),
+      ),
+    ) &&
+    !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:raw|handle|token|token_id|modified_id|identity|profile|profile_sid|principals|baseline|into_inner|as_raw_handle)\b/u.test(
+      rustLexicalCode(inherentImpl),
+    )
+  );
+};
+const verifiedKeyAgentLpacAuthoritySurfaceMutationProbes = [
   keyAgentLpacRelease.replace(
-    "        verify_process_token(process, self.profile_sid.as_psid())?;\n        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;",
-    "        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;",
+    "pub(crate) struct VerifiedKeyAgentLpac {",
+    "#[derive(Clone)]\npub(crate) struct VerifiedKeyAgentLpac {",
   ),
   keyAgentLpacRelease.replace(
-    "        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;\n        verify_process_token(process, self.profile_sid.as_psid())?;",
-    "        install_approval_token_query_dacl(process, self.profile_sid.as_psid())?;",
+    "impl VerifiedKeyAgentLpac {",
+    "impl VerifiedKeyAgentLpac {\n    pub(crate) fn raw_handle(&self) -> HANDLE { self.token.0 }",
+  ),
+  `${keyAgentLpacRelease}\ntype VerifiedKeyAgentLpacAlias = VerifiedKeyAgentLpac;\n`,
+  `${keyAgentLpacRelease}\nimpl From<VerifiedKeyAgentLpac> for HANDLE { fn from(value: VerifiedKeyAgentLpac) -> Self { value.token.0 } }\n`,
+  `${keyAgentLpacRelease}\nimpl Clone for VerifiedKeyAgentLpac { fn clone(&self) -> Self { unreachable!() } }\n`,
+];
+const keyAgentApprovalTokenDaclMutationProbes = [
+  keyAgentLpacRelease.replace(
+    "    require_same_token_object(write_token.0, final_token.0)?;",
+    "    let _ = (&write_token, &final_token);",
+  ),
+  keyAgentLpacRelease.replace(
+    "require_same_token_object(write_token.0, final_token.0)?",
+    "require_same_token_object(write_token.0, write_token.0)?",
+  ),
+  keyAgentLpacRelease.replace(
+    "    require_same_token_object(self.token.0, current.0)?;",
+    "    let _ = (&self.token, &current);",
+  ),
+  keyAgentLpacRelease.replace(
+    "require_same_token_object(self.token.0, current.0)?",
+    "require_same_token_object(self.token.0, self.token.0)?",
+  ),
+  keyAgentLpacRelease.replace(
+    "    if expected.token_id.low_part != observed.token_id.low_part\n",
+    "    if false\n",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || expected.token_id.high_part != observed.token_id.high_part\n",
+    "",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || expected.modified_id.low_part != observed.modified_id.low_part\n",
+    "",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || expected.modified_id.high_part != observed.modified_id.high_part\n",
+    "",
+  ),
+  keyAgentLpacRelease.replace(
+    "        || expected.token_id.high_part != observed.token_id.high_part",
+    "        && expected.token_id.high_part != observed.token_id.high_part",
+  ),
+  keyAgentLpacRelease.replace(
+    "    principals.verify_readback(token.0)?;\n    let baseline = exact_token_statistics_baseline(token.0)?;",
+    "    let baseline = exact_token_statistics_baseline(token.0)?;\n    principals.verify_readback(token.0)?;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    let final_identity = exact_token_statistics_baseline(final_token.0)?;",
+    "    let baseline = exact_token_statistics_baseline(final_token.0)?;\n    let final_identity = exact_token_statistics_baseline(final_token.0)?;",
+  ),
+  keyAgentLpacRelease.replace(
+    "    drop(write_token);",
+    "    let _retained_write_token = write_token;",
+  ),
+  keyAgentLpacRelease.replace(
+    "        require_same_token_object(write_token.0, final_token.0)?;\n        let final_identity = exact_token_statistics_baseline(final_token.0)?;",
+    "        require_same_token_object(write_token.0, final_token.0)?;\n        drop(write_token);\n        let final_identity = exact_token_statistics_baseline(final_token.0)?;",
+  ),
+  keyAgentLpacRelease.replace(
+    "TOKEN_QUERY.0 | TOKEN_DUPLICATE.0 | READ_CONTROL.0",
+    "TOKEN_QUERY.0 | TOKEN_DUPLICATE.0 | READ_CONTROL.0 | WRITE_DAC.0",
+  ),
+  keyAgentLpacRelease.replace(
+    "    verify_token_policy(final_token.0, self.profile_sid.as_psid())?;",
+    "    let _ = (&final_token, &self.profile_sid);",
+  ),
+  keyAgentLpacRelease.replace(
+    "    principals.verify_readback(final_token.0)?;",
+    "    let _ = &principals;",
+  ),
+  keyAgentLpacRelease.replace(
+    "        let final_bookend = exact_token_statistics_baseline(final_token.0)?;\n        require_same_token_identity(&baseline, &final_bookend)?;",
+    "        let _ = (&baseline, &final_token);",
+  ),
+  keyAgentLpacRelease.replace(
+    "        verify_token_policy(self.token.0, self.profile_sid.as_psid())?;",
+    "        let _ = (&self.token, &self.profile_sid);",
+  ),
+  keyAgentLpacRelease.replace(
+    "        self.principals.verify_readback(self.token.0)?;",
+    "        let _ = &self.principals;",
+  ),
+  keyAgentLpacRelease.replace(
+    "        let retained_after = exact_token_statistics_baseline(self.token.0)?;\n        require_same_token_identity(&self.baseline, &retained_after)?;",
+    "        let _ = &self.baseline;",
+  ),
+  keyAgentLpacRelease.replace(
+    "open_process_token_with_access(process, TOKEN_QUERY)?",
+    "open_process_token_with_access(process, TOKEN_QUERY | TOKEN_DUPLICATE)?",
+  ),
+  keyAgentLpacRelease.replace(
+    "            TokenStatistics,",
+    "            TokenUser,",
+  ),
+  keyAgentLpacRelease.replace(
+    "returned_bytes != size_of::<TOKEN_STATISTICS>()",
+    "returned_bytes < size_of::<TOKEN_STATISTICS>()",
+  ),
+  keyAgentLpacRelease.replace(
+    "statistics.TokenType != TokenPrimary",
+    "false && statistics.TokenType != TokenPrimary",
   ),
   keyAgentLpacRelease.replace(
     "const SUPERVISOR_TOKEN_ACCESS: u32 = TOKEN_ALL_ACCESS.0;",
@@ -23249,16 +23775,12 @@ const keyAgentApprovalTokenDaclMutationProbes = [
     "    applied?;",
   ),
   keyAgentLpacRelease.replace(
-    "    verify_installed_token_dacl_readback(\n        token.0,\n        &user_sid_bytes,\n        &key_agent_sid_bytes,\n        &approval_sid_bytes,\n    )",
-    "    Ok(())",
+    "    principals.verify_readback(token.0)?;",
+    "    let _ = &principals;",
   ),
   keyAgentLpacRelease.replace(
-    "    let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();",
-    "    verify_installed_token_dacl_readback(\n        token.0,\n        &user_sid_bytes,\n        &key_agent_sid_bytes,\n        &approval_sid_bytes,\n    )?;\n    let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();",
-  ),
-  keyAgentLpacRelease.replace(
-    "    let user_sid_bytes = copied_sid_bytes(user.User.Sid)?;",
-    "    let user_sid_bytes = Vec::new();",
+    "        user: copied_sid_bytes(user.User.Sid)?,",
+    "        user: Vec::new(),",
   ),
   keyAgentLpacRelease.replace(
     "    if !unsafe { IsValidSid(sid) }.as_bool() {",
@@ -23433,12 +23955,129 @@ requireInvariant(
   keyAgentApprovalTokenDaclMutationProbes.every(
     (mutated) => mutated !== keyAgentLpacRelease,
   ) &&
+    verifiedKeyAgentLpacAuthoritySurfaceMutationProbes.every(
+      (mutated) => mutated !== keyAgentLpacRelease,
+    ) &&
     keyAgentApprovalTokenDaclContract(keyAgentLpacRelease) &&
+    verifiedKeyAgentLpacAuthoritySurfaceContract(keyAgentLpacRelease) &&
     keyAgentApprovalTokenDaclMutationProbes.every(
-      (mutated) =>
-        !keyAgentApprovalTokenDaclContract(mutated),
+      (mutated) => !keyAgentApprovalTokenDaclContract(mutated),
+    ) &&
+    verifiedKeyAgentLpacAuthoritySurfaceMutationProbes.every(
+      (mutated) => !verifiedKeyAgentLpacAuthoritySurfaceContract(mutated),
     ),
-  "the suspended Key Agent must verify one protected three-principal token DACL through a bounded exact same-handle readback, with exact role masks/SIDs/bytes, no reopen, no slack, and unconditional native-resource cleanup",
+  "the suspended Key Agent must harden and read back Hwrite, bind a fresh least-authority Hfinal by exact object and four-part token identity, bookend full policy/DACL checks, drop WRITE_DAC before minting one opaque revalidatable proof, and retain exact mutation-sensitive DACL bytes and native cleanup",
+);
+const keyAgentTokenContinuityRegressionTestContract = (source) => {
+  let kernelTest;
+  let identityTest;
+  let statisticsTest;
+  try {
+    kernelTest = rustFunctionBlock(
+      source,
+      "verified_token_retains_exact_object_and_revalidates_current_process_token",
+    );
+    identityTest = rustFunctionBlock(
+      source,
+      "token_identity_comparison_rejects_each_luid_part_mutation",
+    );
+    statisticsTest = rustFunctionBlock(
+      source,
+      "token_statistics_identity_requires_exact_size_and_primary_type",
+    );
+  } catch {
+    return false;
+  }
+  const lexicalSource = rustLexicalCode(source);
+  const namedTest = (name) =>
+    new RegExp(`#\\[test\\]\\s*fn\\s+${name}\\b`, "u").test(lexicalSource);
+  return (
+    namedTest(
+      "verified_token_retains_exact_object_and_revalidates_current_process_token",
+    ) &&
+    namedTest("token_identity_comparison_rejects_each_luid_part_mutation") &&
+    namedTest("token_statistics_identity_requires_exact_size_and_primary_type") &&
+    hasOrderedCompactRustMarkers(kernelTest, [
+      "letmutprocess=create_suspended_key_agent_lpac(&prepared,&fixture)?;",
+      "letverified=prepared.verify_and_harden_suspended_process(process.process_handle())?;",
+      "verified.revalidate_current_process_token(process.process_handle())?;",
+      "letfresh_current=open_process_token_with_access(process.process_handle(),TOKEN_QUERY)?;",
+      "require_same_token_object(verified.token.0,fresh_current.0)?;",
+      "letfresh_identity=exact_token_statistics_baseline(fresh_current.0)?;",
+      "require_same_token_identity(&verified.baseline,&fresh_identity)?;",
+      "letsupervisor_process=unsafe{BorrowedHandle::borrow_raw(GetCurrentProcess().0)};",
+      "assert_eq!(verified.revalidate_current_process_token(supervisor_process),Err(KeyAgentLpacError::Token));",
+      "process.terminate_and_wait()?;",
+    ]) &&
+    JSON.stringify(
+      rustCallSites(identityTest, "synthetic_token_identity").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["1", "2", "3", "4"],
+        ["1", "2", "3", "4"],
+        ["9", "2", "3", "4"],
+        ["1", "9", "3", "4"],
+        ["1", "2", "9", "4"],
+        ["1", "2", "3", "9"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(identityTest, "require_same_token_identity").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&expected", "&synthetic_token_identity(1,2,3,4)"],
+        ["&expected", "&observed"],
+      ]) &&
+    hasOrderedCompactRustMarkers(statisticsTest, [
+      "TokenId:LUID{LowPart:1,HighPart:2,}",
+      "TokenType:TokenPrimary",
+      "ModifiedId:LUID{LowPart:3,HighPart:4,}",
+      "token_identity_from_statistics(&statistics,size_of::<TOKEN_STATISTICS>()).is_ok()",
+      "token_identity_from_statistics(&statistics,size_of::<TOKEN_STATISTICS>()-1)",
+      "token_identity_from_statistics(&statistics,size_of::<TOKEN_STATISTICS>()+1)",
+      "TokenType:TokenImpersonation",
+      "token_identity_from_statistics(&impersonation,size_of::<TOKEN_STATISTICS>())",
+    ])
+  );
+};
+const keyAgentTokenContinuityRegressionTestMutationProbes = [
+  keyAgentLpacSource.replace(
+    "    #[test]\n    fn verified_token_retains_exact_object_and_revalidates_current_process_token()",
+    "    #[cfg(FALSE)]\n    fn verified_token_retains_exact_object_and_revalidates_current_process_token()",
+  ),
+  keyAgentLpacSource.replace(
+    "        verified.revalidate_current_process_token(process.process_handle())?;",
+    "        let _ = process.process_handle();",
+  ),
+  keyAgentLpacSource.replace(
+    "verified.revalidate_current_process_token(supervisor_process)",
+    "verified.revalidate_current_process_token(process.process_handle())",
+  ),
+  keyAgentLpacSource.replace(
+    "            synthetic_token_identity(1, 2, 9, 4),\n",
+    "",
+  ),
+  keyAgentLpacSource.replace(
+    "token_identity_from_statistics(&statistics, size_of::<TOKEN_STATISTICS>() + 1)",
+    "token_identity_from_statistics(&statistics, size_of::<TOKEN_STATISTICS>())",
+  ),
+  keyAgentLpacSource.replace(
+    "            TokenType: TokenImpersonation,",
+    "            TokenType: TokenPrimary,",
+  ),
+];
+requireInvariant(
+  keyAgentTokenContinuityRegressionTestMutationProbes.every(
+    (mutated) => mutated !== keyAgentLpacSource,
+  ) &&
+    keyAgentTokenContinuityRegressionTestContract(keyAgentLpacSource) &&
+    keyAgentTokenContinuityRegressionTestMutationProbes.every(
+      (mutated) => !keyAgentTokenContinuityRegressionTestContract(mutated),
+    ),
+  "Key Agent token-object continuity must retain an enabled kernel-backed exact-object/revalidation test, all four LUID mutation cases, and exact-size primary TOKEN_STATISTICS tests",
 );
 const keyAgentTokenDaclKernelPathContract = (activationSource) => {
   let successfulKernelTest;
@@ -23447,6 +24086,7 @@ const keyAgentTokenDaclKernelPathContract = (activationSource) => {
   let activateWithIdentity;
   let authenticateAndBind;
   let authenticateFirstEvent;
+  let failAfterCleanup;
   try {
     const activationProduction = withoutCfgTestItems(
       withoutBottomTestModule(activationSource),
@@ -23472,6 +24112,10 @@ const keyAgentTokenDaclKernelPathContract = (activationSource) => {
       activationProduction,
       "authenticate_first_event",
     );
+    failAfterCleanup = rustFunctionBlock(
+      activationProduction,
+      "fail_after_cleanup",
+    );
   } catch {
     return false;
   }
@@ -23493,6 +24137,33 @@ const keyAgentTokenDaclKernelPathContract = (activationSource) => {
       .length === 1 &&
     rustCallSites(authenticateAndBind, "authenticate_first_event").length ===
       1 &&
+    JSON.stringify(
+      rustCallSites(authenticateAndBind, "fail_after_cleanup").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&mutprocess", "error"],
+        ["&mutprocess", "error"],
+        ["&mutprocess", "error"],
+      ]) &&
+    hasOrderedCompactRustMarkers(authenticateAndBind, [
+      "Err(error)=>returnfail_after_cleanup(&mutprocess,error),",
+      "ifletErr(error)=process.detach_still_suspended(){returnfail_after_cleanup(&mutprocess,error);}",
+      "ifletErr(error)=verify_bound_root_process(root_job,process.process_handle()){returnfail_after_cleanup(&mutprocess,error);}",
+      "letprocess=process.into_detached()?;",
+    ]) &&
+    JSON.stringify(
+      rustCallSites(failAfterCleanup, "abort").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[]]) &&
+    hasOrderedCompactRustMarkers(failAfterCleanup, [
+      "process.abort().map_err(|_|KeyAgentActivationError::Cleanup)?;",
+      "Err(error)",
+    ]) &&
+    (rustLexicalCode(failAfterCleanup).match(/\breturn\b/gu) ?? []).length ===
+      0 &&
     JSON.stringify(
       rustCallSites(
         authenticateFirstEvent,
@@ -23535,6 +24206,18 @@ const keyAgentTokenDaclKernelPathMutationProbes = [
     "                .verify_and_harden_suspended_process(self.process_handle())",
     "                .skipped_verify_and_harden_suspended_process(self.process_handle())",
   ),
+  keyAgentActivationSource.replace(
+    "        Err(error) => return fail_after_cleanup(&mut process, error),",
+    "        Err(error) => return Err(error),",
+  ),
+  keyAgentActivationSource.replace(
+    "    if let Err(error) = process.detach_still_suspended() {\n        return fail_after_cleanup(&mut process, error);\n    }",
+    "    if let Err(error) = process.detach_still_suspended() {\n        return Err(error);\n    }",
+  ),
+  keyAgentActivationSource.replace(
+    "    process\n        .abort()\n        .map_err(|_| KeyAgentActivationError::Cleanup)?;",
+    "    let _ = process.abort();",
+  ),
 ];
 requireInvariant(
   keyAgentTokenDaclKernelPathMutationProbes.every(
@@ -23554,20 +24237,27 @@ requireInvariant(
       "verify_process_token(process, self.profile_sid.as_psid())?",
     ) &&
     keyAgentLpacVerifySuspended.includes(
-      "Ok(VerifiedKeyAgentLpac { _private: () })",
+      "drop(write_token);",
     ) &&
-    /pub\(crate\)\s+struct\s+VerifiedKeyAgentLpac\s*\{\s*_private:\s*\(\),\s*\}/su.test(
-      keyAgentLpacRelease,
-    ) &&
+    compactRust(verifiedKeyAgentLpacDefinition) ===
+      "pub(crate)structVerifiedKeyAgentLpac{token:OwnedToken,profile_sid:OwnedAppContainerSid,principals:ExactTokenDaclPrincipals,baseline:TokenIdentityBaseline,}" &&
+    JSON.stringify(rustVisibleFunctionItems(verifiedKeyAgentLpacImpl)) ===
+      JSON.stringify([
+        {
+          owner: "impl VerifiedKeyAgentLpac",
+          visibility: "pub(crate)",
+          name: "revalidate_current_process_token",
+          signature:
+            "fnrevalidate_current_process_token(&self,process:BorrowedHandle<'_>,)->Result<(),KeyAgentLpacError>",
+        },
+      ]) &&
     keyAgentLpacTokenQueryOrder.every((position) => position !== -1) &&
     keyAgentLpacTokenQueryOrder
       .slice(1)
       .every(
         (position, index) => position > keyAgentLpacTokenQueryOrder[index],
       ) &&
-    compactVerifyKeyAgentLpacToken.includes(
-      "OpenProcessToken(HANDLE(process.as_raw_handle()),TOKEN_QUERY|TOKEN_DUPLICATE,&rawmutraw_token,)",
-    ) &&
+    !compactVerifyKeyAgentLpacToken.includes("OpenProcessToken") &&
     queryKeyAgentLpacDword.includes("GetTokenInformation") &&
     queryKeyAgentLpacDword.includes("size_of::<u32>()") &&
     compactOptionalKeyAgentLpacDword.includes(
@@ -23668,8 +24358,12 @@ const createSuspendedRegularAppContainer = rustFunctionBlock(
   keyAgentLpacSource,
   "create_suspended_regular_appcontainer",
 );
+const createSuspendedAppContainer = rustFunctionBlock(
+  keyAgentLpacSource,
+  "create_suspended_appcontainer",
+);
 const regularAppContainerCreateCalls = rustCallSites(
-  createSuspendedRegularAppContainer,
+  createSuspendedAppContainer,
   "CreateProcessW",
 );
 const regularAppContainerNegativeControl = rustFunctionBlock(
@@ -23724,6 +24418,18 @@ requireInvariant(
       ) ?? []
     ).length === 1 &&
     regularAppContainerCreateCalls.length === 1 &&
+    JSON.stringify(
+      rustCallSites(
+        createSuspendedRegularAppContainer,
+        "regular_appcontainer_attribute_list",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["prepared"]]) &&
+    JSON.stringify(
+      rustCallSites(
+        createSuspendedRegularAppContainer,
+        "create_suspended_appcontainer",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["prepared", "fixture", "&attributes"]]) &&
     regularAppContainerCreateCalls[0].arguments.length === 10 &&
     regularAppContainerCreateCalls[0].arguments[1] === "None" &&
     regularAppContainerCreateCalls[0].arguments[4] === "false" &&
@@ -23735,7 +24441,7 @@ requireInvariant(
       "PCWSTR(context.current_directory().as_ptr())" &&
     !/\b(?:ResumeThread|ContinueDebugEvent|DebugActiveProcessStop)\b/u.test(
       rustLexicalCode(
-        `${createSuspendedRegularAppContainer}\n${regularAppContainerNegativeControl}\n${testSuspendedProcessDrop}`,
+        `${createSuspendedRegularAppContainer}\n${createSuspendedAppContainer}\n${regularAppContainerNegativeControl}\n${testSuspendedProcessDrop}`,
       ),
     ) &&
     regularAppContainerNegativeControl.includes(
@@ -24014,15 +24720,205 @@ const detachedRunningImpl = keyAgentActivation.slice(
 const detachedRunningMethods = [
   ...detachedRunningImpl.matchAll(/pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu),
 ].map((match) => match[1]);
+const approvedKeyAgentTokenContinuityActivationLeafSha256 = {
+  postDetach:
+    "d76a622427c909ddbca097fe118bfaaa108dca3019ef0d2d2d4a367d5a1d5487",
+  preResume:
+    "ba99cb65a36278ed257736045de9941e7cd34fb9f90d4810246c1e3365f6bdcf",
+  resident:
+    "391f5131009f7f71583f27e01275f9ace46eec2cc9ea0a3de830ee537b9a5442",
+};
+const keyAgentTokenContinuityProductionCallInventory =
+  platformWindowsProductionFiles
+    .map((file) => ({
+      path: file.path,
+      calls: (
+        rustLexicalCode(file.source).match(
+          /\.\s*revalidate_current_process_token\s*\(/gu,
+        ) ?? []
+      ).length,
+    }))
+    .filter((entry) => entry.calls > 0);
+const keyAgentTokenContinuityDeclarationInventory =
+  platformWindowsProductionFiles
+    .map((file) => ({
+      path: file.path,
+      declarations: (
+        rustLexicalCode(file.source).match(
+          /\bfn\s+revalidate_current_process_token\s*\(/gu,
+        ) ?? []
+      ).length,
+    }))
+    .filter((entry) => entry.declarations > 0);
+const keyAgentTokenContinuityRejectsMethodReference = (source) =>
+  !/::\s*revalidate_current_process_token\b/u.test(rustLexicalCode(source));
+const keyAgentTokenContinuityMethodReferenceMutationProbe =
+  `${keyAgentActivationSource}\nconst REVALIDATE_ESCAPE: usize = VerifiedKeyAgentLpac::revalidate_current_process_token as usize;\n`;
+const keyAgentTokenContinuityCallerContract = (source) => {
+  let detach;
+  let resume;
+  let resident;
+  let production;
+  try {
+    production = withoutCfgTestItems(withoutBottomTestModule(source));
+    const suspendedImpl = rustLexicalItemBlock(
+      production,
+      /impl\s+SuspendedDebuggee\s*\{/u,
+    );
+    const runningImpl = rustLexicalItemBlock(
+      production,
+      /impl\s+DetachedRunningDebuggee\s*\{/u,
+    );
+    detach = rustFunctionBlock(suspendedImpl, "detach_still_suspended");
+    resume = rustFunctionBlock(suspendedImpl, "resume_for_storage_startup");
+    resident = rustFunctionBlock(runningImpl, "revalidate_resident_process");
+  } catch {
+    return false;
+  }
+  const detachCompact = compactRust(detach);
+  const resumeCompact = compactRust(resume);
+  const residentCompact = compactRust(resident);
+  const resumeCall = "ResumeThread(self.primary_thread.raw())";
+  return (
+    normalizedSourceSha256(rustLexicalCode(detach)) ===
+      approvedKeyAgentTokenContinuityActivationLeafSha256.postDetach &&
+    normalizedSourceSha256(rustLexicalCode(resume)) ===
+      approvedKeyAgentTokenContinuityActivationLeafSha256.preResume &&
+    normalizedSourceSha256(rustLexicalCode(resident)) ===
+      approvedKeyAgentTokenContinuityActivationLeafSha256.resident &&
+    rustCallSites(production, "revalidate_current_process_token").length ===
+      3 &&
+    JSON.stringify(
+      rustCallSites(detach, "revalidate_current_process_token").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.process_handle()"]]) &&
+    JSON.stringify(
+      rustCallSites(resume, "revalidate_current_process_token").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.process_handle()"]]) &&
+    JSON.stringify(
+      rustCallSites(resident, "revalidate_current_process_token").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["self.0.process_handle()"]]) &&
+    hasOrderedCompactRustMarkers(detach, [
+      "letprevious_suspend_count=unsafe{SuspendThread(self.primary_thread.raw())};",
+      "ifprevious_suspend_count!=1",
+      "letprevious_suspend_count=unsafe{ResumeThread(self.primary_thread.raw())};",
+      "ifprevious_suspend_count!=2",
+      "self.proven_suspend_count=1;",
+      "self.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy)?.revalidate_current_process_token(self.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)?;",
+      "Ok(())",
+    ]) &&
+    rustCallSites(resume, "ResumeThread").length === 1 &&
+    hasOrderedCompactRustMarkers(resume, [
+      "ifself.phase!=LaunchPhase::DetachedSuspended||self.proven_suspend_count!=1||self.prepared_lpac.is_some()||self.pending_event.is_some(){returnErr(KeyAgentActivationError::StartupResume);}",
+      "ifself.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy).and_then(|lpac|{lpac.revalidate_current_process_token(self.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)}).is_err(){self.abort().map_err(|_|KeyAgentActivationError::Cleanup)?;returnErr(KeyAgentActivationError::LpacPolicy);}",
+      "letprevious_suspend_count=unsafe{ResumeThread(self.primary_thread.raw())};",
+      "ifprevious_suspend_count!=1{self.abort().map_err(|_|KeyAgentActivationError::Cleanup)?;returnErr(KeyAgentActivationError::SuspensionMismatch);}",
+      "self.proven_suspend_count=0;",
+    ]) &&
+    resumeCompact.indexOf(
+      "revalidate_current_process_token(self.process_handle())",
+    ) < resumeCompact.indexOf(resumeCall) &&
+    !resumeCompact.includes(`let_=unsafe{${resumeCall}}`) &&
+    hasOrderedCompactRustMarkers(resident, [
+      "ifself.0.phase!=LaunchPhase::DetachedRunning||self.0.proven_suspend_count!=0||self.0.prepared_lpac.is_some()||self.0.pending_event.is_some(){returnErr(KeyAgentActivationError::ResidentState);}",
+      "ifunsafe{WaitForSingleObject(self.0.process.raw(),0)}!=WAIT_TIMEOUT{returnErr(KeyAgentActivationError::ResidentState);}",
+      "self.0.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy)?.revalidate_current_process_token(self.0.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)",
+    ]) &&
+    detachCompact.length > 0 &&
+    residentCompact.length > 0
+  );
+};
+const keyAgentTokenContinuityCallerMutationProbes = [
+  keyAgentActivationSource.replace(
+    "lpac.revalidate_current_process_token(self.process_handle())",
+    "lpac.skipped_revalidate_current_process_token(self.process_handle())",
+  ),
+  (() => {
+    const withoutPreResume = keyAgentActivationSource.replace(
+      "lpac.revalidate_current_process_token(self.process_handle())",
+      "Ok(())",
+    );
+    return withoutPreResume.replace(
+      "let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };",
+      "let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };\n            let _ = self.lpac.as_ref().unwrap().revalidate_current_process_token(self.process_handle());",
+    );
+  })(),
+  keyAgentActivationSource.replace(
+    "            if self\n                .lpac",
+    "            if false && self\n                .lpac",
+  ),
+  keyAgentActivationSource.replace(
+    "                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;\n                return Err(KeyAgentActivationError::LpacPolicy);",
+    "                return Err(KeyAgentActivationError::LpacPolicy);",
+  ),
+  keyAgentActivationSource.replace(
+    "let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };",
+    "let _ = unsafe { ResumeThread(self.primary_thread.raw()) };\n            let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };",
+  ),
+  keyAgentActivationSource.replace(
+    "                .revalidate_current_process_token(self.0.process_handle())",
+    "                .skipped_revalidate_current_process_token(self.0.process_handle())",
+  ),
+  keyAgentActivationSource.replace(
+    "                .revalidate_current_process_token(self.process_handle())\n                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;\n            Ok(())",
+    "                .skipped_revalidate_current_process_token(self.process_handle())\n                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;\n            Ok(())",
+  ),
+];
+requireInvariant(
+  JSON.stringify(keyAgentTokenContinuityProductionCallInventory) ===
+    JSON.stringify([
+      {
+        path: "crates/platform-windows/src/key_agent_activation.rs",
+        calls: 3,
+      },
+    ]) &&
+    JSON.stringify(keyAgentTokenContinuityDeclarationInventory) ===
+      JSON.stringify([
+      {
+        path: "crates/platform-windows/src/key_agent_lpac.rs",
+        declarations: 1,
+      },
+    ]) &&
+    platformWindowsProductionFiles.every((file) =>
+      keyAgentTokenContinuityRejectsMethodReference(file.source),
+    ) &&
+    keyAgentTokenContinuityMethodReferenceMutationProbe !==
+      keyAgentActivationSource &&
+    !keyAgentTokenContinuityRejectsMethodReference(
+      keyAgentTokenContinuityMethodReferenceMutationProbe,
+    ) &&
+    keyAgentTokenContinuityCallerMutationProbes.every(
+      (mutated) => mutated !== keyAgentActivationSource,
+    ) &&
+    keyAgentTokenContinuityCallerContract(keyAgentActivationSource) &&
+    keyAgentTokenContinuityCallerMutationProbes.every(
+      (mutated) => !keyAgentTokenContinuityCallerContract(mutated),
+    ),
+  "Key Agent token-object revalidation callers must remain exact after the detached 2-to-1 probe, immediately before the sole detached-guard ResumeThread release with cleanup precedence and checked no-retry result, and after resident liveness",
+);
 const exactDetachedKeyAgentResidentRevalidation = compactRust(`
 pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
-    if !self.is_detached_and_running() {
+    if self.0.phase != LaunchPhase::DetachedRunning
+        || self.0.proven_suspend_count != 0
+        || self.0.prepared_lpac.is_some()
+        || self.0.pending_event.is_some()
+    {
         return Err(KeyAgentActivationError::ResidentState);
     }
     if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
         return Err(KeyAgentActivationError::ResidentState);
     }
-    Ok(())
+    self.0
+        .lpac
+        .as_ref()
+        .ok_or(KeyAgentActivationError::LpacPolicy)?
+        .revalidate_current_process_token(self.0.process_handle())
+        .map_err(|_| KeyAgentActivationError::LpacPolicy)
 }
 `);
 const exactDetachedKeyAgentRootJobMembership = compactRust(`
@@ -24061,7 +24957,7 @@ const detachedKeyAgentResidentContract = (source) => {
 };
 const detachedKeyAgentResidentMutationProbes = [
   detachedRunningImpl.replace(
-    "    if !self.is_detached_and_running() {\n",
+    "    if self.0.phase != LaunchPhase::DetachedRunning\n",
     "    if false {\n",
   ),
   detachedRunningImpl.replace(
@@ -24074,8 +24970,12 @@ const detachedKeyAgentResidentMutationProbes = [
     "contains_process(GetCurrentProcess())",
   ),
   detachedRunningImpl.replace(
-    "            if !self.is_detached_and_running() {\n",
-    "            if self.process_id() != 0 { return Ok(()); }\n            if !self.is_detached_and_running() {\n",
+    "            if self.0.phase != LaunchPhase::DetachedRunning\n",
+    "            if self.process_id() != 0 { return Ok(()); }\n            if self.0.phase != LaunchPhase::DetachedRunning\n",
+  ),
+  detachedRunningImpl.replace(
+    "                .revalidate_current_process_token(self.0.process_handle())",
+    "                .skipped_revalidate_current_process_token(self.0.process_handle())",
   ),
   detachedRunningImpl.replace(
     "            root_job\n                .contains_process(self.0.process_handle())\n                .map_err(|_| KeyAgentActivationError::RootJobPolicy)\n",
@@ -29526,7 +30426,88 @@ const approvalParentDocumentationWindow = (document) => {
     .join("\n");
 };
 const approvalParentDocumentationContradiction =
-  /ParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary\.|The binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID\.|The repo-local kernel proof is release evidence for a signed mapped production image\.|The test proves a distinct supervisor principal and same-user owner separation\.|The token DACL is a process-and-thread creation-time DACL\.|The retained exact parent handle is inheritable\.|(?:does not|doesn't|without|않)[^.]{0,120}(?:read back|readback)[^.]{0,120}token (?:security )?descriptor|token (?:security )?descriptor[^.]{0,120}(?:does not|doesn't|not|않)[^.]{0,80}(?:read back|readback)|(?:readback|read back)[^.]{0,120}(?:reopen|different|fresh|new)[^.]{0,80}token handle|(?:final|post)[^.]{0,100}(?:token|process-token)[^.]{0,100}(?:TokenId|identity) continuity|(?:establishes|provides)[^.]{0,100}same-user[^.]{0,100}(?:isolation|separation)\./iu;
+  /ParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary\.|The binder uses PROC_THREAD_ATTRIBUTE_PARENT_PROCESS and reopens the Key Agent by PID\.|The repo-local kernel proof is release evidence for a signed mapped production image\.|The test proves a distinct supervisor principal and same-user owner separation\.|The token DACL is a process-and-thread creation-time DACL\.|The retained exact parent handle is inheritable\.|The hardening step does not read back the token security descriptor\.|The token DACL establishes same-user supervisor isolation\.|The readback may reopen a different token handle\.|Retaining Hfinal atomically freezes the process token association and token contents\.|The hardened-to-final-current-token continuity contract remains STOP-SHIP\.|DACL changes always update ModifiedId\.|VerifiedKeyAgentLpac is minted[^.]{0,120}Hwrite then closes/iu;
+const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
+  const start = normalizedWindow.indexOf(
+    "TOKEN_QUERY | WRITE_DAC | READ_CONTROL",
+  );
+  if (start === -1) {
+    return false;
+  }
+  const continuity = normalizedWindow.slice(
+    Math.max(0, start - 240),
+    start + 7_000,
+  );
+  const semanticContinuity = continuity.replaceAll("`", "");
+  const orderedMarkers = [
+    "TokenStatistics",
+    "TokenId",
+    "ModifiedId",
+    "CompareObjectHandles",
+    "full LPAC policy",
+    "exact DACL",
+    "bookend",
+    "Hwrite",
+    "VerifiedKeyAgentLpac",
+    "post-detach",
+    "ResumeThread",
+    "resident",
+    "point-in-time",
+    "atomic freeze",
+    "last-check",
+    "swap-away/back",
+  ];
+  let cursor = -1;
+  const markersAreOrdered = orderedMarkers.every((marker) => {
+    cursor = continuity.indexOf(marker, cursor + 1);
+    return cursor !== -1;
+  });
+  const statistics = continuity.indexOf("TokenStatistics");
+  const resident = continuity.indexOf("resident");
+  return (
+    markersAreOrdered &&
+    continuity.includes("Hwrite") &&
+    continuity.includes("Hfinal") &&
+    /(?:`Hwrite`[\s\S]{0,180}`TOKEN_QUERY\s*\|\s*WRITE_DAC\s*\|\s*READ_CONTROL`|`TOKEN_QUERY\s*\|\s*WRITE_DAC\s*\|\s*READ_CONTROL`[\s\S]{0,180}`Hwrite`)/u.test(
+      continuity,
+    ) &&
+    /(?:`Hfinal`[\s\S]{0,180}`TOKEN_QUERY\s*\|\s*TOKEN_DUPLICATE\s*\|\s*READ_CONTROL`|`TOKEN_QUERY\s*\|\s*TOKEN_DUPLICATE\s*\|\s*READ_CONTROL`[\s\S]{0,180}`Hfinal`)/u.test(
+      continuity,
+    ) &&
+    continuity.lastIndexOf("readback", statistics) !== -1 &&
+    /resident[\s\S]{0,500}fresh[\s\S]{0,80}current(?:-token)?[\s\S]{0,80}`TOKEN_QUERY`/iu.test(
+      continuity.slice(Math.max(0, resident)),
+    ) &&
+    /production[\s\S]{0,160}Key Agent activation/iu.test(window) &&
+    /TokenUser[\s\S]{0,120}TOKEN_ALL_ACCESS/iu.test(continuity) &&
+    /Key Agent[\s\S]{0,120}(?:query\+duplicate|TOKEN_QUERY\s*\|\s*TOKEN_DUPLICATE)/iu.test(
+      continuity,
+    ) &&
+    /Approval[\s\S]{0,140}(?:query-only|TOKEN_QUERY)/iu.test(continuity) &&
+    /(?:Hwrite\s+then\s+closes\s+before[\s\S]{0,100}VerifiedKeyAgentLpac|Hwrite\uB97C\s+\uB2EB\uC2B5\uB2C8\uB2E4[\s\S]{0,100}VerifiedKeyAgentLpac)/iu.test(
+      semanticContinuity,
+    ) &&
+    /(?:retains?\s+only[\s\S]{0,80}Hfinal[\s\S]{0,80}without[\s\S]{0,40}WRITE_DAC|WRITE_DAC[\s\S]{0,40}\uC5C6\uB294[\s\S]{0,40}Hfinal)/iu.test(
+      semanticContinuity,
+    ) &&
+    /(?:CompareObjectHandles\s*\(\s*Hwrite\s*,\s*Hfinal\s*\)|Hfinal[\s\S]{0,220}CompareObjectHandles[\s\S]{0,180}(?:exact\s+kernel-object\s+equality\s+with\s+Hwrite|prove\s+that\s+Hwrite\s+and\s+Hfinal\s+name))/iu.test(
+      semanticContinuity,
+    ) &&
+    !/VerifiedKeyAgentLpac is minted[\s\S]{0,160}Hwrite then closes/iu.test(
+      normalizedWindow,
+    ) &&
+    /last-check[\s\S]{0,120}(?:ResumeThread|resume)[\s\S]{0,120}swap-away\/back[\s\S]{0,120}STOP-SHIP/iu.test(
+      continuity,
+    ) &&
+    /(?:DACL\s+changes\s+are\s+not\s+assumed\s+to\s+update\s+`?ModifiedId`?|DACL\s+\uBCC0\uACBD\uC774\s+`?ModifiedId`?\uB97C\s+\uAC31\uC2E0\uD55C\uB2E4\uACE0\s+\uAC00\uC815\uD558\uC9C0\s+\uC54A\uC2B5\uB2C8\uB2E4)/u.test(
+      continuity,
+    ) &&
+    /same-user[\s\S]{0,240}TokenUser/iu.test(continuity) &&
+    continuity.includes("distinct supervisor principal") &&
+    continuity.includes("creation-time DACL") &&
+    (continuity.match(/STOP-SHIP/gu) ?? []).length >= 2
+  );
+};
 const approvalParentDocumentationContract = (documents) =>
   documents.every((document) => {
     const window = approvalParentDocumentationWindow(document);
@@ -29584,28 +30565,11 @@ const approvalParentDocumentationContract = (documents) =>
         window,
       ) &&
       /(?:hardening step|hardening\s+단계)/iu.test(window) &&
-      /(?:exactly once|정확히\s+한\s+번)/iu.test(window) &&
+      approvalParentTokenContinuityContract(window, normalizedWindow) &&
       normalizedWindow.includes(
         "TOKEN_QUERY | WRITE_DAC | READ_CONTROL",
       ) &&
-      /(?:install|set|설치)[\s\S]{0,320}(?:(?:same[\s`]+opened|같은[\s`]+opened)[\s\S]{0,160}(?:read back|readback)|(?:read back|readback)[\s\S]{0,160}(?:same[\s`]+opened|같은[\s`]+opened))/iu.test(
-        window,
-      ) &&
-      /(?:The same-handle guarantee covers only DACL Set plus\s+kernel\s+readback|같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용)/iu.test(
-        window,
-      ) &&
-      /production[\s\S]{0,120}Key Agent activation[\s\S]{0,400}(?:install|설치)/iu.test(
-        window,
-      ) &&
-      /stable[\s`]+(?:user|TokenUser)[\s\S]{0,100}(?:all|TOKEN_ALL_ACCESS)/iu.test(
-        window,
-      ) &&
-      /Key Agent[\s\S]{0,100}(?:query\+duplicate|TOKEN_QUERY\s*\|\s*TOKEN_DUPLICATE)/iu.test(
-        window,
-      ) &&
-      /Approval[\s\S]{0,120}(?:query-only|(?:exactly[\s`]+)?TOKEN_QUERY)/iu.test(
-        window,
-      ) &&
+      approvalParentTokenContinuityContract(window, normalizedWindow) &&
       window.includes("DACL_SECURITY_INFORMATION") &&
       /bounded\s+two-pass/iu.test(window) &&
       window.includes("ERROR_INSUFFICIENT_BUFFER") &&
@@ -29628,27 +30592,7 @@ const approvalParentDocumentationContract = (documents) =>
       /slack/iu.test(window) &&
       /trailing/iu.test(window) &&
       window.includes("VerifiedKeyAgentLpac") &&
-      /(?:point-in-time[\s\S]{0,80}token[\s-]+(?:object|handle)|그\s+시점(?:의)?[\s\S]{0,80}token-object)/iu.test(
-        window,
-      ) &&
-      /not\s+same-user\s+isolation|same-user\s+isolation[\s\S]{0,160}(?:아니|아닙|증거가\s*아|not)/iu.test(
-        window,
-      ) &&
-      /not[\s\S]{0,80}process\/thread\s+creation-time\s+DACL|process\/thread\s+creation-time\s+DACL[\s\S]{0,160}(?:아니|아닙|증거가\s*아|not)/iu.test(
-        window,
-      ) &&
-      window.includes("TokenStatistics.TokenId") &&
-      /(?:do not compare|without comparing|비교하지)/iu.test(window) &&
-      window.includes("hardened-to-final-current-token continuity") &&
-      /hardened-to-final-current-token continuity[\s\S]{0,60}STOP-SHIP/iu.test(
-        window,
-      ) &&
-      /(?:(?:ordinary\s+)?LPAC(?:\/token)?(?:\s+(?:policy\s+checks?|attributes))?[\s\S]{0,180}(?:before\s+and\s+after|전후)|전후[\s\S]{0,100}(?:ordinary\s+)?LPAC)/iu.test(
-        window,
-      ) &&
-      /(?:reopen[\s\S]{0,100}(?:then-current|current)[\s`-]+token|그\s+시점\s+current\s+token[\s\S]{0,80}다시\s*열)/iu.test(
-        window,
-      ) &&
+      approvalParentTokenContinuityContract(window, normalizedWindow) &&
       /(?:does not|doesn't)[\s\S]{0,120}read back[\s\S]{0,120}mandatory-label\s+state|mandatory-label\s+state[\s\S]{0,120}(?:(?:not|does not|않)[\s\S]{0,80}read back|read back[\s\S]{0,40}(?:not|않|하지))/iu.test(
         window,
       ) &&
@@ -29726,11 +30670,6 @@ const approvalParentDocumentationMarkerMutators = [
       /(?:token\s+DACL|installs?\s+the\s+protected\s+DACL)/giu,
       "ambient token policy",
     ),
-  (document) =>
-    document.replace(
-      /(?:The same-handle guarantee covers only DACL Set plus\s+kernel\s+readback|같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용)/giu,
-      "The DACL operation has an unspecified handle scope",
-    ),
   (document) => document.replaceAll("NO_LOW_LABEL", "UNSPECIFIED_MITIGATION"),
   (document) => document.replace(/mandatory-label\s+state/giu, "label state"),
   (document) =>
@@ -29746,25 +30685,6 @@ const approvalParentDocumentationMarkerMutators = [
   (document) => document.replace(/zero reserved/giu, "ignored reserved"),
   (document) => document.replaceAll("ACCESS_ALLOWED_ACE", "ARBITRARY_ACE"),
   (document) => document.replace(/slack/giu, "padding"),
-  (document) =>
-    document.replace(/same-user\s+isolation/giu, "same-user boundary"),
-  (document) =>
-    document.replace(
-      /process\/thread creation-time DACL/giu,
-      "runtime token policy",
-    ),
-  (document) =>
-    document.replaceAll("TokenStatistics.TokenId", "TokenStatistics.Unchecked"),
-  (document) =>
-    document.replaceAll(
-      "hardened-to-final-current-token continuity",
-      "unspecified continuity",
-    ),
-  (document) =>
-    document.replace(
-      /(?:reopen\s+the\s+process's\s+then-current\s+token|process의\s+그\s+시점\s+current\s+token을\s+다시\s+열)/giu,
-      "use an unspecified process token",
-    ),
   (document) =>
     document.replace(
       /(?:distinct|별도)\s+supervisor\s+principal/giu,
@@ -29786,13 +30706,84 @@ const approvalParentDocumentationMarkerMutators = [
   (document) => document.replace(/caller/giu, "consumer"),
   (document) =>
     document.replaceAll("production Key Agent activation", "test fixture"),
+  (document) => document.replaceAll("Hwrite", "MutatedWriteHandle"),
+  (document) => document.replaceAll("Hfinal", "MutatedFinalHandle"),
+  (document) =>
+    document.replaceAll("CompareObjectHandles", "SkippedObjectComparison"),
+  (document) =>
+    document.replaceAll("TokenStatistics", "UncheckedStatistics"),
+  (document) => document.replaceAll("TokenId", "UncheckedIdentityA"),
+  (document) => document.replaceAll("ModifiedId", "UncheckedIdentityB"),
+  (document) =>
+    document.replaceAll("full LPAC policy", "partial LPAC policy"),
+  (document) => document.replaceAll("exact DACL", "sampled DACL"),
+  (document) => document.replaceAll("bookend", "single sample"),
+  (document) =>
+    document.replaceAll("VerifiedKeyAgentLpac", "UncheckedKeyAgentLpac"),
+  (document) => document.replaceAll("post-detach", "pre-detach"),
+  (document) => document.replaceAll("ResumeThread", "UncheckedResume"),
+  (document) => document.replaceAll("resident", "unobserved"),
+  (document) => document.replaceAll("point-in-time", "durable"),
+  (document) => document.replaceAll("atomic freeze", "durable guarantee"),
+  (document) => document.replaceAll("last-check", "earlier-check"),
+  (document) => document.replaceAll("swap-away/back", "no-swap"),
+  (document) => document.replaceAll("STOP-SHIP", "COMPLETE"),
+  (document) =>
+    document.replace(
+      /(?:DACL\s+changes\s+are\s+not\s+assumed\s+to\s+update\s+`?ModifiedId`?|DACL\s+\uBCC0\uACBD\uC774\s+`?ModifiedId`?\uB97C\s+\uAC31\uC2E0\uD55C\uB2E4\uACE0\s+\uAC00\uC815\uD558\uC9C0\s+\uC54A\uC2B5\uB2C8\uB2E4)/gu,
+      "DACL observations have unspecified identity effects",
+    ),
+  (document) => document.replaceAll("same-user", "other-user"),
+  (document) => document.replaceAll("TokenUser", "AmbientUser"),
+  (document) =>
+    document.replaceAll(
+      "TOKEN_QUERY | WRITE_DAC | READ_CONTROL",
+      "TOKEN_QUERY | TOKEN_DUPLICATE | WRITE_DAC | READ_CONTROL",
+    ),
+  (document) =>
+    document.replaceAll(
+      "TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL",
+      "TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL | WRITE_DAC",
+    ),
+  (document) =>
+    document.replace(
+      /current(?:-token)?\s+`TOKEN_QUERY`\s+handle/giu,
+      "current `TOKEN_QUERY | TOKEN_DUPLICATE` handle",
+    ),
+  (document) =>
+    document.replace(
+      /(?:`Hwrite`\s+then\s+closes\s+before|`Hwrite`\uB97C\s+\uB2EB\uC2B5\uB2C8\uB2E4[\s\S]{0,40}`VerifiedKeyAgentLpac`)/giu,
+      "`Hwrite` remains open before `VerifiedKeyAgentLpac`",
+    ),
+  (document) =>
+    document.replace(
+      /(?:retains?\s+only\s+`Hfinal`\s+without\s+`WRITE_DAC`|`WRITE_DAC`\uC774\s+\uC5C6\uB294\s+`Hfinal`\uB9CC\s+\uB0A8\uAE41\uB2C8\uB2E4)/giu,
+      "retains `Hfinal` with `WRITE_DAC`",
+    ),
+  (document) =>
+    document
+      .replaceAll(
+        "CompareObjectHandles(Hwrite, Hfinal)",
+        "CompareObjectHandles(Hwrite, Hwrite)",
+      )
+      .replace(
+        /`CompareObjectHandles`\s+must[\s\S]{0,100}exact\s+kernel-object\s+equality\s+with\s+`Hwrite`/giu,
+        "`CompareObjectHandles` checks `Hwrite` against itself",
+      )
+      .replace(
+        /`CompareObjectHandles`\s+must[\s\S]{0,100}prove\s+that\s+`Hwrite`\s+and\s+`Hfinal`\s+name/giu,
+        "`CompareObjectHandles` proves that `Hwrite` and `Hwrite` name",
+      ),
 ];
 const approvalParentDocumentationMutationProbes =
   approvalSupervisorDocumentation.flatMap((document, index) => [
-    ...approvalParentDocumentationMarkerMutators.map((mutate) => ({
-      index,
-      document: mutate(document),
-    })),
+    ...approvalParentDocumentationMarkerMutators
+      .map((mutate, markerIndex) => ({
+        index,
+        markerIndex,
+        document: mutate(document),
+      }))
+      .filter((probe) => probe.document !== document),
     {
       index,
       document: `${document}\nParentBoundReleaseApprovalSupervisor is runtime-ready and establishes a security boundary.\n`,
@@ -29831,11 +30822,28 @@ const approvalParentDocumentationMutationProbes =
     },
     {
       index,
-      document: `${document}\nThe final process-token recheck proves TokenId continuity with the hardened token object.\n`,
+      document: `${document}\nRetaining Hfinal atomically freezes the process token association and token contents.\n`,
+    },
+    {
+      index,
+      document: `${document}\nThe hardened-to-final-current-token continuity contract remains STOP-SHIP.\n`,
+    },
+    {
+      index,
+      document: `${document}\nDACL changes always update ModifiedId.\n`,
+    },
+    {
+      index,
+      document: `${document}\nVerifiedKeyAgentLpac is minted; Hwrite then closes.\n`,
     },
   ]);
 requireInvariant(
   approvalParentDocumentationContract(approvalSupervisorDocumentation) &&
+    approvalParentDocumentationMarkerMutators.every((mutate) =>
+      approvalSupervisorDocumentation.some(
+        (document) => mutate(document) !== document,
+      ),
+    ) &&
     approvalParentDocumentationMutationProbes.every(
       (probe) =>
         probe.document !== approvalSupervisorDocumentation[probe.index] &&

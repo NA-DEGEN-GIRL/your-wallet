@@ -691,9 +691,9 @@ rights. Its local `DuplicateHandle` denial matrix requests
 `PROCESS_SET_LIMITED_INFORMATION` (`0x2000`), `SYNCHRONIZE`, the exact
 query-limited/synchronize combined mask, and `WRITE_DAC`; it also proves the parent-supplied
 `SeDebugPrivilege` LUID is absent. The production Key Agent activation
-hardening step opens the suspended process token exactly once with
-`TOKEN_QUERY | WRITE_DAC | READ_CONTROL`. Before resume it installs the token
-DACL and immediately performs a bounded two-pass
+hardening step opens the suspended process's then-current token as `Hwrite` with
+exactly `TOKEN_QUERY | WRITE_DAC | READ_CONTROL`. Before resume it installs the
+token DACL and immediately performs a bounded two-pass
 `GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)` readback through that same
 opened handle. The first pass must return `ERROR_INSUFFICIENT_BUFFER` with a
 1..=64 KiB requirement; the aligned second pass, its returned length, and
@@ -705,16 +705,31 @@ fields, and exact ACL/descriptor end admit exactly three zero-flag explicit
 fixed Key Agent SID with `TOKEN_QUERY | TOKEN_DUPLICATE`, then fixed Approval SID
 with `TOKEN_QUERY`. Every mask, declared SID length, SID byte sequence, and ACE
 size must consume its exact region; extra ACEs and ACE/ACL/descriptor slack or
-trailing bytes fail closed. The same-handle guarantee covers only DACL Set plus
-kernel readback. The surrounding ordinary LPAC policy checks reopen the
-process's then-current token before and after hardening; they do not compare
-`TokenStatistics.TokenId` or kernel-object identity to the hardened handle.
-Consequently `hardened-to-final-current-token continuity` remains
-**STOP-SHIP**. Any set/readback/policy-check failure occurs before
-`VerifiedKeyAgentLpac` is minted. The `cfg(test)` integration executes the same
-production-compiled hardening and proves the Approval query-only outcome. This
-is point-in-time evidence about the hardened token handle, not same-user
-isolation or a process/thread creation-time DACL.
+trailing bytes fail closed. Immediately after that same-`Hwrite` readback, an
+exact-size `TokenStatistics` read records the `TokenId` and `ModifiedId`
+baseline. The supervisor opens a fresh current-token `Hfinal` with exactly
+`TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL`; `CompareObjectHandles` must
+prove exact kernel-object equality with `Hwrite`, both IDs must equal the
+baseline, the full LPAC policy and exact DACL must pass on `Hfinal`, and a final
+exact-size statistics read must bookend those checks. `Hwrite` then closes
+before `VerifiedKeyAgentLpac` is minted, so the opaque proof retains only
+`Hfinal` without `WRITE_DAC`.
+
+That proof is revalidated after the post-detach suspend-count probe,
+immediately before the sole `ResumeThread` that releases the final count into
+user mode, and at resident authority checks. Each pass bookends the retained
+`Hfinal`'s full policy and exact DACL with baseline-equal statistics, then opens
+a fresh current `TOKEN_QUERY` handle and requires exact-object plus
+`TokenId`/`ModifiedId` equality. These are fail-closed point-in-time checks, not
+an atomic freeze: holding `Hfinal` freezes neither the process's current-token
+association nor the token contents. The last-check/`ResumeThread` gap and
+swap-away/back races remain **STOP-SHIP**, and DACL changes are not assumed to
+update `ModifiedId`. Preexisting same-user high-right handles and the lack of
+`TokenUser` owner isolation from hostile same-user processes remain
+**STOP-SHIP**; release activation still requires a distinct supervisor principal
+and protected process/thread creation-time DACLs. The `cfg(test)` integration
+executes the production-compiled hardening and proves the Approval query-only
+outcome.
 
 The authorization and transport lifetime now share one platform-issued
 monotonic identity. No caller supplies its absolute deadline, invalidation drops

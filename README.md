@@ -687,8 +687,9 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `PROCESS_SET_LIMITED_INFORMATION`(`0x2000`), `SYNCHRONIZE`, query-limited/synchronize의
   exact combined mask, `WRITE_DAC`을 요청합니다. 또한 `SeDebugPrivilege` LUID가
   없음을 증명합니다. production Key Agent activation의 hardening step은 suspended
-  process token을 `TOKEN_QUERY | WRITE_DAC | READ_CONTROL`로 정확히 한 번 열고, resume 전에
-  protected three-ACE token DACL을 설치한 뒤 같은 opened token handle에서
+  process의 then-current token을 정확히 `TOKEN_QUERY | WRITE_DAC | READ_CONTROL`
+  권한의 `Hwrite`로 열고, resume 전에 protected three-ACE token DACL을 설치한 뒤 같은
+  `Hwrite`에서
   `GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)`를 bounded two-pass로 즉시
   read back합니다. 1차 조회는 `ERROR_INSUFFICIENT_BUFFER`와 1..=64 KiB의
   필요 크기를 내야 하고, 2차 결과와 descriptor 길이는 그 크기와 정확히
@@ -698,14 +699,28 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   stable `TokenUser` SID + `TOKEN_ALL_ACCESS`, fixed Key Agent SID +
   `TOKEN_QUERY | TOKEN_DUPLICATE`, fixed Approval SID + `TOKEN_QUERY` 순서로 존재해야
   하며, mask·binary SID·ACE/ACL/descriptor byte shape의 extra/slack/trailing byte를 모두
-  거부합니다. 같은 handle 보장은 DACL Set과 kernel readback 사이에만 적용됩니다.
-  전후 ordinary LPAC policy check는 process의 그 시점 current token을 다시 열지만,
-  hardened handle과 `TokenStatistics.TokenId` 또는 kernel-object identity를 비교하지
-  않습니다. 따라서 `hardened-to-final-current-token continuity`는 **STOP-SHIP**입니다.
-  어떤 set/readback/policy-check failure도 `VerifiedKeyAgentLpac` 생성 전에 fail closed합니다.
-  `cfg(test)` integration은 이 production-compiled set-and-readback hardening을 그대로 실행하고
-  Approval query-only 결과를 증명합니다. 이 readback은 hardened handle의 그 시점 token-object
-  evidence일 뿐 same-user isolation이나 process/thread creation-time DACL 증거가 아닙니다.
+  거부합니다. DACL readback 직후 `Hwrite`에서 exact-size `TokenStatistics`를 읽어
+  `TokenId`와 `ModifiedId` baseline을 잡습니다. 이어서 fresh current token을 정확히
+  `TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL` 권한의 `Hfinal`로 열고,
+  `CompareObjectHandles(Hwrite, Hfinal)`의 exact-object 일치, 두 ID의 baseline 일치,
+  full LPAC policy, exact DACL, 마지막 exact-size statistics bookend를 모두 통과한 뒤
+  `Hwrite`를 닫습니다. 그 다음에야 `VerifiedKeyAgentLpac`을 생성하며, proof에는
+  `WRITE_DAC`이 없는 `Hfinal`만 남깁니다.
+  같은 revalidation은 post-detach suspend-count probe 직후, user-mode 실행을 release하는
+  유일한 `ResumeThread` 직전, resident authority check마다 수행됩니다. retained
+  `Hfinal`의 full policy와 exact DACL을 baseline-equal statistics로 bookend한 뒤 fresh
+  current `TOKEN_QUERY` handle과 exact object 및 `TokenId`/`ModifiedId` 일치를 다시
+  요구합니다. 이는 point-in-time evidence이지 atomic freeze가 아닙니다. `Hfinal` 보유가
+  process current-token association이나 token contents를 freeze하지는 않습니다.
+  last-check/`ResumeThread` gap 및 swap-away/back race는 **STOP-SHIP**이며, DACL 변경이
+  `ModifiedId`를 갱신한다고 가정하지 않습니다. preexisting same-user high-right handle을
+  배제하지 못하고 hostile same-user process에 대한 `TokenUser` owner isolation도 없습니다.
+  distinct supervisor principal과 protected process/thread creation-time DACL 요구사항도
+  여전히 **STOP-SHIP**입니다. 모든 continuity/revalidation failure는 다음
+  typestate 또는 authority 사용 전에 fail closed합니다.
+  `cfg(test)` integration은 이 production-compiled hardening/continuity ceremony를 그대로
+  실행하고 Approval query-only 결과를 증명합니다. 이 evidence는 same-user isolation이나
+  process/thread creation-time DACL 증거가 아닙니다.
   fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
   profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
   제거하며 production mitigation은 그대로입니다.
