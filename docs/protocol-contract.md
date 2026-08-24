@@ -138,6 +138,15 @@ the internal legacy launch leaf accepts only Secret Input as a second check. The
 generic method has no non-test caller. The legacy launcher has zero production
 callers.
 
+At Approval-session issuance, `platform-windows` samples one opaque monotonic
+window internally and splits it into non-Clone authorization and transport
+halves with the exact same issuance identity. `wallet-protocol` retains both
+privately; invalidation drops the unused transport half. The Key Agent constructs
+one request from the exact authorization digest, one-shot nonce, canonical
+display, and protected anti-phishing phrase. Only the matching authorization
+half may consume the transport half and bind that exact request once into opaque
+`BoundApprovalTransport`.
+
 A second dormant transition consumes that whole Approval preparation together
 with the intact `BoundStorageProvenKeyAgent`. It duplicates the same retained
 running Key Agent process object directly, without a PID reopen, into one fresh
@@ -149,32 +158,37 @@ desired-access selector, resource operation, or launch operation. It retains no
 new OS resource except the narrow duplicate. Its production binder has one
 private consumer that creates a further dormant state.
 
-That consumer fixes the Approval profile to revision 1, creates the private
-two-object stdio boundary, and initially creates but does not resume the exact Approval
-process. The existing channel-supervisor process/image proof remains intact;
+That consumer first consumes the bound transport carrier and rejects an elapsed
+original expiry before pipe or process allocation. It then fixes the Approval
+profile to revision 1, creates the private two-object stdio boundary, and
+initially creates but does not resume the exact Approval process. The existing
+channel-supervisor process/image proof remains intact;
 the narrow Key Agent handle is copied separately as a fifth, non-inheritable
 child-local logical-parent capability. `BoundDormantApproval` owns the suspended
-process/thread/Job, unused parent pipe endpoints, and the complete parent-bound
-aggregate. It has no direct resume, request, response, receive, signing,
+process/thread/Job, unused parent pipe endpoints, complete parent-bound
+aggregate, and carrier. It has no direct resume, request, response, receive, signing,
 profile, launcher, attestation, path, PID, or handle operation. Its Drop path
 attempts bounded Approval termination and reap before the pipes and Key Agent
 tree are released. This new outer transition has zero production callers.
 
-One further sealed, consuming transition writes the complete version-2 parent
-hello before releasing exactly one primary-thread suspend count, reads and
+One further sealed, consuming transition uses the earlier of the carrier's
+original expiry and a fresh five-second grace as its bootstrap deadline. It
+writes the complete version-2 parent hello before releasing exactly one
+primary-thread suspend count, reads and
 decodes the exact child hello, and revalidates the running child plus the intact
 parent-bound aggregate. Its opaque `AuthenticatedApprovalBootstrap` owns that
-running child, both unused parent endpoints, both hellos, and the full Key Agent
-aggregate. It exposes no protocol or resource method; only one separate sealed
-function can consume it together with the exact `ApprovalRequest`. The bootstrap
-transition has zero production callers. Explicit bootstrap failure performs a
+running child, both unused parent endpoints, both hellos, the full Key Agent
+aggregate, and the carrier. It exposes no protocol or resource method; only one
+separate sealed function can consume it, without a raw request or deadline. The
+bootstrap transition has zero production callers. Explicit bootstrap failure performs a
 bounded terminate/reap attempt first and gives cleanup failure precedence; Drop
 makes the same attempt and then uses retained kill-on-close Job closure as its
 fail-closed fallback. Drop cannot report an unreaped failure, so unconditional
 reap success is not claimed.
 
-The consuming full-exchange transition derives one monotonic transport deadline
-at its start and uses that same deadline for response arming, the consuming
+The consuming full-exchange transition reads the exact request and original
+monotonic deadline only from the carrier and uses that same deadline for
+response arming, the consuming
 parent-finish plus canonical-request write and request EOF, fixed response plus
 response EOF verification, and the exact held child's natural-exit wait. It
 revalidates the child/Job and Key Agent aggregate before arming and before the
@@ -184,9 +198,10 @@ the same deadline; it does not force-terminate a live child to manufacture
 success. Only after that natural exit does it perform the final Key Agent
 revalidation and final deadline observation. It then mints the crate-private,
 non-cloneable `VerifiedParentBoundApprovalExchange`, which co-owns the exited
-child, intact Key Agent aggregate, both hellos, and sealed response evidence but
-has no accessor or conversion into `VerifiedApprovalResponse` or signing. The
-full-exchange transition also has zero production callers. The post-exit Key
+child, intact Key Agent aggregate, both hellos, sealed response evidence, and
+original request/lifetime carrier but has no accessor or conversion into
+`VerifiedApprovalResponse` or signing. The full-exchange transition also has
+zero production callers. The post-exit Key
 Agent check is point-in-time evidence; any future evidence-to-authorization
 transition must revalidate the retained exact Key Agent again immediately before
 use. No such transition exists. Protocol/read errors,
@@ -292,8 +307,10 @@ resistance therefore also depends on the private one-shot endpoint and a fresh
 one-shot Approval request nonce.
 
 The sealed parent implements the hello bootstrap and the full exchange as two
-separate consuming typestates. The latter sends finish plus the exact request
-and request EOF, verifies the fixed response plus EOF, requires natural exit
+separate consuming typestates. Bootstrap is capped by the earlier of original
+expiry and a fresh five-second grace. The latter accepts no raw request/deadline,
+sends finish plus the carrier's exact request and request EOF, verifies the fixed
+response plus EOF, requires natural exit
 code 0 from the exact held child under the same transport deadline, performs
 final Key Agent revalidation after exit, and returns only
 `VerifiedParentBoundApprovalExchange`. Neither transition has a production
@@ -304,17 +321,11 @@ as the pipe peer or Windows process parent. The legacy
 `launch_approval_frontend` still fails before allocation with
 `LogicalParentUnavailable`.
 
-**STOP-SHIP — transport/session lifetime mismatch:** the current full-exchange code
-resamples the wire request's relative expiry at exchange start. If that request
-originated from a `PreparedApprovalPrompt` created before bootstrap, the
-transport/UI window and terminal evidence mint can outlive the original session
-by approximately the bootstrap duration. The existing authorization TCB still
-rejects at that original expiry.
-The prompt already retains its original monotonic `Instant` transitively inside
-`PreparedAuthorization`, but the parent-bound transport neither receives nor
-enforces it. Before any signing composition is added, that expiry must cross the
-boundary without becoming caller-controlled and cap the transport deadline
-rather than reconstructing it only from the relative wire value.
+The lifetime boundary uses one platform-issued monotonic identity. Matching
+non-Clone halves, one-shot exact-request binding, pre-allocation dormant
+consumption, and terminal carrier retention keep the original deadline
+authoritative; the full exchange never reconstructs it from the wire-relative
+value.
 
 A repo-local child/grandchild kernel test makes a separate positive sentinel
 inheritable and uses `CompareObjectHandles` to prove that the sentinel, but
@@ -760,10 +771,16 @@ the native frontend can render the exact structured document.
 The fixed wire reply is ordered as magic, version, `decision`, the exact request
 digest, and its one-time Approval nonce. Only the digest and nonce echo request
 fields.
-The Key Agent first creates one crate-private opaque `PreparedApprovalPrompt`,
-sampling expiry once and retaining the exact request and its domain-separated
-hash. Creation requires a freshly loaded, confirmed protected-settings record.
-The prompt carries a non-clone settings lease containing its authenticated
+The authorization TCB first asks the platform to issue one opaque monotonic
+window and privately retains its matching non-Clone authorization/transport
+halves. The Key Agent then creates one crate-private opaque
+`PreparedApprovalPrompt`. It samples the remaining wire-relative lifetime from
+the authorization half, builds one request from the exact digest, one-time nonce,
+canonical display, and protected anti-phishing phrase, and consumes the transport
+half into `BoundApprovalTransport`. Creation requires a freshly loaded,
+confirmed protected-settings record.
+The prompt carries that move-only bound request/lifetime carrier, the exact
+request hash, and a non-clone settings lease containing its authenticated
 generation, phrase revision, canonical record digest, exclusive owner evidence,
 process-instance nonce, and fresh one-time lease nonce. The Windows channel
 binds the full request hash (including the local anti-phishing phrase, risk, and
@@ -780,12 +797,11 @@ the public verified response or signing path, and there is no positive
 signed-handshake E2E. Development builds contain no compiled release policy and
 default helper builds exit 78, so the opt-in runtime entry point cannot be
 launched by the restricted release path or reach signing. A challenge expires
-after at most 120 seconds and can be consumed once. The
-`PreparedAuthorization` owned by the prompt retains the original monotonic
-expiry, but the current exchange does not receive it and instead resamples the
-request's relative expiry after bootstrap. Opaque delivery and transport
-enforcement of that original `Instant` are a **STOP-SHIP** prerequisite for
-signing.
+after at most 120 seconds and can be consumed once. Session invalidation drops
+an unbound transport half. The parent consumes the bound carrier before
+allocation, caps bootstrap by the earlier of original expiry and a fresh
+five-second grace, and applies the exact original monotonic deadline throughout
+the full exchange without accepting a raw request or deadline.
 
 ## Durable broadcast handoff
 

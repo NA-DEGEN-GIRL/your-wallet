@@ -874,6 +874,7 @@ mod tests {
     use crate::approval_supervisor::{
         preflight_approval_artifact, prepare_release_approval_supervisor,
     };
+    use crate::approval_transport::bound_approval_transport_for_test;
     use crate::attestation::{ArtifactDigest, ReleaseAttestation};
     use crate::helper::VerifiedHelper;
     use crate::key_agent_activation::{KeyAgentActivationError, PreparedApprovalParentProcess};
@@ -1347,12 +1348,13 @@ mod tests {
         )?)?;
         let bound = bind_release_approval_parent_for_kernel_test(approval, storage_proven)?;
 
-        let dormant_approval = bind_dormant_parent_bound_approval(bound)?;
+        let transport = bound_approval_transport_for_test()?;
+        let dormant_approval = bind_dormant_parent_bound_approval(bound, transport)?;
         assert!(dormant_approval.is_live_in_job_for_test()?);
         let rendered = format!("{dormant_approval:?}");
         assert_eq!(
             rendered,
-            "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT])"
+            "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; BOUND TRANSPORT])"
         );
         assert!(!rendered.contains(&process_id.to_string()));
         assert!(!rendered.contains(&creation_time.to_string()));

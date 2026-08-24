@@ -6384,7 +6384,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "4ca0cae8a95e6dd2bcc7cc0680e59c214723d9c556efc896c8b69d6fc5cd99da";
+  "178ce670774684de416d95feb5420c37f1aecf680954d2bb8c2965562a72609d";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -26834,11 +26834,17 @@ const approvalArchitectureOverviewMarkers = [
   "106-byte child hello",
   "110-byte finish header",
   "75-byte response",
-  "One private zero-caller transition performs parent hello, one exact resume, child hello, and revalidation",
-  "a second sealed zero-caller transition consumes that bootstrap and the exact request under one monotonic transport deadline",
-  "requires the exact held child to exit naturally with code 0 before that same deadline",
-  "crate-private opaque `VerifiedParentBoundApprovalExchange` has no response or signing conversion",
-  "ordinary supervisor remains transport authority and the Key Agent remains only the logical parent",
+  "One private zero-caller transition performs parent hello under `min(original expiry, fresh five-second grace)`",
+  "The platform issues one opaque monotonic window and splits matching non-Clone authorization/transport halves",
+  "binds its exact digest/nonce/display/protected-phrase request once into `BoundApprovalTransport`",
+  "checks original expiry before allocation",
+  "min(original expiry, fresh five-second grace)",
+  "a second sealed zero-caller transition accepts no raw request/deadline",
+  "before the same original deadline",
+  "retains the carrier in opaque `VerifiedParentBoundApprovalExchange`",
+  "no response or signing conversion",
+  "must be repeated at any future authorization edge",
+  "The ordinary supervisor remains transport authority and the Key Agent remains only the logical parent",
   "legacy launcher fails closed before resource allocation",
   "remain **STOP-SHIP**",
   "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`",
@@ -26847,24 +26853,130 @@ const approvalArchitectureOverviewMarkers = [
 const approvalDormantArchitectureMarkers = [
   "private non-clone binding transition consumes the complete release-prepared Approval artifact",
   "retains a fresh `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` duplicate",
-  "separate consuming transition launches Approval suspended",
+  "separate consuming transition requires `BoundApprovalTransport`",
+  "rejects elapsed original expiry before allocation",
   "fifth logical-parent proof",
-  "sealed, consuming, zero-caller transition writes the complete v2 parent hello before resuming the exact primary thread once",
-  "Only another sealed zero-caller transition may consume that opaque bootstrap with the exact request",
-  "one monotonic transport deadline for arming, finish/request plus request EOF, fixed response plus response EOF, and natural child exit",
-  "response EOF alone remains exit-pending",
+  "A further sealed, consuming, zero-caller transition uses",
+  "min(original expiry, fresh five-second grace)",
+  "Only another sealed zero-caller transition may consume that opaque bootstrap",
+  "accepts no raw request/deadline",
+  "carrier's exact original deadline for arming, finish/request plus request EOF, fixed response plus response EOF, and natural child exit",
+  "Response EOF alone remains exit-pending",
   "exact held child must exit naturally with code 0 before evidence",
   "final Key Agent revalidation occurs after that exit",
-  "opaque `VerifiedParentBoundApprovalExchange` minted",
+  "opaque `VerifiedParentBoundApprovalExchange` minted with the carrier retained",
   "no response/signing/raw-resource accessor or conversion",
   "bounded terminate/reap with cleanup-error precedence",
   "successful evidence is never manufactured by force-terminating a live child",
   "Drop retains kill-on-close fallback",
   "without claiming unconditional reap success",
   "`TOKEN_QUERY` access to its token",
-  "transport/UI evidence window outlive the original authorization session",
-  "transport enforcement of that cap before signing are **STOP-SHIP**",
+  "must be repeated at any future authorization edge",
 ];
+const approvalLifetimeDocumentationContradictions = [
+  "Authorization and transport halves may come from different issuance.",
+  "BoundApprovalTransport may be cloned and rebound.",
+  "The full exchange resamples a fresh deadline from the request relative lifetime.",
+  "The cleanup deadline is the protocol exchange deadline.",
+  "The caller supplies a raw Instant.",
+];
+const approvalLifetimeDocumentationSpecs = [
+  {
+    source: rootReadme,
+    markers: [
+      "opaque monotonic window",
+      "authorization half",
+      "matching",
+      "BoundApprovalTransport",
+      "raw request/deadline",
+      "public `VerifiedApprovalResponse`",
+      "signing conversion",
+      "post-exit Key Agent",
+    ],
+  },
+  {
+    source: activationArchitecture,
+    markers: [
+      "same issuance identity",
+      "bind that whole request into opaque",
+      "before pipe or process allocation",
+      "earlier of the carrier's original expiry and a fresh five-second grace",
+      "function accepts no raw request or deadline",
+      "one last observation of the same deadline",
+      "original request/lifetime carrier",
+      "evidence-to-authorization transition",
+      "This transition also has zero production",
+    ],
+  },
+  {
+    source: keyAgentProtocolDocumentation,
+    markers: [
+      "exact same issuance identity",
+      "bind that exact request once into opaque",
+      "original expiry before pipe or process allocation",
+      "original expiry and a fresh five-second grace as its bootstrap deadline",
+      "without a raw request or deadline",
+      "reads the exact request and original",
+      "monotonic deadline only from the carrier",
+      "same deadline; it does not force",
+      "original request/lifetime carrier but has no accessor or conversion into",
+      "post-exit Key",
+    ],
+  },
+  {
+    source: securityDecisions,
+    markers: [
+      "halves with one exact",
+      "matching authorization half consumes the transport half once",
+      "rejects elapsed original expiry",
+      "fresh five-second grace as its bootstrap deadline",
+      "with no raw request or deadline input",
+      "before that same deadline",
+      "retaining the original carrier",
+      "no response accessor or conversion to",
+      "post-exit Key Agent check",
+    ],
+  },
+  {
+    source: activationReadme,
+    markers: [
+      "expired original session rejects before pipe or process creation",
+      "share the exact issuance identity",
+      "matching authorization half consumes the transport half",
+      "earlier of the original expiry and a fresh five-second grace",
+      "with no raw request or deadline parameter",
+      "reads the exact canonical request and original",
+      "monotonic deadline only from its carrier",
+      "before that same deadline",
+      "original request/lifetime carrier",
+      "evidence-to-authorization transition",
+    ],
+  },
+];
+const exactMarkerCount = (source, marker) => source.split(marker).length - 1;
+const approvalLifetimeDocumentationContract = ({ source, markers }) =>
+  markers.every((marker) => exactMarkerCount(source, marker) === 1) &&
+  approvalLifetimeDocumentationContradictions.every(
+    (claim) => !source.includes(claim),
+  );
+const approvalLifetimeDocumentationMutationProbes =
+  approvalLifetimeDocumentationSpecs.flatMap((spec) =>
+    spec.markers.map((marker) => ({
+      original: spec,
+      marker,
+      probe: {
+        ...spec,
+        source: spec.source.replace(marker, "REMOVED_APPROVAL_LIFETIME_MARKER"),
+      },
+    })),
+  );
+const approvalLifetimeDocumentationContradictionProbes =
+  approvalLifetimeDocumentationSpecs.flatMap((spec) =>
+    approvalLifetimeDocumentationContradictions.map((claim) => ({
+      original: spec,
+      probe: { ...spec, source: `${spec.source}\n${claim}` },
+    })),
+  );
 requireInvariant(
   approvalStdioDocumentationSections.every(
     (source) => source.length > 0 && approvalStdioDocumentationContract(source),
@@ -26892,6 +27004,20 @@ requireInvariant(
     ) &&
     approvalDormantArchitectureMarkers.every((marker) =>
       approvalDormantArchitectureRow.includes(marker),
+    ) &&
+    approvalLifetimeDocumentationSpecs.every(
+      approvalLifetimeDocumentationContract,
+    ) &&
+    approvalLifetimeDocumentationMutationProbes.every(
+      ({ original, marker, probe }) =>
+        exactMarkerCount(original.source, marker) === 1 &&
+        probe.source !== original.source &&
+        !approvalLifetimeDocumentationContract(probe),
+    ) &&
+    approvalLifetimeDocumentationContradictionProbes.every(
+      ({ original, probe }) =>
+        probe.source !== original.source &&
+        !approvalLifetimeDocumentationContract(probe),
     ),
   "Approval stdio sealing and parent authentication must remain documented across overview, architecture, protocol, security, and platform surfaces with release-disabled and non-exhaustive/non-atomic proof caveats",
 );
@@ -28731,6 +28857,8 @@ const approvalSupervisorPath =
 const approvalParentPath = "crates/platform-windows/src/approval_parent.rs";
 const dormantApprovalActivationPath =
   "crates/platform-windows/src/approval_activation.rs";
+const approvalTransportPath =
+  "crates/platform-windows/src/approval_transport.rs";
 const approvalParentActivationPath =
   "crates/platform-windows/src/key_agent_activation.rs";
 const approvalParentSupervisorPath =
@@ -29615,10 +29743,1110 @@ requireInvariant(
   "the exact Key Agent parent proof and release Approval must have one sealed suspended-only consumer while the outer ownership binder remains production-caller-free",
 );
 
+const approvalTransportSource = await text(approvalTransportPath);
+const approvalTransportProduction = withoutCfgTestItems(
+  withoutBottomTestModule(approvalTransportSource),
+);
 const approvalActivationSource = await text(dormantApprovalActivationPath);
 const approvalActivationRelease = withoutCfgTestItems(
   withoutBottomTestModule(approvalActivationSource),
 );
+const approvalTransportLibContract = (source) => {
+  const code = rustLexicalCode(source);
+  const declarations = [
+    ...code.matchAll(/\bmod\s+approval_transport\s*;/gu),
+  ];
+  const transportUses = rustUseItems(source)
+    .map((item) => normalizeRustFragment(rustLexicalCode(item.source)))
+    .filter((item) => item.includes("approval_transport"));
+  return (
+    declarations.length === 1 &&
+    /#\[allow\(dead_code\)\]\s*mod approval_transport;/u.test(code) &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+approval_transport\b/u.test(code) &&
+    JSON.stringify(transportUses) ===
+      JSON.stringify([
+        "use approval_transport::{ ApprovalAuthorizationWindow, ApprovalSessionWindowError, ApprovalTransportWindow, BoundApprovalTransport, IssuedApprovalSessionWindow, };",
+      ]) &&
+    !/\bpub\s+use\s+approval_transport\s*::\s*\*/u.test(code) &&
+    !/\bapproval_transport\s*::[^;]*\bas\b/u.test(code)
+  );
+};
+const approvalTransportLibMutationProbes = [
+  platformWindowsLib.replace(
+    "mod approval_transport;",
+    "pub mod approval_transport;",
+  ),
+  platformWindowsLib.replace(
+    "pub use approval_transport::{",
+    "pub use approval_transport::*;\npub use approval_transport::{",
+  ),
+  platformWindowsLib.replace(
+    "    BoundApprovalTransport, IssuedApprovalSessionWindow,",
+    "    BoundApprovalTransport as ReboundApprovalTransport, IssuedApprovalSessionWindow,",
+  ),
+  platformWindowsLib.replace(
+    "    BoundApprovalTransport, IssuedApprovalSessionWindow,",
+    "    IssuedApprovalSessionWindow,",
+  ),
+];
+const approvalTransportContract = (source) => {
+  let sharedDefinition;
+  let issuedDefinition;
+  let authorizationDefinition;
+  let transportDefinition;
+  let boundDefinition;
+  let issue;
+  let intoParts;
+  let remaining;
+  let ensureUnexpired;
+  let bindTransport;
+  let boundRequest;
+  let boundDeadline;
+  let bootstrapDeadline;
+  let checkedDeadline;
+  let ensureDeadlineUnexpired;
+  let implItems;
+  try {
+    sharedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /struct\s+SharedApprovalSessionWindow\s*\{/u,
+    );
+    issuedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+IssuedApprovalSessionWindow\s*\{/u,
+    );
+    authorizationDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+ApprovalAuthorizationWindow\s*\{/u,
+    );
+    transportDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+ApprovalTransportWindow\s*\{/u,
+    );
+    boundDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\s+struct\s+BoundApprovalTransport\s*\{/u,
+    );
+    implItems = rustImplItems(source);
+    const issuedImpl = implItems.find(
+      (item) => item.header === "impl IssuedApprovalSessionWindow",
+    )?.source;
+    const authorizationImpl = implItems.find(
+      (item) => item.header === "impl ApprovalAuthorizationWindow",
+    )?.source;
+    const boundImpl = implItems.find(
+      (item) => item.header === "impl BoundApprovalTransport",
+    )?.source;
+    if (!issuedImpl || !authorizationImpl || !boundImpl) {
+      return false;
+    }
+    issue = rustFunctionBlockAtDepth(issuedImpl, "issue", 1);
+    intoParts = rustFunctionBlockAtDepth(issuedImpl, "into_parts", 1);
+    remaining = rustFunctionBlockAtDepth(
+      authorizationImpl,
+      "remaining_milliseconds",
+      1,
+    );
+    ensureUnexpired = rustFunctionBlockAtDepth(
+      authorizationImpl,
+      "ensure_unexpired",
+      1,
+    );
+    bindTransport = rustFunctionBlockAtDepth(
+      authorizationImpl,
+      "bind_transport",
+      1,
+    );
+    boundRequest = rustFunctionBlockAtDepth(boundImpl, "request", 1);
+    boundDeadline = rustFunctionBlockAtDepth(boundImpl, "deadline", 1);
+    bootstrapDeadline = rustFunctionBlockAtDepth(
+      boundImpl,
+      "bootstrap_deadline",
+      1,
+    );
+    checkedDeadline = rustTopLevelFunctionBlock(source, "checked_deadline");
+    ensureDeadlineUnexpired = rustTopLevelFunctionBlock(
+      source,
+      "ensure_deadline_unexpired",
+    );
+  } catch {
+    return false;
+  }
+
+  const authorityPattern =
+    /\b(?:IssuedApprovalSessionWindow|ApprovalAuthorizationWindow|ApprovalTransportWindow|BoundApprovalTransport)\b/u;
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: approvalTransportPath, source }],
+    authorityPattern,
+  );
+  const visibleFunctions = rustVisibleFunctionItems(source).map(
+    ({ owner, visibility, name, signature }) => ({
+      owner,
+      visibility,
+      name,
+      signature,
+    }),
+  );
+  const completeFunctionSurface = rustFunctionSignatures(source).map(
+    (signature) => {
+      const signatureCode = rustLexicalCode(signature.source);
+      const owner = implItems
+        .filter(
+          (item) =>
+            item.index < signature.index &&
+            signature.index < item.index + item.source.length,
+        )
+        .at(-1)?.header;
+      const name =
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          signatureCode,
+        )?.groups.name;
+      return { owner: owner ?? "free", name: name ?? "[UNPARSED]" };
+    },
+  );
+  const issueCompact = compactRust(issue);
+  const intoPartsCompact = compactRust(intoParts);
+  const bindCompact = compactRust(bindTransport);
+  const bootstrapCompact = compactRust(bootstrapDeadline);
+  const code = rustLexicalCode(source);
+  const instantSamples = [...code.matchAll(/\bInstant\s*::\s*now\s*\(/gu)];
+  const boundSites = rustStructLiteralSites(source, "BoundApprovalTransport").map(
+    (site) => compactRust(site.source),
+  );
+
+  return (
+    normalizeRustFragment(rustLexicalCode(sharedDefinition)) ===
+      "struct SharedApprovalSessionWindow { expires_at: Instant, }" &&
+    normalizeRustFragment(rustLexicalCode(issuedDefinition)) ===
+      "pub struct IssuedApprovalSessionWindow { shared: Arc<SharedApprovalSessionWindow>, }" &&
+    normalizeRustFragment(rustLexicalCode(authorizationDefinition)) ===
+      "pub struct ApprovalAuthorizationWindow { shared: Arc<SharedApprovalSessionWindow>, }" &&
+    normalizeRustFragment(rustLexicalCode(transportDefinition)) ===
+      "pub struct ApprovalTransportWindow { shared: Arc<SharedApprovalSessionWindow>, }" &&
+    normalizeRustFragment(rustLexicalCode(boundDefinition)) ===
+      "pub struct BoundApprovalTransport { shared: Arc<SharedApprovalSessionWindow>, request: ApprovalRequest, }" &&
+    normalizeRustFragment(
+      rustTopLevelConstItem(source, "APPROVAL_BOOTSTRAP_GRACE"),
+    ) ===
+      "const APPROVAL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(5);" &&
+    /#\[must_use = "the Approval session window must be split and retained"\]\s*pub struct IssuedApprovalSessionWindow/u.test(
+      source,
+    ) &&
+    /#\[must_use = "the authorization window must remain with its Approval session"\]\s*pub struct ApprovalAuthorizationWindow/u.test(
+      source,
+    ) &&
+    /#\[must_use = "the transport window must be bound once to its exact Approval request"\]\s*pub struct ApprovalTransportWindow/u.test(
+      source,
+    ) &&
+    /#\[must_use = "the bound Approval transport must reach its consuming exchange"\]\s*pub struct BoundApprovalTransport/u.test(
+      source,
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\s+struct\s+(?:IssuedApprovalSessionWindow|ApprovalAuthorizationWindow|ApprovalTransportWindow|BoundApprovalTransport)\b/u.test(
+      code,
+    ) &&
+    !/\bimpl(?:\s*<[^>{}]*>)?\s+(?:Clone|Copy|Default|Deref|DerefMut|AsRef|Borrow|From|Into)\b[^{}]*\b(?:IssuedApprovalSessionWindow|ApprovalAuthorizationWindow|ApprovalTransportWindow|BoundApprovalTransport)\b/u.test(
+      code,
+    ) &&
+    issueCompact.includes(
+      "if!(1..=u64::from(MAX_EXPIRY_MILLISECONDS)).contains(&ttl_milliseconds){returnErr(ApprovalSessionWindowError::InvalidLifetime);}",
+    ) &&
+    hasOrderedCompactRustMarkers(issue, [
+      "letissued_at=Instant::now();",
+      "letexpires_at=checked_deadline(issued_at,Duration::from_millis(ttl_milliseconds))?;",
+      "Ok(Self{shared:Arc::new(SharedApprovalSessionWindow{expires_at}),})",
+    ]) &&
+    rustCallSites(issue, "Instant::now").length === 1 &&
+    rustCallSites(issue, "checked_deadline").length === 1 &&
+    rustCallSites(issue, "Duration::from_millis").length === 1 &&
+    rustCallSites(issue, "Arc::new").length === 1 &&
+    intoPartsCompact ===
+      "pubfninto_parts(self)->(ApprovalAuthorizationWindow,ApprovalTransportWindow){lettransport_shared=Arc::clone(&self.shared);(ApprovalAuthorizationWindow{shared:self.shared,},ApprovalTransportWindow{shared:transport_shared,},)}" &&
+    rustCallSites(intoParts, "Arc::clone").length === 1 &&
+    compactRust(remaining).includes(
+      "self.shared.expires_at.saturating_duration_since(Instant::now())",
+    ) &&
+    rustCallSites(remaining, "Instant::now").length === 1 &&
+    rustCallSites(remaining, "saturating_duration_since").length === 1 &&
+    compactRust(ensureUnexpired) ===
+      "pubfnensure_unexpired(&self)->Result<(),ApprovalSessionWindowError>{ensure_deadline_unexpired(self.shared.expires_at)}" &&
+    hasOrderedCompactRustMarkers(bindTransport, [
+      "self.ensure_unexpired()?;",
+      "if!Arc::ptr_eq(&self.shared,&transport.shared)",
+      "returnErr(ApprovalSessionWindowError::WindowMismatch);",
+      "if!(1..=MAX_EXPIRY_MILLISECONDS).contains(&request.expires_after_milliseconds())",
+      "returnErr(ApprovalSessionWindowError::InvalidRequestLifetime);",
+      "Ok(BoundApprovalTransport{shared:transport.shared,request,})",
+    ]) &&
+    rustCallSites(bindTransport, "ensure_unexpired").length === 1 &&
+    rustCallSites(bindTransport, "Arc::ptr_eq").length === 1 &&
+    rustCallSites(bindTransport, "expires_after_milliseconds").length === 1 &&
+    rustCallSites(bindTransport, "Instant::now").length === 0 &&
+    rustCallSites(bindTransport, "checked_deadline").length === 0 &&
+    rustCallSites(bindTransport, "Arc::new").length === 0 &&
+    !bindCompact.includes("request.clone()") &&
+    JSON.stringify(boundSites) ===
+      JSON.stringify(["BoundApprovalTransport{shared:transport.shared,request,}"]) &&
+    compactRust(boundRequest) ===
+      "pub(crate)fnrequest(&self)->&ApprovalRequest{&self.request}" &&
+    compactRust(boundDeadline) ===
+      "pub(crate)fndeadline(&self)->Instant{self.shared.expires_at}" &&
+    hasOrderedCompactRustMarkers(bootstrapDeadline, [
+      "letnow=Instant::now();",
+      "ifnow>=self.shared.expires_at",
+      "returnErr(ApprovalSessionWindowError::Expired);",
+      "letgrace_deadline=checked_deadline(now,APPROVAL_BOOTSTRAP_GRACE)?;",
+      "Ok(self.shared.expires_at.min(grace_deadline))",
+    ]) &&
+    rustCallSites(bootstrapDeadline, "Instant::now").length === 1 &&
+    rustCallSites(bootstrapDeadline, "checked_deadline").length === 1 &&
+    bootstrapCompact.includes("APPROVAL_BOOTSTRAP_GRACE") &&
+    !bootstrapCompact.includes("APPROVAL_CLEANUP_GRACE") &&
+    compactRust(checkedDeadline) ===
+      "fnchecked_deadline(issued_at:Instant,lifetime:Duration,)->Result<Instant,ApprovalSessionWindowError>{issued_at.checked_add(lifetime).ok_or(ApprovalSessionWindowError::DeadlineOverflow)}" &&
+    compactRust(ensureDeadlineUnexpired) ===
+      "fnensure_deadline_unexpired(deadline:Instant)->Result<(),ApprovalSessionWindowError>{(Instant::now()<deadline).then_some(()).ok_or(ApprovalSessionWindowError::Expired)}" &&
+    instantSamples.length === 4 &&
+    JSON.stringify(
+      authorityInventory.typeAliases,
+    ) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls.map((item) => item.header)) ===
+      JSON.stringify([
+        "impl fmt::Debug for IssuedApprovalSessionWindow",
+        "impl IssuedApprovalSessionWindow",
+        "impl fmt::Debug for ApprovalAuthorizationWindow",
+        "impl ApprovalAuthorizationWindow",
+        "impl fmt::Debug for ApprovalTransportWindow",
+        "impl fmt::Debug for BoundApprovalTransport",
+        "impl BoundApprovalTransport",
+      ]) &&
+    JSON.stringify(visibleFunctions) ===
+      JSON.stringify([
+        {
+          owner: "impl IssuedApprovalSessionWindow",
+          visibility: "pub",
+          name: "issue",
+          signature:
+            "fnissue(ttl_milliseconds:u64)->Result<Self,ApprovalSessionWindowError>",
+        },
+        {
+          owner: "impl IssuedApprovalSessionWindow",
+          visibility: "pub",
+          name: "into_parts",
+          signature:
+            "fninto_parts(self)->(ApprovalAuthorizationWindow,ApprovalTransportWindow)",
+        },
+        {
+          owner: "impl ApprovalAuthorizationWindow",
+          visibility: "pub",
+          name: "remaining_milliseconds",
+          signature:
+            "fnremaining_milliseconds(&self)->Result<u32,ApprovalSessionWindowError>",
+        },
+        {
+          owner: "impl ApprovalAuthorizationWindow",
+          visibility: "pub",
+          name: "ensure_unexpired",
+          signature:
+            "fnensure_unexpired(&self)->Result<(),ApprovalSessionWindowError>",
+        },
+        {
+          owner: "impl ApprovalAuthorizationWindow",
+          visibility: "pub",
+          name: "bind_transport",
+          signature:
+            "fnbind_transport(&self,transport:ApprovalTransportWindow,request:ApprovalRequest,)->Result<BoundApprovalTransport,ApprovalSessionWindowError>",
+        },
+        {
+          owner: "impl BoundApprovalTransport",
+          visibility: "pub(crate)",
+          name: "request",
+          signature: "fnrequest(&self)->&ApprovalRequest",
+        },
+        {
+          owner: "impl BoundApprovalTransport",
+          visibility: "pub(crate)",
+          name: "deadline",
+          signature: "fndeadline(&self)->Instant",
+        },
+        {
+          owner: "impl BoundApprovalTransport",
+          visibility: "pub(crate)",
+          name: "bootstrap_deadline",
+          signature:
+            "fnbootstrap_deadline(&self)->Result<Instant,ApprovalSessionWindowError>",
+        },
+      ]) &&
+    JSON.stringify(completeFunctionSurface) ===
+      JSON.stringify([
+        { owner: "impl fmt::Debug for IssuedApprovalSessionWindow", name: "fmt" },
+        { owner: "impl IssuedApprovalSessionWindow", name: "issue" },
+        { owner: "impl IssuedApprovalSessionWindow", name: "into_parts" },
+        { owner: "impl fmt::Debug for ApprovalAuthorizationWindow", name: "fmt" },
+        { owner: "impl ApprovalAuthorizationWindow", name: "remaining_milliseconds" },
+        { owner: "impl ApprovalAuthorizationWindow", name: "ensure_unexpired" },
+        { owner: "impl ApprovalAuthorizationWindow", name: "bind_transport" },
+        { owner: "impl fmt::Debug for ApprovalTransportWindow", name: "fmt" },
+        { owner: "impl fmt::Debug for BoundApprovalTransport", name: "fmt" },
+        { owner: "impl BoundApprovalTransport", name: "request" },
+        { owner: "impl BoundApprovalTransport", name: "deadline" },
+        { owner: "impl BoundApprovalTransport", name: "bootstrap_deadline" },
+        { owner: "free", name: "checked_deadline" },
+        { owner: "free", name: "ensure_deadline_unexpired" },
+      ]) &&
+    !/\bpub\s+(?:const\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\bInstant\b/u.test(
+      code,
+    ) &&
+    !/\bpub\s+(?:struct|enum)\s+SharedApprovalSessionWindow\b/u.test(code)
+  );
+};
+const approvalTransportMutationProbes = [
+  approvalTransportProduction.replace(
+    "pub fn issue(ttl_milliseconds: u64)",
+    "pub fn issue(ttl_milliseconds: u64, caller_deadline: Instant)",
+  ),
+  approvalTransportProduction.replace(
+    "        let issued_at = Instant::now();",
+    "        let issued_at = caller_deadline;",
+  ),
+  approvalTransportProduction.replace(
+    "    pub fn into_parts(self)",
+    "    pub fn into_parts(&self)",
+  ),
+  ...[
+    "IssuedApprovalSessionWindow",
+    "ApprovalAuthorizationWindow",
+    "ApprovalTransportWindow",
+    "BoundApprovalTransport",
+  ].map((typeName) =>
+    approvalTransportProduction.replace(
+      `pub struct ${typeName}`,
+      `#[derive(Clone, Copy)]\npub struct ${typeName}`,
+    ),
+  ),
+  approvalTransportProduction.replace(
+    "        if !Arc::ptr_eq(&self.shared, &transport.shared) {",
+    "        if false {",
+  ),
+  approvalTransportProduction.replace(
+    "        transport: ApprovalTransportWindow,",
+    "        transport: &ApprovalTransportWindow,",
+  ),
+  approvalTransportProduction.replace(
+    "            shared: transport.shared,\n            request,",
+    "            shared: Arc::clone(&transport.shared),\n            request: request.clone(),",
+  ),
+  approvalTransportProduction.replace(
+    "        self.ensure_unexpired()?;",
+    "        let _ = self.ensure_unexpired();",
+  ),
+  approvalTransportProduction.replace(
+    "        Ok(self.shared.expires_at.min(grace_deadline))",
+    "        Ok(self.shared.expires_at.max(grace_deadline))",
+  ),
+  approvalTransportProduction.replace(
+    "        Ok(self.shared.expires_at.min(grace_deadline))",
+    "        Ok(grace_deadline)",
+  ),
+  approvalTransportProduction.replace(
+    "checked_deadline(now, APPROVAL_BOOTSTRAP_GRACE)",
+    "checked_deadline(now, APPROVAL_CLEANUP_GRACE)",
+  ),
+  approvalTransportProduction.replace(
+    "    pub(crate) fn request(&self)",
+    "    pub fn request(&self)",
+  ),
+  approvalTransportProduction.replace(
+    "    pub(crate) fn deadline(&self)",
+    "    pub fn deadline(&self)",
+  ),
+  `${approvalTransportProduction}\nimpl BoundApprovalTransport { pub fn from_deadline(request: ApprovalRequest, deadline: Instant) -> Self { Self { shared: Arc::new(SharedApprovalSessionWindow { expires_at: deadline }), request } } }\n`,
+  `${approvalTransportProduction}\nimpl From<BoundApprovalTransport> for ApprovalRequest { fn from(value: BoundApprovalTransport) -> Self { value.request } }\n`,
+  approvalTransportProduction.replace(
+    "    expires_at: Instant,",
+    "    pub expires_at: Instant,",
+  ),
+];
+const approvalTransportTestNames = [
+  "issued_halves_share_exact_deadline_and_identity",
+  "exact_request_binding_preserves_original_window",
+  "mixed_issuances_cannot_be_bound",
+  "expired_window_rejects_checks_and_binding",
+  "invalid_lifetimes_and_deadline_overflow_fail_closed",
+  "bootstrap_deadline_is_capped_by_original_window",
+  "bound_transport_expiry_rejects_bootstrap_before_use",
+  "approval_lifetime_typestates_are_move_only",
+];
+const approvalTransportTestsContract = (source) => {
+  let tests;
+  let helper;
+  try {
+    tests = rustTopLevelLexicalItemBlock(source, /mod\s+tests\s*\{/u);
+    helper = rustTopLevelFunctionBlock(source, "bound_approval_transport_for_test");
+  } catch {
+    return false;
+  }
+  const testNames = [
+    ...rustLexicalCode(tests).matchAll(/\bfn\s+([A-Za-z0-9_]+)\s*\(/gu),
+  ]
+    .map((match) => match[1])
+    .filter((name) => approvalTransportTestNames.includes(name));
+  return (
+    JSON.stringify(
+      rustInlineModuleOuterAttributesAtDepth(source, "tests", 0),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(testNames) === JSON.stringify(approvalTransportTestNames) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) fn bound_approval_transport_for_test/u.test(
+      source,
+    ) &&
+    hasOrderedCompactRustMarkers(helper, [
+      "let(authorization,transport)=IssuedApprovalSessionWindow::issue(120_000)?.into_parts();",
+      "Ok(authorization.bind_transport(transport,tests::request()?)?)",
+    ]) &&
+    approvalTransportTestNames.every((name) =>
+      tests.includes(`fn ${name}`),
+    ) &&
+    tests.includes(
+      "<IssuedApprovalSessionWindow as AmbiguousIfClone<_>>::marker",
+    ) &&
+    tests.includes(
+      "<ApprovalAuthorizationWindow as AmbiguousIfCopy<_>>::marker",
+    ) &&
+    tests.includes("<ApprovalTransportWindow as AmbiguousIfClone<_>>::marker") &&
+    tests.includes("<BoundApprovalTransport as AmbiguousIfCopy<_>>::marker") &&
+    !approvalTransportProduction.includes("bound_approval_transport_for_test")
+  );
+};
+const approvalTransportTestMutationProbes = [
+  ...approvalTransportTestNames.map((name) =>
+    approvalTransportSource.replace(`fn ${name}`, `fn removed_${name}`),
+  ),
+  approvalTransportSource.replace(
+    "#[cfg(test)]\npub(crate) fn bound_approval_transport_for_test",
+    "pub(crate) fn bound_approval_transport_for_test",
+  ),
+  approvalTransportSource.replace(
+    "<BoundApprovalTransport as AmbiguousIfCopy<_>>::marker",
+    "<ApprovalSessionWindowError as AmbiguousIfCopy<_>>::marker",
+  ),
+];
+const approvalSessionProduction = withoutCfgTestItems(
+  withoutBottomTestModule(approval),
+);
+const authorizationProduction = withoutCfgTestItems(
+  withoutBottomTestModule(authorization),
+);
+const keyAgentLibProduction = withoutCfgTestItems(
+  withoutBottomTestModule(keyAgent),
+);
+const approvalSessionLifetimeContract = (source) => {
+  let definition;
+  let issue;
+  let remaining;
+  let invalidate;
+  let bindTransport;
+  let ensureTransportBound;
+  let consume;
+  try {
+    definition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+ApprovalSession\s*\{/u,
+    );
+    const sessionImpl = rustImplItems(source).find(
+      (item) => item.header === "impl ApprovalSession",
+    )?.source;
+    if (!sessionImpl) {
+      return false;
+    }
+    issue = rustFunctionBlockAtDepth(sessionImpl, "issue", 1);
+    remaining = rustFunctionBlockAtDepth(
+      sessionImpl,
+      "remaining_milliseconds",
+      1,
+    );
+    invalidate = rustFunctionBlockAtDepth(sessionImpl, "invalidate", 1);
+    bindTransport = rustFunctionBlockAtDepth(sessionImpl, "bind_transport", 1);
+    ensureTransportBound = rustFunctionBlockAtDepth(
+      sessionImpl,
+      "ensure_transport_bound",
+      1,
+    );
+    consume = rustFunctionBlockAtDepth(sessionImpl, "consume", 1);
+  } catch {
+    return false;
+  }
+
+  const issueCompact = compactRust(issue);
+  const bindCompact = compactRust(bindTransport);
+  const ensureCompact = compactRust(ensureTransportBound);
+  const consumeCompact = compactRust(consume);
+  return (
+    normalizeRustFragment(rustLexicalCode(definition)) ===
+      "pub(crate) struct ApprovalSession { expected_digest: Hash32, nonce: ApprovalNonce, expires_at_ms: u64, authorization_window: ApprovalAuthorizationWindow, transport_window: Option<ApprovalTransportWindow>, state: ApprovalSessionState, }" &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*pub\(crate\)\s+struct\s+ApprovalSession/u.test(
+      rustLexicalCode(source),
+    ) &&
+    rustCallSites(issue, "IssuedApprovalSessionWindow::issue").length === 1 &&
+    rustCallSites(issue, "into_parts").length === 1 &&
+    hasOrderedCompactRustMarkers(issue, [
+      "leteffective_ttl_ms=ttl_ms.min(browser_remaining_ms);",
+      "letexpires_at_ms=issued_at_ms.checked_add(effective_ttl_ms)",
+      "letissued_window=IssuedApprovalSessionWindow::issue(effective_ttl_ms)",
+      "let(authorization_window,transport_window)=issued_window.into_parts();",
+      "Ok(Self{expected_digest,nonce,expires_at_ms,authorization_window,transport_window:Some(transport_window),state:ApprovalSessionState::Pending,})",
+    ]) &&
+    rustCallSites(issue, "Instant::now").length === 0 &&
+    !issueCompact.includes("ApprovalAuthorizationWindow{") &&
+    !issueCompact.includes("ApprovalTransportWindow{") &&
+    compactRust(remaining) ===
+      "pubfnremaining_milliseconds(&self)->Result<u32,ProtocolError>{self.authorization_window.remaining_milliseconds().map_err(map_window_check_error)}" &&
+    compactRust(invalidate) ===
+      "pubfninvalidate(&mutself){self.transport_window.take();ifself.state==ApprovalSessionState::Pending{self.state=ApprovalSessionState::Invalidated;}}" &&
+    hasOrderedCompactRustMarkers(bindTransport, [
+      "matchself.state{",
+      "letSome(transport_window)=self.transport_window.take()else{self.state=ApprovalSessionState::Invalidated;returnErr(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated));};",
+      "letcurrent_digest=approval_digest(binding).map_err(|_|{self.state=ApprovalSessionState::Invalidated;ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated)})?;",
+      "if!constant_time_equal(self.expected_digest.as_bytes(),current_digest.as_bytes())",
+      "||!constant_time_equal(request.digest(),current_digest.as_bytes())",
+      "||!constant_time_equal(request.approval_nonce(),self.nonce.as_bytes())",
+      "||request.display()!=&binding.display",
+      "self.state=ApprovalSessionState::Invalidated;",
+      "returnErr(ProtocolError::new(ProtocolErrorKind::ApprovalMismatch));",
+      "self.authorization_window.bind_transport(transport_window,request).map_err(|error|",
+      "self.state=iferror==ApprovalSessionWindowError::Expired{ApprovalSessionState::Expired}else{ApprovalSessionState::Invalidated};",
+    ]) &&
+    rustCallSites(bindTransport, "take").length === 1 &&
+    rustCallSites(bindTransport, "bind_transport").length === 2 &&
+    rustCallSites(bindTransport, "constant_time_equal").length === 3 &&
+    rustCallSites(bindTransport, "Instant::now").length === 0 &&
+    !bindCompact.includes("request.clone()") &&
+    !bindCompact.includes("transport_window.clone()") &&
+    ensureCompact ===
+      "pub(crate)fnensure_transport_bound(&mutself)->Result<(),ProtocolError>{matchself.state{ApprovalSessionState::Consumed=>{Err(ProtocolError::new(ProtocolErrorKind::ApprovalConsumed))}ApprovalSessionState::Invalidated=>{Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated))}ApprovalSessionState::Expired=>{Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired))}ApprovalSessionState::Pendingifself.transport_window.is_none()=>Ok(()),ApprovalSessionState::Pending=>{self.transport_window.take();self.state=ApprovalSessionState::Invalidated;Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated))}}}" &&
+    hasOrderedCompactRustMarkers(consume, [
+      "matchself.state{",
+      "self.authorization_window.ensure_unexpired().map_err(|error|",
+      "if!constant_time_equal(self.expected_digest.as_bytes(),current_digest.as_bytes())",
+      "self.state=ApprovalSessionState::Consumed;",
+      "Ok(response.decision)",
+    ]) &&
+    rustCallSites(consume, "ensure_unexpired").length === 1 &&
+    rustCallSites(consume, "Instant::now").length === 0 &&
+    !/\bInstant\b/u.test(rustLexicalCode(source)) &&
+    !/\b(?:authorization_window|transport_window)\s*\(&self\)/u.test(
+      rustLexicalCode(source),
+    )
+  );
+};
+const approvalSessionLifetimeMutationProbes = [
+  approvalSessionProduction.replace(
+    "        let (authorization_window, transport_window) = issued_window.into_parts();",
+    "        let (authorization_window, _) = issued_window.into_parts();\n        let (_, transport_window) = IssuedApprovalSessionWindow::issue(effective_ttl_ms)?.into_parts();",
+  ),
+  approvalSessionProduction.replace(
+    "            transport_window: Some(transport_window),",
+    "            transport_window: None,",
+  ),
+  approvalSessionProduction.replace(
+    "        self.transport_window.take();",
+    "        let _ = self.transport_window.as_ref();",
+  ),
+  approvalSessionProduction.replace(
+    "        let Some(transport_window) = self.transport_window.take() else {",
+    "        let Some(transport_window) = self.transport_window.as_ref().cloned() else {",
+  ),
+  approvalSessionProduction.replace(
+    "            || !constant_time_equal(request.digest(), current_digest.as_bytes())",
+    "            || false",
+  ),
+  approvalSessionProduction.replace(
+    "            || !constant_time_equal(request.approval_nonce(), self.nonce.as_bytes())",
+    "            || false",
+  ),
+  approvalSessionProduction.replace(
+    "            || request.display() != &binding.display",
+    "            || false",
+  ),
+  approvalSessionProduction.replace(
+    "            .bind_transport(transport_window, request)",
+    "            .bind_transport(transport_window, request.clone())",
+  ),
+  approvalSessionProduction.replace(
+    "ApprovalSessionState::Pending if self.transport_window.is_none() => Ok(()),",
+    "ApprovalSessionState::Pending if self.transport_window.is_some() => Ok(()),",
+  ),
+  approvalSessionProduction.replace(
+    "        self.authorization_window\n            .ensure_unexpired()",
+    "        fresh_authorization_window()\n            .ensure_unexpired()",
+  ),
+  approvalSessionProduction.replace(
+    "    state: ApprovalSessionState,",
+    "    state: ApprovalSessionState,\n    caller_deadline: std::time::Instant,",
+  ),
+  `${approvalSessionProduction}\nimpl ApprovalSession { pub fn transport_window(&self) -> Option<&ApprovalTransportWindow> { self.transport_window.as_ref() } }\n`,
+];
+const preparedAuthorizationTransportContract = (source) => {
+  let bindTransport;
+  let authorize;
+  try {
+    const preparedImpl = rustImplItems(source).find(
+      (item) => item.header === "impl PreparedAuthorization",
+    )?.source;
+    if (!preparedImpl) {
+      return false;
+    }
+    bindTransport = rustFunctionBlockAtDepth(
+      preparedImpl,
+      "bind_approval_transport",
+      1,
+    );
+    authorize = rustFunctionBlockAtDepth(preparedImpl, "authorize", 1);
+  } catch {
+    return false;
+  }
+  const authorizeCompact = compactRust(authorize);
+  const ensureIndex = authorizeCompact.indexOf(
+    "self.session.ensure_transport_bound()?;",
+  );
+  const responseIndex = authorizeCompact.indexOf("verified_response.into_parts()");
+  return (
+    compactRust(bindTransport) ===
+      "pubfnbind_approval_transport(&mutself,request:ApprovalRequest,)->Result<BoundApprovalTransport,ProtocolError>{self.session.bind_transport(&self.binding,request)}" &&
+    rustCallSites(bindTransport, "bind_transport").length === 1 &&
+    !compactRust(bindTransport).includes("clone()") &&
+    rustCallSites(authorize, "ensure_transport_bound").length === 1 &&
+    ensureIndex >= 0 &&
+    responseIndex > ensureIndex &&
+    !/\b(?:Instant|ApprovalAuthorizationWindow|ApprovalTransportWindow)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/\bfn\s+(?:transport|deadline|request|window)\w*\s*\([^)]*&self/u.test(
+      rustLexicalCode(source),
+    )
+  );
+};
+const preparedAuthorizationTransportMutationProbes = [
+  authorizationProduction.replace(
+    "        self.session.ensure_transport_bound()?;",
+    "        let _ = self.session.ensure_transport_bound();",
+  ),
+  authorizationProduction.replace(
+    "        self.session.ensure_transport_bound()?;\n        let (decision,",
+    "        let (decision,",
+  ),
+  authorizationProduction.replace(
+    "self.session.bind_transport(&self.binding, request)",
+    "self.session.bind_transport(&self.binding, request.clone())",
+  ),
+  `${authorizationProduction}\nimpl PreparedAuthorization { pub fn transport(&self) -> Option<&BoundApprovalTransport> { None } }\n`,
+];
+const keyAgentApprovalPromptContract = (source) => {
+  let definition;
+  let prepare;
+  let approve;
+  try {
+    definition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PreparedApprovalPrompt\s*\{/u,
+    );
+    prepare = rustTopLevelFunctionBlock(source, "prepare_approval_prompt");
+    approve = rustTopLevelFunctionBlock(source, "approve_and_sign");
+  } catch {
+    return false;
+  }
+  const prepareCompact = compactRust(prepare);
+  const approveCompact = compactRust(approve);
+  const remainingCalls = rustCallSites(prepare, "remaining_milliseconds");
+  const lockCalls = rustCallSites(prepare, "lock");
+  const requestNewCalls = rustCallSites(prepare, "ApprovalRequest::new");
+  const requestHashCalls = rustCallSites(prepare, "request_hash");
+  const bindTransportCalls = rustCallSites(
+    prepare,
+    "bind_approval_transport",
+  );
+  const bindRequestCalls = rustCallSites(prepare, "bind_request");
+  const falliblePromptPositions = [
+    remainingCalls[0]?.index,
+    lockCalls[0]?.index,
+    requestNewCalls[0]?.index,
+    lockCalls[1]?.index,
+    requestHashCalls[0]?.index,
+    bindTransportCalls[0]?.index,
+    lockCalls[2]?.index,
+    bindRequestCalls[0]?.index,
+  ];
+  const promptImpls = rustImplItems(source)
+    .map((item) => item.header)
+    .filter((header) => header.includes("PreparedApprovalPrompt"));
+  return (
+    normalizeRustFragment(rustLexicalCode(definition)) ===
+      "pub(crate) struct PreparedApprovalPrompt { prepared: PreparedAuthorization, transport: BoundApprovalTransport, request_hash: [u8; 32], settings_lease: settings::LiveSettingsLease, settings_binding: [u8; 32], }" &&
+    JSON.stringify(promptImpls) ===
+      JSON.stringify(["impl fmt::Debug for PreparedApprovalPrompt"]) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Default)\b[^\]]*\)\]\s*(?:#\[[^\]]+\]\s*)*pub\(crate\)\s+struct\s+PreparedApprovalPrompt/u.test(
+      rustLexicalCode(source),
+    ) &&
+    hasOrderedCompactRustMarkers(prepare, [
+      "letmaterial=protected_settings.issue_approval_material()",
+      "let(anti_phishing_phrase,settings_lease)=material.into_parts();",
+      "letexpires_after_milliseconds=matchprepared.remaining_milliseconds()",
+      "protected_settings.lock();returnErr(error.into());",
+      "letrequest=ApprovalRequest::new(",
+      "letrequest_hash=approval_wire::request_hash(&request);",
+      "lettransport=matchprepared.bind_approval_transport(request)",
+      "protected_settings.lock();returnErr(error.into());",
+      "letsettings_binding=settings_lease.bind_request(request_hash);",
+      "Ok(PreparedApprovalPrompt{prepared,transport,request_hash,settings_lease,settings_binding,})",
+    ]) &&
+    remainingCalls.length === 1 &&
+    lockCalls.length === 3 &&
+    requestNewCalls.length === 1 &&
+    requestHashCalls.length === 1 &&
+    bindTransportCalls.length === 1 &&
+    bindRequestCalls.length === 1 &&
+    falliblePromptPositions.every((position) => Number.isInteger(position)) &&
+    falliblePromptPositions.every(
+      (position, index) =>
+        index === 0 || falliblePromptPositions[index - 1] < position,
+    ) &&
+    prepareCompact.includes(
+      ".map_err(|_|{protected_settings.lock();ProtocolError::new(wallet_protocol::ProtocolErrorKind::BoundsExceeded)})?;",
+    ) &&
+    [
+      ...rustLexicalCode(prepare).matchAll(
+        /\blet\s+(?:mut\s+)?request\s*=/gu,
+      ),
+    ].length === 1 &&
+    rustCallSites(prepare, "IssuedApprovalSessionWindow::issue").length === 0 &&
+    rustCallSites(prepare, "Instant::now").length === 0 &&
+    !prepareCompact.includes("request.clone()") &&
+    !prepareCompact.includes("transport.clone()") &&
+    hasOrderedCompactRustMarkers(approve, [
+      "letPreparedApprovalPrompt{prepared,transport:_,request_hash,settings_lease,settings_binding,}=prompt;",
+      "protected_settings.revalidate_and_consume_approval(settings_lease,request_hash,settings_binding)",
+      "letauthorized=prepared.authorize(request_hash,verified_response)?;",
+      "letaccount=authorized.account();",
+      "verify_key_account(key,account)?;",
+    ]) &&
+    !/\btransport\s*\.(?:request|deadline|bootstrap_deadline|authorize|sign)\s*\(/u.test(
+      rustLexicalCode(approve),
+    ) &&
+    !/\bimpl\s+(?:From|Into|AsRef|Borrow|Deref)\b[^{}]*PreparedApprovalPrompt/u.test(
+      rustLexicalCode(source),
+    ) &&
+    !/\bfn\s+\w*(?:request|deadline|transport|window)\w*\s*\([^)]*&self/u.test(
+      rustLexicalCode(source).slice(
+        source.indexOf(definition),
+        source.indexOf(prepare),
+      ),
+    ) &&
+    approveCompact.length > 0
+  );
+};
+const keyAgentApprovalPromptMutationProbes = [
+  keyAgentLibProduction.replace(
+    "    transport: BoundApprovalTransport,",
+    "    transport: BoundApprovalTransport,\n    request: ApprovalRequest,",
+  ),
+  keyAgentLibProduction.replace(
+    "    let request_hash = approval_wire::request_hash(&request);",
+    "    let request = substitute_request(request);\n    let request_hash = approval_wire::request_hash(&request);",
+  ),
+  keyAgentLibProduction.replace(
+    "    let transport = match prepared.bind_approval_transport(request) {",
+    "    let transport = match prepared.bind_approval_transport(request.clone()) {",
+  ),
+  keyAgentLibProduction.replace(
+    "    let request_hash = approval_wire::request_hash(&request);",
+    "    let second_request = rebuild_request();\n    let request_hash = approval_wire::request_hash(&second_request);",
+  ),
+  keyAgentLibProduction.replace(
+    "    let expires_after_milliseconds = match prepared.remaining_milliseconds() {",
+    "    let _fresh_deadline = std::time::Instant::now();\n    let expires_after_milliseconds = match prepared.remaining_milliseconds() {",
+  ),
+  keyAgentLibProduction.replace(
+    "    let material = protected_settings",
+    "    let _replacement_window = platform_windows::IssuedApprovalSessionWindow::issue(120_000);\n    let material = protected_settings",
+  ),
+  keyAgentLibProduction.replace(
+    "    .map_err(|_| {\n        protected_settings.lock();\n        ProtocolError::new(wallet_protocol::ProtocolErrorKind::BoundsExceeded)\n    })?;",
+    "    .map_err(|_| {\n        ProtocolError::new(wallet_protocol::ProtocolErrorKind::BoundsExceeded)\n    })?;",
+  ),
+  keyAgentLibProduction.replace(
+    "        transport: _,",
+    "        transport,",
+  ),
+  `${keyAgentLibProduction}\nimpl PreparedApprovalPrompt { pub(crate) fn transport(&self) -> &BoundApprovalTransport { &self.transport } }\n`,
+];
+const approvalLifetimeWorkspaceContract = (files) => {
+  const subtractExactlyOnce = (source, definition) => {
+    const index = source.indexOf(definition);
+    if (index === -1 || index !== source.lastIndexOf(definition)) {
+      throw new Error("Approval lifetime definition subtraction was not exact");
+    }
+    return `${source.slice(0, index)}${source.slice(index + definition.length)}`;
+  };
+  const subtractDefinitionFromPath = (
+    targetPath,
+    definitionForSource,
+  ) => {
+    let targetCount = 0;
+    const result = files.map((file) => {
+      if (file.path !== targetPath) {
+        return file;
+      }
+      targetCount += 1;
+      return {
+        ...file,
+        source: subtractExactlyOnce(
+          file.source,
+          definitionForSource(file.source),
+        ),
+      };
+    });
+    if (targetCount !== 1) {
+      throw new Error("Approval lifetime definition owner was not exact");
+    }
+    return result;
+  };
+  let prepareUseFiles;
+  let approveUseFiles;
+  let bindUseFiles;
+  let issueUseFiles;
+  try {
+    prepareUseFiles = subtractDefinitionFromPath(
+      "crates/key-agent/src/lib.rs",
+      (source) => rustTopLevelFunctionBlock(source, "prepare_approval_prompt"),
+    );
+    approveUseFiles = subtractDefinitionFromPath(
+      "crates/key-agent/src/lib.rs",
+      (source) => rustTopLevelFunctionBlock(source, "approve_and_sign"),
+    );
+    bindUseFiles = subtractDefinitionFromPath(
+      "crates/wallet-protocol/src/authorization.rs",
+      (source) => {
+        const preparedImpl = rustImplItems(source).find(
+          (item) => item.header === "impl PreparedAuthorization",
+        )?.source;
+        if (!preparedImpl) {
+          throw new Error("PreparedAuthorization impl is missing");
+        }
+        return rustFunctionBlockAtDepth(
+          preparedImpl,
+          "bind_approval_transport",
+          1,
+        );
+      },
+    );
+    issueUseFiles = subtractDefinitionFromPath(
+      approvalTransportPath,
+      (source) => {
+        const issuedImpl = rustImplItems(source).find(
+          (item) => item.header === "impl IssuedApprovalSessionWindow",
+        )?.source;
+        if (!issuedImpl) {
+          throw new Error("IssuedApprovalSessionWindow impl is missing");
+        }
+        return rustFunctionBlockAtDepth(issuedImpl, "issue", 1);
+      },
+    );
+  } catch {
+    return false;
+  }
+
+  const prepareUsage = rustIdentifierUsageInventory(prepareUseFiles, [
+    "prepare_approval_prompt",
+  ]);
+  const approveUsage = rustIdentifierUsageInventory(approveUseFiles, [
+    "approve_and_sign",
+  ]);
+  const bindUsage = rustIdentifierUsageInventory(bindUseFiles, [
+    "bind_approval_transport",
+  ]);
+  const testHelperUsage = rustIdentifierUsageInventory(files, [
+    "bound_approval_transport_for_test",
+  ]);
+  const normalizedBindCalls = bindUsage.calls.map(
+    ({ name, path, arguments: callArguments }) => ({
+      name,
+      path,
+      arguments: callArguments.map(compactRust),
+    }),
+  );
+  const rustPathSegment =
+    String.raw`(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*`;
+  const issuedWindowIssuePattern = new RegExp(
+    String.raw`(?:(?<ufcs><\s*(?:::\s*)?(?:(?:${rustPathSegment})\s*::\s*)*IssuedApprovalSessionWindow\s*>)|(?<normal>\bIssuedApprovalSessionWindow))\s*::\s*issue\b`,
+    "gu",
+  );
+  const issuedWindowIssueUses = issueUseFiles.flatMap((file) => {
+    const code = rustLexicalCode(file.source);
+    return [...code.matchAll(issuedWindowIssuePattern)].map((match) => {
+      const tail = code.slice(match.index + match[0].length);
+      return {
+        path: file.path,
+        syntax: match.groups.ufcs ? "ufcs" : "normal",
+        form: /^\s*\(/u.test(tail)
+          ? "direct-call"
+          : /^\s*::\s*</u.test(tail)
+            ? "turbofish"
+            : "reference",
+      };
+    });
+  });
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    files,
+    /\b(?:IssuedApprovalSessionWindow|ApprovalAuthorizationWindow|ApprovalTransportWindow|BoundApprovalTransport)\b/u,
+  );
+  return (
+    JSON.stringify(issuedWindowIssueUses) ===
+      JSON.stringify([
+        {
+          path: "crates/wallet-protocol/src/approval.rs",
+          syntax: "normal",
+          form: "direct-call",
+        },
+      ]) &&
+    identifierUsageIsEmpty(prepareUsage) &&
+    identifierUsageIsEmpty(approveUsage) &&
+    identifierUsageIsEmpty(testHelperUsage) &&
+    JSON.stringify(normalizedBindCalls) ===
+      JSON.stringify([
+        {
+          name: "bind_approval_transport",
+          path: "crates/key-agent/src/lib.rs",
+          arguments: ["request"],
+        },
+      ]) &&
+    JSON.stringify(bindUsage.tokens.bind_approval_transport) ===
+      JSON.stringify(["crates/key-agent/src/lib.rs"]) &&
+    bindUsage.aliases.length === 0 &&
+    JSON.stringify(bindUsage.qualified) ===
+      JSON.stringify([
+        {
+          path: "crates/key-agent/src/lib.rs",
+          name: "bind_approval_transport",
+        },
+      ]) &&
+    JSON.stringify(bindUsage.references) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    !files.some((file) =>
+      /\bfn\s+\w*sign\w*\s*\([^)]*\b(?:IssuedApprovalSessionWindow|ApprovalAuthorizationWindow|ApprovalTransportWindow|BoundApprovalTransport)\b/u.test(
+        rustLexicalCode(file.source),
+      ),
+    )
+  );
+};
+const approvalLifetimeWorkspaceMutationProbes = [
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_reissue() { let _ = platform_windows::IssuedApprovalSessionWindow::issue(120_000); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_prompt_call<S: settings::SettingsStore>(prepared: PreparedAuthorization, settings: &mut settings::ProtectedLocalSettings<S>) { let _ = prepare_approval_prompt(prepared, settings); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/wallet-protocol/src/authorization.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_rebind(prepared: &mut PreparedAuthorization, request: ApprovalRequest) { let _ = prepared.bind_approval_transport(request); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nuse crate::BoundApprovalTransport as ReboundApprovalTransport;\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/approval_channel.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nimpl From<crate::BoundApprovalTransport> for Vec<u8> { fn from(_value: crate::BoundApprovalTransport) -> Self { Vec::new() } }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === approvalTransportPath
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_test_escape() { let _ = bound_approval_transport_for_test(); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_prompt_turbofish<S: settings::SettingsStore>(prepared: PreparedAuthorization, settings: &mut settings::ProtectedLocalSettings<S>) { let _ = prepare_approval_prompt::<S>(prepared, settings); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_generic_sign_pointer<J: durable::GenerationStore, S: settings::SettingsStore>() { let hidden = approve_and_sign::<J, S>; let _ = hidden; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/wallet-protocol/src/authorization.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_bind_method_pointer() { let hidden = PreparedAuthorization::bind_approval_transport; let _ = hidden; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_issue_pointer() { let hidden = platform_windows::IssuedApprovalSessionWindow::issue; let _ = hidden; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_ufcs_issue_call() { let _ = <IssuedApprovalSessionWindow>::issue(120_000); }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_qualified_ufcs_issue_pointer() { let hidden = <platform_windows::IssuedApprovalSessionWindow>::issue; let _ = hidden; }\n`,
+        }
+      : file,
+  ),
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/key-agent/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn hidden_absolute_ufcs_issue_call() { let _ = <::platform_windows::IssuedApprovalSessionWindow>::issue(120_000); }\n`,
+        }
+      : file,
+  ),
+];
 const approvalActivationLibContract = (source) => {
   const code = rustLexicalCode(source);
   const declarations = [
@@ -29752,8 +30980,14 @@ const approvalActivationContract = (source) => {
   );
   const authenticateCompact = compactRust(authenticateBootstrap);
   return (
+    /pub\(crate\)\s+fn\s+bind_dormant_parent_bound_approval\s*\(\s*bound\s*:\s*ParentBoundReleaseApprovalSupervisor\s*,\s*transport\s*:\s*BoundApprovalTransport\s*,?\s*\)/u.test(
+      rustLexicalCode(bindDormant),
+    ) &&
+    /pub\(crate\)\s+fn\s+authenticate_parent_bound_approval_bootstrap\s*\(\s*mut\s+dormant\s*:\s*BoundDormantApproval\s*,?\s*\)/u.test(
+      rustLexicalCode(authenticateBootstrap),
+    ) &&
     normalizeRustFragment(rustLexicalCode(dormantDefinition)) ===
-      "pub(crate) struct BoundDormantApproval { activation: Option<HeldApprovalActivation>, request_writer: Option<ApprovalRequestWriter>, response_reader: Option<ApprovalResponseReader>, bound: Option<ParentBoundReleaseApprovalSupervisor>, }" &&
+      "pub(crate) struct BoundDormantApproval { activation: Option<HeldApprovalActivation>, request_writer: Option<ApprovalRequestWriter>, response_reader: Option<ApprovalResponseReader>, bound: Option<ParentBoundReleaseApprovalSupervisor>, transport: Option<BoundApprovalTransport>, }" &&
     /#\[must_use = "dropping dormant Approval only attempts bounded cleanup before kill-on-close fallback"\]\s*pub\(crate\) struct BoundDormantApproval/u.test(
       source,
     ) &&
@@ -29766,7 +31000,7 @@ const approvalActivationContract = (source) => {
     normalizeRustFragment(rustLexicalCode(authenticatedDefinition)) ===
       "pub(crate) struct AuthenticatedApprovalBootstrap { dormant: BoundDormantApproval, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, }" &&
     normalizeRustFragment(rustLexicalCode(verifiedDefinition)) ===
-      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
+      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, transport: BoundApprovalTransport, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
     source.includes("This is point-in-time terminal evidence") &&
     source.includes(
       "any future authorization edge must",
@@ -29788,7 +31022,7 @@ const approvalActivationContract = (source) => {
     ) &&
     compactRust(dormantDropFunction) ===
       "fndrop(&mutself){ifletSome(activation)=self.activation.take(){let_=terminate_held_approval(activation);}}" &&
-    /formatter\s*\.\s*write_str\(\s*"BoundDormantApproval\(\[SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT\]\)"/u.test(
+    /formatter\s*\.\s*write_str\(\s*"BoundDormantApproval\(\[SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; BOUND TRANSPORT\]\)"/u.test(
       dormantDebug,
     ) &&
     /formatter\s*\.\s*write_str\(\s*"AuthenticatedApprovalBootstrap\(\[RUNNING HELD APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; REDACTED HELLOS\]\)"/u.test(
@@ -29816,13 +31050,17 @@ const approvalActivationContract = (source) => {
     compactRust(launchErrorConversion) ===
       "implFrom<LaunchError>forApprovalActivationError{fnfrom(error:LaunchError)->Self{matcherror{LaunchError::Cleanup=>Self::Cleanup,_=>Self::Activation,}}}" &&
     hasOrderedCompactRustMarkers(bindDormant, [
+      "transport.bootstrap_deadline().map_err(|_|ApprovalActivationError::Exchange)?;",
       "letpipes=PrivateApprovalPipes::create()?;",
       "letinherited=InheritedStdio::for_child_pipe_servers(",
       "letseal=ApprovalActivationSeal{_private:()};",
       "letactivation=prepare_parent_bound_approval_activation(&bound,&inherited,&seal)?;",
       "let(request_writer,response_reader)=pipes.into_parent();",
-      "Ok(BoundDormantApproval{activation:Some(HeldApprovalActivation::Suspended(activation)),request_writer:Some(request_writer),response_reader:Some(response_reader),bound:Some(bound),})",
+      "Ok(BoundDormantApproval{activation:Some(HeldApprovalActivation::Suspended(activation)),request_writer:Some(request_writer),response_reader:Some(response_reader),bound:Some(bound),transport:Some(transport),})",
     ]) &&
+    rustCallSites(bindDormant, "bootstrap_deadline").length === 1 &&
+    rustCallSites(bindDormant, "Instant::now").length === 0 &&
+    rustCallSites(bindDormant, "deadline").length === 0 &&
     rustCallSites(bindDormant, "prepare_parent_bound_approval_activation")
       .length === 1 &&
     rustCallSites(bindDormant, "for_child_pipe_servers").length === 1 &&
@@ -29830,15 +31068,14 @@ const approvalActivationContract = (source) => {
       rustLexicalCode(bindDormant),
     ) &&
     normalizeRustFragment(
-      rustTopLevelConstItem(source, "APPROVAL_BOOTSTRAP_GRACE"),
-    ) ===
-      "const APPROVAL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(5);" &&
-    normalizeRustFragment(
       rustTopLevelConstItem(source, "APPROVAL_NONCE_BYTES"),
     ) === "const APPROVAL_NONCE_BYTES: usize = 32;" &&
     orderedRustMarkersAtDepth(authenticateBootstrap, [
-      { marker: "let deadline = Instant::now()", depth: 2 },
-      { marker: ".checked_add(APPROVAL_BOOTSTRAP_GRACE)", depth: 2 },
+      {
+        marker:
+          "let deadline = dormant\n            .transport\n            .as_ref()\n            .ok_or(ApprovalActivationError::Exchange)?\n            .bootstrap_deadline()\n            .map_err(|_| ApprovalActivationError::Exchange)?",
+        depth: 2,
+      },
       {
         marker:
           "let mut parent_nonce = Zeroizing::new([0_u8; APPROVAL_NONCE_BYTES])",
@@ -29885,7 +31122,7 @@ const approvalActivationContract = (source) => {
       { marker: "activation.revalidate_for_bootstrap(&seal)?", depth: 4 },
       {
         marker:
-          "revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        Ok((parent_hello, child_hello))",
+          "revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        if deadline_elapsed(deadline) {\n            return Err(ApprovalActivationError::Bootstrap);\n        }\n\n        Ok((parent_hello, child_hello))",
         depth: 2,
       },
       { marker: "match bootstrap", depth: 1 },
@@ -29913,6 +31150,11 @@ const approvalActivationContract = (source) => {
     ).length === 3 &&
     rustCallSites(authenticateBootstrap, "terminate_held_approval").length ===
       1 &&
+    rustCallSites(authenticateBootstrap, "bootstrap_deadline").length === 1 &&
+    rustCallSites(authenticateBootstrap, "deadline_elapsed").length === 1 &&
+    rustCallSites(authenticateBootstrap, "Instant::now").length === 0 &&
+    rustCallSites(authenticateBootstrap, "Duration::from_millis").length ===
+      0 &&
     !/\b(?:encode_parent_finish|decode_parent_finish|ApprovalRequest|VerifiedApprovalResponse|PendingApproval|receive|approve_and_sign|sign)\b/u.test(
       rustLexicalCode(`${authenticateBootstrap}\n${authenticatedDefinition}`),
     ) &&
@@ -30009,6 +31251,8 @@ const approvalFullExchangeContract = (source) => {
     "wait_for_success_for_exchange",
   );
   const deadlineChecks = rustCallSites(completeExchange, "deadline_elapsed");
+  const transportDeadlineCalls = rustCallSites(completeExchange, "deadline");
+  const transportRequestCalls = rustCallSites(completeExchange, "request");
   const mintCalls = rustCallSites(
     completeExchange,
     "seal_successful_parent_bound_approval_response",
@@ -30021,6 +31265,9 @@ const approvalFullExchangeContract = (source) => {
     ...code.matchAll(/\bInstant\s*::\s*now\s*\(/gu),
   ];
   const positions = [
+    transportDeadlineCalls[0]?.index,
+    transportRequestCalls[0]?.index,
+    deadlineChecks[0]?.index,
     identities[0]?.index,
     parentRevalidations[0]?.index,
     armCalls[0]?.index,
@@ -30030,7 +31277,7 @@ const approvalFullExchangeContract = (source) => {
     verifyCalls[0]?.index,
     waitCalls[0]?.index,
     parentRevalidations[2]?.index,
-    deadlineChecks[0]?.index,
+    deadlineChecks[1]?.index,
     mintCalls[0]?.index,
     terminateCalls[0]?.index,
   ];
@@ -30038,18 +31285,17 @@ const approvalFullExchangeContract = (source) => {
   const afterMint = mintIndex === -1 ? "?" : code.slice(mintIndex);
 
   return (
-    /pub\(crate\)\s+fn\s+complete_parent_bound_approval_exchange\s*\(\s*authenticated\s*:\s*AuthenticatedApprovalBootstrap\s*,\s*request\s*:\s*&ApprovalRequest\s*,?\s*\)\s*->\s*Result\s*<\s*VerifiedParentBoundApprovalExchange\s*,\s*ApprovalActivationError\s*>/u.test(
+    /pub\(crate\)\s+fn\s+complete_parent_bound_approval_exchange\s*\(\s*authenticated\s*:\s*AuthenticatedApprovalBootstrap\s*,?\s*\)\s*->\s*Result\s*<\s*VerifiedParentBoundApprovalExchange\s*,\s*ApprovalActivationError\s*>/u.test(
       code,
     ) &&
     normalizeRustFragment(rustLexicalCode(verifiedDefinition)) ===
-      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
-    instantSamples.length === 1 &&
+      "pub(crate) struct VerifiedParentBoundApprovalExchange { exited_child: HeldExitedApproval, bound: ParentBoundReleaseApprovalSupervisor, parent_hello: ApprovalParentHello, child_hello: ApprovalChildHello, transport: BoundApprovalTransport, response_evidence: ParentBoundApprovalResponseEvidence, }" &&
+    instantSamples.length === 0 &&
     rustCallSites(completeExchange, "expires_after_milliseconds").length ===
-      1 &&
-    rustCallSites(completeExchange, "Duration::from_millis").length === 1 &&
-    compact.includes(
-      "letexpiry_milliseconds=request.expires_after_milliseconds();if!(1..=MAX_EXPIRY_MILLISECONDS).contains(&expiry_milliseconds){returnErr(ApprovalActivationError::Exchange);}letdeadline=Instant::now().checked_add(Duration::from_millis(u64::from(expiry_milliseconds))).ok_or(ApprovalActivationError::Exchange)?;",
-    ) &&
+      0 &&
+    rustCallSites(completeExchange, "Duration::from_millis").length === 0 &&
+    transportDeadlineCalls.length === 1 &&
+    transportRequestCalls.length === 1 &&
     identities.length === 2 &&
     parentRevalidations.length === 3 &&
     armCalls.length === 1 &&
@@ -30057,7 +31303,7 @@ const approvalFullExchangeContract = (source) => {
     rustCallSites(completeExchange, "write_bytes").length === 0 &&
     verifyCalls.length === 1 &&
     waitCalls.length === 1 &&
-    deadlineChecks.length === 1 &&
+    deadlineChecks.length === 2 &&
     mintCalls.length === 1 &&
     terminateCalls.length === 1 &&
     positions.every((position) => Number.isInteger(position)) &&
@@ -30080,8 +31326,11 @@ const approvalFullExchangeContract = (source) => {
       JSON.stringify(["armed_response", "pre_read_identity", "&seal"]) &&
     JSON.stringify(waitCalls[0].arguments.map(compactRust)) ===
       JSON.stringify(["deadline", "&seal"]) &&
-    JSON.stringify(deadlineChecks[0].arguments.map(compactRust)) ===
-      JSON.stringify(["deadline"]) &&
+    deadlineChecks.every(
+      (call) =>
+        JSON.stringify(call.arguments.map(compactRust)) ===
+        JSON.stringify(["deadline"]),
+    ) &&
     JSON.stringify(mintCalls[0].arguments.map(compactRust)) ===
       JSON.stringify(["exit_pending_response", "&seal"]) &&
     hasOrderedCompactRustMarkers(completeExchange, [
@@ -30089,6 +31338,10 @@ const approvalFullExchangeContract = (source) => {
       "letmutparent_hello=Some(parent_hello);",
       "letmutchild_hello=Some(child_hello);",
       "letexchange=(||{",
+      "lettransport=dormant.transport.as_ref().ok_or(ApprovalActivationError::Exchange)?;",
+      "letdeadline=transport.deadline();",
+      "letrequest=transport.request();",
+      "ifdeadline_elapsed(deadline){returnErr(ApprovalActivationError::Exchange);}",
       "letresponse_reader=dormant.response_reader.take().ok_or(ApprovalActivationError::Activation)?;",
       "letarmed_response=arm_parent_bound_approval_response(",
       "letencoded_finish=Zeroizing::new(encode_parent_finish(",
@@ -30101,8 +31354,9 @@ const approvalFullExchangeContract = (source) => {
       "letbound=dormant.bound.take().ok_or(ApprovalActivationError::ParentState)?;",
       "letparent_hello=parent_hello.take().ok_or(ApprovalActivationError::Exchange)?;",
       "letchild_hello=child_hello.take().ok_or(ApprovalActivationError::Exchange)?;",
+      "lettransport=dormant.transport.take().ok_or(ApprovalActivationError::Exchange)?;",
       "letresponse_evidence=seal_successful_parent_bound_approval_response(exit_pending_response,&seal);",
-      "Ok(VerifiedParentBoundApprovalExchange{exited_child,bound,parent_hello,child_hello,response_evidence,})",
+      "Ok(VerifiedParentBoundApprovalExchange{exited_child,bound,parent_hello,child_hello,transport,response_evidence,})",
       "letcleanup=matchdormant.activation.take(){Some(activation)=>terminate_held_approval(activation),None=>Ok(()),};",
       "resolve_after_cleanup(exchange,cleanup)",
     ]) &&
@@ -30186,7 +31440,7 @@ const approvalActivationMutationProbes = [
     "        // weakened\n",
   ),
   approvalActivationRelease.replace(
-    "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        Ok((parent_hello, child_hello))",
+    "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n        if deadline_elapsed(deadline) {\n            return Err(ApprovalActivationError::Bootstrap);\n        }\n\n        Ok((parent_hello, child_hello))",
     "        Ok((parent_hello, child_hello))",
   ),
   approvalActivationRelease.replace(
@@ -30201,11 +31455,27 @@ const approvalActivationMutationProbes = [
     "                terminate_held_approval(activation)?;",
     "                let _ = terminate_held_approval(activation);",
   ),
+  approvalActivationRelease.replace(
+    "    transport\n        .bootstrap_deadline()\n        .map_err(|_| ApprovalActivationError::Exchange)?;",
+    "    let _ = &transport;",
+  ),
+  approvalActivationRelease.replace(
+    "        let deadline = dormant\n            .transport\n            .as_ref()\n            .ok_or(ApprovalActivationError::Exchange)?\n            .bootstrap_deadline()\n            .map_err(|_| ApprovalActivationError::Exchange)?;",
+    "        let deadline = Instant::now()\n            .checked_add(Duration::from_secs(5))\n            .ok_or(ApprovalActivationError::Exchange)?;",
+  ),
+  approvalActivationRelease.replace(
+    "            .bootstrap_deadline()",
+    "            .deadline()",
+  ),
+  approvalActivationRelease.replace(
+    "        if deadline_elapsed(deadline) {\n            return Err(ApprovalActivationError::Bootstrap);\n        }\n\n        Ok((parent_hello, child_hello))",
+    "        Ok((parent_hello, child_hello))",
+  ),
 ];
 const approvalFullExchangeMutationProbes = [
   approvalActivationRelease.replace(
-    "    authenticated: AuthenticatedApprovalBootstrap,\n    request: &ApprovalRequest,",
-    "    authenticated: &AuthenticatedApprovalBootstrap,\n    request: &ApprovalRequest,",
+    "    authenticated: AuthenticatedApprovalBootstrap,",
+    "    authenticated: &AuthenticatedApprovalBootstrap,",
   ),
   approvalActivationRelease.replace(
     '#[must_use = "retain the complete parent-bound Approval exchange evidence"]\npub(crate) struct VerifiedParentBoundApprovalExchange',
@@ -30220,9 +31490,21 @@ const approvalFullExchangeMutationProbes = [
     "caller_challenge: [u8; 32]",
   ].map((parameter) =>
     approvalActivationRelease.replace(
-      "    request: &ApprovalRequest,\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {",
-      `    request: &ApprovalRequest,\n    ${parameter},\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {`,
+      "    authenticated: AuthenticatedApprovalBootstrap,\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {",
+      `    authenticated: AuthenticatedApprovalBootstrap,\n    ${parameter},\n) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {`,
     ),
+  ),
+  approvalActivationRelease.replace(
+    "        let deadline = transport.deadline();",
+    "        let deadline = Instant::now()\n            .checked_add(Duration::from_millis(u64::from(request.expires_after_milliseconds())))\n            .ok_or(ApprovalActivationError::Exchange)?;",
+  ),
+  approvalActivationRelease.replace(
+    "        let request = transport.request();",
+    "        let request = substituted_request;",
+  ),
+  approvalActivationRelease.replace(
+    "        if deadline_elapsed(deadline) {\n            return Err(ApprovalActivationError::Exchange);\n        }\n        let seal =",
+    "        let seal =",
   ),
   approvalActivationRelease.replace(
     "        revalidate_parent_bound_approval_state(\n            dormant\n                .bound\n                .as_ref()\n                .ok_or(ApprovalActivationError::ParentState)?,\n            &seal,\n        )?;\n\n        let response_reader =",
@@ -30268,6 +31550,61 @@ const approvalFullExchangeMutationProbes = [
   approvalActivationRelease.replace(
     "This is point-in-time terminal evidence, not a durable liveness",
     "This is durable liveness evidence",
+  ),
+  approvalActivationRelease.replace(
+    "        let transport = dormant\n            .transport\n            .take()\n            .ok_or(ApprovalActivationError::Exchange)?;",
+    "        let transport = dormant.transport.as_ref().unwrap().clone();",
+  ),
+  approvalActivationRelease.replace(
+    "        if deadline_elapsed(deadline) {\n            return Err(ApprovalActivationError::Exchange);\n        }\n        let bound =",
+    "        let bound =",
+  ),
+];
+const approvalActivationTestsContract = (source) => {
+  let tests;
+  let typestates;
+  try {
+    tests = rustTopLevelLexicalItemBlock(source, /mod\s+tests\s*\{/u);
+    typestates = rustFunctionBlockAtDepth(
+      tests,
+      "dormant_activation_authority_and_state_are_move_only",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  return (
+    JSON.stringify(
+      rustInlineModuleOuterAttributesAtDepth(source, "tests", 0),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    hasOrderedCompactRustMarkers(typestates, [
+      "<BoundDormantApprovalasAmbiguousIfClone<_>>::marker",
+      "<AuthenticatedApprovalBootstrapasAmbiguousIfCopy<_>>::marker",
+      "<VerifiedParentBoundApprovalExchangeasAmbiguousIfClone<_>>::marker",
+      "let_:fn(ParentBoundReleaseApprovalSupervisor,BoundApprovalTransport,)->Result<BoundDormantApproval,ApprovalActivationError>=bind_dormant_parent_bound_approval;",
+      "let_:fn(BoundDormantApproval,)->Result<AuthenticatedApprovalBootstrap,ApprovalActivationError>=authenticate_parent_bound_approval_bootstrap;",
+      "let_:fn(AuthenticatedApprovalBootstrap,)->Result<VerifiedParentBoundApprovalExchange,ApprovalActivationError>=complete_parent_bound_approval_exchange;",
+    ]) &&
+    rustCallSites(typestates, "bind_dormant_parent_bound_approval").length ===
+      0 &&
+    rustCallSites(
+      typestates,
+      "complete_parent_bound_approval_exchange",
+    ).length === 0
+  );
+};
+const approvalActivationTestMutationProbes = [
+  approvalActivationSource.replace(
+    "            BoundApprovalTransport,",
+    "            &BoundApprovalTransport,",
+  ),
+  approvalActivationSource.replace(
+    "            AuthenticatedApprovalBootstrap,\n        ) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> =",
+    "            AuthenticatedApprovalBootstrap,\n            &approval_wire::ApprovalRequest,\n        ) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> =",
+  ),
+  approvalActivationSource.replace(
+    "<VerifiedParentBoundApprovalExchange as AmbiguousIfClone<_>>::marker",
+    "<ApprovalActivationError as AmbiguousIfClone<_>>::marker",
   ),
 ];
 const approvalActivationAuthorityConsumers = workspaceRustProductionFiles
@@ -30481,6 +31818,61 @@ const approvalSensitiveFunctionUsageMutationProbes = [
   ),
 ];
 requireInvariant(
+  approvalTransportLibContract(platformWindowsLib) &&
+    approvalTransportLibMutationProbes.every(
+      (probe) =>
+        probe !== platformWindowsLib && !approvalTransportLibContract(probe),
+    ),
+  "the platform-owned Approval lifetime module must remain private with one exact opaque typestate re-export surface",
+);
+requireInvariant(
+  approvalTransportContract(approvalTransportProduction) &&
+    approvalTransportMutationProbes.every(
+      (probe) =>
+        probe !== approvalTransportProduction &&
+        !approvalTransportContract(probe),
+    ) &&
+    approvalTransportTestsContract(approvalTransportSource) &&
+    approvalTransportTestMutationProbes.every(
+      (probe) =>
+        probe !== approvalTransportSource &&
+        !approvalTransportTestsContract(probe),
+    ),
+  "platform Approval lifetime must issue one opaque shared Instant, split it into move-only identity-matched halves, bind one exact moved request, cap bootstrap by the original expiry, and expose no raw constructor, getter, alias, conversion, or copy path",
+);
+requireInvariant(
+  approvalSessionLifetimeContract(approvalSessionProduction) &&
+    approvalSessionLifetimeMutationProbes.every(
+      (probe) =>
+        probe !== approvalSessionProduction &&
+        !approvalSessionLifetimeContract(probe),
+    ) &&
+    preparedAuthorizationTransportContract(authorizationProduction) &&
+    preparedAuthorizationTransportMutationProbes.every(
+      (probe) =>
+        probe !== authorizationProduction &&
+        !preparedAuthorizationTransportContract(probe),
+    ),
+  "wallet authorization must issue and split one platform window, terminally consume its transport half into the exact digest/nonce/display request, and require that binding before response authorization",
+);
+requireInvariant(
+  keyAgentApprovalPromptContract(keyAgentLibProduction) &&
+    keyAgentApprovalPromptMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentLibProduction &&
+        !keyAgentApprovalPromptContract(probe),
+    ) &&
+    approvalLifetimeWorkspaceContract(workspaceRustProductionFiles) &&
+    approvalLifetimeWorkspaceMutationProbes.every(
+      (probe) =>
+        probe.some(
+          (file, index) =>
+            file.source !== workspaceRustProductionFiles[index].source,
+        ) && !approvalLifetimeWorkspaceContract(probe),
+    ),
+  "the Key Agent prompt must move one exact request into its opaque transport carrier, retain that carrier without signing authority, and keep exact zero/one caller, alias, conversion, and test-helper production surfaces",
+);
+requireInvariant(
   approvalActivationLibContract(platformWindowsLib) &&
     approvalActivationLibMutationProbes.every(
       (probe) =>
@@ -30491,6 +31883,12 @@ requireInvariant(
 requireInvariant(
   approvalActivationContract(approvalActivationRelease) &&
     approvalFullExchangeContract(approvalActivationRelease) &&
+    approvalActivationTestsContract(approvalActivationSource) &&
+    approvalActivationTestMutationProbes.every(
+      (probe) =>
+        probe !== approvalActivationSource &&
+        !approvalActivationTestsContract(probe),
+    ) &&
     approvalActivationMutationProbes.every(
       (probe) =>
         probe !== approvalActivationRelease &&
@@ -30513,7 +31911,7 @@ requireInvariant(
     approvalActivationCallerMutations.every(
       (probe) => !approvalActivationCallSurfaceContract(probe),
     ),
-  "sealed Approval activation must retain exact dormant/bootstrap typestates and a zero-caller consuming full exchange with one request-derived deadline, exact revalidation/write/read/natural-exit/final-check order, cleanup precedence, and no public or signing surface",
+  "sealed Approval activation must retain the bound carrier through exact dormant/bootstrap typestates and a zero-caller consuming full exchange with no raw request/deadline, no resampling, the same original deadline, exact revalidation/write/read/natural-exit/final-check order, cleanup precedence, and no public or signing surface",
 );
 requireInvariant(
   approvalSensitiveFunctionUsageContract(workspaceRustProductionFiles) &&
@@ -31343,9 +32741,11 @@ const dormantApprovalIntegrationContract = (source) => {
       ),
     ) === JSON.stringify(["#[test]"]) &&
     rustCallSites(test, "bind_dormant_parent_bound_approval").length === 1 &&
+    rustCallSites(test, "bound_approval_transport_for_test").length === 1 &&
     rustCallSites(test, "is_live_in_job_for_test").length === 1 &&
     hasOrderedCompactRustMarkers(test, [
-      "letdormant_approval=bind_dormant_parent_bound_approval(bound)?;",
+      "lettransport=bound_approval_transport_for_test()?;",
+      "letdormant_approval=bind_dormant_parent_bound_approval(bound,transport)?;",
       "assert!(dormant_approval.is_live_in_job_for_test()?);",
       "assert!(storage_root.is_dir());",
       "assert!(approval_executable.is_file());",
@@ -31358,7 +32758,7 @@ const dormantApprovalIntegrationContract = (source) => {
       "assert!(!approval_directory.exists());",
     ]) &&
     test.includes(
-      "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT])",
+      "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; BOUND TRANSPORT])",
     ) &&
     !hasVacuousRustTestEscape(test) &&
     !/\b(?:forget|ManuallyDrop|leak)\b/u.test(rustLexicalCode(test))

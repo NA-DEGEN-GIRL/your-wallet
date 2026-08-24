@@ -83,15 +83,26 @@ mod anchor_registry;
 mod appcontainer_profile_api;
 #[allow(dead_code)]
 mod approval_channel;
+// One platform-issued monotonic Approval lifetime splits into move-only
+// authorization and transport halves. Only the matching authorization half can
+// bind the single-use transport half to one canonical request; the resulting
+// carrier exposes its request and exact original deadline only inside this
+// crate. It has no response or signing conversion.
+#[allow(dead_code)]
+mod approval_transport;
 // The production-compiled Approval activation first creates the complete
 // parent-bound process suspended. One sealed consuming transition writes its
 // five-object parent hello, resumes exactly once, and authenticates the child
-// hello. A second sealed transition consumes that opaque bootstrap and exact
-// request under one monotonic transport deadline, verifies finish/request EOF
-// and response/EOF, requires natural child exit code zero, and finally
-// revalidates the Key Agent. The terminal
+// hello. A second sealed transition accepts no raw request or deadline: it
+// consumes that opaque bootstrap, opens its one-shot bound transport carrier
+// internally, and applies the exact original monotonic deadline to
+// finish/request EOF, response/EOF, and natural child exit code zero. After the
+// post-exit Key Agent revalidation it observes that deadline once more, then the
+// terminal retains the carrier. The
 // `VerifiedParentBoundApprovalExchange` has zero production callers and no
-// public response or signing conversion.
+// public response or signing conversion. Its final Key Agent check is only
+// point-in-time evidence; any future authorization edge must revalidate the
+// retained exact Key Agent immediately before use.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_activation;
@@ -100,10 +111,9 @@ mod approval_activation;
 // exact Key Agent logical-parent proof without exposing raw constituents. The
 // sealed full exchange above still does not prove the mapped Approval image,
 // process-object DACL/principal split, or complete runtime/signing composition.
-// It currently resamples relative request expiry after bootstrap. The
-// originating prompt's PreparedAuthorization still retains the original
-// monotonic expiry, but opaque delivery and transport enforcement of that cap
-// are STOP-SHIP before signing.
+// The platform-issued non-Clone authorization/transport halves now preserve one
+// exact monotonic issuance identity through request binding, dormant activation,
+// bootstrap, full exchange, and terminal retention.
 #[cfg(windows)]
 #[allow(dead_code)]
 mod approval_parent;
@@ -214,6 +224,10 @@ mod secret_channel;
 pub mod storage;
 pub use approval_channel::{
     ApprovalChannelError, ApprovalLaunchError, VerifiedApprovalDecision, VerifiedApprovalResponse,
+};
+pub use approval_transport::{
+    ApprovalAuthorizationWindow, ApprovalSessionWindowError, ApprovalTransportWindow,
+    BoundApprovalTransport, IssuedApprovalSessionWindow,
 };
 #[cfg(all(
     windows,

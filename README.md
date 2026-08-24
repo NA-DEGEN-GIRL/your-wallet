@@ -621,32 +621,46 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`인 fresh duplicate 하나만 만들어
   `ParentBoundReleaseApprovalSupervisor` 안에 보유합니다. 이 opaque 상태는 constituent,
   PID, path 또는 raw handle accessor와 launch operation을 제공하지 않으며, 새로 보유하는
-  OS 자원도 그 narrow handle 하나뿐입니다. production binder에는 새 비공개 consumer가
-  정확히 하나 있습니다. 이 consumer는 고정 revision-v1 Approval profile과 exact
-  two-object private stdio를 사용해 Approval process를 single-process Job 안에 만들지만
-  primary thread를 resume하지 않습니다. 기존 channel-supervisor process/image proof는
+  OS 자원도 그 narrow handle 하나뿐입니다. Approval session 발급 시 플랫폼은 caller가
+  절대 deadline을 넣을 수 없는 단 하나의 opaque monotonic window를 만들고, 같은 발급
+  identity를 공유하는 non-Clone authorization/transport half로 이를 분할합니다.
+  `wallet-protocol`은 두 half를 비공개로 함께 보유하고, invalidation은 사용하지 않은
+  transport half를 폐기합니다. Key Agent가 protected phrase와 authorization TCB의 exact
+  digest, one-shot nonce, canonical display로 canonical request를 만든 뒤에만 matching
+  authorization half가 transport half를 한 번 소비해 opaque `BoundApprovalTransport`로
+  묶습니다. production binder에는 새 비공개 consumer가 정확히 하나 있습니다. 이
+  consumer는 parent-bound aggregate와 그 carrier를 함께 소비하고, original expiry가 이미
+  끝났으면 pipe 또는 process를 만들기 전에 거절합니다. 이어 고정 revision-v1 Approval
+  profile과 exact two-object private stdio를 사용해 Approval process를 single-process Job
+  안에 만들지만 primary thread를 resume하지 않습니다. 기존 channel-supervisor
+  process/image proof는
   그대로 두고, narrow Key Agent handle은 별도의 다섯 번째 non-inheritable
   logical-parent capability로 suspended child에 복사합니다. 결과
-  `BoundDormantApproval`은 process/thread/Job, 아직 사용하지 않은 parent endpoints와 전체
-  parent-bound aggregate를 함께 보유하고 자체 resume/request/response/signing 또는
+  `BoundDormantApproval`은 process/thread/Job, 아직 사용하지 않은 parent endpoints, 전체
+  parent-bound aggregate와 bound transport carrier를 함께 보유하고 자체
+  resume/request/response/signing 또는
   path/PID/raw-handle operation을 제공하지 않습니다. Drop은 pipe와 Key Agent tree를
   놓기 전에 bounded terminate/reap을 시도하며, 실패하면 retained kill-on-close Job을
   먼저 닫는 fallback을 사용합니다. 이 최외곽 dormant transition의
   production caller는 0개입니다. 이어지는 sealed consuming bootstrap transition만
-  bootstrap-v2 parent hello를 suspended child의 stdin에 먼저 기록하고, primary thread의
-  정확한 suspend count 하나를 한 번만 해제한 뒤 exact child hello를 읽고
+  original expiry와 그 시점부터의 fresh 5초 grace 중 이른 값을 bootstrap deadline으로
+  정합니다. bootstrap-v2 parent hello를 suspended child의 stdin에 먼저 기록하고,
+  primary thread의 정확한 suspend count 하나를 한 번만 해제한 뒤 exact child hello를 읽고
   transcript 및 child/Job/전체 parent-bound aggregate를 재검증합니다. 성공한
-  `AuthenticatedApprovalBootstrap`은 실행 중인 Approval, 두 parent endpoint, 두 hello와
-  전체 Key Agent aggregate를 함께 보유하며, 단 하나의 별도 sealed function만 이를
-  소비할 수 있습니다. 그 full-exchange transition은 exact request를 받고 request의 relative
-  expiry에서 단 하나의 monotonic transport deadline을 샘플합니다. 같은 deadline을
-  response arming, 110-byte finish+canonical request의 consuming write와 request EOF, 고정
-  75-byte response+EOF 검증, exact held child의 자연 종료 wait에 모두 사용합니다.
+  `AuthenticatedApprovalBootstrap`은 실행 중인 Approval, 두 parent endpoint, 두 hello,
+  전체 Key Agent aggregate와 bound transport carrier를 함께 보유하며, 단 하나의 별도
+  sealed function만 이를 소비할 수 있습니다. 그 full-exchange transition은 raw request나
+  caller-supplied deadline을 받지 않습니다. carrier가 보존한 exact canonical request와
+  original monotonic deadline을 내부에서 사용하고, 그 같은 deadline을 response arming,
+  110-byte finish+canonical request의 consuming write와 request EOF, 고정 75-byte
+  response+EOF 검증, exact held child의 자연 종료 wait에 모두 사용합니다.
   성공은 child/Job과 Key Agent를 finish 전과 response read 전에 재검증하고,
   response+EOF 뒤 그 exact process가 스스로 종료하여 exit code 0을 반환하고,
   그 자연 종료 후 Key Agent aggregate를 마지막으로 재검증하며, deadline이 아직
   유효할 때만 승인됩니다. 그 뒤에만 crate-private opaque
-  `VerifiedParentBoundApprovalExchange`를 만들며, 이 값은 response accessor나
+  `VerifiedParentBoundApprovalExchange`를 만들며, 이 값은 exited child, aggregate, hello,
+  sealed response evidence와 original lifetime/request carrier를 함께 보존하지만 response
+  accessor나
   `VerifiedApprovalResponse`/signing conversion을 전혀 제공하지 않습니다. 성공 경로는
   살아 있는 child를 강제 종료해 증거를 만들지 않습니다. malformed/truncated/trailing
   response 또는 EOF 오류, timeout, nonzero exit, wait 오류는 실패이며, 이때만
@@ -738,23 +752,21 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   nonce에도 의존합니다. raw executable direct launch는 이 교환을 만들 수 없어 진단 없이
   종료되고, legacy Rust API는 resource allocation 전에 `LogicalParentUnavailable`을
   반환합니다. sealed parent는 hello bootstrap과 그 값을 소비하는 full exchange를
-  별도 typestate로 구현합니다. full exchange는 한 monotonic transport deadline 안에서
+  별도 typestate로 구현합니다. bootstrap은 bound carrier의 original expiry와 fresh 5초
+  grace 중 이른 값을 사용하고, full exchange는 raw request/deadline 인수 없이 carrier의
+  exact request 및 original monotonic deadline을 사용합니다. 그 같은 deadline 안에서
   finish+request EOF, response+EOF, exact child의 자연 exit code 0, 자연 종료 후의 final
-  Key Agent revalidation까지 완료한 뒤 accessor 없는
+  Key Agent revalidation까지 완료한 뒤 accessor 없고 carrier를 보존하는
   `VerifiedParentBoundApprovalExchange`만 만듭니다. 이 transition의 production caller는
   0개이고 public `VerifiedApprovalResponse`나 signing으로의 conversion은 없습니다.
   post-exit Key Agent 검사는 그 시점의 증거이므로, 미래에 conversion을 추가한다면
   retained exact Key Agent를 authorization 사용 직전에 다시 검사해야 합니다.
 
-  **STOP-SHIP — transport/authorization 수명 불일치:** 현재 full exchange는 wire request의 relative
-  expiry를 exchange 시작 시점에서 다시 `Instant::now()`에 더해 transport deadline을
-  만듭니다. 이 request가 더 이른 시점에 만들어진 `PreparedApprovalPrompt`에서
-  왔다면 transport/UI window와 terminal evidence mint가 원래 session expiry를
-  bootstrap 시간만큼 지나칠 수 있습니다. 기존 authorization TCB는 그 원래
-  expiry에서 계속 거절합니다. original monotonic `Instant` 자체는 prompt가 소유한
-  `PreparedAuthorization` 안에 계속 보존되지만 parent-bound transport에는 아직
-  전달·강제되지 않습니다. signing을 연결하기 전에 caller가 바꿀 수 없는 형태로 그
-  expiry를 전달하고 transport deadline을 거기에 cap해야 합니다.
+  수명 경계는 하나의 platform-issued monotonic window에서 함께 나온 non-Clone
+  authorization/transport half로 이어집니다. Key Agent가 exact phrase/request를 한 번
+  묶은 opaque carrier는 dormant 상태 전에 소비되고, bootstrap과 full exchange 및 terminal
+  evidence까지 original deadline과 같은 issuance identity를 유지합니다. wire의 relative
+  expiry에서 full-exchange deadline을 다시 샘플하는 경로는 없습니다.
 
   별도 inheritable positive sentinel을 둔 repo-local child/grandchild 커널 테스트는
   sentinel은 broad-inheritance grandchild에 도달하지만 원래의 두 exact stdio

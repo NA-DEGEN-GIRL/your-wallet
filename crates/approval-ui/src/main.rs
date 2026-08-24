@@ -40,18 +40,24 @@
 //! the complete DLL/dependency graph, a release-proven resumable supervisor-held
 //! activation capability, and endpoint topology/exclusivity remain release
 //! blockers. The sealed hello bootstrap and full exchange both have zero
-//! production callers. The full exchange shares one monotonic transport
-//! deadline across finish/request EOF, fixed response/EOF, and the exact held
-//! child's natural exit-code-zero wait, then revalidates the logical Key Agent
-//! after exit. Its opaque `VerifiedParentBoundApprovalExchange` has no public
+//! production callers. The parent-side platform issues one monotonic window and
+//! splits it into matching non-Clone authorization and transport halves. The Key
+//! Agent binds its exact digest/nonce/canonical display/protected-phrase request
+//! once; the opaque carrier reaches dormant activation before allocation. The
+//! bootstrap cap is the earlier of the original expiry and a fresh five-second
+//! grace, and the full exchange accepts no raw request or deadline. It applies
+//! that same original deadline across finish/request EOF, fixed response/EOF,
+//! and the exact held child's natural exit-code-zero wait, then revalidates the
+//! logical Key Agent after exit, observes that deadline once more, and retains
+//! the carrier in its terminal value.
+//! Its opaque `VerifiedParentBoundApprovalExchange` has no public
 //! verified-response or signing conversion, and there is no positive signed-
 //! handshake E2E. The transport supervisor remains the pipe authority; the Key
-//! Agent remains only the distinct logical parent. The current relative-expiry
-//! resampling can let transport/UI evidence outlive a pre-bootstrap prompt's
-//! original session; the existing authorization TCB still rejects at that
-//! original expiry. Its
-//! `PreparedAuthorization` still retains the original monotonic expiry, but
-//! opaque delivery of that expiry to cap transport is a signing **STOP-SHIP**.
+//! Agent remains only the distinct logical parent. That final Key-Agent check is
+//! point-in-time evidence; any future evidence-to-authorization edge must
+//! revalidate the retained exact Key Agent immediately before use. Session invalidation drops
+//! any unbound transport half, and no full-exchange path reconstructs the
+//! deadline from the wire-relative lifetime.
 //! `COMPILED_PARENT_POLICY` remains `None`; ordinary builds exit 78. Raw
 //! executable direct launch exits without diagnostics, while the legacy Rust API
 //! returns `LogicalParentUnavailable` before resource allocation.

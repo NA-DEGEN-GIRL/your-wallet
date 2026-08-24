@@ -280,39 +280,54 @@ Implemented:
   private consumer. It fixes the revision-v1 Approval profile, creates the exact
   two-object private stdio boundary, and uses the pinned verified Approval
   artifact to create a process in its single-process Job without resuming the
-  primary thread; this is not mapped-image provenance. The ordinary
+  primary thread; this is not mapped-image provenance. Before this allocation,
+  the caller must consume the opaque `BoundApprovalTransport`; an already
+  expired original session rejects before pipe or process creation. The ordinary
   channel-supervisor process/image proof remains intact; the narrow Key Agent
   handle is copied separately into the suspended child as a fifth,
   non-inheritable logical-parent capability. The returned
   `BoundDormantApproval` retains the suspended process/thread/Job, unused parent
-  endpoints, and complete parent-bound aggregate, exposes no direct resume, request,
-  response, signing, launcher, profile, PID, path, or handle operation, and
+  endpoints, complete parent-bound aggregate, and bound request/lifetime carrier;
+  it exposes no direct resume, request, response, signing, launcher, profile,
+  PID, path, or handle operation, and
   attempts bounded Approval termination/reap before releasing pipes and the Key
   Agent tree. This outer transition has zero production callers and both
   compiled policies remain `None`.
 
-  A second sealed consuming transition writes the exact version-2 parent hello
-  before releasing exactly one primary-thread suspend count, reads and decodes
+  The platform issues one opaque monotonic session window by sampling its clock
+  internally, then splits it into non-Clone authorization and transport halves
+  that share the exact issuance identity. `wallet-protocol` privately retains
+  both; invalidation drops an unused transport half. After the Key Agent builds
+  one canonical request from the exact digest, one-shot nonce, display, and
+  protected phrase, the matching authorization half consumes the transport half
+  once and returns opaque `BoundApprovalTransport`.
+
+  A second sealed consuming transition derives its bootstrap deadline as the
+  earlier of the original expiry and a fresh five-second grace. It writes the
+  exact version-2 parent hello before releasing exactly one primary-thread
+  suspend count, reads and decodes
   the exact child hello, and revalidates the running child/Job plus the intact
   parent-bound aggregate. Its opaque `AuthenticatedApprovalBootstrap` retains
   the running Approval, both endpoints, both hellos, and the full Key Agent
-  aggregate but exposes no protocol method. Only a separate sealed function can
-  consume it with the exact `ApprovalRequest`. This transition has zero
-  production callers. Explicit bootstrap failures attempt bounded Approval
+  aggregate and bound carrier but exposes no protocol method. Only a separate
+  sealed function can consume it, with no raw request or deadline parameter.
+  This transition has zero production callers. Explicit bootstrap failures
+  attempt bounded Approval
   termination/reap and give cleanup failure precedence. Drop retains the
   kill-on-close fallback without claiming unconditional reap success.
 
-  The full-exchange function derives one monotonic transport deadline at its
-  start and uses that same deadline for response arming, the consuming finish
-  plus canonical request write and request EOF, fixed response plus response
+  The full-exchange function reads the exact canonical request and original
+  monotonic deadline only from its carrier. It uses that same deadline for
+  response arming, the consuming finish plus canonical request write and request EOF, fixed response plus response
   EOF, and the exact held child's natural-exit wait. It revalidates child/Job
   and Key Agent state before arming and before response read. Response bytes and
   EOF remain exit-pending until the exact process exits naturally with code 0
   before that same deadline. Final Key Agent revalidation occurs only after
   natural exit, followed by a final deadline observation. Only then is opaque
   crate-private `VerifiedParentBoundApprovalExchange` minted. It retains the
-  exited child, intact parent-bound aggregate, both hellos, and sealed response
-  evidence but has no response accessor or conversion to
+  exited child, intact parent-bound aggregate, both hellos, sealed response
+  evidence, and the original request/lifetime carrier, but has no response
+  accessor or conversion to
   `VerifiedApprovalResponse` or signing. The transition also has zero production
   callers. The post-exit Key Agent check is point-in-time evidence; any future
   evidence-to-authorization transition must revalidate the retained exact Key
@@ -418,12 +433,15 @@ Implemented:
   fresh one-shot Approval request nonce. Direct executable launch exits without
   diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
   before resource allocation. The sealed parent implements hello bootstrap and
-  full exchange as separate consuming typestates. The full transition writes
-  finish plus exact request and EOF, verifies fixed response plus EOF, requires
+  full exchange as separate consuming typestates. The bootstrap uses the earlier
+  of the carrier's original expiry and a fresh five-second grace. The full
+  transition accepts no raw request/deadline, writes finish plus the carrier's
+  exact request and EOF, verifies fixed response plus EOF, requires
   natural exit code 0 from the exact held child under the same deadline, and
   performs final Key Agent revalidation after exit. It returns only
-  `VerifiedParentBoundApprovalExchange`, which has no public response/signing
-  conversion. Both transitions have zero production callers; the legacy
+  `VerifiedParentBoundApprovalExchange`, which retains the original carrier and
+  has no public response/signing conversion. Both transitions have zero
+  production callers; the legacy
   `launch_approval_frontend` still fails before allocation with
   `LogicalParentUnavailable`. A repo-local child/grandchild kernel test
   makes a separate positive sentinel inheritable and uses
@@ -443,17 +461,14 @@ Implemented:
   evidence into the public verified response or signing, and no positive
   signed-handshake E2E. `COMPILED_PARENT_POLICY` and
   `COMPILED_RELEASE_POLICY` remain `None`, so default `approval-ui` builds still
-  exit 78;
+  exit 78.
 
-  **STOP-SHIP — transport/session lifetime mismatch:** the current full exchange samples
-  a new monotonic deadline from the wire request's relative expiry at exchange
-  start. When the request came from a `PreparedApprovalPrompt` created before
-  bootstrap, the transport/UI window and terminal evidence mint can outlive the
-  original session by the bootstrap duration; the existing authorization TCB
-  still rejects at that original expiry. The prompt already retains the original monotonic `Instant` inside
-  its `PreparedAuthorization`, but the parent-bound transport neither receives
-  nor enforces it. Before any signing composition, that expiry must cross the
-  boundary without becoming caller-controlled and cap the transport deadline;
+  The session and transport lifetime now come from one platform-issued monotonic
+  window. Matching non-Clone halves preserve one issuance identity, invalidation
+  drops the unbound transport half, and the bound carrier keeps the original
+  deadline authoritative through dormant activation, bootstrap, full exchange,
+  and terminal retention. The full exchange has no substitute timing source
+  reconstructed from wire data.
 
 - an earliest runtime-enabled Secret Input/recovery child bootstrap. Its first
   Windows/CRT application operation requires stdin and the shared stdout/stderr
@@ -623,9 +638,9 @@ Implemented:
   Key Agent revalidation before minting opaque
   `VerifiedParentBoundApprovalExchange`, but that evidence has no public
   verified-response/signing conversion and there is no positive signed-handshake
-  E2E. The prompt's `PreparedAuthorization` retains its original monotonic
-  expiry, but opaque transport delivery and enforcement of that cap before
-  signing remain **STOP-SHIP**.
+  E2E. The platform-issued session window now carries one original monotonic
+  deadline through matching non-Clone authorization/transport halves, exact
+  request binding, dormant activation, and terminal exchange retention.
 
   **구현 범위와 남은 릴리스 차단 조건:** 휴면 Broker, 휴면 Key Agent, 제한 helper
   launcher의 세 Rust 운영 상속형 생성 경로는 첫 임시 inheritable handle 생성 전부터
@@ -677,14 +692,21 @@ Implemented:
   순서이며 request에서 echo하는 값은 digest와 nonce뿐입니다. bootstrap nonce를 echo하지
   않으므로 replay 방어는 private one-shot endpoint와 fresh one-shot Approval request nonce에도
   의존합니다. raw executable direct launch는 진단 없이 종료되고, legacy Rust API는
-  resource allocation 전에 `LogicalParentUnavailable`을 반환합니다. sealed parent는
-  hello bootstrap과 그 값을 exact request와 함께 소비하는 full exchange를 별도
-  typestate로 구현합니다. full exchange는 단 하나의 monotonic transport deadline을
+  resource allocation 전에 `LogicalParentUnavailable`을 반환합니다. 플랫폼은 하나의
+  opaque monotonic session window를 내부에서 발급하고 exact issuance identity를 공유하는
+  non-Clone authorization/transport half로 나눕니다. `wallet-protocol`은 둘을 비공개로
+  보유하고 invalidation 때 unbound transport half를 버립니다. Key Agent는 exact
+  digest/one-shot nonce/canonical display/protected phrase request를 만든 다음 matching half를
+  한 번 소비해 `BoundApprovalTransport`로 묶습니다. 이 carrier는 pipe/process allocation
+  전에 dormant transition으로 소비되고, 이미 만료됐으면 allocation 전에 거절됩니다.
+  sealed parent는 hello bootstrap과 full exchange를 별도 typestate로 구현합니다.
+  bootstrap deadline은 original expiry와 fresh 5초 grace 중 이른 값이며, full exchange는
+  raw request/deadline 인수 없이 carrier의 exact request와 original monotonic deadline을
   response arming, finish+request EOF, 고정 response+EOF, exact child의 자연 exit wait에
   공유합니다. response EOF만으로는 완료 증거가 아니며 exact process가 같은
   deadline 안에서 스스로 exit code 0으로 종료해야 합니다. 그 뒤 final Key Agent
-  revalidation과 final deadline check가 성공해야 accessor 없는 crate-private
-  `VerifiedParentBoundApprovalExchange`가 만들어집니다. 살아 있는 child를 강제
+  revalidation과 final deadline check가 성공해야 accessor 없고 carrier를 보존하는
+  crate-private `VerifiedParentBoundApprovalExchange`가 만들어집니다. 살아 있는 child를 강제
   종료해 성공 증거를 만들지 않으며, timeout/nonzero exit/wait 오류는 실패이고
   cleanup 실패가 원래 오류보다 우선합니다. ordinary supervisor는 transport/pipe
   authority로 남고 Key Agent는 별도 logical parent일 뿐입니다. 두 transition의 production caller는
@@ -700,13 +722,10 @@ Implemented:
   activation capability, exact endpoint topology/exclusivity는 모두 **STOP-SHIP**입니다.
   sealed launch-to-`VerifiedParentBoundApprovalExchange` transition의 production
   orchestration caller는 0개이고, 그 증거를 public verified response나 signing으로
-  전환하는 composition과 positive signed-handshake E2E도 없습니다.
-  현재 exchange가 request relative expiry를 bootstrap 후 시점에서 다시 샘플하므로
-  transport/UI window와 terminal evidence mint가 원래 session expiry를 지나칠 수
-  있습니다. 기존 authorization TCB는 원래 expiry에서 계속 거절합니다. 그 prompt의
-  `PreparedAuthorization`은 original monotonic `Instant`를 계속 보존하지만, signing 전에
-  그 값을 caller-controlled deadline으로 노출하지 않고 transport에 전달·강제하는 것은
-  **STOP-SHIP**입니다. `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
+  전환하는 composition과 positive signed-handshake E2E도 없습니다. 수명 carrier는 같은
+  original deadline과 issuance identity를 dormant, bootstrap, full exchange, terminal까지
+  보존하며 wire-relative lifetime을 exchange 시작 뒤 다시 샘플하지 않습니다.
+  `COMPILED_PARENT_POLICY`와 `COMPILED_RELEASE_POLICY`는 모두 `None`이고
   default helper는 exit 78입니다. runtime-enabled Secret Input/
   recovery 자식도 첫 Windows/CRT 동작에서 stdin과 shared stdout/stderr 두 `PIPE` 객체의
   inherit bit를 제거하고, suspended 상태에서 별도로 주입된 non-inheritable parent
@@ -850,10 +869,14 @@ Stop-ship before any signing-capable release:
    fresh non-inheritable exact Key Agent process duplicate with only
    `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`; it never reopens by PID,
    exposes no raw handle, and does not set `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`
-   or change Windows process parentage. One sealed zero-caller transition writes
-   the complete v2 hello before exactly one resume and validates the exact child
-   hello. A second sealed zero-caller transition consumes that bootstrap and the
-   exact request under one monotonic transport deadline, writes finish/request
+   or change Windows process parentage. One platform-issued monotonic session
+   window splits into matching non-Clone authorization/transport halves; the Key
+   Agent binds its exact request once, and dormant activation consumes the opaque
+   carrier before allocation. One sealed zero-caller transition uses the earlier
+   of original expiry and a fresh five-second grace, writes the complete v2 hello
+   before exactly one resume, and validates the exact child hello. A second sealed
+   zero-caller transition consumes that bootstrap with no raw request/deadline
+   input, uses the carrier's exact original deadline, and writes finish/request
    plus EOF, verifies fixed response plus EOF, waits for the exact held child to
    exit naturally with code 0, and finally revalidates the Key Agent after exit.
    Its opaque `VerifiedParentBoundApprovalExchange` exposes no public response or
@@ -880,13 +903,9 @@ Stop-ship before any signing-capable release:
    test is not evidence for the exact signed helper or intended release
    topology. Both sealed transitions have zero production callers; conversion
    from the terminal exchange evidence into verified-response/signing and a
-   positive signed-handshake E2E are absent. The current relative-expiry
-   resampling can let the transport/UI evidence window outlive a pre-bootstrap
-   `PreparedApprovalPrompt` session; the existing authorization TCB still
-   rejects at the original expiry. Its
-   `PreparedAuthorization` still retains the original monotonic `Instant`, but
-   opaque delivery of that expiry to cap transport is **STOP-SHIP** before
-   signing. Direct executable launch exits without
+   positive signed-handshake E2E are absent. The terminal exchange retains the
+   bound carrier and its original issuance identity; no exchange-start deadline
+   reconstruction remains. Direct executable launch exits without
    diagnostics, while the legacy Rust API returns `LogicalParentUnavailable`
    before allocation,
    while `COMPILED_PARENT_POLICY = None`, `COMPILED_RELEASE_POLICY = None`, and

@@ -22,7 +22,7 @@ pub(crate) mod vault_session;
 use std::fmt;
 
 use approval_wire::ApprovalRequest;
-use platform_windows::VerifiedApprovalResponse;
+use platform_windows::{BoundApprovalTransport, VerifiedApprovalResponse};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::{Message, Secp256k1};
 use secret_core::{CanonicalSignature, RawPrivateKey, SecretError};
@@ -43,22 +43,18 @@ enum SigningPlan {
     Message([u8; 32]),
 }
 
-/// Opaque one-shot prompt retaining the exact request and hash across the
-/// complete UI interaction. The wire-relative remaining lifetime is sampled
-/// once here. The owned [`PreparedAuthorization`] still retains its original
-/// monotonic expiry, but the parent exchange does not receive that value and
-/// currently resamples the relative lifetime after bootstrap. That can let
-/// transport evidence outlive the original session, although this retained
-/// authorization still rejects at its original expiry. Closing that transport
-/// gap is STOP-SHIP before signing. Authorization never rebuilds a different
-/// request after a hold.
+/// Opaque one-shot prompt retaining the exact request hash and its bound
+/// transport capability across the complete UI interaction. Authorization and
+/// transport share one original monotonic expiry, while the wall-clock expiry
+/// remains part of the authorization session's external bookkeeping.
+/// Authorization never rebuilds a different request after a hold.
 /// Its non-clone settings lease binds the authenticated settings generation,
 /// phrase revision, exact record digest, exclusive owner, process instance, and
 /// a fresh one-time nonce.
 #[allow(dead_code)]
 pub(crate) struct PreparedApprovalPrompt {
     prepared: PreparedAuthorization,
-    request: ApprovalRequest,
+    transport: BoundApprovalTransport,
     request_hash: [u8; 32],
     settings_lease: settings::LiveSettingsLease,
     settings_binding: [u8; 32],
@@ -70,43 +66,30 @@ impl fmt::Debug for PreparedApprovalPrompt {
     }
 }
 
-impl PreparedApprovalPrompt {
-    /// Borrows the exact request transferred unchanged by the sealed parent-
-    /// bound full exchange. That transition has zero production callers and its
-    /// terminal evidence has no conversion into this crate's signing input.
-    ///
-    /// # Stop-ship lifetime gap
-    ///
-    /// The wire request carries only relative expiry. The current exchange
-    /// resamples it after bootstrap, which can let transport evidence outlive
-    /// this prompt's original session. The owned `PreparedAuthorization` still
-    /// retains the original monotonic `Instant` and rejects at it; before signing
-    /// is connected, that expiry must be delivered in an opaque form and must
-    /// cap the transport deadline.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) const fn request(&self) -> &ApprovalRequest {
-        &self.request
-    }
-}
-
 /// Prepares the exact shared v2 prompt for the authenticated private approval
 /// channel. All field semantics and values were derived by the authorization
 /// TCB. The anti-phishing cue and its live epoch are issued only by freshly
 /// revalidated Key-Agent protected settings; no caller can inject a string.
 #[allow(dead_code)]
 pub(crate) fn prepare_approval_prompt<S: settings::SettingsStore>(
-    prepared: PreparedAuthorization,
+    mut prepared: PreparedAuthorization,
     protected_settings: &mut settings::ProtectedLocalSettings<S>,
 ) -> Result<PreparedApprovalPrompt, SignerError> {
     let material = protected_settings
         .issue_approval_material()
         .map_err(|_| SignerError::Settings)?;
     let (anti_phishing_phrase, settings_lease) = material.into_parts();
+    let expires_after_milliseconds = match prepared.remaining_milliseconds() {
+        Ok(milliseconds) => milliseconds,
+        Err(error) => {
+            protected_settings.lock();
+            return Err(error.into());
+        }
+    };
     let request = ApprovalRequest::new(
         *prepared.approval_digest().as_bytes(),
         *prepared.approval_nonce().as_bytes(),
-        prepared.remaining_milliseconds()?,
+        expires_after_milliseconds,
         anti_phishing_phrase,
         prepared.display().clone(),
     )
@@ -115,10 +98,17 @@ pub(crate) fn prepare_approval_prompt<S: settings::SettingsStore>(
         ProtocolError::new(wallet_protocol::ProtocolErrorKind::BoundsExceeded)
     })?;
     let request_hash = approval_wire::request_hash(&request);
+    let transport = match prepared.bind_approval_transport(request) {
+        Ok(transport) => transport,
+        Err(error) => {
+            protected_settings.lock();
+            return Err(error.into());
+        }
+    };
     let settings_binding = settings_lease.bind_request(request_hash);
     Ok(PreparedApprovalPrompt {
         prepared,
-        request,
+        transport,
         request_hash,
         settings_lease,
         settings_binding,
@@ -297,7 +287,7 @@ pub(crate) fn approve_and_sign<J: durable::GenerationStore, S: settings::Setting
 ) -> Result<SignedArtifact, SignerError> {
     let PreparedApprovalPrompt {
         prepared,
-        request: _,
+        transport: _,
         request_hash,
         settings_lease,
         settings_binding,

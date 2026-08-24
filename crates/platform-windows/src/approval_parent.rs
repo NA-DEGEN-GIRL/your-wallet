@@ -94,7 +94,10 @@ pub(crate) fn bind_release_approval_parent(
 /// cleanup launch rejection. If the final check fails, the newly created child
 /// is synchronously terminated and reaped before the parent-state failure is
 /// returned. Cleanup failure always takes precedence. Neither constituent is
-/// exposed or split.
+/// exposed or split. The sole dormant caller first consumes an opaque
+/// `BoundApprovalTransport` and rejects its original expiry before allocating
+/// the pipe endpoints that reach this launch leaf; this function receives no
+/// request or caller-selected deadline.
 pub(crate) fn prepare_parent_bound_approval_activation(
     bound: &ParentBoundReleaseApprovalSupervisor,
     handles: &InheritedStdio<'_>,
@@ -142,7 +145,9 @@ pub(crate) fn prepare_parent_bound_approval_activation(
 /// Agent half and is requeried without splitting either constituent. The
 /// ordinary supervisor remains the separate transport authority; this check
 /// refreshes the Key Agent logical-parent half and never treats it as the pipe
-/// peer or Windows process parent.
+/// peer or Windows process parent. A successful post-exit call is only
+/// point-in-time evidence; any future evidence-to-authorization edge must call
+/// this revalidation again immediately before use.
 pub(crate) fn revalidate_parent_bound_approval_state(
     bound: &ParentBoundReleaseApprovalSupervisor,
     seal: &ApprovalActivationSeal,

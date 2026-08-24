@@ -1,11 +1,14 @@
 use approval_wire::{
-    ApprovalDisplay, DisplayField, FieldSemantic, OperationKind, RiskLevel, SimulationStatus,
+    ApprovalDisplay, ApprovalRequest, DisplayField, FieldSemantic, OperationKind, RiskLevel,
+    SimulationStatus,
 };
 use chain_registry::{
     Adapter, BuiltInChainEvidence, ChainDefinition, FinalityModel, NetworkKind, RuleCoverage,
     SourceClaim, TransactionEnvelope,
 };
-use platform_windows::{VerifiedApprovalDecision, VerifiedApprovalResponse};
+use platform_windows::{
+    BoundApprovalTransport, VerifiedApprovalDecision, VerifiedApprovalResponse,
+};
 use sha2::{Digest as _, Sha256};
 use sha3::Keccak256;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -134,10 +137,24 @@ impl PreparedAuthorization {
         self.session.nonce()
     }
 
-    /// Returns the absolute deadline enforced when the response is consumed.
+    /// Returns the wall-clock deadline used for external display and bookkeeping.
+    /// Authorization expiry is enforced by the opaque monotonic session window.
     #[must_use]
     pub const fn expires_at_ms(&self) -> u64 {
         self.session.expires_at_ms()
+    }
+
+    /// Consumes this session's transport half once and binds it to the exact
+    /// Key-Agent request derived from this immutable authorization.
+    ///
+    /// A substituted digest, nonce, or canonical display terminally invalidates
+    /// the session. Neither the request nor its original monotonic deadline is
+    /// exposed by the returned opaque transport capability.
+    pub fn bind_approval_transport(
+        &mut self,
+        request: ApprovalRequest,
+    ) -> Result<BoundApprovalTransport, ProtocolError> {
+        self.session.bind_transport(&self.binding, request)
     }
 
     /// Invalidates this challenge after lock, suspend, navigation, chain change,
@@ -151,10 +168,11 @@ impl PreparedAuthorization {
     // one-shot UI result must not remain reusable after authorization.
     #[allow(clippy::needless_pass_by_value)]
     pub fn authorize(
-        self,
+        mut self,
         expected_request_hash: [u8; 32],
         verified_response: VerifiedApprovalResponse,
     ) -> Result<AuthorizedOperation, ProtocolError> {
+        self.session.ensure_transport_bound()?;
         let (decision, approval_digest, challenge_nonce, child_transcript, displayed_request_hash) =
             verified_response.into_parts();
         if child_transcript.iter().all(|byte| *byte == 0)
@@ -951,9 +969,24 @@ mod tests {
 
     use super::{
         ApprovalDecision, ApprovalNonce, ApprovalResponse, AuthorizationOperation,
-        AuthorizationRequest, ReleaseChannel, prepare_authorization_with_policy,
+        AuthorizationRequest, PreparedAuthorization, ReleaseChannel,
+        prepare_authorization_with_policy,
     };
     use crate::{CandidateId, NonceCandidate, NonceLedger};
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     fn evidence() -> Result<chain_registry::BuiltInChainEvidence, EvidenceError> {
         let chain_id = ChainId::from_u64(1);
@@ -1061,6 +1094,12 @@ mod tests {
         assert!(!rendered.contains("123, 123, 123"));
         assert!(!rendered.contains("124, 124, 124"));
         Ok(())
+    }
+
+    #[test]
+    fn prepared_authorization_is_move_only() {
+        let _ = <PreparedAuthorization as AmbiguousIfClone<_>>::marker;
+        let _ = <PreparedAuthorization as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]

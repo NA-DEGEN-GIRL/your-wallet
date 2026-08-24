@@ -11,8 +11,8 @@ use core::fmt;
 use std::time::{Duration, Instant};
 
 use approval_wire::{
-    ApprovalChildHello, ApprovalParentHello, ApprovalRequest, CHILD_HELLO_BYTES,
-    MAX_EXPIRY_MILLISECONDS, decode_child_hello, encode_parent_finish, encode_parent_hello,
+    ApprovalChildHello, ApprovalParentHello, CHILD_HELLO_BYTES, decode_child_hello,
+    encode_parent_finish, encode_parent_hello,
 };
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -25,13 +25,13 @@ use crate::approval_parent::{
     ParentBoundReleaseApprovalSupervisor, prepare_parent_bound_approval_activation,
     revalidate_parent_bound_approval_state,
 };
+use crate::approval_transport::BoundApprovalTransport;
 use crate::launch::{
     HeldExitedApproval, HeldRunningApproval, HeldSuspendedApproval, InheritedStdio, LaunchError,
 };
 use crate::pipe::{ApprovalRequestWriter, ApprovalResponseReader, PipeError, PrivateApprovalPipes};
 
 const APPROVAL_CLEANUP_GRACE: Duration = Duration::from_secs(5);
-const APPROVAL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(5);
 const APPROVAL_NONCE_BYTES: usize = 32;
 
 /// Unforgeable permission for the sealed parent-bound Approval transitions.
@@ -61,7 +61,7 @@ pub(crate) enum ApprovalActivationError {
     #[error("Approval bootstrap authentication failed")]
     Bootstrap,
     /// The sealed finish/request/response exchange could not be completed and
-    /// authenticated before its request-derived monotonic deadline.
+    /// authenticated before its original session-issued monotonic deadline.
     #[error("Approval full exchange authentication failed")]
     Exchange,
     /// Explicit rejection cleanup could not synchronously reap an Approval
@@ -94,14 +94,15 @@ impl From<LaunchError> for ApprovalActivationError {
 /// `Drop` first takes the Approval child and makes its bounded synchronous
 /// terminate/reap attempt;
 /// the retained kill-on-close Job/process ownership then closes before the
-/// endpoints and complete parent-bound Key Agent aggregate. A Drop-only cleanup
-/// error cannot be returned.
+/// endpoints, complete parent-bound Key Agent aggregate, and bound transport
+/// carrier. A Drop-only cleanup error cannot be returned.
 #[must_use = "dropping dormant Approval only attempts bounded cleanup before kill-on-close fallback"]
 pub(crate) struct BoundDormantApproval {
     activation: Option<HeldApprovalActivation>,
     request_writer: Option<ApprovalRequestWriter>,
     response_reader: Option<ApprovalResponseReader>,
     bound: Option<ParentBoundReleaseApprovalSupervisor>,
+    transport: Option<BoundApprovalTransport>,
 }
 
 impl fmt::Debug for BoundDormantApproval {
@@ -111,9 +112,10 @@ impl fmt::Debug for BoundDormantApproval {
             &self.request_writer,
             &self.response_reader,
             &self.bound,
+            &self.transport,
         );
         formatter.write_str(
-            "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT])",
+            "BoundDormantApproval([SUSPENDED APPROVAL; PRIVATE ENDPOINTS; PARENT-BOUND KEY AGENT; BOUND TRANSPORT])",
         )
     }
 }
@@ -173,8 +175,9 @@ impl fmt::Debug for HeldApprovalActivation {
 /// One exact running Approval held after its authenticated child hello.
 ///
 /// The value is opaque, non-cloneable, and has no methods. Only the separate
-/// activation-sealed consuming full-exchange function can provide its request;
-/// no response, signing, raw resource, or partial protocol capability escapes.
+/// activation-sealed consuming full-exchange function can open its retained
+/// carrier internally; no request, deadline, response, signing, raw resource,
+/// or partial protocol capability escapes.
 /// Until consumed, the child remains blocked waiting for the missing finish.
 /// Field order is security-significant: dropping `dormant` first makes its
 /// bounded synchronous terminate/reap attempt and closes child Job/process
@@ -208,6 +211,7 @@ pub(crate) struct VerifiedParentBoundApprovalExchange {
     bound: ParentBoundReleaseApprovalSupervisor,
     parent_hello: ApprovalParentHello,
     child_hello: ApprovalChildHello,
+    transport: BoundApprovalTransport,
     response_evidence: ParentBoundApprovalResponseEvidence,
 }
 
@@ -218,6 +222,7 @@ impl fmt::Debug for VerifiedParentBoundApprovalExchange {
             &self.bound,
             &self.parent_hello,
             &self.child_hello,
+            &self.transport,
             &self.response_evidence,
         );
         formatter.write_str("VerifiedParentBoundApprovalExchange([SEALED COMPLETE EVIDENCE])")
@@ -227,12 +232,18 @@ impl fmt::Debug for VerifiedParentBoundApprovalExchange {
 /// Consumes the complete parent-bound aggregate into suspended dormant state.
 ///
 /// The fixed Approval LPAC revision is selected only inside the sealed launch
-/// leaf. This transition accepts no request, response, deadline, path, PID,
-/// profile, attestation, command line, or generic launcher input and never
-/// resumes the child.
+/// leaf. This transition consumes one already-bound opaque request/deadline
+/// carrier, rejects an expired original session before allocating a pipe or
+/// process, accepts no raw request, response, deadline, path, PID, profile,
+/// attestation, command line, or generic launcher input, and never resumes the
+/// child.
 pub(crate) fn bind_dormant_parent_bound_approval(
     bound: ParentBoundReleaseApprovalSupervisor,
+    transport: BoundApprovalTransport,
 ) -> Result<BoundDormantApproval, ApprovalActivationError> {
+    transport
+        .bootstrap_deadline()
+        .map_err(|_| ApprovalActivationError::Exchange)?;
     let pipes = PrivateApprovalPipes::create()?;
     let inherited = InheritedStdio::for_child_pipe_servers(
         pipes.child_input(),
@@ -248,17 +259,19 @@ pub(crate) fn bind_dormant_parent_bound_approval(
         request_writer: Some(request_writer),
         response_reader: Some(response_reader),
         bound: Some(bound),
+        transport: Some(transport),
     })
 }
 
 /// Consumes dormant state into one authenticated, hello-only bootstrap.
 ///
-/// The transition samples its own fixed monotonic deadline and fresh nonzero
-/// nonce. It writes the complete five-object parent hello while the child is
-/// still suspended, resumes only the retained primary thread through this
-/// module's seal, reads one exact child hello, and revalidates both the running
-/// process and intact parent-bound aggregate. No caller supplies protocol,
-/// identity, resource, policy, timing, or signing input.
+/// The transition derives its bootstrap deadline as the earlier of the opaque
+/// original session expiry and a fresh fixed grace bound, then samples a fresh
+/// nonzero nonce. It writes the complete five-object parent hello while the
+/// child is still suspended, resumes only the retained primary thread through
+/// this module's seal, reads one exact child hello, and revalidates both the
+/// running process and intact parent-bound aggregate. No caller supplies raw
+/// protocol, identity, resource, policy, timing, or signing input.
 ///
 /// Every rejection makes a synchronous terminate/reap attempt for the already-
 /// created child with a fresh bounded cleanup deadline. Cleanup failure takes
@@ -268,9 +281,12 @@ pub(crate) fn authenticate_parent_bound_approval_bootstrap(
     mut dormant: BoundDormantApproval,
 ) -> Result<AuthenticatedApprovalBootstrap, ApprovalActivationError> {
     let bootstrap = (|| {
-        let deadline = Instant::now()
-            .checked_add(APPROVAL_BOOTSTRAP_GRACE)
-            .ok_or(ApprovalActivationError::Bootstrap)?;
+        let deadline = dormant
+            .transport
+            .as_ref()
+            .ok_or(ApprovalActivationError::Exchange)?
+            .bootstrap_deadline()
+            .map_err(|_| ApprovalActivationError::Exchange)?;
         let mut parent_nonce = Zeroizing::new([0_u8; APPROVAL_NONCE_BYTES]);
         getrandom::fill(&mut *parent_nonce).map_err(|_| ApprovalActivationError::Bootstrap)?;
         if is_all_zero(parent_nonce.as_slice()) {
@@ -344,6 +360,9 @@ pub(crate) fn authenticate_parent_bound_approval_bootstrap(
                 .ok_or(ApprovalActivationError::ParentState)?,
             &seal,
         )?;
+        if deadline_elapsed(deadline) {
+            return Err(ApprovalActivationError::Bootstrap);
+        }
 
         Ok((parent_hello, child_hello))
     })();
@@ -363,18 +382,19 @@ pub(crate) fn authenticate_parent_bound_approval_bootstrap(
     }
 }
 
-/// Consumes one authenticated bootstrap and request into terminal sealed
-/// parent-bound exchange evidence.
+/// Consumes one authenticated bootstrap and its bound transport into terminal
+/// sealed parent-bound exchange evidence.
 ///
-/// A single monotonic deadline is sampled internally from the validated
-/// request lifetime and shared by arming, finish/request transfer, fixed
-/// response+EOF verification, and natural child exit. The parent-local
-/// transcript salt is freshly sampled while arming and is never sent to the
-/// child. The exact operation order is fail-closed: pre-arm child/Job and Key
-/// Agent revalidation; arm; consuming finish write and EOF; pre-read child/Job
-/// and Key Agent revalidation; fixed response and transcript verification;
-/// consuming natural exit-code-zero wait; final Key Agent revalidation; final
-/// observation of the same deadline; then evidence minting.
+/// The exact original monotonic authorization deadline retained by the opaque
+/// transport carrier is shared by arming, finish/request transfer, fixed
+/// response+EOF verification, and natural child exit; it is never resampled
+/// from the wire-relative lifetime. The parent-local transcript salt is freshly
+/// sampled while arming and is never sent to the child. The exact operation
+/// order is fail-closed: pre-arm child/Job and Key Agent revalidation; arm;
+/// consuming finish write and EOF; pre-read child/Job and Key Agent
+/// revalidation; fixed response and transcript verification; consuming natural
+/// exit-code-zero wait; final Key Agent revalidation; final observation of the
+/// same deadline; then evidence minting.
 ///
 /// Rejections before the natural-exit transition use the outer retained child
 /// for a fresh bounded terminate/reap attempt. Wait or exit-code rejection owns
@@ -384,7 +404,6 @@ pub(crate) fn authenticate_parent_bound_approval_bootstrap(
 #[allow(clippy::too_many_lines)] // Keep the security-significant protocol and cleanup order linear.
 pub(crate) fn complete_parent_bound_approval_exchange(
     authenticated: AuthenticatedApprovalBootstrap,
-    request: &ApprovalRequest,
 ) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> {
     let AuthenticatedApprovalBootstrap {
         mut dormant,
@@ -394,13 +413,15 @@ pub(crate) fn complete_parent_bound_approval_exchange(
     let mut parent_hello = Some(parent_hello);
     let mut child_hello = Some(child_hello);
     let exchange = (|| {
-        let expiry_milliseconds = request.expires_after_milliseconds();
-        if !(1..=MAX_EXPIRY_MILLISECONDS).contains(&expiry_milliseconds) {
+        let transport = dormant
+            .transport
+            .as_ref()
+            .ok_or(ApprovalActivationError::Exchange)?;
+        let deadline = transport.deadline();
+        let request = transport.request();
+        if deadline_elapsed(deadline) {
             return Err(ApprovalActivationError::Exchange);
         }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_millis(u64::from(expiry_milliseconds)))
-            .ok_or(ApprovalActivationError::Exchange)?;
         let seal = ApprovalActivationSeal { _private: () };
 
         let pre_arm_identity = match dormant.activation.as_ref() {
@@ -516,6 +537,10 @@ pub(crate) fn complete_parent_bound_approval_exchange(
         let child_hello = child_hello
             .take()
             .ok_or(ApprovalActivationError::Exchange)?;
+        let transport = dormant
+            .transport
+            .take()
+            .ok_or(ApprovalActivationError::Exchange)?;
         // No fallible operation remains after evidence minting. All exact
         // ownership required by the terminal aggregate is already local.
         let response_evidence =
@@ -525,6 +550,7 @@ pub(crate) fn complete_parent_bound_approval_exchange(
             bound,
             parent_hello,
             child_hello,
+            transport,
             response_evidence,
         })
     })();
@@ -593,14 +619,15 @@ fn deadline_elapsed(deadline: Instant) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use approval_wire::ApprovalRequest;
-
     use super::{
         APPROVAL_NONCE_BYTES, ApprovalActivationError, ApprovalActivationSeal,
         AuthenticatedApprovalBootstrap, BoundDormantApproval, HeldApprovalActivation,
         VerifiedParentBoundApprovalExchange, authenticate_parent_bound_approval_bootstrap,
-        complete_parent_bound_approval_exchange, is_all_zero, resolve_after_cleanup,
+        bind_dormant_parent_bound_approval, complete_parent_bound_approval_exchange, is_all_zero,
+        resolve_after_cleanup,
     };
+    use crate::approval_parent::ParentBoundReleaseApprovalSupervisor;
+    use crate::approval_transport::BoundApprovalTransport;
     use crate::launch::{HeldExitedApproval, HeldRunningApproval, LaunchError};
     use crate::pipe::PipeError;
 
@@ -633,12 +660,16 @@ mod tests {
         let _ = <VerifiedParentBoundApprovalExchange as AmbiguousIfClone<_>>::marker;
         let _ = <VerifiedParentBoundApprovalExchange as AmbiguousIfCopy<_>>::marker;
         let _: fn(
+            ParentBoundReleaseApprovalSupervisor,
+            BoundApprovalTransport,
+        ) -> Result<BoundDormantApproval, ApprovalActivationError> =
+            bind_dormant_parent_bound_approval;
+        let _: fn(
             BoundDormantApproval,
         ) -> Result<AuthenticatedApprovalBootstrap, ApprovalActivationError> =
             authenticate_parent_bound_approval_bootstrap;
         let _: fn(
             AuthenticatedApprovalBootstrap,
-            &ApprovalRequest,
         ) -> Result<VerifiedParentBoundApprovalExchange, ApprovalActivationError> =
             complete_parent_bound_approval_exchange;
     }

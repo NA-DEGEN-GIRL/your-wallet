@@ -1,7 +1,11 @@
-use approval_wire::{ApprovalDisplay, RiskLevel};
+use approval_wire::{ApprovalDisplay, ApprovalRequest, RiskLevel};
 use core::fmt;
+use platform_windows::{
+    ApprovalAuthorizationWindow, ApprovalSessionWindowError, ApprovalTransportWindow,
+    BoundApprovalTransport, IssuedApprovalSessionWindow,
+};
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use wallet_model::{
     Address20, BrowserContext, CanonicalEncode, CanonicalOperation, ChainIdentity, CodecError,
     Hash32, NonceLeaseId, SimulationProvenance, Transcript, U256,
@@ -273,7 +277,8 @@ pub(crate) struct ApprovalSession {
     expected_digest: Hash32,
     nonce: ApprovalNonce,
     expires_at_ms: u64,
-    expires_at: Instant,
+    authorization_window: ApprovalAuthorizationWindow,
+    transport_window: Option<ApprovalTransportWindow>,
     state: ApprovalSessionState,
 }
 
@@ -284,7 +289,8 @@ impl fmt::Debug for ApprovalSession {
             .field("expected_digest", &"[REDACTED]")
             .field("nonce", &"[REDACTED]")
             .field("expires_at_ms", &"[REDACTED]")
-            .field("expires_at", &"[REDACTED]")
+            .field("authorization_window", &"[REDACTED]")
+            .field("transport_window", &"[REDACTED]")
             .field("state", &self.state)
             .finish()
     }
@@ -306,7 +312,6 @@ impl ApprovalSession {
             ));
         }
         let issued_at_ms = current_unix_ms()?;
-        let issued_at = Instant::now();
         let browser_remaining_ms = binding
             .browser
             .deadline_ms
@@ -325,14 +330,13 @@ impl ApprovalSession {
                 ErrorField::Approval,
             )
         })?;
-        let expires_at = issued_at
-            .checked_add(Duration::from_millis(effective_ttl_ms))
-            .ok_or_else(|| {
-                ProtocolError::at(
-                    ProtocolErrorKind::InvalidNumericInvariant,
-                    ErrorField::Approval,
-                )
-            })?;
+        let issued_window = IssuedApprovalSessionWindow::issue(effective_ttl_ms).map_err(|_| {
+            ProtocolError::at(
+                ProtocolErrorKind::InvalidNumericInvariant,
+                ErrorField::Approval,
+            )
+        })?;
+        let (authorization_window, transport_window) = issued_window.into_parts();
         let expected_digest = approval_digest(binding).map_err(|_| {
             ProtocolError::at(ProtocolErrorKind::BoundsExceeded, ErrorField::Approval)
         })?;
@@ -340,7 +344,8 @@ impl ApprovalSession {
             expected_digest,
             nonce,
             expires_at_ms,
-            expires_at,
+            authorization_window,
+            transport_window: Some(transport_window),
             state: ApprovalSessionState::Pending,
         })
     }
@@ -366,18 +371,9 @@ impl ApprovalSession {
     /// Returns the remaining trusted monotonic lifetime, rounded down to
     /// milliseconds and bounded by the protocol maximum.
     pub fn remaining_milliseconds(&self) -> Result<u32, ProtocolError> {
-        let remaining = self.expires_at.saturating_duration_since(Instant::now());
-        let milliseconds = u32::try_from(remaining.as_millis()).map_err(|_| {
-            ProtocolError::at(
-                ProtocolErrorKind::InvalidNumericInvariant,
-                ErrorField::Approval,
-            )
-        })?;
-        if milliseconds == 0 {
-            Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired))
-        } else {
-            Ok(milliseconds)
-        }
+        self.authorization_window
+            .remaining_milliseconds()
+            .map_err(map_window_check_error)
     }
 
     /// Returns current terminal/pending state.
@@ -389,8 +385,81 @@ impl ApprovalSession {
 
     /// Invalidates a pending challenge after any bound state changes.
     pub fn invalidate(&mut self) {
+        self.transport_window.take();
         if self.state == ApprovalSessionState::Pending {
             self.state = ApprovalSessionState::Invalidated;
+        }
+    }
+
+    /// Consumes the transport half once and binds it to the exact request
+    /// derived from this session's immutable authorization binding.
+    pub fn bind_transport(
+        &mut self,
+        binding: &ApprovalBinding,
+        request: ApprovalRequest,
+    ) -> Result<BoundApprovalTransport, ProtocolError> {
+        match self.state {
+            ApprovalSessionState::Consumed => {
+                return Err(ProtocolError::new(ProtocolErrorKind::ApprovalConsumed));
+            }
+            ApprovalSessionState::Invalidated => {
+                return Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated));
+            }
+            ApprovalSessionState::Expired => {
+                return Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired));
+            }
+            ApprovalSessionState::Pending => {}
+        }
+
+        let Some(transport_window) = self.transport_window.take() else {
+            self.state = ApprovalSessionState::Invalidated;
+            return Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated));
+        };
+        let current_digest = approval_digest(binding).map_err(|_| {
+            self.state = ApprovalSessionState::Invalidated;
+            ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated)
+        })?;
+        if !constant_time_equal(self.expected_digest.as_bytes(), current_digest.as_bytes())
+            || !constant_time_equal(request.digest(), current_digest.as_bytes())
+            || !constant_time_equal(request.approval_nonce(), self.nonce.as_bytes())
+            || request.display() != &binding.display
+        {
+            self.state = ApprovalSessionState::Invalidated;
+            return Err(ProtocolError::new(ProtocolErrorKind::ApprovalMismatch));
+        }
+
+        self.authorization_window
+            .bind_transport(transport_window, request)
+            .map_err(|error| {
+                let protocol_error = map_window_check_error(error);
+                self.state = if error == ApprovalSessionWindowError::Expired {
+                    ApprovalSessionState::Expired
+                } else {
+                    ApprovalSessionState::Invalidated
+                };
+                protocol_error
+            })
+    }
+
+    /// Requires the one transport half to have been successfully bound before
+    /// a verified response can enter the public authorization transition.
+    pub(crate) fn ensure_transport_bound(&mut self) -> Result<(), ProtocolError> {
+        match self.state {
+            ApprovalSessionState::Consumed => {
+                Err(ProtocolError::new(ProtocolErrorKind::ApprovalConsumed))
+            }
+            ApprovalSessionState::Invalidated => {
+                Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated))
+            }
+            ApprovalSessionState::Expired => {
+                Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired))
+            }
+            ApprovalSessionState::Pending if self.transport_window.is_none() => Ok(()),
+            ApprovalSessionState::Pending => {
+                self.transport_window.take();
+                self.state = ApprovalSessionState::Invalidated;
+                Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated))
+            }
         }
     }
 
@@ -412,10 +481,17 @@ impl ApprovalSession {
             }
             ApprovalSessionState::Pending => {}
         }
-        if Instant::now() >= self.expires_at {
-            self.state = ApprovalSessionState::Expired;
-            return Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired));
-        }
+        self.authorization_window
+            .ensure_unexpired()
+            .map_err(|error| {
+                let protocol_error = map_window_check_error(error);
+                self.state = if error == ApprovalSessionWindowError::Expired {
+                    ApprovalSessionState::Expired
+                } else {
+                    ApprovalSessionState::Invalidated
+                };
+                protocol_error
+            })?;
         if !constant_time_equal(self.expected_digest.as_bytes(), current_digest.as_bytes())
             || !constant_time_equal(
                 self.expected_digest.as_bytes(),
@@ -428,6 +504,14 @@ impl ApprovalSession {
         }
         self.state = ApprovalSessionState::Consumed;
         Ok(response.decision)
+    }
+}
+
+fn map_window_check_error(error: ApprovalSessionWindowError) -> ProtocolError {
+    if error == ApprovalSessionWindowError::Expired {
+        ProtocolError::new(ProtocolErrorKind::ApprovalExpired)
+    } else {
+        ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated)
     }
 }
 
@@ -459,7 +543,8 @@ fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use approval_wire::{
-        ApprovalDisplay, DisplayField, FieldSemantic, OperationKind, RiskLevel, SimulationStatus,
+        ApprovalDisplay, ApprovalRequest, DisplayField, FieldSemantic, OperationKind, RiskLevel,
+        SimulationStatus,
     };
     use wallet_model::{
         ActivationNonce, AdapterKind, Address20, BoundedBytes, BrowserContext, BrowserFamily,
@@ -473,6 +558,20 @@ mod tests {
         ApprovalSession, ApprovalSessionState, NonceLeaseBinding, approval_digest, display_digest,
     };
     use crate::{ProtocolError, ProtocolErrorKind, ProtocolValidity, ReleaseChannel};
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     fn binding() -> Result<ApprovalBinding, Box<dyn std::error::Error>> {
         let display = binding_display()?;
@@ -590,6 +689,20 @@ mod tests {
         value: &str,
     ) -> Result<DisplayField, approval_wire::WireError> {
         DisplayField::new(semantic, value, semantic != FieldSemantic::SimulationEngine)
+    }
+
+    fn request_for_session(
+        binding: &ApprovalBinding,
+        session: &ApprovalSession,
+        expires_after_milliseconds: u32,
+    ) -> Result<ApprovalRequest, approval_wire::WireError> {
+        ApprovalRequest::new(
+            *session.expected_digest().as_bytes(),
+            *session.nonce().as_bytes(),
+            expires_after_milliseconds,
+            "blue comet",
+            binding.display.clone(),
+        )
     }
 
     #[test]
@@ -721,6 +834,159 @@ mod tests {
     }
 
     #[test]
+    fn approval_transport_binding_is_one_attempt() -> Result<(), Box<dyn std::error::Error>> {
+        let binding = binding()?;
+        let mut session = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let request = request_for_session(&binding, &session, 10_000)?;
+        let retry = request.clone();
+
+        let _bound = session.bind_transport(&binding, request)?;
+        assert_eq!(session.state(), ApprovalSessionState::Pending);
+        assert!(matches!(
+            session.bind_transport(&binding, retry),
+            Err(error) if error == ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated)
+        ));
+        assert_eq!(session.state(), ApprovalSessionState::Invalidated);
+        Ok(())
+    }
+
+    #[test]
+    fn authorization_requires_successfully_bound_transport()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let binding = binding()?;
+        let mut unbound = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        assert_eq!(
+            unbound.ensure_transport_bound(),
+            Err(ProtocolError::new(ProtocolErrorKind::ApprovalInvalidated))
+        );
+        assert_eq!(unbound.state(), ApprovalSessionState::Invalidated);
+
+        let mut bound = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let request = request_for_session(&binding, &bound, 10_000)?;
+        let _transport = bound.bind_transport(&binding, request)?;
+        assert_eq!(bound.ensure_transport_bound(), Ok(()));
+        assert_eq!(bound.state(), ApprovalSessionState::Pending);
+        Ok(())
+    }
+
+    #[test]
+    fn approval_transport_substitution_terminally_invalidates_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let binding = binding()?;
+
+        let mut digest_session = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let changed_digest = ApprovalRequest::new(
+            [13; 32],
+            *digest_session.nonce().as_bytes(),
+            10_000,
+            "blue comet",
+            binding.display.clone(),
+        )?;
+        assert!(matches!(
+            digest_session.bind_transport(&binding, changed_digest),
+            Err(error) if error == ProtocolError::new(ProtocolErrorKind::ApprovalMismatch)
+        ));
+        assert_eq!(digest_session.state(), ApprovalSessionState::Invalidated);
+
+        let mut nonce_session = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let changed_nonce = ApprovalRequest::new(
+            *nonce_session.expected_digest().as_bytes(),
+            [13; 32],
+            10_000,
+            "blue comet",
+            binding.display.clone(),
+        )?;
+        assert!(matches!(
+            nonce_session.bind_transport(&binding, changed_nonce),
+            Err(error) if error == ProtocolError::new(ProtocolErrorKind::ApprovalMismatch)
+        ));
+        assert_eq!(nonce_session.state(), ApprovalSessionState::Invalidated);
+
+        let mut display_session = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10_000,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let mut changed_fields = binding.display.fields().to_vec();
+        let account_field = changed_fields
+            .iter_mut()
+            .find(|field| field.semantic() == FieldSemantic::Account)
+            .ok_or("missing account display field")?;
+        *account_field = display_field(
+            FieldSemantic::Account,
+            "0x0303030303030303030303030303030303030303",
+        )?;
+        let changed_display = ApprovalDisplay::new(binding.display.risk(), changed_fields)?;
+        let substituted_display = ApprovalRequest::new(
+            *display_session.expected_digest().as_bytes(),
+            *display_session.nonce().as_bytes(),
+            10_000,
+            "blue comet",
+            changed_display,
+        )?;
+        assert!(matches!(
+            display_session.bind_transport(&binding, substituted_display),
+            Err(error) if error == ProtocolError::new(ProtocolErrorKind::ApprovalMismatch)
+        ));
+        assert_eq!(display_session.state(), ApprovalSessionState::Invalidated);
+        Ok(())
+    }
+
+    #[test]
+    fn approval_transport_binding_obeys_original_monotonic_expiry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let binding = binding()?;
+        let mut session = ApprovalSession::issue(
+            &binding,
+            ApprovalNonce::new([12; 32]),
+            10,
+            ReleaseChannel::PrivateCanary,
+        )?;
+        let request = request_for_session(&binding, &session, u32::try_from(APPROVAL_TTL_MAX_MS)?)?;
+
+        std::thread::sleep(std::time::Duration::from_millis(25));
+
+        assert!(matches!(
+            session.bind_transport(&binding, request),
+            Err(error) if error == ProtocolError::new(ProtocolErrorKind::ApprovalExpired)
+        ));
+        assert_eq!(session.state(), ApprovalSessionState::Expired);
+        Ok(())
+    }
+
+    #[test]
+    fn approval_session_is_move_only() {
+        let _ = <ApprovalSession as AmbiguousIfClone<_>>::marker;
+        let _ = <ApprovalSession as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
     fn deadline_is_inclusive_and_capped() -> Result<(), Box<dyn std::error::Error>> {
         let binding = binding()?;
         let mut session = ApprovalSession::issue(
@@ -734,7 +1000,7 @@ mod tests {
             approval_digest: session.expected_digest(),
             nonce: session.nonce(),
         };
-        session.expires_at = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
         assert_eq!(
             session.consume(response, session.expected_digest()),
             Err(ProtocolError::new(ProtocolErrorKind::ApprovalExpired))
