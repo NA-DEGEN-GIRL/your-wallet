@@ -2128,6 +2128,28 @@ const keyAgentServiceTokenFixtureDirectoryInventory = {
     "crates/platform-windows/src/key_agent_service_token",
   ),
 };
+const keyAgentServiceLaunchPaths = Object.freeze({
+  root: "crates/platform-windows/src/key_agent_service_launch/mod.rs",
+  job: "crates/platform-windows/src/key_agent_service_launch/job.rs",
+});
+const keyAgentServiceLaunchFiles = await rustProductionSources(
+  "crates/platform-windows/src/key_agent_service_launch",
+  { withTestCode: true },
+);
+const keyAgentServiceLaunchSources = Object.freeze(
+  Object.fromEntries(
+    keyAgentServiceLaunchFiles.map((file) => [file.path, file.source]),
+  ),
+);
+const keyAgentServiceLaunchDirectoryInventory = {
+  path: "crates/platform-windows/src/key_agent_service_launch",
+  entries: await trustedDirectoryEntryInventory(
+    "crates/platform-windows/src/key_agent_service_launch",
+  ),
+};
+const keyAgentServiceLpacSourceForLaunch = await text(
+  "crates/platform-windows/src/key_agent_lpac.rs",
+);
 const keyAgentServiceBoundaryAdr = await text(
   "docs/adr/0001-windows-key-agent-service-boundary.md",
 );
@@ -5034,6 +5056,13 @@ const keyAgentServiceFeatureContract = ({
     /key-agent-service-token-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
       platformManifest,
     ) &&
+    /^default\s*=\s*\[\]$/mu.test(platformManifest) &&
+    /key-agent-service-lpac-launch-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-rpc-status-feasibility-test-hook",\s*"key-agent-service-token-feasibility-test-hook",?\s*\]/u.test(
+      platformManifest,
+    ) &&
+    !serviceManifest.includes(
+      "key-agent-service-lpac-launch-feasibility-test-hook",
+    ) &&
     /^key-agent-service-rpc-sys\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-rpc-sys",\s*optional\s*=\s*true\s*\}$/mu.test(
       platformManifest,
     ) &&
@@ -5078,6 +5107,19 @@ const keyAgentServiceFeatureContract = ({
     /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-token-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_token\s*;/u.test(
       platformLib,
     ) &&
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_launch\s*;/u.test(
+      platformLib,
+    ) &&
+    keyAgentServiceLiteralCount(
+      compactPlatformLib,
+      "modkey_agent_service_launch;",
+    ) === 1 &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+key_agent_service_launch\b/u.test(
+      rustLexicalCode(platformLib),
+    ) &&
+    !rustLexicalCode(main).includes("key_agent_service_launch") &&
+    !rustLexicalCode(platformService).includes("key_agent_service_launch") &&
+    !serviceCode.includes("key_agent_service_launch") &&
     /#\[cfg\(\s*all\(\s*windows\s*,\s*any\(\s*feature\s*=\s*"key-agent-service-scm-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-token-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*\)\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+sys\s*\{/u.test(
       platformService,
     ) &&
@@ -5164,6 +5206,24 @@ const keyAgentServiceFeatureMutationProbes = [
   },
   {
     ...keyAgentServiceFeatureInputs,
+    platformManifest: keyAgentServicePlatformManifest.replace(
+      "default = []",
+      'default = ["key-agent-service-lpac-launch-feasibility-test-hook"]',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformManifest: keyAgentServicePlatformManifest.replace(
+      '    "key-agent-service-rpc-status-feasibility-test-hook",',
+      '    "key-agent-service-scm-feasibility-test-hook",',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    serviceManifest: `${keyAgentServiceManifest}\nkey-agent-service-lpac-launch-feasibility-test-hook = []\n`,
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
     main: keyAgentServiceMain.replace(
       "    debug_assertions\n))]\nfn main() {",
       "    any(debug_assertions, not(debug_assertions))\n))]\nfn main() {",
@@ -5190,6 +5250,20 @@ const keyAgentServiceFeatureMutationProbes = [
     platformLib: keyAgentServicePlatformLib.replace(
       '    feature = "key-agent-service-token-feasibility-test-hook",\n    debug_assertions\n))]\nmod key_agent_service_token;',
       '    feature = "key-agent-service-token-feasibility-test-hook",\n    any(debug_assertions, not(debug_assertions))\n))]\nmod key_agent_service_token;',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformLib: keyAgentServicePlatformLib.replace(
+      '    feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n    debug_assertions\n))]\nmod key_agent_service_launch;',
+      '    feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n    any(debug_assertions, not(debug_assertions))\n))]\nmod key_agent_service_launch;',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformLib: keyAgentServicePlatformLib.replace(
+      "mod key_agent_service_launch;",
+      "pub mod key_agent_service_launch;",
     ),
   },
   {
@@ -5245,6 +5319,7 @@ const approvedKeyAgentServiceTokenFixtureDirectoryInventory = {
 };
 const keyAgentServiceTokenObservedApis = [
   { api: "CloseHandle", count: 2 },
+  { api: "CompareObjectHandles", count: 1 },
   { api: "GetHandleInformation", count: 1 },
   { api: "GetLengthSid", count: 1 },
   { api: "GetTokenInformation", count: 2 },
@@ -5269,6 +5344,10 @@ const keyAgentServiceTokenTestNames = [
   "every_scalar_and_service_group_policy_mutation_is_rejected",
   "exact_documented_restricted_sid_quartet_rejects_every_set_mutation",
   "candidate_privileges_are_an_exact_presence_set_with_bounded_attributes",
+  "creation_token_revalidation_rejects_handle_flags_and_wrong_object",
+  "creation_token_revalidation_rejects_complete_baseline_and_catalog_drift",
+  "proof_and_creation_token_are_move_only_send_and_not_sync",
+  "creation_token_debug_is_data_free",
   "redacted_public_errors_never_expose_policy_details",
 ];
 const keyAgentServiceTokenContract = ({
@@ -5291,6 +5370,35 @@ const keyAgentServiceTokenContract = ({
       policyProduction,
       "verify_fixture_policy",
     );
+    const verifyFixtureBaseline = rustFunctionBlock(
+      policyProduction,
+      "verify_fixture_baseline",
+    );
+    const verifyCreationTokenRevalidation = rustFunctionBlock(
+      policyProduction,
+      "verify_creation_token_revalidation",
+    );
+    const canonicalizeServiceTokenBaseline = rustFunctionBlock(
+      policyProduction,
+      "canonicalize_service_token_baseline",
+    );
+    const verifyCurrentFixture = rustFunctionBlock(
+      policyProduction,
+      "verify_current_key_agent_service_token_fixture",
+    );
+    const revalidateCreationToken = rustFunctionBlock(
+      policyProduction,
+      "revalidate_creation_token",
+    );
+    const creationToken = rustFunctionBlock(policyProduction, "creation_token");
+    const verifyCreationPrincipals = rustFunctionBlock(
+      policyProduction,
+      "verify_creation_principals",
+    );
+    const revalidateCreationCapability = rustFunctionBlock(
+      policyProduction,
+      "revalidate",
+    );
     const validatePrivileges = rustFunctionBlock(
       policyProduction,
       "validate_privileges",
@@ -5298,6 +5406,14 @@ const keyAgentServiceTokenContract = ({
     const captureCurrentToken = rustFunctionBlock(
       sysProduction,
       "capture_current_service_token",
+    );
+    const recaptureCurrentToken = rustFunctionBlock(
+      sysProduction,
+      "recapture_current_service_token",
+    );
+    const captureServiceTokenBaseline = rustFunctionBlock(
+      sysProduction,
+      "capture_service_token_baseline",
     );
     const openCurrentToken = rustFunctionBlock(
       sysProduction,
@@ -5318,6 +5434,15 @@ const keyAgentServiceTokenContract = ({
     const copyBoundedSid = rustFunctionBlock(
       sysProduction,
       "copy_bounded_sid",
+    );
+    const tokenIdentityBaseline = rustFunctionBlock(
+      sysProduction,
+      "token_identity_baseline",
+    );
+    const tokenOwnerSid = rustFunctionBlock(sysProduction, "token_owner_sid");
+    const tokenPrimaryGroupSid = rustFunctionBlock(
+      sysProduction,
+      "token_primary_group_sid",
     );
     const serviceMainImpl = rustFunctionBlock(platformService, "service_main_impl");
     const publishRunning = rustFunctionBlock(
@@ -5360,13 +5485,34 @@ const keyAgentServiceTokenContract = ({
     const compactPolicy = compactRust(policyProduction);
     const compactSys = compactRust(sysProduction);
     const compactVerify = compactRust(verifyFixturePolicy);
+    const compactVerifyBaseline = compactRust(verifyFixtureBaseline);
+    const compactVerifyCreationTokenRevalidation = compactRust(
+      verifyCreationTokenRevalidation,
+    );
+    const compactCanonicalizeServiceTokenBaseline = compactRust(
+      canonicalizeServiceTokenBaseline,
+    );
+    const compactVerifyCurrentFixture = compactRust(verifyCurrentFixture);
+    const compactRevalidateCreationToken = compactRust(revalidateCreationToken);
+    const compactCreationToken = compactRust(creationToken);
+    const compactVerifyCreationPrincipals = compactRust(
+      verifyCreationPrincipals,
+    );
+    const compactRevalidateCreationCapability = compactRust(
+      revalidateCreationCapability,
+    );
     const compactValidatePrivileges = compactRust(validatePrivileges);
     const compactCapture = compactRust(captureCurrentToken);
+    const compactRecapture = compactRust(recaptureCurrentToken);
+    const compactCaptureBaseline = compactRust(captureServiceTokenBaseline);
     const compactOpenCurrentToken = compactRust(openCurrentToken);
     const compactResolveServiceSid = compactRust(resolveServiceSid);
     const compactResolvePrivileges = compactRust(resolvePrivileges);
     const compactTokenInformation = compactRust(tokenInformation);
     const compactCopyBoundedSid = compactRust(copyBoundedSid);
+    const compactTokenIdentityBaseline = compactRust(tokenIdentityBaseline);
+    const compactTokenOwnerSid = compactRust(tokenOwnerSid);
+    const compactTokenPrimaryGroupSid = compactRust(tokenPrimaryGroupSid);
     const observedTokenName = ["to", "ken"].join("");
    const expectedRestrictedName = ["expected", "_restricted"].join("");
    return (
@@ -5377,7 +5523,7 @@ const keyAgentServiceTokenContract = ({
       policy.includes("#![deny(unsafe_code)]") &&
       rustUnsafeKeywordCount(policyProduction) === 0 &&
       sys.includes("#![allow(unsafe_code)]") &&
-      rustUnsafeKeywordCount(sysProduction) === 19 &&
+      rustUnsafeKeywordCount(sysProduction) === 27 &&
       keyAgentServiceLiteralCount(compactPolicy, "modsys;") === 1 &&
       !/(?:e?println|print|dbg)!/u.test(allCode) &&
       !keyAgentServiceNetworkSurface.test(allCode) &&
@@ -5397,30 +5543,95 @@ const keyAgentServiceTokenContract = ({
       ) &&
       hasOrderedCompactMarkers(captureCurrentToken, [
         "reject_thread_impersonation()?",
-        `let${observedTokenName}=open_current_process_token()?`,
+        "let(token,token_handle_flags)=open_current_process_token()?",
+        "letbaseline=capture_service_token_baseline(token.raw(),token_handle_flags)?",
+        "reject_thread_impersonation()?",
+        "Ok(CapturedServiceToken{token,baseline})",
+      ]) &&
+      hasOrderedCompactMarkers(captureServiceTokenBaseline, [
         "letservice_sid=resolve_fixed_service_sid()?",
         "letcatalog=resolve_privilege_catalog()?",
-        `lettoken_is_primary=token_type(${observedTokenName}.raw())?==TokenPrimary`,
-        `letsession_id=token_u32(${observedTokenName}.raw(),TokenSessionId)?`,
-        `letapp_container=exact_boolean(token_u32(${observedTokenName}.raw(),TokenIsAppContainer)?)?`,
-        `letui_access=exact_boolean(token_u32(${observedTokenName}.raw(),TokenUIAccess)?)?`,
-        `lethas_restrictions=token_has_restrictions(${observedTokenName}.raw())?`,
-        `letuser_sid=token_user_sid(${observedTokenName}.raw())?`,
+        "letidentity_before=token_identity_baseline(token)?",
+        "lettoken_is_primary=token_type(token)?==TokenPrimary",
+        "letsession_id=token_u32(token,TokenSessionId)?",
+        "letapp_container=exact_boolean(token_u32(token,TokenIsAppContainer)?)?",
+        "letui_access=exact_boolean(token_u32(token,TokenUIAccess)?)?",
+        "lethas_restrictions=token_has_restrictions(token)?",
+        "letuser_sid=token_user_sid(token)?",
         "ifuser_sid!=service_sid",
-        `letgroups=token_sid_entries(${observedTokenName}.raw(),TokenGroups)?`,
-        `letrestricted_sids=token_sid_entries(${observedTokenName}.raw(),TokenRestrictedSids)?`,
-        `letprivileges=token_privileges(${observedTokenName}.raw())?`,
-        "reject_thread_impersonation()?",
+        "letowner_sid=token_owner_sid(token)?",
+        "letprimary_group_sid=token_primary_group_sid(token)?",
+        "letgroups=token_sid_entries(token,TokenGroups)?",
+        "letrestricted_sids=token_sid_entries(token,TokenRestrictedSids)?",
+        "letprivileges=token_privileges(token)?",
+        "letidentity=token_identity_baseline(token)?",
+        "ifidentity!=identity_before",
       ]) &&
-      compactOpenCurrentToken.includes(
-        "OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&rawmuttoken)",
+      compactSys.includes(
+        "constCURRENT_SERVICE_TOKEN_ACCESS:windows::Win32::Security::TOKEN_ACCESS_MASK=TOKEN_QUERY;",
       ) &&
       compactOpenCurrentToken.includes(
-        "GetHandleInformation(owned.raw(),&rawmutflags)",
+        "OpenProcessToken(GetCurrentProcess(),CURRENT_SERVICE_TOKEN_ACCESS,&rawmuttoken,)",
       ) &&
-      compactOpenCurrentToken.includes("ifflags!=0") &&
+      compactOpenCurrentToken.includes(
+        "letowned=OwnedToken::new(token);letflags=token_handle_flags(&owned)?;Ok((owned,flags))",
+      ) &&
+      compactSys.includes(
+        "unsafe{GetHandleInformation(token.raw(),&rawmutflags)}",
+      ) &&
       compactSys.includes(
         "OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,true,&rawmuttoken)",
+      ) &&
+      hasOrderedCompactMarkers(recaptureCurrentToken, [
+        "reject_thread_impersonation()?",
+        "letretained_handle_flags=token_handle_flags(retained)?",
+        "letmutbaseline=capture_service_token_baseline(retained.raw(),retained_handle_flags)?",
+        "let(token,fresh_handle_flags)=open_current_process_token()?",
+        "letsame_token_object=same_kernel_object(retained.raw(),token.raw())",
+        "letfresh_identity=token_identity_baseline(token.raw())?",
+        "iffresh_identity!=baseline.observation.identity",
+        "baseline.token_handle_flags=fresh_handle_flags",
+        "reject_thread_impersonation()?",
+        "Ok(RecapturedServiceToken{captured:CapturedServiceToken{token,baseline},retained_handle_flags,same_token_object,})",
+      ]) &&
+      compactSys.includes(
+        "unsafeimplSendforOwnedToken{}",
+      ) &&
+      compactSys.includes(
+        "pub(super)structOwnedToken{handle:HANDLE,_not_sync:PhantomData<Cell<()>>,}",
+      ) &&
+      compactSys.includes(
+        "pub(super)fnborrowed_handle(&self)->BorrowedHandle<'_>{unsafe{BorrowedHandle::borrow_raw(self.raw().0)}}",
+      ) &&
+      compactSys.includes(
+        "implDropforOwnedToken{fndrop(&mutself){if!invalid_handle(self.handle){unsafe{let_=CloseHandle(self.handle);}}}}",
+      ) &&
+      compactTokenOwnerSid.includes(
+        "token_information(token,TokenOwner,size_of::<TOKEN_OWNER>())?",
+      ) &&
+      compactTokenOwnerSid.includes(
+        "copy_bounded_sid(&information,owner.Owner)",
+      ) &&
+      compactTokenPrimaryGroupSid.includes(
+        "token_information(token,TokenPrimaryGroup,size_of::<TOKEN_PRIMARY_GROUP>())?",
+      ) &&
+      compactTokenPrimaryGroupSid.includes(
+        "copy_bounded_sid(&information,primary_group.PrimaryGroup)",
+      ) &&
+      hasOrderedCompactMarkers(tokenIdentityBaseline, [
+        "token_information(token,TokenStatistics,size_of::<TOKEN_STATISTICS>())?",
+        "information.returned_bytes!=size_of::<TOKEN_STATISTICS>()",
+        "offset_of!(TOKEN_STATISTICS,TokenType)",
+        "iftoken_type!=TokenPrimary",
+        "offset_of!(TOKEN_STATISTICS,TokenId)",
+        "offset_of!(TOKEN_STATISTICS,ModifiedId)",
+        "token_id.LowPart.zeroize()",
+        "token_id.HighPart.zeroize()",
+        "modified_id.LowPart.zeroize()",
+        "modified_id.HighPart.zeroize()",
+      ]) &&
+      !/\b(?:AuthenticationId|ExpirationTime|DynamicCharged|DynamicAvailable|GroupCount|PrivilegeCount)\b/u.test(
+        tokenIdentityBaseline,
       ) &&
       hasOrderedCompactMarkers(resolveServiceSid, [
         "KEY_AGENT_VIRTUAL_SERVICE_ACCOUNT.encode_utf16().chain(core::iter::once(0)).collect()",
@@ -5467,8 +5678,13 @@ const keyAgentServiceTokenContract = ({
         "token.ui_access",
         "!token.has_restrictions",
         "!token.user_sid.has_canonical_shape()",
+        "!token.owner_sid.has_canonical_shape()",
+        "!token.primary_group_sid.has_canonical_shape()",
+        "letservice_sid=&token.user_sid",
+        "iftoken.owner_sid!=*service_sid",
         "exactly_one_group(&token.groups,&service_sid.0)",
         "service_group.attributes!=SERVICE_SID_GROUP_ATTRIBUTES",
+        "exactly_one_group(&token.groups,&token.primary_group_sid.0).is_none()",
         "exactly_one_group(&token.groups,LOCAL_SID)",
         "local_group.attributes!=LOCAL_GROUP_ATTRIBUTES",
         "exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID)",
@@ -5476,8 +5692,58 @@ const keyAgentServiceTokenContract = ({
         `let${expectedRestrictedName}=[service_sid.0.as_slice(),WORLD_SID,logon_group.sid.0.as_slice(),WRITE_RESTRICTED_SID,]`,
         `contains_exact_sid_set(&token.restricted_sids,&${expectedRestrictedName})`,
         "validate_privileges(&token.privileges,catalog)?",
-        "completeness:SERVICE_TOKEN_POLICY_COMPLETENESS",
       ]) &&
+      compactVerifyBaseline.includes(
+        "ifbaseline.token_handle_flags!=0{returnErr(PolicyRejection::HandleContinuity);}",
+      ) &&
+      compactVerifyBaseline.includes(
+        "verify_fixture_policy(&baseline.observation,&baseline.catalog)",
+      ) &&
+      hasOrderedCompactMarkers(verifyCreationTokenRevalidation, [
+        "ifretained_handle_flags!=0||!same_token_object",
+        "verify_fixture_baseline(fresh)?",
+        "iffresh!=baseline",
+        "Err(PolicyRejection::BaselineContinuity)",
+      ]) &&
+      hasOrderedCompactMarkers(canonicalizeServiceTokenBaseline, [
+        "baseline.observation.groups.sort_by",
+        "baseline.observation.restricted_sids.sort_by",
+        "baseline.observation.privileges.sort_by",
+      ]) &&
+      hasOrderedCompactMarkers(verifyCurrentFixture, [
+        "letmutcaptured=sys::capture_current_service_token()?",
+        "canonicalize_service_token_baseline(&mutcaptured.baseline)",
+        "verify_fixture_baseline(&captured.baseline)",
+        "retained_token:captured.token",
+        "baseline:captured.baseline",
+        "completeness:SERVICE_TOKEN_POLICY_COMPLETENESS",
+        "_restricted_sid_attributes:UnverifiedRestrictedSidAttributes",
+        "_privilege_state:UnverifiedPrivilegeState",
+        "_integrity_policy:UnverifiedIntegrityPolicy",
+        "_scm_configuration:UnverifiedScmConfiguration",
+      ]) &&
+      hasOrderedCompactMarkers(revalidateCreationToken, [
+        "letmutrecaptured=sys::recapture_current_service_token(&self.retained_token)?",
+        "canonicalize_service_token_baseline(&mutrecaptured.captured.baseline)",
+        "verify_creation_token_revalidation(&self.baseline,&recaptured.captured.baseline,recaptured.retained_handle_flags,recaptured.same_token_object,)",
+      ]) &&
+      hasOrderedCompactMarkers(creationToken, [
+        "&mutself",
+        "Result<VerifiedServiceCreationToken<'_>,ServiceTokenFixtureError>",
+        "self.revalidate_creation_token()?",
+        "Ok(VerifiedServiceCreationToken{proof:self,_not_sync:PhantomData,})",
+      ]) &&
+      hasOrderedCompactMarkers(verifyCreationPrincipals, [
+        "owner:&[u8]",
+        "primary_group:&[u8]",
+        "letobservation=&self.proof.baseline.observation",
+        "owner!=observation.owner_sid.0.as_slice()",
+        "primary_group!=observation.primary_group_sid.0.as_slice()",
+        "Err(ServiceTokenFixtureError::policy())",
+      ]) &&
+      compactRevalidateCreationCapability.includes(
+        "self.proof.revalidate_creation_token()",
+      ) &&
       compactValidatePrivileges.includes(
         "privileges.len()!=catalog.expected.len()",
       ) &&
@@ -5490,11 +5756,39 @@ const keyAgentServiceTokenContract = ({
       compactPolicy.includes(
         "pub(crate)constSERVICE_TOKEN_POLICY_COMPLETENESS:ServiceTokenPolicyCompleteness=ServiceTokenPolicyCompleteness::Unverified;",
       ) &&
+      /pub\(crate\)\s+struct\s+ServiceTokenFixtureProof\s*\{\s*retained_token\s*:\s*sys::OwnedToken\s*,[\s\S]*?baseline\s*:\s*ServiceTokenBaseline\s*,\s*completeness\s*:\s*ServiceTokenPolicyCompleteness\s*,\s*_restricted_sid_attributes\s*:\s*UnverifiedRestrictedSidAttributes\s*,\s*_privilege_state\s*:\s*UnverifiedPrivilegeState\s*,\s*_integrity_policy\s*:\s*UnverifiedIntegrityPolicy\s*,\s*_scm_configuration\s*:\s*UnverifiedScmConfiguration\s*,\s*_not_sync\s*:\s*PhantomData<Cell<\(\)>>\s*,\s*\}/u.test(
+        policyProduction,
+      ) &&
       compactPolicy.includes(
-        "pub(crate)structServiceTokenFixtureProof{completeness:ServiceTokenPolicyCompleteness,_restricted_sid_attributes:UnverifiedRestrictedSidAttributes,_privilege_state:UnverifiedPrivilegeState,_integrity_policy:UnverifiedIntegrityPolicy,_scm_configuration:UnverifiedScmConfiguration,}",
+        "pub(crate)structVerifiedServiceCreationToken<'proof>{proof:&'proofmutServiceTokenFixtureProof,_not_sync:PhantomData<Cell<()>>,}",
+      ) &&
+      compactPolicy.includes(
+        "pub(crate)fnborrowed_handle(&self)->BorrowedHandle<'_>{self.proof.retained_token.borrowed_handle()}",
+      ) &&
+      compactPolicy.includes(
+        "structServiceTokenObservation{identity:TokenIdentityBaseline,token_is_primary:bool,session_id:u32,app_container:bool,ui_access:bool,has_restrictions:bool,user_sid:SidBytes,owner_sid:SidBytes,primary_group_sid:SidBytes,groups:Vec<SidEntry>,restricted_sids:Vec<SidEntry>,privileges:Vec<PrivilegeEntry>,}",
+      ) &&
+      compactPolicy.includes(
+        "structServiceTokenBaseline{token_handle_flags:u32,observation:ServiceTokenObservation,catalog:PrivilegeCatalog,}",
+      ) &&
+      compactVerify.includes(
+        "->Result<(),PolicyRejection>",
+      ) &&
+      !compactVerify.includes("ServiceTokenFixtureProof") &&
+      compactPolicy.includes(
+        "implDropforSidBytes{fndrop(&mutself){self.0.zeroize();}}",
+      ) &&
+      compactPolicy.includes(
+        "implDropforTokenIdentityBaseline{fndrop(&mutself){self.token_id.zeroize();self.modified_id.zeroize();}}",
+      ) &&
+      compactPolicy.includes(
+        "implDropforServiceTokenBaseline{fndrop(&mutself){self.token_handle_flags.zeroize();}}",
       ) &&
       policyProduction.includes(
         'formatter.write_str("ServiceTokenFixtureProof([REDACTED])")',
+      ) &&
+      policyProduction.includes(
+        'formatter.write_str("VerifiedServiceCreationToken([REDACTED])")',
       ) &&
       policyProduction.includes(
         'formatter.write_str("ServiceTokenFixtureError([REDACTED])")',
@@ -5519,6 +5813,16 @@ const keyAgentServiceTokenContract = ({
       policy.includes("for group_index in 0..3") &&
       policy.includes("for index in 0..4") &&
       policy.includes("for index in 0..fixture_catalog.expected.len()") &&
+      policy.includes("value.owner_sid = sid(5, &[80, 9, 9, 9, 9, 9]);") &&
+      policy.includes("value.primary_group_sid = sid(5, &[32, 999]);") &&
+      policy.includes("value.observation.identity.modified_id = luid(11);") &&
+      policy.includes(
+        "value.observation.primary_group_sid = value.observation.user_sid.clone();",
+      ) &&
+      policy.includes(
+        "token.verify_creation_principals(&owner, &primary_group)",
+      ) &&
+      policy.includes("creation_token.revalidate()?;") &&
       compactRust(serviceTokenStart).includes(
         "crate::key_agent_service_token::verify_current_key_agent_service_token_fixture().map(|proof|Self{_proof:proof}).map_err(|_|WorkerStartFailure::Boundary)",
       ) &&
@@ -5604,8 +5908,80 @@ const keyAgentServiceTokenMutationProbes = [
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.sys,
-    "OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token)",
-    "OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &raw mut token)",
+    "const CURRENT_SERVICE_TOKEN_ACCESS: windows::Win32::Security::TOKEN_ACCESS_MASK = TOKEN_QUERY;",
+    "const CURRENT_SERVICE_TOKEN_ACCESS: windows::Win32::Security::TOKEN_ACCESS_MASK = TOKEN_DUPLICATE;",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "    if token.owner_sid != *service_sid {",
+    "    if token.owner_sid == *service_sid {",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "        || !token.primary_group_sid.has_canonical_shape()",
+    "        || token.primary_group_sid.has_canonical_shape()",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "    if exactly_one_group(&token.groups, &token.primary_group_sid.0).is_none() {",
+    "    if false {",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.sys,
+    "token_information(token, TokenOwner, size_of::<TOKEN_OWNER>())?",
+    "token_information(token, TokenUser, size_of::<TOKEN_OWNER>())?",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.sys,
+    "token_information(token, TokenPrimaryGroup, size_of::<TOKEN_PRIMARY_GROUP>())?",
+    "token_information(token, TokenOwner, size_of::<TOKEN_PRIMARY_GROUP>())?",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.sys,
+    "let same_token_object = same_kernel_object(retained.raw(), token.raw());",
+    "let same_token_object = true;",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "    if fresh != baseline {",
+    "    if false {",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.sys,
+    "offset_of!(TOKEN_STATISTICS, ModifiedId)",
+    "offset_of!(TOKEN_STATISTICS, TokenId)",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "    pub(crate) fn creation_token(\n        &mut self,",
+    "    pub(crate) fn creation_token(\n        &self,",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "            || primary_group != observation.primary_group_sid.0.as_slice()",
+    "            || false",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "        self.proof.revalidate_creation_token()",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    "baseline.observation.privileges.sort_by",
+    "baseline.observation.privileges.sort_unstable_by",
   ),
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
@@ -5636,6 +6012,578 @@ requireInvariant(
         !keyAgentServiceTokenContract(probe),
     ),
   "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual account and Session-0 primary restricted shape, exact normal groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, pre-RUNNING SCM integration, ignored live obligation, and effective negative mutations",
+);
+
+const keyAgentServiceCreationSecurityContract = (source) => {
+  try {
+    const production = withoutBottomTestModule(source);
+    const coreImpl = rustImplItems(production).find(
+      (item) => item.header === "impl PreparedKeyAgentCreationSecurity",
+    )?.source;
+    const serviceImpl = rustImplItems(production).find((item) =>
+      item.header.includes("PreparedServiceKeyAgentCreationSecurity"),
+    )?.source;
+    const serviceDebugImpl = rustImplItems(production).find((item) =>
+      item.header.includes("fmt::Debug for PreparedServiceKeyAgentCreationSecurity"),
+    )?.source;
+    if (
+      coreImpl === undefined ||
+      serviceImpl === undefined ||
+      serviceDebugImpl === undefined
+    ) {
+      return false;
+    }
+    const corePrepare = rustFunctionBlock(
+      coreImpl,
+      "prepare_from_principal_token",
+    );
+    const coreCreationSecurity = rustFunctionBlock(
+      coreImpl,
+      "creation_security",
+    );
+    const coreVerifyCreatedObjects = rustFunctionBlock(
+      coreImpl,
+      "verify_created_objects",
+    );
+    const bookend = rustFunctionBlock(
+      production,
+      "retain_after_service_creation_security_bookend",
+    );
+    const servicePrepare = rustFunctionBlock(serviceImpl, "prepare");
+    const serviceCreationSecurity = rustFunctionBlock(
+      serviceImpl,
+      "creation_security",
+    );
+    const serviceVerifyCreatedObjects = rustFunctionBlock(
+      serviceImpl,
+      "verify_created_objects",
+    );
+    const compactProduction = compactRust(production);
+    const compactCorePrepare = compactRust(corePrepare);
+    const compactBookend = compactRust(bookend);
+    const compactServicePrepare = compactRust(servicePrepare);
+    const compactServiceImpl = compactRust(serviceImpl);
+    const serviceItems = [bookend, serviceImpl, serviceDebugImpl].join("\n");
+    const exactFeatureCfg = [
+      ...production.matchAll(
+        /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]/gu,
+      ),
+    ];
+    return (
+      exactFeatureCfg.length === 6 &&
+      /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*use\s+crate::key_agent_service_token::VerifiedServiceCreationToken\s*;/u.test(
+        production,
+      ) &&
+      /#\[must_use\s*=\s*"service creation security and its token proof must remain live through readback"\]\s*#\[allow\(dead_code\)\][^\n]*\n\s*pub\(crate\)\s+struct\s+PreparedServiceKeyAgentCreationSecurity<'proof>\s*\{\s*security\s*:\s*PreparedKeyAgentCreationSecurity\s*,\s*_service_token\s*:\s*VerifiedServiceCreationToken<'proof>\s*,\s*\}/u.test(
+        production,
+      ) &&
+      !/\b(?:Clone|Copy)\b/u.test(
+        rustLexicalCode(
+          rustLexicalItemBlock(
+            production,
+            /struct\s+PreparedServiceKeyAgentCreationSecurity\s*</u,
+          ),
+        ),
+      ) &&
+      !/\bDesktopPrimaryToken\b/u.test(serviceItems) &&
+      rustUnsafeKeywordCount(serviceItems) === 0 &&
+      !/\b(?:CreateProcess\w*|DuplicateTokenEx|DuplicateHandle|Rpc\w*)\b/u.test(
+        rustLexicalCode(serviceItems),
+      ) &&
+      compactCorePrepare.includes(
+        "token_information(token,TokenOwner)",
+      ) &&
+      compactCorePrepare.includes(
+        "token_information(token,TokenPrimaryGroup)",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactCorePrepare,
+        "OwnedCreationSecurityDescriptor::from_sddl(",
+      ) === 2 &&
+      compactCorePrepare.includes(
+        "ifprocess_descriptor.descriptor==primary_thread_descriptor.descriptor",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactCorePrepare,
+        "bInheritHandle:BOOL(0)",
+      ) === 2 &&
+      compactRust(coreCreationSecurity).includes(
+        "ProcessThreadCreationSecurity::new(&self.process_attributes,&self.primary_thread_attributes,)",
+      ) &&
+      hasOrderedCompactMarkers(coreVerifyCreatedObjects, [
+        "verify_created_object_security(HANDLE(process.as_raw_handle()),&self.expected_owner_sid,&self.expected_primary_group_sid,)?",
+        "verify_created_object_security(HANDLE(primary_thread.as_raw_handle()),&self.expected_owner_sid,&self.expected_primary_group_sid,)",
+      ]) &&
+      hasOrderedCompactMarkers(bookend, [
+        "verify_creation_principals(&marker,&security.expected_owner_sid,&security.expected_primary_group_sid,)",
+        ".map_err(|_|KeyAgentLpacError::Attribute)?",
+        "revalidate(&mutmarker).map_err(|_|KeyAgentLpacError::Attribute)?",
+        "Ok((security,marker))",
+      ]) &&
+      hasOrderedCompactMarkers(servicePrepare, [
+        "service_token:VerifiedServiceCreationToken<'proof>",
+        "PreparedKeyAgentCreationSecurity::prepare_from_principal_token(service_token.borrowed_handle(),)?",
+        "retain_after_service_creation_security_bookend(security,service_token",
+        "service_token.verify_creation_principals(owner,primary_group)",
+        "VerifiedServiceCreationToken::revalidate",
+        "security,_service_token:service_token",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactServicePrepare,
+        "map_err(|_|KeyAgentLpacError::Attribute)",
+      ) === 0 &&
+      compactRust(serviceCreationSecurity).includes(
+        "self.security.creation_security()",
+      ) &&
+      compactRust(serviceVerifyCreatedObjects).includes(
+        "self.security.verify_created_objects(process,primary_thread)",
+      ) &&
+      compactServiceImpl.includes(
+        "pub(crate)fnprepare(service_token:VerifiedServiceCreationToken<'proof>,)",
+      ) &&
+      !compactServiceImpl.includes("DesktopPrimaryToken") &&
+      production.includes(
+        '"PreparedServiceKeyAgentCreationSecurity([OPAQUE SERVICE PROCESS/THREAD POLICY])"',
+      ) &&
+      !production.includes(
+        "PreparedServiceKeyAgentCreationSecurity::prepare(",
+      ) &&
+      rustCallSites(
+        production,
+        "retain_after_service_creation_security_bookend",
+      ).length === 1 &&
+      source.includes(
+        "fn service_creation_security_wrapper_is_lifetime_bound_move_only_and_not_sync()",
+      ) &&
+      source.includes(
+        "fn service_creation_security_bookend_checks_principals_then_full_revalidation()",
+      ) &&
+      hasOrderedCompactMarkers(
+        rustFunctionBlock(
+          source,
+          "service_creation_security_bookend_checks_principals_then_full_revalidation",
+        ),
+        [
+          "assert_eq!(call_order.get(),0)",
+          "assert!(owner==expected_owner_sid.as_slice())",
+          "assert!(primary_group==expected_primary_group_sid.as_slice())",
+          "call_order.set(1)",
+          "assert_eq!(call_order.get(),1)",
+          "call_order.set(2)",
+          "principal_failure",
+          "assert!(!revalidation_called.get())",
+          "revalidation_failure",
+          "assert!(principals_verified.get())",
+          "assert!(revalidation_called.get())",
+        ],
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const mutateKeyAgentServiceCreationSecurity = (search, replacement) =>
+  keyAgentServiceLpacSourceForLaunch.replace(search, replacement);
+const keyAgentServiceCreationSecurityMutationProbes = [
+  mutateKeyAgentServiceCreationSecurity(
+    'feature = "key-agent-service-lpac-launch-feasibility-test-hook",',
+    'feature = "key-agent-service-token-feasibility-test-hook",',
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "service_token: VerifiedServiceCreationToken<'proof>",
+    "service_token: DesktopPrimaryToken",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "    _service_token: VerifiedServiceCreationToken<'proof>,",
+    "",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "    revalidate(&mut marker).map_err(|_| KeyAgentLpacError::Attribute)?;",
+    "    let _ = &mut marker;",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "                service_token.verify_creation_principals(owner, primary_group)",
+    "                Ok::<(), crate::key_agent_service_token::ServiceTokenFixtureError>(())",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "            VerifiedServiceCreationToken::revalidate,",
+    "            |_| Ok::<(), crate::key_agent_service_token::ServiceTokenFixtureError>(()),",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "            bInheritHandle: BOOL(0),",
+    "            bInheritHandle: BOOL(1),",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "if process_descriptor.descriptor == primary_thread_descriptor.descriptor",
+    "if false",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "self.security.creation_security()",
+    "unreachable!()",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "#[must_use = \"service creation security and its token proof must remain live through readback\"]",
+    "#[derive(Clone)]",
+  ),
+];
+requireInvariant(
+  keyAgentServiceCreationSecurityContract(keyAgentServiceLpacSourceForLaunch) &&
+    keyAgentServiceCreationSecurityMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceLpacSourceForLaunch &&
+        !keyAgentServiceCreationSecurityContract(probe),
+    ),
+  "the compile-only service creation-security seam must consume only an exclusive verified service-token capability, derive distinct paired non-inheritable process/thread descriptors from its exact owner and primary group, compare copied SID bytes, revalidate the same full token after construction, retain the proof through readback, reject the desktop primary token, remain directly unreachable, and keep every mutation probe effective",
+);
+
+const approvedKeyAgentServiceLaunchPaths = [
+  keyAgentServiceLaunchPaths.job,
+  keyAgentServiceLaunchPaths.root,
+];
+const approvedKeyAgentServiceLaunchDirectoryInventory = {
+  path: "crates/platform-windows/src/key_agent_service_launch",
+  entries: [
+    { name: "job.rs", kind: "file" },
+    { name: "mod.rs", kind: "file" },
+  ],
+};
+const keyAgentServiceLaunchObservedApis = [
+  { api: "CreateJobObjectW", count: 1 },
+  { api: "IsProcessInJob", count: 2 },
+  { api: "QueryInformationJobObject", count: 1 },
+  { api: "SetInformationJobObject", count: 1 },
+  { api: "TerminateJobObject", count: 1 },
+  { api: "UpdateProcThreadAttribute", count: 1 },
+];
+const keyAgentServiceLaunchForbiddenIdentifiers = [
+  "Command",
+  "CreateProcess",
+  "CreateProcessAsUserW",
+  "CreateProcessW",
+  "DuplicateHandle",
+  "DuplicateTokenEx",
+  "RpcBindingFromStringBindingW",
+  "RpcServerListen",
+  "RpcServerRegisterIf3",
+];
+const keyAgentServiceLaunchTestNames = [
+  "exact_one_process_kill_on_close_policy_rejects_every_mutation",
+  "preparation_order_is_exact_and_every_partial_handle_is_closed",
+  "job_owner_is_move_only_send_and_not_sync",
+  "errors_and_attribute_debug_are_data_free",
+];
+const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
+  try {
+    const paths = Object.keys(sources).sort((left, right) =>
+      left.localeCompare(right, "en"),
+    );
+    const root = sources[keyAgentServiceLaunchPaths.root] ?? "";
+    const job = sources[keyAgentServiceLaunchPaths.job] ?? "";
+    const jobProduction = withoutBottomTestModule(job);
+    const sysModule = rustLexicalItemBlock(jobProduction, /mod\s+sys\s*\{/u);
+    const safeJob = jobProduction.replace(sysModule, "");
+    const prepareJob = rustFunctionBlock(jobProduction, "prepare_job");
+    const jobImpl = rustImplItems(jobProduction).find(
+      (item) => item.header === "impl ServiceProbeJob",
+    )?.source;
+    const attributeImpl = rustImplItems(jobProduction).find((item) =>
+      item.header.includes("ServiceProbeJobAttribute"),
+    )?.source;
+    if (jobImpl === undefined || attributeImpl === undefined) return false;
+    const createNonNested = rustFunctionBlock(jobImpl, "create_non_nested");
+    const recheckNonNested = rustFunctionBlock(jobImpl, "recheck_non_nested");
+    const creationAttribute = rustFunctionBlock(jobImpl, "creation_attribute");
+    const terminateAndWaitOwner = rustFunctionBlock(jobImpl, "terminate_and_wait");
+    const installInto = rustFunctionBlock(attributeImpl, "install_into");
+    const requireNotInJob = rustFunctionBlock(
+      sysModule,
+      "require_current_process_not_in_job",
+    );
+    const createJob = rustFunctionBlock(sysModule, "create_job");
+    const installExactLimits = rustFunctionBlock(
+      sysModule,
+      "install_exact_limits",
+    );
+    const verifyExactLimits = rustFunctionBlock(
+      sysModule,
+      "verify_exact_limits",
+    );
+    const activeProcessCount = rustFunctionBlock(
+      sysModule,
+      "active_process_count",
+    );
+    const terminateAndWaitSys = rustFunctionBlock(
+      sysModule,
+      "terminate_and_wait",
+    );
+    const installCreationAttribute = rustFunctionBlock(
+      sysModule,
+      "install_creation_attribute",
+    );
+    const queryInformation = rustFunctionBlock(sysModule, "query_information");
+    const exactLimitsMatch = rustFunctionBlock(
+      jobProduction,
+      "exact_limits_match",
+    );
+    const compactRoot = compactRust(root);
+    const compactJob = compactRust(jobProduction);
+    const compactSys = compactRust(sysModule);
+    const observedApis = keyAgentServiceLaunchObservedApis.map(({ api }) => ({
+      api,
+      count: rustCallSites(sysModule, api).length,
+    }));
+    const forbiddenUsage = rustIdentifierUsageInventory(
+      [
+        { path: keyAgentServiceLaunchPaths.root, source: root },
+        { path: keyAgentServiceLaunchPaths.job, source: jobProduction },
+      ],
+      keyAgentServiceLaunchForbiddenIdentifiers,
+    );
+    const forbiddenIsEmpty =
+      forbiddenUsage.calls.length === 0 &&
+      forbiddenUsage.aliases.length === 0 &&
+      forbiddenUsage.qualified.length === 0 &&
+      forbiddenUsage.references.length === 0 &&
+      Object.values(forbiddenUsage.tokens).every((entries) => entries.length === 0);
+    return (
+      JSON.stringify(paths) ===
+        JSON.stringify(approvedKeyAgentServiceLaunchPaths) &&
+      JSON.stringify(directory) ===
+        JSON.stringify(approvedKeyAgentServiceLaunchDirectoryInventory) &&
+      compactRoot === "#![allow(dead_code)]modjob;" &&
+      rustUnsafeKeywordCount(root) === 0 &&
+      job.includes("#![deny(unsafe_code)]") &&
+      rustUnsafeKeywordCount(jobProduction) === 11 &&
+      rustUnsafeKeywordCount(sysModule) === 9 &&
+      rustUnsafeKeywordCount(safeJob) === 2 &&
+      /#\[allow\(unsafe_code\)\]\s*pub\(super\)\s+unsafe\s+fn\s+install_into/u.test(
+        jobProduction,
+      ) &&
+      sysModule.includes("#![allow(unsafe_code)]") &&
+      JSON.stringify(observedApis) ===
+        JSON.stringify(keyAgentServiceLaunchObservedApis) &&
+      forbiddenIsEmpty &&
+      !/\b(?:wallet|signing|helper|request|response|endpoint)\b/u.test(
+        rustLexicalCode(`${root}\n${jobProduction}`),
+      ) &&
+      compactJob.includes("constSERVICE_PROBE_PROCESS_LIMIT:u32=1;") &&
+      compactJob.includes(
+        "constSERVICE_PROBE_TERMINATION_TIMEOUT:Duration=Duration::from_secs(5);",
+      ) &&
+      compactJob.includes(
+        "constSERVICE_PROBE_JOB_FLAGS:JOB_OBJECT_LIMIT=JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0|JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0);",
+      ) &&
+      compactRust(exactLimitsMatch) ===
+        "fnexact_limits_match(flags:JOB_OBJECT_LIMIT,process_limit:u32)->bool{flags==SERVICE_PROBE_JOB_FLAGS&&process_limit==SERVICE_PROBE_PROCESS_LIMIT&&flags&JOB_OBJECT_LIMIT_BREAKAWAY_OK==JOB_OBJECT_LIMIT(0)&&flags&JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK==JOB_OBJECT_LIMIT(0)}" &&
+      hasOrderedCompactMarkers(prepareJob, [
+        "ops.require_non_nested()?",
+        "lethandle=ops.create()?",
+        "ops.install_limits(&handle)?",
+        "ops.verify_limits(&handle)?",
+        "ops.require_non_nested()?",
+        "Ok(handle)",
+      ]) &&
+      compactRust(createNonNested).includes(
+        "lethandle=prepare_job(&sys::WindowsJobPrepareOps)?",
+      ) &&
+      hasOrderedCompactMarkers(recheckNonNested, [
+        "ifself.shut_down",
+        "sys::require_current_process_not_in_job()?",
+        "sys::verify_exact_limits(self.handle.as_handle())",
+      ]) &&
+      compactJob.includes(
+        "pub(super)structServiceProbeJob{handle:OwnedHandle,shut_down:bool,_not_sync:PhantomData<Cell<()>>,}",
+      ) &&
+      compactJob.includes(
+        "pub(super)structServiceProbeJobAttribute<'job>{handle:Box<HANDLE>,_job:PhantomData<&'jobServiceProbeJob>,}",
+      ) &&
+      hasOrderedCompactMarkers(creationAttribute, [
+        "self.recheck_non_nested()?",
+        "handle:Box::new(sys::windows_handle(self.handle.as_handle()))",
+        "_job:PhantomData",
+      ]) &&
+      compactRust(installInto).includes(
+        "unsafe{sys::install_creation_attribute(attribute_list,self.handle.as_ref())}",
+      ) &&
+      hasOrderedCompactMarkers(requireNotInJob, [
+        "IsProcessInJob(GetCurrentProcess(),None,&rawmutin_job)",
+        "(!in_job.as_bool()).then_some(()).ok_or(ServiceProbeJobError::NestedService)",
+      ]) &&
+      compactRust(createJob).includes(
+        "CreateJobObjectW(None,PCWSTR::null())",
+      ) &&
+      !compactRust(createJob).includes("PCWSTR(") &&
+      hasOrderedCompactMarkers(installExactLimits, [
+        "letmutinformation=JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default()",
+        "information.BasicLimitInformation.LimitFlags=SERVICE_PROBE_JOB_FLAGS",
+        "information.BasicLimitInformation.ActiveProcessLimit=SERVICE_PROBE_PROCESS_LIMIT",
+        "SetInformationJobObject(windows_handle(job),JobObjectExtendedLimitInformation,ptr::from_ref(&information).cast::<c_void>(),structure_size::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()?,)",
+      ]) &&
+      hasOrderedCompactMarkers(verifyExactLimits, [
+        "query_information(Some(windows_handle(job)),JobObjectExtendedLimitInformation,&mutinformation,)?",
+        "exact_limits_match(information.BasicLimitInformation.LimitFlags,information.BasicLimitInformation.ActiveProcessLimit,)",
+        "ok_or(ServiceProbeJobError::LimitVerification)",
+      ]) &&
+      compactRust(activeProcessCount).includes(
+        "accounting.ActiveProcesses<=SERVICE_PROBE_PROCESS_LIMIT",
+      ) &&
+      hasOrderedCompactMarkers(installCreationAttribute, [
+        "UpdateProcThreadAttribute(attribute_list,0,usize::try_from(PROC_THREAD_ATTRIBUTE_JOB_LIST)",
+        "Some(ptr::from_ref(handle).cast::<c_void>())",
+        "size_of::<HANDLE>()",
+        "None,None",
+      ]) &&
+      hasOrderedCompactMarkers(queryInformation, [
+        "letexpected=structure_size::<T>()?",
+        "QueryInformationJobObject(job,class,ptr::from_mut(information).cast::<c_void>(),expected,Some(&rawmutreturned),)",
+        "ifreturned!=expected",
+      ]) &&
+      hasOrderedCompactMarkers(terminateAndWaitOwner, [
+        "ifself.shut_down",
+        "sys::terminate_and_wait(self.handle.as_handle(),SERVICE_PROBE_TERMINATION_TIMEOUT)?",
+        "self.shut_down=true",
+      ]) &&
+      compactSys.includes(
+        "constTERMINATION_POLL_INTERVAL:Duration=Duration::from_millis(1);",
+      ) &&
+      hasOrderedCompactMarkers(terminateAndWaitSys, [
+        "ifactive_process_count(job)?==0",
+        "TerminateJobObject(windows_handle(job),SERVICE_PROBE_EXIT_CODE)",
+        "letdeadline=Instant::now().checked_add(timeout).ok_or(ServiceProbeJobError::TerminationTimeout)?",
+        "loop",
+        "ifactive_process_count(job)?==0",
+        "ifInstant::now()>=deadline",
+        "std::thread::sleep(TERMINATION_POLL_INTERVAL)",
+      ]) &&
+      platformLib.includes("mod key_agent_service_launch;") &&
+      !/\bpub(?:\s*\([^)]*\))?\s+mod\s+key_agent_service_launch\b/u.test(
+        rustLexicalCode(platformLib),
+      ) &&
+      JSON.stringify(keyAgentServiceRustTestNameInventory(job)) ===
+        JSON.stringify(keyAgentServiceLaunchTestNames) &&
+      /#\[test\]\s*#\[ignore\s*=\s*"requires a Windows process that is not already Job-contained"\]\s*fn\s+live_empty_job_has_exact_limits_and_bounded_shutdown/u.test(
+        job,
+      ) &&
+      job.includes(
+        'formatter.write_str("ServiceProbeJobAttribute([REDACTED])")',
+      ) &&
+      job.includes("for flags in [") &&
+      job.includes("assert!(!exact_limits_match(SERVICE_PROBE_JOB_FLAGS, 2));") &&
+      job.includes("let expected = [") &&
+      job.includes("let expected_drops = u32::from(index >= 2);")
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceLaunchInputs = Object.freeze({
+  sources: keyAgentServiceLaunchSources,
+  directory: keyAgentServiceLaunchDirectoryInventory,
+  platformLib: keyAgentServicePlatformLib,
+});
+const mutateKeyAgentServiceLaunchSource = (inputs, path, search, replacement) => ({
+  ...inputs,
+  sources: {
+    ...inputs.sources,
+    [path]: inputs.sources[path].replace(search, replacement),
+  },
+});
+const keyAgentServiceLaunchMutationProbes = [
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.root,
+    "mod job;",
+    "pub mod job;",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "const SERVICE_PROBE_PROCESS_LIMIT: u32 = 1;",
+    "const SERVICE_PROBE_PROCESS_LIMIT: u32 = 2;",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0",
+    "JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "    ops.require_non_nested()?;\n    let handle = ops.create()?;",
+    "    let handle = ops.create()?;",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "    ops.require_non_nested()?;\n    Ok(handle)",
+    "    Ok(handle)",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "CreateJobObjectW(None, PCWSTR::null())",
+    "CreateJobObjectW(None, PCWSTR::from_raw(1_usize as _))",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "flags == SERVICE_PROBE_JOB_FLAGS",
+    "flags.contains(SERVICE_PROBE_JOB_FLAGS)",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "    handle: Box<HANDLE>,",
+    "    handle: HANDLE,",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_JOB_LIST)",
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "const SERVICE_PROBE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);",
+    "const SERVICE_PROBE_TERMINATION_TIMEOUT: Duration = Duration::MAX;",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "unsafe { TerminateJobObject(windows_handle(job), SERVICE_PROBE_EXIT_CODE) }",
+    "Ok(())",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "#![deny(unsafe_code)]",
+    "#![allow(unsafe_code)]",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "mod tests {",
+    "fn hidden_launch() { let _ = CreateProcessW; }\nmod tests {",
+  ),
+  {
+    ...keyAgentServiceLaunchInputs,
+    platformLib: keyAgentServicePlatformLib.replace(
+      "mod key_agent_service_launch;",
+      "pub mod key_agent_service_launch;",
+    ),
+  },
+];
+requireInvariant(
+  keyAgentServiceLaunchContract(keyAgentServiceLaunchInputs) &&
+    keyAgentServiceLaunchMutationProbes.every(
+      (probe) =>
+        (probe.sources !== keyAgentServiceLaunchInputs.sources ||
+          probe.platformLib !== keyAgentServiceLaunchInputs.platformLib) &&
+        !keyAgentServiceLaunchContract(probe),
+    ),
+  "the debug-only service launch primitive must remain an exact private two-file module containing only one unnamed non-nested one-process Job with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no process creation/handle duplication/RPC command, ignored live evidence, and effective mutation probes",
 );
 
 const keyAgentServiceRpcFixturePaths = Object.freeze({
@@ -7401,9 +8349,34 @@ const keyAgentServiceTokenDocumentationPatterns = [
   /SCM configuration/u,
   /(?:intentionally ignored|remains ignored|positive test[^.]{0,160}ignored)/u,
   /disposable-VM/u,
+  /retains?[\s\S]{0,120}`?TOKEN_QUERY`?[\s\S]{0,140}(?:canonical|complete)[\s-]+(?:service-token\s+)?baseline/iu,
+  /(?:fresh,\s+exclusive creation-token capability|lifetime-bound service-principal capability|exclusive creation-token marker)/iu,
+  /(?:same-kernel-object|same kernel object|handles as kernel objects)[\s\S]{0,140}(?:zero handle-flag|handle flags)/iu,
+  /TokenOwner[\s\S]{0,320}(?:must\s+)?equal[\s\S]{0,80}fixed\s+service\s+SID/iu,
+  /TokenPrimaryGroup[\s\S]{0,220}TokenGroups/iu,
+  /(?:copied owner\/group|owner\/group bytes copied)[\s\S]{0,140}(?:sealed )?baseline/iu,
+  /(?:repeats\s+full\s+token\s+revalidation\s+after\s+descriptor\s+construction|repeats\s+the\s+same-object\/full-baseline(?:\s+token)?\s+check)/iu,
+  /(?:authenticated\s+desktop\s+primary\s+token\s+is\s+not\s+(?:an\s+accepted\s+owner|accepted\s+as\s+the\s+descriptor\s+principal)|cannot\s+accept\s+the\s+desktop\s+launch\s+token)/iu,
+  /(?:paired\s+process\/thread\s+creation\s+descriptors|two\s+distinct,\s+non-inheritable\s+process\/thread\s+security\s+descriptors|two\s+separate\s+non-inheritable\s+process\/thread\s+descriptors)/iu,
+  /(?:consume\s+(?:it|them)\s+once[\s\S]{0,100}(?:live|retain)[\s\S]{0,100}readback|one-shot\s+launch\s+consumption[\s\S]{0,180}later\s+STOP-SHIP)/iu,
+  /unnamed,?\s+non-nested[\s\S]{0,80}(?:one-process\s+)?Job/iu,
+  /KILL_ON_JOB_CLOSE\s*\|\s*ACTIVE_PROCESS[\s\S]{0,160}(?:active-process limit must equal one|`?ActiveProcessLimit`?\s*(?:=\s*1|of one))/iu,
+  /(?:creation attribute is lifetime-bound|lifetime-bound creation attribute|stable lifetime-bound creation-attribute storage)/iu,
+  /(?:terminal\s+cleanup\s+is\s+bounded\s+and\s+Job-authoritative|bounded\s+whole-Job\s+cleanup|bounded\s+whole-Job\s+termination)/iu,
+  /(?:No\s+RPC\s+operation|no\s+RPC\s+command|Neither\s+primitive\s+is\s+reachable\s+from\s+an\s+RPC\s+command)/iu,
+  /(?:no[\s\S]{0,160}(?:process\s+creation|`CreateProcessAsUserW`\s+call)|neither\s+calls\s+`CreateProcessAsUserW`)/iu,
+  /(?:helper\s+entrypoint\s+is\s+added|executable\s+entrypoint[\s\S]{0,40}using\s+these\s+primitives|reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable)/iu,
 ];
 const keyAgentServiceTokenDocumentationContradiction =
-  /The callback retains the primary token\.|The service-token proof is complete\.|This is production helper-launch evidence\./u;
+  /The callback retains the primary token\.|The service-token proof is complete\.|This is production helper-launch evidence\.|The authenticated desktop primary token is accepted as the descriptor principal\.|The service helper Job may be named or nested\.|The launch feature calls CreateProcessAsUserW and is production-ready\./u;
+const keyAgentServiceTokenDocumentationContradictionStatements = [
+  "The callback retains the primary token.",
+  "The service-token proof is complete.",
+  "This is production helper-launch evidence.",
+  "The authenticated desktop primary token is accepted as the descriptor principal.",
+  "The service helper Job may be named or nested.",
+  "The launch feature calls CreateProcessAsUserW and is production-ready.",
+];
 const keyAgentServiceTokenDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
@@ -7448,13 +8421,17 @@ const keyAgentServiceTokenDocumentationMutationProbes =
     });
   });
 const keyAgentServiceTokenDocumentationContradictionProbes =
-  keyAgentServiceTokenDocumentationSpecs.map((spec, specIndex) => {
+  keyAgentServiceTokenDocumentationSpecs.flatMap((spec, specIndex) => {
     const window = keyAgentServiceTokenDocumentationWindow(spec);
-    if (window === null) return keyAgentServiceTokenDocumentationSpecs;
+    if (window === null) return [keyAgentServiceTokenDocumentationSpecs];
     const insertion = window.start + Math.min(window.source.length, 2_000);
-    const mutated = `${spec.source.slice(0, insertion)}\nThe callback retains the primary token.\n${spec.source.slice(insertion)}`;
-    return keyAgentServiceTokenDocumentationSpecs.map((entry, index) =>
-      index === specIndex ? { ...entry, source: mutated } : entry,
+    return keyAgentServiceTokenDocumentationContradictionStatements.map(
+      (statement) => {
+        const mutated = `${spec.source.slice(0, insertion)}\n${statement}\n${spec.source.slice(insertion)}`;
+        return keyAgentServiceTokenDocumentationSpecs.map((entry, index) =>
+          index === specIndex ? { ...entry, source: mutated } : entry,
+        );
+      },
     );
   });
 requireInvariant(
@@ -7471,7 +8448,7 @@ requireInvariant(
         probe !== keyAgentServiceTokenDocumentationSpecs &&
         !keyAgentServiceTokenDocumentationContract(probe),
     ),
-  "the bounded Phase 1 service windows must document exact manager-only primary-token rights and callback non-authority plus the pre-RUNNING fixed-service-token predicates, explicit Unverified fields, ignored disposable-VM obligation, and no production-proof contradiction",
+  "the bounded Phase 1 service windows must document exact manager-only primary-token rights, retained same-object/full-baseline service-token authority, service-principal-only paired creation security with post-build revalidation, the one-process unnamed non-nested Job, explicit remaining one-shot work, and no production-proof contradiction",
 );
 
 const keyAgentServiceRpcEpochTestNames = [
@@ -11198,7 +12175,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "b96b8aaa410d1705dcfe5359d4032cb0b87d17e725dcf7209d2ed6d1b04e87eb";
+  "0a09a7619b7d45b882e96489444159b9585338925758611ad8497cbc6a6e3f78";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -11288,7 +12265,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "6b847063660bb47ae50fb1dcc509bd5cdb7ac396e9f4a900c0c1fd3f9b41c0c7",
+    sha256: "139461857b9e85614d431f6b165fbc9b20f199d59bf563cf30aecc488a8bc27d",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -28556,6 +29533,10 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   {
+    path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
+    sites: 3,
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
     sites: 8,
   },
@@ -28565,7 +29546,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
-    sites: 11,
+    sites: 19,
   },
   { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
@@ -28616,13 +29597,18 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
-    unsafeCount: 85,
-    sha256: "5a6d3c2ff84885aba07f82106e0808bc49127937a53ccd3230f56cf824b440b1",
+    unsafeCount: 86,
+    sha256: "3cdc78beaf912eb18f7c12689eb2e3179e0c7f15ff88e7fc46eb8d29ca0cd2e1",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
     unsafeCount: 12,
     sha256: "f2df9738d861ce624131e1aa37a9dee7d3036c49ea21c0f9eed808f88e6f5a08",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
+    unsafeCount: 11,
+    sha256: "92ed1af1d822ed22107fbca66081cbfb0d356aface693e248678e153cf2601e8",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
@@ -28641,8 +29627,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
-    unsafeCount: 19,
-    sha256: "e15382c736f2275dac5c86bdb7e93b43e709455dd693a4755a6cdce11b5f2e52",
+    unsafeCount: 27,
+    sha256: "774ebca979279163b215ec835f950e23dcccf68f9b70c70bef63ac36d50162be",
   },
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
@@ -29146,7 +30132,7 @@ requireInvariant(
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
 );
 requireInvariant(
-  keyAgentLpacVisibilityCount === 31 &&
+  keyAgentLpacVisibilityCount === 35 &&
     JSON.stringify(keyAgentLpacVisibleFunctionInventory) ===
       JSON.stringify([
         {
@@ -29242,6 +30228,30 @@ requireInvariant(
             "fnverify_created_objects(&self,process:BorrowedHandle<'_>,primary_thread:BorrowedHandle<'_>,)->Result<(),KeyAgentLpacError>",
         },
         {
+          owner:
+            "impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof>",
+          visibility: "pub(crate)",
+          name: "prepare",
+          signature:
+            "fnprepare(service_token:VerifiedServiceCreationToken<'proof>,)->Result<Self,KeyAgentLpacError>",
+        },
+        {
+          owner:
+            "impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof>",
+          visibility: "pub(crate)",
+          name: "creation_security",
+          signature:
+            "fncreation_security(&self,)->crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_>",
+        },
+        {
+          owner:
+            "impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof>",
+          visibility: "pub(crate)",
+          name: "verify_created_objects",
+          signature:
+            "fnverify_created_objects(&self,process:BorrowedHandle<'_>,primary_thread:BorrowedHandle<'_>,)->Result<(),KeyAgentLpacError>",
+        },
+        {
           owner: "impl PreparedKeyAgentLpac",
           visibility: "pub(crate)",
           name: "environment_with_local_app_data",
@@ -29331,6 +30341,11 @@ requireInvariant(
         {
           visibility: "pub(crate)",
           kind: "struct",
+          name: "PreparedServiceKeyAgentCreationSecurity",
+        },
+        {
+          visibility: "pub(crate)",
+          kind: "struct",
           name: "PreparedKeyAgentLpac",
         },
         {
@@ -29408,7 +30423,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "6b847063660bb47ae50fb1dcc509bd5cdb7ac396e9f4a900c0c1fd3f9b41c0c7" &&
+    "139461857b9e85614d431f6b165fbc9b20f199d59bf563cf30aecc488a8bc27d" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -29572,11 +30587,20 @@ requireInvariant(
   JSON.stringify(keyAgentLpacAttributeInventory) ===
     JSON.stringify([
       "#![allow(unsafe_code)]",
+      "#[cfg(all(feature=,debug_assertions))]",
       "#[derive(Eq,PartialEq)]",
       "#[must_use=]",
       "#[must_use=]",
       "#[must_use=]",
       "#[must_use=]",
+      "#[cfg(all(feature=,debug_assertions))]",
+      "#[must_use=]",
+      "#[allow(dead_code)]",
+      "#[cfg(all(feature=,debug_assertions))]",
+      "#[cfg(all(feature=,debug_assertions))]",
+      "#[cfg(all(feature=,debug_assertions))]",
+      "#[allow(dead_code)]",
+      "#[cfg(all(feature=,debug_assertions))]",
       "#[must_use=]",
       "#[repr(transparent)]",
       "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
@@ -29777,11 +30801,20 @@ requireInvariant(
     JSON.stringify(keyAgentLpacAttributeInventory) ===
       JSON.stringify([
         "#![allow(unsafe_code)]",
+        "#[cfg(all(feature=,debug_assertions))]",
         "#[derive(Eq,PartialEq)]",
         "#[must_use=]",
         "#[must_use=]",
         "#[must_use=]",
         "#[must_use=]",
+        "#[cfg(all(feature=,debug_assertions))]",
+        "#[must_use=]",
+        "#[allow(dead_code)]",
+        "#[cfg(all(feature=,debug_assertions))]",
+        "#[cfg(all(feature=,debug_assertions))]",
+        "#[cfg(all(feature=,debug_assertions))]",
+        "#[allow(dead_code)]",
+        "#[cfg(all(feature=,debug_assertions))]",
         "#[must_use=]",
         "#[repr(transparent)]",
         "#[derive(Clone,Copy,Debug,Eq,PartialEq)]",
@@ -33704,6 +34737,10 @@ const prepareKeyAgentCreationSecurity = rustFunctionBlock(
   preparedKeyAgentCreationSecurityImpl,
   "prepare",
 );
+const prepareKeyAgentCreationSecurityFromPrincipalToken = rustFunctionBlock(
+  preparedKeyAgentCreationSecurityImpl,
+  "prepare_from_principal_token",
+);
 const verifyCreatedKeyAgentObjects = rustFunctionBlock(
   preparedKeyAgentCreationSecurityImpl,
   "verify_created_objects",
@@ -33729,7 +34766,9 @@ const inspectExactKeyAgentCreationDescriptor = rustTopLevelFunctionBlock(
   "inspect_exact_creation_security_descriptor",
 );
 const approvedKeyAgentCreationDaclLeafSha256 = Object.freeze({
-  prepare: "da042782c626915956569d4f12a883472a96497702cdf690e476b02b550b794b",
+  prepare: "229aee9b738bc5041e08787bfcb18b5297c044c2c43357844384fc960302ab8b",
+  prepareFromPrincipalToken:
+    "fe96246600dea07943384259c44fbe7e106450d615999eb6e3cf5218184fe3d4",
   verifyObjects:
     "906a22415ba615c3afa1ecd283b9da4067f1ea3dfd10f3716b578a9968aa7897",
   accessor:
@@ -33790,6 +34829,7 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
   let preparedDefinition;
   let preparedImpl;
   let prepare;
+  let prepareFromPrincipalToken;
   let creationSecurityAccessor;
   let verifyObjects;
   let ownedDefinition;
@@ -33845,6 +34885,11 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
       0,
     );
     prepare = rustFunctionBlockAtDepth(preparedImpl, "prepare", 1);
+    prepareFromPrincipalToken = rustFunctionBlockAtDepth(
+      preparedImpl,
+      "prepare_from_principal_token",
+      1,
+    );
     creationSecurityAccessor = rustFunctionBlockAtDepth(
       preparedImpl,
       "creation_security",
@@ -34010,7 +35055,10 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
   const preparedCompact = compactRust(rustLexicalCode(preparedDefinition));
   const ownedCompact = compactRust(rustLexicalCode(ownedDefinition));
   const pairCompact = compactRust(rustLexicalCode(pairDefinition));
-  const prepareDescriptorCalls = rustCallSites(prepare, "from_sddl");
+  const prepareDescriptorCalls = rustCallSites(
+    prepareFromPrincipalToken,
+    "from_sddl",
+  );
   const conversionCalls = rustCallSites(
     ownedFromSddl,
     "ConvertStringSecurityDescriptorToSecurityDescriptorW",
@@ -34024,7 +35072,7 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
   );
   const createInnerCalls = rustCallSites(activationProduction, "create_inner");
   const creationRelatedActivation = `${prepareProcess}\n${createProcess}\n${createInner}`;
-  const creationRelatedLpac = `${prepare}\n${creationSecurityAccessor}\n${verifyObjects}\n${ownedFromSddl}\n${ownedDrop}\n${openCreationToken}\n${queryCreationToken}\n${validateTokenSid}\n${sidString}\n${wideNul}\n${tokenDrop}\n${verifyObject}\n${readObject}\n${validateFlags}\n${inspectDescriptor}\n${sidComponent}\n${validateSid}\n${readU16}\n${readU32}`;
+  const creationRelatedLpac = `${prepare}\n${prepareFromPrincipalToken}\n${creationSecurityAccessor}\n${verifyObjects}\n${ownedFromSddl}\n${ownedDrop}\n${openCreationToken}\n${queryCreationToken}\n${validateTokenSid}\n${sidString}\n${wideNul}\n${tokenDrop}\n${verifyObject}\n${readObject}\n${validateFlags}\n${inspectDescriptor}\n${sidComponent}\n${validateSid}\n${readU16}\n${readU32}`;
   const creationRelatedWrapper = `${pairNew}\n${wrapperLeaf}`;
   return (
     rustAuthorityInlineModuleContract(
@@ -34057,19 +35105,22 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
       lpacProduction,
     ) &&
     JSON.stringify(
-      rustCallSites(prepare, "creation_security_token_information").map(
+      rustCallSites(
+        prepareFromPrincipalToken,
+        "creation_security_token_information",
+      ).map(
         (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
-        ["token.0", "TokenOwner"],
-        ["token.0", "TokenPrimaryGroup"],
+        ["token", "TokenOwner"],
+        ["token", "TokenPrimaryGroup"],
       ]) &&
-    prepare.includes(
+    prepareFromPrincipalToken.includes(
       'format!("O:{owner_text}G:{primary_group_text}D:P(D;;0x000e0000;;;OW)")',
     ) &&
-    !prepare.includes("(A;;") &&
-    !/\bTokenUser\b/u.test(rustLexicalCode(prepare)) &&
+    !prepareFromPrincipalToken.includes("(A;;") &&
+    !/\bTokenUser\b/u.test(rustLexicalCode(prepareFromPrincipalToken)) &&
     prepareDescriptorCalls.length === 2 &&
     prepareDescriptorCalls.every(
       (call) =>
@@ -34080,14 +35131,15 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
           "&expected_primary_group_sid",
         ]),
     ) &&
-    prepare.includes(
+    prepareFromPrincipalToken.includes(
       "if process_descriptor.descriptor == primary_thread_descriptor.descriptor",
     ) &&
-    (prepare.match(/bInheritHandle:\s*BOOL\(0\)/gu) ?? []).length === 2 &&
-    prepare.includes(
+    (prepareFromPrincipalToken.match(/bInheritHandle:\s*BOOL\(0\)/gu) ?? [])
+      .length === 2 &&
+    prepareFromPrincipalToken.includes(
       "lpSecurityDescriptor: process_descriptor.descriptor.0",
     ) &&
-    prepare.includes(
+    prepareFromPrincipalToken.includes(
       "lpSecurityDescriptor: primary_thread_descriptor.descriptor.0",
     ) &&
     rustCallSites(creationSecurityAccessor, "new").length === 1 &&
@@ -34271,9 +35323,9 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
-      "creation_security_token_information(token.0, TokenOwner)?",
-      "creation_security_token_information(token.0, TokenUser)?",
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
+      "creation_security_token_information(token, TokenOwner)?",
+      "creation_security_token_information(token, TokenUser)?",
     ),
     activationSource: keyAgentActivationSource,
     wrapperSource: inheritableHandleLaunchSource,
@@ -34281,7 +35333,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       'format!("O:{owner_text}G:{primary_group_text}D:P(D;;0x000e0000;;;OW)")',
       'format!("O:{owner_text}G:{primary_group_text}D:P(D;;0x000e0000;;;OW)(A;;GA;;;{owner_text})")',
     ),
@@ -34291,7 +35343,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       "D:P(D;;0x000e0000;;;OW)",
       "D:P(D;;0x00020000;;;OW)",
     ),
@@ -34301,7 +35353,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       "let primary_thread_descriptor = OwnedCreationSecurityDescriptor::from_sddl(\n            &sddl,\n            &expected_owner_sid,\n            &expected_primary_group_sid,\n        )?;",
       "let primary_thread_descriptor = process_descriptor;",
     ),
@@ -34311,7 +35363,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       "if process_descriptor.descriptor == primary_thread_descriptor.descriptor",
       "if false && process_descriptor.descriptor == primary_thread_descriptor.descriptor",
     ),
@@ -34321,7 +35373,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       "lpSecurityDescriptor: process_descriptor.descriptor.0,\n            bInheritHandle: BOOL(0)",
       "lpSecurityDescriptor: process_descriptor.descriptor.0,\n            bInheritHandle: BOOL(1)",
     ),
@@ -34331,7 +35383,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
   {
     lpacSource: replaceInsideExactRustItem(
       keyAgentLpacSource,
-      prepareKeyAgentCreationSecurity,
+      prepareKeyAgentCreationSecurityFromPrincipalToken,
       "lpSecurityDescriptor: primary_thread_descriptor.descriptor.0,\n            bInheritHandle: BOOL(0)",
       "lpSecurityDescriptor: primary_thread_descriptor.descriptor.0,\n            bInheritHandle: BOOL(1)",
     ),
@@ -34695,6 +35747,7 @@ const keyAgentCreationDaclLpacContract = (source) => {
   let production;
   let preparedImpl;
   let prepare;
+  let prepareFromPrincipalToken;
   let creationSecurityAccessor;
   let verifyObjects;
   let ownedImpl;
@@ -34724,6 +35777,11 @@ const keyAgentCreationDaclLpacContract = (source) => {
       0,
     );
     prepare = rustFunctionBlockAtDepth(preparedImpl, "prepare", 1);
+    prepareFromPrincipalToken = rustFunctionBlockAtDepth(
+      preparedImpl,
+      "prepare_from_principal_token",
+      1,
+    );
     creationSecurityAccessor = rustFunctionBlockAtDepth(
       preparedImpl,
       "creation_security",
@@ -34815,7 +35873,7 @@ const keyAgentCreationDaclLpacContract = (source) => {
   } catch {
     return false;
   }
-  const creationBoundary = `${prepare}\n${creationSecurityAccessor}\n${verifyObjects}\n${ownedFromSddl}\n${ownedDrop}\n${openCreationToken}\n${queryCreationToken}\n${validateTokenSid}\n${sidString}\n${wideNul}\n${tokenDrop}\n${verifyObject}\n${readObject}\n${validateFlags}\n${inspectDescriptor}\n${sidComponent}\n${validateSid}\n${readU16}\n${readU32}\n${provisioningPrepare}`;
+  const creationBoundary = `${prepare}\n${prepareFromPrincipalToken}\n${creationSecurityAccessor}\n${verifyObjects}\n${ownedFromSddl}\n${ownedDrop}\n${openCreationToken}\n${queryCreationToken}\n${validateTokenSid}\n${sidString}\n${wideNul}\n${tokenDrop}\n${verifyObject}\n${readObject}\n${validateFlags}\n${inspectDescriptor}\n${sidComponent}\n${validateSid}\n${readU16}\n${readU32}\n${provisioningPrepare}`;
   return (
     rustAuthorityImplHeaderContract(production, {
       PreparedKeyAgentProvisioning: [
@@ -34831,7 +35889,10 @@ const keyAgentCreationDaclLpacContract = (source) => {
         "impl Drop for OwnedCreationSecurityDescriptor",
         "impl fmt::Debug for OwnedCreationSecurityDescriptor",
       ],
-      CreationSecurityToken: ["impl Drop for CreationSecurityToken"],
+      CreationSecurityToken: [
+        "impl CreationSecurityToken",
+        "impl Drop for CreationSecurityToken",
+      ],
     }) &&
     rustAuthorityFunctionOuterAttributesContract(production, [
       { name: "verify_created_object_security", depth: 0 },
@@ -34851,6 +35912,8 @@ const keyAgentCreationDaclLpacContract = (source) => {
       .length === 1 &&
     normalizedSourceSha256(rustLexicalCode(prepare)) ===
       approvedKeyAgentCreationDaclLeafSha256.prepare &&
+    normalizedSourceSha256(rustLexicalCode(prepareFromPrincipalToken)) ===
+      approvedKeyAgentCreationDaclLeafSha256.prepareFromPrincipalToken &&
     normalizedSourceSha256(rustLexicalCode(verifyObjects)) ===
       approvedKeyAgentCreationDaclLeafSha256.verifyObjects &&
     normalizedSourceSha256(rustLexicalCode(creationSecurityAccessor)) ===
@@ -34890,23 +35953,27 @@ const keyAgentCreationDaclLpacContract = (source) => {
     normalizedSourceSha256(rustLexicalCode(readU32)) ===
       approvedKeyAgentCreationDaclLeafSha256.readU32 &&
     JSON.stringify(
-      rustCallSites(prepare, "creation_security_token_information").map(
+      rustCallSites(
+        prepareFromPrincipalToken,
+        "creation_security_token_information",
+      ).map(
         (call) => call.arguments.map(compactRust),
       ),
     ) ===
       JSON.stringify([
-        ["token.0", "TokenOwner"],
-        ["token.0", "TokenPrimaryGroup"],
+        ["token", "TokenOwner"],
+        ["token", "TokenPrimaryGroup"],
       ]) &&
-    prepare.includes(
+    prepareFromPrincipalToken.includes(
       'format!("O:{owner_text}G:{primary_group_text}D:P(D;;0x000e0000;;;OW)")',
     ) &&
-    !prepare.includes("(A;;") &&
-    rustCallSites(prepare, "from_sddl").length === 2 &&
-    prepare.includes(
+    !prepareFromPrincipalToken.includes("(A;;") &&
+    rustCallSites(prepareFromPrincipalToken, "from_sddl").length === 2 &&
+    prepareFromPrincipalToken.includes(
       "if process_descriptor.descriptor == primary_thread_descriptor.descriptor",
     ) &&
-    (prepare.match(/bInheritHandle:\s*BOOL\(0\)/gu) ?? []).length === 2 &&
+    (prepareFromPrincipalToken.match(/bInheritHandle:\s*BOOL\(0\)/gu) ?? [])
+      .length === 2 &&
     rustCallSites(
       ownedFromSddl,
       "ConvertStringSecurityDescriptorToSecurityDescriptorW",
@@ -35219,6 +36286,7 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
     wrapperPath,
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
   ].sort();
   const expectedCreationPolicyTokens = [
     "crates/platform-windows/src/key_agent_activation.rs",
@@ -35229,10 +36297,18 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
   ].sort();
   const expectedCreationPolicyReferences = [
     "crates/platform-windows/src/key_agent_activation.rs",
     "crates/platform-windows/src/key_agent_activation.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
@@ -35297,13 +36373,26 @@ const keyAgentCreationDaclAuthorityUsageContract = (files) => {
     methodReferencePattern.lastIndex = 0;
     return matches.map(() => file.path);
   });
-  const expectedCalls = names
-    .flatMap((name) => [
-      { name, path: activationPath },
-      { name, path: lpacPath },
-    ])
+  const expectedCalls = [
+    { name: "prepare_creation_security", path: activationPath },
+    { name: "prepare_creation_security", path: lpacPath },
+    { name: "creation_security", path: activationPath },
+    { name: "creation_security", path: lpacPath },
+    { name: "creation_security", path: lpacPath },
+    { name: "creation_security", path: lpacPath },
+    { name: "verify_created_objects", path: activationPath },
+    { name: "verify_created_objects", path: lpacPath },
+    { name: "verify_created_objects", path: lpacPath },
+    { name: "verify_created_objects", path: lpacPath },
+  ]
     .sort((left, right) => left.name.localeCompare(right.name));
-  const expectedDeclarations = names
+  const expectedDeclarations = [
+    "prepare_creation_security",
+    "creation_security",
+    "creation_security",
+    "verify_created_objects",
+    "verify_created_objects",
+  ]
     .map((name) => ({ name, path: lpacPath, raw: false, generics: "" }))
     .sort((left, right) => left.name.localeCompare(right.name));
   return (
@@ -35909,7 +36998,7 @@ const approvedKeyAgentCreationDaclTestEvidenceSha256 = Object.freeze({
   threadHandlesDropRaw:
     "52182c0ac19f7cf2d74703c44e8849e7730437772ae8776351f7d23ce2521e38",
   evidenceModuleRaw:
-    "8b0f03eafc69058c28f5d9bd3afeb82f332366eeca38f218bc4237eb67418349",
+    "61d5467e31badb37749178a9b302d62698063e807c90c6fccf3b1c38b07d190b",
 });
 const keyAgentCreationDaclTestMutationProbes = [
   replaceInsideExactRustItem(
@@ -36220,7 +37309,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "3bca36c39130b4c9457022595d55f41f2fa0c0870a8a7017dabbf5d9d0169f0f",
+    "3e13cb63165a2019dfeff63b5a28da318bc0fe0e1b8eb7e8f0d08bb223a11e05",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -41698,7 +42787,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 32_500),
+      document.slice(Math.max(0, anchor - 700), anchor + 34_500),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -41716,7 +42805,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 25_000,
+    start + 27_000,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const initialMarkers = [
@@ -42011,7 +43100,7 @@ const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "3bca36c39130b4c9457022595d55f41f2fa0c0870a8a7017dabbf5d9d0169f0f",
+  "3e13cb63165a2019dfeff63b5a28da318bc0fe0e1b8eb7e8f0d08bb223a11e05",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,

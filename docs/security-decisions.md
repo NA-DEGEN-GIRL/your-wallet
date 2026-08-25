@@ -597,6 +597,30 @@ Its positive test requires the exact installed restricted service and remains
 ignored; parser and one-field negative policy evidence cannot substitute for
 that elevated disposable-VM kernel probe.
 
+The observer now retains the handle opened with exactly `TOKEN_QUERY`, with
+inheritance disabled, together with the complete canonical service-token
+baseline. Its exclusive creation-token marker is available only after rejecting
+thread impersonation, reopening the current process token, comparing the two
+handles as kernel objects, and rechecking zero handle flags plus exact token IDs,
+identity, `TokenOwner`, `TokenPrimaryGroup`, normal and restricted groups,
+privileges, and the resolved privilege catalog. The owner must equal the fixed
+service SID and the primary group must be an exact `TokenGroups` member. The
+marker exposes only a lifetime-bound borrow to the sibling creation-security
+module; it exports no identity or owned-handle value.
+
+Behind a distinct compile-only debug feature, that sibling module derives two
+separate non-inheritable process/thread descriptors from the service marker and
+compares the owner/group bytes copied by descriptor construction to the sealed
+baseline. It then repeats the same-object/full-baseline check before retaining
+the marker through created-object readback. It cannot accept the desktop launch
+token. A disjoint service-helper Job owner also proves an unnamed non-nested Job
+with exact `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, an
+`ActiveProcessLimit` of one, stable lifetime-bound creation-attribute storage,
+and bounded whole-Job termination. Neither primitive is reachable from an RPC
+command or executable, and neither calls `CreateProcessAsUserW`; one-shot launch
+consumption, target-user AppContainer preparation, the no-inheritance startup
+owner, and the real helper gate remain later STOP-SHIP work.
+
 The service keeps at most sixteen five-second process-correlated epochs,
 removes a nonce before every expiry/identity/state check, returns only
 `Unavailable`, and invalidates all epochs before exact stop/unregister/wait

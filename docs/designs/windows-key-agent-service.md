@@ -123,6 +123,29 @@ The following are existing facts, not new service claims:
   SID attributes, privilege state/necessity, integrity, and SCM configuration.
   The positive test remains ignored until an elevated disposable-VM harness
   installs and starts the exact restricted service.
+- That fixture now retains the non-inheritable token handle opened with exactly
+  `TOKEN_QUERY` and its complete canonical baseline. Before lending a
+  lifetime-bound service-principal capability to creation security, it rejects
+  thread impersonation, reopens the current process token, requires the retained
+  and fresh handles to name the same kernel object, and rechecks handle flags,
+  token identity/IDs, `TokenOwner`, `TokenPrimaryGroup`, groups, restricted SIDs,
+  privileges, and resolved privilege catalog. The owner must equal the fixed
+  service SID and the primary group must occur exactly once in `TokenGroups`.
+  The capability is an exclusive borrow and exposes no SID, PID, or raw owned
+  handle.
+- A compile-only service launch-input feature can consume that capability to
+  create two distinct, non-inheritable process/thread security descriptors and
+  later verify both created objects. Before returning the pair, it compares the
+  owner/group bytes copied into the descriptors with the sealed baseline and
+  repeats the same-object/full-baseline token check, so a mixed or modified
+  principal snapshot fails closed. The authenticated desktop primary token is
+  not accepted as the descriptor principal. The same feature also owns a
+  distinct unnamed non-nested Job primitive with exact
+  `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, `ActiveProcessLimit = 1`, a
+  lifetime-bound creation attribute, and bounded whole-Job cleanup. There is no
+  RPC command, startup attribute list, process creation, or executable entrypoint
+  using these primitives yet; a future launch-attempt owner must consume them
+  once and retain them through post-create readback.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent

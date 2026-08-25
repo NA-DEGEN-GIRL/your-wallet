@@ -77,6 +77,11 @@ use crate::appcontainer_profile_api::{
     AppContainerProfileApiGuard, acquire_appcontainer_profile_api,
 };
 use crate::key_agent_install_adoption::ExistingInstallAdoptionSeal;
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+use crate::key_agent_service_token::VerifiedServiceCreationToken;
 use crate::key_agent_storage::{
     HeldKeyAgentStorageRoot, KeyAgentHeldRootObservation, KeyAgentStorageRootIdentity,
     create_fixed_key_agent_storage_root,
@@ -397,8 +402,12 @@ pub(crate) struct PreparedKeyAgentCreationSecurity {
 impl PreparedKeyAgentCreationSecurity {
     fn prepare() -> Result<Self, KeyAgentLpacError> {
         let token = open_current_process_creation_security_token()?;
+        Self::prepare_from_principal_token(token.borrowed_handle())
+    }
 
-        let owner_information = creation_security_token_information(token.0, TokenOwner)?;
+    fn prepare_from_principal_token(token: BorrowedHandle<'_>) -> Result<Self, KeyAgentLpacError> {
+        let token = HANDLE(token.as_raw_handle());
+        let owner_information = creation_security_token_information(token, TokenOwner)?;
         if owner_information.returned_bytes < size_of::<TOKEN_OWNER>() {
             return Err(KeyAgentLpacError::Attribute);
         }
@@ -414,7 +423,7 @@ impl PreparedKeyAgentCreationSecurity {
         let owner_text = creation_security_sid_string(owner.Owner)?;
 
         let primary_group_information =
-            creation_security_token_information(token.0, TokenPrimaryGroup)?;
+            creation_security_token_information(token, TokenPrimaryGroup)?;
         if primary_group_information.returned_bytes < size_of::<TOKEN_PRIMARY_GROUP>() {
             return Err(KeyAgentLpacError::Attribute);
         }
@@ -502,6 +511,106 @@ impl PreparedKeyAgentCreationSecurity {
             &self.expected_owner_sid,
             &self.expected_primary_group_sid,
         )
+    }
+}
+
+/// Service-fixture ownership of process and primary-thread creation security.
+///
+/// The contained marker can be created only from the verified query-only
+/// service primary token. Retaining it binds both descriptors through creation
+/// and readback to that service-token proof without exposing token, SID, or
+/// descriptor values. The authenticated desktop primary token is deliberately
+/// not accepted by this boundary.
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+#[must_use = "service creation security and its token proof must remain live through readback"]
+#[allow(dead_code)] // Consumed by the next compile-only service launch-input composition.
+pub(crate) struct PreparedServiceKeyAgentCreationSecurity<'proof> {
+    security: PreparedKeyAgentCreationSecurity,
+    _service_token: VerifiedServiceCreationToken<'proof>,
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+const PREPARED_SERVICE_CREATION_SECURITY_DEBUG: &str =
+    "PreparedServiceKeyAgentCreationSecurity([OPAQUE SERVICE PROCESS/THREAD POLICY])";
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+fn retain_after_service_creation_security_bookend<M, PrincipalError, RevalidationError>(
+    security: PreparedKeyAgentCreationSecurity,
+    mut marker: M,
+    verify_creation_principals: impl FnOnce(&M, &[u8], &[u8]) -> Result<(), PrincipalError>,
+    revalidate: impl FnOnce(&mut M) -> Result<(), RevalidationError>,
+) -> Result<(PreparedKeyAgentCreationSecurity, M), KeyAgentLpacError> {
+    verify_creation_principals(
+        &marker,
+        &security.expected_owner_sid,
+        &security.expected_primary_group_sid,
+    )
+    .map_err(|_| KeyAgentLpacError::Attribute)?;
+    revalidate(&mut marker).map_err(|_| KeyAgentLpacError::Attribute)?;
+    Ok((security, marker))
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+#[allow(dead_code)] // Consumed by the next compile-only service launch-input composition.
+impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof> {
+    /// Derives both creation descriptors from the verified service principal.
+    pub(crate) fn prepare(
+        service_token: VerifiedServiceCreationToken<'proof>,
+    ) -> Result<Self, KeyAgentLpacError> {
+        let security = PreparedKeyAgentCreationSecurity::prepare_from_principal_token(
+            service_token.borrowed_handle(),
+        )?;
+        let (security, service_token) = retain_after_service_creation_security_bookend(
+            security,
+            service_token,
+            |service_token, owner, primary_group| {
+                service_token.verify_creation_principals(owner, primary_group)
+            },
+            VerifiedServiceCreationToken::revalidate,
+        )?;
+        Ok(Self {
+            security,
+            _service_token: service_token,
+        })
+    }
+
+    /// Borrows both service-owned creation attributes as one inseparable pair.
+    pub(crate) fn creation_security(
+        &self,
+    ) -> crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_> {
+        self.security.creation_security()
+    }
+
+    /// Verifies the exact service-owned descriptors on both created objects.
+    pub(crate) fn verify_created_objects(
+        &self,
+        process: BorrowedHandle<'_>,
+        primary_thread: BorrowedHandle<'_>,
+    ) -> Result<(), KeyAgentLpacError> {
+        self.security
+            .verify_created_objects(process, primary_thread)
+    }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+impl fmt::Debug for PreparedServiceKeyAgentCreationSecurity<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(PREPARED_SERVICE_CREATION_SECURITY_DEBUG)
     }
 }
 
@@ -597,6 +706,14 @@ impl fmt::Debug for OwnedCreationSecurityDescriptor {
 }
 
 struct CreationSecurityToken(HANDLE);
+
+impl CreationSecurityToken {
+    fn borrowed_handle(&self) -> BorrowedHandle<'_> {
+        // SAFETY: this owner retains the successful OpenProcessToken result and
+        // the returned borrow cannot outlive it.
+        unsafe { BorrowedHandle::borrow_raw(self.0.0) }
+    }
+}
 
 impl Drop for CreationSecurityToken {
     fn drop(&mut self) {
@@ -3051,6 +3168,14 @@ mod tests {
         require_same_token_object, token_identity_from_statistics, validate_creation_handle_flags,
         validate_token_policy, verify_created_object_security, wide_nul_str,
     };
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    use super::{
+        PREPARED_SERVICE_CREATION_SECURITY_DEBUG, PreparedServiceKeyAgentCreationSecurity,
+        retain_after_service_creation_security_bookend,
+    };
     use crate::restricted_process_context::RestrictedProcessContext;
 
     const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";
@@ -5186,6 +5311,133 @@ mod tests {
             format!("{prepared:?}"),
             "PreparedKeyAgentCreationSecurity([OPAQUE PROCESS/THREAD POLICY])"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn current_process_creation_security_wrapper_matches_borrowed_token_core()
+    -> Result<(), KeyAgentLpacError> {
+        let current_process = PreparedKeyAgentCreationSecurity::prepare()?;
+        let token = open_current_process_creation_security_token()?;
+        let borrowed_core = PreparedKeyAgentCreationSecurity::prepare_from_principal_token(
+            token.borrowed_handle(),
+        )?;
+
+        assert_eq!(
+            borrowed_core.expected_owner_sid,
+            current_process.expected_owner_sid
+        );
+        assert_eq!(
+            borrowed_core.expected_primary_group_sid,
+            current_process.expected_primary_group_sid
+        );
+        assert_eq!(
+            borrowed_core.process_descriptor.bytes(),
+            current_process.process_descriptor.bytes()
+        );
+        assert_eq!(
+            borrowed_core.primary_thread_descriptor.bytes(),
+            current_process.primary_thread_descriptor.bytes()
+        );
+        assert_ne!(
+            borrowed_core.process_attributes.lpSecurityDescriptor,
+            borrowed_core.primary_thread_attributes.lpSecurityDescriptor
+        );
+        assert!(!borrowed_core.process_attributes.bInheritHandle.as_bool());
+        assert!(
+            !borrowed_core
+                .primary_thread_attributes
+                .bInheritHandle
+                .as_bool()
+        );
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn service_creation_security_wrapper_is_lifetime_bound_move_only_and_not_sync() {
+        let _ = <PreparedServiceKeyAgentCreationSecurity<'static> as AmbiguousIfClone<_>>::marker;
+        let _ = <PreparedServiceKeyAgentCreationSecurity<'static> as AmbiguousIfCopy<_>>::marker;
+        let _ = <PreparedServiceKeyAgentCreationSecurity<'static> as AmbiguousIfSync<_>>::marker;
+        assert!(core::mem::needs_drop::<
+            PreparedServiceKeyAgentCreationSecurity<'static>,
+        >());
+        assert_eq!(
+            PREPARED_SERVICE_CREATION_SECURITY_DEBUG,
+            "PreparedServiceKeyAgentCreationSecurity([OPAQUE SERVICE PROCESS/THREAD POLICY])"
+        );
+        assert!(!PREPARED_SERVICE_CREATION_SECURITY_DEBUG.contains("S-1-"));
+        assert!(!PREPARED_SERVICE_CREATION_SECURITY_DEBUG.contains("0x"));
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn service_creation_security_bookend_checks_principals_then_full_revalidation()
+    -> Result<(), KeyAgentLpacError> {
+        let security = PreparedKeyAgentCreationSecurity::prepare()?;
+        let expected_owner_sid = security.expected_owner_sid.clone();
+        let expected_primary_group_sid = security.expected_primary_group_sid.clone();
+        let call_order = std::cell::Cell::new(0_u8);
+        let (_security, _marker) = retain_after_service_creation_security_bookend(
+            security,
+            (),
+            |(), owner, primary_group| {
+                assert_eq!(call_order.get(), 0);
+                assert!(owner == expected_owner_sid.as_slice());
+                assert!(primary_group == expected_primary_group_sid.as_slice());
+                call_order.set(1);
+                Ok::<(), ()>(())
+            },
+            |()| {
+                assert_eq!(call_order.get(), 1);
+                call_order.set(2);
+                Ok::<(), ()>(())
+            },
+        )?;
+        assert_eq!(call_order.get(), 2);
+
+        let revalidation_called = std::cell::Cell::new(false);
+        let principal_failure = retain_after_service_creation_security_bookend(
+            PreparedKeyAgentCreationSecurity::prepare()?,
+            (),
+            |(), _, _| Err::<(), ()>(()),
+            |()| {
+                revalidation_called.set(true);
+                Ok::<(), ()>(())
+            },
+        );
+        assert!(matches!(
+            principal_failure,
+            Err(KeyAgentLpacError::Attribute)
+        ));
+        assert!(!revalidation_called.get());
+
+        let principals_verified = std::cell::Cell::new(false);
+        let revalidation_called = std::cell::Cell::new(false);
+        let revalidation_failure = retain_after_service_creation_security_bookend(
+            PreparedKeyAgentCreationSecurity::prepare()?,
+            (),
+            |(), _, _| {
+                principals_verified.set(true);
+                Ok::<(), ()>(())
+            },
+            |()| {
+                revalidation_called.set(true);
+                Err::<(), ()>(())
+            },
+        );
+        assert!(matches!(
+            revalidation_failure,
+            Err(KeyAgentLpacError::Attribute)
+        ));
+        assert!(principals_verified.get());
+        assert!(revalidation_called.get());
         Ok(())
     }
 

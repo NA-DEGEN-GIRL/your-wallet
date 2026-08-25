@@ -163,6 +163,15 @@ mod key_agent_child_bootstrap;
 // Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
 // a signing path. Default and release callers fail closed as unavailable.
 mod key_agent_service;
+// Compile-only Phase 1 launch inputs remain private and unreachable until the
+// target-profile, non-inheriting startup, and CreateProcessAsUser fixtures are
+// composed behind the exact debug feature.
+#[cfg(all(
+    windows,
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+mod key_agent_service_launch;
 // The restricted-service-token observer is compiled only for its explicit
 // Windows debug feasibility build. Its opaque proof deliberately leaves SCM
 // configuration, integrity, and attribute-level policy unverified.

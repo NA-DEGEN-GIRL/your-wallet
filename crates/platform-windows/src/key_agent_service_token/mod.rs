@@ -8,7 +8,10 @@
 
 #![deny(unsafe_code)]
 
+use core::cell::Cell;
 use core::fmt;
+use core::marker::PhantomData;
+use std::os::windows::io::BorrowedHandle;
 
 use zeroize::Zeroize as _;
 
@@ -82,11 +85,21 @@ pub(crate) const SERVICE_TOKEN_POLICY_COMPLETENESS: ServiceTokenPolicyCompletene
 /// privilege enablement/use state, integrity, and SCM configuration readback.
 #[must_use = "discarding the fixture proof must not be confused with production evidence"]
 pub(crate) struct ServiceTokenFixtureProof {
+    retained_token: sys::OwnedToken,
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        )
+    )]
+    baseline: ServiceTokenBaseline,
     completeness: ServiceTokenPolicyCompleteness,
     _restricted_sid_attributes: UnverifiedRestrictedSidAttributes,
     _privilege_state: UnverifiedPrivilegeState,
     _integrity_policy: UnverifiedIntegrityPolicy,
     _scm_configuration: UnverifiedScmConfiguration,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl fmt::Debug for ServiceTokenFixtureProof {
@@ -96,6 +109,88 @@ impl fmt::Debug for ServiceTokenFixtureProof {
                 formatter.write_str("ServiceTokenFixtureProof([REDACTED])")
             }
         }
+    }
+}
+
+impl ServiceTokenFixtureProof {
+    fn revalidate_creation_token(&mut self) -> Result<(), ServiceTokenFixtureError> {
+        let mut recaptured = sys::recapture_current_service_token(&self.retained_token)?;
+        canonicalize_service_token_baseline(&mut recaptured.captured.baseline);
+        verify_creation_token_revalidation(
+            &self.baseline,
+            &recaptured.captured.baseline,
+            recaptured.retained_handle_flags,
+            recaptured.same_token_object,
+        )
+        .map_err(|_| ServiceTokenFixtureError::policy())
+    }
+
+    /// Freshly revalidates the retained service token before lending it to the
+    /// sibling creation-security seam.
+    ///
+    /// The exclusive borrow prevents another revalidation or handle borrow
+    /// until the returned marker has been consumed and dropped.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        )
+    )]
+    pub(crate) fn creation_token(
+        &mut self,
+    ) -> Result<VerifiedServiceCreationToken<'_>, ServiceTokenFixtureError> {
+        self.revalidate_creation_token()?;
+
+        Ok(VerifiedServiceCreationToken {
+            proof: self,
+            _not_sync: PhantomData,
+        })
+    }
+}
+
+/// Fresh, lifetime-bound authority to borrow the retained service token for
+/// the sibling creation-security seam.
+///
+/// This marker owns no identity, SID, PID, or raw-handle data. It is move-only,
+/// is not `Sync`, and keeps an exclusive borrow of the complete fixture proof
+/// until the creation-security operation has finished its readback.
+#[must_use = "the freshly revalidated creation-token authority must stay live through readback"]
+pub(crate) struct VerifiedServiceCreationToken<'proof> {
+    proof: &'proof mut ServiceTokenFixtureProof,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl VerifiedServiceCreationToken<'_> {
+    pub(crate) fn borrowed_handle(&self) -> BorrowedHandle<'_> {
+        self.proof.retained_token.borrowed_handle()
+    }
+
+    /// Confirms that descriptor construction copied the exact retained token
+    /// owner and primary-group SIDs without exporting either principal.
+    pub(crate) fn verify_creation_principals(
+        &self,
+        owner: &[u8],
+        primary_group: &[u8],
+    ) -> Result<(), ServiceTokenFixtureError> {
+        let observation = &self.proof.baseline.observation;
+        if owner != observation.owner_sid.0.as_slice()
+            || primary_group != observation.primary_group_sid.0.as_slice()
+        {
+            return Err(ServiceTokenFixtureError::policy());
+        }
+        Ok(())
+    }
+
+    /// Repeats the complete retained/fresh-token and policy continuity check.
+    pub(crate) fn revalidate(&mut self) -> Result<(), ServiceTokenFixtureError> {
+        self.proof.revalidate_creation_token()
+    }
+}
+
+impl fmt::Debug for VerifiedServiceCreationToken<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VerifiedServiceCreationToken([REDACTED])")
     }
 }
 
@@ -154,9 +249,19 @@ impl std::error::Error for ServiceTokenFixtureError {}
 /// documented fixture predicate does not match exactly.
 pub(crate) fn verify_current_key_agent_service_token_fixture()
 -> Result<ServiceTokenFixtureProof, ServiceTokenFixtureError> {
-    let captured = sys::capture_current_service_token()?;
-    verify_fixture_policy(&captured.observation, &captured.catalog)
-        .map_err(|_| ServiceTokenFixtureError::policy())
+    let mut captured = sys::capture_current_service_token()?;
+    canonicalize_service_token_baseline(&mut captured.baseline);
+    verify_fixture_baseline(&captured.baseline).map_err(|_| ServiceTokenFixtureError::policy())?;
+    Ok(ServiceTokenFixtureProof {
+        retained_token: captured.token,
+        baseline: captured.baseline,
+        completeness: SERVICE_TOKEN_POLICY_COMPLETENESS,
+        _restricted_sid_attributes: UnverifiedRestrictedSidAttributes,
+        _privilege_state: UnverifiedPrivilegeState,
+        _integrity_policy: UnverifiedIntegrityPolicy,
+        _scm_configuration: UnverifiedScmConfiguration,
+        _not_sync: PhantomData,
+    })
 }
 
 #[derive(Eq, PartialEq)]
@@ -204,6 +309,27 @@ impl fmt::Debug for LuidValue {
     }
 }
 
+impl LuidValue {
+    fn zeroize(&mut self) {
+        self.low_part.zeroize();
+        self.high_part.zeroize();
+    }
+}
+
+#[derive(Eq, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+struct TokenIdentityBaseline {
+    token_id: LuidValue,
+    modified_id: LuidValue,
+}
+
+impl Drop for TokenIdentityBaseline {
+    fn drop(&mut self) {
+        self.token_id.zeroize();
+        self.modified_id.zeroize();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FixturePrivilege {
     ChangeNotify,
@@ -220,83 +346,220 @@ enum ForbiddenPrivilege {
     Restore,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct ExpectedPrivilege {
     kind: FixturePrivilege,
     luid: LuidValue,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct ForbiddenPrivilegeLuid {
     kind: ForbiddenPrivilege,
     luid: LuidValue,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Eq, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
 struct PrivilegeCatalog {
     expected: [ExpectedPrivilege; KEY_AGENT_SERVICE_FIXTURE_PRIVILEGES.len()],
     forbidden: [ForbiddenPrivilegeLuid; KEY_AGENT_SERVICE_FORBIDDEN_PRIVILEGES.len()],
 }
 
+impl Drop for PrivilegeCatalog {
+    fn drop(&mut self) {
+        for entry in &mut self.expected {
+            entry.luid.zeroize();
+        }
+        for entry in &mut self.forbidden {
+            entry.luid.zeroize();
+        }
+    }
+}
+
+#[derive(Eq, PartialEq)]
 #[cfg_attr(test, derive(Clone))]
 struct SidEntry {
     sid: SidBytes,
     attributes: u32,
 }
 
-#[derive(Clone, Copy)]
+impl Drop for SidEntry {
+    fn drop(&mut self) {
+        self.attributes.zeroize();
+    }
+}
+
+#[derive(Eq, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
 struct PrivilegeEntry {
     luid: LuidValue,
     attributes: u32,
 }
 
+impl Drop for PrivilegeEntry {
+    fn drop(&mut self) {
+        self.luid.zeroize();
+        self.attributes.zeroize();
+    }
+}
+
+#[derive(Eq, PartialEq)]
 #[cfg_attr(test, derive(Clone))]
 #[allow(clippy::struct_excessive_bools)] // Each Boolean is one independent token query.
 struct ServiceTokenObservation {
+    identity: TokenIdentityBaseline,
     token_is_primary: bool,
     session_id: u32,
     app_container: bool,
     ui_access: bool,
     has_restrictions: bool,
     user_sid: SidBytes,
+    owner_sid: SidBytes,
+    primary_group_sid: SidBytes,
     groups: Vec<SidEntry>,
     restricted_sids: Vec<SidEntry>,
     privileges: Vec<PrivilegeEntry>,
 }
 
-struct CapturedServiceToken {
+impl Drop for ServiceTokenObservation {
+    fn drop(&mut self) {
+        self.token_is_primary.zeroize();
+        self.session_id.zeroize();
+        self.app_container.zeroize();
+        self.ui_access.zeroize();
+        self.has_restrictions.zeroize();
+    }
+}
+
+#[derive(Eq, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+struct ServiceTokenBaseline {
+    token_handle_flags: u32,
     observation: ServiceTokenObservation,
     catalog: PrivilegeCatalog,
 }
 
+impl Drop for ServiceTokenBaseline {
+    fn drop(&mut self) {
+        self.token_handle_flags.zeroize();
+    }
+}
+
+struct CapturedServiceToken {
+    token: sys::OwnedToken,
+    baseline: ServiceTokenBaseline,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+    )
+)]
+struct RecapturedServiceToken {
+    captured: CapturedServiceToken,
+    retained_handle_flags: u32,
+    same_token_object: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PolicyRejection {
+    HandleContinuity,
     TokenShape,
     ServiceIdentity,
     ServiceGroups,
     RestrictedSidSet,
     Privileges,
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        )
+    )]
+    BaselineContinuity,
+}
+
+fn verify_fixture_baseline(baseline: &ServiceTokenBaseline) -> Result<(), PolicyRejection> {
+    if baseline.token_handle_flags != 0 {
+        return Err(PolicyRejection::HandleContinuity);
+    }
+    verify_fixture_policy(&baseline.observation, &baseline.catalog)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+    )
+)]
+fn verify_creation_token_revalidation(
+    baseline: &ServiceTokenBaseline,
+    fresh: &ServiceTokenBaseline,
+    retained_handle_flags: u32,
+    same_token_object: bool,
+) -> Result<(), PolicyRejection> {
+    if retained_handle_flags != 0 || !same_token_object {
+        return Err(PolicyRejection::HandleContinuity);
+    }
+    verify_fixture_baseline(fresh)?;
+    if fresh != baseline {
+        return Err(PolicyRejection::BaselineContinuity);
+    }
+    Ok(())
+}
+
+fn canonicalize_service_token_baseline(baseline: &mut ServiceTokenBaseline) {
+    baseline.observation.groups.sort_by(|left, right| {
+        left.sid
+            .0
+            .cmp(&right.sid.0)
+            .then(left.attributes.cmp(&right.attributes))
+    });
+    baseline.observation.restricted_sids.sort_by(|left, right| {
+        left.sid
+            .0
+            .cmp(&right.sid.0)
+            .then(left.attributes.cmp(&right.attributes))
+    });
+    baseline.observation.privileges.sort_by(|left, right| {
+        left.luid
+            .high_part
+            .cmp(&right.luid.high_part)
+            .then(left.luid.low_part.cmp(&right.luid.low_part))
+            .then(left.attributes.cmp(&right.attributes))
+    });
 }
 
 fn verify_fixture_policy(
     token: &ServiceTokenObservation,
     catalog: &PrivilegeCatalog,
-) -> Result<ServiceTokenFixtureProof, PolicyRejection> {
+) -> Result<(), PolicyRejection> {
     if !token.token_is_primary
         || token.session_id != 0
         || token.app_container
         || token.ui_access
         || !token.has_restrictions
         || !token.user_sid.has_canonical_shape()
+        || !token.owner_sid.has_canonical_shape()
+        || !token.primary_group_sid.has_canonical_shape()
     {
         return Err(PolicyRejection::TokenShape);
     }
 
     let service_sid = &token.user_sid;
+    if token.owner_sid != *service_sid {
+        return Err(PolicyRejection::ServiceIdentity);
+    }
     let service_group =
         exactly_one_group(&token.groups, &service_sid.0).ok_or(PolicyRejection::ServiceIdentity)?;
     if service_group.attributes != SERVICE_SID_GROUP_ATTRIBUTES {
         return Err(PolicyRejection::ServiceIdentity);
+    }
+    if exactly_one_group(&token.groups, &token.primary_group_sid.0).is_none() {
+        return Err(PolicyRejection::ServiceGroups);
     }
 
     let local_group =
@@ -325,13 +588,7 @@ fn verify_fixture_policy(
 
     validate_privileges(&token.privileges, catalog)?;
 
-    Ok(ServiceTokenFixtureProof {
-        completeness: SERVICE_TOKEN_POLICY_COMPLETENESS,
-        _restricted_sid_attributes: UnverifiedRestrictedSidAttributes,
-        _privilege_state: UnverifiedPrivilegeState,
-        _integrity_policy: UnverifiedIntegrityPolicy,
-        _scm_configuration: UnverifiedScmConfiguration,
-    })
+    Ok(())
 }
 
 fn exactly_one_group<'entry>(groups: &'entry [SidEntry], sid: &[u8]) -> Option<&'entry SidEntry> {
@@ -498,12 +755,18 @@ mod tests {
 
     fn observation() -> ServiceTokenObservation {
         ServiceTokenObservation {
+            identity: TokenIdentityBaseline {
+                token_id: luid(9),
+                modified_id: luid(10),
+            },
             token_is_primary: true,
             session_id: 0,
             app_container: false,
             ui_access: false,
             has_restrictions: true,
             user_sid: service_sid(),
+            owner_sid: service_sid(),
+            primary_group_sid: SidBytes(LOCAL_SID.to_vec()),
             groups: vec![
                 SidEntry {
                     sid: service_sid(),
@@ -561,17 +824,41 @@ mod tests {
         }
     }
 
+    fn baseline() -> ServiceTokenBaseline {
+        let mut baseline = ServiceTokenBaseline {
+            token_handle_flags: 0,
+            observation: observation(),
+            catalog: catalog(),
+        };
+        canonicalize_service_token_baseline(&mut baseline);
+        baseline
+    }
+
+    fn fixture_proof() -> ServiceTokenFixtureProof {
+        ServiceTokenFixtureProof {
+            retained_token: sys::OwnedToken::invalid_for_test(),
+            baseline: baseline(),
+            completeness: SERVICE_TOKEN_POLICY_COMPLETENESS,
+            _restricted_sid_attributes: UnverifiedRestrictedSidAttributes,
+            _privilege_state: UnverifiedPrivilegeState,
+            _integrity_policy: UnverifiedIntegrityPolicy,
+            _scm_configuration: UnverifiedScmConfiguration,
+            _not_sync: PhantomData,
+        }
+    }
+
     #[test]
     fn documented_fixture_policy_passes_but_remains_unverified() {
         let result = verify_fixture_policy(&observation(), &catalog());
-        assert!(result.is_ok());
-        if let Ok(proof) = result {
-            assert_eq!(
-                proof.completeness,
-                ServiceTokenPolicyCompleteness::Unverified
-            );
-            assert_eq!(format!("{proof:?}"), "ServiceTokenFixtureProof([REDACTED])");
-        }
+        assert_eq!(result, Ok(()));
+        assert_eq!(verify_fixture_baseline(&baseline()), Ok(()));
+
+        let proof = fixture_proof();
+        assert_eq!(
+            proof.completeness,
+            ServiceTokenPolicyCompleteness::Unverified
+        );
+        assert_eq!(format!("{proof:?}"), "ServiceTokenFixtureProof([REDACTED])");
     }
 
     #[test]
@@ -598,6 +885,15 @@ mod tests {
         rejected.push(value);
         let mut value = observation();
         value.user_sid.0[0] = 2;
+        rejected.push(value);
+        let mut value = observation();
+        value.owner_sid = sid(5, &[80, 9, 9, 9, 9, 9]);
+        rejected.push(value);
+        let mut value = observation();
+        value.primary_group_sid = sid(5, &[32, 999]);
+        rejected.push(value);
+        let mut value = observation();
+        value.primary_group_sid.0[0] = 2;
         rejected.push(value);
 
         for group_index in 0..3 {
@@ -701,6 +997,173 @@ mod tests {
     }
 
     #[test]
+    fn creation_token_revalidation_rejects_handle_flags_and_wrong_object() {
+        let expected = baseline();
+        assert_eq!(
+            verify_creation_token_revalidation(&expected, &expected, 0, true),
+            Ok(())
+        );
+
+        let mut inheritable_fresh = expected.clone();
+        inheritable_fresh.token_handle_flags = 1;
+        assert_eq!(
+            verify_creation_token_revalidation(&expected, &inheritable_fresh, 0, true),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        assert_eq!(
+            verify_creation_token_revalidation(&expected, &expected, 1, true),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        assert_eq!(
+            verify_creation_token_revalidation(&expected, &expected, 0, false),
+            Err(PolicyRejection::HandleContinuity)
+        );
+    }
+
+    #[test]
+    fn creation_token_revalidation_rejects_complete_baseline_and_catalog_drift() {
+        let expected = baseline();
+        let mut drifted = Vec::new();
+
+        let mut value = expected.clone();
+        value.observation.identity.modified_id = luid(11);
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        let old_service_sid = value.observation.user_sid.clone();
+        let new_service_sid = sid(5, &[80, 11, 12, 13, 14, 15]);
+        value.observation.user_sid = new_service_sid.clone();
+        value.observation.owner_sid = new_service_sid.clone();
+        let mut replaced_service_group = false;
+        for entry in &mut value.observation.groups {
+            if entry.sid == old_service_sid {
+                entry.sid = new_service_sid.clone();
+                replaced_service_group = true;
+            }
+        }
+        let mut replaced_restricted_service_sid = false;
+        for entry in &mut value.observation.restricted_sids {
+            if entry.sid == old_service_sid {
+                entry.sid = new_service_sid.clone();
+                replaced_restricted_service_sid = true;
+            }
+        }
+        assert!(replaced_service_group);
+        assert!(replaced_restricted_service_sid);
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        value.observation.primary_group_sid = value.observation.user_sid.clone();
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        value.observation.restricted_sids[0].attributes ^= GROUP_ENABLED;
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        value.observation.privileges[0].attributes ^= PRIVILEGE_ENABLED;
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        let old_luid = value.catalog.expected[0].luid;
+        let new_luid = luid(101);
+        value.catalog.expected[0].luid = new_luid;
+        if let Some(privilege) = value
+            .observation
+            .privileges
+            .iter_mut()
+            .find(|entry| entry.luid == old_luid)
+        {
+            privilege.luid = new_luid;
+        }
+        drifted.push(value);
+
+        let mut value = expected.clone();
+        value.observation.groups.push(SidEntry {
+            sid: sid(5, &[12]),
+            attributes: GROUP_ENABLED,
+        });
+        drifted.push(value);
+
+        for value in &mut drifted {
+            canonicalize_service_token_baseline(value);
+            assert!(verify_fixture_baseline(value).is_ok());
+            assert_eq!(
+                verify_creation_token_revalidation(&expected, value, 0, true),
+                Err(PolicyRejection::BaselineContinuity)
+            );
+        }
+
+        let mut reordered = expected.clone();
+        reordered.observation.groups.reverse();
+        reordered.observation.restricted_sids.reverse();
+        reordered.observation.privileges.reverse();
+        canonicalize_service_token_baseline(&mut reordered);
+        assert_eq!(
+            verify_creation_token_revalidation(&expected, &reordered, 0, true),
+            Ok(())
+        );
+    }
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn proof_and_creation_token_are_move_only_send_and_not_sync() {
+        assert_send::<ServiceTokenFixtureProof>();
+        assert_send::<VerifiedServiceCreationToken<'static>>();
+        let _ = <ServiceTokenFixtureProof as AmbiguousIfSync<_>>::marker;
+        let _ = <ServiceTokenFixtureProof as AmbiguousIfClone<_>>::marker;
+        let _ = <ServiceTokenFixtureProof as AmbiguousIfCopy<_>>::marker;
+        let _ = <VerifiedServiceCreationToken<'static> as AmbiguousIfSync<_>>::marker;
+        let _ = <VerifiedServiceCreationToken<'static> as AmbiguousIfClone<_>>::marker;
+        let _ = <VerifiedServiceCreationToken<'static> as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn creation_token_debug_is_data_free() {
+        let mut proof = fixture_proof();
+        let owner = proof.baseline.observation.owner_sid.0.clone();
+        let primary_group = proof.baseline.observation.primary_group_sid.0.clone();
+        let token = VerifiedServiceCreationToken {
+            proof: &mut proof,
+            _not_sync: PhantomData,
+        };
+        assert_eq!(
+            format!("{token:?}"),
+            "VerifiedServiceCreationToken([REDACTED])"
+        );
+        assert!(
+            token
+                .verify_creation_principals(&owner, &primary_group)
+                .is_ok()
+        );
+        assert!(
+            token
+                .verify_creation_principals(WORLD_SID, &primary_group)
+                .is_err()
+        );
+        assert!(token.verify_creation_principals(&owner, WORLD_SID).is_err());
+    }
+
+    #[test]
     fn redacted_public_errors_never_expose_policy_details() {
         for error in [
             ServiceTokenFixtureError::operating_system(),
@@ -719,6 +1182,13 @@ mod tests {
     #[ignore = "requires execution inside the installed restricted YourWalletKeyAgent SCM service context"]
     fn installed_service_context_matches_documented_fixture_policy()
     -> Result<(), ServiceTokenFixtureError> {
-        verify_current_key_agent_service_token_fixture().map(|_proof| ())
+        let mut proof = verify_current_key_agent_service_token_fixture()?;
+        let owner = proof.baseline.observation.owner_sid.0.clone();
+        let primary_group = proof.baseline.observation.primary_group_sid.0.clone();
+        let mut creation_token = proof.creation_token()?;
+        creation_token.verify_creation_principals(&owner, &primary_group)?;
+        creation_token.revalidate()?;
+        let _borrowed = creation_token.borrowed_handle();
+        Ok(())
     }
 }

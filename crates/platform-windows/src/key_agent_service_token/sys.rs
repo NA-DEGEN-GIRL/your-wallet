@@ -3,18 +3,23 @@
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
+use core::fmt;
 use core::mem::{offset_of, size_of};
 use core::ptr;
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::os::windows::io::BorrowedHandle;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN, GetHandleInformation, HANDLE,
-    INVALID_HANDLE_VALUE, LUID,
+    CloseHandle, CompareObjectHandles, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN,
+    GetHandleInformation, HANDLE, INVALID_HANDLE_VALUE, LUID,
 };
 use windows::Win32::Security::{
     GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW, LookupPrivilegeValueW, PSID,
     SID_AND_ATTRIBUTES, SID_NAME_USE, SidTypeWellKnownGroup, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TOKEN_USER, TokenGroups, TokenHasRestrictions,
-    TokenIsAppContainer, TokenPrimary, TokenPrivileges, TokenRestrictedSids, TokenSessionId,
+    TOKEN_OWNER, TOKEN_PRIMARY_GROUP, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE,
+    TOKEN_USER, TokenGroups, TokenHasRestrictions, TokenIsAppContainer, TokenOwner, TokenPrimary,
+    TokenPrimaryGroup, TokenPrivileges, TokenRestrictedSids, TokenSessionId, TokenStatistics,
     TokenType, TokenUIAccess, TokenUser,
 };
 use windows::Win32::System::Threading::{
@@ -27,8 +32,8 @@ use super::{
     CapturedServiceToken, ExpectedPrivilege, FixturePrivilege, ForbiddenPrivilege,
     ForbiddenPrivilegeLuid, KEY_AGENT_SERVICE_FIXTURE_PRIVILEGES,
     KEY_AGENT_SERVICE_FORBIDDEN_PRIVILEGES, KEY_AGENT_VIRTUAL_SERVICE_ACCOUNT, LuidValue,
-    PrivilegeCatalog, PrivilegeEntry, ServiceTokenFixtureError, ServiceTokenObservation, SidBytes,
-    SidEntry,
+    PrivilegeCatalog, PrivilegeEntry, RecapturedServiceToken, ServiceTokenBaseline,
+    ServiceTokenFixtureError, ServiceTokenObservation, SidBytes, SidEntry, TokenIdentityBaseline,
 };
 
 const MIN_BINARY_SID_BYTES: usize = 8;
@@ -36,36 +41,86 @@ const MAX_BINARY_SID_BYTES: usize = 68;
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
 const MAX_DOMAIN_NAME_UNITS: usize = 256;
 const EXPECTED_DOMAIN_NAME: &[u16] = &[78, 84, 32, 83, 69, 82, 86, 73, 67, 69];
+const CURRENT_SERVICE_TOKEN_ACCESS: windows::Win32::Security::TOKEN_ACCESS_MASK = TOKEN_QUERY;
 
 pub(super) fn capture_current_service_token()
 -> Result<CapturedServiceToken, ServiceTokenFixtureError> {
     reject_thread_impersonation()?;
-    let token = open_current_process_token()?;
+    let (token, token_handle_flags) = open_current_process_token()?;
+    let baseline = capture_service_token_baseline(token.raw(), token_handle_flags)?;
+    reject_thread_impersonation()?;
+
+    Ok(CapturedServiceToken { token, baseline })
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+    )
+)]
+pub(super) fn recapture_current_service_token(
+    retained: &OwnedToken,
+) -> Result<RecapturedServiceToken, ServiceTokenFixtureError> {
+    reject_thread_impersonation()?;
+    let retained_handle_flags = token_handle_flags(retained)?;
+    let mut baseline = capture_service_token_baseline(retained.raw(), retained_handle_flags)?;
+    let (token, fresh_handle_flags) = open_current_process_token()?;
+    let same_token_object = same_kernel_object(retained.raw(), token.raw());
+    let fresh_identity = token_identity_baseline(token.raw())?;
+    if fresh_identity != baseline.observation.identity {
+        return Err(ServiceTokenFixtureError::policy());
+    }
+    baseline.token_handle_flags = fresh_handle_flags;
+    reject_thread_impersonation()?;
+
+    Ok(RecapturedServiceToken {
+        captured: CapturedServiceToken { token, baseline },
+        retained_handle_flags,
+        same_token_object,
+    })
+}
+
+fn capture_service_token_baseline(
+    token: HANDLE,
+    token_handle_flags: u32,
+) -> Result<ServiceTokenBaseline, ServiceTokenFixtureError> {
     let service_sid = resolve_fixed_service_sid()?;
     let catalog = resolve_privilege_catalog()?;
 
-    let token_is_primary = token_type(token.raw())? == TokenPrimary;
-    let session_id = token_u32(token.raw(), TokenSessionId)?;
-    let app_container = exact_boolean(token_u32(token.raw(), TokenIsAppContainer)?)?;
-    let ui_access = exact_boolean(token_u32(token.raw(), TokenUIAccess)?)?;
-    let has_restrictions = token_has_restrictions(token.raw())?;
-    let user_sid = token_user_sid(token.raw())?;
+    let identity_before = token_identity_baseline(token)?;
+    let token_is_primary = token_type(token)? == TokenPrimary;
+    let session_id = token_u32(token, TokenSessionId)?;
+    let app_container = exact_boolean(token_u32(token, TokenIsAppContainer)?)?;
+    let ui_access = exact_boolean(token_u32(token, TokenUIAccess)?)?;
+    let has_restrictions = token_has_restrictions(token)?;
+    let user_sid = token_user_sid(token)?;
     if user_sid != service_sid {
         return Err(ServiceTokenFixtureError::policy());
     }
-    let groups = token_sid_entries(token.raw(), TokenGroups)?;
-    let restricted_sids = token_sid_entries(token.raw(), TokenRestrictedSids)?;
-    let privileges = token_privileges(token.raw())?;
-    reject_thread_impersonation()?;
+    let owner_sid = token_owner_sid(token)?;
+    let primary_group_sid = token_primary_group_sid(token)?;
+    let groups = token_sid_entries(token, TokenGroups)?;
+    let restricted_sids = token_sid_entries(token, TokenRestrictedSids)?;
+    let privileges = token_privileges(token)?;
+    let identity = token_identity_baseline(token)?;
+    if identity != identity_before {
+        return Err(ServiceTokenFixtureError::policy());
+    }
 
-    Ok(CapturedServiceToken {
+    Ok(ServiceTokenBaseline {
+        token_handle_flags,
         observation: ServiceTokenObservation {
+            identity,
             token_is_primary,
             session_id,
             app_container,
             ui_access,
             has_restrictions,
             user_sid,
+            owner_sid,
+            primary_group_sid,
             groups,
             restricted_sids,
             privileges,
@@ -74,20 +129,52 @@ pub(super) fn capture_current_service_token()
     })
 }
 
-struct OwnedToken(HANDLE);
+pub(super) struct OwnedToken {
+    handle: HANDLE,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+// SAFETY: this owner contains one non-inheritable query-only token handle and
+// no thread-affine impersonation state. Moving sole ownership does not alias or
+// duplicate the handle; Drop still closes it exactly once.
+unsafe impl Send for OwnedToken {}
 
 impl OwnedToken {
+    const fn new(handle: HANDLE) -> Self {
+        Self {
+            handle,
+            _not_sync: PhantomData,
+        }
+    }
+
     const fn raw(&self) -> HANDLE {
-        self.0
+        self.handle
+    }
+
+    pub(super) fn borrowed_handle(&self) -> BorrowedHandle<'_> {
+        // SAFETY: this move-only owner keeps the exact live handle until the
+        // returned borrow ends.
+        unsafe { BorrowedHandle::borrow_raw(self.raw().0) }
+    }
+
+    #[cfg(test)]
+    pub(super) fn invalid_for_test() -> Self {
+        Self::new(HANDLE::default())
+    }
+}
+
+impl fmt::Debug for OwnedToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedToken([REDACTED])")
     }
 }
 
 impl Drop for OwnedToken {
     fn drop(&mut self) {
-        if !invalid_handle(self.0) {
+        if !invalid_handle(self.handle) {
             // SAFETY: every OwnedToken owns one successful OpenProcessToken result.
             unsafe {
-                let _ = CloseHandle(self.0);
+                let _ = CloseHandle(self.handle);
             }
         }
     }
@@ -137,24 +224,44 @@ impl Drop for ZeroizedWide {
     }
 }
 
-fn open_current_process_token() -> Result<OwnedToken, ServiceTokenFixtureError> {
+fn open_current_process_token() -> Result<(OwnedToken, u32), ServiceTokenFixtureError> {
     let mut token = HANDLE::default();
     // SAFETY: the process pseudo-handle is valid and output receives one fresh
     // query-only token handle.
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
-        .map_err(|_| ServiceTokenFixtureError::operating_system())?;
+    unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            CURRENT_SERVICE_TOKEN_ACCESS,
+            &raw mut token,
+        )
+    }
+    .map_err(|_| ServiceTokenFixtureError::operating_system())?;
     if invalid_handle(token) {
         return Err(ServiceTokenFixtureError::operating_system());
     }
-    let owned = OwnedToken(token);
+    let owned = OwnedToken::new(token);
+    let flags = token_handle_flags(&owned)?;
+    Ok((owned, flags))
+}
+
+fn token_handle_flags(token: &OwnedToken) -> Result<u32, ServiceTokenFixtureError> {
     let mut flags = u32::MAX;
     // SAFETY: the owned token is live and flags is one initialized scalar.
-    unsafe { GetHandleInformation(owned.raw(), &raw mut flags) }
+    unsafe { GetHandleInformation(token.raw(), &raw mut flags) }
         .map_err(|_| ServiceTokenFixtureError::operating_system())?;
-    if flags != 0 {
-        return Err(ServiceTokenFixtureError::policy());
-    }
-    Ok(owned)
+    Ok(flags)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+    )
+)]
+fn same_kernel_object(first: HANDLE, second: HANDLE) -> bool {
+    // SAFETY: callers retain both validated live handles for this observation.
+    unsafe { CompareObjectHandles(first, second) }.as_bool()
 }
 
 fn reject_thread_impersonation() -> Result<(), ServiceTokenFixtureError> {
@@ -307,6 +414,63 @@ fn lookup_privilege_luid(name: &str) -> Result<LuidValue, ServiceTokenFixtureErr
     })
 }
 
+fn token_identity_baseline(
+    token: HANDLE,
+) -> Result<TokenIdentityBaseline, ServiceTokenFixtureError> {
+    let information = token_information(token, TokenStatistics, size_of::<TOKEN_STATISTICS>())?;
+    if information.returned_bytes != size_of::<TOKEN_STATISTICS>() {
+        return Err(ServiceTokenFixtureError::operating_system());
+    }
+    // SAFETY: the exact initialized TOKEN_STATISTICS extent was checked above;
+    // each read selects one fixed-size field without copying unrelated dynamic
+    // allocator/accounting state out of the zeroized owner.
+    let token_type = unsafe {
+        ptr::read_unaligned(
+            information
+                .as_ptr::<u8>()
+                .add(offset_of!(TOKEN_STATISTICS, TokenType))
+                .cast::<TOKEN_TYPE>(),
+        )
+    };
+    if token_type != TokenPrimary {
+        return Err(ServiceTokenFixtureError::policy());
+    }
+    // SAFETY: the same exact initialized owner contains both complete LUID
+    // fields at their generated structure offsets.
+    let mut token_id = unsafe {
+        ptr::read_unaligned(
+            information
+                .as_ptr::<u8>()
+                .add(offset_of!(TOKEN_STATISTICS, TokenId))
+                .cast::<LUID>(),
+        )
+    };
+    // SAFETY: identical bounds reasoning applies to ModifiedId.
+    let mut modified_id = unsafe {
+        ptr::read_unaligned(
+            information
+                .as_ptr::<u8>()
+                .add(offset_of!(TOKEN_STATISTICS, ModifiedId))
+                .cast::<LUID>(),
+        )
+    };
+    let baseline = TokenIdentityBaseline {
+        token_id: LuidValue {
+            low_part: token_id.LowPart,
+            high_part: token_id.HighPart,
+        },
+        modified_id: LuidValue {
+            low_part: modified_id.LowPart,
+            high_part: modified_id.HighPart,
+        },
+    };
+    token_id.LowPart.zeroize();
+    token_id.HighPart.zeroize();
+    modified_id.LowPart.zeroize();
+    modified_id.HighPart.zeroize();
+    Ok(baseline)
+}
+
 fn token_type(token: HANDLE) -> Result<TOKEN_TYPE, ServiceTokenFixtureError> {
     let information = token_information(token, TokenType, size_of::<TOKEN_TYPE>())?;
     read_fixed(&information)
@@ -344,6 +508,21 @@ fn token_user_sid(token: HANDLE) -> Result<SidBytes, ServiceTokenFixtureError> {
     // SAFETY: the aligned buffer contains a complete TOKEN_USER prefix.
     let user = unsafe { ptr::read_unaligned(information.as_ptr::<TOKEN_USER>()) };
     copy_bounded_sid(&information, user.User.Sid)
+}
+
+fn token_owner_sid(token: HANDLE) -> Result<SidBytes, ServiceTokenFixtureError> {
+    let information = token_information(token, TokenOwner, size_of::<TOKEN_OWNER>())?;
+    // SAFETY: the aligned buffer contains a complete TOKEN_OWNER prefix.
+    let owner = unsafe { ptr::read_unaligned(information.as_ptr::<TOKEN_OWNER>()) };
+    copy_bounded_sid(&information, owner.Owner)
+}
+
+fn token_primary_group_sid(token: HANDLE) -> Result<SidBytes, ServiceTokenFixtureError> {
+    let information =
+        token_information(token, TokenPrimaryGroup, size_of::<TOKEN_PRIMARY_GROUP>())?;
+    // SAFETY: the aligned buffer contains a complete TOKEN_PRIMARY_GROUP prefix.
+    let primary_group = unsafe { ptr::read_unaligned(information.as_ptr::<TOKEN_PRIMARY_GROUP>()) };
+    copy_bounded_sid(&information, primary_group.PrimaryGroup)
 }
 
 fn token_sid_entries(
@@ -540,4 +719,84 @@ fn copy_bounded_sid(
 
 fn invalid_handle(handle: HANDLE) -> bool {
     handle.0.is_null() || handle == INVALID_HANDLE_VALUE || handle.is_invalid()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn owned_query_token_is_move_only_send_not_sync_and_redacted() {
+        assert_send::<OwnedToken>();
+        let _ = <OwnedToken as AmbiguousIfSync<_>>::marker;
+        let _ = <OwnedToken as AmbiguousIfClone<_>>::marker;
+        let _ = <OwnedToken as AmbiguousIfCopy<_>>::marker;
+        assert_eq!(CURRENT_SERVICE_TOKEN_ACCESS.0, TOKEN_QUERY.0);
+
+        let token = OwnedToken::invalid_for_test();
+        assert_eq!(format!("{token:?}"), "OwnedToken([REDACTED])");
+    }
+
+    #[test]
+    fn current_query_tokens_are_same_non_inheritable_object_and_drop_closes()
+    -> Result<(), ServiceTokenFixtureError> {
+        let (first, first_flags) = open_current_process_token()?;
+        let (second, second_flags) = open_current_process_token()?;
+        assert_eq!(first_flags, 0);
+        assert_eq!(second_flags, 0);
+        assert!(same_kernel_object(first.raw(), second.raw()));
+
+        let closed_raw = first.raw();
+        drop(first);
+        let mut flags = u32::MAX;
+        // SAFETY: this is a negative observation of the just-closed value; no
+        // ownership is reconstructed and no API may consume it.
+        assert!(unsafe { GetHandleInformation(closed_raw, &raw mut flags) }.is_err());
+        assert_eq!(token_handle_flags(&second)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn handle_flag_drift_and_wrong_kernel_object_are_observed()
+    -> Result<(), ServiceTokenFixtureError> {
+        let (token, flags) = open_current_process_token()?;
+        assert_eq!(flags, 0);
+        // SAFETY: the process pseudo-handle is valid for this read-only object
+        // comparison and carries no ownership.
+        assert!(!same_kernel_object(token.raw(), unsafe {
+            GetCurrentProcess()
+        }));
+
+        // SAFETY: the test owns this live token handle and changes only its
+        // process-local inheritance bit for the bounded negative observation.
+        unsafe { SetHandleInformation(token.raw(), HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT) }
+            .map_err(|_| ServiceTokenFixtureError::operating_system())?;
+        assert_eq!(token_handle_flags(&token)?, HANDLE_FLAG_INHERIT.0);
+        // SAFETY: restore the same owned handle before the test releases it.
+        unsafe { SetHandleInformation(token.raw(), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+            .map_err(|_| ServiceTokenFixtureError::operating_system())?;
+        assert_eq!(token_handle_flags(&token)?, 0);
+        Ok(())
+    }
 }

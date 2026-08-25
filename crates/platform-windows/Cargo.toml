@@ -18,6 +18,12 @@ key-agent-service-scm-feasibility-test-hook = []
 key-agent-service-token-feasibility-test-hook = [
     "key-agent-service-scm-feasibility-test-hook",
 ]
+# Compile-only Phase 1 launch-input primitives. This does not add an RPC
+# command, process-creation call, or executable entrypoint by itself.
+key-agent-service-lpac-launch-feasibility-test-hook = [
+    "key-agent-service-rpc-status-feasibility-test-hook",
+    "key-agent-service-token-feasibility-test-hook",
+]
 # Bounded, no-secret local-RPC Status/Unavailable fixture. This remains a
 # debug feasibility surface and does not authenticate a production Broker.
 key-agent-service-rpc-status-feasibility-test-hook = [

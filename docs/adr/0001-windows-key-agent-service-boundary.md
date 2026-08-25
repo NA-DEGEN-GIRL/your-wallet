@@ -238,6 +238,28 @@ attributes, privilege enablement/necessity, integrity, and SCM configuration;
 the installed restricted-service positive probe is intentionally ignored until
 an elevated disposable-VM harness exists.
 
+The fixture retains its non-inheritable `TOKEN_QUERY` handle and canonical
+baseline. A fresh, exclusive creation-token capability is issued only after a
+no-impersonation check, a fresh current-process token open, same-kernel-object
+comparison, zero handle-flag readback, and exact identity, token-ID, group,
+restricted-SID, privilege, and privilege-catalog continuity. `TokenOwner` must
+equal the fixed service SID, and `TokenPrimaryGroup` must occur exactly once in
+`TokenGroups`. The capability can derive the paired process/thread creation
+descriptors only from that service principal; it compares the copied owner/group
+bytes to the sealed baseline and repeats full token revalidation after descriptor
+construction. The authenticated desktop primary token is not an accepted owner.
+This compile-only seam has no process-creation caller yet, and the eventual
+launch-attempt state must consume it once and keep it live through readback.
+
+The same compile-only feature contains a separate unnamed, non-nested,
+one-process Job primitive. Its effective flags must equal
+`KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, its active-process limit must equal one,
+its creation attribute is lifetime-bound to the Job owner, and terminal cleanup
+is bounded and Job-authoritative. This is not the existing two-process Key Agent
+root Job. No RPC operation, startup owner, `CreateProcessAsUserW` call, or helper
+entrypoint is added by this slice, and the positive installed-service/nonnested
+kernel context remains unproved.
+
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not
 that bound. The server separately caps concurrent callback-authentication work
