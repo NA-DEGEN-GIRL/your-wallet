@@ -326,17 +326,23 @@ supported `TokenIsLessPrivilegedAppContainer` query must return an exact DWORD
 check; the exact membership differential remains mandatory and every other
 error fails closed. A suspended ordinary-AppContainer control that omits only
 the AAP opt-out must produce `(true, true)`, and neither control is resumed into
-user mode. After continuation and every other fallible worker check,
-`DebugSetProcessKillOnExit(FALSE)` is the fresh debugger OS thread's final
+user mode. Every independently safe CREATE_PROCESS event alias is first recorded
+in the run's shared join-cleanup owner before hFile, mapped-image, ID/object,
+LPAC, or later fallible checks; malformed partial events retain every safe alias.
+After continuation and every remaining worker check, no-kill requires the complete
+authenticated set and `DebugSetProcessKillOnExit(FALSE)` is then the fresh debugger OS thread's final
 fallible operation. An opaque pending owner crosses the join boundary without
 exposing detached or resume authority. The thread exits; caller-side finalization
 requires the identical pending/join/root-Job witness, debugger absence on the
-retained process handle, the retained primary thread's exact 1→2→1 suspend probe,
-and renewed token, Job, provisioning, and lease checks. This documented
-thread-exit detach avoids the PID-only `DebugActiveProcessStop` path that the
-deny-only process DACL blocks. The detached Key Agent capability exposes no
-generic resume API; its only consuming resume transition is the fixed storage-
-startup exchange above.
+retained process handle, authenticated closure of the registered aliases, the
+retained creator primary thread's exact 1→2→1 suspend probe, and renewed token,
+Job, provisioning, and lease checks. A worker error, panic, or abandoned joined
+proof instead invokes the same post-join checked-close owner, which retains
+partial failures for bounded retry, attempts both aliases independently on each
+pass, and closes aliases even when post-join process cleanup fails. This documented thread-exit detach avoids the
+PID-only `DebugActiveProcessStop` path that the deny-only process DACL blocks. The
+detached Key Agent capability exposes no generic resume API; its only consuming
+resume transition is the fixed storage-startup exchange above.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -502,26 +508,89 @@ inseparable pair supplies both `CreateProcessW` `lpProcessAttributes` and
 `lpThreadAttributes`.
 
 The returned creator-owned exact process and primary-thread handles are the
-authorities for pre-resume verification and the later lifecycle. Before the
-first `ResumeThread`, their PID/TID must match the returned identities, both
+authorities for pre-resume verification and debugger-detach finalization. Before
+the first `ResumeThread`, their PID/TID must match the returned identities, both
 `GetHandleInformation` results must be exactly zero, and bounded exact
 `GetKernelObjectSecurity` readback must match the captured owner/group, expected
 self-relative/DACL-present/protected control state, a zero SACL offset in the
 requested owner/group/DACL projection, the single exact no-flag deny ACE and mask,
 and the ACL/descriptor end with no slack or trailing bytes. The readback does not
 request the SACL and therefore does not prove its actual absence. A mismatch
-aborts and cleans up the child. Descriptor owners are dropped before resume; the full-access
-handles returned by `CreateProcessW` are retained and never replaced with a
-PID/TID reopen.
+aborts and cleans up the child. Descriptor owners are dropped before resume; no
+PID/TID reopen substitutes for either creator handle.
+
+The `CREATE_PROCESS_DEBUG_EVENT` process and thread values are separate aliases,
+not creator-owned slots. On the first event they must be valid, distinct from one
+another and both creator handles, report the expected PID/TID, and compare as the
+same process and thread objects. Windows manages them while debugging. Every
+independently safe raw alias moves into a witness-branded shared cleanup owner
+immediately after event extraction and before hFile or any other fallible
+authentication; no-kill later requires the complete authenticated set. After the
+matching debugger OS thread exits and joins and
+`CheckRemoteDebuggerPresent == false`, normal finalization takes the registered
+set, requires both aliases still to be present and distinct, reauthenticates exact
+object/ID/zero-flag state, and checked-closes the thread alias and process alias
+exactly once. The tested host kernel leaves them live and this thread-exit detach
+path offers no later exit event for cleanup.
+
+The registry is also the authoritative failure path after registration. Worker
+`Err`, worker panic, or abandonment of the joined proof invokes post-join checked
+closure. Failed adoption restores the set, partial closure preserves the
+remaining slot, and last-owner `Drop` makes bounded retries. Each pass attempts
+the thread and process aliases independently, and a post-join process cleanup
+failure cannot starve alias closure. Explicit cleanup
+failure takes precedence. Evidence for the same semantics on every supported
+Windows kernel/version remains **STOP-SHIP**.
+
+After the creator-handle post-detach 1→2→1 probe and token/root-Job checks, the
+supervisor duplicates rather than reopens three least-authority handles. The
+resident process mask is exactly `0x00101001`
+(`PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`). The
+ephemeral post-detach probe requests exact `THREAD_SUSPEND_RESUME` (`0x2`), for
+which the modern host reports effective `GrantedAccess == 0x1002` because Windows
+automatically adds `THREAD_RESUME`; its attributes remain zero. The separately
+retained startup thread requests only `THREAD_RESUME` (`0x1000`). Inheritance is
+false and duplication options are zero. Every duplicate must have zero handle
+flags and compare as the same object as its creator source.
+
+The narrow process itself repeats PID/liveness/current-token/root-Job
+verification. The ephemeral `0x1002` handle itself repeats the exact 1→2→1 probe
+and is checked-closed before `Held`; checked-close failure preserves RAII ownership
+for an immediate `Drop` retry. Host/integration kernel tests read back the
+retained thread as exact `0x1000` with zero attributes and require
+`SuspendThread` through it to fail with `ERROR_ACCESS_DENIED`. The creator thread
+and process handles are then checked-closed in that order. A close failure rejects
+and reaps through the already-proven narrow process; no `Held` value precedes all
+three closes.
+
+The Microsoft Learn [`ResumeThread` documentation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)
+still names `THREAD_SUSPEND_RESUME` as required access, whereas the current SDK
+exposes `THREAD_RESUME` and the kernel tests above prove resume-only behavior.
+That documentation/SDK disagreement, automatic-right addition, and supported-OS
+variance remain **STOP-SHIP** kernel-proof obligations.
+
+`Held` owns only that narrow process, the one resume-only startup thread, and its
+other sealed proofs. It is `Send` but `!Sync`, `!Clone`, and `!Copy`. Its consuming
+startup transition revalidates the resident process, requires the one
+user-mode-releasing `ResumeThread` through exact `THREAD_RESUME` (`0x1000`) to
+observe prior count one, and immediately checked-closes the thread handle with
+the same RAII retry ownership on failure. The
+`Running` type has the same transfer traits and structurally contains no thread
+handle. The retained process rights support bounded terminate/wait and exact
+reject-exit-code cleanup. Explicit failure paths give cleanup errors precedence;
+`Drop` attempts the same cleanup but cannot report failure.
 
 Kernel evidence covers process pseudo-handle operations inside the child and a
 thread pseudo-handle operation inside a real `CreateThread` thread. It also
 disables `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` and proves fresh owner
 PID/TID single-access opens are denied. This decision applies only at creation to
-the initial process and primary thread. It neither governs later-created threads
-nor revokes returned, preexisting, or duplicated high-right handles.
+the initial process and primary thread. The creation DACL does not itself govern
+later-created threads or revoke returned, preexisting, or duplicated high-right
+handles; the activation explicitly closes only its own authenticated creator
+pair.
 
-Revalidation runs after the post-detach suspend-count probe, immediately before
+Revalidation runs after the creator-handle post-detach suspend probe, again
+through the narrow process after the ephemeral `0x1002` probe, immediately before
 the sole `ResumeThread` that releases the final count into user mode, and at
 resident authority checks. Each pass bookends the retained `Hfinal`'s full
 policy and exact DACL with baseline-equal statistics, then opens a fresh current

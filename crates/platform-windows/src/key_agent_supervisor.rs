@@ -1266,6 +1266,10 @@ mod tests {
         assert!(bound.root_job.verify_effective_limits().is_ok());
         assert!(bound.provisioning.revalidate().is_ok());
         assert!(bound.activation.revalidate_resident_process().is_ok());
+        let (process_granted_access, process_attributes) =
+            bound.activation.retained_process_authority_for_test()?;
+        assert_eq!(process_granted_access, 0x0010_1001);
+        assert_eq!(process_attributes, 0);
         assert!(bound.handshake.is_live());
         assert!(
             bound

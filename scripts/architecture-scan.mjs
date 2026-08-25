@@ -6482,7 +6482,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "b001f47d02f6b78406bbf2af8cb2188c3e89872b014fb8a1013413445fac5dc3";
+  "2e7de0ebd2ee7dd2b9afad48410f0456b87293c2e95949d4cf2dcb26974f9c37";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6557,7 +6557,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc",
+    sha256: "4cff3a33b3beb4f440f2670aa136c96c22414c33ffa6aa50252a8afcc2998706",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -9621,6 +9621,36 @@ const expectedDuplicateHandleInventory = [
     targetHandle: "&raw mut duplicate",
     desiredAccess: "desired",
     inheritable: "true",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source_process",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "RESIDENT_KEY_AGENT_PROCESS_ACCESS.0",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source_thread",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "POST_DETACH_THREAD_PROBE_ACCESS.0",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_activation.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "source_thread",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "STORAGE_STARTUP_THREAD_ACCESS.0",
+    inheritable: "false",
     options: "DUPLICATE_HANDLE_OPTIONS(0)",
   },
   {
@@ -19160,7 +19190,7 @@ const runningKeyAgentResidentDelegationMutationProbes = [
 ];
 const suspendedDebuggeeStartupImpl = rustLexicalItemBlock(
   keyAgentActivation,
-  /impl\s+SuspendedDebuggee\s*\{/u,
+  /impl\s+DetachedSuspendedDebuggee\s*\{/u,
 );
 const resumeSuspendedDebuggeeForStorageStartup = rustFunctionBlock(
   suspendedDebuggeeStartupImpl,
@@ -19232,6 +19262,7 @@ requireInvariant(
         "revalidate_resident_process",
         "is_member_of_root_job",
         "duplicate_process_observation",
+        "retained_process_authority_for_test",
         "is_member_of_root_job_for_test",
       ]) &&
     runningKeyAgentResidentDelegationContract(runningActivationImpl) &&
@@ -19257,20 +19288,27 @@ requireInvariant(
     ) &&
     rustCallSites(resumeSuspendedDebuggeeForStorageStartup, "ResumeThread")
       .length === 1 &&
+    resumeSuspendedDebuggeeForStorageStartup.indexOf(
+      "LaunchPhase::DetachedSuspended.transition(LaunchTransition::ResumeStorageStartup)?",
+    ) <
+      resumeSuspendedDebuggeeForStorageStartup.indexOf(
+        "let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) }",
+      ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes("resident.revalidate()") &&
     resumeSuspendedDebuggeeForStorageStartup.includes(
       "if previous_suspend_count != 1",
     ) &&
     resumeSuspendedDebuggeeForStorageStartup.includes(
-      "self.proven_suspend_count = 0",
+      "close_owned_handle_checked(primary_thread)",
     ) &&
     resumeSuspendedDebuggeeForStorageStartup.includes(
-      ".transition(LaunchTransition::ResumeStorageStartup)?",
+      "WaitForSingleObject(resident.process_raw(), 0)",
     ) &&
+    resumeSuspendedDebuggeeForStorageStartup.includes("!= WAIT_TIMEOUT") &&
     resumeSuspendedDebuggeeForStorageStartup.includes(
-      "WaitForSingleObject(self.process.raw(), 0)",
-    ) &&
-    resumeSuspendedDebuggeeForStorageStartup.includes("!= WAIT_TIMEOUT"),
-  "the fixed resume leaf must release exactly one suspend count and mint only the opaque detached-running proof after a live-process check",
+      "Ok(DetachedRunningDebuggee(resident))",
+    ),
+  "the fixed resume leaf must release exactly one suspend count through the resume-only handle, checked-close it, and mint only the process-only running proof after a live-process check",
 );
 const preflightActivation = rustFunctionBlock(
   keyAgentActivation,
@@ -19602,6 +19640,10 @@ requireInvariant(
     !secretBootstrapWindows.includes('"YourWallet.SecurityHelper.LPAC.v1"'),
   "restricted launch must derive distinct stable LPAC identities from the exact manifest role, reject cross-role/Key Agent/Other helpers before release and Win32, and bind Secret Input bootstrap to its own SID",
 );
+/* Legacy debugger-detach scanner superseded below by the shared-cleanup and
+ * split-authority contracts. Kept inside this comment only while the reviewed
+ * replacement is installed in one patch-safe section. */
+/*
 const freshDebugRunner = rustFunctionBlock(
   keyAgentActivation,
   "run_on_fresh_key_agent_debug_thread",
@@ -19898,7 +19940,9 @@ const debugWorkerAuthenticationPositions = [
   "Ok(AuthenticatedKeyAgentActivation {",
 ].map((marker) => authenticateAndContinueActivation.indexOf(marker));
 requireInvariant(
-  keyAgentDebuggerEvidenceContract(keyAgentActivationSource) &&
+  JSON.stringify(currentKeyAgentDebuggerBoundaryLeafSha256) ===
+    JSON.stringify(approvedKeyAgentDebuggerBoundaryLeafSha256) &&
+    keyAgentDebuggerEvidenceContract(keyAgentActivationSource) &&
     keyAgentDebuggerEvidenceMutationProbes.every(
       (probe) => !keyAgentDebuggerEvidenceContract(probe),
     ) &&
@@ -20768,6 +20812,1181 @@ requireInvariant(
       (mutated) => !keyAgentDebuggerRootGateContract(mutated),
     ),
   "debugger-thread-exit detachment mutations must fail the same scoped witness identity, final-fallible no-kill, post-join verification/bookend, and root-Job cleanup-gate contracts",
+);
+*/
+const freshDebugRunner = rustFunctionBlock(
+  keyAgentActivation,
+  "run_on_fresh_key_agent_debug_thread",
+);
+const freshWorkerActivation = rustFunctionBlock(
+  keyAgentActivation,
+  "activate_preflighted_key_agent_on_fresh_worker_with_identity",
+);
+const freshWorkerEntry = rustFunctionBlock(
+  keyAgentActivation,
+  "activate_preflighted_key_agent_on_fresh_worker",
+);
+const authenticateAndContinueActivation = rustFunctionBlock(
+  keyAgentActivation,
+  "authenticate_and_continue_activation",
+);
+const compactFreshWorkerEntry = compactRust(freshWorkerEntry);
+const compactFreshWorkerActivation = compactRust(freshWorkerActivation);
+const pendingKeyAgentActivationImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl PendingKeyAgentActivation",
+  0,
+);
+const observeDebuggerExitForCleanup = rustFunctionBlockAtDepth(
+  pendingKeyAgentActivationImpl,
+  "observe_debugger_exit_for_cleanup",
+  1,
+);
+const authenticatedKeyAgentActivationImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl AuthenticatedKeyAgentActivation",
+  0,
+);
+const armAuthenticatedKeyAgentNoKill = rustFunctionBlockAtDepth(
+  authenticatedKeyAgentActivationImpl,
+  "arm_no_kill",
+  1,
+);
+const finalizePendingKeyAgentActivation = rustFunctionBlock(
+  keyAgentActivationRelease,
+  "finalize_pending_key_agent_activation",
+);
+const keyAgentActivationSys = rustTopLevelLexicalItemBlock(
+  keyAgentActivationRelease,
+  /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+);
+const keyAgentActivationSysWithTests = rustTopLevelLexicalItemBlock(
+  keyAgentActivation,
+  /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+);
+const debuggerExitSuspendedDebuggeeImpl = rustImplItemAtDepth(
+  keyAgentActivationSys,
+  "impl SuspendedDebuggee",
+  1,
+);
+const pendingDebuggerExitImpl = rustImplItemAtDepth(
+  keyAgentActivationSys,
+  "impl PendingDebuggerExitSuspendedDebuggee",
+  1,
+);
+const authenticateCreateEventHandles = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "authenticate_create_event_handles",
+  1,
+);
+const authenticateFirstDebugEvent = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "authenticate_first_event",
+  1,
+);
+const armSuspendedDebuggeeNoKill = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "arm_no_kill",
+  1,
+);
+const abortSuspendedDebuggee = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "abort",
+  1,
+);
+const closeRemainingDetachedDebugEventHandles = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "close_remaining_detached_debug_event_handles",
+  1,
+);
+const attenuateKeyAgentForHeld = rustFunctionBlockAtDepth(
+  debuggerExitSuspendedDebuggeeImpl,
+  "attenuate_for_held",
+  1,
+);
+const adoptDetachedDebugEventHandles = rustFunctionBlockAtDepth(
+  pendingDebuggerExitImpl,
+  "adopt_detached_debug_event_handles",
+  1,
+);
+const finalizeAfterDebuggerExit = rustFunctionBlockAtDepth(
+  pendingDebuggerExitImpl,
+  "finalize_after_debugger_exit",
+  1,
+);
+const detachedDebugEventHandleSetImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl DetachedDebugEventHandleSet",
+  0,
+);
+const keyAgentDebugEventCleanupImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl KeyAgentDebugEventCleanup",
+  0,
+);
+const registerDebugEventHandles = rustFunctionBlockAtDepth(
+  keyAgentDebugEventCleanupImpl,
+  "register_while_attached",
+  1,
+);
+const verifyRegisteredDebugEventHandles = rustFunctionBlockAtDepth(
+  keyAgentDebugEventCleanupImpl,
+  "verify_registered_while_attached",
+  1,
+);
+const closeDebugEventHandlesAfterJoin = rustFunctionBlockAtDepth(
+  keyAgentDebugEventCleanupImpl,
+  "close_after_join",
+  1,
+);
+const keyAgentDebugEventCleanupDropImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl Drop for KeyAgentDebugEventCleanup",
+  0,
+);
+const dropKeyAgentDebugEventCleanup = rustFunctionBlockAtDepth(
+  keyAgentDebugEventCleanupDropImpl,
+  "drop",
+  1,
+);
+const joinedKeyAgentDebugThreadProofDropImpl = rustImplItemAtDepth(
+  keyAgentActivationRelease,
+  "impl Drop for JoinedKeyAgentDebugThreadProof",
+  0,
+);
+const dropJoinedKeyAgentDebugThreadProof = rustFunctionBlockAtDepth(
+  joinedKeyAgentDebugThreadProofDropImpl,
+  "drop",
+  1,
+);
+const closeRegisteredDebugEventHandlesAfterJoin = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "close_detached_debug_event_handles_after_join",
+  1,
+);
+const queryHandleAuthorityForTest = rustFunctionBlockAtDepth(
+  keyAgentActivationSysWithTests,
+  "query_handle_authority_for_test",
+  1,
+);
+const closeOwnedHandleChecked = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "close_owned_handle_checked",
+  1,
+);
+const finishExactNoninheritableDuplicate = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "finish_exact_noninheritable_duplicate",
+  1,
+);
+const duplicateResidentKeyAgentProcessHandle = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "duplicate_resident_process_handle",
+  1,
+);
+const duplicatePostDetachThreadProbeHandle = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "duplicate_post_detach_thread_probe_handle",
+  1,
+);
+const duplicateStorageStartupThreadHandle = rustFunctionBlockAtDepth(
+  keyAgentActivationSys,
+  "duplicate_storage_startup_thread_handle",
+  1,
+);
+const residentKeyAgentProcessImpl = rustImplItemAtDepth(
+  keyAgentActivationSys,
+  "impl ResidentKeyAgentProcess",
+  1,
+);
+const detachedSuspendedDebuggeeAttenuationImpl = rustImplItemAtDepth(
+  keyAgentActivationSys,
+  "impl DetachedSuspendedDebuggee",
+  1,
+);
+const detachedRunningDebuggeeAttenuationImpl = rustImplItemAtDepth(
+  keyAgentActivationSys,
+  "impl DetachedRunningDebuggee",
+  1,
+);
+const resumeStorageStartupThroughNarrowHandle = rustFunctionBlockAtDepth(
+  detachedSuspendedDebuggeeAttenuationImpl,
+  "resume_for_storage_startup",
+  1,
+);
+const rejectSuspendThroughResumeOnlyHandleForTest = rustFunctionBlockAtDepth(
+  rustImplItemAtDepth(
+    keyAgentActivationSysWithTests,
+    "impl DetachedSuspendedDebuggee",
+    1,
+  ),
+  "resume_only_thread_rejects_suspend_for_test",
+  1,
+);
+const keyAgentActivationBottomTests = rustBottomTestModule(
+  keyAgentActivationSource,
+);
+const debuggerEvidenceTestNames = [
+  "authority_and_detached_type_states_have_exact_transfer_traits",
+  "pending_finalization_rejects_swapped_join_and_root_job_witnesses",
+  "successful_kernel_proof_detaches_with_one_verified_suspend_count",
+  "worker_error_cleans_up_exact_process",
+  "worker_panic_after_event_alias_registration_cleans_up_after_join",
+  "worker_panic_immediately_after_no_kill_arm_cleans_up_after_join",
+  "worker_error_immediately_after_no_kill_arm_cleans_up_after_join",
+];
+const debuggerEvidenceTests = debuggerEvidenceTestNames.map((name) =>
+  rustFunctionBlockAtDepth(keyAgentActivationBottomTests, name, 1),
+);
+const debuggerTransferTraitTest = debuggerEvidenceTests[0];
+const debuggerWitnessCrossSwapTest = debuggerEvidenceTests[1];
+const debuggerHandleRightsTest = debuggerEvidenceTests[2];
+const preArmMappedImageErrorTest = debuggerEvidenceTests[3];
+const postRegistrationWorkerPanicTest = debuggerEvidenceTests[4];
+const postArmWorkerPanicTest = debuggerEvidenceTests[5];
+const postArmWorkerErrorTest = debuggerEvidenceTests[6];
+const currentKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
+  freshRunner: normalizedSourceSha256(rustLexicalCode(freshDebugRunner)),
+  authenticateCreateEventHandles: normalizedSourceSha256(
+    rustLexicalCode(authenticateCreateEventHandles),
+  ),
+  registerAliases: normalizedSourceSha256(
+    rustLexicalCode(registerDebugEventHandles),
+  ),
+  verifyAliases: normalizedSourceSha256(
+    rustLexicalCode(verifyRegisteredDebugEventHandles),
+  ),
+  cleanupDrop: normalizedSourceSha256(
+    rustLexicalCode(dropKeyAgentDebugEventCleanup),
+  ),
+  joinedProofDrop: normalizedSourceSha256(
+    rustLexicalCode(dropJoinedKeyAgentDebugThreadProof),
+  ),
+  finalizePending: normalizedSourceSha256(
+    rustLexicalCode(finalizePendingKeyAgentActivation),
+  ),
+  armNoKill: normalizedSourceSha256(rustLexicalCode(armSuspendedDebuggeeNoKill)),
+  closeAliasesSys: normalizedSourceSha256(
+    rustLexicalCode(closeRegisteredDebugEventHandlesAfterJoin),
+  ),
+  closeAliasesAdopted: normalizedSourceSha256(
+    rustLexicalCode(closeRemainingDetachedDebugEventHandles),
+  ),
+  abort: normalizedSourceSha256(rustLexicalCode(abortSuspendedDebuggee)),
+  finalizeAfterExit: normalizedSourceSha256(
+    rustLexicalCode(finalizeAfterDebuggerExit),
+  ),
+  attenuate: normalizedSourceSha256(rustLexicalCode(attenuateKeyAgentForHeld)),
+  resumeNarrowThread: normalizedSourceSha256(
+    rustLexicalCode(resumeStorageStartupThroughNarrowHandle),
+  ),
+  closeOwned: normalizedSourceSha256(rustLexicalCode(closeOwnedHandleChecked)),
+  queryAuthorityTest: normalizedSourceSha256(
+    rustLexicalCode(queryHandleAuthorityForTest),
+  ),
+  rightsEvidence: normalizedSourceSha256(rustLexicalCode(debuggerHandleRightsTest)),
+  mappedImageErrorEvidence: normalizedSourceSha256(
+    rustLexicalCode(preArmMappedImageErrorTest),
+  ),
+  postRegistrationPanicEvidence: normalizedSourceSha256(
+    rustLexicalCode(postRegistrationWorkerPanicTest),
+  ),
+  postArmPanicEvidence: normalizedSourceSha256(
+    rustLexicalCode(postArmWorkerPanicTest),
+  ),
+  postArmErrorEvidence: normalizedSourceSha256(
+    rustLexicalCode(postArmWorkerErrorTest),
+  ),
+  evidenceModuleRaw: normalizedSourceSha256(keyAgentActivationBottomTests),
+});
+const approvedKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
+  freshRunner:
+    "2b69018b95811a319353fd8f2d551d11b35b7fe7de676845e07f5bd207419783",
+  authenticateCreateEventHandles:
+    "ac108208da4174496c0fef3c2c4521146254ba393bf5db490168361d1308e6e3",
+  registerAliases:
+    "9dc10ffa6e42c79b96e3d4446cda1c529ec80483c1660d7968ec529d6902283c",
+  verifyAliases:
+    "05e6b2fd8611be9b4cd22387345700c1fc66f5f6b11265247a7a55da34d5d81b",
+  cleanupDrop:
+    "dc2221b12e68552da0e7251b7b4859f03b7bb0963338dd3fadc74375c2d231cb",
+  joinedProofDrop:
+    "c23486f80bc080ec0c5a753a6a5a00c3ba16ca05c1f5fd85e09324109e8ef345",
+  finalizePending:
+    "fc67f6a77c38cb883ce33c8188d2a582304b36428757ca6a12bf333b4e651298",
+  armNoKill:
+    "c9f2ae2fe74704555e625e2ff3de678d713f4f9dcf69b4070d93e2d30188c502",
+  closeAliasesSys:
+    "3ec9839d18be90ecebf2e77b7ab85e0be79711ba213fb2c7e483f22451e21497",
+  closeAliasesAdopted:
+    "25cc40cca85c94dae75141b625b903ffba8fa18bbf90790d07fa0bdb67a95339",
+  abort:
+    "0f936c3654caa218662dbe878b459627f537337204b1f57e53e0e0f39be4f3e7",
+  finalizeAfterExit:
+    "48373fe067c31cabe805bc3e0dfed64babadd9f72a7c6c9b4a1d5de97d23de72",
+  attenuate:
+    "b0f0f9f26260b1e047f5450013377377fc24347909072de8231cec9a7c2deb29",
+  resumeNarrowThread:
+    "9eb0dc8e40d63e67e9eb1a63b61d41ea3cb1b62da9c8fb4bb66b83f1681f2dcc",
+  closeOwned:
+    "294957d0918d5d3b0cace3c3d79bdf4a647f39834dcf1d6e7bab9d314b826f9a",
+  queryAuthorityTest:
+    "99f99e73293d892c615698002680da0e1cd9770ea291848a11c0bf12877327b4",
+  rightsEvidence:
+    "4c4727002575a577cf3b81f7431c5006c340101d3104a02e4c7a5b952233bdc8",
+  mappedImageErrorEvidence:
+    "f21d6465fea06f847ef5869d295ba3d605a3b63042fe32e1c34c66e182614c7e",
+  postRegistrationPanicEvidence:
+    "115474435808ad22436742d01c03ef7400aec09c8311e90b476e52c516fb5058",
+  postArmPanicEvidence:
+    "511c38a67c388c252bc7417c00638d9c91c68ed23fd25182aac33ae67c6d64c5",
+  postArmErrorEvidence:
+    "81f7c264e678258a95f5d7821c42a9b0c9ba123c3ff0c10fd25b2ef79e4d00db",
+  evidenceModuleRaw:
+    "004c9015fd20d568d6c85762ffab228e5b403833bc55c1093977a3b483530c6a",
+});
+const keyAgentDebuggerEvidenceContract = (source) => {
+  let testModule;
+  let tests;
+  try {
+    testModule = rustBottomTestModule(source);
+    tests = debuggerEvidenceTestNames.map((name) =>
+      rustFunctionBlockAtDepth(testModule, name, 1),
+    );
+  } catch {
+    return false;
+  }
+  const rights = compactRust(tests[2]);
+  const mappedError = compactRust(tests[3]);
+  const registeredPanic = compactRust(tests[4]);
+  const armedPanic = compactRust(tests[5]);
+  const armedError = compactRust(tests[6]);
+  return (
+    JSON.stringify(rustInlineModuleOuterAttributesAtDepth(testModule, "tests", 0)) ===
+      JSON.stringify(["#[cfg(all(test, windows))]"]) &&
+    JSON.stringify(rustInnerAttributesAtDepth(testModule, 1)) === "[]" &&
+    debuggerEvidenceTestNames.every(
+      (name) =>
+        JSON.stringify(rustFunctionOuterAttributesAtDepth(testModule, name, 1)) ===
+        JSON.stringify(["#[test]"]),
+    ) &&
+    !tests.some((test, index) => index !== 3 && hasVacuousRustTestEscape(test)) &&
+    rights.includes("assert_eq!(sys::resident_process_access_for_test(),0x0010_1001)") &&
+    rights.includes("assert_eq!(sys::storage_startup_thread_access_for_test(),0x0000_1000)") &&
+    rights.includes("assert_eq!(process_granted_access,0x0010_1001)") &&
+    rights.includes("assert_eq!(thread_granted_access,0x0000_1000)") &&
+    rights.includes("resume_only_thread_rejects_suspend_for_test()") &&
+    mappedError.includes("Err(KeyAgentActivationError::MappedImageMismatch)") &&
+    mappedError.includes("event_observation.aliases_are_closed()") &&
+    registeredPanic.includes("std::panic::resume_unwind") &&
+    registeredPanic.includes("event_observation.aliases_are_closed()") &&
+    armedPanic.includes("let_pending=activation.arm_no_kill()?") &&
+    armedPanic.includes("event_observation.aliases_are_closed()") &&
+    armedError.includes("let_pending=activation.arm_no_kill()?") &&
+    armedError.includes("event_observation.aliases_are_closed()")
+  );
+};
+const keyAgentSharedDebugCleanupContract = (source) => {
+  let production;
+  let runner;
+  let finalizer;
+  let setImpl;
+  let cleanupImpl;
+  let register;
+  let verify;
+  let cleanupDropImpl;
+  let cleanupDrop;
+  let joinedDropImpl;
+  let joinedDrop;
+  let sys;
+  let suspendedImpl;
+  let authenticateHandles;
+  let authenticateEvent;
+  let arm;
+  let abort;
+  let closeAdopted;
+  let closeRegistry;
+  try {
+    production = withoutCfgTestItems(withoutBottomTestModule(source));
+    runner = rustTopLevelFunctionBlock(production, "run_on_fresh_key_agent_debug_thread");
+    finalizer = rustTopLevelFunctionBlock(
+      production,
+      "finalize_pending_key_agent_activation",
+    );
+    setImpl = rustImplItemAtDepth(production, "impl DetachedDebugEventHandleSet", 0);
+    cleanupImpl = rustImplItemAtDepth(production, "impl KeyAgentDebugEventCleanup", 0);
+    register = rustFunctionBlockAtDepth(cleanupImpl, "register_while_attached", 1);
+    verify = rustFunctionBlockAtDepth(
+      cleanupImpl,
+      "verify_registered_while_attached",
+      1,
+    );
+    cleanupDropImpl = rustImplItemAtDepth(
+      production,
+      "impl Drop for KeyAgentDebugEventCleanup",
+      0,
+    );
+    cleanupDrop = rustFunctionBlockAtDepth(cleanupDropImpl, "drop", 1);
+    joinedDropImpl = rustImplItemAtDepth(
+      production,
+      "impl Drop for JoinedKeyAgentDebugThreadProof",
+      0,
+    );
+    joinedDrop = rustFunctionBlockAtDepth(joinedDropImpl, "drop", 1);
+    sys = rustTopLevelLexicalItemBlock(
+      production,
+      /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+    );
+    suspendedImpl = rustImplItemAtDepth(sys, "impl SuspendedDebuggee", 1);
+    authenticateHandles = rustFunctionBlockAtDepth(
+      suspendedImpl,
+      "authenticate_create_event_handles",
+      1,
+    );
+    authenticateEvent = rustFunctionBlockAtDepth(
+      suspendedImpl,
+      "authenticate_first_event",
+      1,
+    );
+    arm = rustFunctionBlockAtDepth(suspendedImpl, "arm_no_kill", 1);
+    abort = rustFunctionBlockAtDepth(suspendedImpl, "abort", 1);
+    closeAdopted = rustFunctionBlockAtDepth(
+      suspendedImpl,
+      "close_remaining_detached_debug_event_handles",
+      1,
+    );
+    closeRegistry = rustFunctionBlockAtDepth(
+      sys,
+      "close_detached_debug_event_handles_after_join",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const compactRunner = compactRust(runner);
+  const compactFinalizer = compactRust(finalizer);
+  const compactHandles = compactRust(authenticateHandles);
+  const compactEvent = compactRust(authenticateEvent);
+  const compactArm = compactRust(arm);
+  const compactAbort = compactRust(abort);
+  const compactAdopted = compactRust(closeAdopted);
+  const compactRegistry = compactRust(closeRegistry);
+  return (
+    rustAuthorityImplHeaderContract(production, {
+      KeyAgentDebugEventCleanup: [
+        "impl KeyAgentDebugEventCleanup",
+        "impl Drop for KeyAgentDebugEventCleanup",
+      ],
+      JoinedKeyAgentDebugThreadProof: [
+        "impl Drop for JoinedKeyAgentDebugThreadProof",
+        "impl fmt::Debug for JoinedKeyAgentDebugThreadProof",
+      ],
+    }) &&
+    !/\btype\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\s*=\s*KeyAgentDebugEventCleanup\b/u.test(
+      rustLexicalCode(production),
+    ) &&
+    /struct\s+KeyAgentDebugEventCleanup\s*\{\s*witness:\s*Arc<KeyAgentDebugThreadWitness>,\s*handles:\s*Mutex<Option<DetachedDebugEventHandleSet>>,/su.test(
+      production,
+    ) &&
+    /pub\(crate\)\s+struct\s+JoinedKeyAgentDebugThreadProof\s*\{\s*witness:\s*Arc<KeyAgentDebugThreadWitness>,\s*debug_event_cleanup:\s*Arc<KeyAgentDebugEventCleanup>/su.test(
+      production,
+    ) &&
+    compactRust(setImpl).includes("constfnis_registerable(&self)->bool") &&
+    compactRust(setImpl).includes("!self.is_empty()") &&
+    compactRust(setImpl).includes("constfnis_complete(&self)->bool") &&
+    register.includes("slot.is_some() || !handles.is_registerable()") &&
+    verify.includes("if !handles.is_complete()") &&
+    compactRunner.includes(
+      "letdebug_event_cleanup=KeyAgentDebugEventCleanup::new_shared(Arc::clone(&witness));",
+    ) &&
+    compactRunner.includes("debug_event_cleanup:worker_debug_event_cleanup,") &&
+    rustCallSites(runner, "close_after_join").length === 3 &&
+    compactRunner.includes("Ok(Err(error))=>{") &&
+    compactRunner.includes("Err(_)=>{") &&
+    rustCallSites(joinedDrop, "close_after_join").length === 1 &&
+    compactRust(cleanupDrop).includes("for_in0..2") &&
+    rustCallSites(cleanupDrop, "close_detached_debug_event_handles_after_join")
+      .length === 1 &&
+    compactHandles.indexOf("letevent_aliases=DetachedDebugEventHandleSet{") <
+      compactHandles.indexOf("register_while_attached(event_aliases)?") &&
+    compactHandles.indexOf("register_while_attached(event_aliases)?") <
+      compactHandles.indexOf("ifinvalid(event_process)") &&
+    compactHandles.indexOf("register_while_attached(event_aliases)?") <
+      compactHandles.indexOf("event_file.ok_or(KeyAgentActivationError::MissingMappedImage)?") &&
+    compactEvent.indexOf("letcreate=unsafe{event.u.CreateProcessInfo};") <
+      compactEvent.indexOf("self.authenticate_create_event_handles(") &&
+    compactEvent.indexOf("self.authenticate_create_event_handles(") <
+      compactEvent.indexOf("letmapped_identity=exact_file_identity") &&
+    compactArm.indexOf("self.revalidate_before_no_kill()?") <
+      compactArm.indexOf("verify_registered_while_attached") &&
+    compactArm.indexOf("verify_registered_while_attached") <
+      compactArm.indexOf("DebugSetProcessKillOnExit(false)") &&
+    !arm
+      .slice(
+        arm.indexOf("DebugSetProcessKillOnExit(false)") +
+          "DebugSetProcessKillOnExit(false)".length,
+      )
+      .includes("?") &&
+    hasOrderedCompactRustMarkers(finalizer, [
+      "pending.observe_debugger_exit_for_cleanup(root_job,&joined)?;",
+      "take_after_join(&joined.witness)?;",
+      "adopt_detached_debug_event_handles(event_handles)",
+      "restore_after_join(&joined.witness,event_handles)",
+      "drop(debug_event_cleanup);",
+      "drop(joined);",
+      "process.finalize_after_debugger_exit(root_job)?;",
+    ]) &&
+    compactFinalizer.includes(
+      "if!Arc::ptr_eq(&pending.debug_event_cleanup,&joined.debug_event_cleanup)",
+    ) &&
+    compactRegistry.includes("letmutfailed=false;") &&
+    compactRegistry.indexOf("ifletSome(event_primary_thread)") <
+      compactRegistry.indexOf("ifletSome(event_process)") &&
+    rustCallSites(closeRegistry, "CloseHandle").length === 2 &&
+    compactRegistry.includes("handles.primary_thread=None") &&
+    compactRegistry.includes("handles.process=None") &&
+    compactRegistry.indexOf("CloseHandle(event_primary_thread)") <
+      compactRegistry.indexOf("handles.primary_thread=None") &&
+    compactRegistry.indexOf("CloseHandle(event_process)") <
+      compactRegistry.indexOf("handles.process=None") &&
+    (compactRegistry.match(/ifrejected\{failed=true;\}else/gu) ?? []).length === 2 &&
+    !compactRegistry.includes("{returnOk(());letmutfailed") &&
+    compactRegistry.endsWith(
+      "iffailed{Err(KeyAgentActivationError::Cleanup)}else{Ok(())}}",
+    ) &&
+    compactAdopted.includes("letmutfirst_error=None;") &&
+    compactAdopted.indexOf("ifletSome(event_primary_thread)") <
+      compactAdopted.indexOf("ifletSome(event_process)") &&
+    rustCallSites(closeAdopted, "CloseHandle").length === 2 &&
+    compactAdopted.includes("self.debug_event_primary_thread=None") &&
+    compactAdopted.includes("self.debug_event_process=None") &&
+    compactAdopted.indexOf("CloseHandle(event_primary_thread)") <
+      compactAdopted.indexOf("self.debug_event_primary_thread=None") &&
+    compactAdopted.indexOf("CloseHandle(event_process)") <
+      compactAdopted.indexOf("self.debug_event_process=None") &&
+    (compactAdopted.match(/ifrejected\{first_error\.get_or_insert\(/gu) ?? [])
+      .length === 2 &&
+    !compactAdopted.includes("{returnOk(());letmutfirst_error") &&
+    compactAdopted.endsWith("first_error.map_or(Ok(()),Err)}") &&
+    compactAbort.includes("letprocess_cleanup=(||{") &&
+    compactAbort.includes("letalias_cleanup=ifself.phase") &&
+    compactAbort.indexOf("letprocess_cleanup=(||{") <
+      compactAbort.indexOf("letalias_cleanup=ifself.phase") &&
+    !compactAbort.includes("process_cleanup?;letalias_cleanup") &&
+    compactAbort.includes(
+      "let(Ok(exit_code),Ok(()))=(process_cleanup,alias_cleanup)else",
+    )
+  );
+};
+const keyAgentPostJoinActivationContract = (source) => {
+  let production;
+  let sys;
+  let pendingImpl;
+  let finalizer;
+  try {
+    production = withoutCfgTestItems(withoutBottomTestModule(source));
+    sys = rustTopLevelLexicalItemBlock(
+      production,
+      /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+    );
+    pendingImpl = rustImplItemAtDepth(
+      sys,
+      "impl PendingDebuggerExitSuspendedDebuggee",
+      1,
+    );
+    finalizer = rustFunctionBlockAtDepth(
+      pendingImpl,
+      "finalize_after_debugger_exit",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  return hasOrderedCompactRustMarkers(finalizer, [
+    "CheckRemoteDebuggerPresent(process.process.raw(),&rawmutdebugger_present)",
+    "ifdebugger_present.as_bool()",
+    "process.close_detached_debug_event_handles()?;",
+    "SuspendThread(process.primary_thread.raw())",
+    "ifprevious_suspend_count!=1",
+    "ResumeThread(process.primary_thread.raw())",
+    "ifprevious_suspend_count!=2",
+    "process.proven_suspend_count=1;",
+    "revalidate_current_process_token(process.process_handle())",
+    "super::verify_bound_root_process(root_job,process.process_handle())?;",
+    "process.phase=LaunchPhase::DetachedSuspended;",
+    "process.attenuate_for_held(root_job)",
+  ]);
+};
+const keyAgentDebuggerEvidenceMutationProbes = [
+  replaceInsideExactRustItem(
+    keyAgentActivationSource,
+    keyAgentActivationBottomTests,
+    "mod tests {",
+    "mod tests {\n    #![cfg(any())]",
+  ),
+  ...debuggerEvidenceTestNames.map((name) =>
+    keyAgentActivationSource.replace(
+      `    #[test]\n    fn ${name}`,
+      `    #[test]\n    #[ignore]\n    fn ${name}`,
+    ),
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentActivationSource,
+    "successful_kernel_proof_detaches_with_one_verified_suspend_count",
+  ),
+  keyAgentActivationSource.replace("0x0010_1001", "0x001f_ffff"),
+  keyAgentActivationSource.replace("0x0000_1000", "0x0000_0002"),
+];
+const replaceNth = (source, search, replacement, ordinal) => {
+  let offset = 0;
+  for (let index = 0; index <= ordinal; index += 1) {
+    offset = source.indexOf(search, offset);
+    if (offset === -1) {
+      return source;
+    }
+    if (index < ordinal) {
+      offset += search.length;
+    }
+  }
+  return `${source.slice(0, offset)}${replacement}${source.slice(offset + search.length)}`;
+};
+const mutateKeyAgentLeaf = (item, search, replacement, ordinal = 0) => {
+  const mutatedItem = replaceNth(item, search, replacement, ordinal);
+  return mutatedItem === item
+    ? keyAgentActivationSource
+    : keyAgentActivationSource.replace(item, mutatedItem);
+};
+const keyAgentHandleAttenuationContract = (source) => {
+  let production;
+  let withTests;
+  let sys;
+  let sysWithTests;
+  let suspendedImpl;
+  let suspendedImplWithTests;
+  let attenuation;
+  let attenuationWithTests;
+  let finishDuplicate;
+  let duplicateProcess;
+  let duplicateProbe;
+  let duplicateResume;
+  let residentImpl;
+  let detachedImpl;
+  let runningImpl;
+  let resume;
+  let negativeSuspend;
+  let closeOwned;
+  let queryAuthority;
+  let rightsEvidence;
+  try {
+    production = withoutCfgTestItems(withoutBottomTestModule(source));
+    withTests = withoutBottomTestModule(source);
+    sys = rustTopLevelLexicalItemBlock(
+      production,
+      /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+    );
+    sysWithTests = rustTopLevelLexicalItemBlock(
+      withTests,
+      /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+    );
+    suspendedImpl = rustImplItemAtDepth(sys, "impl SuspendedDebuggee", 1);
+    suspendedImplWithTests = rustImplItemAtDepth(
+      sysWithTests,
+      "impl SuspendedDebuggee",
+      1,
+    );
+    attenuation = rustFunctionBlockAtDepth(
+      suspendedImpl,
+      "attenuate_for_held",
+      1,
+    );
+    attenuationWithTests = rustFunctionBlockAtDepth(
+      suspendedImplWithTests,
+      "attenuate_for_held",
+      1,
+    );
+    finishDuplicate = rustFunctionBlockAtDepth(
+      sys,
+      "finish_exact_noninheritable_duplicate",
+      1,
+    );
+    duplicateProcess = rustFunctionBlockAtDepth(
+      sys,
+      "duplicate_resident_process_handle",
+      1,
+    );
+    duplicateProbe = rustFunctionBlockAtDepth(
+      sys,
+      "duplicate_post_detach_thread_probe_handle",
+      1,
+    );
+    duplicateResume = rustFunctionBlockAtDepth(
+      sys,
+      "duplicate_storage_startup_thread_handle",
+      1,
+    );
+    residentImpl = rustImplItemAtDepth(sys, "impl ResidentKeyAgentProcess", 1);
+    detachedImpl = rustImplItemAtDepth(sys, "impl DetachedSuspendedDebuggee", 1);
+    runningImpl = rustImplItemAtDepth(sys, "impl DetachedRunningDebuggee", 1);
+    resume = rustFunctionBlockAtDepth(detachedImpl, "resume_for_storage_startup", 1);
+    negativeSuspend = rustFunctionBlockAtDepth(
+      rustImplItemAtDepth(sysWithTests, "impl DetachedSuspendedDebuggee", 1),
+      "resume_only_thread_rejects_suspend_for_test",
+      1,
+    );
+    closeOwned = rustFunctionBlockAtDepth(sys, "close_owned_handle_checked", 1);
+    queryAuthority = rustFunctionBlockAtDepth(
+      sysWithTests,
+      "query_handle_authority_for_test",
+      1,
+    );
+    rightsEvidence = rustFunctionBlockAtDepth(
+      rustBottomTestModule(source),
+      "successful_kernel_proof_detaches_with_one_verified_suspend_count",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const compactSys = compactRust(sys);
+  const compactAttenuation = compactRust(attenuationWithTests);
+  const compactFinish = compactRust(finishDuplicate);
+  const compactResume = compactRust(resume);
+  const compactNegative = compactRust(negativeSuspend);
+  const relevantNarrowLeaves = rustLexicalCode(
+    `${finishDuplicate}\n${duplicateProcess}\n${duplicateProbe}\n${duplicateResume}\n${attenuation}\n${residentImpl}\n${detachedImpl}\n${runningImpl}`,
+  );
+  const duplicateCallContract = (item, sourceName, desiredAccess) =>
+    JSON.stringify(
+      rustCallSites(item, "DuplicateHandle").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+    JSON.stringify([
+      [
+        "GetCurrentProcess()",
+        sourceName,
+        "GetCurrentProcess()",
+        "&rawmutduplicate",
+        desiredAccess,
+        "false",
+        "DUPLICATE_HANDLE_OPTIONS(0)",
+      ],
+    ]) &&
+    JSON.stringify(
+      rustCallSites(item, "finish_exact_noninheritable_duplicate").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([[sourceName, "duplicate"]]);
+  return (
+    normalizedSourceSha256(rustLexicalCode(attenuation)) ===
+      approvedKeyAgentDebuggerBoundaryLeafSha256.attenuate &&
+    normalizedSourceSha256(rustLexicalCode(closeOwned)) ===
+      approvedKeyAgentDebuggerBoundaryLeafSha256.closeOwned &&
+    normalizedSourceSha256(rustLexicalCode(queryAuthority)) ===
+      approvedKeyAgentDebuggerBoundaryLeafSha256.queryAuthorityTest &&
+    normalizedSourceSha256(rustLexicalCode(rightsEvidence)) ===
+      approvedKeyAgentDebuggerBoundaryLeafSha256.rightsEvidence &&
+    normalizedSourceSha256(rustLexicalCode(resume)) ===
+      approvedKeyAgentDebuggerBoundaryLeafSha256.resumeNarrowThread &&
+    compactSys.includes(
+      "constRESIDENT_KEY_AGENT_PROCESS_ACCESS:PROCESS_ACCESS_RIGHTS=PROCESS_ACCESS_RIGHTS(PROCESS_TERMINATE.0|PROCESS_QUERY_LIMITED_INFORMATION.0|PROCESS_SYNCHRONIZE.0,);",
+    ) &&
+    compactSys.includes(
+      "constPOST_DETACH_THREAD_PROBE_ACCESS:THREAD_ACCESS_RIGHTS=THREAD_SUSPEND_RESUME;",
+    ) &&
+    compactSys.includes(
+      "constSTORAGE_STARTUP_THREAD_ACCESS:THREAD_ACCESS_RIGHTS=THREAD_RESUME;",
+    ) &&
+    duplicateCallContract(
+      duplicateProcess,
+      "source_process",
+      "RESIDENT_KEY_AGENT_PROCESS_ACCESS.0",
+    ) &&
+    duplicateCallContract(
+      duplicateProbe,
+      "source_thread",
+      "POST_DETACH_THREAD_PROBE_ACCESS.0",
+    ) &&
+    duplicateCallContract(
+      duplicateResume,
+      "source_thread",
+      "STORAGE_STARTUP_THREAD_ACCESS.0",
+    ) &&
+    compactFinish.includes("GetHandleInformation(duplicate_raw,&rawmutflags)") &&
+    compactFinish.includes("CompareObjectHandles(source,duplicate_raw)") &&
+    compactFinish.includes("ifflags!=0||!same_object") &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(relevantNarrowLeaves) &&
+    !/\b(?:try_clone|clone_to_owned|OpenProcess|OpenThread|NtDuplicateObject|ZwDuplicateObject)\s*\(/u.test(
+      relevantNarrowLeaves,
+    ) &&
+    hasOrderedCompactRustMarkers(attenuationWithTests, [
+      "duplicate_resident_process_handle(self.process.raw())?;",
+      "duplicate_post_detach_thread_probe_handle(self.primary_thread.raw())?;",
+      "duplicate_storage_startup_thread_handle(self.primary_thread.raw())?;",
+      "GetProcessId(resident_process_handle)",
+      "WaitForSingleObject(resident_process_handle,0)",
+      "SuspendThread(post_detach_thread_probe_raw)",
+      "ifprevious_suspend_count!=1",
+      "ResumeThread(post_detach_thread_probe_raw)",
+      "ifprevious_suspend_count!=2",
+      "query_handle_authority_for_test(post_detach_thread_probe_raw)?;",
+      "ifprobe_access!=0x0000_1002||probe_attributes!=0",
+      "revalidate_current_process_token(resident_process.as_handle())",
+      "super::verify_bound_root_process(root_job,resident_process.as_handle())",
+      "close_owned_handle_checked(post_detach_thread_probe)",
+      "letSome(lpac)=self.lpac.take()else",
+      "letmutresident=ResidentKeyAgentProcess{",
+      "letcreator_thread_close=self.primary_thread.close_checked();",
+      "letcreator_process_close=self.process.close_checked();",
+      "ifcreator_thread_close.is_err()||creator_process_close.is_err()",
+      "drop(self);",
+      "Ok(DetachedSuspendedDebuggee{resident,primary_thread:storage_startup_thread,})",
+    ]) &&
+    /struct\s+ResidentKeyAgentProcess\s*\{\s*process:\s*OwnedHandle,\s*process_id:\s*u32,\s*lpac:\s*VerifiedKeyAgentLpac,\s*cleanup_complete:\s*bool,\s*_not_sync:\s*PhantomData<Cell<\(\)>>,\s*\}/su.test(
+      sys,
+    ) &&
+    /pub\(super\)\s+struct\s+DetachedSuspendedDebuggee\s*\{\s*resident:\s*ResidentKeyAgentProcess,\s*primary_thread:\s*OwnedHandle,\s*\}/su.test(
+      sys,
+    ) &&
+    /pub\(super\)\s+struct\s+DetachedRunningDebuggee\(ResidentKeyAgentProcess\);/u.test(
+      sys,
+    ) &&
+    (production.match(/impl\s+ResidentKeyAgentProcess\b/gu) ?? []).length === 1 &&
+    (production.match(/impl\s+DetachedSuspendedDebuggee\b/gu) ?? []).length === 1 &&
+    (production.match(/impl\s+DetachedRunningDebuggee\b/gu) ?? []).length === 1 &&
+    /unsafe\s+impl\s+Send\s+for\s+ResidentKeyAgentProcess/u.test(sys) &&
+    /unsafe\s+impl\s+Send\s+for\s+DetachedSuspendedDebuggee/u.test(sys) &&
+    /unsafe\s+impl\s+Send\s+for\s+DetachedRunningDebuggee/u.test(sys) &&
+    !/impl\s+(?:Clone|Copy|Sync|AsRawHandle)\s+for\s+(?:ResidentKeyAgentProcess|DetachedSuspendedDebuggee|DetachedRunningDebuggee)\b/u.test(
+      sys,
+    ) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*(?:pub\(super\)\s+)?struct\s+(?:ResidentKeyAgentProcess|DetachedSuspendedDebuggee|DetachedRunningDebuggee)\b/u.test(
+      sys,
+    ) &&
+    !/\btype\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\s*=\s*(?:ResidentKeyAgentProcess|DetachedSuspendedDebuggee|DetachedRunningDebuggee)\b/u.test(
+      rustLexicalCode(production),
+    ) &&
+    rustCallSites(resume, "ResumeThread").length === 1 &&
+    hasOrderedCompactRustMarkers(resume, [
+      "resident.revalidate()",
+      "ResumeThread(primary_thread_raw)",
+      "ifprevious_suspend_count!=1",
+      "close_owned_handle_checked(primary_thread)",
+      "WaitForSingleObject(resident.process_raw(),0)",
+      "Ok(DetachedRunningDebuggee(resident))",
+    ]) &&
+    rustCallSites(negativeSuspend, "SuspendThread").length === 1 &&
+    compactNegative.includes("SetLastError(ERROR_SUCCESS)") &&
+    compactNegative.includes("SuspendThread(windows_handle(self.primary_thread.as_handle()))") &&
+    compactNegative.includes("==u32::MAX") &&
+    compactNegative.includes("GetLastError()})==ERROR_ACCESS_DENIED") &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        sysWithTests,
+        "query_handle_authority_for_test",
+        1,
+      ),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    /#\[cfg\(test\)\]\s*use\s+windows::Wdk::Foundation::\{NtQueryObject,\s*ObjectBasicInformation\};/u.test(
+      sysWithTests,
+    ) &&
+    /#\[cfg\(test\)\]\s*use\s+windows::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;/u.test(
+      sysWithTests,
+    ) &&
+    !/\b(?:NtQueryObject|ObjectBasicInformation|PUBLIC_OBJECT_BASIC_INFORMATION)\b/u.test(
+      rustLexicalCode(sys),
+    ) &&
+    JSON.stringify(
+      rustCallSites(queryAuthority, "NtQueryObject").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "Some(handle)",
+          "ObjectBasicInformation",
+          "Some((&rawmutinformation).cast())",
+          "information_size",
+          "Some(&rawmutreturned_length)",
+        ],
+      ]) &&
+    compactRust(queryAuthority).includes(
+      "letmutinformation=PUBLIC_OBJECT_BASIC_INFORMATION::default();",
+    ) &&
+    compactRust(queryAuthority).includes(
+      "ifstatus!=STATUS_SUCCESS||returned_length!=information_size",
+    ) &&
+    compactRust(queryAuthority).includes(
+      "Ok((information.GrantedAccess,information.Attributes))",
+    ) &&
+    !rustForeignBlockInventory([
+      { path: "crates/platform-windows/src/key_agent_activation.rs", source },
+    ]).some((block) => /\bNtQueryObject\b/u.test(block.block)) &&
+    !/\b(?:OpenProcess|OpenThread)\s*\(/u.test(rustLexicalCode(production)) &&
+    compactRust(closeOwned).includes("letraw=HANDLE(handle.as_raw_handle());") &&
+    compactRust(closeOwned).indexOf("CloseHandle(raw)") <
+      compactRust(closeOwned).indexOf("core::mem::forget(handle)") &&
+    compactResume.indexOf("ResumeThread(primary_thread_raw)") <
+      compactResume.indexOf("close_owned_handle_checked(primary_thread)") &&
+    compactAttenuation.indexOf("close_owned_handle_checked(post_detach_thread_probe)") <
+      compactAttenuation.indexOf("Ok(DetachedSuspendedDebuggee{")
+  );
+};
+const keyAgentHandleAttenuationMutationProbes = [
+  mutateKeyAgentLeaf(
+    duplicateResidentKeyAgentProcessHandle,
+    "RESIDENT_KEY_AGENT_PROCESS_ACCESS.0",
+    "PROCESS_ALL_ACCESS.0",
+  ),
+  mutateKeyAgentLeaf(
+    duplicatePostDetachThreadProbeHandle,
+    "POST_DETACH_THREAD_PROBE_ACCESS.0",
+    "STORAGE_STARTUP_THREAD_ACCESS.0",
+  ),
+  mutateKeyAgentLeaf(
+    duplicateStorageStartupThreadHandle,
+    "STORAGE_STARTUP_THREAD_ACCESS.0",
+    "POST_DETACH_THREAD_PROBE_ACCESS.0",
+  ),
+  ...[
+    duplicateResidentKeyAgentProcessHandle,
+    duplicatePostDetachThreadProbeHandle,
+    duplicateStorageStartupThreadHandle,
+  ].flatMap((item) => [
+    mutateKeyAgentLeaf(item, "false,", "true,"),
+    mutateKeyAgentLeaf(
+      item,
+      "DUPLICATE_HANDLE_OPTIONS(0)",
+      "DUPLICATE_SAME_ACCESS",
+    ),
+  ]),
+  mutateKeyAgentLeaf(
+    finishExactNoninheritableDuplicate,
+    "flags != 0 || !same_object",
+    "flags != 0 && !same_object",
+  ),
+  mutateKeyAgentLeaf(
+    finishExactNoninheritableDuplicate,
+    "CompareObjectHandles(source, duplicate_raw)",
+    "CompareObjectHandles(duplicate_raw, duplicate_raw)",
+  ),
+  ...[
+    ["SuspendThread(post_detach_thread_probe_raw)", "skip_probe_suspend(post_detach_thread_probe_raw)"],
+    ["ResumeThread(post_detach_thread_probe_raw)", "skip_probe_resume(post_detach_thread_probe_raw)"],
+    ["close_owned_handle_checked(post_detach_thread_probe)", "skip_checked_close(post_detach_thread_probe)"],
+    ["self.primary_thread.close_checked()", "Ok(())"],
+    ["self.process.close_checked()", "Ok(())"],
+  ].map(([search, replacement]) =>
+    mutateKeyAgentLeaf(attenuateKeyAgentForHeld, search, replacement),
+  ),
+  keyAgentActivationSource.replace("0x0000_1002", "0x0000_0002"),
+  mutateKeyAgentLeaf(
+    resumeStorageStartupThroughNarrowHandle,
+    "let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) };",
+    "let _ = unsafe { ResumeThread(primary_thread_raw) };\n            let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) };",
+  ),
+  mutateKeyAgentLeaf(
+    resumeStorageStartupThroughNarrowHandle,
+    "close_owned_handle_checked(primary_thread)",
+    "skip_checked_close(primary_thread)",
+  ),
+  mutateKeyAgentLeaf(
+    rejectSuspendThroughResumeOnlyHandleForTest,
+    "== u32::MAX",
+    "!= u32::MAX",
+  ),
+  mutateKeyAgentLeaf(
+    rejectSuspendThroughResumeOnlyHandleForTest,
+    "ERROR_ACCESS_DENIED",
+    "ERROR_SUCCESS",
+  ),
+  keyAgentActivationSource.replace(
+    "pub(super) struct DetachedRunningDebuggee(ResidentKeyAgentProcess);",
+    "pub(super) struct DetachedRunningDebuggee(ResidentKeyAgentProcess, OwnedHandle);",
+  ),
+  mutateKeyAgentLeaf(
+    queryHandleAuthorityForTest,
+    "status != STATUS_SUCCESS || returned_length != information_size",
+    "status != STATUS_SUCCESS && returned_length != information_size",
+  ),
+  mutateKeyAgentLeaf(
+    queryHandleAuthorityForTest,
+    "information.GrantedAccess, information.Attributes",
+    "information.Attributes, information.GrantedAccess",
+  ),
+  keyAgentActivationSource.replace(
+    "    #[cfg(test)]\n    fn query_handle_authority_for_test(",
+    "    #[cfg(any())]\n    fn query_handle_authority_for_test(",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    '\nextern "system" { fn NtQueryObject(); }\n',
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    "\nfn forbidden_reopen() { let _ = OpenThread(0, false, 1); }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    "\ntype RunningAlias = DetachedRunningDebuggee;\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    "\nimpl DetachedRunningDebuggee where Self: Sized { fn alternate_running_path(&self) {} }\n",
+  ),
+];
+const runnerCloseMarker = ".close_after_join(&witness)";
+const keyAgentSharedDebugCleanupMutationProbes = [
+  mutateKeyAgentLeaf(
+    registerDebugEventHandles,
+    "slot.is_some() || !handles.is_registerable()",
+    "slot.is_some()",
+  ),
+  mutateKeyAgentLeaf(
+    verifyRegisteredDebugEventHandles,
+    "!handles.is_complete()",
+    "handles.is_empty()",
+  ),
+  mutateKeyAgentLeaf(
+    authenticateCreateEventHandles,
+    "debug_event_cleanup.register_while_attached(event_aliases)?;",
+    "let _ = event_aliases;",
+  ),
+  ...[0, 1, 2].map((ordinal) =>
+    mutateKeyAgentLeaf(
+      freshDebugRunner,
+      runnerCloseMarker,
+      ".skip_close_after_join(&witness)",
+      ordinal,
+    ),
+  ),
+  mutateKeyAgentLeaf(
+    dropJoinedKeyAgentDebugThreadProof,
+    "close_after_join",
+    "skip_close_after_join",
+  ),
+  mutateKeyAgentLeaf(
+    dropKeyAgentDebugEventCleanup,
+    "for _ in 0..2",
+    "for _ in 0..0",
+  ),
+  mutateKeyAgentLeaf(
+    finalizePendingKeyAgentActivation,
+    "if !Arc::ptr_eq(&pending.debug_event_cleanup, &joined.debug_event_cleanup)",
+    "if false",
+  ),
+  mutateKeyAgentLeaf(
+    finalizePendingKeyAgentActivation,
+    ".restore_after_join(&joined.witness, event_handles)",
+    ".discard_joined_aliases(&joined.witness, event_handles)",
+  ),
+  mutateKeyAgentLeaf(
+    closeRegisteredDebugEventHandlesAfterJoin,
+    "if failed {",
+    "if false {",
+  ),
+  mutateKeyAgentLeaf(
+    closeRegisteredDebugEventHandlesAfterJoin,
+    "if let Some(event_process) = handles.process",
+    "if false && let Some(event_process) = handles.process",
+  ),
+  mutateKeyAgentLeaf(
+    closeRegisteredDebugEventHandlesAfterJoin,
+    "if unsafe { CloseHandle(event_primary_thread) }.is_ok() {\n                    handles.primary_thread = None;",
+    "handles.primary_thread = None;\n                if unsafe { CloseHandle(event_primary_thread) }.is_ok() {",
+  ),
+  mutateKeyAgentLeaf(
+    closeRegisteredDebugEventHandlesAfterJoin,
+    "if rejected {\n                failed = true;",
+    "if rejected {\n                return Err(KeyAgentActivationError::Cleanup);",
+  ),
+  mutateKeyAgentLeaf(
+    closeRemainingDetachedDebugEventHandles,
+    "first_error.map_or(Ok(()), Err)",
+    "Ok(())",
+  ),
+  mutateKeyAgentLeaf(
+    closeRemainingDetachedDebugEventHandles,
+    "if let Some(event_process) = self.debug_event_process",
+    "if false && let Some(event_process) = self.debug_event_process",
+  ),
+  mutateKeyAgentLeaf(
+    closeRemainingDetachedDebugEventHandles,
+    "if unsafe { CloseHandle(event_primary_thread) }.is_ok() {\n                        self.debug_event_primary_thread = None;",
+    "self.debug_event_primary_thread = None;\n                    if unsafe { CloseHandle(event_primary_thread) }.is_ok() {",
+  ),
+  mutateKeyAgentLeaf(
+    abortSuspendedDebuggee,
+    "let alias_cleanup = if self.phase",
+    "process_cleanup?;\n            let alias_cleanup = if self.phase",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    "\nimpl KeyAgentDebugEventCleanup where Self: Sized { fn alternate_cleanup(&self) {} }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentActivationSource,
+    "\ntype DebugEventCleanupAlias = KeyAgentDebugEventCleanup;\n",
+  ),
+];
+const keyAgentPostJoinActivationMutationProbes = [
+  ...[
+    ["CheckRemoteDebuggerPresent", "AssumeDebuggerAbsent"],
+    ["close_detached_debug_event_handles", "skip_close_detached_debug_event_handles"],
+    [
+      "SuspendThread(process.primary_thread.raw())",
+      "OmittedThreadIncrement(process.primary_thread.raw())",
+    ],
+    [
+      "ResumeThread(process.primary_thread.raw())",
+      "OmittedThreadRestore(process.primary_thread.raw())",
+    ],
+    ["revalidate_current_process_token", "skip_token_revalidation"],
+    ["super::verify_bound_root_process", "super::skip_root_verification"],
+    ["attenuate_for_held", "skip_attenuate_for_held"],
+  ].map(([search, replacement]) =>
+    mutateKeyAgentLeaf(finalizeAfterDebuggerExit, search, replacement),
+  ),
+];
+requireInvariant(
+  JSON.stringify(currentKeyAgentDebuggerBoundaryLeafSha256) ===
+    JSON.stringify(approvedKeyAgentDebuggerBoundaryLeafSha256) &&
+    keyAgentDebuggerEvidenceContract(keyAgentActivationSource) &&
+    keyAgentDebuggerEvidenceMutationProbes.every(
+      (mutated) =>
+        mutated !== keyAgentActivationSource &&
+        !keyAgentDebuggerEvidenceContract(mutated),
+    ) &&
+    keyAgentSharedDebugCleanupContract(keyAgentActivationSource) &&
+    keyAgentSharedDebugCleanupMutationProbes.every(
+      (mutated) =>
+        mutated !== keyAgentActivationSource &&
+        !keyAgentSharedDebugCleanupContract(mutated),
+    ) &&
+    keyAgentPostJoinActivationContract(keyAgentActivationSource) &&
+    keyAgentPostJoinActivationMutationProbes.every(
+      (mutated) =>
+        mutated !== keyAgentActivationSource &&
+        !keyAgentPostJoinActivationContract(mutated),
+    ) &&
+    keyAgentHandleAttenuationContract(keyAgentActivationSource) &&
+    keyAgentHandleAttenuationMutationProbes.every(
+      (mutated) =>
+        mutated !== keyAgentActivationSource &&
+        !keyAgentHandleAttenuationContract(mutated),
+    ) &&
+    observeDebuggerExitForCleanup.includes(
+      "Arc::ptr_eq(&self.debug_thread_witness, &joined.witness)",
+    ) &&
+    observeDebuggerExitForCleanup.includes(
+      "root_job.matches_debugger_cleanup_gate(&self.debug_thread_witness)",
+    ) &&
+    closeOwnedHandleChecked.includes("let raw = HANDLE(handle.as_raw_handle())") &&
+    closeOwnedHandleChecked.includes("CloseHandle(raw)") &&
+    closeOwnedHandleChecked.includes("core::mem::forget(handle)") &&
+    closeOwnedHandleChecked.indexOf("CloseHandle(raw)") <
+      closeOwnedHandleChecked.indexOf("core::mem::forget(handle)"),
+  "debug-event aliases must register before fallible authentication; creator handles must attenuate to exact process/resume-only authority with cfg(test)-only native readback, one resume, and process-only Running state",
 );
 const keyAgentCreationAttributeBlock =
   /struct\s+KeyAgentCreationAttributes<'resources,\s*'pipes,\s*'flight,\s*'job>\s*\{(?<body>[\s\S]*?)\n\s*\}/u.exec(
@@ -22149,7 +23368,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/broker_supervisor.rs", sites: 7 },
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
-  { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 4 },
+  { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 9 },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 35 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
@@ -22190,8 +23409,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
-    unsafeCount: 51,
-    sha256: "dc602cf5de06bec298c20720e9385866db81ccfc05640118d3b2ce3a7e7a7f12",
+    unsafeCount: 84,
+    sha256: "d889a8c91afa81a261d9239ed16c093ec0f0d7e5766435593dfbaf98428aa46a",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -22925,7 +24144,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "c38ce9223cdb6b5fc12e33e27df69c6f5f8796affa753f31eb4386f6c87680bc" &&
+    "4cff3a33b3beb4f440f2670aa136c96c22414c33ffa6aa50252a8afcc2998706" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -22956,6 +24175,7 @@ requireInvariant(
         "subtle.workspace=true",
         "thiserror.workspace=true",
         "windows={workspace=true,features=[",
+        '"Wdk_Foundation",',
         '"Win32_Globalization",',
         '"Win32_Security_Authorization",',
         '"Win32_Security_Cryptography",',
@@ -25592,8 +26812,16 @@ const keyAgentTokenDaclKernelPathMutationProbes = [
   replaceInsideExactRustItem(
     keyAgentActivationSource,
     authenticateAndContinueActivation,
-    "        .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)",
-    "        .skipped_authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)",
+    `    let first_event = match process.authenticate_first_event(
+        artifact_identity,
+        FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS,
+        &debug_event_cleanup,
+    )`,
+    `    let first_event = match process.skipped_authenticate_first_event(
+        artifact_identity,
+        FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS,
+        &debug_event_cleanup,
+    )`,
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
@@ -26006,7 +27234,7 @@ requireInvariant(
     ) &&
     keyAgentInnerDetachedSuspensionProof.includes("self.lpac.is_some()") &&
     keyAgentDetachedSuspensionProof.includes(
-      "self.0.is_detached_and_suspended()",
+      "!self.resident.cleanup_complete",
     ),
   "mapped-image authentication and an explicit suspend count must precede LPAC token proof, debug continuation, no-kill arming, joined debugger-exit verification, and detached type-state export",
 );
@@ -26116,8 +27344,8 @@ const detachedMethods = [
   ...detachedImpl.matchAll(/pub\(super\)\s+(?:const\s+)?fn\s+(\w+)/gu),
 ].map((match) => match[1]);
 requireInvariant(
-  keyAgentActivation.includes(
-    "pub(super) struct DetachedSuspendedDebuggee(SuspendedDebuggee);",
+  /pub\(super\)\s+struct\s+DetachedSuspendedDebuggee\s*\{\s*resident:\s*ResidentKeyAgentProcess,\s*primary_thread:\s*OwnedHandle,\s*\}/u.test(
+    keyAgentActivation,
   ) &&
     keyAgentActivation.includes(
       "unsafe impl Send for DetachedSuspendedDebuggee {}",
@@ -26142,6 +27370,8 @@ requireInvariant(
         "resume_for_storage_startup",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
+        "retained_handle_authority_for_test",
+        "resume_only_thread_rejects_suspend_for_test",
       ]) &&
     /#\[cfg\(test\)\]\s*pub\(super\)\s+fn\s+duplicate_process_observation/u.test(
       detachedImpl,
@@ -26152,7 +27382,7 @@ requireInvariant(
     !/impl\s+(?:core::ops::)?(?:Deref|DerefMut|AsRawHandle)\s+for\s+DetachedSuspendedDebuggee/u.test(
       keyAgentActivation,
     ) &&
-    /fn\s+resume_for_storage_startup\s*\(\s*mut\s+self,?\s*\)\s*->\s*Result<\s*DetachedRunningDebuggee\s*,\s*KeyAgentActivationError\s*>/u.test(
+    /fn\s+resume_for_storage_startup\s*\(\s*self,?\s*\)\s*->\s*Result<\s*DetachedRunningDebuggee\s*,\s*KeyAgentActivationError\s*>/u.test(
       rustLexicalCode(detachedImpl),
     ) &&
     !/fn\s+(?:into_inner|as_raw_handle|continue|detach|resume)\b/u.test(
@@ -26199,134 +27429,145 @@ const keyAgentTokenContinuityRejectsMethodReference = (source) =>
   !/::\s*revalidate_current_process_token\b/u.test(rustLexicalCode(source));
 const keyAgentTokenContinuityMethodReferenceMutationProbe =
   `${keyAgentActivationSource}\nconst REVALIDATE_ESCAPE: usize = VerifiedKeyAgentLpac::revalidate_current_process_token as usize;\n`;
+const keyAgentTokenContinuityLeaves = (source) => {
+  const production = withoutCfgTestItems(withoutBottomTestModule(source));
+  const suspendedImpl = rustLexicalItemBlock(
+    production,
+    /impl\s+SuspendedDebuggee\s*\{/u,
+  );
+  const pendingImpl = rustLexicalItemBlock(
+    production,
+    /impl\s+PendingDebuggerExitSuspendedDebuggee\s*\{/u,
+  );
+  const residentImpl = rustLexicalItemBlock(
+    production,
+    /impl\s+ResidentKeyAgentProcess\s*\{/u,
+  );
+  const detachedImpl = rustLexicalItemBlock(
+    production,
+    /impl\s+DetachedSuspendedDebuggee\s*\{/u,
+  );
+  const runningImpl = rustLexicalItemBlock(
+    production,
+    /impl\s+DetachedRunningDebuggee\s*\{/u,
+  );
+  return {
+    production,
+    preArm: rustFunctionBlock(suspendedImpl, "revalidate_before_no_kill"),
+    postJoin: rustFunctionBlock(pendingImpl, "finalize_after_debugger_exit"),
+    attenuation: rustFunctionBlock(suspendedImpl, "attenuate_for_held"),
+    resident: rustFunctionBlock(residentImpl, "revalidate"),
+    resume: rustFunctionBlock(detachedImpl, "resume_for_storage_startup"),
+    running: rustFunctionBlock(runningImpl, "revalidate_resident_process"),
+  };
+};
+const currentKeyAgentTokenContinuityLeafSha256 = (() => {
+  const leaves = keyAgentTokenContinuityLeaves(keyAgentActivationSource);
+  return Object.freeze(
+    Object.fromEntries(
+      ["preArm", "postJoin", "attenuation", "resident", "resume", "running"].map(
+        (name) => [name, normalizedSourceSha256(rustLexicalCode(leaves[name]))],
+      ),
+    ),
+  );
+})();
 const keyAgentTokenContinuityCallerContract = (source) => {
-  let preArm;
-  let postJoin;
-  let resume;
-  let resident;
-  let production;
+  let leaves;
   try {
-    production = withoutCfgTestItems(withoutBottomTestModule(source));
-    const suspendedImpl = rustLexicalItemBlock(
-      production,
-      /impl\s+SuspendedDebuggee\s*\{/u,
-    );
-    const pendingImpl = rustLexicalItemBlock(
-      production,
-      /impl\s+PendingDebuggerExitSuspendedDebuggee\s*\{/u,
-    );
-    const detachedImpl = rustLexicalItemBlock(
-      production,
-      /impl\s+DetachedSuspendedDebuggee\s*\{/u,
-    );
-    const runningImpl = rustLexicalItemBlock(
-      production,
-      /impl\s+DetachedRunningDebuggee\s*\{/u,
-    );
-    preArm = rustFunctionBlock(suspendedImpl, "revalidate_before_no_kill");
-    postJoin = rustFunctionBlock(
-      pendingImpl,
-      "finalize_after_debugger_exit",
-    );
-    resume = rustFunctionBlock(suspendedImpl, "resume_for_storage_startup");
-    resident = rustFunctionBlock(runningImpl, "revalidate_resident_process");
+    leaves = keyAgentTokenContinuityLeaves(source);
   } catch {
     return false;
   }
-  const preArmCompact = compactRust(preArm);
-  const postJoinCompact = compactRust(postJoin);
-  const resumeCompact = compactRust(resume);
-  const residentCompact = compactRust(resident);
-  const resumeCall = "ResumeThread(self.primary_thread.raw())";
+  const { production, preArm, postJoin, attenuation, resident, resume, running } =
+    leaves;
   return (
-    normalizedSourceSha256(rustLexicalCode(preArm)) ===
-      approvedKeyAgentTokenContinuityLeafSha256.preArm &&
-    normalizedSourceSha256(rustLexicalCode(postJoin)) ===
-      approvedKeyAgentTokenContinuityLeafSha256.postJoin &&
-    normalizedSourceSha256(rustLexicalCode(resume)) ===
-      approvedKeyAgentTokenContinuityLeafSha256.resume &&
-    normalizedSourceSha256(rustLexicalCode(resident)) ===
-      approvedKeyAgentTokenContinuityLeafSha256.resident &&
-    rustCallSites(production, "revalidate_current_process_token").length ===
-      4 &&
+    ["preArm", "postJoin", "attenuation", "resident", "resume", "running"].every(
+      (name) =>
+        normalizedSourceSha256(rustLexicalCode(leaves[name])) ===
+        approvedKeyAgentTokenContinuityLeafSha256[name],
+    ) &&
+    rustCallSites(production, "revalidate_current_process_token").length === 4 &&
     JSON.stringify(
       rustCallSites(preArm, "revalidate_current_process_token").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["self.process_handle()"]]) &&
     JSON.stringify(
-      rustCallSites(postJoin, "revalidate_current_process_token").map(
-        (call) => call.arguments.map(compactRust),
+      rustCallSites(postJoin, "revalidate_current_process_token").map((call) =>
+        call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["process.process_handle()"]]) &&
     JSON.stringify(
-      rustCallSites(resume, "revalidate_current_process_token").map((call) =>
+      rustCallSites(attenuation, "revalidate_current_process_token").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["resident_process.as_handle()"]]) &&
+    JSON.stringify(
+      rustCallSites(resident, "revalidate_current_process_token").map((call) =>
         call.arguments.map(compactRust),
       ),
     ) === JSON.stringify([["self.process_handle()"]]) &&
-    JSON.stringify(
-      rustCallSites(resident, "revalidate_current_process_token").map(
-        (call) => call.arguments.map(compactRust),
-      ),
-    ) === JSON.stringify([["self.0.process_handle()"]]) &&
+    rustCallSites(resume, "revalidate_current_process_token").length === 0 &&
+    rustCallSites(running, "revalidate_current_process_token").length === 0 &&
     hasOrderedCompactRustMarkers(preArm, [
-      "ifself.phase!=LaunchPhase::EventContinued||self.pending_event.is_some()||self.proven_suspend_count!=1||self.prepared_lpac.is_some()||self.lpac.is_none(){returnErr(KeyAgentActivationError::DebugDetach);}",
-      "ifunsafe{WaitForSingleObject(self.process.raw(),0)}!=WAIT_TIMEOUT",
+      "WaitForSingleObject(self.process.raw(),0)",
       "CheckRemoteDebuggerPresent(self.process.raw(),&rawmutdebugger_present)",
       "if!debugger_present.as_bool()",
-      "self.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy)?.revalidate_current_process_token(self.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)?;",
+      "revalidate_current_process_token(self.process_handle())",
       "Ok(())",
     ]) &&
     hasOrderedCompactRustMarkers(postJoin, [
       "CheckRemoteDebuggerPresent(process.process.raw(),&rawmutdebugger_present)",
       "ifdebugger_present.as_bool()",
-      "letprevious_suspend_count=unsafe{SuspendThread(process.primary_thread.raw())};",
+      "process.close_detached_debug_event_handles()?;",
+      "SuspendThread(process.primary_thread.raw())",
       "ifprevious_suspend_count!=1",
-      "letprevious_suspend_count=unsafe{ResumeThread(process.primary_thread.raw())};",
+      "ResumeThread(process.primary_thread.raw())",
       "ifprevious_suspend_count!=2",
       "process.proven_suspend_count=1;",
-      "process.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy)?.revalidate_current_process_token(process.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)?;",
+      "revalidate_current_process_token(process.process_handle())",
       "super::verify_bound_root_process(root_job,process.process_handle())?;",
+    ]) &&
+    hasOrderedCompactRustMarkers(attenuation, [
+      "SuspendThread(post_detach_thread_probe_raw)",
+      "ifprevious_suspend_count!=1",
+      "ResumeThread(post_detach_thread_probe_raw)",
+      "ifprevious_suspend_count!=2",
+      "revalidate_current_process_token(resident_process.as_handle())",
+      "super::verify_bound_root_process(root_job,resident_process.as_handle())",
+      "close_owned_handle_checked(post_detach_thread_probe)",
     ]) &&
     rustCallSites(resume, "ResumeThread").length === 1 &&
     hasOrderedCompactRustMarkers(resume, [
-      "ifself.phase!=LaunchPhase::DetachedSuspended||self.proven_suspend_count!=1||self.prepared_lpac.is_some()||self.pending_event.is_some(){returnErr(KeyAgentActivationError::StartupResume);}",
-      "ifself.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy).and_then(|lpac|{lpac.revalidate_current_process_token(self.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)}).is_err(){self.abort().map_err(|_|KeyAgentActivationError::Cleanup)?;returnErr(KeyAgentActivationError::LpacPolicy);}",
-      "letprevious_suspend_count=unsafe{ResumeThread(self.primary_thread.raw())};",
-      "ifprevious_suspend_count!=1{self.abort().map_err(|_|KeyAgentActivationError::Cleanup)?;returnErr(KeyAgentActivationError::SuspensionMismatch);}",
-      "self.proven_suspend_count=0;",
+      "LaunchPhase::DetachedSuspended.transition(LaunchTransition::ResumeStorageStartup)?;",
+      "resident.revalidate()",
+      "ResumeThread(primary_thread_raw)",
+      "ifprevious_suspend_count!=1",
+      "close_owned_handle_checked(primary_thread)",
+      "WaitForSingleObject(resident.process_raw(),0)",
+      "Ok(DetachedRunningDebuggee(resident))",
     ]) &&
-    resumeCompact.indexOf(
-      "revalidate_current_process_token(self.process_handle())",
-    ) < resumeCompact.indexOf(resumeCall) &&
-    !resumeCompact.includes(`let_=unsafe{${resumeCall}}`) &&
-    hasOrderedCompactRustMarkers(resident, [
-      "ifself.0.phase!=LaunchPhase::DetachedRunning||self.0.proven_suspend_count!=0||self.0.prepared_lpac.is_some()||self.0.pending_event.is_some(){returnErr(KeyAgentActivationError::ResidentState);}",
-      "ifunsafe{WaitForSingleObject(self.0.process.raw(),0)}!=WAIT_TIMEOUT{returnErr(KeyAgentActivationError::ResidentState);}",
-      "self.0.lpac.as_ref().ok_or(KeyAgentActivationError::LpacPolicy)?.revalidate_current_process_token(self.0.process_handle()).map_err(|_|KeyAgentActivationError::LpacPolicy)",
-    ]) &&
-    preArmCompact.length > 0 &&
-    postJoinCompact.length > 0 &&
-    residentCompact.length > 0
+    compactRust(running).includes("self.0.revalidate()")
   );
 };
 const tokenContinuityResumeMutationScope = rustFunctionBlock(
-  suspendedDebuggeeImpl,
+  detachedSuspendedDebuggeeImpl,
   "resume_for_storage_startup",
 );
 const tokenContinuityResidentMutationScope = rustFunctionBlock(
-  detachedRunningImpl,
-  "revalidate_resident_process",
+  rustLexicalItemBlock(keyAgentActivation, /impl\s+ResidentKeyAgentProcess\s*\{/u),
+  "revalidate",
 );
 const approvedKeyAgentTokenContinuityLeafSha256 = Object.freeze({
-  preArm:
-    "30e4895f31d51aad65e4f6015a9a3121a2df82ffb4d16d431120be20f8734788",
-  postJoin:
-    "671336c702a28072d1fd47f1a4dae4e61db6f9af821a101915849d74f28794d8",
-  resume:
-    "ba99cb65a36278ed257736045de9941e7cd34fb9f90d4810246c1e3365f6bdcf",
+  preArm: "550b788528ade0ce895d12f45e37e4c8ceaad4a8ad8341047368cc37645a48d5",
+  postJoin: "48373fe067c31cabe805bc3e0dfed64babadd9f72a7c6c9b4a1d5de97d23de72",
+  attenuation:
+    "b0f0f9f26260b1e047f5450013377377fc24347909072de8231cec9a7c2deb29",
   resident:
-    "391f5131009f7f71583f27e01275f9ace46eec2cc9ea0a3de830ee537b9a5442",
+    "f7a9c19bf853b4a000cff9f20d797a56fd317dc8f41e74829b45de05c52469cd",
+  resume: "9eb0dc8e40d63e67e9eb1a63b61d41ea3cb1b62da9c8fb4bb66b83f1681f2dcc",
+  running:
+    "30fd2a9e514ac1854c2ea5544881206dacf22e106fc13a6e80493df53469fbd1",
 });
 const keyAgentTokenContinuityCallerMutationProbes = [
   replaceInsideExactRustItem(
@@ -26343,33 +27584,39 @@ const keyAgentTokenContinuityCallerMutationProbes = [
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
-    tokenContinuityResumeMutationScope,
-    "lpac.revalidate_current_process_token(self.process_handle())",
-    "lpac.skipped_revalidate_current_process_token(self.process_handle())",
+    attenuateKeyAgentForHeld,
+    ".revalidate_current_process_token(resident_process.as_handle())",
+    ".skipped_revalidate_current_process_token(resident_process.as_handle())",
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
     tokenContinuityResumeMutationScope,
-    "            if self\n                .lpac",
-    "            if false && self\n                .lpac",
+    "if let Err(error) = resident.revalidate()",
+    "if let Err(error) = resident.skipped_revalidate()",
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
     tokenContinuityResumeMutationScope,
-    "                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;\n                return Err(KeyAgentActivationError::LpacPolicy);",
-    "                return Err(KeyAgentActivationError::LpacPolicy);",
+    "let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) };",
+    "let _ = unsafe { ResumeThread(primary_thread_raw) };\n            let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) };",
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
     tokenContinuityResumeMutationScope,
-    "let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };",
-    "let _ = unsafe { ResumeThread(self.primary_thread.raw()) };\n            let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };",
+    "if close_owned_handle_checked(primary_thread).is_err()",
+    "if false && close_owned_handle_checked(primary_thread).is_err()",
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
     tokenContinuityResidentMutationScope,
-    "                .revalidate_current_process_token(self.0.process_handle())",
-    "                .skipped_revalidate_current_process_token(self.0.process_handle())",
+    ".revalidate_current_process_token(self.process_handle())",
+    ".skipped_revalidate_current_process_token(self.process_handle())",
+  ),
+  replaceInsideExactRustItem(
+    keyAgentActivationSource,
+    rustFunctionBlock(detachedRunningImpl, "revalidate_resident_process"),
+    "self.0.revalidate()",
+    "self.0.skipped_revalidate()",
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
@@ -26385,15 +27632,9 @@ const keyAgentTokenContinuityCallerMutationProbes = [
   ),
   replaceInsideExactRustItem(
     keyAgentActivationSource,
-    tokenContinuityResumeMutationScope,
-    "            if self.phase != LaunchPhase::DetachedSuspended",
-    "            return Ok(());\n            if self.phase != LaunchPhase::DetachedSuspended",
-  ),
-  replaceInsideExactRustItem(
-    keyAgentActivationSource,
-    tokenContinuityResidentMutationScope,
-    "            if self.0.phase != LaunchPhase::DetachedRunning",
-    "            return Ok(());\n            if self.0.phase != LaunchPhase::DetachedRunning",
+    attenuateKeyAgentForHeld,
+    "                super::verify_bound_root_process(root_job, resident_process.as_handle())\n                    .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;",
+    "                let _ = root_job;",
   ),
 ];
 requireInvariant(
@@ -26426,7 +27667,7 @@ requireInvariant(
     keyAgentTokenContinuityCallerMutationProbes.every(
       (mutated) => !keyAgentTokenContinuityCallerContract(mutated),
     ),
-  "Key Agent token-object revalidation callers must remain exact before no-kill arming, after joined debugger-exit 1-to-2-to-1 verification, immediately before the sole detached-guard ResumeThread release with cleanup precedence, and after resident liveness",
+  "Key Agent token-object revalidation callers must remain exact across post-join attenuation and resident process-only type states",
 );
 const preparedKeyAgentCreationSecurityImpl = rustLexicalItemBlock(
   keyAgentLpac,
@@ -26604,7 +27845,7 @@ const approvedKeyAgentCreationDaclLeafSha256 = Object.freeze({
   activationFacade:
     "6ad6276dc1d3f74ae68510b58bc03211a79a95d40d96097c65f9870074c11eb1",
   activationFinalize:
-    "02abbbfb5f3872f4441ee4d10567eabb2f223886b4906e495deae8e602e52fe8",
+    "31fbabc0e9930c4e17b4f174e80e4269e4baa2097059769661c87822646739df",
   openToken:
     "43c95b43e825eadaf86702bc3bef0c2e6aac0b8376e3c880bc2adabef205cc09",
   tokenInformation:
@@ -28716,22 +29957,7 @@ requireInvariant(
 );
 const exactDetachedKeyAgentResidentRevalidation = compactRust(`
 pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
-    if self.0.phase != LaunchPhase::DetachedRunning
-        || self.0.proven_suspend_count != 0
-        || self.0.prepared_lpac.is_some()
-        || self.0.pending_event.is_some()
-    {
-        return Err(KeyAgentActivationError::ResidentState);
-    }
-    if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
-        return Err(KeyAgentActivationError::ResidentState);
-    }
-    self.0
-        .lpac
-        .as_ref()
-        .ok_or(KeyAgentActivationError::LpacPolicy)?
-        .revalidate_current_process_token(self.0.process_handle())
-        .map_err(|_| KeyAgentActivationError::LpacPolicy)
+    self.0.revalidate()
 }
 `);
 const exactDetachedKeyAgentRootJobMembership = compactRust(`
@@ -28739,9 +29965,7 @@ pub(super) fn is_member_of_root_job(
     &self,
     root_job: &KeyAgentRootJob,
 ) -> Result<bool, KeyAgentActivationError> {
-    root_job
-        .contains_process(self.0.process_handle())
-        .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+    self.0.is_member_of_root_job(root_job)
 }
 `);
 const detachedKeyAgentResidentContract = (source) => {
@@ -28757,47 +29981,38 @@ const detachedKeyAgentResidentContract = (source) => {
     compactRust(revalidate) === exactDetachedKeyAgentResidentRevalidation &&
     compactRust(membership) === exactDetachedKeyAgentRootJobMembership &&
     JSON.stringify(
-      rustCallSites(revalidate, "WaitForSingleObject").map((call) =>
+      rustCallSites(revalidate, "revalidate").map((call) =>
         call.arguments.map(compactRust),
       ),
-    ) === JSON.stringify([["self.0.process.raw()", "0"]]) &&
+    ) === JSON.stringify([[]]) &&
     JSON.stringify(
-      rustCallSites(membership, "contains_process").map((call) =>
-        call.arguments.map(compactRust),
-      ),
-    ) === JSON.stringify([["self.0.process_handle()"]])
+      rustCallSites(membership, "is_member_of_root_job")
+        .filter((call) => call.index > membership.indexOf("{"))
+        .map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["root_job"]])
   );
 };
 const detachedKeyAgentResidentMutationProbes = [
   detachedRunningImpl.replace(
-    "    if self.0.phase != LaunchPhase::DetachedRunning\n",
-    "    if false {\n",
+    "self.0.revalidate()",
+    "self.0.skipped_revalidate()",
   ),
   detachedRunningImpl.replace(
-    "WaitForSingleObject(self.0.process.raw(), 0)",
-    "WaitForSingleObject(self.0.process.raw(), 1)",
-  ),
-  detachedRunningImpl.replace("!= WAIT_TIMEOUT", "== WAIT_TIMEOUT"),
-  detachedRunningImpl.replace(
-    "contains_process(self.0.process_handle())",
-    "contains_process(GetCurrentProcess())",
+    "self.0.is_member_of_root_job(root_job)",
+    "self.0.skipped_is_member_of_root_job(root_job)",
   ),
   detachedRunningImpl.replace(
-    "            if self.0.phase != LaunchPhase::DetachedRunning\n",
-    "            if self.process_id() != 0 { return Ok(()); }\n            if self.0.phase != LaunchPhase::DetachedRunning\n",
+    "self.0.revalidate()",
+    "Ok(())",
   ),
   detachedRunningImpl.replace(
-    "                .revalidate_current_process_token(self.0.process_handle())",
-    "                .skipped_revalidate_current_process_token(self.0.process_handle())",
-  ),
-  detachedRunningImpl.replace(
-    "            root_job\n                .contains_process(self.0.process_handle())\n                .map_err(|_| KeyAgentActivationError::RootJobPolicy)\n",
-    "            let _ = root_job\n                .contains_process(self.0.process_handle())\n                .map_err(|_| KeyAgentActivationError::RootJobPolicy);\n            Ok(true)\n",
+    "self.0.is_member_of_root_job(root_job)",
+    "{ let _ = root_job; Ok(true) }",
   ),
 ];
 requireInvariant(
   keyAgentActivation.includes(
-    "pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);",
+    "pub(super) struct DetachedRunningDebuggee(ResidentKeyAgentProcess);",
   ) &&
     keyAgentActivation.includes(
       "unsafe impl Send for DetachedRunningDebuggee {}",
@@ -28816,6 +30031,7 @@ requireInvariant(
         "is_member_of_root_job",
         "duplicate_process_observation",
         "is_member_of_root_job_for_test",
+        "retained_process_authority_for_test",
       ]) &&
     detachedKeyAgentResidentContract(detachedRunningImpl) &&
     detachedKeyAgentResidentMutationProbes.every(
@@ -28830,9 +30046,9 @@ requireInvariant(
       detachedRunningImpl,
     ) &&
     keyAgentActivation.includes(
-      'formatter.write_str("DetachedRunningDebuggee([REDACTED HANDLES AND IDENTITY])")',
+      'formatter.write_str("DetachedRunningDebuggee([NARROW PROCESS; NO THREAD HANDLE])")',
     ),
-  "the detached-running Key Agent type-state must remain a non-cloneable, non-Sync, observation-only proof that rechecks exact zero-time liveness and exact root-Job membership with no second transition or operational I/O",
+  "the detached-running Key Agent type-state must remain a non-cloneable, non-Sync, process-only proof that delegates liveness, token continuity, and exact root-Job membership to its narrow resident owner with no second transition or operational I/O",
 );
 requireInvariant(
   keyAgentActivation.includes("volume_serial_number == 0") &&
@@ -28853,6 +30069,99 @@ requireInvariant(
       "role: HelperRole::from_release_file_name(&verifier.manifest.file_name)",
     ),
   "verified Key Agent role must remain private and manifest-derived",
+);
+const keyAgentHandleAttenuationDocumentation = [
+  { path: "README.md", source: rootReadme },
+  { path: "crates/platform-windows/README.md", source: activationReadme },
+  { path: "docs/architecture.md", source: activationArchitecture },
+  { path: "docs/protocol-contract.md", source: keyAgentProtocolDocumentation },
+  { path: "docs/security-decisions.md", source: securityDecisions },
+];
+const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
+  "README.md":
+    "2ec34fe15d3e7ac98232278bebe17d1a24505f7b19f92f769760d46aaef279e4",
+  "crates/platform-windows/README.md":
+    "d33bdb62c8440dae8bf7a604b031ed7ea549baa065e49ed3c39f7e9aace6a913",
+  "docs/architecture.md":
+    "fa294b5c05ec043a977141d652dcf5e77f3f40d6fff2039d5ae0ce1d2028bce6",
+  "docs/protocol-contract.md":
+    "058bfb8411c058daa0ec431415e76e679eebf2fb66ce0c4dc78b4af101a36bfb",
+  "docs/security-decisions.md":
+    "662439beaa3739a9181b574ad9c8599bfda5944704615c096c135f1fc09fa242",
+});
+const keyAgentHandleAttenuationDocumentationContract = (documents) =>
+  JSON.stringify(documents.map(({ path }) => path)) ===
+    JSON.stringify([
+      "README.md",
+      "crates/platform-windows/README.md",
+      "docs/architecture.md",
+      "docs/protocol-contract.md",
+      "docs/security-decisions.md",
+    ]) &&
+  documents.every(({ path, source }) => {
+    const lower = source.toLocaleLowerCase("en-US");
+    return (
+      normalizedSourceSha256(source) ===
+        approvedKeyAgentHandleAttenuationDocumentationSha256[path] &&
+      source.includes("0x00101001") &&
+      source.includes("PROCESS_TERMINATE") &&
+      source.includes("PROCESS_QUERY_LIMITED_INFORMATION") &&
+      source.includes("SYNCHRONIZE") &&
+      source.includes("THREAD_SUSPEND_RESUME") &&
+      source.includes("0x2") &&
+      source.includes("0x1002") &&
+      source.includes("THREAD_RESUME") &&
+      source.includes("0x1000") &&
+      source.includes("SuspendThread") &&
+      source.includes("ERROR_ACCESS_DENIED") &&
+      /1(?:→|->|\s*to\s*)2(?:→|->|\s*to\s*)1/iu.test(source) &&
+      lower.includes("checked-close") &&
+      lower.includes("held") &&
+      lower.includes("running") &&
+      lower.includes("post-join") &&
+      lower.includes("malformed") &&
+      lower.includes("complete authenticated") &&
+      lower.includes("partial") &&
+      /(?:independent|독립)/iu.test(source) &&
+      lower.includes("retry") &&
+      lower.includes("panic") &&
+      lower.includes("abandon") &&
+      lower.includes("raii") &&
+      source.includes("hFile") &&
+      lower.includes("mapped-image") &&
+      lower.includes("creator thread")
+    );
+  });
+const keyAgentHandleAttenuationDocumentationMutationProbes =
+  keyAgentHandleAttenuationDocumentation.flatMap((document, documentIndex) =>
+    [
+      ["0x00101001", "0x001fffff"],
+      ["0x1002", "0x2"],
+      ["0x1000", "0x2"],
+      ["ERROR_ACCESS_DENIED", "ERROR_SUCCESS"],
+      ["RAII", "best-effort"],
+      ["malformed", "well-formed"],
+      ["post-join", "pre-join"],
+      ["Running", "RunningWithThread"],
+    ].map(([search, replacement]) => {
+      const mutatedSource = document.source.replace(search, replacement);
+      return {
+        changed: mutatedSource !== document.source,
+        documents: keyAgentHandleAttenuationDocumentation.map((entry, index) =>
+          index === documentIndex ? { ...entry, source: mutatedSource } : entry,
+        ),
+      };
+    }),
+  );
+requireInvariant(
+  keyAgentHandleAttenuationDocumentationContract(
+    keyAgentHandleAttenuationDocumentation,
+  ) &&
+    keyAgentHandleAttenuationDocumentationMutationProbes.every(
+      ({ changed, documents }) =>
+        changed && !keyAgentHandleAttenuationDocumentationContract(documents),
+    ),
+  "all five public contracts must pin shared post-join alias cleanup and the requested-0x2/effective-0x1002 probe, exact process/resume-only handles, negative SuspendThread evidence, sole checked-close resume, and process-only Running state",
 );
 const keyAgentBoundaryDocumentation = [
   rootReadme,
@@ -28878,8 +30187,8 @@ requireInvariant(
     /fresh dedicated\s+debugger OS thread/u.test(activationReadme) &&
     activationReadme.includes("all-zero and all-`FF`") &&
     /no raw handle or\s+generic resume API/u.test(activationReadme) &&
-    activationReadme.includes(
-      "its only consuming resume transition is the fixed",
+    /its only\s+consuming resume transition is the fixed/u.test(
+      activationReadme,
     ) &&
     activationReadme.includes("YourWallet.KeyAgent.LPAC.v1") &&
     activationReadme.includes("SECURITY_CAPABILITIES") &&
@@ -29024,7 +30333,7 @@ requireInvariant(
         /response[^\n]{0,120}EOF/iu.test(document) &&
         document.includes("Sleep(INFINITE)") &&
         /authoritative/iu.test(document) &&
-        /no\s+startup endpoint/iu.test(document) &&
+        /no(?:\s+thread handle or)?\s+startup endpoint/iu.test(document) &&
         /exact\s+resident-process liveness[\s\S]{0,80}root-Job\s+membership/iu.test(
           document,
         ),
@@ -32171,7 +33480,7 @@ const approvalLifetimeDocumentationSpecs = [
     markers: [
       "opaque monotonic window",
       "authorization half",
-      "matching",
+      "matching\n  authorization half",
       "BoundApprovalTransport",
       "raw request/deadline",
       "public `VerifiedApprovalResponse`",
@@ -34234,7 +35543,7 @@ const approvalParentDocumentationWindow = (document) => {
     ...document.matchAll(/ParentBoundReleaseApprovalSupervisor/gu),
   ].map((match) => match.index);
   return anchors
-    .map((anchor) => document.slice(Math.max(0, anchor - 700), anchor + 20_000))
+    .map((anchor) => document.slice(Math.max(0, anchor - 700), anchor + 24_000))
     .join("\n");
 };
 const approvalParentDocumentationContradiction =
@@ -34248,7 +35557,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 7_000,
+    start + 10_600,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const orderedMarkers = [
@@ -34436,7 +35745,7 @@ const currentCreationSecurityDocumentationContract = (documents) =>
     if (anchor === -1) {
       return false;
     }
-    const window = normalized.slice(Math.max(0, anchor - 2_000), anchor + 6_000);
+    const window = normalized.slice(Math.max(0, anchor - 2_000), anchor + 6_100);
     return (
       window.includes("TokenOwner") &&
       window.includes("TokenPrimaryGroup") &&
@@ -34480,7 +35789,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
     }
     const window = normalized.slice(Math.max(0, anchor - 2_000), anchor + 6_000);
     return (
-      window.includes("OS thread") &&
+      /\bOS\s+thread\b/u.test(window) &&
       window.includes("witness") &&
       window.includes("DebugSetProcessKillOnExit") &&
       window.includes("FALSE") &&
@@ -34488,17 +35797,17 @@ const currentDebuggerExitDocumentationContract = (documents) =>
       window.includes("1→2→1") &&
       /token/iu.test(window) &&
       /root[- ]Job/iu.test(window) &&
-      window.includes("provisioning") &&
-      window.includes("lease") &&
+      /post-join/iu.test(window) &&
+      /shared\s+(?:join-)?cleanup\s+(?:owner|registry)/iu.test(window) &&
       !currentDebuggerExitDocumentationContradiction.test(document)
     );
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
-  "c90ed91db0e3cdc739e849408fc3b0be461e5a149577dbacfb2c521792300703",
-  "05b09baebbde05b026919fbb567a8b8d45a79778cf2cf75d57f4619cb270fb31",
-  "2b82623ac304e5481c174e4b114e3fdd0b844a8db7fb03f16aefd430f35d7fac",
-  "ff4a1b986e828655bb2ec0f582b22d57d490eda4b6cc628d92eea5e182ce2c43",
-  "f0b22f3fa7cfe36b438ce8965a18ff60966694ed2a4c0244036acdc6e6227cac",
+  "2ec34fe15d3e7ac98232278bebe17d1a24505f7b19f92f769760d46aaef279e4",
+  "d33bdb62c8440dae8bf7a604b031ed7ea549baa065e49ed3c39f7e9aace6a913",
+  "fa294b5c05ec043a977141d652dcf5e77f3f40d6fff2039d5ae0ce1d2028bce6",
+  "058bfb8411c058daa0ec431415e76e679eebf2fb66ce0c4dc78b4af101a36bfb",
+  "662439beaa3739a9181b574ad9c8599bfda5944704615c096c135f1fc09fa242",
 ]);
 const currentApprovalSecurityDocumentationContract = (documents) =>
   JSON.stringify(documents.map(normalizedSourceSha256)) ===
@@ -37668,7 +38977,7 @@ const preparedApprovalParentProcessContract = (source) => {
   const expectedDuplicateCompact =
     "pub(super)fnduplicate(source:&DetachedRunningDebuggee,expected_creation_time:u64,)->Result<Self,KeyAgentActivationError>{" +
     "if!source.is_detached_and_running()||expected_creation_time==0{returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
-    "letsource_process=source.0.process.raw();letexpected_process_id=source.process_id();letmutduplicate=HANDLE::default();" +
+    "letsource_process=source.0.process_raw();letexpected_process_id=source.process_id();letmutduplicate=HANDLE::default();" +
     "unsafe{DuplicateHandle(GetCurrentProcess(),source_process,GetCurrentProcess(),&rawmutduplicate,APPROVAL_PARENT_PROCESS_ACCESS.0,false,DUPLICATE_HANDLE_OPTIONS(0),)}" +
     ".map_err(|_|KeyAgentActivationError::ApprovalParentCapability)?;ifinvalid(duplicate){returnErr(KeyAgentActivationError::ApprovalParentCapability);}" +
     "letprocess=unsafe{OwnedHandle::from_raw_handle(duplicate.0)};" +
@@ -37698,7 +39007,7 @@ const preparedApprovalParentProcessContract = (source) => {
   );
   const duplicateOrder = [
     "if!source.is_detached_and_running()||expected_creation_time==0",
-    "letsource_process=source.0.process.raw()",
+    "letsource_process=source.0.process_raw()",
     "letexpected_process_id=source.process_id()",
     "DuplicateHandle(",
     "ifinvalid(duplicate)",
@@ -37751,7 +39060,7 @@ const preparedApprovalParentProcessContract = (source) => {
     JSON.stringify(approvalParentProcessAccessAttributes) ===
       JSON.stringify([]) &&
     JSON.stringify(maxProcessImagePathUnitsAttributes) === JSON.stringify([]) &&
-    (code.match(/\bPROCESS_SYNCHRONIZE\b/gu) ?? []).length === 2 &&
+    (code.match(/\bPROCESS_SYNCHRONIZE\b/gu) ?? []).length === 3 &&
     (code.match(/\bAPPROVAL_PARENT_PROCESS_ACCESS\b/gu) ?? []).length === 2 &&
     (code.match(/\bMAX_PROCESS_IMAGE_PATH_UNITS\b/gu) ?? []).length === 2 &&
     source.includes(
@@ -37912,12 +39221,12 @@ const preparedApprovalParentProcessMutationProbes = [
     "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | 0x0040);\n    #[cfg(any())]\n    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
   ),
   keyAgentActivationRelease.replace(
-    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0",
-    "PROCESS_ALL_ACCESS.0",
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_ALL_ACCESS.0);",
   ),
   keyAgentActivationRelease.replace(
-    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0",
-    "PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | PROCESS_DUP_HANDLE.0",
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);",
+    "    const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =\n        PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | PROCESS_DUP_HANDLE.0);",
   ),
   keyAgentActivationRelease.replace(
     "                    false,\n                    DUPLICATE_HANDLE_OPTIONS(0),",

@@ -706,8 +706,9 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   full LPAC policy, exact DACL, 마지막 exact-size statistics bookend를 모두 통과한 뒤
   `Hwrite`를 닫습니다. 그 다음에야 `VerifiedKeyAgentLpac`을 생성하며, proof에는
   `WRITE_DAC`이 없는 `Hfinal`만 남깁니다.
-  같은 revalidation은 post-detach suspend-count probe 직후, user-mode 실행을 release하는
-  유일한 `ResumeThread` 직전, resident authority check마다 수행됩니다. retained
+  같은 revalidation은 creator-handle post-detach probe 직후, ephemeral `0x1002` probe
+  뒤 narrow process를 통해 다시, user-mode 실행을 release하는 유일한 `ResumeThread`
+  직전과 resident authority check마다 수행됩니다. retained
   `Hfinal`의 full policy와 exact DACL을 baseline-equal statistics로 bookend한 뒤 fresh
   current `TOKEN_QUERY` handle과 exact object 및 `TokenId`/`ModifiedId` 일치를 다시
   요구합니다. 이는 point-in-time evidence이지 atomic freeze가 아닙니다. `Hfinal` 보유가
@@ -726,16 +727,67 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   owner/group/DACL projection의 zero SACL offset, one-ACE ACL과 descriptor의
   no-slack/no-trailing shape를 첫 `ResumeThread` 전에 모두 다시 확인합니다. SACL
   자체는 요청하지 않으므로 실제 SACL 부재의 증거는 아닙니다. 불일치는 child를
-  fail-closed cleanup하며, descriptor owner는
-  resume 전에 drop됩니다. 이후 lifecycle은 `CreateProcessW`가 반환한 full-access
-  handle을 계속 보유해 수행하고 PID/TID reopen으로 대체하지 않습니다.
+  fail-closed cleanup하며 descriptor owner는 resume 전에 drop됩니다. creator
+  handle은 PID/TID reopen으로 대체하지 않지만 `Held`까지 보유하지도 않습니다.
+
+  첫 `CREATE_PROCESS_DEBUG_EVENT`의 process/thread alias는 서로 및 creator handle과
+  distinct여야 하고, expected PID/TID와 creator handle에 대한 exact-object 일치를
+  증명해야 합니다. debugging 중에는 system-managed observation으로만 다룹니다.
+  CREATE_PROCESS event에서 독립적으로 안전한 raw alias가 드러나는 즉시 hFile,
+  mapped-image, ID/object, LPAC 및 이후 fallible 검사보다 먼저 같은 run의
+  witness-branded shared cleanup registry에 등록합니다. malformed partial event도
+  안전한 alias는 보존하며 no-kill은 complete authenticated set을 다시 요구합니다.
+  matching debugger OS thread를 join하고
+  `CheckRemoteDebuggerPresent(FALSE)`를 확인한 뒤 normal finalization은 두 alias의
+  distinct/object/ID/exact-zero flags를 다시 인증하고 thread alias, process alias
+  순서로 checked `CloseHandle`하여 정확히 한 번 수거합니다. worker `Err`, panic,
+  abandoned joined proof도 post-join registry cleanup을 실행합니다. adoption 실패는
+  set을 복원하고 partial close는 남은 slot을 보존하며 last-owner `Drop`은 bounded
+  retry합니다. 매 cleanup pass는 한 alias의 검증/close 실패와 무관하게 두 alias를
+  각각 시도하고, post-join process cleanup 실패도 alias close를 막지 않습니다. 이
+  thread-exit detach 경로에는 supervisor가 의존할 이후 exit event가
+  없고 현재 host kernel에서는 두 alias가 live로 남습니다. 지원 Windows
+  kernel/version별 동등한 증거는 **STOP-SHIP**입니다.
+
+  detach 뒤 creator thread의 1→2→1 probe와 creator process의 token/root-Job
+  revalidation을 마치면, inheritance false와 options 0인 `DuplicateHandle` 세 개를
+  만듭니다. resident process access는 exact `0x00101001`
+  (`PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`)입니다.
+  ephemeral post-detach probe는 exact `THREAD_SUSPEND_RESUME`(`0x2`)를 요청하지만
+  modern Windows가 `THREAD_RESUME`을 자동 추가하므로 host의 effective
+  `GrantedAccess`는 exact `0x1002`, attributes는 zero입니다. 별도의 retained startup
+  handle은 `THREAD_RESUME`(`0x1000`)만 요청합니다. 모든 duplicate는 source와 same
+  object이고 flags가 exact zero여야 합니다.
+
+  narrow process 자체로 PID/liveness/current-token/root-Job을 검증합니다. ephemeral
+  `0x1002` handle 자체로 다시 1→2→1을 검증한 뒤 `Held` 전에 checked-close합니다.
+  checked-close 실패 시 RAII owner를 보존해 ordinary `Drop`이 즉시 재시도합니다.
+  kernel test는 retained thread가 exact `0x1000`/zero attributes임과 그 handle의
+  `SuspendThread`가 `ERROR_ACCESS_DENIED`로 거부됨을 증명합니다. 그 뒤에만 creator
+  thread/process handle을 순서대로 checked-close하여 `Held`를 만들 수 있습니다.
+  Microsoft Learn의 현재 [`ResumeThread` 문서](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)는 여전히
+  `THREAD_SUSPEND_RESUME`을 요구하지만 current SDK는 `THREAD_RESUME`을 공개하고
+  host/integration kernel test는 resume-only 동작을 증명합니다. 이 문서/SDK 불일치,
+  automatic-right addition, 지원 Windows version별 차이는 **STOP-SHIP** kernel-proof
+  대상입니다.
+
+  `Held`는 `Send`이지만 `!Sync`, `!Clone`, `!Copy`이며 exact `0x1000` resume-only
+  thread만 보유합니다. 유일한 user-mode-releasing `ResumeThread`가 prior count 1을
+  반환하면 그 handle을 즉시 checked-close하며 실패 시 같은 RAII 재시도 소유권을
+  유지합니다. `Running`은 같은 transfer trait과
+  narrow process만 구조적으로 보유하고 thread handle은 없습니다. 명시적 실패는
+  bounded terminate/wait/exact-exit-code cleanup을 수행하고 cleanup error가 우선합니다.
+  `Drop`도 cleanup을 시도하지만 실패를 보고할 수는 없습니다.
+
   kernel test는 child의 process pseudo-handle operation과 real `CreateThread`의
   thread pseudo-handle operation이 유지됨을 확인하고, `SeDebugPrivilege`와
   `SeTakeOwnershipPrivilege`를 disabled로 둔 채 owner의 fresh PID/TID single-access
   open matrix가 거부됨을 증명합니다.
   last-check/`ResumeThread` gap 및 swap-away/back race는 **STOP-SHIP**이며, DACL 변경이
-  `ModifiedId`를 갱신한다고 가정하지 않습니다. preexisting same-user high-right handle을
-  배제하거나 이미 반환·복제된 high-right handle을 회수하지 못합니다. 이 생성 정책은
+  `ModifiedId`를 갱신한다고 가정하지 않습니다. 생성 DACL 자체는 preexisting same-user
+  high-right handle을 배제하거나 이미 반환·복제된 high-right handle을 회수하지
+  못합니다. activation이 명시적으로 닫는 것은 자신이 인증한 creator pair뿐이며 다른
+  alias는 proof 밖입니다. 이 생성 정책은
   initial process와 primary thread의 생성 시점에만 적용되며 이후 생성되는 thread를
   다루지 않습니다. hostile same-user process와 supervisor/owner를 완전히 분리하지도 않고,
   enabled debug/take-ownership privilege를 견디는 경계도 아닙니다. 따라서 distinct
@@ -915,13 +967,20 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   필요합니다. 이 계약은 profile-registration authority나 production reachability를 늘리지
   않고 production `DeleteAppContainerProfile` 경로도 만들지 않습니다. 같은 스레드
   재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를
-  계속할 수 있습니다. 그 뒤 모든 fallible worker 검사를 마친 fresh debugger OS thread의
-  마지막 fallible 연산은 `DebugSetProcessKillOnExit(FALSE)`입니다. 명시적 suspend count
-  하나를 유지한 opaque pending owner만 join 경계를 건너고, 전용 OS thread 종료와 join 뒤
-  같은 run의 pending·join proof·root Job witness가 모두 일치해야 합니다. 이어 retained
-  creator process handle의 `CheckRemoteDebuggerPresent == false`, retained primary-thread
-  handle의 정확한 `SuspendThread`/`ResumeThread` 1→2→1 probe, token·Job·provisioning·lease
-  재검증을 통과한 뒤에만 detached capability가 만들어집니다. PID/TID reopen은 없습니다.
+  계속할 수 있습니다. CREATE_PROCESS event에서 독립적으로 안전한 process/thread
+  alias와 ID는 hFile 및 다른 fallible 인증보다 먼저 exact-run shared join-cleanup
+  registry에 등록합니다. malformed partial event도 안전한 alias를 보존합니다. 이후
+  모든 worker 검사를 마치면 complete registration을 다시 요구하고 fresh debugger OS
+  thread의 마지막 fallible 연산으로 `DebugSetProcessKillOnExit(FALSE)`를 수행합니다.
+  명시적 suspend count 하나를 유지한 opaque pending owner만 join 경계를 건너고, 전용 OS
+  thread 종료와 join 뒤 같은 run의 pending·join proof·root Job witness가 모두 일치해야
+  합니다. normal finalization은 registry의 alias를 채택해 인증·checked-close합니다.
+  worker `Err`/panic 또는 abandoned joined proof도 post-join closure를 수행하고, partial
+  failure는 남은 slot을 bounded retry합니다. 각 pass는 두 alias를 독립적으로 시도하며
+  process cleanup 실패도 post-join alias closure를 막지 않습니다. 이어 retained creator process handle의
+  `CheckRemoteDebuggerPresent == false`, retained creator primary-thread handle의 정확한
+  `SuspendThread`/`ResumeThread` 1→2→1 probe, token·Job·provisioning·lease 재검증을 통과한
+  뒤에만 least-authority attenuation으로 진행합니다. PID/TID reopen은 없습니다.
   별도 Secret Input child 프로세스는 이 parent-side mutex를 공유하지 않습니다. 그
   프로세스의 유일한 deterministic `DeriveAppContainerSidFromAppContainerName` 호출은
   child-local thread-impersonation 검사를 직전과 직후에 수행하고, 성공한 raw SID를

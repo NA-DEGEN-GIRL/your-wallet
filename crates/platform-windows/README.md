@@ -71,15 +71,24 @@ Implemented:
   retained verifier handle by volume serial plus all 128 `FILE_ID_INFO` bits;
   zero volume, all-zero and all-`FF` non-unique identifiers fail closed. While
   that event still holds every thread, the worker installs one explicit primary-
-  thread suspend count. After all other fallible worker checks, its final
-  fallible operation is `DebugSetProcessKillOnExit(FALSE)`; the resulting opaque
-  pending owner crosses the boundary, and the dedicated OS thread exits and is
-  joined. Finalization requires the exact matching per-run join/root-Job witness,
+  thread suspend count. As soon as the CREATE_PROCESS event exposes independently
+  safe process/thread aliases, the worker records them in the exact run's shared
+  join-cleanup owner before hFile, mapped-image, ID/object, LPAC, or later fallible
+  checks; a malformed partial set retains every safe alias. After all remaining
+  checks, the no-kill arm requires a complete authenticated registration and makes
+  `DebugSetProcessKillOnExit(FALSE)` its final fallible operation. The resulting opaque pending owner crosses the boundary, and the
+  dedicated OS thread exits and is joined. Worker error, panic, or abandonment of
+  the joined proof invokes post-join checked alias closure; failed adoption and
+  partial closure preserve the remaining set for bounded retry, and each pass
+  attempts the process and thread aliases independently so one failure cannot
+  starve the other close. Finalization
+  requires the exact matching per-run join/root-Job witness,
   `CheckRemoteDebuggerPresent == false` on the retained creator process handle,
-  an exact `SuspendThread`/`ResumeThread` 1→2→1 probe on the retained primary-
-  thread handle, and renewed token, Job, provisioning, and lease checks. Only
-  that sequence creates the non-clone detached capability; no PID/TID reopen is
-  used. The crate-private generic restricted launcher
+  authenticated checked closure of the registered aliases, an exact
+  `SuspendThread`/`ResumeThread` 1→2→1 probe on the retained creator
+  primary-thread handle, and renewed token, Job, provisioning, and lease checks.
+  Only that sequence can enter least-authority attenuation; no PID/TID reopen is used.
+  The crate-private generic restricted launcher
   rejects the manifest-derived Key Agent role before release evaluation or process
   creation, so the shared artifact allowlist cannot bypass this seam. The
   activation-owned fresh worker now also creates the exact two-process
@@ -186,19 +195,27 @@ Implemented:
   primary token. It retains no directory handle and is not an atomic
   object-identity proof; it also makes no claim about error mode, priority,
   every other inherited Win32 process setting, or DLL/dependency identity. The
-  initial crate-private aggregate uniquely owns the detached suspended process,
-  root Job, two parent endpoints, internally timed one-shot startup lease, and
-  independently verified profile/root proof. It is non-clone, `!Sync`, exposes no raw handle or
-  generic resume API, and its only consuming resume transition is the fixed
-  storage-startup proof above. The resulting private post-startup aggregate
-  retains the running process, Job, transcript commitment, and parent-held root
-  proof, but no startup endpoint. The running child retains sealed stderr and the
-  fixed generation-store bindings derived from its independently opened root and
-  remains inert in `Sleep(INFINITE)` until Job termination; the aggregate exposes no runtime I/O or
-  signing operation. Drop first attempts bounded synchronous cleanup of the
-  exact process tree. Drop cannot report cleanup failure, so closing the retained
-  kill-on-close Job remains the fail-closed fallback before the held storage root
-  is released. The suspended token must
+  initial crate-private aggregate uniquely owns the detached suspended `Held`
+  process capability, root Job, two parent endpoints, internally timed one-shot
+  startup lease, and independently verified profile/root proof. `Held` retains a
+  process handle with exact mask `0x00101001` (`PROCESS_TERMINATE |
+  PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`) and one resume-only
+  primary-thread handle with exact mask `0x1000` (`THREAD_RESUME`). The ephemeral
+  suspend/resume probe is already closed. `Held` is `Send` but `!Sync`, `!Clone`,
+  and `!Copy`, exposes no raw handle or generic resume API, and its only
+  consuming resume transition is the fixed storage-startup proof above. That
+  transition immediately checked-closes the thread handle after its sole
+  successful `ResumeThread`. The resulting private post-startup `Running`
+  aggregate has the same transfer traits and structurally retains only the
+  narrow process capability, Job, transcript commitment, and parent-held root
+  proof, but no thread handle or startup endpoint. The running child retains
+  sealed stderr and the fixed generation-store bindings derived from its
+  independently opened root and remains inert in `Sleep(INFINITE)` until Job
+  termination; the aggregate exposes no runtime I/O or signing operation. Drop
+  first attempts bounded synchronous cleanup of the exact process tree. Drop
+  cannot report cleanup failure, so closing the retained kill-on-close Job
+  remains the fail-closed fallback before the held storage root is released. The
+  suspended token must
   prove the fixed SID, zero capabilities, and the exact
   `CheckTokenMembershipEx`
   differential: `CTMF_INCLUDE_APPCONTAINER` denies while adding
@@ -395,7 +412,8 @@ Implemented:
   `Hfinal`, and a final exact-size statistics read must bookend those checks.
   `Hwrite` then closes before `VerifiedKeyAgentLpac` is minted, so the proof
   retains only `Hfinal` without `WRITE_DAC`.
-  Revalidation runs after the post-detach suspend-count probe, immediately
+  Revalidation runs after the creator-handle post-detach suspend probe, again
+  through the narrow process after the ephemeral `0x1002` probe, immediately
   before the sole `ResumeThread` that releases the final count into user mode,
   and at resident authority checks. Each pass bookends the retained `Hfinal`'s
   full policy and exact DACL with baseline-equal statistics, then opens a fresh
@@ -417,22 +435,71 @@ Implemented:
   Before the first `ResumeThread`, the exact returned creator-owned process and
   thread handles must match the returned PID/TID, return flags exactly zero from
   `GetHandleInformation`, and read back through bounded exact
-  `GetKernelObjectSecurity` the captured owner/group, exact expected self-relative and
-  DACL-present/protected control state, a zero SACL offset in the requested
-  owner/group/DACL projection, the one-ACE ACL, and no slack or trailing descriptor
-  bytes. The readback does not request the SACL and therefore does not prove its
-  actual absence. Any mismatch fails closed through child cleanup;
-  the descriptor owners are dropped before resume. Lifecycle operations retain
-  the full-access handles returned by `CreateProcessW` and never substitute a
-  PID/TID reopen.
-  Kernel tests prove that the child process pseudo-handle operations and a real
-  `CreateThread` thread pseudo-handle operation remain usable. With
+  `GetKernelObjectSecurity` the captured owner/group, exact expected self-relative
+  and DACL-present/protected control state, a zero SACL offset in the requested
+  owner/group/DACL projection, the one-ACE ACL, and no slack or trailing
+  descriptor bytes. The readback does not request the SACL and therefore does not
+  prove its actual absence. Any mismatch fails closed through child cleanup; the
+  descriptor owners are dropped before resume. The creator handles are not
+  replaced with a PID/TID reopen, but they do not enter `Held`.
+
+  The first `CREATE_PROCESS_DEBUG_EVENT` process and thread aliases must be valid,
+  distinct from each other and the creator handles, report the expected PID/TID,
+  and compare as the same kernel objects. They remain system-managed observations
+  while attached. Their independently safe raw slots and identities move into the
+  witness-branded shared cleanup registry immediately after event extraction and
+  before hFile or any other fallible authentication; no-kill later requires the
+  complete authenticated set. After the matching debugger
+  OS thread exits and joins and `CheckRemoteDebuggerPresent` returns false, normal
+  finalization requires both aliases still to be present and distinct,
+  reauthenticates their object/ID and exact-zero flags, then checked-closes the
+  thread and process aliases exactly once. Worker `Err`, panic, abandoned join
+  proof, failed adoption, and partial closure retain a post-join owner and
+  checked-close/retry path. Every cleanup pass attempts both independent aliases
+  even if one fails validation or close. This thread-exit detach path supplies no later exit
+  event, and the tested host kernel leaves both aliases live. Supported-Windows variant
+  evidence remains **STOP-SHIP**.
+
+  After the creator handle's post-detach 1→2→1 probe and token/root-Job checks,
+  `DuplicateHandle` creates three non-inheritable, options-zero capabilities. The
+  process handle has exact `0x00101001` (`PROCESS_TERMINATE |
+  PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`). An ephemeral thread probe
+  requests exact `THREAD_SUSPEND_RESUME` (`0x2`); modern Windows automatically
+  adds `THREAD_RESUME`, so the host observes effective
+  `GrantedAccess == 0x1002` with zero attributes. A distinct retained startup
+  handle requests only `THREAD_RESUME` (`0x1000`). Every duplicate must compare as
+  the source object and have exact-zero flags.
+
+  The narrow process itself repeats PID/liveness/token and root-Job checks. The
+  ephemeral `0x1002` handle itself repeats 1→2→1 and is checked-closed before
+  `Held`. Kernel tests require the retained handle to have exact `0x1000` granted
+  access and zero attributes, and require `SuspendThread` through it to fail with
+  `ERROR_ACCESS_DENIED`. Only then are the creator thread and process handles
+  checked-closed in order and `Held` minted. Explicit failure performs bounded
+  synchronous reject cleanup with cleanup-error precedence; `Drop` retries but
+  cannot report failure.
+
+  Microsoft Learn's current [`ResumeThread` documentation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)
+  still requires `THREAD_SUSPEND_RESUME`, while the current SDK exposes
+  `THREAD_RESUME` and host/integration kernel tests prove resume-only behavior.
+  That mismatch, automatic right addition, and supported-Windows version variance
+  remain **STOP-SHIP** kernel-proof obligations.
+
+  `Held` is `Send` but `!Sync`, `!Clone`, and `!Copy`. Its only startup transition
+  revalidates the narrow process, performs one user-mode-releasing `ResumeThread`
+  through exact `THREAD_RESUME` (`0x1000`) with prior count one, and immediately
+  checked-closes the thread handle. `Running` has the same transfer traits and
+  structurally retains only the narrow process, whose rights support resident
+  checks and bounded termination, wait, and exit-code cleanup. Kernel tests prove
+  that the child process pseudo-handle operations and a real `CreateThread`
+  thread pseudo-handle operation remain usable. With
   `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` disabled, fresh owner PID/TID
-  single-access opens are denied. This point-in-time policy covers only the
-  initial process and primary thread, not threads created later, and it cannot
-  revoke returned, preexisting, or duplicated high-right handles. Same-user
-  supervisor/owner separation, enabled-privilege behavior, and a distinct
-  supervisor principal remain **STOP-SHIP**. The fixture
+  single-access opens are denied. This point-in-time creation policy covers only
+  the initial process and primary thread, not threads created later, and cannot
+  itself revoke returned, preexisting, or duplicated high-right handles. The
+  activation checked-closes its own creator pair; other aliases remain outside
+  the proof. Same-user supervisor/owner separation, enabled-privilege behavior,
+  and a distinct supervisor principal remain **STOP-SHIP**. The fixture
   does not directly read back the copied image's mandatory-label state either.
   Its test-only mitigation removes only `NO_LOW_LABEL` to permit the profile-scoped
   copy; production mitigation is unchanged. This is not
@@ -971,22 +1038,29 @@ Stop-ship before any signing-capable release:
    `Hwrite` then closes before `VerifiedKeyAgentLpac` is minted; the proof retains
    only `Hfinal`, without `WRITE_DAC`. Baseline-equal statistics bookend the retained
    `Hfinal` full-policy/exact-DACL checks, followed by a fresh current
-   `TOKEN_QUERY` exact-object/identity comparison, after the post-detach suspend
-   probe, immediately before the sole user-mode-releasing `ResumeThread`, and at
-   resident authority checks. This is fail-closed
+   `TOKEN_QUERY` exact-object/identity comparison, after the creator-handle
+   post-detach probe, again through the narrow process after the ephemeral
+   `0x1002` probe, immediately before the sole user-mode-releasing `ResumeThread`,
+   and at resident authority checks. This is fail-closed
    point-in-time evidence, not an atomic freeze; holding `Hfinal` freezes neither
    current-token association nor token contents. The last-check/resume and
    swap-away/back races remain **STOP-SHIP**, and DACL changes are not assumed to
-   update `ModifiedId`. The production creation-security pair described above
-   applies the exact deny-only protected DACL to the initial process and primary
-   thread, validates both creator-returned handles before resume, and retains
-   those full-access handles without PID/TID reopen. Its kernel tests cover
-   pseudo-handle usability and fresh owner PID/TID single-right denials with
-   `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` disabled. It remains
-   point-in-time and does not revoke returned, preexisting, or duplicated
-   high-right handles, cover later-created threads, separate a same-user
-   supervisor/owner, or constrain enabled privileges. The copied image's
-   mandatory-label state is likewise not directly read back; the test-only
+   update `ModifiedId`. The production creation-security and attenuation path
+   described above applies the exact deny-only protected DACL to the initial
+   process and primary thread, validates the creator and distinct debug-event
+   aliases, checked-closes the event aliases after joined detach, derives the
+   exact `0x00101001` process and `0x1000` resume-only retained thread
+   capabilities. The separate requested-`0x2`/effective-`0x1002` probe is used,
+   then closed with a checked result before the supervisor closes both creator
+   handles and mints `Held`. The sole successful resume immediately closes
+   the retained thread capability, leaving `Running` with only the narrow
+   process. Its kernel tests cover pseudo-handle usability and fresh owner
+   PID/TID single-right denials with `SeDebugPrivilege` and
+   `SeTakeOwnershipPrivilege` disabled. It remains point-in-time and does not
+   revoke other returned, preexisting, or duplicated high-right handles, cover
+   later-created threads, separate a same-user supervisor/owner, or constrain
+   enabled privileges. The copied image's mandatory-label state is likewise not
+   directly read back; the test-only
    `NO_LOW_LABEL` removal permits the profile-scoped copy and leaves production
    mitigation unchanged. This feasibility proof is not release activation.
    Current held-file policy checks likewise do not provide the

@@ -14,7 +14,7 @@ use core::fmt;
 use std::marker::PhantomData;
 use std::os::windows::io::BorrowedHandle;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use thiserror::Error;
@@ -29,6 +29,197 @@ use crate::{
 };
 
 const FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS: u32 = 5_000;
+
+struct DetachedDebugEventHandleSet {
+    process: Option<usize>,
+    primary_thread: Option<usize>,
+    process_id: u32,
+    thread_id: u32,
+}
+
+impl DetachedDebugEventHandleSet {
+    const fn is_empty(&self) -> bool {
+        self.process.is_none() && self.primary_thread.is_none()
+    }
+
+    const fn is_registerable(&self) -> bool {
+        !self.is_empty()
+            && !matches!(
+                (self.process, self.primary_thread),
+                (Some(process), Some(primary_thread)) if process == primary_thread
+            )
+            && self.process_id != 0
+            && self.thread_id != 0
+    }
+
+    const fn is_complete(&self) -> bool {
+        matches!(
+            (self.process, self.primary_thread),
+            (Some(process), Some(primary_thread)) if process != primary_thread
+        ) && self.process_id != 0
+            && self.thread_id != 0
+    }
+}
+
+struct KeyAgentDebugEventCleanup {
+    witness: Arc<KeyAgentDebugThreadWitness>,
+    handles: Mutex<Option<DetachedDebugEventHandleSet>>,
+}
+
+impl KeyAgentDebugEventCleanup {
+    fn new_shared(witness: Arc<KeyAgentDebugThreadWitness>) -> Arc<Self> {
+        Arc::new(Self {
+            witness,
+            handles: Mutex::new(None),
+        })
+    }
+
+    fn matches_witness(&self, witness: &KeyAgentDebugThreadWitness) -> bool {
+        core::ptr::eq(Arc::as_ptr(&self.witness), witness)
+    }
+
+    fn register_while_attached(
+        &self,
+        handles: DetachedDebugEventHandleSet,
+    ) -> Result<(), KeyAgentActivationError> {
+        if self.witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let mut slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        if slot.is_some() || !handles.is_registerable() {
+            return Err(KeyAgentActivationError::DebugDetach);
+        }
+        *slot = Some(handles);
+        Ok(())
+    }
+
+    fn verify_registered_while_attached(
+        &self,
+        process_id: u32,
+        thread_id: u32,
+    ) -> Result<(), KeyAgentActivationError> {
+        if self.witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        let handles = slot.as_ref().ok_or(KeyAgentActivationError::DebugDetach)?;
+        if !handles.is_complete()
+            || handles.process_id != process_id
+            || handles.thread_id != thread_id
+        {
+            return Err(KeyAgentActivationError::DebugDetach);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn observation_while_attached_for_test(
+        &self,
+    ) -> Result<sys::TestDebugEventHandleObservation, KeyAgentActivationError> {
+        if self.witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        let handles = slot
+            .as_ref()
+            .filter(|handles| handles.is_complete())
+            .ok_or(KeyAgentActivationError::DebugDetach)?;
+        Ok(sys::TestDebugEventHandleObservation::new(
+            handles
+                .process
+                .ok_or(KeyAgentActivationError::DebugDetach)?,
+            handles
+                .primary_thread
+                .ok_or(KeyAgentActivationError::DebugDetach)?,
+        ))
+    }
+
+    fn take_after_join(
+        &self,
+        witness: &KeyAgentDebugThreadWitness,
+    ) -> Result<DetachedDebugEventHandleSet, KeyAgentActivationError> {
+        if !self.matches_witness(witness) || !witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        self.handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?
+            .take()
+            .ok_or(KeyAgentActivationError::DebugDetach)
+    }
+
+    fn restore_after_join(
+        &self,
+        witness: &KeyAgentDebugThreadWitness,
+        handles: DetachedDebugEventHandleSet,
+    ) -> Result<(), KeyAgentActivationError> {
+        if !self.matches_witness(witness) || !witness.is_joined() || handles.is_empty() {
+            return Err(KeyAgentActivationError::Cleanup);
+        }
+        let mut slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        if slot.is_some() {
+            return Err(KeyAgentActivationError::Cleanup);
+        }
+        *slot = Some(handles);
+        Ok(())
+    }
+
+    fn close_after_join(
+        &self,
+        witness: &KeyAgentDebugThreadWitness,
+    ) -> Result<(), KeyAgentActivationError> {
+        if !self.matches_witness(witness) || !witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let mut slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        if let Some(handles) = slot.as_mut() {
+            sys::close_detached_debug_event_handles_after_join(handles)
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            if handles.is_empty() {
+                *slot = None;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for KeyAgentDebugEventCleanup {
+    fn drop(&mut self) {
+        if !self.witness.is_joined() {
+            return;
+        }
+        let Ok(slot) = self.handles.get_mut() else {
+            return;
+        };
+        if let Some(handles) = slot.as_mut() {
+            // Explicit paths report the first checked-close failure. Last-owner
+            // Drop makes two bounded retries so a partial close cannot lose its
+            // remaining high-authority alias without another kernel attempt.
+            for _ in 0..2 {
+                if handles.is_empty()
+                    || sys::close_detached_debug_event_handles_after_join(handles).is_ok()
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
 
 /// Stable failures from the dormant Key Agent activation boundary.
 ///
@@ -76,6 +267,10 @@ pub(crate) enum KeyAgentActivationError {
     /// creation-time owner, group, DACL, or non-inheritable handle policy.
     #[error("created Key Agent object security policy failed")]
     CreationSecurityPolicy,
+    /// Creator-strength process or primary-thread handles could not be replaced
+    /// by the exact non-inheritable resident capabilities before `Held`.
+    #[error("Key Agent resident handle attenuation failed")]
+    HandleAttenuation,
     /// A documented suspend-count transition was not exact.
     #[error("Key Agent suspension invariant mismatch")]
     SuspensionMismatch,
@@ -226,6 +421,7 @@ impl LaunchPhase {
 pub(crate) struct AuthenticatedKeyAgentActivation {
     process: sys::SuspendedDebuggee,
     debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
@@ -249,17 +445,22 @@ impl AuthenticatedKeyAgentActivation {
         let Self {
             process,
             debug_thread_witness,
+            debug_event_cleanup,
             artifact,
             release_identity,
             artifact_identity,
             creation_time,
         } = self;
-        let process = process.arm_no_kill()?;
+        if debug_thread_witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let process = process.arm_no_kill(&debug_event_cleanup)?;
         // No fallible operation follows the successful no-kill arm. These are
         // ownership-only moves into a state with no detached-facing methods.
         Ok(PendingKeyAgentActivation {
             process,
             debug_thread_witness,
+            debug_event_cleanup,
             artifact,
             release_identity,
             artifact_identity,
@@ -286,6 +487,7 @@ impl fmt::Debug for AuthenticatedKeyAgentActivation {
 pub(crate) struct PendingKeyAgentActivation {
     process: sys::PendingDebuggerExitSuspendedDebuggee,
     debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
@@ -322,9 +524,9 @@ impl fmt::Debug for PendingKeyAgentActivation {
 ///
 /// This type is non-cloneable and crate-private. It retains the original
 /// `FILE_SHARE_READ`-only [`VerifiedHelper`] handle, opaque whole-release
-/// identity, exact process and primary thread handles, the retained process-wide
-/// token handle and opaque continuity evidence, the 128-bit file-object proof,
-/// and process creation time.
+/// identity, an exact terminate/query/synchronize process handle, one
+/// resume-only primary-thread handle, the retained process-token continuity
+/// proof, the 128-bit file-object proof, and process creation time.
 /// The only consuming transition resumes it for the fixed storage-startup
 /// probe; no generic resume or raw thread operation is exposed.
 pub(crate) struct HeldKeyAgentActivation {
@@ -453,6 +655,13 @@ impl RunningKeyAgentActivation {
     }
 
     #[cfg(test)]
+    pub(crate) fn retained_process_authority_for_test(
+        &self,
+    ) -> Result<(u32, u32), KeyAgentActivationError> {
+        self.process.retained_process_authority_for_test()
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_member_of_root_job_for_test(
         &self,
         root_job: &KeyAgentRootJob,
@@ -466,7 +675,7 @@ impl fmt::Debug for RunningKeyAgentActivation {
         formatter
             .debug_struct("RunningKeyAgentActivation")
             .field("artifact", &"[VERIFIED KEY AGENT ARTIFACT]")
-            .field("process", &"[RUNNING PROCESS AND THREAD HANDLES]")
+            .field("process", &"[NARROW RUNNING PROCESS; NO THREAD HANDLE]")
             .field("lpac", &"[VERIFIED ZERO-CAPABILITY KEY AGENT LPAC]")
             .field("artifact_identity", &"[FILE_ID_INFO]")
             .field("creation_time", &"[REDACTED]")
@@ -632,6 +841,7 @@ pub(crate) fn preflight_key_agent_activation(
 /// transfer, return, or reuse the debugger-thread authority.
 pub(crate) struct FreshKeyAgentDebugThread {
     witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -645,6 +855,7 @@ impl FreshKeyAgentDebugThread {
             .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
         Ok(RootJobBoundFreshKeyAgentDebugThread {
             witness: self.witness,
+            debug_event_cleanup: self.debug_event_cleanup,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -663,12 +874,18 @@ impl fmt::Debug for FreshKeyAgentDebugThread {
 /// supplied root Job to share that exact witness.
 pub(crate) struct RootJobBoundFreshKeyAgentDebugThread {
     witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
 impl RootJobBoundFreshKeyAgentDebugThread {
-    fn into_witness(self) -> Arc<KeyAgentDebugThreadWitness> {
-        self.witness
+    fn into_run_context(
+        self,
+    ) -> (
+        Arc<KeyAgentDebugThreadWitness>,
+        Arc<KeyAgentDebugEventCleanup>,
+    ) {
+        (self.witness, self.debug_event_cleanup)
     }
 }
 
@@ -687,7 +904,14 @@ impl fmt::Debug for RootJobBoundFreshKeyAgentDebugThread {
 #[must_use = "the join proof must be consumed by post-debugger-exit finalization"]
 pub(crate) struct JoinedKeyAgentDebugThreadProof {
     witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl Drop for JoinedKeyAgentDebugThreadProof {
+    fn drop(&mut self) {
+        let _ = self.debug_event_cleanup.close_after_join(&self.witness);
+    }
 }
 
 impl fmt::Debug for JoinedKeyAgentDebugThreadProof {
@@ -713,12 +937,15 @@ where
     F: FnOnce(FreshKeyAgentDebugThread) -> Result<T, E> + Send + 'static,
 {
     let witness = KeyAgentDebugThreadWitness::new_shared();
+    let debug_event_cleanup = KeyAgentDebugEventCleanup::new_shared(Arc::clone(&witness));
     let worker_witness = Arc::clone(&witness);
+    let worker_debug_event_cleanup = Arc::clone(&debug_event_cleanup);
     let worker = std::thread::Builder::new()
         .name("key-agent-activation".to_owned())
         .spawn(move || {
             worker(FreshKeyAgentDebugThread {
                 witness: worker_witness,
+                debug_event_cleanup: worker_debug_event_cleanup,
                 _not_send_or_sync: PhantomData,
             })
         })
@@ -728,13 +955,31 @@ where
     // release store also switches any surviving root-Job owner back to its
     // ordinary synchronous cleanup policy before an outcome is returned.
     if witness.mark_joined().is_err() {
+        debug_event_cleanup
+            .close_after_join(&witness)
+            .map_err(E::from)?;
         return Err(E::from(KeyAgentActivationError::ActivationWorker));
     }
-    let value = outcome.map_err(|_| E::from(KeyAgentActivationError::ActivationWorker))??;
+    let value = match outcome {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            debug_event_cleanup
+                .close_after_join(&witness)
+                .map_err(E::from)?;
+            return Err(error);
+        }
+        Err(_) => {
+            debug_event_cleanup
+                .close_after_join(&witness)
+                .map_err(E::from)?;
+            return Err(E::from(KeyAgentActivationError::ActivationWorker));
+        }
+    };
     Ok((
         value,
         JoinedKeyAgentDebugThreadProof {
             witness,
+            debug_event_cleanup,
             _not_send_or_sync: PhantomData,
         },
     ))
@@ -747,16 +992,38 @@ pub(crate) fn finalize_pending_key_agent_activation(
     root_job: &KeyAgentRootJob,
     joined: JoinedKeyAgentDebugThreadProof,
 ) -> Result<HeldKeyAgentActivation, KeyAgentActivationError> {
+    if !Arc::ptr_eq(&pending.debug_event_cleanup, &joined.debug_event_cleanup) {
+        return Err(KeyAgentActivationError::DebuggerJoinProof);
+    }
     pending.observe_debugger_exit_for_cleanup(root_job, &joined)?;
+    let event_handles = pending
+        .debug_event_cleanup
+        .take_after_join(&joined.witness)?;
+    if let Err((error, event_handles)) = pending
+        .process
+        .adopt_detached_debug_event_handles(event_handles)
+    {
+        pending
+            .debug_event_cleanup
+            .restore_after_join(&joined.witness, event_handles)
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        return Err(error);
+    }
     let PendingKeyAgentActivation {
         process,
         debug_thread_witness,
+        debug_event_cleanup,
         artifact,
         release_identity,
         artifact_identity,
         creation_time,
     } = pending;
     debug_assert!(Arc::ptr_eq(&debug_thread_witness, &joined.witness));
+    debug_assert!(Arc::ptr_eq(
+        &debug_event_cleanup,
+        &joined.debug_event_cleanup
+    ));
+    drop(debug_event_cleanup);
     drop(joined);
     let process = process.finalize_after_debugger_exit(root_job)?;
     Ok(HeldKeyAgentActivation {
@@ -823,7 +1090,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
     } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     verify_empty_root_job(root_job)?;
-    let debug_thread_witness = fresh_thread.into_witness();
+    let (debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
     let process = sys::SuspendedDebuggee::create_with_test_command_line(
         &artifact,
         provisioning,
@@ -838,6 +1105,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
         release_identity,
         artifact_identity,
         debug_thread_witness,
+        debug_event_cleanup,
         root_job,
         process,
     )
@@ -858,7 +1126,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     coordination_deadline: Instant,
 ) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
     verify_empty_root_job(root_job)?;
-    let debug_thread_witness = fresh_thread.into_witness();
+    let (debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
     let process = sys::SuspendedDebuggee::create(
         &artifact,
         provisioning,
@@ -872,6 +1140,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
         release_identity,
         artifact_identity,
         debug_thread_witness,
+        debug_event_cleanup,
         root_job,
         process,
     )
@@ -882,12 +1151,15 @@ fn authenticate_and_continue_activation(
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
     debug_thread_witness: Arc<KeyAgentDebugThreadWitness>,
+    debug_event_cleanup: Arc<KeyAgentDebugEventCleanup>,
     root_job: &KeyAgentRootJob,
     mut process: sys::SuspendedDebuggee,
 ) -> Result<AuthenticatedKeyAgentActivation, KeyAgentActivationError> {
-    let first_event = match process
-        .authenticate_first_event(artifact_identity, FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS)
-    {
+    let first_event = match process.authenticate_first_event(
+        artifact_identity,
+        FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS,
+        &debug_event_cleanup,
+    ) {
         Ok(event) => event,
         Err(error) => return fail_after_cleanup(&mut process, error),
     };
@@ -904,6 +1176,7 @@ fn authenticate_and_continue_activation(
     Ok(AuthenticatedKeyAgentActivation {
         process,
         debug_thread_witness,
+        debug_event_cleanup,
         artifact,
         release_identity,
         artifact_identity,
@@ -958,19 +1231,27 @@ fn fail_after_cleanup<T>(
 mod sys {
     #![allow(unsafe_code)]
 
+    use core::cell::Cell;
     use core::ffi::c_void;
     use core::fmt;
+    use core::marker::PhantomData;
     use core::mem::{size_of, size_of_val};
     use core::ptr;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::time::Instant;
 
+    #[cfg(test)]
+    use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
     use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
     use windows::Win32::Foundation::{
         CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
         ERROR_SEM_TIMEOUT, FILETIME, GetHandleInformation, GetLastError, HANDLE,
         INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    #[cfg(test)]
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_SUCCESS, STATUS_SUCCESS, SetLastError,
     };
     use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::Storage::FileSystem::{
@@ -986,13 +1267,19 @@ mod sys {
         GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId,
         InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
-        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-        ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SuspendThread, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        SuspendThread, THREAD_ACCESS_RIGHTS, THREAD_RESUME, THREAD_SUSPEND_RESUME,
+        TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
+    #[cfg(test)]
+    use windows::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
     use windows::core::{BOOL, PCWSTR, PWSTR};
 
-    use super::{ExactFileObjectIdentity, KeyAgentActivationError, LaunchPhase, LaunchTransition};
+    use super::{
+        DetachedDebugEventHandleSet, ExactFileObjectIdentity, KeyAgentActivationError,
+        KeyAgentDebugEventCleanup, LaunchPhase, LaunchTransition,
+    };
     use crate::helper::VerifiedHelper;
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
@@ -1008,6 +1295,11 @@ mod sys {
     const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
     const REJECTED_PROCESS_EXIT_CODE: u32 = 0xE0A0_0001;
     const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+    const RESIDENT_KEY_AGENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(
+        PROCESS_TERMINATE.0 | PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0,
+    );
+    const POST_DETACH_THREAD_PROBE_ACCESS: THREAD_ACCESS_RIGHTS = THREAD_SUSPEND_RESUME;
+    const STORAGE_STARTUP_THREAD_ACCESS: THREAD_ACCESS_RIGHTS = THREAD_RESUME;
     const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =
         PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);
     const MAX_PROCESS_IMAGE_PATH_UNITS: usize = 32_768;
@@ -1256,6 +1548,12 @@ mod sys {
         process_id: u32,
         thread_id: u32,
         pending_event: Option<(u32, u32)>,
+        // Distinct raw aliases supplied by CREATE_PROCESS_DEBUG_EVENT. They are
+        // system-managed while attached, transferred to the run's shared cleanup
+        // registry before no-kill arming, then adopted and checked-closed only
+        // after the exact debugger OS thread has joined.
+        debug_event_process: Option<HANDLE>,
+        debug_event_primary_thread: Option<HANDLE>,
         phase: LaunchPhase,
         prepared_lpac: Option<PreparedKeyAgentLpac>,
         // Present only after the exact suspended primary token proved the
@@ -1377,6 +1675,8 @@ mod sys {
                     process_id: information.dwProcessId,
                     thread_id: information.dwThreadId,
                     pending_event: None,
+                    debug_event_process: None,
+                    debug_event_primary_thread: None,
                     phase: LaunchPhase::AwaitingCreateEvent,
                     prepared_lpac: None,
                     lpac: None,
@@ -1395,6 +1695,8 @@ mod sys {
                 process_id: actual_process_id,
                 thread_id: actual_thread_id,
                 pending_event: None,
+                debug_event_process: None,
+                debug_event_primary_thread: None,
                 phase: LaunchPhase::AwaitingCreateEvent,
                 prepared_lpac: Some(prepared_lpac),
                 lpac: None,
@@ -1456,79 +1758,317 @@ mod sys {
                 && self.proven_suspend_count == 1
                 && self.prepared_lpac.is_none()
                 && self.lpac.is_some()
+                && self.debug_event_process.is_none()
+                && self.debug_event_primary_thread.is_none()
         }
 
-        fn is_detached_and_running(&self) -> bool {
-            self.phase == LaunchPhase::DetachedRunning
-                && self.proven_suspend_count == 0
-                && self.prepared_lpac.is_none()
-                && self.lpac.is_some()
-                && self.pending_event.is_none()
+        fn close_remaining_detached_debug_event_handles(
+            &mut self,
+        ) -> Result<(), KeyAgentActivationError> {
+            if self.phase != LaunchPhase::DebuggerExitedPendingVerification {
+                return Err(KeyAgentActivationError::DebugDetach);
+            }
+
+            let mut first_error = None;
+
+            // CREATE_PROCESS_DEBUG_EVENT aliases are system-managed while the
+            // process is attached. Once the matching debugger OS thread is
+            // joined and the kernel reports no debugger, no later exit event
+            // can retire them. This host's kernel leaves the distinct aliases
+            // live, so adopt and close each one exactly once before Held.
+            if let Some(event_primary_thread) = self.debug_event_primary_thread {
+                let mut flags = u32::MAX;
+                let rejected = invalid(event_primary_thread)
+                    || event_primary_thread == self.process.raw()
+                    || event_primary_thread == self.primary_thread.raw()
+                    // SAFETY: both handles are live until the checked close below.
+                    || !unsafe {
+                        CompareObjectHandles(self.primary_thread.raw(), event_primary_thread)
+                    }
+                    .as_bool()
+                    // SAFETY: the still-live event alias is only observed here.
+                    || unsafe { GetThreadId(event_primary_thread) } != self.thread_id
+                    // SAFETY: flags points to exact initialized writable storage.
+                    || unsafe { GetHandleInformation(event_primary_thread, &raw mut flags) }
+                        .is_err()
+                    || flags != 0;
+                if rejected {
+                    first_error.get_or_insert(KeyAgentActivationError::DebugDetach);
+                } else {
+                    // SAFETY: the debugger is gone and this distinct live alias
+                    // was reauthenticated immediately above. Clear it only after
+                    // the kernel confirms the close.
+                    if unsafe { CloseHandle(event_primary_thread) }.is_ok() {
+                        self.debug_event_primary_thread = None;
+                    } else {
+                        first_error.get_or_insert(KeyAgentActivationError::HandleAttenuation);
+                    }
+                }
+            }
+
+            if let Some(event_process) = self.debug_event_process {
+                let mut flags = u32::MAX;
+                let rejected = invalid(event_process)
+                    || event_process == self.process.raw()
+                    || event_process == self.primary_thread.raw()
+                    // SAFETY: both handles are live until the checked close below.
+                    || !unsafe { CompareObjectHandles(self.process.raw(), event_process) }.as_bool()
+                    // SAFETY: the still-live event alias is only observed here.
+                    || unsafe { GetProcessId(event_process) } != self.process_id
+                    // SAFETY: flags points to exact initialized writable storage.
+                    || unsafe { GetHandleInformation(event_process, &raw mut flags) }.is_err()
+                    || flags != 0;
+                if rejected {
+                    first_error.get_or_insert(KeyAgentActivationError::DebugDetach);
+                } else {
+                    // SAFETY: same post-detach adoption and authentication
+                    // argument as the thread alias above.
+                    if unsafe { CloseHandle(event_process) }.is_ok() {
+                        self.debug_event_process = None;
+                    } else {
+                        first_error.get_or_insert(KeyAgentActivationError::HandleAttenuation);
+                    }
+                }
+            }
+
+            first_error.map_or(Ok(()), Err)
         }
 
-        fn resume_for_storage_startup(&mut self) -> Result<(), KeyAgentActivationError> {
-            if self.phase != LaunchPhase::DetachedSuspended
-                || self.proven_suspend_count != 1
-                || self.prepared_lpac.is_some()
-                || self.pending_event.is_some()
+        fn close_detached_debug_event_handles(&mut self) -> Result<(), KeyAgentActivationError> {
+            if self.phase != LaunchPhase::DebuggerExitedPendingVerification
+                || self.debug_event_process.is_none()
+                || self.debug_event_primary_thread.is_none()
+                || self.debug_event_process == self.debug_event_primary_thread
             {
-                return Err(KeyAgentActivationError::StartupResume);
+                return Err(KeyAgentActivationError::DebugDetach);
             }
-            if self
-                .lpac
-                .as_ref()
-                .ok_or(KeyAgentActivationError::LpacPolicy)
-                .and_then(|lpac| {
-                    lpac.revalidate_current_process_token(self.process_handle())
-                        .map_err(|_| KeyAgentActivationError::LpacPolicy)
-                })
-                .is_err()
-            {
-                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
-                return Err(KeyAgentActivationError::LpacPolicy);
-            }
-            // SAFETY: the exact detached primary thread is still owned and the
-            // post-detach proof established precisely one explicit suspend
-            // count. The process token was revalidated immediately above, with
-            // no intervening fallible operation. This is the only production
-            // call that releases the detached guard count into user mode.
-            let previous_suspend_count = unsafe { ResumeThread(self.primary_thread.raw()) };
-            if previous_suspend_count != 1 {
-                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
-                return Err(KeyAgentActivationError::SuspensionMismatch);
-            }
-            self.proven_suspend_count = 0;
-            self.phase = self
-                .phase
-                .transition(LaunchTransition::ResumeStorageStartup)?;
-
-            // SAFETY: a zero-time wait only observes the exact owned process.
-            // A live process must remain nonsignaled immediately after resume;
-            // later exit is handled by the deadline-bound startup channel.
-            if unsafe { WaitForSingleObject(self.process.raw(), 0) } != WAIT_TIMEOUT {
-                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
-                return Err(KeyAgentActivationError::StartupResume);
+            #[cfg(test)]
+            let observation = TestDebugEventHandleObservation::new(
+                self.debug_event_process
+                    .ok_or(KeyAgentActivationError::DebugDetach)?
+                    .0 as usize,
+                self.debug_event_primary_thread
+                    .ok_or(KeyAgentActivationError::DebugDetach)?
+                    .0 as usize,
+            );
+            self.close_remaining_detached_debug_event_handles()?;
+            #[cfg(test)]
+            if !observation.aliases_are_closed() {
+                return Err(KeyAgentActivationError::HandleAttenuation);
             }
             Ok(())
         }
 
-        pub(super) fn into_detached(
-            self,
+        fn attenuate_for_held(
+            mut self,
+            root_job: &KeyAgentRootJob,
         ) -> Result<DetachedSuspendedDebuggee, KeyAgentActivationError> {
-            if !self.is_detached_and_suspended() || self.pending_event.is_some() {
-                return Err(KeyAgentActivationError::DebugDetach);
+            let attenuation = (|| {
+                if !self.is_detached_and_suspended() || self.pending_event.is_some() {
+                    return Err(KeyAgentActivationError::HandleAttenuation);
+                }
+
+                let resident_process = duplicate_resident_process_handle(self.process.raw())?;
+                let post_detach_thread_probe =
+                    duplicate_post_detach_thread_probe_handle(self.primary_thread.raw())?;
+                let storage_startup_thread =
+                    duplicate_storage_startup_thread_handle(self.primary_thread.raw())?;
+                let resident_process_handle = windows_handle(resident_process.as_handle());
+
+                // SAFETY: the duplicate is a live process handle with query-limited
+                // access and this call only observes its stable process identity.
+                let resident_process_id = unsafe { GetProcessId(resident_process_handle) };
+                // SAFETY: the same live query+synchronize handle is observed with
+                // a zero timeout, which cannot mutate process state.
+                let resident_wait = unsafe { WaitForSingleObject(resident_process_handle, 0) };
+                if resident_process_id == 0
+                    || resident_process_id != self.process_id
+                    || resident_wait != WAIT_TIMEOUT
+                {
+                    return Err(KeyAgentActivationError::HandleAttenuation);
+                }
+
+                let post_detach_thread_probe_raw =
+                    windows_handle(post_detach_thread_probe.as_handle());
+                // SAFETY: CompareObjectHandles already proved this exact narrow
+                // probe aliases the suspended primary thread. A 1→2→1 probe
+                // proves THREAD_SUSPEND_RESUME works without entering user code;
+                // the separate retained handle has resume-only authority.
+                let previous_suspend_count = unsafe { SuspendThread(post_detach_thread_probe_raw) };
+                if previous_suspend_count != 1 {
+                    return Err(KeyAgentActivationError::HandleAttenuation);
+                }
+                // SAFETY: the immediately preceding probe raised the exact
+                // primary thread count to two; this restores it to one.
+                let previous_suspend_count = unsafe { ResumeThread(post_detach_thread_probe_raw) };
+                if previous_suspend_count != 2 {
+                    return Err(KeyAgentActivationError::HandleAttenuation);
+                }
+
+                #[cfg(test)]
+                {
+                    // On the tested Windows kernel, a zero-option 0x2 request is
+                    // reported as effective 0x1002. Pin that host evidence
+                    // independently from both production constants.
+                    let (probe_access, probe_attributes) =
+                        query_handle_authority_for_test(post_detach_thread_probe_raw)?;
+                    if probe_access != 0x0000_1002 || probe_attributes != 0 {
+                        return Err(KeyAgentActivationError::HandleAttenuation);
+                    }
+                }
+
+                self.lpac
+                    .as_ref()
+                    .ok_or(KeyAgentActivationError::LpacPolicy)?
+                    .revalidate_current_process_token(resident_process.as_handle())
+                    .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+                super::verify_bound_root_process(root_job, resident_process.as_handle())
+                    .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+                Ok((
+                    resident_process,
+                    resident_process_id,
+                    post_detach_thread_probe,
+                    storage_startup_thread,
+                ))
+            })();
+            let (
+                resident_process,
+                resident_process_id,
+                post_detach_thread_probe,
+                storage_startup_thread,
+            ) = match attenuation {
+                Ok(attenuation) => attenuation,
+                Err(error) => {
+                    self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                    return Err(error);
+                }
+            };
+
+            if close_owned_handle_checked(post_detach_thread_probe).is_err() {
+                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::HandleAttenuation);
             }
-            Ok(DetachedSuspendedDebuggee(self))
+
+            let Some(lpac) = self.lpac.take() else {
+                self.abort().map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::LpacPolicy);
+            };
+            let mut resident = ResidentKeyAgentProcess {
+                process: resident_process,
+                process_id: resident_process_id,
+                lpac,
+                cleanup_complete: false,
+                _not_sync: PhantomData,
+            };
+
+            // All narrow-handle preparation succeeded. Close the creator thread
+            // first, then the creator process, checking both kernel results. A
+            // close failure synchronously rejects through the already-proven
+            // narrow process rather than returning a partially attenuated value.
+            let creator_thread_close = self.primary_thread.close_checked();
+            let creator_process_close = self.process.close_checked();
+            if creator_thread_close.is_err() || creator_process_close.is_err() {
+                resident
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::HandleAttenuation);
+            }
+            self.phase = LaunchPhase::Aborted;
+            self.proven_suspend_count = 0;
+            drop(self);
+            Ok(DetachedSuspendedDebuggee {
+                resident,
+                primary_thread: storage_startup_thread,
+            })
+        }
+
+        fn authenticate_create_event_handles(
+            &self,
+            event_process: HANDLE,
+            event_primary_thread: HANDLE,
+            event_file: HANDLE,
+            debug_event_cleanup: &KeyAgentDebugEventCleanup,
+        ) -> Result<OwnedWinHandle, KeyAgentActivationError> {
+            let creator_process = self.process.raw();
+            let creator_thread = self.primary_thread.raw();
+            let safe_event_process = (!invalid(event_process)
+                && event_process != creator_process
+                && event_process != creator_thread)
+                .then_some(event_process.0 as usize);
+            let mut safe_event_primary_thread = (!invalid(event_primary_thread)
+                && event_primary_thread != creator_process
+                && event_primary_thread != creator_thread)
+                .then_some(event_primary_thread.0 as usize);
+            // A malformed event can repeat one numeric handle in both fields.
+            // Register it at most once so post-join cleanup cannot double-close.
+            if safe_event_process == safe_event_primary_thread {
+                safe_event_primary_thread = None;
+            }
+            let event_aliases = DetachedDebugEventHandleSet {
+                process: safe_event_process,
+                primary_thread: safe_event_primary_thread,
+                process_id: self.process_id,
+                thread_id: self.thread_id,
+            };
+            let event_file = if !invalid(event_file)
+                && event_file != creator_process
+                && event_file != creator_thread
+                && event_file != event_process
+                && event_file != event_primary_thread
+            {
+                OwnedWinHandle::new(event_file)
+            } else {
+                None
+            };
+            if event_aliases.is_registerable() {
+                // Register every independently safe event alias before hFile or
+                // any other fallible authentication. They remain system-managed
+                // while attached, but this shared owner survives all later worker
+                // errors and unwinds and closes them only after the exact join.
+                debug_event_cleanup.register_while_attached(event_aliases)?;
+            }
+            if invalid(event_process)
+                || invalid(event_primary_thread)
+                || event_process == creator_process
+                || event_process == creator_thread
+                || event_primary_thread == creator_process
+                || event_primary_thread == creator_thread
+                || event_process == event_primary_thread
+            {
+                return Err(KeyAgentActivationError::ProcessIdentityMismatch);
+            }
+            let event_file = event_file.ok_or(KeyAgentActivationError::MissingMappedImage)?;
+            // SAFETY: the debug event supplies live process/thread aliases that
+            // remain system-managed until this debugger relationship ends.
+            let event_process_id = unsafe { GetProcessId(event_process) };
+            // SAFETY: same event-handle ownership argument.
+            let event_thread_id = unsafe { GetThreadId(event_primary_thread) };
+            if event_process_id != self.process_id || event_thread_id != self.thread_id {
+                return Err(KeyAgentActivationError::ProcessIdentityMismatch);
+            }
+            // SAFETY: the creator and event process handles are simultaneously
+            // live and this comparison only observes their kernel objects.
+            let same_process = unsafe { CompareObjectHandles(creator_process, event_process) };
+            // SAFETY: the creator and event thread handles are simultaneously
+            // live and this comparison only observes their kernel objects.
+            let same_thread = unsafe { CompareObjectHandles(creator_thread, event_primary_thread) };
+            if !same_process.as_bool() || !same_thread.as_bool() {
+                return Err(KeyAgentActivationError::ProcessIdentityMismatch);
+            }
+            Ok(event_file)
         }
 
         pub(super) fn authenticate_first_event(
             &mut self,
             expected_artifact: ExactFileObjectIdentity,
             timeout_milliseconds: u32,
+            debug_event_cleanup: &KeyAgentDebugEventCleanup,
         ) -> Result<AuthenticatedFirstEvent, KeyAgentActivationError> {
             if self.phase != LaunchPhase::AwaitingCreateEvent
                 || self.prepared_lpac.is_none()
                 || self.lpac.is_some()
+                || self.debug_event_process.is_some()
+                || self.debug_event_primary_thread.is_some()
             {
                 return Err(KeyAgentActivationError::UnexpectedDebugEvent);
             }
@@ -1546,16 +2086,13 @@ mod sys {
             // Own and close either documented debug-event file handle before
             // any rejection is returned. Only the create-process handle can be
             // authenticated; a LOAD_DLL first event remains an error.
-            let event_file = match event.dwDebugEventCode {
-                CREATE_PROCESS_DEBUG_EVENT => {
-                    // SAFETY: the discriminant was matched immediately above.
-                    OwnedWinHandle::new(unsafe { event.u.CreateProcessInfo }.hFile)
-                }
-                LOAD_DLL_DEBUG_EVENT => {
-                    // SAFETY: the discriminant was matched immediately above.
-                    OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)
-                }
-                _ => None,
+            let _unexpected_event_file = if event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
+                // SAFETY: the discriminant was matched immediately above.
+                OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)
+            } else {
+                // CREATE_PROCESS hFile ownership is established only after its
+                // process/thread aliases have entered the shared cleanup owner.
+                None
             };
 
             if event.dwProcessId != self.process_id || event.dwThreadId != self.thread_id {
@@ -1573,21 +2110,12 @@ mod sys {
             }
             // SAFETY: the discriminant was checked immediately above.
             let create = unsafe { event.u.CreateProcessInfo };
-            if invalid(create.hFile) {
-                return Err(KeyAgentActivationError::MissingMappedImage);
-            }
-            let event_file = event_file.ok_or(KeyAgentActivationError::MissingMappedImage)?;
-            if invalid(create.hProcess) || invalid(create.hThread) {
-                return Err(KeyAgentActivationError::ProcessIdentityMismatch);
-            }
-            // SAFETY: the debug event supplies live borrowed process/thread
-            // handles. Windows retains their ownership; only hFile is ours.
-            let event_process_id = unsafe { GetProcessId(create.hProcess) };
-            // SAFETY: same event-handle ownership argument.
-            let event_thread_id = unsafe { GetThreadId(create.hThread) };
-            if event_process_id != self.process_id || event_thread_id != self.thread_id {
-                return Err(KeyAgentActivationError::ProcessIdentityMismatch);
-            }
+            let event_file = self.authenticate_create_event_handles(
+                create.hProcess,
+                create.hThread,
+                create.hFile,
+                debug_event_cleanup,
+            )?;
 
             let mapped_identity = exact_file_identity(event_file.raw())?;
             if mapped_identity != expected_artifact {
@@ -1630,6 +2158,8 @@ mod sys {
                 || self.proven_suspend_count != 1
                 || self.prepared_lpac.is_some()
                 || self.lpac.is_none()
+                || self.debug_event_process.is_some()
+                || self.debug_event_primary_thread.is_some()
             {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
@@ -1654,6 +2184,8 @@ mod sys {
                 || self.proven_suspend_count != 1
                 || self.prepared_lpac.is_some()
                 || self.lpac.is_none()
+                || self.debug_event_process.is_some()
+                || self.debug_event_primary_thread.is_some()
             {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
@@ -1681,8 +2213,11 @@ mod sys {
 
         pub(super) fn arm_no_kill(
             mut self,
+            debug_event_cleanup: &KeyAgentDebugEventCleanup,
         ) -> Result<PendingDebuggerExitSuspendedDebuggee, KeyAgentActivationError> {
             self.revalidate_before_no_kill()?;
+            debug_event_cleanup
+                .verify_registered_while_attached(self.process_id, self.thread_id)?;
             // SAFETY: this is the dedicated debugger thread that created the
             // exact process. Its sole event was continued, and an explicit
             // suspend count still prevents user-mode entry. Microsoft documents
@@ -1711,17 +2246,18 @@ mod sys {
             // cannot release the process into user-mode code.
             let termination_requested =
                 unsafe { TerminateProcess(self.process.raw(), REJECTED_PROCESS_EXIT_CODE) }.is_ok();
-            if !termination_requested {
+            let termination_accepted = if termination_requested {
+                true
+            } else {
                 // SAFETY: a zero-time wait only observes the exact owned process.
-                let already_exited =
-                    unsafe { WaitForSingleObject(self.process.raw(), 0) } == WAIT_OBJECT_0;
-                if !already_exited {
+                (unsafe { WaitForSingleObject(self.process.raw(), 0) }) == WAIT_OBJECT_0
+            };
+            if let Some((process_id, thread_id)) = self.pending_event {
+                if !termination_accepted {
                     // Keeping the debug event pending is safer than continuing
                     // when Windows did not accept termination.
                     return Err(KeyAgentActivationError::Cleanup);
                 }
-            }
-            if let Some((process_id, thread_id)) = self.pending_event {
                 // SAFETY: these identifiers name the pending event owned by this
                 // creator thread. Termination was accepted (or the process was
                 // already signaled) before this event is continued, so user
@@ -1731,6 +2267,9 @@ mod sys {
                 self.pending_event = None;
             }
             if !debugger_thread_has_exited {
+                if !termination_accepted {
+                    return Err(KeyAgentActivationError::Cleanup);
+                }
                 // Waiting here would deadlock progress: a live debugger thread
                 // must return before Windows can apply either default
                 // kill-on-exit or the successfully armed no-kill detach. The
@@ -1740,17 +2279,44 @@ mod sys {
                 self.phase = LaunchPhase::Aborted;
                 return Ok(());
             }
-            // SAFETY: process is a live owned handle and the wait is finite.
-            let wait =
-                unsafe { WaitForSingleObject(self.process.raw(), CLEANUP_TIMEOUT_MILLISECONDS) };
-            if wait != WAIT_OBJECT_0 {
+
+            // Once the debugger thread has exited, process cleanup and adopted
+            // event-alias closure are independent obligations. Attempt both so
+            // a wait/exit-code failure cannot starve high-authority alias close.
+            let process_cleanup = (|| {
+                if !termination_accepted {
+                    return Err(KeyAgentActivationError::Cleanup);
+                }
+                // SAFETY: process is a live owned handle and the wait is finite.
+                let wait = unsafe {
+                    WaitForSingleObject(self.process.raw(), CLEANUP_TIMEOUT_MILLISECONDS)
+                };
+                if wait != WAIT_OBJECT_0 {
+                    return Err(KeyAgentActivationError::Cleanup);
+                }
+                let mut exit_code = 0;
+                // SAFETY: the exact process handle remains owned and is signaled.
+                unsafe { GetExitCodeProcess(self.process.raw(), &raw mut exit_code) }
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                if exit_code != REJECTED_PROCESS_EXIT_CODE {
+                    return Err(KeyAgentActivationError::Cleanup);
+                }
+                Ok(exit_code)
+            })();
+            let alias_cleanup = if self.phase == LaunchPhase::DebuggerExitedPendingVerification {
+                self.close_remaining_detached_debug_event_handles()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)
+            } else if self.debug_event_process.is_some()
+                || self.debug_event_primary_thread.is_some()
+            {
+                Err(KeyAgentActivationError::Cleanup)
+            } else {
+                Ok(())
+            };
+            let (Ok(exit_code), Ok(())) = (process_cleanup, alias_cleanup) else {
                 return Err(KeyAgentActivationError::Cleanup);
-            }
-            let mut exit_code = 0;
-            // SAFETY: the exact process handle remains owned and is signaled.
-            unsafe { GetExitCodeProcess(self.process.raw(), &raw mut exit_code) }
-                .map_err(|_| KeyAgentActivationError::Cleanup)?;
-            if exit_code != REJECTED_PROCESS_EXIT_CODE {
+            };
+            if self.debug_event_process.is_some() || self.debug_event_primary_thread.is_some() {
                 return Err(KeyAgentActivationError::Cleanup);
             }
             self.cleanup_exit_code = Some(exit_code);
@@ -1814,6 +2380,8 @@ mod sys {
                 || self.0.proven_suspend_count != 1
                 || self.0.prepared_lpac.is_some()
                 || self.0.lpac.is_none()
+                || self.0.debug_event_process.is_some()
+                || self.0.debug_event_primary_thread.is_some()
             {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
@@ -1821,6 +2389,39 @@ mod sys {
             // witness and root gate. This phase changes cleanup behavior only;
             // it exposes no detached, handle, or resume capability.
             self.0.phase = LaunchPhase::DebuggerExitedPendingVerification;
+            Ok(())
+        }
+
+        pub(super) fn adopt_detached_debug_event_handles(
+            &mut self,
+            handles: DetachedDebugEventHandleSet,
+        ) -> Result<(), (KeyAgentActivationError, DetachedDebugEventHandleSet)> {
+            let (Some(event_process), Some(event_primary_thread)) =
+                (handles.process, handles.primary_thread)
+            else {
+                return Err((KeyAgentActivationError::DebugDetach, handles));
+            };
+            let event_process = HANDLE(event_process as *mut c_void);
+            let event_primary_thread = HANDLE(event_primary_thread as *mut c_void);
+            if self.0.phase != LaunchPhase::DebuggerExitedPendingVerification
+                || self.0.debug_event_process.is_some()
+                || self.0.debug_event_primary_thread.is_some()
+                || handles.process_id != self.0.process_id
+                || handles.thread_id != self.0.thread_id
+                || invalid(event_process)
+                || invalid(event_primary_thread)
+                || event_process == event_primary_thread
+                || event_process == self.0.process.raw()
+                || event_process == self.0.primary_thread.raw()
+                || event_primary_thread == self.0.process.raw()
+                || event_primary_thread == self.0.primary_thread.raw()
+            {
+                return Err((KeyAgentActivationError::DebugDetach, handles));
+            }
+            // All validation is complete. These assignments are the infallible
+            // ownership transfer from the joined-run cleanup registry.
+            self.0.debug_event_process = Some(event_process);
+            self.0.debug_event_primary_thread = Some(event_primary_thread);
             Ok(())
         }
 
@@ -1834,6 +2435,8 @@ mod sys {
                 || process.proven_suspend_count != 1
                 || process.prepared_lpac.is_some()
                 || process.lpac.is_none()
+                || process.debug_event_process.is_none()
+                || process.debug_event_primary_thread.is_none()
             {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
@@ -1849,6 +2452,7 @@ mod sys {
                 if debugger_present.as_bool() {
                     return Err(KeyAgentActivationError::DebugDetach);
                 }
+                process.close_detached_debug_event_handles()?;
 
                 // SAFETY: the exact creator primary-thread handle remains live.
                 // One explicit guard count crossed debugger-thread exit; a 1→2
@@ -1882,7 +2486,7 @@ mod sys {
                 return Err(error);
             }
             process.phase = LaunchPhase::DetachedSuspended;
-            Ok(DetachedSuspendedDebuggee(process))
+            process.attenuate_for_held(root_job)
         }
     }
 
@@ -1894,52 +2498,194 @@ mod sys {
         }
     }
 
-    /// Type-state proof that the debugger relationship has ended while the
-    /// primary thread retains exactly one explicit suspend count.
+    /// Exact resident process capability after creator-handle attenuation.
     ///
-    /// Construction is possible only after the matching debugger OS thread was
-    /// joined, `CheckRemoteDebuggerPresent` returned false on the retained
-    /// creator handle, the observable post-detach suspend-count probe succeeded,
-    /// and LPAC/root-Job continuity was revalidated. It exposes no raw handle or
-    /// creator-thread-only debug operation.
-    pub(super) struct DetachedSuspendedDebuggee(SuspendedDebuggee);
+    /// Its process handle has exactly terminate, query-limited-information, and
+    /// synchronize access. The retained LPAC proof supplies token continuity;
+    /// no creator-strength process or thread handle can enter this owner.
+    struct ResidentKeyAgentProcess {
+        process: OwnedHandle,
+        process_id: u32,
+        lpac: VerifiedKeyAgentLpac,
+        cleanup_complete: bool,
+        _not_sync: PhantomData<Cell<()>>,
+    }
 
-    // SAFETY: Win32 process and thread handles are process-wide. The only
-    // constructor above rejects every pending/debug-attached phase and requires
-    // the post-detach suspension proof. Its verified token proof retains another
-    // process-wide handle whose query and identity-check operations have no
-    // creator-thread affinity. After construction, the wrapper exposes only
-    // process-wide metadata, token revalidation, termination/wait cleanup, and
-    // Drop; it cannot call WaitForDebugEventEx, ContinueDebugEvent, or
-    // DebugSetProcessKillOnExit. SuspendedDebuggee itself and OwnedWinHandle
-    // intentionally remain !Send.
+    // SAFETY: the debug relationship has ended before this owner is built. Its
+    // exact process and retained token handles are process-wide; methods expose
+    // only query, Job membership, termination/wait cleanup, and token readback.
+    unsafe impl Send for ResidentKeyAgentProcess {}
+
+    impl ResidentKeyAgentProcess {
+        fn process_handle(&self) -> BorrowedHandle<'_> {
+            self.process.as_handle()
+        }
+
+        fn process_raw(&self) -> HANDLE {
+            windows_handle(self.process_handle())
+        }
+
+        const fn process_id(&self) -> u32 {
+            self.process_id
+        }
+
+        fn revalidate(&self) -> Result<(), KeyAgentActivationError> {
+            if self.cleanup_complete || self.process_id == 0 {
+                return Err(KeyAgentActivationError::ResidentState);
+            }
+            let process = self.process_raw();
+            // SAFETY: this capability owns the exact query+sync process handle;
+            // this call only observes its stable process identity.
+            let process_id = unsafe { GetProcessId(process) };
+            // SAFETY: zero-time waiting only observes this exact live process.
+            let wait = unsafe { WaitForSingleObject(process, 0) };
+            if process_id != self.process_id || wait != WAIT_TIMEOUT {
+                return Err(KeyAgentActivationError::ResidentState);
+            }
+            self.lpac
+                .revalidate_current_process_token(self.process_handle())
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)
+        }
+
+        fn is_member_of_root_job(
+            &self,
+            root_job: &KeyAgentRootJob,
+        ) -> Result<bool, KeyAgentActivationError> {
+            root_job
+                .contains_process(self.process_handle())
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+        }
+
+        fn abort(&mut self) -> Result<(), KeyAgentActivationError> {
+            if self.cleanup_complete {
+                return Ok(());
+            }
+            let process = self.process_raw();
+            // SAFETY: the exact resident process handle retains terminate access.
+            let termination_requested =
+                unsafe { TerminateProcess(process, REJECTED_PROCESS_EXIT_CODE) }.is_ok();
+            if !termination_requested
+                // SAFETY: zero-time waiting only observes this exact process.
+                && unsafe { WaitForSingleObject(process, 0) } != WAIT_OBJECT_0
+            {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            // SAFETY: the process handle retains synchronize access and the wait
+            // is bounded by the fixed rejection cleanup policy.
+            if unsafe { WaitForSingleObject(process, CLEANUP_TIMEOUT_MILLISECONDS) }
+                != WAIT_OBJECT_0
+            {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            let mut exit_code = 0;
+            // SAFETY: query-limited-information permits reading this signaled
+            // process's exit code into initialized writable storage.
+            unsafe { GetExitCodeProcess(process, &raw mut exit_code) }
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            if exit_code != REJECTED_PROCESS_EXIT_CODE {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            self.cleanup_complete = true;
+            Ok(())
+        }
+
+        #[cfg(test)]
+        fn duplicate_process_observation(
+            &self,
+        ) -> Result<TestProcessObservation, KeyAgentActivationError> {
+            TestProcessObservation::duplicate(self.process_raw())
+        }
+
+        #[cfg(test)]
+        fn process_authority_for_test(&self) -> Result<(u32, u32), KeyAgentActivationError> {
+            query_handle_authority_for_test(self.process_raw())
+        }
+    }
+
+    impl Drop for ResidentKeyAgentProcess {
+        fn drop(&mut self) {
+            let _ = self.abort();
+        }
+    }
+
+    /// Type-state proof that debugger exit was verified, creator-strength
+    /// handles were closed, and one exact least-authority thread handle retains
+    /// the sole explicit suspend count.
+    pub(super) struct DetachedSuspendedDebuggee {
+        resident: ResidentKeyAgentProcess,
+        primary_thread: OwnedHandle,
+    }
+
+    // SAFETY: the debugger OS thread has joined before construction. The exact
+    // process handle is process-wide and the sole thread operation is one
+    // consuming ResumeThread call through THREAD_RESUME-only access.
     unsafe impl Send for DetachedSuspendedDebuggee {}
 
     impl DetachedSuspendedDebuggee {
         pub(super) const fn process_id(&self) -> u32 {
-            self.0.process_id()
+            self.resident.process_id()
         }
 
         pub(super) fn is_detached_and_suspended(&self) -> bool {
-            self.0.is_detached_and_suspended()
+            !self.resident.cleanup_complete
         }
 
         pub(super) fn abort(&mut self) -> Result<(), KeyAgentActivationError> {
-            self.0.abort()
+            self.resident.abort()
         }
 
         pub(super) fn resume_for_storage_startup(
-            mut self,
+            self,
         ) -> Result<DetachedRunningDebuggee, KeyAgentActivationError> {
-            self.0.resume_for_storage_startup()?;
-            Ok(DetachedRunningDebuggee(self.0))
+            // Keep the only abstract transition check before the irreversible
+            // one-shot resume and checked thread-handle close.
+            LaunchPhase::DetachedSuspended.transition(LaunchTransition::ResumeStorageStartup)?;
+            let Self {
+                mut resident,
+                primary_thread,
+            } = self;
+            if let Err(error) = resident.revalidate() {
+                resident
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(error);
+            }
+            let primary_thread_raw = windows_handle(primary_thread.as_handle());
+            // SAFETY: the exact detached primary-thread duplicate has only the
+            // suspend/resume right and the post-detach proof established one
+            // explicit count. This is its sole production operation.
+            let previous_suspend_count = unsafe { ResumeThread(primary_thread_raw) };
+            if previous_suspend_count != 1 {
+                resident
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::SuspensionMismatch);
+            }
+            // No thread operation remains after the one successful resume. Close
+            // the exact THREAD_RESUME handle with a checked kernel result before
+            // observing or returning the running process capability.
+            if close_owned_handle_checked(primary_thread).is_err() {
+                resident
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::HandleAttenuation);
+            }
+
+            // SAFETY: zero-time waiting only observes the exact resident process.
+            if unsafe { WaitForSingleObject(resident.process_raw(), 0) } != WAIT_TIMEOUT {
+                resident
+                    .abort()
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+                return Err(KeyAgentActivationError::StartupResume);
+            }
+            Ok(DetachedRunningDebuggee(resident))
         }
 
         #[cfg(test)]
         pub(super) fn duplicate_process_observation(
             &self,
         ) -> Result<TestProcessObservation, KeyAgentActivationError> {
-            self.0.duplicate_process_observation()
+            self.resident.duplicate_process_observation()
         }
 
         #[cfg(test)]
@@ -1947,27 +2693,52 @@ mod sys {
             &self,
             root_job: &KeyAgentRootJob,
         ) -> Result<bool, KeyAgentActivationError> {
-            root_job
-                .contains_process(self.0.process_handle())
-                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+            self.resident.is_member_of_root_job(root_job)
+        }
+
+        #[cfg(test)]
+        pub(super) fn retained_handle_authority_for_test(
+            &self,
+        ) -> Result<(u32, u32, u32, u32), KeyAgentActivationError> {
+            let (process_access, process_attributes) =
+                query_handle_authority_for_test(self.resident.process_raw())?;
+            let (thread_access, thread_attributes) =
+                query_handle_authority_for_test(windows_handle(self.primary_thread.as_handle()))?;
+            Ok((
+                process_access,
+                process_attributes,
+                thread_access,
+                thread_attributes,
+            ))
+        }
+
+        #[cfg(test)]
+        pub(super) fn resume_only_thread_rejects_suspend_for_test(&self) -> bool {
+            // SAFETY: establishes an unambiguous sentinel for the immediately
+            // following negative access check.
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            // SAFETY: this negative kernel probe uses the exact retained thread
+            // handle and succeeds only when the forbidden operation is denied
+            // without changing the one proven suspend count.
+            (unsafe { SuspendThread(windows_handle(self.primary_thread.as_handle())) }) == u32::MAX
+                // SAFETY: read immediately after the failed Win32 operation.
+                && (unsafe { GetLastError() }) == ERROR_ACCESS_DENIED
         }
     }
 
     impl fmt::Debug for DetachedSuspendedDebuggee {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("DetachedSuspendedDebuggee([REDACTED HANDLES AND IDENTITY])")
+            formatter.write_str("DetachedSuspendedDebuggee([NARROW PROCESS + RESUME-ONLY THREAD])")
         }
     }
 
-    /// Type-state proof that the exact detached primary thread entered the one
-    /// permitted storage-startup probe after token revalidation and has no
-    /// remaining suspend count.
-    pub(super) struct DetachedRunningDebuggee(SuspendedDebuggee);
+    /// Type-state proof that the primary thread was resumed exactly once and
+    /// its sole `THREAD_RESUME` handle was closed. Only the narrow resident
+    /// process capability and retained token continuity remain.
+    pub(super) struct DetachedRunningDebuggee(ResidentKeyAgentProcess);
 
-    // SAFETY: the debug relationship ended before this wrapper was constructed.
-    // It uniquely owns process-wide process, thread, and retained token handles
-    // and exposes only observation, token revalidation, and synchronous cleanup;
-    // no creator-thread-only debugger operation remains.
+    // SAFETY: no thread or debugger handle remains. The resident process owner
+    // is explicitly Send and exposes only process-wide operations.
     unsafe impl Send for DetachedRunningDebuggee {}
 
     impl DetachedRunningDebuggee {
@@ -1976,37 +2747,18 @@ mod sys {
         }
 
         pub(super) fn is_detached_and_running(&self) -> bool {
-            self.0.is_detached_and_running()
+            !self.0.cleanup_complete
         }
 
         pub(super) fn revalidate_resident_process(&self) -> Result<(), KeyAgentActivationError> {
-            if self.0.phase != LaunchPhase::DetachedRunning
-                || self.0.proven_suspend_count != 0
-                || self.0.prepared_lpac.is_some()
-                || self.0.pending_event.is_some()
-            {
-                return Err(KeyAgentActivationError::ResidentState);
-            }
-            // SAFETY: a zero-time wait only observes the exact retained process
-            // object. A valid resident Key Agent must remain nonsignaled.
-            if unsafe { WaitForSingleObject(self.0.process.raw(), 0) } != WAIT_TIMEOUT {
-                return Err(KeyAgentActivationError::ResidentState);
-            }
-            self.0
-                .lpac
-                .as_ref()
-                .ok_or(KeyAgentActivationError::LpacPolicy)?
-                .revalidate_current_process_token(self.0.process_handle())
-                .map_err(|_| KeyAgentActivationError::LpacPolicy)
+            self.0.revalidate()
         }
 
         pub(super) fn is_member_of_root_job(
             &self,
             root_job: &KeyAgentRootJob,
         ) -> Result<bool, KeyAgentActivationError> {
-            root_job
-                .contains_process(self.0.process_handle())
-                .map_err(|_| KeyAgentActivationError::RootJobPolicy)
+            self.0.is_member_of_root_job(root_job)
         }
 
         #[cfg(test)]
@@ -2023,11 +2775,50 @@ mod sys {
         ) -> Result<bool, KeyAgentActivationError> {
             self.is_member_of_root_job(root_job)
         }
+
+        #[cfg(test)]
+        pub(super) fn retained_process_authority_for_test(
+            &self,
+        ) -> Result<(u32, u32), KeyAgentActivationError> {
+            self.0.process_authority_for_test()
+        }
     }
 
     impl fmt::Debug for DetachedRunningDebuggee {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("DetachedRunningDebuggee([REDACTED HANDLES AND IDENTITY])")
+            formatter.write_str("DetachedRunningDebuggee([NARROW PROCESS; NO THREAD HANDLE])")
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) struct TestDebugEventHandleObservation {
+        process: usize,
+        primary_thread: usize,
+    }
+
+    #[cfg(test)]
+    impl TestDebugEventHandleObservation {
+        pub(super) const fn new(process: usize, primary_thread: usize) -> Self {
+            Self {
+                process,
+                primary_thread,
+            }
+        }
+
+        pub(super) fn aliases_are_closed(&self) -> bool {
+            for raw in [self.primary_thread, self.process] {
+                let handle = HANDLE(raw as *mut c_void);
+                let mut flags = u32::MAX;
+                // SAFETY: this is a test-only post-join probe of the registered
+                // numeric handle values; it never adopts or closes them.
+                if unsafe { GetHandleInformation(handle, &raw mut flags) }.is_ok()
+                    // SAFETY: read immediately after the failed Win32 probe.
+                    || unsafe { GetLastError() } != ERROR_INVALID_HANDLE
+                {
+                    return false;
+                }
+            }
+            true
         }
     }
 
@@ -2158,6 +2949,103 @@ mod sys {
         handle.is_invalid() || handle == INVALID_HANDLE_VALUE
     }
 
+    pub(super) fn close_detached_debug_event_handles_after_join(
+        handles: &mut DetachedDebugEventHandleSet,
+    ) -> Result<(), KeyAgentActivationError> {
+        if handles.process_id == 0
+            || handles.thread_id == 0
+            || matches!(
+                (handles.process, handles.primary_thread),
+                (Some(process), Some(thread)) if process == thread
+            )
+        {
+            return Err(KeyAgentActivationError::Cleanup);
+        }
+
+        let mut failed = false;
+
+        if let Some(event_primary_thread) = handles.primary_thread {
+            let event_primary_thread = HANDLE(event_primary_thread as *mut c_void);
+            let mut flags = u32::MAX;
+            let rejected = invalid(event_primary_thread)
+                // SAFETY: the caller has joined the exact debugger thread; this
+                // registered alias remains live until the checked close below.
+                || unsafe { GetThreadId(event_primary_thread) } != handles.thread_id
+                // SAFETY: flags is exact initialized writable storage.
+                || unsafe { GetHandleInformation(event_primary_thread, &raw mut flags) }.is_err()
+                || flags != 0;
+            if rejected {
+                failed = true;
+            } else {
+                // SAFETY: join ended system management of this authenticated
+                // alias; the registry clears the value only after success.
+                if unsafe { CloseHandle(event_primary_thread) }.is_ok() {
+                    handles.primary_thread = None;
+                } else {
+                    failed = true;
+                }
+            }
+        }
+
+        if let Some(event_process) = handles.process {
+            let event_process = HANDLE(event_process as *mut c_void);
+            let mut flags = u32::MAX;
+            let rejected = invalid(event_process)
+                // SAFETY: same joined-registry ownership argument as above.
+                || unsafe { GetProcessId(event_process) } != handles.process_id
+                // SAFETY: flags is exact initialized writable storage.
+                || unsafe { GetHandleInformation(event_process, &raw mut flags) }.is_err()
+                || flags != 0;
+            if rejected {
+                failed = true;
+            } else {
+                // SAFETY: the registry owns this exact post-detach alias and
+                // clears it only after the kernel confirms the close.
+                if unsafe { CloseHandle(event_process) }.is_ok() {
+                    handles.process = None;
+                } else {
+                    failed = true;
+                }
+            }
+        }
+
+        if failed {
+            Err(KeyAgentActivationError::Cleanup)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    fn query_handle_authority_for_test(
+        handle: HANDLE,
+    ) -> Result<(u32, u32), KeyAgentActivationError> {
+        if invalid(handle) {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        let mut information = PUBLIC_OBJECT_BASIC_INFORMATION::default();
+        let information_size = u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>())
+            .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        let mut returned_length = 0_u32;
+        // SAFETY: this test-only native query receives the exact live handle,
+        // a correctly sized initialized output object, and exact writable
+        // returned-length storage. Production code never depends on this
+        // change-prone native API.
+        let status = unsafe {
+            NtQueryObject(
+                Some(handle),
+                ObjectBasicInformation,
+                Some((&raw mut information).cast()),
+                information_size,
+                Some(&raw mut returned_length),
+            )
+        };
+        if status != STATUS_SUCCESS || returned_length != information_size {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        Ok((information.GrantedAccess, information.Attributes))
+    }
+
     fn key_agent_creation_flags() -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
         CREATE_SUSPENDED
             | DEBUG_PROCESS
@@ -2170,6 +3058,16 @@ mod sys {
     #[cfg(test)]
     pub(super) fn key_agent_creation_flag_bits_for_test() -> u32 {
         key_agent_creation_flags().0
+    }
+
+    #[cfg(test)]
+    pub(super) const fn resident_process_access_for_test() -> u32 {
+        RESIDENT_KEY_AGENT_PROCESS_ACCESS.0
+    }
+
+    #[cfg(test)]
+    pub(super) const fn storage_startup_thread_access_for_test() -> u32 {
+        STORAGE_STARTUP_THREAD_ACCESS.0
     }
 
     #[cfg(test)]
@@ -2195,6 +3093,121 @@ mod sys {
         HANDLE(handle.as_raw_handle())
     }
 
+    fn finish_exact_noninheritable_duplicate(
+        source: HANDLE,
+        duplicate: HANDLE,
+    ) -> Result<OwnedHandle, KeyAgentActivationError> {
+        if invalid(source) || invalid(duplicate) {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        // SAFETY: successful duplication returned one newly owned handle and
+        // ownership transfers exactly once to the standard wrapper.
+        let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate.0) };
+        let duplicate_raw = windows_handle(duplicate.as_handle());
+        let mut flags = u32::MAX;
+        // SAFETY: the duplicate is live and `flags` is initialized writable
+        // storage. CompareObjectHandles only observes both live handles.
+        unsafe { GetHandleInformation(duplicate_raw, &raw mut flags) }
+            .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        // SAFETY: source and duplicate are simultaneously live and this call
+        // only compares their underlying kernel objects.
+        let same_object = unsafe { CompareObjectHandles(source, duplicate_raw) }.as_bool();
+        if flags != 0 || !same_object {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        Ok(duplicate)
+    }
+
+    fn duplicate_resident_process_handle(
+        source_process: HANDLE,
+    ) -> Result<OwnedHandle, KeyAgentActivationError> {
+        if invalid(source_process) {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        let mut duplicate = HANDLE::default();
+        // SAFETY: both process parameters name the current supervisor and
+        // `source_process` is the live creator process handle. Windows writes
+        // at most one local handle with exactly terminate + QLI + synchronize;
+        // zero options keep that mask authoritative and false forbids inheritance.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source_process,
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                RESIDENT_KEY_AGENT_PROCESS_ACCESS.0,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        finish_exact_noninheritable_duplicate(source_process, duplicate)
+    }
+
+    fn duplicate_post_detach_thread_probe_handle(
+        source_thread: HANDLE,
+    ) -> Result<OwnedHandle, KeyAgentActivationError> {
+        if invalid(source_thread) {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        let mut duplicate = HANDLE::default();
+        // SAFETY: both process parameters name the current supervisor and
+        // `source_thread` is the live creator primary-thread handle. Windows
+        // writes at most one local probe handle requested with exactly
+        // THREAD_SUSPEND_RESUME; zero options and false forbid broader copy
+        // semantics and inheritance.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source_thread,
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                POST_DETACH_THREAD_PROBE_ACCESS.0,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        finish_exact_noninheritable_duplicate(source_thread, duplicate)
+    }
+
+    fn duplicate_storage_startup_thread_handle(
+        source_thread: HANDLE,
+    ) -> Result<OwnedHandle, KeyAgentActivationError> {
+        if invalid(source_thread) {
+            return Err(KeyAgentActivationError::HandleAttenuation);
+        }
+        let mut duplicate = HANDLE::default();
+        // SAFETY: both process parameters name the current supervisor and
+        // `source_thread` is the live creator primary-thread handle. The final
+        // resident thread capability requests only THREAD_RESUME for its one
+        // consuming storage-startup operation; options and inheritance are zero.
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source_thread,
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                STORAGE_STARTUP_THREAD_ACCESS.0,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        finish_exact_noninheritable_duplicate(source_thread, duplicate)
+    }
+
+    fn close_owned_handle_checked(handle: OwnedHandle) -> Result<(), KeyAgentActivationError> {
+        let raw = HANDLE(handle.as_raw_handle());
+        // SAFETY: `handle` remains the sole RAII owner during this checked call.
+        // On failure, ordinary Drop immediately retries instead of losing the
+        // raw capability. On success, forget only the now-closed wrapper so it
+        // cannot issue a second close against a potentially reused value.
+        unsafe { CloseHandle(raw) }.map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+        core::mem::forget(handle);
+        Ok(())
+    }
+
     struct OwnedWinHandle(HANDLE);
 
     impl OwnedWinHandle {
@@ -2204,6 +3217,19 @@ mod sys {
 
         const fn raw(&self) -> HANDLE {
             self.0
+        }
+
+        fn close_checked(&mut self) -> Result<(), KeyAgentActivationError> {
+            if invalid(self.0) {
+                return Err(KeyAgentActivationError::HandleAttenuation);
+            }
+            // SAFETY: this wrapper owns the exact live handle. Preserve its raw
+            // value on failure so Drop can retry cleanup; clear it only after a
+            // successful checked close.
+            unsafe { CloseHandle(self.0) }
+                .map_err(|_| KeyAgentActivationError::HandleAttenuation)?;
+            self.0 = HANDLE::default();
+            Ok(())
         }
     }
 
@@ -2234,7 +3260,7 @@ mod sys {
                 return Err(KeyAgentActivationError::ApprovalParentCapability);
             }
 
-            let source_process = source.0.process.raw();
+            let source_process = source.0.process_raw();
             let expected_process_id = source.process_id();
             let mut duplicate = HANDLE::default();
             // SAFETY: both process parameters name the current supervisor; the
@@ -2698,6 +3724,9 @@ mod tests {
         let _ = <PendingKeyAgentActivation as AmbiguousIfCopy<_>>::marker;
         let _ = <PreflightKeyAgentArtifact as AmbiguousIfClone<_>>::marker;
         let _ = <PreflightKeyAgentArtifact as AmbiguousIfCopy<_>>::marker;
+        let _ = <HeldKeyAgentActivation as AmbiguousIfSync<_>>::marker;
+        let _ = <HeldKeyAgentActivation as AmbiguousIfClone<_>>::marker;
+        let _ = <HeldKeyAgentActivation as AmbiguousIfCopy<_>>::marker;
         let _ = <sys::SuspendedDebuggee as AmbiguousIfSend<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfSync<_>>::marker;
         let _ = <sys::DetachedSuspendedDebuggee as AmbiguousIfClone<_>>::marker;
@@ -2767,36 +3796,38 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[0] ^= 1;
-        let (observation, joined) =
-            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
-                move |fresh_thread| {
-                    let provisioning = test_provisioning()?;
-                    let mut root_job = test_root_job()?;
-                    let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
-                    let pipes = PrivateKeyAgentPipes::create()
-                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                    let root_job_attribute = root_job
-                        .creation_attribute()
-                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                    let mut process = sys::SuspendedDebuggee::create(
-                        &artifact,
-                        &provisioning,
-                        &pipes,
-                        &root_job,
-                        &root_job_attribute,
-                        activation_deadline(),
-                    )?;
-                    let observation = process.duplicate_process_observation()?;
-                    assert!(matches!(
-                        process.authenticate_first_event(wrong_identity, 5_000),
-                        Err(KeyAgentActivationError::MappedImageMismatch)
-                    ));
-                    process.abort()?;
-                    assert!(process.is_aborted());
-                    assert_eq!(process.cleanup_exit_code(), None);
-                    Ok(observation)
-                },
+        let (observation, joined) = run_on_fresh_key_agent_debug_thread::<
+            _,
+            KeyAgentActivationError,
+            _,
+        >(move |fresh_thread| {
+            let provisioning = test_provisioning()?;
+            let mut root_job = test_root_job()?;
+            let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+            let (_debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
+            let pipes = PrivateKeyAgentPipes::create()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let root_job_attribute = root_job
+                .creation_attribute()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            let mut process = sys::SuspendedDebuggee::create(
+                &artifact,
+                &provisioning,
+                &pipes,
+                &root_job,
+                &root_job_attribute,
+                activation_deadline(),
             )?;
+            let observation = process.duplicate_process_observation()?;
+            assert!(matches!(
+                process.authenticate_first_event(wrong_identity, 5_000, &debug_event_cleanup,),
+                Err(KeyAgentActivationError::MappedImageMismatch)
+            ));
+            process.abort()?;
+            assert!(process.is_aborted());
+            assert_eq!(process.cleanup_exit_code(), None);
+            Ok(observation)
+        })?;
         drop(joined);
         assert_eq!(
             observation.rejected_exit_code()?,
@@ -2859,6 +3890,23 @@ mod tests {
             assert!(activation.creation_time() != 0);
             assert!(activation.is_detached_and_suspended());
             assert!(activation.is_member_of_root_job_for_test(root_job)?);
+            let (
+                process_granted_access,
+                process_attributes,
+                thread_granted_access,
+                thread_attributes,
+            ) = activation.process.retained_handle_authority_for_test()?;
+            assert_eq!(sys::resident_process_access_for_test(), 0x0010_1001);
+            assert_eq!(sys::storage_startup_thread_access_for_test(), 0x0000_1000);
+            assert_eq!(process_granted_access, 0x0010_1001);
+            assert_eq!(process_attributes, 0);
+            assert_eq!(thread_granted_access, 0x0000_1000);
+            assert_eq!(thread_attributes, 0);
+            assert!(
+                activation
+                    .process
+                    .resume_only_thread_rejects_suspend_for_test()
+            );
             assert_eq!(
                 root_job
                     .active_process_count()
@@ -2931,7 +3979,8 @@ mod tests {
                 let caller_identity = sys::exact_file_identity(caller_artifact.raw_handle())?;
                 let caller_provisioning = test_provisioning()?;
                 let mut caller_root_job = test_root_job()?;
-                let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut caller_root_job)?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut caller_root_job)?;
+                let (_debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
                 let caller_pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
                 let caller_root_job_attribute = caller_root_job
@@ -2952,8 +4001,11 @@ mod tests {
                 caller_release_receiver
                     .recv()
                     .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
-                let caller_event =
-                    caller_debuggee.authenticate_first_event(caller_identity, 5_000)?;
+                let caller_event = caller_debuggee.authenticate_first_event(
+                    caller_identity,
+                    5_000,
+                    &debug_event_cleanup,
+                )?;
                 if caller_event.creation_time == 0 {
                     return Err(KeyAgentActivationError::CreationTime);
                 }
@@ -3085,7 +4137,8 @@ mod tests {
             move |fresh_thread| {
                 let provisioning = test_provisioning()?;
                 let mut root_job = test_root_job()?;
-                let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let (_debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
                 let pipes = PrivateKeyAgentPipes::create()
                     .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
                 let root_job_attribute = root_job
@@ -3099,12 +4152,17 @@ mod tests {
                     &root_job_attribute,
                     activation_deadline(),
                 )?;
-                observation_sender
-                    .send(process.duplicate_process_observation()?)
-                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
-                let Err(error) = process.authenticate_first_event(wrong_identity, 5_000) else {
+                let observation = process.duplicate_process_observation()?;
+                let Err(error) =
+                    process.authenticate_first_event(wrong_identity, 5_000, &debug_event_cleanup)
+                else {
                     return Err(KeyAgentActivationError::MappedImageMismatch);
                 };
+                let event_observation =
+                    debug_event_cleanup.observation_while_attached_for_test()?;
+                observation_sender
+                    .send((observation, event_observation))
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
                 fail_after_cleanup(&mut process, error)
             },
         );
@@ -3112,11 +4170,12 @@ mod tests {
             result,
             Err(KeyAgentActivationError::MappedImageMismatch)
         ));
-        let observation = observation_receiver.recv()?;
+        let (observation, event_observation) = observation_receiver.recv()?;
         assert_eq!(
             observation.rejected_exit_code()?,
             sys::rejected_process_exit_code_for_test()
         );
+        assert!(event_observation.aliases_are_closed());
         Ok(())
     }
 
@@ -3163,6 +4222,56 @@ mod tests {
     }
 
     #[test]
+    fn worker_panic_after_event_alias_registration_cleans_up_after_join()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
+        let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |fresh_thread| {
+                let provisioning = test_provisioning()?;
+                let mut root_job = test_root_job()?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let activation = activate_preflighted_key_agent_on_fresh_worker(
+                    fresh_thread,
+                    preflighted,
+                    &provisioning,
+                    &pipes,
+                    &root_job,
+                    &root_job_attribute,
+                    activation_deadline(),
+                )?;
+                let observation = activation.process.duplicate_process_observation()?;
+                let event_observation = activation
+                    .debug_event_cleanup
+                    .observation_while_attached_for_test()?;
+                observation_sender
+                    .send((observation, event_observation))
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                std::panic::resume_unwind(Box::new(
+                    "intentional post-event-registration activation worker unwind",
+                ));
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(KeyAgentActivationError::ActivationWorker)
+        ));
+        let (observation, event_observation) = observation_receiver.recv()?;
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
+        assert!(event_observation.aliases_are_closed());
+        Ok(())
+    }
+
+    #[test]
     fn worker_panic_immediately_after_no_kill_arm_cleans_up_after_join()
     -> Result<(), Box<dyn std::error::Error>> {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
@@ -3188,6 +4297,9 @@ mod tests {
                     activation_deadline(),
                 )?;
                 let observation = activation.process.duplicate_process_observation()?;
+                let event_observation = activation
+                    .debug_event_cleanup
+                    .observation_while_attached_for_test()?;
                 drop(root_job_attribute);
                 drop(pipes);
                 provisioning
@@ -3196,7 +4308,7 @@ mod tests {
                 activation.revalidate_before_no_kill(&root_job)?;
                 let _pending = activation.arm_no_kill()?;
                 observation_sender
-                    .send(observation)
+                    .send((observation, event_observation))
                     .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
                 std::panic::resume_unwind(Box::new(
                     "intentional post-no-kill-arm activation worker unwind",
@@ -3207,11 +4319,67 @@ mod tests {
             result,
             Err(KeyAgentActivationError::ActivationWorker)
         ));
-        let observation = observation_receiver.recv()?;
+        let (observation, event_observation) = observation_receiver.recv()?;
         assert_eq!(
             observation.rejected_exit_code()?,
             sys::rejected_process_exit_code_for_test()
         );
+        assert!(event_observation.aliases_are_closed());
+        Ok(())
+    }
+
+    #[test]
+    fn worker_error_immediately_after_no_kill_arm_cleans_up_after_join()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
+        let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
+            move |fresh_thread| {
+                let provisioning = test_provisioning()?;
+                let mut root_job = test_root_job()?;
+                let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                let pipes = PrivateKeyAgentPipes::create()
+                    .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                let root_job_attribute = root_job
+                    .creation_attribute()
+                    .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                let activation = activate_preflighted_key_agent_on_fresh_worker(
+                    fresh_thread,
+                    preflighted,
+                    &provisioning,
+                    &pipes,
+                    &root_job,
+                    &root_job_attribute,
+                    activation_deadline(),
+                )?;
+                let observation = activation.process.duplicate_process_observation()?;
+                let event_observation = activation
+                    .debug_event_cleanup
+                    .observation_while_attached_for_test()?;
+                drop(root_job_attribute);
+                drop(pipes);
+                provisioning
+                    .revalidate()
+                    .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+                activation.revalidate_before_no_kill(&root_job)?;
+                let _pending = activation.arm_no_kill()?;
+                observation_sender
+                    .send((observation, event_observation))
+                    .map_err(|_| KeyAgentActivationError::ActivationWorker)?;
+                Err(KeyAgentActivationError::ActivationWorker)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(KeyAgentActivationError::ActivationWorker)
+        ));
+        let (observation, event_observation) = observation_receiver.recv()?;
+        assert_eq!(
+            observation.rejected_exit_code()?,
+            sys::rejected_process_exit_code_for_test()
+        );
+        assert!(event_observation.aliases_are_closed());
         Ok(())
     }
 
@@ -3232,36 +4400,38 @@ mod tests {
         let artifact = VerifiedHelper::for_key_agent_activation_test()?;
         let mut wrong_identity = sys::exact_file_identity(artifact.raw_handle())?;
         wrong_identity.file_id[7] ^= 1;
-        let (observation, joined) =
-            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
-                move |fresh_thread| {
-                    let provisioning = test_provisioning()?;
-                    let mut root_job = test_root_job()?;
-                    let _fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
-                    let pipes = PrivateKeyAgentPipes::create()
-                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-                    let root_job_attribute = root_job
-                        .creation_attribute()
-                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-                    let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
-                        &artifact,
-                        &provisioning,
-                        &pipes,
-                        &root_job,
-                        &root_job_attribute,
-                        activation_deadline(),
-                        &mut command_line,
-                    )?;
-                    let observation = process.duplicate_process_observation()?;
-                    assert!(matches!(
-                        process.authenticate_first_event(wrong_identity, 5_000),
-                        Err(KeyAgentActivationError::MappedImageMismatch)
-                    ));
-                    process.abort()?;
-                    assert_eq!(process.cleanup_exit_code(), None);
-                    Ok(observation)
-                },
+        let (observation, joined) = run_on_fresh_key_agent_debug_thread::<
+            _,
+            KeyAgentActivationError,
+            _,
+        >(move |fresh_thread| {
+            let provisioning = test_provisioning()?;
+            let mut root_job = test_root_job()?;
+            let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+            let (_debug_thread_witness, debug_event_cleanup) = fresh_thread.into_run_context();
+            let pipes = PrivateKeyAgentPipes::create()
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let root_job_attribute = root_job
+                .creation_attribute()
+                .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+            let mut process = sys::SuspendedDebuggee::create_with_test_command_line(
+                &artifact,
+                &provisioning,
+                &pipes,
+                &root_job,
+                &root_job_attribute,
+                activation_deadline(),
+                &mut command_line,
             )?;
+            let observation = process.duplicate_process_observation()?;
+            assert!(matches!(
+                process.authenticate_first_event(wrong_identity, 5_000, &debug_event_cleanup,),
+                Err(KeyAgentActivationError::MappedImageMismatch)
+            ));
+            process.abort()?;
+            assert_eq!(process.cleanup_exit_code(), None);
+            Ok(observation)
+        })?;
         drop(joined);
         assert_eq!(
             observation.rejected_exit_code()?,

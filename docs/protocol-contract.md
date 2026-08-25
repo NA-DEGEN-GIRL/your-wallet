@@ -268,23 +268,79 @@ group, the exact expected self-relative/DACL-present/protected control state, a
 zero SACL offset in the requested owner/group/DACL projection, one exact no-flag
 `ACCESS_DENIED_ACE` for the binary `OWNER RIGHTS` SID and mask above, and no ACL or
 descriptor slack/trailing bytes. The readback does not request the SACL and
-therefore does not prove its actual absence.
-Any mismatch aborts and cleans up the child; descriptor owners are dropped before
-resume. The creator retains the full-access handles returned by `CreateProcessW`
-for the complete lifecycle and never replaces either with a PID/TID reopen.
+therefore does not prove its actual absence. Any mismatch aborts and cleans up
+the child; descriptor owners are dropped before resume. The creator handles are
+never replaced through PID/TID reopen, but they are pre-`Held` authorities only.
 
 The same deny-only process DACL excludes PID-only `DebugActiveProcessStop` from
 the Key Agent path. One fresh debugger OS thread authenticates and continues the
-first event while an explicit primary-thread suspend count remains. After every
-other fallible worker check, `DebugSetProcessKillOnExit(FALSE)` is its final
-fallible operation. Only an opaque pending owner crosses the boundary before the
-thread exits and is joined. Post-join finalization requires the identical per-run
-witness in the pending state, non-`Send` join proof, and root Job gate; retained-
-handle `CheckRemoteDebuggerPresent == false`; an exact retained-thread 1→2→1
-suspend probe; token and root-Job revalidation; and provisioning/lease bookends.
-Only then can a detached suspended activation be minted. Pre-join cleanup never
-blocks the live debugger thread; post-join cleanup restores the ordinary bounded
-synchronous process/Job policy.
+first event while an explicit primary-thread suspend count remains. Its
+`CREATE_PROCESS_DEBUG_EVENT` process and thread aliases must be valid, pairwise
+distinct and distinct from the creator handles, report the expected PID/TID, and
+compare as the same two kernel objects. They remain system-managed observations
+while the debug relationship is attached. Every independently safe raw alias is
+registered in the exact run's shared cleanup owner immediately after event
+extraction and before hFile, mapped-image, ID/object, LPAC, or later fallible
+checks; malformed partial events retain every safe alias. After every remaining
+fallible worker check, the no-kill arm requires the complete authenticated set and
+`DebugSetProcessKillOnExit(FALSE)` is the debugger thread's final fallible
+operation. Only an opaque pending owner crosses the boundary before that thread
+exits and is joined.
+
+Post-join finalization requires the identical per-run witness in the pending
+state, non-`Send` join proof, root Job gate, and
+`CheckRemoteDebuggerPresent == false`. The supervisor then requires both event
+aliases still to be present and distinct, reauthenticates object equality,
+PID/TID, and exact-zero flags, and checked-closes the thread alias and process
+alias exactly once before attenuation. They remain live on the tested host
+kernel, and this thread-exit detach route provides no later exit event on which
+to rely. Once the witness is joined, worker `Err`, worker panic, and abandonment
+of the joined proof all invoke the shared post-join checked-close path. Normal
+finalization takes the registered set; failed adoption restores it, partial close
+retains the remaining slot, and last-owner `Drop` makes bounded retries. Each
+pass attempts both aliases independently, and post-join process cleanup failure
+cannot prevent alias closure. Explicit
+cleanup failure takes precedence. Supported-Windows variant evidence for this
+behavior remains **STOP-SHIP**.
+
+The creator thread next performs an exact post-detach 1→2→1 suspend probe and
+the creator process supplies token and root-Job revalidation. `DuplicateHandle`
+then derives three non-inheritable capabilities with options zero. The resident
+process has exact access `0x00101001` (`PROCESS_TERMINATE |
+PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`). The ephemeral post-detach
+thread probe requests exact `THREAD_SUSPEND_RESUME` (`0x2`); modern Windows adds
+`THREAD_RESUME`, and host kernel readback must observe effective
+`GrantedAccess == 0x1002` with attributes zero. The separately retained startup
+thread handle requests exact `THREAD_RESUME` (`0x1000`). Every duplicate must
+compare as the same source object and have exact-zero flags.
+
+The narrow process itself must pass PID/liveness/current-token/root-Job checks.
+The ephemeral `0x1002` probe itself must pass the second exact 1→2→1 transition
+and then be checked-closed before `Held`; failure preserves its RAII owner for an
+immediate `Drop` retry. Kernel tests require the retained handle
+to read back as exact `0x1000` with zero attributes and require `SuspendThread`
+through it to fail with `ERROR_ACCESS_DENIED`. Only after those checks are the
+creator thread and process handles checked-closed, in order, and the detached
+suspended `Held` capability minted.
+
+Microsoft Learn's current [`ResumeThread` documentation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)
+still requires `THREAD_SUSPEND_RESUME`, but the current SDK exposes
+`THREAD_RESUME` and the host/integration kernel tests prove its resume-only use.
+The documentation/SDK disagreement, automatic effective-right addition, and
+supported-Windows version variance remain **STOP-SHIP** kernel-proof obligations.
+
+`Held` is `Send` but `!Sync`, `!Clone`, and `!Copy`. Its only consuming startup
+transition revalidates the narrow process, performs the sole user-mode-releasing
+`ResumeThread` through the exact resume-only `THREAD_RESUME` (`0x1000`) handle
+with prior count one, and immediately checked-closes that handle, with the same
+RAII retry ownership on checked-close failure. `Running` has
+the same transfer traits and structurally retains only the narrow process; it has
+no thread handle.
+The process rights support resident revalidation and bounded reject
+termination/wait/exit-code cleanup. Explicit failures clean up synchronously with
+cleanup-error precedence; `Drop` retries but cannot report an error. Pre-join
+cleanup never blocks the live debugger thread; post-join cleanup restores the
+ordinary bounded synchronous process/Job policy.
 
 Kernel tests prove child process pseudo-handle operations and a real
 `CreateThread` thread pseudo-handle operation remain usable. With
@@ -293,7 +349,8 @@ single-access opens are denied. This is a point-in-time creation contract for th
 initial process and primary thread only: it does not cover later-created threads
 or revoke returned, preexisting, or duplicated high-right handles.
 
-Revalidation runs after the post-detach suspend-count probe, immediately before
+Revalidation runs after the creator-handle post-detach suspend probe, again
+through the narrow process after the ephemeral `0x1002` probe, immediately before
 the sole `ResumeThread` that releases the final count into user mode, and at
 resident authority checks. Each pass bookends the retained `Hfinal`'s full
 policy and exact DACL with baseline-equal statistics, then opens a fresh current
