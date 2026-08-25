@@ -61,14 +61,70 @@ function Invoke-Typecheck {
     Invoke-Checked -Executable "cargo" -CommandArguments @("check", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked", "--all-targets")
 }
 
+function Build-KeyAgentTestExecutable {
+    $previousErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $messages = & cargo build --locked -p key-agent --bin key-agent --message-format=json-render-diagnostics
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: cargo"
+    }
+
+    $executable = $null
+    foreach ($line in $messages) {
+        try {
+            $message = $line | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            continue
+        }
+        if ($message.reason -eq "compiler-artifact" -and
+            $message.target.name -eq "key-agent" -and
+            @($message.target.kind) -contains "bin" -and
+            $null -ne $message.executable) {
+            $executable = [string]$message.executable
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($executable)) {
+        throw "Cargo did not report the Key Agent test executable"
+    }
+    $resolved = Resolve-Path -LiteralPath $executable -ErrorAction Stop
+    if (-not (Test-Path -LiteralPath $resolved.Path -PathType Leaf) -or
+        [IO.Path]::GetFileName($resolved.Path) -ne "key-agent.exe") {
+        throw "Cargo reported an invalid Key Agent test executable"
+    }
+    return $resolved.Path
+}
+
 function Invoke-Tests {
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--all-targets", "--all-features")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--doc", "--all-features")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked")
-    Invoke-Checked -Executable "npm" -CommandArguments @("--prefix", "extension", "test")
-    foreach ($source in Get-ChildItem -LiteralPath "extension/src" -Filter "*.js") {
-        Invoke-Checked -Executable "node" -CommandArguments @("--check", $source.FullName)
+    $keyAgentExecutable = Build-KeyAgentTestExecutable
+    $previousKeyAgentExecutable = [Environment]::GetEnvironmentVariable(
+        "YW_TEST_KEY_AGENT_EXECUTABLE",
+        [EnvironmentVariableTarget]::Process
+    )
+    try {
+        $env:YW_TEST_KEY_AGENT_EXECUTABLE = $keyAgentExecutable
+        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--all-targets", "--all-features")
+        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--doc", "--all-features")
+        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked")
+        Invoke-Checked -Executable "npm" -CommandArguments @("--prefix", "extension", "test")
+        foreach ($source in Get-ChildItem -LiteralPath "extension/src" -Filter "*.js") {
+            Invoke-Checked -Executable "node" -CommandArguments @("--check", $source.FullName)
+        }
+    }
+    finally {
+        if ($null -eq $previousKeyAgentExecutable) {
+            Remove-Item Env:YW_TEST_KEY_AGENT_EXECUTABLE -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:YW_TEST_KEY_AGENT_EXECUTABLE = $previousKeyAgentExecutable
+        }
     }
 }
 

@@ -40,6 +40,50 @@ use crate::key_agent_storage::open_test_key_agent_storage_root_for_child;
 use crate::key_agent_storage::{
     FixedKeyAgentGenerationStoreBindings, open_fixed_key_agent_storage_root_for_child,
 };
+
+/// Public, non-secret structural marker carried only across the cooperative
+/// post-runtime debugger gate. The high half cannot be produced by either
+/// x86-64 sign-extended or zero-extended `mov r64, imm32` encodings, forcing
+/// the reviewed `mov r10, imm64` instruction shape.
+pub(crate) const KEY_AGENT_DEFAULT_DACL_GATE_MARKER: u64 = 0xA17E_DAC1_5AFE_B04D;
+
+/// Stops the exact Key Agent entry thread after CRT/Rust runtime startup and an
+/// independent current-token LPAC eligibility proof, but before stdio use or
+/// any storage-startup protocol operation.
+///
+/// The parent authenticates the exact `49 BA <marker-le> CC` bytes, exception
+/// address, image mapping, PID/TID, and register context while Windows holds the
+/// debug event. It then installs and rereads the token's deny-only default DACL,
+/// clears `r10`, adds one explicit suspend count, and alone may continue this
+/// breakpoint. The reviewed production path supports only x86-64 Windows;
+/// other Windows targets are not claimed buildable, while this module's local
+/// fallback returns an error before stdio if such a target reaches it.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn enter_key_agent_default_dacl_gate() {
+    // SAFETY: the instruction sequence itself touches no memory or stack,
+    // preserves flags, and declares its sole register mutation. Deliberately do
+    // not declare `nomem`: the authenticated debugger ceremony is a cross-thread
+    // synchronization boundary, so the compiler must retain the default memory
+    // clobber across `int3`. The breakpoint is intentionally fatal without that
+    // debugger and resumes at the next instruction only after hardening.
+    unsafe {
+        core::arch::asm!(
+            "mov r10, {marker}",
+            "int3",
+            marker = const KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
+            lateout("r10") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(never)]
+fn reject_unsupported_key_agent_default_dacl_gate() -> Result<(), KeyAgentChildBootstrapError> {
+    Err(KeyAgentChildBootstrapError)
+}
+
 /// Stable failure category for the Key Agent's earliest child-side boundary.
 ///
 /// The error intentionally retains no raw handle or operating-system details.
@@ -103,11 +147,12 @@ impl fmt::Debug for ResidentKeyAgentBoundary {
 
 /// Validates and removes inheritance from the Key Agent's three stdio handles.
 ///
-/// This must be the Key Agent binary's first Windows operation. All three
-/// handles are validated before any mutation: stdin and stdout must be distinct
-/// pipes, stderr must be a third distinct character device, and every handle
-/// must initially have exactly `HANDLE_FLAG_INHERIT`. The function then clears
-/// that flag from all three and verifies that every resulting flag word is zero.
+/// This must be the Key Agent binary's first standard-handle or protocol
+/// operation after the LPAC and debugger-gate proofs. All three handles are
+/// validated before any mutation: stdin and stdout must be distinct pipes,
+/// stderr must be a third distinct character device, and every handle must
+/// initially have exactly `HANDLE_FLAG_INHERIT`. The function then clears that
+/// flag from all three and verifies that every resulting flag word is zero.
 ///
 /// If one clear operation fails, the function still attempts to clear the
 /// remaining handles and never restores inheritance. The caller must terminate
@@ -120,7 +165,8 @@ impl fmt::Debug for ResidentKeyAgentBoundary {
 /// or does not read back as exactly non-inheritable.
 fn seal_inherited_key_agent_stdio() -> Result<SealedKeyAgentStdio, KeyAgentChildBootstrapError> {
     // SAFETY: GetStdHandle returns one borrowed process-table value. This code
-    // neither adopts nor closes it, and no Key Agent application code has run.
+    // neither adopts nor closes it, and no standard-handle or storage-startup
+    // operation has run.
     let stdin =
         unsafe { GetStdHandle(STD_INPUT_HANDLE) }.map_err(|_| KeyAgentChildBootstrapError)?;
     // SAFETY: same borrowed-handle contract as stdin.
@@ -141,20 +187,31 @@ fn seal_inherited_key_agent_stdio() -> Result<SealedKeyAgentStdio, KeyAgentChild
 
 /// Serves the exact inherited Key Agent storage-startup handshake.
 ///
-/// Standard handles are sealed before any other operation. The function then
-/// reads one fixed request through exact EOF, binds it to this process and the
-/// freshly opened storage root, attempts one fixed response, and remains inert
-/// while retaining both child proofs. Only the parent may accept that response,
-/// after observing the exact frame through EOF. A future runtime transition
-/// must establish a separate authenticated bounded channel.
+/// After the current-token LPAC proof and authenticated debugger gate, standard
+/// handles are sealed before any protocol operation. The function then reads
+/// one fixed request through exact EOF, binds it to this process and the freshly
+/// opened storage root, attempts one fixed response, and remains inert while
+/// retaining both child proofs. Only the parent may accept that response after
+/// observing the exact frame through EOF. A future runtime transition must
+/// establish a separate authenticated bounded channel.
 ///
 /// # Errors
 ///
-/// Returns [`KeyAgentChildBootstrapError`] when pre-response stdio sealing,
-/// request I/O, request-side startup-handle detachment/close, decoding, process
-/// identity, storage opening or revalidation, request binding, or response
-/// construction fails. No error returns after response output begins.
+/// Returns [`KeyAgentChildBootstrapError`] when the current process is not the
+/// exact fixed Key Agent LPAC, or when pre-response stdio sealing, request I/O,
+/// request-side startup-handle detachment/close, decoding, process identity,
+/// storage opening or revalidation, request binding, or response construction
+/// fails. No error returns after response output begins.
 pub fn serve_inherited_key_agent_storage_startup() -> Result<(), KeyAgentChildBootstrapError> {
+    crate::key_agent_lpac::verify_current_key_agent_lpac_before_gate()
+        .map_err(|_| KeyAgentChildBootstrapError)?;
+    #[cfg(target_arch = "x86_64")]
+    enter_key_agent_default_dacl_gate();
+    #[cfg(not(target_arch = "x86_64"))]
+    reject_unsupported_key_agent_default_dacl_gate()?;
+    crate::key_agent_lpac::verify_current_key_agent_default_dacl_after_gate()
+        .map_err(|_| KeyAgentChildBootstrapError)?;
+
     let (resident_boundary, generation_store_bindings) = {
         let sealed_stdio = seal_inherited_key_agent_stdio()?;
 

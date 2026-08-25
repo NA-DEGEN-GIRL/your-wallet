@@ -13,7 +13,7 @@ invariants, not a claim that the current binaries establish every boundary.
 | --- | --- |
 | MV3 extension | Strict top-level HTTPS routing, exact 128-bit request IDs, bounded envelopes/state, deadline checks, freeze/navigation cancellation, replay handling, and incognito rejection have unit tests. Native response sequences must now be exact rather than merely increasing. Every native reconnect samples a distinct session ID, resets the per-connection sequence, rejects responses from an earlier session, and is bounded to 4,096 attempts per worker lifetime. Default and release operation still receives only the unavailable response; an explicit debug-only subprocess contract can return only the local Sepolia chain ID. |
 | Native host | The default executable runs the bounded persistent dispatcher: strict JSON and exact version-1 envelopes, combined inbound sequencing, independent response sequencing, cancellation without response, and a 4,096-frame connection cap. Every valid request receives stable provider error 4900 and the process exits with code 78 on EOF or the first terminal error because it constructs only a disabled release attestation. A Cargo-feature **and** `debug_assertions` gated headless contract hook can spawn only the regular-file `broker` sibling beside its own executable, with hidden, cleared-environment stdio, unwind-safe child kill/wait cleanup, and a typed two-nonce/role/sequence handshake. Broker independently admits at most 4,096 post-handshake commands; the hello is outside that count and the next complete frame fails before dispatch. The local chain-ID execution surface is crate-private and absent from ordinary/release library builds. That hook can execute only Broker-owned `eth_chainId`; every other allowlisted method crosses only as a parameter-free enum plus request correlation, is recorded complete by Broker, and then receives 4900. Exact late cancellation is acknowledged internally as already completed and never produces a Chrome response. No raw unavailable-request params, messages, accounts, addresses, or origins cross that hook. A second Windows-only feature/debug hook uses an exact-image-authenticated, process-bound named pipe and a retained one-process Job instead of Broker stdio; it reuses the same payload-only typed state. Feature-enabled release binaries still take the disabled path and exit 78. Chrome-launched native-host image proof, immutable signed installation/registration, stable release extension identity, RPC, signing, and Key Agent access remain absent and stop-ship. |
-| Approval helper | `approval-wire` is the single bounded v2 codec. Its 74-byte parent hello binds an ordinary channel supervisor PID/process/image proof and a distinct logical Key Agent PID/process proof; the 106-byte child hello, 110-byte finish header, bounded request, and 75-byte response retain the existing nonce/transcript framing. The runtime child seals its two stdio objects first, verifies Approval LPAC/Job state, then requires stdio plus all three injected proofs to be five pairwise-distinct exact objects with zero flags. Fresh child-local duplicates of the injected proofs remain authoritative through response write. Pipe PID/session observations bind only to the retained supervisor process, while the logical Key Agent is independently checked for live exact PID, same session, image, fixed `YourWallet.KeyAgent.LPAC.v1` SID, AppContainer/LPAC state, zero capabilities, and least-authority denials. The platform issues one opaque monotonic window and splits matching non-Clone authorization/transport halves; wallet protocol retains both privately, invalidation drops the transport half, and the Key Agent binds its exact digest/nonce/display/protected-phrase request once into `BoundApprovalTransport`. Dormant activation consumes that carrier and checks original expiry before allocation. One private zero-caller transition performs parent hello under `min(original expiry, fresh five-second grace)`, one exact resume, child hello, and revalidation; a second sealed zero-caller transition accepts no raw request/deadline, writes the carrier's exact request plus EOF, verifies the fixed response plus EOF, requires the exact held child to exit naturally with code 0 before the same original deadline, finally revalidates the Key Agent, observes that deadline once more, and retains the carrier in opaque `VerifiedParentBoundApprovalExchange`. It has no response or signing conversion. The final Key-Agent check is point-in-time evidence and must be repeated at any future authorization edge. The ordinary supervisor remains transport authority and the Key Agent remains only the logical parent. The Key Agent launcher supplies process and primary-thread creation attributes as one deny-only protected pair, authenticates the creator and distinct create-event aliases, and registers those aliases in a shared post-join cleanup owner before debugger-thread exit. Worker error, panic, abandoned join proof, and partial closure retain a checked-close/retry path. Attenuation retains the exact `0x00101001` process handle, uses and closes an ephemeral requested-`0x2`/effective-`0x1002` probe before `Held`, and retains only an exact `0x1000` resume-only thread handle. The sole successful resume immediately closes that thread handle, so `Running` structurally retains only the narrow process capability. These capabilities are `Send` but `!Sync`, `!Clone`, and `!Copy`; later threads, other existing high-right handles, the Microsoft Learn/SDK `ResumeThread` access disagreement, and Windows-version variance in debug-event cleanup and thread-right behavior remain outside the point-in-time proof. The legacy launcher fails closed before resource allocation because it lacks the complete logical-parent aggregate. Transferable pipe handles, mapped-image provenance, signed immutable installation and DLL graph, a distinct supervisor principal and same-user owner separation, returned/preexisting/duplicated high-right handles, enabled debug/take-owner privileges, later-thread policy, bootstrap/provenance, endpoint topology/exclusivity and per-write attribution, signed cleanup, a positive real-binary handshake, and production composition through signing remain **STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default builds exit 78. |
+| Approval helper | `approval-wire` is the single bounded v2 codec. Its 74-byte parent hello binds an ordinary channel supervisor PID/process/image proof and a distinct logical Key Agent PID/process proof; the 106-byte child hello, 110-byte finish header, bounded request, and 75-byte response retain the existing nonce/transcript framing. The runtime child seals its two stdio objects first, verifies Approval LPAC/Job state, then requires stdio plus all three injected proofs to be five pairwise-distinct exact objects with zero flags. Fresh child-local duplicates of the injected proofs remain authoritative through response write. Pipe PID/session observations bind only to the retained supervisor process, while the logical Key Agent is independently checked for live exact PID, same session, image, fixed `YourWallet.KeyAgent.LPAC.v1` SID, AppContainer/LPAC state, zero capabilities, and least-authority denials. The platform issues one opaque monotonic window and splits matching non-Clone authorization/transport halves; wallet protocol retains both privately, invalidation drops the transport half, and the Key Agent binds its exact digest/nonce/display/protected-phrase request once into `BoundApprovalTransport`. Dormant activation consumes that carrier and checks original expiry before allocation. One private zero-caller transition performs parent hello under `min(original expiry, fresh five-second grace)`, one exact post-gate application resume, child hello, and revalidation; a second sealed zero-caller transition accepts no raw request/deadline, writes the carrier's exact request plus EOF, verifies the fixed response plus EOF, requires the exact held child to exit naturally with code 0 before the same original deadline, finally revalidates the Key Agent, observes that deadline once more, and retains the carrier in opaque `VerifiedParentBoundApprovalExchange`. It has no response or signing conversion. The final Key-Agent check is point-in-time evidence and must be repeated at any future authorization edge. The ordinary supervisor remains transport authority and the Key Agent remains only the logical parent. Before stdio or INT3, the Key Agent child fresh-opens its current token with exact `TOKEN_QUERY | TOKEN_DUPLICATE`, verifies the fixed zero-capability LPAC policy, and checked-closes it; ordinary non-LPAC execution remains silent exit 78 without entering the gate. The Key Agent launcher supplies process and primary-thread creation attributes as one deny-only protected pair, authenticates the creator and distinct create-event aliases, and registers those aliases in a shared post-join cleanup owner before debugger-thread exit. It retains a separate exact `TOKEN_QUERY | TOKEN_ADJUST_DEFAULT` handle in `PendingKeyAgentLpac`. Test and production share a strict primary-TID-only/zero-loader-thread policy. The green actual GUI Key Agent regression rejects non-primary loader activity before detach, verifies Job cleanup, and keeps root active-process count one without conhost; it does not reach the semantic gate. A separate green deterministic import-free relocatable GUI PE fixture proves the exact-primary gate, Pending→Verified transition, one verified suspend count, detach, and dormant ownership/cleanup mechanics, but not product compatibility. Seven Rust-startup supervisor integrations are explicitly ignored STOP-SHIP; the green negative maps loader activity to `Activation` and removes the prepared storage root. The pre-resume matrix's no-mutation and original-deep-copy controls exit 0, while every tested deny-first `OWNER RIGHTS` `0x000e0000` plus `SYSTEM`/package/user allow combination exits exact `0xC0000142`; standalone `READ_CONTROL`, `WRITE_DAC`, or `WRITE_OWNER` denies do likewise. Because the package SID is neither a token group nor owner-eligible, the current same-user LPAC principal cannot supply a loader-compatible from-birth `WRITE_DAC` denial. This excludes the current architecture, not every Windows design; a distinct OS principal/service boundary is the next design option. A revised bounded loader policy must still authenticate each worker's provenance, exact thread object/ID, event set, lifetime, exit, and post-exit reopen denial, but it can only exercise the conditional gate mechanism and cannot repair the from-birth gap. If that mechanism reaches the exact PID/primary-TID marker inside `serve`, the launcher may install/read back the deny-only token default DACL, record the post-mutation baseline, checked-close adjust authority, and complete the least-authority final-token bookends. The child independently reads the default back after the later post-gate resume and before later serve work. Every revalidation re-reads both token DACLs and the same current-token object. Worker error, panic, abandoned join proof, and partial closure retain a checked-close/retry path. Attenuation retains the exact `0x00101001` process handle, uses and closes an ephemeral requested-`0x2`/effective-`0x1002` probe before `Held`, and retains only an exact `0x1000` resume-only thread handle. The post-gate application-releasing resume immediately closes that thread handle, so `Running` structurally retains only the narrow process capability. These capabilities are `Send` but `!Sync`, `!Clone`, and `!Copy`. The green post-loader non-primary feasibility test covers real `CreateThread(NULL, ...)` using a default descriptor, but does not prove the real Key Agent's loader-compatible exact-primary production gate. Caller-supplied/native/remote thread creation, pre-gate objects, other existing high-right handles, the Microsoft Learn/SDK `ResumeThread` access disagreement, and Windows-version variance in debug-event cleanup and thread-right behavior remain outside the point-in-time proof. The legacy launcher fails closed before resource allocation because it lacks the complete logical-parent aggregate. Transferable pipe handles, mapped-image and signed DLL/TLS provenance, signed immutable installation, a pre-gate non-thread-object inventory, the loader-worker provenance/lifetime/exit/reopen policy, a distinct OS principal/service design with IPC/lifecycle proof, a supported AMD64/Windows marker/context/system-breakpoint matrix, same-user owner separation, returned/preexisting/duplicated high-right handles, enabled debug/take-owner privileges, bypass-thread policy, bootstrap/provenance, endpoint topology/exclusivity and per-write attribution, signed cleanup, a real GUI Key Agent loader-compatible exact-primary gate E2E, and production composition through signing remain **STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`, so default builds exit 78. |
 | Secret-input helper | The library has exact prompt/outcome codecs, bounded zeroizing response reads, and a non-persisting native secret surface. Its high-level parent API requires the release-attested restricted launcher and exact manifest-derived Secret Input role, atomically owns separate request/response pipes and the held helper/job, transfers the canonical prompt plus EOF, and performs cancellable/drained bounded response reads through EOF. The proof binds the exact prompt, held file/process/LPAC identity, and a fresh OS-CSPRNG challenge, then permits consumption only for that same prompt. Default executable builds exit 78 and the compiled release policy is absent. Direct-launch parent-identity denial and immutable signed-artifact evidence remain stop-ship. |
 | Broker/key agent/Windows boundary | Method schemas, state bounds, typed chain evidence, canonical display derivation, request-hashed one-shot approval, nonce lifecycle, signer self-checks, protected pipe/helper verification, and an opaque verified-response capability exist. The Key Agent now also has a crate-private offline-lifecycle wire/controller: exact magic/version/type/request-ID/sequence/deadline/length framing, fixed 64-byte frames, exact EOF, zero reserved fields, a 64-request controller-activation lifetime across one-shot inherited request channels, and distinct duplicate/replay/out-of-order outcomes. Admission pins the bounded wall-clock remainder to a trusted monotonic `Instant`; every frontend receives the exact absolute expiry. After a frontend returns, only the controller can mint a private-field, non-clone checked-deadline capability, and every service/session mutation must consume it. The same capability owns the trusted clock borrow and rechecks the pinned expiry after KDF/derivation/seal/reseal at the last safe point before durable commit, unlock, or pending-state activation; expiry locks without advancing generation or decrypted state. Its closed command set is status, 12/24-word creation, separate backup display/confirmation stages, open, lock, and confirmed-address lookup; no password, mnemonic, confirmation answers, signing, import/export, or network payload is representable. Status, lock, and confirmed-address access use the owned `OfflineWalletService`. Secret-bearing transitions require a crate-sealed frontend capability that can acquire inputs or present a borrowed view but cannot receive the vault service. Recovery display returns a non-clone, live-session-bound capability without mutation; only the deadline-checked controller may consume it into one pending positions-only confirmation, which lock, restart, cross-stage use, or replay clears or rejects. The compiled capability returns stable `Unavailable` and locks because authenticated Secret Input/Recovery adapters and the inherited channel launcher are not wired. The anti-phishing phrase has a sealed Key Agent-only lifecycle: a five-word OS-CSPRNG cue is first committed as pending and is unavailable to prompts until a trusted exact enrollment confirmation. Rotation is a persisted old-to-new pending ceremony. Loads carry typed authenticated-empty/record state, installation/store/class identity, an exclusive owner generation, exact record digest, and previous/high-water anchor evidence; same-generation equivocation, empty-after-observed, rollback, owner takeover, or ambiguous commits lock the lifecycle. The platform storage layer now has a narrow private fixed-role Key Agent generation-store adapter, but no production protected-settings consumer or settings key provisioning is wired yet; independent settings AEAD key custody, exclusive-owner enforcement, and a release-approved non-rollbackable anchor remain blockers. The launcher uses separate deterministic revision-v1, zero-capability LPAC profiles for manifest-derived Approval and Secret Input roles; the names and derived SIDs differ and callers cannot select the profile role. The launcher verifies every suspended child against its exact expected SID, and the Secret Input/recovery bootstrap independently repeats that check. Both use an exact inherited-handle list, minimal environment, suspended token verification, process mitigations, and a single-process kill-on-close job. The authenticated dual-slot store and encrypted Key Agent journal cover reservation, approval-pending, potentially-signed, signed-unbroadcast, broadcasting, submitted, and broadcast-unknown recovery. Raw transaction bytes remain journal-owned and reach an RPC adapter only through a non-clone lease after `Broadcasting` commits. Production rollback-anchor/key provisioning and signed-artifact helper/network/RPC evidence are absent; the compiled release policy is `None`, so launch and signing remain disabled. |
 | Key Agent activation proof | A dormant crate-private Windows seam verifies the manifest-derived role, exact image, zero-capability LPAC token, Job, pipes, and independently prepared supervisor-held fixed root before detaching with one proven suspend count. Fresh profile/root creation remains a distinct non-launchable pending path. A separate dormant storage-only opener, with zero production callers, opens only the fixed existing leaf using `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT`, and no delete sharing; it verifies initial security and complete `FILE_ID_INFO`, canonicalizes and reopens the path, requires identical security and identity, privately retains the canonical path/reopened handle, and revalidates both the held handle and canonical reopen. It neither creates nor repairs/deletes/adopts the root and is distinct from the child `LOCALAPPDATA`/token-derived opener. It cannot observe profile registration or construct `HeldExistingKeyAgentInstallObjects`, `PreparedKeyAgentProvisioning`, or `VerifiedExistingKeyAgentInstall`. The sole production-compiled prepared mint remains the private sealed adoption transition; whole-release binding retains helper-manifest and exact file-object proofs separately, but the opener, adoption transition, release-binding, and dormant supervisor binder all have zero production call sites. The one-shot child/root transcript requires exact request EOF before the child detaches both ambient protocol entries and closes raw stdin; raw stdout survives only in a response capability. Once response output is attempted, write/flush/close results cannot return to `main` and the child enters `Sleep(INFINITE)`. The parent's deadline-bound exact response plus EOF authoritatively proves response-endpoint closure; separate resident-process/Job revalidation completes startup. The parent consumes both endpoints and the retained aggregate has none. This dormant boundary exposes no generic runtime/signing IPC. Production installer key/checkpoint and journal I/O backends, authoritative profile-registration observation and held-aggregate construction, an exclusive installer lease covering checkpoint/observation/reread ordering, production call sites and recovery, atomic same-user/ancestor race closure, rollback-anchor and storage/AEAD-key provisioning, protected settings/lease wiring, authenticated Broker/supervisor topology and single-instance enforcement, signed immutable artifact/DLL/dependency E2E, and release activation remain **STOP-SHIP**; `COMPILED_RELEASE_POLICY` is `None`. |
@@ -341,12 +341,13 @@ that C# runner type and is not shared with the Rust coordinator.
 ### Key Agent activation invariant (STOP-SHIP)
 
 Windows routes debug events to the thread that created the debuggee. The activation
-boundary therefore performs `CreateProcessW`, `WaitForDebugEventEx`, image-handle
-authentication, `ContinueDebugEvent`, and `DebugSetProcessKillOnExit(FALSE)` on
-one fresh dedicated OS thread that owns no other debuggee. The caller cannot
-contaminate or consume that worker's event queue. `DebugActiveProcessStop` is not
-used: its PID-only path conflicts with the deny-only process creation DACL. The
-documented debugger-thread-exit behavior provides detach without a PID reopen.
+boundary therefore performs `CreateProcessW`, the complete bounded
+create/loader/system-breakpoint/semantic-gate event loop, every
+`ContinueDebugEvent`, and `DebugSetProcessKillOnExit(FALSE)` on one fresh
+dedicated OS thread that owns no other debuggee. The caller cannot contaminate or
+consume that worker's event queue. `DebugActiveProcessStop` is not used: its
+PID-only path conflicts with the deny-only process creation DACL. The documented
+debugger-thread-exit behavior provides detach without a PID reopen.
 
 The first event must be the exact pre-user-mode `CREATE_PROCESS_DEBUG_EVENT` for
 the returned PID and primary thread. Its image `hFile` is compared with the
@@ -356,9 +357,10 @@ an all-zero ID means the filesystem does not support that identity and all-`FF`
 means a unique ID could not be established; both are rejected rather than
 compared. A zero volume serial is also rejected.
 
-Only after that mapped-image proof succeeds, and while the create event still
-freezes every process thread, the worker installs exactly one explicit
-primary-thread suspend count and verifies the exact process token. The proof
+The original `CREATE_SUSPENDED` count is consumed to let Windows produce this
+first event, so the explicit count is zero while the create event itself freezes
+the process. Only after the mapped-image proof succeeds does the worker verify
+the exact process token and mint the pending token proof. The LPAC proof
 requires an exact DWORD `TokenIsAppContainer == 1`, the fixed Key Agent profile
 SID, and zero `TokenCapabilities`. It duplicates the primary token at
 `SecurityIdentification`, queries its valid `TokenUser` SID, and performs two
@@ -372,17 +374,29 @@ malformed result, SID mismatch, capability, or membership pair fails closed. A
 separate suspended ordinary-AppContainer control omits only the AAP opt-out and
 must produce `(true, true)`; neither control is resumed into user mode.
 
-Only the verified LPAC state may continue the event. As soon as the CREATE_PROCESS
-event exposes independently safe process/thread aliases, their raw slots and
-PID/TID are registered in a witness-branded shared cleanup owner, before hFile,
-mapped-image, ID/object, LPAC, or later fallible checks. A malformed partial set
-still retains every independently safe alias. They remain system-managed while
-the debugger relationship is attached. After all other fallible worker checks,
-the no-kill arm requires a complete authenticated registration and
-`DebugSetProcessKillOnExit(FALSE)` is the final fallible operation; only
-infallible phase and ownership moves follow. The opaque pending owner can cross
-the boundary but exposes no detached, process, or resume operation. The dedicated
-OS thread then exits and is joined.
+Only the verified gate-pending LPAC state may continue the create event. As soon
+as that event exposes independently safe process/thread aliases, their raw slots
+and PID/TID are registered in a witness-branded shared cleanup owner, before
+hFile, mapped-image, ID/object, LPAC, or later fallible checks. A malformed
+partial set still retains every independently safe alias. They remain
+system-managed while the debugger relationship is attached. The worker then
+enters the test/production-identical strict loader loop. The actual
+GUI-subsystem Key Agent regression rejects non-primary loader activity before
+detach and verifies Job cleanup with root active-process count one; the separate
+minimal import-free GUI PE fixture proves exact-primary gate mechanics but not
+product compatibility. The pre-resume default-DACL matrix additionally excludes
+the current same-user LPAC architecture: it cannot deny `WRITE_DAC` from birth
+and remain loader-compatible. A revised loader policy could exercise the
+compiled gate mechanism but cannot repair that gap; the next architecture option
+is a distinct OS principal/service boundary. Only conditionally, if such a later
+event freezes every thread, does the implementation add exactly one explicit
+primary-thread suspend count, finalize and read back the default DACL, and
+continue while retaining that count. Only after all remaining gate checks may
+the no-kill arm require a complete
+authenticated registration and make `DebugSetProcessKillOnExit(FALSE)` the final
+fallible operation; only infallible phase and ownership moves follow. The opaque
+final owner can cross the boundary but exposes no detached, process, or resume
+operation. The dedicated OS thread then exits and is joined.
 
 Marking that exact witness joined activates the shared alias cleanup. A worker
 `Err`, worker panic, or abandoned joined proof performs post-join checked closure;
@@ -394,7 +408,7 @@ aliases independently, even if the other validation or close fails; post-join
 process wait/exit-code failure likewise cannot starve alias closure. Explicit cleanup failure takes precedence; `Drop`
 cannot report its result.
 
-Caller-side finalization accepts only the exact witness shared by the pending
+Caller-side finalization accepts only the exact witness shared by the final
 owner, the non-`Send` join proof, and the root Job cleanup gate. It then requires
 `CheckRemoteDebuggerPresent == false` on the retained creator process handle,
 reauthenticates and closes the registered event aliases, performs an exact
@@ -798,15 +812,17 @@ PID/liveness/token checks and bounded reject termination/wait/exit-code cleanup.
 Explicit transition failures perform synchronous cleanup with cleanup-error
 precedence; `Drop` retries cleanup but cannot report failure.
 
-Kernel tests preserve process pseudo-handle behavior inside the child and thread
-pseudo-handle behavior inside a real `CreateThread`, then disable
-`SeDebugPrivilege` and `SeTakeOwnershipPrivilege` and prove fresh owner PID/TID
-single-access opens are denied.
+Kernel tests preserve process and primary-thread pseudo-handle behavior, then
+disable `SeDebugPrivilege` and `SeTakeOwnershipPrivilege` and prove fresh owner
+PID/TID single-access opens are denied.
 
-The production Key Agent activation token-hardening step opens the suspended
-process's then-current token as `Hwrite` with exactly
-`TOKEN_QUERY | WRITE_DAC | READ_CONTROL`. Before resume it installs the token
-DACL and immediately performs a bounded two-pass
+Token hardening has gate-pending and final phases. At
+`CREATE_PROCESS_DEBUG_EVENT`, the supervisor opens the then-current token as
+`Hwrite` with exactly `TOKEN_QUERY | WRITE_DAC | READ_CONTROL` and separately
+opens `Hadjust` with exactly `TOKEN_QUERY | TOKEN_ADJUST_DEFAULT`. Before
+mutation, `CompareObjectHandles` must prove exact token-object equality. This
+phase installs only the token-object DACL and immediately performs a bounded
+two-pass
 `GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)` readback through that same
 opened handle. The first pass must return `ERROR_INSUFFICIENT_BUFFER` with a
 1..=64 KiB requirement; the aligned second pass, its returned length, and
@@ -818,37 +834,193 @@ fields, and exact ACL/descriptor end admit exactly three zero-flag explicit
 fixed Key Agent SID with `TOKEN_QUERY | TOKEN_DUPLICATE`, then fixed Approval SID
 with `TOKEN_QUERY`. Every mask, declared SID length, SID byte sequence, and ACE
 size must consume its exact region; extra ACEs and ACE/ACL/descriptor slack or
-trailing bytes fail closed. Immediately after that same-`Hwrite` readback, an
-exact-size `TokenStatistics` read records the `TokenId` and `ModifiedId`
-baseline. The supervisor opens a fresh current-token `Hfinal` with exactly
-`TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL`; `CompareObjectHandles` must
-prove exact kernel-object equality with `Hwrite`, both IDs must equal the
-baseline, the full LPAC policy and exact DACL must pass on `Hfinal`, and a final
-exact-size statistics read must bookend those checks. `Hwrite` then closes
-before `VerifiedKeyAgentLpac` is minted, so the opaque proof retains only
-`Hfinal` without `WRITE_DAC`.
+trailing bytes fail closed. A fresh `Hfinal` with exactly
+`TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL` must compare as the same object
+and pass LPAC, token-object-DACL, and identity checks. `Hwrite` is checked-closed;
+`Hadjust` remains only inside opaque `PendingKeyAgentLpac`, minted by
+`PreparedKeyAgentLpac::prepare_suspended_process_for_gate(...)`.
 
-That proof is revalidated after the creator-handle post-detach suspend probe,
-again through the narrow process after the ephemeral `0x1002` probe, immediately
-before the sole `ResumeThread` that releases the final count into user mode, and
-at resident authority checks. Each pass bookends the retained
-`Hfinal`'s full policy and exact DACL with baseline-equal statistics, then opens
-a fresh current `TOKEN_QUERY` handle and requires exact-object plus
-`TokenId`/`ModifiedId` equality. These are fail-closed point-in-time checks, not
-an atomic freeze: holding `Hfinal` freezes neither the process's current-token
-association nor the token contents. The last-check/`ResumeThread` gap and
-swap-away/back races remain **STOP-SHIP**, and DACL changes are not assumed to
-update `ModifiedId`. The creation DACL is also point-in-time: it covers only the
-initial process and primary thread, not later-created threads, and cannot itself
-revoke creator-returned, preexisting, or duplicated high-right handles. The
-activation closes its own authenticated creator pair as described above; other
-such aliases remain outside this proof. Complete
-same-user supervisor/owner isolation and enabled debug/take-ownership privilege
-behavior remain **STOP-SHIP**; release activation still requires a distinct
-supervisor principal or an explicitly narrower threat model. The `cfg(test)`
-integration executes the production-compiled token and creation hardening,
-proves the Approval query-only result, and exercises the creation DACL kernel
-behavior.
+The eight-case pre-resume `TokenDefaultDacl` kernel matrix now fixes the current
+same-user LPAC boundary. In the green
+`pre_resume_token_default_dacl_matrix_proves_loader_and_same_user_boundary`, the
+no-mutation and exact original-DACL deep-copy controls both reach user mode and
+exit 0. All six deny-first cases exit exact `0xC0000142`
+(`STATUS_DLL_INIT_FAILED`): an `OWNER RIGHTS` deny mask `0x000e0000` remains
+loader-fatal across the tested `SYSTEM`, exact-package, and child-user
+`GENERIC_ALL` combinations. The green
+`pre_resume_owner_rights_deny_mask_axis_proves_each_standard_right_breaks_loader`
+also grants all three principals `GENERIC_ALL` and shows that a standalone
+`READ_CONTROL`, `WRITE_DAC`, or `WRITE_OWNER` `OWNER RIGHTS` deny is individually
+loader-fatal. The sanitized original default DACL is exactly child-user
+`GENERIC_ALL`, `SYSTEM` `GENERIC_ALL`, logon-session
+`GENERIC_READ | GENERIC_EXECUTE`, and exact-package `GENERIC_ALL` allows. The
+green `lpac_package_sid_is_absent_from_groups_and_not_token_owner_eligible`
+proves that the package SID is absent from `TokenGroups` and that making it
+`TokenOwner` fails with `ERROR_INVALID_OWNER`.
+
+The precise inference is that the current same-user LPAC principal cannot supply
+a loader-compatible from-birth policy that denies `WRITE_DAC`. This excludes the
+current architecture, not every possible Windows design. Post-loader final-DACL
+and gate feasibility cannot retroactively close that gap. The next design option
+is a distinct OS principal/service boundary with new principal, IPC, and service
+lifecycle proofs. The compiled finalization remains a conditional mechanism at
+the reviewed semantic gate inside `serve`, after loader, DLL, TLS, and CRT
+initialization. It is not the first machine or Rust instruction, and objects
+created before it remain outside the proof.
+
+Child-side eligibility precedes the marker.
+`serve_inherited_key_agent_storage_startup()` first calls
+`verify_current_key_agent_lpac_before_gate()`, before stdio or INT3. That
+read-only check opens the current process token through a fresh exact
+`TOKEN_QUERY | TOKEN_DUPLICATE` handle, verifies the fixed Key Agent SID and
+complete zero-capability LPAC policy, and checked-closes the handle. Only
+successful verification may enter the debugger gate. The green
+`default_disabled` proves that
+ordinary non-LPAC `key-agent.exe` execution remains a silent exit 78 without
+executing INT3; an LPAC-policy mismatch likewise fails before stdio and INT3.
+This is eligibility-ordering evidence, not actual production-gate success.
+
+Before launch, the already-held authenticated Key Agent file is parsed as a
+bounded AMD64 PE32+ image. Exactly one whole-file
+`49 BA <marker-le> CC` sequence must exist, with all 11 bytes in initialized raw
+(non-padding) bytes of one executable section. The create-event hFile must
+authenticate that same held file and be checked-closed before its event is
+continued. The expected runtime INT3 is derived only from
+authenticated `lpBaseOfImage + int3_rva`, never preferred `ImageBase` or
+`lpStartAddress`.
+
+The original `CREATE_SUSPENDED` count was consumed 1→0 to produce the first
+debug event; the authenticated CREATE_PROCESS event itself is the process-wide
+stop. Only after pending-token verification and checked create-event hFile close
+may it be continued into the loader. The currently compiled candidate loop is
+monotonic-deadline bounded to 160 post-create events and 128
+`LOAD_DLL_DEBUG_EVENT`s, requires every event to carry the expected PID/primary
+TID, and rejects `CREATE_THREAD`/`EXIT_THREAD`, `UNLOAD_DLL`, and non-landmark
+exceptions. It fails closed but is not a production-compatible contract. Test
+and production now use this same strict policy; no diagnostic worker allowance
+remains. The green
+`real_key_agent_loader_activity_fails_closed_before_detach` copies the exact
+GUI-subsystem `key-agent.exe` reported by a fresh Cargo build into the
+profile-private fixture and launches that copy rather than a guessed profile
+sibling. It records the non-primary loader `CREATE_THREAD` as the
+pending event, authenticates and registers the event's zero-flag `hThread` alias
+for post-join cleanup, rejects before detach, and proves that raw alias returns
+`ERROR_INVALID_HANDLE` after join. It also verifies joined Job cleanup. GUI
+subsystem selection structurally avoids `conhost.exe`, and the root Job
+active-process count stays one. This proves rejection and cleanup, not a
+product-compatible gate. An
+earlier CUI diagnostic fixture had an exact System32 `conhost.exe` and root count
+two and observed multiple loader workers, worker-TID DLL loads, first-chance C++
+`0xe06d7363`, and DLL unload. Those observations are historical threat-model
+input, not the current accepted event contract or gate evidence.
+
+A replacement bounded allowlist must authenticate each loader worker's creation
+provenance, exact thread object/ID, admitted event set and lifetime, proof that
+every worker exits before the semantic gate, and fresh post-exit
+reopen denial, while checked-closing every non-null hFile before
+continue. Its policy and bounds remain **STOP-SHIP**. Any eventual automatic
+system breakpoint must still follow an exact pre-held System32 `ntdll.dll`
+`FILE_ID_INFO` match that pins `lpBaseOfDll`, then require a
+`MEM_COMMIT | MEM_IMAGE`, executable, non-guard page whose `AllocationBase`
+equals that ntdll base, remote byte `0xCC`, and
+`RIP == ExceptionAddress + 1`. No unproven `DbgBreakPoint` export RVA or fixed
+exception `NumberParameters` shape is assumed.
+Even if that replacement policy succeeds, it does not close the measured
+from-birth `WRITE_DAC` gap and therefore is not sufficient to admit the current
+same-user architecture into production.
+
+If that revised loader policy reaches and authenticates it, the cooperative gate
+must arrive as a first-chance
+`EXCEPTION_BREAKPOINT` from the exact process and primary TID. Its
+`ExceptionAddress` is the authenticated INT3, `RIP == address + 1`,
+`R10 == marker`, remote memory is the exact 11-byte sequence, and
+`VirtualQueryEx` must report a `MEM_COMMIT | MEM_IMAGE`, executable, non-guard
+region with `AllocationBase` equal to the authenticated main-image base. Before
+continue, the debugger uses an explicitly 16-byte-aligned AMD64 `CONTEXT`
+wrapper, zeros `R10`, and verifies context readback. Only the reserved
+always-one EFLAGS bit 1 representation may canonicalize; every mutable flag bit
+and every other reviewed context field remains exact. While the
+debug event holds every thread, primary `SuspendThread` must observe prior count
+zero and leave explicit count one.
+
+The separately green
+`minimal_primary_gate_proof_detaches_with_one_verified_suspend_count` uses a
+deterministic import-free relocatable GUI PE fixture to prove the exact
+PID/primary-TID gate, `PendingKeyAgentLpac`→`VerifiedKeyAgentLpac`, one verified
+suspend count, detach, and root Job count one. It proves the gate machinery, not
+actual Key Agent loader compatibility, a signed artifact, or product E2E.
+
+Supervisor tests preserve that layering. The green minimal-PE
+`integrated_kernel_binding_owns_one_member_and_no_inheritable_parent_handles`
+and `dormant_aggregate_unwind_synchronously_aborts_the_exact_process` cover only
+dormant ownership, non-inheritance, and drop/unwind cleanup. All seven supervisor
+integration tests that drive the Rust-startup fixture through storage or
+Approval are explicitly ignored **STOP-SHIP** because loader workers precede the
+exact-primary gate. The green
+`rust_startup_fixture_loader_activity_fails_closed_before_supervisor_binding`
+instead proves that activity maps to `KeyAgentSupervisorError::Activation` and
+removes the prepared storage root. No actual production gate or storage-startup
+success is claimed.
+
+Only then may `PendingKeyAgentLpac::finalize_after_gate(...)` consume the pending
+proof into `VerifiedKeyAgentLpac`. It revalidates current-token
+association, `Hfinal`/`Hadjust` object and identity continuity, LPAC, and the
+token-object DACL. `Hadjust` installs the exact 28-byte `TokenDefaultDacl`:
+`ACL_REVISION`, zero reserved fields, no allow ACE, and one zero-flag
+`ACCESS_DENIED_ACE` for binary `OWNER RIGHTS` (`S-1-3-4`) with mask
+`0x000e0000` (`READ_CONTROL | WRITE_DAC | WRITE_OWNER`), with no ACL slack or
+trailing bytes. Its immediate bounded readback validates the fixed prefix and
+returned range, then proves with checked arithmetic that the non-null aligned
+`PACL` header and entire 28-byte ACL lie inside initialized bytes before forming
+a slice. Initialized API-wrapper padding/trailing bytes may surround the pointed
+ACL, but the 28-byte ACL itself permits no internal slack. A post-mutation
+statistics read creates the final baseline and preserves
+provisional `TokenId` continuity; `Hadjust` is then checked-closed. With adjustment
+authority gone, `Hfinal` bookends full policy, both DACLs, identity, and
+baseline-equal statistics and must match a fresh current-token object. Only the
+unchanged least-authority `Hfinal` remains in the final proof. When the
+later sole post-gate `ResumeThread` releases the explicit count, the child's
+first semantic step calls
+`verify_current_key_agent_default_dacl_after_gate()`, opens its current token
+with a fresh `TOKEN_QUERY` handle, and reads back the same exact default DACL
+before later `serve` work.
+
+Final revalidation runs after detach, through narrow-process attenuation,
+immediately before the sole `ResumeThread` that releases post-gate application
+execution, and at resident authority edges. It bookends `Hfinal` LPAC policy,
+both DACLs, and baseline-equal statistics, then requires a fresh current token
+to be the same object and identity. These are point-in-time checks, not an atomic
+freeze; the last-check/resume and swap-away/back races remain **STOP-SHIP**, and
+no DACL mutation is assumed to update `ModifiedId`.
+
+A green
+`post_loader_worker_feasibility_default_dacl_hardens_later_null_security_thread`
+proves a separate cooperative post-loader child and parent
+install/readback/adjust-close, child independent readback, actual
+`CreateThread(NULL, ...)`, pseudo `GetThreadTimes`,
+`OpenThreadToken(ERROR_NO_TOKEN)`, exact default owner/group and one-ACE DACL,
+parent and child one-bit denial matrices, privilege bookends, checked cleanup,
+and natural exit 0. The descriptor parser requires only
+`SE_SELF_RELATIVE | SE_DACL_PRESENT`; it does not equate
+`SE_DACL_PROTECTED` or `SE_DACL_DEFAULTED` with the explicit protected creation
+descriptor. That ignored libtest probe runs on a non-primary TID, so it is
+kernel feasibility, not a substitute for the real Key Agent's loader-compatible
+exact-primary production gate.
+
+In post-loader feasibility on the tested host, default-security Win32 later
+threads created after the final lock inherit the policy. Because the actual Key
+Agent gate has not succeeded and a loader-compatible from-birth `WRITE_DAC`
+denial is unavailable, this is not production coverage for the current
+architecture. Caller-supplied descriptors, raw native or remote
+thread creation, returned/preexisting/duplicated high-right handles, and objects
+created under the old default before the gate remain outside it.
+`TokenDefaultDacl` is token-global rather than thread-only, and the observed
+loader-worker thread history is neither authenticated yet nor a non-thread-object
+inventory. A distinct OS principal/service boundary, enabled
+debug/take-ownership behavior, signed DLL/TLS provenance,
+pre-gate object inventory, and supported architecture/Windows matrices for the
+AMD64 context and ntdll breakpoint remain **STOP-SHIP**; release still requires
+that distinct-principal/service design or an explicitly narrower threat model.
 
 The authorization and transport lifetime now share one platform-issued
 monotonic identity. No caller supplies its absolute deadline, invalidation drops
@@ -859,11 +1031,14 @@ terminal evidence retain the same opaque carrier and original deadline.
 That is repo-local kernel feasibility evidence, not release evidence. The
 Approval fixture does not directly read back the copied image's mandatory-label
 state. Its test-only mitigation removes exactly the `NO_LOW_LABEL` bit to permit
-the profile-scoped copy; production mitigation remains unchanged. A
-signed/mapped exact image, complete
-DLL/dependency provenance, a distinct supervisor principal, same-user owner
-separation, a later-thread and existing/duplicated high-right-handle policy,
-enabled-privilege constraints, bootstrap/provenance, endpoint
+the profile-scoped copy; production mitigation remains unchanged. Complete
+signed DLL/TLS provenance, a pre-gate non-thread-object inventory, supported
+architecture/Windows evidence for the marker/context/system breakpoint, a
+bounded loader-worker provenance/lifetime/exit/reopen-denial policy, a distinct
+OS principal/service design with IPC/lifecycle proof, a real GUI Key Agent
+loader-compatible exact-primary gate E2E, same-user owner separation,
+caller-supplied/raw-native/remote-thread and existing/duplicated high-right-handle
+policy, enabled-privilege constraints, bootstrap/provenance, endpoint
 topology/exclusivity, signed-artifact cleanup evidence, and production
 composition/signing remain **STOP-SHIP**. The production binder still has zero
 callers and both compiled policies stay `None`.
@@ -1105,11 +1280,14 @@ sealed stderr and fixed generation-store bindings derived from the child-opened
 root until Job termination. Only the parent's exact response plus EOF under the
 startup deadline proves response-handle closure; no startup handle is reused for
 runtime I/O.
-The integrated kernel fixture has two explicit `cfg(test)` accommodations: its
-reader consumes only the pinned terse libtest preamble before the exact response,
-and its Job topology permits only the fixture plus at most the exact
-`GetSystemDirectoryW` `conhost.exe`. Production requires response magic at byte
-zero and exactly one Job member; neither test accommodation is release evidence.
+All seven Rust-startup supervisor integration positives are explicitly ignored
+**STOP-SHIP**. Their fixture code, when deliberately invoked, has two
+`cfg(test)` accommodations: its reader consumes only the pinned terse libtest
+preamble before the exact response, and its Job topology permits only the fixture
+plus at most the exact `GetSystemDirectoryW` `conhost.exe`. Production requires
+response magic at byte zero and exactly one Job member. The green minimal-PE
+dormant ownership/cleanup positives and Rust-startup failure-cleanup negative
+prove neither storage-startup success nor release evidence.
 
 **STOP-SHIP (English):** the in-crate coordinator does not prove that a standalone
 supervisor is single-instance, does not authenticate the Native Host/Broker/Key

@@ -196,6 +196,192 @@ pub struct VerifiedHelper {
     role: HelperRole,
 }
 
+#[cfg(all(test, windows))]
+const MINIMAL_KEY_AGENT_GATE_PE_BYTES: usize = 0x600;
+#[cfg(all(test, windows))]
+const MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES: usize = 0x200;
+#[cfg(all(test, windows))]
+const MINIMAL_KEY_AGENT_GATE_TEXT_RVA: u32 = 0x1000;
+#[cfg(all(test, windows))]
+const MINIMAL_KEY_AGENT_GATE_TEXT_BYTES: usize = 13;
+
+/// Builds one deterministic import-free AMD64 PE32+ image whose primary entry
+/// executes only the cooperative Key Agent gate and then spins in place.
+///
+/// The marker is deliberately passed through `black_box` and assembled a byte
+/// at a time. That keeps this test-image builder from introducing a second
+/// contiguous gate signature into the Rust test executable itself.
+#[cfg(all(test, windows))]
+fn minimal_key_agent_gate_pe_image() -> [u8; MINIMAL_KEY_AGENT_GATE_PE_BYTES] {
+    const PE_OFFSET: usize = 0x80;
+    const COFF_OFFSET: usize = PE_OFFSET + 4;
+    const OPTIONAL_OFFSET: usize = COFF_OFFSET + 20;
+    const OPTIONAL_HEADER_BYTES: u16 = 0xF0;
+    const SECTION_OFFSET: usize = OPTIONAL_OFFSET + 0xF0;
+    const FILE_ALIGNMENT: u32 = 0x200;
+    const SECTION_ALIGNMENT: u32 = 0x1000;
+
+    let mut image = [0_u8; MINIMAL_KEY_AGENT_GATE_PE_BYTES];
+
+    image[0..2].copy_from_slice(b"MZ");
+    put_pe_u32(&mut image, 0x3C, 0x80);
+    image[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
+
+    put_pe_u16(&mut image, COFF_OFFSET, 0x8664); // AMD64.
+    put_pe_u16(&mut image, COFF_OFFSET + 2, 2); // Code and base relocations.
+    put_pe_u16(&mut image, COFF_OFFSET + 16, OPTIONAL_HEADER_BYTES);
+    // Executable image, large-address aware, with relocations retained.
+    put_pe_u16(&mut image, COFF_OFFSET + 18, 0x0022);
+
+    put_pe_u16(&mut image, OPTIONAL_OFFSET, 0x020B); // PE32+.
+    image[OPTIONAL_OFFSET + 2] = 14; // Deterministic linker major version.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 4, FILE_ALIGNMENT); // SizeOfCode.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 8, FILE_ALIGNMENT); // Initialized data.
+    put_pe_u32(
+        &mut image,
+        OPTIONAL_OFFSET + 16,
+        MINIMAL_KEY_AGENT_GATE_TEXT_RVA,
+    );
+    put_pe_u32(
+        &mut image,
+        OPTIONAL_OFFSET + 20,
+        MINIMAL_KEY_AGENT_GATE_TEXT_RVA,
+    );
+    put_pe_u64(&mut image, OPTIONAL_OFFSET + 24, 0x0000_0001_4000_0000);
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 32, SECTION_ALIGNMENT);
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 36, FILE_ALIGNMENT);
+    put_pe_u16(&mut image, OPTIONAL_OFFSET + 40, 6); // MajorOperatingSystemVersion.
+    put_pe_u16(&mut image, OPTIONAL_OFFSET + 48, 6); // MajorSubsystemVersion.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 56, 0x3000); // SizeOfImage.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 60, 0x200);
+    // A GUI subsystem keeps the exact root Job single-process by avoiding a
+    // CUI conhost; activation still supplies its reviewed STARTF stdio handles.
+    put_pe_u16(&mut image, OPTIONAL_OFFSET + 68, 2);
+    put_pe_u16(&mut image, OPTIONAL_OFFSET + 70, 0x0140); // Dynamic base and NX.
+    put_pe_u64(&mut image, OPTIONAL_OFFSET + 72, 0x10_0000); // Stack reserve.
+    put_pe_u64(&mut image, OPTIONAL_OFFSET + 80, 0x1000); // Stack commit.
+    put_pe_u64(&mut image, OPTIONAL_OFFSET + 88, 0x10_0000); // Heap reserve.
+    put_pe_u64(&mut image, OPTIONAL_OFFSET + 96, 0x1000); // Heap commit.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 108, 16); // Data-directory count.
+    // IMAGE_DIRECTORY_ENTRY_BASERELOC.
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 152, 0x2000);
+    put_pe_u32(&mut image, OPTIONAL_OFFSET + 156, 12);
+
+    image[SECTION_OFFSET..SECTION_OFFSET + 8].copy_from_slice(b".text\0\0\0");
+    put_pe_u32(&mut image, SECTION_OFFSET + 8, 13);
+    put_pe_u32(
+        &mut image,
+        SECTION_OFFSET + 12,
+        MINIMAL_KEY_AGENT_GATE_TEXT_RVA,
+    );
+    put_pe_u32(&mut image, SECTION_OFFSET + 16, FILE_ALIGNMENT);
+    put_pe_u32(&mut image, SECTION_OFFSET + 20, 0x200);
+    // Initialized code, executable and readable, never writable.
+    put_pe_u32(&mut image, SECTION_OFFSET + 36, 0x6000_0020);
+
+    let relocation_section = SECTION_OFFSET + 40;
+    image[relocation_section..relocation_section + 8].copy_from_slice(b".reloc\0\0");
+    put_pe_u32(&mut image, relocation_section + 8, 12);
+    put_pe_u32(&mut image, relocation_section + 12, 0x2000);
+    put_pe_u32(&mut image, relocation_section + 16, FILE_ALIGNMENT);
+    put_pe_u32(&mut image, relocation_section + 20, 0x400);
+    // Initialized, discardable, read-only data.
+    put_pe_u32(&mut image, relocation_section + 36, 0x4200_0040);
+
+    // A valid relocation block for the .text page. Both entries are
+    // IMAGE_REL_BASED_ABSOLUTE padding because the gate has no absolute address.
+    put_pe_u32(&mut image, 0x400, MINIMAL_KEY_AGENT_GATE_TEXT_RVA);
+    put_pe_u32(&mut image, 0x404, 12);
+    put_pe_u16(&mut image, 0x408, 0);
+    put_pe_u16(&mut image, 0x40A, 0);
+
+    let marker =
+        std::hint::black_box(crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER)
+            .to_le_bytes();
+    let text = &mut image[MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES
+        ..MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES + MINIMAL_KEY_AGENT_GATE_TEXT_BYTES];
+    text[0] = 0x49;
+    text[1] = 0xBA;
+    text[2..10].copy_from_slice(&marker);
+    text[10] = 0xCC;
+    text[11] = 0xEB;
+    text[12] = 0xFE;
+
+    image
+}
+
+#[cfg(all(test, windows))]
+fn put_pe_u16(image: &mut [u8], offset: usize, value: u16) {
+    image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(all(test, windows))]
+fn put_pe_u32(image: &mut [u8], offset: usize, value: u32) {
+    image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(all(test, windows))]
+fn put_pe_u64(image: &mut [u8], offset: usize, value: u64) {
+    image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(all(test, windows))]
+struct TemporaryMinimalGateExecutable {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+#[cfg(all(test, windows))]
+impl TemporaryMinimalGateExecutable {
+    fn create() -> Result<Self, HelperError> {
+        use std::io::Write as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).map_err(|_| HelperError::OperatingSystem)?;
+        let suffix = u128::from_le_bytes(random);
+        let path = std::env::temp_dir().join(format!(
+            "your-wallet-minimal-key-agent-gate-{suffix:032x}.exe"
+        ));
+        if !path.is_absolute() {
+            return Err(HelperError::OperatingSystem);
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(&path)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        let mut temporary = Self {
+            path,
+            file: Some(file),
+        };
+        let temporary_file = temporary
+            .file
+            .as_mut()
+            .ok_or(HelperError::OperatingSystem)?;
+        temporary_file
+            .write_all(&minimal_key_agent_gate_pe_image())
+            .and_then(|()| temporary_file.flush())
+            .map_err(|_| HelperError::OperatingSystem)?;
+        Ok(temporary)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Drop for TemporaryMinimalGateExecutable {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl VerifiedHelper {
     /// Returns the verified file identity for audit binding.
     #[must_use]
@@ -330,6 +516,90 @@ impl VerifiedHelper {
                 file_size: 23,
             },
             manifest_digest: [24; 32],
+            role: HelperRole::KeyAgent,
+        })
+    }
+
+    /// Holds a profile-private copy of a deterministic import-free AMD64 PE32+
+    /// test image. Its primary entry is exactly `mov r10, marker; int3; jmp $`,
+    /// so debugger-gate tests can isolate the cooperative checkpoint from CRT,
+    /// Rust runtime, and application import activity.
+    #[cfg(all(test, windows))]
+    pub(crate) fn for_minimal_primary_gate_activation_test() -> Result<Self, HelperError> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        use windows::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+
+        let source = TemporaryMinimalGateExecutable::create()?;
+        let fixture = crate::key_agent_lpac::KeyAgentLpacKernelTestFixture::create_from_executable(
+            source.path(),
+        )
+        .map_err(|_| HelperError::OperatingSystem)?;
+        let path = fixture.path().to_path_buf();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(&path)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        Ok(Self {
+            path,
+            file,
+            _key_agent_lpac_fixture: Some(fixture),
+            identity: FileIdentity {
+                volume_serial_number: 41,
+                file_index: 42,
+                file_size: 0x600,
+            },
+            manifest_digest: [44; 32],
+            role: HelperRole::KeyAgent,
+        })
+    }
+
+    /// Holds a profile-private copy of the explicitly built, harness-free Key
+    /// Agent binary so debugger-gate tests execute
+    /// `serve_inherited_key_agent_storage_startup` on the process primary thread
+    /// rather than on a libtest worker. The quality gate must supply the exact
+    /// Cargo artifact path; guessing a profile sibling could silently reuse a
+    /// stale executable after source changes.
+    #[cfg(all(test, windows))]
+    pub(crate) fn for_key_agent_primary_gate_activation_test() -> Result<Self, HelperError> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        use windows::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+
+        const TEST_KEY_AGENT_EXECUTABLE_ENV: &str = "YW_TEST_KEY_AGENT_EXECUTABLE";
+
+        let source = std::env::var_os(TEST_KEY_AGENT_EXECUTABLE_ENV)
+            .map(PathBuf::from)
+            .filter(|path| {
+                path.is_absolute()
+                    && path.file_name() == Some(std::ffi::OsStr::new("key-agent.exe"))
+            })
+            .ok_or(HelperError::OperatingSystem)?;
+        if !source.is_file() {
+            return Err(HelperError::OperatingSystem);
+        }
+        let fixture =
+            crate::key_agent_lpac::KeyAgentLpacKernelTestFixture::create_from_executable(&source)
+                .map_err(|_| HelperError::OperatingSystem)?;
+        let path = fixture.path().to_path_buf();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(&path)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        Ok(Self {
+            path,
+            file,
+            _key_agent_lpac_fixture: Some(fixture),
+            identity: FileIdentity {
+                volume_serial_number: 31,
+                file_index: 32,
+                file_size: 33,
+            },
+            manifest_digest: [34; 32],
             role: HelperRole::KeyAgent,
         })
     }
@@ -969,7 +1239,12 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{HelperError, HelperManifest, HelperVerifier, HelperVersion};
+    use super::{
+        HelperError, HelperManifest, HelperVerifier, HelperVersion,
+        MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES, MINIMAL_KEY_AGENT_GATE_PE_BYTES,
+        MINIMAL_KEY_AGENT_GATE_TEXT_BYTES, MINIMAL_KEY_AGENT_GATE_TEXT_RVA, VerifiedHelper,
+        minimal_key_agent_gate_pe_image,
+    };
 
     fn manifest() -> Result<HelperManifest, HelperError> {
         HelperManifest::new(
@@ -1002,6 +1277,159 @@ mod tests {
         let entry = manifest()?;
         let digest = entry.digest();
         Ok(HelperVerifier::new(root.to_path_buf(), entry, digest))
+    }
+
+    #[test]
+    fn minimal_primary_gate_image_is_import_free_amd64_pe32_plus() {
+        const PE_OFFSET: usize = 0x80;
+        const COFF_OFFSET: usize = PE_OFFSET + 4;
+        const OPTIONAL_OFFSET: usize = COFF_OFFSET + 20;
+        const SECTION_OFFSET: usize = OPTIONAL_OFFSET + 0xF0;
+
+        let image = minimal_key_agent_gate_pe_image();
+        assert_eq!(image.len(), MINIMAL_KEY_AGENT_GATE_PE_BYTES);
+        assert_eq!(&image[0..2], b"MZ");
+        assert_eq!(&image[PE_OFFSET..PE_OFFSET + 4], b"PE\0\0");
+        assert_eq!(
+            u16::from_le_bytes([image[COFF_OFFSET], image[COFF_OFFSET + 1]]),
+            0x8664
+        );
+        assert_eq!(
+            u16::from_le_bytes([image[COFF_OFFSET + 2], image[COFF_OFFSET + 3]]),
+            2
+        );
+        assert_eq!(
+            u16::from_le_bytes([image[COFF_OFFSET + 18], image[COFF_OFFSET + 19]]),
+            0x0022
+        );
+        assert_eq!(
+            u16::from_le_bytes([image[OPTIONAL_OFFSET], image[OPTIONAL_OFFSET + 1]]),
+            0x020B
+        );
+        assert_eq!(
+            u32::from_le_bytes([
+                image[OPTIONAL_OFFSET + 16],
+                image[OPTIONAL_OFFSET + 17],
+                image[OPTIONAL_OFFSET + 18],
+                image[OPTIONAL_OFFSET + 19],
+            ]),
+            MINIMAL_KEY_AGENT_GATE_TEXT_RVA
+        );
+        assert_eq!(
+            u32::from_le_bytes([
+                image[OPTIONAL_OFFSET + 56],
+                image[OPTIONAL_OFFSET + 57],
+                image[OPTIONAL_OFFSET + 58],
+                image[OPTIONAL_OFFSET + 59],
+            ]),
+            0x3000
+        );
+        assert_eq!(
+            u16::from_le_bytes([image[OPTIONAL_OFFSET + 68], image[OPTIONAL_OFFSET + 69]]),
+            2
+        );
+        assert_eq!(
+            u16::from_le_bytes([image[OPTIONAL_OFFSET + 70], image[OPTIONAL_OFFSET + 71]]),
+            0x0140
+        );
+        assert_eq!(&image[SECTION_OFFSET..SECTION_OFFSET + 8], b".text\0\0\0");
+        let characteristics = u32::from_le_bytes([
+            image[SECTION_OFFSET + 36],
+            image[SECTION_OFFSET + 37],
+            image[SECTION_OFFSET + 38],
+            image[SECTION_OFFSET + 39],
+        ]);
+        assert_eq!(characteristics & 0x6000_0020, 0x6000_0020);
+        assert_eq!(characteristics & 0x8000_0000, 0);
+
+        // Imports are absent; base relocations are the sole populated data
+        // directory so LPAC process creation can enforce image relocation.
+        assert!(
+            image[OPTIONAL_OFFSET + 120..OPTIONAL_OFFSET + 128]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert_eq!(
+            &image[OPTIONAL_OFFSET + 152..OPTIONAL_OFFSET + 160],
+            &[0x00, 0x20, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00]
+        );
+        assert!(
+            image[OPTIONAL_OFFSET + 112..OPTIONAL_OFFSET + 0xF0]
+                .chunks_exact(8)
+                .enumerate()
+                .all(|(index, directory)| index == 5 || directory.iter().all(|byte| *byte == 0))
+        );
+
+        let relocation_section = SECTION_OFFSET + 40;
+        assert_eq!(
+            &image[relocation_section..relocation_section + 8],
+            b".reloc\0\0"
+        );
+        let relocation_characteristics = u32::from_le_bytes([
+            image[relocation_section + 36],
+            image[relocation_section + 37],
+            image[relocation_section + 38],
+            image[relocation_section + 39],
+        ]);
+        assert_eq!(relocation_characteristics, 0x4200_0040);
+        assert_eq!(relocation_characteristics & 0xA000_0000, 0);
+        assert_eq!(
+            &image[0x400..0x40C],
+            &[0x00, 0x10, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn minimal_primary_gate_image_has_one_exact_entry_sequence() {
+        let image = minimal_key_agent_gate_pe_image();
+        let marker = std::hint::black_box(
+            crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
+        )
+        .to_le_bytes();
+        let mut expected_text = [0_u8; MINIMAL_KEY_AGENT_GATE_TEXT_BYTES];
+        expected_text[0] = 0x49;
+        expected_text[1] = 0xBA;
+        expected_text[2..10].copy_from_slice(&marker);
+        expected_text[10] = 0xCC;
+        expected_text[11] = 0xEB;
+        expected_text[12] = 0xFE;
+        assert_eq!(
+            &image[MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES
+                ..MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES + MINIMAL_KEY_AGENT_GATE_TEXT_BYTES],
+            &expected_text
+        );
+        assert_eq!(
+            image
+                .windows(11)
+                .filter(|window| *window == &expected_text[..11])
+                .count(),
+            1
+        );
+        assert!(
+            image[MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES + MINIMAL_KEY_AGENT_GATE_TEXT_BYTES..0x400]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(image[0x40C..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn minimal_primary_gate_helper_holds_exact_profile_private_copy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::process::CommandExt as _;
+
+        use windows::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+
+        let helper = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
+        assert!(helper.is_key_agent());
+        assert!(helper.path().is_absolute());
+        assert_eq!(fs::read(helper.path())?, minimal_key_agent_gate_pe_image());
+        let mut child = std::process::Command::new(helper.path())
+            .creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0)
+            .spawn()?;
+        child.kill()?;
+        let _ = child.wait()?;
+        Ok(())
     }
 
     #[test]

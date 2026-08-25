@@ -6,6 +6,8 @@
 //! its kill-on-close Job. Startup streams are closed and no public or
 //! accidental signing interface exists.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[cfg(windows)]
 fn main() {
     let Ok(()) = platform_windows::serve_inherited_key_agent_storage_startup() else {

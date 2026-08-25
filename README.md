@@ -686,9 +686,13 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   `PROCESS_QUERY_INFORMATION`, `PROCESS_QUERY_LIMITED_INFORMATION`,
   `PROCESS_SET_LIMITED_INFORMATION`(`0x2000`), `SYNCHRONIZE`, query-limited/synchronize의
   exact combined mask, `WRITE_DAC`을 요청합니다. 또한 `SeDebugPrivilege` LUID가
-  없음을 증명합니다. production Key Agent activation의 hardening step은 suspended
-  process의 then-current token을 정확히 `TOKEN_QUERY | WRITE_DAC | READ_CONTROL`
-  권한의 `Hwrite`로 열고, resume 전에 protected three-ACE token DACL을 설치한 뒤 같은
+  없음을 증명합니다. production Key Agent activation의 첫 token-hardening
+  phase는 `CREATE_PROCESS_DEBUG_EVENT`에서 then-current token을 정확히
+  `TOKEN_QUERY | WRITE_DAC | READ_CONTROL` 권한의 `Hwrite`로 열고, 별도
+  temporary current-token `Hadjust`를 exact `TOKEN_QUERY | TOKEN_ADJUST_DEFAULT`로
+  엽니다. 어떤 mutation보다 먼저
+  `CompareObjectHandles(Hwrite, Hadjust)`가 exact same token object임을 증명해야
+  합니다. 이 phase에서는 protected three-ACE token-object DACL만 설치한 뒤 같은
   `Hwrite`에서
   `GetKernelObjectSecurity(DACL_SECURITY_INFORMATION)`를 bounded two-pass로 즉시
   read back합니다. 1차 조회는 `ERROR_INSUFFICIENT_BUFFER`와 1..=64 KiB의
@@ -699,20 +703,38 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   stable `TokenUser` SID + `TOKEN_ALL_ACCESS`, fixed Key Agent SID +
   `TOKEN_QUERY | TOKEN_DUPLICATE`, fixed Approval SID + `TOKEN_QUERY` 순서로 존재해야
   하며, mask·binary SID·ACE/ACL/descriptor byte shape의 extra/slack/trailing byte를 모두
-  거부합니다. DACL readback 직후 `Hwrite`에서 exact-size `TokenStatistics`를 읽어
-  `TokenId`와 `ModifiedId` baseline을 잡습니다. 이어서 fresh current token을 정확히
-  `TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL` 권한의 `Hfinal`로 열고,
-  `CompareObjectHandles(Hwrite, Hfinal)`의 exact-object 일치, 두 ID의 baseline 일치,
-  full LPAC policy, exact DACL, 마지막 exact-size statistics bookend를 모두 통과한 뒤
-  `Hwrite`를 닫습니다. 그 다음에야 `VerifiedKeyAgentLpac`을 생성하며, proof에는
-  `WRITE_DAC`이 없는 `Hfinal`만 남깁니다.
-  같은 revalidation은 creator-handle post-detach probe 직후, ephemeral `0x1002` probe
-  뒤 narrow process를 통해 다시, user-mode 실행을 release하는 유일한 `ResumeThread`
-  직전과 resident authority check마다 수행됩니다. retained
-  `Hfinal`의 full policy와 exact DACL을 baseline-equal statistics로 bookend한 뒤 fresh
-  current `TOKEN_QUERY` handle과 exact object 및 `TokenId`/`ModifiedId` 일치를 다시
-  요구합니다. 이는 point-in-time evidence이지 atomic freeze가 아닙니다. `Hfinal` 보유가
-  process current-token association이나 token contents를 freeze하지는 않습니다.
+  거부합니다. fresh `Hfinal`은 여전히 exact
+  `TOKEN_QUERY | TOKEN_DUPLICATE | READ_CONTROL`만 가지고 `Hwrite`·`Hadjust`와
+  same object임을 통과해야 합니다. `Hwrite`는 checked-close하지만
+  `Hadjust`는 아직 final proof가 아닌 opaque `PendingKeyAgentLpac` 안에만 남습니다.
+  이 값은
+  `PreparedKeyAgentLpac::prepare_suspended_process_for_gate(...)`만 만들 수 있습니다.
+
+  `TokenDefaultDacl`의 pre-resume kernel matrix는 이제 현재 same-user LPAC 경계를
+  확정합니다. green
+  `pre_resume_token_default_dacl_matrix_proves_loader_and_same_user_boundary`의 여덟
+  case 중 no-mutation control과 original DACL exact deep-copy control은 user mode exit
+  0이고, `OWNER RIGHTS` mask `0x000e0000` deny를 앞에 둔 나머지 여섯 case는
+  `SYSTEM`/exact-package/child-user `GENERIC_ALL`의 tested 조합과 무관하게 모두 exact
+  `0xC0000142`(`STATUS_DLL_INIT_FAILED`)입니다. green
+  `pre_resume_owner_rights_deny_mask_axis_proves_each_standard_right_breaks_loader`는
+  child-user, `SYSTEM`, exact package에 모두 `GENERIC_ALL`을 허용해도 standalone
+  `READ_CONTROL`, `WRITE_DAC`, `WRITE_OWNER` 각각의 `OWNER RIGHTS` deny가 같은 exact
+  loader failure를 만든다고 분해합니다. 원본 default DACL의 sanitized exact shape은
+  child user `GENERIC_ALL`, `SYSTEM` `GENERIC_ALL`, logon-session
+  `GENERIC_READ | GENERIC_EXECUTE`, exact package `GENERIC_ALL` allow입니다. 별도 green
+  `lpac_package_sid_is_absent_from_groups_and_not_token_owner_eligible`는 exact package
+  SID가 `TokenGroups`에 없고 `TokenOwner`로 설정하면 `ERROR_INVALID_OWNER`임을
+  증명합니다.
+
+  따라서 현재 same-user LPAC principal은 `WRITE_DAC`을 거부하면서 loader-compatible한
+  from-birth policy를 제공할 수 없습니다. 이는 모든 Windows 설계의 불가능성이 아니라
+  현재 아키텍처를 배제하는 host/kernel inference입니다. post-loader final DACL
+  feasibility와 아래 gate machinery는 from-birth gap을 소급해 닫지 못합니다. 다음 설계
+  후보는 Key Agent를 별도 OS principal/service boundary로 옮기고 그 principal·IPC·service
+  lifecycle을 새로 증명하는 것입니다. 현재 구현의 final default DACL은 여전히
+  CRT/TLS/runtime 초기화 뒤 `serve`의 reviewed semantic gate에서만 설치되며, gate 전에
+  loader·DLL·TLS·CRT가 생성한 default-security object는 이 proof 밖입니다.
   별도의 생성 보안 단계는 launcher current token의 `TokenOwner`와
   `TokenPrimaryGroup`을 각각 bounded exact token query로 읽고, 서로 다른 두
   `LocalAlloc` self-relative descriptor와 non-inheritable `SECURITY_ATTRIBUTES`를
@@ -729,6 +751,116 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   자체는 요청하지 않으므로 실제 SACL 부재의 증거는 아닙니다. 불일치는 child를
   fail-closed cleanup하며 descriptor owner는 resume 전에 drop됩니다. creator
   handle은 PID/TID reopen으로 대체하지 않지만 `Held`까지 보유하지도 않습니다.
+
+  child-side gate eligibility도 marker보다 앞에 고정됩니다.
+  `serve_inherited_key_agent_storage_startup()`은 stdio를 보거나 INT3를 실행하기 전에
+  `verify_current_key_agent_lpac_before_gate()`로 current process token을 fresh
+  `TOKEN_QUERY | TOKEN_DUPLICATE` handle로 열고 fixed Key Agent SID, exact
+  zero-capability LPAC policy를 검증한 뒤 그 handle을 checked-close합니다. 이 read-only
+  검사가 성공해야만 아래 debugger gate로 들어갑니다. green `default_disabled`는 ordinary
+  non-LPAC `key-agent.exe`가 INT3 없이 기존 silent exit 78을 유지함을 증명하며, LPAC
+  policy mismatch도 stdio와 INT3 전에 fail closed합니다. 이는 gate eligibility와 ordering
+  증거이지 actual production gate 성공 증거가 아닙니다.
+
+  gate preflight는 이미 held/authenticated된 exact Key Agent file을 bounded AMD64
+  PE32+ parser로 읽습니다. 전체 file에 exact one
+  `49 BA <marker-le> CC` sequence만 허용하고, 11 bytes 전체가 하나의 executable
+  section initialized raw non-padding range 안에 있을 때만 RVA를 만듭니다.
+  `CREATE_PROCESS_DEBUG_EVENT` hFile이 같은 held file object임을 인증하고 그 event를
+  continue하기 전에 checked-close한 뒤
+  runtime gate INT3 주소는 preferred image base나 `lpStartAddress`가 아닌,
+  authenticated `lpBaseOfImage + sequence_rva + 10`으로만 계산합니다.
+
+  원래 `CREATE_SUSPENDED` count는 first debug event 생성을 위해 1→0으로 이미
+  소비되었고, authenticated CREATE_PROCESS event 자체의 process-wide stop만 이 phase를
+  고정합니다. pending token proof와 create-event hFile close가 끝난 뒤 그 event를
+  continue해야만 loader가 실행됩니다. 현재 compiled candidate loop는 monotonic
+  deadline, CREATE_PROCESS 뒤 event 최대 160개, 그중 `LOAD_DLL_DEBUG_EVENT` 최대
+  128개를 두고 모든 event를 expected PID/primary TID로 제한하며
+  `CREATE_THREAD`/`EXIT_THREAD`·`UNLOAD_DLL`·비-landmark exception을 거부합니다. 이 strict candidate는
+  fail closed하지만 production-compatible contract는 아닙니다. test와 production은
+  이제 loader event에 동일한 strict policy를 사용하며 진단용 worker 허용 경로는
+  없습니다. green `real_key_agent_loader_activity_fails_closed_before_detach`는 실제
+  GUI-subsystem `key-agent.exe`의 non-primary loader `CREATE_THREAD`를 detach 전에
+  거부하고 joined Job cleanup을 확인합니다. GUI subsystem은 console host를
+  구조적으로 제거하며 이 회귀 테스트의 root Job active-process count는 1을
+  유지합니다. 이는 거부·정리 증거이지 product-compatible gate 성공 증거가
+  아닙니다. 이전 CUI diagnostic fixture의 exact System32 `conhost.exe`와 root count
+  2, multiple loader workers, worker-TID DLL load, first-chance C++ `0xe06d7363`, DLL
+  unload 관측은 historical threat-model input일 뿐 현재 accepted event contract나
+  gate proof가 아닙니다.
+
+  replacement loop는 monotonic deadline/count 안에서 각 loader worker의 생성
+  provenance, exact thread object/ID, 허용 event와 lifetime, semantic gate 전 전원 exit,
+  post-exit fresh reopen denial을
+  인증하고 모든 non-null hFile을 continue 전에 checked-close해야 합니다. 이 policy와
+  bound는 아직 **STOP-SHIP**입니다. 재설계 뒤 automatic system breakpoint를 허용할
+  때도 exact System32 `ntdll.dll` held `FILE_ID_INFO`가 pin한 allocation base,
+  first chance, remote `0xCC`, `RIP == ExceptionAddress + 1`,
+  `MEM_COMMIT | MEM_IMAGE`·executable·non-guard page를 요구하며 `DbgBreakPoint` export
+  RVA나 fixed exception `NumberParameters` shape은 가정하지 않습니다.
+  이 replacement loader policy가 성공하더라도 위 from-birth `WRITE_DAC` gap을 해소하지
+  않으므로 현재 same-user architecture의 production admission 조건으로는 충분하지
+  않습니다.
+
+  revised loader policy가 gate까지 증명된 경우 cooperative gate event는 exact
+  PID/primary TID의 first-chance `EXCEPTION_BREAKPOINT`, exact
+  authenticated INT3 address, `RIP == address + 1`, `R10 == marker`, remote exact 11 bytes,
+  그리고 authenticated main base와 같은 `AllocationBase`의
+  `MEM_COMMIT | MEM_IMAGE`·executable·non-guard region을 모두 요구합니다. continue
+  전에 explicit 16-byte-aligned AMD64 `CONTEXT` wrapper를 사용해 `R10`을 zeroing하고
+  context readback으로 확인합니다. readback에서 달라질 수 있는 것은 reserved
+  always-one EFLAGS bit 1의 API representation뿐이고, 모든 mutable flag bit와
+  나머지 reviewed context field는 exact해야 합니다. debug-event stop
+  안에서 primary `SuspendThread`가 prior count exact 0을 반환해 explicit count 1을
+  만들어야 합니다.
+
+  별도 green
+  `minimal_primary_gate_proof_detaches_with_one_verified_suspend_count`는 deterministic,
+  import-free, relocatable GUI PE fixture로 exact PID/primary-TID gate,
+  `PendingKeyAgentLpac`→`VerifiedKeyAgentLpac`, verified suspend count 하나, detach와
+  root Job count 1을 증명합니다. 이는 gate machinery proof이지 실제 Key Agent의
+  loader compatibility, signed artifact, product E2E 증거가 아닙니다.
+
+  supervisor test layering도 이 경계를 보존합니다. 같은 minimal PE를 쓰는 green
+  `integrated_kernel_binding_owns_one_member_and_no_inheritable_parent_handles`와
+  `dormant_aggregate_unwind_synchronously_aborts_the_exact_process`는 dormant ownership,
+  non-inheritance, drop/unwind cleanup만 증명합니다. Rust-startup fixture를 storage와
+  Approval까지 잇는 supervisor integration test 일곱 개는 loader worker가
+  exact-primary gate보다 먼저 생성되므로 모두 명시적 `#[ignore = "STOP-SHIP: ..."]`이고
+  성공 증거가 아닙니다. 반대로 green
+  `rust_startup_fixture_loader_activity_fails_closed_before_supervisor_binding`은 그 loader
+  activity가 `KeyAgentSupervisorError::Activation`을 반환하고 준비한 storage root를
+  정리함을 증명합니다. actual production gate나 storage-startup 성공은 주장하지
+  않습니다.
+
+  그 상태에서 `PendingKeyAgentLpac::finalize_after_gate(...)`가 pending proof를
+  소비해 current-token association,
+  `Hfinal`·`Hadjust` exact object/identity, LPAC, token-object DACL을 다시 검증합니다.
+  `Hadjust`는 그때만 `SetTokenInformation(TokenDefaultDacl)`로 exact 28-byte
+  deny-only ACL을 설치합니다. 이 ACL은 `ACL_REVISION`, zero reserved fields,
+  no allow ACE, exact one zero-flag `ACCESS_DENIED_ACE`, binary
+  `OWNER RIGHTS`(`S-1-3-4`), exact `0x000e0000`
+  (`READ_CONTROL | WRITE_DAC | WRITE_OWNER`), no slack/trailing bytes를 요구합니다.
+  같은 `Hadjust`의 immediate bounded `GetTokenInformation(TokenDefaultDacl)`는 complete
+  fixed prefix/returned range와 non-null aligned `PACL`의 header·entire 28-byte ACL range를
+  checked arithmetic으로 먼저 증명한 뒤에만 slice를 만듭니다. OS API wrapper의
+  initialized padding/trailing bytes는 허용하지만 28-byte ACL 내부 slack은 허용하지
+  않습니다. mutation 후 exact
+  statistics로 final baseline을 새로 잡고 provisional `TokenId` continuity를 확인한
+  다음 `Hadjust`를 checked-close합니다. 조정 권한이 사라진 상태에서 `Hfinal`의 full
+  policy·두 DACL·identity·baseline-equal statistics를 bookend하고 fresh current token
+  same-object check까지 통과해야만 final proof가 됩니다. 나중 sole post-gate
+  `ResumeThread`가 explicit count 1을 풀면 child는
+  gate 다음의 첫 semantic step에서
+  `verify_current_key_agent_default_dacl_after_gate()`로 current token을 fresh
+  `TOKEN_QUERY` handle로 열고
+  exact default DACL을 독립적으로 read back해야 다음 `serve` step으로 갈 수
+  있습니다. final revalidation은 post-detach probe, narrow-process attenuation,
+  post-gate execution을 풀어 주는 sole `ResumeThread` 직전, resident authority edge마다
+  baseline-equal statistics로 `Hfinal`의 full LPAC policy·token-object DACL·
+  `TokenDefaultDacl`을 bookend하고 fresh current token과 exact object/identity를 요구합니다.
+  이는 point-in-time evidence이지 token association/contents의 atomic freeze가 아닙니다.
 
   첫 `CREATE_PROCESS_DEBUG_EVENT`의 process/thread alias는 서로 및 creator handle과
   distinct여야 하고, expected PID/TID와 creator handle에 대한 exact-object 일치를
@@ -772,37 +904,60 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   대상입니다.
 
   `Held`는 `Send`이지만 `!Sync`, `!Clone`, `!Copy`이며 exact `0x1000` resume-only
-  thread만 보유합니다. 유일한 user-mode-releasing `ResumeThread`가 prior count 1을
+  thread만 보유합니다. 유일한 post-gate application-releasing `ResumeThread`가 prior count 1을
   반환하면 그 handle을 즉시 checked-close하며 실패 시 같은 RAII 재시도 소유권을
   유지합니다. `Running`은 같은 transfer trait과
   narrow process만 구조적으로 보유하고 thread handle은 없습니다. 명시적 실패는
   bounded terminate/wait/exact-exit-code cleanup을 수행하고 cleanup error가 우선합니다.
   `Drop`도 cleanup을 시도하지만 실패를 보고할 수는 없습니다.
 
-  kernel test는 child의 process pseudo-handle operation과 real `CreateThread`의
-  thread pseudo-handle operation이 유지됨을 확인하고, `SeDebugPrivilege`와
-  `SeTakeOwnershipPrivilege`를 disabled로 둔 채 owner의 fresh PID/TID single-access
-  open matrix가 거부됨을 증명합니다.
+  kernel test는 initial process/primary-thread pseudo-handle operation을 유지합니다. 별도
+  green
+  `post_loader_worker_feasibility_default_dacl_hardens_later_null_security_thread`는
+  post-loader cooperative feasibility child의 READY 후 parent exact default-DACL
+  install/readback/adjust-close, child의 independent current-token/default-DACL readback,
+  real `CreateThread(NULL, ...)`, 그 thread의 pseudo `GetThreadTimes`·
+  `OpenThreadToken(ERROR_NO_TOKEN)`, exact owner/group·one-ACE DACL, parent/child
+  single-right `OpenThread` denial matrix, privilege bookend, checked cleanup, natural exit 0을
+  증명합니다. default-created descriptor는 kernel-generated이므로 parser는
+  `SE_SELF_RELATIVE | SE_DACL_PRESENT`만 요구하고 `SE_DACL_PROTECTED`·
+  `SE_DACL_DEFAULTED`를 explicit protected creation descriptor와 같다고 가정하지 않습니다.
+  이 ignored libtest probe는 non-primary TID에서 실행되므로 kernel feasibility이지
+  위 실제 Key Agent의 loader-compatible exact-primary production gate를 대체하는
+  증거가 아닙니다.
   last-check/`ResumeThread` gap 및 swap-away/back race는 **STOP-SHIP**이며, DACL 변경이
   `ModifiedId`를 갱신한다고 가정하지 않습니다. 생성 DACL 자체는 preexisting same-user
   high-right handle을 배제하거나 이미 반환·복제된 high-right handle을 회수하지
   못합니다. activation이 명시적으로 닫는 것은 자신이 인증한 creator pair뿐이며 다른
-  alias는 proof 밖입니다. 이 생성 정책은
-  initial process와 primary thread의 생성 시점에만 적용되며 이후 생성되는 thread를
-  다루지 않습니다. hostile same-user process와 supervisor/owner를 완전히 분리하지도 않고,
-  enabled debug/take-ownership privilege를 견디는 경계도 아닙니다. 따라서 distinct
-  supervisor principal과 same-user owner 분리는 여전히 **STOP-SHIP**입니다. 모든
+  alias는 proof 밖입니다. post-loader feasibility에서는 final default DACL 설치 이후
+  default-security Win32 later thread가 tested host에서 이 정책을 상속합니다. 그러나
+  actual Key Agent gate가 성공하지 않았고 from-birth `WRITE_DAC` denial도 양립하지
+  않으므로 이 사실을 현재 architecture의 production coverage로 승격하지 않습니다.
+  caller-supplied
+  descriptor, raw native/remote thread creation, returned/preexisting/duplicated high-right handle은
+  다루지 않습니다. `TokenDefaultDacl`은 thread-only 정책이 아니라 token-global
+  default-object 정책입니다. gate 전 loader·DLL·TLS·CRT가 기존 default DACL로
+  생성한 non-thread object/handle은 소급해 바뀌지 않으며 inventory도 아닙니다.
+  hostile same-user process와 supervisor/owner를 완전히 분리하지도 않고,
+  enabled debug/take-ownership privilege를 견디는 경계도 아닙니다. 따라서 distinct OS
+  principal/service boundary와 same-user owner 분리는 다음 설계의 **STOP-SHIP**
+  전제입니다. 모든
   continuity/revalidation failure는 다음
   typestate 또는 authority 사용 전에 fail closed합니다.
-  `cfg(test)` integration은 이 production-compiled hardening/continuity ceremony를 그대로
-  실행하고 Approval query-only 결과와 위 생성 DACL의 kernel 동작을 증명하지만,
+  `cfg(test)` integration은 token-object/creation DACL과 post-loader default-DACL kernel
+  feasibility를 실행하고 Approval query-only 결과를 증명하지만,
   same-user isolation이나 release evidence는 아닙니다.
   fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
   profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
   제거하며 production mitigation은 그대로입니다.
-  이는 signed/mapped release proof가 아닙니다. mapped-image/DLL provenance, distinct supervisor
-  principal과 same-user owner 분리, preexisting/returned/duplicated high-right handle 및
-  enabled privilege 위협, later-thread policy, bootstrap/provenance, endpoint topology 및
+  이는 signed/mapped release proof가 아닙니다. signed DLL/TLS provenance, pre-gate
+  non-thread object inventory, loader-worker provenance/lifetime/exit/reopen-denial
+  policy, distinct OS principal/service design과 그 IPC/lifecycle proof,
+  real GUI Key Agent loader-compatible exact-primary gate E2E,
+  exact AMD64/context/system-breakpoint의 supported-architecture/Windows matrix와
+  same-user owner 분리,
+  caller-supplied/raw-native/remote thread 우회, preexisting/returned/duplicated high-right handle 및
+  enabled privilege 위협, bootstrap/provenance, endpoint topology 및
   production cleanup/orchestration/signing은 여전히 release blocker이고, production
   binder caller는 0개이며 두 compiled policy는 `None`입니다.
 - runtime-enabled Approval launcher의 `HANDLE_LIST`에는 stdin과 숫자상 같은
@@ -940,10 +1095,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
 - 같은 dormant activation은 정확한 실행 파일, 비공개 파이프 3개, 2프로세스 Windows
   Job과 위 provisioning 증명을 묶습니다. 네 개의 `STARTUPINFOEX` attribute는 handle
   allowlist, Job, null capability pointer와 count 0인 `SECURITY_CAPABILITIES`,
-  `ALL_APPLICATION_PACKAGES` opt-out입니다. 첫 pre-user-mode debug 생성 이벤트가 잡힌
-  동안 mapped image의 정확한 파일 신원을 먼저 확인하고 명시적 suspend count를 다시
-  설치한 뒤, 토큰이 AppContainer이고 profile SID가 정확히 같으며 capability count가
-  0인지 검증합니다. 이어 primary token을 `SecurityIdentification` impersonation token으로
+  `ALL_APPLICATION_PACKAGES` opt-out입니다. 원래 `CREATE_SUSPENDED` count는 Windows가
+  첫 pre-user-mode debug 생성 이벤트를 만들도록 먼저 1→0으로 소비합니다. 그 event가
+  process 전체를 멈춘 동안 mapped image의 정확한 파일 신원을 먼저 확인하고, later gate의
+  explicit suspend count를 아직 추가하지 않은 채 token을 gate-pending proof로 검증합니다.
+  token은 AppContainer이고 profile SID가 정확히 같으며 capability count가 0이어야 합니다.
+  이어 primary token을 `SecurityIdentification` impersonation token으로
   복제하고 그 `TokenUser` SID에 `CheckTokenMembershipEx`를 두 번 적용합니다.
   `CTMF_INCLUDE_APPCONTAINER`로는 거부되고 `CTMF_INCLUDE_LPAC`까지 더했을 때만 허용되는
   정확한 `(false, true)` 결과가 필수입니다. `TokenIsLessPrivilegedAppContainer`를
@@ -966,14 +1123,24 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   따라서 신규 Key Agent fresh provisioning은 profile을 이미 만들었을 수 있으며 recovery가
   필요합니다. 이 계약은 profile-registration authority나 production reachability를 늘리지
   않고 production `DeleteAppContainerProfile` 경로도 만들지 않습니다. 같은 스레드
-  재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공해야만 debug event를
-  계속할 수 있습니다. CREATE_PROCESS event에서 독립적으로 안전한 process/thread
+  재진입이나 poisoned gate도 fail-closed입니다. 이 검증이 성공하면 CREATE_PROCESS
+  event를 test/production 공통 strict ntdll loader loop로 넘깁니다. 실제
+  GUI-subsystem Key Agent 회귀 테스트는 non-primary loader thread를 detach 전에
+  fail closed하고 Job을 정리하며, console host 없이 root Job count 1을 유지합니다.
+  별도 최소 import-free GUI PE fixture만 exact-primary gate와 pending-to-final token
+  transition, suspend count 하나, detach를 증명합니다. pre-resume DACL matrix는
+  same-user LPAC principal이 loader-compatible from-birth `WRITE_DAC` denial을 제공할 수
+  없음을 추가로 증명하므로, replacement loader policy만으로는 현재 architecture를
+  구제하지 못합니다. 아래 gate 흐름은 구현된 conditional mechanism으로만 남습니다.
+  그러한 gate가 모든 thread를 멈춘 경우에만 primary explicit suspend
+  count를 exact 0→1로 만들고 default DACL을 finalize/readback한 뒤, 그 count를 보존한 채
+  gate event를 계속합니다. CREATE_PROCESS event에서 독립적으로 안전한 process/thread
   alias와 ID는 hFile 및 다른 fallible 인증보다 먼저 exact-run shared join-cleanup
   registry에 등록합니다. malformed partial event도 안전한 alias를 보존합니다. 이후
-  모든 worker 검사를 마치면 complete registration을 다시 요구하고 fresh debugger OS
+  replacement loader/gate의 모든 검사를 마친 경우에만 complete registration을 다시 요구하고 fresh debugger OS
   thread의 마지막 fallible 연산으로 `DebugSetProcessKillOnExit(FALSE)`를 수행합니다.
-  명시적 suspend count 하나를 유지한 opaque pending owner만 join 경계를 건너고, 전용 OS
-  thread 종료와 join 뒤 같은 run의 pending·join proof·root Job witness가 모두 일치해야
+  명시적 suspend count 하나를 유지한 opaque final owner만 join 경계를 건너고, 전용 OS
+  thread 종료와 join 뒤 같은 run의 final·join proof·root Job witness가 모두 일치해야
   합니다. normal finalization은 registry의 alias를 채택해 인증·checked-close합니다.
   worker `Err`/panic 또는 abandoned joined proof도 post-join closure를 수행하고, partial
   failure는 남은 slot을 bounded retry합니다. 각 pass는 두 alias를 독립적으로 시도하며
@@ -1031,11 +1198,13 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   write/flush/close 실패로 frame이나 EOF가 빠지면 부모는 성공 aggregate를 만들지 않고
   실패 또는 timeout으로 Job을 정리합니다. startup stream은 runtime channel로 재사용되지
   않으며 generic runtime request나 signing API도 없습니다.
-- 통합 kernel positive test는 persistent test profile의 CSPRNG leaf를 사용하고, 고정된
-  libtest terse preamble과 test process 옆의 선택적 exact System32 `conhost.exe`만
-  `cfg(test)` accommodation으로 허용합니다. production parser는 response magic을 byte
-  zero에서 요구하고 Job member 하나만 허용합니다. 따라서 이 테스트는 production fresh
-  fixed-profile/root 또는 exact signed artifact E2E 증거가 아닙니다.
+- Rust-startup storage/supervisor integration positive 일곱 개는 현재 모두 명시적
+  **STOP-SHIP** ignore입니다. 의도적으로 실행할 때 쓰는 fixture code만 persistent test
+  profile의 CSPRNG leaf, 고정 libtest terse preamble, test process 옆의 선택적 exact
+  System32 `conhost.exe` accommodation을 유지합니다. production parser는 response magic을
+  byte zero에서 요구하고 Job member 하나만 허용합니다. 이 dormant fixture contract와
+  green failure-cleanup negative는 production fresh fixed-profile/root, actual gate,
+  storage-proven aggregate, exact signed artifact E2E 성공 증거가 아닙니다.
 - 좁은 crate-private Key Agent generation-store adapter와 그 `cfg(test)` 통합 증명은 이제
   구현되어 있습니다. child-held root를 소비하는 봉인된 전이가 caller가 만들 수 없는
   binding 네 개(`Vault`, `NonceLedger`, `SignedCandidateJournal`, `LocalSettings`)를 고정

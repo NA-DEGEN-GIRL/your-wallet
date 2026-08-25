@@ -11,17 +11,21 @@
 #![allow(dead_code)]
 
 use core::fmt;
+use core::mem::size_of;
+use std::io::Read;
 use std::marker::PhantomData;
-use std::os::windows::io::BorrowedHandle;
+use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use thiserror::Error;
+use windows::Win32::Foundation::HANDLE;
 
 use crate::{
     attestation::{AttestedArtifactDigest, ReleaseAttestation},
     helper::VerifiedHelper,
+    key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
     key_agent_lpac::PreparedKeyAgentProvisioning,
     key_agent_root_job::{KeyAgentDebugThreadWitness, KeyAgentRootJob, KeyAgentRootJobAttribute},
     launch::{ApprovalLogicalParentInjectionSeal, InjectedApprovalLogicalParent},
@@ -29,21 +33,30 @@ use crate::{
 };
 
 const FIRST_DEBUG_EVENT_TIMEOUT_MILLISECONDS: u32 = 5_000;
+const MAX_KEY_AGENT_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+const KEY_AGENT_DEFAULT_DACL_GATE_BYTES: usize = 11;
 
 struct DetachedDebugEventHandleSet {
     process: Option<usize>,
     primary_thread: Option<usize>,
+    rejected_thread: Option<usize>,
     process_id: u32,
     thread_id: u32,
+    rejected_thread_id: Option<u32>,
 }
 
 impl DetachedDebugEventHandleSet {
     const fn is_empty(&self) -> bool {
-        self.process.is_none() && self.primary_thread.is_none()
+        self.process.is_none()
+            && self.primary_thread.is_none()
+            && self.rejected_thread.is_none()
+            && self.rejected_thread_id.is_none()
     }
 
     const fn is_registerable(&self) -> bool {
         !self.is_empty()
+            && self.rejected_thread.is_none()
+            && self.rejected_thread_id.is_none()
             && !matches!(
                 (self.process, self.primary_thread),
                 (Some(process), Some(primary_thread)) if process == primary_thread
@@ -58,6 +71,8 @@ impl DetachedDebugEventHandleSet {
             (Some(process), Some(primary_thread)) if process != primary_thread
         ) && self.process_id != 0
             && self.thread_id != 0
+            && self.rejected_thread.is_none()
+            && self.rejected_thread_id.is_none()
     }
 }
 
@@ -118,6 +133,41 @@ impl KeyAgentDebugEventCleanup {
         Ok(())
     }
 
+    fn register_rejected_thread_while_attached(
+        &self,
+        process_id: u32,
+        primary_thread_id: u32,
+        rejected_thread_id: u32,
+        rejected_thread: usize,
+    ) -> Result<(), KeyAgentActivationError> {
+        if self.witness.is_joined()
+            || process_id == 0
+            || primary_thread_id == 0
+            || rejected_thread_id == 0
+            || rejected_thread_id == primary_thread_id
+            || rejected_thread == 0
+        {
+            return Err(KeyAgentActivationError::DebugDetach);
+        }
+        let mut slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        let handles = slot
+            .as_mut()
+            .filter(|handles| {
+                handles.is_complete()
+                    && handles.process_id == process_id
+                    && handles.thread_id == primary_thread_id
+                    && handles.process != Some(rejected_thread)
+                    && handles.primary_thread != Some(rejected_thread)
+            })
+            .ok_or(KeyAgentActivationError::DebugDetach)?;
+        handles.rejected_thread = Some(rejected_thread);
+        handles.rejected_thread_id = Some(rejected_thread_id);
+        Ok(())
+    }
+
     #[cfg(test)]
     fn observation_while_attached_for_test(
         &self,
@@ -140,6 +190,27 @@ impl KeyAgentDebugEventCleanup {
             handles
                 .primary_thread
                 .ok_or(KeyAgentActivationError::DebugDetach)?,
+        ))
+    }
+
+    #[cfg(test)]
+    fn rejected_thread_observation_while_attached_for_test(
+        &self,
+    ) -> Result<sys::TestRejectedThreadEventHandleObservation, KeyAgentActivationError> {
+        if self.witness.is_joined() {
+            return Err(KeyAgentActivationError::DebuggerJoinProof);
+        }
+        let slot = self
+            .handles
+            .lock()
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+        let handles = slot.as_ref().ok_or(KeyAgentActivationError::DebugDetach)?;
+        let rejected_thread = handles
+            .rejected_thread
+            .filter(|_| handles.rejected_thread_id.is_some())
+            .ok_or(KeyAgentActivationError::DebugDetach)?;
+        Ok(sys::TestRejectedThreadEventHandleObservation::new(
+            rejected_thread,
         ))
     }
 
@@ -293,6 +364,10 @@ pub(crate) enum KeyAgentActivationError {
     /// Windows did not provide a valid executable-image file handle.
     #[error("Key Agent mapped-image handle is unavailable")]
     MissingMappedImage,
+    /// The authenticated image did not contain exactly one reviewed
+    /// cooperative default-DACL gate instruction sequence.
+    #[error("Key Agent cooperative default-DACL gate policy failed")]
+    CooperativeGatePolicy,
     /// The mapped executable and the pre-held verified artifact were different
     /// file objects.
     #[error("Key Agent mapped image does not match the held artifact")]
@@ -356,7 +431,9 @@ impl fmt::Debug for ExactFileObjectIdentity {
 enum LaunchPhase {
     AwaitingCreateEvent,
     CreateEventHeld,
-    EventContinued,
+    LoaderRunning,
+    GateEventHeld,
+    GateEventContinued,
     NoKillArmedAwaitingDebuggerExit,
     DebuggerExitedPendingVerification,
     DetachedSuspended,
@@ -368,6 +445,8 @@ enum LaunchPhase {
 enum LaunchTransition {
     ReceiveCreateEvent,
     ContinueCreateEvent,
+    ReceiveCooperativeGate,
+    ContinueCooperativeGate,
     ArmNoKill,
     ObserveDebuggerExit,
     VerifyDetached,
@@ -382,9 +461,15 @@ impl LaunchPhase {
                 Ok(Self::CreateEventHeld)
             }
             (Self::CreateEventHeld, LaunchTransition::ContinueCreateEvent) => {
-                Ok(Self::EventContinued)
+                Ok(Self::LoaderRunning)
             }
-            (Self::EventContinued, LaunchTransition::ArmNoKill) => {
+            (Self::LoaderRunning, LaunchTransition::ReceiveCooperativeGate) => {
+                Ok(Self::GateEventHeld)
+            }
+            (Self::GateEventHeld, LaunchTransition::ContinueCooperativeGate) => {
+                Ok(Self::GateEventContinued)
+            }
+            (Self::GateEventContinued, LaunchTransition::ArmNoKill) => {
                 Ok(Self::NoKillArmedAwaitingDebuggerExit)
             }
             (Self::NoKillArmedAwaitingDebuggerExit, LaunchTransition::ObserveDebuggerExit) => {
@@ -399,7 +484,9 @@ impl LaunchPhase {
             (
                 Self::AwaitingCreateEvent
                 | Self::CreateEventHeld
-                | Self::EventContinued
+                | Self::LoaderRunning
+                | Self::GateEventHeld
+                | Self::GateEventContinued
                 | Self::NoKillArmedAwaitingDebuggerExit
                 | Self::DebuggerExitedPendingVerification
                 | Self::DetachedSuspended
@@ -792,6 +879,7 @@ impl fmt::Debug for HeldKeyAgentActivation {
 pub(crate) struct PreflightKeyAgentArtifact {
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
+    gate_layout: KeyAgentGateLayout,
 }
 
 impl PreflightKeyAgentArtifact {
@@ -826,11 +914,328 @@ pub(crate) fn preflight_key_agent_activation(
     if !artifact.path().is_absolute() {
         return Err(KeyAgentActivationError::InvalidPath);
     }
+    let gate_layout = verify_unique_default_dacl_gate_sequence(&artifact)?;
 
     Ok(PreflightKeyAgentArtifact {
         artifact,
         release_identity,
+        gate_layout,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KeyAgentGateLayout {
+    sequence_rva: u32,
+    breakpoint_rva: u32,
+    size_of_image: u32,
+}
+
+fn default_dacl_gate_sequence(marker: u64) -> [u8; KEY_AGENT_DEFAULT_DACL_GATE_BYTES] {
+    let marker = marker.to_le_bytes();
+    let mut sequence = [0_u8; KEY_AGENT_DEFAULT_DACL_GATE_BYTES];
+    sequence[0] = 0x49;
+    sequence[1] = 0xBA;
+    sequence[2..10].copy_from_slice(&marker);
+    sequence[10] = 0xCC;
+    sequence
+}
+
+/// Reopens the already pinned artifact for sequential reading, proves that the
+/// path still names the exact held file object, and counts the structural gate
+/// sequence across the entire bounded PE file. Counting the whole file is
+/// deliberately stronger than accepting a probabilistic marker collision in a
+/// loaded executable page: every admitted artifact must contain exactly one
+/// occurrence before any activation resource is allocated.
+fn verify_unique_default_dacl_gate_sequence(
+    artifact: &VerifiedHelper,
+) -> Result<KeyAgentGateLayout, KeyAgentActivationError> {
+    let mut image = std::fs::File::open(artifact.path())
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    let reopened_identity = sys::exact_file_identity(HANDLE(image.as_raw_handle()))?;
+    let held_identity = sys::exact_file_identity(artifact.raw_handle())?;
+    if reopened_identity != held_identity {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    let length = image
+        .metadata()
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?
+        .len();
+    if length < KEY_AGENT_DEFAULT_DACL_GATE_BYTES as u64 || length > MAX_KEY_AGENT_IMAGE_BYTES {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    // Keep the marker runtime-derived so the verifier itself need not embed a
+    // second contiguous copy of the sequence into a test artifact that also
+    // contains the child gate. The artifact scan remains authoritative even if
+    // a future compiler chooses a different lowering.
+    let sequence =
+        default_dacl_gate_sequence(std::hint::black_box(KEY_AGENT_DEFAULT_DACL_GATE_MARKER));
+    let capacity =
+        usize::try_from(length).map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    image
+        .read_to_end(&mut bytes)
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+
+    let final_identity = sys::exact_file_identity(HANDLE(image.as_raw_handle()))?;
+    if bytes.len() != capacity
+        || final_identity != reopened_identity
+        || sys::exact_file_identity(artifact.raw_handle())? != held_identity
+    {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    parse_unique_default_dacl_gate_layout(&bytes, &sequence)
+}
+
+fn pe_u16(bytes: &[u8], offset: usize) -> Result<u16, KeyAgentActivationError> {
+    let end = offset
+        .checked_add(size_of::<u16>())
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let value: [u8; 2] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?
+        .try_into()
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    Ok(u16::from_le_bytes(value))
+}
+
+fn pe_u32(bytes: &[u8], offset: usize) -> Result<u32, KeyAgentActivationError> {
+    let end = offset
+        .checked_add(size_of::<u32>())
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let value: [u8; 4] = bytes
+        .get(offset..end)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?
+        .try_into()
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    Ok(u32::from_le_bytes(value))
+}
+
+#[derive(Clone, Copy)]
+struct PeSectionRange {
+    raw_start: usize,
+    raw_end: usize,
+    initialized_raw_length: usize,
+    virtual_start: u32,
+    virtual_end: u32,
+    characteristics: u32,
+}
+
+fn ranges_overlap<T: Ord + Copy>(first: (T, T), second: (T, T)) -> bool {
+    first.0 < second.1 && second.0 < first.1
+}
+
+#[allow(clippy::too_many_lines)]
+fn parse_unique_default_dacl_gate_layout(
+    bytes: &[u8],
+    sequence: &[u8; KEY_AGENT_DEFAULT_DACL_GATE_BYTES],
+) -> Result<KeyAgentGateLayout, KeyAgentActivationError> {
+    const DOS_HEADER_BYTES: usize = 64;
+    const DOS_PE_OFFSET: usize = 0x3C;
+    const COFF_HEADER_BYTES: usize = 20;
+    const OPTIONAL_HEADER64_MINIMUM_BYTES: usize = 112;
+    const SECTION_HEADER_BYTES: usize = 40;
+    const MAX_PE_SECTIONS: usize = 96;
+    const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+    const IMAGE_NT_OPTIONAL_HDR64_MAGIC: u16 = 0x020B;
+    const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+    const IMAGE_FILE_DLL: u16 = 0x2000;
+    const IMAGE_SCN_CNT_CODE: u32 = 0x0000_0020;
+    const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+    const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+    if bytes.len() < DOS_HEADER_BYTES || pe_u16(bytes, 0)? != 0x5A4D {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+    let pe_offset_u32 = pe_u32(bytes, DOS_PE_OFFSET)?;
+    if pe_offset_u32 > i32::MAX.unsigned_abs() {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+    let pe_offset = usize::try_from(pe_offset_u32)
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    let coff_offset = pe_offset
+        .checked_add(4)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let optional_offset = coff_offset
+        .checked_add(COFF_HEADER_BYTES)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    if bytes.get(pe_offset..coff_offset) != Some(b"PE\0\0".as_slice())
+        || pe_u16(bytes, coff_offset)? != IMAGE_FILE_MACHINE_AMD64
+    {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    let section_count = usize::from(pe_u16(bytes, coff_offset + 2)?);
+    let optional_size = usize::from(pe_u16(bytes, coff_offset + 16)?);
+    let file_characteristics = pe_u16(bytes, coff_offset + 18)?;
+    if !(1..=MAX_PE_SECTIONS).contains(&section_count)
+        || optional_size < OPTIONAL_HEADER64_MINIMUM_BYTES
+        || file_characteristics & IMAGE_FILE_EXECUTABLE_IMAGE == 0
+        || file_characteristics & IMAGE_FILE_DLL != 0
+        || pe_u16(bytes, optional_offset)? != IMAGE_NT_OPTIONAL_HDR64_MAGIC
+    {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    let optional_end = optional_offset
+        .checked_add(optional_size)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let section_table_bytes = section_count
+        .checked_mul(SECTION_HEADER_BYTES)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let section_table_end = optional_end
+        .checked_add(section_table_bytes)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let section_alignment = pe_u32(bytes, optional_offset + 32)?;
+    let file_alignment = pe_u32(bytes, optional_offset + 36)?;
+    let size_of_image = pe_u32(bytes, optional_offset + 56)?;
+    let size_of_headers = pe_u32(bytes, optional_offset + 60)?;
+    let size_of_headers_usize = usize::try_from(size_of_headers)
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+    if section_alignment == 0
+        || file_alignment == 0
+        || !section_alignment.is_power_of_two()
+        || !file_alignment.is_power_of_two()
+        || section_alignment < file_alignment
+        || size_of_image == 0
+        || u64::from(size_of_image) > MAX_KEY_AGENT_IMAGE_BYTES
+        || size_of_headers == 0
+        || size_of_headers > size_of_image
+        || section_table_end > size_of_headers_usize
+        || size_of_headers_usize > bytes.len()
+        || size_of_image % section_alignment != 0
+    {
+        return Err(KeyAgentActivationError::CooperativeGatePolicy);
+    }
+
+    let mut occurrence = None;
+    for (offset, candidate) in bytes.windows(KEY_AGENT_DEFAULT_DACL_GATE_BYTES).enumerate() {
+        if candidate == sequence && occurrence.replace(offset).is_some() {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+    }
+    let occurrence = occurrence.ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+    let occurrence_end = occurrence
+        .checked_add(KEY_AGENT_DEFAULT_DACL_GATE_BYTES)
+        .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+
+    let mut sections: Vec<PeSectionRange> = Vec::with_capacity(section_count);
+    for index in 0..section_count {
+        let section_offset = optional_end
+            .checked_add(
+                index
+                    .checked_mul(SECTION_HEADER_BYTES)
+                    .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?,
+            )
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let virtual_size = pe_u32(bytes, section_offset + 8)?;
+        let virtual_start = pe_u32(bytes, section_offset + 12)?;
+        let raw_size = pe_u32(bytes, section_offset + 16)?;
+        let raw_start_u32 = pe_u32(bytes, section_offset + 20)?;
+        let characteristics = pe_u32(bytes, section_offset + 36)?;
+        let raw_start = usize::try_from(raw_start_u32)
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let raw_size_usize = usize::try_from(raw_size)
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let raw_end = raw_start
+            .checked_add(raw_size_usize)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let mapped_size = virtual_size.max(raw_size);
+        let virtual_end = virtual_start
+            .checked_add(mapped_size)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        if virtual_start % section_alignment != 0
+            || (raw_size != 0
+                && (raw_start_u32 % file_alignment != 0
+                    || raw_size % file_alignment != 0
+                    || raw_start < size_of_headers_usize
+                    || raw_end > bytes.len()))
+            || virtual_end > size_of_image
+        {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        let initialized_raw_length = usize::try_from(virtual_size.min(raw_size))
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let section = PeSectionRange {
+            raw_start,
+            raw_end,
+            initialized_raw_length,
+            virtual_start,
+            virtual_end,
+            characteristics,
+        };
+        for prior in &sections {
+            if (section.raw_start != section.raw_end
+                && prior.raw_start != prior.raw_end
+                && ranges_overlap(
+                    (section.raw_start, section.raw_end),
+                    (prior.raw_start, prior.raw_end),
+                ))
+                || (section.virtual_start != section.virtual_end
+                    && prior.virtual_start != prior.virtual_end
+                    && ranges_overlap(
+                        (section.virtual_start, section.virtual_end),
+                        (prior.virtual_start, prior.virtual_end),
+                    ))
+            {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+        }
+        sections.push(section);
+    }
+
+    let mut layout = None;
+    for section in sections {
+        if occurrence < section.raw_start || occurrence_end > section.raw_end {
+            continue;
+        }
+        let delta = occurrence
+            .checked_sub(section.raw_start)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let initialized_end = delta
+            .checked_add(KEY_AGENT_DEFAULT_DACL_GATE_BYTES)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        if section.characteristics & IMAGE_SCN_CNT_CODE == 0
+            || section.characteristics & IMAGE_SCN_MEM_EXECUTE == 0
+            || section.characteristics & IMAGE_SCN_MEM_WRITE != 0
+            || initialized_end > section.initialized_raw_length
+        {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        let delta =
+            u32::try_from(delta).map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let sequence_rva = section
+            .virtual_start
+            .checked_add(delta)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let sequence_end = sequence_rva
+            .checked_add(
+                u32::try_from(KEY_AGENT_DEFAULT_DACL_GATE_BYTES)
+                    .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+            )
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let breakpoint_rva = sequence_rva
+            .checked_add(
+                u32::try_from(KEY_AGENT_DEFAULT_DACL_GATE_BYTES - 1)
+                    .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+            )
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        if sequence_end > section.virtual_end
+            || sequence_end > size_of_image
+            || layout
+                .replace(KeyAgentGateLayout {
+                    sequence_rva,
+                    breakpoint_rva,
+                    size_of_image,
+                })
+                .is_some()
+        {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+    }
+    layout.ok_or(KeyAgentActivationError::CooperativeGatePolicy)
 }
 
 /// One-shot proof that code is running on the activation-owned fresh OS thread.
@@ -1054,6 +1459,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
     let PreflightKeyAgentArtifact {
         artifact,
         release_identity,
+        gate_layout,
     } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     activate_preflighted_key_agent_on_fresh_worker_with_identity(
@@ -1061,6 +1467,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker(
         artifact,
         release_identity,
         artifact_identity,
+        gate_layout,
         provisioning,
         pipes,
         root_job,
@@ -1087,6 +1494,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
     let PreflightKeyAgentArtifact {
         artifact,
         release_identity,
+        gate_layout,
     } = preflighted;
     let artifact_identity = sys::exact_file_identity(artifact.raw_handle())?;
     verify_empty_root_job(root_job)?;
@@ -1097,7 +1505,7 @@ pub(crate) fn activate_preflighted_key_agent_on_fresh_worker_for_kernel_test(
         pipes,
         root_job,
         root_job_attribute,
-        coordination_deadline,
+        sys::DebuggeeLaunchPolicy::new(coordination_deadline, gate_layout),
         command_line,
     )?;
     authenticate_and_continue_activation(
@@ -1119,6 +1527,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
     artifact: VerifiedHelper,
     release_identity: AttestedArtifactDigest,
     artifact_identity: ExactFileObjectIdentity,
+    gate_layout: KeyAgentGateLayout,
     provisioning: &PreparedKeyAgentProvisioning,
     pipes: &PrivateKeyAgentPipes,
     root_job: &KeyAgentRootJob,
@@ -1133,7 +1542,7 @@ fn activate_preflighted_key_agent_on_fresh_worker_with_identity(
         pipes,
         root_job,
         root_job_attribute,
-        coordination_deadline,
+        sys::DebuggeeLaunchPolicy::new(coordination_deadline, gate_layout),
     )?;
     authenticate_and_continue_activation(
         artifact,
@@ -1163,7 +1572,9 @@ fn authenticate_and_continue_activation(
         Ok(event) => event,
         Err(error) => return fail_after_cleanup(&mut process, error),
     };
-    if let Err(error) = process.continue_first_event_still_suspended() {
+    if let Err(error) =
+        process.continue_to_cooperative_gate(first_event.deadline, &debug_event_cleanup)
+    {
         return fail_after_cleanup(&mut process, error);
     }
     if let Err(error) = verify_bound_root_process(root_job, process.process_handle()) {
@@ -1237,17 +1648,24 @@ mod sys {
     use core::marker::PhantomData;
     use core::mem::{size_of, size_of_val};
     use core::ptr;
+    use std::ffi::OsString;
+    use std::fs::OpenOptions;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
-    use std::time::Instant;
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::{
+        AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, IntoRawHandle, OwnedHandle,
+    };
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     #[cfg(test)]
     use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
     use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
     use windows::Win32::Foundation::{
         CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
-        ERROR_SEM_TIMEOUT, FILETIME, GetHandleInformation, GetLastError, HANDLE,
-        INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_SEM_TIMEOUT, EXCEPTION_BREAKPOINT, FILETIME, GetHandleInformation, GetLastError,
+        HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     #[cfg(test)]
     use windows::Win32::Foundation::{
@@ -1255,21 +1673,30 @@ mod sys {
     };
     use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::Storage::FileSystem::{
-        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_SHARE_READ, FileAttributeTagInfo,
+        FileIdInfo, GetFileInformationByHandleEx,
     };
     use windows::Win32::System::Diagnostics::Debug::{
-        CREATE_PROCESS_DEBUG_EVENT, CheckRemoteDebuggerPresent, ContinueDebugEvent, DEBUG_EVENT,
-        DebugSetProcessKillOnExit, LOAD_DLL_DEBUG_EVENT, WaitForDebugEventEx,
+        CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_INTEGER_AMD64, CREATE_PROCESS_DEBUG_EVENT,
+        CREATE_THREAD_DEBUG_EVENT, CheckRemoteDebuggerPresent, ContinueDebugEvent, DEBUG_EVENT,
+        DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
+        EXIT_THREAD_DEBUG_EVENT, GetThreadContext, LOAD_DLL_DEBUG_EVENT, OUTPUT_DEBUG_STRING_EVENT,
+        RIP_EVENT, ReadProcessMemory, SetThreadContext, WaitForDebugEventEx,
+    };
+    use windows::Win32::System::Memory::{
+        MEM_COMMIT, MEM_IMAGE, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ,
+        PAGE_GUARD, VirtualQueryEx,
     };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
         DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-        GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, GetThreadId,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
-        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-        QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-        SuspendThread, THREAD_ACCESS_RIGHTS, THREAD_RESUME, THREAD_SUSPEND_RESUME,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessIdOfThread, GetProcessTimes,
+        GetThreadId, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_ACCESS_RIGHTS,
+        PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_TERMINATE, QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, SuspendThread, THREAD_ACCESS_RIGHTS, THREAD_RESUME, THREAD_SUSPEND_RESUME,
         TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
     #[cfg(test)]
@@ -1277,16 +1704,17 @@ mod sys {
     use windows::core::{BOOL, PCWSTR, PWSTR};
 
     use super::{
-        DetachedDebugEventHandleSet, ExactFileObjectIdentity, KeyAgentActivationError,
-        KeyAgentDebugEventCleanup, LaunchPhase, LaunchTransition,
+        DetachedDebugEventHandleSet, ExactFileObjectIdentity, KEY_AGENT_DEFAULT_DACL_GATE_BYTES,
+        KeyAgentActivationError, KeyAgentDebugEventCleanup, KeyAgentGateLayout, LaunchPhase,
+        LaunchTransition,
     };
     use crate::helper::VerifiedHelper;
     use crate::inheritable_handle_launch::{
         InheritableHandleLaunchFlight, acquire_inheritable_handle_launch,
     };
     use crate::key_agent_lpac::{
-        PreparedKeyAgentCreationSecurity, PreparedKeyAgentLpac, PreparedKeyAgentProvisioning,
-        VerifiedKeyAgentLpac,
+        PendingKeyAgentLpac, PreparedKeyAgentCreationSecurity, PreparedKeyAgentLpac,
+        PreparedKeyAgentProvisioning, VerifiedKeyAgentLpac,
     };
     use crate::key_agent_root_job::{KeyAgentRootJob, KeyAgentRootJobAttribute};
     use crate::pipe::{PreparedKeyAgentInheritance, PrivateKeyAgentPipes};
@@ -1303,6 +1731,159 @@ mod sys {
     const APPROVAL_PARENT_PROCESS_ACCESS: PROCESS_ACCESS_RIGHTS =
         PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);
     const MAX_PROCESS_IMAGE_PATH_UNITS: usize = 32_768;
+    const MAX_LOADER_DEBUG_EVENTS: usize = 128;
+    const MAX_PRE_GATE_DEBUG_EVENTS: usize = 160;
+
+    fn wait_for_debug_event_until(
+        deadline: Instant,
+    ) -> Result<DEBUG_EVENT, KeyAgentActivationError> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(KeyAgentActivationError::DebugEventTimeout)?;
+        let rounded_milliseconds = remaining.as_millis().saturating_add(1);
+        let timeout = u32::try_from(rounded_milliseconds.min(u128::from(u32::MAX)))
+            .map_err(|_| KeyAgentActivationError::DebugEventTimeout)?
+            .max(1);
+        let mut event = DEBUG_EVENT::default();
+        // SAFETY: event points to exact writable storage and the caller is the
+        // same dedicated OS thread that created this debuggee.
+        if unsafe { WaitForDebugEventEx(&raw mut event, timeout) }.is_err() {
+            // SAFETY: queried immediately after the failed Win32 call.
+            return if unsafe { GetLastError() } == ERROR_SEM_TIMEOUT {
+                Err(KeyAgentActivationError::DebugEventTimeout)
+            } else {
+                Err(KeyAgentActivationError::UnexpectedDebugEvent)
+            };
+        }
+        Ok(event)
+    }
+
+    fn query_remote_image_page(
+        process: HANDLE,
+        address: usize,
+        required_allocation_base: usize,
+        required_end: usize,
+        require_executable: bool,
+    ) -> Result<MEMORY_BASIC_INFORMATION, KeyAgentActivationError> {
+        if address == 0 || required_allocation_base == 0 || required_end <= address {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        let mut information = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: process is the retained live debuggee; the address is used
+        // only as a remote query key and information is exact writable storage.
+        let returned = unsafe {
+            VirtualQueryEx(
+                process,
+                Some(address as *const c_void),
+                &raw mut information,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        let region_start = information.BaseAddress.addr();
+        let region_end = region_start
+            .checked_add(information.RegionSize)
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let base_protection = information.Protect.0 & 0xFF;
+        let executable_nonwritable =
+            base_protection == PAGE_EXECUTE.0 || base_protection == PAGE_EXECUTE_READ.0;
+        if returned != size_of::<MEMORY_BASIC_INFORMATION>()
+            || information.AllocationBase.addr() != required_allocation_base
+            || information.State != MEM_COMMIT
+            || information.Type != MEM_IMAGE
+            || information.Protect.0 & PAGE_GUARD.0 != 0
+            || (require_executable && !executable_nonwritable)
+            || region_start > address
+            || required_end > region_end
+        {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        Ok(information)
+    }
+
+    fn read_remote_exact<const N: usize>(
+        process: HANDLE,
+        address: usize,
+    ) -> Result<[u8; N], KeyAgentActivationError> {
+        let mut bytes = [0_u8; N];
+        let mut read = 0_usize;
+        // SAFETY: the destination is exact writable local storage. The source
+        // is read-only remote memory whose committed range was authenticated by
+        // the caller immediately beforehand.
+        unsafe {
+            ReadProcessMemory(
+                process,
+                address as *const c_void,
+                bytes.as_mut_ptr().cast::<c_void>(),
+                N,
+                Some(&raw mut read),
+            )
+        }
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        if read != N {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        Ok(bytes)
+    }
+
+    #[derive(Clone, Copy)]
+    #[repr(C, align(16))]
+    struct AlignedAmd64Context(CONTEXT);
+
+    fn primary_thread_context(
+        thread: HANDLE,
+    ) -> Result<AlignedAmd64Context, KeyAgentActivationError> {
+        let mut context = AlignedAmd64Context(CONTEXT {
+            ContextFlags: CONTEXT_CONTROL_AMD64 | CONTEXT_INTEGER_AMD64,
+            ..CONTEXT::default()
+        });
+        // SAFETY: this exact primary-thread handle remains live and Windows has
+        // stopped the thread for the debug event. AMD64 CONTEXT storage is
+        // explicitly 16-byte aligned even though the generated Rust type has a
+        // weaker alignment than the native ABI declaration.
+        unsafe { GetThreadContext(thread, &raw mut context.0) }
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        if context.0.ContextFlags != (CONTEXT_CONTROL_AMD64 | CONTEXT_INTEGER_AMD64) {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        Ok(context)
+    }
+
+    fn context_matches_after_r10_clear(before: &CONTEXT, after: &CONTEXT) -> bool {
+        const AMD64_EFLAGS_RESERVED_ONE: u32 = 1 << 1;
+
+        after.ContextFlags == before.ContextFlags
+            && after.R10 == 0
+            && after.P1Home == before.P1Home
+            && after.P2Home == before.P2Home
+            && after.P3Home == before.P3Home
+            && after.P4Home == before.P4Home
+            && after.P5Home == before.P5Home
+            && after.P6Home == before.P6Home
+            && after.SegCs == before.SegCs
+            && after.SegSs == before.SegSs
+            // SetThreadContext/GetThreadContext may canonicalize away the
+            // architecturally reserved, always-one EFLAGS bit in its API
+            // representation. Every mutable flag bit must remain exact.
+            && before.EFlags & AMD64_EFLAGS_RESERVED_ONE != 0
+            && after.EFlags & !AMD64_EFLAGS_RESERVED_ONE
+                == before.EFlags & !AMD64_EFLAGS_RESERVED_ONE
+            && after.Rax == before.Rax
+            && after.Rcx == before.Rcx
+            && after.Rdx == before.Rdx
+            && after.Rbx == before.Rbx
+            && after.Rsp == before.Rsp
+            && after.Rbp == before.Rbp
+            && after.Rsi == before.Rsi
+            && after.Rdi == before.Rdi
+            && after.R8 == before.R8
+            && after.R9 == before.R9
+            && after.R11 == before.R11
+            && after.R12 == before.R12
+            && after.R13 == before.R13
+            && after.R14 == before.R14
+            && after.R15 == before.R15
+            && after.Rip == before.Rip
+    }
 
     /// Initialized four-slot process-creation policy retained through one call.
     ///
@@ -1433,12 +2014,71 @@ mod sys {
         environment: Box<[u16]>,
         lpac: PreparedKeyAgentLpac,
         creation_security: PreparedKeyAgentCreationSecurity,
+        system_ntdll: PinnedSystemNtdll,
     }
 
     impl PreparedKeyAgentProcess {
-        fn into_security_parts(self) -> (PreparedKeyAgentLpac, PreparedKeyAgentCreationSecurity) {
-            (self.lpac, self.creation_security)
+        fn into_security_parts(
+            self,
+        ) -> (
+            PreparedKeyAgentLpac,
+            PreparedKeyAgentCreationSecurity,
+            PinnedSystemNtdll,
+        ) {
+            (self.lpac, self.creation_security, self.system_ntdll)
         }
+    }
+
+    struct PinnedSystemNtdll {
+        handle: OwnedWinHandle,
+        identity: ExactFileObjectIdentity,
+    }
+
+    fn pin_system_ntdll(
+        context: &RestrictedProcessContext,
+    ) -> Result<PinnedSystemNtdll, KeyAgentActivationError> {
+        let system_directory = context.current_directory();
+        let path_units = system_directory
+            .strip_suffix(&[0])
+            .filter(|units| !units.is_empty() && !units.contains(&0))
+            .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        let path = PathBuf::from(OsString::from_wide(path_units)).join("ntdll.dll");
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(path)
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let raw = HANDLE(file.as_raw_handle());
+        let mut flags = u32::MAX;
+        // SAFETY: the newly opened file remains owned by `file` and `flags`
+        // names exact initialized writable storage.
+        unsafe { GetHandleInformation(raw, &raw mut flags) }
+            .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        let mut attributes = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: `raw` is the exact live file and `attributes` is correctly
+        // sized writable storage for FileAttributeTagInfo.
+        unsafe {
+            GetFileInformationByHandleEx(
+                raw,
+                FileAttributeTagInfo,
+                ptr::from_mut(&mut attributes).cast::<c_void>(),
+                u32::try_from(size_of_val(&attributes))
+                    .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+            )
+        }
+        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+        if flags != 0
+            || attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+            || attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        {
+            return Err(KeyAgentActivationError::CooperativeGatePolicy);
+        }
+        let identity = exact_file_identity(raw)?;
+        let raw = HANDLE(file.into_raw_handle());
+        let handle =
+            OwnedWinHandle::new(raw).ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+        Ok(PinnedSystemNtdll { handle, identity })
     }
 
     fn prepare_key_agent_process(
@@ -1450,6 +2090,7 @@ mod sys {
         #[cfg(not(test))]
         let context = RestrictedProcessContext::prepare();
         let context = context.map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
+        let system_ntdll = pin_system_ntdll(&context)?;
         provisioning
             .revalidate()
             .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
@@ -1474,6 +2115,7 @@ mod sys {
             environment,
             lpac,
             creation_security,
+            system_ntdll,
         })
     }
 
@@ -1542,12 +2184,44 @@ mod sys {
         Ok(information)
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PendingDebugEventKind {
+        CreateProcess,
+        Loader,
+        CooperativeGate,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct PendingDebugEvent {
+        process_id: u32,
+        thread_id: u32,
+        kind: PendingDebugEventKind,
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) struct DebuggeeLaunchPolicy {
+        coordination_deadline: Instant,
+        gate_layout: KeyAgentGateLayout,
+    }
+
+    impl DebuggeeLaunchPolicy {
+        pub(super) const fn new(
+            coordination_deadline: Instant,
+            gate_layout: KeyAgentGateLayout,
+        ) -> Self {
+            Self {
+                coordination_deadline,
+                gate_layout,
+            }
+        }
+    }
+
     pub(super) struct SuspendedDebuggee {
         process: OwnedWinHandle,
         primary_thread: OwnedWinHandle,
         process_id: u32,
         thread_id: u32,
-        pending_event: Option<(u32, u32)>,
+        pending_event: Option<PendingDebugEvent>,
         // Distinct raw aliases supplied by CREATE_PROCESS_DEBUG_EVENT. They are
         // system-managed while attached, transferred to the run's shared cleanup
         // registry before no-kill arming, then adopted and checked-closed only
@@ -1555,7 +2229,13 @@ mod sys {
         debug_event_process: Option<HANDLE>,
         debug_event_primary_thread: Option<HANDLE>,
         phase: LaunchPhase,
+        gate_layout: KeyAgentGateLayout,
+        main_image_base: Option<usize>,
+        system_ntdll: Option<PinnedSystemNtdll>,
+        loaded_system_ntdll_base: Option<usize>,
+        system_breakpoint_seen: bool,
         prepared_lpac: Option<PreparedKeyAgentLpac>,
+        pending_lpac: Option<PendingKeyAgentLpac>,
         // Present only after the exact suspended primary token proved the
         // fixed Key Agent SID, zero capabilities, and differential LPAC
         // access-membership behavior. The proof retains a process-wide token
@@ -1576,7 +2256,7 @@ mod sys {
             pipes: &PrivateKeyAgentPipes,
             root_job: &KeyAgentRootJob,
             root_job_attribute: &KeyAgentRootJobAttribute<'_>,
-            coordination_deadline: Instant,
+            policy: DebuggeeLaunchPolicy,
         ) -> Result<Self, KeyAgentActivationError> {
             Self::create_inner(
                 artifact,
@@ -1584,7 +2264,7 @@ mod sys {
                 pipes,
                 root_job,
                 root_job_attribute,
-                coordination_deadline,
+                policy,
                 None,
             )
         }
@@ -1596,7 +2276,7 @@ mod sys {
             pipes: &PrivateKeyAgentPipes,
             root_job: &KeyAgentRootJob,
             root_job_attribute: &KeyAgentRootJobAttribute<'_>,
-            coordination_deadline: Instant,
+            policy: DebuggeeLaunchPolicy,
             command_line: &mut [u16],
         ) -> Result<Self, KeyAgentActivationError> {
             Self::create_inner(
@@ -1605,44 +2285,50 @@ mod sys {
                 pipes,
                 root_job,
                 root_job_attribute,
-                coordination_deadline,
+                policy,
                 Some(command_line),
             )
         }
 
-        fn create_inner(
-            artifact: &VerifiedHelper,
-            provisioning: &PreparedKeyAgentProvisioning,
-            pipes: &PrivateKeyAgentPipes,
-            root_job: &KeyAgentRootJob,
-            root_job_attribute: &KeyAgentRootJobAttribute<'_>,
-            coordination_deadline: Instant,
-            command_line: Option<&mut [u16]>,
-        ) -> Result<Self, KeyAgentActivationError> {
-            let prepared_process = prepare_key_agent_process(artifact, provisioning)?;
-            let flight = acquire_inheritable_handle_launch(coordination_deadline)
-                .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
-            if Instant::now() >= coordination_deadline {
-                return Err(KeyAgentActivationError::ProcessCreation);
+        fn initial_suspended(
+            process: OwnedWinHandle,
+            primary_thread: OwnedWinHandle,
+            process_id: u32,
+            thread_id: u32,
+            gate_layout: KeyAgentGateLayout,
+            system_ntdll: PinnedSystemNtdll,
+            prepared_lpac: Option<PreparedKeyAgentLpac>,
+        ) -> Self {
+            Self {
+                process,
+                primary_thread,
+                process_id,
+                thread_id,
+                pending_event: None,
+                debug_event_process: None,
+                debug_event_primary_thread: None,
+                phase: LaunchPhase::AwaitingCreateEvent,
+                gate_layout,
+                main_image_base: None,
+                system_ntdll: Some(system_ntdll),
+                loaded_system_ntdll_base: None,
+                system_breakpoint_seen: false,
+                prepared_lpac,
+                pending_lpac: None,
+                lpac: None,
+                proven_suspend_count: 1,
+                cleanup_exit_code: None,
             }
-            let inheritance = pipes
-                .prepare_child_inheritance(&flight)
-                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
-            let information = create_suspended_debuggee_process(
-                &flight,
-                &prepared_process,
-                &inheritance,
-                root_job,
-                root_job_attribute,
-                coordination_deadline,
-                command_line,
-            )?;
-            let (prepared_lpac, creation_security) = prepared_process.into_security_parts();
+        }
+
+        fn adopt_created_process(
+            information: PROCESS_INFORMATION,
+            gate_layout: KeyAgentGateLayout,
+            system_ntdll: PinnedSystemNtdll,
+            prepared_lpac: PreparedKeyAgentLpac,
+        ) -> Result<Self, KeyAgentActivationError> {
             let process = OwnedWinHandle::new(information.hProcess);
             let primary_thread = OwnedWinHandle::new(information.hThread);
-            drop(inheritance);
-            drop(flight);
-
             let (process, primary_thread) = match (process, primary_thread) {
                 (Some(process), Some(primary_thread)) => (process, primary_thread),
                 (process, primary_thread) => {
@@ -1669,40 +2355,69 @@ mod sys {
                 || actual_process_id != information.dwProcessId
                 || actual_thread_id != information.dwThreadId
             {
-                let mut rejected = Self {
+                let mut rejected = Self::initial_suspended(
                     process,
                     primary_thread,
-                    process_id: information.dwProcessId,
-                    thread_id: information.dwThreadId,
-                    pending_event: None,
-                    debug_event_process: None,
-                    debug_event_primary_thread: None,
-                    phase: LaunchPhase::AwaitingCreateEvent,
-                    prepared_lpac: None,
-                    lpac: None,
-                    proven_suspend_count: 1,
-                    cleanup_exit_code: None,
-                };
+                    information.dwProcessId,
+                    information.dwThreadId,
+                    gate_layout,
+                    system_ntdll,
+                    None,
+                );
                 rejected
                     .abort()
                     .map_err(|_| KeyAgentActivationError::Cleanup)?;
                 return Err(KeyAgentActivationError::ProcessIdentityMismatch);
             }
 
-            let mut created = Self {
+            Ok(Self::initial_suspended(
                 process,
                 primary_thread,
-                process_id: actual_process_id,
-                thread_id: actual_thread_id,
-                pending_event: None,
-                debug_event_process: None,
-                debug_event_primary_thread: None,
-                phase: LaunchPhase::AwaitingCreateEvent,
-                prepared_lpac: Some(prepared_lpac),
-                lpac: None,
-                proven_suspend_count: 1,
-                cleanup_exit_code: None,
-            };
+                actual_process_id,
+                actual_thread_id,
+                gate_layout,
+                system_ntdll,
+                Some(prepared_lpac),
+            ))
+        }
+
+        fn create_inner(
+            artifact: &VerifiedHelper,
+            provisioning: &PreparedKeyAgentProvisioning,
+            pipes: &PrivateKeyAgentPipes,
+            root_job: &KeyAgentRootJob,
+            root_job_attribute: &KeyAgentRootJobAttribute<'_>,
+            policy: DebuggeeLaunchPolicy,
+            command_line: Option<&mut [u16]>,
+        ) -> Result<Self, KeyAgentActivationError> {
+            let DebuggeeLaunchPolicy {
+                coordination_deadline,
+                gate_layout,
+            } = policy;
+            let prepared_process = prepare_key_agent_process(artifact, provisioning)?;
+            let flight = acquire_inheritable_handle_launch(coordination_deadline)
+                .map_err(|_| KeyAgentActivationError::ProcessCreation)?;
+            if Instant::now() >= coordination_deadline {
+                return Err(KeyAgentActivationError::ProcessCreation);
+            }
+            let inheritance = pipes
+                .prepare_child_inheritance(&flight)
+                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            let information = create_suspended_debuggee_process(
+                &flight,
+                &prepared_process,
+                &inheritance,
+                root_job,
+                root_job_attribute,
+                coordination_deadline,
+                command_line,
+            )?;
+            let (prepared_lpac, creation_security, system_ntdll) =
+                prepared_process.into_security_parts();
+            drop(inheritance);
+            drop(flight);
+            let mut created =
+                Self::adopt_created_process(information, gate_layout, system_ntdll, prepared_lpac)?;
             if creation_security
                 .verify_created_objects(created.process_handle(), created.primary_thread_handle())
                 .is_err()
@@ -1757,7 +2472,10 @@ mod sys {
             self.phase == LaunchPhase::DetachedSuspended
                 && self.proven_suspend_count == 1
                 && self.prepared_lpac.is_none()
+                && self.pending_lpac.is_none()
                 && self.lpac.is_some()
+                && self.system_ntdll.is_none()
+                && self.system_breakpoint_seen
                 && self.debug_event_process.is_none()
                 && self.debug_event_primary_thread.is_none()
         }
@@ -2007,8 +2725,10 @@ mod sys {
             let event_aliases = DetachedDebugEventHandleSet {
                 process: safe_event_process,
                 primary_thread: safe_event_primary_thread,
+                rejected_thread: None,
                 process_id: self.process_id,
                 thread_id: self.thread_id,
+                rejected_thread_id: None,
             };
             let event_file = if !invalid(event_file)
                 && event_file != creator_process
@@ -2058,6 +2778,289 @@ mod sys {
             Ok(event_file)
         }
 
+        fn adopt_loader_event_file(
+            &self,
+            handle: HANDLE,
+        ) -> Result<Option<OwnedWinHandle>, KeyAgentActivationError> {
+            if handle == HANDLE::default() {
+                return Ok(None);
+            }
+            if invalid(handle)
+                || handle == self.process.raw()
+                || handle == self.primary_thread.raw()
+                || self.debug_event_process == Some(handle)
+                || self.debug_event_primary_thread == Some(handle)
+                || self
+                    .system_ntdll
+                    .as_ref()
+                    .is_some_and(|pinned| pinned.handle.raw() == handle)
+            {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            OwnedWinHandle::new(handle)
+                .map(Some)
+                .ok_or(KeyAgentActivationError::UnexpectedDebugEvent)
+        }
+
+        fn register_rejected_create_thread_event_handle(
+            &self,
+            event: &DEBUG_EVENT,
+            debug_event_cleanup: &KeyAgentDebugEventCleanup,
+        ) -> Result<(), KeyAgentActivationError> {
+            if event.dwDebugEventCode != CREATE_THREAD_DEBUG_EVENT
+                || event.dwProcessId != self.process_id
+                || event.dwThreadId == 0
+                || event.dwThreadId == self.thread_id
+            {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            // SAFETY: the caller and guard above matched the event discriminant.
+            let event_thread = unsafe { event.u.CreateThread.hThread };
+            if invalid(event_thread)
+                || event_thread == self.process.raw()
+                || event_thread == self.primary_thread.raw()
+                || self.debug_event_process == Some(event_thread)
+                || self.debug_event_primary_thread == Some(event_thread)
+                || self
+                    .system_ntdll
+                    .as_ref()
+                    .is_some_and(|pinned| pinned.handle.raw() == event_thread)
+            {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+
+            // Register the independently safe numeric alias before any later
+            // fallible identity check. Windows manages it while the debug event
+            // is attached; the shared owner survives every error and closes it
+            // only after the exact debugger OS thread has joined.
+            debug_event_cleanup.register_rejected_thread_while_attached(
+                self.process_id,
+                self.thread_id,
+                event.dwThreadId,
+                event_thread.0 as usize,
+            )?;
+
+            let mut flags = u32::MAX;
+            // SAFETY: the registered event alias remains live while attached.
+            let observed_thread_id = unsafe { GetThreadId(event_thread) };
+            // SAFETY: same event-alias lifetime argument.
+            let observed_process_id = unsafe { GetProcessIdOfThread(event_thread) };
+            // SAFETY: flags is exact initialized writable storage.
+            let flags_result = unsafe { GetHandleInformation(event_thread, &raw mut flags) };
+            if observed_thread_id != event.dwThreadId
+                || observed_process_id != self.process_id
+                || flags_result.is_err()
+                || flags != 0
+            {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            Ok(())
+        }
+
+        fn continue_pending_event(
+            &mut self,
+            expected: PendingDebugEventKind,
+        ) -> Result<(), KeyAgentActivationError> {
+            let pending = self
+                .pending_event
+                .filter(|pending| pending.kind == expected)
+                .ok_or(KeyAgentActivationError::DebugDetach)?;
+            // SAFETY: these identifiers came from the exact event still held by
+            // this dedicated debugger thread.
+            unsafe { ContinueDebugEvent(pending.process_id, pending.thread_id, DBG_CONTINUE) }
+                .map_err(|_| KeyAgentActivationError::DebugDetach)?;
+            self.pending_event = None;
+            Ok(())
+        }
+
+        fn authenticate_load_dll_event(
+            &mut self,
+            event: &DEBUG_EVENT,
+        ) -> Result<(), KeyAgentActivationError> {
+            // SAFETY: the caller matched the event discriminant.
+            let load = unsafe { event.u.LoadDll };
+            let Some(mut event_file) = self.adopt_loader_event_file(load.hFile)? else {
+                return Ok(());
+            };
+            let proof = (|| {
+                let identity = exact_file_identity(event_file.raw())?;
+                let Some(pinned) = self.system_ntdll.as_ref() else {
+                    return Ok(());
+                };
+                if identity != pinned.identity {
+                    return Ok(());
+                }
+                if self.loaded_system_ntdll_base.is_some()
+                    || exact_file_identity(pinned.handle.raw())? != pinned.identity
+                {
+                    return Err(KeyAgentActivationError::CooperativeGatePolicy);
+                }
+                let base = load.lpBaseOfDll.addr();
+                let end = base
+                    .checked_add(1)
+                    .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+                let _ = query_remote_image_page(self.process.raw(), base, base, end, false)?;
+                if Some(base) == self.main_image_base {
+                    return Err(KeyAgentActivationError::CooperativeGatePolicy);
+                }
+                self.loaded_system_ntdll_base = Some(base);
+                Ok(())
+            })();
+            let close = event_file.close_checked();
+            proof?;
+            close
+        }
+
+        fn authenticate_system_breakpoint(
+            &mut self,
+            event: &DEBUG_EVENT,
+        ) -> Result<(), KeyAgentActivationError> {
+            if self.system_breakpoint_seen {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            // SAFETY: the caller matched the exception-event discriminant.
+            let exception = unsafe { event.u.Exception };
+            let record = exception.ExceptionRecord;
+            let address = record.ExceptionAddress.addr();
+            let allocation_base = self
+                .loaded_system_ntdll_base
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let end = address
+                .checked_add(1)
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            if exception.dwFirstChance != 1 || record.ExceptionCode != EXCEPTION_BREAKPOINT {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            let _ =
+                query_remote_image_page(self.process.raw(), address, allocation_base, end, true)?;
+            if read_remote_exact::<1>(self.process.raw(), address)? != [0xCC] {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+            let context = primary_thread_context(self.primary_thread.raw())?;
+            let expected_rip =
+                u64::try_from(end).map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+            if context.0.Rip != expected_rip {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+            let pinned = self
+                .system_ntdll
+                .as_mut()
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            if exact_file_identity(pinned.handle.raw())? != pinned.identity {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+            pinned.handle.close_checked()?;
+            self.system_ntdll = None;
+            self.system_breakpoint_seen = true;
+            Ok(())
+        }
+
+        fn authenticate_cooperative_gate(
+            &mut self,
+            event: &DEBUG_EVENT,
+        ) -> Result<(), KeyAgentActivationError> {
+            if !self.system_breakpoint_seen
+                || self.system_ntdll.is_some()
+                || self.loaded_system_ntdll_base.is_none()
+            {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+            // SAFETY: the caller matched the exception-event discriminant.
+            let exception = unsafe { event.u.Exception };
+            let record = exception.ExceptionRecord;
+            let image_base = self
+                .main_image_base
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let sequence_address = image_base
+                .checked_add(
+                    usize::try_from(self.gate_layout.sequence_rva)
+                        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+                )
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let breakpoint_address = image_base
+                .checked_add(
+                    usize::try_from(self.gate_layout.breakpoint_rva)
+                        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+                )
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let sequence_end = sequence_address
+                .checked_add(KEY_AGENT_DEFAULT_DACL_GATE_BYTES)
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let image_end = image_base
+                .checked_add(
+                    usize::try_from(self.gate_layout.size_of_image)
+                        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+                )
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            if exception.dwFirstChance != 1
+                || record.ExceptionCode != EXCEPTION_BREAKPOINT
+                || record.ExceptionAddress.addr() != breakpoint_address
+                || sequence_end > image_end
+                || breakpoint_address
+                    .checked_add(1)
+                    .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?
+                    != sequence_end
+            {
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
+            let _ = query_remote_image_page(
+                self.process.raw(),
+                sequence_address,
+                image_base,
+                sequence_end,
+                true,
+            )?;
+            let expected = super::default_dacl_gate_sequence(
+                crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
+            );
+            if read_remote_exact::<KEY_AGENT_DEFAULT_DACL_GATE_BYTES>(
+                self.process.raw(),
+                sequence_address,
+            )? != expected
+            {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+
+            let before = primary_thread_context(self.primary_thread.raw())?;
+            let expected_rip = u64::try_from(sequence_end)
+                .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+            if before.0.Rip != expected_rip
+                || before.0.R10
+                    != crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER
+            {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+            let mut cleared = before;
+            cleared.0.R10 = 0;
+            // SAFETY: the event still stops this exact primary thread. The
+            // context was captured in this event and differs only in R10.
+            unsafe { SetThreadContext(self.primary_thread.raw(), &raw const cleared.0) }
+                .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?;
+            let after = primary_thread_context(self.primary_thread.raw())?;
+            if !context_matches_after_r10_clear(&before.0, &after.0) {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
+            }
+
+            // SAFETY: the debug event supplies the process-wide stop while this
+            // exact creator handle adds one explicit, independently retained
+            // suspend count. No CREATE_THREAD event was admitted before here.
+            let previous_suspend_count = unsafe { SuspendThread(self.primary_thread.raw()) };
+            if previous_suspend_count != 0 {
+                return Err(KeyAgentActivationError::SuspensionMismatch);
+            }
+            self.proven_suspend_count = 1;
+
+            let pending_lpac = self
+                .pending_lpac
+                .take()
+                .ok_or(KeyAgentActivationError::LpacPolicy)?;
+            let verified_lpac = pending_lpac
+                .finalize_after_gate(self.process_handle())
+                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
+            self.lpac = Some(verified_lpac);
+            Ok(())
+        }
+
         pub(super) fn authenticate_first_event(
             &mut self,
             expected_artifact: ExactFileObjectIdentity,
@@ -2065,125 +3068,200 @@ mod sys {
             debug_event_cleanup: &KeyAgentDebugEventCleanup,
         ) -> Result<AuthenticatedFirstEvent, KeyAgentActivationError> {
             if self.phase != LaunchPhase::AwaitingCreateEvent
+                || timeout_milliseconds == 0
                 || self.prepared_lpac.is_none()
+                || self.pending_lpac.is_some()
                 || self.lpac.is_some()
+                || self.main_image_base.is_some()
+                || self.system_ntdll.is_none()
+                || self.loaded_system_ntdll_base.is_some()
+                || self.system_breakpoint_seen
                 || self.debug_event_process.is_some()
                 || self.debug_event_primary_thread.is_some()
             {
                 return Err(KeyAgentActivationError::UnexpectedDebugEvent);
             }
-            let mut event = DEBUG_EVENT::default();
-            // SAFETY: event points to exact writable storage and this is the same
-            // thread that called CreateProcessW for the debuggee.
-            if unsafe { WaitForDebugEventEx(&raw mut event, timeout_milliseconds) }.is_err() {
-                // SAFETY: queried immediately after the failed Win32 call.
-                return if unsafe { GetLastError() } == ERROR_SEM_TIMEOUT {
-                    Err(KeyAgentActivationError::DebugEventTimeout)
-                } else {
-                    Err(KeyAgentActivationError::UnexpectedDebugEvent)
-                };
-            }
-            // Own and close either documented debug-event file handle before
-            // any rejection is returned. Only the create-process handle can be
-            // authenticated; a LOAD_DLL first event remains an error.
-            let _unexpected_event_file = if event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
-                // SAFETY: the discriminant was matched immediately above.
-                OwnedWinHandle::new(unsafe { event.u.LoadDll }.hFile)
-            } else {
-                // CREATE_PROCESS hFile ownership is established only after its
-                // process/thread aliases have entered the shared cleanup owner.
-                None
-            };
-
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(u64::from(timeout_milliseconds)))
+                .ok_or(KeyAgentActivationError::DebugEventTimeout)?;
+            let event = wait_for_debug_event_until(deadline)?;
             if event.dwProcessId != self.process_id || event.dwThreadId != self.thread_id {
-                // Never continue a debug event for an identity outside this
-                // activation. Dropping its file handle and retaining the event
-                // stop is safer than releasing an unrelated process.
                 return Err(KeyAgentActivationError::UnexpectedDebugEvent);
             }
-            self.pending_event = Some((event.dwProcessId, event.dwThreadId));
+            self.pending_event = Some(PendingDebugEvent {
+                process_id: event.dwProcessId,
+                thread_id: event.dwThreadId,
+                kind: if event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
+                    PendingDebugEventKind::CreateProcess
+                } else {
+                    PendingDebugEventKind::Loader
+                },
+            });
+            if event.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT {
+                if event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
+                    // SAFETY: the discriminant was checked immediately above.
+                    let load_dll = unsafe { event.u.LoadDll };
+                    if let Some(mut file) = self.adopt_loader_event_file(load_dll.hFile)? {
+                        file.close_checked()?;
+                    }
+                }
+                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+            }
             self.phase = self
                 .phase
                 .transition(LaunchTransition::ReceiveCreateEvent)?;
-            if event.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT {
-                return Err(KeyAgentActivationError::UnexpectedDebugEvent);
-            }
             // SAFETY: the discriminant was checked immediately above.
             let create = unsafe { event.u.CreateProcessInfo };
-            let event_file = self.authenticate_create_event_handles(
+            let mut event_file = self.authenticate_create_event_handles(
                 create.hProcess,
                 create.hThread,
                 create.hFile,
                 debug_event_cleanup,
             )?;
-
             let mapped_identity = exact_file_identity(event_file.raw())?;
             if mapped_identity != expected_artifact {
                 return Err(KeyAgentActivationError::MappedImageMismatch);
             }
-            // The event hFile can carry broader rights than the retained verified
-            // artifact. Close it during this event exactly as Microsoft directs;
-            // it is never duplicated into the activation capability.
-            drop(event_file);
-
-            let creation_time = process_creation_time(self.process.raw())?;
-
-            // SAFETY: Windows has stopped every process thread for this exact
-            // CREATE_PROCESS event. The primary thread's explicit count must be
-            // zero because CREATE_SUSPENDED was consumed before waiting. Adding
-            // one count here guarantees ContinueDebugEvent and detach cannot
-            // enter user-mode code.
-            let previous_suspend_count = unsafe { SuspendThread(self.primary_thread.raw()) };
-            if previous_suspend_count != 0 {
-                return Err(KeyAgentActivationError::SuspensionMismatch);
+            let image_base = create.lpBaseOfImage.addr();
+            let image_end = image_base
+                .checked_add(
+                    usize::try_from(self.gate_layout.size_of_image)
+                        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+                )
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            let breakpoint = image_base
+                .checked_add(
+                    usize::try_from(self.gate_layout.breakpoint_rva)
+                        .map_err(|_| KeyAgentActivationError::CooperativeGatePolicy)?,
+                )
+                .ok_or(KeyAgentActivationError::CooperativeGatePolicy)?;
+            if image_base == 0 || breakpoint >= image_end {
+                return Err(KeyAgentActivationError::CooperativeGatePolicy);
             }
-            self.proven_suspend_count = 1;
+            self.main_image_base = Some(image_base);
 
+            // The event hFile can carry broader rights than the retained
+            // artifact. Checked-close it before this event can be continued.
+            event_file.close_checked()?;
+            let creation_time = process_creation_time(self.process.raw())?;
             let prepared_lpac = self
                 .prepared_lpac
                 .take()
                 .ok_or(KeyAgentActivationError::LpacPolicy)?;
-            let verified_lpac = prepared_lpac
-                .verify_and_harden_suspended_process(self.process_handle())
+            let pending_lpac = prepared_lpac
+                .prepare_suspended_process_for_gate(self.process_handle())
                 .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
-            self.lpac = Some(verified_lpac);
+            self.pending_lpac = Some(pending_lpac);
 
-            Ok(AuthenticatedFirstEvent { creation_time })
+            Ok(AuthenticatedFirstEvent {
+                creation_time,
+                deadline,
+            })
         }
 
-        pub(super) fn continue_first_event_still_suspended(
+        pub(super) fn continue_to_cooperative_gate(
             &mut self,
+            deadline: Instant,
+            debug_event_cleanup: &KeyAgentDebugEventCleanup,
         ) -> Result<(), KeyAgentActivationError> {
             if self.phase != LaunchPhase::CreateEventHeld
-                || self.proven_suspend_count != 1
+                || self.proven_suspend_count != 0
                 || self.prepared_lpac.is_some()
-                || self.lpac.is_none()
-                || self.debug_event_process.is_some()
-                || self.debug_event_primary_thread.is_some()
+                || self.pending_lpac.is_none()
+                || self.lpac.is_some()
+                || self.main_image_base.is_none()
+                || self.system_ntdll.is_none()
+                || self.system_breakpoint_seen
             {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
-            let (process_id, thread_id) = self
-                .pending_event
-                .ok_or(KeyAgentActivationError::DebugDetach)?;
-            // SAFETY: these exact identifiers came from the event still held by
-            // this creator thread. DBG_CONTINUE releases only the debugger event
-            // suspension; the explicit guard suspend count remains.
-            unsafe { ContinueDebugEvent(process_id, thread_id, DBG_CONTINUE) }
-                .map_err(|_| KeyAgentActivationError::DebugDetach)?;
-            self.pending_event = None;
+            self.continue_pending_event(PendingDebugEventKind::CreateProcess)?;
             self.phase = self
                 .phase
                 .transition(LaunchTransition::ContinueCreateEvent)?;
-            Ok(())
+
+            let mut load_dll_events = 0_usize;
+            for _ in 0..MAX_PRE_GATE_DEBUG_EVENTS {
+                let event = wait_for_debug_event_until(deadline)?;
+                if event.dwProcessId != self.process_id {
+                    return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+                }
+                self.pending_event = Some(PendingDebugEvent {
+                    process_id: event.dwProcessId,
+                    thread_id: event.dwThreadId,
+                    kind: PendingDebugEventKind::Loader,
+                });
+                if event.dwThreadId != self.thread_id {
+                    match event.dwDebugEventCode {
+                        CREATE_THREAD_DEBUG_EVENT => self
+                            .register_rejected_create_thread_event_handle(
+                                &event,
+                                debug_event_cleanup,
+                            )?,
+                        LOAD_DLL_DEBUG_EVENT => {
+                            // SAFETY: the discriminant was checked immediately above.
+                            let load = unsafe { event.u.LoadDll };
+                            if let Some(mut file) = self.adopt_loader_event_file(load.hFile)? {
+                                file.close_checked()?;
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+                }
+                match event.dwDebugEventCode {
+                    LOAD_DLL_DEBUG_EVENT => {
+                        load_dll_events = load_dll_events
+                            .checked_add(1)
+                            .filter(|count| *count <= MAX_LOADER_DEBUG_EVENTS)
+                            .ok_or(KeyAgentActivationError::UnexpectedDebugEvent)?;
+                        self.authenticate_load_dll_event(&event)?;
+                        self.continue_pending_event(PendingDebugEventKind::Loader)?;
+                    }
+                    EXCEPTION_DEBUG_EVENT => {
+                        if !self.system_breakpoint_seen {
+                            self.authenticate_system_breakpoint(&event)?;
+                            self.continue_pending_event(PendingDebugEventKind::Loader)?;
+                            continue;
+                        }
+                        self.pending_event = Some(PendingDebugEvent {
+                            process_id: event.dwProcessId,
+                            thread_id: event.dwThreadId,
+                            kind: PendingDebugEventKind::CooperativeGate,
+                        });
+                        self.phase = self
+                            .phase
+                            .transition(LaunchTransition::ReceiveCooperativeGate)?;
+                        self.authenticate_cooperative_gate(&event)?;
+                        self.continue_pending_event(PendingDebugEventKind::CooperativeGate)?;
+                        self.phase = self
+                            .phase
+                            .transition(LaunchTransition::ContinueCooperativeGate)?;
+                        return Ok(());
+                    }
+                    CREATE_THREAD_DEBUG_EVENT
+                    | EXIT_THREAD_DEBUG_EVENT
+                    | EXIT_PROCESS_DEBUG_EVENT
+                    | OUTPUT_DEBUG_STRING_EVENT
+                    | RIP_EVENT
+                    | CREATE_PROCESS_DEBUG_EVENT => {
+                        return Err(KeyAgentActivationError::UnexpectedDebugEvent);
+                    }
+                    _ => return Err(KeyAgentActivationError::UnexpectedDebugEvent),
+                }
+            }
+            Err(KeyAgentActivationError::UnexpectedDebugEvent)
         }
 
         pub(super) fn revalidate_before_no_kill(&self) -> Result<(), KeyAgentActivationError> {
-            if self.phase != LaunchPhase::EventContinued
+            if self.phase != LaunchPhase::GateEventContinued
                 || self.pending_event.is_some()
                 || self.proven_suspend_count != 1
                 || self.prepared_lpac.is_some()
+                || self.pending_lpac.is_some()
                 || self.lpac.is_none()
+                || self.system_ntdll.is_some()
+                || !self.system_breakpoint_seen
                 || self.debug_event_process.is_some()
                 || self.debug_event_primary_thread.is_some()
             {
@@ -2252,7 +3330,7 @@ mod sys {
                 // SAFETY: a zero-time wait only observes the exact owned process.
                 (unsafe { WaitForSingleObject(self.process.raw(), 0) }) == WAIT_OBJECT_0
             };
-            if let Some((process_id, thread_id)) = self.pending_event {
+            if let Some(pending) = self.pending_event {
                 if !termination_accepted {
                     // Keeping the debug event pending is safer than continuing
                     // when Windows did not accept termination.
@@ -2262,7 +3340,7 @@ mod sys {
                 // creator thread. Termination was accepted (or the process was
                 // already signaled) before this event is continued, so user
                 // code cannot be released by this call.
-                unsafe { ContinueDebugEvent(process_id, thread_id, DBG_CONTINUE) }
+                unsafe { ContinueDebugEvent(pending.process_id, pending.thread_id, DBG_CONTINUE) }
                     .map_err(|_| KeyAgentActivationError::Cleanup)?;
                 self.pending_event = None;
             }
@@ -2379,7 +3457,10 @@ mod sys {
                 || self.0.pending_event.is_some()
                 || self.0.proven_suspend_count != 1
                 || self.0.prepared_lpac.is_some()
+                || self.0.pending_lpac.is_some()
                 || self.0.lpac.is_none()
+                || self.0.system_ntdll.is_some()
+                || !self.0.system_breakpoint_seen
                 || self.0.debug_event_process.is_some()
                 || self.0.debug_event_primary_thread.is_some()
             {
@@ -2408,6 +3489,8 @@ mod sys {
                 || self.0.debug_event_primary_thread.is_some()
                 || handles.process_id != self.0.process_id
                 || handles.thread_id != self.0.thread_id
+                || handles.rejected_thread.is_some()
+                || handles.rejected_thread_id.is_some()
                 || invalid(event_process)
                 || invalid(event_primary_thread)
                 || event_process == event_primary_thread
@@ -2434,7 +3517,10 @@ mod sys {
                 || process.pending_event.is_some()
                 || process.proven_suspend_count != 1
                 || process.prepared_lpac.is_some()
+                || process.pending_lpac.is_some()
                 || process.lpac.is_none()
+                || process.system_ntdll.is_some()
+                || !process.system_breakpoint_seen
                 || process.debug_event_process.is_none()
                 || process.debug_event_primary_thread.is_none()
             {
@@ -2823,6 +3909,28 @@ mod sys {
     }
 
     #[cfg(test)]
+    pub(super) struct TestRejectedThreadEventHandleObservation {
+        thread: usize,
+    }
+
+    #[cfg(test)]
+    impl TestRejectedThreadEventHandleObservation {
+        pub(super) const fn new(thread: usize) -> Self {
+            Self { thread }
+        }
+
+        pub(super) fn alias_is_closed(&self) -> bool {
+            let handle = HANDLE(self.thread as *mut c_void);
+            let mut flags = u32::MAX;
+            // SAFETY: this is a test-only post-join probe of the registered
+            // numeric handle value; it never adopts or closes the handle.
+            unsafe { GetHandleInformation(handle, &raw mut flags) }.is_err()
+                // SAFETY: read immediately after the failed Win32 probe.
+                && unsafe { GetLastError() } == ERROR_INVALID_HANDLE
+        }
+    }
+
+    #[cfg(test)]
     pub(super) struct TestProcessObservation(OwnedHandle);
 
     #[cfg(test)]
@@ -2895,6 +4003,7 @@ mod sys {
 
     pub(super) struct AuthenticatedFirstEvent {
         pub(super) creation_time: u64,
+        pub(super) deadline: Instant,
     }
 
     pub(super) fn exact_file_identity(
@@ -2963,6 +4072,39 @@ mod sys {
         }
 
         let mut failed = false;
+
+        match (handles.rejected_thread, handles.rejected_thread_id) {
+            (Some(rejected_thread), Some(rejected_thread_id)) => {
+                let rejected_thread = HANDLE(rejected_thread as *mut c_void);
+                let mut flags = u32::MAX;
+                let rejected = invalid(rejected_thread)
+                    || handles.process == Some(rejected_thread.0 as usize)
+                    || handles.primary_thread == Some(rejected_thread.0 as usize)
+                    || rejected_thread_id == handles.thread_id
+                    // SAFETY: the caller joined the exact debugger thread; this
+                    // registered CREATE_THREAD alias remains live until close.
+                    || unsafe { GetThreadId(rejected_thread) } != rejected_thread_id
+                    // SAFETY: same joined event-alias lifetime argument.
+                    || unsafe { GetProcessIdOfThread(rejected_thread) } != handles.process_id
+                    // SAFETY: flags is exact initialized writable storage.
+                    || unsafe { GetHandleInformation(rejected_thread, &raw mut flags) }.is_err()
+                    || flags != 0;
+                if rejected {
+                    failed = true;
+                } else {
+                    // SAFETY: the exact debugger thread has joined and this
+                    // authenticated rejected-worker alias is now owned here.
+                    if unsafe { CloseHandle(rejected_thread) }.is_ok() {
+                        handles.rejected_thread = None;
+                        handles.rejected_thread_id = None;
+                    } else {
+                        failed = true;
+                    }
+                }
+            }
+            (None, None) => {}
+            _ => failed = true,
+        }
 
         if let Some(event_primary_thread) = handles.primary_thread {
             let event_primary_thread = HANDLE(event_primary_thread as *mut c_void);
@@ -3397,6 +4539,32 @@ mod sys {
         APPROVAL_PARENT_PROCESS_ACCESS.0
     }
 
+    #[cfg(test)]
+    pub(super) const fn amd64_context_storage_alignment_for_test() -> usize {
+        core::mem::align_of::<AlignedAmd64Context>()
+    }
+
+    #[cfg(test)]
+    pub(super) fn context_r10_clear_readback_policy_for_test(
+        before_flags: u32,
+        after_flags: u32,
+        after_r10: u64,
+        after_rip_delta: u64,
+    ) -> bool {
+        let before = CONTEXT {
+            ContextFlags: CONTEXT_CONTROL_AMD64 | CONTEXT_INTEGER_AMD64,
+            EFlags: before_flags,
+            R10: crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
+            Rip: 0x1000,
+            ..CONTEXT::default()
+        };
+        let mut after = before;
+        after.EFlags = after_flags;
+        after.R10 = after_r10;
+        after.Rip = after.Rip.wrapping_add(after_rip_delta);
+        context_matches_after_r10_clear(&before, &after)
+    }
+
     impl fmt::Debug for OwnedWinHandle {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("OwnedWinHandle([REDACTED])")
@@ -3425,9 +4593,10 @@ mod tests {
         HeldKeyAgentActivation, JoinedKeyAgentDebugThreadProof, KeyAgentActivationError,
         LaunchPhase, LaunchTransition, PendingKeyAgentActivation, PreflightKeyAgentArtifact,
         RootJobBoundFreshKeyAgentDebugThread, RunningKeyAgentActivation,
-        activate_preflighted_key_agent_on_fresh_worker, fail_after_cleanup,
-        finalize_pending_key_agent_activation, preflight_key_agent_activation,
-        run_on_fresh_key_agent_debug_thread, sys,
+        activate_preflighted_key_agent_on_fresh_worker, default_dacl_gate_sequence,
+        fail_after_cleanup, finalize_pending_key_agent_activation,
+        parse_unique_default_dacl_gate_layout, preflight_key_agent_activation,
+        run_on_fresh_key_agent_debug_thread, sys, verify_unique_default_dacl_gate_sequence,
     };
     use crate::{
         attestation::{ArtifactDigest, ReleaseAttestation},
@@ -3591,6 +4760,27 @@ mod tests {
         )
     }
 
+    fn test_pe_u16(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    }
+
+    fn test_pe_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    }
+
+    fn set_test_pe_u16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn set_test_pe_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
     #[test]
     fn launch_state_machine_rejects_skip_replay_and_post_abort_transitions() {
         assert_eq!(
@@ -3599,10 +4789,18 @@ mod tests {
         );
         assert_eq!(
             LaunchPhase::CreateEventHeld.transition(LaunchTransition::ContinueCreateEvent),
-            Ok(LaunchPhase::EventContinued)
+            Ok(LaunchPhase::LoaderRunning)
         );
         assert_eq!(
-            LaunchPhase::EventContinued.transition(LaunchTransition::ArmNoKill),
+            LaunchPhase::LoaderRunning.transition(LaunchTransition::ReceiveCooperativeGate),
+            Ok(LaunchPhase::GateEventHeld)
+        );
+        assert_eq!(
+            LaunchPhase::GateEventHeld.transition(LaunchTransition::ContinueCooperativeGate),
+            Ok(LaunchPhase::GateEventContinued)
+        );
+        assert_eq!(
+            LaunchPhase::GateEventContinued.transition(LaunchTransition::ArmNoKill),
             Ok(LaunchPhase::NoKillArmedAwaitingDebuggerExit)
         );
         assert_eq!(
@@ -3643,6 +4841,101 @@ mod tests {
             LaunchPhase::Aborted.transition(LaunchTransition::ResumeStorageStartup),
             Err(KeyAgentActivationError::DebugDetach)
         );
+    }
+
+    #[test]
+    fn amd64_context_storage_and_r10_readback_policy_are_exact() {
+        assert_eq!(sys::amd64_context_storage_alignment_for_test(), 16);
+        assert!(sys::context_r10_clear_readback_policy_for_test(
+            0x202, 0x200, 0, 0
+        ));
+        assert!(sys::context_r10_clear_readback_policy_for_test(
+            0x202, 0x202, 0, 0
+        ));
+        assert!(!sys::context_r10_clear_readback_policy_for_test(
+            0x202, 0x200, 1, 0
+        ));
+        assert!(!sys::context_r10_clear_readback_policy_for_test(
+            0x202, 0x204, 0, 0
+        ));
+        assert!(!sys::context_r10_clear_readback_policy_for_test(
+            0x202, 0x200, 0, 1
+        ));
+    }
+
+    #[test]
+    fn minimal_gate_pe_parser_binds_exact_rvas_and_rejects_shape_mutations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
+        let bytes = std::fs::read(artifact.path())?;
+        let sequence = default_dacl_gate_sequence(
+            crate::key_agent_child_bootstrap::KEY_AGENT_DEFAULT_DACL_GATE_MARKER,
+        );
+        let layout = parse_unique_default_dacl_gate_layout(&bytes, &sequence)?;
+
+        let pe_offset = usize::try_from(test_pe_u32(&bytes, 0x3c))?;
+        let coff_offset = pe_offset + 4;
+        let optional_offset = coff_offset + 20;
+        let section_offset = optional_offset + usize::from(test_pe_u16(&bytes, coff_offset + 16));
+        assert_eq!(test_pe_u16(&bytes, coff_offset + 2), 2);
+        assert_eq!(layout.sequence_rva, 0x1000);
+        assert_eq!(layout.breakpoint_rva, 0x100a);
+        assert_eq!(
+            layout.size_of_image,
+            test_pe_u32(&bytes, optional_offset + 56)
+        );
+
+        let rejected = |candidate: &[u8]| {
+            matches!(
+                parse_unique_default_dacl_gate_layout(candidate, &sequence),
+                Err(KeyAgentActivationError::CooperativeGatePolicy)
+            )
+        };
+
+        let mut duplicate = bytes.clone();
+        duplicate.extend_from_slice(&sequence);
+        assert!(rejected(&duplicate));
+
+        let mut wrong_machine = bytes.clone();
+        set_test_pe_u16(&mut wrong_machine, coff_offset, 0x014c);
+        assert!(rejected(&wrong_machine));
+
+        let mut dll = bytes.clone();
+        let characteristics = test_pe_u16(&dll, coff_offset + 18);
+        set_test_pe_u16(&mut dll, coff_offset + 18, characteristics | 0x2000);
+        assert!(rejected(&dll));
+
+        let mut writable_code = bytes.clone();
+        let characteristics = test_pe_u32(&writable_code, section_offset + 36);
+        set_test_pe_u32(
+            &mut writable_code,
+            section_offset + 36,
+            characteristics | 0x8000_0000,
+        );
+        assert!(rejected(&writable_code));
+
+        let mut raw_padding = bytes.clone();
+        set_test_pe_u32(&mut raw_padding, section_offset + 8, 10);
+        assert!(rejected(&raw_padding));
+
+        let mut overlapping_raw_sections = bytes.clone();
+        let first_raw_start = test_pe_u32(&overlapping_raw_sections, section_offset + 20);
+        set_test_pe_u32(
+            &mut overlapping_raw_sections,
+            section_offset + 40 + 20,
+            first_raw_start,
+        );
+        assert!(rejected(&overlapping_raw_sections));
+
+        let mut unaligned_image = bytes;
+        let size_of_image = test_pe_u32(&unaligned_image, optional_offset + 56);
+        set_test_pe_u32(
+            &mut unaligned_image,
+            optional_offset + 56,
+            size_of_image + 1,
+        );
+        assert!(rejected(&unaligned_image));
+        Ok(())
     }
 
     #[test]
@@ -3816,7 +5109,10 @@ mod tests {
                 &pipes,
                 &root_job,
                 &root_job_attribute,
-                activation_deadline(),
+                sys::DebuggeeLaunchPolicy::new(
+                    activation_deadline(),
+                    verify_unique_default_dacl_gate_sequence(&artifact)?,
+                ),
             )?;
             let observation = process.duplicate_process_observation()?;
             assert!(matches!(
@@ -3859,7 +5155,10 @@ mod tests {
                 &pipes,
                 &root_job,
                 &root_job_attribute,
-                activation_deadline(),
+                sys::DebuggeeLaunchPolicy::new(
+                    activation_deadline(),
+                    verify_unique_default_dacl_gate_sequence(&artifact)?,
+                ),
             )?;
             let observation = process.duplicate_process_observation()?;
             let timeout_result: Result<(), KeyAgentActivationError> =
@@ -3881,9 +5180,53 @@ mod tests {
     }
 
     #[test]
-    fn successful_kernel_proof_detaches_with_one_verified_suspend_count()
+    fn real_key_agent_loader_activity_fails_closed_before_detach()
     -> Result<(), Box<dyn std::error::Error>> {
-        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let artifact = VerifiedHelper::for_key_agent_primary_gate_activation_test()?;
+        let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
+        let ((root_job, rejected_thread_observation), joined) =
+            run_on_fresh_key_agent_debug_thread::<_, KeyAgentActivationError, _>(
+                move |fresh_thread| {
+                    let provisioning = test_provisioning()?;
+                    let mut root_job = test_root_job()?;
+                    let fresh_thread = fresh_thread.bind_root_job_cleanup(&mut root_job)?;
+                    let debug_event_cleanup = Arc::clone(&fresh_thread.debug_event_cleanup);
+                    let pipes = PrivateKeyAgentPipes::create()
+                        .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+                    let root_job_attribute = root_job
+                        .creation_attribute()
+                        .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
+                    let result = activate_preflighted_key_agent_on_fresh_worker(
+                        fresh_thread,
+                        preflighted,
+                        &provisioning,
+                        &pipes,
+                        &root_job,
+                        &root_job_attribute,
+                        activation_deadline(),
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(KeyAgentActivationError::UnexpectedDebugEvent)
+                    ));
+                    drop(root_job_attribute);
+                    drop(pipes);
+                    drop(provisioning);
+                    let rejected_thread_observation = debug_event_cleanup
+                        .rejected_thread_observation_while_attached_for_test()?;
+                    Ok((root_job, rejected_thread_observation))
+                },
+            )?;
+        drop(joined);
+        assert!(rejected_thread_observation.alias_is_closed());
+        require_root_job_empty_after_join(&root_job)?;
+        Ok(())
+    }
+
+    #[test]
+    fn minimal_primary_gate_proof_detaches_with_one_verified_suspend_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let attestation = attestation_for(&artifact);
         activate_for_test(attestation, artifact, |activation, root_job| {
             assert!(activation.process_id() != 0);
@@ -3938,11 +5281,11 @@ mod tests {
     #[test]
     fn pending_finalization_rejects_swapped_join_and_root_job_witnesses()
     -> Result<(), Box<dyn std::error::Error>> {
-        let first_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let first_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let first = pending_for_test(attestation_for(&first_artifact), first_artifact)?;
-        let second_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let second_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let second = pending_for_test(attestation_for(&second_artifact), second_artifact)?;
-        let third_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let third_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let third = pending_for_test(attestation_for(&third_artifact), third_artifact)?;
 
         let (first_pending, first_root, first_joined) = first;
@@ -3992,7 +5335,10 @@ mod tests {
                     &caller_pipes,
                     &caller_root_job,
                     &caller_root_job_attribute,
-                    activation_deadline(),
+                    sys::DebuggeeLaunchPolicy::new(
+                        activation_deadline(),
+                        verify_unique_default_dacl_gate_sequence(&caller_artifact)?,
+                    ),
                 )?;
                 let observation = caller_debuggee.duplicate_process_observation()?;
                 caller_ready_sender
@@ -4017,7 +5363,7 @@ mod tests {
         });
         caller_ready_receiver.recv()?;
 
-        let activation_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let activation_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let activation_attestation = attestation_for(&activation_artifact);
         activate_for_test(
             activation_attestation,
@@ -4041,9 +5387,9 @@ mod tests {
 
     #[test]
     fn concurrent_activations_use_isolated_workers() -> Result<(), Box<dyn std::error::Error>> {
-        let first_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let first_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let first_attestation = attestation_for(&first_artifact);
-        let second_artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let second_artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let second_attestation = attestation_for(&second_artifact);
         let barrier = Arc::new(Barrier::new(3));
 
@@ -4150,7 +5496,10 @@ mod tests {
                     &pipes,
                     &root_job,
                     &root_job_attribute,
-                    activation_deadline(),
+                    sys::DebuggeeLaunchPolicy::new(
+                        activation_deadline(),
+                        verify_unique_default_dacl_gate_sequence(&artifact)?,
+                    ),
                 )?;
                 let observation = process.duplicate_process_observation()?;
                 let Err(error) =
@@ -4200,7 +5549,10 @@ mod tests {
                     &pipes,
                     &root_job,
                     &root_job_attribute,
-                    activation_deadline(),
+                    sys::DebuggeeLaunchPolicy::new(
+                        activation_deadline(),
+                        verify_unique_default_dacl_gate_sequence(&artifact)?,
+                    ),
                 )?;
                 let observation = process.duplicate_process_observation()?;
                 observation_sender
@@ -4224,7 +5576,7 @@ mod tests {
     #[test]
     fn worker_panic_after_event_alias_registration_cleans_up_after_join()
     -> Result<(), Box<dyn std::error::Error>> {
-        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
         let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
@@ -4274,7 +5626,7 @@ mod tests {
     #[test]
     fn worker_panic_immediately_after_no_kill_arm_cleans_up_after_join()
     -> Result<(), Box<dyn std::error::Error>> {
-        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
         let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
@@ -4331,7 +5683,7 @@ mod tests {
     #[test]
     fn worker_error_immediately_after_no_kill_arm_cleans_up_after_join()
     -> Result<(), Box<dyn std::error::Error>> {
-        let artifact = VerifiedHelper::for_key_agent_activation_test()?;
+        let artifact = VerifiedHelper::for_minimal_primary_gate_activation_test()?;
         let preflighted = preflight_key_agent_activation(attestation_for(&artifact), artifact)?;
         let (observation_sender, observation_receiver) = mpsc::sync_channel(1);
         let result = run_on_fresh_key_agent_debug_thread::<(), KeyAgentActivationError, _>(
@@ -4420,7 +5772,10 @@ mod tests {
                 &pipes,
                 &root_job,
                 &root_job_attribute,
-                activation_deadline(),
+                sys::DebuggeeLaunchPolicy::new(
+                    activation_deadline(),
+                    verify_unique_default_dacl_gate_sequence(&artifact)?,
+                ),
                 &mut command_line,
             )?;
             let observation = process.duplicate_process_observation()?;
