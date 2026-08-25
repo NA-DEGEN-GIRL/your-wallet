@@ -52,6 +52,40 @@ pub fn run_inert_key_agent_service_fixture() -> Result<(), KeyAgentServiceFixtur
     }
 }
 
+/// Runs the fixed-name restricted-service-token fixture when explicitly enabled.
+///
+/// Default builds, release builds, and non-Windows builds always return
+/// [`KeyAgentServiceFixtureError::Unavailable`]. The enabled fixture verifies
+/// the current process token before publishing `SERVICE_RUNNING`; its opaque
+/// proof deliberately does not claim final SCM configuration, integrity, or
+/// helper-launch feasibility.
+///
+/// # Errors
+///
+/// Returns [`KeyAgentServiceFixtureError::Unavailable`] outside the exact debug
+/// feasibility build, or [`KeyAgentServiceFixtureError::OperatingSystemBoundary`]
+/// when Windows rejects the SCM lifecycle or the current token does not match
+/// the documented feasibility policy.
+pub fn run_service_token_key_agent_service_fixture() -> Result<(), KeyAgentServiceFixtureError> {
+    #[cfg(all(
+        windows,
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
+    {
+        sys::run_service_token_dispatcher()
+    }
+
+    #[cfg(not(all(
+        windows,
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    )))]
+    {
+        Err(KeyAgentServiceFixtureError::Unavailable)
+    }
+}
+
 /// Runs the fixed-name, no-secret local-RPC status fixture when explicitly enabled.
 ///
 /// Default builds, release builds, and non-Windows builds always return
@@ -88,6 +122,7 @@ pub fn run_status_rpc_key_agent_service_fixture() -> Result<(), KeyAgentServiceF
     windows,
     any(
         feature = "key-agent-service-scm-feasibility-test-hook",
+        feature = "key-agent-service-token-feasibility-test-hook",
         feature = "key-agent-service-rpc-status-feasibility-test-hook"
     ),
     debug_assertions
@@ -244,6 +279,7 @@ mod sys {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum WorkerStartFailure {
         Boundary,
+        #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
         RuntimeStateRetained,
     }
 
@@ -291,6 +327,28 @@ mod sys {
         }
     }
 
+    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    struct ServiceTokenWorker {
+        _proof: crate::key_agent_service_token::ServiceTokenFixtureProof,
+    }
+
+    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    impl ScmWorker for ServiceTokenWorker {
+        fn start() -> Result<Self, WorkerStartFailure> {
+            crate::key_agent_service_token::verify_current_key_agent_service_token_fixture()
+                .map(|proof| Self { _proof: proof })
+                .map_err(|_| WorkerStartFailure::Boundary)
+        }
+
+        fn begin_accepting(&mut self) -> Result<(), KeyAgentServiceFixtureError> {
+            Ok(())
+        }
+
+        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+            Ok(())
+        }
+    }
+
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
     struct StatusRpcWorker(crate::key_agent_service_rpc::StatusRpcWorker);
 
@@ -323,6 +381,11 @@ mod sys {
 
     pub(super) fn run_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
         run_dispatcher_with(service_main)
+    }
+
+    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    pub(super) fn run_service_token_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
+        run_dispatcher_with(service_token_service_main)
     }
 
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
@@ -364,6 +427,14 @@ mod sys {
 
     unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut PWSTR) {
         service_main_impl::<InertWorker>();
+    }
+
+    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    unsafe extern "system" fn service_token_service_main(
+        _argument_count: u32,
+        _arguments: *mut PWSTR,
+    ) {
+        service_main_impl::<ServiceTokenWorker>();
     }
 
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
@@ -857,6 +928,7 @@ mod sys {
         #[test]
         fn retained_runtime_start_failure_forbids_stopped_status() {
             assert!(WorkerStartFailure::Boundary.permits_stopped_status());
+            #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
             assert!(!WorkerStartFailure::RuntimeStateRetained.permits_stopped_status());
         }
 
@@ -906,6 +978,19 @@ mod tests {
     fn rpc_status_fixture_is_unavailable_outside_the_exact_debug_build() {
         assert_eq!(
             run_status_rpc_key_agent_service_fixture(),
+            Err(KeyAgentServiceFixtureError::Unavailable)
+        );
+    }
+
+    #[cfg(not(all(
+        windows,
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    )))]
+    #[test]
+    fn service_token_fixture_is_unavailable_outside_the_exact_debug_build() {
+        assert_eq!(
+            run_service_token_key_agent_service_fixture(),
             Err(KeyAgentServiceFixtureError::Unavailable)
         );
     }

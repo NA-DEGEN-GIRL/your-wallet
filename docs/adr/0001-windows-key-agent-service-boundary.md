@@ -220,6 +220,24 @@ filtered. The runtime supplies a numeric client PID, not an atomic
 origin-process capability; reopening and retaining a process handle does not
 upgrade that observation into original-client proof.
 
+The manager path now derives one non-inheritable move-only `TokenPrimary` while
+the authenticated desktop caller is impersonated. It requests exactly
+`TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY`, compares the duplicate
+to both the effective impersonation identity and the caller process primary
+token before revert, and revalidates the retained token and handle flags across
+the epoch. The If3 callback independently authenticates but returns only a
+data-free success marker, never a token or launch authority. This is a
+same-host feasibility result, not enrolled-Broker or helper-launch proof.
+
+A separate explicit debug fixture observes the current service process token
+before `SERVICE_RUNNING`. It can enforce the fixed virtual-account user SID,
+primary Session-0 restricted-token shape, documented normal-group facts, the
+four documented restricted-SID identities, and the exact candidate privilege
+presence set. The resulting proof remains typed `Unverified` for restricted-SID
+attributes, privilege enablement/necessity, integrity, and SCM configuration;
+the installed restricted-service positive probe is intentionally ignored until
+an elevated disposable-VM harness exists.
+
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not
 that bound. The server separately caps concurrent callback-authentication work
@@ -231,11 +249,12 @@ aborts on a 15-second deadline, status-report failure, or reporter disconnect;
 uncertain cleanup is never presented as a clean stop.
 
 The ignored Windows same-process authenticated round-trip now passes on the
-current interactive host. It proves only this local debug composition, not the
-claimed Windows-build matrix, service identity, endpoint-squatting resistance,
-cross-session zero-capability LPAC behavior, or a real production Broker client;
-those remain **STOP-SHIP**. This single-host result does not satisfy the blockers
-below.
+current interactive host, including manager-only primary-token duplication and
+retained-token revalidation. It proves only this local debug composition, not
+the claimed Windows-build matrix, installed service identity/configuration,
+endpoint-squatting resistance, cross-session zero-capability LPAC behavior, or
+a real production Broker client; those remain **STOP-SHIP**. This single-host
+result does not satisfy the blockers below.
 
 Phase 1 MUST first prove, with an inert no-secret service and real user-session
 LPAC fixture on every initially claimed Windows 11 x64 build:

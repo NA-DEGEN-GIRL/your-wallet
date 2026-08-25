@@ -575,6 +575,28 @@ twice around `OpenProcess` and retaining the resulting handle reduces ambiguity
 but does not prove that the handle names the original RPC client across PID
 reuse.
 
+Only the manager path may turn that authenticated desktop observation into a
+launch-token capability. While the exact call is impersonated it duplicates a
+move-only primary token with precisely `TOKEN_QUERY | TOKEN_DUPLICATE |
+TOKEN_ASSIGN_PRIMARY`, verifies that the new handle is non-inheritable, compares
+the duplicate to both effective client-token observations before revert, and
+revalidates its complete identity and token ID while the epoch lives. The If3
+callback repeats identity authentication independently but returns only a
+private data-free marker; it never creates or retains a primary token. The
+passing same-process live round trip exercises this primitive, but still does
+not authenticate an enrolled Broker or prove `CreateProcessAsUserW`.
+
+The separate debug service-token observer runs before SCM publishes
+`SERVICE_RUNNING`. Its safe policy and narrow Windows adapter can verify the
+fixed virtual-account user SID, primary Session-0 restricted-token shape,
+documented service/logon/Local normal-group facts, the exact documented
+restricted-SID identity quartet, and the four-name candidate privilege set.
+The opaque result deliberately carries `Unverified` markers for restricted-SID
+attributes, privilege enablement/necessity, integrity, and SCM configuration.
+Its positive test requires the exact installed restricted service and remains
+ignored; parser and one-field negative policy evidence cannot substitute for
+that elevated disposable-VM kernel probe.
+
 The service keeps at most sixteen five-second process-correlated epochs,
 removes a nonce before every expiry/identity/state check, returns only
 `Unavailable`, and invalidates all epochs before exact stop/unregister/wait

@@ -1,8 +1,8 @@
 //! Windows Key Agent SCM feasibility executable.
 //!
 //! Ordinary and release builds are unavailable. The explicit debug-only hook
-//! exercises either the inert lifecycle or bounded local-RPC status surface and
-//! contains no wallet operation.
+//! exercises the inert lifecycle, restricted-service-token policy, or bounded
+//! local-RPC status surface and contains no wallet operation.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -22,6 +22,19 @@ fn main() {
 #[cfg(all(
     windows,
     not(feature = "rpc-status-feasibility-test-hook"),
+    feature = "service-token-feasibility-test-hook",
+    debug_assertions
+))]
+fn main() {
+    let exit_code = platform_windows::run_service_token_key_agent_service_fixture()
+        .map_or(SERVICE_UNAVAILABLE, |()| 0);
+    std::process::exit(exit_code);
+}
+
+#[cfg(all(
+    windows,
+    not(feature = "rpc-status-feasibility-test-hook"),
+    not(feature = "service-token-feasibility-test-hook"),
     feature = "scm-feasibility-test-hook",
     debug_assertions
 ))]
@@ -40,6 +53,13 @@ fn main() {
     all(
         windows,
         not(feature = "rpc-status-feasibility-test-hook"),
+        feature = "service-token-feasibility-test-hook",
+        debug_assertions
+    ),
+    all(
+        windows,
+        not(feature = "rpc-status-feasibility-test-hook"),
+        not(feature = "service-token-feasibility-test-hook"),
         feature = "scm-feasibility-test-hook",
         debug_assertions
     )

@@ -198,10 +198,16 @@ impl fmt::Debug for TokenObservation {
 
 trait ProcessAuthOps {
     type Process;
+    type DesktopPrimaryToken;
 
     fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError>;
 
     fn primary_token(&self, process: &Self::Process) -> Result<TokenObservation, ObservationError>;
+
+    fn desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<TokenObservation, ObservationError>;
 
     fn exact_process_is_live(
         &self,
@@ -229,6 +235,10 @@ trait RpcAuthOps: ProcessAuthOps {
 
     fn impersonation_token(&self) -> Result<TokenObservation, ObservationError>;
 
+    fn duplicate_desktop_primary_token(
+        &self,
+    ) -> Result<Self::DesktopPrimaryToken, ObservationError>;
+
     fn revert(&self) -> Result<(), ObservationError>;
 
     fn fail_fast(&self) -> !;
@@ -239,25 +249,52 @@ trait RpcAuthOps: ProcessAuthOps {
 /// Debug output intentionally exposes neither PID, session, token identifiers,
 /// nor SID material. V2 call attributes expose only a PID, so this value does
 /// not claim an atomic kernel binding to the process that originated the RPC.
-pub(crate) struct AuthenticatedClient<P> {
+pub(crate) struct AuthenticatedClient<P, T> {
     process_id: NonZeroU32,
     process: P,
     primary: TokenObservation,
+    desktop_primary_token: T,
+    desktop_primary: TokenObservation,
 }
 
-impl<P> fmt::Debug for AuthenticatedClient<P> {
+impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthenticatedRpcClient([REDACTED])")
     }
 }
 
-pub(crate) type AuthenticatedRpcClient = AuthenticatedClient<sys::RetainedProcess>;
+pub(crate) type AuthenticatedRpcClient =
+    AuthenticatedClient<sys::RetainedProcess, sys::DesktopPrimaryToken>;
+
+/// Data-free success marker for the callback's independent identity check.
+///
+/// Unlike `AuthenticatedRpcClient`, this cannot carry launch authority and is
+/// intentionally not usable as an epoch peer.
+pub(crate) struct AuthenticatedRpcCallback {
+    _private: (),
+}
+
+impl fmt::Debug for AuthenticatedRpcCallback {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedRpcCallback([REDACTED])")
+    }
+}
 
 impl AuthenticatedRpcClient {
     /// Reopens the PID, compares the exact process objects, checks liveness and
     /// restricted handle flags, then repeats the complete primary-token policy.
     pub(crate) fn revalidate(&self) -> Result<(), RpcAuthError> {
         self.revalidate_with(&sys::WindowsProcessAuthOps)
+    }
+
+    /// Borrows the exact move-only primary token derived while the matching
+    /// RPC client was impersonated.
+    ///
+    /// The lifetime prevents a later sibling launch boundary from retaining a
+    /// raw token value beyond this fully revalidatable authentication proof.
+    #[allow(dead_code)] // Consumed by the next debug-only helper-launch slice.
+    pub(crate) fn desktop_primary_token(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        self.desktop_primary_token.as_handle()
     }
 
     /// Establishes exact equality between two retained process handles only
@@ -308,22 +345,21 @@ const fn map_peer_revalidation_error(error: RpcAuthError) -> super::epoch::PeerR
     }
 }
 
-impl<P> AuthenticatedClient<P> {
+impl<P, T> AuthenticatedClient<P, T> {
     fn revalidate_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
     where
-        O: ProcessAuthOps<Process = P>,
+        O: ProcessAuthOps<Process = P, DesktopPrimaryToken = T>,
     {
-        if !ops
-            .exact_process_is_live(&self.process, self.process_id)
-            .map_err(|_| RpcAuthError::CallFailed)?
-        {
-            return Err(RpcAuthError::AccessDenied);
-        }
-        let current = ops
-            .primary_token(&self.process)
+        let current =
+            revalidate_client_process(self.process_id, &self.process, &self.primary, ops)?;
+
+        let desktop_primary = ops
+            .desktop_primary_token(&self.desktop_primary_token)
             .map_err(|_| RpcAuthError::CallFailed)?;
-        validate_token(&current, TokenKind::Primary)?;
-        if !same_primary_token(&self.primary, &current) {
+        validate_token(&desktop_primary, TokenKind::Primary)?;
+        if !same_primary_token(&self.desktop_primary, &desktop_primary)
+            || !same_token_identity(&desktop_primary, &current)
+        {
             return Err(RpcAuthError::AccessDenied);
         }
         Ok(())
@@ -351,17 +387,66 @@ pub(crate) fn authenticate_call(
 /// until this function returns and must not be retained or freed by the caller.
 pub(crate) unsafe fn authenticate_callback_context(
     raw: *const c_void,
-) -> Result<AuthenticatedRpcClient, RpcAuthError> {
+) -> Result<AuthenticatedRpcCallback, RpcAuthError> {
     // SAFETY: the caller supplies the active callback's synchronous context;
     // the adapter retains it only inside this function.
     let ops = unsafe { sys::WindowsRpcAuthOps::from_callback(raw) }
         .map_err(|_| RpcAuthError::CallFailed)?;
-    authenticate_with(&ops)
+    authenticate_callback_with(&ops)?;
+    Ok(AuthenticatedRpcCallback { _private: () })
 }
 
-fn authenticate_with<O>(ops: &O) -> Result<AuthenticatedClient<O::Process>, RpcAuthError>
+fn authenticate_with<O>(
+    ops: &O,
+) -> Result<AuthenticatedClient<O::Process, O::DesktopPrimaryToken>, RpcAuthError>
 where
     O: RpcAuthOps,
+{
+    let (process_id, process, primary, (desktop_primary_token, desktop_primary)) =
+        authenticate_identity_with(ops, |ops, impersonation, primary| {
+            let desktop_primary_token = ops
+                .duplicate_desktop_primary_token()
+                .map_err(|_| RpcAuthError::CallFailed)?;
+            let desktop_primary = ops
+                .desktop_primary_token(&desktop_primary_token)
+                .map_err(|_| RpcAuthError::CallFailed)?;
+            validate_token(&desktop_primary, TokenKind::Primary)?;
+            if !same_token_identity(impersonation, &desktop_primary)
+                || !same_token_identity(primary, &desktop_primary)
+            {
+                return Err(RpcAuthError::AccessDenied);
+            }
+            Ok((desktop_primary_token, desktop_primary))
+        })?;
+
+    let authenticated = AuthenticatedClient {
+        process_id,
+        process,
+        primary,
+        desktop_primary_token,
+        desktop_primary,
+    };
+    authenticated.revalidate_with(ops)?;
+    Ok(authenticated)
+}
+
+fn authenticate_callback_with<O>(ops: &O) -> Result<(), RpcAuthError>
+where
+    O: RpcAuthOps,
+{
+    let (process_id, process, primary, ()) =
+        authenticate_identity_with(ops, |_ops, _impersonation, _primary| Ok(()))?;
+    let _current = revalidate_client_process(process_id, &process, &primary, ops)?;
+    Ok(())
+}
+
+fn authenticate_identity_with<O, T, F>(
+    ops: &O,
+    while_impersonating: F,
+) -> Result<(NonZeroU32, O::Process, TokenObservation, T), RpcAuthError>
+where
+    O: RpcAuthOps,
+    F: FnOnce(&O, &TokenObservation, &TokenObservation) -> Result<T, RpcAuthError>,
 {
     let call = ops
         .call_observation()
@@ -413,16 +498,35 @@ where
     if !same_token_identity(&impersonation, &primary) {
         return Err(RpcAuthError::AccessDenied);
     }
+    let extra = while_impersonating(ops, &impersonation, &primary)?;
 
     guard.finish();
+    Ok((process_id, process, primary, extra))
+}
 
-    let authenticated = AuthenticatedClient {
-        process_id,
-        process,
-        primary,
-    };
-    authenticated.revalidate_with(ops)?;
-    Ok(authenticated)
+fn revalidate_client_process<P, O>(
+    process_id: NonZeroU32,
+    process: &P,
+    primary: &TokenObservation,
+    ops: &O,
+) -> Result<TokenObservation, RpcAuthError>
+where
+    O: ProcessAuthOps<Process = P>,
+{
+    if !ops
+        .exact_process_is_live(process, process_id)
+        .map_err(|_| RpcAuthError::CallFailed)?
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    let current = ops
+        .primary_token(process)
+        .map_err(|_| RpcAuthError::CallFailed)?;
+    validate_token(&current, TokenKind::Primary)?;
+    if !same_primary_token(primary, &current) {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    Ok(current)
 }
 
 fn validate_call(call: CallObservation) -> Result<NonZeroU32, RpcAuthError> {
@@ -543,9 +647,11 @@ mod tests {
         CallObservation, CallProtocol, ElevationKind, ImpersonationGuard, NonZeroU32,
         ObservationError, ProcessAuthOps, RPC_AUTHN_LEVEL_PACKET_PRIVACY, RPC_AUTHN_SERVICE_WINNT,
         RPC_AUTHZ_SERVICE_NONE, RPC_CALL_STATUS_ACTIVE, RpcAuthError, RpcAuthOps, SidBytes,
-        ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation, authenticate_with,
+        ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
+        authenticate_callback_with, authenticate_with,
     };
     use core::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
@@ -557,6 +663,8 @@ mod tests {
         ImpersonationToken,
         OpenProcess,
         PrimaryToken,
+        DuplicateDesktopPrimary,
+        DesktopPrimaryToken,
         Revert,
         ExactProcess,
         SameProcess,
@@ -565,6 +673,16 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct FakeProcess(u32);
+
+    struct FakeDesktopPrimaryToken {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for FakeDesktopPrimaryToken {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get().saturating_add(1));
+        }
+    }
 
     struct FakeOps {
         events: RefCell<Vec<Event>>,
@@ -583,6 +701,13 @@ mod tests {
         primary_token_id: Cell<u32>,
         open_process_ok: Cell<bool>,
         primary_token_ok: Cell<bool>,
+        duplicate_desktop_primary_ok: Cell<bool>,
+        desktop_primary_token_ok: Cell<bool>,
+        desktop_primary_matches: Cell<bool>,
+        desktop_primary_kind: Cell<TokenKind>,
+        desktop_primary_session_id: Cell<u32>,
+        desktop_primary_token_id: Cell<u32>,
+        desktop_primary_drops: Rc<Cell<u32>>,
         exact_process: Cell<bool>,
         same_process: Cell<bool>,
         revert_ok: Cell<bool>,
@@ -607,6 +732,13 @@ mod tests {
                 primary_token_id: Cell::new(12),
                 open_process_ok: Cell::new(true),
                 primary_token_ok: Cell::new(true),
+                duplicate_desktop_primary_ok: Cell::new(true),
+                desktop_primary_token_ok: Cell::new(true),
+                desktop_primary_matches: Cell::new(true),
+                desktop_primary_kind: Cell::new(TokenKind::Primary),
+                desktop_primary_session_id: Cell::new(3),
+                desktop_primary_token_id: Cell::new(21),
+                desktop_primary_drops: Rc::new(Cell::new(0)),
                 exact_process: Cell::new(true),
                 same_process: Cell::new(true),
                 revert_ok: Cell::new(true),
@@ -624,6 +756,7 @@ mod tests {
 
     impl ProcessAuthOps for FakeOps {
         type Process = FakeProcess;
+        type DesktopPrimaryToken = FakeDesktopPrimaryToken;
 
         fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
             self.record(Event::OpenProcess);
@@ -644,6 +777,25 @@ mod tests {
             let marker = if self.matching_tokens.get() { 1 } else { 2 };
             let mut token = approved_token(TokenKind::Primary, marker);
             token.token_id.low_part = self.primary_token_id.get();
+            Ok(token)
+        }
+
+        fn desktop_primary_token(
+            &self,
+            _token: &Self::DesktopPrimaryToken,
+        ) -> Result<TokenObservation, ObservationError> {
+            self.record(Event::DesktopPrimaryToken);
+            if !self.desktop_primary_token_ok.get() {
+                return Err(ObservationError::Incomplete);
+            }
+            let marker = if self.desktop_primary_matches.get() {
+                1
+            } else {
+                3
+            };
+            let mut token = approved_token(self.desktop_primary_kind.get(), marker);
+            token.session_id = self.desktop_primary_session_id.get();
+            token.token_id.low_part = self.desktop_primary_token_id.get();
             Ok(token)
         }
 
@@ -726,6 +878,18 @@ mod tests {
             self.impersonation_token_ok
                 .get()
                 .then(|| approved_token(TokenKind::Impersonation, 1))
+                .ok_or(ObservationError::Incomplete)
+        }
+
+        fn duplicate_desktop_primary_token(
+            &self,
+        ) -> Result<Self::DesktopPrimaryToken, ObservationError> {
+            self.record(Event::DuplicateDesktopPrimary);
+            self.duplicate_desktop_primary_ok
+                .get()
+                .then(|| FakeDesktopPrimaryToken {
+                    drops: Rc::clone(&self.desktop_primary_drops),
+                })
                 .ok_or(ObservationError::Incomplete)
         }
 
@@ -813,12 +977,31 @@ mod tests {
                 Event::Impersonate,
                 Event::ImpersonationToken,
                 Event::PrimaryToken,
+                Event::DuplicateDesktopPrimary,
+                Event::DesktopPrimaryToken,
                 Event::ThreadCookie,
                 Event::Revert,
                 Event::ThreadState,
                 Event::ExactProcess,
                 Event::PrimaryToken,
+                Event::DesktopPrimaryToken,
             ]
+        );
+    }
+
+    #[test]
+    fn callback_authenticates_independently_without_minting_launch_authority() {
+        let ops = FakeOps::approved();
+        assert_eq!(authenticate_callback_with(&ops), Ok(()));
+        assert!(!ops.events().contains(&Event::DuplicateDesktopPrimary));
+        assert!(!ops.events().contains(&Event::DesktopPrimaryToken));
+        assert_eq!(ops.desktop_primary_drops.get(), 0);
+        assert_eq!(
+            ops.events()
+                .iter()
+                .filter(|event| **event == Event::Revert)
+                .count(),
+            1
         );
     }
 
@@ -906,11 +1089,18 @@ mod tests {
 
     #[test]
     fn every_post_impersonation_failure_reverts_exactly_once() {
-        for failure in [Event::ImpersonationToken, Event::PrimaryToken] {
+        for failure in [
+            Event::ImpersonationToken,
+            Event::PrimaryToken,
+            Event::DuplicateDesktopPrimary,
+            Event::DesktopPrimaryToken,
+        ] {
             let ops = FakeOps::approved();
             match failure {
                 Event::ImpersonationToken => ops.impersonation_token_ok.set(false),
                 Event::PrimaryToken => ops.primary_token_ok.set(false),
+                Event::DuplicateDesktopPrimary => ops.duplicate_desktop_primary_ok.set(false),
+                Event::DesktopPrimaryToken => ops.desktop_primary_token_ok.set(false),
                 _ => {}
             }
             assert!(matches!(
@@ -924,6 +1114,8 @@ mod tests {
                     .count(),
                 1
             );
+            let expected_drops = u32::from(matches!(failure, Event::DesktopPrimaryToken));
+            assert_eq!(ops.desktop_primary_drops.get(), expected_drops);
         }
     }
 
@@ -971,6 +1163,52 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn duplicated_primary_must_match_both_effective_client_tokens() {
+        let ops = FakeOps::approved();
+        ops.desktop_primary_matches.set(false);
+        assert!(matches!(
+            authenticate_with(&ops),
+            Err(RpcAuthError::AccessDenied)
+        ));
+        assert_eq!(
+            ops.events()
+                .iter()
+                .filter(|event| **event == Event::Revert)
+                .count(),
+            1
+        );
+        assert_eq!(ops.desktop_primary_drops.get(), 1);
+
+        let wrong_kind = FakeOps::approved();
+        wrong_kind
+            .desktop_primary_kind
+            .set(TokenKind::Impersonation);
+        assert_eq!(
+            authenticate_with(&wrong_kind).map(|_| ()),
+            Err(RpcAuthError::AccessDenied)
+        );
+        assert_eq!(wrong_kind.desktop_primary_drops.get(), 1);
+
+        let wrong_session = FakeOps::approved();
+        wrong_session.desktop_primary_session_id.set(4);
+        assert_eq!(
+            authenticate_with(&wrong_session).map(|_| ()),
+            Err(RpcAuthError::AccessDenied)
+        );
+        assert_eq!(wrong_session.desktop_primary_drops.get(), 1);
+    }
+
+    #[test]
+    fn successful_proof_retains_one_move_only_primary_until_drop() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        assert_eq!(ops.desktop_primary_drops.get(), 0);
+        drop(proof);
+        assert_eq!(ops.desktop_primary_drops.get(), 1);
     }
 
     #[test]
@@ -1150,6 +1388,9 @@ mod tests {
             ops.primary_token_id.set(13);
             assert_eq!(first.revalidate_with(&ops), Err(RpcAuthError::AccessDenied));
             ops.primary_token_id.set(12);
+            ops.desktop_primary_token_id.set(22);
+            assert_eq!(first.revalidate_with(&ops), Err(RpcAuthError::AccessDenied));
+            ops.desktop_primary_token_id.set(21);
             ops.exact_process.set(false);
             assert_eq!(first.revalidate_with(&ops), Err(RpcAuthError::AccessDenied));
         }
@@ -1163,10 +1404,20 @@ mod tests {
             process_id: NonZeroU32::new(9).unwrap_or(NonZeroU32::MIN),
             process: FakeProcess(9),
             primary: approved_token(TokenKind::Primary, 9),
+            desktop_primary_token: FakeDesktopPrimaryToken {
+                drops: Rc::new(Cell::new(0)),
+            },
+            desktop_primary: approved_token(TokenKind::Primary, 9),
         };
         let debug = format!("{proof:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains('9'));
+
+        let callback = super::AuthenticatedRpcCallback { _private: () };
+        assert_eq!(
+            format!("{callback:?}"),
+            "AuthenticatedRpcCallback([REDACTED])"
+        );
     }
 
     #[test]

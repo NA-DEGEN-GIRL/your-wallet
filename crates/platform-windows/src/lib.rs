@@ -163,6 +163,15 @@ mod key_agent_child_bootstrap;
 // Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
 // a signing path. Default and release callers fail closed as unavailable.
 mod key_agent_service;
+// The restricted-service-token observer is compiled only for its explicit
+// Windows debug feasibility build. Its opaque proof deliberately leaves SCM
+// configuration, integrity, and attribute-level policy unverified.
+#[cfg(all(
+    windows,
+    feature = "key-agent-service-token-feasibility-test-hook",
+    debug_assertions
+))]
+mod key_agent_service_token;
 // The local-RPC module is present only in the exact debug feasibility build.
 // It may expose Status/Unavailable after fresh per-call desktop authentication,
 // but supplies no production Broker/helper role or wallet authority.
@@ -257,6 +266,6 @@ pub use key_agent_child_bootstrap::{
 };
 pub use key_agent_service::{
     KEY_AGENT_SERVICE_NAME, KeyAgentServiceFixtureError, run_inert_key_agent_service_fixture,
-    run_status_rpc_key_agent_service_fixture,
+    run_service_token_key_agent_service_fixture, run_status_rpc_key_agent_service_fixture,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

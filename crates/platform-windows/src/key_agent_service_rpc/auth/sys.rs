@@ -6,8 +6,10 @@ use core::ffi::c_void;
 use core::fmt;
 use core::mem::{offset_of, size_of};
 use core::ptr;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
+use std::os::windows::io::BorrowedHandle;
 use std::ptr::NonNull;
 
 use key_agent_service_rpc_sys::{CallBinding, INTERFACE_UUID};
@@ -16,8 +18,9 @@ use windows::Win32::Foundation::{
     INVALID_HANDLE_VALUE, LUID, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, PSID, SECURITY_IMPERSONATION_LEVEL,
-    SID_AND_ATTRIBUTES, SecurityImpersonation, TOKEN_ELEVATION_TYPE, TOKEN_GROUPS,
+    DuplicateTokenEx, GetLengthSid, GetTokenInformation, IsValidSid, PSID,
+    SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES, SecurityImpersonation, TOKEN_ACCESS_MASK,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_GROUPS,
     TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE,
     TOKEN_USER, TokenElevationType, TokenElevationTypeDefault, TokenElevationTypeFull,
     TokenElevationTypeLimited, TokenGroups, TokenHasRestrictions, TokenImpersonation,
@@ -52,6 +55,8 @@ const MAX_BINARY_SID_BYTES: usize = 68;
 const INTERACTIVE_SID: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0];
 const MANDATORY_LABEL_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 16];
 const EXPECTED_INTERFACE_UUID: GUID = GUID::from_u128(u128::from_be_bytes(INTERFACE_UUID));
+const DESKTOP_PRIMARY_TOKEN_ACCESS: TOKEN_ACCESS_MASK =
+    TOKEN_ACCESS_MASK(TOKEN_ASSIGN_PRIMARY.0 | TOKEN_DUPLICATE.0 | TOKEN_QUERY.0);
 
 pub(crate) struct RetainedProcess(HANDLE);
 
@@ -81,6 +86,39 @@ impl Drop for RetainedProcess {
                 let _ = CloseHandle(self.0);
             }
         }
+    }
+}
+
+/// Exact primary-token handle derived while the RPC client is impersonated.
+///
+/// The owner is move-only, non-inheritable, and deliberately not `Sync`. Its
+/// only exposed operation is a lifetime-bound borrow for a later sibling launch
+/// boundary; raw ownership never leaves this module.
+pub(crate) struct DesktopPrimaryToken {
+    token: OwnedToken,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+// SAFETY: this value owns one non-inheritable token kernel handle and contains
+// no thread-affine impersonation state. Moving ownership to the later dedicated
+// process-creation/debugger thread does not duplicate or alias that handle.
+unsafe impl Send for DesktopPrimaryToken {}
+
+impl DesktopPrimaryToken {
+    const fn raw(&self) -> HANDLE {
+        self.token.raw()
+    }
+
+    pub(crate) fn as_handle(&self) -> BorrowedHandle<'_> {
+        // SAFETY: `self` owns the live token handle and the borrow cannot outlive
+        // this move-only authentication proof.
+        unsafe { BorrowedHandle::borrow_raw(self.raw().0) }
+    }
+}
+
+impl fmt::Debug for DesktopPrimaryToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DesktopPrimaryToken([REDACTED])")
     }
 }
 
@@ -181,6 +219,7 @@ pub(super) struct WindowsProcessAuthOps;
 
 impl ProcessAuthOps for WindowsProcessAuthOps {
     type Process = RetainedProcess;
+    type DesktopPrimaryToken = DesktopPrimaryToken;
 
     fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
         open_restricted_process(process_id)
@@ -188,6 +227,13 @@ impl ProcessAuthOps for WindowsProcessAuthOps {
 
     fn primary_token(&self, process: &Self::Process) -> Result<TokenObservation, ObservationError> {
         primary_token_observation(process)
+    }
+
+    fn desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<TokenObservation, ObservationError> {
+        desktop_primary_token_observation(token)
     }
 
     fn exact_process_is_live(
@@ -219,6 +265,7 @@ impl ProcessAuthOps for WindowsProcessAuthOps {
 
 impl ProcessAuthOps for WindowsRpcAuthOps<'_> {
     type Process = RetainedProcess;
+    type DesktopPrimaryToken = DesktopPrimaryToken;
 
     fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
         WindowsProcessAuthOps.open_process(process_id)
@@ -226,6 +273,13 @@ impl ProcessAuthOps for WindowsRpcAuthOps<'_> {
 
     fn primary_token(&self, process: &Self::Process) -> Result<TokenObservation, ObservationError> {
         WindowsProcessAuthOps.primary_token(process)
+    }
+
+    fn desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<TokenObservation, ObservationError> {
+        WindowsProcessAuthOps.desktop_primary_token(token)
     }
 
     fn exact_process_is_live(
@@ -339,6 +393,12 @@ impl RpcAuthOps for WindowsRpcAuthOps<'_> {
         token_observation(token.raw())
     }
 
+    fn duplicate_desktop_primary_token(
+        &self,
+    ) -> Result<Self::DesktopPrimaryToken, ObservationError> {
+        duplicate_current_thread_desktop_primary_token()
+    }
+
     fn revert(&self) -> Result<(), ObservationError> {
         // SAFETY: this is the exact binding used for successful impersonation;
         // the non-Send guard keeps the call on the originating thread.
@@ -388,6 +448,53 @@ fn open_current_thread_token() -> Result<OwnedToken, ObservationError> {
         return Err(ObservationError::Incomplete);
     }
     Ok(OwnedToken(token))
+}
+
+fn duplicate_current_thread_desktop_primary_token() -> Result<DesktopPrimaryToken, ObservationError>
+{
+    let mut source = HANDLE::default();
+    // SAFETY: successful RPC impersonation installed the current thread token.
+    // OpenAsSelf lets the service request only query and duplication authority
+    // without changing the effective client identity being copied.
+    unsafe {
+        OpenThreadToken(
+            GetCurrentThread(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            true,
+            &raw mut source,
+        )
+    }
+    .map_err(|_| ObservationError::Incomplete)?;
+    if invalid_handle(source) {
+        return Err(ObservationError::Incomplete);
+    }
+    let source = OwnedToken(source);
+
+    let mut duplicate = HANDLE::default();
+    // SAFETY: `source` is the exact live impersonation token opened above.
+    // A null SECURITY_ATTRIBUTES pointer makes the new handle non-inheritable;
+    // the desired mask is exactly CreateProcessAsUserW's documented token
+    // requirement, and TokenPrimary produces the required primary-token type.
+    unsafe {
+        DuplicateTokenEx(
+            source.raw(),
+            DESKTOP_PRIMARY_TOKEN_ACCESS,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            &raw mut duplicate,
+        )
+    }
+    .map_err(|_| ObservationError::Incomplete)?;
+    if invalid_handle(duplicate) {
+        return Err(ObservationError::Incomplete);
+    }
+    let token = DesktopPrimaryToken {
+        token: OwnedToken(duplicate),
+        _not_sync: PhantomData,
+    };
+    validate_desktop_primary_token_handle(&token)?;
+    Ok(token)
 }
 
 fn open_restricted_process(process_id: NonZeroU32) -> Result<RetainedProcess, ObservationError> {
@@ -442,6 +549,31 @@ fn primary_token_observation(
     }
     let token = OwnedToken(token);
     token_observation(token.raw())
+}
+
+fn desktop_primary_token_observation(
+    token: &DesktopPrimaryToken,
+) -> Result<TokenObservation, ObservationError> {
+    validate_desktop_primary_token_handle(token)?;
+    token_observation(token.raw())
+}
+
+fn validate_desktop_primary_token_handle(
+    token: &DesktopPrimaryToken,
+) -> Result<(), ObservationError> {
+    if invalid_handle(token.raw()) {
+        return Err(ObservationError::Incomplete);
+    }
+    let mut flags = u32::MAX;
+    // SAFETY: the move-only owner retains this live handle and `flags` is exact
+    // writable scalar storage. DuplicateTokenEx received no inheritable
+    // SECURITY_ATTRIBUTES, so any nonzero flag is a fail-closed mismatch.
+    unsafe { GetHandleInformation(token.raw(), &raw mut flags) }
+        .map_err(|_| ObservationError::Incomplete)?;
+    if flags != 0 {
+        return Err(ObservationError::Incomplete);
+    }
+    Ok(())
 }
 
 fn token_observation(token: HANDLE) -> Result<TokenObservation, ObservationError> {
@@ -781,9 +913,66 @@ fn invalid_handle(handle: HANDLE) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MANDATORY_LABEL_AUTHORITY, SidBytes, exact_boolean, integrity_rid,
-        parse_token_has_restrictions, token_groups_bytes,
+        DESKTOP_PRIMARY_TOKEN_ACCESS, DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, OwnedToken,
+        SidBytes, exact_boolean, integrity_rid, parse_token_has_restrictions, token_groups_bytes,
     };
+    use std::marker::PhantomData;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{
+        TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+    };
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn desktop_primary_token_is_move_only_send_and_not_sync() {
+        assert_send::<DesktopPrimaryToken>();
+        let _ = <DesktopPrimaryToken as AmbiguousIfSync<_>>::marker;
+        let _ = <DesktopPrimaryToken as AmbiguousIfClone<_>>::marker;
+        let _ = <DesktopPrimaryToken as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn desktop_primary_token_debug_is_data_free() {
+        let token = DesktopPrimaryToken {
+            token: OwnedToken(HANDLE::default()),
+            _not_sync: PhantomData,
+        };
+        assert_eq!(format!("{token:?}"), "DesktopPrimaryToken([REDACTED])");
+    }
+
+    #[test]
+    fn desktop_primary_token_rights_are_exactly_create_process_as_user_minimum() {
+        assert_eq!(
+            DESKTOP_PRIMARY_TOKEN_ACCESS.0,
+            TOKEN_ASSIGN_PRIMARY.0 | TOKEN_DUPLICATE.0 | TOKEN_QUERY.0
+        );
+        let forbidden = TOKEN_IMPERSONATE.0
+            | TOKEN_ADJUST_PRIVILEGES.0
+            | TOKEN_ADJUST_GROUPS.0
+            | TOKEN_ADJUST_DEFAULT.0
+            | TOKEN_ADJUST_SESSIONID.0;
+        assert_eq!(DESKTOP_PRIMARY_TOKEN_ACCESS.0 & forbidden, 0);
+    }
 
     #[test]
     fn integrity_sid_parser_requires_mandatory_authority_and_exact_shape() {

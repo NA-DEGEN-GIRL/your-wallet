@@ -12,6 +12,12 @@ default = []
 broker-channel-contract-test-hook = []
 # Inert, no-secret SCM lifecycle fixture used only by debug feasibility tests.
 key-agent-service-scm-feasibility-test-hook = []
+# Current-process restricted-service-token policy fixture. This debug-only
+# surface verifies documented token facts before SCM publishes RUNNING, but it
+# does not claim the still-unproven installer or helper-launch composition.
+key-agent-service-token-feasibility-test-hook = [
+    "key-agent-service-scm-feasibility-test-hook",
+]
 # Bounded, no-secret local-RPC Status/Unavailable fixture. This remains a
 # debug feasibility surface and does not authenticate a production Broker.
 key-agent-service-rpc-status-feasibility-test-hook = [

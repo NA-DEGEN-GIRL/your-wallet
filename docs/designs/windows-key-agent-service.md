@@ -107,6 +107,22 @@ The following are existing facts, not new service claims:
   than an atomic origin-process object, so the retained PID-opened handle is
   only a correlation observation. There is no production RPC client or helper
   proof.
+- The manager-side debug path now duplicates the already impersonated caller
+  into one move-only `TokenPrimary` handle with exactly `TOKEN_QUERY |
+  TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY`, verifies non-inheritance and full
+  identity continuity before revert, and revalidates the retained token across
+  the epoch. The If3 callback still performs an independent identity check and
+  returns no token or launch authority. This proves the same-host token
+  derivation primitive only; it does not prove an enrolled Broker or
+  `CreateProcessAsUserW`.
+- A separate debug-only service-token fixture can verify the current process
+  before `SERVICE_RUNNING`: exact fixed virtual-account `TokenUser`, primary
+  Session-0 restricted-token shape, documented service/logon/Local group facts,
+  the documented four restricted-SID identities, and an exact four-name
+  candidate privilege set. Its proof is explicitly `Unverified` for restricted
+  SID attributes, privilege state/necessity, integrity, and SCM configuration.
+  The positive test remains ignored until an elevated disposable-VM harness
+  installs and starts the exact restricted service.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -615,10 +631,13 @@ negative kernel evidence on the initial exact support target. A failure chooses
 review or abandonment, never a weaker hidden fallback.
 
 **Current status:** not passed. The ignored same-process authenticated RPC probe
-passes on the current interactive Windows host, but it is only a narrow local
-kernel round trip. The claimed-build matrix, endpoint-squatting,
-service-identity, cross-session LPAC, and real Broker-client evidence are still
-absent.
+passes on the current interactive Windows host and now includes manager-only
+primary-token duplication and retained-token revalidation, but it is only a
+narrow local kernel round trip. The service-token parser and negative policy
+matrix are implemented, while the installed restricted-service positive probe
+remains intentionally ignored. The claimed-build matrix, endpoint-squatting,
+SCM configuration/service identity, cross-session LPAC, and real Broker-client
+evidence are still absent.
 
 ### Phase 2 — Installer, service host, storage, and network boundary
 
@@ -719,6 +738,11 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-26 — Added manager-only authenticated desktop `TokenPrimary`
+  duplication/retention and the debug-only restricted-service-token observer.
+  Callback authentication retains no launch authority, exact token access and
+  non-inheritance are read back, and the installed-service positive remains an
+  explicit ignored kernel obligation. Release remains `STOP-SHIP`.
 - 2026-08-26 — Added the no-secret Phase 1 SCM, bounded wire, checked-in MIDL
   boundary, and Windows-debug-only authenticated local-RPC
   `Status -> Unavailable` server slices. Recorded the hard 76-byte canonical
