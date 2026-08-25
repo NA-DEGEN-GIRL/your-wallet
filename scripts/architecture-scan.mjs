@@ -1906,6 +1906,7 @@ const publicBoundaryManifests = [
   "crates/native-host/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/dashboard/Cargo.toml",
+  "crates/key-agent-service-wire/Cargo.toml",
 ];
 
 for (const manifestPath of publicBoundaryManifests) {
@@ -1920,6 +1921,19 @@ for (const manifestPath of publicBoundaryManifests) {
 
 const rootManifest = await trustedRegularFileText("Cargo.toml");
 const rootManifestSha256 = normalizedSourceSha256(rootManifest);
+const keyAgentServiceWireManifest = await text(
+  "crates/key-agent-service-wire/Cargo.toml",
+);
+const keyAgentServiceWireSource = await text(
+  "crates/key-agent-service-wire/src/lib.rs",
+);
+const keyAgentServiceWirePublicContract = await text(
+  "crates/key-agent-service-wire/tests/public_contract.rs",
+);
+const keyAgentServiceWireRustFiles = await rustProductionSources(
+  "crates/key-agent-service-wire",
+  { withTestCode: true },
+);
 const keyAgentServiceManifest = await text(
   "crates/key-agent-service/Cargo.toml",
 );
@@ -4710,6 +4724,7 @@ const noNetworkManifests = [
   "crates/secret-core/Cargo.toml",
   "crates/key-agent/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service-wire/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/secret-input-ui/Cargo.toml",
 ];
@@ -4772,6 +4787,702 @@ requireInvariant(
       keyAgentServicePlatformSource,
     ),
   "the Key Agent service crate must remain non-publishable, safe-only, silent, network/key-agent-free, and gated by the exact debug SCM feature",
+);
+
+const keyAgentServiceWireManifestContract = (manifest) => {
+  const normalized = manifest.replace(/\r\n?/gu, "\n");
+  const dependencyTables =
+    normalized.match(/^\s*\[[^\]\r\n]*dependencies[^\]\r\n]*\]\s*$/gmu) ?? [];
+  const dependencyHeader = /^\s*\[dependencies\]\s*$/mu.exec(normalized);
+  if (dependencyHeader === null) {
+    return false;
+  }
+  const afterDependencyHeader = normalized.slice(
+    dependencyHeader.index + dependencyHeader[0].length,
+  );
+  const nextTable = /^\s*\[/mu.exec(afterDependencyHeader);
+  const dependencyBody = afterDependencyHeader.slice(
+    0,
+    nextTable?.index ?? afterDependencyHeader.length,
+  );
+  return (
+    (normalized.match(/^name\s*=\s*"key-agent-service-wire"\s*$/gmu) ?? [])
+      .length === 1 &&
+    (normalized.match(/^build\s*=\s*false\s*$/gmu) ?? []).length === 1 &&
+    dependencyTables.length === 1 &&
+    dependencyTables[0].trim() === "[dependencies]" &&
+    dependencyBody
+      .split("\n")
+      .every((line) => line.replace(/\s*#.*$/u, "").trim() === "") &&
+    !/^\s*(?:dependencies|dev-dependencies|build-dependencies)\s*=/mu.test(
+      normalized,
+    ) &&
+    !/^\s*\[\[(?:bin|example|test|bench)\]\]\s*$/mu.test(normalized) &&
+    /^\s*\[lints\]\s*$/mu.test(normalized) &&
+    /^workspace\s*=\s*true\s*$/mu.test(normalized)
+  );
+};
+
+const keyAgentServiceWireNetworkSurface =
+  /\b(?:std\s*::\s*net|TcpStream|TcpListener|UdpSocket|SocketAddr|reqwest|hyper|ureq|curl|tonic|tungstenite|WebSocket|HttpClient)\b/u;
+const keyAgentServiceWirePlatformSurface =
+  /\b(?:windows|Win32|Wdk|HANDLE|HLOCAL|HKEY|SID|TOKEN_[A-Z_]+|CreateProcess\w*|Rpc\w*|NamedPipe|UnixStream|extern)\b/u;
+const keyAgentServiceWireAuthorityTypeSurface =
+  /\b(?:[A-Za-z_][A-Za-z0-9_]*Key[A-Za-z0-9_]*|Secret[A-Za-z0-9_]*|Signing[A-Za-z0-9_]*|Signature[A-Za-z0-9_]*|Mnemonic[A-Za-z0-9_]*|Seed[A-Za-z0-9_]*|Password[A-Za-z0-9_]*|Credential[A-Za-z0-9_]*|Authorization[A-Za-z0-9_]*|Wallet[A-Za-z0-9_]*|Transaction[A-Za-z0-9_]*)\b/u;
+const keyAgentServiceWirePolicyContract = (manifest, files) => {
+  const code = files.map((file) => rustLexicalCode(file.source)).join("\n");
+  const librarySource =
+    files.find(
+      (file) => file.path === "crates/key-agent-service-wire/src/lib.rs",
+    )?.source ?? "";
+  return (
+    keyAgentServiceWireManifestContract(manifest) &&
+    JSON.stringify(files.map((file) => file.path)) ===
+      JSON.stringify([
+        "crates/key-agent-service-wire/src/lib.rs",
+        "crates/key-agent-service-wire/tests/public_contract.rs",
+      ]) &&
+    librarySource.includes("#![forbid(unsafe_code)]") &&
+    files.every((file) => rustUnsafeKeywordCount(file.source) === 0) &&
+    !/(?:e?println|print|dbg)!/u.test(code) &&
+    !keyAgentServiceWireNetworkSurface.test(code) &&
+    !keyAgentServiceWirePlatformSurface.test(code) &&
+    !keyAgentServiceWireAuthorityTypeSurface.test(code)
+  );
+};
+
+const keyAgentServiceWireV1Contract = (source, publicContract) => {
+  let protocolVersion;
+  let serviceCommand;
+  let serviceStatus;
+  let serviceRequest;
+  let serviceResponse;
+  let wireError;
+  let epochNonceNew;
+  let requestIdNew;
+  let epochNonceDebug;
+  let requestIdDebug;
+  let encodeRequest;
+  let decodeRequest;
+  let encodeResponse;
+  let decodeResponse;
+  let commandCode;
+  let statusCode;
+  let encodeHeader;
+  let finishFrame;
+  let decodeHeader;
+  let requireExactLength;
+  let verifyChecksum;
+  let requireZeroU16;
+  let requireZeroU32;
+  let statusCorrelation;
+  let responseCorrelation;
+  let requestCorruptionHelper;
+  let responseCorruptionHelper;
+  let unitTests;
+  let publicTests;
+  const unitTestNames = [
+    "value_sentinels_are_rejected_and_debug_is_redacted",
+    "all_canonical_frames_round_trip_at_exact_lengths",
+    "every_prefix_and_suffix_length_is_rejected",
+    "semantic_header_failures_have_stable_categories",
+    "version_and_kind_extrema_are_rejected",
+    "every_reserved_bit_is_rejected_after_checksum_recomputation",
+    "command_and_status_payloads_are_closed_and_reserved",
+    "zero_bindings_and_checksum_mismatches_are_rejected",
+    "request_and_response_directions_are_not_interchangeable",
+    "response_correlation_requires_pairing_epoch_and_request_id",
+    "wrapper_and_outer_debug_never_expose_binding_bytes",
+    "every_wire_error_display_is_a_stable_data_free_category",
+    "every_single_byte_substitution_is_rejected",
+    "crc32c_matches_the_standard_check_value",
+  ];
+  const publicTestNames = [
+    "public_api_round_trips_the_complete_v1_set",
+    "stable_golden_vectors_decode_and_reencode_exactly",
+    "public_errors_are_category_only_and_payload_debug_is_redacted",
+    "public_response_correlation_rejects_every_mismatch",
+  ];
+  try {
+    protocolVersion = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ProtocolVersion\s*\{/u,
+    );
+    serviceCommand = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ServiceCommand\s*\{/u,
+    );
+    serviceStatus = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ServiceStatus\s*\{/u,
+    );
+    serviceRequest = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ServiceRequest\s*\{/u,
+    );
+    serviceResponse = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ServiceResponse\s*\{/u,
+    );
+    wireError = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+WireError\s*\{/u,
+    );
+    const epochNonceImpl = rustImplItemAtDepth(source, "impl EpochNonce", 0);
+    const requestIdImpl = rustImplItemAtDepth(
+      source,
+      "impl ServiceRequestId",
+      0,
+    );
+    epochNonceNew = rustFunctionBlockAtDepth(epochNonceImpl, "new", 1);
+    requestIdNew = rustFunctionBlockAtDepth(requestIdImpl, "new", 1);
+    epochNonceDebug = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for EpochNonce",
+      0,
+    );
+    requestIdDebug = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for ServiceRequestId",
+      0,
+    );
+    const statusResponseImpl = rustImplItemAtDepth(
+      source,
+      "impl ServiceStatusResponse",
+      0,
+    );
+    const responseImpl = rustImplItemAtDepth(source, "impl ServiceResponse", 0);
+    statusCorrelation = rustFunctionBlockAtDepth(
+      statusResponseImpl,
+      "ensure_correlates_with",
+      1,
+    );
+    responseCorrelation = rustFunctionBlockAtDepth(
+      responseImpl,
+      "ensure_correlates_with",
+      1,
+    );
+    encodeRequest = rustTopLevelFunctionBlock(source, "encode_request");
+    decodeRequest = rustTopLevelFunctionBlock(source, "decode_request");
+    encodeResponse = rustTopLevelFunctionBlock(source, "encode_response");
+    decodeResponse = rustTopLevelFunctionBlock(source, "decode_response");
+    commandCode = rustTopLevelFunctionBlock(source, "command_code");
+    statusCode = rustTopLevelFunctionBlock(source, "status_code");
+    encodeHeader = rustTopLevelFunctionBlock(source, "encode_header");
+    finishFrame = rustTopLevelFunctionBlock(source, "finish_frame");
+    decodeHeader = rustTopLevelFunctionBlock(source, "decode_header");
+    requireExactLength = rustTopLevelFunctionBlock(
+      source,
+      "require_exact_length",
+    );
+    verifyChecksum = rustTopLevelFunctionBlock(source, "verify_checksum");
+    requireZeroU16 = rustTopLevelFunctionBlock(source, "require_zero_u16");
+    requireZeroU32 = rustTopLevelFunctionBlock(source, "require_zero_u32");
+    requestCorruptionHelper = rustFunctionBlockAtDepth(
+      source,
+      "assert_every_single_byte_request_corruption_is_rejected",
+      1,
+    );
+    responseCorruptionHelper = rustFunctionBlockAtDepth(
+      source,
+      "assert_every_single_byte_response_corruption_is_rejected",
+      1,
+    );
+    unitTests = Object.fromEntries(
+      unitTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(source, name, 1),
+      ]),
+    );
+    publicTests = Object.fromEntries(
+      publicTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(publicContract, name, 0),
+      ]),
+    );
+  } catch {
+    return false;
+  }
+
+  const sourceCode = rustLexicalCode(source);
+  const compactSource = compactRust(source);
+  const compactEncodeRequest = compactRust(encodeRequest);
+  const compactDecodeRequest = compactRust(decodeRequest);
+  const compactEncodeResponse = compactRust(encodeResponse);
+  const compactDecodeResponse = compactRust(decodeResponse);
+  const compactDecodeHeader = compactRust(decodeHeader);
+  const compactStatusCorrelation = compactRust(statusCorrelation);
+  const compactResponseCorrelation = compactRust(responseCorrelation);
+  const compactLengthTest = compactRust(
+    unitTests.every_prefix_and_suffix_length_is_rejected,
+  );
+  const compactReservedTest = compactRust(
+    unitTests.every_reserved_bit_is_rejected_after_checksum_recomputation,
+  );
+  const compactZeroBindingTest = compactRust(
+    unitTests.zero_bindings_and_checksum_mismatches_are_rejected,
+  );
+  const goldenVectors = [
+    "59574b415356303100010001000000004408a573",
+    "59574b41535630310001000200000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5991279df",
+    "59574b41535630310001000300000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a55a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0001000049b6c377",
+    "59574b41535630310001000400000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a55a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a000100002384c7b3",
+  ];
+  const checks = [
+    [
+      'pub const PROTOCOL_MAGIC: [u8; 8] = *b"YWKASV01";',
+      "pub const OPEN_EPOCH_REQUEST_BYTES: usize = 20;",
+      "pub const OPEN_EPOCH_ACK_BYTES: usize = 52;",
+      "pub const COMMAND_REQUEST_BYTES: usize = 72;",
+      "pub const COMMAND_RESPONSE_BYTES: usize = 72;",
+      "pub const MAX_SERVICE_REQUEST_BYTES: usize = COMMAND_REQUEST_BYTES;",
+      "pub const MAX_SERVICE_RESPONSE_BYTES: usize = COMMAND_RESPONSE_BYTES;",
+      "const HEADER_BYTES: usize = 16;",
+      "const CHECKSUM_BYTES: usize = 4;",
+      "const VERSION_V1: u16 = 1;",
+      "const FRAME_OPEN_EPOCH_REQUEST: u16 = 1;",
+      "const FRAME_OPEN_EPOCH_ACK: u16 = 2;",
+      "const FRAME_COMMAND_REQUEST: u16 = 3;",
+      "const FRAME_COMMAND_RESPONSE: u16 = 4;",
+      "const COMMAND_STATUS: u16 = 1;",
+      "const STATUS_UNAVAILABLE: u16 = 1;",
+      "const EPOCH_NONCE_BYTES: usize = 32;",
+      "const REQUEST_ID_BYTES: usize = 16;",
+      "const EPOCH_OFFSET: usize = HEADER_BYTES;",
+      "const REQUEST_ID_OFFSET: usize = EPOCH_OFFSET + EPOCH_NONCE_BYTES;",
+      "const BODY_KIND_OFFSET: usize = REQUEST_ID_OFFSET + REQUEST_ID_BYTES;",
+      "const BODY_RESERVED_OFFSET: usize = BODY_KIND_OFFSET + 2;",
+    ].every((marker) => source.includes(marker)),
+    (source.match(/b"YWKASV01"/gu) ?? []).length === 1,
+    compactRust(protocolVersion) === "pubenumProtocolVersion{V1,}",
+    compactRust(serviceCommand) === "pubenumServiceCommand{Status,}",
+    compactRust(serviceStatus) === "pubenumServiceStatus{Unavailable,}",
+    compactRust(serviceRequest) ===
+      "pubenumServiceRequest{OpenEpoch(OpenEpochRequest),Command(ServiceCommandRequest),}",
+    compactRust(serviceResponse) ===
+      "pubenumServiceResponse{OpenEpoch(OpenEpochAck),Status(ServiceStatusResponse),}",
+    compactRust(wireError) ===
+      "pubenumWireError{Truncated,TrailingData,InvalidMagic,UnsupportedVersion,UnknownKind,NonZeroReserved,InvalidValue,Integrity,BindingMismatch,}",
+    compactSource.includes(
+      "pubstructEpochNonce([u8;EPOCH_NONCE_BYTES]);",
+    ),
+    compactSource.includes(
+      "pubstructServiceRequestId([u8;REQUEST_ID_BYTES]);",
+    ),
+    compactSource.includes("pubstructOpenEpochAck{epoch_nonce:EpochNonce,}"),
+    compactSource.includes(
+      "pubstructServiceCommandRequest{epoch_nonce:EpochNonce,request_id:ServiceRequestId,command:ServiceCommand,}",
+    ),
+    compactSource.includes(
+      "pubstructServiceStatusResponse{epoch_nonce:EpochNonce,request_id:ServiceRequestId,status:ServiceStatus,}",
+    ),
+    compactRust(epochNonceNew).includes(
+      "ifis_all_zero(&bytes){returnErr(WireError::InvalidValue);}Ok(Self(bytes))",
+    ),
+    compactRust(requestIdNew).includes(
+      "ifis_all_zero(&bytes){returnErr(WireError::InvalidValue);}Ok(Self(bytes))",
+    ),
+    epochNonceDebug.includes('write_str("EpochNonce([REDACTED])")'),
+    requestIdDebug.includes(
+      'write_str("ServiceRequestId([REDACTED])")',
+    ),
+    !/#\[derive\([^\]]*\bDebug\b[^\]]*\)\]\s*pub\s+struct\s+(?:EpochNonce|ServiceRequestId)\b/u.test(
+      source,
+    ),
+    compactEncodeRequest.includes(
+      "ServiceRequest::OpenEpoch(_)=>{letmutframe=Vec::with_capacity(OPEN_EPOCH_REQUEST_BYTES);encode_header(&mutframe,FRAME_OPEN_EPOCH_REQUEST);finish_frame(frame)}",
+    ),
+    hasOrderedCompactMarkers(encodeRequest, [
+      "ServiceRequest::Command(request)=>{",
+      "Vec::with_capacity(COMMAND_REQUEST_BYTES)",
+      "encode_header(&mutframe,FRAME_COMMAND_REQUEST)",
+      "frame.extend_from_slice(request.epoch_nonce.as_bytes())",
+      "frame.extend_from_slice(request.request_id.as_bytes())",
+      "frame.extend_from_slice(&command_code(request.command).to_be_bytes())",
+      "frame.extend_from_slice(&0_u16.to_be_bytes())",
+      "finish_frame(frame)",
+    ]),
+    hasOrderedCompactMarkers(decodeRequest, [
+      "letframe_kind=decode_header(bytes)?",
+      "FRAME_OPEN_EPOCH_REQUEST=>{",
+      "require_exact_length(bytes,OPEN_EPOCH_REQUEST_BYTES)?",
+      "verify_checksum(bytes)?",
+      "Ok(ServiceRequest::OpenEpoch(OpenEpochRequest::new()))",
+      "FRAME_COMMAND_REQUEST=>{",
+      "require_exact_length(bytes,COMMAND_REQUEST_BYTES)?",
+      "verify_checksum(bytes)?",
+      "letepoch_nonce=decode_epoch_nonce(bytes)?",
+      "letrequest_id=decode_request_id(bytes)?",
+      "require_zero_u16(bytes,BODY_RESERVED_OFFSET)?",
+      "COMMAND_STATUS=>ServiceCommand::Status",
+      "_=>returnErr(WireError::UnknownKind)",
+      "_=>Err(WireError::UnknownKind)",
+    ]),
+    compactEncodeResponse.includes(
+      "ServiceResponse::OpenEpoch(ack)=>{letmutframe=Vec::with_capacity(OPEN_EPOCH_ACK_BYTES);encode_header(&mutframe,FRAME_OPEN_EPOCH_ACK);frame.extend_from_slice(ack.epoch_nonce.as_bytes());finish_frame(frame)}",
+    ),
+    hasOrderedCompactMarkers(encodeResponse, [
+      "ServiceResponse::Status(response)=>{",
+      "Vec::with_capacity(COMMAND_RESPONSE_BYTES)",
+      "encode_header(&mutframe,FRAME_COMMAND_RESPONSE)",
+      "frame.extend_from_slice(response.epoch_nonce.as_bytes())",
+      "frame.extend_from_slice(response.request_id.as_bytes())",
+      "frame.extend_from_slice(&status_code(response.status).to_be_bytes())",
+      "frame.extend_from_slice(&0_u16.to_be_bytes())",
+      "finish_frame(frame)",
+    ]),
+    hasOrderedCompactMarkers(decodeResponse, [
+      "letframe_kind=decode_header(bytes)?",
+      "FRAME_OPEN_EPOCH_ACK=>{",
+      "require_exact_length(bytes,OPEN_EPOCH_ACK_BYTES)?",
+      "verify_checksum(bytes)?",
+      "letepoch_nonce=decode_epoch_nonce(bytes)?",
+      "Ok(ServiceResponse::OpenEpoch(OpenEpochAck::new(epoch_nonce)))",
+      "FRAME_COMMAND_RESPONSE=>{",
+      "require_exact_length(bytes,COMMAND_RESPONSE_BYTES)?",
+      "verify_checksum(bytes)?",
+      "letepoch_nonce=decode_epoch_nonce(bytes)?",
+      "letrequest_id=decode_request_id(bytes)?",
+      "require_zero_u16(bytes,BODY_RESERVED_OFFSET)?",
+      "STATUS_UNAVAILABLE=>ServiceStatus::Unavailable",
+      "_=>returnErr(WireError::UnknownKind)",
+      "_=>Err(WireError::UnknownKind)",
+    ]),
+    compactRust(commandCode) ===
+      "constfncommand_code(command:ServiceCommand)->u16{matchcommand{ServiceCommand::Status=>COMMAND_STATUS,}}",
+    compactRust(statusCode) ===
+      "constfnstatus_code(status:ServiceStatus)->u16{matchstatus{ServiceStatus::Unavailable=>STATUS_UNAVAILABLE,}}",
+    compactRust(encodeHeader).includes(
+      "output.extend_from_slice(&PROTOCOL_MAGIC);output.extend_from_slice(&ProtocolVersion::V1.wire_code().to_be_bytes());output.extend_from_slice(&frame_kind.to_be_bytes());output.extend_from_slice(&0_u32.to_be_bytes());",
+    ),
+    compactRust(finishFrame).includes(
+      "letchecksum=crc32c(&frame);frame.extend_from_slice(&checksum.to_be_bytes());frame",
+    ),
+    hasOrderedCompactMarkers(decodeHeader, [
+      "ifbytes.len()<HEADER_BYTES+CHECKSUM_BYTES",
+      "Err(WireError::Truncated)",
+      "bytes.get(..PROTOCOL_MAGIC.len())!=Some(PROTOCOL_MAGIC.as_slice())",
+      "Err(WireError::InvalidMagic)",
+      "ProtocolVersion::try_from(read_u16(bytes,8))?",
+      "require_zero_u32(bytes,12)?",
+      "Ok(read_u16(bytes,10))",
+    ]),
+    compactDecodeHeader.includes("require_zero_u32(bytes,12)?"),
+    compactRust(requireExactLength).includes(
+      "core::cmp::Ordering::Less=>Err(WireError::Truncated),core::cmp::Ordering::Equal=>Ok(()),core::cmp::Ordering::Greater=>Err(WireError::TrailingData)",
+    ),
+    compactRust(verifyChecksum).includes(
+      "ifcrc32c(&bytes[..checksum_offset])==actual{Ok(())}else{Err(WireError::Integrity)}",
+    ),
+    compactRust(requireZeroU16).includes(
+      "ifread_u16(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ),
+    compactRust(requireZeroU32).includes(
+      "ifread_u32(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ),
+    compactStatusCorrelation.includes(
+      "ifrequest.command==ServiceCommand::Status&&self.epoch_nonce==request.epoch_nonce&&self.request_id==request.request_id{Ok(())}else{Err(WireError::BindingMismatch)}",
+    ),
+    compactResponseCorrelation.includes(
+      "(Self::OpenEpoch(_),ServiceRequest::OpenEpoch(_))=>Ok(())",
+    ) &&
+      compactResponseCorrelation.includes(
+        "(Self::Status(response),ServiceRequest::Command(request))=>{response.ensure_correlates_with(request)}",
+      ) &&
+      compactResponseCorrelation.includes("_=>Err(WireError::BindingMismatch)"),
+    unitTestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(source, name, 1).includes(
+          "#[test]",
+        ) && !hasVacuousRustTestEscape(unitTests[name]),
+    ),
+    publicTestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(publicContract, name, 0).includes(
+          "#[test]",
+        ) && !hasVacuousRustTestEscape(publicTests[name]),
+    ),
+    (compactLengthTest.match(/forprefix_lengthin0\.\.frame\.len\(\)/gu) ?? [])
+      .length === 2,
+    (compactLengthTest.match(/Err\(WireError::TrailingData\)/gu) ?? [])
+      .length === 2,
+    (compactReservedTest.match(/foroffsetin12\.\.16/gu) ?? []).length === 2,
+    (
+      compactReservedTest.match(
+        /foroffsetinBODY_RESERVED_OFFSET\.\.BODY_RESERVED_OFFSET\+2/gu,
+      ) ?? []
+    ).length === 2,
+    (compactReservedTest.match(/forbitin0\.\.8/gu) ?? []).length === 4,
+    compactRust(
+      unitTests.command_and_status_payloads_are_closed_and_reserved,
+    ).includes("2_u16.to_be_bytes()") &&
+      (
+        compactRust(
+          unitTests.command_and_status_payloads_are_closed_and_reserved,
+        ).match(/Err\(WireError::UnknownKind\)/gu) ?? []
+      ).length === 2 &&
+      (
+        compactRust(
+          unitTests.command_and_status_payloads_are_closed_and_reserved,
+        ).match(/Err\(WireError::NonZeroReserved\)/gu) ?? []
+      ).length === 2,
+    (compactZeroBindingTest.match(/\.fill\(0\)/gu) ?? []).length === 5 &&
+      compactZeroBindingTest.includes("Err(WireError::Integrity)"),
+    compactRust(requestCorruptionHelper).includes(
+      "forindexin0..frame.len(){forreplacementinu8::MIN..=u8::MAX",
+    ) &&
+      compactRust(requestCorruptionHelper).includes(
+        "assert!(decode_request(&corrupted).is_err())",
+      ),
+    compactRust(responseCorruptionHelper).includes(
+      "forindexin0..frame.len(){forreplacementinu8::MIN..=u8::MAX",
+    ) &&
+      compactRust(responseCorruptionHelper).includes(
+        "assert!(decode_response(&corrupted).is_err())",
+      ),
+    compactRust(
+      unitTests.version_and_kind_extrema_are_rejected,
+    ).includes("[u16::MIN,u16::MAX]") &&
+      (
+        compactRust(
+          unitTests.version_and_kind_extrema_are_rejected,
+        ).match(/\[u16::MIN,u16::MAX\]/gu) ?? []
+      ).length === 6,
+    compactRust(
+      unitTests.response_correlation_requires_pairing_epoch_and_request_id,
+    ).includes("wrong_epoch.ensure_correlates_with(&request_outer)") &&
+      compactRust(
+        unitTests.response_correlation_requires_pairing_epoch_and_request_id,
+      ).includes("wrong_request_id.ensure_correlates_with(&request_outer)") &&
+      (
+        compactRust(
+          unitTests.response_correlation_requires_pairing_epoch_and_request_id,
+        ).match(/Err\(WireError::BindingMismatch\)/gu) ?? []
+      ).length === 4,
+    unitTests.wrapper_and_outer_debug_never_expose_binding_bytes.includes(
+      "[REDACTED]",
+    ) &&
+      publicTests.public_errors_are_category_only_and_payload_debug_is_redacted.includes(
+        "[REDACTED]",
+      ),
+    goldenVectors.every((vector) => publicContract.includes(`"${vector}"`)),
+    compactRust(
+      publicTests.public_api_round_trips_the_complete_v1_set,
+    ).includes("ServiceCommand::Status") &&
+      compactRust(
+        publicTests.public_api_round_trips_the_complete_v1_set,
+      ).includes("ServiceStatus::Unavailable") &&
+      (
+        compactRust(
+          publicTests.public_api_round_trips_the_complete_v1_set,
+        ).match(/\.len\(\),[A-Z_]+_BYTES/gu) ?? []
+      ).length === 4,
+    compactRust(
+      publicTests.public_response_correlation_rejects_every_mismatch,
+    ).includes("wrong_epoch.ensure_correlates_with(&request_outer)") &&
+      compactRust(
+        publicTests.public_response_correlation_rejects_every_mismatch,
+      ).includes("wrong_request_id.ensure_correlates_with(&request_outer)") &&
+      (
+        compactRust(
+          publicTests.public_response_correlation_rejects_every_mismatch,
+        ).match(/Err\(WireError::BindingMismatch\)/gu) ?? []
+      ).length === 4,
+    !/\bncalrpc\b/iu.test(source),
+  ];
+  return checks.every(Boolean);
+};
+
+const mutateKeyAgentServiceWireSource = (suffix) =>
+  keyAgentServiceWireRustFiles.map((file) =>
+    file.path === "crates/key-agent-service-wire/src/lib.rs"
+      ? { ...file, source: `${file.source}\n${suffix}\n` }
+      : file,
+  );
+const replaceKeyAgentServiceWireSource = (search, replacement) =>
+  keyAgentServiceWireRustFiles.map((file) =>
+    file.path === "crates/key-agent-service-wire/src/lib.rs"
+      ? { ...file, source: file.source.replace(search, replacement) }
+      : file,
+  );
+const keyAgentServiceWirePolicyMutationProbes = [
+  {
+    manifest: keyAgentServiceWireManifest.replace(
+      "build = false",
+      "build = true",
+    ),
+    files: keyAgentServiceWireRustFiles,
+  },
+  {
+    manifest: keyAgentServiceWireManifest.replace(
+      "[dependencies]",
+      '[dependencies]\nserde = "1"',
+    ),
+    files: keyAgentServiceWireRustFiles,
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: replaceKeyAgentServiceWireSource("#![forbid(unsafe_code)]", ""),
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: mutateKeyAgentServiceWireSource(
+      "unsafe fn hidden_wire_escape() {}",
+    ),
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: mutateKeyAgentServiceWireSource(
+      'fn hidden_wire_print() { println!("wire"); }',
+    ),
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: mutateKeyAgentServiceWireSource(
+      "fn hidden_wire_network() { let _ = std::net::TcpStream::connect; }",
+    ),
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: mutateKeyAgentServiceWireSource("struct WindowsHandle(HANDLE);"),
+  },
+  {
+    manifest: keyAgentServiceWireManifest,
+    files: mutateKeyAgentServiceWireSource("struct SigningKey([u8; 32]);"),
+  },
+];
+const keyAgentServiceWireV1MutationProbes = [
+  {
+    source: keyAgentServiceWireSource.replace("YWKASV01", "YWKASV02"),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "const VERSION_V1: u16 = 1;",
+      "const VERSION_V1: u16 = 2;",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "pub const OPEN_EPOCH_REQUEST_BYTES: usize = 20;",
+      "pub const OPEN_EPOCH_REQUEST_BYTES: usize = 21;",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "pub enum ServiceCommand {\n    /// Request only a coarse non-secret service status.\n    Status,\n}",
+      "pub enum ServiceCommand {\n    /// Request only a coarse non-secret service status.\n    Status,\n    Sign,\n}",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "pub enum ServiceStatus {\n    /// No production wallet operation is available.\n    Unavailable,\n}",
+      "pub enum ServiceStatus {\n    /// No production wallet operation is available.\n    Unavailable,\n    Ready,\n}",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "            frame.extend_from_slice(&0_u16.to_be_bytes());",
+      "            frame.extend_from_slice(&1_u16.to_be_bytes());",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "            require_zero_u16(bytes, BODY_RESERVED_OFFSET)?;\n            let command =",
+      "            let command =",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "            && self.epoch_nonce == request.epoch_nonce\n",
+      "",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "            && self.request_id == request.request_id\n",
+      "",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "        for index in 0..frame.len() {",
+      "        for index in 0..0 {",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "    #[test]\n    fn every_reserved_bit_is_rejected_after_checksum_recomputation",
+      "    fn every_reserved_bit_is_rejected_after_checksum_recomputation",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "if is_all_zero(&bytes) {",
+      "if false {",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource.replace(
+      "            require_exact_length(bytes, COMMAND_RESPONSE_BYTES)?;",
+      "",
+    ),
+    publicContract: keyAgentServiceWirePublicContract,
+  },
+  {
+    source: keyAgentServiceWireSource,
+    publicContract: keyAgentServiceWirePublicContract.replace(
+      "59574b415356303100010001000000004408a573",
+      "59574b415356303100010001000000004408a572",
+    ),
+  },
+  {
+    source: keyAgentServiceWireSource,
+    publicContract: keyAgentServiceWirePublicContract.replace(
+      "        wrong_epoch.ensure_correlates_with(&request_outer),",
+      "        Ok(()),",
+    ),
+  },
+];
+requireInvariant(
+  keyAgentServiceWirePolicyContract(
+    keyAgentServiceWireManifest,
+    keyAgentServiceWireRustFiles,
+  ) &&
+    keyAgentServiceWirePolicyMutationProbes.every(
+      (probe) =>
+        (probe.manifest !== keyAgentServiceWireManifest ||
+          probe.files.some(
+            (file, index) =>
+              file.source !== keyAgentServiceWireRustFiles[index]?.source,
+          )) &&
+        !keyAgentServiceWirePolicyContract(probe.manifest, probe.files),
+    ),
+  "key-agent-service-wire must remain dependency-free, build-script-free, safe-only, silent, network/platform-free, and unable to carry secret, key, signing, wallet, or transaction authority types, with effective mutation probes",
+);
+requireInvariant(
+  keyAgentServiceWireV1Contract(
+    keyAgentServiceWireSource,
+    keyAgentServiceWirePublicContract,
+  ) &&
+    keyAgentServiceWireV1MutationProbes.every(
+      (probe) =>
+        (probe.source !== keyAgentServiceWireSource ||
+          probe.publicContract !== keyAgentServiceWirePublicContract) &&
+        !keyAgentServiceWireV1Contract(probe.source, probe.publicContract),
+    ),
+  "key-agent-service-wire v1 must remain an exact fixed-magic/version/kind/length/reserved/CRC contract with nonzero epoch/request bindings, closed Status/Unavailable semantics, secret-free Debug, exact request/response correlation, exhaustive malformed-frame tests, and effective mutation probes",
 );
 
 const extensionManifest = JSON.parse(await text("extension/manifest.json"));
@@ -6603,7 +7314,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "c4e0788d64c23e27c71c525d4a84b43d8d071a404c8d35bdf5c75617a6ddd770";
+  "6fd5aa575adb03a160ddf5b74da461efae37057d4dc4221aae97255ac3dfc379";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6626,6 +7337,7 @@ const workspaceCargoManifestPaths = [
   "crates/eip712/Cargo.toml",
   "crates/key-agent/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service-wire/Cargo.toml",
   "crates/native-host/Cargo.toml",
   "crates/platform-windows/Cargo.toml",
   "crates/secret-core/Cargo.toml",
@@ -6643,7 +7355,7 @@ const workspaceCargoManifestInventory = await Promise.all(
 const approvedWorkspaceCargoManifestPins = [
   {
     path: "Cargo.toml",
-    sha256: "08850662731c50e8ad9547e29f50e0ba11fc6921b11cedd40c900b83caa8a073",
+    sha256: "f1ce805a325aa87df4bb2245926c6bea8a63a7bd7243be099fcd3d477e83a29a",
   },
   {
     path: "crates/approval-ui/Cargo.toml",
@@ -6676,6 +7388,10 @@ const approvedWorkspaceCargoManifestPins = [
   {
     path: "crates/key-agent-service/Cargo.toml",
     sha256: "9f10b43e1f7b5020c5080f2f0365baf3ce69cdea12dde1e826071bdb80692828",
+  },
+  {
+    path: "crates/key-agent-service-wire/Cargo.toml",
+    sha256: "1fb82456c08373d73b6f4c35039d1f49ae61aaf6de7917252abfc805092fc631",
   },
   {
     path: "crates/native-host/Cargo.toml",
@@ -24654,9 +25370,9 @@ requireInvariant(
         "zeroize.workspace=true",
       ].join("") &&
     rootManifestSha256 ===
-      "08850662731c50e8ad9547e29f50e0ba11fc6921b11cedd40c900b83caa8a073" &&
+      "f1ce805a325aa87df4bb2245926c6bea8a63a7bd7243be099fcd3d477e83a29a" &&
     workspaceLockSha256 ===
-      "f7ffa7c543e15e843f166794588d823c736a7715e4ec2055ef962f3b97eeeede" &&
+      "28f934033a2a03ebc3b738fe183393e671e66da75a3e138efd71aeeb329f4a97" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -31406,11 +32122,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "08ee28547a1aadf08e14a05cc7ad74e6ba7ca5434d8513e9f83e4c4205615de1",
+    "e959e57d1835949e4256b803a5166444b94779ee3f2b39dcc5a23504a7865918",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "62532edfa5177a975f3d825f93145f0fa76cb1f3e2857928122c5d4b2b653f2f",
+    "dcb58359a617d36083b94d1150060100ae132309bdaccb113bc53dd87ca4dad5",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -37199,9 +37915,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "08ee28547a1aadf08e14a05cc7ad74e6ba7ca5434d8513e9f83e4c4205615de1",
+  "e959e57d1835949e4256b803a5166444b94779ee3f2b39dcc5a23504a7865918",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "62532edfa5177a975f3d825f93145f0fa76cb1f3e2857928122c5d4b2b653f2f",
+  "dcb58359a617d36083b94d1150060100ae132309bdaccb113bc53dd87ca4dad5",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,

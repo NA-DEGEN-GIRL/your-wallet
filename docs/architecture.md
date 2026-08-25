@@ -10,14 +10,20 @@ high-value use, or real-mainnet funds.
 invariants, not a claim that the current binaries establish every boundary.
 
 ADR 0001 now selects a distinct restricted virtual-account Windows service as
-the replacement Key Agent boundary. The only implementation so far is a
-fixed-name, debug-feature-gated, inert SCM lifecycle fixture. It serializes
-STOP/SHUTDOWN/INTERROGATE handling, latches a stop received before event
-publication, and protects event-handle rundown with a locked published context.
-Direct execution, non-Windows/default builds, and feature-enabled release builds
-remain silent exit 78. The fixture owns no wallet state, IPC endpoint, token,
-helper, storage, network adapter, or signing transition. Restricted service
-identity, ncalrpc, client impersonation, `CreateProcessAsUserW`, interactive LPAC
+the replacement Key Agent boundary. The implemented no-secret surface consists
+of a fixed-name, debug-feature-gated, inert SCM lifecycle fixture plus a
+dependency-free transport-neutral version-1 wire contract. The fixture
+serializes STOP/SHUTDOWN/INTERROGATE handling, latches a stop received before
+event publication, and protects event-handle rundown with a locked published
+context. The wire admits only open-epoch and epoch/request-bound status frames,
+can return only `Unavailable`, fixes every frame to 20, 52, or 72 bytes, and
+rejects noncanonical lengths, kinds, reserved fields, sentinels, correlations,
+and CRC32C framing corruption. Windows identity, process identity, role, and
+trusted deadlines are deliberately absent as wire authority. Direct execution,
+non-Windows/default builds, and feature-enabled release builds remain silent
+exit 78. Neither component owns wallet state, an IPC endpoint, a token, helper,
+storage, network adapter, or signing transition. Restricted service identity,
+ncalrpc, client impersonation, `CreateProcessAsUserW`, interactive LPAC
 creation, post-create handle injection, R10/R11 capture, and kernel lifecycle
 evidence remain Phase 1 **STOP-SHIP** obligations.
 

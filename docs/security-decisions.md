@@ -541,10 +541,14 @@ initialization. This is not the first machine or Rust instruction, and objects
 created before the gate remain outside the proof.
 
 ADR 0001 and the accepted Windows Key Agent Service Design Brief now select
-that distinct-principal direction. The committed implementation remains only an
-inert debug SCM lifecycle fixture; service identity, authenticated local RPC,
-interactive helper creation, non-inherited bootstrap, signing composition, and
-release evidence are still unproven and **STOP-SHIP**.
+that distinct-principal direction. The committed implementation remains limited
+to an inert debug SCM lifecycle fixture and a dependency-free, bounded service
+wire contract. That contract can only open an epoch or request status, can only
+return `Unavailable`, binds status responses to a nonzero epoch nonce and
+request identifier, and never accepts identity, role, or deadline fields as
+authority. No transport consumes it yet. Service identity, authenticated local
+RPC, interactive helper creation, non-inherited bootstrap, signing composition,
+and release evidence are still unproven and **STOP-SHIP**.
 
 Preflight parses the exact held Key Agent image as AMD64 PE32+ and admits exactly
 one whole-file 11-byte `49 BA <marker-le> CC` sequence. All 11 bytes must lie in
