@@ -10,6 +10,8 @@ build = false
 default = []
 # Dormant, network-free Windows Broker composition used only by debug tests.
 broker-channel-contract-test-hook = []
+# Inert, no-secret SCM lifecycle fixture used only by debug feasibility tests.
+key-agent-service-scm-feasibility-test-hook = []
 
 [dependencies]
 approval-wire = { path = "../approval-wire" }
@@ -34,6 +36,7 @@ windows = { workspace = true, features = [
     "Win32_System_Kernel",
     "Win32_System_ProcessStatus",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_WindowsProgramming",

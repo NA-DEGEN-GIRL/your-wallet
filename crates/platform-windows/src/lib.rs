@@ -159,6 +159,10 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
+// The fixed-name SCM host is an inert, debug-only Phase 1 feasibility fixture.
+// It owns no wallet state, IPC endpoint, user token, helper, or signing path.
+// Default and release callers receive only a fail-closed unavailable result.
+mod key_agent_service;
 // Held existing-install adoption bookends the pure authenticated-snapshot
 // matcher with exact root/profile-binding revalidation. Its compiled dormant
 // binding separately matches the journal's whole-release ArtifactDigest to the
@@ -241,5 +245,8 @@ pub use broker_artifact::broker_supervisor::{
 #[cfg(windows)]
 pub use key_agent_child_bootstrap::{
     KeyAgentChildBootstrapError, serve_inherited_key_agent_storage_startup,
+};
+pub use key_agent_service::{
+    KEY_AGENT_SERVICE_NAME, KeyAgentServiceFixtureError, run_inert_key_agent_service_fixture,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

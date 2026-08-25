@@ -1889,7 +1889,11 @@ function requireStableDisplay(source, typeName, stableMessage) {
   );
 }
 
-const secretBearingCrates = ["secret-core", "key-agent"];
+const secretBearingCrates = [
+  "secret-core",
+  "key-agent",
+  "key-agent-service",
+];
 for (const crateName of secretBearingCrates) {
   const manifest = await text(`crates/${crateName}/Cargo.toml`);
   requireInvariant(
@@ -1916,6 +1920,19 @@ for (const manifestPath of publicBoundaryManifests) {
 
 const rootManifest = await trustedRegularFileText("Cargo.toml");
 const rootManifestSha256 = normalizedSourceSha256(rootManifest);
+const keyAgentServiceManifest = await text(
+  "crates/key-agent-service/Cargo.toml",
+);
+const keyAgentServiceMain = await text(
+  "crates/key-agent-service/src/main.rs",
+);
+const keyAgentServiceRustFiles = await rustProductionSources(
+  "crates/key-agent-service",
+  { withTestCode: true },
+);
+const keyAgentServicePlatformSource = await text(
+  "crates/platform-windows/src/key_agent_service.rs",
+);
 const rootReadme = await text("README.md");
 const sepoliaArchitectureDoc = await text("docs/architecture.md");
 const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
@@ -4692,6 +4709,7 @@ const noNetworkManifests = [
   "crates/approval-wire/Cargo.toml",
   "crates/secret-core/Cargo.toml",
   "crates/key-agent/Cargo.toml",
+  "crates/key-agent-service/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/secret-input-ui/Cargo.toml",
 ];
@@ -4712,6 +4730,49 @@ for (const manifestPath of noNetworkManifests) {
     );
   }
 }
+
+const compactKeyAgentServiceMain = compactRust(keyAgentServiceMain);
+const keyAgentServiceRustSource = keyAgentServiceRustFiles
+  .map((file) => file.source)
+  .join("\n");
+const keyAgentServiceNetworkSurface =
+  /\b(?:std::net|TcpStream|TcpListener|UdpSocket|SocketAddr|WinSock|Win32::Networking)\b/u;
+requireInvariant(
+  /^publish\s*=\s*false$/mu.test(keyAgentServiceManifest) &&
+    /^build\s*=\s*false$/mu.test(keyAgentServiceManifest) &&
+    /^default\s*=\s*\[\]$/mu.test(keyAgentServiceManifest) &&
+    /scm-feasibility-test-hook\s*=\s*\[\s*"platform-windows\/key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
+      keyAgentServiceManifest,
+    ) &&
+    hasDependency(keyAgentServiceManifest, "platform-windows") &&
+    !hasDependency(keyAgentServiceManifest, "key-agent") &&
+    !hasDependency(keyAgentServiceManifest, "windows") &&
+    keyAgentServiceRustFiles.every(
+      (file) => rustUnsafeKeywordCount(file.source) === 0,
+    ) &&
+    !/(?:e?println|print|dbg)!/u.test(
+      rustLexicalCode(keyAgentServiceRustSource),
+    ) &&
+    !keyAgentServiceNetworkSurface.test(
+      rustLexicalCode(keyAgentServiceRustSource),
+    ) &&
+    !keyAgentServiceNetworkSurface.test(
+      rustLexicalCode(keyAgentServicePlatformSource),
+    ) &&
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
+      keyAgentServiceMain,
+    ) &&
+    /#\[cfg\(\s*not\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
+      keyAgentServiceMain,
+    ) &&
+    compactKeyAgentServiceMain.includes(
+      "platform_windows::run_inert_key_agent_service_fixture()",
+    ) &&
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+sys\s*\{/u.test(
+      keyAgentServicePlatformSource,
+    ),
+  "the Key Agent service crate must remain non-publishable, safe-only, silent, network/key-agent-free, and gated by the exact debug SCM feature",
+);
 
 const extensionManifest = JSON.parse(await text("extension/manifest.json"));
 requireInvariant(
@@ -6542,7 +6603,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "4373f2cb7d516d90ceb8ff9c56abcbdd4b1a60eca3371e0bc407efb13d3f06fd";
+  "c4e0788d64c23e27c71c525d4a84b43d8d071a404c8d35bdf5c75617a6ddd770";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -6564,6 +6625,7 @@ const workspaceCargoManifestPaths = [
   "crates/dashboard/Cargo.toml",
   "crates/eip712/Cargo.toml",
   "crates/key-agent/Cargo.toml",
+  "crates/key-agent-service/Cargo.toml",
   "crates/native-host/Cargo.toml",
   "crates/platform-windows/Cargo.toml",
   "crates/secret-core/Cargo.toml",
@@ -6581,7 +6643,7 @@ const workspaceCargoManifestInventory = await Promise.all(
 const approvedWorkspaceCargoManifestPins = [
   {
     path: "Cargo.toml",
-    sha256: "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49",
+    sha256: "08850662731c50e8ad9547e29f50e0ba11fc6921b11cedd40c900b83caa8a073",
   },
   {
     path: "crates/approval-ui/Cargo.toml",
@@ -6612,12 +6674,16 @@ const approvedWorkspaceCargoManifestPins = [
     sha256: "2464e3b9dc86089a4d3f05cf936e3cc4988ed698215e83fb7555416bd9f62bba",
   },
   {
+    path: "crates/key-agent-service/Cargo.toml",
+    sha256: "9f10b43e1f7b5020c5080f2f0365baf3ce69cdea12dde1e826071bdb80692828",
+  },
+  {
     path: "crates/native-host/Cargo.toml",
     sha256: "5ddf3ca3c87c2b634c5a12700af2e08637612e22a3fb7afb4b9c4e4754f5d988",
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "3c2a1babb5887c1f2287a326c9927a267f17c57ea7718641737e2b338b2e991e",
+    sha256: "d14f102fc9816b3b6ee903e29a60fbf7f93b745914631e2fead30da7caca071f",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -6712,6 +6778,73 @@ const identifierUsageIsEmpty = (usage) =>
   usage.qualified.length === 0 &&
   usage.references.length === 0 &&
   Object.values(usage.tokens).every((paths) => paths.length === 0);
+const keyAgentServiceScmRuntimeApis = [
+  "StartServiceCtrlDispatcherW",
+  "RegisterServiceCtrlHandlerExW",
+  "SetServiceStatus",
+];
+const keyAgentServiceScmRuntimeCallSites = keyAgentServiceScmRuntimeApis.map(
+  (api) => ({
+    api,
+    paths: workspaceRustCompilationInputs.flatMap((file) =>
+      rustCallSites(file.source, api).map(() => file.path),
+    ),
+  }),
+);
+const forbiddenKeyAgentServiceScmApis = [
+  "OpenSCManagerA",
+  "OpenSCManagerW",
+  "OpenServiceA",
+  "OpenServiceW",
+  "CreateServiceA",
+  "CreateServiceW",
+  "ChangeServiceConfigA",
+  "ChangeServiceConfigW",
+  "ChangeServiceConfig2A",
+  "ChangeServiceConfig2W",
+  "DeleteService",
+  "SetServiceObjectSecurity",
+  "CreateProcessAsUserA",
+  "CreateProcessAsUserW",
+  "RpcServerUseProtseqA",
+  "RpcServerUseProtseqW",
+  "RpcServerUseProtseqEpA",
+  "RpcServerUseProtseqEpW",
+  "RpcServerRegisterIf",
+  "RpcServerRegisterIf2",
+  "RpcServerRegisterIf3",
+  "RpcServerListen",
+  "RpcBindingFromStringBindingA",
+  "RpcBindingFromStringBindingW",
+  "RpcStringBindingComposeA",
+  "RpcStringBindingComposeW",
+];
+const forbiddenKeyAgentServiceScmUsage = rustIdentifierUsageInventory(
+  workspaceRustCompilationInputs,
+  forbiddenKeyAgentServiceScmApis,
+);
+requireInvariant(
+  JSON.stringify(keyAgentServiceScmRuntimeCallSites) ===
+    JSON.stringify([
+      {
+        api: "StartServiceCtrlDispatcherW",
+        paths: ["crates/platform-windows/src/key_agent_service.rs"],
+      },
+      {
+        api: "RegisterServiceCtrlHandlerExW",
+        paths: ["crates/platform-windows/src/key_agent_service.rs"],
+      },
+      {
+        api: "SetServiceStatus",
+        paths: ["crates/platform-windows/src/key_agent_service.rs"],
+      },
+    ]) &&
+    identifierUsageIsEmpty(forbiddenKeyAgentServiceScmUsage) &&
+    !workspaceRustCompilationInputs.some((file) =>
+      /\bncalrpc\b/iu.test(file.source),
+    ),
+  "the inert Key Agent service fixture must keep exact runtime-only SCM callsites while install, configuration, deletion, user-process launch, and ncalrpc surfaces remain absent",
+);
 const dynamicResolverUsageProbes = {
   alias: rustIdentifierUsageInventory(
     [
@@ -23661,6 +23794,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 14 },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
+  { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
   { path: "crates/platform-windows/src/pipe.rs", sites: 4 },
@@ -23716,6 +23850,11 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
     path: "crates/platform-windows/src/key_agent_root_job.rs",
     unsafeCount: 12,
     sha256: "f2df9738d861ce624131e1aa37a9dee7d3036c49ea21c0f9eed808f88e6f5a08",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service.rs",
+    unsafeCount: 11,
+    sha256: "c4e25e56e19f4fd2ed70bc000fde473307b809fd8f511b7b8e230e51cd3ea5ff",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -24462,7 +24601,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "3c2a1babb5887c1f2287a326c9927a267f17c57ea7718641737e2b338b2e991e" &&
+    "d14f102fc9816b3b6ee903e29a60fbf7f93b745914631e2fead30da7caca071f" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -24507,6 +24646,7 @@ requireInvariant(
         '"Win32_System_Kernel",',
         '"Win32_System_ProcessStatus",',
         '"Win32_System_RemoteDesktop",',
+        '"Win32_System_Services",',
         '"Win32_System_SystemInformation",',
         '"Win32_System_SystemServices",',
         '"Win32_System_WindowsProgramming",',
@@ -24514,9 +24654,9 @@ requireInvariant(
         "zeroize.workspace=true",
       ].join("") &&
     rootManifestSha256 ===
-      "f0e60d7e80e30c69bb9b3251a4217d8c52e242a1f1f85c10add4c893c8df4e49" &&
+      "08850662731c50e8ad9547e29f50e0ba11fc6921b11cedd40c900b83caa8a073" &&
     workspaceLockSha256 ===
-      "97051fb94d4acfb1cc6e7ae05e826e36cdf9ed4e3225da9ed2b77c529ba8c69f" &&
+      "f7ffa7c543e15e843f166794588d823c736a7715e4ec2055ef962f3b97eeeede" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -31266,11 +31406,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "664124b5ce2cb2092097d105438949c10bc118d127cc8ac53dc9f910e699f9d6",
+    "08ee28547a1aadf08e14a05cc7ad74e6ba7ca5434d8513e9f83e4c4205615de1",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "b0b0f84b5ac003103030ddb76e6d5659bd5130bfe6a4adeca2a2ef9d6dc2b2aa",
+    "62532edfa5177a975f3d825f93145f0fa76cb1f3e2857928122c5d4b2b653f2f",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -34815,6 +34955,7 @@ requireInvariant(
 for (const mainPath of [
   "crates/broker/src/main.rs",
   "crates/key-agent/src/main.rs",
+  "crates/key-agent-service/src/main.rs",
   "crates/approval-ui/src/main.rs",
   "crates/secret-input-ui/src/main.rs",
 ]) {
@@ -34823,8 +34964,12 @@ for (const mainPath of [
   const namedExit =
     mainSource.includes("const PRIVATE_LAUNCH_UNAVAILABLE: i32 = 78;") &&
     mainSource.includes("std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);");
+  const serviceExit =
+    mainPath === "crates/key-agent-service/src/main.rs" &&
+    mainSource.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
+    mainSource.includes("std::process::exit(SERVICE_UNAVAILABLE);");
   requireInvariant(
-    literalExit || namedExit,
+    literalExit || namedExit || serviceExit,
     `${mainPath} must remain fail-closed with exit 78`,
   );
 }
@@ -36743,7 +36888,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 26_700),
+      document.slice(Math.max(0, anchor - 700), anchor + 27_500),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -37054,9 +37199,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "664124b5ce2cb2092097d105438949c10bc118d127cc8ac53dc9f910e699f9d6",
+  "08ee28547a1aadf08e14a05cc7ad74e6ba7ca5434d8513e9f83e4c4205615de1",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "b0b0f84b5ac003103030ddb76e6d5659bd5130bfe6a4adeca2a2ef9d6dc2b2aa",
+  "62532edfa5177a975f3d825f93145f0fa76cb1f3e2857928122c5d4b2b653f2f",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,

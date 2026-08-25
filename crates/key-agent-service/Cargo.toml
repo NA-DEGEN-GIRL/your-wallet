@@ -1,0 +1,20 @@
+[package]
+name = "key-agent-service"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = false
+
+[features]
+default = []
+scm-feasibility-test-hook = [
+    "platform-windows/key-agent-service-scm-feasibility-test-hook",
+]
+
+[dependencies]
+platform-windows = { path = "../platform-windows" }
+
+[lints]
+workspace = true

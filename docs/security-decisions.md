@@ -540,6 +540,12 @@ the reviewed semantic gate inside `serve`, after loader, DLL, TLS, and CRT
 initialization. This is not the first machine or Rust instruction, and objects
 created before the gate remain outside the proof.
 
+ADR 0001 and the accepted Windows Key Agent Service Design Brief now select
+that distinct-principal direction. The committed implementation remains only an
+inert debug SCM lifecycle fixture; service identity, authenticated local RPC,
+interactive helper creation, non-inherited bootstrap, signing composition, and
+release evidence are still unproven and **STOP-SHIP**.
+
 Preflight parses the exact held Key Agent image as AMD64 PE32+ and admits exactly
 one whole-file 11-byte `49 BA <marker-le> CC` sequence. All 11 bytes must lie in
 initialized raw, non-padding bytes of exactly one executable section. The

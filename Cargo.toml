@@ -8,6 +8,7 @@ members = [
     "crates/dashboard",
     "crates/eip712",
     "crates/key-agent",
+    "crates/key-agent-service",
     "crates/native-host",
     "crates/platform-windows",
     "crates/secret-core",

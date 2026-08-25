@@ -1339,6 +1339,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-agent-service"
+version = "0.1.0"
+dependencies = [
+ "platform-windows",
+]
+
+[[package]]
 name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

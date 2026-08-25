@@ -9,6 +9,18 @@ high-value use, or real-mainnet funds.
 **Release status: STOP-SHIP.** The diagram and trust rules below are target
 invariants, not a claim that the current binaries establish every boundary.
 
+ADR 0001 now selects a distinct restricted virtual-account Windows service as
+the replacement Key Agent boundary. The only implementation so far is a
+fixed-name, debug-feature-gated, inert SCM lifecycle fixture. It serializes
+STOP/SHUTDOWN/INTERROGATE handling, latches a stop received before event
+publication, and protects event-handle rundown with a locked published context.
+Direct execution, non-Windows/default builds, and feature-enabled release builds
+remain silent exit 78. The fixture owns no wallet state, IPC endpoint, token,
+helper, storage, network adapter, or signing transition. Restricted service
+identity, ncalrpc, client impersonation, `CreateProcessAsUserW`, interactive LPAC
+creation, post-create handle injection, R10/R11 capture, and kernel lifecycle
+evidence remain Phase 1 **STOP-SHIP** obligations.
+
 | Component | Current evidence and limitation |
 | --- | --- |
 | MV3 extension | Strict top-level HTTPS routing, exact 128-bit request IDs, bounded envelopes/state, deadline checks, freeze/navigation cancellation, replay handling, and incognito rejection have unit tests. Native response sequences must now be exact rather than merely increasing. Every native reconnect samples a distinct session ID, resets the per-connection sequence, rejects responses from an earlier session, and is bounded to 4,096 attempts per worker lifetime. Default and release operation still receives only the unavailable response; an explicit debug-only subprocess contract can return only the local Sepolia chain ID. |
