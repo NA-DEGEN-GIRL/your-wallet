@@ -1,0 +1,4 @@
+# Checked-in output of SDK 10.0.26100.0 x64 MIDL 8.01.0628.
+1b3a81945a673b9d863a1f815869d5dad0f0fac6231d31a898e9e98afddb08e7  key_agent_service_rpc.h
+b28e8929ccdc7aacb9c5347fe335d39a63f6484ddf2f81d050c5aae340269c87  key_agent_service_rpc_c.c
+9d7afcde1dae54fe578039011f7b2f114dfb22b60f4fa32a43c0f6bd974fbce3  key_agent_service_rpc_s.c

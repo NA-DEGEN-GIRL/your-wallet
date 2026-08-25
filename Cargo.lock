@@ -1346,6 +1346,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-agent-service-rpc-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "key-agent-service-wire"
 version = "0.1.0"
 

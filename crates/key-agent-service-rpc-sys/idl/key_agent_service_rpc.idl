@@ -1,0 +1,28 @@
+/*
+ * Canonical Phase-1 RPC contract for the Windows Key Agent service.
+ *
+ * The interface deliberately transports one fixed-size frame in each
+ * direction. Authentication and caller identity are properties of the
+ * ncalrpc binding and server security callback, never of this payload.
+ */
+[
+    uuid(4cb7f95a-2697-4f96-bd29-56e4b978748a),
+    version(1.0),
+    pointer_default(ref)
+]
+interface YwkasRpc
+{
+    const unsigned long YWKAS_RPC_FRAME_CAPACITY = 72;
+
+    typedef struct _YWKAS_RPC_FRAME
+    {
+        unsigned long length;
+        byte payload[YWKAS_RPC_FRAME_CAPACITY];
+    } YWKAS_RPC_FRAME;
+
+    error_status_t Exchange(
+        [in] handle_t binding,
+        [in] const YWKAS_RPC_FRAME *request,
+        [out] YWKAS_RPC_FRAME *response
+    );
+}

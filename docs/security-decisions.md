@@ -542,13 +542,17 @@ created before the gate remain outside the proof.
 
 ADR 0001 and the accepted Windows Key Agent Service Design Brief now select
 that distinct-principal direction. The committed implementation remains limited
-to an inert debug SCM lifecycle fixture and a dependency-free, bounded service
-wire contract. That contract can only open an epoch or request status, can only
-return `Unavailable`, binds status responses to a nonzero epoch nonce and
-request identifier, and never accepts identity, role, or deadline fields as
-authority. No transport consumes it yet. Service identity, authenticated local
-RPC, interactive helper creation, non-inherited bootstrap, signing composition,
-and release evidence are still unproven and **STOP-SHIP**.
+to an inert debug SCM lifecycle fixture, a dependency-free bounded service wire
+contract, and a checked-in classic-MIDL x64 sys boundary. The wire can only open
+an epoch or request status, can only return `Unavailable`, binds status responses
+to a nonzero epoch nonce and request identifier, and never accepts identity,
+role, or deadline fields as authority. The sys boundary fixes one zero-padded
+76-byte RPC frame, distinct client/server symbols, a call-lifetime server binding,
+closed manager errors, and an SEH containment shim; it does not create or
+authenticate a binding, endpoint, listener, caller, or epoch. No transport
+consumes the wire yet. Service identity, authenticated local RPC, interactive
+helper creation, non-inherited bootstrap, signing composition, and release
+evidence are still unproven and **STOP-SHIP**.
 
 Preflight parses the exact held Key Agent image as AMD64 PE32+ and admits exactly
 one whole-file 11-byte `49 BA <marker-le> CC` sequence. All 11 bytes must lie in

@@ -70,6 +70,41 @@ async function trustedRegularFileText(path) {
   }
 }
 
+async function trustedRegularFileBytes(path) {
+  const absolute = resolve(root, path);
+  const pathBefore = await lstat(absolute, { bigint: true });
+  if (
+    pathBefore.isSymbolicLink() ||
+    !pathBefore.isFile() ||
+    pathBefore.nlink !== 1n
+  ) {
+    throw new Error(
+      `trusted input must be a regular single-link file: ${path}`,
+    );
+  }
+
+  const handle = await open(absolute, "r");
+  try {
+    const openedBefore = await handle.stat({ bigint: true });
+    if (!sameRegularFileSnapshot(pathBefore, openedBefore)) {
+      throw new Error(`trusted input identity changed before read: ${path}`);
+    }
+    const bytes = await handle.readFile();
+    const openedAfter = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(absolute, { bigint: true });
+    if (
+      pathAfter.isSymbolicLink() ||
+      !sameRegularFileSnapshot(openedBefore, openedAfter) ||
+      !sameRegularFileSnapshot(openedAfter, pathAfter)
+    ) {
+      throw new Error(`trusted input changed during held-handle read: ${path}`);
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
 async function trustedDirectoryEntryInventory(path) {
   const absolute = resolve(root, path);
   const directoryBefore = await lstat(absolute, { bigint: true });
@@ -1118,6 +1153,10 @@ function normalizedSourceSha256(source) {
     .digest("hex");
 }
 
+function rawBytesSha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 function rustCompilationClosureSha256(files) {
   return normalizedSourceSha256(
     JSON.stringify(
@@ -1906,6 +1945,7 @@ const publicBoundaryManifests = [
   "crates/native-host/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/dashboard/Cargo.toml",
+  "crates/key-agent-service-rpc-sys/Cargo.toml",
   "crates/key-agent-service-wire/Cargo.toml",
 ];
 
@@ -1933,6 +1973,100 @@ const keyAgentServiceWirePublicContract = await text(
 const keyAgentServiceWireRustFiles = await rustProductionSources(
   "crates/key-agent-service-wire",
   { withTestCode: true },
+);
+const keyAgentServiceRpcSysManifest = await text(
+  "crates/key-agent-service-rpc-sys/Cargo.toml",
+);
+const keyAgentServiceRpcSysBuild = await text(
+  "crates/key-agent-service-rpc-sys/build.rs",
+);
+const keyAgentServiceRpcSysSource = await text(
+  "crates/key-agent-service-rpc-sys/src/lib.rs",
+);
+const keyAgentServiceRpcSysPublicContract = await text(
+  "crates/key-agent-service-rpc-sys/tests/public_contract.rs",
+);
+const keyAgentServiceRpcSysRustFiles = await rustProductionSources(
+  "crates/key-agent-service-rpc-sys",
+  { withTestCode: true },
+);
+const keyAgentServiceRpcSysAssetPaths = [
+  "crates/key-agent-service-rpc-sys/generated/TOOLCHAIN.md",
+  "crates/key-agent-service-rpc-sys/generated/artifacts.sha256",
+  "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc.h",
+  "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_c.c",
+  "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_s.c",
+  "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.acf",
+  "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.idl",
+  "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.c",
+  "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.h",
+  "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1",
+];
+const keyAgentServiceRpcSysAssetInventory = await Promise.all(
+  keyAgentServiceRpcSysAssetPaths.map(async (path) => {
+    const bytes = await trustedRegularFileBytes(path);
+    return { path, bytes, sha256: rawBytesSha256(bytes) };
+  }),
+);
+const keyAgentServiceRpcSysAssetSources = Object.fromEntries(
+  keyAgentServiceRpcSysAssetInventory.map(({ path, bytes }) => [
+    path,
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+  ]),
+);
+const keyAgentServiceRpcSysToolchain =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/generated/TOOLCHAIN.md"
+  ];
+const keyAgentServiceRpcSysArtifactHashes =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/generated/artifacts.sha256"
+  ];
+const keyAgentServiceRpcSysHeader =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc.h"
+  ];
+const keyAgentServiceRpcSysClientStub =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_c.c"
+  ];
+const keyAgentServiceRpcSysServerStub =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_s.c"
+  ];
+const keyAgentServiceRpcSysAcf =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.acf"
+  ];
+const keyAgentServiceRpcSysIdl =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.idl"
+  ];
+const keyAgentServiceRpcSysShim =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.c"
+  ];
+const keyAgentServiceRpcSysShimHeader =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.h"
+  ];
+const keyAgentServiceRpcSysVerifyGenerated =
+  keyAgentServiceRpcSysAssetSources[
+    "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1"
+  ];
+const keyAgentServiceRpcSysDirectoryInventories = await Promise.all(
+  [
+    "crates/key-agent-service-rpc-sys",
+    "crates/key-agent-service-rpc-sys/generated",
+    "crates/key-agent-service-rpc-sys/idl",
+    "crates/key-agent-service-rpc-sys/native",
+    "crates/key-agent-service-rpc-sys/scripts",
+    "crates/key-agent-service-rpc-sys/src",
+    "crates/key-agent-service-rpc-sys/tests",
+  ].map(async (path) => ({
+    path,
+    entries: await trustedDirectoryEntryInventory(path),
+  })),
 );
 const keyAgentServiceManifest = await text(
   "crates/key-agent-service/Cargo.toml",
@@ -4724,6 +4858,7 @@ const noNetworkManifests = [
   "crates/secret-core/Cargo.toml",
   "crates/key-agent/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service-rpc-sys/Cargo.toml",
   "crates/key-agent-service-wire/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/secret-input-ui/Cargo.toml",
@@ -5483,6 +5618,942 @@ requireInvariant(
         !keyAgentServiceWireV1Contract(probe.source, probe.publicContract),
     ),
   "key-agent-service-wire v1 must remain an exact fixed-magic/version/kind/length/reserved/CRC contract with nonzero epoch/request bindings, closed Status/Unavailable semantics, secret-free Debug, exact request/response correlation, exhaustive malformed-frame tests, and effective mutation probes",
+);
+
+const tomlTableBody = (manifest, tableName) => {
+  const escaped = tableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const header = new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, "mu").exec(manifest);
+  if (header === null) return null;
+  const tail = manifest.slice(header.index + header[0].length);
+  const nextTable = /^\s*\[/mu.exec(tail);
+  return tail.slice(0, nextTable?.index ?? tail.length);
+};
+const compactTomlTableBody = (body) =>
+  body
+    ?.replace(/^\s*#.*$/gmu, "")
+    .replace(/\s+#.*$/gmu, "")
+    .replace(/\s+/gu, "") ?? null;
+const literalOccurrenceCount = (source, marker) =>
+  source.split(marker).length - 1;
+
+const keyAgentServiceRpcSysManifestContract = (manifest) => {
+  const normalized = manifest.replace(/\r\n?/gu, "\n");
+  const dependencyTables = [
+    ...normalized.matchAll(
+      /^\s*\[(?<name>[^\]\r\n]*dependencies[^\]\r\n]*)\]\s*$/gmu,
+    ),
+  ].map((match) => match.groups.name.trim());
+  return (
+    (normalized.match(/^name\s*=\s*"key-agent-service-rpc-sys"\s*$/gmu) ?? [])
+      .length === 1 &&
+    (normalized.match(/^build\s*=\s*"build\.rs"\s*$/gmu) ?? []).length ===
+      1 &&
+    (normalized.match(/^publish\s*=\s*false\s*$/gmu) ?? []).length === 1 &&
+    JSON.stringify(dependencyTables) ===
+      JSON.stringify(["dependencies", "build-dependencies"]) &&
+    compactTomlTableBody(tomlTableBody(normalized, "dependencies")) === "" &&
+    compactTomlTableBody(tomlTableBody(normalized, "build-dependencies")) ===
+      'cc="=1.4.2"' &&
+    !/^\s*(?:dependencies|dev-dependencies|build-dependencies)\s*=/mu.test(
+      normalized,
+    ) &&
+    !/^\s*\[\[(?:bin|example|test|bench)\]\]\s*$/mu.test(normalized) &&
+    !/^\s*\[(?:lib|target\b|package\.metadata\.)/mu.test(normalized) &&
+    /^\s*\[lints\.rust\]\s*$/mu.test(normalized) &&
+    /^unsafe_code\s*=\s*"allow"\s*$/mu.test(normalized) &&
+    /^unsafe_op_in_unsafe_fn\s*=\s*"deny"\s*$/mu.test(normalized) &&
+    /^\s*\[lints\.clippy\]\s*$/mu.test(normalized) &&
+    /^undocumented_unsafe_blocks\s*=\s*"deny"\s*$/mu.test(normalized) &&
+    /^print_stdout\s*=\s*"deny"\s*$/mu.test(normalized) &&
+    /^print_stderr\s*=\s*"deny"\s*$/mu.test(normalized)
+  );
+};
+
+const keyAgentServiceRpcSysBuildContract = (source) => {
+  const rerunList = /for\s+path\s+in\s*\[(?<body>[\s\S]*?)\]\s*\{/u.exec(source)
+    ?.groups.body;
+  const rerunPaths = [
+    ...(rerunList ?? "").matchAll(/"(?<path>[^"]+)"/gu),
+  ].map((match) => match.groups.path);
+  const includePaths = [
+    ...source.matchAll(/\.include\(crate_root\.join\("(?<path>[^"]+)"\)\)/gu),
+  ].map((match) => match.groups.path);
+  const cInputs = [
+    ...source.matchAll(/\.file\(crate_root\.join\("(?<path>[^"]+)"\)\)/gu),
+  ].map((match) => match.groups.path);
+  const defines = [
+    ...source.matchAll(
+      /\.define\("(?<name>[^"]+)",\s*(?<value>None|"[^"]*")\)/gu,
+    ),
+  ].map((match) => `${match.groups.name}=${match.groups.value}`);
+  const flags = [
+    ...source.matchAll(/\.flag_if_supported\("(?<flag>[^"]+)"\)/gu),
+  ].map((match) => match.groups.flag);
+  const archives = [
+    ...source.matchAll(/\.compile\("(?<archive>[^"]+)"\)/gu),
+  ].map((match) => match.groups.archive);
+  const environmentReads = [
+    ...source.matchAll(/env::var(?:_os)?\("(?<name>[A-Z0-9_]+)"\)/gu),
+  ].map((match) => match.groups.name);
+  const methodCalls = [
+    ...source.matchAll(/\.(?<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu),
+  ].map((match) => match.groups.method);
+  const printMacros = [
+    ...source.matchAll(/\b(?<name>e?println|print|dbg)!/gu),
+  ].map((match) => match.groups.name);
+  return (
+    JSON.stringify(rerunPaths) ===
+      JSON.stringify([
+        "idl/key_agent_service_rpc.idl",
+        "idl/key_agent_service_rpc.acf",
+        "generated/key_agent_service_rpc.h",
+        "generated/key_agent_service_rpc_c.c",
+        "generated/key_agent_service_rpc_s.c",
+        "native/key_agent_service_rpc_shim.c",
+        "native/key_agent_service_rpc_shim.h",
+      ]) &&
+    literalOccurrenceCount(source, 'println!("cargo:rerun-if-changed={path}")') ===
+      1 &&
+    JSON.stringify(includePaths) ===
+      JSON.stringify(["generated", "generated", "native"]) &&
+    JSON.stringify(cInputs) ===
+      JSON.stringify([
+        "generated/key_agent_service_rpc_c.c",
+        "generated/key_agent_service_rpc_s.c",
+        "native/key_agent_service_rpc_shim.c",
+      ]) &&
+    JSON.stringify(defines) ===
+      JSON.stringify([
+        "WIN32_LEAN_AND_MEAN=None",
+        "NOMINMAX=None",
+        '_WIN32_WINNT="0x0A00"',
+        "WIN32_LEAN_AND_MEAN=None",
+        "NOMINMAX=None",
+        '_WIN32_WINNT="0x0A00"',
+      ]) &&
+    JSON.stringify(flags) ===
+      JSON.stringify([
+        "/guard:cf",
+        "/sdl",
+        "/GS",
+        "/Brepro",
+        "/W4",
+        "/WX",
+        "/guard:cf",
+        "/sdl",
+        "/GS",
+        "/Brepro",
+      ]) &&
+    JSON.stringify(archives) ===
+      JSON.stringify([
+        "your_wallet_key_agent_rpc_generated",
+        "your_wallet_key_agent_rpc_shim",
+      ]) &&
+    JSON.stringify(environmentReads) ===
+      JSON.stringify([
+        "CARGO_CFG_TARGET_OS",
+        "CARGO_CFG_TARGET_ARCH",
+        "CARGO_CFG_TARGET_ENV",
+        "CARGO_MANIFEST_DIR",
+      ]) &&
+    JSON.stringify(methodCalls) ===
+      JSON.stringify([
+        "as_deref",
+        "as_deref",
+        "into",
+        "as_deref",
+        "into",
+        "into",
+        "include",
+        "join",
+        "file",
+        "join",
+        "file",
+        "join",
+        "define",
+        "define",
+        "define",
+        "warnings",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "compile",
+        "include",
+        "join",
+        "include",
+        "join",
+        "file",
+        "join",
+        "define",
+        "define",
+        "define",
+        "warnings",
+        "warnings_into_errors",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "flag_if_supported",
+        "compile",
+      ]) &&
+    JSON.stringify(printMacros) === JSON.stringify(["println", "println"]) &&
+    literalOccurrenceCount(source, "cc::Build::new()") === 2 &&
+    source.includes('env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")') &&
+    source.includes('env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64")') &&
+    source.includes('env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")') &&
+    literalOccurrenceCount(source, 'println!("cargo:rustc-link-lib=Rpcrt4")') ===
+      1 &&
+    (source.match(/cargo:rustc-link-lib=/gu) ?? []).length === 1 &&
+    !/(?:cargo:rustc-(?:link-arg|link-search|env)|cargo:warning)/u.test(source) &&
+    !/\.(?:files|object|objects|compiler|archiver|flag|asm_flag|cargo_metadata|cpp|cuda|expand|get_compiler|try_compile|compile_intermediates|out_dir|target|host)\s*\(/u.test(
+      source,
+    ) &&
+    !/(?:std\s*::\s*process|process\s*::\s*Command|\bCommand\s*::|\benv\s*::\s*(?:set_var|remove_var|set_current_dir)\b|midlc?\.exe|verify-generated|OUT_DIR|std\s*::\s*fs|OpenOptions|File\s*::|write_all|read_dir|glob\s*::)/iu.test(
+      source,
+    )
+  );
+};
+
+const keyAgentServiceRpcSysNetworkSurface =
+  /\b(?:std\s*::\s*net|TcpStream|TcpListener|UdpSocket|SocketAddr|reqwest|hyper|ureq|curl|tonic|tungstenite|WebSocket|HttpClient)\b/u;
+const keyAgentServiceRpcSysPolicyContract = (manifest, files) => {
+  const paths = files.map((file) => file.path);
+  const nonBuildCode = files
+    .filter((file) => !file.path.endsWith("/build.rs"))
+    .map((file) => rustLexicalCode(file.source))
+    .join("\n");
+  const unsafeInventory = files
+    .map((file) => ({
+      path: file.path,
+      count: rustUnsafeKeywordCount(file.source),
+    }))
+    .filter((file) => file.count > 0);
+  return (
+    keyAgentServiceRpcSysManifestContract(manifest) &&
+    JSON.stringify(paths) ===
+      JSON.stringify([
+        "crates/key-agent-service-rpc-sys/build.rs",
+        "crates/key-agent-service-rpc-sys/src/lib.rs",
+        "crates/key-agent-service-rpc-sys/tests/public_contract.rs",
+      ]) &&
+    JSON.stringify(unsafeInventory) ===
+      JSON.stringify([
+        { path: "crates/key-agent-service-rpc-sys/src/lib.rs", count: 13 },
+        {
+          path: "crates/key-agent-service-rpc-sys/tests/public_contract.rs",
+          count: 1,
+        },
+      ]) &&
+    !/(?:e?println|print|dbg)!/u.test(nonBuildCode) &&
+    !keyAgentServiceRpcSysNetworkSurface.test(nonBuildCode) &&
+    ![...networkCrates, ...secretBearingCrates, "windows", "windows-sys", "platform-windows"]
+      .some((crateName) => hasDependency(manifest, crateName))
+  );
+};
+
+const approvedKeyAgentServiceRpcSysDirectoryInventories = [
+  {
+    path: "crates/key-agent-service-rpc-sys",
+    entries: [
+      { name: "build.rs", kind: "file" },
+      { name: "Cargo.toml", kind: "file" },
+      { name: "generated", kind: "directory" },
+      { name: "idl", kind: "directory" },
+      { name: "native", kind: "directory" },
+      { name: "scripts", kind: "directory" },
+      { name: "src", kind: "directory" },
+      { name: "tests", kind: "directory" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/generated",
+    entries: [
+      { name: "artifacts.sha256", kind: "file" },
+      { name: "key_agent_service_rpc_c.c", kind: "file" },
+      { name: "key_agent_service_rpc_s.c", kind: "file" },
+      { name: "key_agent_service_rpc.h", kind: "file" },
+      { name: "TOOLCHAIN.md", kind: "file" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/idl",
+    entries: [
+      { name: "key_agent_service_rpc.acf", kind: "file" },
+      { name: "key_agent_service_rpc.idl", kind: "file" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/native",
+    entries: [
+      { name: "key_agent_service_rpc_shim.c", kind: "file" },
+      { name: "key_agent_service_rpc_shim.h", kind: "file" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/scripts",
+    entries: [{ name: "verify-generated.ps1", kind: "file" }],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/src",
+    entries: [{ name: "lib.rs", kind: "file" }],
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/tests",
+    entries: [{ name: "public_contract.rs", kind: "file" }],
+  },
+];
+const approvedKeyAgentServiceRpcSysRawAssetPins = [
+  {
+    path: "crates/key-agent-service-rpc-sys/generated/TOOLCHAIN.md",
+    sha256: "141403dee95fcb473d75fffb0c9223a3f0591910a57ba4b0af15e5243313e1ce",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/generated/artifacts.sha256",
+    sha256: "5957ec6c58fba2c0f1ff70e8e3bef3b16961841fb2287beeb13c4f7a6142b92b",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc.h",
+    sha256: "1b3a81945a673b9d863a1f815869d5dad0f0fac6231d31a898e9e98afddb08e7",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_c.c",
+    sha256: "b28e8929ccdc7aacb9c5347fe335d39a63f6484ddf2f81d050c5aae340269c87",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_s.c",
+    sha256: "9d7afcde1dae54fe578039011f7b2f114dfb22b60f4fa32a43c0f6bd974fbce3",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.acf",
+    sha256: "6159cfe33142e89d14714efbb3801931368b5b549247283295031ae22e265e2b",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/idl/key_agent_service_rpc.idl",
+    sha256: "afebe677da4c26a3ca12a56226a9b368a169d7d3f537d62b9eacb5a3d3240074",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.c",
+    sha256: "4472682a28ccbcb2c4694313239aa21fc1e01814e55a906933d2ef846786f328",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/native/key_agent_service_rpc_shim.h",
+    sha256: "8f8f4c1be05dee5246380765bc28db52f4b22b18b851a01632a7eecb7a986000",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1",
+    sha256: "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
+  },
+];
+const keyAgentServiceRpcSysRawAssetPinsHold = (inventory) =>
+  JSON.stringify(inventory.map(({ path, sha256 }) => ({ path, sha256 }))) ===
+  JSON.stringify(approvedKeyAgentServiceRpcSysRawAssetPins);
+const keyAgentServiceRpcSysRawAssetMutationProbes =
+  keyAgentServiceRpcSysAssetInventory.map((_, mutationIndex) =>
+    keyAgentServiceRpcSysAssetInventory.map((asset, index) => {
+      if (index !== mutationIndex) return asset;
+      const mutated = Buffer.from(asset.bytes);
+      mutated[0] ^= 1;
+      return { ...asset, bytes: mutated, sha256: rawBytesSha256(mutated) };
+    }),
+  );
+
+const keyAgentServiceRpcSysPolicyMutationProbes = [
+  {
+    manifest: keyAgentServiceRpcSysManifest.replace('cc = "=1.4.2"', 'cc = "1"'),
+    files: keyAgentServiceRpcSysRustFiles,
+  },
+  {
+    manifest: keyAgentServiceRpcSysManifest.replace(
+      "[dependencies]",
+      '[dependencies]\nwindows = "0.62"',
+    ),
+    files: keyAgentServiceRpcSysRustFiles,
+  },
+  {
+    manifest: `${keyAgentServiceRpcSysManifest}\n[[bin]]\nname = "native-rpc"\npath = "native/key_agent_service_rpc_shim.c"\n`,
+    files: keyAgentServiceRpcSysRustFiles,
+  },
+  {
+    manifest: keyAgentServiceRpcSysManifest.replace(
+      'build = "build.rs"',
+      'build = "scripts/verify-generated.ps1"',
+    ),
+    files: keyAgentServiceRpcSysRustFiles,
+  },
+  {
+    manifest: keyAgentServiceRpcSysManifest,
+    files: keyAgentServiceRpcSysRustFiles.map((file) =>
+      file.path.endsWith("/src/lib.rs")
+        ? { ...file, source: `${file.source}\nfn hidden_network() { let _ = std::net::TcpStream::connect; }\n` }
+        : file,
+    ),
+  },
+];
+const keyAgentServiceRpcSysBuildMutationProbes = [
+  keyAgentServiceRpcSysBuild.replace(
+    "use std::{env, error::Error, io, path::PathBuf};",
+    "use std::{env, error::Error, io, path::PathBuf, process::Command};",
+  ),
+  keyAgentServiceRpcSysBuild.replace(
+    '.file(crate_root.join("native/key_agent_service_rpc_shim.c"))',
+    '.file(crate_root.join("native/key_agent_service_rpc_shim.c"))\n        .file(crate_root.join("native/hidden.c"))',
+  ),
+  keyAgentServiceRpcSysBuild.replace(
+    '.file(crate_root.join("native/key_agent_service_rpc_shim.c"))',
+    '.file(crate_root.join("native/key_agent_service_rpc_shim.c"))\n        .object(crate_root.join("native/hidden.obj"))',
+  ),
+  keyAgentServiceRpcSysBuild.replace(
+    "let mut generated = cc::Build::new();",
+    'let mut generated = cc::Build::new();\n    generated.compiler("unreviewed-cl.exe");',
+  ),
+  keyAgentServiceRpcSysBuild.replace(
+    '.flag_if_supported("/W4")',
+    '.flag_if_supported("/W4")\n        .flag("/unreviewed")\n        .cargo_metadata(false)',
+  ),
+  keyAgentServiceRpcSysBuild.replace(
+    'println!("cargo:rustc-link-lib=Rpcrt4");',
+    'println!("cargo:rustc-link-arg=/WHOLEARCHIVE:hidden.lib");',
+  ),
+  keyAgentServiceRpcSysBuild.replace("/Brepro", "/DYNAMICBASE"),
+  keyAgentServiceRpcSysBuild.replace(
+    "fn main() -> Result<(), Box<dyn Error>> {",
+    'fn main() -> Result<(), Box<dyn Error>> {\n    env::set_current_dir(".")?;',
+  ),
+  `${keyAgentServiceRpcSysBuild}\nconst OUT_DIR: &str = "generated";\n`,
+];
+requireInvariant(
+  keyAgentServiceRpcSysPolicyContract(
+    keyAgentServiceRpcSysManifest,
+    keyAgentServiceRpcSysRustFiles,
+  ) &&
+    keyAgentServiceRpcSysPolicyMutationProbes.every(
+      (probe) =>
+        (probe.manifest !== keyAgentServiceRpcSysManifest ||
+          probe.files.some(
+            (file, index) =>
+              file.source !== keyAgentServiceRpcSysRustFiles[index]?.source,
+          )) &&
+        !keyAgentServiceRpcSysPolicyContract(probe.manifest, probe.files),
+    ) &&
+    keyAgentServiceRpcSysBuildContract(keyAgentServiceRpcSysBuild) &&
+    keyAgentServiceRpcSysBuildMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceRpcSysBuild &&
+        !keyAgentServiceRpcSysBuildContract(probe),
+    ),
+  "key-agent-service-rpc-sys must retain its sole exact cc build dependency, reviewed unsafe-only Rust surface, no network/secret/platform dependency, no non-Rust Cargo target, and a Windows-x64-MSVC build script that compiles only the three checked-in C inputs and emits only the Rpcrt4 link",
+);
+requireInvariant(
+  JSON.stringify(keyAgentServiceRpcSysDirectoryInventories) ===
+    JSON.stringify(approvedKeyAgentServiceRpcSysDirectoryInventories) &&
+    keyAgentServiceRpcSysRawAssetPinsHold(
+      keyAgentServiceRpcSysAssetInventory,
+    ) &&
+    keyAgentServiceRpcSysRawAssetMutationProbes.every(
+      (probe) => !keyAgentServiceRpcSysRawAssetPinsHold(probe),
+    ),
+  "key-agent-service-rpc-sys must retain the exact reviewed directory inventory and raw-byte IDL, ACF, generated, toolchain, shim, and maintainer-verification assets with effective byte mutation probes",
+);
+
+const identifierOccurrenceCount = (source, identifier) => {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return (
+    source.match(
+      new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, "gu"),
+    ) ?? []
+  ).length;
+};
+const rustTestNameInventory = (source) => [
+  ...source.matchAll(
+    /#\s*\[\s*test\s*\]\s*fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
+
+const keyAgentServiceRpcSysToolchainContract = ({
+  verify,
+  toolchain,
+  artifactHashes,
+}) => {
+  const artifactEntries = [
+    ...artifactHashes.matchAll(
+      /^(?<sha256>[0-9a-f]{64})  (?<name>[A-Za-z0-9_.-]+)\r?$/gmu,
+    ),
+  ].map((match) => ({
+    name: match.groups.name,
+    sha256: match.groups.sha256,
+  }));
+  const canonicalSwitches = [
+    "'/nologo'",
+    "'/env', 'x64'",
+    "'/Oicf'",
+    "'/robust'",
+    "'/protocol', 'dce'",
+    "'/char', 'signed'",
+    "'/W4'",
+    "'/client', 'stub'",
+    "'/server', 'stub'",
+    "'/prefix', 'client', $clientPrefix",
+    "'/prefix', 'server', $serverPrefix",
+  ];
+  return (
+    JSON.stringify(artifactEntries) ===
+      JSON.stringify([
+        {
+          name: "key_agent_service_rpc.h",
+          sha256:
+            "1b3a81945a673b9d863a1f815869d5dad0f0fac6231d31a898e9e98afddb08e7",
+        },
+        {
+          name: "key_agent_service_rpc_c.c",
+          sha256:
+            "b28e8929ccdc7aacb9c5347fe335d39a63f6484ddf2f81d050c5aae340269c87",
+        },
+        {
+          name: "key_agent_service_rpc_s.c",
+          sha256:
+            "9d7afcde1dae54fe578039011f7b2f114dfb22b60f4fa32a43c0f6bd974fbce3",
+        },
+      ]) &&
+    verify.includes("$sdkVersion = '10.0.26100.0'") &&
+    verify.includes("$midlCompilerVersion = '8.01.0628'") &&
+    verify.includes("$vcToolsVersion = '14.44.35207'") &&
+    verify.includes(
+      "$expectedMidlHash = '57ff0546270ea51e61f87a121f1cc1ea09d100c7ca6e0172a8b3e0b988ab778f'",
+    ) &&
+    verify.includes(
+      "$expectedMidlcHash = 'b27b8ef9758a7d4b39c622b9fa78ee2f7f8c2601996f1daccbff48c810484915'",
+    ) &&
+    verify.includes(
+      "$expectedClHash = 'f444d471f7926f50928945f16a53081adb276f599db1dfc3aa2cf4bcf20ece17'",
+    ) &&
+    verify.includes(
+      "$expectedIdlHash = 'afebe677da4c26a3ca12a56226a9b368a169d7d3f537d62b9eacb5a3d3240074'",
+    ) &&
+    verify.includes(
+      "$expectedAcfHash = '6159cfe33142e89d14714efbb3801931368b5b549247283295031ae22e265e2b'",
+    ) &&
+    verify.includes("$clientPrefix = 'YwkasRpcClient_'") &&
+    verify.includes("$serverPrefix = 'YwkasRpcServer_'") &&
+    canonicalSwitches.every((marker) => verify.includes(marker)) &&
+    literalOccurrenceCount(verify, "& $midl @arguments") === 1 &&
+    literalOccurrenceCount(verify, "Invoke-PinnedMidl $runA") === 1 &&
+    literalOccurrenceCount(verify, "Invoke-PinnedMidl $runB") === 1 &&
+    verify.includes(
+      'Assert-ByteEqual (Join-Path $runA $name) (Join-Path $runB $name) "two-run $name"',
+    ) &&
+    verify.includes(
+      'Assert-ByteEqual (Join-Path $checkedGenerated $name) (Join-Path $runA $name) "checked-in $name"',
+    ) &&
+    verify.includes("[IO.Path]::GetTempPath()") &&
+    verify.includes("$tempRoot.StartsWith($tempPrefix") &&
+    verify.includes("(Split-Path -Leaf $tempRoot).StartsWith('ywkas-rpc-midl-'") &&
+    verify.includes("Remove-Item -LiteralPath $tempRoot -Recurse -Force") &&
+    !/\b(?:Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|WriteAllBytes|WriteAllText)\b/iu.test(
+      verify,
+    ) &&
+    !/['"]\/notimestamp['"]/iu.test(verify) &&
+    toolchain.includes("Windows SDK `10.0.26100.0`, x64 tools") &&
+    toolchain.includes("MIDL compiler banner: `8.01.0628`") &&
+    toolchain.includes("MSVC toolset `14.44.35207`, `cl.exe` `19.44.35220.0`") &&
+    toolchain.includes(
+      "/nologo /env x64 /Oicf /robust /protocol dce /char signed /W4",
+    ) &&
+    toolchain.includes(
+      "/prefix client YwkasRpcClient_ /prefix server YwkasRpcServer_",
+    ) &&
+    toolchain.includes("Tue Jan 19 12:14:07 2038") &&
+    toolchain.includes("two independent temporary directories") &&
+    toolchain.includes("byte-identical to each other and to these checked-in files")
+  );
+};
+
+const keyAgentServiceRpcSysForbiddenRuntimeApis = [
+  "RpcServerUseProtseqA",
+  "RpcServerUseProtseqW",
+  "RpcServerUseProtseqEpA",
+  "RpcServerUseProtseqEpW",
+  "RpcServerRegisterIf",
+  "RpcServerRegisterIf2",
+  "RpcServerRegisterIf3",
+  "RpcServerRegisterIfEx",
+  "RpcServerListen",
+  "RpcServerUseProtseqIfA",
+  "RpcServerUseProtseqIfW",
+  "RpcServerUseProtseqIfExA",
+  "RpcServerUseProtseqIfExW",
+  "RpcServerUseAllProtseqs",
+  "RpcServerUseAllProtseqsEx",
+  "RpcServerUseAllProtseqsIf",
+  "RpcServerUseAllProtseqsIfEx",
+  "RpcMgmtStopServerListening",
+  "RpcServerUnregisterIf",
+  "RpcServerUnregisterIfEx",
+  "RpcBindingFromStringBindingA",
+  "RpcBindingFromStringBindingW",
+  "RpcStringBindingComposeA",
+  "RpcStringBindingComposeW",
+  "RpcBindingFree",
+  "RpcBindingCreateA",
+  "RpcBindingCreateW",
+  "RpcStringFreeA",
+  "RpcStringFreeW",
+  "RpcBindingSetAuthInfoA",
+  "RpcBindingSetAuthInfoW",
+  "RpcBindingSetAuthInfoExA",
+  "RpcBindingSetAuthInfoExW",
+  "RpcServerRegisterAuthInfoA",
+  "RpcServerRegisterAuthInfoW",
+  "RpcBindingInqAuthClientA",
+  "RpcBindingInqAuthClientW",
+  "RpcBindingInqAuthClientExA",
+  "RpcBindingInqAuthClientExW",
+  "RpcServerInqCallAttributesA",
+  "RpcServerInqCallAttributesW",
+  "RpcImpersonateClient",
+  "RpcRevertToSelf",
+  "RpcRevertToSelfEx",
+  "RpcEpRegisterA",
+  "RpcEpRegisterW",
+  "RpcEpRegisterNoReplaceA",
+  "RpcEpRegisterNoReplaceW",
+  "RpcEpResolveBinding",
+  "RpcEpUnregister",
+];
+const keyAgentServiceRpcSysForbiddenRuntimeApiPattern =
+  /\b(?:RpcServer(?:UseProtseq|UseAllProtseqs|RegisterIf|UnregisterIf|Listen|InqBindings|RegisterAuthInfo|InqCallAttributes)\w*|RpcBinding(?:Create|FromStringBinding|ToStringBinding|Free|SetAuthInfo|InqAuthClient|SetOption|InqOption)\w*|RpcStringBindingCompose\w*|RpcStringFree\w*|RpcEp(?:Register|Unregister|ResolveBinding)\w*|RpcMgmtStopServerListening|RpcImpersonateClient|RpcRevertToSelf\w*)\b/u;
+
+const keyAgentServiceRpcSysSemanticContract = (contract) => {
+  const {
+    source,
+    publicContract,
+    idl,
+    acf,
+    header,
+    client,
+    server,
+    shim,
+    shimHeader,
+    verify,
+    toolchain,
+    artifactHashes,
+  } = contract;
+  let managerErrorBlock;
+  let callBindingBlock;
+  try {
+    managerErrorBlock = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+ManagerError\s*\{/u,
+    );
+    callBindingBlock = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+struct\s+CallBinding\s*<'call>\s*\{/u,
+    );
+  } catch {
+    return false;
+  }
+  const managerErrorVariants = [
+    ...rustLexicalCode(managerErrorBlock).matchAll(
+      /^\s*(?<name>[A-Z][A-Za-z0-9_]*)\s*,\s*$/gmu,
+    ),
+  ].map((match) => match.groups.name);
+  const codeAssets = [header, client, server, shim, shimHeader, source];
+  const bareIfspec = "YwkasRpc_v1_0_c_ifspec";
+  const allGenerated = [header, client, server];
+  const unitTestNames = [
+    "frame_layout_is_exact",
+    "bounded_constructor_zero_pads",
+    "handler_cannot_mutate_the_request",
+    "handler_failure_and_panic_are_fail_closed",
+    "manager_errors_map_to_only_the_five_approved_statuses",
+    "nonzero_unused_tail_is_noncanonical",
+    "server_handler_install_is_process_lifetime_one_shot",
+    "debug_never_displays_payload_bytes",
+    "non_windows_surface_is_inert",
+  ];
+  const publicTestNames = [
+    "public_frame_contract_is_fixed_and_bounded",
+    "non_windows_exchange_is_unavailable_without_mutation",
+    "checked_in_client_and_server_ifspecs_link",
+  ];
+  const handlerSetIndex = source.indexOf("HANDLER.set(handler)");
+  const nativeInstallIndex = source.indexOf(
+    "ffi::ywkas_rpc_install_server_handler(dispatch_trampoline)",
+  );
+  return (
+    /uuid\(4cb7f95a-2697-4f96-bd29-56e4b978748a\)/u.test(idl) &&
+    /version\(1\.0\)/u.test(idl) &&
+    /const\s+unsigned\s+long\s+YWKAS_RPC_FRAME_CAPACITY\s*=\s*72\s*;/u.test(
+      idl,
+    ) &&
+    /unsigned\s+long\s+length\s*;\s*byte\s+payload\[YWKAS_RPC_FRAME_CAPACITY\]\s*;/u.test(
+      idl,
+    ) &&
+    /error_status_t\s+Exchange\s*\(\s*\[in\]\s*handle_t\s+binding,\s*\[in\]\s*const\s+YWKAS_RPC_FRAME\s*\*request,\s*\[out\]\s*YWKAS_RPC_FRAME\s*\*response/u.test(
+      idl,
+    ) &&
+    /\[\s*explicit_handle\s*\]/u.test(acf) &&
+    /\[comm_status,\s*fault_status\]\s*Exchange\(\)/u.test(acf) &&
+    allGenerated.every(
+      (generated) =>
+        generated.includes("MIDL compiler version 8.01.0628") &&
+        generated.includes("at Tue Jan 19 12:14:07 2038") &&
+        generated.includes("Oicf, W4, Zp8, env=Win64") &&
+        generated.includes("target_arch=AMD64 8.01.0628"),
+    ) &&
+    header.includes("#define\tYWKAS_RPC_FRAME_CAPACITY\t( 72 )") &&
+    header.includes("unsigned long length;") &&
+    header.includes("byte payload[ 72 ];") &&
+    header.includes("error_status_t YwkasRpcClient_Exchange(") &&
+    header.includes("error_status_t YwkasRpcServer_Exchange(") &&
+    client.includes(
+      "{{0x4cb7f95a,0x2697,0x4f96,{0xbd,0x29,0x56,0xe4,0xb9,0x78,0x74,0x8a}},{1,0}}",
+    ) &&
+    server.includes(
+      "{{0x4cb7f95a,0x2697,0x4f96,{0xbd,0x29,0x56,0xe4,0xb9,0x78,0x74,0x8a}},{1,0}}",
+    ) &&
+    client.includes(
+      "RPC_IF_HANDLE YwkasRpcClient_YwkasRpc_v1_0_c_ifspec =",
+    ) &&
+    server.includes(
+      "RPC_IF_HANDLE YwkasRpcServer_YwkasRpc_v1_0_s_ifspec =",
+    ) &&
+    client.includes("_RetVal = NdrClientCall2(") &&
+    server.includes("NdrServerCall2") &&
+    server.includes("(SERVER_ROUTINE)YwkasRpcServer_Exchange") &&
+    /extern\s+RPC_IF_HANDLE\s+YwkasRpc_v1_0_c_ifspec\s*;/u.test(header) &&
+    identifierOccurrenceCount(header, bareIfspec) === 1 &&
+    [client, server, shim, shimHeader, source].every(
+      (code) => identifierOccurrenceCount(code, bareIfspec) === 0,
+    ) &&
+    shim.includes("return YwkasRpcClient_YwkasRpc_v1_0_c_ifspec;") &&
+    shim.includes("return YwkasRpcServer_YwkasRpc_v1_0_s_ifspec;") &&
+    !/error_status_t\s+Exchange\s*\(/u.test(
+      [header, client, server, shim, shimHeader].join("\n"),
+    ) &&
+    source.includes("pub const RPC_FRAME_CAPACITY: usize = 72;") &&
+    source.includes("pub const RPC_FRAME_SIZE: usize = 76;") &&
+    source.includes('pub const LOCAL_RPC_ENDPOINT: &str = "YourWallet.KeyAgentService.v1";') &&
+    source.includes("#[repr(C)]\n#[derive(Clone, Copy, Eq, PartialEq)]\npub struct RpcFrame") &&
+    source.includes("length: u32,\n    payload: [u8; RPC_FRAME_CAPACITY]") &&
+    source.includes(
+      "length <= RPC_FRAME_CAPACITY && self.payload[length..].iter().all(|byte| *byte == 0)",
+    ) &&
+    source.includes('.field("payload", &"[REDACTED]")') &&
+    shim.includes("(sizeof(YWKAS_RPC_FRAME) == 76U) ? 1 : -1") &&
+    shim.includes("(FIELD_OFFSET(YWKAS_RPC_FRAME, payload) == 4U) ? 1 : -1") &&
+    shim.includes(
+      "for (index = frame->length; index < YWKAS_RPC_FRAME_CAPACITY; ++index)",
+    ) &&
+    shim.includes("if (frame->payload[index] != 0U)") &&
+    shim.includes("ywkas_zero_frame(response);") &&
+    publicContract.includes("assert_eq!(core::mem::size_of::<RpcFrame>(), 76);") &&
+    source.includes("pub struct CallBinding<'call>") &&
+    callBindingBlock.includes("PhantomData<&'call mut c_void>") &&
+    !/(?:derive\([^)]*(?:Clone|Copy)|impl\s+(?:Clone|Copy)\s+for)\s*CallBinding/u.test(
+      source,
+    ) &&
+    source.includes(
+      "for<'call> fn(CallBinding<'call>, &'call RpcFrame) -> Result<RpcFrame, ManagerError>",
+    ) &&
+    shimHeader.includes("handle_t call_binding,") &&
+    shim.includes("status = handler(binding, request, &candidate);") &&
+    JSON.stringify(managerErrorVariants) ===
+      JSON.stringify([
+        "AccessDenied",
+        "InvalidArgument",
+        "ServerTooBusy",
+        "ServerUnavailable",
+        "CallFailed",
+      ]) &&
+    source.includes("Self::AccessDenied => 5") &&
+    source.includes("Self::InvalidArgument => RPC_S_INVALID_ARG") &&
+    source.includes("Self::ServerTooBusy => 1_723") &&
+    source.includes("Self::ServerUnavailable => RPC_S_SERVER_UNAVAILABLE") &&
+    source.includes("Self::CallFailed => 1_726") &&
+    source.includes("static HANDLER: OnceLock<ExchangeHandler> = OnceLock::new();") &&
+    handlerSetIndex !== -1 &&
+    nativeInstallIndex > handlerSetIndex &&
+    source.includes("return Err(InstallError::AlreadyInstalled);") &&
+    !/pub\s+fn\s+(?:uninstall|remove|reset)_server_handler/u.test(source) &&
+    shim.includes("YWKAS_HANDLER_EMPTY = 0") &&
+    shim.includes("YWKAS_HANDLER_INSTALLING = 1") &&
+    shim.includes("YWKAS_HANDLER_READY = 2") &&
+    shim.includes(
+      "InterlockedCompareExchange(\n            &ywkas_handler_state,\n            YWKAS_HANDLER_INSTALLING,\n            YWKAS_HANDLER_EMPTY) != YWKAS_HANDLER_EMPTY",
+    ) &&
+    shim.includes("(void)InterlockedExchange(&ywkas_handler_state, YWKAS_HANDLER_READY);") &&
+    literalOccurrenceCount(shim, "RpcExceptionFilter(code)") === 2 &&
+    literalOccurrenceCount(shim, "RaiseFailFastException(NULL, NULL, 0)") === 2 &&
+    identifierOccurrenceCount(shim, "RpcTryExcept") === 1 &&
+    identifierOccurrenceCount(shim, "RpcExcept") === 1 &&
+    identifierOccurrenceCount(shim, "RpcEndExcept") === 1 &&
+    identifierOccurrenceCount(shim, "RpcExceptionCode") === 1 &&
+    literalOccurrenceCount(shim, "__try") === 1 &&
+    literalOccurrenceCount(shim, "__except") === 1 &&
+    keyAgentServiceRpcSysForbiddenRuntimeApis.every((api) =>
+      codeAssets.every((code) => identifierOccurrenceCount(code, api) === 0),
+    ) &&
+    codeAssets.every(
+      (code) => !keyAgentServiceRpcSysForbiddenRuntimeApiPattern.test(code),
+    ) &&
+    JSON.stringify(rustTestNameInventory(source)) === JSON.stringify(unitTestNames) &&
+    JSON.stringify(rustTestNameInventory(publicContract)) ===
+      JSON.stringify(publicTestNames) &&
+    source.includes("manager_errors_map_to_only_the_five_approved_statuses") &&
+    source.includes("(ManagerError::AccessDenied, 5)") &&
+    source.includes("(ManagerError::InvalidArgument, 87)") &&
+    source.includes("(ManagerError::ServerTooBusy, 1_723)") &&
+    source.includes("(ManagerError::ServerUnavailable, 1_722)") &&
+    source.includes("(ManagerError::CallFailed, 1_726)") &&
+    source.includes("nonzero_unused_tail_is_noncanonical") &&
+    source.includes("server_handler_install_is_process_lifetime_one_shot") &&
+    source.includes("Err(InstallError::AlreadyInstalled)") &&
+    publicContract.includes("checked_in_client_and_server_ifspecs_link") &&
+    publicContract.includes("client_interface_spec().is_some()") &&
+    publicContract.includes("server_interface_spec().is_some()") &&
+    keyAgentServiceRpcSysToolchainContract({
+      verify,
+      toolchain,
+      artifactHashes,
+    })
+  );
+};
+
+const keyAgentServiceRpcSysSemanticInputs = Object.freeze({
+  source: keyAgentServiceRpcSysSource,
+  publicContract: keyAgentServiceRpcSysPublicContract,
+  idl: keyAgentServiceRpcSysIdl,
+  acf: keyAgentServiceRpcSysAcf,
+  header: keyAgentServiceRpcSysHeader,
+  client: keyAgentServiceRpcSysClientStub,
+  server: keyAgentServiceRpcSysServerStub,
+  shim: keyAgentServiceRpcSysShim,
+  shimHeader: keyAgentServiceRpcSysShimHeader,
+  verify: keyAgentServiceRpcSysVerifyGenerated,
+  toolchain: keyAgentServiceRpcSysToolchain,
+  artifactHashes: keyAgentServiceRpcSysArtifactHashes,
+});
+const keyAgentServiceRpcSysSemanticMutationProbes = [
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    idl: keyAgentServiceRpcSysIdl.replace("4cb7f95a", "4cb7f95b"),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    idl: keyAgentServiceRpcSysIdl.replace("version(1.0)", "version(1.1)"),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    header: keyAgentServiceRpcSysHeader.replace(
+      "YWKAS_RPC_FRAME_CAPACITY\t( 72 )",
+      "YWKAS_RPC_FRAME_CAPACITY\t( 73 )",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: keyAgentServiceRpcSysShim.replace(
+      "return YwkasRpcClient_YwkasRpc_v1_0_c_ifspec;",
+      "return YwkasRpc_v1_0_c_ifspec;",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    header: keyAgentServiceRpcSysHeader.replace(
+      "extern RPC_IF_HANDLE YwkasRpc_v1_0_c_ifspec;",
+      "",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: keyAgentServiceRpcSysShim.replace(
+      "RpcExceptionFilter(code)",
+      "EXCEPTION_EXECUTE_HANDLER",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: keyAgentServiceRpcSysShim.replace(
+      "for (index = frame->length; index < YWKAS_RPC_FRAME_CAPACITY; ++index)",
+      "for (index = 0; index < frame->length; ++index)",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: keyAgentServiceRpcSysShim.replace(
+      "status = handler(binding, request, &candidate);",
+      "status = handler(NULL, request, &candidate);",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: `${keyAgentServiceRpcSysShim}\nvoid hidden_register(void) { RpcServerRegisterIfEx(0, 0, 0, 0, 0, 0, 0); }\n`,
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: `${keyAgentServiceRpcSysShim}\nvoid hidden_bind(void) { RpcBindingCreateW(0, 0, 0, 0); RpcEpRegisterW(0, 0, 0, 0); }\n`,
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: `${keyAgentServiceRpcSysShim}\nvoid hidden_endpoint_resolution(void) { RpcEpResolveBinding(0, 0); }\n`,
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    source: keyAgentServiceRpcSysSource.replace(
+      "Self::ServerTooBusy => 1_723",
+      "Self::ServerTooBusy => 1_724",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    shim: keyAgentServiceRpcSysShim.replace(
+      "YWKAS_HANDLER_INSTALLING,\n            YWKAS_HANDLER_EMPTY) != YWKAS_HANDLER_EMPTY",
+      "YWKAS_HANDLER_INSTALLING,\n            YWKAS_HANDLER_READY) != YWKAS_HANDLER_EMPTY",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    source: keyAgentServiceRpcSysSource.replace(
+      "server_handler_install_is_process_lifetime_one_shot",
+      "server_handler_install_can_retry",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    publicContract: keyAgentServiceRpcSysPublicContract.replace(
+      "checked_in_client_and_server_ifspecs_link",
+      "generated_symbols_are_documented",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcSysSemanticInputs,
+    verify: keyAgentServiceRpcSysVerifyGenerated.replace(
+      "Invoke-PinnedMidl $runB",
+      "Invoke-PinnedMidl $runA",
+    ),
+  },
+];
+requireInvariant(
+  keyAgentServiceRpcSysToolchainContract({
+    verify: keyAgentServiceRpcSysVerifyGenerated,
+    toolchain: keyAgentServiceRpcSysToolchain,
+    artifactHashes: keyAgentServiceRpcSysArtifactHashes,
+  }),
+  "key-agent-service-rpc-sys checked-in artifact hash manifest and pinned two-run MIDL verification contract changed",
+);
+requireInvariant(
+  keyAgentServiceRpcSysSemanticContract(keyAgentServiceRpcSysSemanticInputs),
+  "key-agent-service-rpc-sys must retain the fixed UUID/version/frame ABI, explicit binding, prefixed link symbols, header-only bare-ifspec wart, SEH containment, canonical tail-zero frames, five closed manager errors, process-lifetime one-shot install, link-smoke tests, zero runtime RPC setup APIs, and deterministic two-run checked-in MIDL verification",
+);
+requireInvariant(
+  keyAgentServiceRpcSysSemanticMutationProbes.every(
+    (probe) =>
+      Object.keys(keyAgentServiceRpcSysSemanticInputs).some(
+        (key) => probe[key] !== keyAgentServiceRpcSysSemanticInputs[key],
+      ) && !keyAgentServiceRpcSysSemanticContract(probe),
+  ),
+  "key-agent-service-rpc-sys semantic UUID/version/frame/tail-zero/call-binding/SEH/prefix/wart/error/one-shot/install/link-smoke/toolchain mutation probes must all be effective",
 );
 
 const extensionManifest = JSON.parse(await text("extension/manifest.json"));
@@ -7314,7 +8385,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "6fd5aa575adb03a160ddf5b74da461efae37057d4dc4221aae97255ac3dfc379";
+  "5427e9d1e8b6d32f01b4ec5ded009be3ee1f10c34680a82040738653ab4ddd14";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -7337,6 +8408,7 @@ const workspaceCargoManifestPaths = [
   "crates/eip712/Cargo.toml",
   "crates/key-agent/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service-rpc-sys/Cargo.toml",
   "crates/key-agent-service-wire/Cargo.toml",
   "crates/native-host/Cargo.toml",
   "crates/platform-windows/Cargo.toml",
@@ -7355,7 +8427,7 @@ const workspaceCargoManifestInventory = await Promise.all(
 const approvedWorkspaceCargoManifestPins = [
   {
     path: "Cargo.toml",
-    sha256: "f1ce805a325aa87df4bb2245926c6bea8a63a7bd7243be099fcd3d477e83a29a",
+    sha256: "1290279b9088b26ff9e38387fba9ed8cc95bf0aec6b41210918c5c1cbb2d37d9",
   },
   {
     path: "crates/approval-ui/Cargo.toml",
@@ -7388,6 +8460,10 @@ const approvedWorkspaceCargoManifestPins = [
   {
     path: "crates/key-agent-service/Cargo.toml",
     sha256: "9f10b43e1f7b5020c5080f2f0365baf3ce69cdea12dde1e826071bdb80692828",
+  },
+  {
+    path: "crates/key-agent-service-rpc-sys/Cargo.toml",
+    sha256: "96890f310467948c0fb7e9dab5bd84bbdd3964e256451e2cc55ac10152121a1a",
   },
   {
     path: "crates/key-agent-service-wire/Cargo.toml",
@@ -7428,8 +8504,8 @@ const cargoManifestPinsHold = (inventory) =>
 const cargoNonRustTargetMutationProbe = workspaceCargoManifestInventory.map(
   ({ path, source }) => {
     const mutated =
-      path === "crates/native-host/Cargo.toml"
-        ? `${source.replace('unsafe_code = "deny"', 'unsafe_code = "allow"')}\n[[bin]]\nname = "hidden-handle"\npath = "src/hidden.inc"\n`
+      path === "crates/key-agent-service-rpc-sys/Cargo.toml"
+        ? `${source}\n[[bin]]\nname = "hidden-native-rpc"\npath = "native/key_agent_service_rpc_shim.c"\n`
         : source;
     return { path, sha256: normalizedSourceSha256(mutated) };
   },
@@ -7652,6 +8728,11 @@ const approvedWorkspaceForeignBlocks = [
       'unsafe extern "C" { fn _setmode(file_descriptor: i32, mode: i32) -> i32; }',
   },
   {
+    path: "crates/key-agent-service-rpc-sys/src/lib.rs",
+    block:
+      'unsafe extern "C" { pub(super) fn ywkas_rpc_client_ifspec() -> *mut c_void; pub(super) fn ywkas_rpc_server_ifspec() -> *mut c_void; pub(super) fn ywkas_rpc_client_exchange( binding: *mut c_void, request: *const RpcFrame, response: *mut RpcFrame, ) -> u32; pub(super) fn ywkas_rpc_install_server_handler( handler: unsafe extern "system" fn( *mut c_void, *const RpcFrame, *mut RpcFrame, ) -> u32, ) -> u32; }',
+  },
+  {
     path: "crates/native-host/src/lib.rs",
     block: 'unsafe extern "C" { fn _setmode(fd: i32, mode: i32) -> i32; }',
   },
@@ -7808,6 +8889,128 @@ const platformWindowsCrateRootInventory = await trustedDirectoryEntryInventory(
 const workspaceManifest = rootManifest;
 const workspaceLock = await trustedRegularFileText("Cargo.lock");
 const workspaceLockSha256 = normalizedSourceSha256(workspaceLock);
+const approvedKeyAgentServiceRpcSysProviderClosure = [
+  {
+    name: "cc",
+    version: "1.4.2",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277e",
+    dependencies: ["find-msvc-tools", "jobserver", "libc", "shlex"],
+  },
+  {
+    name: "cfg-if",
+    version: "1.0.4",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801",
+    dependencies: [],
+  },
+  {
+    name: "find-msvc-tools",
+    version: "0.1.10",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de",
+    dependencies: [],
+  },
+  {
+    name: "getrandom",
+    version: "0.4.3",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
+    dependencies: ["cfg-if", "libc", "r-efi 6.0.0"],
+  },
+  {
+    name: "jobserver",
+    version: "0.1.35",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3",
+    dependencies: ["getrandom 0.4.3", "libc"],
+  },
+  {
+    name: "libc",
+    version: "0.2.189",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+    dependencies: [],
+  },
+  {
+    name: "r-efi",
+    version: "6.0.0",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+    dependencies: [],
+  },
+  {
+    name: "shlex",
+    version: "2.0.1",
+    source: "registry+https://github.com/rust-lang/crates.io-index",
+    checksum:
+      "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+    dependencies: [],
+  },
+];
+const keyAgentServiceRpcSysLockContract = (lock) => {
+  const records = cargoLockPackageRecords(lock);
+  const localRecords = records.filter(
+    (record) => record.name === "key-agent-service-rpc-sys",
+  );
+  const providerKeys = new Set(
+    approvedKeyAgentServiceRpcSysProviderClosure.map(
+      (record) => `${record.name}@${record.version}`,
+    ),
+  );
+  const providerRecords = records
+    .filter((record) => providerKeys.has(`${record.name}@${record.version}`))
+    .sort((left, right) =>
+      `${left.name}@${left.version}`.localeCompare(
+        `${right.name}@${right.version}`,
+        "en",
+      ),
+    );
+  return (
+    JSON.stringify(localRecords) ===
+      JSON.stringify([
+        {
+          name: "key-agent-service-rpc-sys",
+          version: "0.1.0",
+          source: null,
+          checksum: null,
+          dependencies: ["cc"],
+        },
+      ]) &&
+    records.filter((record) => record.name === "cc").length === 1 &&
+    JSON.stringify(providerRecords) ===
+      JSON.stringify(approvedKeyAgentServiceRpcSysProviderClosure)
+  );
+};
+const keyAgentServiceRpcSysLockMutationProbes = [
+  workspaceLock.replace(
+    "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277e",
+    "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277f",
+  ),
+  workspaceLock.replace(
+    'name = "key-agent-service-rpc-sys"\nversion = "0.1.0"\ndependencies = [\n "cc",\n]',
+    'name = "key-agent-service-rpc-sys"\nversion = "0.1.0"\ndependencies = [\n "cc",\n "windows-sys",\n]',
+  ),
+  workspaceLock.replace(
+    ' "shlex",\n]\n\n[[package]]\nname = "cfg-if"',
+    ' "shlex",\n "serde",\n]\n\n[[package]]\nname = "cfg-if"',
+  ),
+];
+requireInvariant(
+  keyAgentServiceRpcSysLockContract(workspaceLock) &&
+    keyAgentServiceRpcSysLockMutationProbes.every(
+      (probe) =>
+        probe !== workspaceLock && !keyAgentServiceRpcSysLockContract(probe),
+    ),
+  "key-agent-service-rpc-sys must remain locally locked to the exact cc 1.4.2 provider closure, with effective checksum, dependency, and local-package mutation probes",
+);
 const repositoryCargoOverrideInventory = await repositoryCargoOverridePaths();
 const platformWindowsLibCode = platformWindowsLib.replace(/^\s*\/\/.*$/gmu, "");
 const inheritableHandleLaunchSource = await text(
@@ -15360,10 +16563,14 @@ requireInvariant(
   "the cfg(test) context bypass must retain policy coverage and at least one kernel proof must still traverse the actual coordinated Key Agent creation path",
 );
 requireInvariant(
-  workspaceBuildScriptPaths.length === 0 &&
+  JSON.stringify(workspaceBuildScriptPaths) ===
+    JSON.stringify(["crates/key-agent-service-rpc-sys/build.rs"]) &&
     cargoManifestPinsHold(workspaceCargoManifestInventory) &&
-    !cargoManifestPinsHold(cargoNonRustTargetMutationProbe),
-  "workspace Cargo manifests must be exact-pinned and may not add build scripts or non-Rust explicit target roots",
+    !cargoManifestPinsHold(cargoNonRustTargetMutationProbe) &&
+    (rootManifest.match(
+      /^\s*"crates\/key-agent-service-rpc-sys",\s*$/gmu,
+    ) ?? []).length === 1,
+  "workspace Cargo manifests must be exact-pinned, retain only the reviewed rpc-sys build script, reject non-Rust explicit target roots, and include rpc-sys exactly once",
 );
 requireInvariant(
   isWorkspaceBuildOutputPath(
@@ -15434,10 +16641,11 @@ requireInvariant(
 );
 requireInvariant(
   workspaceCompilationBindingEdges.includeMacros.length === 0 &&
-    workspaceCompilationBindingEdges.includeTokens.length === 0 &&
+    JSON.stringify(workspaceCompilationBindingEdges.includeTokens) ===
+      JSON.stringify(["crates/key-agent-service-rpc-sys/build.rs"]) &&
     compilationBindingEdgeProbes.include.includeMacros.length === 1 &&
     compilationBindingEdgeProbes.include.includeTokens.length === 1,
-  "workspace Rust compilation inputs must reject unreviewed include source edges",
+  "workspace Rust compilation inputs must reject unreviewed include source edges while allowing only the exact reviewed cc include-directory method in rpc-sys build.rs",
 );
 requireInvariant(
   JSON.stringify(workspaceCompilationBindingEdges.pathAttributes) ===
@@ -25370,9 +26578,9 @@ requireInvariant(
         "zeroize.workspace=true",
       ].join("") &&
     rootManifestSha256 ===
-      "f1ce805a325aa87df4bb2245926c6bea8a63a7bd7243be099fcd3d477e83a29a" &&
+      "1290279b9088b26ff9e38387fba9ed8cc95bf0aec6b41210918c5c1cbb2d37d9" &&
     workspaceLockSha256 ===
-      "28f934033a2a03ebc3b738fe183393e671e66da75a3e138efd71aeeb329f4a97" &&
+      "c1f34319f5780293d3a36351e17631fc579e04a5df5a47ad0510471e9fdf84b6" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -32122,11 +33330,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "e959e57d1835949e4256b803a5166444b94779ee3f2b39dcc5a23504a7865918",
+    "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "dcb58359a617d36083b94d1150060100ae132309bdaccb113bc53dd87ca4dad5",
+    "ace766cbdc8a72c16dc37d3052cc58eda94b89e10e832ce4e422fa90b1b79fef",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -37604,7 +38812,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 27_500),
+      document.slice(Math.max(0, anchor - 700), anchor + 28_000),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -37915,9 +39123,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "e959e57d1835949e4256b803a5166444b94779ee3f2b39dcc5a23504a7865918",
+  "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "dcb58359a617d36083b94d1150060100ae132309bdaccb113bc53dd87ca4dad5",
+  "ace766cbdc8a72c16dc37d3052cc58eda94b89e10e832ce4e422fa90b1b79fef",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -38395,6 +39603,26 @@ const debuggerExitDocumentationContradictionMutationProbes =
   approvalParentDocumentationMutationProbes.filter(
     (probe) => probe.scope === "debugger-exit",
   );
+requireInvariant(
+  JSON.stringify(
+    approvalSupervisorDocumentation.map(normalizedSourceSha256),
+  ) === JSON.stringify(approvedCurrentApprovalSecurityDocumentationSha256),
+  "the five architecture document hashes must match the final reviewed tree",
+);
+requireInvariant(
+  approvalParentDocumentationContract(approvalSupervisorDocumentation),
+  "all five architecture documents must preserve the Approval parent-orchestration evidence window",
+);
+requireInvariant(
+  currentCreationSecurityDocumentationContract(
+    approvalSupervisorDocumentation,
+  ),
+  "all five architecture documents must preserve the paired creation-security evidence window and SACL-projection caveat",
+);
+requireInvariant(
+  currentDebuggerExitDocumentationContract(approvalSupervisorDocumentation),
+  "all five architecture documents must preserve the joined debugger-exit evidence window",
+);
 requireInvariant(
   currentApprovalSecurityDocumentationContract(
     approvalSupervisorDocumentation,
@@ -46146,6 +47374,7 @@ const approvedSealedReleasePowerShellEntryPaths = [
   "scripts/release/verify-release-offline.ps1",
 ];
 const approvedOtherPowerShellScriptPaths = [
+  "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1",
   "scripts/check.ps1",
   "scripts/launcher-contract.test.ps1",
   "scripts/release/common.ps1",
@@ -46156,6 +47385,8 @@ const approvedRepositoryPowerShellScriptPaths = [
   ...approvedOtherPowerShellScriptPaths,
 ];
 const approvedPowerShellSourceSha256 = Object.freeze({
+  "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1":
+    "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
   "scripts/check.ps1":
     "5b7cccbe090a546be0e0ac263fbad2ec41beb814a6a1b69b8d6271e0c9436c15",
   "scripts/launcher-contract.test.ps1":
@@ -46250,6 +47481,53 @@ const releaseSecurity = await text("docs/release-security.md");
 const ciWorkflow = await text(".github/workflows/ci.yml");
 const releaseEvidencePolicyWorkflow = await text(
   ".github/workflows/release-evidence-policy.yml",
+);
+const keyAgentServiceRpcSysVerifierReference = "verify-generated.ps1";
+const keyAgentServiceRpcSysMaintainerExecutionInputs = [
+  ...workspaceRustCompilationInputs.map(({ path, source }) => ({ path, source })),
+  ...workspaceCargoManifestInventory.map(({ path, source }) => ({ path, source })),
+  ...repositoryPowerShellScripts
+    .filter(
+      ({ path }) =>
+        path !==
+        "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1",
+    )
+    .map(({ path, source }) => ({ path, source })),
+  { path: ".github/workflows/ci.yml", source: ciWorkflow },
+  {
+    path: ".github/workflows/release-evidence-policy.yml",
+    source: releaseEvidencePolicyWorkflow,
+  },
+];
+const keyAgentServiceRpcSysMaintainerConsumerInventory = (inputs) =>
+  inputs
+    .filter(({ source }) =>
+      source
+        .toLocaleLowerCase("en-US")
+        .includes(keyAgentServiceRpcSysVerifierReference),
+    )
+    .map(({ path }) => path);
+const keyAgentServiceRpcSysMaintainerConsumerMutationProbe =
+  keyAgentServiceRpcSysMaintainerExecutionInputs.map((input) =>
+    input.path === ".github/workflows/ci.yml"
+      ? {
+          ...input,
+          source: `${input.source}\n# powershell crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1\n`,
+        }
+      : input,
+  );
+requireInvariant(
+  JSON.stringify(
+    keyAgentServiceRpcSysMaintainerConsumerInventory(
+      keyAgentServiceRpcSysMaintainerExecutionInputs,
+    ),
+  ) === JSON.stringify([]) &&
+    JSON.stringify(
+      keyAgentServiceRpcSysMaintainerConsumerInventory(
+        keyAgentServiceRpcSysMaintainerConsumerMutationProbe,
+      ),
+    ) === JSON.stringify([".github/workflows/ci.yml"]),
+  "rpc-sys verify-generated.ps1 must remain a manually invoked maintainer verifier absent from Cargo, Rust, PowerShell check/release entrypoints, and CI workflows, with an effective consumer mutation probe",
 );
 const trustedReleaseModuleNamesBlock =
   /foreach \(\$moduleName in @\((?<body>[\s\S]*?)\)\) \{\s*\$manifestPath =/u.exec(

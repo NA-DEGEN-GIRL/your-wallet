@@ -1,0 +1,30 @@
+[package]
+name = "key-agent-service-rpc-sys"
+description = "Checked-in classic MIDL stubs for the Windows Key Agent service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+publish = false
+
+[dependencies]
+
+[build-dependencies]
+cc = "=1.4.2"
+
+[lints.rust]
+unsafe_code = "allow"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+undocumented_unsafe_blocks = "deny"
+print_stdout = "deny"
+print_stderr = "deny"

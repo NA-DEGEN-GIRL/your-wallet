@@ -12,6 +12,11 @@
 RUN-SEPOLIA-WALLET.cmd -text whitespace=cr-at-eol
 scripts/run-sepolia-wallet.ps1 -text whitespace=cr-at-eol
 scripts/launcher-contract.test.ps1 -text whitespace=cr-at-eol
+# Checked-in MIDL output is byte-pinned against the Windows SDK generator.
+# Keep its CRLF and generator-owned spacing unchanged in every checkout.
+crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc.h -text whitespace=-trailing-space,cr-at-eol
+crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_c.c -text whitespace=-trailing-space,cr-at-eol
+crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_s.c -text whitespace=-trailing-space,cr-at-eol
 *.yml text eol=lf
 *.yaml text eol=lf
 *.lock text eol=lf
