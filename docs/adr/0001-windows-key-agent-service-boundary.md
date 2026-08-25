@@ -203,6 +203,40 @@ evidence set passes.
 
 ## Release blockers
 
+Implementation status on 2026-08-26: the repository contains only no-secret
+Phase 1 feasibility fixtures—an inert SCM host, bounded Status/Unavailable wire,
+a checked-in x64 MIDL/SEH boundary, and an authenticated local-RPC server. That
+RPC surface exists only in the exact Windows debug build with the explicit
+feature; default, production, non-Windows, and release paths remain silent and
+fail closed as unavailable. There is no production RPC client and no proof of
+an enrolled Broker, Broker role or image, helper role, or service mutual
+identity. The admission predicate proves at most a local, medium-integrity,
+interactive, non-AppContainer caller. It requires the SDK-defined `CallStatus`
+cancellation/disconnection bit field to be zero (active), rejecting values 1,
+2, and 3. `TokenHasRestrictions` is observed in the canonical one- or four-byte
+form and must remain continuous between the impersonation and primary tokens;
+a normal UAC-filtered desktop token is not rejected merely for having been
+filtered. The runtime supplies a numeric client PID, not an atomic
+origin-process capability; reopening and retaining a process handle does not
+upgrade that observation into original-client proof.
+
+The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
+message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not
+that bound. The server separately caps concurrent callback-authentication work
+at eight permits and serializes manager dispatch. If failed startup rollback or
+stop rundown retains RPC-referenced runtime state, the SCM host deliberately
+omits `SERVICE_STOPPED`. During worker rundown, its progress reporter advances
+the `SERVICE_STOP_PENDING` checkpoint every 500 ms with a 3-second wait hint and
+aborts on a 15-second deadline, status-report failure, or reporter disconnect;
+uncertain cleanup is never presented as a clean stop.
+
+The ignored Windows same-process authenticated round-trip now passes on the
+current interactive host. It proves only this local debug composition, not the
+claimed Windows-build matrix, service identity, endpoint-squatting resistance,
+cross-session zero-capability LPAC behavior, or a real production Broker client;
+those remain **STOP-SHIP**. This single-host result does not satisfy the blockers
+below.
+
 Phase 1 MUST first prove, with an inert no-secret service and real user-session
 LPAC fixture on every initially claimed Windows 11 x64 build:
 

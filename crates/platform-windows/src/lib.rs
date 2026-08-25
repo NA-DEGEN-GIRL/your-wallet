@@ -159,10 +159,19 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
-// The fixed-name SCM host is an inert, debug-only Phase 1 feasibility fixture.
-// It owns no wallet state, IPC endpoint, user token, helper, or signing path.
-// Default and release callers receive only a fail-closed unavailable result.
+// The fixed-name SCM host provides inert and bounded local-RPC, debug-only
+// Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
+// a signing path. Default and release callers fail closed as unavailable.
 mod key_agent_service;
+// The local-RPC module is present only in the exact debug feasibility build.
+// It may expose Status/Unavailable after fresh per-call desktop authentication,
+// but supplies no production Broker/helper role or wallet authority.
+#[cfg(all(
+    windows,
+    feature = "key-agent-service-rpc-status-feasibility-test-hook",
+    debug_assertions
+))]
+mod key_agent_service_rpc;
 // Held existing-install adoption bookends the pure authenticated-snapshot
 // matcher with exact root/profile-binding revalidation. Its compiled dormant
 // binding separately matches the journal's whole-release ArtifactDigest to the
@@ -248,5 +257,6 @@ pub use key_agent_child_bootstrap::{
 };
 pub use key_agent_service::{
     KEY_AGENT_SERVICE_NAME, KeyAgentServiceFixtureError, run_inert_key_agent_service_fixture,
+    run_status_rpc_key_agent_service_fixture,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

@@ -12,11 +12,20 @@ default = []
 broker-channel-contract-test-hook = []
 # Inert, no-secret SCM lifecycle fixture used only by debug feasibility tests.
 key-agent-service-scm-feasibility-test-hook = []
+# Bounded, no-secret local-RPC Status/Unavailable fixture. This remains a
+# debug feasibility surface and does not authenticate a production Broker.
+key-agent-service-rpc-status-feasibility-test-hook = [
+    "key-agent-service-scm-feasibility-test-hook",
+    "dep:key-agent-service-rpc-sys",
+    "dep:key-agent-service-wire",
+]
 
 [dependencies]
 approval-wire = { path = "../approval-wire" }
 getrandom.workspace = true
 hmac.workspace = true
+key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }
+key-agent-service-wire = { path = "../key-agent-service-wire", optional = true }
 sha2.workspace = true
 secret-input-ui = { path = "../secret-input-ui" }
 subtle.workspace = true
@@ -36,6 +45,7 @@ windows = { workspace = true, features = [
     "Win32_System_Kernel",
     "Win32_System_ProcessStatus",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Rpc",
     "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",

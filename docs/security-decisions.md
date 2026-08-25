@@ -541,18 +541,63 @@ initialization. This is not the first machine or Rust instruction, and objects
 created before the gate remain outside the proof.
 
 ADR 0001 and the accepted Windows Key Agent Service Design Brief now select
-that distinct-principal direction. The committed implementation remains limited
-to an inert debug SCM lifecycle fixture, a dependency-free bounded service wire
-contract, and a checked-in classic-MIDL x64 sys boundary. The wire can only open
-an epoch or request status, can only return `Unavailable`, binds status responses
-to a nonzero epoch nonce and request identifier, and never accepts identity,
-role, or deadline fields as authority. The sys boundary fixes one zero-padded
-76-byte RPC frame, distinct client/server symbols, a call-lifetime server binding,
-closed manager errors, and an SEH containment shim; it does not create or
-authenticate a binding, endpoint, listener, caller, or epoch. No transport
-consumes the wire yet. Service identity, authenticated local RPC, interactive
-helper creation, non-inherited bootstrap, signing composition, and release
-evidence are still unproven and **STOP-SHIP**.
+that distinct-principal direction. The committed Phase 1 work remains an
+explicit debug-only, no-secret feasibility surface: an inert SCM lifecycle, a
+dependency-free bounded service wire, a checked-in classic-MIDL x64 sys
+boundary, and an opt-in local-RPC `Status -> Unavailable` server fixture. The
+wire can only open an epoch or request status, binds status responses to a
+nonzero epoch nonce and request identifier, and never accepts identity, role,
+or deadline fields as authority. The sys boundary fixes one zero-padded 76-byte
+RPC frame, distinct client/server symbols, a call-lifetime server binding,
+closed manager errors, and an SEH containment shim. The generated 76-byte MIDL
+frame plus canonical Rust decoder are the hard message boundary. The
+`MaxCalls = 8` and `MaxRpcSize = 76` values passed to the RPC runtime are only
+registration/listen hints. The application independently caps concurrent If3
+callback-authentication work at eight permits and serializes manager dispatch
+behind one mutex.
+
+The debug server fixes one explicit endpoint and security descriptor, registers
+WINNT authentication plus an If3 callback with local-only, secure-only, and
+no-security-cache flags, and requires packet privacy. Both the If3 callback and
+the manager independently re-query the active call, impersonation token, and a
+freshly opened process/primary token. The call must be local, normal, and in the
+active state: the Windows SDK defines `CallStatus` as cancellation and
+disconnection bits, so the accepted value is exactly zero and values 1, 2, and
+3 are denied. `TokenHasRestrictions` is accepted only in the canonical native
+one-byte or documented four-byte shape, and its value must match across the
+impersonation and primary-token observations. This preserves normal
+UAC-filtered desktop callers without treating filtered state as unconstrained.
+The resulting predicate proves at most a local, medium-integrity, interactive,
+non-AppContainer caller. It performs no enrolled-Broker, role, image, or helper
+authentication. RPC
+supplies a numeric PID rather than an atomic process object; sampling that PID
+twice around `OpenProcess` and retaining the resulting handle reduces ambiguity
+but does not prove that the handle names the original RPC client across PID
+reuse.
+
+The service keeps at most sixteen five-second process-correlated epochs,
+removes a nonce before every expiry/identity/state check, returns only
+`Unavailable`, and invalidates all epochs before exact stop/unregister/wait
+rundown. If failed-listen rollback or stop rundown cannot prove release, the
+RPC-referenced runtime remains retained until process exit and the SCM host
+omits `SERVICE_STOPPED`. While a worker drains, a shutdown reporter advances
+`SERVICE_STOP_PENDING` every 500 ms with a 3-second wait hint. It aborts at the
+15-second deadline, on status-report failure, or on reporter disconnect, so an
+uncertain rundown is never reported as a clean stop.
+
+Only the exact Windows debug feature can enter that server. Direct launch,
+default and production configurations, non-Windows builds, and every release
+build still fail closed silently with the unavailable code. There is no
+production client binding. The only live binding exercise is the ignored
+same-process authenticated Windows round-trip test, which passes on the current
+interactive host. That is positive evidence only for this narrow local debug
+composition, not for a claimed Windows-build matrix. Endpoint squatting, final
+service identity and mutual authentication, a cross-session zero-capability
+LPAC exchange, and a real Broker client remain
+**STOP-SHIP**, as do the installer/restricted-virtual-account proof, interactive
+helper creation, non-inherited bootstrap, signing composition, and complete
+live kernel matrix. The fixture is not production authorization, and the
+release remains **STOP-SHIP**.
 
 Preflight parses the exact held Key Agent image as AMD64 PE32+ and admits exactly
 one whole-file 11-byte `49 BA <marker-le> CC` sequence. All 11 bytes must lie in

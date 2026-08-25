@@ -92,6 +92,30 @@ The following are existing facts, not new service claims:
 - There is no SCM service host, service installer/configuration, service SID,
   `CreateProcessAsUserW` launch path, or service IPC implementation in the
   repository at acceptance time.
+- Subsequent Phase 1 slices add an inert debug SCM host, a bounded four-frame
+  service wire, checked-in MIDL-generated x64 stubs behind a narrow Rust/C SEH
+  boundary, and an opt-in authenticated local-RPC server. The RPC surface is
+  compiled only by the explicit Windows debug feature. Default, production,
+  non-Windows, and release paths remain silent and fail closed as unavailable.
+- The debug caller predicate proves only a local, medium-integrity, interactive,
+  non-AppContainer caller. It requires the SDK-defined `CallStatus`
+  cancellation/disconnection bit field to be zero and rejects 1, 2, and 3. It
+  accepts both canonical one- and four-byte `TokenHasRestrictions` observations
+  and binds the filtered state across the impersonation and primary tokens; a
+  standard UAC-filtered token is not denied solely for having been filtered.
+  It performs no Broker role or image proof. RPC exposes a numeric PID rather
+  than an atomic origin-process object, so the retained PID-opened handle is
+  only a correlation observation. There is no production RPC client or helper
+  proof.
+- The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
+  message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
+  server independently caps callback-authentication work at eight concurrent
+  permits and serializes all manager dispatch.
+- The ignored same-process authenticated Windows round-trip passes on the
+  current interactive host. That is narrow local kernel evidence, not a claimed
+  build matrix or service-identity proof. Endpoint squatting, final service
+  identity, a cross-session zero-capability LPAC exchange, and a real production
+  Broker client remain **STOP-SHIP**.
 
 The decisive existing result is documented in
 [`docs/security-decisions.md`](../security-decisions.md): a same-user LPAC cannot
@@ -436,6 +460,15 @@ records, releases hardware handles, and reports stopped only after bounded
 cleanup. If cleanup cannot be proven, the service exits fail-closed and the next
 start enters recovery before listening.
 
+The current debug fixture implements only the SCM/RPC rundown subset of this
+policy. If startup rollback or stop rundown cannot prove that RPC-referenced
+runtime state was released, it retains that state until process exit and omits
+`SERVICE_STOPPED`. While a worker drains, a dedicated reporter advances the
+`SERVICE_STOP_PENDING` checkpoint every 500 ms with a 3-second wait hint. It
+aborts the process at 15 seconds, on a status-report failure, or on reporter
+disconnect, and therefore never converts uncertain rundown into a false clean
+stop.
+
 ### 12. The service has no network authority
 
 The service contains no chain RPC, DNS, HTTP, WebSocket, update, telemetry, or
@@ -581,6 +614,12 @@ secret, key, approval, signing, or policy enablement enters this phase.
 negative kernel evidence on the initial exact support target. A failure chooses
 review or abandonment, never a weaker hidden fallback.
 
+**Current status:** not passed. The ignored same-process authenticated RPC probe
+passes on the current interactive Windows host, but it is only a narrow local
+kernel round trip. The claimed-build matrix, endpoint-squatting,
+service-identity, cross-session LPAC, and real Broker-client evidence are still
+absent.
+
 ### Phase 2 — Installer, service host, storage, and network boundary
 
 Add production SCM lifecycle, immutable installation/configuration readback,
@@ -680,6 +719,16 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-26 — Added the no-secret Phase 1 SCM, bounded wire, checked-in MIDL
+  boundary, and Windows-debug-only authenticated local-RPC
+  `Status -> Unavailable` server slices. Recorded the hard 76-byte canonical
+  frame, hint-only RPC call/size values, eight-permit callback cap, serialized
+  manager, exact active-zero SDK call-status check, canonical one-/four-byte
+  token-filter observation and continuity, retained-runtime stop behavior, and
+  bounded stop reporter. The ignored same-process authenticated round-trip now
+  passes on the current interactive host. No production client, role/image,
+  service-identity, endpoint-squatting, claimed-build matrix, or cross-session
+  LPAC proof exists; all release gates remain disabled.
 - 2026-08-25 — Accepted the distinct-OS-principal Windows service direction
   after the same-user LPAC from-birth `WRITE_DAC` gap was reproduced. Recorded
   service-owned user-session helper creation, non-inherited handle injection,

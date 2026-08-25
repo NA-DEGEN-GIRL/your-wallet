@@ -12,6 +12,10 @@ default = []
 scm-feasibility-test-hook = [
     "platform-windows/key-agent-service-scm-feasibility-test-hook",
 ]
+rpc-status-feasibility-test-hook = [
+    "scm-feasibility-test-hook",
+    "platform-windows/key-agent-service-rpc-status-feasibility-test-hook",
+]
 
 [dependencies]
 platform-windows = { path = "../platform-windows" }

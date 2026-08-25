@@ -887,10 +887,10 @@ function rustExpansionSensitiveUseItems(source) {
   return rustUseItems(source).filter((item) => {
     const code = rustLexicalCode(item.source);
     return (
-      /\bas\s+(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\b/u.test(
+      /\bas\s+(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|deny|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|w|write)\b/u.test(
         code,
       ) ||
-      /\b(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|write)\s*(?=,|\}|;|\bas\b)/u.test(
+      /\b(?:r#)?(?:Clone|Copy|Debug|Default|Eq|Error|Hash|PartialEq|allow|assert|assert_eq|assert_ne|cfg|cfg_attr|core|debug_assert|debug_assert_eq|deny|derive|error|expect|format|matches|must_use|offset_of|path|ptr|repr|source|std|test|thiserror|thread_local|unreachable|vec|w|write)\s*(?=,|\}|;|\bas\b)/u.test(
         code,
       )
     );
@@ -2080,6 +2080,34 @@ const keyAgentServiceRustFiles = await rustProductionSources(
 );
 const keyAgentServicePlatformSource = await text(
   "crates/platform-windows/src/key_agent_service.rs",
+);
+const keyAgentServicePlatformManifest = await text(
+  "crates/platform-windows/Cargo.toml",
+);
+const keyAgentServicePlatformLib = await text(
+  "crates/platform-windows/src/lib.rs",
+);
+const keyAgentServiceRpcFixtureFiles = await rustProductionSources(
+  "crates/platform-windows/src/key_agent_service_rpc",
+  { withTestCode: true },
+);
+const keyAgentServiceRpcFixtureProductionFiles = await rustProductionSources(
+  "crates/platform-windows/src/key_agent_service_rpc",
+  { withoutInlineTests: true },
+);
+const keyAgentServiceRpcFixtureSources = Object.freeze(
+  Object.fromEntries(
+    keyAgentServiceRpcFixtureFiles.map((file) => [file.path, file.source]),
+  ),
+);
+const keyAgentServiceRpcFixtureDirectoryInventories = await Promise.all(
+  [
+    "crates/platform-windows/src/key_agent_service_rpc",
+    "crates/platform-windows/src/key_agent_service_rpc/auth",
+  ].map(async (path) => ({
+    path,
+    entries: await trustedDirectoryEntryInventory(path),
+  })),
 );
 const rootReadme = await text("README.md");
 const sepoliaArchitectureDoc = await text("docs/architecture.md");
@@ -4887,41 +4915,1810 @@ const keyAgentServiceRustSource = keyAgentServiceRustFiles
   .join("\n");
 const keyAgentServiceNetworkSurface =
   /\b(?:std::net|TcpStream|TcpListener|UdpSocket|SocketAddr|WinSock|Win32::Networking)\b/u;
-requireInvariant(
-  /^publish\s*=\s*false$/mu.test(keyAgentServiceManifest) &&
-    /^build\s*=\s*false$/mu.test(keyAgentServiceManifest) &&
-    /^default\s*=\s*\[\]$/mu.test(keyAgentServiceManifest) &&
+const keyAgentServiceLiteralCount = (source, marker) =>
+  source.split(marker).length - 1;
+const keyAgentServiceRustTestNameInventory = (source) => [
+  ...source.matchAll(
+    /#\s*\[\s*test\s*\]\s*fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
+  ),
+].map((match) => match.groups.name);
+const tomlTableKeyInventory = (manifest, tableName) => {
+  const escaped = tableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const header = new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, "mu").exec(
+    manifest,
+  );
+  if (header === null) return [];
+  const tail = manifest.slice(header.index + header[0].length);
+  const nextTable = /^\s*\[/mu.exec(tail);
+  const body = tail.slice(0, nextTable?.index ?? tail.length);
+  return [...body.matchAll(/^\s*(?<key>[A-Za-z0-9_-]+)\s*=/gmu)].map(
+    (match) => match.groups.key,
+  );
+};
+const keyAgentServiceFeatureContract = ({
+  serviceManifest,
+  platformManifest,
+  main,
+  platformLib,
+  platformService,
+  serviceFiles,
+}) => {
+  const serviceCode = serviceFiles
+    .map((file) => rustLexicalCode(file.source))
+    .join("\n");
+  const mainCode = rustLexicalCode(main);
+  const compactMain = compactRust(main);
+  const compactPlatformLib = compactRust(platformLib);
+  const compactPlatformService = compactRust(platformService);
+  return (
+    /^publish\s*=\s*false$/mu.test(serviceManifest) &&
+    /^build\s*=\s*false$/mu.test(serviceManifest) &&
+    /^default\s*=\s*\[\]$/mu.test(serviceManifest) &&
+    JSON.stringify(tomlTableKeyInventory(serviceManifest, "features")) ===
+      JSON.stringify([
+        "default",
+        "scm-feasibility-test-hook",
+        "rpc-status-feasibility-test-hook",
+      ]) &&
     /scm-feasibility-test-hook\s*=\s*\[\s*"platform-windows\/key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
-      keyAgentServiceManifest,
+      serviceManifest,
     ) &&
-    hasDependency(keyAgentServiceManifest, "platform-windows") &&
-    !hasDependency(keyAgentServiceManifest, "key-agent") &&
-    !hasDependency(keyAgentServiceManifest, "windows") &&
-    keyAgentServiceRustFiles.every(
-      (file) => rustUnsafeKeywordCount(file.source) === 0,
+    /rpc-status-feasibility-test-hook\s*=\s*\[\s*"scm-feasibility-test-hook",\s*"platform-windows\/key-agent-service-rpc-status-feasibility-test-hook",?\s*\]/u.test(
+      serviceManifest,
     ) &&
-    !/(?:e?println|print|dbg)!/u.test(
-      rustLexicalCode(keyAgentServiceRustSource),
+    hasDependency(serviceManifest, "platform-windows") &&
+    !hasDependency(serviceManifest, "key-agent") &&
+    !hasDependency(serviceManifest, "windows") &&
+    /key-agent-service-rpc-status-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-scm-feasibility-test-hook",\s*"dep:key-agent-service-rpc-sys",\s*"dep:key-agent-service-wire",?\s*\]/u.test(
+      platformManifest,
     ) &&
-    !keyAgentServiceNetworkSurface.test(
-      rustLexicalCode(keyAgentServiceRustSource),
+    /^key-agent-service-rpc-sys\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-rpc-sys",\s*optional\s*=\s*true\s*\}$/mu.test(
+      platformManifest,
     ) &&
-    !keyAgentServiceNetworkSurface.test(
-      rustLexicalCode(keyAgentServicePlatformSource),
+    /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire",\s*optional\s*=\s*true\s*\}$/mu.test(
+      platformManifest,
     ) &&
-    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
-      keyAgentServiceMain,
+    !hasDependency(platformManifest, "key-agent") &&
+    main.includes('#![cfg_attr(windows, windows_subsystem = "windows")]') &&
+    (mainCode.match(/\bfn\s+main\s*\(/gu) ?? []).length === 3 &&
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"rpc-status-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
+      main,
     ) &&
-    /#\[cfg\(\s*not\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
-      keyAgentServiceMain,
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*not\(feature\s*=\s*"rpc-status-feasibility-test-hook"\)\s*,\s*feature\s*=\s*"scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*fn\s+main\s*\(/u.test(
+      main,
     ) &&
-    compactKeyAgentServiceMain.includes(
+    /#\[cfg\(\s*not\(\s*any\(/u.test(main) &&
+    keyAgentServiceLiteralCount(
+      compactMain,
+      "platform_windows::run_status_rpc_key_agent_service_fixture()",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      compactMain,
       "platform_windows::run_inert_key_agent_service_fixture()",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      compactMain,
+      "std::process::exit(SERVICE_UNAVAILABLE)",
+    ) === 1 &&
+    main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_rpc\s*;/u.test(
+      platformLib,
     ) &&
-    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-scm-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+sys\s*\{/u.test(
-      keyAgentServicePlatformSource,
+    /#\[cfg\(\s*all\(\s*windows\s*,\s*any\(\s*feature\s*=\s*"key-agent-service-scm-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*\)\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+sys\s*\{/u.test(
+      platformService,
+    ) &&
+    keyAgentServiceLiteralCount(
+      compactPlatformService,
+      "sys::run_status_rpc_dispatcher()",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      compactPlatformService,
+      "Err(KeyAgentServiceFixtureError::Unavailable)",
+    ) >= 2 &&
+    serviceFiles.every((file) => rustUnsafeKeywordCount(file.source) === 0) &&
+    !/(?:e?println|print|dbg)!/u.test(serviceCode) &&
+    !keyAgentServiceNetworkSurface.test(serviceCode) &&
+    !keyAgentServiceNetworkSurface.test(rustLexicalCode(platformService)) &&
+    !/\bcfg\s*!\s*\(\s*debug_assertions/u.test(mainCode)
+  );
+};
+const keyAgentServiceFeatureInputs = Object.freeze({
+  serviceManifest: keyAgentServiceManifest,
+  platformManifest: keyAgentServicePlatformManifest,
+  main: keyAgentServiceMain,
+  platformLib: keyAgentServicePlatformLib,
+  platformService: keyAgentServicePlatformSource,
+  serviceFiles: keyAgentServiceRustFiles,
+});
+const keyAgentServiceFeatureMutationProbes = [
+  {
+    ...keyAgentServiceFeatureInputs,
+    serviceManifest: keyAgentServiceManifest.replace(
+      "default = []",
+      'default = ["rpc-status-feasibility-test-hook"]',
     ),
-  "the Key Agent service crate must remain non-publishable, safe-only, silent, network/key-agent-free, and gated by the exact debug SCM feature",
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    serviceManifest: `${keyAgentServiceManifest}\nkey-agent = { path = "../key-agent" }\n`,
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformManifest: keyAgentServicePlatformManifest.replace(
+      'key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }',
+      'key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys" }',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    main: keyAgentServiceMain.replace(
+      "    debug_assertions\n))]\nfn main() {",
+      "    any(debug_assertions, not(debug_assertions))\n))]\nfn main() {",
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    main: `${keyAgentServiceMain}\nfn hidden_output() { println!("status"); }\n`,
+    serviceFiles: keyAgentServiceRustFiles.map((file) =>
+      file.path === "crates/key-agent-service/src/main.rs"
+        ? { ...file, source: `${file.source}\nfn hidden_output() { println!("status"); }\n` }
+        : file,
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformLib: keyAgentServicePlatformLib.replace(
+      "    debug_assertions\n))]\nmod key_agent_service_rpc;",
+      "    any(debug_assertions, not(debug_assertions))\n))]\nmod key_agent_service_rpc;",
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    main: keyAgentServiceMain.replace(
+      "platform_windows::run_status_rpc_key_agent_service_fixture()",
+      "platform_windows::run_inert_key_agent_service_fixture()",
+    ),
+  },
+];
+requireInvariant(
+  keyAgentServiceFeatureContract(keyAgentServiceFeatureInputs) &&
+    keyAgentServiceFeatureMutationProbes.every(
+      (probe) =>
+        Object.keys(keyAgentServiceFeatureInputs).some(
+          (key) => probe[key] !== keyAgentServiceFeatureInputs[key],
+        ) && !keyAgentServiceFeatureContract(probe),
+    ),
+  "the Key Agent service must remain non-publishable, safe-only, silent, network/key-agent-free, default/release unavailable, and gated by the exact debug SCM and status-RPC features with effective mutation probes",
+);
+
+const keyAgentServiceRpcFixturePaths = Object.freeze({
+  root: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
+  auth: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+  authSys: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+  dispatch: "crates/platform-windows/src/key_agent_service_rpc/dispatch.rs",
+  epoch: "crates/platform-windows/src/key_agent_service_rpc/epoch.rs",
+  lifecycle: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
+});
+const approvedKeyAgentServiceRpcFixturePaths = [
+  keyAgentServiceRpcFixturePaths.auth,
+  keyAgentServiceRpcFixturePaths.authSys,
+  keyAgentServiceRpcFixturePaths.dispatch,
+  keyAgentServiceRpcFixturePaths.epoch,
+  keyAgentServiceRpcFixturePaths.lifecycle,
+  keyAgentServiceRpcFixturePaths.root,
+];
+const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc",
+    entries: [
+      { name: "auth", kind: "directory" },
+      { name: "auth.rs", kind: "file" },
+      { name: "dispatch.rs", kind: "file" },
+      { name: "epoch.rs", kind: "file" },
+      { name: "lifecycle.rs", kind: "file" },
+      { name: "mod.rs", kind: "file" },
+    ],
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/auth",
+    entries: [{ name: "sys.rs", kind: "file" }],
+  },
+];
+const keyAgentServiceRpcFixtureAuthoritySurface =
+  /\b(?:SigningKey|SecretKey|PrivateKey|Mnemonic|Password|Credential|Signature|Transaction|Wallet|ApprovalAuthorization|PreparedAuthorization|AttestedArtifactDigest|sign_(?:hash|prehash|digest|transaction)|derive_private|export_secret|decrypt_secret)\b/u;
+const keyAgentServiceRpcFixtureNetworkSurface =
+  /\b(?:std\s*::\s*net|TcpStream|TcpListener|UdpSocket|SocketAddr|WinSock|Win32\s*::\s*Networking|reqwest|hyper|ureq|curl|tonic|tungstenite|WebSocket|HttpClient)\b/u;
+const keyAgentServiceRpcFixtureProcessCreationSurface =
+  /\b(?:CreateProcess\w*|CreateProcessAsUser\w*|ShellExecute\w*|Command\s*::\s*new)\b/u;
+const keyAgentServiceRpcFixturePolicyContract = ({
+  sources,
+  directories,
+}) => {
+  const paths = Object.keys(sources).sort((left, right) =>
+    left.localeCompare(right, "en"),
+  );
+  const code = paths.map((path) => rustLexicalCode(sources[path])).join("\n");
+  const root = sources[keyAgentServiceRpcFixturePaths.root] ?? "";
+  const purePaths = [
+    keyAgentServiceRpcFixturePaths.dispatch,
+    keyAgentServiceRpcFixturePaths.epoch,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+  ];
+  return (
+    JSON.stringify(paths) ===
+      JSON.stringify(approvedKeyAgentServiceRpcFixturePaths) &&
+    JSON.stringify(directories) ===
+      JSON.stringify(approvedKeyAgentServiceRpcFixtureDirectoryInventories) &&
+    root.includes("#![allow(unsafe_code)]") &&
+    compactRust(root).includes("modauth;moddispatch;modepoch;modlifecycle;") &&
+    purePaths.every(
+      (path) =>
+        sources[path]?.includes("#![deny(unsafe_code)]") &&
+        rustUnsafeKeywordCount(sources[path]) === 0,
+    ) &&
+    !/(?:e?println|print|dbg)!/u.test(code) &&
+    !keyAgentServiceRpcFixtureNetworkSurface.test(code) &&
+    !keyAgentServiceRpcFixtureProcessCreationSurface.test(code) &&
+    !keyAgentServiceRpcFixtureAuthoritySurface.test(code) &&
+    !/\b(?:secret_core|key_agent)::/u.test(code) &&
+    !/\bpub\s+(?:unsafe\s+)?(?:fn|struct|enum|trait|type|const|static|mod)\b/u.test(
+      code,
+    ) &&
+    !/\b(?:fs\s*::|File\s*::|OpenOptions\s*::|std\s*::\s*env)\b/u.test(code)
+  );
+};
+const keyAgentServiceRpcFixturePolicyInputs = Object.freeze({
+  sources: keyAgentServiceRpcFixtureSources,
+  directories: keyAgentServiceRpcFixtureDirectoryInventories,
+});
+const mutateKeyAgentServiceRpcFixtureSource = (
+  inputs,
+  path,
+  search,
+  replacement,
+) => ({
+  ...inputs,
+  sources: {
+    ...inputs.sources,
+    [path]: inputs.sources[path].replace(search, replacement),
+  },
+});
+const appendKeyAgentServiceRpcFixtureSource = (inputs, path, suffix) => ({
+  ...inputs,
+  sources: {
+    ...inputs.sources,
+    [path]: `${inputs.sources[path]}\n${suffix}\n`,
+  },
+});
+const keyAgentServiceRpcFixturePolicyMutationProbes = [
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "#![deny(unsafe_code)]",
+    "#![allow(unsafe_code)]",
+  ),
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "unsafe fn hidden_dispatch_escape() {}",
+  ),
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    'fn hidden_output() { println!("rpc"); }',
+  ),
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "fn hidden_network() { let _ = std::net::TcpStream::connect; }",
+  ),
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "fn sign_transaction(key: SigningKey, transaction: Transaction) -> Signature { todo!() }",
+  ),
+  {
+    ...keyAgentServiceRpcFixturePolicyInputs,
+    directories: [
+      {
+        ...keyAgentServiceRpcFixtureDirectoryInventories[0],
+        entries: [
+          ...keyAgentServiceRpcFixtureDirectoryInventories[0].entries,
+          { name: "hidden.rs", kind: "file" },
+        ],
+      },
+      keyAgentServiceRpcFixtureDirectoryInventories[1],
+    ],
+  },
+];
+requireInvariant(
+  keyAgentServiceRpcFixturePolicyContract(
+    keyAgentServiceRpcFixturePolicyInputs,
+  ) &&
+    keyAgentServiceRpcFixturePolicyMutationProbes.every(
+      (probe) =>
+        (probe.sources !== keyAgentServiceRpcFixturePolicyInputs.sources ||
+          probe.directories !==
+            keyAgentServiceRpcFixturePolicyInputs.directories) &&
+        !keyAgentServiceRpcFixturePolicyContract(probe),
+    ),
+  "the debug status-RPC fixture must retain its exact two-directory/six-file inventory, deny unsafe code in all pure modules, remain crate-private and silent, and contain no network, process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
+);
+
+const keyAgentServiceRpcRuntimeApis = [
+  "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+  "RpcServerRegisterAuthInfoW",
+  "RpcServerUseProtseqEpW",
+  "RpcServerRegisterIf3",
+  "RpcServerListen",
+  "RpcMgmtStopServerListening",
+  "RpcServerUnregisterIf",
+  "RpcMgmtWaitServerListen",
+  "RpcServerInqCallAttributesW",
+  "RpcBindingInqAuthClientExW",
+  "RpcImpersonateClient",
+  "RpcRevertToSelfEx",
+  "RaiseFailFastException",
+];
+const keyAgentServiceRpcForbiddenRuntimeApis = [
+  "RpcServerUseProtseqA",
+  "RpcServerUseProtseqW",
+  "RpcServerUseProtseqEpA",
+  "RpcServerRegisterIf",
+  "RpcServerRegisterIf2",
+  "RpcServerRegisterIfEx",
+  "RpcServerUseAllProtseqs",
+  "RpcServerUseAllProtseqsEx",
+  "RpcServerUseAllProtseqsIf",
+  "RpcServerUseAllProtseqsIfEx",
+  "RpcServerUseProtseqIfA",
+  "RpcServerUseProtseqIfW",
+  "RpcServerUseProtseqIfExA",
+  "RpcServerUseProtseqIfExW",
+  "RpcBindingCreateA",
+  "RpcBindingCreateW",
+  "RpcBindingFromStringBindingA",
+  "RpcBindingFromStringBindingW",
+  "RpcBindingToStringBindingA",
+  "RpcBindingToStringBindingW",
+  "RpcBindingFree",
+  "RpcBindingSetAuthInfoA",
+  "RpcBindingSetAuthInfoW",
+  "RpcBindingSetAuthInfoExA",
+  "RpcBindingSetAuthInfoExW",
+  "RpcStringBindingComposeA",
+  "RpcStringBindingComposeW",
+  "RpcStringFreeA",
+  "RpcStringFreeW",
+  "RpcEpRegisterA",
+  "RpcEpRegisterW",
+  "RpcEpRegisterNoReplaceA",
+  "RpcEpRegisterNoReplaceW",
+  "RpcEpResolveBinding",
+  "RpcEpUnregister",
+  "RpcRevertToSelf",
+];
+const approvedKeyAgentServiceRpcRuntimeCallPaths = [
+  {
+    api: "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerRegisterAuthInfoW",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerUseProtseqEpW",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerRegisterIf3",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerListen",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcMgmtStopServerListening",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerUnregisterIf",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcMgmtWaitServerListen",
+    paths: [keyAgentServiceRpcFixturePaths.root],
+  },
+  {
+    api: "RpcServerInqCallAttributesW",
+    paths: [keyAgentServiceRpcFixturePaths.authSys],
+  },
+  {
+    api: "RpcBindingInqAuthClientExW",
+    paths: [keyAgentServiceRpcFixturePaths.authSys],
+  },
+  {
+    api: "RpcImpersonateClient",
+    paths: [keyAgentServiceRpcFixturePaths.authSys],
+  },
+  {
+    api: "RpcRevertToSelfEx",
+    paths: [keyAgentServiceRpcFixturePaths.authSys],
+  },
+  {
+    api: "RaiseFailFastException",
+    paths: [keyAgentServiceRpcFixturePaths.authSys],
+  },
+];
+const keyAgentServiceRpcLifecycleTestNames = [
+  "constants_are_exact_and_exclude_unsafe_registration_modes",
+  "successful_lifecycle_has_exact_order_and_drops_only_after_wait",
+  "every_start_operation_failure_releases_without_opening_admission",
+  "failed_listen_cleanup_edges_retain_resources_and_never_claim_success",
+  "stop_listening_failure_best_effort_unregisters_but_never_waits",
+  "unregister_and_wait_failures_never_return_clean_stop",
+  "unregister_and_wait_double_failure_preserves_secondary_error",
+  "dropping_live_server_closes_admission_invalidates_and_retains_resources",
+];
+const keyAgentServiceRpcRootTestNames = [
+  "constants_bind_generated_frame_and_endpoint",
+  "errors_and_context_debug_are_data_free",
+  "callback_authentication_has_an_application_level_concurrency_cap",
+  "runtime_error_never_exposes_status_details",
+];
+const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
+  try {
+    const productionFiles = Object.entries(sources).map(([path, source]) => ({
+      path,
+      source: withoutBottomTestModule(source),
+    }));
+    const production = Object.fromEntries(
+      productionFiles.map((file) => [file.path, file.source]),
+    );
+    const root = production[keyAgentServiceRpcFixturePaths.root];
+    const lifecycle = production[keyAgentServiceRpcFixturePaths.lifecycle];
+    const oneImpl = (source, marker, traitImplementation = false) => {
+      const matches = rustImplItems(source).filter(
+        (item) =>
+          item.header.includes(marker) &&
+          (traitImplementation || !item.header.includes(" for ")),
+      );
+      if (matches.length !== 1) {
+        throw new Error(`lost exact lifecycle impl ${marker}`);
+      }
+      return matches[0].source;
+    };
+    const preparedImpl = oneImpl(
+      lifecycle,
+      "PreparedStatusRpcServer<O, H>",
+    );
+    const listeningImpl = oneImpl(
+      lifecycle,
+      "ListeningStatusRpcServer<O, H>",
+    );
+    const listeningDrop = oneImpl(
+      lifecycle,
+      "Drop for ListeningStatusRpcServer<O, H>",
+      true,
+    );
+    const windowsOps = oneImpl(root, "RpcOps for WindowsRpcOps", true);
+    const preparedNew = rustFunctionBlock(preparedImpl, "new");
+    const start = rustFunctionBlock(preparedImpl, "start");
+    const enableAdmission = rustFunctionBlock(
+      listeningImpl,
+      "enable_admission_after_scm_running",
+    );
+    const stopAndDrain = rustFunctionBlock(listeningImpl, "stop_and_drain");
+    const listeningDropFunction = rustFunctionBlock(listeningDrop, "drop");
+    const drainResources = rustFunctionBlock(lifecycle, "drain_resources");
+    const releaseResources = rustFunctionBlock(lifecycle, "release_resources");
+    const workerStart = rustFunctionBlock(root, "start");
+    const workerBegin = rustFunctionBlock(root, "begin_accepting");
+    const workerStop = rustFunctionBlock(root, "stop_and_drain");
+    const callbackPermit = rustFunctionBlock(
+      root,
+      "try_callback_auth_permit",
+    );
+    const runningTransition = rustFunctionBlock(
+      platformService,
+      "publish_running_or_select_stop",
+    );
+    const serviceMain = rustFunctionBlock(platformService, "service_main_impl");
+    const finishService = rustFunctionBlock(platformService, "finish_service");
+    const permitsStoppedStatus = rustFunctionBlock(
+      platformService,
+      "permits_stopped_status",
+    );
+    const abandonRetainedRuntime = rustFunctionBlock(
+      platformService,
+      "abandon_service_with_retained_runtime",
+    );
+    const reportStopProgress = rustFunctionBlock(
+      platformService,
+      "report_stop_progress_until_complete",
+    );
+    const runtimeCallPaths = keyAgentServiceRpcRuntimeApis.map((api) => ({
+      api,
+      paths: productionFiles.flatMap((file) =>
+        rustCallSites(file.source, api).map(() => file.path),
+      ),
+    }));
+    const runtimeUsage = rustIdentifierUsageInventory(
+      productionFiles,
+      keyAgentServiceRpcRuntimeApis,
+    );
+    const forbiddenRuntimeUsage = rustIdentifierUsageInventory(
+      productionFiles,
+      keyAgentServiceRpcForbiddenRuntimeApis,
+    );
+    const registerIf3 = rustCallSites(root, "RpcServerRegisterIf3");
+    const registerAuth = rustCallSites(root, "RpcServerRegisterAuthInfoW");
+    const bindEndpoint = rustCallSites(root, "RpcServerUseProtseqEpW");
+    const stopListening = rustCallSites(root, "RpcMgmtStopServerListening");
+    const unregister = rustCallSites(root, "RpcServerUnregisterIf");
+    return (
+      lifecycle.includes(
+        'pub(crate) const LOCAL_RPC_PROTOCOL_SEQUENCE: &str = "ncalrpc";',
+      ) &&
+      lifecycle.includes(
+        'pub(crate) const STATUS_RPC_ENDPOINT: &str = "YourWallet.KeyAgentService.v1";',
+      ) &&
+      lifecycle.includes("pub(crate) const RPC_C_AUTHN_WINNT: u32 = 10;") &&
+      lifecycle.includes(
+        "pub(crate) const RPC_IF_ALLOW_SECURE_ONLY: u32 = 0x0000_0008;",
+      ) &&
+      lifecycle.includes(
+        "pub(crate) const RPC_IF_ALLOW_LOCAL_ONLY: u32 = 0x0000_0020;",
+      ) &&
+      lifecycle.includes(
+        "pub(crate) const RPC_IF_SEC_NO_CACHE: u32 = 0x0000_0040;",
+      ) &&
+      compactRust(lifecycle).includes(
+        "pub(crate)constSTATUS_RPC_INTERFACE_FLAGS:u32=RPC_IF_ALLOW_LOCAL_ONLY|RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_SEC_NO_CACHE;",
+      ) &&
+      lifecycle.includes("pub(crate) const STATUS_RPC_MIN_CALL_THREADS: u32 = 1;") &&
+      lifecycle.includes("pub(crate) const STATUS_RPC_MAX_CALLS: u32 = 8;") &&
+      lifecycle.includes("pub(crate) const STATUS_RPC_MAX_RPC_SIZE: u32 = 76;") &&
+      lifecycle.includes("pub(crate) const RPC_LISTEN_DONT_WAIT: u32 = 1;") &&
+      platformService.includes(
+        "const STOP_PROGRESS_MILLISECONDS: u64 = 500;",
+      ) &&
+      platformService.includes(
+        "const STOP_DEADLINE_MILLISECONDS: u64 = 15_000;",
+      ) &&
+      compactRust(lifecycle).includes(
+        "const_:()=assert!(STATUS_RPC_INTERFACE_FLAGS==0x0000_0068);",
+      ) &&
+      compactRust(lifecycle).includes(
+        "const_:()=assert!(STATUS_RPC_INTERFACE_FLAGS&RPC_IF_AUTOLISTEN==0);",
+      ) &&
+      compactRust(lifecycle).includes(
+        "const_:()=assert!(STATUS_RPC_INTERFACE_FLAGS&RPC_IF_ALLOW_CALLBACKS_WITH_NO_AUTH==0);",
+      ) &&
+      root.includes(
+        'const STATUS_RPC_SECURITY_DESCRIPTOR: PCWSTR = w!("D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)");',
+      ) &&
+      keyAgentServiceLiteralCount(
+        root,
+        "D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)",
+      ) === 1 &&
+      root.includes(
+        "static LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];",
+      ) &&
+      root.includes(
+        "lifecycle::STATUS_RPC_MAX_RPC_SIZE as usize == key_agent_service_rpc_sys::RPC_FRAME_SIZE",
+      ) &&
+      JSON.stringify(runtimeCallPaths) ===
+        JSON.stringify(approvedKeyAgentServiceRpcRuntimeCallPaths) &&
+      runtimeUsage.aliases.length === 0 &&
+      runtimeUsage.references.length === 0 &&
+      forbiddenRuntimeUsage.calls.length === 0 &&
+      forbiddenRuntimeUsage.aliases.length === 0 &&
+      forbiddenRuntimeUsage.qualified.length === 0 &&
+      forbiddenRuntimeUsage.references.length === 0 &&
+      Object.values(forbiddenRuntimeUsage.tokens).every(
+        (paths) => paths.length === 0,
+      ) &&
+      registerAuth.length === 1 &&
+      JSON.stringify(registerAuth[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "PCWSTR::null()",
+          "authentication_service",
+          "None",
+          "None",
+        ]) &&
+      bindEndpoint.length === 1 &&
+      JSON.stringify(bindEndpoint[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr())",
+          "max_calls",
+          "PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr())",
+          "Some(security_descriptor.as_raw())",
+        ]) &&
+      registerIf3.length === 1 &&
+      JSON.stringify(registerIf3[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "interface_spec.as_raw().cast_const()",
+          "None",
+          "None",
+          "flags",
+          "max_calls",
+          "max_rpc_size",
+          "Some(interface_security_callback)",
+          "Some(security_descriptor.as_raw())",
+        ]) &&
+      stopListening.length === 1 &&
+      JSON.stringify(stopListening[0].arguments.map(compactRust)) ===
+        JSON.stringify(["None"]) &&
+      unregister.length === 1 &&
+      JSON.stringify(unregister[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "Some(interface_spec.as_raw().cast_const())",
+          "None",
+          "1",
+        ]) &&
+      compactRust(windowsOps).includes(
+        "ifprotocol_sequence!=lifecycle::LOCAL_RPC_PROTOCOL_SEQUENCE||endpoint!=key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT{returnErr(RpcRuntimeError);}",
+      ) &&
+      hasOrderedCompactMarkers(preparedNew, [
+        "hooks.set_admission(false)",
+        "resources:RpcResources{ops,interface_spec,endpoint_security_descriptor,hooks,}",
+      ]) &&
+      hasOrderedCompactMarkers(start, [
+        ".register_auth_info_without_principal(RPC_C_AUTHN_WINNT)",
+        ".use_protocol_sequence_endpoint(LOCAL_RPC_PROTOCOL_SEQUENCE,STATUS_RPC_MAX_CALLS,STATUS_RPC_ENDPOINT,&self.resources.endpoint_security_descriptor,)",
+        ".install_process_lifetime_handler()",
+        ".register_interface3(self.resources.interface_spec,STATUS_RPC_INTERFACE_FLAGS,STATUS_RPC_MAX_CALLS,STATUS_RPC_MAX_RPC_SIZE,&self.resources.endpoint_security_descriptor,)",
+        ".listen(STATUS_RPC_MIN_CALL_THREADS,STATUS_RPC_MAX_CALLS,RPC_LISTEN_DONT_WAIT,)",
+      ]) &&
+      compactRust(start).includes(
+        "resources:Some(ManuallyDrop::new(self.resources)),admission_open:false",
+      ) &&
+      hasOrderedCompactMarkers(enableAdmission, [
+        "ifself.admission_open{return;}",
+        "resources.hooks.set_admission(true)",
+        "self.admission_open=true",
+      ]) &&
+      hasOrderedCompactMarkers(stopAndDrain, [
+        "self.resources.take()",
+        "ManuallyDrop::into_inner(resources)",
+        "self.admission_open=false",
+        "drain_resources(resources)",
+      ]) &&
+      hasOrderedCompactMarkers(listeningDropFunction, [
+        "resources.hooks.set_admission(false)",
+        "resources.hooks.invalidate_epochs()",
+        "self.admission_open=false",
+      ]) &&
+      lifecycle.includes(
+        "resources: ManuallyDrop<RpcResources<O, H>>",
+      ) &&
+      hasOrderedCompactMarkers(drainResources, [
+        "resources.hooks.set_admission(false)",
+        "resources.hooks.invalidate_epochs()",
+        "resources.ops.stop_server_listening()",
+        ".unregister_interface_waiting(resources.interface_spec,true)",
+        "returnErr((report,RetainedRpcResources::new(resources)))",
+        ".unregister_interface_waiting(resources.interface_spec,true)",
+        "resources.ops.wait_server_listen()",
+        "release_resources(resources)",
+      ]) &&
+      !compactRust(drainResources).includes(
+        "ifletErr(error)=resources.ops.stop_server_listening(){resources.ops.wait_server_listen()",
+      ) &&
+      hasOrderedCompactMarkers(releaseResources, [
+        "drop(hooks)",
+        "drop(endpoint_security_descriptor)",
+        "drop(ops)",
+      ]) &&
+      hasOrderedCompactMarkers(serviceMain, [
+        "publish_stop_event_and_select_startup(&stop_event)",
+        "StartupState::Stop=>{finish_service::<W>(status_handle,Some(stop_event),None,None);return;}",
+        "W::start()",
+        "failure.permits_stopped_status()",
+        "abandon_service_with_retained_runtime(stop_event)",
+        "publish_running_or_select_stop(&mutworker)",
+      ]) &&
+      compactRust(platformService).includes(
+        "Err(crate::key_agent_service_rpc::StatusRpcWorkerError::RuntimeStateRetained)=>{Err(WorkerStartFailure::RuntimeStateRetained)}",
+      ) &&
+      compactRust(permitsStoppedStatus).includes(
+        "matches!(self,Self::Boundary)",
+      ) &&
+      hasOrderedCompactMarkers(runningTransition, [
+        "letmutcontext=lock_context()",
+        "publish_status(&mutcontext,SERVICE_RUNNING,0,0,0)",
+        "worker.begin_accepting()",
+      ]) &&
+      hasOrderedCompactMarkers(finishService, [
+        "StopProgressReporter::start()",
+        "worker.stop_and_drain().is_err()",
+        "reporter.finish().is_err()",
+        "drop(worker)",
+        "stop_event.map(OwnedEvent::close)",
+        "ifworker_failed||progress_failed||event_close_failed",
+        "return;",
+        "letfinal_status=ifletSome(detail)=failure",
+        "send_status(status_handle,&final_status)",
+      ]) &&
+      hasOrderedCompactMarkers(reportStopProgress, [
+        "Instant::now().checked_add(Duration::from_millis(STOP_DEADLINE_MILLISECONDS))",
+        "std::process::abort()",
+        "receiver.recv_timeout(Duration::from_millis(STOP_PROGRESS_MILLISECONDS))",
+        "Err(RecvTimeoutError::Disconnected)=>std::process::abort()",
+        "ifInstant::now()>=deadline",
+        "std::process::abort()",
+        "checkpoint.checked_add(1)",
+        "publish_status(&mutcontext,SERVICE_STOP_PENDING,0,checkpoint,STOP_WAIT_HINT_MILLISECONDS,)",
+        "std::process::abort()",
+      ]) &&
+      !compactRust(abandonRetainedRuntime).includes("SERVICE_STOPPED") &&
+      !compactRust(abandonRetainedRuntime).includes("send_status(") &&
+      hasOrderedCompactMarkers(abandonRetainedRuntime, [
+        "context.finishing=true",
+        "context.unpublish_stop_event()",
+        "stop_event.close()",
+        "context.status_handle=0",
+        "DISPATCH_OUTCOME.store(OUTCOME_FAILURE,Ordering::Release)",
+      ]) &&
+      hasOrderedCompactMarkers(workerStart, [
+        "letcontext=Arc::new(ServerContext::new()?)",
+        "letsecurity_descriptor=OwnedSecurityDescriptor::new()?",
+        "letinterface_spec=server_interface_spec().ok_or(StatusRpcWorkerError::Unavailable)?",
+        "publish_context(Arc::clone(&context))?",
+        "PreparedStatusRpcServer::new(WindowsRpcOps,interface_spec,security_descriptor,ServerHooks{context:Arc::clone(&context),},)",
+        ".start()",
+      ]) &&
+      hasOrderedCompactMarkers(workerBegin, [
+        "self.context.fatal.load(Ordering::Acquire)",
+        "self.server.enable_admission_after_scm_running()",
+        "self.server.is_admitting()",
+        "self.context.admission.load(Ordering::Acquire)",
+      ]) &&
+      hasOrderedCompactMarkers(callbackPermit, [
+        "self.fatal.load(Ordering::Acquire)",
+        "!self.admission.load(Ordering::Acquire)",
+        "self.callback_auth_inflight.fetch_update(Ordering::AcqRel,Ordering::Acquire,|current|{(current<lifecycle::STATUS_RPC_MAX_CALLSasusize).then_some(current+1)})",
+        "Some(CallbackAuthPermit{context:self})",
+      ]) &&
+      compactRust(root).includes(
+        "implDropforCallbackAuthPermit<'_>{fndrop(&mutself){letprevious=self.context.callback_auth_inflight.fetch_sub(1,Ordering::AcqRel);ifprevious==0{std::process::abort();}}}",
+      ) &&
+      hasOrderedCompactMarkers(workerStop, [
+        "server.stop_and_drain()",
+        "clear_context(&context)?",
+        "context.fatal.load(Ordering::Acquire)",
+      ]) &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.lifecycle],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcLifecycleTestNames) &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.root],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcRootTestNames) &&
+      /#\[test\]\s*#\[ignore\s*=\s*"requires an interactive medium-integrity Windows desktop token and a free fixed endpoint"\]\s*fn\s+live_authenticated_local_rpc_status_round_trip\s*\(/u.test(
+        sources[keyAgentServiceRpcFixturePaths.root],
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceRpcLifecycleInputs = Object.freeze({
+  sources: keyAgentServiceRpcFixtureSources,
+  platformService: keyAgentServicePlatformSource,
+});
+const keyAgentServiceRpcLifecycleMutationProbes = [
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "pub(crate) const STATUS_RPC_MAX_CALLS: u32 = 8;",
+    "pub(crate) const STATUS_RPC_MAX_CALLS: u32 = 9;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "pub(crate) const STATUS_RPC_MAX_RPC_SIZE: u32 = 76;",
+    "pub(crate) const STATUS_RPC_MAX_RPC_SIZE: u32 = 77;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "RPC_IF_ALLOW_LOCAL_ONLY | RPC_IF_ALLOW_SECURE_ONLY | RPC_IF_SEC_NO_CACHE",
+    "RPC_IF_ALLOW_SECURE_ONLY | RPC_IF_SEC_NO_CACHE",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    '"YourWallet.KeyAgentService.v1"',
+    '"YourWallet.KeyAgentService.v2"',
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)",
+    "D:(A;;GA;;;WD)",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "RpcServerRegisterAuthInfoW(PCWSTR::null(), authentication_service, None, None)",
+    "RpcServerRegisterAuthInfoW(w!(\"principal\"), authentication_service, None, None)",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "Some(interface_security_callback),",
+    "None,",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "RpcMgmtStopServerListening(None)",
+    "RpcMgmtStopServerListening(Some(core::ptr::null_mut()))",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "Some(interface_spec.as_raw().cast_const()), None, 1",
+    "Some(interface_spec.as_raw().cast_const()), None, 0",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "resources.hooks.invalidate_epochs();",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "resources: ManuallyDrop<RpcResources<O, H>>",
+    "resources: RpcResources<O, H>",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "let wait_error = resources.ops.wait_server_listen().err();",
+    "let wait_error = None;",
+  ),
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "if publish_status(&mut context, SERVICE_RUNNING, 0, 0, 0).is_err()\n            || worker.begin_accepting().is_err()",
+      "if worker.begin_accepting().is_err()\n            || publish_status(&mut context, SERVICE_RUNNING, 0, 0, 0).is_err()",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "matches!(self, Self::Boundary)",
+      "matches!(self, Self::Boundary | Self::RuntimeStateRetained)",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "abandon_service_with_retained_runtime(stop_event);",
+      "finish_service::<W>(status_handle, Some(stop_event), None, Some(INITIALIZATION_FAILURE));",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "const STOP_DEADLINE_MILLISECONDS: u64 = 15_000;",
+      "const STOP_DEADLINE_MILLISECONDS: u64 = 30_000;",
+    ),
+  },
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "if Instant::now() >= deadline {\n                std::process::abort();\n            }",
+      "if Instant::now() >= deadline {\n                return;\n            }",
+    ),
+  },
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "fn hidden_endpoint_mapper() { RpcEpResolveBinding(core::ptr::null_mut(), core::ptr::null_mut()); }",
+  ),
+];
+requireInvariant(
+  keyAgentServiceRpcLifecycleContract(
+    keyAgentServiceRpcLifecycleInputs,
+  ) &&
+    keyAgentServiceRpcLifecycleMutationProbes.every(
+      (probe) =>
+        (probe.sources !== keyAgentServiceRpcLifecycleInputs.sources ||
+          probe.platformService !==
+            keyAgentServiceRpcLifecycleInputs.platformService) &&
+        !keyAgentServiceRpcLifecycleContract(probe),
+    ),
+  "the debug status-RPC lifecycle must retain the fixed local endpoint, explicit AU/SY medium-integrity descriptor, WINNT secure-local no-cache If3 flags, 8-call/76-byte bounds, independent security callback, SCM-after-RUNNING admission, stop-unregister(TRUE)-wait rundown, and process-lifetime retention on uncertain cleanup with exact callsites, tests, and effective mutation probes",
+);
+
+const keyAgentServiceRpcLiveProbeApis = [
+  "RpcStringBindingComposeW",
+  "RpcBindingFromStringBindingW",
+  "RpcBindingSetAuthInfoW",
+  "RpcBindingFree",
+  "RpcStringFreeW",
+];
+const keyAgentServiceRpcLiveProbeContract = ({ source }) => {
+  try {
+    const tests = rustBottomTestModule(source);
+    const connect = rustFunctionBlock(tests, "connect");
+    const call = rustFunctionBlock(tests, "call");
+    const live = rustFunctionBlock(
+      tests,
+      "live_authenticated_local_rpc_status_round_trip",
+    );
+    const ownedBindingDrop = rustImplItems(tests).find((item) =>
+      item.header.includes("Drop for OwnedTestBinding"),
+    )?.source;
+    const ownedStringDrop = rustImplItems(tests).find((item) =>
+      item.header.includes("Drop for OwnedRpcString"),
+    )?.source;
+    if (ownedBindingDrop === undefined || ownedStringDrop === undefined) {
+      return false;
+    }
+    const apiCalls = keyAgentServiceRpcLiveProbeApis.map((api) => ({
+      api,
+      count: rustCallSites(tests, api).length,
+    }));
+    const usage = rustIdentifierUsageInventory(
+      [{ path: keyAgentServiceRpcFixturePaths.root, source: tests }],
+      keyAgentServiceRpcLiveProbeApis,
+    );
+    return (
+      JSON.stringify(apiCalls) ===
+        JSON.stringify(
+          keyAgentServiceRpcLiveProbeApis.map((api) => ({ api, count: 1 })),
+        ) &&
+      usage.aliases.length === 0 &&
+      usage.references.length === 0 &&
+      tests.includes("const TEST_RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;") &&
+      tests.includes("const TEST_RPC_AUTHN_SERVICE_WINNT: u32 = 10;") &&
+      tests.includes("const TEST_RPC_AUTHZ_SERVICE_NONE: u32 = 0;") &&
+      hasOrderedCompactMarkers(connect, [
+        "RpcStringBindingComposeW(PCWSTR::null(),PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr()),PCWSTR::null(),PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),PCWSTR::null(),Some(&rawmutstring_binding),)",
+        "letstring_binding=OwnedRpcString(string_binding)",
+        "RpcBindingFromStringBindingW(PCWSTR(string_binding.0.0.cast_const()),&rawmutbinding,)",
+        "letbinding=Self(binding)",
+        "RpcBindingSetAuthInfoW(binding.0.cast_const(),PCWSTR::null(),TEST_RPC_AUTHN_LEVEL_PACKET_PRIVACY,TEST_RPC_AUTHN_SERVICE_WINNT,None,TEST_RPC_AUTHZ_SERVICE_NONE,)",
+      ]) &&
+      hasOrderedCompactMarkers(call, [
+        "BindingHandle::from_raw(self.0)",
+        "RpcFrame::from_payload(&encode_request(request))",
+        "exchange(&binding,&frame)",
+        "decode_response(response.payload())",
+      ]) &&
+      hasOrderedCompactMarkers(
+        rustFunctionBlock(ownedBindingDrop, "drop"),
+        [
+          "RpcBindingFree(&rawmutself.0)",
+          "ifstatus.0!=RPC_S_OK||!self.0.is_null()",
+          "std::process::abort()",
+        ],
+      ) &&
+      hasOrderedCompactMarkers(
+        rustFunctionBlock(ownedStringDrop, "drop"),
+        [
+          "RpcStringFreeW(&rawmutself.0)",
+          "ifstatus.0!=RPC_S_OK||!self.0.0.is_null()",
+          "std::process::abort()",
+        ],
+      ) &&
+      /#\[test\]\s*#\[ignore\s*=\s*"requires an interactive medium-integrity Windows desktop token and a free fixed endpoint"\]\s*fn\s+live_authenticated_local_rpc_status_round_trip\s*\(/u.test(
+        tests,
+      ) &&
+      hasOrderedCompactMarkers(live, [
+        "letmutworker=StatusRpcWorker::start()",
+        "worker.begin_accepting()",
+        "letbinding=OwnedTestBinding::connect()?",
+        "ServiceRequest::OpenEpoch(OpenEpochRequest::new())",
+        "ServiceRequest::Command(ServiceCommandRequest::new(nonce,request_id,ServiceCommand::Status,))",
+        "response.status()==ServiceStatus::Unavailable",
+        "response.epoch_nonce()==nonce",
+        "response.request_id()==request_id",
+        "letstop_result=worker.stop_and_drain()",
+        "exchange_result?",
+        "stop_result",
+      ]) &&
+      !/\b(?:RpcEp\w*|RpcServerRegisterIf\w*|RpcServerListen|RpcMgmtStopServerListening|RpcImpersonateClient|RpcRevertToSelf\w*)\b/u.test(
+        rustLexicalCode(tests),
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceRpcLiveProbeInputs = Object.freeze({
+  source: keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root],
+});
+const mutateKeyAgentServiceRpcLiveProbe = (search, replacement) => {
+  const source = keyAgentServiceRpcLiveProbeInputs.source;
+  const tests = rustBottomTestModule(source);
+  const mutatedTests = tests.replace(search, replacement);
+  return {
+    source: `${source.slice(0, source.length - tests.length)}${mutatedTests}`,
+  };
+};
+const keyAgentServiceRpcLiveProbeMutationProbes = [
+  mutateKeyAgentServiceRpcLiveProbe(
+    "const TEST_RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;",
+    "const TEST_RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 5;",
+  ),
+  mutateKeyAgentServiceRpcLiveProbe(
+    "PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),",
+    "PCWSTR::null(),",
+  ),
+  mutateKeyAgentServiceRpcLiveProbe(
+    "let status = unsafe { RpcBindingFree(&raw mut self.0) };",
+    "let status = RPC_STATUS(RPC_S_OK);",
+  ),
+  mutateKeyAgentServiceRpcLiveProbe(
+    '#[ignore = "requires an interactive medium-integrity Windows desktop token and a free fixed endpoint"]',
+    "",
+  ),
+  mutateKeyAgentServiceRpcLiveProbe(
+    "let stop_result = worker.stop_and_drain().map_err(|_| \"drain worker\");",
+    "let stop_result = Ok(());",
+  ),
+];
+requireInvariant(
+  keyAgentServiceRpcLiveProbeContract(keyAgentServiceRpcLiveProbeInputs) &&
+    keyAgentServiceRpcLiveProbeMutationProbes.every(
+      (probe) =>
+        probe.source !== keyAgentServiceRpcLiveProbeInputs.source &&
+        !keyAgentServiceRpcLiveProbeContract(probe),
+    ),
+  "the ignored Windows live status-RPC probe must compose only the fixed local endpoint, set WINNT packet privacy with authz-none, own and fail-fast-free both RPC allocations, use the checked generated binding, prove OpenEpoch then exactly correlated Status/Unavailable, always drain the worker, remain explicitly environment-gated, and reject effective endpoint/auth/free/drain mutations",
+);
+
+const keyAgentServiceRpcAuthTestNames = [
+  "approved_call_runs_the_complete_order_and_reverts_before_revalidation",
+  "every_call_attribute_is_fail_closed_before_authentication",
+  "independent_authentication_query_is_required",
+  "preexisting_thread_token_is_rejected_without_impersonating",
+  "failed_impersonation_does_not_attempt_revert",
+  "every_post_impersonation_failure_reverts_exactly_once",
+  "process_open_or_pid_reconfirmation_failure_never_impersonates",
+  "impersonation_and_primary_identity_mismatch_reverts_and_denies",
+  "token_policy_rejects_each_forbidden_property",
+  "elevation_and_filtering_must_match_across_effective_tokens",
+  "revert_failure_or_thread_change_fail_fast_after_one_exact_revert",
+  "residual_or_unobservable_thread_token_fail_fasts_on_success_and_error_paths",
+  "unobservable_preclean_state_fails_before_open_or_impersonation",
+  "retained_process_revalidation_and_exact_match_are_fail_closed",
+  "debug_is_data_free",
+  "null_callback_context_fails_before_any_rpc_query",
+];
+const keyAgentServiceRpcAuthSysTestNames = [
+  "integrity_sid_parser_requires_mandatory_authority_and_exact_shape",
+  "exact_token_booleans_and_group_bounds_fail_closed",
+  "token_restriction_widths_are_closed_and_canonical",
+];
+const keyAgentServiceRpcAuthContract = ({ sources }) => {
+  try {
+    const root = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.root],
+    );
+    const auth = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.auth],
+    );
+    const authSys = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.authSys],
+    );
+    const dispatch = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.dispatch],
+    );
+    const authenticateCall = rustFunctionBlock(auth, "authenticate_call");
+    const authenticateCallback = rustFunctionBlock(
+      auth,
+      "authenticate_callback_context",
+    );
+    const authenticateWith = rustFunctionBlock(auth, "authenticate_with");
+    const validateCall = rustFunctionBlock(auth, "validate_call");
+    const validateAuthentication = rustFunctionBlock(
+      auth,
+      "validate_authentication",
+    );
+    const validateToken = rustFunctionBlock(auth, "validate_token");
+    const sameTokenIdentity = rustFunctionBlock(auth, "same_token_identity");
+    const samePrimaryToken = rustFunctionBlock(auth, "same_primary_token");
+    const revalidateWith = rustFunctionBlock(auth, "revalidate_with");
+    const revertExact = rustFunctionBlock(auth, "revert_exact");
+    const guardDrop = rustImplItems(auth).find((item) =>
+      item.header.includes("Drop for ImpersonationGuard"),
+    )?.source;
+    const managerExchange = rustFunctionBlock(root, "exchange");
+    const interfaceCallback = rustFunctionBlock(
+      root,
+      "interface_security_callback",
+    );
+    const dispatchExchange = rustFunctionBlock(dispatch, "exchange_with");
+    const callObservation = rustFunctionBlock(authSys, "call_observation");
+    const authenticationObservation = rustFunctionBlock(
+      authSys,
+      "authentication_observation",
+    );
+    const threadTokenState = rustTopLevelFunctionBlock(
+      authSys,
+      "thread_token_state",
+    );
+    const openRestrictedProcess = rustFunctionBlock(
+      authSys,
+      "open_restricted_process",
+    );
+    const validateProcessHandle = rustFunctionBlock(
+      authSys,
+      "validate_process_handle",
+    );
+    const tokenObservation = rustFunctionBlock(authSys, "token_observation");
+    const tokenHasRestrictions = rustFunctionBlock(
+      authSys,
+      "token_has_restrictions",
+    );
+    const parseTokenHasRestrictions = rustFunctionBlock(
+      authSys,
+      "parse_token_has_restrictions",
+    );
+    const initializedTokenBytes = rustFunctionBlock(
+      authSys,
+      "initialized_bytes",
+    );
+    const tokenInformation = rustFunctionBlock(authSys, "token_information");
+    const failFast = rustFunctionBlock(authSys, "fail_fast");
+    if (guardDrop === undefined) return false;
+    const guardDropFunction = rustFunctionBlock(guardDrop, "drop");
+    const authenticateWithCompact = compactRust(authenticateWith);
+    const validateCallCompact = compactRust(validateCall);
+    const validateTokenCompact = compactRust(validateToken);
+    const sameTokenIdentityCompact = compactRust(sameTokenIdentity);
+    const samePrimaryTokenCompact = compactRust(samePrimaryToken);
+    const revalidateCompact = compactRust(revalidateWith);
+    return (
+      auth.includes("const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;") &&
+      auth.includes("const RPC_AUTHN_SERVICE_WINNT: u32 = 10;") &&
+      auth.includes("const RPC_AUTHZ_SERVICE_NONE: u32 = 0;") &&
+      auth.includes("const RPC_CALL_STATUS_ACTIVE: u32 = 0;") &&
+      auth.includes("const MEDIUM_INTEGRITY_RID: u32 = 0x2000;") &&
+      auth.includes("const MAX_BINARY_SID_BYTES: usize = 68;") &&
+      compactRust(authenticateCall).includes(
+        "letops=sys::WindowsRpcAuthOps::new(binding);authenticate_with(&ops)",
+      ) &&
+      compactRust(authenticateCallback).includes(
+        "letops=unsafe{sys::WindowsRpcAuthOps::from_callback(raw)}.map_err(|_|RpcAuthError::CallFailed)?;authenticate_with(&ops)",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactRust(auth),
+        "authenticate_with(&ops)",
+      ) === 2 &&
+      keyAgentServiceLiteralCount(
+        compactRust(root),
+        "auth::authenticate_callback_context(call_context)",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        compactRust(root),
+        "auth::authenticate_call(binding)",
+      ) === 1 &&
+      hasOrderedCompactMarkers(interfaceCallback, [
+        "letOk(context)=current_context()else{returnRPC_STATUS(RPC_S_ACCESS_DENIED);}",
+        "letSome(_permit)=context.try_callback_auth_permit()else{returnRPC_STATUS(RPC_S_ACCESS_DENIED);}",
+        "auth::authenticate_callback_context(call_context)",
+        "Ok(_)=>RPC_STATUS(RPC_S_OK)",
+        "Err(_)=>RPC_STATUS(RPC_S_ACCESS_DENIED)",
+      ]) &&
+      hasOrderedCompactMarkers(managerExchange, [
+        "self.admission.load(Ordering::Acquire)",
+        "self.dispatch.lock()",
+        "self.admission.load(Ordering::Acquire)",
+        "dispatch.exchange_with(request,move||{auth::authenticate_call(binding).map_err(AuthenticationFailure::from)})",
+      ]) &&
+      compactRust(dispatchExchange).includes(
+        "F:FnOnce()->Result<P,AuthenticationFailure>",
+      ) &&
+      hasOrderedCompactMarkers(dispatchExchange, [
+        "letcurrent_peer=authenticate().map_err(map_authentication_failure)?",
+        "if!request_frame.is_canonical()",
+        "decode_request(request_frame.payload())",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateWith, [
+        "letcall=ops.call_observation()",
+        "letprocess_id=validate_call(call)?",
+        "letauthentication=ops.authentication_observation()",
+        "validate_authentication(authentication)",
+        "ops.thread_token_state()",
+        "ThreadTokenState::Clear=>{}",
+        "ThreadTokenState::Present=>",
+        "returnErr(RpcAuthError::AccessDenied)",
+        "letprocess=ops.open_process(process_id)",
+        "letconfirmed_call=ops.call_observation()",
+        "ifvalidate_call(confirmed_call)?!=process_id",
+        "letthread_cookie=ops.current_thread_cookie()",
+        "ops.impersonate()",
+        "letguard=ImpersonationGuard::new(ops,thread_cookie)",
+        "letimpersonation=ops.impersonation_token()",
+        "validate_token(&impersonation,TokenKind::Impersonation)",
+        "letprimary=ops.primary_token(&process)",
+        "validate_token(&primary,TokenKind::Primary)",
+        "if!same_token_identity(&impersonation,&primary)",
+        "guard.finish()",
+        "authenticated.revalidate_with(ops)",
+      ]) &&
+      (authenticateWithCompact.match(/ops\.call_observation\(\)/gu) ?? [])
+        .length === 2 &&
+      validateCallCompact.includes("if!call.local") &&
+      validateCallCompact.includes(
+        "call.protocol!=CallProtocol::LocalRpc",
+      ) &&
+      validateCallCompact.includes("!call.interface_uuid_matches") &&
+      validateCallCompact.includes("call.operation_number!=0") &&
+      validateCallCompact.includes("call.null_session") &&
+      validateCallCompact.includes("call.kernel_mode_caller") &&
+      validateCallCompact.includes(
+        "call.call_status!=RPC_CALL_STATUS_ACTIVE",
+      ) &&
+      validateCallCompact.includes("call.call_kind!=CallKind::Normal") &&
+      validateCallCompact.includes(
+        "call.authentication_level!=RPC_AUTHN_LEVEL_PACKET_PRIVACY",
+      ) &&
+      validateCallCompact.includes(
+        "call.authentication_service!=RPC_AUTHN_SERVICE_WINNT",
+      ) &&
+      validateCallCompact.includes(
+        "call.process_id.ok_or(RpcAuthError::AccessDenied)",
+      ) &&
+      compactRust(validateAuthentication).includes(
+        "authentication.authentication_level!=RPC_AUTHN_LEVEL_PACKET_PRIVACY||authentication.authentication_service!=RPC_AUTHN_SERVICE_WINNT||authentication.authorization_service!=RPC_AUTHZ_SERVICE_NONE",
+      ) &&
+      validateTokenCompact.includes("token.token_kind!=expected") &&
+      validateTokenCompact.includes("token.token_level!=expected_level") &&
+      validateTokenCompact.includes("!token.user_sid.has_valid_length()") &&
+      validateTokenCompact.includes("token.logon_sid_count!=1") &&
+      validateTokenCompact.includes("token.session_id==0") &&
+      validateTokenCompact.includes(
+        ".logon_sid.as_ref().is_none_or(|sid|!sid.has_valid_length())",
+      ) &&
+      validateTokenCompact.includes("token.app_container") &&
+      validateTokenCompact.includes("token.ui_access") &&
+      validateTokenCompact.includes(
+        "token.integrity_rid!=MEDIUM_INTEGRITY_RID",
+      ) &&
+      validateTokenCompact.includes(
+        "matches!(token.elevation,ElevationKind::Full|ElevationKind::Other)",
+      ) &&
+      validateTokenCompact.includes("!token.interactive_sid_enabled") &&
+      sameTokenIdentityCompact ===
+        "fnsame_token_identity(first:&TokenObservation,second:&TokenObservation)->bool{first.user_sid==second.user_sid&&first.logon_sid==second.logon_sid&&first.session_id==second.session_id&&first.authentication_id==second.authentication_id&&first.elevation==second.elevation&&first.restricted==second.restricted}" &&
+      samePrimaryTokenCompact ===
+        "fnsame_primary_token(first:&TokenObservation,second:&TokenObservation)->bool{same_token_identity(first,second)&&first.token_id==second.token_id}" &&
+      revalidateCompact.includes(
+        "exact_process_is_live(&self.process,self.process_id)",
+      ) &&
+      revalidateCompact.includes("validate_token(&current,TokenKind::Primary)?") &&
+      revalidateCompact.includes(
+        "if!same_primary_token(&self.primary,&current)",
+      ) &&
+      auth.includes("_thread_bound: PhantomData<Rc<()>>") &&
+      !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+ImpersonationGuard/u.test(
+        rustLexicalCode(auth),
+      ) &&
+      hasOrderedCompactMarkers(revertExact, [
+        "if!self.active{return;}",
+        "self.active=false",
+        "letcurrent=self.ops.current_thread_cookie()",
+        "letreverted=self.ops.revert()",
+        "lettoken_state=self.ops.thread_token_state()",
+        "current!=Ok(self.thread_cookie)||reverted.is_err()||token_state!=Ok(ThreadTokenState::Clear)",
+        "self.ops.fail_fast()",
+      ]) &&
+      compactRust(guardDropFunction).includes("self.revert_exact()") &&
+      authSys.includes(
+        "const EXPECTED_INTERFACE_UUID: GUID = GUID::from_u128(u128::from_be_bytes(INTERFACE_UUID));",
+      ) &&
+      compactRust(callObservation).includes(
+        "Version:RPC_CALL_ATTRIBUTES_VERSION,Flags:RPC_QUERY_CLIENT_PID|RPC_QUERY_IS_CLIENT_LOCAL",
+      ) &&
+      compactRust(callObservation).includes(
+        "RpcServerInqCallAttributesW(Some(self.raw_binding()),ptr::from_mut(&mutattributes).cast::<c_void>(),)",
+      ) &&
+      compactRust(callObservation).includes(
+        "status.0!=0||attributes.Version!=RPC_CALL_ATTRIBUTES_VERSION",
+      ) &&
+      compactRust(callObservation).includes(
+        "attributes.InterfaceUuid==EXPECTED_INTERFACE_UUID",
+      ) &&
+      compactRust(callObservation).includes(
+        "u32::try_from(attributes.ClientPID.0.addr()).ok().and_then(NonZeroU32::new)",
+      ) &&
+      compactRust(authenticationObservation).includes(
+        "RpcBindingInqAuthClientExW(Some(self.raw_binding()),&rawmutprivileges,None,Some(&rawmutauthentication_level),Some(&rawmutauthentication_service),Some(&rawmutauthorization_service),0,)",
+      ) &&
+      compactRust(threadTokenState).includes(
+        "OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,true,&rawmuttoken)",
+      ) &&
+      compactRust(threadTokenState).includes(
+        "ERROR_NO_TOKEN.to_hresult()=>Ok(ThreadTokenState::Clear)",
+      ) &&
+      compactRust(openRestrictedProcess).includes(
+        "letaccess=PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE",
+      ) &&
+      compactRust(openRestrictedProcess).includes(
+        "OpenProcess(access,false,process_id.get())",
+      ) &&
+      hasOrderedCompactMarkers(validateProcessHandle, [
+        "GetHandleInformation(process.raw(),&rawmutflags)",
+        "ifflags!=0{returnOk(false);}",
+        "GetProcessId(process.raw())",
+        "WaitForSingleObject(process.raw(),0)}==WAIT_TIMEOUT",
+      ]) &&
+      compactRust(authSys).includes(
+        "letreopened=open_restricted_process(process_id)?;Ok(unsafe{CompareObjectHandles(process.raw(),reopened.raw())}.as_bool())",
+      ) &&
+      compactRust(tokenObservation).includes(
+        "fill_token_fixed(token,TokenStatistics,&mutstatistics)",
+      ) &&
+      compactRust(tokenObservation).includes(
+        "letrestricted=token_has_restrictions(token)",
+      ) &&
+      hasOrderedCompactMarkers(tokenHasRestrictions, [
+        "token_information(token,TokenHasRestrictions,1)",
+        "parse_token_has_restrictions(information.initialized_bytes())",
+      ]) &&
+      hasOrderedCompactMarkers(parseTokenHasRestrictions, [
+        "[value]=>exact_boolean(u32::from(*value))",
+        "[first,second,third,fourth]=>",
+        "exact_boolean(u32::from_ne_bytes([*first,*second,*third,*fourth]))",
+        "_=>Err(ObservationError::Incomplete)",
+      ]) &&
+      compactRust(initializedTokenBytes).includes(
+        "core::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(),self.returned_bytes)",
+      ) &&
+      compactRust(tokenObservation).includes(
+        "authentication_id:authentication_id(statistics.AuthenticationId),token_id:token_id(statistics.TokenId)",
+      ) &&
+      compactRust(authSys).includes(
+        "fnimpersonate(&self)->Result<(),ObservationError>{letstatus=unsafe{RpcImpersonateClient(Some(self.raw_binding()))};rpc_success(status.0)}",
+      ) &&
+      compactRust(authSys).includes(
+        "fnrevert(&self)->Result<(),ObservationError>{letstatus=unsafe{RpcRevertToSelfEx(Some(self.raw_binding()))};rpc_success(status.0)}",
+      ) &&
+      hasOrderedCompactMarkers(failFast, [
+        "RaiseFailFastException(None,None,0)",
+        "std::process::abort()",
+      ]) &&
+      authSys.includes("self.words.zeroize();") &&
+      authSys.includes("self.returned_bytes.zeroize();") &&
+      compactRust(tokenInformation).includes("letmutwords=vec![0_usize;word_count]") &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.auth],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcAuthTestNames) &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.authSys],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcAuthSysTestNames) &&
+      sources[keyAgentServiceRpcFixturePaths.auth].includes(
+        "let mutations: [fn(&mut CallObservation); 13]",
+      ) &&
+      sources[keyAgentServiceRpcFixturePaths.auth].includes(
+        "|call: &mut CallObservation| call.call_status = 1",
+      ) &&
+      sources[keyAgentServiceRpcFixturePaths.auth].includes(
+        "|call: &mut CallObservation| call.call_status = 2",
+      ) &&
+      sources[keyAgentServiceRpcFixturePaths.auth].includes(
+        "|call: &mut CallObservation| call.call_status = 3",
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceRpcAuthInputs = Object.freeze({
+  sources: keyAgentServiceRpcFixtureSources,
+});
+const keyAgentServiceRpcAuthMutationProbes = [
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "const RPC_CALL_STATUS_ACTIVE: u32 = 0;",
+    "const RPC_CALL_STATUS_ACTIVE: u32 = 1;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        || !call.interface_uuid_matches\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        || call.call_status != RPC_CALL_STATUS_ACTIVE\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        || authentication.authorization_service != RPC_AUTHZ_SERVICE_NONE\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        || token.session_id == 0\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.authSys,
+    "token_information(token, TokenHasRestrictions, 1)?",
+    "token_information(token, TokenRestrictedSids, 1)?",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.authSys,
+    "[first, second, third, fourth] => {",
+    "[first, second] => {",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.authSys,
+    "        _ => Err(ObservationError::Incomplete),\n    }\n}\n\nfn fill_token_fixed",
+    "        _ => Ok(false),\n    }\n}\n\nfn fill_token_fixed",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        && first.authentication_id == second.authentication_id\n",
+    "        && first.authentication_id == second.authentication_id\n        && first.token_id == second.token_id\n",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        && first.elevation == second.elevation\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        && first.restricted == second.restricted\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "same_token_identity(first, second) && first.token_id == second.token_id",
+    "same_token_identity(first, second)",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "        let token_state = self.ops.thread_token_state();\n",
+    "        let token_state = Ok(ThreadTokenState::Clear);\n",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "            self.ops.fail_fast();",
+    "            return;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.authSys,
+    "RpcRevertToSelfEx(Some(self.raw_binding()))",
+    "RpcRevertToSelf()",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.authSys,
+    "PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE",
+    "PROCESS_QUERY_LIMITED_INFORMATION",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "auth::authenticate_callback_context(call_context)",
+    "Ok(AuthenticatedRpcClient::hidden_for_test())",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "auth::authenticate_call(binding).map_err(AuthenticationFailure::from)",
+    "Ok(AuthenticatedRpcClient::hidden_for_test())",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "F: FnOnce() -> Result<P, AuthenticationFailure>",
+    "F: Fn() -> Result<P, AuthenticationFailure>",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcAuthInputs,
+    keyAgentServiceRpcFixturePaths.auth,
+    "    let confirmed_call = ops\n        .call_observation()\n        .map_err(|_| RpcAuthError::CallFailed)?;",
+    "    let confirmed_call = call;",
+  ),
+];
+requireInvariant(
+  keyAgentServiceRpcAuthContract(keyAgentServiceRpcAuthInputs) &&
+    keyAgentServiceRpcAuthMutationProbes.every(
+      (probe) =>
+        probe.sources !== keyAgentServiceRpcAuthInputs.sources &&
+        !keyAgentServiceRpcAuthContract(probe),
+    ),
+  "every debug status-RPC callback and manager entry must authenticate independently; require exact local LRPC/UUID/opnum/normal/active-zero/privacy/WINNT facts, independent authz-none inquiry, clean same-thread fail-fast impersonation rundown, nonzero desktop medium interactive token policy, matched elevation/filter state across effective tokens, retained exact process and primary TokenId revalidation, PID requery, canonical one-/four-byte TokenHasRestrictions parsing, secret-buffer zeroization, exact tests, and effective mutations",
+);
+
+const keyAgentServiceRpcEpochTestNames = [
+  "zero_seed_is_rejected_and_debug_is_fully_redacted",
+  "same_exact_peer_has_only_one_live_epoch",
+  "concurrent_issue_for_same_peer_has_exactly_one_winner",
+  "fixed_capacity_never_evicts_a_live_epoch",
+  "expiry_is_inclusive_at_exactly_five_seconds",
+  "wrong_peer_spends_the_epoch_before_identity_check",
+  "both_retained_and_current_peer_are_revalidated",
+  "same_nonce_has_exactly_one_concurrent_consumer",
+  "stop_invalidates_all_epochs_and_restart_requires_a_new_table",
+  "counter_and_deadline_failures_are_internal_and_insert_nothing",
+  "failed_time_read_after_take_cannot_be_replayed",
+  "poisoned_table_cannot_report_a_clean_stop",
+];
+const keyAgentServiceRpcDispatchTestNames = [
+  "open_and_status_are_the_only_successful_dispatches",
+  "manager_authenticates_exactly_once_before_parsing",
+  "wrong_peer_and_replay_map_only_to_epoch_denial",
+  "current_peer_revalidation_failure_is_internal_and_terminal",
+  "fixed_full_and_stopping_categories_are_preserved",
+  "every_dispatch_category_has_one_closed_manager_mapping",
+  "debug_output_contains_no_seed_peer_nonce_or_request_bytes",
+  "wire_error_categories_cannot_escape_dispatch",
+];
+const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
+  try {
+    const epoch = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.epoch],
+    );
+    const dispatch = withoutBottomTestModule(
+      sources[keyAgentServiceRpcFixturePaths.dispatch],
+    );
+    const issue = rustFunctionBlock(epoch, "issue");
+    const consume = rustFunctionBlock(epoch, "consume");
+    const epochStop = rustFunctionBlock(epoch, "stop");
+    const lockState = rustFunctionBlock(epoch, "lock_state");
+    const deriveNonce = rustFunctionBlock(epoch, "derive_nonce");
+    const nonceMatch = rustFunctionBlock(epoch, "nonce_bytes_match");
+    const exchange = rustFunctionBlock(dispatch, "exchange_with");
+    const dispatchStop = rustFunctionBlock(dispatch, "stop");
+    const dispatchMapping = rustImplItems(dispatch).find(
+      (item) => item.header === "impl From<DispatchError> for ManagerError",
+    )?.source;
+    const mapAuth = rustFunctionBlock(
+      dispatch,
+      "map_authentication_failure",
+    );
+    const mapEpoch = rustFunctionBlock(dispatch, "map_epoch_error");
+    if (dispatchMapping === undefined) return false;
+    const issueCompact = compactRust(issue);
+    const consumeCompact = compactRust(consume);
+    return (
+      epoch.includes("#![deny(unsafe_code)]") &&
+      dispatch.includes("#![deny(unsafe_code)]") &&
+      epoch.includes("pub(super) const EPOCH_CAPACITY: usize = 16;") &&
+      epoch.includes(
+        "pub(super) const EPOCH_LIFETIME: Duration = Duration::from_secs(5);",
+      ) &&
+      epoch.includes("const EPOCH_SEED_BYTES: usize = 32;") &&
+      /^const EPOCH_NONCE_DOMAIN_V1:\s*&\[u8\]\s*=\s*b"[^"\r\n]+";$/mu.test(
+        epoch,
+      ) &&
+      keyAgentServiceLiteralCount(epoch, "EPOCH_NONCE_DOMAIN_V1") === 2 &&
+      compactRust(epoch).includes(
+        "seed:Zeroizing<[u8;EPOCH_SEED_BYTES]>,counter:u64,stopped:bool,slots:[Option<EpochSlot<P,I>>;EPOCH_CAPACITY]",
+      ) &&
+      compactRust(epoch).includes(
+        "nonce:Zeroizing<[u8;32]>,peer:P,deadline:I",
+      ) &&
+      compactRust(epoch).includes(
+        "getrandom::fill(seed.as_mut()).map_err(|_|EpochError::Internal)?",
+      ) &&
+      !/\b(?:HashMap|BTreeMap|VecDeque|retain\s*\(|remove\s*\(0\)|swap_remove)\b/u.test(
+        rustLexicalCode(epoch),
+      ) &&
+      hasOrderedCompactMarkers(issue, [
+        "letmutstate=self.lock_state()?",
+        "ifstate.stopped{returnErr(EpochError::Stopping);}",
+        "letnow=self.clock.now().ok_or(EpochError::Internal)?",
+        "now>=existing.deadline",
+        "*slot=None",
+        ".exactly_matches(&peer)",
+        "returnErr(EpochError::Denied)",
+        ".position(Option::is_none).ok_or(EpochError::Full)?",
+        ".checked_add(now,EPOCH_LIFETIME).ok_or(EpochError::Internal)?",
+        "state.counter.checked_add(1).ok_or(EpochError::Internal)?",
+        "state.counter=next_counter",
+        "derive_nonce(&state.seed,next_counter)?",
+        "nonce_bytes_match(&existing.nonce,&nonce_bytes)",
+        "returnErr(EpochError::Internal)",
+        "state.slots[slot_index]=Some(EpochSlot{nonce:nonce_bytes,peer,deadline,})",
+      ]) &&
+      (issueCompact.match(/state\.slots/gu) ?? []).length >= 5 &&
+      !issueCompact.includes("unwrap_or") &&
+      !issueCompact.includes("wrapping_add") &&
+      hasOrderedCompactMarkers(consume, [
+        "letmutstate=self.lock_state()?",
+        "ifstate.stopped{returnErr(EpochError::Stopping);}",
+        ".position(|candidate|",
+        "nonce_bytes_match(&candidate.nonce,nonce.as_bytes())",
+        ".ok_or(EpochError::Denied)?",
+        "state.slots[slot_index].take().ok_or(EpochError::Internal)?",
+        "letnow=self.clock.now().ok_or(EpochError::Internal)?",
+        "ifnow>=slot.deadline{returnErr(EpochError::Denied);}",
+        ".exactly_matches(current_peer)",
+        "slot.peer.revalidate().map_err(map_revalidation_error)?",
+        "current_peer.revalidate().map_err(map_revalidation_error)?",
+        "ifself.lock_state()?.stopped{returnErr(EpochError::Stopping);}",
+      ]) &&
+      consumeCompact.indexOf(".take()") <
+        consumeCompact.indexOf("self.clock.now()") &&
+      consumeCompact.indexOf(".take()") <
+        consumeCompact.indexOf(".exactly_matches(current_peer)") &&
+      hasOrderedCompactMarkers(epochStop, [
+        "letmutstate=self.lock_state()?",
+        "state.stopped=true",
+        "forslotin&mutstate.slots",
+        "*slot=None",
+      ]) &&
+      compactRust(lockState).includes(
+        "self.state.lock().map_err(|_|EpochError::Internal)",
+      ) &&
+      !compactRust(lockState).includes("PoisonError::into_inner") &&
+      hasOrderedCompactMarkers(deriveNonce, [
+        "EpochHmacSha256::new_from_slice(seed)",
+        "mac.update(EPOCH_NONCE_DOMAIN_V1)",
+        "mac.update(&counter.to_be_bytes())",
+        "mac.finalize().into_bytes().into()",
+        "ifnonce_bytes.iter().all(|byte|*byte==0)",
+        "Zeroizing::new(nonce_bytes)",
+      ]) &&
+      compactRust(nonceMatch).includes("bool::from(left.ct_eq(right))") &&
+      hasOrderedCompactMarkers(exchange, [
+        "letcurrent_peer=authenticate().map_err(map_authentication_failure)?",
+        "if!request_frame.is_canonical()",
+        "decode_request(request_frame.payload())",
+        "ServiceRequest::OpenEpoch(_)=>",
+        "self.epochs.issue(current_peer)",
+        "ServiceRequest::Command(command)=>",
+        ".consume(command.epoch_nonce(),&current_peer)",
+        "ServiceCommand::Status=>ServiceResponse::Status(ServiceStatusResponse::new(command.epoch_nonce(),command.request_id(),ServiceStatus::Unavailable,))",
+        "response.ensure_correlates_with(&request)",
+        "RpcFrame::from_payload(encoded.as_slice())",
+      ]) &&
+      compactRust(dispatchStop).includes(
+        "self.epochs.stop().map_err(map_epoch_error)",
+      ) &&
+      compactRust(dispatchMapping) ===
+        "implFrom<DispatchError>forManagerError{fnfrom(error:DispatchError)->Self{matcherror{DispatchError::Malformed=>Self::InvalidArgument,DispatchError::Authentication|DispatchError::Epoch=>Self::AccessDenied,DispatchError::Full=>Self::ServerTooBusy,DispatchError::Stopping=>Self::ServerUnavailable,DispatchError::Internal=>Self::CallFailed,}}}" &&
+      compactRust(mapAuth) ===
+        "constfnmap_authentication_failure(error:AuthenticationFailure)->DispatchError{matcherror{AuthenticationFailure::Denied=>DispatchError::Authentication,AuthenticationFailure::Internal=>DispatchError::Internal,}}" &&
+      compactRust(mapEpoch) ===
+        "constfnmap_epoch_error(error:EpochError)->DispatchError{matcherror{EpochError::Denied=>DispatchError::Epoch,EpochError::Full=>DispatchError::Full,EpochError::Stopping=>DispatchError::Stopping,EpochError::Internal=>DispatchError::Internal,}}" &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.epoch],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcEpochTestNames) &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(
+          sources[keyAgentServiceRpcFixturePaths.dispatch],
+        ),
+      ) === JSON.stringify(keyAgentServiceRpcDispatchTestNames)
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceRpcEpochDispatchInputs = Object.freeze({
+  sources: keyAgentServiceRpcFixtureSources,
+});
+const keyAgentServiceRpcEpochDispatchMutationProbes = [
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "pub(super) const EPOCH_CAPACITY: usize = 16;",
+    "pub(super) const EPOCH_CAPACITY: usize = 17;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "Duration::from_secs(5)",
+    "Duration::from_secs(6)",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "now >= existing.deadline",
+    "now > existing.deadline",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "if now >= slot.deadline",
+    "if now > slot.deadline",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "state.slots[slot_index].take().ok_or(EpochError::Internal)?",
+    "state.slots[slot_index].as_ref().ok_or(EpochError::Internal)?",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "        slot.peer.revalidate().map_err(map_revalidation_error)?;\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "        current_peer.revalidate().map_err(map_revalidation_error)?;\n",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "state.counter.checked_add(1)",
+    "Some(state.counter.wrapping_add(1))",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "        state.stopped = true;",
+    "        state.stopped = false;",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "        self.state.lock().map_err(|_| EpochError::Internal)",
+    "        Ok(self.state.lock().unwrap_or_else(PoisonError::into_inner))",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.epoch,
+    "    mac.update(EPOCH_NONCE_DOMAIN_V1);",
+    "",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "        let current_peer = authenticate().map_err(map_authentication_failure)?;\n        if !request_frame.is_canonical()",
+    "        if !request_frame.is_canonical()",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcEpochDispatchInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "DispatchError::Stopping => Self::ServerUnavailable",
+    "DispatchError::Stopping => Self::CallFailed",
+  ),
+];
+requireInvariant(
+  keyAgentServiceRpcEpochDispatchContract(
+    keyAgentServiceRpcEpochDispatchInputs,
+  ) &&
+    keyAgentServiceRpcEpochDispatchMutationProbes.every(
+      (probe) =>
+        probe.sources !== keyAgentServiceRpcEpochDispatchInputs.sources &&
+        !keyAgentServiceRpcEpochDispatchContract(probe),
+    ),
+  "the debug status-RPC dispatcher must authenticate before parsing, expose only OpenEpoch and Status-to-Unavailable, preserve closed manager errors, and use a 16-slot five-second HMAC epoch table with one live peer epoch, no eviction, inclusive expiry, constant-time lookup, remove-before-check one-shot consumption, dual peer revalidation, poison-fail-closed stop invalidation, exact concurrency/replay tests, and effective mutations",
 );
 
 const keyAgentServiceWireManifestContract = (manifest) => {
@@ -8385,7 +10182,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "5427e9d1e8b6d32f01b4ec5ded009be3ee1f10c34680a82040738653ab4ddd14";
+  "cb2d0387eaeded8d1501560cb75b96ce2c55134ee56a7da1c810923d36205033";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -8459,7 +10256,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/key-agent-service/Cargo.toml",
-    sha256: "9f10b43e1f7b5020c5080f2f0365baf3ce69cdea12dde1e826071bdb80692828",
+    sha256: "81cc0c3073686f38ae4b9cfbc5d85c9faf0720722f0eba06f91d2ccc2b1b45c9",
   },
   {
     path: "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -8475,7 +10272,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "d14f102fc9816b3b6ee903e29a60fbf7f93b745914631e2fead30da7caca071f",
+    sha256: "056c3ab269575dcd9295caba994135f0342d7ff0ec38936386a021dfc51e5c7e",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -8598,23 +10395,31 @@ const forbiddenKeyAgentServiceScmApis = [
   "SetServiceObjectSecurity",
   "CreateProcessAsUserA",
   "CreateProcessAsUserW",
-  "RpcServerUseProtseqA",
-  "RpcServerUseProtseqW",
-  "RpcServerUseProtseqEpA",
-  "RpcServerUseProtseqEpW",
-  "RpcServerRegisterIf",
-  "RpcServerRegisterIf2",
-  "RpcServerRegisterIf3",
-  "RpcServerListen",
-  "RpcBindingFromStringBindingA",
-  "RpcBindingFromStringBindingW",
-  "RpcStringBindingComposeA",
-  "RpcStringBindingComposeW",
+  ...keyAgentServiceRpcForbiddenRuntimeApis,
 ];
 const forbiddenKeyAgentServiceScmUsage = rustIdentifierUsageInventory(
-  workspaceRustCompilationInputs,
+  workspaceRustProductionFiles,
   forbiddenKeyAgentServiceScmApis,
 );
+const keyAgentServiceRpcWorkspaceRuntimeCallSites =
+  keyAgentServiceRpcRuntimeApis.map((api) => ({
+    api,
+    paths: workspaceRustProductionFiles
+      .filter(
+        (file) =>
+          api !== "ConvertStringSecurityDescriptorToSecurityDescriptorW" ||
+          file.path === keyAgentServiceRpcFixturePaths.root,
+      )
+      .flatMap((file) => rustCallSites(file.source, api).map(() => file.path)),
+  }));
+const keyAgentServiceRpcWorkspaceRuntimeUsage = rustIdentifierUsageInventory(
+  workspaceRustProductionFiles,
+  keyAgentServiceRpcRuntimeApis,
+);
+const keyAgentServiceRpcWorkspaceProtocolLiteralPaths =
+  workspaceRustProductionFiles.flatMap((file) =>
+    [...file.source.matchAll(/\bncalrpc\b/giu)].map(() => file.path),
+  );
 requireInvariant(
   JSON.stringify(keyAgentServiceScmRuntimeCallSites) ===
     JSON.stringify([
@@ -8632,10 +10437,13 @@ requireInvariant(
       },
     ]) &&
     identifierUsageIsEmpty(forbiddenKeyAgentServiceScmUsage) &&
-    !workspaceRustCompilationInputs.some((file) =>
-      /\bncalrpc\b/iu.test(file.source),
-    ),
-  "the inert Key Agent service fixture must keep exact runtime-only SCM callsites while install, configuration, deletion, user-process launch, and ncalrpc surfaces remain absent",
+    JSON.stringify(keyAgentServiceRpcWorkspaceRuntimeCallSites) ===
+      JSON.stringify(approvedKeyAgentServiceRpcRuntimeCallPaths) &&
+    keyAgentServiceRpcWorkspaceRuntimeUsage.aliases.length === 0 &&
+    keyAgentServiceRpcWorkspaceRuntimeUsage.references.length === 0 &&
+    JSON.stringify(keyAgentServiceRpcWorkspaceProtocolLiteralPaths) ===
+      JSON.stringify([keyAgentServiceRpcFixturePaths.lifecycle]),
+  "the Key Agent service fixtures must keep exact runtime-only SCM and authenticated local-RPC callsites while installer/configuration/deletion/user-process launch, endpoint mapper, dynamic binding, alternate registration, aliased native APIs, and non-reviewed ncalrpc surfaces remain absent",
 );
 const dynamicResolverUsageProbes = {
   alias: rustIdentifierUsageInventory(
@@ -25718,6 +27526,14 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 14 },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+    sites: 8,
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
+    sites: 6,
+  },
   { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
@@ -25776,9 +27592,24 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
     sha256: "f2df9738d861ce624131e1aa37a9dee7d3036c49ea21c0f9eed808f88e6f5a08",
   },
   {
-    path: "crates/platform-windows/src/key_agent_service.rs",
+    path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+    unsafeCount: 2,
+    sha256: "901fc4b29267d6baef86ff5936956e3dc09d00073128806725d5dff74141efa2",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+    unsafeCount: 31,
+    sha256: "f96b29f4f00447430efe9c682a8dd429018e5a38a4ef7bf039eb24a0d7e773e8",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 11,
-    sha256: "c4e25e56e19f4fd2ed70bc000fde473307b809fd8f511b7b8e230e51cd3ea5ff",
+    sha256: "3d5ba74801e33ec9c072b9462e646dfd7c26a8ada449f4a1de698ebeb3c89b8d",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service.rs",
+    unsafeCount: 13,
+    sha256: "1678e87f77208c3ea07a5e6a7dc97184065d7878756db59087a223dec5d8f8bf",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -25814,6 +27645,15 @@ const approvedPlatformWindowsVisibleGenericFunctionInventory = [
     name: "run_on_fresh_key_agent_debug_thread",
     signature:
       "fnrun_on_fresh_key_agent_debug_thread<T,E,F>(worker:F,)->Result<(T,JoinedKeyAgentDebugThreadProof),E>whereT:Send+'static,E:From<KeyAgentActivationError>+Send+'static,F:FnOnce(FreshKeyAgentDebugThread)->Result<T,E>+Send+'static,",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/dispatch.rs",
+    owner:
+      "impl<P, C> DispatchEngine<P, C> where P: ExactEpochPeer, C: MonotonicClock,",
+    visibility: "pub(super)",
+    name: "exchange_with",
+    signature:
+      "fnexchange_with<F>(&self,request_frame:&RpcFrame,authenticate:F,)->Result<RpcFrame,DispatchError>whereF:FnOnce()->Result<P,AuthenticationFailure>,",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -26239,6 +28079,7 @@ requireInvariant(
       "allow",
       "cfg",
       "cfg_attr",
+      "deny",
       "derive",
       "error",
       "expect",
@@ -26483,9 +28324,10 @@ requireInvariant(
       "ptr::addr_of",
       "std::vec",
       "thread_local",
-      "unreachable",
-      "vec",
-      "write",
+       "unreachable",
+       "vec",
+       "w",
+       "write",
     ]) &&
     JSON.stringify(platformWindowsDerivePathInventory) ===
       JSON.stringify([
@@ -26507,9 +28349,11 @@ requireInvariant(
       ]) &&
     platformWindowsExpansionSensitiveUseInventory.every((item) =>
       [
+        "usecore::mem::{offset_of,size_of};",
         "usecore::mem::{offset_of,size_of,size_of_val};",
         "usecore::ptr;",
         "usethiserror::Error;",
+        "usewindows::core::{PCWSTR,w};",
       ].includes(item.source),
     ) &&
     JSON.stringify(platformWindowsGlobUseInventory) ===
@@ -26525,7 +28369,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "d14f102fc9816b3b6ee903e29a60fbf7f93b745914631e2fead30da7caca071f" &&
+    "056c3ab269575dcd9295caba994135f0342d7ff0ec38936386a021dfc51e5c7e" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -26551,6 +28395,8 @@ requireInvariant(
         'approval-wire={path="../approval-wire"}',
         "getrandom.workspace=true",
         "hmac.workspace=true",
+        'key-agent-service-rpc-sys={path="../key-agent-service-rpc-sys",optional=true}',
+        'key-agent-service-wire={path="../key-agent-service-wire",optional=true}',
         "sha2.workspace=true",
         'secret-input-ui={path="../secret-input-ui"}',
         "subtle.workspace=true",
@@ -26570,6 +28416,7 @@ requireInvariant(
         '"Win32_System_Kernel",',
         '"Win32_System_ProcessStatus",',
         '"Win32_System_RemoteDesktop",',
+        '"Win32_System_Rpc",',
         '"Win32_System_Services",',
         '"Win32_System_SystemInformation",',
         '"Win32_System_SystemServices",',
@@ -26580,7 +28427,7 @@ requireInvariant(
     rootManifestSha256 ===
       "1290279b9088b26ff9e38387fba9ed8cc95bf0aec6b41210918c5c1cbb2d37d9" &&
     workspaceLockSha256 ===
-      "c1f34319f5780293d3a36351e17631fc579e04a5df5a47ad0510471e9fdf84b6" &&
+      "1700356f81938fb202f92f0c66f32577aa1f0785fe21f907316ec0f9f19f0ea8" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -33334,7 +35181,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "ace766cbdc8a72c16dc37d3052cc58eda94b89e10e832ce4e422fa90b1b79fef",
+    "6f35db3ff991132dfc086bcf7a30d9b38ef0f791da6d09232224346444639dbd",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -38812,7 +40659,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 28_000),
+      document.slice(Math.max(0, anchor - 700), anchor + 32_000),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -38830,7 +40677,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 21_000,
+    start + 24_000,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const initialMarkers = [
@@ -39125,7 +40972,7 @@ const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "ace766cbdc8a72c16dc37d3052cc58eda94b89e10e832ce4e422fa90b1b79fef",
+  "6f35db3ff991132dfc086bcf7a30d9b38ef0f791da6d09232224346444639dbd",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
