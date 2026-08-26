@@ -107,11 +107,32 @@ Implemented:
   rejects the manifest-derived Key Agent role before release evaluation or process
   creation, so the shared artifact allowlist cannot bypass this seam. The
   activation-owned fresh worker now also creates the exact two-process
-  kill-on-close root Job and private Key Agent pipes. One `STARTUPINFOEXW` call
-  receives exactly three short-lived inherited stdio handles, one Job-list
-  handle, the fixed zero-capability `YourWallet.KeyAgent.LPAC.v1` identity, and
-  the ALL APPLICATION PACKAGES opt-out; the short-lived handles are dropped
-  before the worker returns. The separate fresh-provisioning boundary creates
+  kill-on-close root Job and private Key Agent pipes. `CreateNamedPipeW` keeps
+  `FILE_FLAG_FIRST_PIPE_INSTANCE` even though its `0x00080000` bit is also
+  `WRITE_OWNER` in the returned access mask. Each persistent server source is
+  immediately duplicated to exact request read-plus-synchronize `0x00100001` or
+  response write-plus-synchronize `0x00100002`, non-inheritable with options
+  zero, and the original is checked-closed before client open. Child stdin,
+  stdout, and NUL-backed stderr are separate exact-access inheritable duplicates
+  without `DUPLICATE_SAME_ACCESS`. An ignored host-local kernel test uses official
+  `windows` WDK function/class bindings plus a test-only ABI-checked local
+  pipe-information mirror. Exact sources omit `FILE_READ_ATTRIBUTES`, so only the
+  sealed parent response client supplies pipe-local information; request direction
+  comes from successful forward and rejected reverse I/O. The WDK wrappers link
+  native symbols as test-binary load-time imports rather than resolving them
+  dynamically, leaving a test-host compatibility limit but no production
+  reachability. That evidence covers only
+  `PrivateKeyAgentPipes`, not the separate Phase 1 service-helper source
+  candidates, and does not permit production activation. One `STARTUPINFOEXW` call
+  uses an exact five-slot list in handle, Job, full mitigation, security-
+  capabilities, and ALL APPLICATION PACKAGES opt-out order. The mitigation is
+  identical to the restricted-helper and service-startup policy, including the
+  non-Microsoft-binary block, and its immutable `Box<u64>` backing outlives
+  `CreateProcessW` and list deletion. Exactly three short-lived inherited stdio
+  handles, one Job-list handle, and the fixed zero-capability
+  `YourWallet.KeyAgent.LPAC.v1` identity cross that boundary; the short-lived
+  handles are dropped before the worker returns. The separate fresh-provisioning
+  boundary creates
   both the fixed profile and the fixed `YourWallet.KeyAgent.Storage.v1` leaf
   beneath its validated `AC` folder, but yields only a non-launchable pending
   capability, with no direct pending/candidate conversion. The sole
@@ -133,6 +154,13 @@ Implemented:
   in-place upgrade under this contract. No exclusive installer lease yet
   serializes checkpoint, observation, and post-observation reread, so production
   upgrade orchestration remains closed.
+  On the measured Windows host, where third-party injected modules were
+  observed in the surrounding process, the full-policy kernel matrix fails
+  closed earlier at process creation. This is host-local evidence, not proof of
+  injection causation or supported-kernel readiness. Raw `DEBUG_EVENT`
+  generation/same-object ABA/atomic compare-close and the separate Phase 1 source-candidate pipe
+  rights/direction proof remain unresolved, so production activation stays
+  forbidden and both compiled policies remain `None`.
   The adoption transition, release-binding, and dormant supervisor binder all
   have zero production call sites. A separate dormant storage-only
   `open_existing_fixed_key_agent_storage_root` also has zero production callers.

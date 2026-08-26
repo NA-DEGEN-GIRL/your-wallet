@@ -12336,7 +12336,7 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "2e95c6e7426b21055b95594ed1aee53c52b7c85dad6b6638689eaa1d7ef51a3d",
+    sha256: "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
@@ -12349,7 +12349,7 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "24e717f7b6e91e212f37fe7f8b3048cbd3a7383d06581b7cce667e2a045f4587",
+    sha256: "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -18699,7 +18699,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "b092216d9c68146678129dc8cb5460a62692580531321b6ba5a79f19f49e93ee";
+  "1cb12fe974eac13c390241a2d810c4affbbe64211f69d26834af252256a6b35c";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -18794,7 +18794,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "9c7e31a0ef7555c5a8bc4825be0908ccdbbac4850d32842ec613ea7586ccd71b",
+    sha256: "ffd29ef516e420944ffa18e40d42f107e2bd020ba641ce9cc5761af82fe03223",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -22994,13 +22994,13 @@ const expectedDuplicateHandleInventory = [
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
-    sourceProcess: "GetCurrentProcess()",
+    sourceProcess: "process",
     sourceHandle: "source.raw()",
-    targetProcess: "GetCurrentProcess()",
+    targetProcess: "process",
     targetHandle: "&raw mut duplicate",
-    desiredAccess: "0",
-    inheritable: "true",
-    options: "DUPLICATE_SAME_ACCESS",
+    desiredAccess: "desired_access",
+    inheritable: "inheritable",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
   },
   {
     path: "crates/secret-input-ui/src/bootstrap/windows.rs",
@@ -26239,6 +26239,10 @@ const keyAgentInheritableDuplicateLeaf = rustFunctionBlock(
   keyAgentPipeProduction,
   "duplicate_inheritable",
 );
+const keyAgentExactDuplicateLeaf = rustFunctionBlock(
+  keyAgentPipeProduction,
+  "duplicate_exact_access",
+);
 const brokerInheritedParentDefinition = rustLexicalItemBlock(
   releaseBrokerSupervisorProduction,
   /(?:^|\n)\s*struct InheritedParentProcess<'flight>\s*\{/u,
@@ -27838,13 +27842,47 @@ requireInvariant(
     restrictedInheritableDuplicateLeaf.includes(
       "_flight: &InheritableHandleLaunchFlight<'_>",
     ) &&
-    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle")
-      .length === 1 &&
-    rustCallSites(keyAgentInheritableDuplicateLeaf, "DuplicateHandle")[0]
-      ?.arguments[5] === "true" &&
+    JSON.stringify(
+      rustCallSites(keyAgentExactDuplicateLeaf, "DuplicateHandle")[0]
+        ?.arguments,
+    ) ===
+      JSON.stringify([
+        "process",
+        "source.raw()",
+        "process",
+        "&raw mut duplicate",
+        "desired_access",
+        "inheritable",
+        "DUPLICATE_HANDLE_OPTIONS(0)",
+      ]) &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(
+      rustLexicalCode(withoutCfgTestItems(keyAgentPipeProduction)),
+    ) &&
+    JSON.stringify(
+      rustCallSites(keyAgentInheritableDuplicateLeaf, "duplicate_exact_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["source", "desired_access", "true"]]) &&
     keyAgentInheritableDuplicateLeaf.includes(
       "_flight: &InheritableHandleLaunchFlight<'_>",
     ) &&
+    JSON.stringify(
+      rustCallSites(prepareKeyAgentInheritance, "sys::duplicate_inheritable").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "&self.child_request_source",
+          "sys::CHILD_REQUEST_INPUT_ACCESS",
+          "flight",
+        ],
+        [
+          "&self.child_response_source",
+          "sys::CHILD_RESPONSE_OUTPUT_ACCESS",
+          "flight",
+        ],
+      ]) &&
     brokerInheritedParentDefinition.includes(
       "flight: &'flight InheritableHandleLaunchFlight<'static>",
     ) &&
@@ -34503,7 +34541,7 @@ const approvedKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
   postArmErrorEvidence:
     "e06e1898319f06ac2c76a124e6eb74053945dcceadc3ac38e8da380d382a7ffc",
   evidenceModuleRaw:
-    "1386dc47bcc9bafba808f36d3ddfdb9033d36f6f79cabbbdbf1ec7e9202bee99",
+    "5e557776922a7a9c3ba1ee1cc5ef22a0c939c7ad1a9226ed447eba538506d321",
 });
 const keyAgentDebuggerEvidenceContract = (source) => {
   let testModule;
@@ -35449,6 +35487,59 @@ const keyAgentCreationFlagsTest = rustFunctionBlock(
   keyAgentActivationSource,
   "process_creation_flags_are_exact_and_do_not_debug_descendants",
 );
+const keyAgentCreationAttributeCount = rustConstItemAtDepth(
+  keyAgentActivationSys,
+  "KEY_AGENT_CREATION_ATTRIBUTE_COUNT",
+  1,
+);
+const keyAgentCreationMitigationPolicy = rustConstItemAtDepth(
+  keyAgentActivationSys,
+  "KEY_AGENT_MITIGATION_POLICY",
+  1,
+);
+const keyAgentCreationMitigationBitDefinitions = helperMitigationBits.map(
+  (name) => rustConstItemAtDepth(keyAgentActivationSys, name, 1),
+);
+const helperMitigationBitDefinitions = helperMitigationBits.map((name) =>
+  rustConstItemAtDepth(restrictedLauncherRelease, name, 1),
+);
+const keyAgentInstallMitigationPolicy = rustFunctionBlockAtDepth(
+  keyAgentCreationAttributeImpl,
+  "install_mitigation_policy",
+  1,
+);
+const keyAgentCreationAttributeConstructor = rustFunctionBlockAtDepth(
+  keyAgentCreationAttributeImpl,
+  "new",
+  1,
+);
+const keyAgentRetainedMitigationPolicyAdapter = rustFunctionBlockAtDepth(
+  keyAgentCreationAttributeImpl,
+  "retained_mitigation_policy",
+  1,
+);
+const keyAgentCreationAttributeCountAdapter = rustFunctionBlockAtDepth(
+  keyAgentActivationSysWithTests,
+  "creation_attribute_count_for_test",
+  1,
+);
+const keyAgentMitigationPolicyAdapter = rustFunctionBlockAtDepth(
+  keyAgentActivationSysWithTests,
+  "key_agent_mitigation_policy_for_test",
+  1,
+);
+const keyAgentCreationMitigationTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "key_agent_creation_mitigation_matches_the_full_helper_policy",
+);
+const keyAgentCreationAttributeSourceTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "creation_attribute_source_contract_installs_mitigation_before_lpac",
+);
+const keyAgentCreationRetainedValuesTest = rustFunctionBlock(
+  keyAgentActivationSource,
+  "startup_attribute_list_retains_policy_and_exactly_three_stdio_handles",
+);
 const verifyBoundRootProcess = rustFunctionBlock(
   keyAgentActivation,
   "verify_bound_root_process",
@@ -35828,8 +35919,199 @@ const compactKeyAgentCreationAttributeImpl = compactRust(
 const keyAgentCreationAttributeOrder = [
   "attributes.install_handle_list()?",
   "attributes.root_job_attribute.install_into(attributes.pointer)",
+  "attributes.install_mitigation_policy()?",
   "attributes.lpac.install_into(attributes.pointer)",
 ].map((marker) => compactKeyAgentCreationAttributeImpl.indexOf(marker));
+const keyAgentCreationMitigationContract = ({
+  attributeBlock,
+  attributeImpl,
+  attributeCount,
+  mitigationPolicy,
+  mitigationBitDefinitions,
+  mitigationInstall,
+  constructor,
+  retainedMitigationPolicyAdapter,
+  attributeCountAdapter,
+  mitigationPolicyAdapter,
+  mitigationTest,
+  sourceTest,
+  retainedValuesTest,
+}) => {
+  const compactImpl = compactRust(attributeImpl);
+  const initializationCalls = rustCallSites(
+    attributeImpl,
+    "InitializeProcThreadAttributeList",
+  );
+  const order = [
+    "attributes.install_handle_list()?",
+    "attributes.root_job_attribute.install_into(attributes.pointer)",
+    "attributes.install_mitigation_policy()?",
+    "attributes.lpac.install_into(attributes.pointer)",
+  ].map((marker) => compactImpl.indexOf(marker));
+  const policyCompact = compactRust(mitigationPolicy);
+  const expectedPolicy = compactRust(helperMitigationPolicyDefinition).replace(
+    "HELPER_MITIGATION_POLICY",
+    "KEY_AGENT_MITIGATION_POLICY",
+  );
+  const installCompact = compactRust(mitigationInstall);
+  const constructorCode = rustLexicalCode(constructor);
+  const constructorCompact = compactRust(constructor);
+
+  return (
+    attributeBlock.includes("mitigation_policy: Box<u64>") &&
+    compactRust(attributeCount) ===
+      "constKEY_AGENT_CREATION_ATTRIBUTE_COUNT:u32=5;" &&
+    policyCompact === expectedPolicy &&
+    JSON.stringify(mitigationBitDefinitions.map(compactRust)) ===
+      JSON.stringify(helperMitigationBitDefinitions.map(compactRust)) &&
+    JSON.stringify(
+      [...policyCompact.matchAll(/\bMITIGATION_[A-Z0-9_]+/gu)].map(
+        (match) => match[0],
+      ),
+    ) === JSON.stringify(helperMitigationBits) &&
+    initializationCalls.length === 2 &&
+    initializationCalls.every(
+      (call) =>
+        call.arguments.length === 4 &&
+        call.arguments[1] === "KEY_AGENT_CREATION_ATTRIBUTE_COUNT",
+    ) &&
+    (constructorCode.match(/\blet\s+mitigation_policy\s*=/gu) ?? []).length ===
+      1 &&
+    (constructorCode.match(/\bmitigation_policy\b/gu) ?? []).length === 2 &&
+    constructorCompact.includes(
+      "letmitigation_policy=Box::new(KEY_AGENT_MITIGATION_POLICY);",
+    ) &&
+    constructorCompact.includes(
+      "letattributes=Self{pointer,words,inherited_handles,mitigation_policy,_inheritance:inheritance,root_job_attribute,lpac,};",
+    ) &&
+    normalizeRustFragment(rustLexicalCode(retainedMitigationPolicyAdapter)) ===
+      "fn retained_mitigation_policy(&self) -> u64 { *self.mitigation_policy }" &&
+    normalizeRustFragment(rustLexicalCode(attributeCountAdapter)) ===
+      "pub(super) const fn creation_attribute_count_for_test() -> u32 { KEY_AGENT_CREATION_ATTRIBUTE_COUNT }" &&
+    normalizeRustFragment(rustLexicalCode(mitigationPolicyAdapter)) ===
+      "pub(super) const fn key_agent_mitigation_policy_for_test() -> u64 { KEY_AGENT_MITIGATION_POLICY }" &&
+    (attributeImpl.match(/\bUpdateProcThreadAttribute\s*\(/gu) ?? [])
+      .length === 2 &&
+    installCompact.includes(
+      "usize::try_from(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY)",
+    ) &&
+    installCompact.includes(
+      "Some(ptr::from_ref(self.mitigation_policy.as_ref()).cast::<c_void>())",
+    ) &&
+    installCompact.includes("size_of::<u64>()") &&
+    (installCompact.match(/KeyAgentActivationError::ProcessCreation/gu) ?? [])
+      .length === 2 &&
+    order.every((position) => position !== -1) &&
+    order
+      .slice(1)
+      .every((position, index) => position > order[index]) &&
+    !hasVacuousRustTestEscape(mitigationTest) &&
+    mitigationTest.includes("assert_eq!(mitigation, 0x1110_1011_0111_1105)") &&
+    mitigationTest.includes("assert_ne!(mitigation & (1 << 32), 0") &&
+    mitigationTest.includes("assert_ne!(mitigation & (1 << 44), 0") &&
+    mitigationTest.includes("assert_eq!(sys::creation_attribute_count_for_test(), 5)") &&
+    !hasVacuousRustTestEscape(sourceTest) &&
+    sourceTest.includes('contract.contains("mitigation_policy: Box<u64>")') &&
+    sourceTest.includes('contract.contains("PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY")') &&
+    sourceTest.includes("assert!(0 < job && job < mitigation && mitigation < lpac)") &&
+    !hasVacuousRustTestEscape(retainedValuesTest) &&
+    retainedValuesTest.includes(
+      "(3, sys::key_agent_mitigation_policy_for_test())",
+    )
+  );
+};
+const keyAgentCreationMitigationLeaves = {
+  attributeBlock: keyAgentCreationAttributeBlock,
+  attributeImpl: keyAgentCreationAttributeImpl,
+  attributeCount: keyAgentCreationAttributeCount,
+  mitigationPolicy: keyAgentCreationMitigationPolicy,
+  mitigationBitDefinitions: keyAgentCreationMitigationBitDefinitions,
+  mitigationInstall: keyAgentInstallMitigationPolicy,
+  constructor: keyAgentCreationAttributeConstructor,
+  retainedMitigationPolicyAdapter: keyAgentRetainedMitigationPolicyAdapter,
+  attributeCountAdapter: keyAgentCreationAttributeCountAdapter,
+  mitigationPolicyAdapter: keyAgentMitigationPolicyAdapter,
+  mitigationTest: keyAgentCreationMitigationTest,
+  sourceTest: keyAgentCreationAttributeSourceTest,
+  retainedValuesTest: keyAgentCreationRetainedValuesTest,
+};
+const keyAgentCreationMitigationMutationProbes = [
+  {
+    ...keyAgentCreationMitigationLeaves,
+    attributeCount: keyAgentCreationAttributeCount.replace("= 5", "= 4"),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    mitigationPolicy: keyAgentCreationMitigationPolicy.replace(
+      "| MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON",
+      "",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    mitigationBitDefinitions: keyAgentCreationMitigationBitDefinitions.map(
+      (definition, index) =>
+        index === 0 ? definition.replace("= 1;", "= 0;") : definition,
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    constructor: keyAgentCreationAttributeConstructor.replace(
+      "Box::new(KEY_AGENT_MITIGATION_POLICY)",
+      "Box::new(0)",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    constructor: keyAgentCreationAttributeConstructor.replace(
+      "let attributes = Self {",
+      "let mitigation_policy = Box::new(0);\n            let attributes = Self {",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    attributeImpl: keyAgentCreationAttributeImpl.replace(
+      "attributes.install_mitigation_policy()?;",
+      "unsafe { attributes.lpac.install_into(attributes.pointer) }\n                .map_err(|_| KeyAgentActivationError::LpacPolicy)?;\n            attributes.install_mitigation_policy()?;",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    attributeBlock: keyAgentCreationAttributeBlock.replace(
+      "mitigation_policy: Box<u64>",
+      "mitigation_policy: u64",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    mitigationInstall: keyAgentInstallMitigationPolicy.replace(
+      "PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY",
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    mitigationTest: keyAgentCreationMitigationTest.replace(
+      "assert_eq!(mitigation, 0x1110_1011_0111_1105)",
+      "assert_ne!(mitigation, 0x1110_1011_0111_1105)",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    mitigationPolicyAdapter: keyAgentMitigationPolicyAdapter.replace(
+      "KEY_AGENT_MITIGATION_POLICY",
+      "0",
+    ),
+  },
+  {
+    ...keyAgentCreationMitigationLeaves,
+    retainedMitigationPolicyAdapter:
+      keyAgentRetainedMitigationPolicyAdapter.replace(
+        "*self.mitigation_policy",
+        "0",
+      ),
+  },
+];
 const compactAppContainerProfileAcquire = compactRust(
   acquireAppContainerProfileApi,
 );
@@ -36976,7 +37258,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/broker_supervisor.rs", sites: 7 },
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
-  { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 14 },
+  { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 15 },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   {
@@ -37050,8 +37332,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
-    unsafeCount: 102,
-    sha256: "85d9b860f126c80eaed367f5995aa1515f288ac9df6d405fc7cc64fd4f62a3a3",
+    unsafeCount: 103,
+    sha256: "3d10c7f9e224ca8b63a8b831dac68be4e384d0986d141589be476b580a17de17",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -37136,7 +37418,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/pipe.rs",
     unsafeCount: 34,
-    sha256: "66d47d0e6a6d3947d8652ee6a45fe403489a5408e7a9f9c917c91c3758b56aa3",
+    sha256: "e6e34ed3ffec556c29baaec015c1b973ec5686a285ef0fef3299bc95bf5dc10e",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -37928,7 +38210,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "9c7e31a0ef7555c5a8bc4825be0908ccdbbac4850d32842ec613ea7586ccd71b" &&
+    "ffd29ef516e420944ffa18e40d42f107e2bd020ba641ce9cc5761af82fe03223" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -37963,6 +38245,7 @@ requireInvariant(
         "thiserror.workspace=true",
         "windows={workspace=true,features=[",
         '"Wdk_Foundation",',
+        '"Wdk_Storage_FileSystem",',
         '"Win32_Globalization",',
         '"Win32_Security_Authorization",',
         '"Win32_Security_Cryptography",',
@@ -38886,9 +39169,16 @@ requireInvariant(
   "release Key Agent provisioning must quarantine fresh fixed objects as Pending, permit only the sealed dormant held-object Prepared transition, validate created-versus-derived SID equality, and expose only exact authority-free observations",
 );
 requireInvariant(
-  keyAgentCreationAttributeBlock.includes(
-    "inherited_handles: Box<[HANDLE; 3]>",
-  ) &&
+  keyAgentCreationMitigationContract(keyAgentCreationMitigationLeaves) &&
+    keyAgentCreationMitigationMutationProbes.every(
+      (probe) =>
+        Object.entries(probe).some(
+          ([key, value]) => value !== keyAgentCreationMitigationLeaves[key],
+        ) && !keyAgentCreationMitigationContract(probe),
+    ) &&
+    keyAgentCreationAttributeBlock.includes(
+      "inherited_handles: Box<[HANDLE; 3]>",
+    ) &&
     keyAgentCreationAttributeBlock.includes(
       "_inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>",
     ) &&
@@ -38898,20 +39188,11 @@ requireInvariant(
     keyAgentCreationAttributeBlock.includes(
       "lpac: &'resources PreparedKeyAgentLpac",
     ) &&
-    keyAgentAttributeListInitializations.length === 2 &&
-    keyAgentAttributeListInitializations.every(
-      (call) => call.arguments.length === 4 && call.arguments[1] === "4",
-    ) &&
     keyAgentAttributeListInitializations[0].arguments[0] === "None" &&
     keyAgentAttributeListInitializations[1].arguments[0] === "Some(pointer)" &&
     keyAgentCreationAttributeImpl.includes(
       "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
     ) &&
-    (
-      keyAgentCreationAttributeImpl.match(
-        /\bUpdateProcThreadAttribute\s*\(/gu,
-      ) ?? []
-    ).length === 1 &&
     keyAgentCreationAttributeOrder.every((position) => position !== -1) &&
     keyAgentCreationAttributeOrder
       .slice(1)
@@ -38983,7 +39264,7 @@ requireInvariant(
     verifyBoundRootProcess.includes(".recheck_supervisor_context()") &&
     verifyBoundRootProcess.includes(".contains_process(process)") &&
     verifyBoundRootProcess.includes("active_processes == 1"),
-  "dormant Key Agent creation must atomically bind three stdio handles, one root Job, and the exact zero-capability LPAC attributes without descendant policy",
+  "dormant Key Agent creation must atomically bind three stdio handles, one root Job, the complete immutable helper mitigation policy, and the exact zero-capability LPAC attributes without descendant policy",
 );
 const compactPrepareKeyAgentProcess = compactRust(
   prepareKeyAgentProcessRelease,
@@ -42292,7 +42573,7 @@ const approvedKeyAgentCreationDaclLeafSha256 = Object.freeze({
   createWrapper:
     "16433dc14275610e06ecc3eb4be434bd7cce891c9983cf42a57bf3203aadb657",
   activationCreate:
-    "fe53cdf954739fc9f9be2846ea2692652b65b08e10a187aa63073ab6676f49a6",
+    "f6ad06f9ffadb2dea9a9d63471af0a7bc9b2a1710c5c68d42f6fe6bead736bf4",
   activationFacade:
     "576155240b62a9c0da5f8da13ad13f15a1fcb7be7303014c3ea305ca4e2c9e39",
   activationFinalize:
@@ -44833,13 +45114,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
+    "6ef6bca3fb748061e581fbe93ad47dae5740572b583aa4936a43703c8052693c",
   "docs/architecture.md":
-    "2e95c6e7426b21055b95594ed1aee53c52b7c85dad6b6638689eaa1d7ef51a3d",
+    "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "24e717f7b6e91e212f37fe7f8b3048cbd3a7383d06581b7cce667e2a045f4587",
+    "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -44929,7 +45210,7 @@ requireInvariant(
     /fresh\s+dedicated OS thread/u.test(activationArchitecture) &&
     /all-zero[\s\S]{0,100}all-`FF`/u.test(activationArchitecture) &&
     activationArchitecture.includes("YourWallet.KeyAgent.LPAC.v1") &&
-    /\bfour-slot\s+`STARTUPINFOEXW` attribute list/u.test(
+    /\bfive-slot\s+`STARTUPINFOEXW` attribute list/u.test(
       activationArchitecture,
     ) &&
     activationArchitecture.includes("`SECURITY_CAPABILITIES`") &&
@@ -50622,10 +50903,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "2e95c6e7426b21055b95594ed1aee53c52b7c85dad6b6638689eaa1d7ef51a3d",
+  "6ef6bca3fb748061e581fbe93ad47dae5740572b583aa4936a43703c8052693c",
+  "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "24e717f7b6e91e212f37fe7f8b3048cbd3a7383d06581b7cce667e2a045f4587",
+  "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -57952,6 +58233,12 @@ const approvalPipeContract = (source) => {
   let readExactFrame;
   let sysModule;
   let createChildServerPipe;
+  let duplicateExactAccess;
+  let duplicateInheritable;
+  let createInheritableNullSink;
+  let duplicateExactNoninheritableTest;
+  let nativePipeConfigurationTestAdapter;
+  let nativePipeClientEndTestAdapter;
   let readExactBefore;
   let readExactFrameBefore;
   let requireEndBefore;
@@ -57959,6 +58246,12 @@ const approvalPipeContract = (source) => {
   let stagedTest;
   let parentPeerTest;
   let expiredPendingReadTest;
+  let keyAgentAuthorityKernelTest;
+  let keyAgentSourceAuthorityTest;
+  let keyAgentPreparedAuthorityTest;
+  let keyAgentFreshAuthorityTest;
+  let nativeGrantedAccessTestAdapter;
+  let nativePipeInformationTestAdapter;
   try {
     approvalPipesImpl = rustImplItemAtDepth(
       production,
@@ -57995,6 +58288,36 @@ const approvalPipeContract = (source) => {
       "create_child_server_pipe",
       1,
     );
+    duplicateExactAccess = rustFunctionBlockAtDepth(
+      sysModule,
+      "duplicate_exact_access",
+      1,
+    );
+    duplicateInheritable = rustFunctionBlockAtDepth(
+      sysModule,
+      "duplicate_inheritable",
+      1,
+    );
+    createInheritableNullSink = rustFunctionBlockAtDepth(
+      sysModule,
+      "create_inheritable_null_sink",
+      1,
+    );
+    duplicateExactNoninheritableTest = rustFunctionBlockAtDepth(
+      source,
+      "duplicate_exact_noninheritable_for_test",
+      1,
+    );
+    nativePipeConfigurationTestAdapter = rustFunctionBlockAtDepth(
+      source,
+      "native_pipe_configuration_for_test",
+      1,
+    );
+    nativePipeClientEndTestAdapter = rustFunctionBlockAtDepth(
+      source,
+      "native_pipe_client_end_for_test",
+      1,
+    );
     readExactBefore = rustFunctionBlockAtDepth(
       sysModule,
       "read_exact_before",
@@ -58026,12 +58349,52 @@ const approvalPipeContract = (source) => {
       "already_expired_pending_read_is_cancelled_and_drained_before_return",
       1,
     );
+    keyAgentAuthorityKernelTest = rustFunctionBlockAtDepth(
+      source,
+      "kernel_matrix_key_agent_sources_and_fresh_capabilities_have_exact_authority",
+      1,
+    );
+    keyAgentSourceAuthorityTest = rustFunctionBlockAtDepth(
+      source,
+      "assert_key_agent_source_authority",
+      1,
+    );
+    keyAgentPreparedAuthorityTest = rustFunctionBlockAtDepth(
+      source,
+      "assert_prepared_key_agent_authority",
+      1,
+    );
+    keyAgentFreshAuthorityTest = rustFunctionBlockAtDepth(
+      source,
+      "assert_fresh_key_agent_authority_and_directions",
+      1,
+    );
+    nativeGrantedAccessTestAdapter = rustFunctionBlockAtDepth(
+      source,
+      "native_granted_access_for_test",
+      1,
+    );
+    nativePipeInformationTestAdapter = rustFunctionBlockAtDepth(
+      source,
+      "native_pipe_local_information_for_test",
+      1,
+    );
   } catch {
     return false;
   }
   const serverCompact = compactRust(createChildServerPipe);
+  const duplicateExactCompact = compactRust(duplicateExactAccess);
+  const sysCompact = compactRust(sysModule);
+  const sourceCompact = compactRust(source);
   const frameCompact = compactRust(readExactFrameBefore);
   const completionCompact = compactRust(completeBefore);
+  const sourceAuthorityCompact = compactRust(keyAgentSourceAuthorityTest);
+  const preparedAuthorityCompact = compactRust(keyAgentPreparedAuthorityTest);
+  const freshAuthorityCompact = compactRust(keyAgentFreshAuthorityTest);
+  const nativeGrantedAccessCompact = compactRust(nativeGrantedAccessTestAdapter);
+  const nativePipeInformationCompact = compactRust(
+    nativePipeInformationTestAdapter,
+  );
   return (
     JSON.stringify(
       rustCallSites(create, "sys::create_child_server_pipe").map((call) =>
@@ -58071,11 +58434,28 @@ const approvalPipeContract = (source) => {
     compactRust(requireEndBefore).includes(
       "IoRead::End|IoRead::Bytes(0)=>Ok(()),IoRead::Bytes(_)=>Err(PipeError::TrailingData)",
     ) &&
+    /pub\(super\)\s+const\s+CHILD_REQUEST_INPUT_ACCESS:\s*u32\s*=\s*0x0010_0001\s*;/u.test(
+      rustLexicalCode(sysModule),
+    ) &&
+    /pub\(super\)\s+const\s+CHILD_RESPONSE_OUTPUT_ACCESS:\s*u32\s*=\s*0x0010_0002\s*;/u.test(
+      rustLexicalCode(sysModule),
+    ) &&
+    sourceCompact.includes("constKERNEL_WRITE_OWNER:u32=WRITE_OWNER.0;") &&
+    sysCompact.includes("constNATIVE_FILE_PIPE_INBOUND:u32=0;") &&
+    sysCompact.includes("constNATIVE_FILE_PIPE_OUTBOUND:u32=1;") &&
+    sysCompact.includes("constNATIVE_FILE_PIPE_CLIENT_END:u32=0;") &&
+    compactRust(nativePipeConfigurationTestAdapter) ===
+      "pub(super)constfnnative_pipe_configuration_for_test(direction:PipeDirection)->u32{matchdirection{PipeDirection::ParentWrites=>NATIVE_FILE_PIPE_INBOUND,PipeDirection::ParentReads=>NATIVE_FILE_PIPE_OUTBOUND,}}" &&
+    compactRust(nativePipeClientEndTestAdapter) ===
+      "pub(super)constfnnative_pipe_client_end_for_test()->u32{NATIVE_FILE_PIPE_CLIENT_END}" &&
     serverCompact.includes(
-      "letserver_direction=matchdirection{PipeDirection::ParentWrites=>PIPE_ACCESS_INBOUND,PipeDirection::ParentReads=>PIPE_ACCESS_OUTBOUND,};",
+      "let(server_direction,retained_server_access)=matchdirection{PipeDirection::ParentWrites=>(PIPE_ACCESS_INBOUND,CHILD_REQUEST_INPUT_ACCESS),PipeDirection::ParentReads=>(PIPE_ACCESS_OUTBOUND,CHILD_RESPONSE_OUTPUT_ACCESS),};",
     ) &&
     serverCompact.includes(
       "letopen_mode=server_direction|FILE_FLAG_FIRST_PIPE_INSTANCE;",
+    ) &&
+    serverCompact.includes(
+      "letoriginal_child_server=OwnedWinHandle(child_server);",
     ) &&
     !serverCompact.includes(
       "letopen_mode=server_direction|FILE_FLAG_FIRST_PIPE_INSTANCE|FILE_FLAG_OVERLAPPED",
@@ -58083,6 +58463,77 @@ const approvalPipeContract = (source) => {
     serverCompact.includes(
       "FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OVERLAPPED|SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION",
     ) &&
+    JSON.stringify(
+      rustCallSites(createChildServerPipe, "duplicate_exact_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&original_child_server", "retained_server_access", "false"],
+      ]) &&
+    serverCompact.includes(
+      "letchild_server=matchduplicate_exact_access(&original_child_server,retained_server_access,false){Ok(child_server)=>child_server,Err(error)=>{ifletErr(retry)=original_child_server.close_checked(){drop(retry);}returnErr(error);}};",
+    ) &&
+    serverCompact.includes(
+      "ifletErr(retry)=original_child_server.close_checked(){drop(retry);returnErr(PipeError::OperatingSystem);}",
+    ) &&
+    (serverCompact.match(/original_child_server\.close_checked\(\)/gu) ?? [])
+      .length === 2 &&
+    serverCompact.indexOf("CreateNamedPipeW(") <
+      serverCompact.indexOf("duplicate_exact_access(") &&
+    serverCompact.indexOf("duplicate_exact_access(") <
+      serverCompact.indexOf("original_child_server.close_checked()") &&
+    serverCompact.indexOf("original_child_server.close_checked()") <
+      serverCompact.indexOf("returnErr(error)") &&
+    serverCompact.indexOf("returnErr(error)") <
+      serverCompact.lastIndexOf("original_child_server.close_checked()") &&
+    serverCompact.lastIndexOf("original_child_server.close_checked()") <
+      serverCompact.indexOf("CreateFileW(") &&
+    JSON.stringify(
+      rustCallSites(duplicateExactAccess, "DuplicateHandle")[0]?.arguments.map(
+        compactRust,
+      ),
+    ) ===
+      JSON.stringify([
+        "process",
+        "source.raw()",
+        "process",
+        "&rawmutduplicate",
+        "desired_access",
+        "inheritable",
+        "DUPLICATE_HANDLE_OPTIONS(0)",
+      ]) &&
+    duplicateExactCompact.includes(
+      "letexpected_flags=ifinheritable{HANDLE_FLAG_INHERIT.0}else{0};",
+    ) &&
+    duplicateExactCompact.includes(
+      "ifhandle_flags(duplicate.raw())?!=expected_flags{returnErr(PipeError::OperatingSystem);}",
+    ) &&
+    JSON.stringify(
+      rustCallSites(duplicateInheritable, "duplicate_exact_access").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["source", "desired_access", "true"]]) &&
+    JSON.stringify(
+      rustCallSites(createInheritableNullSink, "duplicate_inheritable").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        ["&source", "CHILD_RESPONSE_OUTPUT_ACCESS", "flight"],
+      ]) &&
+    JSON.stringify(
+      rustCallSites(
+        duplicateExactNoninheritableTest,
+        "duplicate_exact_access",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["source", "desired_access", "false"]]) &&
+    JSON.stringify(
+      rustAttachedOuterAttributes(
+        source,
+        source.indexOf(duplicateExactNoninheritableTest),
+      ).map((attribute) => normalizeRustFragment(attribute.source)),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
     serverCompact.includes(
       "Ok((OwnedWinHandle(parent_client),child_server))",
     ) &&
@@ -58133,6 +58584,196 @@ const approvalPipeContract = (source) => {
     ) &&
     compactRust(expiredPendingReadTest).includes(
       "assert!(started.elapsed()<Duration::from_secs(2))",
+    ) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        source,
+        "kernel_matrix_key_agent_sources_and_fresh_capabilities_have_exact_authority",
+        1,
+      ),
+    ) ===
+      JSON.stringify([
+        "#[test]",
+        '#[ignore = "native NtQueryObject/NtQueryInformationFile kernel-matrix evidence only"]',
+      ]) &&
+    !hasVacuousRustTestEscape(keyAgentAuthorityKernelTest) &&
+    compactRust(keyAgentAuthorityKernelTest).includes(
+      "assert_key_agent_source_authority(&pipes)?;",
+    ) &&
+    compactRust(keyAgentAuthorityKernelTest).includes(
+      "assert_prepared_key_agent_authority(&pipes,&prepared)?;",
+    ) &&
+    compactRust(keyAgentAuthorityKernelTest).includes(
+      "assert_fresh_key_agent_authority_and_directions(&pipes,&prepared)",
+    ) &&
+    sourceAuthorityCompact.includes(
+      "assert_eq!(FILE_FLAG_FIRST_PIPE_INSTANCE.0,KERNEL_WRITE_OWNER);",
+    ) &&
+    sourceAuthorityCompact.includes(
+      "assert_eq!(request_source_access,sys::CHILD_REQUEST_INPUT_ACCESS);",
+    ) &&
+    sourceAuthorityCompact.includes(
+      "assert_eq!(response_source_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    (sourceAuthorityCompact.match(
+      /assert_eq!\([^;]*&KERNEL_WRITE_OWNER,0\);/gu,
+    ) ?? []).length === 2 &&
+    sourceAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&pipes.child_request_source)?);",
+    ) &&
+    sourceAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&pipes.child_response_source)?);",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        keyAgentSourceAuthorityTest,
+        "sys::native_pipe_local_information_for_test",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["&pipes.parent_response"]]) &&
+    sourceAuthorityCompact.includes(
+      "assert_eq!(response_instance.named_pipe_configuration,sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentReads));",
+    ) &&
+    sourceAuthorityCompact.includes(
+      "assert_eq!(response_instance.named_pipe_end,sys::native_pipe_client_end_for_test());",
+    ) &&
+    (compactRust(keyAgentPreparedAuthorityTest).match(
+      /assert_eq!\([^;]*_access,sys::CHILD_(?:REQUEST_INPUT|RESPONSE_OUTPUT)_ACCESS\);/gu,
+    ) ?? []).length === 3 &&
+    preparedAuthorityCompact.includes(
+      "assert_eq!(stdin_access,sys::CHILD_REQUEST_INPUT_ACCESS);",
+    ) &&
+    preparedAuthorityCompact.includes(
+      "assert_eq!(stdout_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    preparedAuthorityCompact.includes(
+      "assert_eq!(stderr_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    (compactRust(keyAgentPreparedAuthorityTest).match(
+      /assert!\(sys::handle_inheritable_for_test\(&prepared\.(?:stdin|stdout|stderr)\)\?\);/gu,
+    ) ?? []).length === 3 &&
+    preparedAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(&pipes.child_request_source,&prepared.stdin));",
+    ) &&
+    preparedAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(&pipes.child_response_source,&prepared.stdout));",
+    ) &&
+    (preparedAuthorityCompact.match(
+      /assert_eq!\([^;]*&KERNEL_WRITE_OWNER,0\);/gu,
+    ) ?? []).length === 3 &&
+    JSON.stringify(
+      rustCallSites(
+        keyAgentFreshAuthorityTest,
+        "sys::duplicate_exact_noninheritable_for_test",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        ["&prepared.stdin", "sys::CHILD_REQUEST_INPUT_ACCESS"],
+        ["&prepared.stdout", "sys::CHILD_RESPONSE_OUTPUT_ACCESS"],
+      ]) &&
+    freshAuthorityCompact.includes(
+      "assert_ne!(sys::raw_handle_for_test(&prepared.stdin),sys::raw_handle_for_test(&request_input));",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert_ne!(sys::raw_handle_for_test(&prepared.stdout),sys::raw_handle_for_test(&response_output));",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(&prepared.stdin,&request_input));",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(&prepared.stdout,&response_output));",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert!(!sys::same_kernel_object_for_test(&request_input,&response_output));",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&request_input)?);",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&response_output)?);",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert_eq!(request_access,sys::CHILD_REQUEST_INPUT_ACCESS);",
+    ) &&
+    freshAuthorityCompact.includes(
+      "assert_eq!(response_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    (freshAuthorityCompact.match(
+      /assert_eq!\([^;]*&KERNEL_WRITE_OWNER,0\);/gu,
+    ) ?? []).length === 2 &&
+    freshAuthorityCompact.includes(
+      "sys::write_all_before(pipes.parent_request.raw(),&request,future_deadline()?)?;",
+    ) &&
+    keyAgentFreshAuthorityTest.includes(
+      'sys::write_child_for_test(&request_input, b"wrong request direction"),\n            Err(PipeError::OperatingSystem)',
+    ) &&
+    freshAuthorityCompact.includes(
+      "sys::write_child_for_test(&response_output,&response)?;",
+    ) &&
+    freshAuthorityCompact.includes(
+      "sys::read_child_exact_for_test(&response_output,1),Err(PipeError::OperatingSystem)",
+    ) &&
+    JSON.stringify(
+      rustAttachedOuterAttributes(
+        source,
+        source.indexOf(nativeGrantedAccessTestAdapter),
+      ).map((attribute) => normalizeRustFragment(attribute.source)),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(
+      rustAttachedOuterAttributes(
+        source,
+        source.indexOf(nativePipeInformationTestAdapter),
+      ).map((attribute) => normalizeRustFragment(attribute.source)),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    sysCompact.includes(
+      "#[cfg(test)]usewindows::Wdk::Foundation::{NtQueryObject,ObjectBasicInformation};",
+    ) &&
+    sysCompact.includes(
+      "#[cfg(test)]usewindows::Wdk::Storage::FileSystem::{FilePipeLocalInformation,NtQueryInformationFile};",
+    ) &&
+    sysCompact.includes(
+      "#[cfg(test)]#[repr(C)]#[derive(Clone,Copy,Debug,Default,Eq,PartialEq)]structNativeFilePipeLocalInformation{named_pipe_type:u32,named_pipe_configuration:u32,maximum_instances:u32,current_instances:u32,inbound_quota:u32,read_data_available:u32,outbound_quota:u32,write_quota_available:u32,named_pipe_state:u32,named_pipe_end:u32,}",
+    ) &&
+    sysCompact.includes(
+      "#[cfg(test)]const_:()={assert!(size_of::<NativeFilePipeLocalInformation>()==40);assert!(align_of::<NativeFilePipeLocalInformation>()==4);assert!(offset_of!(NativeFilePipeLocalInformation,named_pipe_type)==0);assert!(offset_of!(NativeFilePipeLocalInformation,named_pipe_configuration)==4);assert!(offset_of!(NativeFilePipeLocalInformation,maximum_instances)==8);assert!(offset_of!(NativeFilePipeLocalInformation,current_instances)==12);assert!(offset_of!(NativeFilePipeLocalInformation,inbound_quota)==16);assert!(offset_of!(NativeFilePipeLocalInformation,read_data_available)==20);assert!(offset_of!(NativeFilePipeLocalInformation,outbound_quota)==24);assert!(offset_of!(NativeFilePipeLocalInformation,write_quota_available)==28);assert!(offset_of!(NativeFilePipeLocalInformation,named_pipe_state)==32);assert!(offset_of!(NativeFilePipeLocalInformation,named_pipe_end)==36);assert!(size_of::<IO_STATUS_BLOCK>()==size_of::<usize>()*2);assert!(align_of::<IO_STATUS_BLOCK>()==align_of::<usize>());assert!(offset_of!(IO_STATUS_BLOCK,Anonymous)==0);assert!(offset_of!(IO_STATUS_BLOCK,Information)==size_of::<usize>());};",
+    ) &&
+    JSON.stringify(
+      rustCallSites(nativeGrantedAccessTestAdapter, "NtQueryObject").map(
+        (call) => call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [
+          "Some(handle.raw())",
+          "ObjectBasicInformation",
+          "Some((&rawmutobject_information).cast())",
+          "object_information_size",
+          "Some(&rawmutreturned_length)",
+        ],
+      ]) &&
+    nativeGrantedAccessCompact.includes(
+      "ifobject_status!=STATUS_SUCCESS||returned_length!=object_information_size{",
+    ) &&
+    nativeGrantedAccessCompact.includes("Ok(object_information.GrantedAccess)") &&
+    JSON.stringify(
+      rustCallSites(
+        nativePipeInformationTestAdapter,
+        "NtQueryInformationFile",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        [
+          "handle.raw()",
+          "&rawmutio_status",
+          "(&rawmutpipe_information).cast()",
+          "pipe_information_size",
+          "FilePipeLocalInformation",
+        ],
+      ]) &&
+    nativePipeInformationCompact.includes(
+      "ifpipe_status!=STATUS_SUCCESS||completed_status!=STATUS_SUCCESS||io_status.Information!=size_of::<NativeFilePipeLocalInformation>(){",
+    ) &&
+    nativePipeInformationCompact.includes(
+      "Ok(NativePipeLocalInformationForTest{named_pipe_configuration:pipe_information.named_pipe_configuration,named_pipe_end:pipe_information.named_pipe_end,})",
     )
   );
 };
@@ -58144,6 +58785,192 @@ const approvalPipeMutationProbes = [
   keyAgentPipeSource.replace(
     "sys::PipeDirection::ParentReads,\n        )?;",
     "sys::PipeDirection::ParentWrites,\n        )?;",
+  ),
+  keyAgentPipeSource.replace(
+    "PipeDirection::ParentWrites => (PIPE_ACCESS_INBOUND, CHILD_REQUEST_INPUT_ACCESS)",
+    "PipeDirection::ParentWrites => (PIPE_ACCESS_INBOUND, CHILD_RESPONSE_OUTPUT_ACCESS)",
+  ),
+  keyAgentPipeSource.replace(
+    "let original_child_server = OwnedWinHandle(child_server);",
+    "let original_child_server = OwnedWinHandle(HANDLE::default());",
+  ),
+  keyAgentPipeSource.replace(
+    "match duplicate_exact_access(&original_child_server, retained_server_access, false) {",
+    "match duplicate_exact_access(&original_child_server, retained_server_access, true) {",
+  ),
+  keyAgentPipeSource.replace(
+    "if let Err(retry) = original_child_server.close_checked() {",
+    "if let Err(retry) = Ok::<(), sys::OwnedWinHandle>(()) {",
+  ),
+  replaceNth(
+    keyAgentPipeSource,
+    "if let Err(retry) = original_child_server.close_checked() {",
+    "if let Err(retry) = Ok::<(), sys::OwnedWinHandle>(()) {",
+    1,
+  ),
+  keyAgentPipeSource.replace(
+    "duplicate_inheritable(&source, CHILD_RESPONSE_OUTPUT_ACCESS, flight)",
+    "duplicate_inheritable(&source, CHILD_REQUEST_INPUT_ACCESS, flight)",
+  ),
+  keyAgentPipeSource.replace(
+    "duplicate_exact_access(source, desired_access, true)",
+    "duplicate_exact_access(source, desired_access, false)",
+  ),
+  keyAgentPipeSource.replace(
+    "duplicate_exact_access(source, desired_access, false)",
+    "duplicate_exact_access(source, desired_access, true)",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    pub(super) fn duplicate_exact_noninheritable_for_test(",
+    "    pub(super) fn duplicate_exact_noninheritable_for_test(",
+  ),
+  keyAgentPipeSource.replace(
+    "pub(super) const CHILD_REQUEST_INPUT_ACCESS: u32 = 0x0010_0001;",
+    "pub(super) const CHILD_REQUEST_INPUT_ACCESS: u32 = 0x001a_0089;",
+  ),
+  keyAgentPipeSource.replace(
+    "    const KERNEL_WRITE_OWNER: u32 = WRITE_OWNER.0;",
+    "    const KERNEL_WRITE_OWNER: u32 = 0;",
+  ),
+  keyAgentPipeSource.replace(
+    "    const NATIVE_FILE_PIPE_INBOUND: u32 = 0;",
+    "    const NATIVE_FILE_PIPE_INBOUND: u32 = 1;",
+  ),
+  keyAgentPipeSource.replace(
+    "    const NATIVE_FILE_PIPE_OUTBOUND: u32 = 1;",
+    "    const NATIVE_FILE_PIPE_OUTBOUND: u32 = 0;",
+  ),
+  keyAgentPipeSource.replace(
+    "    const NATIVE_FILE_PIPE_CLIENT_END: u32 = 0;",
+    "    const NATIVE_FILE_PIPE_CLIENT_END: u32 = 1;",
+  ),
+  keyAgentPipeSource.replace(
+    "PipeDirection::ParentReads => NATIVE_FILE_PIPE_OUTBOUND,",
+    "PipeDirection::ParentReads => NATIVE_FILE_PIPE_INBOUND,",
+  ),
+  keyAgentPipeSource.replace(
+    "DUPLICATE_HANDLE_OPTIONS(0),",
+    "DUPLICATE_SAME_ACCESS,",
+  ),
+  keyAgentPipeSource.replace(
+    "if handle_flags(duplicate.raw())? != expected_flags {",
+    "if handle_flags(duplicate.raw())? == expected_flags {",
+  ),
+  keyAgentPipeSource.replace(
+    '    #[ignore = "native NtQueryObject/NtQueryInformationFile kernel-matrix evidence only"]\n',
+    "",
+  ),
+  keyAgentPipeSource.replace(
+    "assert_eq!(request_source_access & KERNEL_WRITE_OWNER, 0);",
+    "assert_ne!(request_source_access & KERNEL_WRITE_OWNER, 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert_eq!(stdin_access, sys::CHILD_REQUEST_INPUT_ACCESS);",
+    "assert_eq!(stdin_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(!sys::handle_inheritable_for_test(\n            &pipes.child_request_source\n        )?);",
+    "assert!(sys::handle_inheritable_for_test(\n            &pipes.child_request_source\n        )?);",
+  ),
+  keyAgentPipeSource.replace(
+    "sys::native_pipe_local_information_for_test(&pipes.parent_response)",
+    "sys::native_pipe_local_information_for_test(&pipes.child_response_source)",
+  ),
+  keyAgentPipeSource.replace(
+    "response_instance.named_pipe_configuration,\n            sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentReads)",
+    "response_instance.named_pipe_configuration,\n            sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentWrites)",
+  ),
+  keyAgentPipeSource.replace(
+    "response_instance.named_pipe_end,\n            sys::native_pipe_client_end_for_test()",
+    "response_instance.named_pipe_end,\n            1",
+  ),
+  keyAgentPipeSource.replace(
+    "&prepared.stdin,\n            sys::CHILD_REQUEST_INPUT_ACCESS,",
+    "&prepared.stdin,\n            sys::CHILD_RESPONSE_OUTPUT_ACCESS,",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(sys::same_kernel_object_for_test(\n            &prepared.stdin,\n            &request_input\n        ));",
+    "assert!(!sys::same_kernel_object_for_test(\n            &prepared.stdin,\n            &request_input\n        ));",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(!sys::handle_inheritable_for_test(&request_input)?);",
+    "assert!(sys::handle_inheritable_for_test(&request_input)?);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert_eq!(request_access, sys::CHILD_REQUEST_INPUT_ACCESS);",
+    "assert_ne!(request_access, sys::CHILD_REQUEST_INPUT_ACCESS);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert_eq!(request_access & KERNEL_WRITE_OWNER, 0);",
+    "assert_ne!(request_access & KERNEL_WRITE_OWNER, 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(sys::same_kernel_object_for_test(\n            &pipes.child_request_source,\n            &prepared.stdin\n        ));",
+    "assert!(!sys::same_kernel_object_for_test(\n            &pipes.child_request_source,\n            &prepared.stdin\n        ));",
+  ),
+  keyAgentPipeSource.replace(
+    "assert_eq!(stdin_access & KERNEL_WRITE_OWNER, 0);",
+    "assert_ne!(stdin_access & KERNEL_WRITE_OWNER, 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "returned_length != object_information_size",
+    "returned_length == 0",
+  ),
+  keyAgentPipeSource.replace(
+    "                Some(handle.raw()),\n                ObjectBasicInformation,",
+    "                Some(HANDLE::default()),\n                ObjectBasicInformation,",
+  ),
+  keyAgentPipeSource.replace(
+    "Ok(object_information.GrantedAccess)",
+    "Ok(object_information.Attributes)",
+  ),
+  keyAgentPipeSource.replace(
+    "io_status.Information != size_of::<NativeFilePipeLocalInformation>()",
+    "io_status.Information == 0",
+  ),
+  keyAgentPipeSource.replace(
+    "                pipe_information_size,\n                FilePipeLocalInformation,",
+    "                pipe_information_size,\n                0,",
+  ),
+  keyAgentPipeSource.replace(
+    "named_pipe_configuration: pipe_information.named_pipe_configuration,",
+    "named_pipe_configuration: pipe_information.named_pipe_end,",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+    "    use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    use windows::Wdk::Storage::FileSystem::{FilePipeLocalInformation, NtQueryInformationFile};",
+    "    use windows::Wdk::Storage::FileSystem::{FilePipeLocalInformation, NtQueryInformationFile};",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    pub(super) fn native_granted_access_for_test(",
+    "    pub(super) fn native_granted_access_for_test(",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    pub(super) fn native_pipe_local_information_for_test(",
+    "    pub(super) fn native_pipe_local_information_for_test(",
+  ),
+  keyAgentPipeSource.replace(
+    "    #[cfg(test)]\n    #[repr(C)]\n    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]\n    struct NativeFilePipeLocalInformation",
+    "    #[cfg(test)]\n    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]\n    struct NativeFilePipeLocalInformation",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(size_of::<NativeFilePipeLocalInformation>() == 40);",
+    "assert!(size_of::<NativeFilePipeLocalInformation>() == 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "assert!(offset_of!(IO_STATUS_BLOCK, Information) == size_of::<usize>());",
+    "assert!(offset_of!(IO_STATUS_BLOCK, Information) == 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "sys::write_child_for_test(&request_input, b\"wrong request direction\"),\n            Err(PipeError::OperatingSystem)",
+    "sys::write_child_for_test(&request_input, b\"wrong request direction\"),\n            Ok(())",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentPipeSource,
+    "kernel_matrix_key_agent_sources_and_fresh_capabilities_have_exact_authority",
   ),
   keyAgentPipeSource.replace(
     "pub(crate) fn write_all(self, bytes: &[u8]",
@@ -58187,7 +59014,7 @@ requireInvariant(
     approvalPipeMutationProbes.every(
       (probe) => probe !== keyAgentPipeSource && !approvalPipeContract(probe),
     ),
-  "Approval pipes must retain child-server/parent-overlapped-client topology, parent-write/parent-read direction pairing, v2 PARENT_HELLO_BYTES/CHILD_HELLO_BYTES staged IO with no legacy 62-byte hello, consuming finish/response IO, zeroized exact child hello, and final exact EOF",
+  "Approval and Key Agent pipes must retain child-server/parent-overlapped-client topology, exact attenuated source and child-stdio rights with checked broad-source close, cfg(test)-only ABI-checked kernel evidence, parent-write/parent-read direction pairing, v2 staged IO, consuming finish/response IO, zeroized exact child hello, and final exact EOF",
 );
 
 const approvalChildServerStdioContract = (source) => {

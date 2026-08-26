@@ -312,9 +312,15 @@ boundary adds no `CreateAppContainerProfile`, `GetAppContainerFolderPath`, or
 `DeleteAppContainerProfile` call, profile-registration authority, or new
 production reachability. `COMPILED_PARENT_POLICY` remains `None`.
 
-The activation still supplies zero capabilities plus the ALL APPLICATION
-PACKAGES opt-out in its exact four-entry process-creation attribute list. The
-original `CREATE_SUSPENDED` count is consumed to let Windows produce the first
+The activation supplies an exact five-entry process-creation attribute list in
+`HANDLE_LIST` -> `JOB_LIST` -> `MITIGATION_POLICY` ->
+`SECURITY_CAPABILITIES` -> `ALL_APPLICATION_PACKAGES_POLICY` order. Its full
+immutable mitigation word is identical to the restricted-helper and
+service-startup policy, including the non-Microsoft-binary block, and remains in
+heap-stable `Box<u64>` storage through `CreateProcessW` and attribute-list
+deletion. The LPAC entries still supply zero capabilities plus the ALL
+APPLICATION PACKAGES opt-out. The original `CREATE_SUSPENDED` count is consumed
+to let Windows produce the first
 pre-user-mode create event. While that event remains held, activation
 authenticates the mapped image and verifies the exact primary token into the
 gate-pending proof; it does not add the later explicit suspend count there.
@@ -357,6 +363,40 @@ pass, and closes aliases even when post-join process cleanup fails. This documen
 PID-only `DebugActiveProcessStop` path that the deny-only process DACL blocks. The
 detached Key Agent capability exposes no generic resume API; its only consuming
 resume transition is the fixed storage-startup exchange above.
+
+The dormant Key Agent pipe owner preserves `FILE_FLAG_FIRST_PIPE_INSTANCE` at
+`CreateNamedPipeW` even though its `0x00080000` value is also `WRITE_OWNER` in
+the resulting access mask. It immediately duplicates each persistent server
+source to exact request read-plus-synchronize `0x00100001` or response
+write-plus-synchronize `0x00100002`, inheritance false and options zero, then
+checked-closes the original before client open. Child stdin, stdout, and
+NUL-backed stderr are separate exact-access inheritable duplicates; none uses
+`DUPLICATE_SAME_ACCESS`.
+
+One ignored host-local kernel test uses the official `windows` WDK native-query
+function/class bindings and a test-only `repr(C)` local pipe-information ABI
+mirror guarded by size, alignment, and offset assertions. Exact sources omit
+`FILE_READ_ATTRIBUTES`, so only the sealed `parent_response` client supplies
+pipe-local outbound/client-end information; request direction is proved by
+successful forward I/O and rejected reverse I/O. Handle flags and same-object
+comparison cover inheritance and continuity. The WDK wrappers create native-symbol
+load-time imports in the test binary rather than resolving them dynamically,
+which leaves a test-host compatibility limit but no production call or import
+reachability. This is
+test-only kernel evidence for `PrivateKeyAgentPipes`, not runtime admission or
+proof of the separate Phase 1 service-helper source candidates, and it does not
+enable production activation.
+
+On 2026-08-27, the locked `platform-windows` all-target/all-feature run on Windows
+build 26200, with the freshly built Key Agent test executable explicitly bound,
+reported 567 passed, 16 failed, and 27 ignored. The affected cases failed
+earlier at process creation on a host where third-party injected modules were
+observed; coexistence is not causal proof. This result does not authenticate raw
+`DEBUG_EVENT` slot
+generations, eliminate same-object ABA or the compare-to-close TOCTOU, or prove
+the separate Phase 1 helper bootstrap's source-candidate `GrantedAccess` and
+pipe direction. Production activation remains forbidden and both compiled
+policies remain `None`.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -1307,7 +1347,7 @@ Before any real mainnet value is used, the Windows build must prove:
    OS-derived `LOCALAPPDATA`, share the same verified System32
    current-directory boundary; that policy remains repo-local and is not atomic
    directory identity or signed-artifact E2E evidence. The verified/prepared
-   held-root proof, four creation attributes, suspended-token proof, and private
+   held-root proof, five creation attributes, suspended-token proof, and private
    request-before-resume storage transcript commitment now bind the kernel-test
    child to its exact CSPRNG test root. The same integrated `cfg(test)` path now
    exercises the four fixed private generation stores and their exact

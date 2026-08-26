@@ -538,6 +538,15 @@ consume that worker's event queue. `DebugActiveProcessStop` is not used: its
 PID-only path conflicts with the deny-only process creation DACL. The documented
 debugger-thread-exit behavior provides detach without a PID reopen.
 
+The same creator installs an exact five-slot `STARTUPINFOEXW` attribute list in
+`HANDLE_LIST` -> `JOB_LIST` -> `MITIGATION_POLICY` ->
+`SECURITY_CAPABILITIES` -> `ALL_APPLICATION_PACKAGES_POLICY` order. The
+mitigation word is identical to the restricted-helper and service-startup
+policy, including the non-Microsoft-binary block, and remains at a heap-stable
+`Box<u64>` address until `CreateProcessW` returns and the attribute list is
+deleted. This lifetime/order hardening does not make the dormant activation a
+production path.
+
 The first event must be the exact pre-user-mode `CREATE_PROCESS_DEBUG_EVENT` for
 the returned PID and primary thread. Its image `hFile` is compared with the
 still-held verified artifact by volume serial and the complete 128-bit
@@ -1398,14 +1407,44 @@ profile/root, install root, or exact signed artifact end to end.
 The dormant supervisor composition initially binds that exact-image proof to one
 preconfigured two-process kill-on-close root Job, one private request pipe, one
 separate private response pipe, and one internally timed one-shot startup nonce.
+Each `CreateNamedPipeW` call retains first-instance exclusion even though
+`FILE_FLAG_FIRST_PIPE_INSTANCE` shares the numeric `0x0008_0000` bit with
+`WRITE_OWNER` in a returned handle's access mask. Immediately after creation,
+the pipe owner duplicates the persistent request server source to exact
+read-plus-synchronize `0x00100001` or the response server source to exact
+write-plus-synchronize `0x00100002`, with inheritance false and duplication
+options zero, then checked-closes the original before opening the corresponding
+parent client. Child stdin, stdout, and NUL-backed stderr are separate
+inheritable duplicates with those exact directional masks; none of these
+production child-stdio duplicates uses `DUPLICATE_SAME_ACCESS`.
+
+An ignored host-local kernel-matrix test uses the official `windows` WDK
+`NtQueryObject(ObjectBasicInformation)` and
+`NtQueryInformationFile(FilePipeLocalInformation)` function/class bindings; the
+result buffer is a test-only `repr(C)` local ABI mirror guarded by size, alignment,
+and offset assertions. Exact server sources intentionally omit
+`FILE_READ_ATTRIBUTES`, so pipe-local information is observed only through the
+sealed `parent_response` client (outbound/client end), while request direction is
+proved by successful parent-to-child I/O and rejected reverse I/O. Handle flags
+and same-object comparison additionally check inheritance and continuity. The WDK
+wrappers create native-symbol load-time imports in the test binary rather than
+resolving them dynamically, so this ignored evidence has a test-host compatibility
+limit; no query or import is production-reachable. It is evidence for
+`PrivateKeyAgentPipes` on that host,
+not runtime admission and not proof of the separate Phase 1 service-helper source
+candidates. It does not permit production activation.
+
 The activation-owned fresh thread creates the Job and pipes, acquires the shared
 flight up to the startup-lease deadline, and creates exactly three short-lived
 inheritable stdio duplicates plus one borrowed Job handle through an exact
-four-slot `STARTUPINFOEXW` attribute list: `HANDLE_LIST`, `JOB_LIST`,
-`SECURITY_CAPABILITIES`, and `ALL_APPLICATION_PACKAGES_POLICY`. The attribute
-list retains its three-handle array, Job value, profile SID, and both LPAC values
-through `CreateProcessW`; it is then deleted and all three duplicates close
-before the flight is released and mapped-image authentication begins. The Job
+five-slot `STARTUPINFOEXW` attribute list: `HANDLE_LIST`, `JOB_LIST`, the full
+immutable helper `MITIGATION_POLICY`, `SECURITY_CAPABILITIES`, and
+`ALL_APPLICATION_PACKAGES_POLICY`. The policy is the same one used by restricted
+helper and service startup and includes the non-Microsoft-binary block. The
+attribute list retains its three-handle array, Job value, heap-stable boxed
+mitigation word, profile SID, and both LPAC values through `CreateProcessW`; it
+is then deleted and all three duplicates close before the flight is released
+and mapped-image authentication begins. The Job
 context is checked before creation, after exact-image/LPAC detach while the child
 is still suspended, and once more before the aggregate crosses the join. Exactly
 one active Job member is required. The aggregate is non-clone, `!Sync`, and
@@ -1418,6 +1457,16 @@ then releases exactly the verified suspend count for storage startup. The child
 must observe exact request EOF, detach the ambient stdin/stdout entries, and
 close raw stdin before decoding or opening the root. Raw stdout remains only as
 the response-capability handle.
+
+On the measured Windows host, where third-party injected modules were observed
+in the surrounding process, the full-policy kernel matrix fails closed earlier
+at process creation. This is narrow host-local evidence, not proof that
+injection caused the failures and not a supported-kernel result. Neither the
+mitigation change nor this observation resolves generation authentication for raw
+`DEBUG_EVENT` aliases, same-object ABA, or atomic compare-and-close. The separate
+Phase 1 helper bootstrap also lacks exact source-candidate `GrantedAccess` and
+pipe-direction proof. Production activation therefore remains forbidden and the
+compiled policies remain `None`.
 
 The child constructs one exact 88-byte `YWKSRES1` response only when the request's
 nonce, PID, creation time, and complete root identity equal its own observations.

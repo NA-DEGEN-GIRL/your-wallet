@@ -487,8 +487,16 @@ impl PrivateKeyAgentPipes {
         &'pipes self,
         flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,
     ) -> Result<PreparedKeyAgentInheritance<'pipes, 'flight>, PipeError> {
-        let stdin = sys::duplicate_inheritable(&self.child_request_source, flight)?;
-        let stdout = sys::duplicate_inheritable(&self.child_response_source, flight)?;
+        let stdin = sys::duplicate_inheritable(
+            &self.child_request_source,
+            sys::CHILD_REQUEST_INPUT_ACCESS,
+            flight,
+        )?;
+        let stdout = sys::duplicate_inheritable(
+            &self.child_response_source,
+            sys::CHILD_RESPONSE_OUTPUT_ACCESS,
+            flight,
+        )?;
         let stderr = sys::create_inheritable_null_sink(flight)?;
         sys::validate_prepared_key_agent_inheritance(
             &self.child_request_source,
@@ -880,12 +888,22 @@ mod sys {
 
     use core::ffi::c_void;
     use core::mem::size_of;
+    #[cfg(test)]
+    use core::mem::{align_of, offset_of};
     use core::ptr;
     use std::os::windows::io::{AsHandle, BorrowedHandle, RawHandle};
     use std::time::{Duration, Instant};
 
+    #[cfg(test)]
+    use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
+    #[cfg(test)]
+    use windows::Wdk::Storage::FileSystem::{FilePipeLocalInformation, NtQueryInformationFile};
+    #[cfg(test)]
+    use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
+    #[cfg(test)]
+    use windows::Win32::Foundation::STATUS_SUCCESS;
     use windows::Win32::Foundation::{
-        CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle,
+        CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
         ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_READ,
         GENERIC_WRITE, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL, LocalFree,
         WAIT_TIMEOUT,
@@ -904,6 +922,8 @@ mod sys {
         FILE_TYPE_PIPE, GetFileType, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_INBOUND,
         PIPE_ACCESS_OUTBOUND, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     };
+    #[cfg(test)]
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
     use windows::Win32::System::IO::{
         CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED,
     };
@@ -918,11 +938,60 @@ mod sys {
         CreateEventW, GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    #[cfg(test)]
+    use windows::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
     use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
     use zeroize::Zeroizing;
 
     use super::{ExpectedPeer, PIPE_BUFFER_BYTES, PipeError, SensitivePipeName};
     use crate::inheritable_handle_launch::InheritableHandleLaunchFlight;
+
+    #[cfg(test)]
+    const NATIVE_FILE_PIPE_INBOUND: u32 = 0;
+    #[cfg(test)]
+    const NATIVE_FILE_PIPE_OUTBOUND: u32 = 1;
+    #[cfg(test)]
+    const NATIVE_FILE_PIPE_CLIENT_END: u32 = 0;
+
+    /// Test-only declaration of the native `FILE_PIPE_LOCAL_INFORMATION` ABI.
+    ///
+    /// This change-prone interface is kernel-matrix evidence only. Production
+    /// validation deliberately does not depend on this declaration or query.
+    #[cfg(test)]
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct NativeFilePipeLocalInformation {
+        named_pipe_type: u32,
+        named_pipe_configuration: u32,
+        maximum_instances: u32,
+        current_instances: u32,
+        inbound_quota: u32,
+        read_data_available: u32,
+        outbound_quota: u32,
+        write_quota_available: u32,
+        named_pipe_state: u32,
+        named_pipe_end: u32,
+    }
+
+    #[cfg(test)]
+    const _: () = {
+        assert!(size_of::<NativeFilePipeLocalInformation>() == 40);
+        assert!(align_of::<NativeFilePipeLocalInformation>() == 4);
+        assert!(offset_of!(NativeFilePipeLocalInformation, named_pipe_type) == 0);
+        assert!(offset_of!(NativeFilePipeLocalInformation, named_pipe_configuration) == 4);
+        assert!(offset_of!(NativeFilePipeLocalInformation, maximum_instances) == 8);
+        assert!(offset_of!(NativeFilePipeLocalInformation, current_instances) == 12);
+        assert!(offset_of!(NativeFilePipeLocalInformation, inbound_quota) == 16);
+        assert!(offset_of!(NativeFilePipeLocalInformation, read_data_available) == 20);
+        assert!(offset_of!(NativeFilePipeLocalInformation, outbound_quota) == 24);
+        assert!(offset_of!(NativeFilePipeLocalInformation, write_quota_available) == 28);
+        assert!(offset_of!(NativeFilePipeLocalInformation, named_pipe_state) == 32);
+        assert!(offset_of!(NativeFilePipeLocalInformation, named_pipe_end) == 36);
+        assert!(size_of::<IO_STATUS_BLOCK>() == size_of::<usize>() * 2);
+        assert!(align_of::<IO_STATUS_BLOCK>() == align_of::<usize>());
+        assert!(offset_of!(IO_STATUS_BLOCK, Anonymous) == 0);
+        assert!(offset_of!(IO_STATUS_BLOCK, Information) == size_of::<usize>());
+    };
 
     pub(super) struct OwnedWinHandle(HANDLE);
 
@@ -961,6 +1030,9 @@ mod sys {
         ParentWrites,
         ParentReads,
     }
+
+    pub(super) const CHILD_REQUEST_INPUT_ACCESS: u32 = 0x0010_0001;
+    pub(super) const CHILD_RESPONSE_OUTPUT_ACCESS: u32 = 0x0010_0002;
 
     impl Drop for OwnedWinHandle {
         fn drop(&mut self) {
@@ -1099,9 +1171,9 @@ mod sys {
         direction: PipeDirection,
     ) -> Result<(OwnedWinHandle, OwnedWinHandle), PipeError> {
         let attributes = security.attributes();
-        let server_direction = match direction {
-            PipeDirection::ParentWrites => PIPE_ACCESS_INBOUND,
-            PipeDirection::ParentReads => PIPE_ACCESS_OUTBOUND,
+        let (server_direction, retained_server_access) = match direction {
+            PipeDirection::ParentWrites => (PIPE_ACCESS_INBOUND, CHILD_REQUEST_INPUT_ACCESS),
+            PipeDirection::ParentReads => (PIPE_ACCESS_OUTBOUND, CHILD_RESPONSE_OUTPUT_ACCESS),
         };
         let open_mode = server_direction | FILE_FLAG_FIRST_PIPE_INSTANCE;
         let pipe_mode =
@@ -1123,7 +1195,31 @@ mod sys {
         if child_server.is_invalid() {
             return Err(PipeError::OperatingSystem);
         }
-        let child_server = OwnedWinHandle(child_server);
+        let original_child_server = OwnedWinHandle(child_server);
+        // CreateNamedPipeW assigns 0x0008_0000 both to the first-instance
+        // creation flag and to WRITE_OWNER in the returned access mask. Keep
+        // first-instance exclusion, but retain only the exact data direction
+        // plus SYNCHRONIZE in every persistent child-server source.
+        let child_server =
+            match duplicate_exact_access(&original_child_server, retained_server_access, false) {
+                Ok(child_server) => child_server,
+                Err(error) => {
+                    // Even a failed attenuation attempt must explicitly close the
+                    // broad first-instance/WRITE_OWNER source. A failed checked
+                    // close leaves the returned owner armed for one RAII retry.
+                    if let Err(retry) = original_child_server.close_checked() {
+                        drop(retry);
+                    }
+                    return Err(error);
+                }
+            };
+        if let Err(retry) = original_child_server.close_checked() {
+            // The still-armed owner performs one ordinary RAII retry only after
+            // the checked close has failed. The attenuated duplicate also drops
+            // on this error path, so no server capability can escape.
+            drop(retry);
+            return Err(PipeError::OperatingSystem);
+        }
         let desired_access = match direction {
             PipeDirection::ParentWrites => GENERIC_WRITE.0,
             PipeDirection::ParentReads => GENERIC_READ.0,
@@ -1154,26 +1250,25 @@ mod sys {
         Ok((OwnedWinHandle(parent_client), child_server))
     }
 
-    /// Creates one inheritable duplicate with exactly the source access mask.
-    /// The persistent source remains non-inheritable.
-    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-    pub(super) fn duplicate_inheritable(
+    fn duplicate_exact_access(
         source: &OwnedWinHandle,
-        _flight: &InheritableHandleLaunchFlight<'_>,
+        desired_access: u32,
+        inheritable: bool,
     ) -> Result<OwnedWinHandle, PipeError> {
         let mut duplicate = HANDLE::default();
-        // SAFETY: the source is owned and live. Both process pseudo-handles name
-        // this process, and the requested inheritance bit applies only to the
-        // returned duplicate.
+        // SAFETY: the source is owned and live, both process pseudo-handles name
+        // this process, and ownership of a successful fresh result is adopted
+        // immediately below. No DuplicateHandle option bits are enabled.
         unsafe {
+            let process = GetCurrentProcess();
             DuplicateHandle(
-                GetCurrentProcess(),
+                process,
                 source.raw(),
-                GetCurrentProcess(),
+                process,
                 &raw mut duplicate,
-                0,
-                true,
-                DUPLICATE_SAME_ACCESS,
+                desired_access,
+                inheritable,
+                DUPLICATE_HANDLE_OPTIONS(0),
             )
             .map_err(|_| PipeError::OperatingSystem)?;
         }
@@ -1181,10 +1276,26 @@ mod sys {
             return Err(PipeError::OperatingSystem);
         }
         let duplicate = OwnedWinHandle(duplicate);
-        if handle_flags(duplicate.raw())? != HANDLE_FLAG_INHERIT.0 {
+        let expected_flags = if inheritable {
+            HANDLE_FLAG_INHERIT.0
+        } else {
+            0
+        };
+        if handle_flags(duplicate.raw())? != expected_flags {
             return Err(PipeError::OperatingSystem);
         }
         Ok(duplicate)
+    }
+
+    /// Creates one inheritable duplicate with exactly the requested access.
+    /// The persistent source remains non-inheritable.
+    #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
+    pub(super) fn duplicate_inheritable(
+        source: &OwnedWinHandle,
+        desired_access: u32,
+        _flight: &InheritableHandleLaunchFlight<'_>,
+    ) -> Result<OwnedWinHandle, PipeError> {
+        duplicate_exact_access(source, desired_access, true)
     }
 
     /// Opens the Windows null device write-only and returns only an inheritable
@@ -1218,7 +1329,7 @@ mod sys {
         }
         .map(OwnedWinHandle)
         .map_err(|_| PipeError::OperatingSystem)?;
-        duplicate_inheritable(&source, flight)
+        duplicate_inheritable(&source, CHILD_RESPONSE_OUTPUT_ACCESS, flight)
     }
 
     #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
@@ -1803,6 +1914,96 @@ mod sys {
     }
 
     #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) struct NativePipeLocalInformationForTest {
+        pub(super) named_pipe_configuration: u32,
+        pub(super) named_pipe_end: u32,
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_granted_access_for_test(
+        handle: &OwnedWinHandle,
+    ) -> Result<u32, PipeError> {
+        let mut object_information = PUBLIC_OBJECT_BASIC_INFORMATION::default();
+        let object_information_size = u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        let mut returned_length = 0_u32;
+        // SAFETY: this kernel-matrix-only query receives one exact live handle,
+        // a correctly sized initialized output object, and writable returned-
+        // length storage. Production code never calls this native API.
+        let object_status = unsafe {
+            NtQueryObject(
+                Some(handle.raw()),
+                ObjectBasicInformation,
+                Some((&raw mut object_information).cast()),
+                object_information_size,
+                Some(&raw mut returned_length),
+            )
+        };
+        if object_status != STATUS_SUCCESS || returned_length != object_information_size {
+            return Err(PipeError::OperatingSystem);
+        }
+        Ok(object_information.GrantedAccess)
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_pipe_local_information_for_test(
+        handle: &OwnedWinHandle,
+    ) -> Result<NativePipeLocalInformationForTest, PipeError> {
+        let mut io_status = IO_STATUS_BLOCK::default();
+        let mut pipe_information = NativeFilePipeLocalInformation::default();
+        let pipe_information_size = u32::try_from(size_of::<NativeFilePipeLocalInformation>())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        // SAFETY: the exact live pipe handle, ABI-checked IO status block, and
+        // ABI-checked FILE_PIPE_LOCAL_INFORMATION storage remain writable for
+        // the complete synchronous query. This declaration is test-only.
+        let pipe_status = unsafe {
+            NtQueryInformationFile(
+                handle.raw(),
+                &raw mut io_status,
+                (&raw mut pipe_information).cast(),
+                pipe_information_size,
+                FilePipeLocalInformation,
+            )
+        };
+        // SAFETY: a synchronous successful query initializes the status arm of
+        // the ABI-checked IO_STATUS_BLOCK union.
+        let completed_status = unsafe { io_status.Anonymous.Status };
+        if pipe_status != STATUS_SUCCESS
+            || completed_status != STATUS_SUCCESS
+            || io_status.Information != size_of::<NativeFilePipeLocalInformation>()
+        {
+            return Err(PipeError::OperatingSystem);
+        }
+
+        Ok(NativePipeLocalInformationForTest {
+            named_pipe_configuration: pipe_information.named_pipe_configuration,
+            named_pipe_end: pipe_information.named_pipe_end,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn duplicate_exact_noninheritable_for_test(
+        source: &OwnedWinHandle,
+        desired_access: u32,
+    ) -> Result<OwnedWinHandle, PipeError> {
+        duplicate_exact_access(source, desired_access, false)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn native_pipe_configuration_for_test(direction: PipeDirection) -> u32 {
+        match direction {
+            PipeDirection::ParentWrites => NATIVE_FILE_PIPE_INBOUND,
+            PipeDirection::ParentReads => NATIVE_FILE_PIPE_OUTBOUND,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn native_pipe_client_end_for_test() -> u32 {
+        NATIVE_FILE_PIPE_CLIENT_END
+    }
+
+    #[cfg(test)]
     pub(super) fn raw_handle_names_same_object_for_test(
         expected: &OwnedWinHandle,
         candidate: HANDLE,
@@ -2019,7 +2220,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use approval_wire::{CHILD_HELLO_BYTES, PARENT_HELLO_BYTES, RESPONSE_BYTES};
-    use windows::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, WRITE_OWNER};
     use windows::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
 
     use super::{
@@ -2111,6 +2312,171 @@ mod tests {
         assert_eq!(request_peer.0, std::process::id());
         assert_eq!(request_peer.1, sys::current_session_for_test()?);
         Ok(())
+    }
+
+    const KERNEL_FILE_READ_DATA: u32 = 0x0000_0001;
+    const KERNEL_FILE_WRITE_DATA: u32 = 0x0000_0002;
+    const KERNEL_WRITE_OWNER: u32 = WRITE_OWNER.0;
+
+    fn native_granted_access_evidence(
+        handle: &sys::OwnedWinHandle,
+        error: &'static str,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        sys::native_granted_access_for_test(handle).map_err(|_| error.into())
+    }
+
+    fn assert_key_agent_source_authority(
+        pipes: &PrivateKeyAgentPipes,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(FILE_FLAG_FIRST_PIPE_INSTANCE.0, KERNEL_WRITE_OWNER);
+        let request_source_access =
+            native_granted_access_evidence(&pipes.child_request_source, "request source query")?;
+        let response_source_access =
+            native_granted_access_evidence(&pipes.child_response_source, "response source query")?;
+        assert_eq!(request_source_access, sys::CHILD_REQUEST_INPUT_ACCESS);
+        assert_eq!(response_source_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(request_source_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(response_source_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(request_source_access & KERNEL_FILE_WRITE_DATA, 0);
+        assert_eq!(response_source_access & KERNEL_FILE_READ_DATA, 0);
+        assert!(!sys::handle_inheritable_for_test(
+            &pipes.child_request_source
+        )?);
+        assert!(!sys::handle_inheritable_for_test(
+            &pipes.child_response_source
+        )?);
+
+        // Exact data-only sources intentionally lack FILE_READ_ATTRIBUTES, so
+        // native local-information queries cannot be made on either source.
+        // Observe the response instance through its unique sealed parent-side
+        // reader; request direction is proven by exact I/O below.
+        let response_instance = sys::native_pipe_local_information_for_test(&pipes.parent_response)
+            .map_err(|_| "response instance NtQueryInformationFile evidence failed")?;
+        assert_eq!(
+            response_instance.named_pipe_configuration,
+            sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentReads)
+        );
+        assert_eq!(
+            response_instance.named_pipe_end,
+            sys::native_pipe_client_end_for_test()
+        );
+        Ok(())
+    }
+
+    fn assert_prepared_key_agent_authority(
+        pipes: &PrivateKeyAgentPipes,
+        prepared: &super::PreparedKeyAgentInheritance<'_, '_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert!(sys::same_kernel_object_for_test(
+            &pipes.child_request_source,
+            &prepared.stdin
+        ));
+        assert!(sys::same_kernel_object_for_test(
+            &pipes.child_response_source,
+            &prepared.stdout
+        ));
+        assert!(sys::handle_inheritable_for_test(&prepared.stdin)?);
+        assert!(sys::handle_inheritable_for_test(&prepared.stdout)?);
+        assert!(sys::handle_inheritable_for_test(&prepared.stderr)?);
+        let stdin_access = native_granted_access_evidence(&prepared.stdin, "prepared stdin query")?;
+        let stdout_access =
+            native_granted_access_evidence(&prepared.stdout, "prepared stdout query")?;
+        let stderr_access =
+            native_granted_access_evidence(&prepared.stderr, "prepared stderr query")?;
+        assert_eq!(stdin_access, sys::CHILD_REQUEST_INPUT_ACCESS);
+        assert_eq!(stdout_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(stderr_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(stdin_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(stdout_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(stderr_access & KERNEL_WRITE_OWNER, 0);
+        Ok(())
+    }
+
+    fn assert_fresh_key_agent_authority_and_directions(
+        pipes: &PrivateKeyAgentPipes,
+        prepared: &super::PreparedKeyAgentInheritance<'_, '_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let request_input = sys::duplicate_exact_noninheritable_for_test(
+            &prepared.stdin,
+            sys::CHILD_REQUEST_INPUT_ACCESS,
+        )?;
+        let response_output = sys::duplicate_exact_noninheritable_for_test(
+            &prepared.stdout,
+            sys::CHILD_RESPONSE_OUTPUT_ACCESS,
+        )?;
+        assert_ne!(
+            sys::raw_handle_for_test(&prepared.stdin),
+            sys::raw_handle_for_test(&request_input)
+        );
+        assert_ne!(
+            sys::raw_handle_for_test(&prepared.stdout),
+            sys::raw_handle_for_test(&response_output)
+        );
+        assert!(sys::same_kernel_object_for_test(
+            &prepared.stdin,
+            &request_input
+        ));
+        assert!(sys::same_kernel_object_for_test(
+            &prepared.stdout,
+            &response_output
+        ));
+        assert!(!sys::same_kernel_object_for_test(
+            &request_input,
+            &response_output
+        ));
+        assert!(!sys::handle_inheritable_for_test(&request_input)?);
+        assert!(!sys::handle_inheritable_for_test(&response_output)?);
+
+        let request_access = native_granted_access_evidence(&request_input, "fresh request query")?;
+        let response_access =
+            native_granted_access_evidence(&response_output, "fresh response query")?;
+        assert_eq!(request_access, sys::CHILD_REQUEST_INPUT_ACCESS);
+        assert_eq!(response_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(request_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(response_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(request_access & KERNEL_FILE_WRITE_DATA, 0);
+        assert_eq!(response_access & KERNEL_FILE_READ_DATA, 0);
+
+        let request = [0x41_u8; 32];
+        sys::write_all_before(pipes.parent_request.raw(), &request, future_deadline()?)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&request_input, request.len())?,
+            request
+        );
+        assert_eq!(
+            sys::write_child_for_test(&request_input, b"wrong request direction"),
+            Err(PipeError::OperatingSystem)
+        );
+
+        let response = [0x52_u8; 32];
+        sys::write_child_for_test(&response_output, &response)?;
+        assert_eq!(
+            sys::read_exact_before(
+                pipes.parent_response.raw(),
+                response.len(),
+                future_deadline()?
+            )?
+            .as_slice(),
+            response
+        );
+        assert_eq!(
+            sys::read_child_exact_for_test(&response_output, 1),
+            Err(PipeError::OperatingSystem)
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "native NtQueryObject/NtQueryInformationFile kernel-matrix evidence only"]
+    fn kernel_matrix_key_agent_sources_and_fresh_capabilities_have_exact_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateKeyAgentPipes::create()?;
+        assert_key_agent_source_authority(&pipes)?;
+        let flight = acquire_inheritable_handle_launch(launch_deadline())
+            .map_err(|_| PipeError::OperatingSystem)?;
+        let prepared = pipes.prepare_child_inheritance(&flight)?;
+        assert_prepared_key_agent_authority(&pipes, &prepared)?;
+        assert_fresh_key_agent_authority_and_directions(&pipes, &prepared)
     }
 
     #[test]

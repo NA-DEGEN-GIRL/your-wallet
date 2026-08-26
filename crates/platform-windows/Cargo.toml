@@ -47,6 +47,7 @@ subtle.workspace = true
 thiserror.workspace = true
 windows = { workspace = true, features = [
     "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Globalization",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",

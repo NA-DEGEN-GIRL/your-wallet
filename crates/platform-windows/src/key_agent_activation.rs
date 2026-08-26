@@ -1693,10 +1693,11 @@ mod sys {
         DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
         GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessIdOfThread, GetProcessTimes,
         GetThreadId, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-        OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_ACCESS_RIGHTS,
-        PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_TERMINATE, QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, SuspendThread, THREAD_ACCESS_RIGHTS, THREAD_RESUME, THREAD_SUSPEND_RESUME,
+        OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        SuspendThread, THREAD_ACCESS_RIGHTS, THREAD_RESUME, THREAD_SUSPEND_RESUME,
         TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
     #[cfg(test)]
@@ -1733,6 +1734,37 @@ mod sys {
     const MAX_PROCESS_IMAGE_PATH_UNITS: usize = 32_768;
     const MAX_LOADER_DEBUG_EVENTS: usize = 128;
     const MAX_PRE_GATE_DEBUG_EVENTS: usize = 160;
+    const KEY_AGENT_CREATION_ATTRIBUTE_COUNT: u32 = 5;
+
+    const MITIGATION_DEP_ENABLE: u64 = 1;
+    const MITIGATION_SEHOP_ENABLE: u64 = 1 << 2;
+    const MITIGATION_FORCE_RELOCATE_IMAGES_ALWAYS_ON: u64 = 1 << 8;
+    const MITIGATION_HEAP_TERMINATE_ALWAYS_ON: u64 = 1 << 12;
+    const MITIGATION_BOTTOM_UP_ASLR_ALWAYS_ON: u64 = 1 << 16;
+    const MITIGATION_HIGH_ENTROPY_ASLR_ALWAYS_ON: u64 = 1 << 20;
+    const MITIGATION_STRICT_HANDLE_CHECKS_ALWAYS_ON: u64 = 1 << 24;
+    const MITIGATION_EXTENSION_POINT_DISABLE_ALWAYS_ON: u64 = 1 << 32;
+    const MITIGATION_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON: u64 = 1 << 36;
+    const MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON: u64 = 1 << 44;
+    const MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON: u64 = 1 << 52;
+    const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON: u64 = 1 << 56;
+    const MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON: u64 = 1 << 60;
+
+    // Intentionally identical to launch.rs's HELPER_MITIGATION_POLICY and the
+    // service startup path's SERVICE_PROBE_MITIGATION_POLICY.
+    const KEY_AGENT_MITIGATION_POLICY: u64 = MITIGATION_DEP_ENABLE
+        | MITIGATION_SEHOP_ENABLE
+        | MITIGATION_FORCE_RELOCATE_IMAGES_ALWAYS_ON
+        | MITIGATION_HEAP_TERMINATE_ALWAYS_ON
+        | MITIGATION_BOTTOM_UP_ASLR_ALWAYS_ON
+        | MITIGATION_HIGH_ENTROPY_ASLR_ALWAYS_ON
+        | MITIGATION_STRICT_HANDLE_CHECKS_ALWAYS_ON
+        | MITIGATION_EXTENSION_POINT_DISABLE_ALWAYS_ON
+        | MITIGATION_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON
+        | MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON
+        | MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON
+        | MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON
+        | MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON;
 
     fn wait_for_debug_event_until(
         deadline: Instant,
@@ -1885,16 +1917,17 @@ mod sys {
             && after.Rip == before.Rip
     }
 
-    /// Initialized four-slot process-creation policy retained through one call.
+    /// Initialized five-slot process-creation policy retained through one call.
     ///
-    /// The backing words, the exact three-HANDLE array, the prepared pipe
-    /// capability, and the stable Job-HANDLE attribute all outlive
-    /// `CreateProcessW`. Drop deletes the native list before any retained
-    /// storage or borrow is released.
+    /// The backing words, the exact three-HANDLE array, the heap-stable
+    /// mitigation word, the prepared pipe capability, and the stable Job-HANDLE
+    /// and LPAC attributes all outlive `CreateProcessW`. Drop deletes the native
+    /// list before any retained storage or borrow is released.
     struct KeyAgentCreationAttributes<'resources, 'pipes, 'flight, 'job> {
         pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
         words: Vec<usize>,
         inherited_handles: Box<[HANDLE; 3]>,
+        mitigation_policy: Box<u64>,
         _inheritance: &'resources PreparedKeyAgentInheritance<'pipes, 'flight>,
         root_job_attribute: &'resources KeyAgentRootJobAttribute<'job>,
         lpac: &'resources PreparedKeyAgentLpac,
@@ -1911,7 +1944,14 @@ mod sys {
             let mut bytes = 0_usize;
             // SAFETY: the documented sizing call uses a null attribute list and
             // initializes `bytes`; its expected false result is not an error.
-            let _ = unsafe { InitializeProcThreadAttributeList(None, 4, None, &raw mut bytes) };
+            let _ = unsafe {
+                InitializeProcThreadAttributeList(
+                    None,
+                    KEY_AGENT_CREATION_ATTRIBUTE_COUNT,
+                    None,
+                    &raw mut bytes,
+                )
+            };
             if bytes == 0 {
                 return Err(KeyAgentActivationError::PrivateChannelPolicy);
             }
@@ -1924,18 +1964,27 @@ mod sys {
             let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());
             // SAFETY: `words` is aligned writable storage of at least `bytes`
             // and cannot reallocate while this wrapper is alive.
-            unsafe { InitializeProcThreadAttributeList(Some(pointer), 4, None, &raw mut bytes) }
-                .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
+            unsafe {
+                InitializeProcThreadAttributeList(
+                    Some(pointer),
+                    KEY_AGENT_CREATION_ATTRIBUTE_COUNT,
+                    None,
+                    &raw mut bytes,
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)?;
 
             let inherited_handles = Box::new([
                 windows_handle(inheritance.stdin()),
                 windows_handle(inheritance.stdout()),
                 windows_handle(inheritance.stderr()),
             ]);
+            let mitigation_policy = Box::new(KEY_AGENT_MITIGATION_POLICY);
             let attributes = Self {
                 pointer,
                 words,
                 inherited_handles,
+                mitigation_policy,
                 _inheritance: inheritance,
                 root_job_attribute,
                 lpac,
@@ -1950,7 +1999,9 @@ mod sys {
                     .install_into(attributes.pointer)
             }
             .map_err(|_| KeyAgentActivationError::RootJobPolicy)?;
-            // SAFETY: the initialized list has exactly two slots remaining.
+            attributes.install_mitigation_policy()?;
+            // SAFETY: the initialized list has exactly two slots remaining
+            // after the fixed HANDLE, Job, and mitigation-policy prefix.
             // `lpac` retains both its SID and heap-stable attribute values until
             // this list is deleted by Drop.
             unsafe { attributes.lpac.install_into(attributes.pointer) }
@@ -1977,6 +2028,25 @@ mod sys {
             .map_err(|_| KeyAgentActivationError::PrivateChannelPolicy)
         }
 
+        fn install_mitigation_policy(&self) -> Result<(), KeyAgentActivationError> {
+            // SAFETY: the list is live with its third slot free. The boxed u64
+            // has a stable address and is retained through CreateProcessW and
+            // attribute-list deletion.
+            unsafe {
+                UpdateProcThreadAttribute(
+                    self.pointer,
+                    0,
+                    usize::try_from(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY)
+                        .map_err(|_| KeyAgentActivationError::ProcessCreation)?,
+                    Some(ptr::from_ref(self.mitigation_policy.as_ref()).cast::<c_void>()),
+                    size_of::<u64>(),
+                    None,
+                    None,
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::ProcessCreation)
+        }
+
         const fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
             self.pointer
         }
@@ -1996,6 +2066,11 @@ mod sys {
         #[cfg(test)]
         const fn explicit_handle_count(&self) -> usize {
             self.inherited_handles.len()
+        }
+
+        #[cfg(test)]
+        fn retained_mitigation_policy(&self) -> u64 {
+            *self.mitigation_policy
         }
     }
 
@@ -2156,10 +2231,11 @@ mod sys {
             .map_err(|_| KeyAgentActivationError::ProcessContextPolicy)?;
         // SAFETY: the verified absolute path is NUL terminated and retained for
         // the call. Production supplies no command line; the test-only buffer is
-        // writable and retained. `attributes` is a live initialized four-slot
-        // list containing exactly HANDLE_LIST(3), JOB_LIST(1),
-        // SECURITY_CAPABILITIES(zero), and the LPAC AAP opt-out policy; the three
-        // listed stdio handles are the only inheritable handles. The paired
+        // writable and retained. `attributes` is a live initialized five-slot
+        // list containing exactly HANDLE_LIST(3), JOB_LIST(1), the full helper
+        // MITIGATION_POLICY, SECURITY_CAPABILITIES(zero), and the LPAC AAP
+        // opt-out policy; the three listed stdio handles are the only inheritable
+        // handles. The paired
         // non-inheritable process/thread security attributes retain their exact
         // protected descriptors through this call. The retained process context
         // supplies a validated System32 current directory and an exact three-name
@@ -4218,17 +4294,30 @@ mod sys {
     }
 
     #[cfg(test)]
-    pub(super) fn creation_attribute_handle_count_for_test(
+    pub(super) const fn creation_attribute_count_for_test() -> u32 {
+        KEY_AGENT_CREATION_ATTRIBUTE_COUNT
+    }
+
+    #[cfg(test)]
+    pub(super) const fn key_agent_mitigation_policy_for_test() -> u64 {
+        KEY_AGENT_MITIGATION_POLICY
+    }
+
+    #[cfg(test)]
+    pub(super) fn creation_attribute_retained_values_for_test(
         inheritance: &PreparedKeyAgentInheritance<'_, '_>,
         root_job_attribute: &KeyAgentRootJobAttribute<'_>,
-    ) -> Result<usize, KeyAgentActivationError> {
+    ) -> Result<(usize, u64), KeyAgentActivationError> {
         let provisioning = PreparedKeyAgentProvisioning::prepare_for_kernel_test()
             .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
         let lpac = provisioning
             .prepare_lpac()
             .map_err(|_| KeyAgentActivationError::LpacPolicy)?;
         let attributes = KeyAgentCreationAttributes::new(inheritance, root_job_attribute, &lpac)?;
-        Ok(attributes.explicit_handle_count())
+        Ok((
+            attributes.explicit_handle_count(),
+            attributes.retained_mitigation_policy(),
+        ))
     }
 
     fn windows_handle(handle: BorrowedHandle<'_>) -> HANDLE {
@@ -5045,7 +5134,63 @@ mod tests {
     }
 
     #[test]
-    fn startup_attribute_list_has_exactly_three_explicit_stdio_handles()
+    fn key_agent_creation_mitigation_matches_the_full_helper_policy() {
+        let mitigation = sys::key_agent_mitigation_policy_for_test();
+        assert_eq!(mitigation, 0x1110_1011_0111_1105);
+        assert_ne!(mitigation & (1 << 32), 0, "extension points disabled");
+        assert_ne!(mitigation & (1 << 44), 0, "non-Microsoft binaries blocked");
+        assert_eq!(sys::creation_attribute_count_for_test(), 5);
+    }
+
+    #[test]
+    fn creation_attribute_source_contract_installs_mitigation_before_lpac()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = include_str!("key_agent_activation.rs");
+        let start = source
+            .find("struct KeyAgentCreationAttributes")
+            .ok_or(std::io::Error::other("creation-attribute owner must exist"))?;
+        let drop_offset = source[start..]
+            .find("impl Drop for KeyAgentCreationAttributes")
+            .ok_or(std::io::Error::other(
+                "creation-attribute owner must have Drop",
+            ))?;
+        let end = start + drop_offset;
+        let contract = &source[start..end];
+
+        assert!(contract.contains("mitigation_policy: Box<u64>"));
+        assert_eq!(
+            contract
+                .matches("InitializeProcThreadAttributeList(")
+                .count(),
+            2
+        );
+        assert_eq!(
+            contract
+                .matches("KEY_AGENT_CREATION_ATTRIBUTE_COUNT")
+                .count(),
+            2
+        );
+        assert!(contract.contains("PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY"));
+
+        let handle = contract
+            .find("attributes.install_handle_list()?;")
+            .ok_or(std::io::Error::other("handle list must be installed first"))?;
+        let installation = &contract[handle..];
+        let job = installation
+            .find(".root_job_attribute")
+            .ok_or(std::io::Error::other("Job list must be installed"))?;
+        let mitigation = installation
+            .find("attributes.install_mitigation_policy()?;")
+            .ok_or(std::io::Error::other("mitigation policy must be installed"))?;
+        let lpac = installation
+            .find("attributes.lpac.install_into")
+            .ok_or(std::io::Error::other("LPAC attributes must be installed"))?;
+        assert!(0 < job && job < mitigation && mitigation < lpac);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_attribute_list_retains_policy_and_exactly_three_stdio_handles()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_job = test_root_job()?;
         let pipes = PrivateKeyAgentPipes::create()?;
@@ -5054,8 +5199,8 @@ mod tests {
         let inheritance = pipes.prepare_child_inheritance(&flight)?;
         let root_job_attribute = root_job.creation_attribute()?;
         assert_eq!(
-            sys::creation_attribute_handle_count_for_test(&inheritance, &root_job_attribute)?,
-            3
+            sys::creation_attribute_retained_values_for_test(&inheritance, &root_job_attribute)?,
+            (3, sys::key_agent_mitigation_policy_for_test())
         );
         Ok(())
     }
