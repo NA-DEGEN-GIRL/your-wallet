@@ -163,9 +163,9 @@ mod key_agent_child_bootstrap;
 // Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
 // a signing path. Default and release callers fail closed as unavailable.
 mod key_agent_service;
-// Compile-only Phase 1 launch inputs remain private and unreachable until the
-// target-profile, non-inheriting startup, and CreateProcessAsUser fixtures are
-// composed behind the exact debug feature.
+// The composed parent two-gate launch remains private, debug-only, dormant, and
+// unreachable from production. Its event-alias cleanup is kernel-matrix
+// STOP-SHIP until a supported Windows matrix is explicitly pinned.
 #[cfg(all(
     windows,
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",

@@ -445,11 +445,118 @@ impl CreatedDesktopProcess {
             _not_sync: PhantomData,
         }
     }
+
+    /// Prepares the exact successful process-handle handoff before the final
+    /// fallible debugger-thread operation.
+    pub(crate) fn prepare_pending_debugger_exit_success(
+        self,
+    ) -> PreparedDebuggerExitProcessSuccess {
+        PreparedDebuggerExitProcessSuccess {
+            state: self.state.prepare_pending_debugger_exit_success(),
+            _thread_bound: PhantomData,
+        }
+    }
 }
 
 impl fmt::Debug for CreatedDesktopProcess {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CreatedDesktopProcess([REDACTED])")
+    }
+}
+
+/// Thread-bound process handoff prepared before no-kill arming.
+#[must_use = "the prepared process must commit or enter process-terminal cleanup"]
+pub(crate) struct PreparedDebuggerExitProcessSuccess {
+    state: sys::PreparedDebuggerExitProcessSuccess,
+    _thread_bound: PhantomData<Rc<Cell<()>>>,
+}
+
+impl PreparedDebuggerExitProcessSuccess {
+    /// Infallibly commits the ownership phase after no-kill succeeds.
+    pub(crate) fn commit_after_no_kill(self) -> PendingDebuggerExitProcessSuccess {
+        PendingDebuggerExitProcessSuccess {
+            state: self.state.commit_after_no_kill(),
+            _not_sync: PhantomData,
+        }
+    }
+
+    /// Requests termination after no-kill arming failed.
+    pub(crate) fn abort_into_pending_cleanup(self) -> PendingDebuggerExitProcessCleanup {
+        PendingDebuggerExitProcessCleanup {
+            state: self.state.abort_into_pending_cleanup(),
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for PreparedDebuggerExitProcessSuccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedDebuggerExitProcessSuccess([REDACTED])")
+    }
+}
+
+/// Sendable, non-shareable process owner awaiting debugger-thread join.
+#[must_use = "consume the exact join proof before detached process access"]
+pub(crate) struct PendingDebuggerExitProcessSuccess {
+    state: sys::PendingDebuggerExitProcessSuccess,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PendingDebuggerExitProcessSuccess {
+    pub(crate) fn finish_after_debugger_exit(self) -> DetachedDesktopProcess {
+        DetachedDesktopProcess {
+            state: self.state.finish_after_debugger_exit(),
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for PendingDebuggerExitProcessSuccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingDebuggerExitProcessSuccess([REDACTED])")
+    }
+}
+
+/// Exact creator process/thread owners after debugger-thread join.
+#[must_use = "the detached suspended process remains process-terminal on drop"]
+pub(crate) struct DetachedDesktopProcess {
+    state: sys::DetachedDesktopProcess,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl DetachedDesktopProcess {
+    pub(crate) fn process_handle(&self) -> BorrowedHandle<'_> {
+        self.state.process_handle()
+    }
+
+    pub(crate) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        self.state.primary_thread_handle()
+    }
+
+    pub(crate) const fn process_id(&self) -> NonZeroU32 {
+        self.state.process_id()
+    }
+
+    pub(crate) const fn primary_thread_id(&self) -> NonZeroU32 {
+        self.state.primary_thread_id()
+    }
+
+    pub(crate) fn request_termination_for_cleanup(&self) -> Result<(), DesktopProcessCleanupError> {
+        self.state
+            .request_termination_for_cleanup()
+            .map_err(map_native_process_cleanup_error)
+    }
+
+    pub(crate) fn wait_for_exit_for_cleanup(&self) -> Result<(), DesktopProcessCleanupError> {
+        self.state
+            .wait_for_exit_for_cleanup()
+            .map_err(map_native_process_cleanup_error)
+    }
+}
+
+impl fmt::Debug for DetachedDesktopProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DetachedDesktopProcess([REDACTED])")
     }
 }
 
@@ -465,6 +572,14 @@ pub(crate) struct PendingDebuggerExitProcessCleanup {
 }
 
 impl PendingDebuggerExitProcessCleanup {
+    pub(crate) fn process_handle(&self) -> BorrowedHandle<'_> {
+        self.state.process_handle()
+    }
+
+    pub(crate) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        self.state.primary_thread_handle()
+    }
+
     /// Waits for the process for the fixed bound, closes both exact handles, and
     /// reports the latched termination-request and wait outcomes.
     pub(crate) fn wait_and_close(self) -> Result<(), DesktopProcessCleanupError> {

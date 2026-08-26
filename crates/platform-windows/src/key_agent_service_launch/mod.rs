@@ -1,13 +1,15 @@
-//! Debug-only Phase 1 inputs for direct service-owned LPAC helper creation.
+//! Dormant debug-only composition for direct service-owned LPAC helper launch.
 //!
-//! The module contains a dormant, debug-only pre-event process-creation seam
-//! plus its isolated preparation and verification owners. No RPC command,
-//! release build, helper protocol, wallet operation, or signing path can reach
-//! it yet.
+//! One fresh debugger thread composes verified creation, a closed authenticated
+//! two-gate channel handoff, exact join, debugger-absence proof, event-alias
+//! cleanup, and one retained suspend count. No production caller, RPC command,
+//! release build, wallet operation, or signing path reaches it. Event-alias
+//! cleanup remains kernel-matrix STOP-SHIP.
 
 #![allow(dead_code)]
 
 mod channel;
+mod debug_gate;
 mod gate;
 mod job;
 mod process;

@@ -46,7 +46,8 @@ use self::auth::RpcAuthError;
 ))]
 pub(crate) use self::auth::{
     AuthenticatedDesktopImpersonation, AuthenticatedRpcClient, CreatedDesktopProcess,
-    PendingDebuggerExitProcessCleanup,
+    DetachedDesktopProcess, PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
+    PreparedDebuggerExitProcessSuccess,
 };
 use self::dispatch::{AuthenticationFailure, DispatchEngine};
 use self::epoch::SystemMonotonicClock;

@@ -2,12 +2,12 @@
 //!
 //! The service retains its overlapped client endpoints and duplicates exactly
 //! two already-connected child-server handles into one suspended helper. The
-//! private wrappers require their future caller to authenticate that exact
-//! process first; this slice does not yet encode that proof in a typestate.
+//! private wrappers' sole dormant caller authenticates that exact process and
+//! capture gate first; this module's parameter type does not encode that proof.
 //! Returned target-process handle values are opaque numeric words, not local
-//! `HANDLE` owners. Any error is process-terminal for the future orchestration
-//! layer; this module never attempts to close a target-process handle value
-//! from the service process.
+//! `HANDLE` owners. Any error is process-terminal for the sole dormant
+//! orchestration layer; this module never attempts to close a target-process
+//! handle value from the service process.
 
 #![allow(unsafe_code)]
 
@@ -173,8 +173,8 @@ impl fmt::Debug for InjectedSecretInputChannels {
 }
 
 /// Duplicates the exact Approval request/response server sources into one
-/// suspended child process. The future caller must first authenticate the exact
-/// child at the capture gate; the current parameter type does not prove that
+/// suspended child process. Its sole dormant caller first authenticates the
+/// exact child at the capture gate; this parameter type does not prove that
 /// obligation. No source handle or pipe name is inherited or serialized.
 pub(super) fn duplicate_approval_channels_for_child(
     pipes: PrivateApprovalPipes,
@@ -189,8 +189,8 @@ pub(super) fn duplicate_approval_channels_for_child(
 }
 
 /// Duplicates the exact Secret Input request/response server sources into one
-/// suspended child process. The future caller must first authenticate the exact
-/// child at the capture gate; the current parameter type does not prove that
+/// suspended child process. Its sole dormant caller first authenticates the
+/// exact child at the capture gate; this parameter type does not prove that
 /// obligation. No source handle or pipe name is inherited or serialized.
 pub(super) fn duplicate_secret_input_channels_for_child(
     pipes: PrivateSecretInputPipes,

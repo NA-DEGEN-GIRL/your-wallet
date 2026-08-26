@@ -1,10 +1,11 @@
-//! One-shot, pre-event creation state for the service-owned LPAC helper probe.
+//! One-shot process, debugger-join, and detached cleanup states for the dormant
+//! service-owned LPAC helper probe.
 //!
-//! The caller must execute this boundary on one fresh dedicated debugger OS
-//! thread. Success retains the still-suspended, debug-attached process without
-//! receiving or continuing a debug event. Failure requests exact process and
-//! whole-Job termination, then returns a sendable cleanup owner that may only
-//! be completed after that debugger thread has exited and been joined.
+//! Creation and both authenticated gates run on one fresh dedicated debugger OS
+//! thread. Sendable pending owners cross only its exact join; success then proves
+//! debugger absence, closes matrix-qualified event aliases, and retains one
+//! explicit suspend count. Every failure prefix requests exact process and
+//! whole-Job termination or fails fast before authority can be lost.
 
 #![allow(unsafe_code)]
 
@@ -16,17 +17,25 @@ use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::BorrowedHandle;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::thread::{self, ThreadId};
 
 use thiserror::Error;
+use windows::Win32::Foundation::WAIT_TIMEOUT;
+use windows::Win32::System::Diagnostics::Debug::CheckRemoteDebuggerPresent;
+use windows::Win32::System::Threading::{ResumeThread, SuspendThread, WaitForSingleObject};
+use windows::core::BOOL;
 
+use super::debug_gate::ServiceProbeDebugEventCleanup;
 use super::job::ServiceProbeJob;
 use super::startup::ServiceProbeStartup;
 use super::target_profile::{PreparedTargetUserLpac, VerifiedCreatedTargetLpac};
 use crate::helper::VerifiedHelper;
 use crate::key_agent_lpac::PreparedServiceKeyAgentCreationSecurity;
 use crate::key_agent_service_rpc::{
-    AuthenticatedRpcClient, CreatedDesktopProcess, PendingDebuggerExitProcessCleanup,
+    AuthenticatedRpcClient, CreatedDesktopProcess, DetachedDesktopProcess,
+    PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
+    PreparedDebuggerExitProcessSuccess,
 };
 use crate::key_agent_service_token::VerifiedServiceCreationToken;
 use crate::restricted_process_context::RestrictedProcessContext;
@@ -48,6 +57,7 @@ pub(super) enum FreshDebuggerThreadError {
 /// Move-only proof that the current code runs on one newly spawned thread.
 pub(super) struct FreshDebuggerThread {
     thread_id: ThreadId,
+    debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
     _thread_bound: PhantomData<Rc<Cell<()>>>,
 }
 
@@ -57,6 +67,11 @@ impl FreshDebuggerThread {
             return Err(ServiceProbeCreateError::Verification);
         }
         Ok(self.thread_id)
+    }
+
+    #[cfg(test)]
+    fn cleanup_identity_for_test(&self) -> usize {
+        Arc::as_ptr(&self.debug_event_cleanup) as usize
     }
 }
 
@@ -88,7 +103,15 @@ impl<Output> fmt::Debug for JoinedFreshDebuggerThread<Output> {
 /// Move-only evidence that one exact debugger thread has exited and joined.
 pub(super) struct DebuggerThreadExitProof {
     thread_id: ThreadId,
+    debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
     _thread_bound: PhantomData<Rc<Cell<()>>>,
+}
+
+impl DebuggerThreadExitProof {
+    #[cfg(test)]
+    fn cleanup_identity_for_test(&self) -> usize {
+        Arc::as_ptr(&self.debug_event_cleanup) as usize
+    }
 }
 
 impl fmt::Debug for DebuggerThreadExitProof {
@@ -97,8 +120,13 @@ impl fmt::Debug for DebuggerThreadExitProof {
     }
 }
 
-fn debugger_exit_matches(creator_thread_id: ThreadId, proof: &DebuggerThreadExitProof) -> bool {
+fn debugger_exit_matches(
+    creator_thread_id: ThreadId,
+    debug_event_cleanup: &Arc<ServiceProbeDebugEventCleanup>,
+    proof: &DebuggerThreadExitProof,
+) -> bool {
     proof.thread_id == creator_thread_id
+        && Arc::ptr_eq(debug_event_cleanup, &proof.debug_event_cleanup)
 }
 
 /// Runs one complete attempt on a newly spawned scoped OS thread.
@@ -113,6 +141,8 @@ where
     Output: Send,
     Operation: FnOnce(FreshDebuggerThread) -> Output + Send,
 {
+    let debug_event_cleanup = ServiceProbeDebugEventCleanup::new_shared();
+    let worker_cleanup = Arc::clone(&debug_event_cleanup);
     thread::scope(|scope| {
         let handle = thread::Builder::new()
             .name(DEBUGGER_THREAD_NAME.to_owned())
@@ -120,16 +150,28 @@ where
                 let thread_id = thread::current().id();
                 let output = operation(FreshDebuggerThread {
                     thread_id,
+                    debug_event_cleanup: Arc::clone(&worker_cleanup),
                     _thread_bound: PhantomData,
                 });
                 (output, thread_id)
             })
             .map_err(|_| FreshDebuggerThreadError::Spawn)?;
-        let (output, thread_id) = handle.join().map_err(|_| FreshDebuggerThreadError::Panic)?;
+        let joined = handle.join();
+        debug_event_cleanup.mark_joined();
+        let Ok((output, thread_id)) = joined else {
+            if debug_event_cleanup.require_empty_after_join().is_err() {
+                // A panic after event-alias registration cannot return a
+                // data-free error while losing authority. The registry's own
+                // last-owner Drop repeats this fail-safe invariant.
+                std::process::abort();
+            }
+            return Err(FreshDebuggerThreadError::Panic);
+        };
         Ok(JoinedFreshDebuggerThread {
             output,
             proof: DebuggerThreadExitProof {
                 thread_id,
+                debug_event_cleanup,
                 _thread_bound: PhantomData,
             },
         })
@@ -175,7 +217,7 @@ pub(super) enum ServiceProbeCreateError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ServiceProbeRole {
+pub(super) enum ServiceProbeRole {
     Approval,
     SecretInput,
 }
@@ -269,20 +311,36 @@ impl<'client, 'proof, 'context> ServiceProbeCreateInputs<'client, 'proof, 'conte
         mut self,
         debugger_thread: FreshDebuggerThread,
     ) -> Result<SuspendedServiceProbe<'client, 'proof, 'context>, PendingServiceProbeCleanup> {
+        let debug_event_cleanup = Arc::clone(&debugger_thread.debug_event_cleanup);
         let creator_thread_id = match debugger_thread.require_current() {
             Ok(thread_id) => thread_id,
             Err(failure) => {
-                return Err(self.into_pending_cleanup(None, failure, debugger_thread.thread_id));
+                return Err(self.into_pending_cleanup(
+                    None,
+                    failure,
+                    debugger_thread.thread_id,
+                    debug_event_cleanup,
+                ));
             }
         };
         if let Err(failure) = self.verify_pre_create() {
-            return Err(self.into_pending_cleanup(None, failure, creator_thread_id));
+            return Err(self.into_pending_cleanup(
+                None,
+                failure,
+                creator_thread_id,
+                debug_event_cleanup,
+            ));
         }
 
         let created = match self.create_native_suspended() {
             Ok(created) => created,
             Err(failure) => {
-                return Err(self.into_pending_cleanup(None, failure, creator_thread_id));
+                return Err(self.into_pending_cleanup(
+                    None,
+                    failure,
+                    creator_thread_id,
+                    debug_event_cleanup,
+                ));
             }
         };
 
@@ -304,7 +362,12 @@ impl<'client, 'proof, 'context> ServiceProbeCreateInputs<'client, 'proof, 'conte
             Ok(proof) => proof,
             Err(failure) => {
                 let process = created.request_termination_into_pending_debugger_exit_cleanup();
-                return Err(self.into_pending_cleanup(Some(process), failure, creator_thread_id));
+                return Err(self.into_pending_cleanup(
+                    Some(process),
+                    failure,
+                    creator_thread_id,
+                    debug_event_cleanup,
+                ));
             }
         };
 
@@ -408,6 +471,7 @@ impl<'client, 'proof, 'context> ServiceProbeCreateInputs<'client, 'proof, 'conte
         process: Option<PendingDebuggerExitProcessCleanup>,
         failure: ServiceProbeCreateError,
         creator_thread_id: ThreadId,
+        debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
     ) -> PendingServiceProbeCleanup {
         let Self { mut job, .. } = self;
         let job_request_failed = job.request_termination().is_err();
@@ -417,7 +481,9 @@ impl<'client, 'proof, 'context> ServiceProbeCreateInputs<'client, 'proof, 'conte
             failure,
             job_request_failed,
             process_cleanup_failed: false,
+            worker_cleanup_failed: false,
             creator_thread_id,
+            debug_event_cleanup,
         }
     }
 }
@@ -462,12 +528,26 @@ impl SuspendedServiceProbe<'_, '_, '_> {
         self.created.primary_thread_id()
     }
 
-    /// Repeats every object-bound proof before a future debug event or handle
-    /// injection transition.
-    pub(super) fn revalidate(mut self) -> Result<Self, PendingServiceProbeCleanup> {
-        if let Err(failure) = self.debugger_thread.require_current() {
-            return Err(self.into_pending_cleanup(failure));
-        }
+    pub(super) const fn role(&self) -> ServiceProbeRole {
+        self.role
+    }
+
+    pub(super) fn helper(&self) -> &VerifiedHelper {
+        &self.helper
+    }
+
+    pub(super) fn debug_event_cleanup(&self) -> &Arc<ServiceProbeDebugEventCleanup> {
+        &self.debugger_thread.debug_event_cleanup
+    }
+
+    pub(super) fn system_directory(&self) -> &[u16] {
+        self.context.current_directory()
+    }
+
+    /// Repeats every object-bound proof without changing ownership while a
+    /// debug event or explicit suspend count holds the primary thread.
+    pub(super) fn revalidate_held(&mut self) -> Result<(), ServiceProbeCreateError> {
+        self.debugger_thread.require_current()?;
         let verification = {
             let mut operations = WindowsPostCreateVerification {
                 client: self.client,
@@ -481,21 +561,64 @@ impl SuspendedServiceProbe<'_, '_, '_> {
                 created: &self.created,
             };
             verify_post_create(&mut operations)
-        };
-        let fresh = match verification {
-            Ok(fresh) => fresh,
-            Err(failure) => return Err(self.into_pending_cleanup(failure)),
-        };
+        }?;
         let retained = self.target.revalidate_created_process(
             &self.target_proof,
             self.created.process_handle(),
             self.context,
         );
-        drop(fresh);
-        if retained.is_err() {
-            return Err(self.into_pending_cleanup(ServiceProbeCreateError::Verification));
+        drop(verification);
+        retained.map_err(|_| ServiceProbeCreateError::Verification)?;
+        Ok(())
+    }
+
+    /// Repeats every object-bound proof before a future debug event or handle
+    /// injection transition.
+    pub(super) fn revalidate(mut self) -> Result<Self, PendingServiceProbeCleanup> {
+        if let Err(failure) = self.revalidate_held() {
+            return Err(self.into_pending_cleanup(failure));
         }
         Ok(self)
+    }
+
+    /// Prepares every ownership move needed after successful no-kill arming.
+    /// This must be called only after the second event was continued and all
+    /// live object proofs were revalidated on this exact debugger thread.
+    pub(super) fn prepare_pending_debugger_exit_success(
+        mut self,
+    ) -> Result<PreparedServiceProbeDetach, PendingServiceProbeCleanup> {
+        if let Err(failure) = self.revalidate_held() {
+            return Err(self.into_pending_cleanup(failure));
+        }
+        let Self {
+            debugger_thread,
+            created,
+            target_proof,
+            job,
+            helper,
+            application_name,
+            service_security,
+            target,
+            client: _,
+            context: _,
+            role: _,
+            _thread_bound: _,
+        } = self;
+        let creator_thread_id = debugger_thread.thread_id;
+        let debug_event_cleanup = Arc::clone(&debugger_thread.debug_event_cleanup);
+        let process = created.prepare_pending_debugger_exit_success();
+        drop(target_proof);
+        drop(helper);
+        drop(application_name);
+        drop(service_security);
+        drop(target);
+        Ok(PreparedServiceProbeDetach {
+            process,
+            job,
+            creator_thread_id,
+            debug_event_cleanup,
+            _thread_bound: PhantomData,
+        })
     }
 
     /// Requests exact process and whole-Job termination without waiting. The
@@ -520,6 +643,7 @@ impl SuspendedServiceProbe<'_, '_, '_> {
             _thread_bound: _,
         } = self;
         let creator_thread_id = debugger_thread.thread_id;
+        let debug_event_cleanup = Arc::clone(&debugger_thread.debug_event_cleanup);
         let process = created.request_termination_into_pending_debugger_exit_cleanup();
         let job_request_failed = job.request_termination().is_err();
         drop(target_proof);
@@ -533,9 +657,300 @@ impl SuspendedServiceProbe<'_, '_, '_> {
             failure,
             job_request_failed,
             process_cleanup_failed: false,
+            worker_cleanup_failed: false,
             creator_thread_id,
+            debug_event_cleanup,
         }
     }
+}
+
+/// Thread-bound process/Job handoff prepared before no-kill arming.
+#[must_use = "the prepared service probe must commit or enter cleanup"]
+pub(super) struct PreparedServiceProbeDetach {
+    process: PreparedDebuggerExitProcessSuccess,
+    job: ServiceProbeJob,
+    creator_thread_id: ThreadId,
+    debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
+    _thread_bound: PhantomData<Rc<Cell<()>>>,
+}
+
+impl PreparedServiceProbeDetach {
+    /// Commits only infallible phase and ownership moves after the successful
+    /// `DebugSetProcessKillOnExit(FALSE)` call.
+    pub(super) fn commit_after_no_kill(self) -> PendingServiceProbeDetach {
+        let Self {
+            process,
+            job,
+            creator_thread_id,
+            debug_event_cleanup,
+            _thread_bound: _,
+        } = self;
+        PendingServiceProbeDetach {
+            process: process.commit_after_no_kill(),
+            job,
+            creator_thread_id,
+            debug_event_cleanup,
+            _not_sync: PhantomData,
+        }
+    }
+
+    /// Requests process and whole-Job termination when no-kill arming fails.
+    pub(super) fn abort_after_no_kill_failure(self) -> PendingServiceProbeCleanup {
+        let Self {
+            process,
+            mut job,
+            creator_thread_id,
+            debug_event_cleanup,
+            _thread_bound: _,
+        } = self;
+        let process = process.abort_into_pending_cleanup();
+        let job_request_failed = job.request_termination().is_err();
+        PendingServiceProbeCleanup {
+            process: Some(process),
+            job,
+            failure: ServiceProbeCreateError::Aborted,
+            job_request_failed,
+            process_cleanup_failed: false,
+            worker_cleanup_failed: false,
+            creator_thread_id,
+            debug_event_cleanup,
+        }
+    }
+}
+
+impl fmt::Debug for PreparedServiceProbeDetach {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedServiceProbeDetach([REDACTED])")
+    }
+}
+
+/// Sendable, non-shareable service probe awaiting exact debugger-thread join.
+///
+/// Neither process nor thread handle is exposed in this state.
+#[must_use = "consume the exact debugger-thread join proof"]
+pub(super) struct PendingServiceProbeDetach {
+    process: PendingDebuggerExitProcessSuccess,
+    job: ServiceProbeJob,
+    creator_thread_id: ThreadId,
+    debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PendingServiceProbeDetach {
+    /// Consumes the exact join proof, proves debugger absence before adopting
+    /// event aliases, and verifies the still-suspended detached kernel state.
+    pub(super) fn finish_after_debugger_exit(
+        self,
+        proof: DebuggerThreadExitProof,
+    ) -> Result<DetachedSuspendedServiceProbe, ServiceProbeCreateError> {
+        let Self {
+            process,
+            mut job,
+            creator_thread_id,
+            debug_event_cleanup,
+            _not_sync: _,
+        } = self;
+        let process = process.finish_after_debugger_exit();
+        if !debug_event_cleanup.debugger_thread_has_joined()
+            || !debugger_exit_matches(creator_thread_id, &debug_event_cleanup, &proof)
+        {
+            drop(proof);
+            return Err(fail_detached_service_probe(
+                &process,
+                &mut job,
+                &debug_event_cleanup,
+                ServiceProbeCreateError::Cleanup,
+            ));
+        }
+        drop(proof);
+
+        if let Err(error) = verify_debugger_absent(&process) {
+            return Err(fail_detached_service_probe(
+                &process,
+                &mut job,
+                &debug_event_cleanup,
+                error,
+            ));
+        }
+        if debug_event_cleanup
+            .authorize_after_debugger_absence(
+                process.process_id().get(),
+                process.primary_thread_id().get(),
+            )
+            .and_then(|()| {
+                close_debug_event_aliases(
+                    debug_event_cleanup.as_ref(),
+                    process.process_handle(),
+                    process.primary_thread_handle(),
+                )
+            })
+            .is_err()
+        {
+            return Err(fail_detached_service_probe(
+                &process,
+                &mut job,
+                &debug_event_cleanup,
+                ServiceProbeCreateError::Cleanup,
+            ));
+        }
+        if let Err(error) = verify_detached_suspended_process(&process, &job) {
+            return Err(fail_detached_service_probe(
+                &process,
+                &mut job,
+                &debug_event_cleanup,
+                error,
+            ));
+        }
+        Ok(DetachedSuspendedServiceProbe {
+            process,
+            job,
+            _not_sync: PhantomData,
+        })
+    }
+}
+
+impl fmt::Debug for PendingServiceProbeDetach {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingServiceProbeDetach([REDACTED])")
+    }
+}
+
+/// Post-join detached process/Job owner with exactly one explicit suspend count.
+///
+/// This dormant slice intentionally exposes no resume or resident attenuation.
+#[must_use = "the detached suspended service probe remains process-terminal"]
+pub(super) struct DetachedSuspendedServiceProbe {
+    process: DetachedDesktopProcess,
+    job: ServiceProbeJob,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl fmt::Debug for DetachedSuspendedServiceProbe {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DetachedSuspendedServiceProbe([REDACTED])")
+    }
+}
+
+fn verify_detached_suspended_process(
+    process: &DetachedDesktopProcess,
+    job: &ServiceProbeJob,
+) -> Result<(), ServiceProbeCreateError> {
+    let _ = (process.process_id(), process.primary_thread_id());
+    // SAFETY: the exact creator process handle remains live after the debugger
+    // thread joined; a zero wait observes only liveness.
+    if unsafe { WaitForSingleObject(windows_handle(process.process_handle()), 0) } != WAIT_TIMEOUT {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    if !job
+        .contains_process(process.process_handle())
+        .map_err(|_| ServiceProbeCreateError::Cleanup)?
+        || job
+            .active_process_count()
+            .map_err(|_| ServiceProbeCreateError::Cleanup)?
+            != 1
+    {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    // SAFETY: gate 2 installed exactly one suspend count before continuing its
+    // event. The joined debugger no longer contributes a debug-event stop.
+    let previous = unsafe { SuspendThread(windows_handle(process.primary_thread_handle())) };
+    if previous != 1 {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    // SAFETY: the immediately preceding successful SuspendThread established
+    // count two on this exact primary thread. This restores the retained one.
+    let resumed = unsafe { ResumeThread(windows_handle(process.primary_thread_handle())) };
+    if resumed != 2 {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    Ok(())
+}
+
+fn verify_debugger_absent(process: &DetachedDesktopProcess) -> Result<(), ServiceProbeCreateError> {
+    // SAFETY: the exact creator process handle remains live after the debugger
+    // thread joined; a zero wait observes only liveness.
+    if unsafe { WaitForSingleObject(windows_handle(process.process_handle()), 0) } != WAIT_TIMEOUT {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    let mut debugger_present = BOOL::default();
+    // SAFETY: the process handle and writable BOOL remain live for this query.
+    unsafe {
+        CheckRemoteDebuggerPresent(
+            windows_handle(process.process_handle()),
+            &raw mut debugger_present,
+        )
+    }
+    .map_err(|_| ServiceProbeCreateError::Cleanup)?;
+    if debugger_present.as_bool() {
+        Err(ServiceProbeCreateError::Cleanup)
+    } else {
+        Ok(())
+    }
+}
+
+fn fail_detached_service_probe(
+    process: &DetachedDesktopProcess,
+    job: &mut ServiceProbeJob,
+    debug_event_cleanup: &ServiceProbeDebugEventCleanup,
+    original: ServiceProbeCreateError,
+) -> ServiceProbeCreateError {
+    // Both kill requests are attempted before either bounded terminal proof.
+    // A failed request remains an error even when later observations prove the
+    // process and one-process Job empty.
+    let job_request = job.request_termination();
+    let process_request = process.request_termination_for_cleanup();
+    let process_wait = process.wait_for_exit_for_cleanup();
+    let job_wait = job.finish_termination_and_wait();
+    let terminal = process_wait.is_ok() && job_wait.is_ok();
+    if !terminal {
+        // No recoverable return may close the creator anchors while registered
+        // event authority remains. Process-wide exit reclaims the handle table.
+        std::process::abort();
+    }
+    let alias_cleanup = debug_event_cleanup
+        .authorize_after_process_terminal()
+        .and_then(|()| {
+            close_debug_event_aliases(
+                debug_event_cleanup,
+                process.process_handle(),
+                process.primary_thread_handle(),
+            )
+        });
+    if alias_cleanup.is_err() {
+        // Preserve the exact creator objects through the fail-fast boundary;
+        // closing them would make a residual primary alias unrecoverable.
+        std::process::abort();
+    }
+    if job_request.is_err()
+        || process_request.is_err()
+        || process_wait.is_err()
+        || job_wait.is_err()
+    {
+        ServiceProbeCreateError::Cleanup
+    } else {
+        original
+    }
+}
+
+fn close_debug_event_aliases(
+    cleanup: &ServiceProbeDebugEventCleanup,
+    process: BorrowedHandle<'_>,
+    primary_thread: BorrowedHandle<'_>,
+) -> Result<(), super::debug_gate::ServiceProbeDebugGateError> {
+    let first = cleanup.close_after_join(process, primary_thread);
+    if first.is_ok() {
+        first
+    } else {
+        // The registry clears each word only after a successful checked close.
+        // One bounded retry therefore reauthenticates every remaining alias
+        // against the still-live creator handles without risking double-close.
+        cleanup.close_after_join(process, primary_thread)
+    }
+}
+
+fn windows_handle(handle: BorrowedHandle<'_>) -> windows::Win32::Foundation::HANDLE {
+    use std::os::windows::io::AsRawHandle as _;
+    windows::Win32::Foundation::HANDLE(handle.as_raw_handle())
 }
 
 impl fmt::Debug for SuspendedServiceProbe<'_, '_, '_> {
@@ -552,12 +967,19 @@ pub(super) struct PendingServiceProbeCleanup {
     failure: ServiceProbeCreateError,
     job_request_failed: bool,
     process_cleanup_failed: bool,
+    worker_cleanup_failed: bool,
     creator_thread_id: ThreadId,
+    debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
 }
 
 impl PendingServiceProbeCleanup {
     pub(super) const fn failure(&self) -> ServiceProbeCreateError {
         self.failure
+    }
+
+    /// Latches an independent checked cleanup failure on the debugger worker.
+    pub(super) fn note_worker_cleanup_failure(&mut self) {
+        self.worker_cleanup_failed = true;
     }
 
     /// Completes exact process reap and Job-empty proof after the debugger
@@ -566,16 +988,44 @@ impl PendingServiceProbeCleanup {
         &mut self,
         proof: &DebuggerThreadExitProof,
     ) -> Result<ServiceProbeCreateError, ServiceProbeCreateError> {
-        if !debugger_exit_matches(self.creator_thread_id, proof) {
-            return Err(ServiceProbeCreateError::Cleanup);
+        let proof_matches = self.debug_event_cleanup.debugger_thread_has_joined()
+            && debugger_exit_matches(self.creator_thread_id, &self.debug_event_cleanup, proof);
+        if !proof_matches {
+            // The exact join proof is unforgeable in normal control flow. Do
+            // not touch or outlive residual event authority on substitution.
+            std::process::abort();
+        }
+        // Whole-Job emptiness is a prerequisite for partial-prefix cleanup when
+        // no-kill was never armed. It is not sufficient by itself: exact
+        // creator/canonical identity checks still precede every alias close.
+        let job_result = self.job.finish_termination_and_wait();
+        if job_result.is_err() {
+            std::process::abort();
+        }
+        let event_alias_result = match self.process.as_ref() {
+            Some(process) => self
+                .debug_event_cleanup
+                .authorize_after_process_terminal()
+                .and_then(|()| {
+                    close_debug_event_aliases(
+                        &self.debug_event_cleanup,
+                        process.process_handle(),
+                        process.primary_thread_handle(),
+                    )
+                }),
+            None => self.debug_event_cleanup.require_empty_after_join(),
+        };
+        if event_alias_result.is_err() {
+            // Keep creator handles live when checked alias cleanup cannot clear
+            // the registry. The last-owner guard is a second line of defense.
+            std::process::abort();
         }
         let process_result = match self.process.take() {
             Some(process) => process.wait_and_close(),
             None => Ok(()),
         };
         self.process_cleanup_failed |= process_result.is_err();
-        let job_result = self.job.finish_termination_and_wait();
-        if self.job_request_failed || self.process_cleanup_failed || job_result.is_err() {
+        if self.job_request_failed || self.process_cleanup_failed || self.worker_cleanup_failed {
             return Err(ServiceProbeCreateError::Cleanup);
         }
         Ok(self.failure)
@@ -892,20 +1342,50 @@ mod tests {
             let current = std::thread::current().id();
             assert_ne!(current, parent);
             assert_eq!(witness.require_current(), Ok(current));
-            current
+            (current, witness.cleanup_identity_for_test())
         })?;
-        let (first_thread, first_proof) = first.into_parts();
-        assert!(debugger_exit_matches(first_thread, &first_proof));
+        let ((first_thread, first_cleanup), first_proof) = first.into_parts();
+        assert!(debugger_exit_matches(
+            first_thread,
+            &first_proof.debug_event_cleanup,
+            &first_proof,
+        ));
+        assert_eq!(first_cleanup, first_proof.cleanup_identity_for_test());
 
         let second = run_on_fresh_debugger_thread(|witness| {
             let current = std::thread::current().id();
             assert_eq!(witness.require_current(), Ok(current));
-            current
+            (current, witness.cleanup_identity_for_test())
         })?;
-        let (second_thread, second_proof) = second.into_parts();
-        assert!(debugger_exit_matches(second_thread, &second_proof));
-        assert!(!debugger_exit_matches(first_thread, &second_proof));
-        assert!(!debugger_exit_matches(second_thread, &first_proof));
+        let ((second_thread, second_cleanup), second_proof) = second.into_parts();
+        assert!(debugger_exit_matches(
+            second_thread,
+            &second_proof.debug_event_cleanup,
+            &second_proof,
+        ));
+        assert_eq!(second_cleanup, second_proof.cleanup_identity_for_test());
+        assert!(!debugger_exit_matches(
+            first_thread,
+            &first_proof.debug_event_cleanup,
+            &second_proof,
+        ));
+        assert!(!debugger_exit_matches(
+            second_thread,
+            &second_proof.debug_event_cleanup,
+            &first_proof,
+        ));
+        assert!(!debugger_exit_matches(
+            first_thread,
+            &second_proof.debug_event_cleanup,
+            &first_proof,
+        ));
         Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn fresh_debugger_runner_returns_data_free_panic_only_for_empty_registry() {
+        let result = run_on_fresh_debugger_thread::<(), _>(|_| panic!("inert worker panic"));
+        assert_eq!(result.err(), Some(super::FreshDebuggerThreadError::Panic));
     }
 }

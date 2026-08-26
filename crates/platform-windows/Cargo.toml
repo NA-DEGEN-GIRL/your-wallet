@@ -18,8 +18,9 @@ key-agent-service-scm-feasibility-test-hook = []
 key-agent-service-token-feasibility-test-hook = [
     "key-agent-service-scm-feasibility-test-hook",
 ]
-# Compile-only Phase 1 launch primitives, including a dormant pre-event
-# process-creation seam. This adds no RPC command or executable entrypoint.
+# Debug-only dormant Phase 1 launch composition through the authenticated
+# parent two-gate handoff. It has no production caller, RPC command, or
+# executable entrypoint and remains kernel-matrix STOP-SHIP.
 key-agent-service-lpac-launch-feasibility-test-hook = [
     "dep:key-agent-service-helper-bootstrap",
     "key-agent-service-rpc-status-feasibility-test-hook",

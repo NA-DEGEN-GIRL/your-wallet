@@ -227,6 +227,38 @@ impl CreatedDesktopProcess {
             _not_sync: PhantomData,
         }
     }
+
+    /// Performs every fallible creator-thread check needed by the successful
+    /// debugger-exit handoff before kill-on-debugger-exit is disabled.
+    ///
+    /// The returned owner remains creator-thread-bound. Its only successful
+    /// transition is an infallible field move, so the caller can make
+    /// `DebugSetProcessKillOnExit(FALSE)` its final fallible debugger-thread
+    /// operation.
+    pub(super) fn prepare_pending_debugger_exit_success(
+        mut self,
+    ) -> PreparedDebuggerExitProcessSuccess {
+        // SAFETY: this scalar query has no preconditions and is compared with
+        // the exact creator-thread identity captured before process creation.
+        if NonZeroU32::new(unsafe { GetCurrentThreadId() }) != Some(self.creator_thread_id) {
+            fail_fast();
+        }
+        let Some(process) = self.process.take() else {
+            fail_fast();
+        };
+        let Some(primary_thread) = self.primary_thread.take() else {
+            fail_fast();
+        };
+        self.must_transition = false;
+        PreparedDebuggerExitProcessSuccess {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            process_id: self.process_id,
+            primary_thread_id: self.primary_thread_id,
+            commit_required: true,
+            _thread_bound: PhantomData,
+        }
+    }
 }
 
 impl fmt::Debug for CreatedDesktopProcess {
@@ -255,6 +287,250 @@ impl Drop for CreatedDesktopProcess {
     }
 }
 
+/// Creator-thread-bound successful handoff prepared before no-kill arming.
+///
+/// Construction performs the creator-thread check and extracts both exact
+/// handles. After `DebugSetProcessKillOnExit(FALSE)` succeeds,
+/// [`Self::commit_after_no_kill`] performs no allocation, lock, query, close,
+/// or fallible native operation.
+pub(super) struct PreparedDebuggerExitProcessSuccess {
+    process: Option<OwnedHandle>,
+    primary_thread: Option<OwnedHandle>,
+    process_id: NonZeroU32,
+    primary_thread_id: NonZeroU32,
+    commit_required: bool,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl PreparedDebuggerExitProcessSuccess {
+    /// Commits the already-prepared ownership move after successful no-kill
+    /// arming. This function is deliberately infallible.
+    pub(super) fn commit_after_no_kill(mut self) -> PendingDebuggerExitProcessSuccess {
+        let Some(process) = self.process.take() else {
+            fail_fast();
+        };
+        let Some(primary_thread) = self.primary_thread.take() else {
+            fail_fast();
+        };
+        self.commit_required = false;
+        PendingDebuggerExitProcessSuccess {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            process_id: self.process_id,
+            primary_thread_id: self.primary_thread_id,
+            must_finalize: true,
+            _not_sync: PhantomData,
+        }
+    }
+
+    /// Converts a failed no-kill attempt into the ordinary process-terminal
+    /// cleanup state without waiting on the still-live debugger thread.
+    pub(super) fn abort_into_pending_cleanup(mut self) -> PendingDebuggerExitProcessCleanup {
+        let Some(process) = self.process.as_ref() else {
+            fail_fast();
+        };
+        // SAFETY: this is the exact live creator process handle. The result is
+        // latched and the post-join cleanup owner performs the bounded wait.
+        let termination_requested = unsafe {
+            TerminateProcess(
+                windows_handle(process.as_handle()),
+                DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+            )
+        }
+        .is_ok();
+        let Some(process) = self.process.take() else {
+            fail_fast();
+        };
+        let Some(primary_thread) = self.primary_thread.take() else {
+            fail_fast();
+        };
+        self.commit_required = false;
+        PendingDebuggerExitProcessCleanup {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            termination_requested,
+            must_wait_and_close: true,
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for PreparedDebuggerExitProcessSuccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedDebuggerExitProcessSuccess([REDACTED])")
+    }
+}
+
+impl Drop for PreparedDebuggerExitProcessSuccess {
+    fn drop(&mut self) {
+        if !self.commit_required {
+            return;
+        }
+        if let Some(process) = self.process.as_ref() {
+            // SAFETY: this is the exact retained process owner. Best-effort
+            // termination precedes fail-fast if an explicit transition is lost.
+            unsafe {
+                let _ = TerminateProcess(
+                    windows_handle(process.as_handle()),
+                    DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+                );
+            }
+        }
+        fail_fast();
+    }
+}
+
+/// Sendable but non-shareable process owner awaiting exact debugger-thread join.
+///
+/// No handle is exposed until the launch layer consumes its run-specific join
+/// proof. Dropping this state requests process termination before closing the
+/// handles, preserving process-terminal behavior on abandonment.
+pub(super) struct PendingDebuggerExitProcessSuccess {
+    process: Option<OwnedHandle>,
+    primary_thread: Option<OwnedHandle>,
+    process_id: NonZeroU32,
+    primary_thread_id: NonZeroU32,
+    must_finalize: bool,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PendingDebuggerExitProcessSuccess {
+    /// Commits the post-join ownership phase. The caller owns the unforgeable
+    /// join proof; this adapter performs only an infallible field move.
+    pub(super) fn finish_after_debugger_exit(mut self) -> DetachedDesktopProcess {
+        let Some(process) = self.process.take() else {
+            fail_fast();
+        };
+        let Some(primary_thread) = self.primary_thread.take() else {
+            fail_fast();
+        };
+        self.must_finalize = false;
+        DetachedDesktopProcess {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            process_id: self.process_id,
+            primary_thread_id: self.primary_thread_id,
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for PendingDebuggerExitProcessSuccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingDebuggerExitProcessSuccess([REDACTED])")
+    }
+}
+
+impl Drop for PendingDebuggerExitProcessSuccess {
+    fn drop(&mut self) {
+        if !self.must_finalize {
+            return;
+        }
+        if let Some(process) = self.process.as_ref() {
+            // SAFETY: this owner retains the exact creator process handle. A
+            // join-pending success must fail closed if abandoned.
+            unsafe {
+                let _ = TerminateProcess(
+                    windows_handle(process.as_handle()),
+                    DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+                );
+            }
+        }
+        // Losing the only post-join finalization path would otherwise discard
+        // the registry's numeric debug-event aliases after creator handles are
+        // closed. Process-wide fail-fast reclaims the complete service handle
+        // table without ever raw-closing an unverified/reused word.
+        fail_fast();
+    }
+}
+
+/// Exact creator handles after the run-specific debugger-thread join proof.
+pub(super) struct DetachedDesktopProcess {
+    process: Option<OwnedHandle>,
+    primary_thread: Option<OwnedHandle>,
+    process_id: NonZeroU32,
+    primary_thread_id: NonZeroU32,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl DetachedDesktopProcess {
+    pub(super) fn process_handle(&self) -> BorrowedHandle<'_> {
+        match self.process.as_ref() {
+            Some(process) => process.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
+    pub(super) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        match self.primary_thread.as_ref() {
+            Some(thread) => thread.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
+    pub(super) const fn process_id(&self) -> NonZeroU32 {
+        self.process_id
+    }
+
+    pub(super) const fn primary_thread_id(&self) -> NonZeroU32 {
+        self.primary_thread_id
+    }
+
+    /// Requests termination while retaining both creator handles so the
+    /// launch layer can validate and close joined debug-event aliases only
+    /// after an exact terminal observation.
+    pub(super) fn request_termination_for_cleanup(
+        &self,
+    ) -> Result<(), NativeDesktopProcessCleanupError> {
+        // SAFETY: this is the exact retained creator process handle.
+        unsafe {
+            TerminateProcess(
+                windows_handle(self.process_handle()),
+                DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+            )
+        }
+        .map_err(|_| NativeDesktopProcessCleanupError::TerminationRequest)
+    }
+
+    /// Proves process termination without closing either creator handle.
+    pub(super) fn wait_for_exit_for_cleanup(&self) -> Result<(), NativeDesktopProcessCleanupError> {
+        // SAFETY: this retained creator handle includes SYNCHRONIZE and remains
+        // live for the complete bounded wait.
+        if unsafe {
+            WaitForSingleObject(
+                windows_handle(self.process_handle()),
+                DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS,
+            )
+        } == WAIT_OBJECT_0
+        {
+            Ok(())
+        } else {
+            Err(NativeDesktopProcessCleanupError::Wait)
+        }
+    }
+}
+
+impl fmt::Debug for DetachedDesktopProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DetachedDesktopProcess([REDACTED])")
+    }
+}
+
+impl Drop for DetachedDesktopProcess {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.as_ref() {
+            // SAFETY: until a later resident attenuation owner exists, this
+            // dormant detached capability remains process-terminal on drop.
+            unsafe {
+                let _ = TerminateProcess(
+                    windows_handle(process.as_handle()),
+                    DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+                );
+            }
+        }
+    }
+}
+
 /// Private post-debugger-exit owner of the exact process and thread handles.
 pub(super) struct PendingDebuggerExitProcessCleanup {
     process: Option<OwnedHandle>,
@@ -265,6 +541,20 @@ pub(super) struct PendingDebuggerExitProcessCleanup {
 }
 
 impl PendingDebuggerExitProcessCleanup {
+    pub(super) fn process_handle(&self) -> BorrowedHandle<'_> {
+        match self.process.as_ref() {
+            Some(process) => process.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
+    pub(super) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        match self.primary_thread.as_ref() {
+            Some(thread) => thread.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
     pub(super) fn wait_and_close(mut self) -> Result<(), NativeDesktopProcessCleanupError> {
         let Some(process) = self.process.as_ref() else {
             fail_fast();
@@ -1529,7 +1819,8 @@ mod tests {
     use super::{
         DESKTOP_NAME_WIDE, DESKTOP_PRIMARY_TOKEN_ACCESS, DESKTOP_PROCESS_CREATION_FLAGS,
         DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, NativeDesktopProcessCleanupError,
-        NativeDesktopProcessCreateError, OwnedToken, PendingDebuggerExitProcessCleanup, SidBytes,
+        NativeDesktopProcessCreateError, OwnedToken, PendingDebuggerExitProcessCleanup,
+        PendingDebuggerExitProcessSuccess, PreparedDebuggerExitProcessSuccess, SidBytes,
         TokenLevel, application_name_is_exact, classify_impersonation_level,
         creation_attributes_are_exact, current_directory_is_exact, environment_is_exact,
         exact_boolean, integrity_rid, parse_token_has_restrictions, startup_info_is_exact,
@@ -1596,6 +1887,16 @@ mod tests {
         let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfSync<_>>::marker;
         let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfClone<_>>::marker;
         let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfCopy<_>>::marker;
+
+        let _ = <PreparedDebuggerExitProcessSuccess as AmbiguousIfSend<_>>::marker;
+        let _ = <PreparedDebuggerExitProcessSuccess as AmbiguousIfSync<_>>::marker;
+        let _ = <PreparedDebuggerExitProcessSuccess as AmbiguousIfClone<_>>::marker;
+        let _ = <PreparedDebuggerExitProcessSuccess as AmbiguousIfCopy<_>>::marker;
+
+        assert_send::<PendingDebuggerExitProcessSuccess>();
+        let _ = <PendingDebuggerExitProcessSuccess as AmbiguousIfSync<_>>::marker;
+        let _ = <PendingDebuggerExitProcessSuccess as AmbiguousIfClone<_>>::marker;
+        let _ = <PendingDebuggerExitProcessSuccess as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]
