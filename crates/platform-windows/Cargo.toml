@@ -21,6 +21,7 @@ key-agent-service-token-feasibility-test-hook = [
 # Compile-only Phase 1 launch primitives, including a dormant pre-event
 # process-creation seam. This adds no RPC command or executable entrypoint.
 key-agent-service-lpac-launch-feasibility-test-hook = [
+    "dep:key-agent-service-helper-bootstrap",
     "key-agent-service-rpc-status-feasibility-test-hook",
     "key-agent-service-token-feasibility-test-hook",
 ]
@@ -36,6 +37,7 @@ key-agent-service-rpc-status-feasibility-test-hook = [
 approval-wire = { path = "../approval-wire" }
 getrandom.workspace = true
 hmac.workspace = true
+key-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap", optional = true, default-features = false }
 key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }
 key-agent-service-wire = { path = "../key-agent-service-wire", optional = true }
 sha2.workspace = true

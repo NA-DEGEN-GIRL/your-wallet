@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 mod channel;
+mod gate;
 mod job;
 mod process;
 mod startup;
