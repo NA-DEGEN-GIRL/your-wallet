@@ -8,9 +8,7 @@ use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, FILETIME,
     GetHandleInformation, HANDLE,
 };
-use windows::Win32::Storage::FileSystem::{
-    FILE_TYPE_PIPE, FlushFileBuffers, GetFileType, ReadFile, WriteFile,
-};
+use windows::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, ReadFile, WriteFile};
 use windows::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
@@ -321,7 +319,6 @@ trait BootstrapOperations {
     fn tick_count_milliseconds(&mut self) -> Result<u64, ()>;
     fn named_pipe_client_process_id(&mut self, handle: HandleWord) -> Result<u32, ()>;
     fn write_response(&mut self, handle: HandleWord, bytes: &[u8]) -> Result<usize, ()>;
-    fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()>;
     fn enter_adoption_complete_gate(&mut self);
 }
 
@@ -338,9 +335,13 @@ fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
         return Err(());
     }
 
-    if operations.current_process_id()? != hello.child_process_id().get()
-        || operations.current_process_creation_filetime()? != hello.child_creation_filetime().get()
+    let child_process_id = hello.child_process_id().get();
+    if operations.current_process_id()? != child_process_id
+        || hello.service_process_id().get() == child_process_id
     {
+        return Err(());
+    }
+    if operations.current_process_creation_filetime()? != hello.child_creation_filetime().get() {
         return Err(());
     }
 
@@ -360,7 +361,11 @@ fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
     let acknowledgement =
         HelperAdoptionAck::new(hello.epoch_nonce(), hello.request_id(), hello.role()).encode();
     write_exact_response(operations, response_output, &acknowledgement)?;
-    operations.flush_response(response_output)?;
+    // The exact synchronous write completes before this transition. Do not use
+    // `FlushFileBuffers`: its documented `GENERIC_WRITE` requirement is wider
+    // than the deliberately injected `SYNCHRONIZE | FILE_WRITE_DATA` handle.
+    // Gate two independently stops the child while the parent reads and binds
+    // the complete ACK, before installing the explicit suspend count.
     operations.enter_adoption_complete_gate();
     Ok(())
 }
@@ -564,12 +569,6 @@ impl BootstrapOperations for WindowsBootstrapOperations {
         }
         .map_err(|_| ())?;
         usize::try_from(written).map_err(|_| ())
-    }
-
-    fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()> {
-        // SAFETY: the adopted response server handle remains owned for the
-        // synchronous flush operation.
-        unsafe { FlushFileBuffers(native_handle(handle)?) }.map_err(|_| ())
     }
 
     fn enter_adoption_complete_gate(&mut self) {
@@ -1073,7 +1072,6 @@ mod tests {
         TickCount,
         NamedPipeClientProcessId(u64),
         Write { handle: u64, offered: usize },
-        Flush(u64),
         AdoptionCompleteGate,
     }
 
@@ -1187,10 +1185,6 @@ mod tests {
             Ok(written)
         }
 
-        fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()> {
-            self.record(BootstrapEvent::Flush(handle.get()))
-        }
-
         fn enter_adoption_complete_gate(&mut self) {
             self.events.push(BootstrapEvent::AdoptionCompleteGate);
         }
@@ -1203,11 +1197,18 @@ mod tests {
     fn sample_bootstrap_hello_for_role(
         role: HelperBootstrapRole,
     ) -> Result<HelperBootstrapHello, WireError> {
+        sample_bootstrap_hello_for_role_and_service(role, BOOTSTRAP_SERVICE_PROCESS_ID)
+    }
+
+    fn sample_bootstrap_hello_for_role_and_service(
+        role: HelperBootstrapRole,
+        service_process_id: u32,
+    ) -> Result<HelperBootstrapHello, WireError> {
         Ok(HelperBootstrapHello::new(
             EpochNonce::new([0xA5; 32])?,
             ServiceRequestId::new([0x5A; 16])?,
             role,
-            NonZeroU32::new(BOOTSTRAP_SERVICE_PROCESS_ID).ok_or(WireError::InvalidValue)?,
+            NonZeroU32::new(service_process_id).ok_or(WireError::InvalidValue)?,
             NonZeroU32::new(BOOTSTRAP_CHILD_PROCESS_ID).ok_or(WireError::InvalidValue)?,
             NonZeroU64::new(BOOTSTRAP_CHILD_CREATION_FILETIME).ok_or(WireError::InvalidValue)?,
             NonZeroU64::new(BOOTSTRAP_DEADLINE_MILLISECONDS).ok_or(WireError::InvalidValue)?,
@@ -1251,7 +1252,6 @@ mod tests {
                     handle: FRESH_RESPONSE,
                     offered: HELPER_ADOPTION_ACK_BYTES,
                 },
-                BootstrapEvent::Flush(FRESH_RESPONSE),
                 BootstrapEvent::AdoptionCompleteGate,
             ]
         );
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_reads_and_writes_are_completed_before_flush_and_gate() -> Result<(), WireError> {
+    fn partial_reads_and_writes_are_completed_before_gate() -> Result<(), WireError> {
         let mut operations = FakeBootstrapOperations::scenario()?;
         operations.read_sizes = VecDeque::from([1, 2, HELPER_BOOTSTRAP_HELLO_BYTES - 3]);
         operations.write_sizes = VecDeque::from([1, 2, HELPER_ADOPTION_ACK_BYTES - 3]);
@@ -1312,10 +1312,12 @@ mod tests {
             operations.write_sizes = write_sizes;
             assert!(complete_with_fake(&mut operations).is_err());
             assert!(!operations.has_entered_gate());
-            assert!(!operations.events.iter().any(|event| matches!(
-                event,
-                BootstrapEvent::Flush(_) | BootstrapEvent::AdoptionCompleteGate
-            )));
+            assert!(
+                !operations
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BootstrapEvent::AdoptionCompleteGate))
+            );
         }
         Ok(())
     }
@@ -1371,6 +1373,24 @@ mod tests {
         child_process.current_process_id = BOOTSTRAP_CHILD_PROCESS_ID + 1;
         assert!(complete_with_fake(&mut child_process).is_err());
 
+        let mut self_service = FakeBootstrapOperations::scenario()?;
+        self_service.hello_bytes = sample_bootstrap_hello_for_role_and_service(
+            HelperBootstrapRole::Approval,
+            BOOTSTRAP_CHILD_PROCESS_ID,
+        )?
+        .encode();
+        assert!(complete_with_fake(&mut self_service).is_err());
+        assert_eq!(
+            self_service.events,
+            [
+                BootstrapEvent::Read {
+                    handle: FRESH_REQUEST,
+                    requested: HELPER_BOOTSTRAP_HELLO_BYTES,
+                },
+                BootstrapEvent::CurrentProcessId,
+            ]
+        );
+
         let mut creation = FakeBootstrapOperations::scenario()?;
         creation.current_process_creation_filetime = BOOTSTRAP_CHILD_CREATION_FILETIME + 1;
         assert!(complete_with_fake(&mut creation).is_err());
@@ -1398,12 +1418,16 @@ mod tests {
                 .contains(&BootstrapEvent::NamedPipeClientProcessId(FRESH_RESPONSE))
         );
 
-        for operations in [&child_process, &creation, &request_client, &response_client] {
+        for operations in [
+            &child_process,
+            &self_service,
+            &creation,
+            &request_client,
+            &response_client,
+        ] {
             assert!(!operations.events.iter().any(|event| matches!(
                 event,
-                BootstrapEvent::Write { .. }
-                    | BootstrapEvent::Flush(_)
-                    | BootstrapEvent::AdoptionCompleteGate
+                BootstrapEvent::Write { .. } | BootstrapEvent::AdoptionCompleteGate
             )));
         }
         Ok(())
@@ -1442,20 +1466,6 @@ mod tests {
             assert!(complete_with_fake(&mut operations).is_err());
             assert!(!operations.has_entered_gate());
         }
-        Ok(())
-    }
-
-    #[test]
-    fn flush_failure_keeps_complete_ack_but_never_enters_gate() -> Result<(), WireError> {
-        let mut baseline = FakeBootstrapOperations::scenario()?;
-        assert_eq!(complete_with_fake(&mut baseline), Ok(()));
-        let flush_call = baseline.calls.saturating_sub(1);
-
-        let mut operations = FakeBootstrapOperations::scenario()?;
-        operations.fail_at = Some(flush_call);
-        assert!(complete_with_fake(&mut operations).is_err());
-        assert_eq!(operations.written_response.len(), HELPER_ADOPTION_ACK_BYTES);
-        assert!(!operations.has_entered_gate());
         Ok(())
     }
 

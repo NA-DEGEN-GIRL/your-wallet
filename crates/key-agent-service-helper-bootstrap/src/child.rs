@@ -88,7 +88,7 @@ pub fn capture_and_adopt_injected_channels() -> AdoptedInjectedChannels {
 ///
 /// # Process termination
 ///
-/// Every read, framing, role, identity, deadline, peer-process, write, and flush
+/// Every read, framing, role, identity, deadline, peer-process, and write
 /// failure aborts the child immediately. Calling the second gate without the
 /// expected parent debugger is likewise process-terminal. No recoverable path
 /// may expose a partially bootstrapped helper channel.
