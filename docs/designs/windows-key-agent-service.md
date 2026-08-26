@@ -168,6 +168,34 @@ The following are existing facts, not new service claims:
   thread. Bounded process and Job reap requires the matching thread-exit/join
   proof. The seam still has no RPC command or executable caller and enables no
   release path.
+- A separate child-only leaf crate, `key-agent-service-helper-bootstrap`, depends
+  on `key-agent-service-wire` and target-specific `windows` APIs, not on
+  `platform-windows`, Approval, Secret Input, or the service. Its always-
+  available secret-free canonical 72-byte ACK codec provides correlation only,
+  not authentication or authority. The child capture/adoption API is further
+  limited to Windows x86_64 plus the explicit
+  `child-capture-feasibility-test-hook` feature and `debug_assertions`; it has no
+  executable, default, or release reachability and must not run without the
+  authenticated parent debugger ready for its breakpoint.
+- That leaf's naked stub is exactly 34 bytes: `movabs` public markers into R10
+  and R11, `INT3`, stores of R10/R11 through RCX/RDX, 32-bit XOR clears of both
+  registers, and `RET`. Adoption rejects zero, negative/invalid or pseudo,
+  equal, standard-handle-aliasing, nonzero-flag, non-`FILE_TYPE_PIPE`, and
+  same-object candidates. It makes fresh child-local duplicates with explicit
+  desired access `0x00100001`/`0x00100002`, inheritance false, and options zero,
+  verifies object continuity, and checked-closes both launcher-known
+  candidates. Its safe state exposes neither raw handles nor I/O.
+- Every capture or adoption failure is process-terminal: the child calls
+  `std::process::abort()` and exposes no failure return. No UI code can continue;
+  the OS closes the child's entire handle table, and the parent must terminate
+  and reap the helper Job.
+- Each source candidate's exact `GrantedAccess` and direction remain
+  **UNVERIFIED**: supported Win32 APIs cannot read that admission fact, and
+  `DuplicateHandle` may produce a stronger-access result.
+  `NtQueryObject` is test/change-prone and is not runtime admission. The target
+  exact-access/direction invariant therefore remains unproved, as do UI
+  integration, parent injection, ACK transport, second suspend, detach, and
+  signed-artifact/kernel-matrix evidence.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -714,7 +742,14 @@ role SID, zero capabilities, AAP opt-out, session, desktop user/logon SID, and
 separate pre-event termination requests from bounded process/Job reap; this
 slice receives no debug event and performs no continue, resume, detach, or
 kill-on-exit opt-out. These types still have no RPC/executable caller and
-perform no remote-handle injection or R10/R11 gate. Privilege enablement,
+perform no parent-side remote-handle injection or integrated R10/R11 gate. A
+separate child-only leaf now fixes the secret-free 72-byte correlation ACK
+codec, exact 34-byte R10/R11 capture stub, and fresh local pipe-handle adoption
+described above, but only under its Windows x86_64 debug feasibility gate. It
+does not prove source-candidate exact `GrantedAccess`/direction and reaches no UI
+or executable. Any child capture/adoption failure aborts the process, so no UI
+can continue; the OS closes the child handle table and the parent must terminate
+and reap the helper Job. Privilege enablement,
 interactive desktop DACL access, child-token query access, the actual
 cross-session call, claimed-build matrix, endpoint-squatting, SCM
 configuration/service identity, and real Broker-client evidence are absent.
@@ -818,6 +853,15 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-26 - Added the child-only `key-agent-service-helper-bootstrap`
+  feasibility boundary: an always-available secret-free 72-byte correlation
+  ACK codec plus a Windows-x86_64/debug-feature-only exact 34-byte R10/R11
+  capture and local-adoption API. Recorded its candidate rejection, explicit-
+  rights fresh duplication, continuity and close behavior; its lack of raw
+  handles/I/O and runtime reachability; process-terminal failure with no UI
+  continuation and parent-owned Job termination/reap; and the unresolved
+  source-candidate `GrantedAccess`/direction, parent, UI, transport, detach,
+  signed-artifact, and kernel-matrix blockers.
 - 2026-08-26 - Added the dormant one-shot service LPAC process-creation seam:
   exact five-flag `CreateProcessAsUserW`, no command line or inheritance,
   paired service-owned creation security, immediate native-result ownership,

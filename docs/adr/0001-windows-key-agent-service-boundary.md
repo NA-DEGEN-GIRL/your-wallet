@@ -301,11 +301,50 @@ The pending owner can be reaped only after the exact creator/debugger thread has
 exited and joined; the matching join proof then permits bounded process wait and
 exact-zero Job completion.
 
-No RPC operation or executable consumes this creation seam, and no helper
-entrypoint, handle injection, or R10/R11 gate is added by this slice. Required
+No RPC operation or executable consumes this creation seam, and that creation
+slice adds no helper entrypoint, parent-side handle injection, or integrated
+R10/R11 gate. Required
 privilege enablement, exact interactive window-station/desktop DACL access,
 child-token query access, the actual cross-session call, and the positive
 installed-service/nonnested-Job matrix remain unproved.
+
+A separate child-only Phase 1 feasibility leaf,
+`key-agent-service-helper-bootstrap`, depends on `key-agent-service-wire` and
+target-specific `windows` APIs. It does not depend on `platform-windows`, either
+UI crate, or the service. No executable consumes it, and no default or release
+path reaches register capture/adoption. Its secret-free canonical 72-byte
+correlation ACK codec is always available but is neither authentication nor
+authority. Register capture and adoption are
+compiled only for Windows x86_64 with the explicit
+`child-capture-feasibility-test-hook` feature and `debug_assertions`; the safe
+API is dormant and MUST NOT run unless the authenticated parent debugger is
+ready to own the breakpoint.
+
+The child leaf contains one exact 34-byte naked sequence: `movabs` loads public
+markers into R10 and R11, `INT3` stops at the gate, register-only stores through
+RCX/RDX capture both values, 32-bit XORs clear both registers, and `RET` returns.
+Adoption rejects zero, negative/invalid or pseudo, equal, standard-handle-
+aliasing, nonzero-flag, non-`FILE_TYPE_PIPE`, and same-object candidates. It
+creates fresh child-local duplicates with explicit desired access `0x00100001`
+for the request
+reader and `0x00100002` for the response writer, inheritance false, and options
+zero; verifies candidate/duplicate object continuity; and checked-closes both
+launcher-known candidates. The resulting safe state exposes no raw handle
+getter and performs no I/O.
+
+Every capture or adoption failure is process-terminal: the child calls
+`std::process::abort()` and exposes no failure return. No UI code can continue;
+the OS closes the child's entire handle table, and the parent MUST terminate and
+reap the helper Job.
+
+The source candidates' exact `GrantedAccess` and pipe direction remain
+**UNVERIFIED**. Supported Win32 APIs cannot query that admission fact, and the
+explicit-rights `DuplicateHandle` result may be stronger than the candidate.
+`NtQueryObject` is test/change-prone evidence and is not permitted as runtime
+admission. The leaf therefore does not satisfy the target exact-access/direction
+requirement and does not integrate either UI, parent injection, ACK transport,
+the independent second suspend, detach, or signed artifacts. Those steps and
+their supported-kernel matrix remain Phase 1 **STOP-SHIP** blockers.
 
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not

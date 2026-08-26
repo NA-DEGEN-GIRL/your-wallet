@@ -1346,6 +1346,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-agent-service-helper-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "key-agent-service-wire",
+ "windows",
+]
+
+[[package]]
 name = "key-agent-service-rpc-sys"
 version = "0.1.0"
 dependencies = [

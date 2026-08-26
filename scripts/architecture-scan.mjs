@@ -1945,6 +1945,7 @@ const publicBoundaryManifests = [
   "crates/native-host/Cargo.toml",
   "crates/approval-ui/Cargo.toml",
   "crates/dashboard/Cargo.toml",
+  "crates/key-agent-service-helper-bootstrap/Cargo.toml",
   "crates/key-agent-service-rpc-sys/Cargo.toml",
   "crates/key-agent-service-wire/Cargo.toml",
 ];
@@ -1973,6 +1974,44 @@ const keyAgentServiceWirePublicContract = await text(
 const keyAgentServiceWireRustFiles = await rustProductionSources(
   "crates/key-agent-service-wire",
   { withTestCode: true },
+);
+const keyAgentServiceHelperBootstrapRoot =
+  "crates/key-agent-service-helper-bootstrap";
+const keyAgentServiceHelperBootstrapManifest = await text(
+  `${keyAgentServiceHelperBootstrapRoot}/Cargo.toml`,
+);
+const keyAgentServiceHelperBootstrapPaths = Object.freeze({
+  manifest: `${keyAgentServiceHelperBootstrapRoot}/Cargo.toml`,
+  lib: `${keyAgentServiceHelperBootstrapRoot}/src/lib.rs`,
+  wire: `${keyAgentServiceHelperBootstrapRoot}/src/wire.rs`,
+  child: `${keyAgentServiceHelperBootstrapRoot}/src/child.rs`,
+  windows: `${keyAgentServiceHelperBootstrapRoot}/src/child/windows.rs`,
+});
+const keyAgentServiceHelperBootstrapLib = await text(
+  keyAgentServiceHelperBootstrapPaths.lib,
+);
+const keyAgentServiceHelperBootstrapWire = await text(
+  keyAgentServiceHelperBootstrapPaths.wire,
+);
+const keyAgentServiceHelperBootstrapChild = await text(
+  keyAgentServiceHelperBootstrapPaths.child,
+);
+const keyAgentServiceHelperBootstrapWindows = await text(
+  keyAgentServiceHelperBootstrapPaths.windows,
+);
+const keyAgentServiceHelperBootstrapRustFiles = await rustProductionSources(
+  keyAgentServiceHelperBootstrapRoot,
+  { withTestCode: true },
+);
+const keyAgentServiceHelperBootstrapDirectoryInventories = await Promise.all(
+  [
+    keyAgentServiceHelperBootstrapRoot,
+    `${keyAgentServiceHelperBootstrapRoot}/src`,
+    `${keyAgentServiceHelperBootstrapRoot}/src/child`,
+  ].map(async (path) => ({
+    path,
+    entries: await trustedDirectoryEntryInventory(path),
+  })),
 );
 const keyAgentServiceRpcSysManifest = await text(
   "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -10895,6 +10934,156 @@ requireInvariant(
   "the bounded Phase 1 service windows must document exact manager-only primary-token rights, retained same-object/full-baseline service-token authority, service-principal-only paired creation security with post-build revalidation, split-phase one-process Job cleanup, the dormant sole five-flag process call, exact created-child LPAC/desktop/object proof, fresh debugger-thread join authority, direct unreachability, and no production-proof contradiction",
 );
 
+const keyAgentServiceHelperBootstrapDocumentationSpecs = [
+  {
+    path: "docs/adr/0001-windows-key-agent-service-boundary.md",
+    source: keyAgentServiceBoundaryAdr,
+    anchor: "A separate child-only Phase 1 feasibility leaf,",
+    sha256:
+      "4c3df2355b16f1d71a7a05d22f8ee111be761666fbf95835b51b325b54b61d8d",
+  },
+  {
+    path: "docs/architecture.md",
+    source: sepoliaArchitectureDoc,
+    anchor: "A separate child-only Phase 1 feasibility leaf,",
+    sha256:
+      "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
+  },
+  {
+    path: "docs/designs/windows-key-agent-service.md",
+    source: keyAgentServiceDesign,
+    anchor: "A separate child-only leaf crate,",
+    sha256:
+      "865f9a6a9031b78877e0a8ab719f15290a957534293b154ef8d6c102c1a559c9",
+  },
+  {
+    path: "docs/security-decisions.md",
+    source: keyAgentServiceSecurityDecisions,
+    anchor: "A separate child-only feasibility leaf,",
+    sha256:
+      "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
+  },
+];
+const keyAgentServiceHelperBootstrapDocumentationPatterns = [
+  /key-agent-service-helper-bootstrap[\s\S]{0,180}key-agent-service-wire[\s\S]{0,160}windows[\s\S]{0,220}(?:not\s+on|does\s+not\s+depend\s+on|has\s+no\s+dependency\s+on|but\s+not\s+on)[\s\S]{0,220}(?:platform-windows|UI|service)/iu,
+  /(?:canonical )?72-byte[\s\S]{0,120}(?:correlation|ACK)[\s\S]{0,180}(?:not|neither|proves neither)[\s\S]{0,100}(?:authentication|authority)/iu,
+  /Windows\s+x86_64[\s\S]{0,160}child-capture-feasibility-test-hook[\s\S]{0,120}debug_assertions/iu,
+  /(?:no\s+executable|no\s+executable consumes|has no\s+executable)[\s\S]{0,180}(?:default|release)/iu,
+  /(?:parent debugger|debugger)[\s\S]{0,180}(?:breakpoint|INT3)/iu,
+  /(?:exact 34-byte|exactly 34 bytes)[\s\S]{0,180}movabs[\s\S]{0,120}R10[\s\S]{0,80}R11[\s\S]{0,140}INT3[\s\S]{0,180}(?:RCX|stores)[\s\S]{0,180}(?:XOR|clear)[\s\S]{0,120}RET/iu,
+  /rejects? zero[\s\S]{0,120}(?:negative|invalid)[\s\S]{0,80}pseudo[\s\S]{0,80}equal[\s\S]{0,160}standard[\s-]+handle[\s\S]{0,120}(?:nonzero|flag)[\s\S]{0,100}FILE_TYPE_PIPE[\s\S]{0,120}same-object/iu,
+  /0x00100001[\s\S]{0,180}0x00100002[\s\S]{0,160}inheritance\s+false[\s\S]{0,100}options\s+zero/iu,
+  /(?:object continuity|candidate\/duplicate object continuity|compares? each duplicate|compares? fresh\/candidate object identity)[\s\S]{0,180}(?:checked-closes|closes)[\s\S]{0,80}both/iu,
+  /(?:no raw handle|getters?|exposes neither raw handles)[\s\S]{0,120}(?:no I\/O|performs no I\/O|nor I\/O)/iu,
+  /Every capture or adoption failure is process-terminal[\s\S]{0,140}std::process::abort\(\)[\s\S]{0,120}no failure return/iu,
+  /(?:entire handle table|whole handle table)[\s\S]{0,180}parent[\s\S]{0,100}(?:terminate|termination)[\s\S]{0,100}reap[\s\S]{0,80}Job/iu,
+  /(?:GrantedAccess|granted access)[\s\S]{0,120}(?:pipe )?direction[\s\S]{0,100}UNVERIFIED/iu,
+  /(?:Supported Win32 APIs|Win32 APIs)[\s\S]{0,160}(?:cannot|do not)[\s\S]{0,140}(?:admission fact|source)[\s\S]{0,180}DuplicateHandle[\s\S]{0,140}stronger/iu,
+  /NtQueryObject[\s\S]{0,160}(?:not\s+permitted\s+as\s+runtime\s+admission|not\s+a\s+runtime\s+admission|not\s+runtime\s+admission)/iu,
+  /(?:UI integration|integrate either UI|adds no UI entrypoint|UI)[\s\S]{0,180}parent[\s\S]{0,140}(?:ACK|transport)[\s\S]{0,180}(?:second suspend|detach)[\s\S]{0,180}(?:signed|kernel)/iu,
+];
+const keyAgentServiceHelperBootstrapDocumentationContradiction =
+  /The source handle access and pipe direction are proven exact\.|Capture failures return to the UI for recovery\.|The release executable consumes the child capture API\.|The ACK authenticates the helper and grants authority\./u;
+const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
+  const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
+  if (anchors.length !== 1) return null;
+  return spec.source.slice(anchors[0].index, anchors[0].index + 2_300);
+};
+const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
+  JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
+    JSON.stringify(
+      keyAgentServiceHelperBootstrapDocumentationSpecs.map(
+        ({ path, anchor }) => ({ path, anchor }),
+      ),
+    ) &&
+  specs.every((spec) => {
+    const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
+    return (
+      window !== null &&
+      window.length <= 2_300 &&
+      keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
+        pattern.test(window),
+      ) &&
+      !keyAgentServiceHelperBootstrapDocumentationContradiction.test(window)
+    );
+  });
+const keyAgentServiceHelperBootstrapDocumentationPinContract = (specs) =>
+  specs.every(
+    (spec) => normalizedSourceSha256(spec.source) === spec.sha256,
+  );
+const keyAgentServiceHelperBootstrapDocumentationInventoryMutations = [
+  keyAgentServiceHelperBootstrapDocumentationSpecs.slice(1),
+  [
+    keyAgentServiceHelperBootstrapDocumentationSpecs[1],
+    keyAgentServiceHelperBootstrapDocumentationSpecs[0],
+    ...keyAgentServiceHelperBootstrapDocumentationSpecs.slice(2),
+  ],
+  keyAgentServiceHelperBootstrapDocumentationSpecs.map((spec, index) =>
+    index === 3 ? { ...spec, path: "docs/architecture.md" } : spec,
+  ),
+];
+const keyAgentServiceHelperBootstrapDocumentationMarkerMutations =
+  keyAgentServiceHelperBootstrapDocumentationSpecs.flatMap(
+    (spec, specIndex) => {
+      const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
+      if (window === null) return [];
+      return keyAgentServiceHelperBootstrapDocumentationPatterns.map(
+        (pattern) => {
+          const global = new RegExp(
+            pattern.source,
+            pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+          );
+          if (![...window.matchAll(global)].length) {
+            return keyAgentServiceHelperBootstrapDocumentationSpecs;
+          }
+          const mutatedWindow = window.replace(
+            global,
+            "REMOVED_HELPER_BOOTSTRAP_DOCUMENTATION_MARKER",
+          );
+          const anchor = spec.source.indexOf(spec.anchor);
+          const mutatedSource = `${spec.source.slice(0, anchor)}${mutatedWindow}${spec.source.slice(anchor + window.length)}`;
+          return keyAgentServiceHelperBootstrapDocumentationSpecs.map(
+            (entry, index) =>
+              index === specIndex
+                ? { ...entry, source: mutatedSource }
+                : entry,
+          );
+        },
+      );
+    },
+  );
+const keyAgentServiceHelperBootstrapDocumentationContradictionMutations =
+  keyAgentServiceHelperBootstrapDocumentationSpecs.map((spec, specIndex) => {
+    const anchor = spec.source.indexOf(spec.anchor);
+    const mutatedSource = `${spec.source.slice(0, anchor + 500)}\nThe source handle access and pipe direction are proven exact.\n${spec.source.slice(anchor + 500)}`;
+    return keyAgentServiceHelperBootstrapDocumentationSpecs.map(
+      (entry, index) =>
+        index === specIndex ? { ...entry, source: mutatedSource } : entry,
+    );
+  });
+requireInvariant(
+  keyAgentServiceHelperBootstrapDocumentationPinContract(
+    keyAgentServiceHelperBootstrapDocumentationSpecs,
+  ) &&
+    keyAgentServiceHelperBootstrapDocumentationSemanticContract(
+      keyAgentServiceHelperBootstrapDocumentationSpecs,
+    ) &&
+    keyAgentServiceHelperBootstrapDocumentationInventoryMutations.every(
+      (probe) =>
+        !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
+    ) &&
+    keyAgentServiceHelperBootstrapDocumentationMarkerMutations.every(
+      (probe) =>
+        probe !== keyAgentServiceHelperBootstrapDocumentationSpecs &&
+        !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
+    ) &&
+    keyAgentServiceHelperBootstrapDocumentationContradictionMutations.every(
+      (probe) =>
+        !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
+    ),
+  "the exact four frozen helper-bootstrap document windows must preserve the child-only dependency boundary, 72-byte non-authenticating wire role, debug-only x64 capture, exact naked sequence, closed candidate admission/duplication/close policy, process-terminal abort semantics, typed source-access/direction uncertainty, STOP-SHIP integration blockers, and effective inventory/marker/contradiction mutations",
+);
+
 const keyAgentServiceRpcEpochTestNames = [
   "zero_seed_is_rejected_and_debug_is_fully_redacted",
   "same_exact_peer_has_only_one_live_epoch",
@@ -11852,6 +12041,1046 @@ requireInvariant(
         !keyAgentServiceWireV1Contract(probe.source, probe.publicContract),
     ),
   "key-agent-service-wire v1 must remain an exact fixed-magic/version/kind/length/reserved/CRC contract with nonzero epoch/request bindings, closed Status/Unavailable semantics, secret-free Debug, exact request/response correlation, exhaustive malformed-frame tests, and effective mutation probes",
+);
+
+const approvedKeyAgentServiceHelperBootstrapDirectories = [
+  {
+    path: "crates/key-agent-service-helper-bootstrap",
+    entries: [
+      { name: "Cargo.toml", kind: "file" },
+      { name: "src", kind: "directory" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-helper-bootstrap/src",
+    entries: [
+      { name: "child", kind: "directory" },
+      { name: "child.rs", kind: "file" },
+      { name: "lib.rs", kind: "file" },
+      { name: "wire.rs", kind: "file" },
+    ],
+  },
+  {
+    path: "crates/key-agent-service-helper-bootstrap/src/child",
+    entries: [{ name: "windows.rs", kind: "file" }],
+  },
+];
+const approvedKeyAgentServiceHelperBootstrapSourcePins = [
+  {
+    path: keyAgentServiceHelperBootstrapPaths.child,
+    sha256: "844e13c1f3f9a518117f7a8211ee8b03a9b63552f511df1e61145de71894ac96",
+  },
+  {
+    path: keyAgentServiceHelperBootstrapPaths.windows,
+    sha256: "bcae2fef4b5ab365b2bdb569e48a239f51845d87c629975788bf268f7326f05a",
+  },
+  {
+    path: keyAgentServiceHelperBootstrapPaths.lib,
+    sha256: "e6bb7df33a0102c4f4a4b2189a6403ac5a5b41d7eb2ff1924632800836805e4e",
+  },
+  {
+    path: keyAgentServiceHelperBootstrapPaths.wire,
+    sha256: "e5346fbe0bb9c6b386e903ea7f1968f14db24289e053cd64c70eb5babcf08f46",
+  },
+];
+const keyAgentServiceHelperBootstrapInventoryContract = (
+  manifest,
+  files,
+  directories,
+) =>
+  normalizedSourceSha256(manifest) ===
+    "6fce1c2dee7b93b9a5ca6f7de2b62b2e7ba7dd5e3bc9015703bb5c7abf97b3f5" &&
+  JSON.stringify(directories) ===
+    JSON.stringify(approvedKeyAgentServiceHelperBootstrapDirectories) &&
+  JSON.stringify(
+    files.map((file) => ({
+      path: file.path,
+      sha256: normalizedSourceSha256(file.source),
+    })),
+  ) === JSON.stringify(approvedKeyAgentServiceHelperBootstrapSourcePins);
+
+const keyAgentServiceHelperBootstrapManifestContract = (manifest) => {
+  const normalized = manifest.replace(/\r\n?/gu, "\n");
+  const dependencyHeaders =
+    normalized.match(/^\s*\[[^\]\r\n]*dependencies[^\]\r\n]*\]\s*$/gmu) ?? [];
+  const features = tomlTableKeyInventory(normalized, "features");
+  return (
+    (normalized.match(
+      /^name\s*=\s*"key-agent-service-helper-bootstrap"\s*$/gmu,
+    ) ?? []).length === 1 &&
+    /^build\s*=\s*false\s*$/mu.test(normalized) &&
+    /^publish\s*=\s*false\s*$/mu.test(normalized) &&
+    JSON.stringify(features) ===
+      JSON.stringify(["default", "child-capture-feasibility-test-hook"]) &&
+    /^default\s*=\s*\[\]\s*$/mu.test(normalized) &&
+    /^child-capture-feasibility-test-hook\s*=\s*\[\]\s*$/mu.test(
+      normalized,
+    ) &&
+    dependencyHeaders.length === 2 &&
+    dependencyHeaders[0].trim() === "[dependencies]" &&
+    dependencyHeaders[1].trim() === "[target.'cfg(windows)'.dependencies]" &&
+    /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire"\s*\}\s*$/mu.test(
+      normalized,
+    ) &&
+    /^windows\s*=\s*\{\s*workspace\s*=\s*true\s*,\s*features\s*=\s*\[\s*"Win32_Foundation"\s*,\s*"Win32_Storage_FileSystem"\s*,\s*"Win32_System_Console"\s*,\s*"Win32_System_Threading"\s*,?\s*\]\s*\}\s*$/mu.test(
+      normalized,
+    ) &&
+    !/^\s*(?:dev-dependencies|build-dependencies)\s*=/mu.test(normalized) &&
+    !/^\s*\[(?:dev-dependencies|build-dependencies)\]\s*$/mu.test(normalized) &&
+    !/^\s*\[\[(?:bin|example|test|bench)\]\]\s*$/mu.test(normalized) &&
+    /^\s*\[lints\.rust\]\s*$/mu.test(normalized) &&
+    /^unsafe_code\s*=\s*"allow"\s*$/mu.test(normalized) &&
+    /^unsafe_op_in_unsafe_fn\s*=\s*"deny"\s*$/mu.test(normalized) &&
+    /^undocumented_unsafe_blocks\s*=\s*"deny"\s*$/mu.test(normalized) &&
+    !/\b(?:platform-windows|approval-ui|secret-input-ui|key-agent-service)\s*=/u.test(
+      normalized.replace(/key-agent-service-wire/gu, ""),
+    )
+  );
+};
+
+const keyAgentServiceHelperBootstrapLibContract = (lib, wire, child) => {
+  const exactCfg = /#\[cfg\(all\(\s*windows\s*,\s*target_arch\s*=\s*"x86_64"\s*,\s*feature\s*=\s*"child-capture-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]/gu;
+  return (
+    (lib.match(exactCfg) ?? []).length === 2 &&
+    (lib.match(/\bmod\s+wire\s*;/gu) ?? []).length === 1 &&
+    (lib.match(/\bmod\s+child\s*;/gu) ?? []).length === 1 &&
+    !/\bpub\s+mod\s+(?:wire|child)\b/u.test(rustLexicalCode(lib)) &&
+    compactRust(lib).includes(
+      "pubuseself::wire::{AdoptionWireError,HELPER_ADOPTION_ACK_BYTES,HelperAdoptionAck,HelperBootstrapRole,decode_adoption_ack,encode_adoption_ack,};",
+    ) &&
+    compactRust(lib).includes(
+      "pubuseself::child::{AdoptedInjectedChannels,REQUEST_INPUT_MARKER,RESPONSE_OUTPUT_MARKER,capture_and_adopt_injected_channels,};",
+    ) &&
+    wire.includes("#![forbid(unsafe_code)]") &&
+    rustUnsafeKeywordCount(wire) === 0 &&
+    child.includes("#![deny(unsafe_code)]") &&
+    (child.match(/#\[allow\(unsafe_code\)\]\s*mod\s+windows\s*;/gu) ?? [])
+      .length === 1 &&
+    rustUnsafeKeywordCount(child) === 0 &&
+    !/\b(?:main|run|serve|launch|spawn)\s*\(/u.test(rustLexicalCode(lib))
+  );
+};
+
+const keyAgentServiceHelperBootstrapBoundaryInputs = Object.freeze({
+  manifest: keyAgentServiceHelperBootstrapManifest,
+  lib: keyAgentServiceHelperBootstrapLib,
+  wire: keyAgentServiceHelperBootstrapWire,
+  child: keyAgentServiceHelperBootstrapChild,
+});
+const mutateKeyAgentServiceHelperBootstrapBoundary = (
+  field,
+  search,
+  replacement,
+) => ({
+  ...keyAgentServiceHelperBootstrapBoundaryInputs,
+  [field]: keyAgentServiceHelperBootstrapBoundaryInputs[field].replace(
+    search,
+    replacement,
+  ),
+});
+const keyAgentServiceHelperBootstrapBoundaryMutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    "default = []",
+    'default = ["child-capture-feasibility-test-hook"]',
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    "build = false",
+    "build = true",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    "publish = false",
+    "publish = true",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    "[dependencies]",
+    '[dependencies]\nplatform-windows = { path = "../platform-windows" }',
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    '    "Win32_System_Threading",',
+    '    "Win32_Security",',
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "manifest",
+    'unsafe_code = "allow"',
+    'unsafe_code = "forbid"',
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "lib",
+    "    debug_assertions\n))]\nmod child;",
+    "))]\nmod child;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "lib",
+    '    target_arch = "x86_64",\n',
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "lib",
+    '    feature = "child-capture-feasibility-test-hook",\n',
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "lib",
+    "mod child;",
+    "pub mod child;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "wire",
+    "#![forbid(unsafe_code)]",
+    "#![allow(unsafe_code)]",
+  ),
+  mutateKeyAgentServiceHelperBootstrapBoundary(
+    "child",
+    "#[allow(unsafe_code)]\nmod windows;",
+    "mod windows;",
+  ),
+];
+requireInvariant(
+  keyAgentServiceHelperBootstrapInventoryContract(
+    keyAgentServiceHelperBootstrapManifest,
+    keyAgentServiceHelperBootstrapRustFiles,
+    keyAgentServiceHelperBootstrapDirectoryInventories,
+  ) &&
+    keyAgentServiceHelperBootstrapManifestContract(
+      keyAgentServiceHelperBootstrapManifest,
+    ) &&
+    keyAgentServiceHelperBootstrapLibContract(
+      keyAgentServiceHelperBootstrapLib,
+      keyAgentServiceHelperBootstrapWire,
+      keyAgentServiceHelperBootstrapChild,
+    ) &&
+    keyAgentServiceHelperBootstrapBoundaryMutationProbes.every(
+      (probe) =>
+        Object.keys(probe).some(
+          (field) =>
+            probe[field] !== keyAgentServiceHelperBootstrapBoundaryInputs[field],
+        ) &&
+        (!keyAgentServiceHelperBootstrapManifestContract(probe.manifest) ||
+          !keyAgentServiceHelperBootstrapLibContract(
+            probe.lib,
+            probe.wire,
+            probe.child,
+          )),
+    ),
+  "key-agent-service-helper-bootstrap must remain an exact five-file child-only crate with an always-safe wire module and a private Windows-x64/debug-feature-only capture module, empty defaults, no build or executable target, only service-wire plus four reviewed target Windows features, and effective default/release/dependency/cfg mutations",
+);
+
+const keyAgentServiceHelperBootstrapWireTestNames = [
+  "both_roles_round_trip",
+  "approval_golden_vector_is_stable",
+  "every_nonexact_length_is_rejected",
+  "every_single_byte_mutation_is_rejected",
+  "recomputed_crc_cannot_make_invalid_header_fields_canonical",
+  "recomputed_crc_cannot_make_invalid_body_fields_canonical",
+  "correlation_requires_every_field_to_match",
+  "debug_output_redacts_correlation_values",
+];
+const keyAgentServiceHelperBootstrapWireContract = (source) => {
+  let role;
+  let acknowledgement;
+  let roleCode;
+  let roleFromCode;
+  let encode;
+  let decode;
+  let correlation;
+  let debug;
+  let requireLength;
+  let verifyChecksum;
+  let requireZeroU16;
+  let requireZeroU32;
+  let crc32c;
+  let tests;
+  try {
+    role = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+HelperBootstrapRole\s*\{/u,
+    );
+    acknowledgement = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+struct\s+HelperAdoptionAck\s*\{/u,
+    );
+    const roleImpl = rustImplItemAtDepth(
+      source,
+      "impl HelperBootstrapRole",
+      0,
+    );
+    roleCode = rustFunctionBlockAtDepth(roleImpl, "wire_code", 1);
+    roleFromCode = rustFunctionBlockAtDepth(
+      roleImpl,
+      "from_wire_code",
+      1,
+    );
+    const acknowledgementImpl = rustImplItemAtDepth(
+      source,
+      "impl HelperAdoptionAck",
+      0,
+    );
+    encode = rustFunctionBlockAtDepth(acknowledgementImpl, "encode", 1);
+    decode = rustFunctionBlockAtDepth(acknowledgementImpl, "decode", 1);
+    correlation = rustFunctionBlockAtDepth(
+      acknowledgementImpl,
+      "ensure_correlates_with",
+      1,
+    );
+    debug = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for HelperAdoptionAck",
+      0,
+    );
+    requireLength = rustTopLevelFunctionBlock(source, "require_exact_length");
+    verifyChecksum = rustTopLevelFunctionBlock(source, "verify_checksum");
+    requireZeroU16 = rustTopLevelFunctionBlock(source, "require_zero_u16");
+    requireZeroU32 = rustTopLevelFunctionBlock(source, "require_zero_u32");
+    crc32c = rustTopLevelFunctionBlock(source, "crc32c");
+    tests = Object.fromEntries(
+      keyAgentServiceHelperBootstrapWireTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(source, name, 1),
+      ]),
+    );
+  } catch {
+    return false;
+  }
+
+  const compactSource = compactRust(source);
+  const compactEncode = compactRust(encode);
+  const compactDecode = compactRust(decode);
+  const compactCorrelation = compactRust(correlation);
+  const compactLengthTest = compactRust(
+    tests.every_nonexact_length_is_rejected,
+  );
+  const compactHeaderTest = compactRust(
+    tests.recomputed_crc_cannot_make_invalid_header_fields_canonical,
+  );
+  const compactBodyTest = compactRust(
+    tests.recomputed_crc_cannot_make_invalid_body_fields_canonical,
+  );
+  const compactCorrelationTest = compactRust(
+    tests.correlation_requires_every_field_to_match,
+  );
+  return (
+    [
+      "pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;",
+      'const HELPER_ADOPTION_MAGIC: [u8; 8] = *b"YWKHBA01";',
+      "const VERSION_V1: u16 = 1;",
+      "const FRAME_HELPER_ADOPTION_ACK: u16 = 1;",
+      "const HEADER_RESERVED_OFFSET: usize = 12;",
+      "const EPOCH_NONCE_OFFSET: usize = 16;",
+      "const EPOCH_NONCE_BYTES: usize = 32;",
+      "const REQUEST_ID_OFFSET: usize = EPOCH_NONCE_OFFSET + EPOCH_NONCE_BYTES;",
+      "const REQUEST_ID_BYTES: usize = 16;",
+      "const ROLE_OFFSET: usize = REQUEST_ID_OFFSET + REQUEST_ID_BYTES;",
+      "const ROLE_RESERVED_OFFSET: usize = ROLE_OFFSET + 2;",
+      "const CHECKSUM_OFFSET: usize = ROLE_RESERVED_OFFSET + 2;",
+      "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;",
+    ].every((marker) => source.includes(marker)) &&
+    (source.match(/b"YWKHBA01"/gu) ?? []).length === 1 &&
+    compactRust(role) ===
+      "pubenumHelperBootstrapRole{Approval,SecretInput,}" &&
+    compactRust(acknowledgement) ===
+      "pubstructHelperAdoptionAck{epoch_nonce:EpochNonce,request_id:ServiceRequestId,role:HelperBootstrapRole,}" &&
+    !/#\[derive\([^\]]*\bDebug\b[^\]]*\)\]\s*pub\s+struct\s+HelperAdoptionAck\b/u.test(
+      source,
+    ) &&
+    compactRust(roleCode).includes(
+      "Self::Approval=>1,Self::SecretInput=>2,",
+    ) &&
+    compactRust(roleFromCode).includes(
+      "1=>Ok(Self::Approval),2=>Ok(Self::SecretInput),_=>Err(WireError::UnknownKind)",
+    ) &&
+    hasOrderedCompactMarkers(encode, [
+      "letmutframe=[0_u8;HELPER_ADOPTION_ACK_BYTES]",
+      "frame[..HELPER_ADOPTION_MAGIC.len()].copy_from_slice(&HELPER_ADOPTION_MAGIC)",
+      "frame[8..10].copy_from_slice(&VERSION_V1.to_be_bytes())",
+      "frame[10..12].copy_from_slice(&FRAME_HELPER_ADOPTION_ACK.to_be_bytes())",
+      "frame[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET].copy_from_slice(self.epoch_nonce.as_bytes())",
+      "frame[REQUEST_ID_OFFSET..ROLE_OFFSET].copy_from_slice(self.request_id.as_bytes())",
+      "frame[ROLE_OFFSET..ROLE_RESERVED_OFFSET].copy_from_slice(&self.role.wire_code().to_be_bytes())",
+      "letchecksum=crc32c(&frame[..CHECKSUM_OFFSET])",
+      "frame[CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_be_bytes())",
+      "frame",
+    ]) &&
+    (compactEncode.match(/copy_from_slice/gu) ?? []).length === 7 &&
+    !compactEncode.includes("frame[HEADER_RESERVED_OFFSET") &&
+    !compactEncode.includes("frame[ROLE_RESERVED_OFFSET") &&
+    hasOrderedCompactMarkers(decode, [
+      "require_exact_length(bytes)?",
+      "bytes.get(..HELPER_ADOPTION_MAGIC.len())!=Some(HELPER_ADOPTION_MAGIC.as_slice())",
+      "returnErr(WireError::InvalidMagic)",
+      "read_u16(bytes,8)!=VERSION_V1",
+      "returnErr(WireError::UnsupportedVersion)",
+      "read_u16(bytes,10)!=FRAME_HELPER_ADOPTION_ACK",
+      "returnErr(WireError::UnknownKind)",
+      "require_zero_u32(bytes,HEADER_RESERVED_OFFSET)?",
+      "verify_checksum(bytes)?",
+      "require_zero_u16(bytes,ROLE_RESERVED_OFFSET)?",
+      "epoch_nonce.copy_from_slice(&bytes[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET])",
+      "let epoch_nonce = EpochNonce::new(epoch_nonce)?".replaceAll(" ", ""),
+      "request_id.copy_from_slice(&bytes[REQUEST_ID_OFFSET..ROLE_OFFSET])",
+      "let request_id = ServiceRequestId::new(request_id)?".replaceAll(" ", ""),
+      "HelperBootstrapRole::from_wire_code(read_u16(bytes,ROLE_OFFSET))?",
+      "Ok(Self::new(epoch_nonce,request_id,role))",
+    ]) &&
+    (compactDecode.match(/require_zero_u(?:16|32)/gu) ?? []).length === 2 &&
+    compactRust(requireLength).includes(
+      "core::cmp::Ordering::Less=>Err(WireError::Truncated),core::cmp::Ordering::Equal=>Ok(()),core::cmp::Ordering::Greater=>Err(WireError::TrailingData)",
+    ) &&
+    compactRust(verifyChecksum).includes(
+      "ifcrc32c(&bytes[..CHECKSUM_OFFSET])==actual{Ok(())}else{Err(WireError::Integrity)}",
+    ) &&
+    compactRust(requireZeroU16).includes(
+      "ifread_u16(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ) &&
+    compactRust(requireZeroU32).includes(
+      "ifread_u32(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ) &&
+    hasOrderedCompactMarkers(crc32c, [
+      "letmutcrc=u32::MAX",
+      "crc^=u32::from(*byte)",
+      "for_in0..8",
+      "letlow_bit_mask=(crc&1).wrapping_neg()",
+      "crc=(crc>>1)^(CRC32C_POLYNOMIAL_REVERSED&low_bit_mask)",
+      "!crc",
+    ]) &&
+    compactCorrelation.includes(
+      "self.epoch_nonce==epoch_nonce&&self.request_id==request_id&&self.role==role",
+    ) &&
+    compactCorrelation.includes("Err(WireError::BindingMismatch)") &&
+    debug.includes('.field("epoch_nonce", &"[REDACTED]")') &&
+    debug.includes('.field("request_id", &"[REDACTED]")') &&
+    debug.includes('.field("role", &self.role)') &&
+    source.includes(
+      "neither the frame nor its checksum authenticates a peer or\n//! grants authority",
+    ) &&
+    source.includes(
+      "This value is deliberately not an authentication or authorization proof.",
+    ) &&
+    !source.includes("This frame authenticates a peer and grants authority.") &&
+    !/\b(?:HANDLE|BorrowedHandle|OwnedHandle|RawHandle|ReadFile|WriteFile|TcpStream|NamedPipe)\b/u.test(
+      rustLexicalCode(source),
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapWireTestNames) &&
+    keyAgentServiceHelperBootstrapWireTestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(source, name, 1).includes(
+          "#[test]",
+        ) && !hasVacuousRustTestEscape(tests[name]),
+    ) &&
+    compactLengthTest.includes("forlengthin0..HELPER_ADOPTION_ACK_BYTES") &&
+    compactLengthTest.includes(
+      "forlengthinHELPER_ADOPTION_ACK_BYTES+1..=with_trailing.len()",
+    ) &&
+    compactRust(tests.every_single_byte_mutation_is_rejected).includes(
+      "forindexin0..HELPER_ADOPTION_ACK_BYTES",
+    ) &&
+    compactHeaderTest.includes("invalid_magic[0]^=1") &&
+    compactHeaderTest.includes("unsupported_version[8..10]") &&
+    compactHeaderTest.includes("unknown_kind[10..12]") &&
+    compactHeaderTest.includes("nonzero_reserved[HEADER_RESERVED_OFFSET]=1") &&
+    (compactHeaderTest.match(/rewrite_checksum/gu) ?? []).length === 4 &&
+    compactBodyTest.includes(
+      "zero_epoch_nonce[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET].fill(0)",
+    ) &&
+    compactBodyTest.includes(
+      "zero_request_id[REQUEST_ID_OFFSET..ROLE_OFFSET].fill(0)",
+    ) &&
+    compactBodyTest.includes("unknown_role[ROLE_OFFSET..ROLE_RESERVED_OFFSET]") &&
+    compactBodyTest.includes("nonzero_reserved[ROLE_RESERVED_OFFSET]=1") &&
+    (compactBodyTest.match(/rewrite_checksum/gu) ?? []).length === 4 &&
+    (compactCorrelationTest.match(/Err\(WireError::BindingMismatch\)/gu) ?? [])
+      .length === 3 &&
+    tests.debug_output_redacts_correlation_values.includes("[REDACTED]") &&
+    !compactSource.includes("implstd::io::Read") &&
+    !compactSource.includes("implstd::io::Write")
+  );
+};
+
+const mutateKeyAgentServiceHelperBootstrapWire = (search, replacement) =>
+  keyAgentServiceHelperBootstrapWire.replace(search, replacement);
+const keyAgentServiceHelperBootstrapWireMutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;",
+    "pub const HELPER_ADOPTION_ACK_BYTES: usize = 71;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire("YWKHBA01", "YWKHBA02"),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "const VERSION_V1: u16 = 1;",
+    "const VERSION_V1: u16 = 2;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "const FRAME_HELPER_ADOPTION_ACK: u16 = 1;",
+    "const FRAME_HELPER_ADOPTION_ACK: u16 = 2;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "        require_zero_u32(bytes, HEADER_RESERVED_OFFSET)?;\n",
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "        require_zero_u16(bytes, ROLE_RESERVED_OFFSET)?;\n",
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "        verify_checksum(bytes)?;",
+    "        let _ = bytes;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "            Self::SecretInput => 2,",
+    "            Self::SecretInput => 3,",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    " && self.role == role {",
+    " {",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;",
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0xEDB8_8320;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    '.field("epoch_nonce", &"[REDACTED]")',
+    '.field("epoch_nonce", &self.epoch_nonce)',
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "This frame carries correlation evidence only.",
+    "This frame authenticates a peer and grants authority.",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    #[test]\n    fn recomputed_crc_cannot_make_invalid_body_fields_canonical",
+    "    fn recomputed_crc_cannot_make_invalid_body_fields_canonical",
+  ),
+];
+requireInvariant(
+  keyAgentServiceHelperBootstrapWireContract(
+    keyAgentServiceHelperBootstrapWire,
+  ) &&
+    keyAgentServiceHelperBootstrapWireMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceHelperBootstrapWire &&
+        !keyAgentServiceHelperBootstrapWireContract(probe),
+    ),
+  "key-agent-service-helper-bootstrap wire acknowledgement must remain the exact 72-byte YWKHBA01/v1/kind-1 zero-reserved epoch/request/closed-role/CRC32C correlation frame, with redacted Debug, no authentication or authority claim, exhaustive semantic tests, and effective layout/header/reserved/CRC/role/binding/redaction mutations",
+);
+
+const keyAgentServiceHelperBootstrapChildTestNames = [
+  "public_capture_signature_has_no_recoverable_error_channel",
+];
+const keyAgentServiceHelperBootstrapWindowsTestNames = [
+  "successful_adoption_has_one_exact_operation_order_and_drop_boundary",
+  "zero_signed_negative_pseudo_and_equal_words_fail_before_operations",
+  "numeric_and_object_standard_stream_aliases_fail_without_closing_candidates",
+  "original_flags_type_and_object_alias_fail_before_duplication_or_close",
+  "fresh_flags_type_source_continuity_and_pair_identity_are_required",
+  "first_candidate_close_failure_still_attempts_second_and_drops_both_owners",
+  "final_recheck_rejects_post_close_flag_or_type_drift_and_drops_owners",
+  "every_fallible_operation_prefix_rejects_without_returning_owners",
+  "partial_duplicate_failure_drops_the_first_owner_without_closing_candidates",
+];
+const hasOrderedTextMarkers = (source, markers) => {
+  let cursor = 0;
+  return markers.every((marker) => {
+    const index = source.indexOf(marker, cursor);
+    if (index === -1) return false;
+    cursor = index + marker.length;
+    return true;
+  });
+};
+const keyAgentServiceHelperBootstrapChildContract = (child, windows) => {
+  const windowsProduction = withoutBottomTestModule(windows);
+  let publicAdopted;
+  let publicCapture;
+  let publicCaptureTest;
+  let nativeAdopted;
+  let captureGate;
+  let captureWords;
+  let nativeCapture;
+  let handleWordNew;
+  let adoptCandidates;
+  let validatePair;
+  let validateNoStandardAlias;
+  let nativeDuplicate;
+  let nativeClose;
+  let windowsTests;
+  try {
+    publicAdopted = rustTopLevelLexicalItemBlock(
+      child,
+      /(?:^|\n)\s*pub\s+struct\s+AdoptedInjectedChannels\s*\{/u,
+    );
+    publicCapture = rustTopLevelFunctionBlock(
+      child,
+      "capture_and_adopt_injected_channels",
+    );
+    publicCaptureTest = rustFunctionBlockAtDepth(
+      child,
+      "public_capture_signature_has_no_recoverable_error_channel",
+      1,
+    );
+    nativeAdopted = rustTopLevelLexicalItemBlock(
+      windowsProduction,
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+AdoptedInjectedChannels\s*\{/u,
+    );
+    captureGate = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "injected_channel_capture_gate",
+    );
+    captureWords = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "capture_candidate_words",
+    );
+    nativeCapture = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "capture_and_adopt_injected_channels",
+    );
+    const handleWordImpl = rustImplItemAtDepth(
+      windowsProduction,
+      "impl HandleWord",
+      0,
+    );
+    handleWordNew = rustFunctionBlockAtDepth(handleWordImpl, "new", 1);
+    adoptCandidates = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "adopt_candidate_words",
+    );
+    validatePair = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "validate_pair",
+    );
+    validateNoStandardAlias = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "validate_no_standard_stream_alias",
+    );
+    const operationsImpl = rustImplItemAtDepth(
+      windowsProduction,
+      "impl HandleOperations for WindowsHandleOperations",
+      0,
+    );
+    nativeDuplicate = rustFunctionBlockAtDepth(
+      operationsImpl,
+      "duplicate",
+      1,
+    );
+    nativeClose = rustFunctionBlockAtDepth(
+      operationsImpl,
+      "close_candidate",
+      1,
+    );
+    windowsTests = Object.fromEntries(
+      keyAgentServiceHelperBootstrapWindowsTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(windows, name, 1),
+      ]),
+    );
+  } catch {
+    return false;
+  }
+
+  const compactChild = compactRust(child);
+  const compactPublicCapture = compactRust(publicCapture);
+  const compactWindows = compactRust(windowsProduction);
+  const compactCaptureWords = compactRust(captureWords);
+  const compactNativeCapture = compactRust(nativeCapture);
+  const compactAdopt = compactRust(adoptCandidates);
+  const compactValidatePair = compactRust(validatePair);
+  const compactValidateNoStandardAlias = compactRust(
+    validateNoStandardAlias,
+  );
+  const duplicateCalls = rustCallSites(windowsProduction, "DuplicateHandle");
+  const closeCalls = rustCallSites(windowsProduction, "CloseHandle");
+  const sensitiveUsage = rustIdentifierUsageInventory(
+    [
+      {
+        path: keyAgentServiceHelperBootstrapPaths.windows,
+        source: windowsProduction,
+      },
+    ],
+    ["DuplicateHandle", "CloseHandle"],
+  );
+  const gateSequence = [
+    '"movabs r10, {request_input_marker}"',
+    '"movabs r11, {response_output_marker}"',
+    '"int3"',
+    '"mov [rcx], r10"',
+    '"mov [rdx], r11"',
+    '"xor r10d, r10d"',
+    '"xor r11d, r11d"',
+    '"ret"',
+    "request_input_marker = const REQUEST_INPUT_MARKER",
+    "response_output_marker = const RESPONSE_OUTPUT_MARKER",
+  ];
+  return (
+    child.includes("#![deny(unsafe_code)]") &&
+    (child.match(/#\[allow\(unsafe_code\)\]\s*mod\s+windows\s*;/gu) ?? [])
+      .length === 1 &&
+    rustUnsafeKeywordCount(child) === 0 &&
+    compactRust(publicAdopted) ===
+      "pubstructAdoptedInjectedChannels{_inner:windows::AdoptedInjectedChannels,_not_send_or_sync:PhantomData<Rc<()>>,}" &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\]\s*pub\s+struct\s+AdoptedInjectedChannels\b/u.test(
+      child,
+    ) &&
+    !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+AdoptedInjectedChannels|impl\s+(?:Clone|Copy)\s+for\s+AdoptedInjectedChannels/u.test(
+      rustLexicalCode(child),
+    ) &&
+    compactPublicCapture ===
+      "pubfncapture_and_adopt_injected_channels()->AdoptedInjectedChannels{letOk(inner)=windows::capture_and_adopt_injected_channels()else{std::process::abort();};AdoptedInjectedChannels{_inner:inner,_not_send_or_sync:PhantomData,}}" &&
+    !compactPublicCapture.includes("Result<") &&
+    !/\bpub\s+(?:enum|struct|type)\s+ChildChannelAdoptionError\b/u.test(
+      rustLexicalCode(child),
+    ) &&
+    !/\bpub(?:\([^)]*\))?\s+fn\s+(?:raw|raw_handle|as_raw|handle|request_handle|response_handle)\b/u.test(
+      rustLexicalCode(child),
+    ) &&
+    !/\b(?:AsRawHandle|AsHandle|BorrowedHandle|RawHandle|Read|Write)\b/u.test(
+      rustLexicalCode(child),
+    ) &&
+    child.includes(
+      'formatter.write_str("AdoptedInjectedChannels([SEALED PIPE HANDLES])")',
+    ) &&
+    child.includes(
+      "Every capture, validation, duplication, candidate-close, and final\n/// revalidation failure aborts the child process immediately.",
+    ) &&
+    child.includes(
+      'there is no recoverable "debugger absent" result.',
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(child)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapChildTestNames) &&
+    rustFunctionOuterAttributesAtDepth(
+      child,
+      "public_capture_signature_has_no_recoverable_error_channel",
+      1,
+    ).includes("#[test]") &&
+    !hasVacuousRustTestEscape(publicCaptureTest) &&
+    compactRust(publicCaptureTest).includes(
+      "fnrequire_signature(_capture:fn()->AdoptedInjectedChannels){}",
+    ) &&
+    compactRust(publicCaptureTest).includes(
+      "require_signature(capture_and_adopt_injected_channels)",
+    ) &&
+    rustUnsafeKeywordCount(windowsProduction) === 10 &&
+    (windowsProduction.match(/#\[unsafe\(naked\)\]/gu) ?? []).length === 1 &&
+    (windowsProduction.match(
+      /\bunsafe\s+extern\s+"C"\s+fn\s+injected_channel_capture_gate\b/gu,
+    ) ?? []).length === 1 &&
+    (windowsProduction.match(/\bcore::arch::naked_asm!/gu) ?? []).length ===
+      1 &&
+    !/(?<!naked_)\basm!|\bglobal_asm!/u.test(windowsProduction) &&
+    !/#\[(?:unsafe\()?\s*(?:no_mangle|export_name|link_name|link_section)\b|\b(?:no_mangle|export_name|link_name|link_section)\s*=/u.test(
+      windowsProduction,
+    ) &&
+    hasOrderedTextMarkers(captureGate, gateSequence) &&
+    gateSequence.every(
+      (marker) => captureGate.split(marker).length - 1 === 1,
+    ) &&
+    captureGate.includes("_request_input: *mut u64") &&
+    captureGate.includes("_response_output: *mut u64") &&
+    windowsProduction.includes(
+      "const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0001;",
+    ) &&
+    windowsProduction.includes(
+      "const RESPONSE_OUTPUT_DUPLICATE_ACCESS: u32 = 0x0010_0002;",
+    ) &&
+    windowsProduction.includes("const DUPLICATE_OPTIONS_NONE: u32 = 0;") &&
+    windowsProduction.includes("const EXPECTED_HANDLE_FLAGS: u32 = 0;") &&
+    windowsProduction.includes(
+      "const EXPECTED_FILE_TYPE: u32 = FILE_TYPE_PIPE.0;",
+    ) &&
+    compactCaptureWords.includes("letmutrequest_input=0_u64") &&
+    compactCaptureWords.includes("letmutresponse_output=0_u64") &&
+    compactCaptureWords.includes(
+      "injected_channel_capture_gate(&rawmutrequest_input,&rawmutresponse_output)",
+    ) &&
+    compactCaptureWords.endsWith("[request_input,response_output]}") &&
+    (rustCallSites(captureWords, "injected_channel_capture_gate").length ===
+      1) &&
+    compactRust(nativeAdopted) ===
+      "pub(super)structAdoptedInjectedChannels{_request_input:FreshHandle,_response_output:FreshHandle,_source_access_and_direction:UnverifiedSourceAccessAndDirection,}" &&
+    compactWindows.includes("structUnverifiedSourceAccessAndDirection;") &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\]\s*struct\s+UnverifiedSourceAccessAndDirection\b/u.test(
+      windowsProduction,
+    ) &&
+    windowsProduction.includes(
+      "They do not expose the source handles'\n/// exact granted access or anonymous-pipe direction",
+    ) &&
+    !windowsProduction.includes(
+      "The source handles have exact granted access and proven pipe direction.",
+    ) &&
+    compactNativeCapture.includes(
+      "adopt_candidate_words(&mutoperations,request_input,response_output)?",
+    ) &&
+    compactNativeCapture.includes(
+      "_source_access_and_direction:UnverifiedSourceAccessAndDirection",
+    ) &&
+    compactRust(handleWordNew).includes(
+      "ifword==0||word>i64::MAXasu64{returnErr(());}Ok(Self(word))",
+    ) &&
+    hasOrderedCompactMarkers(adoptCandidates, [
+      "letrequest_input=HandleWord::new(request_input)?",
+      "letresponse_output=HandleWord::new(response_output)?",
+      "ifrequest_input==response_output{returnErr(());}",
+      "validate_pair(operations,request_input,response_output)?",
+      "letfresh_request_input=operations.duplicate(request_input,REQUEST_INPUT_DUPLICATE_ACCESS,false,DUPLICATE_OPTIONS_NONE,)?",
+      "letfresh_response_output=operations.duplicate(response_output,RESPONSE_OUTPUT_DUPLICATE_ACCESS,false,DUPLICATE_OPTIONS_NONE,)?",
+      "letfresh_request_word=fresh_request_input.word()",
+      "letfresh_response_word=fresh_response_output.word()",
+      "validate_pair(operations,fresh_request_word,fresh_response_word)?",
+      "!operations.same_object(fresh_request_word,request_input)?",
+      "!operations.same_object(fresh_response_word,response_output)?",
+      "letrequest_closed=operations.close_candidate(request_input).is_ok()",
+      "letresponse_closed=operations.close_candidate(response_output).is_ok()",
+      "if!request_closed||!response_closed{returnErr(());}",
+      "validate_pair(operations,fresh_request_word,fresh_response_word)?",
+      "Ok((fresh_request_input,fresh_response_output))",
+    ]) &&
+    (compactAdopt.match(/validate_pair\(/gu) ?? []).length === 3 &&
+    (compactAdopt.match(/operations\.duplicate\(/gu) ?? []).length === 2 &&
+    (compactAdopt.match(/operations\.close_candidate\(/gu) ?? []).length ===
+      2 &&
+    (compactAdopt.match(/operations\.same_object\(/gu) ?? []).length === 2 &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(
+      rustLexicalCode(windowsProduction),
+    ) &&
+    compactWindows.includes(
+      "constALL:[Self;3]=[Self::Input,Self::Output,Self::Error]",
+    ) &&
+    compactValidateNoStandardAlias.includes(
+      "forstreaminStandardStream::ALL",
+    ) &&
+    compactValidateNoStandardAlias.includes(
+      "request_input==standard||response_output==standard||operations.same_object(request_input,standard)?||operations.same_object(response_output,standard)?",
+    ) &&
+    compactValidatePair.includes(
+      "operations.handle_flags(request_input)?!=EXPECTED_HANDLE_FLAGS||operations.handle_flags(response_output)?!=EXPECTED_HANDLE_FLAGS",
+    ) &&
+    compactValidatePair.includes(
+      "operations.file_type(request_input)?!=EXPECTED_FILE_TYPE||operations.file_type(response_output)?!=EXPECTED_FILE_TYPE",
+    ) &&
+    compactValidatePair.includes(
+      "operations.same_object(request_input,response_output)?",
+    ) &&
+    duplicateCalls.length === 1 &&
+    JSON.stringify(duplicateCalls[0].arguments) ===
+      JSON.stringify([
+        "process",
+        "native_handle(source)?",
+        "process",
+        "&raw mut duplicate",
+        "desired_access",
+        "inherit",
+        "DUPLICATE_HANDLE_OPTIONS(options)",
+      ]) &&
+    closeCalls.length === 1 &&
+    JSON.stringify(closeCalls[0].arguments) ===
+      JSON.stringify(["native_handle(handle)?"]) &&
+    sensitiveUsage.calls.length === 2 &&
+    sensitiveUsage.aliases.length === 0 &&
+    sensitiveUsage.qualified.length === 0 &&
+    sensitiveUsage.references.length === 0 &&
+    compactRust(nativeDuplicate).includes(
+      "letmutduplicate=HANDLE::default()",
+    ) &&
+    compactRust(nativeDuplicate).includes(
+      "letprocess=GetCurrentProcess();DuplicateHandle(process,native_handle(source)?,process,&rawmutduplicate,desired_access,inherit,DUPLICATE_HANDLE_OPTIONS(options),)",
+    ) &&
+    compactRust(nativeDuplicate).includes(
+      "letowner=unsafe{OwnedHandle::from_raw_handle(duplicate.0.cast::<c_void>())}",
+    ) &&
+    compactRust(nativeClose).includes(
+      "unsafe{CloseHandle(native_handle(handle)?)}.map_err(|_|())",
+    ) &&
+    !/\bimpl\s+Drop\s+for\s+FreshHandle\b/u.test(
+      rustLexicalCode(windowsProduction),
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(windows)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapWindowsTestNames) &&
+    keyAgentServiceHelperBootstrapWindowsTestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(windows, name, 1).includes(
+          "#[test]",
+        ) && !hasVacuousRustTestEscape(windowsTests[name]),
+    ) &&
+    compactRust(
+      windowsTests.first_candidate_close_failure_still_attempts_second_and_drops_both_owners,
+    ).includes("Event::Close(REQUEST),Event::Close(RESPONSE)") &&
+    compactRust(
+      windowsTests.partial_duplicate_failure_drops_the_first_owner_without_closing_candidates,
+    ).includes("Event::DropOwner(FRESH_REQUEST)") &&
+    compactRust(
+      windowsTests.final_recheck_rejects_post_close_flag_or_type_drift_and_drops_owners,
+    ).includes("matches!(event,Event::DropOwner(_))") &&
+    compactRust(
+      windowsTests.final_recheck_rejects_post_close_flag_or_type_drift_and_drops_owners,
+    ).includes(".count(),2")
+  );
+};
+
+const keyAgentServiceHelperBootstrapChildInputs = Object.freeze({
+  child: keyAgentServiceHelperBootstrapChild,
+  windows: keyAgentServiceHelperBootstrapWindows,
+});
+const mutateKeyAgentServiceHelperBootstrapChild = (
+  field,
+  search,
+  replacement,
+) => ({
+  ...keyAgentServiceHelperBootstrapChildInputs,
+  [field]: keyAgentServiceHelperBootstrapChildInputs[field].replace(
+    search,
+    replacement,
+  ),
+});
+const mutateLastKeyAgentServiceHelperBootstrapWindows = (
+  search,
+  replacement,
+) => {
+  const index = keyAgentServiceHelperBootstrapWindows.lastIndexOf(search);
+  if (index === -1) return keyAgentServiceHelperBootstrapChildInputs;
+  return {
+    ...keyAgentServiceHelperBootstrapChildInputs,
+    windows:
+      keyAgentServiceHelperBootstrapWindows.slice(0, index) +
+      replacement +
+      keyAgentServiceHelperBootstrapWindows.slice(index + search.length),
+  };
+};
+const keyAgentServiceHelperBootstrapChildMutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "child",
+    "    let Ok(inner) = windows::capture_and_adopt_injected_channels() else {\n        std::process::abort();\n    };",
+    "    let inner = windows::capture_and_adopt_injected_channels().unwrap();",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "child",
+    "pub fn capture_and_adopt_injected_channels() -> AdoptedInjectedChannels {",
+    "pub fn capture_and_adopt_injected_channels() -> Result<AdoptedInjectedChannels, ()> {",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "child",
+    "#[cfg(test)]\nmod tests",
+    "impl AdoptedInjectedChannels { pub fn raw_handle(&self) -> usize { 1 } }\n\n#[cfg(test)]\nmod tests",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "#[cfg(test)]\nmod tests",
+    '#[unsafe(naked)]\nunsafe extern "C" fn second_capture_gate() { core::arch::naked_asm!("ret"); }\n\n#[cfg(test)]\nmod tests',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "#[cfg(test)]\nmod tests",
+    '#[allow(unsafe_code)]\nfn ordinary_asm_escape() { unsafe { core::arch::asm!("nop"); } }\n\n#[cfg(test)]\nmod tests',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "movabs r10, {request_input_marker}",',
+    '        "mov r10d, {request_input_marker:e}",',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "mov [rcx], r10",\n        "mov [rdx], r11",',
+    '        "mov [rcx], r11",\n        "mov [rdx], r10",',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "xor r11d, r11d",\n',
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "ret",\n',
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0001;",
+    "const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0000;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        false,\n        DUPLICATE_OPTIONS_NONE,",
+    "        true,\n        DUPLICATE_OPTIONS_NONE,",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "const DUPLICATE_OPTIONS_NONE: u32 = 0;",
+    "const DUPLICATE_OPTIONS_NONE: u32 = 1;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        DUPLICATE_OPTIONS_NONE,\n    )?;",
+    "        DUPLICATE_SAME_ACCESS.0,\n    )?;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    let request_closed = operations.close_candidate(request_input).is_ok();\n    let response_closed = operations.close_candidate(response_output).is_ok();\n    if !request_closed || !response_closed {",
+    "    if operations.close_candidate(request_input).is_err()\n        || operations.close_candidate(response_output).is_err()\n    {",
+  ),
+  mutateLastKeyAgentServiceHelperBootstrapWindows(
+    "    validate_pair(operations, fresh_request_word, fresh_response_word)?;",
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "They do not expose the source handles'\n/// exact granted access or anonymous-pipe direction",
+    "The source handles have exact granted access and proven pipe direction.",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        if request_input == standard\n            || response_output == standard\n",
+    "        if response_output == standard\n",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    #[test]\n    fn first_candidate_close_failure_still_attempts_second_and_drops_both_owners",
+    "    fn first_candidate_close_failure_still_attempts_second_and_drops_both_owners",
+  ),
+];
+requireInvariant(
+  keyAgentServiceHelperBootstrapChildContract(
+    keyAgentServiceHelperBootstrapChild,
+    keyAgentServiceHelperBootstrapWindows,
+  ) &&
+    keyAgentServiceHelperBootstrapChildMutationProbes.every(
+      (probe) =>
+        (probe.child !== keyAgentServiceHelperBootstrapChild ||
+          probe.windows !== keyAgentServiceHelperBootstrapWindows) &&
+        !keyAgentServiceHelperBootstrapChildContract(
+          probe.child,
+          probe.windows,
+        ),
+    ),
+  "key-agent-service-helper-bootstrap child capture must remain a process-terminal direct-return API over one private x64 naked INT3 gate, exact full-width marker/store/zero/ret assembly, safe stack capture, closed candidate validation, two exact non-inheritable access-limited duplicates, independent candidate-close attempts, final revalidation, opaque thread-bound ownership, typed unverified source-access/direction evidence, exhaustive prefix/drop tests, and effective abort/asm/access/close/raw/overclaim mutations",
+);
+const keyAgentServiceHelperBootstrapUnsafeSourceInventory =
+  rustUnsafeSourceInventory(keyAgentServiceHelperBootstrapRustFiles);
+const keyAgentServiceHelperBootstrapAuthorityTypeErasureInventory =
+  keyAgentServiceHelperBootstrapRustFiles
+    .map((file) => ({
+      path: file.path,
+      sites: rustAuthorityTypeErasureSites(file.source),
+    }))
+    .filter((file) => file.sites.length > 0);
+requireInvariant(
+  JSON.stringify(keyAgentServiceHelperBootstrapUnsafeSourceInventory) ===
+    JSON.stringify([
+      {
+        path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+        unsafeCount: 10,
+        sha256:
+          "bcae2fef4b5ab365b2bdb569e48a239f51845d87c629975788bf268f7326f05a",
+      },
+    ]) &&
+    JSON.stringify(
+      keyAgentServiceHelperBootstrapAuthorityTypeErasureInventory,
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+          sites: [".cast::<c_void>()", "as *mut"],
+        },
+      ]),
+  "helper-bootstrap unsafe and authority type-erasure inventory must remain confined to the exact reviewed Windows capture leaf",
 );
 
 const tomlTableBody = (manifest, tableName) => {
@@ -14619,7 +15848,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "d9287d6975744cb838687dafd348a781f62baa544d491413379a171819ca7836";
+  "ad130297f5b283684ae74534577c26ee4f35a8767c7f4b2e896f01ff8be0eb33";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -14642,6 +15871,7 @@ const workspaceCargoManifestPaths = [
   "crates/eip712/Cargo.toml",
   "crates/key-agent/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service-helper-bootstrap/Cargo.toml",
   "crates/key-agent-service-rpc-sys/Cargo.toml",
   "crates/key-agent-service-wire/Cargo.toml",
   "crates/native-host/Cargo.toml",
@@ -14661,7 +15891,7 @@ const workspaceCargoManifestInventory = await Promise.all(
 const approvedWorkspaceCargoManifestPins = [
   {
     path: "Cargo.toml",
-    sha256: "1290279b9088b26ff9e38387fba9ed8cc95bf0aec6b41210918c5c1cbb2d37d9",
+    sha256: "ae82bc1d65c28dc023df61fae592e1c7c722e8ab6bbf8c014686707ebaf39352",
   },
   {
     path: "crates/approval-ui/Cargo.toml",
@@ -14694,6 +15924,10 @@ const approvedWorkspaceCargoManifestPins = [
   {
     path: "crates/key-agent-service/Cargo.toml",
     sha256: "ff65268aaba1ebdd9c5253840fe89fe6e93b8347fef6a4aa73a5cde0135d4148",
+  },
+  {
+    path: "crates/key-agent-service-helper-bootstrap/Cargo.toml",
+    sha256: "6fce1c2dee7b93b9a5ca6f7de2b62b2e7ba7dd5e3bc9015703bb5c7abf97b3f5",
   },
   {
     path: "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -14735,6 +15969,71 @@ const approvedWorkspaceCargoManifestPins = [
 const cargoManifestPinsHold = (inventory) =>
   JSON.stringify(inventory.map(({ path, sha256 }) => ({ path, sha256 }))) ===
   JSON.stringify(approvedWorkspaceCargoManifestPins);
+const keyAgentServiceHelperBootstrapReachabilityContract = (
+  manifests,
+  rustFiles,
+) => {
+  const dependencyConsumers = manifests
+    .filter(
+      ({ path }) =>
+        path !== "crates/key-agent-service-helper-bootstrap/Cargo.toml",
+    )
+    .filter(({ source }) =>
+      hasDependency(source, "key-agent-service-helper-bootstrap"),
+    )
+    .map(({ path }) => path);
+  const sourceConsumers = rustFiles
+    .filter(
+      ({ path }) =>
+        !path.startsWith("crates/key-agent-service-helper-bootstrap/"),
+    )
+    .filter(({ source }) =>
+      /\bkey_agent_service_helper_bootstrap\b/u.test(
+        rustLexicalCode(source),
+      ),
+    )
+    .map(({ path }) => path);
+  return (
+    JSON.stringify(dependencyConsumers) === JSON.stringify([]) &&
+    JSON.stringify(sourceConsumers) === JSON.stringify([])
+  );
+};
+const keyAgentServiceHelperBootstrapDependencyConsumerMutation =
+  workspaceCargoManifestInventory.map((entry) =>
+    entry.path === "crates/approval-ui/Cargo.toml"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            "[dependencies]",
+            '[dependencies]\nkey-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap" }',
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapSourceConsumerMutation =
+  workspaceRustCompilationInputs.map((entry) =>
+    entry.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...entry,
+          source: `${entry.source}\nuse key_agent_service_helper_bootstrap::AdoptedInjectedChannels;\n`,
+        }
+      : entry,
+  );
+requireInvariant(
+  keyAgentServiceHelperBootstrapReachabilityContract(
+    workspaceCargoManifestInventory,
+    workspaceRustCompilationInputs,
+  ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      keyAgentServiceHelperBootstrapDependencyConsumerMutation,
+      workspaceRustCompilationInputs,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      workspaceCargoManifestInventory,
+      keyAgentServiceHelperBootstrapSourceConsumerMutation,
+    ),
+  "helper-bootstrap must have zero dependency or Rust consumers outside its own crate, including UI, platform, service, RPC, demo, and executable/release surfaces, with effective dependency and direct-source consumer mutations",
+);
 const cargoNonRustTargetMutationProbe = workspaceCargoManifestInventory.map(
   ({ path, source }) => {
     const mutated =
@@ -14777,18 +16076,38 @@ const reviewedKeyAgentDefaultDaclGateInlineCode = rustFunctionBlock(
   keyAgentChildBootstrapSource,
   "enter_key_agent_default_dacl_gate",
 );
+const reviewedHelperBootstrapCaptureGateInlineCode = rustFunctionBlock(
+  keyAgentServiceHelperBootstrapWindows,
+  "injected_channel_capture_gate",
+);
 const workspaceInlineCodeReviewInputs = workspaceRustCompilationInputs.map(
-  (file) =>
-    file.path ===
-    "crates/platform-windows/src/key_agent_child_bootstrap.rs"
-      ? {
-          ...file,
-          source: file.source.replace(
-            reviewedKeyAgentDefaultDaclGateInlineCode,
-            "",
-          ),
-        }
-      : file,
+  (file) => {
+    if (
+      file.path ===
+      "crates/platform-windows/src/key_agent_child_bootstrap.rs"
+    ) {
+      return {
+        ...file,
+        source: file.source.replace(
+          reviewedKeyAgentDefaultDaclGateInlineCode,
+          "",
+        ),
+      };
+    }
+    if (
+      file.path ===
+      "crates/key-agent-service-helper-bootstrap/src/child/windows.rs"
+    ) {
+      return {
+        ...file,
+        source: file.source.replace(
+          reviewedHelperBootstrapCaptureGateInlineCode,
+          "",
+        ),
+      };
+    }
+    return file;
+  },
 );
 const workspaceInlineCodeUsage = rustIdentifierUsageInventory(
   workspaceInlineCodeReviewInputs,
@@ -15163,6 +16482,38 @@ const platformWindowsCrateRootInventory = await trustedDirectoryEntryInventory(
 const workspaceManifest = rootManifest;
 const workspaceLock = await trustedRegularFileText("Cargo.lock");
 const workspaceLockSha256 = normalizedSourceSha256(workspaceLock);
+const keyAgentServiceHelperBootstrapLockContract = (source) => {
+  const records = cargoLockPackageRecords(source).filter(
+    (record) => record.name === "key-agent-service-helper-bootstrap",
+  );
+  return (
+    records.length === 1 &&
+    records[0].version === "0.1.0" &&
+    records[0].source === null &&
+    records[0].checksum === null &&
+    JSON.stringify(records[0].dependencies) ===
+      JSON.stringify(["key-agent-service-wire", "windows"])
+  );
+};
+const keyAgentServiceHelperBootstrapLockMutationProbes = [
+  workspaceLock.replace(
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-wire",\n "windows",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-wire",\n]',
+  ),
+  workspaceLock.replace(
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-wire",\n "windows",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-wire",\n "platform-windows",\n "windows",\n]',
+  ),
+];
+requireInvariant(
+  keyAgentServiceHelperBootstrapLockContract(workspaceLock) &&
+    keyAgentServiceHelperBootstrapLockMutationProbes.every(
+      (probe) =>
+        probe !== workspaceLock &&
+        !keyAgentServiceHelperBootstrapLockContract(probe),
+    ),
+  "Cargo.lock must contain exactly one local helper-bootstrap record with only service-wire and windows dependencies, with effective removal and dependency-expansion mutations",
+);
 const approvedKeyAgentServiceRpcSysProviderClosure = [
   {
     name: "cc",
@@ -18138,6 +19489,16 @@ const expectedDuplicateHandleInventory = [
     desiredAccess: "0",
     inheritable: "false",
     options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+    sourceProcess: "process",
+    sourceHandle: "native_handle(source)?",
+    targetProcess: "process",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess: "desired_access",
+    inheritable: "inherit",
+    options: "DUPLICATE_HANDLE_OPTIONS(options)",
   },
   {
     path: "crates/platform-windows/src/broker_channel.rs",
@@ -22866,9 +24227,12 @@ requireInvariant(
     cargoManifestPinsHold(workspaceCargoManifestInventory) &&
     !cargoManifestPinsHold(cargoNonRustTargetMutationProbe) &&
     (rootManifest.match(
+      /^\s*"crates\/key-agent-service-helper-bootstrap",\s*$/gmu,
+    ) ?? []).length === 1 &&
+    (rootManifest.match(
       /^\s*"crates\/key-agent-service-rpc-sys",\s*$/gmu,
     ) ?? []).length === 1,
-  "workspace Cargo manifests must be exact-pinned, retain only the reviewed rpc-sys build script, reject non-Rust explicit target roots, and include rpc-sys exactly once",
+  "workspace Cargo manifests must be exact-pinned, retain only the reviewed rpc-sys build script, reject non-Rust explicit target roots, and include helper-bootstrap plus rpc-sys exactly once",
 );
 requireInvariant(
   isWorkspaceBuildOutputPath(
@@ -22886,8 +24250,14 @@ requireInvariant(
   "workspace first-party Rust compilation closure must exact-pin nested auto targets while excluding only crate-root build output",
 );
 requireInvariant(
-  workspaceCompilationBindingEdges.nativeBindings.length === 0,
-  "workspace Rust compilation inputs must reject native symbol rebinding",
+  JSON.stringify(workspaceCompilationBindingEdges.nativeBindings) ===
+    JSON.stringify([
+      {
+        path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+        attribute: "#[unsafe(naked)]",
+      },
+    ]),
+  "workspace Rust compilation inputs must admit only the exact reviewed helper-bootstrap naked capture gate and reject every other native binding or source-rebinding edge",
 );
 requireInvariant(
   compilationBindingEdgeProbes.linkName.nativeBindings.length === 1 &&
@@ -22910,10 +24280,19 @@ requireInvariant(
 );
 requireInvariant(
   reviewedKeyAgentDefaultDaclGateInlineCode.includes("core::arch::asm!(") &&
+    reviewedHelperBootstrapCaptureGateInlineCode.includes(
+      "core::arch::naked_asm!(",
+    ) &&
     workspaceInlineCodeReviewInputs.some(
       (file, index) =>
         file.path ===
           "crates/platform-windows/src/key_agent_child_bootstrap.rs" &&
+        file.source !== workspaceRustCompilationInputs[index].source,
+    ) &&
+    workspaceInlineCodeReviewInputs.some(
+      (file, index) =>
+        file.path ===
+          "crates/key-agent-service-helper-bootstrap/src/child/windows.rs" &&
         file.source !== workspaceRustCompilationInputs[index].source,
     ) &&
     identifierUsageIsEmpty(workspaceInlineCodeUsage) &&
@@ -22921,7 +24300,7 @@ requireInvariant(
     inlineCodeUsageProbes.alias.tokens.global_asm.length === 1 &&
     inlineCodeUsageProbes.qualified.tokens.global_asm.length === 1 &&
     identifierUsageIsEmpty(inlineCodeUsageProbes.clean),
-  "workspace Rust compilation inputs must reject every inline machine-code escape hatch outside the separately reviewed Key Agent cooperative gate",
+  "workspace Rust compilation inputs must reject every inline machine-code escape hatch outside the separately reviewed Key Agent cooperative gate and helper-bootstrap naked capture gate",
 );
 requireInvariant(
   workspacePointerFabricationUsage.calls.length === 0 &&
@@ -33188,9 +34567,9 @@ requireInvariant(
         "zeroize.workspace=true",
       ].join("") &&
     rootManifestSha256 ===
-      "1290279b9088b26ff9e38387fba9ed8cc95bf0aec6b41210918c5c1cbb2d37d9" &&
+      "ae82bc1d65c28dc023df61fae592e1c7c722e8ab6bbf8c014686707ebaf39352" &&
     workspaceLockSha256 ===
-      "1700356f81938fb202f92f0c66f32577aa1f0785fe21f907316ec0f9f19f0ea8" &&
+      "82ddb7beec5e9f6d8801ba62ffa8054b1122041d032483513f6d74c8af38d739" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -40041,11 +41420,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "dc44b1ed6b6f36d67e94c37f2992eaaa96efd060ac9444480af3924e9c25b0aa",
+    "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "001f03b174d5f17e07c42a55aa180448d1fe8b8d47c8ef845562ec527baf6971",
+    "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -45541,7 +46920,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 30_100,
+    start + 32_200,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const initialMarkers = [
@@ -45834,9 +47213,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "dc44b1ed6b6f36d67e94c37f2992eaaa96efd060ac9444480af3924e9c25b0aa",
+  "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "001f03b174d5f17e07c42a55aa180448d1fe8b8d47c8ef845562ec527baf6971",
+  "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,

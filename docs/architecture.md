@@ -62,10 +62,49 @@ process first and then the whole Job, exits and joins the exact creator/debugger
 thread, and only then permits bounded process reap and exact-zero Job cleanup.
 The joined-thread proof is matched to the pending cleanup owner.
 
+A separate child-only Phase 1 feasibility leaf,
+`key-agent-service-helper-bootstrap`, depends on `key-agent-service-wire` and
+target-specific `windows` APIs, but not on `platform-windows`, either UI crate,
+or the service crate. Its secret-free canonical 72-byte correlation ACK codec
+is always available, but proves neither authentication nor authority. Child
+register capture and candidate adoption compile only for Windows x86_64 with
+the explicit `child-capture-feasibility-test-hook` feature and
+`debug_assertions`; no executable,
+default, or release path reaches that API. The safe wrapper is dormant and
+must not be invoked unless the authenticated parent debugger is ready to own
+the breakpoint.
+
+The leaf contains one exact 34-byte naked sequence: `movabs` loads independent
+public markers into R10 and R11, `INT3` stops the child, two register-only stores
+capture R10/R11 through RCX/RDX, two 32-bit XORs clear R10/R11, and `RET`
+returns. Adoption rejects zero, negative/invalid or pseudo, equal, standard-
+handle-aliasing, nonzero-flag, non-`FILE_TYPE_PIPE`, and same-object
+candidates. It makes fresh current-process duplicates with explicit desired
+access `0x00100001` for
+the request reader and `0x00100002` for the response writer, inheritance false,
+and options zero; compares each duplicate with its candidate for object
+continuity; and checked-closes both launcher-known candidates. The resulting
+safe state exposes no raw handle getter and performs no I/O.
+
+Every capture or adoption failure is process-terminal: the child calls
+`std::process::abort()` and exposes no failure return. No UI code can continue;
+the OS closes the child's entire handle table, and the parent must terminate and
+reap the helper Job.
+
+The source candidates' exact `GrantedAccess` and pipe direction remain
+**UNVERIFIED**. Supported Win32 APIs do not report that admission fact, and an
+explicit-rights `DuplicateHandle` result can still be stronger than the
+candidate. `NtQueryObject` is test/change-prone evidence and is deliberately
+not a runtime admission dependency. UI integration, parent-side injection,
+ACK transport, the independent second suspend, detach, signed-artifact
+preflight, and the supported-kernel matrix therefore remain later Phase 1
+**STOP-SHIP** work.
+
 Direct execution, non-Windows/default builds, and feature-enabled release
 builds remain silent exit 78. No executable or RPC operation reaches this
-creation seam, and there is still no post-create handle injection, R10/R11
-capture, wallet state, storage, network adapter, or signing transition. Required
+creation seam, and there is still no parent-side post-create handle injection or
+integrated R10/R11 capture, wallet state, storage, network adapter, or signing
+transition. Required
 privilege enablement, exact interactive window-station/desktop DACL adjustment,
 child-token query access, the actual Session-0-to-user-session call, real signed
 Broker/helpers, and the supported-kernel matrix remain Phase 1 **STOP-SHIP**

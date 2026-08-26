@@ -676,6 +676,40 @@ Pre-event cleanup therefore does not use `WaitForDebugEvent`,
 `ContinueDebugEvent`, `ResumeThread`, `DebugActiveProcessStop`, or a kill-on-exit
 opt-out.
 
+A separate child-only feasibility leaf, `key-agent-service-helper-bootstrap`,
+depends on `key-agent-service-wire` and target-specific `windows` APIs and has
+no dependency on `platform-windows`, either UI crate, or the service crate. Its
+always-available, secret-free canonical 72-byte correlation ACK codec is not an
+authentication or authority proof. The child capture/adoption API exists only
+under Windows x86_64, the explicit `child-capture-feasibility-test-hook`
+feature, and `debug_assertions`; it has no executable, default, or release
+reachability and must not be invoked
+without the authenticated parent debugger ready to handle its breakpoint.
+
+The capture primitive is one exact 34-byte naked sequence: two `movabs` marker
+loads into R10/R11, `INT3`, two stores through RCX/RDX, two 32-bit XOR clears,
+and `RET`. Candidate adoption rejects zero, negative/invalid or pseudo, equal,
+standard-handle-aliasing, nonzero-flag, non-`FILE_TYPE_PIPE`, and same-object
+values. It duplicates the candidates only within the child, with desired access
+`0x00100001` for the request reader and `0x00100002` for the response writer,
+inheritance false, and options zero; compares fresh/candidate object identity;
+and checked-closes both launcher-known candidates. The safe state has no raw
+handle getter and no I/O method.
+
+Every capture or adoption failure is process-terminal: the child calls
+`std::process::abort()` and exposes no failure return. No UI code can continue;
+the OS closes the child's entire handle table, and the parent must terminate and
+reap the helper Job.
+
+The exact source-candidate `GrantedAccess` and pipe direction remain
+**UNVERIFIED**. Supported Win32 APIs do not expose that admission fact, and an
+explicit-rights `DuplicateHandle` result may still be stronger than its source.
+`NtQueryObject` is test/change-prone and is not a runtime admission dependency.
+Consequently this leaf does not satisfy the target exact-access/direction
+requirement and adds no UI entrypoint, parent injection, ACK transport, second
+suspend, detach, or signed-artifact evidence. Those kernel and integration
+steps remain **STOP-SHIP**.
+
 None of these compile-only primitives is reachable from an RPC command or
 executable. Required privilege enablement, exact interactive desktop DACL
 access, child-token query access, an actual cross-session call, post-create

@@ -9,6 +9,7 @@ members = [
     "crates/eip712",
     "crates/key-agent",
     "crates/key-agent-service",
+    "crates/key-agent-service-helper-bootstrap",
     "crates/key-agent-service-rpc-sys",
     "crates/key-agent-service-wire",
     "crates/native-host",
