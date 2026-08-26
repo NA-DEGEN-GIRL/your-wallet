@@ -1217,9 +1217,8 @@ impl PreparedKeyAgentLpac {
         PreparedKeyAgentProfile::open_or_create()?.prepare_lpac()
     }
 
-    /// Extends the trusted two-name process context with the OS-derived user
-    /// local-data base that Windows rebases to this exact `AppContainer`'s `AC`
-    /// folder during process creation.
+    /// Extends the trusted two-name process context with the exact OS-derived
+    /// `AppContainer` local-data folder.
     pub(crate) fn environment_with_local_app_data(
         &self,
         base_environment: &[u16],
@@ -1241,17 +1240,17 @@ impl PreparedKeyAgentLpac {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(KeyAgentLpacError::Profile)?;
-        let packages_parent = packages.parent().ok_or(KeyAgentLpacError::Profile)?;
         if !local_folder_name.eq_ignore_ascii_case("AC")
             || !profile_name.eq_ignore_ascii_case(KEY_AGENT_PROFILE_V1_NAME)
             || !packages_name.eq_ignore_ascii_case("Packages")
             || !appcontainer_local_data.is_absolute()
-            || !packages_parent.is_absolute()
             || !base_environment_is_exact(base_environment)
         {
             return Err(KeyAgentLpacError::Profile);
         }
-        let local_value: Vec<u16> = packages_parent.as_os_str().encode_wide().collect();
+        // GetAppContainerFolderPath already returns this profile's exact
+        // FOLDERID_LocalAppData path; its parent is not the sandbox folder.
+        let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();
         if local_value.is_empty() || local_value.contains(&0) {
             return Err(KeyAgentLpacError::Profile);
         }
@@ -7039,12 +7038,7 @@ mod tests {
             .collect();
         let mut exact_local_app_data: Vec<u16> = "LOCALAPPDATA=".encode_utf16().collect();
         let appcontainer_local_data = appcontainer_folder(&prepared.profile_sid)?;
-        let user_local_data = appcontainer_local_data
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .ok_or(KeyAgentLpacError::Profile)?;
-        exact_local_app_data.extend(user_local_data.as_os_str().encode_wide());
+        exact_local_app_data.extend(appcontainer_local_data.as_os_str().encode_wide());
         let system_root: Vec<u16> = "SystemRoot=[ROOT]".encode_utf16().collect();
         let windir: Vec<u16> = "WINDIR=[ROOT]".encode_utf16().collect();
         assert_eq!(entries.len(), 4);

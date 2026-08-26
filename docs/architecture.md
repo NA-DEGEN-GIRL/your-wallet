@@ -22,16 +22,30 @@ rejects noncanonical lengths, kinds, reserved fields, sentinels, correlations,
 and CRC32C framing corruption. Windows identity, process identity, role, and
 trusted deadlines are deliberately absent as wire authority. The sys boundary
 compiles byte-pinned MIDL client/server stubs and a handwritten SEH shim from
-checked-in sources, fixes its outer ABI to a zero-padded 76-byte frame, preserves
-the server call binding for per-call authentication, and exposes only five
-manager failure categories. It creates no binding, endpoint, listener, security
-descriptor, or authenticated epoch. Direct execution, non-Windows/default
-builds, and feature-enabled release builds remain silent exit 78. None of these
-components owns wallet state, a live IPC endpoint, a token, helper, storage,
-network adapter, or signing transition. Restricted service identity, ncalrpc,
-client impersonation, `CreateProcessAsUserW`, interactive LPAC
-creation, post-create handle injection, R10/R11 capture, and kernel lifecycle
-evidence remain Phase 1 **STOP-SHIP** obligations.
+checked-in sources and fixes its outer ABI to a zero-padded 76-byte frame. An
+additional explicit debug feature composes that boundary into a local-only,
+packet-private authenticated status server with bounded callback permits,
+one-shot process-correlated epochs, SCM rundown, and `Unavailable` as its only
+application response. Its admission proves only a local medium-integrity,
+interactive, non-AppContainer desktop caller, not an enrolled Broker or role.
+
+Compile-only launch inputs now retain and revalidate an exact restricted service
+token for service-owned process/thread descriptors, an unnamed non-nested
+one-process Job, and fixed target-user Approval or Secret Input LPAC profiles.
+The desktop token never crosses as a handle: an auth-owned same-thread lease
+contains target impersonation and exact-once cleanup while profile creation,
+SID/folder observation, and fresh revalidation run under the shared profile
+mutex. The resulting environment binds `LOCALAPPDATA` to the authoritative
+AppContainer `...\AC` folder plus only verified `SystemRoot`/`WINDIR`. A
+five-slot startup owner binds the Job, full helper mitigation policy, zero-cap
+LPAC and AAP opt-out attributes, and restricted-child policy with fixed desktop,
+null stdio, and no handle list. Direct execution, non-Windows/default builds,
+and feature-enabled release builds remain silent exit 78. No executable or RPC
+operation consumes these launch inputs; there is still no
+`CreateProcessAsUserW`, helper process, post-create handle injection, R10/R11
+capture, wallet state, storage, network adapter, or signing transition. The
+installed restricted-service, cross-session LPAC/desktop, real Broker/helper,
+and supported-kernel matrix remain Phase 1 **STOP-SHIP** obligations.
 
 | Component | Current evidence and limitation |
 | --- | --- |
@@ -1196,8 +1210,8 @@ root and whose leaf is `System32`. That double-NUL two-name block is only the
 immutable base context. After preparing the exact role profile, every restricted
 helper and the Key Agent validates `GetAppContainerFolderPath` as an absolute
 `Packages` / exact profile-name / `AC` layout, derives the containing
-user-local-data base, and prepends it as `LOCALAPPDATA` for Windows to rebase
-inside the AppContainer. Each final environment contains exactly
+profile-specific `AC` folder, and prepends that exact returned path as
+`LOCALAPPDATA`. Each final environment contains exactly
 `LOCALAPPDATA`, `SystemRoot`, and `WINDIR`; none inherits the parent's ambient
 values or current directory. The production policy rejects directory reparses,
 path-replacement/delete/ACL rights on every ancestor, and file/subdirectory

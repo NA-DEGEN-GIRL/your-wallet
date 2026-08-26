@@ -1645,17 +1645,18 @@ mod sys {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(LaunchError::OperatingSystem)?;
-        let user_local_data = packages.parent().ok_or(LaunchError::OperatingSystem)?;
         if !local_folder_name.eq_ignore_ascii_case("AC")
             || !profile_name.eq_ignore_ascii_case(expected_profile_name)
             || !packages_name.eq_ignore_ascii_case("Packages")
-            || !user_local_data.is_absolute()
+            || !appcontainer_local_data.is_absolute()
             || !base_environment_is_exact(base_environment)
         {
             return Err(LaunchError::OperatingSystem);
         }
 
-        let local_value: Vec<u16> = user_local_data.as_os_str().encode_wide().collect();
+        // GetAppContainerFolderPath is already the profile's FOLDERID_LocalAppData
+        // path. Passing its parent would escape the profile-specific AC folder.
+        let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();
         if local_value.is_empty() || local_value.contains(&0) {
             return Err(LaunchError::OperatingSystem);
         }
@@ -3208,6 +3209,7 @@ mod tests {
     use core::mem::{offset_of, size_of};
     use core::ptr;
     use std::cell::Cell;
+    use std::ffi::OsStr;
     use std::fs::OpenOptions;
     use std::io::Read as _;
     use std::net::{Ipv4Addr, TcpListener};
@@ -4060,7 +4062,25 @@ mod tests {
         let local_app_data = entries[0]
             .strip_prefix("LOCALAPPDATA=")
             .ok_or_else(|| std::io::Error::other("LOCALAPPDATA entry is absent"))?;
-        assert!(Path::new(local_app_data).is_absolute());
+        let local_app_data = Path::new(local_app_data);
+        assert!(local_app_data.is_absolute());
+        assert_eq!(local_app_data.file_name(), Some(OsStr::new("AC")));
+        assert!(
+            local_app_data
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(OsStr::to_str)
+                .is_some_and(
+                    |name| name.eq_ignore_ascii_case("YourWallet.ApprovalFrontend.LPAC.v1")
+                )
+        );
+        assert_eq!(
+            local_app_data
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name),
+            Some(OsStr::new("Packages"))
+        );
         assert_eq!(entries[1], r"SystemRoot=C:\Windows");
         assert_eq!(entries[2], r"WINDIR=C:\Windows");
 

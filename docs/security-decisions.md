@@ -82,8 +82,8 @@ system-shared Windows root and passes a verified System32 current directory.
 Those two names form only the immutable base block. Every restricted helper and
 the Key Agent prepares its exact role profile, validates
 `GetAppContainerFolderPath` as the absolute `Packages` / profile-name / `AC`
-layout, derives the containing user-local-data base, and prepends it as
-`LOCALAPPDATA` for Windows to rebase inside the AppContainer. Each final
+layout and prepends that returned `FOLDERID_LocalAppData` path itself as
+`LOCALAPPDATA`. Each final
 environment therefore contains exactly `LOCALAPPDATA`, `SystemRoot`, and
 `WINDIR`; no child inherits the parent's ambient environment or current
 directory. Restricted helpers complete the base
@@ -616,10 +616,36 @@ the marker through created-object readback. It cannot accept the desktop launch
 token. A disjoint service-helper Job owner also proves an unnamed non-nested Job
 with exact `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, an
 `ActiveProcessLimit` of one, stable lifetime-bound creation-attribute storage,
-and bounded whole-Job termination. Neither primitive is reachable from an RPC
-command or executable, and neither calls `CreateProcessAsUserW`; one-shot launch
-consumption, target-user AppContainer preparation, the no-inheritance startup
-owner, and the real helper gate remain later STOP-SHIP work.
+and bounded whole-Job termination.
+
+The authenticated desktop token remains sealed inside RPC auth. It has no raw
+or borrowed-handle getter. Target-user profile preparation can instead obtain a
+must-use, same-thread impersonation lease whose explicit finish and drop
+fallback own the only exact-once `RevertToSelf`, residual-token check, and
+retained-client revalidation authority. The target profile guard holds that
+lease ahead of the existing process-wide profile mutex owner, so implicit and
+explicit cleanup both remove impersonation before another profile caller can
+enter. Fixed Approval and Secret Input constructors individually bookend
+`CreateAppContainerProfile`, SID derivation/equality,
+`GetAppContainerFolderPath`, and folder validation with effective-token
+rechecks. A successful newly allocated SID or path is RAII-owned before the
+post-call check. The retained profile SID must remain equal on fresh derivation,
+and the folder must remain the exact absolute
+`...\Packages\<fixed-profile>\AC` path. The minimal environment sets
+`LOCALAPPDATA` to that authoritative returned `...\AC` folder and contains only
+the verified `SystemRoot` and `WINDIR`. Its stable creation values contain zero
+capabilities and the ALL APPLICATION PACKAGES opt-out.
+
+A separate five-slot startup owner installs the lifetime-bound one-process Job,
+the existing full helper mitigation policy, the target-user security
+capabilities, the opt-out policy, and the restricted-child policy in that
+order. It fixes `winsta0\default`; title, reserved fields, and all standard
+handles are null; `STARTF_USESTDHANDLES` and a handle-list attribute are absent.
+The attribute list is destroyed before any backing Job, SID, policy, or scalar
+storage. None of these compile-only primitives is reachable from an RPC command
+or executable, and none calls `CreateProcessAsUserW`. One-shot launch
+consumption, cross-session desktop/profile evidence, post-create handle
+injection, and the real helper R10/R11 gate remain STOP-SHIP work.
 
 The service keeps at most sixteen five-second process-correlated epochs,
 removes a nonce before every expiry/identity/state check, returns only

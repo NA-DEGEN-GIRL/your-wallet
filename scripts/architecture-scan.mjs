@@ -2131,6 +2131,9 @@ const keyAgentServiceTokenFixtureDirectoryInventory = {
 const keyAgentServiceLaunchPaths = Object.freeze({
   root: "crates/platform-windows/src/key_agent_service_launch/mod.rs",
   job: "crates/platform-windows/src/key_agent_service_launch/job.rs",
+  startup: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
+  targetProfile:
+    "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
 });
 const keyAgentServiceLaunchFiles = await rustProductionSources(
   "crates/platform-windows/src/key_agent_service_launch",
@@ -2149,6 +2152,12 @@ const keyAgentServiceLaunchDirectoryInventory = {
 };
 const keyAgentServiceLpacSourceForLaunch = await text(
   "crates/platform-windows/src/key_agent_lpac.rs",
+);
+const keyAgentServiceProfileApiSourceForLaunch = await text(
+  "crates/platform-windows/src/appcontainer_profile_api.rs",
+);
+const keyAgentServiceRestrictedLauncherSourceForLaunch = await text(
+  "crates/platform-windows/src/launch.rs",
 );
 const keyAgentServiceBoundaryAdr = await text(
   "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -6239,12 +6248,16 @@ requireInvariant(
 const approvedKeyAgentServiceLaunchPaths = [
   keyAgentServiceLaunchPaths.job,
   keyAgentServiceLaunchPaths.root,
+  keyAgentServiceLaunchPaths.startup,
+  keyAgentServiceLaunchPaths.targetProfile,
 ];
 const approvedKeyAgentServiceLaunchDirectoryInventory = {
   path: "crates/platform-windows/src/key_agent_service_launch",
   entries: [
     { name: "job.rs", kind: "file" },
     { name: "mod.rs", kind: "file" },
+    { name: "startup.rs", kind: "file" },
+    { name: "target_profile.rs", kind: "file" },
   ],
 };
 const keyAgentServiceLaunchObservedApis = [
@@ -6279,7 +6292,11 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
     );
     const root = sources[keyAgentServiceLaunchPaths.root] ?? "";
     const job = sources[keyAgentServiceLaunchPaths.job] ?? "";
+    const startup = sources[keyAgentServiceLaunchPaths.startup] ?? "";
+    const targetProfile = sources[keyAgentServiceLaunchPaths.targetProfile] ?? "";
     const jobProduction = withoutBottomTestModule(job);
+    const startupProduction = withoutBottomTestModule(startup);
+    const targetProfileProduction = withoutBottomTestModule(targetProfile);
     const sysModule = rustLexicalItemBlock(jobProduction, /mod\s+sys\s*\{/u);
     const safeJob = jobProduction.replace(sysModule, "");
     const prepareJob = rustFunctionBlock(jobProduction, "prepare_job");
@@ -6336,6 +6353,14 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
       [
         { path: keyAgentServiceLaunchPaths.root, source: root },
         { path: keyAgentServiceLaunchPaths.job, source: jobProduction },
+        {
+          path: keyAgentServiceLaunchPaths.startup,
+          source: startupProduction,
+        },
+        {
+          path: keyAgentServiceLaunchPaths.targetProfile,
+          source: targetProfileProduction,
+        },
       ],
       keyAgentServiceLaunchForbiddenIdentifiers,
     );
@@ -6350,7 +6375,8 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         JSON.stringify(approvedKeyAgentServiceLaunchPaths) &&
       JSON.stringify(directory) ===
         JSON.stringify(approvedKeyAgentServiceLaunchDirectoryInventory) &&
-      compactRoot === "#![allow(dead_code)]modjob;" &&
+      compactRoot ===
+        "#![allow(dead_code)]modjob;modstartup;modtarget_profile;" &&
       rustUnsafeKeywordCount(root) === 0 &&
       job.includes("#![deny(unsafe_code)]") &&
       rustUnsafeKeywordCount(jobProduction) === 11 &&
@@ -6364,7 +6390,9 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         JSON.stringify(keyAgentServiceLaunchObservedApis) &&
       forbiddenIsEmpty &&
       !/\b(?:wallet|signing|helper|request|response|endpoint)\b/u.test(
-        rustLexicalCode(`${root}\n${jobProduction}`),
+        rustLexicalCode(
+          `${root}\n${jobProduction}\n${startupProduction}\n${targetProfileProduction}`,
+        ),
       ) &&
       compactJob.includes("constSERVICE_PROBE_PROCESS_LIMIT:u32=1;") &&
       compactJob.includes(
@@ -6583,7 +6611,527 @@ requireInvariant(
           probe.platformLib !== keyAgentServiceLaunchInputs.platformLib) &&
         !keyAgentServiceLaunchContract(probe),
     ),
-  "the debug-only service launch primitive must remain an exact private two-file module containing only one unnamed non-nested one-process Job with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no process creation/handle duplication/RPC command, ignored live evidence, and effective mutation probes",
+  "the debug-only service launch primitive must remain an exact private four-file module whose Job is one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no process creation/handle duplication/RPC command, ignored live evidence, and effective mutation probes",
+);
+
+const keyAgentServiceTargetProfileTestNames = [
+  "create_success_is_fully_bookended_and_releases_each_sid_once",
+  "already_existing_profile_skips_created_sid_equality",
+  "created_and_derived_sid_mismatch_fails_and_frees_both_once",
+  "every_observation_failure_has_the_exact_completed_bookend_prefix",
+  "filesystem_rejection_occurs_after_its_complete_bookend",
+  "derive_only_fresh_observation_has_no_create_or_equality_call",
+  "fresh_revalidation_rejects_wrong_sid_folder_and_environment",
+  "stable_attribute_backing_is_exact_zero_capability_aap_opt_out",
+  "fixed_profiles_are_distinct_and_versioned",
+  "environment_is_exact_and_target_profile_bound",
+  "environment_rejects_shape_and_base_mutations",
+  "errors_are_data_free_in_debug",
+];
+const keyAgentServiceTargetProfileObservedApis = [
+  { api: "CreateAppContainerProfile", count: 1 },
+  { api: "DeriveAppContainerSidFromAppContainerName", count: 1 },
+  { api: "EqualSid", count: 1 },
+  { api: "GetAppContainerFolderPath", count: 1 },
+  { api: "ConvertSidToStringSidW", count: 1 },
+  { api: "IsValidSid", count: 1 },
+  { api: "FreeSid", count: 1 },
+  { api: "LocalFree", count: 1 },
+  { api: "CoTaskMemFree", count: 1 },
+  { api: "UpdateProcThreadAttribute", count: 1 },
+];
+const keyAgentServiceTargetProfileContract = (source) => {
+  try {
+    const production = withoutBottomTestModule(source);
+    const sysModule = rustLexicalItemBlock(production, /mod\s+sys\s*\{/u);
+    const safeSource = production.replace(sysModule, "");
+    const preparedImpl = rustImplItems(production).find((item) =>
+      item.header.includes("PreparedTargetUserLpac"),
+    )?.source;
+    if (preparedImpl === undefined) return false;
+    const prepare = rustFunctionBlock(preparedImpl, "prepare");
+    const revalidate = rustFunctionBlock(preparedImpl, "revalidate");
+    const observe = rustFunctionBlock(production, "observe_profile");
+    const observeUnderGuard = rustFunctionBlock(
+      production,
+      "observe_profile_under_guard",
+    );
+    const bookended = rustFunctionBlock(production, "bookended");
+    const fresh = rustFunctionBlock(production, "verify_fresh_observation");
+    const environment = rustFunctionBlock(production, "environment_for_folder");
+    const stable = rustFunctionBlock(
+      production,
+      "stable_attribute_backing_is_exact",
+    );
+    const observedApis = keyAgentServiceTargetProfileObservedApis.map(
+      ({ api }) => ({ api, count: rustCallSites(sysModule, api).length }),
+    );
+    const compactProduction = compactRust(production);
+    return (
+      production.includes("#![deny(unsafe_code)]") &&
+      sysModule.includes("#![allow(unsafe_code)]") &&
+      rustUnsafeKeywordCount(safeSource) === 4 &&
+      JSON.stringify(observedApis) ===
+        JSON.stringify(keyAgentServiceTargetProfileObservedApis) &&
+      !rustLexicalCode(production).includes("DeleteAppContainerProfile") &&
+      production.includes(
+        'const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";',
+      ) &&
+      production.includes(
+        'const SECRET_INPUT_PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.v1";',
+      ) &&
+      production.includes("const CAPABILITY_COUNT: u32 = 0;") &&
+      production.includes("const MAX_ENVIRONMENT_UNITS: usize = 32_767;") &&
+      compactProduction.includes(
+        "pub(super)structPreparedTargetUserLpac<'client>{client:&'clientAuthenticatedRpcClient,metadata:ProfileMetadata,environment:Box<[u16]>,profile_folder:PathBuf,security_capabilities:Box<SECURITY_CAPABILITIES>,all_application_packages_policy:Box<u32>,profile_sid:OwnedAppContainerSid,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+      ) &&
+      hasOrderedCompactMarkers(preparedImpl, [
+        "pub(super)fnprepare_approval(",
+        "client:&'clientAuthenticatedRpcClient",
+        "context:&RestrictedProcessContext",
+        "Self::prepare(client,context,APPROVAL_PROFILE)",
+        "pub(super)fnprepare_secret_input(",
+        "client:&'clientAuthenticatedRpcClient",
+        "context:&RestrictedProcessContext",
+        "Self::prepare(client,context,SECRET_INPUT_PROFILE)",
+      ]) &&
+      hasOrderedCompactMarkers(prepare, [
+        "context.recheck_thread()",
+        "observe_profile(client,metadata,ProfileObservation::CreateOrOpen)?",
+        "context.recheck_thread()",
+        "environment_for_folder(&observed.folder,metadata.name,context.environment())?",
+        "Capabilities:ptr::null_mut()",
+        "CapabilityCount:CAPABILITY_COUNT",
+        "Reserved:0",
+        "all_application_packages_policy:Box::new(sys::all_application_packages_opt_out())",
+        "prepared.verify_stable_attributes()?",
+      ]) &&
+      hasOrderedCompactMarkers(revalidate, [
+        "context.recheck_thread()",
+        "self.client.revalidate()",
+        "observe_profile(self.client,self.metadata,ProfileObservation::DeriveOnly)?",
+        "verify_fresh_observation",
+        "self.verify_stable_attributes()?",
+        "context.recheck_thread()",
+      ]) &&
+      hasOrderedCompactMarkers(observe, [
+        "acquire_target_appcontainer_profile_api(client)",
+        "observe_profile_under_guard(&guard,&WindowsProfileObservationOps,metadata,mode)",
+        "guard.finish()",
+        "match(observed,finished)",
+        "(Ok(observed),Ok(()))=>Ok(observed)",
+        "(Err(error),_)|(Ok(_),Err(error))=>Err(error)",
+      ]) &&
+      hasOrderedCompactMarkers(observeUnderGuard, [
+        "ProfileObservation::CreateOrOpen",
+        "bookended(guard,||ops.create_profile(metadata))?",
+        "CreateProfileOutcome::Created(created)",
+        "derive_profile_under_guard(guard,ops,metadata.name)?",
+        "bookended(guard,||ops.equal_sid(&created,&derived))?",
+        "if!same_sid",
+        "CreateProfileOutcome::AlreadyExists",
+        "ProfileObservation::DeriveOnly",
+        "bookended(guard,||ops.appcontainer_folder(&sid))?",
+        "bookended(guard,||ops.validate_profile_folder(&folder))?",
+        "if!folder_is_valid",
+      ]) &&
+      hasOrderedCompactMarkers(bookended, [
+        "guard.recheck_target()?",
+        "letresult=call()",
+        "guard.recheck_target()?",
+        "result",
+      ]) &&
+      hasOrderedCompactMarkers(fresh, [
+        "ops.equal_sid(retained_sid,&observed.sid)?",
+        "retained_folder!=observed.folder",
+        "environment_for_folder(&observed.folder,metadata.name,base_environment)?",
+        "retained_environment!=expected.as_ref()",
+      ]) &&
+      hasOrderedCompactMarkers(
+        environment,
+        [
+          "appcontainer_local_data.file_name()",
+          "appcontainer_local_data.parent()",
+          "profile_folder.file_name()",
+          "profile_folder.parent()",
+          "packages.file_name()",
+          "local_folder_name.eq_ignore_ascii_case(\"AC\")",
+          "profile_name.eq_ignore_ascii_case(expected_profile_name)",
+          "packages_name.eq_ignore_ascii_case(\"Packages\")",
+          "appcontainer_local_data.is_absolute()",
+          "base_environment_is_exact(base_environment)",
+          "appcontainer_local_data.as_os_str().encode_wide().collect()",
+          "environment.extend(\"LOCALAPPDATA=\".encode_utf16())",
+          "environment.extend_from_slice(&local_value)",
+          "environment.extend_from_slice(base_environment)",
+          "environment.len()>MAX_ENVIRONMENT_UNITS",
+          "environment.ends_with(&[0,0])",
+        ].map(compactRust),
+      ) &&
+      environment.includes(
+        '!local_folder_name.eq_ignore_ascii_case("AC")',
+      ) &&
+      environment.includes(
+        '!profile_name.eq_ignore_ascii_case(expected_profile_name)',
+      ) &&
+      environment.includes(
+        '!packages_name.eq_ignore_ascii_case("Packages")',
+      ) &&
+      compactRust(stable).includes(
+        "capabilities.AppContainerSid==expected_sid&&capabilities.Capabilities.is_null()&&capabilities.CapabilityCount==CAPABILITY_COUNT&&capabilities.Reserved==0&&policy==sys::all_application_packages_opt_out()",
+      ) &&
+      compactProduction.includes(
+        "pub(super)structPreparedTargetLpacAttributes<'owner>{security_capabilities:&'ownerSECURITY_CAPABILITIES,all_application_packages_policy:&'owneru32,_owner:PhantomData<&'owner()>,}",
+      ) &&
+      production.includes(
+        'formatter.write_str("PreparedTargetUserLpac([REDACTED])")',
+      ) &&
+      production.includes(
+        'formatter.write_str("PreparedTargetLpacAttributes([REDACTED])")',
+      ) &&
+      JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+        JSON.stringify(keyAgentServiceTargetProfileTestNames) &&
+      source.includes("const CREATED_TRACE: [&str; 15]") &&
+      source.includes("const ALREADY_EXISTS_TRACE: [&str; 12]") &&
+      source.includes("const DERIVE_ONLY_TRACE: [&str; 9]")
+    );
+  } catch {
+    return false;
+  }
+};
+
+const keyAgentServiceStartupTestNames = [
+  "exact_five_attributes_are_installed_in_order_without_a_handle_list",
+  "every_partial_install_failure_deletes_the_initialized_list_once",
+  "startup_prefix_has_exact_desktop_size_and_null_stdio",
+  "mitigation_and_child_policies_match_the_existing_launch_contract",
+  "owner_is_move_only_and_thread_bound",
+  "errors_and_owner_debug_are_data_free",
+];
+const keyAgentServiceMitigationDeclarations = [
+  "const MITIGATION_DEP_ENABLE: u64 = 1;",
+  "const MITIGATION_SEHOP_ENABLE: u64 = 1 << 2;",
+  "const MITIGATION_FORCE_RELOCATE_IMAGES_ALWAYS_ON: u64 = 1 << 8;",
+  "const MITIGATION_HEAP_TERMINATE_ALWAYS_ON: u64 = 1 << 12;",
+  "const MITIGATION_BOTTOM_UP_ASLR_ALWAYS_ON: u64 = 1 << 16;",
+  "const MITIGATION_HIGH_ENTROPY_ASLR_ALWAYS_ON: u64 = 1 << 20;",
+  "const MITIGATION_STRICT_HANDLE_CHECKS_ALWAYS_ON: u64 = 1 << 24;",
+  "const MITIGATION_EXTENSION_POINT_DISABLE_ALWAYS_ON: u64 = 1 << 32;",
+  "const MITIGATION_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON: u64 = 1 << 36;",
+  "const MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON: u64 = 1 << 44;",
+  "const MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON: u64 = 1 << 52;",
+  "const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON: u64 = 1 << 56;",
+  "const MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON: u64 = 1 << 60;",
+];
+const keyAgentServiceStartupContract = ({ source, restrictedLauncher }) => {
+  try {
+    const production = withoutBottomTestModule(source);
+    const sysModule = rustLexicalItemBlock(production, /mod\s+sys\s*\{/u);
+    const safeSource = production.replace(sysModule, "");
+    const startupImpl = rustImplItems(production).find((item) =>
+      item.header.includes("ServiceProbeStartup<'job, 'lpac, 'client>"),
+    )?.source;
+    const listDrop = rustImplItems(production).find((item) =>
+      item.header.includes("Drop for InitializedAttributeList"),
+    )?.source;
+    if (startupImpl === undefined || listDrop === undefined) return false;
+    const prepare = rustFunctionBlock(startupImpl, "prepare");
+    const view = rustFunctionBlock(startupImpl, "process_creation_view");
+    const revalidate = rustFunctionBlock(startupImpl, "revalidate");
+    const install = rustFunctionBlock(production, "install_exact_attributes");
+    const build = rustFunctionBlock(production, "build_startup");
+    const layout = rustFunctionBlock(production, "startup_layout_is_exact");
+    const initialize = rustFunctionBlock(sysModule, "initialize_attribute_list");
+    const update = rustFunctionBlock(sysModule, "update_scalar");
+    const compactProduction = compactRust(production);
+    const lexicalProduction = rustLexicalCode(production);
+    const mitigationInitializer =
+      production.match(
+        /const\s+SERVICE_PROBE_MITIGATION_POLICY\s*:\s*u64\s*=([\s\S]*?);/u,
+      )?.[1] ?? "";
+    return (
+      production.includes("#![deny(unsafe_code)]") &&
+      sysModule.includes("#![allow(unsafe_code)]") &&
+      rustUnsafeKeywordCount(safeSource) === 0 &&
+      production.includes("const ATTRIBUTE_COUNT: u32 = 5;") &&
+      production.includes('const DESKTOP_NAME: &str = r"winsta0\\default";') &&
+      hasOrderedCompactMarkers(install, [
+        "installer.install_job()?",
+        "installer.install_mitigation()?",
+        "installer.install_security_capabilities()?",
+        "installer.install_all_application_packages_policy()?",
+        "installer.install_child_process_policy()",
+      ]) &&
+      compactProduction.includes(
+        "constSERVICE_PROBE_MITIGATION_POLICY:u64=MITIGATION_DEP_ENABLE|MITIGATION_SEHOP_ENABLE|MITIGATION_FORCE_RELOCATE_IMAGES_ALWAYS_ON|MITIGATION_HEAP_TERMINATE_ALWAYS_ON|MITIGATION_BOTTOM_UP_ASLR_ALWAYS_ON|MITIGATION_HIGH_ENTROPY_ASLR_ALWAYS_ON|MITIGATION_STRICT_HANDLE_CHECKS_ALWAYS_ON|MITIGATION_EXTENSION_POINT_DISABLE_ALWAYS_ON|MITIGATION_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON|MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON|MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON|MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON|MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON;",
+      ) &&
+      restrictedLauncher.includes(
+        "const HELPER_MITIGATION_POLICY: u64 = MITIGATION_DEP_ENABLE",
+      ) &&
+      keyAgentServiceMitigationDeclarations.every(
+        (declaration) =>
+          production.includes(declaration) &&
+          restrictedLauncher.includes(declaration),
+      ) &&
+      [
+        "MITIGATION_DEP_ENABLE",
+        "MITIGATION_SEHOP_ENABLE",
+        "MITIGATION_FORCE_RELOCATE_IMAGES_ALWAYS_ON",
+        "MITIGATION_HEAP_TERMINATE_ALWAYS_ON",
+        "MITIGATION_BOTTOM_UP_ASLR_ALWAYS_ON",
+        "MITIGATION_HIGH_ENTROPY_ASLR_ALWAYS_ON",
+        "MITIGATION_STRICT_HANDLE_CHECKS_ALWAYS_ON",
+        "MITIGATION_EXTENSION_POINT_DISABLE_ALWAYS_ON",
+        "MITIGATION_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON",
+        "MITIGATION_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON",
+        "MITIGATION_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON",
+        "MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON",
+        "MITIGATION_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON",
+      ].every(
+        (name) =>
+          keyAgentServiceLiteralCount(
+            rustLexicalCode(mitigationInitializer),
+            name,
+          ) === 1 && restrictedLauncher.includes(name),
+      ) &&
+      production.includes(
+        "Box::new(PROCESS_CREATION_CHILD_PROCESS_RESTRICTED)",
+      ) &&
+      compactProduction.includes(
+        "pub(super)structServiceProbeStartup<'job,'lpac,'client>{attribute_list:InitializedAttributeList<WindowsAttributeListDeleter>,startup:Box<STARTUPINFOEXW>,job_attribute:ServiceProbeJobAttribute<'job>,lpac_attributes:PreparedTargetLpacAttributes<'lpac>,mitigation:Box<u64>,child_process_policy:Box<u32>,desktop:Box<[u16]>,job:&'jobServiceProbeJob,lpac:&'lpacPreparedTargetUserLpac<'client>,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+      ) &&
+      compactProduction.includes(
+        "pub(super)structServiceProbeStartupView<'startup>{pointer:*constSTARTUPINFOW,_owner:PhantomData<&'startupSTARTUPINFOEXW>,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+      ) &&
+      !/#\[derive\([^)]*(?:Clone|Copy)[^)]*\)\]\s*pub\(super\)\s+struct\s+ServiceProbeStartupView/u.test(
+        production,
+      ) &&
+      !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+ServiceProbeStartupView/u.test(
+        lexicalProduction,
+      ) &&
+      !/fn\s+startup_info\b/u.test(lexicalProduction) &&
+      !/->\s*&\s*STARTUPINFOW\b/u.test(lexicalProduction) &&
+      compactProduction.includes(
+        "pub(super)constfnas_raw(&self)->*constSTARTUPINFOW{self.pointer}",
+      ) &&
+      hasOrderedCompactMarkers(prepare, [
+        "job.creation_attribute()",
+        "lpac.creation_attributes()",
+        "Box::new(SERVICE_PROBE_MITIGATION_POLICY)",
+        "Box::new(PROCESS_CREATION_CHILD_PROCESS_RESTRICTED)",
+        "DESKTOP_NAME.encode_utf16()",
+        "InitializedAttributeList::initialize()?",
+        "install_and_retain(attribute_list,&mutinstaller)?",
+        "build_startup(attribute_list.pointer(),&mutdesktop)?",
+        "letprepared=Self",
+        "prepared.verify_static_layout()?",
+      ]) &&
+      compactRust(view).includes(
+        "ServiceProbeStartupView{pointer:core::ptr::from_ref(&self.startup.StartupInfo),_owner:PhantomData,_thread_bound:PhantomData,}",
+      ) &&
+      hasOrderedCompactMarkers(revalidate, [
+        "self.job.recheck_non_nested()",
+        "self.lpac.revalidate(context)",
+        "self.verify_static_layout()",
+      ]) &&
+      hasOrderedCompactMarkers(build, [
+        "Box::new(STARTUPINFOEXW::default())",
+        "size_of::<STARTUPINFOEXW>()",
+        "startup.StartupInfo.lpDesktop=PWSTR(desktop.as_mut_ptr())",
+        "startup.lpAttributeList=attribute_list",
+      ]) &&
+      hasOrderedCompactMarkers(layout, [
+        "desktop==expected_desktop",
+        "info.lpDesktop.0==desktop.as_ptr().cast_mut()",
+        "startup.lpAttributeList.0==attribute_list.0",
+        "info.lpReserved.0.is_null()",
+        "info.lpTitle.0.is_null()",
+        "info.dwFlags.0==0",
+        "info.hStdInput.0.is_null()",
+        "info.hStdOutput.0.is_null()",
+        "info.hStdError.0.is_null()",
+      ]) &&
+      compactRust(rustFunctionBlock(listDrop, "drop")).includes(
+        "self.deleter.delete(self.pointer)",
+      ) &&
+      hasOrderedCompactMarkers(initialize, [
+        "pointer.0.is_null()",
+        "attribute_count!=ATTRIBUTE_COUNT",
+        "bytes==0",
+        "InitializeProcThreadAttributeList(Some(pointer),attribute_count,None,&rawmutbytes)",
+      ]) &&
+      compactRust(update).includes("UpdateProcThreadAttribute(") &&
+      rustCallSites(sysModule, "InitializeProcThreadAttributeList").length === 2 &&
+      rustCallSites(sysModule, "DeleteProcThreadAttributeList").length === 1 &&
+      rustCallSites(sysModule, "UpdateProcThreadAttribute").length === 1 &&
+      !lexicalProduction.includes("PROC_THREAD_ATTRIBUTE_HANDLE_LIST") &&
+      !/\b(?:CreateProcess|CreateProcessAsUserW|CreateProcessW|DuplicateHandle)\b/u.test(
+        lexicalProduction,
+      ) &&
+      JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+        JSON.stringify(keyAgentServiceStartupTestNames) &&
+      source.includes(
+        "assert_eq!(SERVICE_PROBE_MITIGATION_POLICY, 0x1110_1011_0111_1105);",
+      ) &&
+      source.includes(
+        "assert_eq!(PROCESS_CREATION_CHILD_PROCESS_RESTRICTED, 1);",
+      ) &&
+      source.includes('formatter.write_str("ServiceProbeStartup([REDACTED])")') &&
+      source.includes(
+        'formatter.write_str("ServiceProbeStartupView([REDACTED])")',
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+
+const keyAgentServiceTargetProfileSource =
+  keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.targetProfile];
+const keyAgentServiceTargetProfileMutations = [
+  [
+    'const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";',
+    'const APPROVAL_PROFILE_V1_NAME: &str = "YourWallet.Dynamic.LPAC.v1";',
+  ],
+  [
+    'const SECRET_INPUT_PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.v1";',
+    'const SECRET_INPUT_PROFILE_V1_NAME: &str = "YourWallet.ApprovalFrontend.LPAC.v1";',
+  ],
+  ["const CAPABILITY_COUNT: u32 = 0;", "const CAPABILITY_COUNT: u32 = 1;"],
+  [
+    "observe_profile(client, metadata, ProfileObservation::CreateOrOpen)?",
+    "observe_profile(client, metadata, ProfileObservation::DeriveOnly)?",
+  ],
+  [
+    "    let finished = guard\n        .finish()\n        .map_err(|_| TargetUserLpacError::Authentication);",
+    "    let finished = Ok(());",
+  ],
+  [
+    "    let result = call();\n    guard.recheck_target()?;\n    result",
+    "    call()",
+  ],
+  ["                    if !same_sid {", "                    if false {"],
+  ["    if !folder_is_valid {", "    if false {"],
+  [
+    '.eq_ignore_ascii_case("AC")',
+    '.eq_ignore_ascii_case("LocalState")',
+  ],
+  [
+    "let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();",
+    "let local_value: Vec<u16> = packages.as_os_str().encode_wide().collect();",
+  ],
+  [
+    "        && policy == sys::all_application_packages_opt_out()",
+    "        && policy == 0",
+  ],
+  ["#![deny(unsafe_code)]", "#![allow(unsafe_code)]"],
+  [
+    "fn environment_is_exact_and_target_profile_bound()",
+    "fn environment_is_not_exact_and_target_profile_bound()",
+  ],
+].map(([search, replacement]) =>
+  keyAgentServiceTargetProfileSource.replace(search, replacement),
+);
+requireInvariant(
+  keyAgentServiceTargetProfileContract(keyAgentServiceTargetProfileSource) &&
+    keyAgentServiceTargetProfileMutations.every(
+      (probe) =>
+        probe !== keyAgentServiceTargetProfileSource &&
+        !keyAgentServiceTargetProfileContract(probe),
+    ),
+  "the target-user LPAC fixture must expose only fixed Approval and Secret Input profiles, create/derive/equal/folder/filesystem-observe each profile under complete target-identity bookends and the shared coordinator, retain exact AC LOCALAPPDATA plus only the fixed base environment, install zero capabilities with AAP opt-out from stable lifetime-bound storage, revalidate fresh SID/folder/environment state, keep native ownership and unsafe calls confined, and reject every effective mutation",
+);
+
+const keyAgentServiceStartupInputs = Object.freeze({
+  source: keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.startup],
+  restrictedLauncher: keyAgentServiceRestrictedLauncherSourceForLaunch,
+});
+const mutateKeyAgentServiceStartup = (field, search, replacement) => ({
+  ...keyAgentServiceStartupInputs,
+  [field]: keyAgentServiceStartupInputs[field].replace(search, replacement),
+});
+const keyAgentServiceStartupMutationProbes = [
+  mutateKeyAgentServiceStartup(
+    "source",
+    "const ATTRIBUTE_COUNT: u32 = 5;",
+    "const ATTRIBUTE_COUNT: u32 = 4;",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    'const DESKTOP_NAME: &str = r"winsta0\\default";',
+    'const DESKTOP_NAME: &str = r"winsta0\\other";',
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "    installer.install_job()?;\n    installer.install_mitigation()?;",
+    "    installer.install_mitigation()?;\n    installer.install_job()?;",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "    | MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON",
+    "    | 0",
+  ),
+  mutateKeyAgentServiceStartup(
+    "restrictedLauncher",
+    "const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON: u64 = 1 << 56;",
+    "const MITIGATION_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON: u64 = 0;",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "Box::new(PROCESS_CREATION_CHILD_PROCESS_RESTRICTED)",
+    "Box::new(0)",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "    attribute_list: InitializedAttributeList<WindowsAttributeListDeleter>,\n    startup: Box<STARTUPINFOEXW>,",
+    "    startup: Box<STARTUPINFOEXW>,\n    attribute_list: InitializedAttributeList<WindowsAttributeListDeleter>,",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "pub(super) struct ServiceProbeStartupView<'startup> {",
+    "#[derive(Clone, Copy)]\npub(super) struct ServiceProbeStartupView<'startup> {",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "pub(super) const fn as_raw(&self) -> *const STARTUPINFOW",
+    "pub(super) const fn startup_info(&self) -> &STARTUPINFOW",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "        self.deleter.delete(self.pointer);",
+    "        let _ = self.pointer;",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY",
+    "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "        && info.dwFlags.0 == 0",
+    "        && info.dwFlags.0 != 0",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "mod tests {",
+    "fn hidden_create() { let _ = CreateProcessAsUserW; }\nmod tests {",
+  ),
+  mutateKeyAgentServiceStartup(
+    "source",
+    "fn owner_is_move_only_and_thread_bound()",
+    "fn owner_is_copyable_and_thread_bound()",
+  ),
+];
+requireInvariant(
+  keyAgentServiceStartupContract(keyAgentServiceStartupInputs) &&
+    keyAgentServiceStartupMutationProbes.every(
+      (probe) =>
+        (probe.source !== keyAgentServiceStartupInputs.source ||
+          probe.restrictedLauncher !==
+            keyAgentServiceStartupInputs.restrictedLauncher) &&
+        !keyAgentServiceStartupContract(probe),
+    ),
+  "the service probe startup owner must retain a five-slot list in exact Job/mitigation/security-capabilities/AAP-opt-out/child-policy order, match the existing mitigation policy, forbid child creation and inherited handle lists, retain a fixed desktop with null standard handles, delete partial and complete lists exactly once, expose only a move-only lifetime-bound raw-prefix view, perform no process creation, and reject every effective mutation",
 );
 
 const keyAgentServiceRpcFixturePaths = Object.freeze({
@@ -6844,7 +7392,10 @@ const approvedKeyAgentServiceRpcRuntimeCallPaths = [
   },
   {
     api: "RaiseFailFastException",
-    paths: [keyAgentServiceRpcFixturePaths.authSys],
+    paths: [
+      keyAgentServiceRpcFixturePaths.authSys,
+      keyAgentServiceRpcFixturePaths.authSys,
+    ],
   },
 ];
 const keyAgentServiceRpcLifecycleTestNames = [
@@ -7476,6 +8027,7 @@ requireInvariant(
 );
 
 const keyAgentServiceRpcAuthTestNames = [
+  "desktop_impersonation_authority_is_thread_bound_move_only",
   "approved_call_runs_the_complete_order_and_reverts_before_revalidation",
   "callback_authenticates_independently_without_minting_launch_authority",
   "every_call_attribute_is_fail_closed_before_authentication",
@@ -7488,18 +8040,25 @@ const keyAgentServiceRpcAuthTestNames = [
   "duplicated_primary_must_match_both_effective_client_tokens",
   "successful_proof_retains_one_move_only_primary_until_drop",
   "token_policy_rejects_each_forbidden_property",
-  "elevation_and_filtering_must_match_across_effective_tokens",
+  "exact_identity_facts_must_match_across_effective_tokens",
+  "effective_desktop_thread_revalidation_accepts_exact_or_delegation_level",
+  "effective_desktop_thread_revalidation_rejects_every_changed_fact",
+  "missing_or_unobservable_effective_thread_token_fails_closed",
+  "stale_retained_proof_fails_before_effective_thread_observation",
   "revert_failure_or_thread_change_fail_fast_after_one_exact_revert",
   "residual_or_unobservable_thread_token_fail_fasts_on_success_and_error_paths",
   "unobservable_preclean_state_fails_before_open_or_impersonation",
   "retained_process_revalidation_and_exact_match_are_fail_closed",
   "debug_is_data_free",
+  "desktop_impersonation_lease_rechecks_and_reverts_exactly_once",
+  "desktop_impersonation_lease_drop_is_exact_once_fallback",
   "null_callback_context_fails_before_any_rpc_query",
 ];
 const keyAgentServiceRpcAuthSysTestNames = [
   "desktop_primary_token_is_move_only_send_and_not_sync",
   "desktop_primary_token_debug_is_data_free",
   "desktop_primary_token_rights_are_exactly_create_process_as_user_minimum",
+  "effective_thread_level_accepts_impersonation_or_delegation_only",
   "integrity_sid_parser_requires_mandatory_authority_and_exact_shape",
   "exact_token_booleans_and_group_bounds_fail_closed",
   "token_restriction_widths_are_closed_and_canonical",
@@ -7542,10 +8101,18 @@ const keyAgentServiceRpcAuthContract = ({ sources }) => {
       "validate_authentication",
     );
     const validateToken = rustFunctionBlock(auth, "validate_token");
+    const satisfiesDesktopTokenPolicy = rustFunctionBlock(
+      auth,
+      "satisfies_desktop_token_policy",
+    );
     const sameTokenIdentity = rustFunctionBlock(auth, "same_token_identity");
     const samePrimaryToken = rustFunctionBlock(auth, "same_primary_token");
     const revalidateWith = rustFunctionBlock(auth, "revalidate_with");
-    const revertExact = rustFunctionBlock(auth, "revert_exact");
+    const guardImpl = rustImplItems(auth).find(
+      (item) =>
+        item.header.includes("ImpersonationGuard<'ops, O>") &&
+        !item.header.includes("Drop for"),
+    )?.source;
     const guardDrop = rustImplItems(auth).find((item) =>
       item.header.includes("Drop for ImpersonationGuard"),
     )?.source;
@@ -7586,8 +8153,9 @@ const keyAgentServiceRpcAuthContract = ({ sources }) => {
       "initialized_bytes",
     );
     const tokenInformation = rustFunctionBlock(authSys, "token_information");
-    const failFast = rustFunctionBlock(authSys, "fail_fast");
-    if (guardDrop === undefined) return false;
+    const failFast = rustTopLevelFunctionBlock(authSys, "fail_fast");
+    if (guardImpl === undefined || guardDrop === undefined) return false;
+    const revertExact = rustFunctionBlock(guardImpl, "revert_exact");
     const guardDropFunction = rustFunctionBlock(guardDrop, "drop");
     const authenticateWithCompact = compactRust(authenticateWith);
     const authenticateCallbackWithCompact = compactRust(authenticateCallbackWith);
@@ -7595,6 +8163,9 @@ const keyAgentServiceRpcAuthContract = ({ sources }) => {
     const revalidateClientProcessCompact = compactRust(revalidateClientProcess);
     const validateCallCompact = compactRust(validateCall);
     const validateTokenCompact = compactRust(validateToken);
+    const satisfiesDesktopTokenPolicyCompact = compactRust(
+      satisfiesDesktopTokenPolicy,
+    );
     const sameTokenIdentityCompact = compactRust(sameTokenIdentity);
     const samePrimaryTokenCompact = compactRust(samePrimaryToken);
     const revalidateCompact = compactRust(revalidateWith);
@@ -7723,23 +8294,28 @@ const keyAgentServiceRpcAuthContract = ({ sources }) => {
       ) &&
       validateTokenCompact.includes("token.token_kind!=expected") &&
       validateTokenCompact.includes("token.token_level!=expected_level") &&
-      validateTokenCompact.includes("!token.user_sid.has_valid_length()") &&
-      validateTokenCompact.includes("token.logon_sid_count!=1") &&
-      validateTokenCompact.includes("token.session_id==0") &&
-      validateTokenCompact.includes(
+      validateTokenCompact.includes("!satisfies_desktop_token_policy(token)") &&
+      satisfiesDesktopTokenPolicyCompact.includes(
+        "!token.user_sid.has_valid_length()",
+      ) &&
+      satisfiesDesktopTokenPolicyCompact.includes("token.logon_sid_count!=1") &&
+      satisfiesDesktopTokenPolicyCompact.includes("token.session_id==0") &&
+      satisfiesDesktopTokenPolicyCompact.includes(
         ".logon_sid.as_ref().is_none_or(|sid|!sid.has_valid_length())",
       ) &&
-      validateTokenCompact.includes("token.app_container") &&
-      validateTokenCompact.includes("token.ui_access") &&
-      validateTokenCompact.includes(
+      satisfiesDesktopTokenPolicyCompact.includes("token.app_container") &&
+      satisfiesDesktopTokenPolicyCompact.includes("token.ui_access") &&
+      satisfiesDesktopTokenPolicyCompact.includes(
         "token.integrity_rid!=MEDIUM_INTEGRITY_RID",
       ) &&
-      validateTokenCompact.includes(
+      satisfiesDesktopTokenPolicyCompact.includes(
         "matches!(token.elevation,ElevationKind::Full|ElevationKind::Other)",
       ) &&
-      validateTokenCompact.includes("!token.interactive_sid_enabled") &&
+      satisfiesDesktopTokenPolicyCompact.includes(
+        "!token.interactive_sid_enabled",
+      ) &&
       sameTokenIdentityCompact ===
-        "fnsame_token_identity(first:&TokenObservation,second:&TokenObservation)->bool{first.user_sid==second.user_sid&&first.logon_sid==second.logon_sid&&first.session_id==second.session_id&&first.authentication_id==second.authentication_id&&first.elevation==second.elevation&&first.restricted==second.restricted}" &&
+        "fnsame_token_identity(first:&TokenObservation,second:&TokenObservation)->bool{first.user_sid==second.user_sid&&first.logon_sid_count==second.logon_sid_count&&first.logon_sid==second.logon_sid&&first.session_id==second.session_id&&first.authentication_id==second.authentication_id&&first.integrity_rid==second.integrity_rid&&first.elevation==second.elevation&&first.restricted==second.restricted}" &&
       samePrimaryTokenCompact ===
         "fnsame_primary_token(first:&TokenObservation,second:&TokenObservation)->bool{same_token_identity(first,second)&&first.token_id==second.token_id}" &&
       revalidateClientProcessCompact.includes(
@@ -7958,14 +8534,14 @@ const keyAgentServiceRpcAuthMutationProbes = [
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcAuthInputs,
     keyAgentServiceRpcFixturePaths.auth,
-    "        let token_state = self.ops.thread_token_state();\n",
-    "        let token_state = Ok(ThreadTokenState::Clear);\n",
+    "        let reverted = self.ops.revert();\n        let token_state = self.ops.thread_token_state();\n",
+    "        let reverted = self.ops.revert();\n        let token_state = Ok(ThreadTokenState::Clear);\n",
   ),
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcAuthInputs,
     keyAgentServiceRpcFixturePaths.auth,
-    "            self.ops.fail_fast();",
-    "            return;",
+    "        let reverted = self.ops.revert();\n        let token_state = self.ops.thread_token_state();\n        if current != Ok(self.thread_cookie)\n            || reverted.is_err()\n            || token_state != Ok(ThreadTokenState::Clear)\n        {\n            self.ops.fail_fast();\n        }",
+    "        let reverted = self.ops.revert();\n        let token_state = self.ops.thread_token_state();\n        if current != Ok(self.thread_cookie)\n            || reverted.is_err()\n            || token_state != Ok(ThreadTokenState::Clear)\n        {\n            return;\n        }",
   ),
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcAuthInputs,
@@ -8012,6 +8588,365 @@ requireInvariant(
         !keyAgentServiceRpcAuthContract(probe),
     ),
   "every debug status-RPC callback and manager entry must authenticate independently; require exact local LRPC/UUID/opnum/normal/active-zero/privacy/WINNT facts, independent authz-none inquiry, clean same-thread fail-fast impersonation rundown, nonzero desktop medium interactive token policy, matched elevation/filter state across effective tokens, retained exact process and primary TokenId revalidation, PID requery, canonical one-/four-byte TokenHasRestrictions parsing, secret-buffer zeroization, exact tests, and effective mutations",
+);
+
+const keyAgentServiceTargetProfileCoordinatorTestNames = [
+  "profile_api_guard_is_thread_bound_non_clone_and_non_copy",
+  "same_thread_reentry_fails_closed_without_poisoning_gate",
+  "impersonating_thread_is_rejected_before_profile_gate",
+  "held_guard_rechecks_thread_impersonation_around_native_call",
+  "target_guard_is_thread_bound_non_clone_non_copy_and_redacted_debug",
+  "successful_finish_reverts_and_proves_clear_before_releasing_profile_gate",
+  "drop_fallback_reverts_exactly_once_before_profile_gate_drop",
+  "profile_operation_error_still_cleans_up_in_security_order",
+  "every_pre_impersonation_failure_stops_at_the_exact_boundary",
+  "acquisition_thread_change_after_impersonation_fails_fast_then_cleans_up_once",
+  "post_impersonation_auth_failure_reverts_before_returning_error",
+  "active_effective_identity_error_is_returned_before_drop_cleanup",
+  "explicit_finish_revalidates_client_after_cleanup_and_returns_auth_error",
+  "active_recheck_thread_change_enters_fail_fast_seam",
+  "finish_thread_revert_and_residual_anomalies_all_fail_fast_after_one_revert",
+  "drop_revert_failure_uses_the_same_exact_once_fail_fast_seam",
+];
+const keyAgentServiceTargetAuthLeaseContract = ({
+  authSource,
+  authSysSource,
+  profileApiSource,
+  targetProfileSource,
+  startupSource,
+  launchRootSource,
+}) => {
+  try {
+    const auth = withoutBottomTestModule(authSource);
+    const authSys = withoutBottomTestModule(authSysSource);
+    const profileApi = withoutBottomTestModule(profileApiSource);
+    const targetProfile = withoutBottomTestModule(targetProfileSource);
+    const startup = withoutBottomTestModule(startupSource);
+    const launchRoot = withoutBottomTestModule(launchRootSource);
+    const authenticatedImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl AuthenticatedRpcClient",
+    )?.source;
+    const genericClientImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl<P, T> AuthenticatedClient<P, T>",
+    )?.source;
+    const desktopState = rustLexicalItemBlock(
+      auth,
+      /struct\s+DesktopImpersonation\b/u,
+    );
+    const desktopImpl = rustImplItems(auth).find((item) =>
+      item.header.includes("DesktopImpersonation<'client, 'ops, P, T, O>"),
+    )?.source;
+    const desktopDrop = rustImplItems(auth).find((item) =>
+      item.header.includes("Drop for DesktopImpersonation"),
+    )?.source;
+    const lease = rustLexicalItemBlock(
+      auth,
+      /pub\(crate\)\s+struct\s+AuthenticatedDesktopImpersonation\b/u,
+    );
+    const leaseImpl = rustImplItems(auth).find((item) =>
+      item.header.includes("AuthenticatedDesktopImpersonation<'_>"),
+    )?.source;
+    if (
+      authenticatedImpl === undefined ||
+      genericClientImpl === undefined ||
+      desktopImpl === undefined ||
+      desktopDrop === undefined ||
+      leaseImpl === undefined
+    ) {
+      return false;
+    }
+    const publicBegin = rustFunctionBlock(
+      authenticatedImpl,
+      "impersonate_desktop_user",
+    );
+    const begin = rustFunctionBlock(
+      genericClientImpl,
+      "impersonate_desktop_user_with",
+    );
+    const effectiveRecheck = rustFunctionBlock(
+      genericClientImpl,
+      "revalidate_effective_desktop_thread_with",
+    );
+    const stateRecheck = rustFunctionBlock(desktopImpl, "recheck");
+    const stateFinish = rustFunctionBlock(desktopImpl, "finish");
+    const revert = rustFunctionBlock(desktopImpl, "revert_exact");
+    const acquire = rustFunctionBlock(
+      profileApi,
+      "acquire_target_profile_api_with",
+    );
+    const acquireNative = rustFunctionBlock(
+      profileApi,
+      "acquire_target_appcontainer_profile_api",
+    );
+    const profileState = rustLexicalItemBlock(
+      profileApi,
+      /struct\s+TargetProfileApiState\b/u,
+    );
+    const profileStateImpl = rustImplItems(profileApi).find((item) =>
+      item.header.includes("TargetProfileApiState<I, P>"),
+    )?.source;
+    if (profileStateImpl === undefined) return false;
+    const profileFinish = rustFunctionBlock(profileStateImpl, "finish");
+    const cleanProbe = rustFunctionBlock(
+      profileApi,
+      "current_thread_token_state",
+    );
+    const nativeImpersonate = rustTopLevelFunctionBlock(
+      authSys,
+      "impersonate_desktop_primary_token",
+    );
+    const relevantSources = [
+      { path: keyAgentServiceRpcFixturePaths.auth, source: auth },
+      { path: keyAgentServiceRpcFixturePaths.authSys, source: authSys },
+      {
+        path: "crates/platform-windows/src/appcontainer_profile_api.rs",
+        source: profileApi,
+      },
+      { path: keyAgentServiceLaunchPaths.targetProfile, source: targetProfile },
+      { path: keyAgentServiceLaunchPaths.startup, source: startup },
+      { path: keyAgentServiceLaunchPaths.root, source: launchRoot },
+    ];
+    const consumers = relevantSources.flatMap((file) => {
+      const count = rustCallSites(file.source, "impersonate_desktop_user").length;
+      return count === 0 ? [] : [{ path: file.path, count }];
+    });
+    const cfg =
+      '#[cfg(all(feature = "key-agent-service-lpac-launch-feasibility-test-hook", debug_assertions))]';
+    const compactAuth = compactRust(auth);
+    const compactProfileApi = compactRust(profileApi);
+    const lexicalLease = rustLexicalCode(`${lease}\n${leaseImpl}`);
+    return (
+      compactAuth.includes(
+        "pub(crate)structAuthenticatedDesktopImpersonation<'client>{state:DesktopImpersonation<'client,'static,sys::RetainedProcess,sys::DesktopPrimaryToken,sys::WindowsProcessAuthOps,>,}",
+      ) &&
+      !/\b(?:HANDLE|BorrowedHandle|OwnedHandle|DesktopPrimaryToken|raw|as_handle|borrowed_handle)\b/u.test(
+        lexicalLease.replace(/sys::DesktopPrimaryToken/gu, ""),
+      ) &&
+      compactRust(leaseImpl).includes(
+        "pub(crate)fnrecheck(&self)->Result<(),RpcAuthError>{self.state.recheck()}",
+      ) &&
+      compactRust(leaseImpl).includes(
+        "pub(crate)fnfinish(self)->Result<(),RpcAuthError>{self.state.finish()}",
+      ) &&
+      !/#\[allow\(dead_code\)\][\s\S]{0,160}fn\s+impersonate_desktop_user\b/u.test(
+        authenticatedImpl,
+      ) &&
+      compactRust(publicBegin).includes(
+        "letstate=self.impersonate_desktop_user_with(&sys::WINDOWS_PROCESS_AUTH_OPS)?;Ok(AuthenticatedDesktopImpersonation{state})",
+      ) &&
+      hasOrderedCompactMarkers(begin, [
+        "self.revalidate_with(ops)?",
+        "ops.thread_token_state()",
+        "ThreadTokenState::Clear",
+        "ops.current_thread_cookie()",
+        "ops.impersonate_desktop_primary_token(&self.desktop_primary_token)",
+        "letstate=DesktopImpersonation::new(self,ops,thread_cookie)",
+        "state.recheck()?",
+        "Ok(state)",
+      ]) &&
+      hasOrderedCompactMarkers(effectiveRecheck, [
+        "self.revalidate_with(ops)?",
+        "ops.effective_thread_token()",
+        "validate_effective_desktop_thread_token(&effective)?",
+        "same_token_identity(&effective,&self.primary)",
+        "same_token_identity(&effective,&self.desktop_primary)",
+      ]) &&
+      compactRust(desktopState).includes(
+        "client:&'clientAuthenticatedClient<P,T>,ops:&'opsO,thread_cookie:NonZeroU32,active:bool,_thread_bound:PhantomData<Rc<()>>",
+      ) &&
+      hasOrderedCompactMarkers(stateRecheck, [
+        "self.ops.current_thread_cookie()!=Ok(self.thread_cookie)",
+        "self.ops.fail_fast()",
+        "self.client.revalidate_effective_desktop_thread_with(self.ops)",
+      ]) &&
+      hasOrderedCompactMarkers(stateFinish, [
+        "self.revert_exact()",
+        "self.client.revalidate_with(self.ops)",
+      ]) &&
+      hasOrderedCompactMarkers(revert, [
+        "if!self.active",
+        "self.active=false",
+        "self.ops.current_thread_cookie()",
+        "self.ops.revert_desktop_impersonation()",
+        "self.ops.thread_token_state()",
+        "current!=Ok(self.thread_cookie)",
+        "reverted.is_err()",
+        "token_state!=Ok(ThreadTokenState::Clear)",
+        "self.ops.fail_fast()",
+      ]) &&
+      compactRust(rustFunctionBlock(desktopDrop, "drop")).includes(
+        "self.revert_exact()",
+      ) &&
+      rustCallSites(authSys, "ImpersonateLoggedOnUser").length === 1 &&
+      rustCallSites(authSys, "RevertToSelf").length === 1 &&
+      hasOrderedCompactMarkers(nativeImpersonate, [
+        "validate_desktop_primary_token_handle(token)?",
+        "ImpersonateLoggedOnUser(token.raw())",
+      ]) &&
+      profileApi.includes("static APP_CONTAINER_PROFILE_API: Mutex<()> = Mutex::new(());") &&
+      compactProfileApi.includes(compactRust(cfg)) &&
+      compactProfileApi.includes(
+        "pub(crate)structTargetAppContainerProfileApiGuard<'client>{state:TargetProfileApiState<crate::key_agent_service_rpc::AuthenticatedDesktopImpersonation<'client>,AppContainerProfileApiGuard,>,}",
+      ) &&
+      compactRust(acquireNative).includes(
+        "letops=WindowsTargetProfileOps{client};acquire_target_profile_api_with(&ops).map(|state|TargetAppContainerProfileApiGuard{state})",
+      ) &&
+      hasOrderedCompactMarkers(acquire, [
+        "require_clear_thread(ops)?",
+        "letprofile_api=ops.acquire_profile_api()?",
+        "require_clear_thread(ops)?",
+        "ops.revalidate_client()?",
+        "letimpersonation=ops.begin_impersonation()?",
+        "impersonation.recheck()?",
+        "TargetProfileApiState",
+        "impersonation",
+        "profile_api",
+      ]) &&
+      compactRust(profileState).includes(
+        "structTargetProfileApiState<I:TargetProfileImpersonation,P>{impersonation:I,profile_api:P,}",
+      ) &&
+      hasOrderedCompactMarkers(profileFinish, [
+        "letSelf{impersonation,profile_api,}=self",
+        "letresult=impersonation.finish()",
+        "drop(profile_api)",
+        "result",
+      ]) &&
+      hasOrderedCompactMarkers(cleanProbe, [
+        "OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,true,&rawmuttoken)",
+        "CloseHandle(token)",
+        "TargetThreadTokenState::Present",
+        "ERROR_NO_TOKEN",
+        "TargetThreadTokenState::Clear",
+      ]) &&
+      JSON.stringify(consumers) ===
+        JSON.stringify([
+          {
+            path: keyAgentServiceRpcFixturePaths.auth,
+            count: 1,
+          },
+          {
+            path: "crates/platform-windows/src/appcontainer_profile_api.rs",
+            count: 1,
+          },
+        ]) &&
+      !/\b(?:HANDLE|BorrowedHandle|DesktopPrimaryToken)\b/u.test(
+        rustLexicalCode(targetProfile),
+      ) &&
+      JSON.stringify(
+        keyAgentServiceRustTestNameInventory(profileApiSource),
+      ) === JSON.stringify(keyAgentServiceTargetProfileCoordinatorTestNames) &&
+      authSource.includes(
+        "fn desktop_impersonation_authority_is_thread_bound_move_only()",
+      ) &&
+      authSource.includes(
+        "fn desktop_impersonation_lease_rechecks_and_reverts_exactly_once()",
+      ) &&
+      authSource.includes(
+        "fn desktop_impersonation_lease_drop_is_exact_once_fallback()",
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const keyAgentServiceTargetAuthLeaseInputs = Object.freeze({
+  authSource:
+    keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.auth],
+  authSysSource:
+    keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.authSys],
+  profileApiSource: keyAgentServiceProfileApiSourceForLaunch,
+  targetProfileSource: keyAgentServiceTargetProfileSource,
+  startupSource:
+    keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.startup],
+  launchRootSource:
+    keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.root],
+});
+const mutateKeyAgentServiceTargetAuthLease = (field, search, replacement) => ({
+  ...keyAgentServiceTargetAuthLeaseInputs,
+  [field]: keyAgentServiceTargetAuthLeaseInputs[field].replace(
+    search,
+    replacement,
+  ),
+});
+const keyAgentServiceTargetAuthLeaseMutationProbes = [
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "    state: DesktopImpersonation<",
+    "    borrowed_handle: BorrowedHandle<'client>,\n    state: DesktopImpersonation<",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "        self.revalidate_with(ops)?;\n        if ops",
+    "        if ops",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "        let state = DesktopImpersonation::new(self, ops, thread_cookie);\n        state.recheck()?;",
+    "        let state = DesktopImpersonation::new(self, ops, thread_cookie);",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "        self.active = false;\n        let current",
+    "        let current",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "        self.revert_exact();\n        self.client.revalidate_with(self.ops)",
+    "        self.client.revalidate_with(self.ops)",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSysSource",
+    "unsafe { ImpersonateLoggedOnUser(token.raw()) }.map_err(|_| ObservationError::Incomplete)",
+    "Ok(())",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSysSource",
+    "unsafe { RevertToSelf() }.map_err(|_| ObservationError::Incomplete)",
+    "Ok(())",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "profileApiSource",
+    "    require_clear_thread(ops)?;\n    let profile_api = ops.acquire_profile_api()?;",
+    "    let profile_api = ops.acquire_profile_api()?;",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "profileApiSource",
+    "    ops.revalidate_client()?;\n    let impersonation = ops.begin_impersonation()?;",
+    "    let impersonation = ops.begin_impersonation()?;\n    ops.revalidate_client()?;",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "profileApiSource",
+    "    impersonation: I,\n    profile_api: P,",
+    "    profile_api: P,\n    impersonation: I,",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "profileApiSource",
+    "        let result = impersonation.finish();\n        // This explicit order is security-significant: another thread must not\n        // enter profile APIs until the target token is completely removed.\n        drop(profile_api);",
+    "        drop(profile_api);\n        let result = impersonation.finish();",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "profileApiSource",
+    "        self.client\n            .impersonate_desktop_user()",
+    "        self.client\n            .impersonate_desktop_user().and_then(|_| self.client.impersonate_desktop_user())",
+  ),
+  mutateKeyAgentServiceTargetAuthLease(
+    "authSource",
+    "fn desktop_impersonation_lease_drop_is_exact_once_fallback()",
+    "fn desktop_impersonation_lease_drop_is_not_exact_once_fallback()",
+  ),
+];
+requireInvariant(
+  keyAgentServiceTargetAuthLeaseContract(
+    keyAgentServiceTargetAuthLeaseInputs,
+  ) &&
+    keyAgentServiceTargetAuthLeaseMutationProbes.every(
+      (probe) =>
+        Object.keys(probe).some(
+          (field) =>
+            probe[field] !== keyAgentServiceTargetAuthLeaseInputs[field],
+        ) && !keyAgentServiceTargetAuthLeaseContract(probe),
+    ),
+  "target profile observation must be the sole consumer of an authentication-owned handle-free same-thread desktop impersonation lease; it must acquire the shared profile mutex while clear, revalidate before impersonation, install exact-once fail-fast cleanup immediately, bookend effective identity, revert before releasing the mutex on explicit and implicit paths, retain no raw or borrowed token capability, pin exhaustive fake seams, and reject every effective mutation",
 );
 
 const keyAgentServiceRpcDesktopPrimaryTokenContract = ({ sources }) => {
@@ -8149,11 +9084,12 @@ const keyAgentServiceRpcDesktopPrimaryTokenContract = ({ sources }) => {
       !/(?:derive\s*\([^)]*\b(?:Clone|Copy)\b|impl\s+(?:Clone|Copy|Sync)\s+for)\s*DesktopPrimaryToken/u.test(
         authSys,
       ) &&
-      compactAuthSys.includes(
-        "pub(crate)fnas_handle(&self)->BorrowedHandle<'_>{unsafe{BorrowedHandle::borrow_raw(self.raw().0)}}",
+      !/\bBorrowedHandle\b/u.test(rustLexicalCode(authSys)) &&
+      !/pub\(crate\)\s+fn\s+(?:as_handle|borrowed_handle)\b/u.test(
+        rustLexicalCode(authSys),
       ) &&
       keyAgentServiceLiteralCount(compactAuthSys, "BorrowedHandle::borrow_raw(") ===
-        1 &&
+        0 &&
       !/\b(?:into_raw|from_raw_handle|as_raw_handle)\b/u.test(
         rustLexicalCode(authSys),
       ) &&
@@ -8358,14 +9294,24 @@ const keyAgentServiceTokenDocumentationPatterns = [
   /(?:repeats\s+full\s+token\s+revalidation\s+after\s+descriptor\s+construction|repeats\s+the\s+same-object\/full-baseline(?:\s+token)?\s+check)/iu,
   /(?:authenticated\s+desktop\s+primary\s+token\s+is\s+not\s+(?:an\s+accepted\s+owner|accepted\s+as\s+the\s+descriptor\s+principal)|cannot\s+accept\s+the\s+desktop\s+launch\s+token)/iu,
   /(?:paired\s+process\/thread\s+creation\s+descriptors|two\s+distinct,\s+non-inheritable\s+process\/thread\s+security\s+descriptors|two\s+separate\s+non-inheritable\s+process\/thread\s+descriptors)/iu,
-  /(?:consume\s+(?:it|them)\s+once[\s\S]{0,100}(?:live|retain)[\s\S]{0,100}readback|one-shot\s+launch\s+consumption[\s\S]{0,180}later\s+STOP-SHIP)/iu,
+  /(?:consume\s+(?:it|them)\s+once[\s\S]{0,100}(?:live|retain)[\s\S]{0,100}readback|one-shot\s+launch\s+consumption[\s\S]{0,300}(?:later\s+STOP-SHIP|remain\s+STOP-SHIP))/iu,
   /unnamed,?\s+non-nested[\s\S]{0,80}(?:one-process\s+)?Job/iu,
   /KILL_ON_JOB_CLOSE\s*\|\s*ACTIVE_PROCESS[\s\S]{0,160}(?:active-process limit must equal one|`?ActiveProcessLimit`?\s*(?:=\s*1|of one))/iu,
   /(?:creation attribute is lifetime-bound|lifetime-bound creation attribute|stable lifetime-bound creation-attribute storage)/iu,
   /(?:terminal\s+cleanup\s+is\s+bounded\s+and\s+Job-authoritative|bounded\s+whole-Job\s+cleanup|bounded\s+whole-Job\s+termination)/iu,
-  /(?:No\s+RPC\s+operation|no\s+RPC\s+command|Neither\s+primitive\s+is\s+reachable\s+from\s+an\s+RPC\s+command)/iu,
-  /(?:no[\s\S]{0,160}(?:process\s+creation|`CreateProcessAsUserW`\s+call)|neither\s+calls\s+`CreateProcessAsUserW`)/iu,
-  /(?:helper\s+entrypoint\s+is\s+added|executable\s+entrypoint[\s\S]{0,40}using\s+these\s+primitives|reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable)/iu,
+  /(?:No\s+RPC\s+operation|no\s+RPC\s+command|Neither\s+primitive\s+is\s+reachable\s+from\s+an\s+RPC\s+command|compile-only\s+primitives?\s+is\s+reachable\s+from\s+an\s+RPC\s+command|None\s+of\s+these\s+compile-only\s+primitives\s+is\s+reachable\s+from\s+an\s+RPC\s+command)/iu,
+  /(?:no[\s\S]{0,200}(?:process[- ]creation|`CreateProcessAsUserW`)|neither\s+calls\s+`CreateProcessAsUserW`)/iu,
+  /(?:no[\s\S]{0,180}(?:helper\s+entrypoint|executable\s+entrypoint)|helper\s+entrypoint\s+is\s+added|executable\s+entrypoint[\s\S]{0,40}using\s+these\s+primitives|reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable)/iu,
+  /(?:fixed\s+Approval\s+(?:or|and)\s+Secret\s+Input|target-user\s+Approval\s+and\s+Secret\s+Input)/iu,
+  /(?:auth(?:entication)?-owned\s+exact-once\s+impersonation\s+lease|must-use,\s+same-thread\s+impersonation\s+lease)/iu,
+  /(?:never\s+exposed\s+as\s+a\s+raw\s+or\s+borrowed\s+handle|no\s+raw\s+or\s+borrowed-handle\s+getter|exposes\s+no[^.]{0,100}raw\s+owned\s+handle)/iu,
+  /(?:process-wide\s+profile\s+mutex|profile\s+APIs[\s\S]{0,100}auth-owned\s+exact-once\s+impersonation\s+lease)/iu,
+  /(?:(?:profile\s+creation|CreateAppContainerProfile)[\s\S]{0,220}(?:SID\s+derivation|deriv)[\s\S]{0,180}(?:SID\s+equality|equal)[\s\S]{0,180}(?:folder\s+observation|GetAppContainerFolderPath)[\s\S]{0,180}(?:filesystem|folder\s+validation)|fixed\s+target-user[\s\S]{0,100}profile\s+owners[\s\S]{0,80}run\s+profile\s+APIs)/iu,
+  /(?:LOCALAPPDATA[\s\S]{0,220}(?:GetAppContainerFolderPath|authoritative\s+returned)[\s\S]{0,140}\\AC|(?:returned\s+)?`?\.\.\.\\AC`?[\s\S]{0,100}(?:as|folder\s+and\s+the\s+minimal\s+environment\s+sets)\s+`?LOCALAPPDATA`?)/iu,
+  /zero[\s-]+capabilit(?:y|ies)[\s\S]{0,140}(?:AAP|ALL APPLICATION PACKAGES)[\s\S]{0,100}opt-out/iu,
+  /five-slot[\s\S]{0,260}Job[\s\S]{0,260}mitigation[\s\S]{0,260}(?:LPAC|security\s+capabilities)[\s\S]{0,260}(?:restricted-child|restricted\s+child)/iu,
+  /(?:null\s+standard\s+handles|every\s+standard\s+handle\s+null|all\s+standard\s+handles\s+are\s+null)[\s\S]{0,180}(?:no\s+(?:inherited-)?handle(?:-list|\s+list)|handle-list[^.]{0,100}absent)/iu,
+  /(?:move-only[\s\S]{0,100}(?:process-creation\s+view|startup)|startup[^.]{0,160}move-only|five-slot\s+startup\s+owner)/iu,
 ];
 const keyAgentServiceTokenDocumentationContradiction =
   /The callback retains the primary token\.|The service-token proof is complete\.|This is production helper-launch evidence\.|The authenticated desktop primary token is accepted as the descriptor principal\.|The service helper Job may be named or nested\.|The launch feature calls CreateProcessAsUserW and is production-ready\./u;
@@ -8383,7 +9329,7 @@ const keyAgentServiceTokenDocumentationWindow = (spec) => {
   const start = anchors[0].index;
   return {
     start,
-    source: spec.source.slice(start, start + 4_000),
+    source: spec.source.slice(start, start + 10_000),
   };
 };
 const keyAgentServiceTokenDocumentationContract = (specs) =>
@@ -8391,7 +9337,7 @@ const keyAgentServiceTokenDocumentationContract = (specs) =>
     const window = keyAgentServiceTokenDocumentationWindow(spec);
     return (
       window !== null &&
-      window.source.length <= 4_000 &&
+      window.source.length <= 10_000 &&
       keyAgentServiceTokenDocumentationPatterns.every((pattern) =>
         pattern.test(window.source),
       ) &&
@@ -12175,7 +13121,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "0a09a7619b7d45b882e96489444159b9585338925758611ad8497cbc6a6e3f78";
+  "9b2e2d8046c3764b652f2f85bdeb6997261e02898d7797e799f31896dc2e4456";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -16717,10 +17663,10 @@ const mitigationContractTest = rustFunctionBlockAtDepth(
 );
 const approvedFrontendEnvironmentLeafSha256 = {
   environment:
-    "fa4350a488fae9361096cebe8ca4f486824c835bcbe8848e6858d8a9d0b74e09",
+    "6f5f082d3d6780e757b97c01053bfd36ff65c06ad8e8e59edfc119789d843c33",
   base: "7df62eb8cc81c58a737773f33c170de47e59a08a3c92ff2d36832d15d3a3d030",
   adapter: "1a8b31c7c2bca68f0bf72c5000453d0273a0437c38e7c31179ec3d5d8a23fee9",
-  test: "fe27aec82bc9ae8a1840655c1c602aa11ed28c23cb94614bbaeebcf0d20fe344",
+  test: "38837f2cffafa6ff61b1cec3f27595bc77f45bde932d44004f2c651ab763b34f",
 };
 function compactRust(source) {
   return rustLexicalCode(source).replace(/\s+/gu, "");
@@ -19326,6 +20272,8 @@ requireInvariant(
     JSON.stringify([...restrictedContextConsumers].sort()) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_service_launch/startup.rs",
+        "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
         "crates/platform-windows/src/launch.rs",
       ]) &&
     restrictedContextPrepareCallSites.length === 3 &&
@@ -19345,7 +20293,7 @@ requireInvariant(
         rustLexicalCode(file.source),
       ),
     ),
-  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two approved launchers",
+  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two existing launchers plus the two compile-only service launch-input owners",
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(restrictedContextPrepare)) ===
@@ -19716,11 +20664,10 @@ const frontendEnvironmentContract = ({
       "letprofile_name=profile_folder.file_name()",
       "letpackages=profile_folder.parent()",
       "letpackages_name=packages.file_name()",
-      "letuser_local_data=packages.parent()",
       "!profile_name.eq_ignore_ascii_case(expected_profile_name)",
-      "!user_local_data.is_absolute()",
+      "!appcontainer_local_data.is_absolute()",
       "!base_environment_is_exact(base_environment)",
-      "letlocal_value:Vec<u16>=user_local_data.as_os_str().encode_wide().collect();",
+      "letlocal_value:Vec<u16>=appcontainer_local_data.as_os_str().encode_wide().collect();",
       "iflocal_value.is_empty()||local_value.contains(&0)",
       "environment.extend_from_slice(&local_value);",
       "environment.push(0);",
@@ -19798,7 +20745,14 @@ const frontendEnvironmentContract = ({
       ]) &&
     test.includes("assert_eq!(entries.len(), 3)") &&
     test.includes('.strip_prefix("LOCALAPPDATA=")') &&
-    test.includes("assert!(Path::new(local_app_data).is_absolute())") &&
+    test.includes("assert!(local_app_data.is_absolute())") &&
+    test.includes(
+      'assert_eq!(local_app_data.file_name(), Some(OsStr::new("AC")))',
+    ) &&
+    test.includes(
+      '|name| name.eq_ignore_ascii_case("YourWallet.ApprovalFrontend.LPAC.v1")',
+    ) &&
+    test.includes('Some(OsStr::new("Packages"))') &&
     test.includes('assert_eq!(entries[1], r"SystemRoot=C:\\Windows")') &&
     test.includes('assert_eq!(entries[2], r"WINDIR=C:\\Windows")') &&
     test.includes(`for ambient_name in [
@@ -19836,8 +20790,8 @@ const frontendEnvironmentContract = ({
 const frontendEnvironmentMutationProbes = [
   {
     environment: frontendLpacEnvironment.replace(
-      "let user_local_data = packages.parent()",
-      "let user_local_data = appcontainer_local_data.parent()",
+      "let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();",
+      "let local_value: Vec<u16> = packages.as_os_str().encode_wide().collect();",
     ),
     base: frontendBaseEnvironment,
     launch: restrictedLaunchLeaf,
@@ -29000,16 +29954,18 @@ requireInvariant(
       ]) &&
     appContainerProfileNativeApiInventory.filter(
       (call) => call.api === "CreateAppContainerProfile",
-    ).length === 2 &&
+    ).length === 3 &&
     appContainerProfileNativeApiInventory.filter(
       (call) => call.api === "DeriveAppContainerSidFromAppContainerName",
-    ).length === 2 &&
+    ).length === 3 &&
     appContainerProfileNativeApiInventory.filter(
       (call) => call.api === "GetAppContainerFolderPath",
-    ).length === 2 &&
+    ).length === 3 &&
     appContainerProfileNativeApiInventory.every(
       (call) =>
         call.path === "crates/platform-windows/src/key_agent_lpac.rs" ||
+        call.path ===
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs" ||
         call.path === "crates/platform-windows/src/launch.rs",
     ) &&
     JSON.stringify(
@@ -29019,10 +29975,13 @@ requireInvariant(
     ) ===
       JSON.stringify([
         "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs",
+        "CreateAppContainerProfile:crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
         "CreateAppContainerProfile:crates/platform-windows/src/launch.rs",
         "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
         "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs",
         "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs",
+        "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
         "GetAppContainerFolderPath:crates/platform-windows/src/launch.rs",
       ]) &&
     JSON.stringify(appContainerProfileNativeUsage.tokens) ===
@@ -29030,18 +29989,24 @@ requireInvariant(
         CreateAppContainerProfile: [
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
         ],
         DeriveAppContainerSidFromAppContainerName: [
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
         ],
         GetAppContainerFolderPath: [
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
         ],
@@ -29059,12 +30024,15 @@ requireInvariant(
     ) ===
       JSON.stringify([
         "CreateAppContainerProfile:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr()),PCWSTR(display_name.as_ptr()),PCWSTR(description.as_ptr()),None",
+        "CreateAppContainerProfile:crates/platform-windows/src/key_agent_service_launch/target_profile.rs:PCWSTR(name.as_ptr()),PCWSTR(display_name.as_ptr()),PCWSTR(description.as_ptr()),None",
         "CreateAppContainerProfile:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr()),PCWSTR(display_wide.as_ptr()),PCWSTR(description_wide.as_ptr()),None",
         "DeriveAppContainerSidFromAppContainerName:crates/approval-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
         "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(name.as_ptr())",
+        "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/key_agent_service_launch/target_profile.rs:PCWSTR(name.as_ptr())",
         "DeriveAppContainerSidFromAppContainerName:crates/platform-windows/src/launch.rs:PCWSTR(name_wide.as_ptr())",
         "DeriveAppContainerSidFromAppContainerName:crates/secret-input-ui/src/bootstrap/windows.rs:PCWSTR(profile.as_ptr())",
         "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_lpac.rs:PCWSTR(sid_text.as_ptr())",
+        "GetAppContainerFolderPath:crates/platform-windows/src/key_agent_service_launch/target_profile.rs:PCWSTR(sid_text.as_ptr())",
         "GetAppContainerFolderPath:crates/platform-windows/src/launch.rs:PCWSTR(sid_text.as_ptr())",
       ]) &&
     JSON.stringify(workspaceAppContainerProfileNativeUsage.tokens) ===
@@ -29072,6 +30040,8 @@ requireInvariant(
         CreateAppContainerProfile: [
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
         ],
@@ -29080,6 +30050,8 @@ requireInvariant(
           "crates/approval-ui/src/bootstrap/windows.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/secret-input-ui/src/bootstrap/windows.rs",
@@ -29088,6 +30060,8 @@ requireInvariant(
         GetAppContainerFolderPath: [
           "crates/platform-windows/src/key_agent_lpac.rs",
           "crates/platform-windows/src/key_agent_lpac.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
           "crates/platform-windows/src/launch.rs",
           "crates/platform-windows/src/launch.rs",
         ],
@@ -29537,6 +30511,14 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
     sites: 3,
   },
   {
+    path: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
+    sites: 2,
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+    sites: 4,
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
     sites: 8,
   },
@@ -29557,8 +30539,8 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
 const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/appcontainer_profile_api.rs",
-    unsafeCount: 2,
-    sha256: "9bfa761e154e90e4c436f38791f6c04f1d8ef68f0655fd40a90cabfb6aae4c0a",
+    unsafeCount: 4,
+    sha256: "f75e0bee80c9ed82dff601c92b2fc9a06aa767123b6e45d4dcb4b5f011ec3f96",
   },
   {
     path: "crates/platform-windows/src/broker_channel.rs",
@@ -29588,7 +30570,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
     unsafeCount: 102,
-    sha256: "ceb0afbaf31683b8f2f728446b586243577f9ecbd90b0b3e49ed313d591c8886",
+    sha256: "85d9b860f126c80eaed367f5995aa1515f288ac9df6d405fc7cc64fd4f62a3a3",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -29598,7 +30580,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
     unsafeCount: 86,
-    sha256: "3cdc78beaf912eb18f7c12689eb2e3179e0c7f15ff88e7fc46eb8d29ca0cd2e1",
+    sha256: "4a91afc19472c202bb2b5b29b23689406ca5e48c602de49d0c85a7e3af4e5605",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -29611,19 +30593,29 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
     sha256: "92ed1af1d822ed22107fbca66081cbfb0d356aface693e248678e153cf2601e8",
   },
   {
+    path: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
+    unsafeCount: 7,
+    sha256: "fcee231c188908956a2f1b2419ceb4db703642318a4e75574a2ca3e6f0872ebc",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+    unsafeCount: 21,
+    sha256: "1de76f0bd7a9a5266094a821ac2f76aef5acbddd8f37c86a147a029002379295",
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
     unsafeCount: 2,
-    sha256: "86c74162f9d180a998bd1b7cdca0ba0705767f73fe0135e6d992a102cc82991c",
+    sha256: "a6afd999135e8d5601d5baf7108d3a211fe9f24ffbbb66518f0b8a7b6d4a3c74",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
-    unsafeCount: 36,
-    sha256: "d8ef33af40cbefdbb5bf459fa66b8fbe6dbab8d2f288afa683d347b3ea424851",
+    unsafeCount: 39,
+    sha256: "a4a0cf0c7f7c0332be02a3409c31843b9d46ff0574a140b2e4f28431da003787",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 11,
-    sha256: "3d5ba74801e33ec9c072b9462e646dfd7c26a8ada449f4a1de698ebeb3c89b8d",
+    sha256: "9fc5491e4e49e037c36cb8d1f1c800b91e00c5ac742941704bb54d7ff42676d6",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -29643,7 +30635,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/launch.rs",
     unsafeCount: 65,
-    sha256: "67e811bde9f6376aae0105487e2c6c5fdb55ab5973bd140944863f8cbc226106",
+    sha256: "e786993d3bd9f6ff5fa7a0cc5b21a3d49398d75d690f4e63b63d803c29443934",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -31526,7 +32518,6 @@ requireInvariant(
     compactKeyAgentLpacEnvironment.includes(
       "!appcontainer_local_data.is_absolute()",
     ) &&
-    compactKeyAgentLpacEnvironment.includes("!packages_parent.is_absolute()") &&
     compactKeyAgentLpacEnvironment.includes(
       "!base_environment_is_exact(base_environment)",
     ) &&
@@ -31538,7 +32529,7 @@ requireInvariant(
       "environment.extend_from_slice(&local_value);environment.push(0);environment.extend_from_slice(base_environment);",
     ) &&
     keyAgentLpacEnvironment.includes(
-      "let local_value: Vec<u16> = packages_parent.as_os_str().encode_wide().collect();",
+      "let local_value: Vec<u16> = appcontainer_local_data.as_os_str().encode_wide().collect();",
     ) &&
     compactKeyAgentLpacEnvironment.includes(
       "environment.len()>32_767||!environment.ends_with(&[0,0])",
@@ -31564,7 +32555,7 @@ requireInvariant(
     keyAgentCreateProcess.includes(
       "Some(prepared_process.environment.as_ptr().cast::<c_void>())",
     ),
-  "Key Agent creation must use the OS-derived user local-data base that Windows rebases to the exact AppContainer AC path as LOCALAPPDATA, plus validated SystemRoot/WINDIR with no ambient inheritance",
+  "Key Agent creation must use the OS-derived exact AppContainer AC path as LOCALAPPDATA, plus validated SystemRoot/WINDIR with no ambient inheritance",
 );
 const compactVerifyKeyAgentLpacToken = compactRust(verifyKeyAgentLpacPolicy);
 const keyAgentLpacTokenQueryOrder = [
@@ -34788,7 +35779,7 @@ const approvedKeyAgentCreationDaclLeafSha256 = Object.freeze({
   createWrapper:
     "07d3b2101dd9951ae5581b309731b3c9f420b7deb31935c6bf2dc5e64b3f83b4",
   activationCreate:
-    "5236b0dd942c3dbcada173435973d3006b26d3fdbf517e550c26f525b41244ef",
+    "fe53cdf954739fc9f9be2846ea2692652b65b08e10a187aa63073ab6676f49a6",
   activationFacade:
     "576155240b62a9c0da5f8da13ad13f15a1fcb7be7303014c3ea305ca4e2c9e39",
   activationFinalize:
@@ -36998,7 +37989,7 @@ const approvedKeyAgentCreationDaclTestEvidenceSha256 = Object.freeze({
   threadHandlesDropRaw:
     "52182c0ac19f7cf2d74703c44e8849e7730437772ae8776351f7d23ce2521e38",
   evidenceModuleRaw:
-    "61d5467e31badb37749178a9b302d62698063e807c90c6fccf3b1c38b07d190b",
+    "0669ed683f47807769becc0eee78c664251e1c5ca0eea8a59e43b23145e1c162",
 });
 const keyAgentCreationDaclTestMutationProbes = [
   replaceInsideExactRustItem(
@@ -37305,11 +38296,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
+    "8a603b7049104d240cfdec05587771153b3d620989f3d02a22ccc1608793d1cd",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "3e13cb63165a2019dfeff63b5a28da318bc0fe0e1b8eb7e8f0d08bb223a11e05",
+    "1d14cbf42b0d9b8d4cbfca8c21c091981dcfadafd591e0c8be448174b16aafb4",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -42787,7 +43778,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 34_500),
+      document.slice(Math.max(0, anchor - 700), anchor + 36_000),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -42805,7 +43796,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 27_000,
+    start + 28_100,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const initialMarkers = [
@@ -43098,9 +44089,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "9bf3c9098296c9a4e1521c972bd4b52f554d565252ee06d9f5a0e9a6fdc9c8f6",
+  "8a603b7049104d240cfdec05587771153b3d620989f3d02a22ccc1608793d1cd",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "3e13cb63165a2019dfeff63b5a28da318bc0fe0e1b8eb7e8f0d08bb223a11e05",
+  "1d14cbf42b0d9b8d4cbfca8c21c091981dcfadafd591e0c8be448174b16aafb4",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,

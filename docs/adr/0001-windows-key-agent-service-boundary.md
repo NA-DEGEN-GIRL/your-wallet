@@ -256,9 +256,29 @@ one-process Job primitive. Its effective flags must equal
 `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, its active-process limit must equal one,
 its creation attribute is lifetime-bound to the Job owner, and terminal cleanup
 is bounded and Job-authoritative. This is not the existing two-process Key Agent
-root Job. No RPC operation, startup owner, `CreateProcessAsUserW` call, or helper
-entrypoint is added by this slice, and the positive installed-service/nonnested
-kernel context remains unproved.
+root Job.
+
+The same feature also contains compile-only target-user launch inputs. The
+manager-retained desktop token is never exposed as a raw or borrowed handle;
+auth instead returns a must-use, same-thread impersonation lease whose explicit
+finish and drop fallback each own exact-once revert, clean-thread proof, and
+client revalidation. While that lease is held under the existing process-wide
+profile mutex, fixed Approval or Secret Input profile creation, SID derivation,
+SID equality, folder observation, and filesystem validation are individually
+bookended by effective-token checks. `LOCALAPPDATA` is the exact
+`GetAppContainerFolderPath` result (`...\Packages\<fixed-profile>\AC`), not its
+parent, and the environment otherwise contains only verified `SystemRoot` and
+`WINDIR`. Stable LPAC attributes carry the fixed SID, zero capabilities, and
+the ALL APPLICATION PACKAGES opt-out.
+
+A separate five-slot startup owner installs, in order, the Job list, the
+existing helper mitigation policy, those two LPAC attributes, and the
+restricted-child policy. It fixes `winsta0\default`, leaves every standard
+handle null, and has no inherited-handle-list slot. No RPC operation or
+executable consumes these launch inputs, and no `CreateProcessAsUserW`, helper
+entrypoint, handle injection, or R10/R11 gate is added by this slice. The
+positive installed-service, cross-session target-profile, desktop-access, and
+nonnested-Job kernel compositions remain unproved.
 
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not

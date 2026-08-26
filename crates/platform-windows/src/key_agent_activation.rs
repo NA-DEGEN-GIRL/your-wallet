@@ -2164,8 +2164,8 @@ mod sys {
         // protected descriptors through this call. The retained process context
         // supplies a validated System32 current directory and an exact three-name
         // Unicode environment: its OS-derived SystemRoot and WINDIR plus the
-        // OS-derived user LOCALAPPDATA base that Windows rebases for the
-        // AppContainer. The flags keep creation both headless and suspended
+        // exact AppContainer FOLDERID_LocalAppData path. The flags keep
+        // creation both headless and suspended
         // before user-mode entry.
         unsafe {
             flight

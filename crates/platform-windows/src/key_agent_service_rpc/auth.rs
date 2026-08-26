@@ -161,6 +161,7 @@ enum TokenKind {
 enum TokenLevel {
     NotApplicable,
     Impersonation,
+    Delegation,
     Other,
 }
 
@@ -222,6 +223,30 @@ trait ProcessAuthOps {
     ) -> Result<bool, ObservationError>;
 }
 
+/// Query-only observation of the token currently effective on this thread.
+///
+/// The native handle remains confined to the Windows adapter. This narrow
+/// seam exists only so the target-profile impersonation guard can prove that
+/// Windows installed the already-authenticated desktop identity.
+trait EffectiveThreadAuthOps: ProcessAuthOps {
+    fn effective_thread_token(&self) -> Result<TokenObservation, ObservationError>;
+}
+
+trait DesktopImpersonationOps: EffectiveThreadAuthOps {
+    fn thread_token_state(&self) -> Result<ThreadTokenState, ObservationError>;
+
+    fn current_thread_cookie(&self) -> Result<NonZeroU32, ObservationError>;
+
+    fn impersonate_desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<(), ObservationError>;
+
+    fn revert_desktop_impersonation(&self) -> Result<(), ObservationError>;
+
+    fn fail_fast(&self) -> !;
+}
+
 trait RpcAuthOps: ProcessAuthOps {
     fn call_observation(&self) -> Result<CallObservation, ObservationError>;
 
@@ -266,6 +291,39 @@ impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
 pub(crate) type AuthenticatedRpcClient =
     AuthenticatedClient<sys::RetainedProcess, sys::DesktopPrimaryToken>;
 
+/// Exact-once, same-thread ownership of target desktop impersonation.
+///
+/// No token handle is exposed. Dropping this value reverts the thread and
+/// fail-fast terminates on a wrong-thread, revert, or residual-token anomaly.
+#[must_use = "desktop impersonation must be finished on its originating thread"]
+pub(crate) struct AuthenticatedDesktopImpersonation<'client> {
+    state: DesktopImpersonation<
+        'client,
+        'static,
+        sys::RetainedProcess,
+        sys::DesktopPrimaryToken,
+        sys::WindowsProcessAuthOps,
+    >,
+}
+
+impl AuthenticatedDesktopImpersonation<'_> {
+    /// Revalidates the exact originating thread and effective desktop token.
+    pub(crate) fn recheck(&self) -> Result<(), RpcAuthError> {
+        self.state.recheck()
+    }
+
+    /// Reverts exactly once, proves a clean thread, and revalidates the client.
+    pub(crate) fn finish(self) -> Result<(), RpcAuthError> {
+        self.state.finish()
+    }
+}
+
+impl fmt::Debug for AuthenticatedDesktopImpersonation<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedDesktopImpersonation([REDACTED])")
+    }
+}
+
 /// Data-free success marker for the callback's independent identity check.
 ///
 /// Unlike `AuthenticatedRpcClient`, this cannot carry launch authority and is
@@ -287,14 +345,13 @@ impl AuthenticatedRpcClient {
         self.revalidate_with(&sys::WindowsProcessAuthOps)
     }
 
-    /// Borrows the exact move-only primary token derived while the matching
-    /// RPC client was impersonated.
-    ///
-    /// The lifetime prevents a later sibling launch boundary from retaining a
-    /// raw token value beyond this fully revalidatable authentication proof.
-    #[allow(dead_code)] // Consumed by the next debug-only helper-launch slice.
-    pub(crate) fn desktop_primary_token(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        self.desktop_primary_token.as_handle()
+    /// Revalidates and impersonates the exact retained desktop token, returning
+    /// the only exact-once revert authority without exposing a token handle.
+    pub(crate) fn impersonate_desktop_user(
+        &self,
+    ) -> Result<AuthenticatedDesktopImpersonation<'_>, RpcAuthError> {
+        let state = self.impersonate_desktop_user_with(&sys::WINDOWS_PROCESS_AUTH_OPS)?;
+        Ok(AuthenticatedDesktopImpersonation { state })
     }
 
     /// Establishes exact equality between two retained process handles only
@@ -363,6 +420,52 @@ impl<P, T> AuthenticatedClient<P, T> {
             return Err(RpcAuthError::AccessDenied);
         }
         Ok(())
+    }
+
+    fn revalidate_effective_desktop_thread_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
+    where
+        O: EffectiveThreadAuthOps<Process = P, DesktopPrimaryToken = T>,
+    {
+        self.revalidate_with(ops)?;
+
+        let effective = ops
+            .effective_thread_token()
+            .map_err(|_| RpcAuthError::CallFailed)?;
+        validate_effective_desktop_thread_token(&effective)?;
+        if !same_token_identity(&effective, &self.primary)
+            || !same_token_identity(&effective, &self.desktop_primary)
+        {
+            return Err(RpcAuthError::AccessDenied);
+        }
+        Ok(())
+    }
+
+    fn impersonate_desktop_user_with<'client, 'ops, O>(
+        &'client self,
+        ops: &'ops O,
+    ) -> Result<DesktopImpersonation<'client, 'ops, P, T, O>, RpcAuthError>
+    where
+        O: DesktopImpersonationOps<Process = P, DesktopPrimaryToken = T>,
+    {
+        self.revalidate_with(ops)?;
+        if ops
+            .thread_token_state()
+            .map_err(|_| RpcAuthError::CallFailed)?
+            != ThreadTokenState::Clear
+        {
+            return Err(RpcAuthError::AccessDenied);
+        }
+        let thread_cookie = ops
+            .current_thread_cookie()
+            .map_err(|_| RpcAuthError::CallFailed)?;
+        ops.impersonate_desktop_primary_token(&self.desktop_primary_token)
+            .map_err(|_| RpcAuthError::CallFailed)?;
+
+        // There is no fallible operation between successful impersonation and
+        // construction of this exact-once owner.
+        let state = DesktopImpersonation::new(self, ops, thread_cookie);
+        state.recheck()?;
+        Ok(state)
     }
 }
 
@@ -564,7 +667,28 @@ fn validate_token(token: &TokenObservation, expected: TokenKind) -> Result<(), R
     };
     if token.token_kind != expected
         || token.token_level != expected_level
-        || !token.user_sid.has_valid_length()
+        || !satisfies_desktop_token_policy(token)
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    Ok(())
+}
+
+fn validate_effective_desktop_thread_token(token: &TokenObservation) -> Result<(), RpcAuthError> {
+    if token.token_kind != TokenKind::Impersonation
+        || !matches!(
+            token.token_level,
+            TokenLevel::Impersonation | TokenLevel::Delegation
+        )
+        || !satisfies_desktop_token_policy(token)
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    Ok(())
+}
+
+fn satisfies_desktop_token_policy(token: &TokenObservation) -> bool {
+    if !token.user_sid.has_valid_length()
         || token.logon_sid_count != 1
         || token.session_id == 0
         || token
@@ -577,22 +701,93 @@ fn validate_token(token: &TokenObservation, expected: TokenKind) -> Result<(), R
         || matches!(token.elevation, ElevationKind::Full | ElevationKind::Other)
         || !token.interactive_sid_enabled
     {
-        return Err(RpcAuthError::AccessDenied);
+        return false;
     }
-    Ok(())
+    true
 }
 
 fn same_token_identity(first: &TokenObservation, second: &TokenObservation) -> bool {
     first.user_sid == second.user_sid
+        && first.logon_sid_count == second.logon_sid_count
         && first.logon_sid == second.logon_sid
         && first.session_id == second.session_id
         && first.authentication_id == second.authentication_id
+        && first.integrity_rid == second.integrity_rid
         && first.elevation == second.elevation
         && first.restricted == second.restricted
 }
 
 fn same_primary_token(first: &TokenObservation, second: &TokenObservation) -> bool {
     same_token_identity(first, second) && first.token_id == second.token_id
+}
+
+#[must_use = "desktop impersonation must be reverted on this exact thread"]
+struct DesktopImpersonation<'client, 'ops, P, T, O>
+where
+    O: DesktopImpersonationOps<Process = P, DesktopPrimaryToken = T>,
+{
+    client: &'client AuthenticatedClient<P, T>,
+    ops: &'ops O,
+    thread_cookie: NonZeroU32,
+    active: bool,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl<'client, 'ops, P, T, O> DesktopImpersonation<'client, 'ops, P, T, O>
+where
+    O: DesktopImpersonationOps<Process = P, DesktopPrimaryToken = T>,
+{
+    const fn new(
+        client: &'client AuthenticatedClient<P, T>,
+        ops: &'ops O,
+        thread_cookie: NonZeroU32,
+    ) -> Self {
+        Self {
+            client,
+            ops,
+            thread_cookie,
+            active: true,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    fn recheck(&self) -> Result<(), RpcAuthError> {
+        if self.ops.current_thread_cookie() != Ok(self.thread_cookie) {
+            self.ops.fail_fast();
+        }
+        self.client
+            .revalidate_effective_desktop_thread_with(self.ops)
+    }
+
+    fn finish(mut self) -> Result<(), RpcAuthError> {
+        self.revert_exact();
+        self.client.revalidate_with(self.ops)
+    }
+
+    fn revert_exact(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        let current = self.ops.current_thread_cookie();
+        let reverted = self.ops.revert_desktop_impersonation();
+        let token_state = self.ops.thread_token_state();
+        if current != Ok(self.thread_cookie)
+            || reverted.is_err()
+            || token_state != Ok(ThreadTokenState::Clear)
+        {
+            self.ops.fail_fast();
+        }
+    }
+}
+
+impl<P, T, O> Drop for DesktopImpersonation<'_, '_, P, T, O>
+where
+    O: DesktopImpersonationOps<Process = P, DesktopPrimaryToken = T>,
+{
+    fn drop(&mut self) {
+        self.revert_exact();
+    }
 }
 
 #[must_use = "successful RPC impersonation must be reverted on this exact thread"]
@@ -644,14 +839,38 @@ impl<O: RpcAuthOps> Drop for ImpersonationGuard<'_, O> {
 mod tests {
     use super::{
         AuthenticatedClient, AuthenticationId, AuthenticationObservation, CallKind,
-        CallObservation, CallProtocol, ElevationKind, ImpersonationGuard, NonZeroU32,
-        ObservationError, ProcessAuthOps, RPC_AUTHN_LEVEL_PACKET_PRIVACY, RPC_AUTHN_SERVICE_WINNT,
-        RPC_AUTHZ_SERVICE_NONE, RPC_CALL_STATUS_ACTIVE, RpcAuthError, RpcAuthOps, SidBytes,
-        ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
-        authenticate_callback_with, authenticate_with,
+        CallObservation, CallProtocol, DesktopImpersonationOps, EffectiveThreadAuthOps,
+        ElevationKind, ImpersonationGuard, NonZeroU32, ObservationError, ProcessAuthOps,
+        RPC_AUTHN_LEVEL_PACKET_PRIVACY, RPC_AUTHN_SERVICE_WINNT, RPC_AUTHZ_SERVICE_NONE,
+        RPC_CALL_STATUS_ACTIVE, RpcAuthError, RpcAuthOps, SidBytes, ThreadTokenState, TokenId,
+        TokenKind, TokenLevel, TokenObservation, authenticate_callback_with, authenticate_with,
     };
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    trait AmbiguousIfSend<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+    trait AmbiguousIfClone<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+    trait AmbiguousIfCopy<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
@@ -665,6 +884,7 @@ mod tests {
         PrimaryToken,
         DuplicateDesktopPrimary,
         DesktopPrimaryToken,
+        EffectiveThreadToken,
         Revert,
         ExactProcess,
         SameProcess,
@@ -676,6 +896,35 @@ mod tests {
 
     struct FakeDesktopPrimaryToken {
         drops: Rc<Cell<u32>>,
+    }
+
+    #[test]
+    fn desktop_impersonation_authority_is_thread_bound_move_only() {
+        type Authority = super::AuthenticatedDesktopImpersonation<'static>;
+
+        let _ = <Authority as AmbiguousIfSend<_>>::marker;
+        let _ = <Authority as AmbiguousIfSync<_>>::marker;
+        let _ = <Authority as AmbiguousIfClone<_>>::marker;
+        let _ = <Authority as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum EffectiveTokenMutation {
+        Exact,
+        UserSid,
+        LogonSidCount,
+        LogonSid,
+        SessionId,
+        AuthenticationId,
+        IntegrityRid,
+        Elevation,
+        Restricted,
+        AppContainer,
+        UiAccess,
+        InteractiveSidDisabled,
+        WrongKind,
+        WrongLevel,
+        Delegation,
     }
 
     impl Drop for FakeDesktopPrimaryToken {
@@ -708,6 +957,8 @@ mod tests {
         desktop_primary_session_id: Cell<u32>,
         desktop_primary_token_id: Cell<u32>,
         desktop_primary_drops: Rc<Cell<u32>>,
+        effective_thread_token_ok: Cell<bool>,
+        effective_token_mutation: Cell<EffectiveTokenMutation>,
         exact_process: Cell<bool>,
         same_process: Cell<bool>,
         revert_ok: Cell<bool>,
@@ -739,6 +990,8 @@ mod tests {
                 desktop_primary_session_id: Cell::new(3),
                 desktop_primary_token_id: Cell::new(21),
                 desktop_primary_drops: Rc::new(Cell::new(0)),
+                effective_thread_token_ok: Cell::new(true),
+                effective_token_mutation: Cell::new(EffectiveTokenMutation::Exact),
                 exact_process: Cell::new(true),
                 same_process: Cell::new(true),
                 revert_ok: Cell::new(true),
@@ -751,6 +1004,42 @@ mod tests {
 
         fn events(&self) -> Vec<Event> {
             self.events.borrow().clone()
+        }
+    }
+
+    impl EffectiveThreadAuthOps for FakeOps {
+        fn effective_thread_token(&self) -> Result<TokenObservation, ObservationError> {
+            self.record(Event::EffectiveThreadToken);
+            if !self.effective_thread_token_ok.get() {
+                return Err(ObservationError::Incomplete);
+            }
+            let mut token = approved_token(TokenKind::Impersonation, 1);
+            match self.effective_token_mutation.get() {
+                EffectiveTokenMutation::Exact => {}
+                EffectiveTokenMutation::UserSid => token.user_sid = SidBytes(vec![4; 12]),
+                EffectiveTokenMutation::LogonSidCount => token.logon_sid_count = 2,
+                EffectiveTokenMutation::LogonSid => {
+                    token.logon_sid = Some(SidBytes(vec![4; 12]));
+                }
+                EffectiveTokenMutation::SessionId => token.session_id = 4,
+                EffectiveTokenMutation::AuthenticationId => {
+                    token.authentication_id.low_part = 19;
+                }
+                EffectiveTokenMutation::IntegrityRid => token.integrity_rid = 0x3000,
+                EffectiveTokenMutation::Elevation => token.elevation = ElevationKind::Limited,
+                EffectiveTokenMutation::Restricted => token.restricted = true,
+                EffectiveTokenMutation::AppContainer => token.app_container = true,
+                EffectiveTokenMutation::UiAccess => token.ui_access = true,
+                EffectiveTokenMutation::InteractiveSidDisabled => {
+                    token.interactive_sid_enabled = false;
+                }
+                EffectiveTokenMutation::WrongKind => token.token_kind = TokenKind::Primary,
+                EffectiveTokenMutation::WrongLevel => token.token_level = TokenLevel::Other,
+                EffectiveTokenMutation::Delegation => {
+                    token.token_level = TokenLevel::Delegation;
+                }
+            }
+            Ok(token)
         }
     }
 
@@ -904,6 +1193,31 @@ mod tests {
         fn fail_fast(&self) -> ! {
             self.record(Event::FailFast);
             std::panic::resume_unwind(Box::new("test fail-fast sentinel"))
+        }
+    }
+
+    impl DesktopImpersonationOps for FakeOps {
+        fn thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
+            <Self as RpcAuthOps>::thread_token_state(self)
+        }
+
+        fn current_thread_cookie(&self) -> Result<NonZeroU32, ObservationError> {
+            <Self as RpcAuthOps>::current_thread_cookie(self)
+        }
+
+        fn impersonate_desktop_primary_token(
+            &self,
+            _token: &Self::DesktopPrimaryToken,
+        ) -> Result<(), ObservationError> {
+            <Self as RpcAuthOps>::impersonate(self)
+        }
+
+        fn revert_desktop_impersonation(&self) -> Result<(), ObservationError> {
+            <Self as RpcAuthOps>::revert(self)
+        }
+
+        fn fail_fast(&self) -> ! {
+            <Self as RpcAuthOps>::fail_fast(self)
         }
     }
 
@@ -1280,9 +1594,19 @@ mod tests {
     }
 
     #[test]
-    fn elevation_and_filtering_must_match_across_effective_tokens() {
+    fn exact_identity_facts_must_match_across_effective_tokens() {
         let mut impersonation = approved_token(TokenKind::Impersonation, 1);
         let mut primary = approved_token(TokenKind::Primary, 1);
+        assert!(super::same_token_identity(&impersonation, &primary));
+
+        impersonation.logon_sid_count = 2;
+        assert!(!super::same_token_identity(&impersonation, &primary));
+        primary.logon_sid_count = 2;
+        assert!(super::same_token_identity(&impersonation, &primary));
+
+        impersonation.integrity_rid = 0x3000;
+        assert!(!super::same_token_identity(&impersonation, &primary));
+        primary.integrity_rid = 0x3000;
         assert!(super::same_token_identity(&impersonation, &primary));
 
         impersonation.restricted = true;
@@ -1294,6 +1618,106 @@ mod tests {
         assert!(!super::same_token_identity(&impersonation, &primary));
         primary.elevation = ElevationKind::Limited;
         assert!(super::same_token_identity(&impersonation, &primary));
+    }
+
+    #[test]
+    fn effective_desktop_thread_revalidation_accepts_exact_or_delegation_level() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            ops.events.borrow_mut().clear();
+            assert_eq!(proof.revalidate_effective_desktop_thread_with(&ops), Ok(()));
+            assert_eq!(
+                ops.events(),
+                vec![
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::EffectiveThreadToken,
+                ]
+            );
+
+            ops.events.borrow_mut().clear();
+            ops.effective_token_mutation
+                .set(EffectiveTokenMutation::Delegation);
+            assert_eq!(proof.revalidate_effective_desktop_thread_with(&ops), Ok(()));
+            assert_eq!(ops.events().last(), Some(&Event::EffectiveThreadToken));
+        }
+    }
+
+    #[test]
+    fn effective_desktop_thread_revalidation_rejects_every_changed_fact() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            for mutation in [
+                EffectiveTokenMutation::UserSid,
+                EffectiveTokenMutation::LogonSidCount,
+                EffectiveTokenMutation::LogonSid,
+                EffectiveTokenMutation::SessionId,
+                EffectiveTokenMutation::AuthenticationId,
+                EffectiveTokenMutation::IntegrityRid,
+                EffectiveTokenMutation::Elevation,
+                EffectiveTokenMutation::Restricted,
+                EffectiveTokenMutation::AppContainer,
+                EffectiveTokenMutation::UiAccess,
+                EffectiveTokenMutation::InteractiveSidDisabled,
+                EffectiveTokenMutation::WrongKind,
+                EffectiveTokenMutation::WrongLevel,
+            ] {
+                ops.events.borrow_mut().clear();
+                ops.effective_token_mutation.set(mutation);
+                assert_eq!(
+                    proof.revalidate_effective_desktop_thread_with(&ops),
+                    Err(RpcAuthError::AccessDenied),
+                    "mutation {mutation:?} must fail closed"
+                );
+                assert_eq!(ops.events().last(), Some(&Event::EffectiveThreadToken));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_or_unobservable_effective_thread_token_fails_closed() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            ops.events.borrow_mut().clear();
+            ops.effective_thread_token_ok.set(false);
+            assert_eq!(
+                proof.revalidate_effective_desktop_thread_with(&ops),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert_eq!(ops.events().last(), Some(&Event::EffectiveThreadToken));
+        }
+    }
+
+    #[test]
+    fn stale_retained_proof_fails_before_effective_thread_observation() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            ops.events.borrow_mut().clear();
+            ops.primary_token_id.set(13);
+            assert_eq!(
+                proof.revalidate_effective_desktop_thread_with(&ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(!ops.events().contains(&Event::EffectiveThreadToken));
+
+            ops.events.borrow_mut().clear();
+            ops.primary_token_id.set(12);
+            ops.desktop_primary_token_id.set(22);
+            assert_eq!(
+                proof.revalidate_effective_desktop_thread_with(&ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(!ops.events().contains(&Event::EffectiveThreadToken));
+        }
     }
 
     #[test]
@@ -1413,10 +1837,66 @@ mod tests {
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains('9'));
 
+        let observation = approved_token(TokenKind::Impersonation, 7);
+        assert_eq!(format!("{observation:?}"), "TokenObservation([REDACTED])");
+
         let callback = super::AuthenticatedRpcCallback { _private: () };
         assert_eq!(
             format!("{callback:?}"),
             "AuthenticatedRpcCallback([REDACTED])"
+        );
+    }
+
+    #[test]
+    fn desktop_impersonation_lease_rechecks_and_reverts_exactly_once() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        ops.events.borrow_mut().clear();
+
+        if let Ok(proof) = proof {
+            let lease = proof.impersonate_desktop_user_with(&ops);
+            assert!(lease.is_ok());
+            if let Ok(lease) = lease {
+                assert_eq!(lease.recheck(), Ok(()));
+                assert_eq!(lease.finish(), Ok(()));
+            }
+        }
+        assert_eq!(
+            ops.events()
+                .iter()
+                .filter(|event| **event == Event::Impersonate)
+                .count(),
+            1
+        );
+        assert_eq!(
+            ops.events()
+                .iter()
+                .filter(|event| **event == Event::Revert)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn desktop_impersonation_lease_drop_is_exact_once_fallback() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        ops.events.borrow_mut().clear();
+
+        if let Ok(proof) = proof {
+            let lease = proof.impersonate_desktop_user_with(&ops);
+            assert!(lease.is_ok());
+            ops.events.borrow_mut().clear();
+            drop(lease);
+        }
+        assert_eq!(
+            ops.events()
+                .iter()
+                .filter(|event| **event == Event::Revert)
+                .count(),
+            1
         );
     }
 

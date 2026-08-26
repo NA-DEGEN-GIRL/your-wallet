@@ -33,9 +33,18 @@ use windows::Win32::System::Rpc::{
 };
 use windows::core::{PCWSTR, w};
 
+#[cfg(not(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+)))]
 use self::auth::AuthenticatedRpcClient;
 #[cfg(test)]
 use self::auth::RpcAuthError;
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+pub(crate) use self::auth::{AuthenticatedDesktopImpersonation, AuthenticatedRpcClient};
 use self::dispatch::{AuthenticationFailure, DispatchEngine};
 use self::epoch::SystemMonotonicClock;
 use self::lifecycle::{LifecycleHooks, ListeningStatusRpcServer, PreparedStatusRpcServer, RpcOps};

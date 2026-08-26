@@ -9,7 +9,6 @@ use core::ptr;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
-use std::os::windows::io::BorrowedHandle;
 use std::ptr::NonNull;
 
 use key_agent_service_rpc_sys::{CallBinding, INTERFACE_UUID};
@@ -18,14 +17,14 @@ use windows::Win32::Foundation::{
     INVALID_HANDLE_VALUE, LUID, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, GetLengthSid, GetTokenInformation, IsValidSid, PSID,
-    SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES, SecurityImpersonation, TOKEN_ACCESS_MASK,
-    TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_GROUPS,
-    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE,
-    TOKEN_USER, TokenElevationType, TokenElevationTypeDefault, TokenElevationTypeFull,
-    TokenElevationTypeLimited, TokenGroups, TokenHasRestrictions, TokenImpersonation,
-    TokenImpersonationLevel, TokenIntegrityLevel, TokenIsAppContainer, TokenPrimary,
-    TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
+    DuplicateTokenEx, GetLengthSid, GetTokenInformation, ImpersonateLoggedOnUser, IsValidSid, PSID,
+    RevertToSelf, SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES, SecurityDelegation,
+    SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+    TOKEN_ELEVATION_TYPE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL,
+    TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE, TOKEN_USER, TokenElevationType,
+    TokenElevationTypeDefault, TokenElevationTypeFull, TokenElevationTypeLimited, TokenGroups,
+    TokenHasRestrictions, TokenImpersonation, TokenImpersonationLevel, TokenIntegrityLevel,
+    TokenIsAppContainer, TokenPrimary, TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
 };
 use windows::Win32::System::Diagnostics::Debug::RaiseFailFastException;
 use windows::Win32::System::Rpc::{
@@ -45,8 +44,9 @@ use zeroize::Zeroize as _;
 
 use super::{
     AuthenticationId, AuthenticationObservation, CallKind, CallObservation, CallProtocol,
-    ElevationKind, ObservationError, ProcessAuthOps, RpcAuthOps, SidBytes, ThreadTokenState,
-    TokenId, TokenKind, TokenLevel, TokenObservation,
+    DesktopImpersonationOps, EffectiveThreadAuthOps, ElevationKind, ObservationError,
+    ProcessAuthOps, RpcAuthOps, SidBytes, ThreadTokenState, TokenId, TokenKind, TokenLevel,
+    TokenObservation,
 };
 
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
@@ -92,8 +92,8 @@ impl Drop for RetainedProcess {
 /// Exact primary-token handle derived while the RPC client is impersonated.
 ///
 /// The owner is move-only, non-inheritable, and deliberately not `Sync`. Its
-/// only exposed operation is a lifetime-bound borrow for a later sibling launch
-/// boundary; raw ownership never leaves this module.
+/// only external operations are exact observations and narrowly scoped native
+/// uses implemented inside this adapter; raw ownership never leaves the module.
 pub(crate) struct DesktopPrimaryToken {
     token: OwnedToken,
     _not_sync: PhantomData<Cell<()>>,
@@ -107,12 +107,6 @@ unsafe impl Send for DesktopPrimaryToken {}
 impl DesktopPrimaryToken {
     const fn raw(&self) -> HANDLE {
         self.token.raw()
-    }
-
-    pub(crate) fn as_handle(&self) -> BorrowedHandle<'_> {
-        // SAFETY: `self` owns the live token handle and the borrow cannot outlive
-        // this move-only authentication proof.
-        unsafe { BorrowedHandle::borrow_raw(self.raw().0) }
     }
 }
 
@@ -217,6 +211,8 @@ impl<'call> WindowsRpcAuthOps<'call> {
 
 pub(super) struct WindowsProcessAuthOps;
 
+pub(super) static WINDOWS_PROCESS_AUTH_OPS: WindowsProcessAuthOps = WindowsProcessAuthOps;
+
 impl ProcessAuthOps for WindowsProcessAuthOps {
     type Process = RetainedProcess;
     type DesktopPrimaryToken = DesktopPrimaryToken;
@@ -260,6 +256,39 @@ impl ProcessAuthOps for WindowsProcessAuthOps {
         }
         // SAFETY: both retained handles are live and only observed here.
         Ok(unsafe { CompareObjectHandles(first.raw(), second.raw()) }.as_bool())
+    }
+}
+
+impl EffectiveThreadAuthOps for WindowsProcessAuthOps {
+    fn effective_thread_token(&self) -> Result<TokenObservation, ObservationError> {
+        effective_thread_token_observation()
+    }
+}
+
+impl DesktopImpersonationOps for WindowsProcessAuthOps {
+    fn thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
+        thread_token_state()
+    }
+
+    fn current_thread_cookie(&self) -> Result<NonZeroU32, ObservationError> {
+        current_thread_cookie()
+    }
+
+    fn impersonate_desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<(), ObservationError> {
+        impersonate_desktop_primary_token(token)
+    }
+
+    fn revert_desktop_impersonation(&self) -> Result<(), ObservationError> {
+        // SAFETY: the auth-owned same-thread lease calls this exactly once
+        // after successful ImpersonateLoggedOnUser.
+        unsafe { RevertToSelf() }.map_err(|_| ObservationError::Incomplete)
+    }
+
+    fn fail_fast(&self) -> ! {
+        fail_fast()
     }
 }
 
@@ -422,6 +451,18 @@ fn rpc_success(status: i32) -> Result<(), ObservationError> {
     }
 }
 
+fn current_thread_cookie() -> Result<NonZeroU32, ObservationError> {
+    // SAFETY: this scalar query has no preconditions.
+    NonZeroU32::new(unsafe { GetCurrentThreadId() }).ok_or(ObservationError::Incomplete)
+}
+
+fn fail_fast() -> ! {
+    // SAFETY: null records request the canonical fail-fast exception without
+    // attacker-controlled diagnostic material.
+    unsafe { RaiseFailFastException(None, None, 0) };
+    std::process::abort()
+}
+
 fn thread_token_state() -> Result<ThreadTokenState, ObservationError> {
     let mut token = HANDLE::default();
     // SAFETY: the current-thread pseudo-handle is valid; OpenAsSelf makes this
@@ -448,6 +489,21 @@ fn open_current_thread_token() -> Result<OwnedToken, ObservationError> {
         return Err(ObservationError::Incomplete);
     }
     Ok(OwnedToken(token))
+}
+
+fn effective_thread_token_observation() -> Result<TokenObservation, ObservationError> {
+    let token = open_current_thread_token()?;
+    token_observation(token.raw())
+}
+
+pub(super) fn impersonate_desktop_primary_token(
+    token: &DesktopPrimaryToken,
+) -> Result<(), ObservationError> {
+    validate_desktop_primary_token_handle(token)?;
+    // SAFETY: this adapter retains the exact validated primary-token handle.
+    // The caller installs an exact-once RevertToSelf owner immediately after
+    // this success and independently validates the resulting thread token.
+    unsafe { ImpersonateLoggedOnUser(token.raw()) }.map_err(|_| ObservationError::Incomplete)
 }
 
 fn duplicate_current_thread_desktop_primary_token() -> Result<DesktopPrimaryToken, ObservationError>
@@ -630,12 +686,18 @@ fn token_kind_and_level(
     fill_token_fixed(token, TokenImpersonationLevel, &mut level)?;
     Ok((
         TokenKind::Impersonation,
-        if level == SecurityImpersonation {
-            TokenLevel::Impersonation
-        } else {
-            TokenLevel::Other
-        },
+        classify_impersonation_level(level),
     ))
+}
+
+fn classify_impersonation_level(level: SECURITY_IMPERSONATION_LEVEL) -> TokenLevel {
+    if level == SecurityImpersonation {
+        TokenLevel::Impersonation
+    } else if level == SecurityDelegation {
+        TokenLevel::Delegation
+    } else {
+        TokenLevel::Other
+    }
 }
 
 fn token_elevation(token: HANDLE) -> Result<ElevationKind, ObservationError> {
@@ -914,11 +976,13 @@ fn invalid_handle(handle: HANDLE) -> bool {
 mod tests {
     use super::{
         DESKTOP_PRIMARY_TOKEN_ACCESS, DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, OwnedToken,
-        SidBytes, exact_boolean, integrity_rid, parse_token_has_restrictions, token_groups_bytes,
+        SidBytes, TokenLevel, classify_impersonation_level, exact_boolean, integrity_rid,
+        parse_token_has_restrictions, token_groups_bytes,
     };
     use std::marker::PhantomData;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Security::{
+        SecurityAnonymous, SecurityDelegation, SecurityIdentification, SecurityImpersonation,
         TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID,
         TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
     };
@@ -972,6 +1036,26 @@ mod tests {
             | TOKEN_ADJUST_DEFAULT.0
             | TOKEN_ADJUST_SESSIONID.0;
         assert_eq!(DESKTOP_PRIMARY_TOKEN_ACCESS.0 & forbidden, 0);
+    }
+
+    #[test]
+    fn effective_thread_level_accepts_impersonation_or_delegation_only() {
+        assert_eq!(
+            classify_impersonation_level(SecurityImpersonation),
+            TokenLevel::Impersonation
+        );
+        assert_eq!(
+            classify_impersonation_level(SecurityDelegation),
+            TokenLevel::Delegation
+        );
+        assert_eq!(
+            classify_impersonation_level(SecurityAnonymous),
+            TokenLevel::Other
+        );
+        assert_eq!(
+            classify_impersonation_level(SecurityIdentification),
+            TokenLevel::Other
+        );
     }
 
     #[test]

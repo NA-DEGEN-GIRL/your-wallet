@@ -142,10 +142,17 @@ The following are existing facts, not new service claims:
   not accepted as the descriptor principal. The same feature also owns a
   distinct unnamed non-nested Job primitive with exact
   `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, `ActiveProcessLimit = 1`, a
-  lifetime-bound creation attribute, and bounded whole-Job cleanup. There is no
-  RPC command, startup attribute list, process creation, or executable entrypoint
-  using these primitives yet; a future launch-attempt owner must consume them
-  once and retain them through post-create readback.
+  lifetime-bound creation attribute, and bounded whole-Job cleanup. Fixed
+  target-user Approval and Secret Input profile owners now run profile APIs
+  through the auth-owned exact-once impersonation lease, bind the returned
+  `...\AC` folder as `LOCALAPPDATA`, and retain zero-capability/AAP-opt-out
+  attributes. A five-slot extended-startup owner adds the Job, full helper
+  mitigation, those LPAC attributes, and restricted-child policy with null
+  standard handles and no handle list. Its process-creation view is move-only
+  and lifetime-bound rather than a copyable `STARTUPINFOW`. There is still no
+  RPC command, process creation, or executable entrypoint using these
+  primitives; a future launch-attempt owner must consume them once and retain
+  them through post-create readback.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -658,9 +665,22 @@ passes on the current interactive Windows host and now includes manager-only
 primary-token duplication and retained-token revalidation, but it is only a
 narrow local kernel round trip. The service-token parser and negative policy
 matrix are implemented, while the installed restricted-service positive probe
-remains intentionally ignored. The claimed-build matrix, endpoint-squatting,
-SCM configuration/service identity, cross-session LPAC, and real Broker-client
-evidence are still absent.
+remains intentionally ignored. A further compile-only debug seam now retains
+the exact service token for paired service-owned process/thread descriptors,
+prepares a separate one-process Job, and can prepare either fixed target-user
+Approval or Secret Input LPAC profile while an auth-owned, same-thread,
+exact-once impersonation lease is active. Profile creation, SID derivation, and
+the authoritative `GetAppContainerFolderPath` observation are individually
+bookended by identity revalidation. The prepared environment binds
+`LOCALAPPDATA` to that returned AppContainer `...\AC` folder and adds only the
+verified `SystemRoot` and `WINDIR`; creation attributes contain zero
+capabilities and the ALL APPLICATION PACKAGES opt-out. A disjoint five-slot
+startup owner binds the one-process Job, existing helper mitigation policy,
+LPAC attributes, and restricted-child policy without standard handles or a
+handle list. These types have no RPC/executable caller and still perform no
+`CreateProcessAsUserW`, remote-handle injection, or R10/R11 gate. The
+claimed-build matrix, endpoint-squatting, SCM configuration/service identity,
+cross-session LPAC launch, and real Broker-client evidence are still absent.
 
 ### Phase 2 — Installer, service host, storage, and network boundary
 
@@ -761,6 +781,11 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-26 - Added compile-only target-user launch inputs: auth-owned
+  exact-once desktop impersonation, fixed Approval/Secret Input profile
+  observation, exact AppContainer `LOCALAPPDATA`, zero-capability/AAP-opt-out
+  storage, and a five-slot no-handle-list startup owner. No process creation,
+  helper execution, or release authority was enabled.
 - 2026-08-26 — Added manager-only authenticated desktop `TokenPrimary`
   duplication/retention and the debug-only restricted-service-token observer.
   Callback authentication retains no launch authority, exact token access and
