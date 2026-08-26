@@ -7,6 +7,7 @@
 
 #![allow(dead_code)]
 
+mod channel;
 mod job;
 mod process;
 mod startup;

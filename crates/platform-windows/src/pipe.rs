@@ -90,6 +90,12 @@ impl PrivateApprovalPipes {
             &security,
             sys::PipeDirection::ParentReads,
         )?;
+        sys::validate_private_pipe_handles(
+            &parent_request,
+            &child_request,
+            &parent_response,
+            &child_response,
+        )?;
         Ok(Self {
             parent_request,
             child_request,
@@ -104,6 +110,42 @@ impl PrivateApprovalPipes {
 
     pub(crate) fn child_output(&self) -> BorrowedHandle<'_> {
         self.child_response.as_handle()
+    }
+
+    /// Revalidates the exact non-inheritable, distinct child-server sources
+    /// immediately before the service duplicates them into an authenticated
+    /// helper process.
+    #[allow(dead_code)] // Compiled for the exact debug-only service launch seam.
+    pub(crate) fn revalidate_service_launch_sources(&self) -> Result<(), PipeError> {
+        sys::validate_private_pipe_handles(
+            &self.parent_request,
+            &self.child_request,
+            &self.parent_response,
+            &self.child_response,
+        )
+    }
+
+    /// Closes both local child-server sources with checked, independent
+    /// attempts and returns only the role-typed service endpoints.
+    ///
+    /// A failed checked close retains its owner until the other source has also
+    /// been attempted, then lets ordinary RAII retry the failed close. Parent
+    /// endpoints are dropped instead of returned if either checked close fails.
+    #[allow(dead_code)] // Compiled for the exact debug-only service launch seam.
+    pub(crate) fn into_parent_checked(
+        self,
+    ) -> Result<(ApprovalRequestWriter, ApprovalResponseReader), PipeError> {
+        let Self {
+            parent_request,
+            child_request,
+            parent_response,
+            child_response,
+        } = self;
+        sys::close_source_pair_checked(child_request, child_response)?;
+        Ok((
+            ApprovalRequestWriter(parent_request),
+            ApprovalResponseReader(parent_response),
+        ))
     }
 
     pub(crate) fn into_parent(self) -> (ApprovalRequestWriter, ApprovalResponseReader) {
@@ -236,6 +278,12 @@ impl PrivateSecretInputPipes {
             &security,
             sys::PipeDirection::ParentReads,
         )?;
+        sys::validate_private_pipe_handles(
+            &parent_request,
+            &child_request,
+            &parent_response,
+            &child_response,
+        )?;
         Ok(Self {
             parent_request,
             child_request,
@@ -250,6 +298,40 @@ impl PrivateSecretInputPipes {
 
     pub(crate) fn child_output(&self) -> BorrowedHandle<'_> {
         self.child_response.as_handle()
+    }
+
+    /// Revalidates the exact non-inheritable, distinct child-server sources
+    /// immediately before the service duplicates them into an authenticated
+    /// helper process.
+    pub(crate) fn revalidate_service_launch_sources(&self) -> Result<(), PipeError> {
+        sys::validate_private_pipe_handles(
+            &self.parent_request,
+            &self.child_request,
+            &self.parent_response,
+            &self.child_response,
+        )
+    }
+
+    /// Closes both local child-server sources with checked, independent
+    /// attempts and returns only the role-typed service endpoints.
+    ///
+    /// A failed checked close retains its owner until the other source has also
+    /// been attempted, then lets ordinary RAII retry the failed close. Parent
+    /// endpoints are dropped instead of returned if either checked close fails.
+    pub(crate) fn into_parent_checked(
+        self,
+    ) -> Result<(SecretRequestWriter, SecretResponseReader), PipeError> {
+        let Self {
+            parent_request,
+            child_request,
+            parent_response,
+            child_response,
+        } = self;
+        sys::close_source_pair_checked(child_request, child_response)?;
+        Ok((
+            SecretRequestWriter(parent_request),
+            SecretResponseReader(parent_response),
+        ))
     }
 
     pub(crate) fn into_parent(self) -> (SecretRequestWriter, SecretResponseReader) {
@@ -387,7 +469,7 @@ impl PrivateKeyAgentPipes {
             &security,
             sys::PipeDirection::ParentReads,
         )?;
-        sys::validate_key_agent_persistent_pipe_handles(
+        sys::validate_private_pipe_handles(
             &parent_request,
             &child_request_source,
             &parent_response,
@@ -848,6 +930,22 @@ mod sys {
         pub(super) const fn raw(&self) -> HANDLE {
             self.0
         }
+
+        /// Attempts to close this exact owner once.
+        ///
+        /// Success invalidates the wrapper before it drops, so the handle can
+        /// never be closed twice. Failure returns the still-armed owner and
+        /// therefore preserves the ordinary RAII close retry.
+        pub(super) fn close_checked(mut self) -> Result<(), Self> {
+            // SAFETY: this wrapper uniquely owns one live Win32 handle.
+            match unsafe { CloseHandle(self.0) } {
+                Ok(()) => {
+                    self.0 = HANDLE::default();
+                    Ok(())
+                }
+                Err(_) => Err(self),
+            }
+        }
     }
 
     impl AsHandle for OwnedWinHandle {
@@ -867,11 +965,53 @@ mod sys {
     impl Drop for OwnedWinHandle {
         fn drop(&mut self) {
             // SAFETY: `OwnedWinHandle` is constructed only from a successful Win32
-            // handle-returning call and owns that handle exactly once.
-            unsafe {
-                let _ = CloseHandle(self.0);
+            // handle-returning call and owns that handle exactly once. A successful
+            // checked close replaces the value with the invalid default first.
+            if !self.0.is_invalid() {
+                // SAFETY: the non-invalid value remains uniquely owned here.
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
             }
         }
+    }
+
+    trait CheckedCloseOwner: Sized {
+        fn close_owned_checked(self) -> Result<(), Self>;
+    }
+
+    impl CheckedCloseOwner for OwnedWinHandle {
+        fn close_owned_checked(self) -> Result<(), Self> {
+            self.close_checked()
+        }
+    }
+
+    fn close_pair_checked<First, Second>(first: First, second: Second) -> Result<(), PipeError>
+    where
+        First: CheckedCloseOwner,
+        Second: CheckedCloseOwner,
+    {
+        let first_retry = first.close_owned_checked().err();
+        let second_retry = second.close_owned_checked().err();
+        let failed = first_retry.is_some() || second_retry.is_some();
+
+        // A failed checked close deliberately keeps its owner armed. Dropping
+        // both retained owners here performs the ordinary independent RAII
+        // retry only after both initial close attempts have run.
+        drop(first_retry);
+        drop(second_retry);
+        if failed {
+            Err(PipeError::OperatingSystem)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn close_source_pair_checked(
+        request: OwnedWinHandle,
+        response: OwnedWinHandle,
+    ) -> Result<(), PipeError> {
+        close_pair_checked(request, response)
     }
 
     pub(super) struct PipeSecurity {
@@ -1082,7 +1222,7 @@ mod sys {
     }
 
     #[allow(dead_code)] // Reserved for the private Key Agent supervisor seam.
-    pub(super) fn validate_key_agent_persistent_pipe_handles(
+    pub(super) fn validate_private_pipe_handles(
         parent_request: &OwnedWinHandle,
         child_request_source: &OwnedWinHandle,
         parent_response: &OwnedWinHandle,
@@ -1790,6 +1930,84 @@ mod sys {
                 .ok_or(PipeError::OperatingSystem)?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod checked_close_tests {
+        use core::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::{CheckedCloseOwner, PipeError, close_pair_checked};
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Event {
+            Attempt(u8),
+            RaiiRetry(u8),
+        }
+
+        struct FakeCloseOwner {
+            id: u8,
+            fails: bool,
+            retry_armed: bool,
+            events: Rc<RefCell<Vec<Event>>>,
+        }
+
+        impl CheckedCloseOwner for FakeCloseOwner {
+            fn close_owned_checked(mut self) -> Result<(), Self> {
+                self.events.borrow_mut().push(Event::Attempt(self.id));
+                if self.fails {
+                    self.retry_armed = true;
+                    Err(self)
+                } else {
+                    self.retry_armed = false;
+                    Ok(())
+                }
+            }
+        }
+
+        impl Drop for FakeCloseOwner {
+            fn drop(&mut self) {
+                if self.retry_armed {
+                    self.events.borrow_mut().push(Event::RaiiRetry(self.id));
+                }
+            }
+        }
+
+        fn owner(id: u8, fails: bool, events: &Rc<RefCell<Vec<Event>>>) -> FakeCloseOwner {
+            FakeCloseOwner {
+                id,
+                fails,
+                retry_armed: false,
+                events: Rc::clone(events),
+            }
+        }
+
+        #[test]
+        fn checked_close_attempts_both_sources_before_any_raii_retry() {
+            for (first_fails, second_fails, expected) in [
+                (false, false, Ok(())),
+                (true, false, Err(PipeError::OperatingSystem)),
+                (false, true, Err(PipeError::OperatingSystem)),
+                (true, true, Err(PipeError::OperatingSystem)),
+            ] {
+                let events = Rc::new(RefCell::new(Vec::new()));
+                assert_eq!(
+                    close_pair_checked(
+                        owner(1, first_fails, &events),
+                        owner(2, second_fails, &events),
+                    ),
+                    expected
+                );
+                let mut expected_events = vec![Event::Attempt(1), Event::Attempt(2)];
+                if first_fails {
+                    expected_events.push(Event::RaiiRetry(1));
+                }
+                if second_fails {
+                    expected_events.push(Event::RaiiRetry(2));
+                }
+                assert_eq!(*events.borrow(), expected_events);
+            }
+        }
     }
 }
 
