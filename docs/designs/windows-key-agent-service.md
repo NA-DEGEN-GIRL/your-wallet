@@ -161,41 +161,90 @@ The following are existing facts, not new service claims:
   token. The child must have the fixed role SID, zero capabilities, LPAC/AAP
   opt-out state, the target session, and the authenticated desktop user's exact
   `TokenUser`, single logon SID, and `AuthenticationId`.
-- The attempt consumes a move-only fresh-debugger-thread witness. It neither
-  receives/continues a debug event nor resumes/detaches the child, and never
+- The pre-event creation attempt consumes a move-only fresh-debugger-thread
+  witness. That subtransition neither receives/continues a debug event nor
+  resumes/detaches the child, and never
   calls `DebugSetProcessKillOnExit(FALSE)`. On failure after creation it requests
   exact-process termination and then whole-Job termination before leaving that
   thread. Bounded process and Job reap requires the matching thread-exit/join
   proof. The seam still has no RPC command or executable caller and enables no
-  release path.
-- A separate child-only leaf crate, `key-agent-service-helper-bootstrap`, depends
-  on `key-agent-service-wire` and target-specific `windows` APIs, not on
-  `platform-windows`, Approval, Secret Input, or the service. Its always-
-  available secret-free canonical 72-byte ACK codec provides correlation only,
-  not authentication or authority. The child capture/adoption API is further
+  release path. The later dormant parent gate below separately owns its admitted
+  debug-event sequence.
+- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte
+  specification and secret-free canonical 100-byte hello/72-byte ACK codecs to
+  the optional, default-feature-disabled `platform-windows` launch feature.
+  Those values provide correlation only, not authentication or authority. The
+  child capture/adoption/completion API remains
   limited to Windows x86_64 plus the explicit
   `child-capture-feasibility-test-hook` feature and `debug_assertions`; it has no
-  executable, default, or release reachability and must not run without the
+  UI or executable, default, or release reachability and must not run without the
   authenticated parent debugger ready for its breakpoint.
-- That leaf's naked stub is exactly 34 bytes: `movabs` public markers into R10
+- The capture stub is exactly 34 bytes: `movabs` public markers into R10
   and R11, `INT3`, stores of R10/R11 through RCX/RDX, 32-bit XOR clears of both
   registers, and `RET`. Adoption rejects zero, negative/invalid or pseudo,
   equal, standard-handle-aliasing, nonzero-flag, non-`FILE_TYPE_PIPE`, and
   same-object candidates. It makes fresh child-local duplicates with explicit
   desired access `0x00100001`/`0x00100002`, inheritance false, and options zero,
   verifies object continuity, and checked-closes both launcher-known
-  candidates. Its safe state exposes neither raw handles nor I/O.
-- Every capture or adoption failure is process-terminal: the child calls
-  `std::process::abort()` and exposes no failure return. No UI code can continue;
-  the OS closes the child's entire handle table, and the parent must terminate
-  and reap the helper Job.
+  candidates. The independent adoption-complete stub is exactly 28 bytes with
+  different R10/R11 markers, one `INT3`, both register clears, and `RET`; both
+  breakpoints are at offset 20.
+- The child exact-reads/canonically decodes the 100-byte hello, binds expected
+  role, its current child PID, a distinct service PID, child-creation `FILETIME`, a strict
+  future deadline no more than five seconds away, and both pipe client PIDs to
+  the service. It completes one exact synchronous 72-byte ACK write and enters
+  gate two. Every capture, adoption, framing, role, identity, deadline, peer,
+  write, or second-gate failure calls `std::process::abort()`.
+- The dormant parent uses a bounded read-only reparse-point reopen with file
+  identity checked before and after reading, then preflights exactly one
+  nonoverlapping copy of each complete gate in initialized executable
+  nonwritable AMD64 PE32+ code. It requires canonical virtual/raw section order,
+  raw-equals-RVA mapping for every nonempty raw section in a low-alignment image,
+  and final aligned extent equal to `SizeOfImage`; it then authenticates the
+  bounded create/loader/system-breakpoint/capture sequence and revalidates the
+  exact client, process/thread descriptors, LPAC token, context, and one-member
+  Job before channel injection.
+- Parent injection uses exactly `0x00100001`/`0x00100002`, inheritance false,
+  options zero, and opaque child-table words. A partial remote duplicate is not
+  locally closeable, so every injection error must terminate and bounded-reap
+  the exact child and Job. `DUPLICATE_SAME_ACCESS`, inherited duplication, and
+  rights broadening are forbidden.
+- The parent mutates only R10/R11 with complete readback, writes hello before
+  continuing capture, reads/binds ACK before authenticating gate two, installs
+  suspend count one from prior zero, continues gate two, and revalidates live/
+  attached/Job/no-pending-event state. No `PeekNamedPipe` is used because it
+  requires broader `GENERIC_READ`; no `FlushFileBuffers` is used because it
+  requires broader `GENERIC_WRITE`. Synchronous ACK-write-before-gate-two and
+  ACK-read-before-gate-two-authentication provide the ordering boundary.
+- `DebugSetProcessKillOnExit(FALSE)` is the final fallible debugger-thread
+  operation. After join, success requires debugger absence, create-event alias
+  flags/ID/same-object reauthentication and checked close, Job count one, and a
+  1 -> 2 -> 1 suspend probe. Alias survival after thread-exit detach is proven
+  only on the measured host and remains a **STOP-SHIP** kernel matrix item. No
+  `DebugActiveProcessStop`, `WriteProcessMemory`, or `CreateRemoteThread` path
+  exists. Required privilege and endpoint-squatting evidence remain
+  **STOP-SHIP**.
+- Rejected-event cleanup registers query-only, non-inheritable anchors with
+  `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, PID)` or
+  `OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, TID)` and immediately
+  uses `CompareObjectHandles` before checked close. This does not authenticate a
+  raw `DEBUG_EVENT` slot generation or eliminate same-object ABA and the
+  compare-to-close TOCTOU. Local rejected-alias closure remains debug-only
+  **STOP-SHIP** kernel-matrix evidence, not activation safety.
+- Every `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
+  ownership and completes checked close before loader-count increment or any
+  semantic/limit rejection; cleanup failure dominates if both fail. Rejected
+  authority is single-assignment: if any rejected raw slot, PID/TID, or
+  canonical anchor already exists, a second registration unconditionally
+  fail-fasts before overwrite. This fixes local ordering/overwrite hazards but
+  does not remove the raw-generation, ABA, or compare-to-close limitations.
 - Each source candidate's exact `GrantedAccess` and direction remain
   **UNVERIFIED**: supported Win32 APIs cannot read that admission fact, and
   `DuplicateHandle` may produce a stronger-access result.
   `NtQueryObject` is test/change-prone and is not runtime admission. The target
-  exact-access/direction invariant therefore remains unproved, as do UI
-  integration, parent injection, ACK transport, second suspend, detach, and
-  signed-artifact/kernel-matrix evidence.
+  exact-access/direction invariant therefore remains unproved, as do UI/
+  production integration, real signed-helper E2E, and complete kernel-matrix
+  evidence.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -424,19 +473,23 @@ has authenticated the service/control epoch and verified:
 
 - both values are nonzero, distinct, not pseudo handles, and not equal to any
   ambient standard handle;
-- both have exact-zero handle flags and expected object type/direction/access;
+- both have exact-zero handle flags and `FILE_TYPE_PIPE`; supported Win32 APIs
+  do not yet prove each source's exact access mask or effective direction;
 - each can be converted immediately to a fresh child-local least-authority
   duplicate, after which the launcher-known candidate is closed;
-- the first bounded hello matches the service-issued nonce, request role,
-  service identity proof, exact child PID/creation identity, and deadline;
+- the exact 100-byte hello binds epoch nonce, request ID, fixed role, distinct
+  service/current-child PIDs, child-creation `FILETIME`, a strict-future deadline
+  no more than five seconds away, and both child-server peer PIDs to the service;
 - EOF, trailing-data, timeout, cancellation, and extra-handle conditions fail
   closed.
 
 Partial duplication, context write/readback failure, a wrong gate, or child-side
 validation failure terminates and reaps the exact child and closes its whole Job.
 The service must not continue a partially bootstrapped child. Remote duplicate
-cleanup should be attempted where its exact semantics are proven; process/Job
-termination remains the authoritative close of all child-table values.
+cleanup cannot be performed locally when only the first target value was
+installed; process/Job termination is the authoritative close of all
+child-table values. No caller may recover and reuse the child after an injection
+error.
 
 ### 8. Primary bootstrap: exact R10/R11 child-owned breakpoint gate
 
@@ -450,7 +503,9 @@ preflighted executable sequence equivalent to:
    child-owned locals without a call, allocation, TLS use, stdio use, or other
    externally visible operation;
 4. clear `R10` and `R11` before ordinary Rust/UI code;
-5. validate and adopt the two handle candidates as described above.
+5. validate and adopt the two handle candidates as described above;
+6. exact-read and bind the 100-byte hello, exact-write the 72-byte ACK, and enter
+   one separate exact 28-byte adoption-complete gate with independent markers.
 
 The service accepts the breakpoint only when all of the following match the
 retained creation proof:
@@ -472,11 +527,24 @@ canonicalization. The child then captures the values immediately. Compiler
 output, PE uniqueness, register liveness, CFG/CET behavior, debugger event
 ordering, and supported-Windows variance are release evidence, not assumptions.
 
-The debugger relationship and all debug-event aliases remain on one dedicated
-service OS thread. Detach occurs only after the child reports successful handle
-adoption while an independent suspend count still prevents UI execution.
-Creator-strength handles are then closed or attenuated to the exact cleanup and
-query rights required by the service lifecycle.
+The debugger relationship and all debug events remain on one dedicated service
+OS thread. The parent writes hello before continuing capture; the child finishes
+the synchronous ACK write before gate two; the parent exact-reads and binds the
+ACK before authenticating that gate. `PeekNamedPipe` and `FlushFileBuffers` are
+not substitutes for this order because their documented generic access
+requirements would broaden the two minimum masks.
+
+At gate two, `SuspendThread` must report prior count zero, installing the
+independent suspend before the event is continued. After live/attached/Job/no-
+pending-event revalidation, `DebugSetProcessKillOnExit(FALSE)` is the final
+fallible debugger-thread operation. No explicit `DebugActiveProcessStop`, remote
+write, or remote-thread path is admitted. After debugger-thread join, success
+requires debugger absence, exact flags/IDs/same-object reauthentication and
+checked close of retained create-event aliases, Job count one, and a 1 -> 2 -> 1
+suspend probe. The observed alias lifetime/thread-exit detach behavior is
+kernel-matrix evidence, not a cross-version assumption. Creator-strength
+handles are then closed or attenuated to the exact cleanup/query rights required
+by the service lifecycle.
 
 ### 9. Conditional fallback: fixed remote bootstrap cell
 
@@ -739,17 +807,17 @@ owns the native success handles and rechecks object DACLs, helper binding, Job
 membership/count, and an exact retained/fresh target LPAC token, including the
 role SID, zero capabilities, AAP opt-out, session, desktop user/logon SID, and
 `AuthenticationId`. A fresh-debugger-thread witness and matching join proof
-separate pre-event termination requests from bounded process/Job reap; this
-slice receives no debug event and performs no continue, resume, detach, or
-kill-on-exit opt-out. These types still have no RPC/executable caller and
-perform no parent-side remote-handle injection or integrated R10/R11 gate. A
-separate child-only leaf now fixes the secret-free 72-byte correlation ACK
-codec, exact 34-byte R10/R11 capture stub, and fresh local pipe-handle adoption
-described above, but only under its Windows x86_64 debug feasibility gate. It
-does not prove source-candidate exact `GrantedAccess`/direction and reaches no UI
-or executable. Any child capture/adoption failure aborts the process, so no UI
-can continue; the OS closes the child handle table and the parent must terminate
-and reap the helper Job. Privilege enablement,
+separate pre-event termination requests from bounded process/Job reap; that
+creation subtransition receives no debug event. The same dormant feature now
+also contains the static two-gate preflight, exact parent minimum-right channel
+injection, bounded debug-event state machine, 100-byte hello/72-byte ACK
+exchange, gate-two suspend installation, no-kill thread-exit detach, and
+post-join verification described above. The child-only capture/completion API
+remains under its Windows x86_64 debug feasibility gate, and every partial state
+is process-terminal. These types still have no RPC/executable caller and reach
+no UI or release path. They do not prove source-candidate exact
+`GrantedAccess`/direction, real signed-helper composition, or cross-kernel event
+and alias behavior. Privilege enablement,
 interactive desktop DACL access, child-token query access, the actual
 cross-session call, claimed-build matrix, endpoint-squatting, SCM
 configuration/service identity, and real Broker-client evidence are absent.
@@ -853,9 +921,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
-- 2026-08-26 - Added the child-only `key-agent-service-helper-bootstrap`
-  feasibility boundary: an always-available secret-free 72-byte correlation
-  ACK codec plus a Windows-x86_64/debug-feature-only exact 34-byte R10/R11
+- 2026-08-26 - Added the dormant parent two-gate feasibility flow: bounded
+  pinned-PE preflight, exact minimum-right non-inherited channel duplication,
+  authenticated capture/context mutation, 100-byte hello/72-byte ACK ordering,
+  independent 28-byte adoption-complete gate and suspend, no-kill debugger-
+  thread exit, and post-join debugger/alias/Job/suspend verification. Recorded
+  process-terminal cleanup for every partial remote duplicate, omission of
+  `PeekNamedPipe`/`FlushFileBuffers` to preserve minimum masks, no production
+  reachability, and real signed-helper/full-kernel-matrix `STOP-SHIP` status.
+- 2026-08-26 - Added the initial child-only
+  `key-agent-service-helper-bootstrap` feasibility boundary: a secret-free
+  72-byte correlation ACK codec plus a Windows-x86_64/debug-feature-only exact
+  34-byte R10/R11
   capture and local-adoption API. Recorded its candidate rejection, explicit-
   rights fresh duplication, continuity and close behavior; its lack of raw
   handles/I/O and runtime reachability; process-terminal failure with no UI

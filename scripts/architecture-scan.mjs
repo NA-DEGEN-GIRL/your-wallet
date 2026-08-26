@@ -1983,12 +1983,16 @@ const keyAgentServiceHelperBootstrapManifest = await text(
 const keyAgentServiceHelperBootstrapPaths = Object.freeze({
   manifest: `${keyAgentServiceHelperBootstrapRoot}/Cargo.toml`,
   lib: `${keyAgentServiceHelperBootstrapRoot}/src/lib.rs`,
+  gateSpec: `${keyAgentServiceHelperBootstrapRoot}/src/gate_spec.rs`,
   wire: `${keyAgentServiceHelperBootstrapRoot}/src/wire.rs`,
   child: `${keyAgentServiceHelperBootstrapRoot}/src/child.rs`,
   windows: `${keyAgentServiceHelperBootstrapRoot}/src/child/windows.rs`,
 });
 const keyAgentServiceHelperBootstrapLib = await text(
   keyAgentServiceHelperBootstrapPaths.lib,
+);
+const keyAgentServiceHelperBootstrapGateSpec = await text(
+  keyAgentServiceHelperBootstrapPaths.gateSpec,
 );
 const keyAgentServiceHelperBootstrapWire = await text(
   keyAgentServiceHelperBootstrapPaths.wire,
@@ -2169,6 +2173,10 @@ const keyAgentServiceTokenFixtureDirectoryInventory = {
 };
 const keyAgentServiceLaunchPaths = Object.freeze({
   root: "crates/platform-windows/src/key_agent_service_launch/mod.rs",
+  channel: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
+  debugGate:
+    "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+  gate: "crates/platform-windows/src/key_agent_service_launch/gate.rs",
   job: "crates/platform-windows/src/key_agent_service_launch/job.rs",
   process: "crates/platform-windows/src/key_agent_service_launch/process.rs",
   startup: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
@@ -5109,7 +5117,7 @@ const keyAgentServiceFeatureContract = ({
       platformManifest,
     ) &&
     /^default\s*=\s*\[\]$/mu.test(platformManifest) &&
-    /key-agent-service-lpac-launch-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-rpc-status-feasibility-test-hook",\s*"key-agent-service-token-feasibility-test-hook",?\s*\]/u.test(
+    /key-agent-service-lpac-launch-feasibility-test-hook\s*=\s*\[\s*"dep:key-agent-service-helper-bootstrap",\s*"key-agent-service-rpc-status-feasibility-test-hook",\s*"key-agent-service-token-feasibility-test-hook",?\s*\]/u.test(
       platformManifest,
     ) &&
     !serviceManifest.includes(
@@ -5119,6 +5127,9 @@ const keyAgentServiceFeatureContract = ({
       platformManifest,
     ) &&
     /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire",\s*optional\s*=\s*true\s*\}$/mu.test(
+      platformManifest,
+    ) &&
+    /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*default-features\s*=\s*false\s*\}$/mu.test(
       platformManifest,
     ) &&
     !hasDependency(platformManifest, "key-agent") &&
@@ -6325,6 +6336,9 @@ requireInvariant(
 );
 
 const approvedKeyAgentServiceLaunchPaths = [
+  keyAgentServiceLaunchPaths.channel,
+  keyAgentServiceLaunchPaths.debugGate,
+  keyAgentServiceLaunchPaths.gate,
   keyAgentServiceLaunchPaths.job,
   keyAgentServiceLaunchPaths.root,
   keyAgentServiceLaunchPaths.process,
@@ -6334,6 +6348,9 @@ const approvedKeyAgentServiceLaunchPaths = [
 const approvedKeyAgentServiceLaunchDirectoryInventory = {
   path: "crates/platform-windows/src/key_agent_service_launch",
   entries: [
+    { name: "channel.rs", kind: "file" },
+    { name: "debug_gate.rs", kind: "file" },
+    { name: "gate.rs", kind: "file" },
     { name: "job.rs", kind: "file" },
     { name: "mod.rs", kind: "file" },
     { name: "process.rs", kind: "file" },
@@ -6481,7 +6498,7 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
       JSON.stringify(directory) ===
         JSON.stringify(approvedKeyAgentServiceLaunchDirectoryInventory) &&
       compactRoot ===
-        "#![allow(dead_code)]modjob;modprocess;modstartup;modtarget_profile;" &&
+        "#![allow(dead_code)]modchannel;moddebug_gate;modgate;modjob;modprocess;modstartup;modtarget_profile;" &&
       rustUnsafeKeywordCount(root) === 0 &&
       job.includes("#![deny(unsafe_code)]") &&
       rustUnsafeKeywordCount(jobProduction) === 11 &&
@@ -6763,7 +6780,994 @@ requireInvariant(
           probe.platformLib !== keyAgentServiceLaunchInputs.platformLib) &&
         !keyAgentServiceLaunchMutationResults[index],
     ),
-  "the debug-only service launch primitive must remain an exact private five-file module whose Job is one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no direct handle duplication or RPC command, ignored live evidence, and effective mutation probes",
+  "the debug-only service launch primitive must retain its exact private module inventory while its Job remains one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no RPC command, ignored live evidence, and effective mutation probes",
+);
+
+const keyAgentServiceChannelSource =
+  keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.channel];
+const keyAgentServiceChannelTestNames = [
+  "success_uses_exactly_two_restricted_non_inheritable_calls",
+  "each_duplicate_failure_prefix_closes_both_sources_and_parent",
+  "invalid_or_repeated_remote_words_fail_closed_without_local_ownership",
+  "validation_and_both_close_failure_shapes_are_terminal",
+  "remote_words_are_move_only_non_handle_values_with_redacted_debug",
+  "role_typed_results_are_distinct",
+];
+const keyAgentServiceChannelContract = (source) => {
+  const production = withoutBottomTestModule(source);
+  const code = rustLexicalCode(production);
+  const compact = compactRust(production);
+  const duplicate = rustCallSites(production, "DuplicateHandle");
+  let duplicateChannels;
+  try {
+    duplicateChannels = rustTopLevelFunctionBlock(production, "duplicate_channels");
+  } catch {
+    return false;
+  }
+  const duplicateRequests = rustCallSites(
+    duplicateChannels,
+    "duplicate_handle",
+  ).map((call) => call.arguments.map(compactRust));
+  return (
+    normalizedSourceSha256(source) ===
+      "9e6dc564b18a0630b56cc4d9d2dbe0be27462b1cdfc9c8148b7272c27bf44698" &&
+    source.includes("#![allow(unsafe_code)]") &&
+    rustUnsafeKeywordCount(production) === 1 &&
+    source.includes("const CHILD_REQUEST_ACCESS: u32 = 0x0010_0001;") &&
+    source.includes("const CHILD_RESPONSE_ACCESS: u32 = 0x0010_0002;") &&
+    source.includes("const NO_DUPLICATE_OPTIONS: u32 = 0;") &&
+    duplicate.length === 1 &&
+    JSON.stringify(duplicate[0].arguments.map(compactRust)) ===
+      JSON.stringify([
+        "GetCurrentProcess()",
+        "HANDLE(call.source_handle.0as*mutc_void)",
+        "HANDLE(call.target_process.0as*mutc_void)",
+        "&rawmutremote",
+        "call.desired_access",
+        "call.inherit_handle",
+        "DUPLICATE_HANDLE_OPTIONS(call.options)",
+      ]) &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(code) &&
+    !/\bCloseHandle\b/u.test(code) &&
+    !/inherit_handle\s*:\s*true/u.test(code) &&
+    compact.includes(
+      "pub(super)structRemoteChildHandleWord(u64);",
+    ) &&
+    compact.includes(
+      "pub(super)fninto_register_words(self)->(u64,u64){(self.request.0,self.response.0)}",
+    ) &&
+    !/\b(?:OwnedHandle|FromRawHandle|from_raw_handle)\b/u.test(code) &&
+    !/\bimpl\s+Drop\s+for\s+(?:RemoteChildHandleWord|InjectedChildChannelHandles)\b/u.test(
+      code,
+    ) &&
+    hasOrderedCompactMarkers(duplicateChannels, [
+      "bundle.revalidate_sources()",
+      "bundle.source_words()",
+      "ifrequest_source==response_source",
+      "desired_access:CHILD_REQUEST_ACCESS,inherit_handle:false,options:NO_DUPLICATE_OPTIONS",
+      "desired_access:CHILD_RESPONSE_ACCESS,inherit_handle:false,options:NO_DUPLICATE_OPTIONS",
+      "ifrequest.0==response.0",
+      "letparent=bundle.close_sources_checked()",
+      "match(injection,parent)",
+      "(Err(_injection_failure),Err(close_failure))=>Err(close_failure)",
+    ]) &&
+    JSON.stringify(duplicateRequests) ===
+      JSON.stringify([
+        [
+          "DuplicateCall{source_process:DuplicateSourceProcess::Current,source_handle:request_source,target_process,desired_access:CHILD_REQUEST_ACCESS,inherit_handle:false,options:NO_DUPLICATE_OPTIONS,}",
+        ],
+        [
+          "DuplicateCall{source_process:DuplicateSourceProcess::Current,source_handle:response_source,target_process,desired_access:CHILD_RESPONSE_ACCESS,inherit_handle:false,options:NO_DUPLICATE_OPTIONS,}",
+        ],
+      ]) &&
+    source.includes(
+      "Any error is process-terminal for the sole dormant\n//! orchestration layer",
+    ) &&
+    source.includes(
+      "this module never attempts to close a target-process\n//! handle value",
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(keyAgentServiceChannelTestNames)
+  );
+};
+const mutateKeyAgentServiceChannel = (search, replacement) =>
+  keyAgentServiceChannelSource.replace(search, replacement);
+const keyAgentServiceChannelMutationProbes = [
+  mutateKeyAgentServiceChannel(
+    "const CHILD_REQUEST_ACCESS: u32 = 0x0010_0001;",
+    "const CHILD_REQUEST_ACCESS: u32 = 0x0010_0000;",
+  ),
+  mutateKeyAgentServiceChannel(
+    "                inherit_handle: false,",
+    "                inherit_handle: true,",
+  ),
+  mutateKeyAgentServiceChannel(
+    "                options: NO_DUPLICATE_OPTIONS,",
+    "                options: DUPLICATE_SAME_ACCESS.0,",
+  ),
+  mutateKeyAgentServiceChannel(
+    "        let response = api",
+    "        let response = api",
+  ).replace(
+    "desired_access: CHILD_RESPONSE_ACCESS,",
+    "desired_access: CHILD_REQUEST_ACCESS,",
+  ),
+  mutateKeyAgentServiceChannel(
+    "    let parent = bundle\n        .close_sources_checked()",
+    "    let parent = Ok(bundle);\n    let _ = bundle\n        .close_sources_checked()",
+  ),
+  mutateKeyAgentServiceChannel(
+    "    #[test]\n    fn each_duplicate_failure_prefix_closes_both_sources_and_parent",
+    "    fn each_duplicate_failure_prefix_closes_both_sources_and_parent",
+  ),
+];
+requireInvariant(
+  keyAgentServiceChannelContract(keyAgentServiceChannelSource) &&
+    keyAgentServiceChannelMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceChannelSource &&
+        !keyAgentServiceChannelContract(probe),
+    ),
+  "service helper channel injection must retain exactly two minimum-right non-inheritable no-option DuplicateHandle calls, opaque target-only register words, role-typed parent endpoints, independent checked closure of both local sources, no local close of remote values, no SAME_ACCESS or rights broadening, terminal error documentation, exhaustive prefix tests, and effective mutations",
+);
+
+const keyAgentServiceDebugGateSource =
+  keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.debugGate];
+const keyAgentServiceDebugGateTestNames = [
+  "detached_alias_shape_is_closed",
+  "cleanup_registry_debug_is_data_free",
+  "cleanup_registry_accepts_one_exact_pair_and_latches_rejected_thread",
+  "cleanup_registry_retains_each_independently_safe_malformed_alias_once",
+  "later_event_file_rejection_cannot_discard_registered_aliases",
+  "malformed_rejected_event_ids_do_not_discard_safe_aliases",
+  "identity_open_compare_and_compare_close_failures_preserve_safe_raw_words",
+  "checked_authority_cleanup_failure_dominates_semantic_failure",
+  "loader_limit_runs_authority_cleanup_first_and_cleanup_dominates",
+  "every_existing_rejected_authority_requires_fail_fast_before_overwrite",
+  "residual_or_poisoned_registry_requires_process_wide_fail_fast",
+  "protocol_phase_accepts_only_the_exact_two_gate_order",
+  "both_channel_duplicate_callers_are_confined_to_one_private_injection_step",
+  "complete_context_readback_allows_only_r10_r11_and_reserved_eflags_bit",
+  "correlation_deadline_is_nonzero_and_bounded_to_five_seconds",
+  "pending_success_is_send_but_not_sync_clone_or_copy",
+  "debugger_gate_errors_are_data_free",
+];
+const keyAgentServiceDebugGateApiInventory = [
+  { api: "CheckRemoteDebuggerPresent", count: 1 },
+  { api: "CloseHandle", count: 5 },
+  { api: "CompareObjectHandles", count: 7 },
+  { api: "ContinueDebugEvent", count: 1 },
+  { api: "DebugSetProcessKillOnExit", count: 1 },
+  { api: "GetCurrentProcessId", count: 1 },
+  { api: "GetFileInformationByHandleEx", count: 2 },
+  { api: "GetHandleInformation", count: 3 },
+  { api: "GetLastError", count: 2 },
+  { api: "GetProcessId", count: 5 },
+  { api: "GetProcessIdOfThread", count: 5 },
+  { api: "GetProcessTimes", count: 1 },
+  { api: "GetThreadContext", count: 1 },
+  { api: "GetThreadId", count: 5 },
+  { api: "GetTickCount64", count: 1 },
+  { api: "OpenProcess", count: 1 },
+  { api: "OpenThread", count: 1 },
+  { api: "ReadProcessMemory", count: 1 },
+  { api: "ResumeThread", count: 1 },
+  { api: "SetThreadContext", count: 1 },
+  { api: "SuspendThread", count: 1 },
+  { api: "VirtualQueryEx", count: 1 },
+  { api: "WaitForDebugEventEx", count: 2 },
+  { api: "WaitForSingleObject", count: 1 },
+];
+const keyAgentServiceDebugGateContract = (source, channelSource, processSource) => {
+  try {
+    const production = withoutBottomTestModule(source);
+    const channelProduction = withoutBottomTestModule(channelSource);
+    const processProduction = withoutBottomTestModule(processSource);
+    const code = rustLexicalCode(production);
+    const compact = compactRust(production);
+    const attemptImpl = rustImplItems(production).find((item) =>
+      item.header.includes("WindowsGateAttempt"),
+    )?.source;
+    const cleanupImpl = rustImplItems(production).find(
+      (item) => item.header === "impl ServiceProbeDebugEventCleanup",
+    )?.source;
+    const detachedAliasesImpl = rustImplItems(production).find(
+      (item) => item.header === "impl DetachedDebugEventAliases",
+    )?.source;
+    const identityImpl = rustImplItems(production).find(
+      (item) =>
+        item.header ===
+        "impl DebugEventAliasIdentityApi for WindowsDebugEventAliasIdentityApi",
+    )?.source;
+    const suspendedImpl = rustImplItems(processProduction).find((item) =>
+      item.header.startsWith("impl SuspendedServiceProbe"),
+    )?.source;
+    if (
+      attemptImpl === undefined ||
+      cleanupImpl === undefined ||
+      detachedAliasesImpl === undefined ||
+      identityImpl === undefined ||
+      suspendedImpl === undefined
+    ) {
+      return false;
+    }
+    const registerRejectedThread = rustFunctionBlock(
+      cleanupImpl,
+      "register_rejected_thread_alias_with",
+    );
+    const registerRejectedProcess = rustFunctionBlock(
+      cleanupImpl,
+      "register_rejected_process_aliases_with",
+    );
+    const retainProcessAnchor = rustFunctionBlock(
+      production,
+      "retain_process_anchor",
+    );
+    const retainThreadAnchor = rustFunctionBlock(
+      production,
+      "retain_thread_anchor",
+    );
+    const hasRejectedAuthority = rustFunctionBlock(
+      detachedAliasesImpl,
+      "has_rejected_authority",
+    );
+    const repeatedRejected = rustFunctionBlock(
+      production,
+      "repeated_rejected_registration_requires_fail_fast",
+    );
+    const loaderResourceFirst = rustFunctionBlock(
+      production,
+      "authenticate_loader_event_then_increment",
+    );
+    const authenticateCreate = rustFunctionBlock(
+      attemptImpl,
+      "authenticate_create_event",
+    );
+    const authenticateLoadDll = rustFunctionBlock(
+      attemptImpl,
+      "authenticate_load_dll_event",
+    );
+    const continueToCapture = rustFunctionBlock(
+      attemptImpl,
+      "continue_to_capture_gate",
+    );
+    const authenticateSystemBreakpoint = rustFunctionBlock(
+      attemptImpl,
+      "authenticate_system_breakpoint",
+    );
+    const authenticateGate = rustFunctionBlock(attemptImpl, "authenticate_gate");
+    const injectChannels = rustFunctionBlock(attemptImpl, "inject_channels");
+    const installChannelWords = rustFunctionBlock(
+      attemptImpl,
+      "install_channel_words",
+    );
+    const bootstrapHello = rustFunctionBlock(attemptImpl, "bootstrap_hello");
+    const continueCaptureAndAck = rustFunctionBlock(
+      attemptImpl,
+      "continue_capture_and_require_ack",
+    );
+    const authenticateAdoption = rustFunctionBlock(
+      attemptImpl,
+      "authenticate_adoption_gate",
+    );
+    const installSuspendAndContinue = rustFunctionBlock(
+      attemptImpl,
+      "install_suspend_and_continue_adoption",
+    );
+    const requireNoQueuedEvent = rustFunctionBlock(
+      attemptImpl,
+      "require_no_queued_event",
+    );
+    const revalidateBeforeNoKill = rustFunctionBlock(
+      attemptImpl,
+      "revalidate_before_no_kill",
+    );
+    const advance = rustFunctionBlock(attemptImpl, "advance");
+    const intoFailure = rustFunctionBlock(attemptImpl, "into_failure");
+    const authenticateAndArm = rustFunctionBlock(
+      production,
+      "authenticate_and_arm_service_probe",
+    );
+    const abortForDebuggerExit = rustFunctionBlock(
+      suspendedImpl,
+      "abort_for_debugger_exit",
+    );
+    const processTerminalCleanup = rustFunctionBlock(
+      suspendedImpl,
+      "into_pending_cleanup",
+    );
+    const observedApis = keyAgentServiceDebugGateApiInventory.map(({ api }) => ({
+      api,
+      count: rustCallSites(production, api).length,
+    }));
+    const openProcessCalls = rustCallSites(production, "OpenProcess").map(
+      (call) => call.arguments.map(compactRust),
+    );
+    const openThreadCalls = rustCallSites(production, "OpenThread").map(
+      (call) => call.arguments.map(compactRust),
+    );
+    const waitEventCalls = rustCallSites(production, "WaitForDebugEventEx").map(
+      (call) => call.arguments.map(compactRust),
+    );
+    const helperCallInventory = [
+      "duplicate_approval_channels_for_child",
+      "duplicate_secret_input_channels_for_child",
+    ].map((name) => ({
+      name,
+      arguments: rustCallSites(injectChannels, name).map((call) =>
+        call.arguments.map(compactRust),
+      ),
+      otherLaunchCallPaths: keyAgentServiceLaunchFiles
+        .filter(
+          (file) =>
+            file.path !== keyAgentServiceLaunchPaths.channel &&
+            file.path !== keyAgentServiceLaunchPaths.debugGate,
+        )
+        .flatMap((file) =>
+          rustCallSites(withoutBottomTestModule(file.source), name).map(
+            () => file.path,
+          ),
+        ),
+    }));
+    return (
+      normalizedSourceSha256(source) ===
+        "a56021abb9639b50bb8718b49e08b56a16983744cc9ba2718975bfc26321c9ca" &&
+      source.includes("#![allow(unsafe_code)]") &&
+      rustUnsafeKeywordCount(production) === 60 &&
+      JSON.stringify(observedApis) ===
+        JSON.stringify(keyAgentServiceDebugGateApiInventory) &&
+      JSON.stringify(openProcessCalls) ===
+        JSON.stringify([
+          ["PROCESS_QUERY_LIMITED_INFORMATION", "false", "process_id"],
+        ]) &&
+      JSON.stringify(openThreadCalls) ===
+        JSON.stringify([
+          [
+            "THREAD_QUERY_LIMITED_INFORMATION",
+            "false",
+            "identity.thread_id",
+          ],
+        ]) &&
+      JSON.stringify(waitEventCalls) ===
+        JSON.stringify([
+          ["&rawmutevent", "timeout"],
+          ["&rawmutevent", "0"],
+        ]) &&
+      JSON.stringify(helperCallInventory) ===
+        JSON.stringify([
+          {
+            name: "duplicate_approval_channels_for_child",
+            arguments: [["pipes", "probe.process_handle()"]],
+            otherLaunchCallPaths: [],
+          },
+          {
+            name: "duplicate_secret_input_channels_for_child",
+            arguments: [["pipes", "probe.process_handle()"]],
+            otherLaunchCallPaths: [],
+          },
+        ]) &&
+      keyAgentServiceLiteralCount(
+        rustLexicalCode(channelProduction),
+        "duplicate_approval_channels_for_child",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        rustLexicalCode(channelProduction),
+        "duplicate_secret_input_channels_for_child",
+      ) === 1 &&
+      !/\b(?:PROCESS_ALL_ACCESS|THREAD_ALL_ACCESS|DUPLICATE_SAME_ACCESS|PeekNamedPipe|FlushFileBuffers|WriteProcessMemory|CreateRemoteThread|CreateRemoteThreadEx|DebugActiveProcessStop|NtQueryObject)\b/u.test(
+        code,
+      ) &&
+      !/\b(?:std::net|windows::Win32::Networking|windows::Win32::NetworkManagement|SigningKey|PrivateKey|Mnemonic|SeedPhrase|Wallet|Transaction)\b/u.test(
+        code,
+      ) &&
+      hasOrderedCompactMarkers(retainProcessAnchor, [
+        "letmutowner=api.open_process_anchor(event_handle,process_id)?",
+        "api.process_id(owner.raw())==Some(process_id)",
+        "api.same_object(owner.raw(),event_handle)",
+        "owner.close_checked()?",
+      ]) &&
+      hasOrderedCompactMarkers(retainThreadAnchor, [
+        "letmutowner=api.open_thread_anchor(event_handle,identity)?",
+        "api.thread_identity(owner.raw())",
+        "api.same_object(owner.raw(),event_handle)",
+        "owner.close_checked()?",
+      ]) &&
+      compactRust(hasRejectedAuthority) ===
+        "fnhas_rejected_authority(&self)->bool{self.rejected_thread.is_some()||self.rejected_process.is_some()||self.rejected_primary_thread.is_some()||self.rejected_thread_id.is_some()||self.rejected_thread_process_id.is_some()||self.rejected_thread_anchor.is_some()||self.rejected_process_id.is_some()||self.rejected_process_anchor.is_some()||self.rejected_primary_thread_id.is_some()||self.rejected_primary_thread_process_id.is_some()||self.rejected_primary_thread_anchor.is_some()}" &&
+      compactRust(repeatedRejected) ===
+        "fnrepeated_rejected_registration_requires_fail_fast(aliases:Option<&DetachedDebugEventAliases>,)->bool{aliases.is_some_and(DetachedDebugEventAliases::has_rejected_authority)}" &&
+      hasOrderedCompactMarkers(registerRejectedThread, [
+        "letrejected_thread=raw_handle_word(rejected_thread)?",
+        "letmutslot=self.aliases.lock()",
+        "ifrepeated_rejected_registration_requires_fail_fast(slot.as_ref())",
+        "windows_fail_fast()",
+        "letcreator_process=raw_handle_word(creator_process)?",
+        "aliases.rejected_thread=Some(rejected_thread)",
+        "letanchor=retain_thread_anchor(api,event_handle,identity)?",
+        "aliases.rejected_thread_anchor=Some(anchor)",
+      ]) &&
+      hasOrderedCompactMarkers(registerRejectedProcess, [
+        "letmutprocess_word=raw_handle_word(process).ok()",
+        "letmutprimary_thread_word=raw_handle_word(primary_thread).ok()",
+        "ifprocess_word.is_none()&&primary_thread_word.is_none()",
+        "letmutslot=self.aliases.lock()",
+        "ifrepeated_rejected_registration_requires_fail_fast(slot.as_ref())",
+        "windows_fail_fast()",
+        "aliases.rejected_process=process_word",
+        "aliases.rejected_primary_thread=primary_thread_word",
+        "letanchor=retain_process_anchor(api,handle,identity)?",
+        "letanchor=retain_thread_anchor(api,handle,identity)?",
+      ]) &&
+      hasOrderedCompactMarkers(loaderResourceFirst, [
+        "authenticate_and_close()?",
+        "current_count.checked_add(1)",
+        ".filter(|count|*count<=MAX_LOADER_DEBUG_EVENTS)",
+        ".ok_or(ServiceProbeDebugGateError::UnexpectedEvent)",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateLoadDll, [
+        "CheckedFileHandle::adopt_optional_event_distinct(load.hFile",
+        "letproof=(||",
+        "letclose=matchevent_file.as_mut()",
+        "Some(file)=>file.close_checked()",
+        "cleanup_result_dominates(proof,close)",
+      ]) &&
+      hasOrderedCompactMarkers(continueToCapture, [
+        "self.continue_pending()?",
+        "DebugProtocolTransition::ContinueCreate",
+        "LOAD_DLL_DEBUG_EVENT=>",
+        "authenticate_loader_event_then_increment(loader_events,||",
+        "self.authenticate_load_dll_event(&event)",
+        "self.continue_pending()?",
+        "self.authenticate_system_breakpoint(&event)?",
+        "self.continue_pending()?",
+        "returnself.authenticate_capture_gate(&event)",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateCreate, [
+        "ResumeThread(windows_handle(self.probe()?.primary_thread_handle()))",
+        "ifprevious!=1",
+        "letevent=self.wait_event()?",
+        "ifevent.dwDebugEventCode!=CREATE_PROCESS_DEBUG_EVENT",
+        ".register_create_process_aliases(",
+        "CheckedFileHandle::adopt_event_distinct(create.hFile",
+        "CompareObjectHandles(windows_handle(probe.process_handle()),create.hProcess)",
+        "CompareObjectHandles(windows_handle(probe.primary_thread_handle()),create.hThread,)",
+        "authenticate_mapped_image(&expected_image,event_file.raw())",
+        "letclose=event_file.close_checked()",
+        "cleanup_result_dominates(proof,close)?",
+        "letcreation_filetime=process_creation_filetime",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateSystemBreakpoint, [
+        "record.ExceptionCode!=EXCEPTION_BREAKPOINT",
+        "query_remote_image_page(process,address,allocation_base,end,true)?",
+        "read_remote_exact::<1>(process,address)?!=[0xcc]",
+        "context.0.Rip!=expected_rip",
+        "FileObjectIdentity::query(pinned.handle.raw())?!=pinned.identity",
+        "pinned.handle.close_checked()?",
+        "self.system_breakpoint_seen=true",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateGate, [
+        "record.ExceptionCode!=EXCEPTION_BREAKPOINT",
+        "record.ExceptionAddress.addr()!=breakpoint",
+        "breakpoint!=sequence.checked_add(breakpoint_offset)",
+        "query_remote_image_page(process,sequence,image_base,sequence_end,true)?",
+        "read_remote_exact::<N>(process,sequence)?!=expected_bytes",
+        "context.0.Rip!=expected_rip||context.0.R10!=expected_r10||context.0.R11!=expected_r11",
+      ]) &&
+      hasOrderedCompactMarkers(installChannelWords, [
+        "primary_thread_context(thread)?",
+        "contexts_match_except_r10_r11(&authenticated_capture.0,&before.0,REQUEST_INPUT_MARKER,RESPONSE_OUTPUT_MARKER,)",
+        "let(request,response)=handles.into_register_words()",
+        "injected.0.R10=request",
+        "injected.0.R11=response",
+        "SetThreadContext(thread,&rawconstinjected.0)",
+        "letafter=primary_thread_context(thread)?",
+        "contexts_match_except_r10_r11(&before.0,&after.0,request,response)",
+      ]) &&
+      hasOrderedCompactMarkers(bootstrapHello, [
+        "GetCurrentProcessId()",
+        "letchild_process_id=self.probe()?.process_id()",
+        "letchild_creation_filetime=self.creation_filetime",
+        "HelperBootstrapHello::new(self.correlation.epoch_nonce,self.correlation.request_id,role,service_process_id,child_process_id,child_creation_filetime,self.deadline.tick_count_milliseconds,)",
+      ]) &&
+      hasOrderedCompactMarkers(continueCaptureAndAck, [
+        "self.continue_pending()?",
+        "DebugProtocolTransition::ContinueCapture",
+        "letbytes=channels.read_ack(self.deadline.instant)?",
+        "HelperAdoptionAck::decode(&bytes)",
+        ".ensure_correlates_with(self.correlation.epoch_nonce,self.correlation.request_id,channels.role(),)",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateAdoption, [
+        "letevent=self.wait_event()?",
+        "event.dwDebugEventCode!=EXCEPTION_DEBUG_EVENT",
+        "self.authenticate_gate::<ADOPTION_COMPLETE_GATE_BYTES>(",
+        "adoption_complete_gate_bytes()",
+        "ADOPTION_COMPLETE_R10_MARKER",
+        "ADOPTION_COMPLETE_R11_MARKER",
+        "DebugProtocolTransition::HoldAdoption",
+      ]) &&
+      hasOrderedCompactMarkers(installSuspendAndContinue, [
+        "letprevious=unsafe{SuspendThread(thread)}",
+        "ifprevious!=0",
+        "self.continue_pending()?",
+        "DebugProtocolTransition::ContinueAdoption",
+        "letafter=primary_thread_context(thread)?",
+        "contexts_match_except_r10_r11(&authenticated.0,&after.0,ADOPTION_COMPLETE_R10_MARKER,ADOPTION_COMPLETE_R11_MARKER,)",
+      ]) &&
+      hasOrderedCompactMarkers(requireNoQueuedEvent, [
+        "WaitForDebugEventEx(&rawmutevent,0)",
+        "self.adopt_rejected_event_resources(&event)?",
+        "unsafe{GetLastError()}==ERROR_SEM_TIMEOUT",
+      ]) &&
+      hasOrderedCompactMarkers(revalidateBeforeNoKill, [
+        "self.require_no_queued_event()?",
+        "unsafe{WaitForSingleObject(process,0)}!=WAIT_TIMEOUT",
+        "CheckRemoteDebuggerPresent(process,&rawmutdebugger_present)",
+        "if!debugger_present.as_bool()",
+        "self.probe_mut()?.revalidate_held()",
+        ".verify_complete_while_attached(",
+        "DebugProtocolTransition::PrepareNoKill",
+      ]) &&
+      hasOrderedCompactMarkers(advance, [
+        "self.authenticate_create_event()?",
+        "letcapture=self.continue_to_capture_gate()?",
+        "self.probe_mut()?.revalidate_held()",
+        "let(handles,mutchannels)=self.inject_channels(sources)?",
+        "self.install_channel_words(&capture,handles)?",
+        "lethello=self.bootstrap_hello(channels.role())?",
+        "channels.write_hello(&hello.encode(),self.deadline.instant)?",
+        "self.continue_capture_and_require_ack(&channels)?",
+        "letadoption=self.authenticate_adoption_gate()?",
+        "self.install_suspend_and_continue_adoption(&adoption)?",
+        "self.revalidate_before_no_kill()?",
+        "letprobe=self.probe.take()",
+        ".prepare_pending_debugger_exit_success()",
+        "Ok((prepared,channels))",
+      ]) &&
+      hasOrderedCompactMarkers(intoFailure, [
+        "letSome(probe)=self.probe.take()else",
+        "windows_fail_fast()",
+        "letmutcleanup=probe.abort_for_debugger_exit()",
+        "pinned.handle.close_checked().is_err()",
+        "cleanup.note_worker_cleanup_failure()",
+        "FailedServiceProbeDebugGate{cleanup,error}",
+      ]) &&
+      compactRust(abortForDebuggerExit) ===
+        "pub(super)fnabort_for_debugger_exit(self)->PendingServiceProbeCleanup{self.into_pending_cleanup(ServiceProbeCreateError::Aborted)}" &&
+      hasOrderedCompactMarkers(processTerminalCleanup, [
+        "letprocess=created.request_termination_into_pending_debugger_exit_cleanup()",
+        "letjob_request_failed=job.request_termination().is_err()",
+        "PendingServiceProbeCleanup",
+      ]) &&
+      hasOrderedCompactMarkers(authenticateAndArm, [
+        "CoordinationDeadline::start(correlation.timeout_milliseconds)",
+        "cleanup:probe.abort_for_debugger_exit()",
+        "attempt.advance(sources)",
+        "Err(AdvanceFailure::Gate(error))=>returnErr(attempt.into_failure(error))",
+        "Err(AdvanceFailure::PreparedCleanup(cleanup,error))",
+        "DebugSetProcessKillOnExit(false)",
+        "cleanup:prepared.abort_after_no_kill_failure()",
+        "letprocess=prepared.commit_after_no_kill()",
+        "Ok(PendingDebuggerExitServiceProbe",
+      ]) &&
+      compact.includes("constMAX_COORDINATION_MILLISECONDS:u32=5_000;") &&
+      compact.includes("constMAX_LOADER_DEBUG_EVENTS:usize=128;") &&
+      compact.includes("constMAX_PRE_CAPTURE_DEBUG_EVENTS:usize=160;") &&
+      source.includes("Windows offers no atomic compare-and-close") &&
+      source.includes("kernel that retires and reuses the raw slot") &&
+      JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+        JSON.stringify(keyAgentServiceDebugGateTestNames)
+    );
+  } catch {
+    return false;
+  }
+};
+const mutateKeyAgentServiceDebugGate = (search, replacement) =>
+  keyAgentServiceDebugGateSource.replace(search, replacement);
+const keyAgentServiceDebugGateMutationProbes = [
+  mutateKeyAgentServiceDebugGate(
+    "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)",
+    "OpenProcess(PROCESS_ALL_ACCESS, false, process_id)",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, identity.thread_id)",
+    "OpenThread(THREAD_QUERY_LIMITED_INFORMATION, true, identity.thread_id)",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "    aliases.is_some_and(DetachedDebugEventAliases::has_rejected_authority)",
+    "    false",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "        if repeated_rejected_registration_requires_fail_fast(slot.as_ref()) {",
+    "        if false {",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "    authenticate_and_close()?;\n    current_count",
+    "    current_count",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "                        authenticate_loader_event_then_increment(loader_events, || {\n                            self.authenticate_load_dll_event(&event)\n                        })?;",
+    "                        loader_events.checked_add(1).ok_or(ServiceProbeDebugGateError::UnexpectedEvent)?;",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "        let (handles, mut channels) = self.inject_channels(sources)?;",
+    "        return Err(ServiceProbeDebugGateError::Channel.into());\n        let (handles, mut channels) = self.inject_channels(sources)?;",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "        channels.write_hello(&hello.encode(), self.deadline.instant)?;\n        self.continue_capture_and_require_ack(&channels)?;",
+    "        self.continue_capture_and_require_ack(&channels)?;\n        channels.write_hello(&hello.encode(), self.deadline.instant)?;",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "        if previous != 0 {",
+    "        if previous != 1 {",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "    if unsafe { DebugSetProcessKillOnExit(false) }.is_err() {",
+    "    if unsafe { DebugSetProcessKillOnExit(true) }.is_err() {",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "        Err(AdvanceFailure::Gate(error)) => return Err(attempt.into_failure(error)),",
+    "        Err(AdvanceFailure::Gate(error)) => return Err(FailedServiceProbeDebugGate { cleanup: attempt.probe.take().unwrap().abort_for_debugger_exit(), error }),",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "    #[test]\n    fn loader_limit_runs_authority_cleanup_first_and_cleanup_dominates",
+    "    fn loader_limit_runs_authority_cleanup_first_and_cleanup_dominates",
+  ),
+  mutateKeyAgentServiceDebugGate(
+    "    #[test]\n    fn every_existing_rejected_authority_requires_fail_fast_before_overwrite",
+    "    fn every_existing_rejected_authority_requires_fail_fast_before_overwrite",
+  ),
+];
+requireInvariant(
+  keyAgentServiceDebugGateContract(
+    keyAgentServiceDebugGateSource,
+    keyAgentServiceChannelSource,
+    keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.process],
+  ) &&
+    keyAgentServiceDebugGateMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceDebugGateSource &&
+        !keyAgentServiceDebugGateContract(
+          probe,
+          keyAgentServiceChannelSource,
+          keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.process],
+        ),
+    ),
+  "the dormant parent debugger must retain the exact closed create/loader/system-breakpoint/capture/hello/ACK/adoption/no-kill sequence, sole minimum-right channel callers with process-and-Job terminal cleanup, exact debug API inventory, query-only non-inheritable rejected-event anchors, resource-first LOAD_DLL cleanup with cleanup-error precedence, pre-overwrite rejected-authority fail-fast, post-join matrix-qualified alias cleanup, and effective mutations",
+);
+
+const keyAgentServiceStaticGateSource =
+  keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.gate];
+const keyAgentServiceStaticGateTestNames = [
+  "valid_fixture_binds_exact_sequence_breakpoint_and_image_rvas",
+  "every_truncated_prefix_is_rejected",
+  "duplicate_of_either_exact_sequence_anywhere_in_file_is_rejected",
+  "absence_and_every_single_byte_gate_mutation_are_rejected",
+  "wrong_machine_optional_magic_and_file_flags_are_rejected",
+  "wrong_code_section_flags_are_rejected",
+  "gate_in_uninitialized_raw_tail_or_across_section_boundary_is_rejected",
+  "overlapping_and_overflowing_section_ranges_are_rejected",
+  "low_alignment_requires_raw_offsets_to_equal_section_rvas",
+  "section_table_requires_canonical_virtual_and_raw_order",
+  "malformed_header_and_section_ranges_are_rejected",
+  "overlapping_sequences_and_invalid_breakpoint_offsets_are_rejected",
+  "layout_and_errors_have_redacted_diagnostics",
+];
+const keyAgentServiceStaticGateContract = (source) => {
+  const code = rustLexicalCode(source);
+  const compact = compactRust(source);
+  return (
+    normalizedSourceSha256(source) ===
+      "8000a1b316771deda38bd050a0ac0be960257e90596455a040d4a9e9b552cfa1" &&
+    source.includes("#![forbid(unsafe_code)]") &&
+    rustUnsafeKeywordCount(source) === 0 &&
+    source.includes(
+      "const MAX_SERVICE_HELPER_IMAGE_BYTES: u64 = 256 * 1024 * 1024;",
+    ) &&
+    hasOrderedCompactMarkers(compact, [
+      "letheld_before=held_helper_file_identity(artifact)",
+      ".read(true)",
+      ".share_mode(FILE_SHARE_READ.0)",
+      ".custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)",
+      "authenticate_mapped_image(&held_before,reopened_handle)",
+      "letlength_before=reopened.metadata()",
+      ".take(MAX_SERVICE_HELPER_IMAGE_BYTES+1)",
+      ".read_to_end(&mutbytes)",
+      "authenticate_mapped_image(&held_before,reopened_handle)",
+      "letheld_after=held_helper_file_identity(artifact)",
+      "ifheld_after!=held_before||length_after!=length_before||bytes.len()!=capacity",
+      "parse_service_helper_gate_layout(&bytes)",
+    ]) &&
+    compact.includes("constIMAGE_FILE_MACHINE_AMD64:u16=0x8664;") &&
+    compact.includes("constIMAGE_NT_OPTIONAL_HDR64_MAGIC:u16=0x020B;") &&
+    compact.includes("constIMAGE_FILE_EXECUTABLE_IMAGE:u16=0x0002;") &&
+    compact.includes("constIMAGE_FILE_DLL:u16=0x2000;") &&
+    compact.includes("constMAX_PE_SECTIONS:usize=96;") &&
+    compact.includes("constMAX_DATA_DIRECTORIES:u32=16;") &&
+    compact.includes(
+      "pe_u16(bytes,coff_offset)?!=IMAGE_FILE_MACHINE_AMD64",
+    ) &&
+    compact.includes(
+      "file_characteristics&IMAGE_FILE_EXECUTABLE_IMAGE==0",
+    ) &&
+    compact.includes("file_characteristics&IMAGE_FILE_DLL!=0") &&
+    compact.includes(
+      "pe_u16(bytes,optional_offset)?!=IMAGE_NT_OPTIONAL_HDR64_MAGIC",
+    ) &&
+    compact.includes("constAMD64_PAGE_BYTES:u32=0x1000;") &&
+    compact.includes(
+      "section_alignment<file_alignment||(section_alignment<0x1000&&section_alignment!=file_alignment)",
+    ) &&
+    hasOrderedCompactMarkers(compact, [
+      "letfirst_section_rva=align_up(size_of_headers,section_alignment)",
+      "letmutexpected_virtual_start=first_section_rva",
+      "letmutprior_raw_end=size_of_headers_usize",
+      "letmapped_size=virtual_size.max(raw_size)",
+      "virtual_start!=expected_virtual_start",
+      "raw_start<prior_raw_end",
+      "section_alignment<AMD64_PAGE_BYTES&&raw_start_u32!=virtual_start",
+      "expected_virtual_start=align_up(virtual_end,section_alignment)",
+      "ifraw_size!=0{prior_raw_end=raw_end;}",
+      "ifexpected_virtual_start!=size_of_image",
+    ]) &&
+    compact.includes(
+      "section.characteristics&IMAGE_SCN_CNT_CODE==0||section.characteristics&IMAGE_SCN_CNT_UNINITIALIZED_DATA!=0||section.characteristics&IMAGE_SCN_MEM_EXECUTE==0||section.characteristics&IMAGE_SCN_MEM_WRITE!=0||occurrence.raw_end>section.initialized_raw_end",
+    ) &&
+    compact.includes("letcapture=find_unique(bytes,capture_sequence)?") &&
+    compact.includes("letadoption=find_unique(bytes,adoption_sequence)?") &&
+    compact.includes("capture.sequence==adoption.sequence") &&
+    !/\b(?:WriteFile|OpenOptions::write|write\(|create\(|truncate\(|CreateProcess|DuplicateHandle|WaitForDebugEvent|ContinueDebugEvent)\b/u.test(
+      code,
+    ) &&
+    source.includes(
+      'formatter.write_str("ServiceHelperGateLayout([REDACTED TWO-GATE RVAS])")',
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(keyAgentServiceStaticGateTestNames)
+  );
+};
+const mutateKeyAgentServiceStaticGate = (search, replacement) =>
+  keyAgentServiceStaticGateSource.replace(search, replacement);
+const keyAgentServiceStaticGateMutationProbes = [
+  mutateKeyAgentServiceStaticGate(
+    ".share_mode(FILE_SHARE_READ.0)",
+    ".share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    ".custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)",
+    ".custom_flags(0)",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "    let capture = find_unique(bytes, capture_sequence)?;",
+    "    let capture = find_first(bytes, capture_sequence)?;",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || pe_u16(bytes, coff_offset)? != IMAGE_FILE_MACHINE_AMD64",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || file_characteristics & IMAGE_FILE_EXECUTABLE_IMAGE == 0",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || file_characteristics & IMAGE_FILE_DLL != 0",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || pe_u16(bytes, optional_offset)? != IMAGE_NT_OPTIONAL_HDR64_MAGIC",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || section.characteristics & IMAGE_SCN_MEM_WRITE != 0",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "        || occurrence.raw_end > section.initialized_raw_end",
+    "        || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "                    || (section_alignment < AMD64_PAGE_BYTES && raw_start_u32 != virtual_start)",
+    "                    || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "            || virtual_start != expected_virtual_start",
+    "            || virtual_start < expected_virtual_start",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "                    || raw_start < prior_raw_end",
+    "                    || false",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "    if expected_virtual_start != size_of_image {",
+    "    if expected_virtual_start > size_of_image {",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "    #[test]\n    fn low_alignment_requires_raw_offsets_to_equal_section_rvas",
+    "    fn low_alignment_requires_raw_offsets_to_equal_section_rvas",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "    #[test]\n    fn section_table_requires_canonical_virtual_and_raw_order",
+    "    fn section_table_requires_canonical_virtual_and_raw_order",
+  ),
+  mutateKeyAgentServiceStaticGate(
+    "    #[test]\n    fn duplicate_of_either_exact_sequence_anywhere_in_file_is_rejected",
+    "    fn duplicate_of_either_exact_sequence_anywhere_in_file_is_rejected",
+  ),
+];
+requireInvariant(
+  keyAgentServiceStaticGateContract(keyAgentServiceStaticGateSource) &&
+    keyAgentServiceStaticGateMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceStaticGateSource &&
+        !keyAgentServiceStaticGateContract(probe),
+    ),
+  "service helper static preflight must retain a bounded read-only reparse-point reopen of the pinned artifact with identity checks before and after reading, strict AMD64 PE32+ executable/non-DLL parsing, canonical raw/RVA section order including low-alignment raw-equals-RVA mapping and exact image extent, exactly one nonoverlapping copy of each full gate in initialized executable nonwritable code, exact gate RVAs, redacted diagnostics, exhaustive malformed-image tests, and effective mutations",
+);
+
+const keyAgentServiceLaunchForbiddenAuthorityIdentifiers = [
+  "WriteProcessMemory",
+  "CreateRemoteThread",
+  "CreateRemoteThreadEx",
+  "DebugActiveProcessStop",
+  "NtQueryObject",
+  "PROCESS_ALL_ACCESS",
+  "THREAD_ALL_ACCESS",
+  "GetProcAddress",
+  "LoadLibraryA",
+  "LoadLibraryW",
+  "LoadLibraryExA",
+  "LoadLibraryExW",
+  "TcpStream",
+  "UdpSocket",
+  "WinHttpOpen",
+  "InternetOpenW",
+  "SigningKey",
+  "PrivateKey",
+  "Mnemonic",
+  "SeedPhrase",
+  "Transaction",
+  "Wallet",
+];
+const keyAgentServiceLaunchAuthorityBoundaryContract = (files) => {
+  const productionFiles = files.map((file) => ({
+    path: file.path,
+    source: withoutBottomTestModule(file.source),
+  }));
+  const production = productionFiles.map(({ source }) => source).join("\n");
+  const code = rustLexicalCode(production);
+  const forbidden = rustIdentifierUsageInventory(
+    productionFiles,
+    keyAgentServiceLaunchForbiddenAuthorityIdentifiers,
+  );
+  const duplicateCalls = productionFiles.flatMap((file) =>
+    rustCallSites(file.source, "DuplicateHandle").map((call) => ({
+      path: file.path,
+      arguments: call.arguments.map(compactRust),
+    })),
+  );
+  const openProcessCalls = productionFiles.flatMap((file) =>
+    rustCallSites(file.source, "OpenProcess").map((call) => ({
+      path: file.path,
+      arguments: call.arguments.map(compactRust),
+    })),
+  );
+  const openThreadCalls = productionFiles.flatMap((file) =>
+    rustCallSites(file.source, "OpenThread").map((call) => ({
+      path: file.path,
+      arguments: call.arguments.map(compactRust),
+    })),
+  );
+  return (
+    forbidden.calls.length === 0 &&
+    forbidden.aliases.length === 0 &&
+    forbidden.qualified.length === 0 &&
+    forbidden.references.length === 0 &&
+    Object.values(forbidden.tokens).every((entries) => entries.length === 0) &&
+    !/\b(?:DUPLICATE_SAME_ACCESS|PeekNamedPipe|FlushFileBuffers)\b/u.test(
+      code,
+    ) &&
+    !/\binherit_handle\s*:\s*true\b/u.test(code) &&
+    JSON.stringify(duplicateCalls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
+          arguments: [
+            "GetCurrentProcess()",
+            "HANDLE(call.source_handle.0as*mutc_void)",
+            "HANDLE(call.target_process.0as*mutc_void)",
+            "&rawmutremote",
+            "call.desired_access",
+            "call.inherit_handle",
+            "DUPLICATE_HANDLE_OPTIONS(call.options)",
+          ],
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+          arguments: [
+            "current_process",
+            "source",
+            "current_process",
+            "&rawmutduplicate",
+            "(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE).0",
+            "false",
+            "DUPLICATE_HANDLE_OPTIONS(0)",
+          ],
+        },
+      ]) &&
+    JSON.stringify(openProcessCalls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+          arguments: [
+            "PROCESS_QUERY_LIMITED_INFORMATION",
+            "false",
+            "process_id",
+          ],
+        },
+      ]) &&
+    JSON.stringify(openThreadCalls) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+          arguments: [
+            "THREAD_QUERY_LIMITED_INFORMATION",
+            "false",
+            "identity.thread_id",
+          ],
+        },
+      ]) &&
+    !/\b(?:std::net|windows::Win32::Networking|windows::Win32::NetworkManagement)\b/u.test(
+      code,
+    )
+  );
+};
+const mutateKeyAgentServiceLaunchAuthorityBoundary = (injection) => {
+  const bottomTestModule = "\n#[cfg(test)]\nmod tests {";
+  return keyAgentServiceLaunchFiles.map((file) => {
+    if (file.path !== keyAgentServiceLaunchPaths.debugGate) return file;
+    const insertion = file.source.lastIndexOf(bottomTestModule);
+    if (insertion < 0) {
+      throw new Error(
+        "architecture scan requires debug_gate.rs to retain its bottom test module",
+      );
+    }
+    return {
+      ...file,
+      source: `${file.source.slice(0, insertion)}\n${injection}\n${file.source.slice(insertion)}`,
+    };
+  });
+};
+const keyAgentServiceLaunchAuthorityBoundaryMutations = [
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_remote_write() { let _ = WriteProcessMemory; }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_remote_thread() { let _ = CreateRemoteThread; }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_detach() { let _ = DebugActiveProcessStop; }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_runtime_object_query() { let _ = NtQueryObject; }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_broad_process_open() { let _ = OpenProcess(PROCESS_ALL_ACCESS, true, 1); }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_extra_thread_open() { let _ = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, 1); }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_network() { let _ = TcpStream::connect; }",
+  ),
+  mutateKeyAgentServiceLaunchAuthorityBoundary(
+    "fn hidden_secret() { let _: Option<SigningKey> = None; }",
+  ),
+];
+requireInvariant(
+  keyAgentServiceLaunchAuthorityBoundaryContract(keyAgentServiceLaunchFiles) &&
+    keyAgentServiceLaunchAuthorityBoundaryMutations.every(
+      (probe) => !keyAgentServiceLaunchAuthorityBoundaryContract(probe),
+    ),
+  "the complete service-launch feasibility module must have only its two reviewed non-inheritable no-SAME_ACCESS DuplicateHandle sites plus the sole query-limited, non-inheritable rejected-event OpenProcess/OpenThread sites, and must reject broader or extra openers, remote writes/threads, explicit detach, runtime NtQueryObject, queued-byte/flush rights broadening, dynamic API rebinding, network, wallet/signing/secret authority, aliases, references, and effective bypass mutations",
 );
 
 const keyAgentServiceTargetProfileTestNames = [
@@ -10394,23 +11398,71 @@ const keyAgentServiceProcessCoordinatorContract = (processSource) => {
     const createSuspended = rustFunctionBlock(process, "create_suspended");
     const createNative = rustFunctionBlock(process, "create_native_suspended");
     const verifyPreCreate = rustFunctionBlock(process, "verify_pre_create");
+    const suspendedImpl = rustImplItems(process).find((item) =>
+      item.header.startsWith("impl SuspendedServiceProbe"),
+    )?.source;
+    const preparedDetachImpl = rustImplItems(process).find(
+      (item) => item.header === "impl PreparedServiceProbeDetach",
+    )?.source;
+    const pendingDetachImpl = rustImplItems(process).find(
+      (item) => item.header === "impl PendingServiceProbeDetach",
+    )?.source;
+    if (
+      suspendedImpl === undefined ||
+      preparedDetachImpl === undefined ||
+      pendingDetachImpl === undefined
+    ) {
+      return false;
+    }
     const suspendedRevalidate = rustLexicalItemBlock(
-      rustImplItems(process).find((item) =>
-        item.header.startsWith("impl SuspendedServiceProbe"),
-      )?.source ?? "",
+      suspendedImpl,
       /pub\(super\)\s+fn\s+revalidate\s*\(/u,
     );
+    const revalidateHeld = rustFunctionBlock(
+      suspendedImpl,
+      "revalidate_held",
+    );
     const suspendedCleanup = rustFunctionBlock(
-      rustImplItems(process).find((item) =>
-        item.header.startsWith("impl SuspendedServiceProbe"),
-      )?.source ?? "",
+      suspendedImpl,
       "into_pending_cleanup",
+    );
+    const abortForDebuggerExit = rustFunctionBlock(
+      suspendedImpl,
+      "abort_for_debugger_exit",
+    );
+    const preparePendingDebuggerExitSuccess = rustFunctionBlock(
+      suspendedImpl,
+      "prepare_pending_debugger_exit_success",
+    );
+    const abortAfterNoKillFailure = rustFunctionBlock(
+      preparedDetachImpl,
+      "abort_after_no_kill_failure",
+    );
+    const finishDetach = rustFunctionBlock(
+      pendingDetachImpl,
+      "finish_after_debugger_exit",
     );
     const finishCleanup = rustFunctionBlock(
       rustImplItems(process).find((item) =>
         item.header === "impl PendingServiceProbeCleanup",
       )?.source ?? "",
       "finish_after_debugger_exit",
+    );
+    const verifyDetached = rustFunctionBlock(
+      process,
+      "verify_detached_suspended_process",
+    );
+    const verifyDebuggerAbsent = rustFunctionBlock(
+      process,
+      "verify_debugger_absent",
+    );
+    const failDetached = rustFunctionBlock(
+      process,
+      "fail_detached_service_probe",
+    );
+    const closeDebugEventAliases = rustFunctionBlock(
+      process,
+      "close_debug_event_aliases",
     );
     const verifyPostCreate = rustFunctionBlock(process, "verify_post_create");
     const windowsVerification = rustImplItems(process).find((item) =>
@@ -10453,25 +11505,70 @@ const keyAgentServiceProcessCoordinatorContract = (processSource) => {
       "DuplicateTokenEx",
       "WaitForDebugEvent",
       "ContinueDebugEvent",
-      "ResumeThread",
       "DebugActiveProcessStop",
       "DebugSetProcessKillOnExit",
+      "OpenProcess",
+      "OpenThread",
+      "WriteProcessMemory",
+      "CreateRemoteThread",
+      "CreateRemoteThreadEx",
+      "NtQueryObject",
       "RpcBindingFromStringBindingW",
       "RpcServerListen",
       "RpcServerRegisterIf3",
     ];
+    const observedApis = [
+      "CheckRemoteDebuggerPresent",
+      "ResumeThread",
+      "SuspendThread",
+      "WaitForSingleObject",
+    ].map((api) => ({
+      api,
+      calls: rustCallSites(process, api).map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    }));
     return (
+      normalizedSourceSha256(processSource) ===
+        "e0dfb87d9bfadd5dac6131ccb75022abb95449f2c89ecab1315b416ddcac4c19" &&
       process.includes("#![allow(unsafe_code)]") &&
-      rustUnsafeKeywordCount(process) === 1 &&
+      rustUnsafeKeywordCount(process) === 6 &&
       forbiddenApis.every((api) => rustCallSites(process, api).length === 0) &&
+      JSON.stringify(observedApis) ===
+        JSON.stringify([
+          {
+            api: "CheckRemoteDebuggerPresent",
+            calls: [
+              [
+                "windows_handle(process.process_handle())",
+                "&rawmutdebugger_present",
+              ],
+            ],
+          },
+          {
+            api: "ResumeThread",
+            calls: [["windows_handle(process.primary_thread_handle())"]],
+          },
+          {
+            api: "SuspendThread",
+            calls: [["windows_handle(process.primary_thread_handle())"]],
+          },
+          {
+            api: "WaitForSingleObject",
+            calls: [
+              ["windows_handle(process.process_handle())", "0"],
+              ["windows_handle(process.process_handle())", "0"],
+            ],
+          },
+        ]) &&
       processSource.includes(
         'const DEBUGGER_THREAD_NAME: &str = "yw-key-agent-service-probe";',
       ) &&
       compactProcess.includes(
-        "pub(super)structFreshDebuggerThread{thread_id:ThreadId,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+        "pub(super)structFreshDebuggerThread{thread_id:ThreadId,debug_event_cleanup:Arc<ServiceProbeDebugEventCleanup>,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
       ) &&
       compactProcess.includes(
-        "pub(super)structDebuggerThreadExitProof{thread_id:ThreadId,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+        "pub(super)structDebuggerThreadExitProof{thread_id:ThreadId,debug_event_cleanup:Arc<ServiceProbeDebugEventCleanup>,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
       ) &&
       !/#\[derive\([^)]*(?:Clone|Copy)[^)]*\)\]\s*(?:pub\(super\)\s+)?struct\s+(?:FreshDebuggerThread|DebuggerThreadExitProof|ServiceProbeCreateInputs|SuspendedServiceProbe|PendingServiceProbeCleanup)\b/u.test(
         process,
@@ -10485,20 +11582,27 @@ const keyAgentServiceProcessCoordinatorContract = (processSource) => {
       compactRust(requireFreshDebuggerThread) ===
         "fnrequire_current(&self)->Result<ThreadId,ServiceProbeCreateError>{ifthread::current().id()!=self.thread_id{returnErr(ServiceProbeCreateError::Verification);}Ok(self.thread_id)}" &&
       hasOrderedCompactMarkers(runner, [
+        "letdebug_event_cleanup=ServiceProbeDebugEventCleanup::new_shared()",
+        "letworker_cleanup=Arc::clone(&debug_event_cleanup)",
         "thread::scope(|scope|",
         "thread::Builder::new()",
         ".name(DEBUGGER_THREAD_NAME.to_owned())",
         ".spawn_scoped(scope,move||",
         "letthread_id=thread::current().id()",
-        "letoutput=operation(FreshDebuggerThread{thread_id,_thread_bound:PhantomData,})",
-        "let(output,thread_id)=handle.join().map_err(|_|FreshDebuggerThreadError::Panic)?",
-        "Ok(JoinedFreshDebuggerThread{output,proof:DebuggerThreadExitProof{thread_id,_thread_bound:PhantomData,},})",
+        "letoutput=operation(FreshDebuggerThread{thread_id,debug_event_cleanup:Arc::clone(&worker_cleanup),_thread_bound:PhantomData,})",
+        "letjoined=handle.join()",
+        "debug_event_cleanup.mark_joined()",
+        "letOk((output,thread_id))=joinedelse",
+        "ifdebug_event_cleanup.require_empty_after_join().is_err()",
+        "std::process::abort()",
+        "returnErr(FreshDebuggerThreadError::Panic)",
+        "Ok(JoinedFreshDebuggerThread{output,proof:DebuggerThreadExitProof{thread_id,debug_event_cleanup,_thread_bound:PhantomData,},})",
       ]) &&
       compactRust(runner).includes(
         "whereOutput:Send,Operation:FnOnce(FreshDebuggerThread)->Output+Send",
       ) &&
       compactRust(debuggerExitMatches) ===
-        "fndebugger_exit_matches(creator_thread_id:ThreadId,proof:&DebuggerThreadExitProof)->bool{proof.thread_id==creator_thread_id}" &&
+        "fndebugger_exit_matches(creator_thread_id:ThreadId,debug_event_cleanup:&Arc<ServiceProbeDebugEventCleanup>,proof:&DebuggerThreadExitProof,)->bool{proof.thread_id==creator_thread_id&&Arc::ptr_eq(debug_event_cleanup,&proof.debug_event_cleanup)}" &&
       hasOrderedCompactMarkers(prepareApproval, [
         "if!helper.is_approval_frontend()",
         "letapplication_name=wide_nul_absolute_path(helper.path())?",
@@ -10520,13 +11624,15 @@ const keyAgentServiceProcessCoordinatorContract = (processSource) => {
         "prepared.verify_helper_binding()?",
       ]) &&
       hasOrderedCompactMarkers(createSuspended, [
+        "letdebug_event_cleanup=Arc::clone(&debugger_thread.debug_event_cleanup)",
         "letcreator_thread_id=matchdebugger_thread.require_current()",
+        "self.into_pending_cleanup(None,failure,debugger_thread.thread_id,debug_event_cleanup,)",
         "self.verify_pre_create()",
         "self.create_native_suspended()",
         "letmutoperations=WindowsPostCreateVerification",
         "verify_post_create(&mutoperations)",
         "letprocess=created.request_termination_into_pending_debugger_exit_cleanup()",
-        "self.into_pending_cleanup(Some(process),failure,creator_thread_id)",
+        "self.into_pending_cleanup(Some(process),failure,creator_thread_id,debug_event_cleanup,)",
         "Ok(SuspendedServiceProbe",
       ]) &&
       hasOrderedCompactMarkers(createNative, [
@@ -10599,32 +11705,102 @@ const keyAgentServiceProcessCoordinatorContract = (processSource) => {
       compactRust(suspendedRevalidate).startsWith(
         "pub(super)fnrevalidate(mutself)->Result<Self,PendingServiceProbeCleanup>",
       ) &&
-      hasOrderedCompactMarkers(suspendedRevalidate, [
-        "self.debugger_thread.require_current()",
+      hasOrderedCompactMarkers(revalidateHeld, [
+        "self.debugger_thread.require_current()?",
         "verify_post_create(&mutoperations)",
-        "self.target.revalidate_created_process(&self.target_proof,self.created.process_handle(),self.context,)",
-        "drop(fresh)",
-        "ifretained.is_err()",
+        "letretained=self.target.revalidate_created_process(&self.target_proof,self.created.process_handle(),self.context,)",
+        "drop(verification)",
+        "retained.map_err(|_|ServiceProbeCreateError::Verification)?",
+        "Ok(())",
+      ]) &&
+      hasOrderedCompactMarkers(suspendedRevalidate, [
+        "ifletErr(failure)=self.revalidate_held()",
+        "returnErr(self.into_pending_cleanup(failure))",
         "Ok(self)",
       ]) &&
       hasOrderedCompactMarkers(suspendedCleanup, [
         "letcreator_thread_id=debugger_thread.thread_id",
+        "letdebug_event_cleanup=Arc::clone(&debugger_thread.debug_event_cleanup)",
         "letprocess=created.request_termination_into_pending_debugger_exit_cleanup()",
         "letjob_request_failed=job.request_termination().is_err()",
         "drop(target_proof)",
         "PendingServiceProbeCleanup",
       ]) &&
+      compactRust(abortForDebuggerExit) ===
+        "pub(super)fnabort_for_debugger_exit(self)->PendingServiceProbeCleanup{self.into_pending_cleanup(ServiceProbeCreateError::Aborted)}" &&
+      hasOrderedCompactMarkers(preparePendingDebuggerExitSuccess, [
+        "ifletErr(failure)=self.revalidate_held()",
+        "returnErr(self.into_pending_cleanup(failure))",
+        "letcreator_thread_id=debugger_thread.thread_id",
+        "letdebug_event_cleanup=Arc::clone(&debugger_thread.debug_event_cleanup)",
+        "letprocess=created.prepare_pending_debugger_exit_success()",
+        "Ok(PreparedServiceProbeDetach",
+      ]) &&
+      hasOrderedCompactMarkers(abortAfterNoKillFailure, [
+        "letprocess=process.abort_into_pending_cleanup()",
+        "letjob_request_failed=job.request_termination().is_err()",
+        "PendingServiceProbeCleanup",
+      ]) &&
+      hasOrderedCompactMarkers(finishDetach, [
+        "letprocess=process.finish_after_debugger_exit()",
+        "if!debug_event_cleanup.debugger_thread_has_joined()||!debugger_exit_matches(creator_thread_id,&debug_event_cleanup,&proof)",
+        "fail_detached_service_probe",
+        "verify_debugger_absent(&process)",
+        ".authorize_after_debugger_absence(process.process_id().get(),process.primary_thread_id().get(),)",
+        "close_debug_event_aliases",
+        "verify_detached_suspended_process(&process,&job)",
+        "Ok(DetachedSuspendedServiceProbe",
+      ]) &&
+      hasOrderedCompactMarkers(verifyDebuggerAbsent, [
+        "ifunsafe{WaitForSingleObject(windows_handle(process.process_handle()),0)}!=WAIT_TIMEOUT",
+        "unsafe{CheckRemoteDebuggerPresent(windows_handle(process.process_handle()),&rawmutdebugger_present,)}",
+        "ifdebugger_present.as_bool()",
+      ]) &&
+      hasOrderedCompactMarkers(verifyDetached, [
+        "ifunsafe{WaitForSingleObject(windows_handle(process.process_handle()),0)}!=WAIT_TIMEOUT",
+        "if!job.contains_process(process.process_handle())",
+        "||job.active_process_count()",
+        "letprevious=unsafe{SuspendThread(windows_handle(process.primary_thread_handle()))}",
+        "ifprevious!=1",
+        "letresumed=unsafe{ResumeThread(windows_handle(process.primary_thread_handle()))}",
+        "ifresumed!=2",
+        "Ok(())",
+      ]) &&
+      hasOrderedCompactMarkers(failDetached, [
+        "letjob_request=job.request_termination()",
+        "letprocess_request=process.request_termination_for_cleanup()",
+        "letprocess_wait=process.wait_for_exit_for_cleanup()",
+        "letjob_wait=job.finish_termination_and_wait()",
+        "if!terminal",
+        "std::process::abort()",
+        ".authorize_after_process_terminal()",
+        "close_debug_event_aliases",
+        "ifalias_cleanup.is_err()",
+        "std::process::abort()",
+      ]) &&
+      hasOrderedCompactMarkers(closeDebugEventAliases, [
+        "letfirst=cleanup.close_after_join(process,primary_thread)",
+        "iffirst.is_ok()",
+        "cleanup.close_after_join(process,primary_thread)",
+      ]) &&
       hasOrderedCompactMarkers(finishCleanup, [
-        "if!debugger_exit_matches(self.creator_thread_id,proof)",
+        "letproof_matches=self.debug_event_cleanup.debugger_thread_has_joined()&&debugger_exit_matches(self.creator_thread_id,&self.debug_event_cleanup,proof)",
+        "if!proof_matches",
+        "std::process::abort()",
+        "letjob_result=self.job.finish_termination_and_wait()",
+        "ifjob_result.is_err()",
+        "std::process::abort()",
+        ".authorize_after_process_terminal()",
+        "close_debug_event_aliases",
+        "self.debug_event_cleanup.require_empty_after_join()",
+        "ifevent_alias_result.is_err()",
+        "std::process::abort()",
         "letprocess_result=matchself.process.take()",
         "Some(process)=>process.wait_and_close()",
-        "letjob_result=self.job.finish_termination_and_wait()",
-        "ifself.job_request_failed||self.process_cleanup_failed||job_result.is_err()",
+        "self.process_cleanup_failed|=process_result.is_err()",
+        "ifself.job_request_failed||self.process_cleanup_failed||self.worker_cleanup_failed",
         "Ok(self.failure)",
       ]) &&
-      compactRust(finishCleanup).startsWith(
-        "pub(super)fnfinish_after_debugger_exit(&mutself,proof:&DebuggerThreadExitProof,)->Result<ServiceProbeCreateError,ServiceProbeCreateError>{if!debugger_exit_matches(self.creator_thread_id,proof){returnErr(ServiceProbeCreateError::Cleanup);}",
-      ) &&
       JSON.stringify(keyAgentServiceRustTestNameInventory(processSource)) ===
         JSON.stringify(keyAgentServiceProcessCoordinatorTestNames) &&
       processSource.includes(
@@ -10694,16 +11870,28 @@ const keyAgentServiceProcessCoordinatorMutationProbes = [
     "        let job_request_failed = job.request_termination().is_err();\n        let process = created.request_termination_into_pending_debugger_exit_cleanup();",
   ),
   mutateKeyAgentServiceProcessCoordinator(
-    "        if !debugger_exit_matches(self.creator_thread_id, proof) {",
-    "        if false {",
+    "        let proof_matches = self.debug_event_cleanup.debugger_thread_has_joined()",
+    "        let proof_matches = true",
   ),
   mutateKeyAgentServiceProcessCoordinator(
-    "    ) -> Result<ServiceProbeCreateError, ServiceProbeCreateError> {\n        if !debugger_exit_matches(self.creator_thread_id, proof) {",
-    "    ) -> Result<ServiceProbeCreateError, ServiceProbeCreateError> {\n        let _ = self.process.take();\n        if !debugger_exit_matches(self.creator_thread_id, proof) {",
+    "        let event_alias_result = match self.process.as_ref() {",
+    "        let _ = self.process.take();\n        let event_alias_result = match self.process.as_ref() {",
   ),
   mutateKeyAgentServiceProcessCoordinator(
     "        let job_result = self.job.finish_termination_and_wait();",
     "        let job_result = Ok(());",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    if previous != 1 {",
+    "    if previous != 0 {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    if resumed != 2 {",
+    "    if resumed != 1 {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "                .authorize_after_process_terminal()",
+    "                .require_empty_after_join()",
   ),
   mutateKeyAgentServiceProcessCoordinator(
     "        self.client\n            .revalidate()\n            .map_err(|_| ServiceProbeCreateError::Authentication)",
@@ -10938,56 +12126,78 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
-    anchor: "A separate child-only Phase 1 feasibility leaf,",
+    anchor: "A separate Phase 1 helper-bootstrap crate exposes",
     sha256:
-      "4c3df2355b16f1d71a7a05d22f8ee111be761666fbf95835b51b325b54b61d8d",
+      "fe7a3f236bdd7ed9cd839371070cebe25bf3b26fedc7462429307ee19fcf362b",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
-    anchor: "A separate child-only Phase 1 feasibility leaf,",
+    anchor:
+      "The helper-bootstrap crate now has two deliberately different surfaces.",
     sha256:
-      "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
+      "9603057865c4ac9330741ca9f9ebbbee5454c07a9505065665392dfdeb122f94",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
-    anchor: "A separate child-only leaf crate,",
+    anchor:
+      "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
     sha256:
-      "865f9a6a9031b78877e0a8ab719f15290a957534293b154ef8d6c102c1a559c9",
+      "ec76bcec37d91af7e5a48850a1ae2a05e2fc8e5ba870fffeae0bada771a81ef5",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
-    anchor: "A separate child-only feasibility leaf,",
+    anchor: "A separate helper-bootstrap crate now exposes",
     sha256:
-      "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
+      "ee34c7830471a4431b11071ee7c4934e1993170105f66c395d23dde202556eac",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
-  /key-agent-service-helper-bootstrap[\s\S]{0,180}key-agent-service-wire[\s\S]{0,160}windows[\s\S]{0,220}(?:not\s+on|does\s+not\s+depend\s+on|has\s+no\s+dependency\s+on|but\s+not\s+on)[\s\S]{0,220}(?:platform-windows|UI|service)/iu,
-  /(?:canonical )?72-byte[\s\S]{0,120}(?:correlation|ACK)[\s\S]{0,180}(?:not|neither|proves neither)[\s\S]{0,100}(?:authentication|authority)/iu,
+  /(?:platform-neutral|safe platform-neutral)[\s\S]{0,180}(?:gate|byte)[\s\S]{0,260}100-byte[\s\S]{0,80}72-byte/iu,
+  /(?:correlation|frames?)[\s\S]{0,180}(?:not|neither)[\s\S]{0,100}(?:authentication|authority)/iu,
   /Windows\s+x86_64[\s\S]{0,160}child-capture-feasibility-test-hook[\s\S]{0,120}debug_assertions/iu,
-  /(?:no\s+executable|no\s+executable consumes|has no\s+executable)[\s\S]{0,180}(?:default|release)/iu,
-  /(?:parent debugger|debugger)[\s\S]{0,180}(?:breakpoint|INT3)/iu,
-  /(?:exact 34-byte|exactly 34 bytes)[\s\S]{0,180}movabs[\s\S]{0,120}R10[\s\S]{0,80}R11[\s\S]{0,140}INT3[\s\S]{0,180}(?:RCX|stores)[\s\S]{0,180}(?:XOR|clear)[\s\S]{0,120}RET/iu,
+  /(?:no\s+UI|unreachable\s+from\s+either\s+UI|has\s+no\s+UI)[\s\S]{0,260}(?:default|release)/iu,
+  /(?:exact 34-byte|exactly 34 bytes)[\s\S]{0,160}R10[\s\S]{0,80}R11[\s\S]{0,140}INT3[\s\S]{0,180}(?:RCX|stores)[\s\S]{0,180}(?:XOR|clear)[\s\S]{0,120}RET/iu,
+  /(?:exact\s+28-byte|exactly\s+28\s+bytes)[\s\S]{0,220}(?:independent|distinct|different|separate)[\s\S]{0,240}(?:offset\s+20|offsets\s+are\s+20|breakpoints\s+are\s+at\s+offset\s+20)/iu,
   /rejects? zero[\s\S]{0,120}(?:negative|invalid)[\s\S]{0,80}pseudo[\s\S]{0,80}equal[\s\S]{0,160}standard[\s-]+handle[\s\S]{0,120}(?:nonzero|flag)[\s\S]{0,100}FILE_TYPE_PIPE[\s\S]{0,120}same-object/iu,
   /0x00100001[\s\S]{0,180}0x00100002[\s\S]{0,160}inheritance\s+false[\s\S]{0,100}options\s+zero/iu,
-  /(?:object continuity|candidate\/duplicate object continuity|compares? each duplicate|compares? fresh\/candidate object identity)[\s\S]{0,180}(?:checked-closes|closes)[\s\S]{0,80}both/iu,
-  /(?:no raw handle|getters?|exposes neither raw handles)[\s\S]{0,120}(?:no I\/O|performs no I\/O|nor I\/O)/iu,
-  /Every capture or adoption failure is process-terminal[\s\S]{0,140}std::process::abort\(\)[\s\S]{0,120}no failure return/iu,
-  /(?:entire handle table|whole handle table)[\s\S]{0,180}parent[\s\S]{0,100}(?:terminate|termination)[\s\S]{0,100}reap[\s\S]{0,80}Job/iu,
+  /100-byte[\s\S]{0,240}(?:role)[\s\S]{0,180}(?:child\s+PID|current\s+child\s+PID)[\s\S]{0,180}(?:service\s+PID)[\s\S]{0,180}FILETIME[\s\S]{0,180}(?:five\s+seconds|five-second)[\s\S]{0,220}(?:both|two)[\s\S]{0,100}(?:peer|client\s+PID)/iu,
+  /(?:synchronously writes|synchronous)[\s\S]{0,120}72-byte[\s\S]{0,160}(?:gate two|adoption-complete)/iu,
+  /(?:Every|every)[\s\S]{0,220}(?:failure)[\s\S]{0,120}std::process::abort\(\)/iu,
+  /bounded\s+read-only(?:\/|[\s\S]{0,40})reparse-point[\s\S]{0,180}file[\s-]+identity[\s\S]{0,180}(?:before\s+and\s+after|checked\s+before\s+and\s+after)/iu,
+  /(?:(?:exactly\s+one|occurs\s+exactly\s+once)[\s\S]{0,300}initialized\s+executable\s+nonwritable[\s\S]{0,140}AMD64\s+PE32\+|AMD64\s+PE32\+[\s\S]{0,300}(?:exactly\s+one|occurs\s+exactly\s+once)[\s\S]{0,300}initialized\s+executable\s+nonwritable)/iu,
+  /canonical\s+virtual(?:\/|\s+and\s+)raw[\s\S]{0,260}(?:raw[\s\S]{0,100}RVA|raw-equals-RVA)[\s\S]{0,220}SizeOfImage/iu,
+  /(?:first\s+remote\s+duplicate|only\s+the\s+first\s+remote\s+duplicate|partial\s+remote\s+duplicate)[\s\S]{0,260}(?:cannot|not)[\s\S]{0,160}(?:close|locally)[\s\S]{0,300}(?:process-terminal|terminate|termination|consume)[\s\S]{0,180}(?:reap|Job)/iu,
+  /DUPLICATE_SAME_ACCESS[\s\S]{0,180}(?:forbidden|not admitted|absent)/iu,
+  /(?:only R10\/R11|changes only R10\/R11|mutates only R10\/R11)[\s\S]{0,160}(?:readback|context)/iu,
+  /(?:write|writes)[\s\S]{0,80}(?:hello)[\s\S]{0,140}(?:before)[\s\S]{0,100}(?:continue|continuing)[\s\S]{0,240}(?:ACK)[\s\S]{0,160}(?:before)[\s\S]{0,160}(?:gate two|gate-two)/iu,
+  /PeekNamedPipe[\s\S]{0,180}GENERIC_READ[\s\S]{0,220}FlushFileBuffers[\s\S]{0,180}GENERIC_WRITE/iu,
+  /DebugSetProcessKillOnExit\(FALSE\)[\s\S]{0,180}final fallible[\s\S]{0,520}(?:DebugActiveProcessStop|WriteProcessMemory|CreateRemoteThread)/iu,
+  /(?:Post-join|After the debugger thread exits and joins|After join)[\s\S]{0,180}(?:debugger absence|debugger is absent)[\s\S]{0,260}(?:flags|IDs)[\s\S]{0,160}same-object[\s\S]{0,180}(?:checked close|checked-close)/iu,
+  /(?:measured host|observed on this host|host evidence)[\s\S]{0,620}(?:kernel|STOP-SHIP)/iu,
+  /OpenProcess\(PROCESS_QUERY_LIMITED_INFORMATION,\s*FALSE,\s*PID\)[\s\S]{0,180}OpenThread\(THREAD_QUERY_LIMITED_INFORMATION,\s*FALSE,\s*TID\)[\s\S]{0,220}CompareObjectHandles/iu,
+  /raw\s+`?DEBUG_EVENT`?\s+slot[\s\S]{0,160}generation[\s\S]{0,180}same-object\s+ABA[\s\S]{0,160}compare-to-close\s+TOCTOU[\s\S]{0,240}debug-only[\s\S]{0,100}STOP-SHIP/iu,
+  /LOAD_DLL_DEBUG_EVENT[\s\S]{0,180}adopt[\s\S]{0,100}hFile[\s\S]{0,220}before[\s\S]{0,120}(?:loader(?:-count|\s+counter))[\s\S]{0,180}(?:semantic|limit)[\s\S]{0,220}cleanup\s+failure[\s\S]{0,60}(?:dominates|wins)/iu,
+  /(?:second\s+rejected-event\s+registration|rejected[\s\S]{0,360}(?:single-assignment|second\s+registration))[\s\S]{0,420}fail-fast[\s\S]{0,120}before[\s\S]{0,60}(?:overwrite|assignment)/iu,
   /(?:GrantedAccess|granted access)[\s\S]{0,120}(?:pipe )?direction[\s\S]{0,100}UNVERIFIED/iu,
-  /(?:Supported Win32 APIs|Win32 APIs)[\s\S]{0,160}(?:cannot|do not)[\s\S]{0,140}(?:admission fact|source)[\s\S]{0,180}DuplicateHandle[\s\S]{0,140}stronger/iu,
   /NtQueryObject[\s\S]{0,160}(?:not\s+permitted\s+as\s+runtime\s+admission|not\s+a\s+runtime\s+admission|not\s+runtime\s+admission)/iu,
-  /(?:UI integration|integrate either UI|adds no UI entrypoint|UI)[\s\S]{0,180}parent[\s\S]{0,140}(?:ACK|transport)[\s\S]{0,180}(?:second suspend|detach)[\s\S]{0,180}(?:signed|kernel)/iu,
+  /(?:real signed-helper|real signed helpers|signed-helper E2E|signed artifacts?)[\s\S]{0,220}(?:kernel|STOP-SHIP)/iu,
 ];
 const keyAgentServiceHelperBootstrapDocumentationContradiction =
-  /The source handle access and pipe direction are proven exact\.|Capture failures return to the UI for recovery\.|The release executable consumes the child capture API\.|The ACK authenticates the helper and grants authority\./u;
+  /The source handle access and pipe direction are proven exact\.|Capture failures return to the UI for recovery\.|The release executable consumes the child capture API\.|The ACK authenticates the helper and grants authority\.|A partial remote duplicate is recoverable without terminating the child\.|Create-event aliases are universally guaranteed to survive debugger-thread exit\.|Registration-time canonical anchors eliminate raw-event ABA and close TOCTOU\.|CompareObjectHandles proves rejected raw aliases safe to close\.|LOAD_DLL limits may be checked before hFile cleanup\.|A second rejected registration may overwrite prior authority\./u;
+const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
+  "The source handle access and pipe direction are proven exact.",
+  "Registration-time canonical anchors eliminate raw-event ABA and close TOCTOU.",
+  "CompareObjectHandles proves rejected raw aliases safe to close.",
+  "LOAD_DLL limits may be checked before hFile cleanup.",
+  "A second rejected registration may overwrite prior authority.",
+];
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 2_300);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 9_000);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -11000,7 +12210,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 2_300 &&
+      window.length <= 9_000 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -11053,12 +12263,16 @@ const keyAgentServiceHelperBootstrapDocumentationMarkerMutations =
     },
   );
 const keyAgentServiceHelperBootstrapDocumentationContradictionMutations =
-  keyAgentServiceHelperBootstrapDocumentationSpecs.map((spec, specIndex) => {
+  keyAgentServiceHelperBootstrapDocumentationSpecs.flatMap((spec, specIndex) => {
     const anchor = spec.source.indexOf(spec.anchor);
-    const mutatedSource = `${spec.source.slice(0, anchor + 500)}\nThe source handle access and pipe direction are proven exact.\n${spec.source.slice(anchor + 500)}`;
-    return keyAgentServiceHelperBootstrapDocumentationSpecs.map(
-      (entry, index) =>
-        index === specIndex ? { ...entry, source: mutatedSource } : entry,
+    return keyAgentServiceHelperBootstrapDocumentationContradictionStatements.map(
+      (statement) => {
+        const mutatedSource = `${spec.source.slice(0, anchor + 500)}\n${statement}\n${spec.source.slice(anchor + 500)}`;
+        return keyAgentServiceHelperBootstrapDocumentationSpecs.map(
+          (entry, index) =>
+            index === specIndex ? { ...entry, source: mutatedSource } : entry,
+        );
+      },
     );
   });
 requireInvariant(
@@ -11081,7 +12295,7 @@ requireInvariant(
       (probe) =>
         !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
     ),
-  "the exact four frozen helper-bootstrap document windows must preserve the child-only dependency boundary, 72-byte non-authenticating wire role, debug-only x64 capture, exact naked sequence, closed candidate admission/duplication/close policy, process-terminal abort semantics, typed source-access/direction uncertainty, STOP-SHIP integration blockers, and effective inventory/marker/contradiction mutations",
+  "the exact four frozen helper-bootstrap document windows must preserve the optional parent-neutral dependency boundary, canonical 100-byte hello/72-byte ACK, two exact gates, canonical PE raw/RVA order with low-alignment equality and exact SizeOfImage extent, minimum-right injection, process-terminal partial-duplicate cleanup, role/PID/FILETIME/deadline/two-peer binding, ACK/gate ordering without rights-broadening peek/flush, debugger-thread/post-join proof, host-scoped alias evidence, resource-first LOAD_DLL hFile cleanup with cleanup-error precedence, fail-fast-before-overwrite rejected authority, query-only anchors without overclaiming raw-slot generation or compare-to-close TOCTOU safety, source-access/direction uncertainty, no production reachability, signed-helper/kernel STOP-SHIP status, and effective mutations",
 );
 
 const keyAgentServiceRpcEpochTestNames = [
@@ -12056,6 +13270,7 @@ const approvedKeyAgentServiceHelperBootstrapDirectories = [
     entries: [
       { name: "child", kind: "directory" },
       { name: "child.rs", kind: "file" },
+      { name: "gate_spec.rs", kind: "file" },
       { name: "lib.rs", kind: "file" },
       { name: "wire.rs", kind: "file" },
     ],
@@ -12068,19 +13283,23 @@ const approvedKeyAgentServiceHelperBootstrapDirectories = [
 const approvedKeyAgentServiceHelperBootstrapSourcePins = [
   {
     path: keyAgentServiceHelperBootstrapPaths.child,
-    sha256: "844e13c1f3f9a518117f7a8211ee8b03a9b63552f511df1e61145de71894ac96",
+    sha256: "37f0a6f4e3ac151ab3d2ba23117d2de356e994181b9d9678caa95b07f0310dad",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.windows,
-    sha256: "bcae2fef4b5ab365b2bdb569e48a239f51845d87c629975788bf268f7326f05a",
+    sha256: "4e8033fbe547b9345a4700d228d30d9ff1a43ab3d609e4305e637a560a5d0fdf",
+  },
+  {
+    path: keyAgentServiceHelperBootstrapPaths.gateSpec,
+    sha256: "5e0de4c679ab3919dfa43b242dd832a678349b204dd33a4aadd855537d636cf3",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.lib,
-    sha256: "e6bb7df33a0102c4f4a4b2189a6403ac5a5b41d7eb2ff1924632800836805e4e",
+    sha256: "3087a32b013eaee10455560f9814a9b6a702fef527210d4b5c7503e215ac6be6",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.wire,
-    sha256: "e5346fbe0bb9c6b386e903ea7f1968f14db24289e053cd64c70eb5babcf08f46",
+    sha256: "d33b4d178b9b7482f2ab5ec5000b8ace92fb256c8d1f7bff54d46b735dc4c01d",
   },
 ];
 const keyAgentServiceHelperBootstrapInventoryContract = (
@@ -12089,7 +13308,7 @@ const keyAgentServiceHelperBootstrapInventoryContract = (
   directories,
 ) =>
   normalizedSourceSha256(manifest) ===
-    "6fce1c2dee7b93b9a5ca6f7de2b62b2e7ba7dd5e3bc9015703bb5c7abf97b3f5" &&
+    "ff9e78f3a97fd33a1937ed8de99111960db88c2a387a1b3700a3ed423d8c189e" &&
   JSON.stringify(directories) ===
     JSON.stringify(approvedKeyAgentServiceHelperBootstrapDirectories) &&
   JSON.stringify(
@@ -12122,7 +13341,7 @@ const keyAgentServiceHelperBootstrapManifestContract = (manifest) => {
     /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire"\s*\}\s*$/mu.test(
       normalized,
     ) &&
-    /^windows\s*=\s*\{\s*workspace\s*=\s*true\s*,\s*features\s*=\s*\[\s*"Win32_Foundation"\s*,\s*"Win32_Storage_FileSystem"\s*,\s*"Win32_System_Console"\s*,\s*"Win32_System_Threading"\s*,?\s*\]\s*\}\s*$/mu.test(
+    /^windows\s*=\s*\{\s*workspace\s*=\s*true\s*,\s*features\s*=\s*\[\s*"Win32_Foundation"\s*,\s*"Win32_Storage_FileSystem"\s*,\s*"Win32_System_Console"\s*,\s*"Win32_System_IO"\s*,\s*"Win32_System_Pipes"\s*,\s*"Win32_System_SystemInformation"\s*,\s*"Win32_System_Threading"\s*,?\s*\]\s*\}\s*$/mu.test(
       normalized,
     ) &&
     !/^\s*(?:dev-dependencies|build-dependencies)\s*=/mu.test(normalized) &&
@@ -12138,19 +13357,30 @@ const keyAgentServiceHelperBootstrapManifestContract = (manifest) => {
   );
 };
 
-const keyAgentServiceHelperBootstrapLibContract = (lib, wire, child) => {
+const keyAgentServiceHelperBootstrapLibContract = (
+  lib,
+  gateSpec,
+  wire,
+  child,
+) => {
   const exactCfg = /#\[cfg\(all\(\s*windows\s*,\s*target_arch\s*=\s*"x86_64"\s*,\s*feature\s*=\s*"child-capture-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]/gu;
   return (
     (lib.match(exactCfg) ?? []).length === 2 &&
+    (lib.match(/\bmod\s+gate_spec\s*;/gu) ?? []).length === 1 &&
     (lib.match(/\bmod\s+wire\s*;/gu) ?? []).length === 1 &&
     (lib.match(/\bmod\s+child\s*;/gu) ?? []).length === 1 &&
-    !/\bpub\s+mod\s+(?:wire|child)\b/u.test(rustLexicalCode(lib)) &&
+    !/\bpub\s+mod\s+(?:gate_spec|wire|child)\b/u.test(rustLexicalCode(lib)) &&
     compactRust(lib).includes(
-      "pubuseself::wire::{AdoptionWireError,HELPER_ADOPTION_ACK_BYTES,HelperAdoptionAck,HelperBootstrapRole,decode_adoption_ack,encode_adoption_ack,};",
+      "pubuseself::gate_spec::{ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET,ADOPTION_COMPLETE_GATE_BYTES,ADOPTION_COMPLETE_R10_MARKER,ADOPTION_COMPLETE_R11_MARKER,CAPTURE_GATE_BREAKPOINT_OFFSET,CAPTURE_GATE_BYTES,REQUEST_INPUT_MARKER,RESPONSE_OUTPUT_MARKER,adoption_complete_gate_bytes,capture_gate_bytes,};",
     ) &&
     compactRust(lib).includes(
-      "pubuseself::child::{AdoptedInjectedChannels,REQUEST_INPUT_MARKER,RESPONSE_OUTPUT_MARKER,capture_and_adopt_injected_channels,};",
+      "pubuseself::wire::{AdoptionWireError,HELPER_ADOPTION_ACK_BYTES,HELPER_BOOTSTRAP_HELLO_BYTES,HelperAdoptionAck,HelperBootstrapHello,HelperBootstrapRole,decode_adoption_ack,decode_bootstrap_hello,encode_adoption_ack,encode_bootstrap_hello,};",
     ) &&
+    compactRust(lib).includes(
+      "pubuseself::child::{AdoptedInjectedChannels,BootstrappedInjectedChannels,capture_and_adopt_injected_channels,complete_injected_channel_bootstrap,};",
+    ) &&
+    gateSpec.includes("#![forbid(unsafe_code)]") &&
+    rustUnsafeKeywordCount(gateSpec) === 0 &&
     wire.includes("#![forbid(unsafe_code)]") &&
     rustUnsafeKeywordCount(wire) === 0 &&
     child.includes("#![deny(unsafe_code)]") &&
@@ -12251,6 +13481,7 @@ requireInvariant(
     ) &&
     keyAgentServiceHelperBootstrapLibContract(
       keyAgentServiceHelperBootstrapLib,
+      keyAgentServiceHelperBootstrapGateSpec,
       keyAgentServiceHelperBootstrapWire,
       keyAgentServiceHelperBootstrapChild,
     ) &&
@@ -12263,11 +13494,89 @@ requireInvariant(
         (!keyAgentServiceHelperBootstrapManifestContract(probe.manifest) ||
           !keyAgentServiceHelperBootstrapLibContract(
             probe.lib,
+            keyAgentServiceHelperBootstrapGateSpec,
             probe.wire,
             probe.child,
           )),
     ),
-  "key-agent-service-helper-bootstrap must remain an exact five-file child-only crate with an always-safe wire module and a private Windows-x64/debug-feature-only capture module, empty defaults, no build or executable target, only service-wire plus four reviewed target Windows features, and effective default/release/dependency/cfg mutations",
+  "key-agent-service-helper-bootstrap must remain an exact six-file crate with always-safe gate-spec/wire modules and a private Windows-x64/debug-feature-only capture/completion module, empty defaults, no build or executable target, only service-wire plus seven reviewed target Windows features, and effective default/release/dependency/cfg mutations",
+);
+
+const keyAgentServiceHelperBootstrapGateSpecTestNames = [
+  "public_markers_remain_exact",
+  "builders_match_the_complete_golden_sequences",
+  "breakpoint_offsets_and_sequence_ends_are_exact",
+  "breakpoint_is_the_only_int3_in_each_sequence",
+  "every_single_bit_sequence_mutation_differs_from_the_golden_sequence",
+  "every_capture_marker_bit_mutation_is_confined_to_its_immediate",
+  "every_adoption_marker_bit_mutation_is_confined_to_its_immediate",
+];
+const keyAgentServiceHelperBootstrapGateSpecContract = (source) => {
+  const compact = compactRust(source);
+  return (
+    normalizedSourceSha256(source) ===
+      "5e0de4c679ab3919dfa43b242dd832a678349b204dd33a4aadd855537d636cf3" &&
+    source.includes("#![forbid(unsafe_code)]") &&
+    rustUnsafeKeywordCount(source) === 0 &&
+    source.includes(
+      "pub const REQUEST_INPUT_MARKER: u64 = 0xA1D7_5E02_9C4B_63F8;",
+    ) &&
+    source.includes(
+      "pub const RESPONSE_OUTPUT_MARKER: u64 = 0x6C39_B4E1_27FA_805D;",
+    ) &&
+    source.includes("pub const CAPTURE_GATE_BYTES: usize = 34;") &&
+    source.includes("pub const CAPTURE_GATE_BREAKPOINT_OFFSET: usize = 20;") &&
+    source.includes(
+      "pub const ADOPTION_COMPLETE_R10_MARKER: u64 = 0xD84F_71A3_C25E_906B;",
+    ) &&
+    source.includes(
+      "pub const ADOPTION_COMPLETE_R11_MARKER: u64 = 0x2B96_E04D_7A13_F5C8;",
+    ) &&
+    source.includes("pub const ADOPTION_COMPLETE_GATE_BYTES: usize = 28;") &&
+    source.includes(
+      "pub const ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET: usize = 20;",
+    ) &&
+    compact.includes(
+      "bytes[20]=0xCC;bytes[21]=0x4C;bytes[22]=0x89;bytes[23]=0x11;bytes[24]=0x4C;bytes[25]=0x89;bytes[26]=0x1A;bytes[27]=0x45;bytes[28]=0x31;bytes[29]=0xD2;bytes[30]=0x45;bytes[31]=0x31;bytes[32]=0xDB;bytes[33]=0xC3",
+    ) &&
+    compact.includes(
+      "bytes[20]=0xCC;bytes[21]=0x45;bytes[22]=0x31;bytes[23]=0xD2;bytes[24]=0x45;bytes[25]=0x31;bytes[26]=0xDB;bytes[27]=0xC3",
+    ) &&
+    source.includes("structural sentinels, not secrets, authentication, or authority") &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapGateSpecTestNames)
+  );
+};
+const mutateKeyAgentServiceHelperBootstrapGateSpec = (search, replacement) =>
+  keyAgentServiceHelperBootstrapGateSpec.replace(search, replacement);
+const keyAgentServiceHelperBootstrapGateSpecMutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapGateSpec(
+    "pub const CAPTURE_GATE_BYTES: usize = 34;",
+    "pub const CAPTURE_GATE_BYTES: usize = 33;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapGateSpec(
+    "pub const ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET: usize = 20;",
+    "pub const ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET: usize = 21;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapGateSpec(
+    "    bytes[20] = 0xCC;",
+    "    bytes[20] = 0x90;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapGateSpec(
+    "    #[test]\n    fn breakpoint_is_the_only_int3_in_each_sequence",
+    "    fn breakpoint_is_the_only_int3_in_each_sequence",
+  ),
+];
+requireInvariant(
+  keyAgentServiceHelperBootstrapGateSpecContract(
+    keyAgentServiceHelperBootstrapGateSpec,
+  ) &&
+    keyAgentServiceHelperBootstrapGateSpecMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceHelperBootstrapGateSpec &&
+        !keyAgentServiceHelperBootstrapGateSpecContract(probe),
+    ),
+  "helper-bootstrap gate_spec must retain the exact public 34-byte capture and 28-byte adoption-complete sequences, independent full-width markers, one INT3 at offset 20, register clearing, RET, safe-only platform neutrality, exhaustive golden/mutation tests, and effective scanner mutations",
 );
 
 const keyAgentServiceHelperBootstrapWireTestNames = [
@@ -12554,16 +13863,448 @@ const keyAgentServiceHelperBootstrapWireMutationProbes = [
     "    fn recomputed_crc_cannot_make_invalid_body_fields_canonical",
   ),
 ];
+const keyAgentServiceHelperBootstrapWireV2TestNames = [
+  ...keyAgentServiceHelperBootstrapWireTestNames,
+  "bootstrap_hello_both_roles_round_trip_and_getters",
+  "bootstrap_hello_approval_golden_vector_is_stable",
+  "bootstrap_hello_every_nonexact_length_is_rejected",
+  "bootstrap_hello_every_single_byte_mutation_is_rejected",
+  "bootstrap_hello_recomputed_crc_cannot_make_invalid_header_canonical",
+  "bootstrap_hello_recomputed_crc_cannot_make_invalid_correlation_canonical",
+  "bootstrap_hello_recomputed_crc_cannot_make_zero_lifetime_fields_canonical",
+  "bootstrap_hello_binding_requires_every_field_to_match",
+  "bootstrap_hello_debug_output_redacts_every_binding_value",
+];
+const keyAgentServiceHelperBootstrapWireV2Contract = (source) => {
+  let role;
+  let roleCode;
+  let roleFromCode;
+  let hello;
+  let helloEncode;
+  let helloDecode;
+  let helloCorrelation;
+  let helloDebug;
+  let acknowledgement;
+  let acknowledgementEncode;
+  let acknowledgementDecode;
+  let acknowledgementCorrelation;
+  let acknowledgementDebug;
+  let encodeCommon;
+  let decodeCommon;
+  let requireLength;
+  let writeChecksum;
+  let verifyChecksum;
+  let requireZeroU16;
+  let requireZeroU32;
+  let crc32c;
+  let tests;
+  try {
+    role = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+enum\s+HelperBootstrapRole\s*\{/u,
+    );
+    const roleImpl = rustImplItemAtDepth(
+      source,
+      "impl HelperBootstrapRole",
+      0,
+    );
+    roleCode = rustFunctionBlockAtDepth(roleImpl, "wire_code", 1);
+    roleFromCode = rustFunctionBlockAtDepth(roleImpl, "from_wire_code", 1);
+    hello = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+struct\s+HelperBootstrapHello\s*\{/u,
+    );
+    const helloImpl = rustImplItemAtDepth(
+      source,
+      "impl HelperBootstrapHello",
+      0,
+    );
+    helloEncode = rustFunctionBlockAtDepth(helloImpl, "encode", 1);
+    helloDecode = rustFunctionBlockAtDepth(helloImpl, "decode", 1);
+    helloCorrelation = rustFunctionBlockAtDepth(
+      helloImpl,
+      "ensure_correlates_with",
+      1,
+    );
+    helloDebug = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for HelperBootstrapHello",
+      0,
+    );
+    acknowledgement = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)\s*pub\s+struct\s+HelperAdoptionAck\s*\{/u,
+    );
+    const acknowledgementImpl = rustImplItemAtDepth(
+      source,
+      "impl HelperAdoptionAck",
+      0,
+    );
+    acknowledgementEncode = rustFunctionBlockAtDepth(
+      acknowledgementImpl,
+      "encode",
+      1,
+    );
+    acknowledgementDecode = rustFunctionBlockAtDepth(
+      acknowledgementImpl,
+      "decode",
+      1,
+    );
+    acknowledgementCorrelation = rustFunctionBlockAtDepth(
+      acknowledgementImpl,
+      "ensure_correlates_with",
+      1,
+    );
+    acknowledgementDebug = rustImplItemAtDepth(
+      source,
+      "impl fmt::Debug for HelperAdoptionAck",
+      0,
+    );
+    encodeCommon = rustTopLevelFunctionBlock(
+      source,
+      "encode_common_correlation",
+    );
+    decodeCommon = rustTopLevelFunctionBlock(
+      source,
+      "decode_common_correlation",
+    );
+    requireLength = rustTopLevelFunctionBlock(source, "require_exact_length");
+    writeChecksum = rustTopLevelFunctionBlock(source, "write_checksum");
+    verifyChecksum = rustTopLevelFunctionBlock(source, "verify_checksum");
+    requireZeroU16 = rustTopLevelFunctionBlock(source, "require_zero_u16");
+    requireZeroU32 = rustTopLevelFunctionBlock(source, "require_zero_u32");
+    crc32c = rustTopLevelFunctionBlock(source, "crc32c");
+    tests = Object.fromEntries(
+      keyAgentServiceHelperBootstrapWireV2TestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(source, name, 1),
+      ]),
+    );
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  const compact = compactRust(source);
+  const compactRoleCode = compactRust(roleCode);
+  const compactRoleFromCode = compactRust(roleFromCode);
+  const compactHelloEncode = compactRust(helloEncode);
+  const compactHelloDecode = compactRust(helloDecode);
+  const compactHelloCorrelation = compactRust(helloCorrelation);
+  const compactAcknowledgementEncode = compactRust(acknowledgementEncode);
+  const compactAcknowledgementDecode = compactRust(acknowledgementDecode);
+  const compactAcknowledgementCorrelation = compactRust(
+    acknowledgementCorrelation,
+  );
+  const compactEncodeCommon = compactRust(encodeCommon);
+  const compactDecodeCommon = compactRust(decodeCommon);
+  return (
+    normalizedSourceSha256(source) ===
+      "d33b4d178b9b7482f2ab5ec5000b8ace92fb256c8d1f7bff54d46b735dc4c01d" &&
+    source.includes("#![forbid(unsafe_code)]") &&
+    rustUnsafeKeywordCount(source) === 0 &&
+    [
+      "pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;",
+      "pub const HELPER_BOOTSTRAP_HELLO_BYTES: usize = 100;",
+      'const HELPER_ADOPTION_MAGIC: [u8; 8] = *b"YWKHBA01";',
+      'const HELPER_BOOTSTRAP_HELLO_MAGIC: [u8; 8] = *b"YWKHBH01";',
+      "const VERSION_V1: u16 = 1;",
+      "const FRAME_HELPER_ADOPTION_ACK: u16 = 1;",
+      "const FRAME_HELPER_BOOTSTRAP_HELLO: u16 = 1;",
+      "const HEADER_RESERVED_OFFSET: usize = 12;",
+      "const EPOCH_NONCE_OFFSET: usize = 16;",
+      "const EPOCH_NONCE_BYTES: usize = 32;",
+      "const REQUEST_ID_OFFSET: usize = EPOCH_NONCE_OFFSET + EPOCH_NONCE_BYTES;",
+      "const REQUEST_ID_BYTES: usize = 16;",
+      "const ROLE_OFFSET: usize = REQUEST_ID_OFFSET + REQUEST_ID_BYTES;",
+      "const ROLE_RESERVED_OFFSET: usize = ROLE_OFFSET + 2;",
+      "const COMMON_CORRELATION_END: usize = ROLE_RESERVED_OFFSET + 2;",
+      "const ACK_CHECKSUM_OFFSET: usize = COMMON_CORRELATION_END;",
+      "const SERVICE_PROCESS_ID_OFFSET: usize = COMMON_CORRELATION_END;",
+      "const CHILD_PROCESS_ID_OFFSET: usize = SERVICE_PROCESS_ID_OFFSET + 4;",
+      "const CHILD_CREATION_FILETIME_OFFSET: usize = CHILD_PROCESS_ID_OFFSET + 4;",
+      "const DEADLINE_TICK_COUNT_MS_OFFSET: usize = CHILD_CREATION_FILETIME_OFFSET + 8;",
+      "const HELLO_TAIL_RESERVED_OFFSET: usize = DEADLINE_TICK_COUNT_MS_OFFSET + 8;",
+      "const HELLO_CHECKSUM_OFFSET: usize = HELLO_TAIL_RESERVED_OFFSET + 4;",
+      "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;",
+      "const _: () = assert!(ACK_CHECKSUM_OFFSET + 4 == HELPER_ADOPTION_ACK_BYTES);",
+      "const _: () = assert!(HELLO_CHECKSUM_OFFSET + 4 == HELPER_BOOTSTRAP_HELLO_BYTES);",
+    ].every((marker) => source.includes(marker)) &&
+    (source.match(/b"YWKHBA01"/gu) ?? []).length === 1 &&
+    (source.match(/b"YWKHBH01"/gu) ?? []).length === 1 &&
+    compactRust(role) ===
+      "pubenumHelperBootstrapRole{Approval,SecretInput,}" &&
+    compactRoleCode.includes("Self::Approval=>1,Self::SecretInput=>2,") &&
+    compactRoleFromCode.includes(
+      "1=>Ok(Self::Approval),2=>Ok(Self::SecretInput),_=>Err(WireError::UnknownKind)",
+    ) &&
+    compact.includes(
+      "pubstructHelperBootstrapHello{epoch_nonce:EpochNonce,request_id:ServiceRequestId,role:HelperBootstrapRole,service_process_id:NonZeroU32,child_process_id:NonZeroU32,child_creation_filetime:NonZeroU64,deadline_tick_count_ms:NonZeroU64,}",
+    ) &&
+    compactRust(acknowledgement) ===
+      "pubstructHelperAdoptionAck{epoch_nonce:EpochNonce,request_id:ServiceRequestId,role:HelperBootstrapRole,}" &&
+    !/#\[derive\([^\]]*\bDebug\b[^\]]*\)\]\s*pub\s+struct\s+(?:HelperBootstrapHello|HelperAdoptionAck)\b/u.test(
+      source,
+    ) &&
+    hasOrderedCompactMarkers(encodeCommon, [
+      "frame[..magic.len()].copy_from_slice(&magic)",
+      "frame[8..10].copy_from_slice(&VERSION_V1.to_be_bytes())",
+      "frame[10..12].copy_from_slice(&kind.to_be_bytes())",
+      "frame[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET].copy_from_slice(epoch_nonce.as_bytes())",
+      "frame[REQUEST_ID_OFFSET..ROLE_OFFSET].copy_from_slice(request_id.as_bytes())",
+      "frame[ROLE_OFFSET..ROLE_RESERVED_OFFSET].copy_from_slice(&role.wire_code().to_be_bytes())",
+    ]) &&
+    (compactEncodeCommon.match(/copy_from_slice/gu) ?? []).length === 6 &&
+    !compactEncodeCommon.includes("frame[HEADER_RESERVED_OFFSET") &&
+    !compactEncodeCommon.includes("frame[ROLE_RESERVED_OFFSET") &&
+    hasOrderedCompactMarkers(decodeCommon, [
+      "require_exact_length(bytes,expected_length)?",
+      "bytes.get(..magic.len())!=Some(magic.as_slice())",
+      "returnErr(WireError::InvalidMagic)",
+      "read_u16(bytes,8)!=VERSION_V1",
+      "returnErr(WireError::UnsupportedVersion)",
+      "read_u16(bytes,10)!=kind",
+      "returnErr(WireError::UnknownKind)",
+      "require_zero_u32(bytes,HEADER_RESERVED_OFFSET)?",
+      "verify_checksum(bytes,checksum_offset)?",
+      "require_zero_u16(bytes,ROLE_RESERVED_OFFSET)?",
+      "epoch_nonce.copy_from_slice(&bytes[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET])",
+      "let epoch_nonce = EpochNonce::new(epoch_nonce)?".replaceAll(" ", ""),
+      "request_id.copy_from_slice(&bytes[REQUEST_ID_OFFSET..ROLE_OFFSET])",
+      "let request_id = ServiceRequestId::new(request_id)?".replaceAll(" ", ""),
+      "HelperBootstrapRole::from_wire_code(read_u16(bytes,ROLE_OFFSET))?",
+      "Ok((epoch_nonce,request_id,role))",
+    ]) &&
+    (compactDecodeCommon.match(/require_zero_u(?:16|32)/gu) ?? []).length ===
+      2 &&
+    hasOrderedCompactMarkers(helloEncode, [
+      "letmutframe=[0_u8;HELPER_BOOTSTRAP_HELLO_BYTES]",
+      "encode_common_correlation(&mutframe,HELPER_BOOTSTRAP_HELLO_MAGIC,FRAME_HELPER_BOOTSTRAP_HELLO,self.epoch_nonce,self.request_id,self.role,)",
+      "frame[SERVICE_PROCESS_ID_OFFSET..CHILD_PROCESS_ID_OFFSET].copy_from_slice(&self.service_process_id.get().to_be_bytes())",
+      "frame[CHILD_PROCESS_ID_OFFSET..CHILD_CREATION_FILETIME_OFFSET].copy_from_slice(&self.child_process_id.get().to_be_bytes())",
+      "frame[CHILD_CREATION_FILETIME_OFFSET..DEADLINE_TICK_COUNT_MS_OFFSET].copy_from_slice(&self.child_creation_filetime.get().to_be_bytes())",
+      "frame[DEADLINE_TICK_COUNT_MS_OFFSET..HELLO_TAIL_RESERVED_OFFSET].copy_from_slice(&self.deadline_tick_count_ms.get().to_be_bytes())",
+      "write_checksum(&mutframe,HELLO_CHECKSUM_OFFSET)",
+      "frame",
+    ]) &&
+    (compactHelloEncode.match(/copy_from_slice/gu) ?? []).length === 4 &&
+    !compactHelloEncode.includes("frame[HELLO_TAIL_RESERVED_OFFSET") &&
+    hasOrderedCompactMarkers(helloDecode, [
+      "decode_common_correlation(bytes,HELPER_BOOTSTRAP_HELLO_BYTES,HELPER_BOOTSTRAP_HELLO_MAGIC,FRAME_HELPER_BOOTSTRAP_HELLO,HELLO_CHECKSUM_OFFSET,)?",
+      "require_zero_u32(bytes,HELLO_TAIL_RESERVED_OFFSET)?",
+      "NonZeroU32::new(read_u32(bytes,SERVICE_PROCESS_ID_OFFSET)).ok_or(WireError::InvalidValue)?",
+      "NonZeroU32::new(read_u32(bytes,CHILD_PROCESS_ID_OFFSET)).ok_or(WireError::InvalidValue)?",
+      "NonZeroU64::new(read_u64(bytes,CHILD_CREATION_FILETIME_OFFSET)).ok_or(WireError::InvalidValue)?",
+      "NonZeroU64::new(read_u64(bytes,DEADLINE_TICK_COUNT_MS_OFFSET)).ok_or(WireError::InvalidValue)?",
+      "Ok(Self::new(epoch_nonce,request_id,role,service_process_id,child_process_id,child_creation_filetime,deadline_tick_count_ms,))",
+    ]) &&
+    compactHelloCorrelation.includes(
+      "self.epoch_nonce==epoch_nonce&&self.request_id==request_id&&self.role==role&&self.service_process_id==service_process_id&&self.child_process_id==child_process_id&&self.child_creation_filetime==child_creation_filetime&&self.deadline_tick_count_ms==deadline_tick_count_ms",
+    ) &&
+    compactHelloCorrelation.includes("Err(WireError::BindingMismatch)") &&
+    helloDebug.includes('.field("epoch_nonce", &"[REDACTED]")') &&
+    helloDebug.includes('.field("request_id", &"[REDACTED]")') &&
+    helloDebug.includes('.field("role", &self.role)') &&
+    helloDebug.includes('.field("service_process_id", &"[REDACTED]")') &&
+    helloDebug.includes('.field("child_process_id", &"[REDACTED]")') &&
+    helloDebug.includes(
+      '.field("child_creation_filetime", &"[REDACTED]")',
+    ) &&
+    helloDebug.includes(
+      '.field("deadline_tick_count_ms", &"[REDACTED]")',
+    ) &&
+    hasOrderedCompactMarkers(acknowledgementEncode, [
+      "letmutframe=[0_u8;HELPER_ADOPTION_ACK_BYTES]",
+      "encode_common_correlation(&mutframe,HELPER_ADOPTION_MAGIC,FRAME_HELPER_ADOPTION_ACK,self.epoch_nonce,self.request_id,self.role,)",
+      "write_checksum(&mutframe,ACK_CHECKSUM_OFFSET)",
+      "frame",
+    ]) &&
+    compactAcknowledgementEncode.match(/copy_from_slice/gu) === null &&
+    hasOrderedCompactMarkers(acknowledgementDecode, [
+      "decode_common_correlation(bytes,HELPER_ADOPTION_ACK_BYTES,HELPER_ADOPTION_MAGIC,FRAME_HELPER_ADOPTION_ACK,ACK_CHECKSUM_OFFSET,)?",
+      "Ok(Self::new(epoch_nonce,request_id,role))",
+    ]) &&
+    compactAcknowledgementCorrelation.includes(
+      "self.epoch_nonce==epoch_nonce&&self.request_id==request_id&&self.role==role",
+    ) &&
+    compactAcknowledgementCorrelation.includes(
+      "Err(WireError::BindingMismatch)",
+    ) &&
+    acknowledgementDebug.includes(
+      '.field("epoch_nonce", &"[REDACTED]")',
+    ) &&
+    acknowledgementDebug.includes(
+      '.field("request_id", &"[REDACTED]")',
+    ) &&
+    acknowledgementDebug.includes('.field("role", &self.role)') &&
+    compactRust(requireLength).includes(
+      "core::cmp::Ordering::Less=>Err(WireError::Truncated),core::cmp::Ordering::Equal=>Ok(()),core::cmp::Ordering::Greater=>Err(WireError::TrailingData)",
+    ) &&
+    hasOrderedCompactMarkers(writeChecksum, [
+      "letchecksum=crc32c(&frame[..checksum_offset])",
+      "frame[checksum_offset..checksum_offset+4].copy_from_slice(&checksum.to_be_bytes())",
+    ]) &&
+    compactRust(verifyChecksum).includes(
+      "ifcrc32c(&bytes[..checksum_offset])==actual{Ok(())}else{Err(WireError::Integrity)}",
+    ) &&
+    compactRust(requireZeroU16).includes(
+      "ifread_u16(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ) &&
+    compactRust(requireZeroU32).includes(
+      "ifread_u32(bytes,offset)==0{Ok(())}else{Err(WireError::NonZeroReserved)}",
+    ) &&
+    hasOrderedCompactMarkers(crc32c, [
+      "letmutcrc=u32::MAX",
+      "crc^=u32::from(*byte)",
+      "for_in0..8",
+      "letlow_bit_mask=(crc&1).wrapping_neg()",
+      "crc=(crc>>1)^(CRC32C_POLYNOMIAL_REVERSED&low_bit_mask)",
+      "!crc",
+    ]) &&
+    compact.includes(
+      "pubfnencode_adoption_ack(acknowledgement:&HelperAdoptionAck)->[u8;HELPER_ADOPTION_ACK_BYTES]{acknowledgement.encode()}",
+    ) &&
+    compact.includes(
+      "pubfndecode_adoption_ack(bytes:&[u8])->Result<HelperAdoptionAck,AdoptionWireError>{HelperAdoptionAck::decode(bytes)}",
+    ) &&
+    compact.includes(
+      "pubfnencode_bootstrap_hello(hello:&HelperBootstrapHello)->[u8;HELPER_BOOTSTRAP_HELLO_BYTES]{hello.encode()}",
+    ) &&
+    compact.includes(
+      "pubfndecode_bootstrap_hello(bytes:&[u8])->Result<HelperBootstrapHello,AdoptionWireError>{HelperBootstrapHello::decode(bytes)}",
+    ) &&
+    source.includes("neither a frame nor its checksum authenticates a peer or") &&
+    !source.includes("This frame authenticates a peer and grants authority.") &&
+    !/\b(?:HANDLE|BorrowedHandle|OwnedHandle|RawHandle|ReadFile|WriteFile|TcpStream|NamedPipe)\b/u.test(
+      code,
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(
+        keyAgentServiceHelperBootstrapWireV2TestNames.filter(
+          (name) =>
+            name !== "bootstrap_hello_binding_requires_every_field_to_match",
+        ),
+      ) &&
+    keyAgentServiceHelperBootstrapWireV2TestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(source, name, 1).includes(
+          "#[test]",
+        ) && !hasVacuousRustTestEscape(tests[name]),
+    ) &&
+    compactRust(tests.every_nonexact_length_is_rejected).includes(
+      "forlengthin0..HELPER_ADOPTION_ACK_BYTES",
+    ) &&
+    compactRust(tests.every_single_byte_mutation_is_rejected).includes(
+      "forindexin0..HELPER_ADOPTION_ACK_BYTES",
+    ) &&
+    compactRust(
+      tests.recomputed_crc_cannot_make_invalid_header_fields_canonical,
+    ).includes("nonzero_reserved[HEADER_RESERVED_OFFSET]=1") &&
+    compactRust(
+      tests.recomputed_crc_cannot_make_invalid_body_fields_canonical,
+    ).includes("nonzero_reserved[ROLE_RESERVED_OFFSET]=1") &&
+    (compactRust(tests.correlation_requires_every_field_to_match).match(
+      /Err\(WireError::BindingMismatch\)/gu,
+    ) ?? []).length === 3 &&
+    tests.debug_output_redacts_correlation_values.includes("[REDACTED]") &&
+    compactRust(
+      tests.bootstrap_hello_every_nonexact_length_is_rejected,
+    ).includes("forlengthin0..HELPER_BOOTSTRAP_HELLO_BYTES") &&
+    compactRust(
+      tests.bootstrap_hello_every_single_byte_mutation_is_rejected,
+    ).includes("forindexin0..HELPER_BOOTSTRAP_HELLO_BYTES") &&
+    compactRust(
+      tests.bootstrap_hello_recomputed_crc_cannot_make_invalid_header_canonical,
+    ).includes("nonzero_reserved[HEADER_RESERVED_OFFSET]=1") &&
+    compactRust(
+      tests.bootstrap_hello_recomputed_crc_cannot_make_invalid_correlation_canonical,
+    ).includes("nonzero_role_reserved[ROLE_RESERVED_OFFSET]=1") &&
+    compactRust(
+      tests.bootstrap_hello_recomputed_crc_cannot_make_zero_lifetime_fields_canonical,
+    ).includes("nonzero_tail_reserved[HELLO_TAIL_RESERVED_OFFSET]=1") &&
+    (compactRust(
+      tests.bootstrap_hello_binding_requires_every_field_to_match,
+    ).match(/Err\(WireError::BindingMismatch\)/gu) ?? []).length === 7 &&
+    tests.bootstrap_hello_debug_output_redacts_every_binding_value.includes(
+      "[REDACTED]",
+    ) &&
+    !compact.includes("implstd::io::Read") &&
+    !compact.includes("implstd::io::Write")
+  );
+};
+const keyAgentServiceHelperBootstrapWireV2MutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;",
+    "pub const HELPER_ADOPTION_ACK_BYTES: usize = 71;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "pub const HELPER_BOOTSTRAP_HELLO_BYTES: usize = 100;",
+    "pub const HELPER_BOOTSTRAP_HELLO_BYTES: usize = 99;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire("YWKHBA01", "YWKHBA02"),
+  mutateKeyAgentServiceHelperBootstrapWire("YWKHBH01", "YWKHBH02"),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "            Self::SecretInput => 2,",
+    "            Self::SecretInput => 3,",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    require_zero_u32(bytes, HEADER_RESERVED_OFFSET)?;",
+    "    let _ = bytes;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    require_zero_u16(bytes, ROLE_RESERVED_OFFSET)?;",
+    "    let _ = bytes;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    verify_checksum(bytes, checksum_offset)?;",
+    "    let _ = checksum_offset;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;",
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0xEDB8_8320;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "        if self.epoch_nonce == epoch_nonce && self.request_id == request_id && self.role == role {",
+    "        if self.epoch_nonce == epoch_nonce && self.request_id == request_id {",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    '.field("request_id", &"[REDACTED]")',
+    '.field("request_id", &self.request_id)',
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "        require_zero_u32(bytes, HELLO_TAIL_RESERVED_OFFSET)?;",
+    "        let _ = bytes;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "            && self.service_process_id == service_process_id",
+    "            && true",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    '.field("child_process_id", &"[REDACTED]")',
+    '.field("child_process_id", &self.child_process_id)',
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    #[test]\n    fn recomputed_crc_cannot_make_invalid_body_fields_canonical",
+    "    fn recomputed_crc_cannot_make_invalid_body_fields_canonical",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    #[test]\n    fn bootstrap_hello_recomputed_crc_cannot_make_zero_lifetime_fields_canonical",
+    "    fn bootstrap_hello_recomputed_crc_cannot_make_zero_lifetime_fields_canonical",
+  ),
+  mutateKeyAgentServiceHelperBootstrapWire(
+    "    #[test]\n    #[allow(clippy::too_many_lines)] // Keep all one-field binding mutations adjacent.",
+    "    #[allow(clippy::too_many_lines)] // Keep all one-field binding mutations adjacent.",
+  ),
+];
 requireInvariant(
-  keyAgentServiceHelperBootstrapWireContract(
+  keyAgentServiceHelperBootstrapWireV2Contract(
     keyAgentServiceHelperBootstrapWire,
   ) &&
-    keyAgentServiceHelperBootstrapWireMutationProbes.every(
+    keyAgentServiceHelperBootstrapWireV2MutationProbes.every(
       (probe) =>
         probe !== keyAgentServiceHelperBootstrapWire &&
-        !keyAgentServiceHelperBootstrapWireContract(probe),
+        !keyAgentServiceHelperBootstrapWireV2Contract(probe),
     ),
-  "key-agent-service-helper-bootstrap wire acknowledgement must remain the exact 72-byte YWKHBA01/v1/kind-1 zero-reserved epoch/request/closed-role/CRC32C correlation frame, with redacted Debug, no authentication or authority claim, exhaustive semantic tests, and effective layout/header/reserved/CRC/role/binding/redaction mutations",
+  "key-agent-service-helper-bootstrap wire frames must remain the exact canonical 100-byte hello and 72-byte ACK with closed role, nonzero process/FILETIME/deadline bindings, zero reserved bytes, CRC32C, redacted Debug, no authentication or authority claim, exhaustive semantic tests, and effective mutations",
 );
 
 const keyAgentServiceHelperBootstrapChildTestNames = [
@@ -13036,21 +14777,410 @@ const keyAgentServiceHelperBootstrapChildMutationProbes = [
     "    fn first_candidate_close_failure_still_attempts_second_and_drops_both_owners",
   ),
 ];
+const keyAgentServiceHelperBootstrapChildV2TestNames = [
+  "public_capture_signature_has_no_recoverable_error_channel",
+  "public_completion_signature_has_no_recoverable_error_channel",
+  "opaque_channel_states_are_debuggable_but_thread_bound",
+];
+const keyAgentServiceHelperBootstrapWindowsV2TestNames = [
+  ...keyAgentServiceHelperBootstrapWindowsTestNames,
+  "successful_bootstrap_has_exact_order_ack_and_fake_gate",
+  "partial_reads_and_writes_are_completed_before_gate",
+  "zero_or_oversized_read_and_write_progress_is_rejected",
+  "malformed_hello_stops_before_identity_queries",
+  "expected_role_is_bound_before_identity_queries_or_ack",
+  "process_and_both_pipe_client_identities_are_required",
+  "deadline_is_strict_future_and_at_most_five_seconds",
+  "every_fallible_bootstrap_operation_prefix_rejects_before_gate",
+  "process_creation_filetime_combines_high_and_low_halves",
+];
+const keyAgentServiceHelperBootstrapChildV2Contract = (
+  child,
+  windows,
+  gateSpec,
+) => {
+  const windowsProduction = withoutBottomTestModule(windows);
+  const childCode = rustLexicalCode(child);
+  const windowsCode = rustLexicalCode(windowsProduction);
+  const compactChild = compactRust(child);
+  const compactWindows = compactRust(windowsProduction);
+  const publicCapture = rustTopLevelFunctionBlock(
+    child,
+    "capture_and_adopt_injected_channels",
+  );
+  const publicCompletion = rustTopLevelFunctionBlock(
+    child,
+    "complete_injected_channel_bootstrap",
+  );
+  const captureWords = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "capture_candidate_words",
+  );
+  const nativeCapture = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "capture_and_adopt_injected_channels",
+  );
+  const handleWordImpl = rustImplItems(windowsProduction).find(
+    (item) => item.header === "impl HandleWord",
+  )?.source;
+  const windowsHandleOperations = rustImplItems(windowsProduction).find(
+    (item) => item.header === "impl HandleOperations for WindowsHandleOperations",
+  )?.source;
+  if (handleWordImpl === undefined || windowsHandleOperations === undefined) {
+    return false;
+  }
+  const handleWordNew = rustFunctionBlock(handleWordImpl, "new");
+  const adoptCandidates = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "adopt_candidate_words",
+  );
+  const validatePair = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "validate_pair",
+  );
+  const validateNoStandardAlias = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "validate_no_standard_stream_alias",
+  );
+  const nativeDuplicate = rustFunctionBlock(
+    windowsHandleOperations,
+    "duplicate",
+  );
+  const nativeClose = rustFunctionBlock(
+    windowsHandleOperations,
+    "close_candidate",
+  );
+  const complete = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "complete_bootstrap_with_operations",
+  );
+  const captureGate = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "injected_channel_capture_gate",
+  );
+  const adoptionCompleteGate = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "injected_channel_adoption_complete_gate",
+  );
+  const captureGateSequence = [
+    '"movabs r10, {request_input_marker}"',
+    '"movabs r11, {response_output_marker}"',
+    '"int3"',
+    '"mov [rcx], r10"',
+    '"mov [rdx], r11"',
+    '"xor r10d, r10d"',
+    '"xor r11d, r11d"',
+    '"ret"',
+    "request_input_marker = const REQUEST_INPUT_MARKER",
+    "response_output_marker = const RESPONSE_OUTPUT_MARKER",
+  ];
+  const adoptionCompleteGateSequence = [
+    '"movabs r10, {r10_marker}"',
+    '"movabs r11, {r11_marker}"',
+    '"int3"',
+    '"xor r10d, r10d"',
+    '"xor r11d, r11d"',
+    '"ret"',
+    "r10_marker = const ADOPTION_COMPLETE_R10_MARKER",
+    "r11_marker = const ADOPTION_COMPLETE_R11_MARKER",
+  ];
+  const completeCalls = [
+    "DuplicateHandle",
+    "CloseHandle",
+    "ReadFile",
+    "WriteFile",
+    "GetNamedPipeClientProcessId",
+  ].map((api) => ({ api, count: rustCallSites(windowsProduction, api).length }));
+  const duplicateCalls = rustCallSites(windowsProduction, "DuplicateHandle");
+  const closeCalls = rustCallSites(windowsProduction, "CloseHandle");
+  const compactAdoptCandidates = compactRust(adoptCandidates);
+  const compactValidatePair = compactRust(validatePair);
+  const compactValidateNoStandardAlias = compactRust(
+    validateNoStandardAlias,
+  );
+  return (
+    normalizedSourceSha256(child) ===
+      "37f0a6f4e3ac151ab3d2ba23117d2de356e994181b9d9678caa95b07f0310dad" &&
+    normalizedSourceSha256(windows) ===
+      "4e8033fbe547b9345a4700d228d30d9ff1a43ab3d609e4305e637a560a5d0fdf" &&
+    keyAgentServiceHelperBootstrapGateSpecContract(gateSpec) &&
+    child.includes("#![deny(unsafe_code)]") &&
+    (child.match(/#\[allow\(unsafe_code\)\]\s*mod\s+windows\s*;/gu) ?? [])
+      .length === 1 &&
+    rustUnsafeKeywordCount(child) === 0 &&
+    compactChild.includes(
+      "pubstructAdoptedInjectedChannels{inner:windows::AdoptedInjectedChannels,_not_send_or_sync:PhantomData<Rc<()>>,}",
+    ) &&
+    compactChild.includes(
+      "pubstructBootstrappedInjectedChannels{_inner:windows::BootstrappedInjectedChannels,_not_send_or_sync:PhantomData<Rc<()>>,}",
+    ) &&
+    (compactChild.match(/std::process::abort\(\)/gu) ?? []).length === 2 &&
+    compactRust(publicCapture) ===
+      "pubfncapture_and_adopt_injected_channels()->AdoptedInjectedChannels{letOk(inner)=windows::capture_and_adopt_injected_channels()else{std::process::abort();};AdoptedInjectedChannels{inner,_not_send_or_sync:PhantomData,}}" &&
+    hasOrderedCompactMarkers(publicCompletion, [
+      "pubfncomplete_injected_channel_bootstrap(channels:AdoptedInjectedChannels,expected_role:HelperBootstrapRole,)->BootstrappedInjectedChannels",
+      "windows::complete_injected_channel_bootstrap(channels.inner,expected_role)",
+      "else{std::process::abort();}",
+      "BootstrappedInjectedChannels{_inner:inner,_not_send_or_sync:PhantomData,}",
+    ]) &&
+    !compactRust(publicCapture).includes("Result<") &&
+    !compactRust(publicCompletion).includes("Result<") &&
+    !/\b(?:AsRawHandle|AsHandle|BorrowedHandle|RawHandle)\b/u.test(childCode) &&
+    !/\bpub(?:\([^)]*\))?\s+fn\s+(?:raw|raw_handle|as_raw|handle|request_handle|response_handle)\b/u.test(
+      childCode,
+    ) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy)\b[^\]]*\)\]\s*pub\s+struct\s+(?:AdoptedInjectedChannels|BootstrappedInjectedChannels)\b/u.test(
+      child,
+    ) &&
+    !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+(?:AdoptedInjectedChannels|BootstrappedInjectedChannels)|impl\s+(?:Clone|Copy)\s+for\s+(?:AdoptedInjectedChannels|BootstrappedInjectedChannels)/u.test(
+      childCode,
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(child)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapChildV2TestNames) &&
+    (windowsProduction.match(/#\[unsafe\(naked\)\]/gu) ?? []).length === 2 &&
+    (windowsProduction.match(/\bunsafe\s+extern\s+"C"\s+fn\s+injected_channel_(?:capture_gate|adoption_complete_gate)\b/gu) ?? [])
+      .length === 2 &&
+    (windowsProduction.match(/\bcore::arch::naked_asm!/gu) ?? []).length === 2 &&
+    !/(?<!naked_)\basm!|\bglobal_asm!/u.test(windowsProduction) &&
+    compactWindows.includes(
+      "usecrate::gate_spec::{ADOPTION_COMPLETE_R10_MARKER,ADOPTION_COMPLETE_R11_MARKER,REQUEST_INPUT_MARKER,RESPONSE_OUTPUT_MARKER,};",
+    ) &&
+    hasOrderedTextMarkers(captureGate, captureGateSequence) &&
+    captureGateSequence.every(
+      (marker) => captureGate.split(marker).length - 1 === 1,
+    ) &&
+    hasOrderedTextMarkers(
+      adoptionCompleteGate,
+      adoptionCompleteGateSequence,
+    ) &&
+    adoptionCompleteGateSequence.every(
+      (marker) => adoptionCompleteGate.split(marker).length - 1 === 1,
+    ) &&
+    (captureGate.match(/\bcore::arch::naked_asm!/gu) ?? []).length === 1 &&
+    (adoptionCompleteGate.match(/\bcore::arch::naked_asm!/gu) ?? []).length ===
+      1 &&
+    captureGate.includes("_request_input: *mut u64") &&
+    captureGate.includes("_response_output: *mut u64") &&
+    rustCallSites(windowsProduction, "injected_channel_capture_gate").length ===
+      2 &&
+    rustCallSites(
+      windowsProduction,
+      "injected_channel_adoption_complete_gate",
+    ).length === 2 &&
+    compactWindows.includes(
+      "fnenter_adoption_complete_gate(&mutself){enter_adoption_complete_gate();}",
+    ) &&
+    hasOrderedCompactMarkers(captureWords, [
+      "letmutrequest_input=0_u64",
+      "letmutresponse_output=0_u64",
+      "injected_channel_capture_gate(&rawmutrequest_input,&rawmutresponse_output)",
+      "[request_input,response_output]",
+    ]) &&
+    hasOrderedCompactMarkers(nativeCapture, [
+      "let[request_input,response_output]=capture_candidate_words()",
+      "letmutoperations=WindowsHandleOperations",
+      "adopt_candidate_words(&mutoperations,request_input,response_output)?",
+      "source_access_and_direction:UnverifiedSourceAccessAndDirection",
+    ]) &&
+    compactRust(handleWordNew).includes(
+      "ifword==0||word>i64::MAXasu64{returnErr(());}Ok(Self(word))",
+    ) &&
+    windowsProduction.includes(
+      "const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0001;",
+    ) &&
+    windowsProduction.includes(
+      "const RESPONSE_OUTPUT_DUPLICATE_ACCESS: u32 = 0x0010_0002;",
+    ) &&
+    windowsProduction.includes("const DUPLICATE_OPTIONS_NONE: u32 = 0;") &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(windowsCode) &&
+    !/\b(?:PeekNamedPipe|FlushFileBuffers)\b/u.test(windowsCode) &&
+    windowsProduction.includes("const EXPECTED_HANDLE_FLAGS: u32 = 0;") &&
+    windowsProduction.includes(
+      "const EXPECTED_FILE_TYPE: u32 = FILE_TYPE_PIPE.0;",
+    ) &&
+    hasOrderedCompactMarkers(adoptCandidates, [
+      "letrequest_input=HandleWord::new(request_input)?",
+      "letresponse_output=HandleWord::new(response_output)?",
+      "ifrequest_input==response_output{returnErr(());}",
+      "validate_pair(operations,request_input,response_output)?",
+      "operations.duplicate(request_input,REQUEST_INPUT_DUPLICATE_ACCESS,false,DUPLICATE_OPTIONS_NONE,)?",
+      "operations.duplicate(response_output,RESPONSE_OUTPUT_DUPLICATE_ACCESS,false,DUPLICATE_OPTIONS_NONE,)?",
+      "validate_pair(operations,fresh_request_word,fresh_response_word)?",
+      "!operations.same_object(fresh_request_word,request_input)?",
+      "!operations.same_object(fresh_response_word,response_output)?",
+      "letrequest_closed=operations.close_candidate(request_input).is_ok()",
+      "letresponse_closed=operations.close_candidate(response_output).is_ok()",
+      "if!request_closed||!response_closed{returnErr(());}",
+      "validate_pair(operations,fresh_request_word,fresh_response_word)?",
+      "Ok((fresh_request_input,fresh_response_output))",
+    ]) &&
+    (compactAdoptCandidates.match(/validate_pair\(/gu) ?? []).length === 3 &&
+    (compactAdoptCandidates.match(/operations\.duplicate\(/gu) ?? []).length ===
+      2 &&
+    (compactAdoptCandidates.match(/operations\.close_candidate\(/gu) ?? [])
+      .length === 2 &&
+    compactValidateNoStandardAlias.includes("forstreaminStandardStream::ALL") &&
+    compactValidateNoStandardAlias.includes(
+      "request_input==standard||response_output==standard||operations.same_object(request_input,standard)?||operations.same_object(response_output,standard)?",
+    ) &&
+    compactValidatePair.includes(
+      "operations.handle_flags(request_input)?!=EXPECTED_HANDLE_FLAGS||operations.handle_flags(response_output)?!=EXPECTED_HANDLE_FLAGS",
+    ) &&
+    compactValidatePair.includes(
+      "operations.file_type(request_input)?!=EXPECTED_FILE_TYPE||operations.file_type(response_output)?!=EXPECTED_FILE_TYPE",
+    ) &&
+    compactValidatePair.includes(
+      "operations.same_object(request_input,response_output)?",
+    ) &&
+    duplicateCalls.length === 1 &&
+    JSON.stringify(duplicateCalls[0].arguments) ===
+      JSON.stringify([
+        "process",
+        "native_handle(source)?",
+        "process",
+        "&raw mut duplicate",
+        "desired_access",
+        "inherit",
+        "DUPLICATE_HANDLE_OPTIONS(options)",
+      ]) &&
+    closeCalls.length === 1 &&
+    JSON.stringify(closeCalls[0].arguments) ===
+      JSON.stringify(["native_handle(handle)?"]) &&
+    compactRust(nativeDuplicate).includes(
+      "letprocess=GetCurrentProcess();DuplicateHandle(process,native_handle(source)?,process,&rawmutduplicate,desired_access,inherit,DUPLICATE_HANDLE_OPTIONS(options),)",
+    ) &&
+    compactRust(nativeClose).includes(
+      "unsafe{CloseHandle(native_handle(handle)?)}.map_err(|_|())",
+    ) &&
+    JSON.stringify(completeCalls) ===
+      JSON.stringify([
+        { api: "DuplicateHandle", count: 1 },
+        { api: "CloseHandle", count: 1 },
+        { api: "ReadFile", count: 1 },
+        { api: "WriteFile", count: 1 },
+        { api: "GetNamedPipeClientProcessId", count: 1 },
+      ]) &&
+    hasOrderedCompactMarkers(complete, [
+      "read_exact_request::<HELPER_BOOTSTRAP_HELLO_BYTES,_>(operations,request_input)?",
+      "HelperBootstrapHello::decode(&hello_bytes).map_err(|_|())?",
+      "ifhello.role()!=expected_role",
+      "letchild_process_id=hello.child_process_id().get()",
+      "operations.current_process_id()?!=child_process_id||hello.service_process_id().get()==child_process_id",
+      "operations.current_process_creation_filetime()?!=hello.child_creation_filetime().get()",
+      "letnow=operations.tick_count_milliseconds()?",
+      "ifnow>=deadline||deadline-now>MAX_BOOTSTRAP_WINDOW_MILLISECONDS",
+      "operations.named_pipe_client_process_id(request_input)?!=service_process_id||operations.named_pipe_client_process_id(response_output)?!=service_process_id",
+      "HelperAdoptionAck::new(hello.epoch_nonce(),hello.request_id(),hello.role()).encode()",
+      "write_exact_response(operations,response_output,&acknowledgement)?",
+      "operations.enter_adoption_complete_gate()",
+      "Ok(())",
+    ]) &&
+    compactWindows.includes(
+      "constMAX_BOOTSTRAP_WINDOW_MILLISECONDS:u64=5_000;",
+    ) &&
+    windowsProduction.includes(
+      "They do not expose the source handles'\n/// exact granted access or effective pipe direction",
+    ) &&
+    windowsProduction.includes(
+      "Do not use\n    // `FlushFileBuffers`: its documented `GENERIC_WRITE` requirement is wider",
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(windows)) ===
+      JSON.stringify(keyAgentServiceHelperBootstrapWindowsV2TestNames)
+  );
+};
+const keyAgentServiceHelperBootstrapChildV2MutationProbes = [
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "child",
+    "    let Ok(inner) = windows::capture_and_adopt_injected_channels() else {\n        std::process::abort();\n    };",
+    "    let inner = windows::capture_and_adopt_injected_channels().unwrap();",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "child",
+    ") -> BootstrappedInjectedChannels {",
+    ") -> Result<BootstrappedInjectedChannels, ()> {",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        false,\n        DUPLICATE_OPTIONS_NONE,",
+    "        true,\n        DUPLICATE_OPTIONS_NONE,",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    let request_closed = operations.close_candidate(request_input).is_ok();\n    let response_closed = operations.close_candidate(response_output).is_ok();\n    if !request_closed || !response_closed {",
+    "    if operations.close_candidate(request_input).is_err()\n        || operations.close_candidate(response_output).is_err()\n    {",
+  ),
+  mutateLastKeyAgentServiceHelperBootstrapWindows(
+    "    validate_pair(operations, fresh_request_word, fresh_response_word)?;",
+    "",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "mov [rcx], r10",\n        "mov [rdx], r11",',
+    '        "mov [rcx], r11",\n        "mov [rdx], r10",',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        r10_marker = const ADOPTION_COMPLETE_R10_MARKER,",
+    "        r10_marker = const REQUEST_INPUT_MARKER,",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    '        "xor r11d, r11d",\n        "ret",\n        r10_marker = const ADOPTION_COMPLETE_R10_MARKER,',
+    '        "ret",\n        r10_marker = const ADOPTION_COMPLETE_R10_MARKER,',
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        || hello.service_process_id().get() == child_process_id",
+    "        || false",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    if now >= deadline || deadline - now > MAX_BOOTSTRAP_WINDOW_MILLISECONDS {",
+    "    if now > deadline {",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        || operations.named_pipe_client_process_id(response_output)? != service_process_id",
+    "        || false",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    write_exact_response(operations, response_output, &acknowledgement)?;",
+    "    let _ = acknowledgement;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    operations.enter_adoption_complete_gate();",
+    "    FlushFileBuffers();\n    operations.enter_adoption_complete_gate();",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "        DUPLICATE_OPTIONS_NONE,\n    )?;",
+    "        DUPLICATE_SAME_ACCESS.0,\n    )?;",
+  ),
+  mutateKeyAgentServiceHelperBootstrapChild(
+    "windows",
+    "    #[test]\n    fn expected_role_is_bound_before_identity_queries_or_ack",
+    "    fn expected_role_is_bound_before_identity_queries_or_ack",
+  ),
+];
 requireInvariant(
-  keyAgentServiceHelperBootstrapChildContract(
+  keyAgentServiceHelperBootstrapChildV2Contract(
     keyAgentServiceHelperBootstrapChild,
     keyAgentServiceHelperBootstrapWindows,
+    keyAgentServiceHelperBootstrapGateSpec,
   ) &&
-    keyAgentServiceHelperBootstrapChildMutationProbes.every(
+    keyAgentServiceHelperBootstrapChildV2MutationProbes.every(
       (probe) =>
         (probe.child !== keyAgentServiceHelperBootstrapChild ||
           probe.windows !== keyAgentServiceHelperBootstrapWindows) &&
-        !keyAgentServiceHelperBootstrapChildContract(
+        !keyAgentServiceHelperBootstrapChildV2Contract(
           probe.child,
           probe.windows,
+          keyAgentServiceHelperBootstrapGateSpec,
         ),
     ),
-  "key-agent-service-helper-bootstrap child capture must remain a process-terminal direct-return API over one private x64 naked INT3 gate, exact full-width marker/store/zero/ret assembly, safe stack capture, closed candidate validation, two exact non-inheritable access-limited duplicates, independent candidate-close attempts, final revalidation, opaque thread-bound ownership, typed unverified source-access/direction evidence, exhaustive prefix/drop tests, and effective abort/asm/access/close/raw/overclaim mutations",
+  "key-agent-service-helper-bootstrap child must retain process-terminal capture and completion APIs whose exact two private naked x64 instruction streams bind directly to the reviewed gate-spec marker/byte builders, strict candidate adoption, exact non-inheritable minimum-right duplicates, canonical hello/ACK framing, expected-role/current-child/creation-FILETIME/deadline/two-peer binding, synchronous ACK-before-gate ordering, no Peek/flush rights widening, opaque thread-bound ownership, explicit source access/direction uncertainty, exhaustive negatives, and effective mutations",
 );
 const keyAgentServiceHelperBootstrapUnsafeSourceInventory =
   rustUnsafeSourceInventory(keyAgentServiceHelperBootstrapRustFiles);
@@ -13066,9 +15196,9 @@ requireInvariant(
     JSON.stringify([
       {
         path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
-        unsafeCount: 10,
+        unsafeCount: 19,
         sha256:
-          "bcae2fef4b5ab365b2bdb569e48a239f51845d87c629975788bf268f7326f05a",
+          "4e8033fbe547b9345a4700d228d30d9ff1a43ab3d609e4305e637a560a5d0fdf",
       },
     ]) &&
     JSON.stringify(
@@ -15848,7 +17978,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "ad130297f5b283684ae74534577c26ee4f35a8767c7f4b2e896f01ff8be0eb33";
+  "b092216d9c68146678129dc8cb5460a62692580531321b6ba5a79f19f49e93ee";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -15927,7 +18057,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/key-agent-service-helper-bootstrap/Cargo.toml",
-    sha256: "6fce1c2dee7b93b9a5ca6f7de2b62b2e7ba7dd5e3bc9015703bb5c7abf97b3f5",
+    sha256: "ff9e78f3a97fd33a1937ed8de99111960db88c2a387a1b3700a3ed423d8c189e",
   },
   {
     path: "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -15943,7 +18073,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "02c33fda93de8fe13143dc70311b1d9423c845ac3edaefe5c05e2f0e0c3607de",
+    sha256: "9c7e31a0ef7555c5a8bc4825be0908ccdbbac4850d32842ec613ea7586ccd71b",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -15969,6 +18099,61 @@ const approvedWorkspaceCargoManifestPins = [
 const cargoManifestPinsHold = (inventory) =>
   JSON.stringify(inventory.map(({ path, sha256 }) => ({ path, sha256 }))) ===
   JSON.stringify(approvedWorkspaceCargoManifestPins);
+const keyAgentServiceHelperBootstrapParentNeutralExports = [
+  "ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET",
+  "ADOPTION_COMPLETE_GATE_BYTES",
+  "ADOPTION_COMPLETE_R10_MARKER",
+  "ADOPTION_COMPLETE_R11_MARKER",
+  "CAPTURE_GATE_BREAKPOINT_OFFSET",
+  "CAPTURE_GATE_BYTES",
+  "HELPER_ADOPTION_ACK_BYTES",
+  "HelperAdoptionAck",
+  "HelperBootstrapHello",
+  "HelperBootstrapRole",
+  "REQUEST_INPUT_MARKER",
+  "RESPONSE_OUTPUT_MARKER",
+  "adoption_complete_gate_bytes",
+  "capture_gate_bytes",
+].sort((left, right) => left.localeCompare(right, "en"));
+const keyAgentServiceHelperBootstrapParentNeutralImports = (source) => {
+  const code = rustLexicalCode(withoutBottomTestModule(source));
+  const usePattern =
+    /\buse\s+key_agent_service_helper_bootstrap\s*::(?<tail>[^;]+);/gu;
+  const statements = [...code.matchAll(usePattern)];
+  const remainder = code.replace(usePattern, "");
+  if (
+    statements.length === 0 ||
+    /\bkey_agent_service_helper_bootstrap\b/u.test(remainder)
+  ) {
+    return null;
+  }
+  const names = [];
+  for (const statement of statements) {
+    const tail = statement.groups?.tail ?? "";
+    if (/::|\*|\bas\b/u.test(tail)) return null;
+    const identifiers = [...tail.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/gu)].map(
+      (match) => match[0],
+    );
+    const residue = tail
+      .replace(/\b[A-Za-z_][A-Za-z0-9_]*\b/gu, "")
+      .replace(/[\s{},]/gu, "");
+    if (
+      identifiers.length === 0 ||
+      residue.length !== 0 ||
+      identifiers.some(
+        (identifier) =>
+          !keyAgentServiceHelperBootstrapParentNeutralExports.includes(
+            identifier,
+          ),
+      )
+    ) {
+      return null;
+    }
+    names.push(...identifiers);
+  }
+  if (new Set(names).size !== names.length) return null;
+  return names.sort((left, right) => left.localeCompare(right, "en"));
+};
 const keyAgentServiceHelperBootstrapReachabilityContract = (
   manifests,
   rustFiles,
@@ -15989,13 +18174,93 @@ const keyAgentServiceHelperBootstrapReachabilityContract = (
     )
     .filter(({ source }) =>
       /\bkey_agent_service_helper_bootstrap\b/u.test(
-        rustLexicalCode(source),
+        rustLexicalCode(withoutBottomTestModule(source)),
       ),
     )
     .map(({ path }) => path);
+  const platformManifest = manifests.find(
+    ({ path }) => path === "crates/platform-windows/Cargo.toml",
+  )?.source;
+  const parentNeutralConsumers = rustFiles.filter(({ path }) =>
+    sourceConsumers.includes(path),
+  );
+  const parentNeutralImportInventory = parentNeutralConsumers.map(
+    ({ path, source }) => ({
+      path,
+      imports: keyAgentServiceHelperBootstrapParentNeutralImports(source),
+    }),
+  );
   return (
-    JSON.stringify(dependencyConsumers) === JSON.stringify([]) &&
-    JSON.stringify(sourceConsumers) === JSON.stringify([])
+    JSON.stringify(dependencyConsumers) ===
+      JSON.stringify(["crates/platform-windows/Cargo.toml"]) &&
+    JSON.stringify(sourceConsumers) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+        "crates/platform-windows/src/key_agent_service_launch/gate.rs",
+      ]) &&
+    typeof platformManifest === "string" &&
+    /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*default-features\s*=\s*false\s*\}$/mu.test(
+      platformManifest,
+    ) &&
+    /key-agent-service-lpac-launch-feasibility-test-hook\s*=\s*\[\s*"dep:key-agent-service-helper-bootstrap"/u.test(
+      platformManifest,
+    ) &&
+    keyAgentServiceLiteralCount(
+      platformManifest,
+      "key-agent-service-helper-bootstrap",
+    ) === 3 &&
+    !/key-agent-service-helper-bootstrap\/[A-Za-z0-9_-]+/u.test(
+      platformManifest,
+    ) &&
+    JSON.stringify(parentNeutralImportInventory) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+          imports: [
+            "ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET",
+            "adoption_complete_gate_bytes",
+            "ADOPTION_COMPLETE_GATE_BYTES",
+            "ADOPTION_COMPLETE_R10_MARKER",
+            "ADOPTION_COMPLETE_R11_MARKER",
+            "CAPTURE_GATE_BREAKPOINT_OFFSET",
+            "capture_gate_bytes",
+            "CAPTURE_GATE_BYTES",
+            "HELPER_ADOPTION_ACK_BYTES",
+            "HelperAdoptionAck",
+            "HelperBootstrapHello",
+            "HelperBootstrapRole",
+            "REQUEST_INPUT_MARKER",
+            "RESPONSE_OUTPUT_MARKER",
+          ],
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_service_launch/gate.rs",
+          imports: [
+            "ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET",
+            "adoption_complete_gate_bytes",
+            "CAPTURE_GATE_BREAKPOINT_OFFSET",
+            "capture_gate_bytes",
+          ],
+        },
+      ]) &&
+    parentNeutralConsumers.every(
+      ({ source }) =>
+        !/\b(?:AdoptedInjectedChannels|BootstrappedInjectedChannels|capture_and_adopt_injected_channels|complete_injected_channel_bootstrap)\b/u.test(
+          rustLexicalCode(withoutBottomTestModule(source)),
+        ) &&
+        !/child-capture-feasibility-test-hook/u.test(
+          withoutBottomTestModule(source),
+        ) &&
+        !/\b(?:pub\s+)?use\s+key_agent_service_helper_bootstrap\s*::\s*(?:\*|\{[^}]*\*[^}]*\})/u.test(
+          rustLexicalCode(withoutBottomTestModule(source)),
+        ),
+    ) &&
+    !/\bkey_agent_service_helper_bootstrap\b/u.test(
+      rustLexicalCode(keyAgentServicePlatformLib),
+    ) &&
+    !/\bkey_agent_service_helper_bootstrap\b/u.test(
+      rustLexicalCode(keyAgentServiceMain),
+    )
   );
 };
 const keyAgentServiceHelperBootstrapDependencyConsumerMutation =
@@ -16015,7 +18280,85 @@ const keyAgentServiceHelperBootstrapSourceConsumerMutation =
     entry.path === "crates/platform-windows/src/lib.rs"
       ? {
           ...entry,
-          source: `${entry.source}\nuse key_agent_service_helper_bootstrap::AdoptedInjectedChannels;\n`,
+          source: entry.source.replace(
+            "#![cfg_attr(not(windows), allow(dead_code))]",
+            "#![cfg_attr(not(windows), allow(dead_code))]\nuse key_agent_service_helper_bootstrap::AdoptedInjectedChannels;",
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapChildCaptureConsumerMutation =
+  workspaceRustCompilationInputs.map((entry) =>
+    entry.path ===
+    "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            "use key_agent_service_helper_bootstrap::{",
+            "use key_agent_service_helper_bootstrap::capture_and_adopt_injected_channels;\nuse key_agent_service_helper_bootstrap::{",
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapDefaultFeatureMutation =
+  workspaceCargoManifestInventory.map((entry) =>
+    entry.path === "crates/platform-windows/Cargo.toml"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            ", optional = true, default-features = false }",
+            ", optional = true }",
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapFeatureForwardingMutation =
+  workspaceCargoManifestInventory.map((entry) =>
+    entry.path === "crates/platform-windows/Cargo.toml"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            '"dep:key-agent-service-helper-bootstrap",',
+            '"dep:key-agent-service-helper-bootstrap",\n    "key-agent-service-helper-bootstrap/child-capture-feasibility-test-hook",',
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapGlobConsumerMutation =
+  workspaceRustCompilationInputs.map((entry) =>
+    entry.path ===
+    "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            "use key_agent_service_helper_bootstrap::{",
+            "use key_agent_service_helper_bootstrap::*;\nuse key_agent_service_helper_bootstrap::{",
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapUnknownExportConsumerMutation =
+  workspaceRustCompilationInputs.map((entry) =>
+    entry.path ===
+    "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            "use key_agent_service_helper_bootstrap::{",
+            "use key_agent_service_helper_bootstrap::HelperBootstrapAuthority;\nuse key_agent_service_helper_bootstrap::{",
+          ),
+        }
+      : entry,
+  );
+const keyAgentServiceHelperBootstrapUnexpectedSafeImportMutation =
+  workspaceRustCompilationInputs.map((entry) =>
+    entry.path === "crates/platform-windows/src/key_agent_service_launch/gate.rs"
+      ? {
+          ...entry,
+          source: entry.source.replace(
+            "ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET, CAPTURE_GATE_BREAKPOINT_OFFSET,",
+            "ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET, ADOPTION_COMPLETE_GATE_BYTES, CAPTURE_GATE_BREAKPOINT_OFFSET,",
+          ),
         }
       : entry,
   );
@@ -16031,8 +18374,32 @@ requireInvariant(
     !keyAgentServiceHelperBootstrapReachabilityContract(
       workspaceCargoManifestInventory,
       keyAgentServiceHelperBootstrapSourceConsumerMutation,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      workspaceCargoManifestInventory,
+      keyAgentServiceHelperBootstrapChildCaptureConsumerMutation,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      keyAgentServiceHelperBootstrapDefaultFeatureMutation,
+      workspaceRustCompilationInputs,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      keyAgentServiceHelperBootstrapFeatureForwardingMutation,
+      workspaceRustCompilationInputs,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      workspaceCargoManifestInventory,
+      keyAgentServiceHelperBootstrapGlobConsumerMutation,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      workspaceCargoManifestInventory,
+      keyAgentServiceHelperBootstrapUnknownExportConsumerMutation,
+    ) &&
+    !keyAgentServiceHelperBootstrapReachabilityContract(
+      workspaceCargoManifestInventory,
+      keyAgentServiceHelperBootstrapUnexpectedSafeImportMutation,
     ),
-  "helper-bootstrap must have zero dependency or Rust consumers outside its own crate, including UI, platform, service, RPC, demo, and executable/release surfaces, with effective dependency and direct-source consumer mutations",
+  "helper-bootstrap must have exactly one optional default-feature-disabled platform dependency with no child-feature forwarding and exactly the two private launch-module consumers whose production imports equal their exact per-file parent-neutral gate/wire symbol inventories, while child-capture types/functions and every UI, service, RPC, demo, executable, default, and release surface remain unreachable, with effective dependency, feature-forwarding, unknown or unexpected-safe export, and direct-source consumer mutations",
 );
 const cargoNonRustTargetMutationProbe = workspaceCargoManifestInventory.map(
   ({ path, source }) => {
@@ -16080,6 +18447,11 @@ const reviewedHelperBootstrapCaptureGateInlineCode = rustFunctionBlock(
   keyAgentServiceHelperBootstrapWindows,
   "injected_channel_capture_gate",
 );
+const reviewedHelperBootstrapAdoptionCompleteGateInlineCode =
+  rustFunctionBlock(
+    keyAgentServiceHelperBootstrapWindows,
+    "injected_channel_adoption_complete_gate",
+  );
 const workspaceInlineCodeReviewInputs = workspaceRustCompilationInputs.map(
   (file) => {
     if (
@@ -16100,10 +18472,12 @@ const workspaceInlineCodeReviewInputs = workspaceRustCompilationInputs.map(
     ) {
       return {
         ...file,
-        source: file.source.replace(
-          reviewedHelperBootstrapCaptureGateInlineCode,
-          "",
-        ),
+        source: file.source
+          .replace(reviewedHelperBootstrapCaptureGateInlineCode, "")
+          .replace(
+            reviewedHelperBootstrapAdoptionCompleteGateInlineCode,
+            "",
+          ),
       };
     }
     return file;
@@ -19579,6 +21953,16 @@ const expectedDuplicateHandleInventory = [
     desiredAccess: "0",
     inheritable: "false",
     options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "HANDLE(call.source_handle.0 as *mut c_void)",
+    targetProcess: "HANDLE(call.target_process.0 as *mut c_void)",
+    targetHandle: "&raw mut remote",
+    desiredAccess: "call.desired_access",
+    inheritable: "call.inherit_handle",
+    options: "DUPLICATE_HANDLE_OPTIONS(call.options)",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
@@ -24256,8 +26640,12 @@ requireInvariant(
         path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
         attribute: "#[unsafe(naked)]",
       },
+      {
+        path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+        attribute: "#[unsafe(naked)]",
+      },
     ]),
-  "workspace Rust compilation inputs must admit only the exact reviewed helper-bootstrap naked capture gate and reject every other native binding or source-rebinding edge",
+  "workspace Rust compilation inputs must admit only the exact two reviewed helper-bootstrap naked capture/adoption gates and reject every other native binding or source-rebinding edge",
 );
 requireInvariant(
   compilationBindingEdgeProbes.linkName.nativeBindings.length === 1 &&
@@ -24283,6 +26671,9 @@ requireInvariant(
     reviewedHelperBootstrapCaptureGateInlineCode.includes(
       "core::arch::naked_asm!(",
     ) &&
+    reviewedHelperBootstrapAdoptionCompleteGateInlineCode.includes(
+      "core::arch::naked_asm!(",
+    ) &&
     workspaceInlineCodeReviewInputs.some(
       (file, index) =>
         file.path ===
@@ -24300,7 +26691,7 @@ requireInvariant(
     inlineCodeUsageProbes.alias.tokens.global_asm.length === 1 &&
     inlineCodeUsageProbes.qualified.tokens.global_asm.length === 1 &&
     identifierUsageIsEmpty(inlineCodeUsageProbes.clean),
-  "workspace Rust compilation inputs must reject every inline machine-code escape hatch outside the separately reviewed Key Agent cooperative gate and helper-bootstrap naked capture gate",
+  "workspace Rust compilation inputs must reject every inline machine-code escape hatch outside the separately reviewed Key Agent cooperative gate and the two helper-bootstrap naked capture/adoption gates",
 );
 requireInvariant(
   workspacePointerFabricationUsage.calls.length === 0 &&
@@ -33582,6 +35973,14 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   {
+    path: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
+    sites: 2,
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+    sites: 12,
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
     sites: 3,
   },
@@ -33663,14 +36062,24 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
     sha256: "f2df9738d861ce624131e1aa37a9dee7d3036c49ea21c0f9eed808f88e6f5a08",
   },
   {
+    path: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
+    unsafeCount: 1,
+    sha256: "a3c8813016a0f8c001f779a2b574ffdafed95ee11eb754175a35c7e722ba2218",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
+    unsafeCount: 60,
+    sha256: "467d5589f669db12b6fc9dbb0fa7b6096bb83b4e6d7dbd908c1a92d1fab4596d",
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
     unsafeCount: 11,
     sha256: "13a8f1415f58336675c5821647c06dcf7e87bf9743fd2b5a61480593cefe8278",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/process.rs",
-    unsafeCount: 1,
-    sha256: "bff6eadfccdf786d138f4eacb081fecbea19ecac4d2a6b72438ec885bffd5bdf",
+    unsafeCount: 6,
+    sha256: "f119f38ef19c59ee11b08b60080fb75c6dbae320ddb426e890bb1546fb6de3eb",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
@@ -33685,17 +36094,17 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
     unsafeCount: 4,
-    sha256: "4e87233536fa915cd04215609822ff88361fa13208e5cdc8fa426ed29cf4dbcd",
+    sha256: "2bf3867c9b7a2d993b0e915431befe3ab58f81a2840536b67a55ab448ec5812d",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
-    unsafeCount: 58,
-    sha256: "4b97444a6fdb7631ca779d8b33d540af3859c76d984084724315ae2bb5a3bfdf",
+    unsafeCount: 65,
+    sha256: "08240cdeb2a790874b66addba056e72eb55c6819b2e4e02141d1b340881487e2",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 11,
-    sha256: "bd4a63ae9ffcac600658dc25ff1e8e3f6f81477f09bf40184db281af5ca04d89",
+    sha256: "68f2d5a91109552231ada38edf2e7a8118d285228a1077cab2e9e15950f8a1ce",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -33719,8 +36128,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
-    unsafeCount: 33,
-    sha256: "c34e282b99633d0d095dea1a2b765e86f383472bde498d0555fdf17513fa0cd8",
+    unsafeCount: 34,
+    sha256: "66d47d0e6a6d3947d8652ee6a45fe403489a5408e7a9f9c917c91c3758b56aa3",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -34187,6 +36596,7 @@ requireInvariant(
       "derive",
       "error",
       "expect",
+      "forbid",
       "inline",
       "must_use",
       "path",
@@ -34194,7 +36604,7 @@ requireInvariant(
       "source",
       "test",
     ]),
-  "production Rust attributes must not introduce an unreviewed proc-macro expansion entry point",
+  "platform-windows production Rust attributes must not introduce an unreviewed proc-macro expansion entry point, while its safe static preflight remains forbid-unsafe",
 );
 requireInvariant(
   JSON.stringify(platformWindowsExternalModulePathInventory) ===
@@ -34511,7 +36921,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "02c33fda93de8fe13143dc70311b1d9423c845ac3edaefe5c05e2f0e0c3607de" &&
+    "9c7e31a0ef7555c5a8bc4825be0908ccdbbac4850d32842ec613ea7586ccd71b" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -34537,6 +36947,7 @@ requireInvariant(
         'approval-wire={path="../approval-wire"}',
         "getrandom.workspace=true",
         "hmac.workspace=true",
+        'key-agent-service-helper-bootstrap={path="../key-agent-service-helper-bootstrap",optional=true,default-features=false}',
         'key-agent-service-rpc-sys={path="../key-agent-service-rpc-sys",optional=true}',
         'key-agent-service-wire={path="../key-agent-service-wire",optional=true}',
         "sha2.workspace=true",
@@ -34569,7 +36980,7 @@ requireInvariant(
     rootManifestSha256 ===
       "ae82bc1d65c28dc023df61fae592e1c7c722e8ab6bbf8c014686707ebaf39352" &&
     workspaceLockSha256 ===
-      "82ddb7beec5e9f6d8801ba62ffa8054b1122041d032483513f6d74c8af38d739" &&
+      "8af6eaa3658dc33abf5656cee86517b03209075883998b8424052d61a072ba12" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -41420,11 +43831,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
+    "9603057865c4ac9330741ca9f9ebbbee5454c07a9505065665392dfdeb122f94",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
+    "ee34c7830471a4431b11071ee7c4934e1993170105f66c395d23dde202556eac",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -47213,9 +49624,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "9f864491fcfe01d83427255d20060cac3b7366ddd9b66fcb1add928b8d1f60b8",
+  "9603057865c4ac9330741ca9f9ebbbee5454c07a9505065665392dfdeb122f94",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "17473c2fb539bde19295cbb227fb94afa8857e915ce8206ef0f05233d1705528",
+  "ee34c7830471a4431b11071ee7c4934e1993170105f66c395d23dde202556eac",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
