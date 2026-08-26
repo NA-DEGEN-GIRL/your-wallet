@@ -445,6 +445,26 @@ impl DetachedDebugEventAliases {
             && self.rejected_primary_thread_process_id.is_none()
             && self.rejected_primary_thread_anchor.is_none()
     }
+
+    fn has_rejected_authority(&self) -> bool {
+        self.rejected_thread.is_some()
+            || self.rejected_process.is_some()
+            || self.rejected_primary_thread.is_some()
+            || self.rejected_thread_id.is_some()
+            || self.rejected_thread_process_id.is_some()
+            || self.rejected_thread_anchor.is_some()
+            || self.rejected_process_id.is_some()
+            || self.rejected_process_anchor.is_some()
+            || self.rejected_primary_thread_id.is_some()
+            || self.rejected_primary_thread_process_id.is_some()
+            || self.rejected_primary_thread_anchor.is_some()
+    }
+}
+
+fn repeated_rejected_registration_requires_fail_fast(
+    aliases: Option<&DetachedDebugEventAliases>,
+) -> bool {
+    aliases.is_some_and(DetachedDebugEventAliases::has_rejected_authority)
 }
 
 #[derive(Clone, Copy)]
@@ -716,6 +736,16 @@ impl ServiceProbeDebugEventCleanup {
         creator_primary_thread: HANDLE,
     ) -> Result<(), ServiceProbeDebugGateError> {
         let rejected_thread = raw_handle_word(rejected_thread)?;
+        let mut slot = self
+            .aliases
+            .lock()
+            .map_err(|_| ServiceProbeDebugGateError::Cleanup)?;
+        if repeated_rejected_registration_requires_fail_fast(slot.as_ref()) {
+            // A second held rejection owns fresh event authority that cannot
+            // replace the first raw/canonical set. Process-wide exit is the
+            // only transition that reclaims both generations without loss.
+            windows_fail_fast();
+        }
         let creator_process = raw_handle_word(creator_process)?;
         let creator_primary_thread = raw_handle_word(creator_primary_thread)?;
         if self.joined.load(Ordering::Acquire)
@@ -724,10 +754,6 @@ impl ServiceProbeDebugEventCleanup {
         {
             return Err(ServiceProbeDebugGateError::EventIdentity);
         }
-        let mut slot = self
-            .aliases
-            .lock()
-            .map_err(|_| ServiceProbeDebugGateError::Cleanup)?;
         let missing_primary_event = slot.is_none();
         if missing_primary_event {
             *slot = Some(DetachedDebugEventAliases::blank(
@@ -803,17 +829,26 @@ impl ServiceProbeDebugEventCleanup {
         rejected_process_id: u32,
         rejected_primary_thread_id: u32,
     ) -> Result<(), ServiceProbeDebugGateError> {
+        let mut process_word = raw_handle_word(process).ok();
+        let mut primary_thread_word = raw_handle_word(primary_thread).ok();
+        if process_word.is_none() && primary_thread_word.is_none() {
+            return Err(ServiceProbeDebugGateError::EventIdentity);
+        }
+        let mut slot = self
+            .aliases
+            .lock()
+            .map_err(|_| ServiceProbeDebugGateError::Cleanup)?;
+        if repeated_rejected_registration_requires_fail_fast(slot.as_ref()) {
+            // Never overwrite an earlier rejected raw word or its canonical
+            // owner. The newly held event makes recovery ambiguous, so abort
+            // while the complete process handle table still contains both.
+            windows_fail_fast();
+        }
         if self.joined.load(Ordering::Acquire) {
             return Err(ServiceProbeDebugGateError::JoinProof);
         }
         let creator_process = raw_handle_word(creator_process)?;
         let creator_primary_thread = raw_handle_word(creator_primary_thread)?;
-        let mut process_word = raw_handle_word(process).ok();
-        let mut primary_thread_word = raw_handle_word(primary_thread).ok();
-        let mut slot = self
-            .aliases
-            .lock()
-            .map_err(|_| ServiceProbeDebugGateError::Cleanup)?;
         let occupied = slot.as_ref().map_or([None; 5], |aliases| {
             [
                 aliases.process,
@@ -1303,6 +1338,23 @@ fn merge_authority_errors(
     } else {
         first.unwrap_or(second)
     }
+}
+
+fn authenticate_loader_event_then_increment<Authenticate>(
+    current_count: usize,
+    authenticate_and_close: Authenticate,
+) -> Result<usize, ServiceProbeDebugGateError>
+where
+    Authenticate: FnOnce() -> Result<(), ServiceProbeDebugGateError>,
+{
+    // The held event's optional hFile must be adopted and checked-closed even
+    // when this event will exceed the semantic loader-event bound. Any checked
+    // cleanup failure therefore dominates the later count rejection.
+    authenticate_and_close()?;
+    current_count
+        .checked_add(1)
+        .filter(|count| *count <= MAX_LOADER_DEBUG_EVENTS)
+        .ok_or(ServiceProbeDebugGateError::UnexpectedEvent)
 }
 
 /// Stable, data-free failures from the dormant parent debugger gate.
@@ -2331,11 +2383,10 @@ impl<'client, 'proof, 'context> WindowsGateAttempt<'client, 'proof, 'context> {
             }
             match event.dwDebugEventCode {
                 LOAD_DLL_DEBUG_EVENT => {
-                    loader_events = loader_events
-                        .checked_add(1)
-                        .filter(|count| *count <= MAX_LOADER_DEBUG_EVENTS)
-                        .ok_or(ServiceProbeDebugGateError::UnexpectedEvent)?;
-                    self.authenticate_load_dll_event(&event)?;
+                    loader_events =
+                        authenticate_loader_event_then_increment(loader_events, || {
+                            self.authenticate_load_dll_event(&event)
+                        })?;
                     self.continue_pending()?;
                 }
                 EXCEPTION_DEBUG_EVENT if !self.system_breakpoint_seen => {
@@ -2710,6 +2761,7 @@ fn windows_fail_fast() -> ! {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
     use core::num::NonZeroU32;
     use std::os::windows::io::AsRawHandle as _;
     use std::os::windows::process::CommandExt as _;
@@ -2727,12 +2779,15 @@ mod tests {
     use super::{
         CheckedCanonicalAlias, CheckedFileHandle, ContinueDebugEvent, DBG_CONTINUE,
         DebugEventAliasIdentityApi, DebugProtocolPhase, DebugProtocolTransition,
-        DetachedDebugEventAliases, ParentBootstrapChannels, PendingDebuggerExitServiceProbe,
-        ServiceProbeDebugCorrelation, ServiceProbeDebugEventCleanup, ServiceProbeDebugGateError,
-        ThreadAliasIdentity, WaitForDebugEventEx, WaitForSingleObject,
-        WindowsDebugEventAliasIdentityApi, cleanup_registry_drop_is_safe, cleanup_result_dominates,
-        close_registered_alias, contexts_match_except_r10_r11, handle_flags_are_zero,
-        merge_authority_errors, raw_handle_word, retain_process_anchor, retain_thread_anchor,
+        DetachedDebugEventAliases, MAX_LOADER_DEBUG_EVENTS, ParentBootstrapChannels,
+        PendingDebuggerExitServiceProbe, ServiceProbeDebugCorrelation,
+        ServiceProbeDebugEventCleanup, ServiceProbeDebugGateError, ThreadAliasIdentity,
+        WaitForDebugEventEx, WaitForSingleObject, WindowsDebugEventAliasIdentityApi,
+        authenticate_loader_event_then_increment, cleanup_registry_drop_is_safe,
+        cleanup_result_dominates, close_registered_alias, contexts_match_except_r10_r11,
+        handle_flags_are_zero, merge_authority_errors, raw_handle_word,
+        repeated_rejected_registration_requires_fail_fast, retain_process_anchor,
+        retain_thread_anchor,
     };
 
     trait AmbiguousIfSync<A> {
@@ -3276,6 +3331,102 @@ mod tests {
             Err(ServiceProbeDebugGateError::Cleanup)
         );
         assert_eq!(failing.raw(), handle(501));
+    }
+
+    #[test]
+    fn loader_limit_runs_authority_cleanup_first_and_cleanup_dominates() {
+        let cleanup_attempted = Cell::new(false);
+        assert_eq!(
+            authenticate_loader_event_then_increment(MAX_LOADER_DEBUG_EVENTS, || {
+                cleanup_attempted.set(true);
+                Ok(())
+            }),
+            Err(ServiceProbeDebugGateError::UnexpectedEvent)
+        );
+        assert!(cleanup_attempted.get());
+
+        cleanup_attempted.set(false);
+        assert_eq!(
+            authenticate_loader_event_then_increment(MAX_LOADER_DEBUG_EVENTS, || {
+                cleanup_attempted.set(true);
+                Err(ServiceProbeDebugGateError::Cleanup)
+            }),
+            Err(ServiceProbeDebugGateError::Cleanup)
+        );
+        assert!(cleanup_attempted.get());
+        assert_eq!(
+            authenticate_loader_event_then_increment(MAX_LOADER_DEBUG_EVENTS - 1, || Ok(())),
+            Ok(MAX_LOADER_DEBUG_EVENTS)
+        );
+    }
+
+    #[test]
+    fn every_existing_rejected_authority_requires_fail_fast_before_overwrite() {
+        assert!(!repeated_rejected_registration_requires_fail_fast(None));
+        let mut aliases = DetachedDebugEventAliases::blank(20, 21);
+        assert!(!repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+
+        aliases.rejected_thread = Some(12);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_thread = None;
+        aliases.rejected_process = Some(13);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_process = None;
+        aliases.rejected_primary_thread = Some(14);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_primary_thread = None;
+
+        aliases.rejected_thread_id = Some(22);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_thread_id = None;
+        aliases.rejected_thread_process_id = Some(20);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_thread_process_id = None;
+        aliases.rejected_process_id = Some(30);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_process_id = None;
+        aliases.rejected_primary_thread_id = Some(31);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_primary_thread_id = None;
+        aliases.rejected_primary_thread_process_id = Some(30);
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_primary_thread_process_id = None;
+
+        aliases.rejected_thread_anchor =
+            Some(CheckedCanonicalAlias::synthetic(handle(1_012), false));
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_thread_anchor = None;
+        aliases.rejected_process_anchor =
+            Some(CheckedCanonicalAlias::synthetic(handle(1_013), false));
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
+        aliases.rejected_process_anchor = None;
+        aliases.rejected_primary_thread_anchor =
+            Some(CheckedCanonicalAlias::synthetic(handle(1_014), false));
+        assert!(repeated_rejected_registration_requires_fail_fast(Some(
+            &aliases
+        )));
     }
 
     #[test]
