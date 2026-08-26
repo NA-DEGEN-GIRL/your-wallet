@@ -18,8 +18,8 @@ key-agent-service-scm-feasibility-test-hook = []
 key-agent-service-token-feasibility-test-hook = [
     "key-agent-service-scm-feasibility-test-hook",
 ]
-# Compile-only Phase 1 launch-input primitives. This does not add an RPC
-# command, process-creation call, or executable entrypoint by itself.
+# Compile-only Phase 1 launch primitives, including a dormant pre-event
+# process-creation seam. This adds no RPC command or executable entrypoint.
 key-agent-service-lpac-launch-feasibility-test-hook = [
     "key-agent-service-rpc-status-feasibility-test-hook",
     "key-agent-service-token-feasibility-test-hook",

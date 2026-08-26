@@ -642,10 +642,44 @@ capabilities, the opt-out policy, and the restricted-child policy in that
 order. It fixes `winsta0\default`; title, reserved fields, and all standard
 handles are null; `STARTF_USESTDHANDLES` and a handle-list attribute are absent.
 The attribute list is destroyed before any backing Job, SID, policy, or scalar
-storage. None of these compile-only primitives is reachable from an RPC command
-or executable, and none calls `CreateProcessAsUserW`. One-shot launch
-consumption, cross-session desktop/profile evidence, post-create handle
-injection, and the real helper R10/R11 gate remain STOP-SHIP work.
+storage.
+
+An auth-owned one-shot attempt now consumes those inputs at the sole
+`CreateProcessAsUserW` boundary. The call accepts only the fixed application
+name, no command line, `bInheritHandles = FALSE`, paired non-inheritable
+service-owned process/thread security attributes, the exact target environment
+and current directory, and exactly `CREATE_SUSPENDED |
+DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+EXTENDED_STARTUPINFO_PRESENT`. A native error cannot expose uninitialized
+`PROCESS_INFORMATION`; native success immediately transfers both returned
+handles into non-copyable owners after exact handle, ID, flag, and liveness
+checks. Malformed native success terminates the uniquely validated process and
+fails fast rather than returning partial authority.
+
+The attempt requires a move-only witness minted only by a fresh scoped debugger
+OS thread. Its current success state remains suspended and debug-attached before
+the first event: this slice never receives or continues a debug event, releases
+the initial suspend count, detaches, or calls
+`DebugSetProcessKillOnExit(FALSE)`. Post-create readback proves the helper/path,
+paired service-owned process/thread descriptors, one-process Job membership and
+count, and a retained/fresh child-token pair. Each token must be primary, in the
+target session, exact-role zero-capability LPAC, and show the required AAP
+opt-out membership differential; its `TokenUser`, exactly one logon SID, and
+`AuthenticationId` must match the authenticated desktop baseline. There is no
+ordinary-AppContainer or unsupported-LPAC fallback.
+
+Every post-create failure first requests termination of the exact process and
+then latches whole-Job termination. The pending owner may cross the creator
+thread boundary, but bounded process wait/close and exact-zero Job completion
+are accepted only after the matching debugger thread has exited and joined.
+Pre-event cleanup therefore does not use `WaitForDebugEvent`,
+`ContinueDebugEvent`, `ResumeThread`, `DebugActiveProcessStop`, or a kill-on-exit
+opt-out.
+
+None of these compile-only primitives is reachable from an RPC command or
+executable. Required privilege enablement, exact interactive desktop DACL
+access, child-token query access, an actual cross-session call, post-create
+handle injection, and the real helper R10/R11 gate remain STOP-SHIP work.
 
 The service keeps at most sixteen five-second process-correlated epochs,
 removes a nonce before every expiry/identity/state check, returns only

@@ -66,6 +66,17 @@ impl<'attributes> ProcessThreadCreationSecurity<'attributes> {
     ) -> Self {
         Self { process, thread }
     }
+
+    /// Borrows the mandatory process/thread pair without exposing either value
+    /// independently through the public launch API.
+    pub(crate) const fn as_pair(
+        self,
+    ) -> (
+        &'attributes SECURITY_ATTRIBUTES,
+        &'attributes SECURITY_ATTRIBUTES,
+    ) {
+        (self.process, self.thread)
+    }
 }
 
 struct InheritableHandleLaunchCoordinator {
@@ -329,9 +340,10 @@ impl InheritableHandleLaunchFlight<'_> {
         self.validate_create_admission()?;
         let (process_attributes, thread_attributes) =
             process_thread_security.map_or((None, None), |security| {
+                let (process, thread) = security.as_pair();
                 (
-                    Some(core::ptr::from_ref(security.process)),
-                    Some(core::ptr::from_ref(security.thread)),
+                    Some(core::ptr::from_ref(process)),
+                    Some(core::ptr::from_ref(thread)),
                 )
             });
         // SAFETY: the caller upholds the documented pointer, attribute-list,
@@ -397,9 +409,10 @@ mod tests {
         let process = SECURITY_ATTRIBUTES::default();
         let thread = SECURITY_ATTRIBUTES::default();
         let security = ProcessThreadCreationSecurity::new(&process, &thread);
+        let (retained_process, retained_thread) = security.as_pair();
 
-        assert!(core::ptr::eq(security.process, &raw const process));
-        assert!(core::ptr::eq(security.thread, &raw const thread));
+        assert!(core::ptr::eq(retained_process, &raw const process));
+        assert!(core::ptr::eq(retained_thread, &raw const thread));
     }
 
     fn wait_until_waiter_is_parked(coordinator: &InheritableHandleLaunchCoordinator) {

@@ -1,10 +1,13 @@
 //! Debug-only Phase 1 inputs for direct service-owned LPAC helper creation.
 //!
-//! The module currently contains only isolated, non-launching primitives. It
-//! exposes no process-creation, RPC command, helper, wallet, or signing path.
+//! The module contains a dormant, debug-only pre-event process-creation seam
+//! plus its isolated preparation and verification owners. No RPC command,
+//! release build, helper protocol, wallet operation, or signing path can reach
+//! it yet.
 
 #![allow(dead_code)]
 
 mod job;
+mod process;
 mod startup;
 mod target_profile;

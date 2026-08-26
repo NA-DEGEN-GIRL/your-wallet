@@ -45,6 +45,14 @@ pub(super) enum ServiceProbeJobError {
     /// Membership or accounting could not be observed exactly.
     #[error("service helper Job query is unavailable")]
     Query,
+    /// Whole-Job termination has been requested, so no further admission or
+    /// ordinary observation is permitted.
+    #[error("service helper Job termination is pending")]
+    TerminationPending,
+    /// Post-join completion was attempted before whole-Job termination had
+    /// been requested.
+    #[error("service helper Job termination was not requested")]
+    TerminationNotRequested,
     /// Terminal cleanup has already completed.
     #[error("service helper Job is already shut down")]
     ShutDown,
@@ -77,6 +85,66 @@ fn prepare_job<O: JobPrepareOps>(ops: &O) -> Result<O::Handle, ServiceProbeJobEr
     Ok(handle)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceProbeJobState {
+    Active,
+    TerminationRequested,
+    ShutDown,
+}
+
+trait JobTerminationOps {
+    fn request_termination(&self) -> Result<(), ServiceProbeJobError>;
+
+    fn wait_until_empty(&self, timeout: Duration) -> Result<(), ServiceProbeJobError>;
+}
+
+fn require_active_job(state: ServiceProbeJobState) -> Result<(), ServiceProbeJobError> {
+    match state {
+        ServiceProbeJobState::Active => Ok(()),
+        ServiceProbeJobState::TerminationRequested => Err(ServiceProbeJobError::TerminationPending),
+        ServiceProbeJobState::ShutDown => Err(ServiceProbeJobError::ShutDown),
+    }
+}
+
+fn request_job_termination<O: JobTerminationOps>(
+    state: &mut ServiceProbeJobState,
+    ops: &O,
+) -> Result<(), ServiceProbeJobError> {
+    require_active_job(*state)?;
+    // Latch before the native call. Even a failed termination attempt must
+    // permanently forbid later admission through this Job owner.
+    *state = ServiceProbeJobState::TerminationRequested;
+    ops.request_termination()
+}
+
+fn finish_job_termination_and_wait<O: JobTerminationOps>(
+    state: &mut ServiceProbeJobState,
+    ops: &O,
+    timeout: Duration,
+) -> Result<(), ServiceProbeJobError> {
+    match *state {
+        ServiceProbeJobState::Active => {
+            return Err(ServiceProbeJobError::TerminationNotRequested);
+        }
+        ServiceProbeJobState::TerminationRequested => {}
+        ServiceProbeJobState::ShutDown => return Err(ServiceProbeJobError::ShutDown),
+    }
+    ops.wait_until_empty(timeout)?;
+    *state = ServiceProbeJobState::ShutDown;
+    Ok(())
+}
+
+fn terminate_job_and_wait<O: JobTerminationOps>(
+    state: &mut ServiceProbeJobState,
+    ops: &O,
+    timeout: Duration,
+) -> Result<(), ServiceProbeJobError> {
+    if *state == ServiceProbeJobState::Active {
+        request_job_termination(state, ops)?;
+    }
+    finish_job_termination_and_wait(state, ops, timeout)
+}
+
 /// Move-only ownership of one exact, unnamed, one-process Job Object.
 ///
 /// The final handle close remains kill-authoritative. This owner is `Send` but
@@ -84,7 +152,7 @@ fn prepare_job<O: JobPrepareOps>(ops: &O) -> Result<O::Handle, ServiceProbeJobEr
 /// admission, observation, and terminal cleanup.
 pub(super) struct ServiceProbeJob {
     handle: OwnedHandle,
-    shut_down: bool,
+    state: ServiceProbeJobState,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -95,7 +163,7 @@ impl ServiceProbeJob {
         let handle = prepare_job(&sys::WindowsJobPrepareOps)?;
         Ok(Self {
             handle,
-            shut_down: false,
+            state: ServiceProbeJobState::Active,
             _not_sync: PhantomData,
         })
     }
@@ -103,9 +171,7 @@ impl ServiceProbeJob {
     /// Revalidates the enclosing-service and Job-limit assumptions immediately
     /// before a future creation call.
     pub(super) fn recheck_non_nested(&self) -> Result<(), ServiceProbeJobError> {
-        if self.shut_down {
-            return Err(ServiceProbeJobError::ShutDown);
-        }
+        require_active_job(self.state)?;
         sys::require_current_process_not_in_job()?;
         sys::verify_exact_limits(self.handle.as_handle())
     }
@@ -126,29 +192,45 @@ impl ServiceProbeJob {
         &self,
         process: BorrowedHandle<'_>,
     ) -> Result<bool, ServiceProbeJobError> {
-        if self.shut_down {
-            return Err(ServiceProbeJobError::ShutDown);
-        }
+        require_active_job(self.state)?;
         sys::contains_process(self.handle.as_handle(), process)
     }
 
     /// Returns the exact active process count, bounded by the one-process
     /// topology rather than an attacker-sized allocation.
     pub(super) fn active_process_count(&self) -> Result<u32, ServiceProbeJobError> {
-        if self.shut_down {
-            return Err(ServiceProbeJobError::ShutDown);
-        }
+        require_active_job(self.state)?;
         sys::active_process_count(self.handle.as_handle())
     }
 
-    /// Terminates the complete Job and waits until exact accounting is empty.
+    /// Requests whole-Job termination without querying, waiting, or sleeping.
+    ///
+    /// The pending state is latched before the native request. The dedicated
+    /// debugger thread can therefore return immediately even when Windows has
+    /// not yet completed debuggee termination, while every later admission
+    /// path remains permanently closed.
+    pub(super) fn request_termination(&mut self) -> Result<(), ServiceProbeJobError> {
+        let ops = sys::WindowsJobTerminationOps::new(self.handle.as_handle());
+        request_job_termination(&mut self.state, &ops)
+    }
+
+    /// Waits after debugger-thread exit until exact Job accounting is empty.
+    ///
+    /// A query failure or timeout retains the pending state for another
+    /// bounded completion attempt. Only an exact zero count marks shutdown.
+    pub(super) fn finish_termination_and_wait(&mut self) -> Result<(), ServiceProbeJobError> {
+        let ops = sys::WindowsJobTerminationOps::new(self.handle.as_handle());
+        finish_job_termination_and_wait(&mut self.state, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT)
+    }
+
+    /// Requests whole-Job termination and then waits until accounting is empty.
+    ///
+    /// This compatibility operation is valid only after any debugger thread
+    /// has exited. A pending owner skips a second termination request and
+    /// retries only the bounded exact-zero observation.
     pub(super) fn terminate_and_wait(&mut self) -> Result<(), ServiceProbeJobError> {
-        if self.shut_down {
-            return Err(ServiceProbeJobError::ShutDown);
-        }
-        sys::terminate_and_wait(self.handle.as_handle(), SERVICE_PROBE_TERMINATION_TIMEOUT)?;
-        self.shut_down = true;
-        Ok(())
+        let ops = sys::WindowsJobTerminationOps::new(self.handle.as_handle());
+        terminate_job_and_wait(&mut self.state, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT)
     }
 }
 
@@ -156,7 +238,7 @@ impl fmt::Debug for ServiceProbeJob {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ServiceProbeJob")
-            .field("shut_down", &self.shut_down)
+            .field("state", &self.state)
             .finish_non_exhaustive()
     }
 }
@@ -242,6 +324,26 @@ mod sys {
 
         fn verify_limits(&self, handle: &Self::Handle) -> Result<(), ServiceProbeJobError> {
             verify_exact_limits(handle.as_handle())
+        }
+    }
+
+    pub(super) struct WindowsJobTerminationOps<'job> {
+        job: BorrowedHandle<'job>,
+    }
+
+    impl<'job> WindowsJobTerminationOps<'job> {
+        pub(super) const fn new(job: BorrowedHandle<'job>) -> Self {
+            Self { job }
+        }
+    }
+
+    impl super::JobTerminationOps for WindowsJobTerminationOps<'_> {
+        fn request_termination(&self) -> Result<(), ServiceProbeJobError> {
+            request_termination(self.job)
+        }
+
+        fn wait_until_empty(&self, timeout: Duration) -> Result<(), ServiceProbeJobError> {
+            wait_until_empty(self.job, timeout)
         }
     }
 
@@ -333,16 +435,16 @@ mod sys {
             .ok_or(ServiceProbeJobError::Query)
     }
 
-    pub(super) fn terminate_and_wait(
+    pub(super) fn request_termination(job: BorrowedHandle<'_>) -> Result<(), ServiceProbeJobError> {
+        // SAFETY: the exact Job owner remains live throughout termination.
+        unsafe { TerminateJobObject(windows_handle(job), SERVICE_PROBE_EXIT_CODE) }
+            .map_err(|_| ServiceProbeJobError::Termination)
+    }
+
+    pub(super) fn wait_until_empty(
         job: BorrowedHandle<'_>,
         timeout: Duration,
     ) -> Result<(), ServiceProbeJobError> {
-        if active_process_count(job)? == 0 {
-            return Ok(());
-        }
-        // SAFETY: the exact Job owner remains live throughout termination.
-        unsafe { TerminateJobObject(windows_handle(job), SERVICE_PROBE_EXIT_CODE) }
-            .map_err(|_| ServiceProbeJobError::Termination)?;
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or(ServiceProbeJobError::TerminationTimeout)?;
@@ -434,6 +536,12 @@ mod tests {
         Recheck,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TerminationEvent {
+        Request,
+        Wait(Duration),
+    }
+
     struct FakeHandle {
         drops: Rc<Cell<u32>>,
     }
@@ -504,6 +612,39 @@ mod tests {
 
         fn verify_limits(&self, _handle: &Self::Handle) -> Result<(), ServiceProbeJobError> {
             self.record(PrepareEvent::Verify)
+        }
+    }
+
+    struct FakeTerminationOps {
+        events: RefCell<Vec<TerminationEvent>>,
+        request_failure: Cell<Option<ServiceProbeJobError>>,
+        wait_failure: Cell<Option<ServiceProbeJobError>>,
+    }
+
+    impl FakeTerminationOps {
+        fn new(
+            request_failure: Option<ServiceProbeJobError>,
+            wait_failure: Option<ServiceProbeJobError>,
+        ) -> Self {
+            Self {
+                events: RefCell::new(Vec::new()),
+                request_failure: Cell::new(request_failure),
+                wait_failure: Cell::new(wait_failure),
+            }
+        }
+    }
+
+    impl JobTerminationOps for FakeTerminationOps {
+        fn request_termination(&self) -> Result<(), ServiceProbeJobError> {
+            self.events.borrow_mut().push(TerminationEvent::Request);
+            self.request_failure.get().map_or(Ok(()), Err)
+        }
+
+        fn wait_until_empty(&self, timeout: Duration) -> Result<(), ServiceProbeJobError> {
+            self.events
+                .borrow_mut()
+                .push(TerminationEvent::Wait(timeout));
+            self.wait_failure.get().map_or(Ok(()), Err)
         }
     }
 
@@ -582,6 +723,171 @@ mod tests {
     }
 
     #[test]
+    fn split_termination_requests_once_then_waits_and_latches_shutdown() {
+        let ops = FakeTerminationOps::new(None, None);
+        let mut state = ServiceProbeJobState::Active;
+
+        assert_eq!(request_job_termination(&mut state, &ops), Ok(()));
+        assert_eq!(state, ServiceProbeJobState::TerminationRequested);
+        assert_eq!(ops.events.borrow().as_slice(), [TerminationEvent::Request]);
+
+        assert_eq!(
+            finish_job_termination_and_wait(&mut state, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT,),
+            Ok(())
+        );
+        assert_eq!(state, ServiceProbeJobState::ShutDown);
+        assert_eq!(
+            ops.events.borrow().as_slice(),
+            [
+                TerminationEvent::Request,
+                TerminationEvent::Wait(SERVICE_PROBE_TERMINATION_TIMEOUT),
+            ]
+        );
+
+        assert_eq!(
+            request_job_termination(&mut state, &ops),
+            Err(ServiceProbeJobError::ShutDown)
+        );
+        assert_eq!(
+            finish_job_termination_and_wait(&mut state, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT,),
+            Err(ServiceProbeJobError::ShutDown)
+        );
+        assert_eq!(ops.events.borrow().len(), 2);
+    }
+
+    #[test]
+    fn failed_termination_request_stays_pending_and_cannot_be_reissued() {
+        let ops = FakeTerminationOps::new(Some(ServiceProbeJobError::Termination), None);
+        let mut state = ServiceProbeJobState::Active;
+
+        assert_eq!(
+            request_job_termination(&mut state, &ops),
+            Err(ServiceProbeJobError::Termination)
+        );
+        assert_eq!(state, ServiceProbeJobState::TerminationRequested);
+        assert_eq!(
+            request_job_termination(&mut state, &ops),
+            Err(ServiceProbeJobError::TerminationPending)
+        );
+        assert_eq!(ops.events.borrow().as_slice(), [TerminationEvent::Request]);
+
+        assert_eq!(
+            finish_job_termination_and_wait(&mut state, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT,),
+            Ok(())
+        );
+        assert_eq!(state, ServiceProbeJobState::ShutDown);
+    }
+
+    #[test]
+    fn finish_requires_request_and_failed_wait_is_bounded_and_retriable() {
+        for failure in [
+            ServiceProbeJobError::Query,
+            ServiceProbeJobError::TerminationTimeout,
+        ] {
+            let ops = FakeTerminationOps::new(None, Some(failure));
+            let mut state = ServiceProbeJobState::Active;
+            assert_eq!(
+                finish_job_termination_and_wait(
+                    &mut state,
+                    &ops,
+                    SERVICE_PROBE_TERMINATION_TIMEOUT,
+                ),
+                Err(ServiceProbeJobError::TerminationNotRequested)
+            );
+            assert!(ops.events.borrow().is_empty());
+
+            assert_eq!(request_job_termination(&mut state, &ops), Ok(()));
+            assert_eq!(
+                finish_job_termination_and_wait(
+                    &mut state,
+                    &ops,
+                    SERVICE_PROBE_TERMINATION_TIMEOUT,
+                ),
+                Err(failure)
+            );
+            assert_eq!(state, ServiceProbeJobState::TerminationRequested);
+
+            ops.wait_failure.set(None);
+            assert_eq!(
+                finish_job_termination_and_wait(
+                    &mut state,
+                    &ops,
+                    SERVICE_PROBE_TERMINATION_TIMEOUT,
+                ),
+                Ok(())
+            );
+            assert_eq!(state, ServiceProbeJobState::ShutDown);
+            assert_eq!(
+                ops.events.borrow().as_slice(),
+                [
+                    TerminationEvent::Request,
+                    TerminationEvent::Wait(SERVICE_PROBE_TERMINATION_TIMEOUT),
+                    TerminationEvent::Wait(SERVICE_PROBE_TERMINATION_TIMEOUT),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_cleanup_skips_a_second_request_while_pending() {
+        let ops = FakeTerminationOps::new(None, None);
+        let mut fresh = ServiceProbeJobState::Active;
+        assert_eq!(
+            terminate_job_and_wait(&mut fresh, &ops, SERVICE_PROBE_TERMINATION_TIMEOUT),
+            Ok(())
+        );
+        assert_eq!(fresh, ServiceProbeJobState::ShutDown);
+        assert_eq!(
+            ops.events.borrow().as_slice(),
+            [
+                TerminationEvent::Request,
+                TerminationEvent::Wait(SERVICE_PROBE_TERMINATION_TIMEOUT),
+            ]
+        );
+
+        let pending_ops = FakeTerminationOps::new(Some(ServiceProbeJobError::Termination), None);
+        let mut pending = ServiceProbeJobState::Active;
+        assert_eq!(
+            terminate_job_and_wait(
+                &mut pending,
+                &pending_ops,
+                SERVICE_PROBE_TERMINATION_TIMEOUT,
+            ),
+            Err(ServiceProbeJobError::Termination)
+        );
+        pending_ops.request_failure.set(None);
+        assert_eq!(
+            terminate_job_and_wait(
+                &mut pending,
+                &pending_ops,
+                SERVICE_PROBE_TERMINATION_TIMEOUT,
+            ),
+            Ok(())
+        );
+        assert_eq!(pending, ServiceProbeJobState::ShutDown);
+        assert_eq!(
+            pending_ops.events.borrow().as_slice(),
+            [
+                TerminationEvent::Request,
+                TerminationEvent::Wait(SERVICE_PROBE_TERMINATION_TIMEOUT),
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_and_shutdown_states_reject_all_admission() {
+        assert_eq!(require_active_job(ServiceProbeJobState::Active), Ok(()));
+        assert_eq!(
+            require_active_job(ServiceProbeJobState::TerminationRequested),
+            Err(ServiceProbeJobError::TerminationPending)
+        );
+        assert_eq!(
+            require_active_job(ServiceProbeJobState::ShutDown),
+            Err(ServiceProbeJobError::ShutDown)
+        );
+    }
+
+    #[test]
     fn errors_and_attribute_debug_are_data_free() {
         for error in [
             ServiceProbeJobError::NestedService,
@@ -589,6 +895,8 @@ mod tests {
             ServiceProbeJobError::Configuration,
             ServiceProbeJobError::LimitVerification,
             ServiceProbeJobError::Query,
+            ServiceProbeJobError::TerminationPending,
+            ServiceProbeJobError::TerminationNotRequested,
             ServiceProbeJobError::ShutDown,
             ServiceProbeJobError::Termination,
             ServiceProbeJobError::TerminationTimeout,
@@ -619,7 +927,8 @@ mod tests {
         let is_contained = job.contains_process(outside.as_handle())?;
         outside.wait().map_err(|_| ServiceProbeJobError::Query)?;
         assert!(!is_contained);
-        job.terminate_and_wait()?;
+        job.request_termination()?;
+        job.finish_termination_and_wait()?;
         Ok(())
     }
 }

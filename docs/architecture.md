@@ -39,13 +39,37 @@ mutex. The resulting environment binds `LOCALAPPDATA` to the authoritative
 AppContainer `...\AC` folder plus only verified `SystemRoot`/`WINDIR`. A
 five-slot startup owner binds the Job, full helper mitigation policy, zero-cap
 LPAC and AAP opt-out attributes, and restricted-child policy with fixed desktop,
-null stdio, and no handle list. Direct execution, non-Windows/default builds,
-and feature-enabled release builds remain silent exit 78. No executable or RPC
-operation consumes these launch inputs; there is still no
-`CreateProcessAsUserW`, helper process, post-create handle injection, R10/R11
-capture, wallet state, storage, network adapter, or signing transition. The
-installed restricted-service, cross-session LPAC/desktop, real Broker/helper,
-and supported-kernel matrix remain Phase 1 **STOP-SHIP** obligations.
+null stdio, and no handle list.
+
+The same dormant feature now has one auth-owned, exact-once process-creation
+attempt. Its sole `CreateProcessAsUserW` call supplies the fixed application
+name with no command line, `bInheritHandles = FALSE`, the paired non-inheritable
+service-owned process/thread security attributes, and exactly
+`CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW |
+CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT`. Native success is
+immediately adopted into move-only process/thread owners. Before the suspended
+child can advance, readback proves both service-owned object descriptors, exact
+Job membership/count, and a fresh primary child token with the fixed role SID,
+zero capabilities, LPAC/AAP-opt-out membership differential, target session,
+and exact desktop `TokenUser`, single logon SID, and `AuthenticationId`.
+
+Creation consumes a move-only witness minted only on one fresh debugger OS
+thread. This slice receives no debug event and calls none of
+`WaitForDebugEvent`, `ContinueDebugEvent`, `ResumeThread`,
+`DebugActiveProcessStop`, or `DebugSetProcessKillOnExit(FALSE)`. If a child was
+created and any verification fails, it requests termination of that exact
+process first and then the whole Job, exits and joins the exact creator/debugger
+thread, and only then permits bounded process reap and exact-zero Job cleanup.
+The joined-thread proof is matched to the pending cleanup owner.
+
+Direct execution, non-Windows/default builds, and feature-enabled release
+builds remain silent exit 78. No executable or RPC operation reaches this
+creation seam, and there is still no post-create handle injection, R10/R11
+capture, wallet state, storage, network adapter, or signing transition. Required
+privilege enablement, exact interactive window-station/desktop DACL adjustment,
+child-token query access, the actual Session-0-to-user-session call, real signed
+Broker/helpers, and the supported-kernel matrix remain Phase 1 **STOP-SHIP**
+obligations.
 
 | Component | Current evidence and limitation |
 | --- | --- |

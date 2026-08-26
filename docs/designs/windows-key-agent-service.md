@@ -149,10 +149,25 @@ The following are existing facts, not new service claims:
   attributes. A five-slot extended-startup owner adds the Job, full helper
   mitigation, those LPAC attributes, and restricted-child policy with null
   standard handles and no handle list. Its process-creation view is move-only
-  and lifetime-bound rather than a copyable `STARTUPINFOW`. There is still no
-  RPC command, process creation, or executable entrypoint using these
-  primitives; a future launch-attempt owner must consume them once and retain
-  them through post-create readback.
+  and lifetime-bound rather than a copyable `STARTUPINFOW`.
+- A dormant auth-owned launch attempt now consumes those inputs exactly once at
+  the sole `CreateProcessAsUserW` call. It passes the fixed application name,
+  no command line, `bInheritHandles = FALSE`, paired non-inheritable
+  service-owned process/thread security attributes, and exactly
+  `CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW |
+  CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT`. Native success is
+  adopted immediately; before any debug event, post-create readback proves the
+  paired descriptors, exact one-process Job, and retained/fresh primary child
+  token. The child must have the fixed role SID, zero capabilities, LPAC/AAP
+  opt-out state, the target session, and the authenticated desktop user's exact
+  `TokenUser`, single logon SID, and `AuthenticationId`.
+- The attempt consumes a move-only fresh-debugger-thread witness. It neither
+  receives/continues a debug event nor resumes/detaches the child, and never
+  calls `DebugSetProcessKillOnExit(FALSE)`. On failure after creation it requests
+  exact-process termination and then whole-Job termination before leaving that
+  thread. Bounded process and Job reap requires the matching thread-exit/join
+  proof. The seam still has no RPC command or executable caller and enables no
+  release path.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -343,8 +358,9 @@ The creation contract is:
 
 - `bInheritHandles = FALSE`;
 - no `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
-- `CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | EXTENDED_STARTUPINFO_PRESENT`
-  plus only reviewed headless/Unicode flags;
+- exactly `CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW |
+  CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT`;
+- a fixed application name and no command line;
 - fixed `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` with zero capabilities and
   the LPAC `ALL_APPLICATION_PACKAGES` opt-out;
 - fixed child-process and mitigation policies;
@@ -515,6 +531,17 @@ aborts the process at 15 seconds, on a status-report failure, or on reporter
 disconnect, and therefore never converts uncertain rundown into a false clean
 stop.
 
+The dormant pre-event creation seam adds a narrower per-attempt cleanup proof.
+It runs under a token minted only on one fresh debugger OS thread and leaves a
+successful child suspended and debug-attached without receiving, continuing,
+resuming, or detaching any event and without disabling debugger-exit kill
+semantics. If creation succeeded but later readback fails, the service requests
+termination of that exact process first, then latches termination of its whole
+one-process Job. Only after the exact creator/debugger thread exits and joins
+may the sendable pending owner perform the bounded process wait/close and
+exact-zero Job reap. This is compile-only lifecycle structure, not a live
+cross-session cleanup result.
+
 ### 12. The service has no network authority
 
 The service contains no chain RPC, DNS, HTTP, WebSocket, update, telemetry, or
@@ -677,10 +704,20 @@ verified `SystemRoot` and `WINDIR`; creation attributes contain zero
 capabilities and the ALL APPLICATION PACKAGES opt-out. A disjoint five-slot
 startup owner binds the one-process Job, existing helper mitigation policy,
 LPAC attributes, and restricted-child policy without standard handles or a
-handle list. These types have no RPC/executable caller and still perform no
-`CreateProcessAsUserW`, remote-handle injection, or R10/R11 gate. The
-claimed-build matrix, endpoint-squatting, SCM configuration/service identity,
-cross-session LPAC launch, and real Broker-client evidence are still absent.
+handle list. A dormant one-shot owner now performs the sole compile-only
+`CreateProcessAsUserW` with the exact five flags, inheritance disabled, no
+command line, and paired service-owned security attributes. It immediately
+owns the native success handles and rechecks object DACLs, helper binding, Job
+membership/count, and an exact retained/fresh target LPAC token, including the
+role SID, zero capabilities, AAP opt-out, session, desktop user/logon SID, and
+`AuthenticationId`. A fresh-debugger-thread witness and matching join proof
+separate pre-event termination requests from bounded process/Job reap; this
+slice receives no debug event and performs no continue, resume, detach, or
+kill-on-exit opt-out. These types still have no RPC/executable caller and
+perform no remote-handle injection or R10/R11 gate. Privilege enablement,
+interactive desktop DACL access, child-token query access, the actual
+cross-session call, claimed-build matrix, endpoint-squatting, SCM
+configuration/service identity, and real Broker-client evidence are absent.
 
 ### Phase 2 — Installer, service host, storage, and network boundary
 
@@ -781,11 +818,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-26 - Added the dormant one-shot service LPAC process-creation seam:
+  exact five-flag `CreateProcessAsUserW`, no command line or inheritance,
+  paired service-owned creation security, immediate native-result ownership,
+  exact child LPAC/desktop identity and Job readback, and fresh debugger-thread
+  exit/join-gated bounded failure cleanup. It receives no debug event and has no
+  RPC, executable, or release reachability.
 - 2026-08-26 - Added compile-only target-user launch inputs: auth-owned
   exact-once desktop impersonation, fixed Approval/Secret Input profile
   observation, exact AppContainer `LOCALAPPDATA`, zero-capability/AAP-opt-out
-  storage, and a five-slot no-handle-list startup owner. No process creation,
-  helper execution, or release authority was enabled.
+  storage, and a five-slot no-handle-list startup owner. Those prerequisites
+  later feed the dormant one-shot seam above; neither slice enables helper
+  execution, RPC reachability, or release authority.
 - 2026-08-26 — Added manager-only authenticated desktop `TokenPrimary`
   duplication/retention and the debug-only restricted-service-token observer.
   Callback authentication retains no launch authority, exact token access and

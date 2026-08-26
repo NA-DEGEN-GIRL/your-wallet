@@ -205,7 +205,8 @@ evidence set passes.
 
 Implementation status on 2026-08-26: the repository contains only no-secret
 Phase 1 feasibility fixtures—an inert SCM host, bounded Status/Unavailable wire,
-a checked-in x64 MIDL/SEH boundary, and an authenticated local-RPC server. That
+a checked-in x64 MIDL/SEH boundary, an authenticated local-RPC server, and a
+dormant compile-only one-shot helper-creation seam. That
 RPC surface exists only in the exact Windows debug build with the explicit
 feature; default, production, non-Windows, and release paths remain silent and
 fail closed as unavailable. There is no production RPC client and no proof of
@@ -248,8 +249,9 @@ equal the fixed service SID, and `TokenPrimaryGroup` must occur exactly once in
 descriptors only from that service principal; it compares the copied owner/group
 bytes to the sealed baseline and repeats full token revalidation after descriptor
 construction. The authenticated desktop primary token is not an accepted owner.
-This compile-only seam has no process-creation caller yet, and the eventual
-launch-attempt state must consume it once and keep it live through readback.
+The compile-only launch-attempt state now consumes that authority once and keeps
+the paired descriptor owners and service-token proof live through created-object
+readback.
 
 The same compile-only feature contains a separate unnamed, non-nested,
 one-process Job primitive. Its effective flags must equal
@@ -274,11 +276,36 @@ the ALL APPLICATION PACKAGES opt-out.
 A separate five-slot startup owner installs, in order, the Job list, the
 existing helper mitigation policy, those two LPAC attributes, and the
 restricted-child policy. It fixes `winsta0\default`, leaves every standard
-handle null, and has no inherited-handle-list slot. No RPC operation or
-executable consumes these launch inputs, and no `CreateProcessAsUserW`, helper
-entrypoint, handle injection, or R10/R11 gate is added by this slice. The
-positive installed-service, cross-session target-profile, desktop-access, and
-nonnested-Job kernel compositions remain unproved.
+handle null, and has no inherited-handle-list slot.
+
+The dormant launch attempt owns the sole `CreateProcessAsUserW` call. It accepts
+only the fixed application name, no command line, `bInheritHandles = FALSE`,
+the paired non-inheritable service-owned process/thread security attributes,
+and exactly `CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW |
+CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT`. Native success is
+adopted immediately into move-only owners. Before any child code or debug event
+can advance, readback proves the paired object descriptors, exact Job
+membership/count, and both retained and freshly opened primary child tokens.
+The token proof requires the fixed Approval or Secret Input profile SID, zero
+capabilities, exact LPAC/AAP-opt-out membership, target session, and equality to
+the authenticated desktop `TokenUser`, exactly one logon SID, and
+`AuthenticationId`; no ordinary-AppContainer or unsupported-LPAC fallback is
+accepted.
+
+The create transition also consumes a move-only witness minted only on a fresh
+debugger OS thread. This slice receives or continues no debug event, releases no
+suspend count, performs no detach, and never calls
+`DebugSetProcessKillOnExit(FALSE)`. On a post-create failure it requests
+termination of the exact child first and then latches whole-Job termination.
+The pending owner can be reaped only after the exact creator/debugger thread has
+exited and joined; the matching join proof then permits bounded process wait and
+exact-zero Job completion.
+
+No RPC operation or executable consumes this creation seam, and no helper
+entrypoint, handle injection, or R10/R11 gate is added by this slice. Required
+privilege enablement, exact interactive window-station/desktop DACL access,
+child-token query access, the actual cross-session call, and the positive
+installed-service/nonnested-Job matrix remain unproved.
 
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not

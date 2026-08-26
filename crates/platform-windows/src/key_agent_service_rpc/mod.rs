@@ -44,7 +44,10 @@ use self::auth::RpcAuthError;
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",
     debug_assertions
 ))]
-pub(crate) use self::auth::{AuthenticatedDesktopImpersonation, AuthenticatedRpcClient};
+pub(crate) use self::auth::{
+    AuthenticatedDesktopImpersonation, AuthenticatedRpcClient, CreatedDesktopProcess,
+    PendingDebuggerExitProcessCleanup,
+};
 use self::dispatch::{AuthenticationFailure, DispatchEngine};
 use self::epoch::SystemMonotonicClock;
 use self::lifecycle::{LifecycleHooks, ListeningStatusRpcServer, PreparedStatusRpcServer, RpcOps};

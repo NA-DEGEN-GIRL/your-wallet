@@ -11,14 +11,19 @@ mod sys;
 
 use core::ffi::c_void;
 use core::fmt;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
+use std::os::windows::io::BorrowedHandle;
 use std::rc::Rc;
 
 use key_agent_service_rpc_sys::CallBinding;
 #[cfg(test)]
 use key_agent_service_rpc_sys::ManagerError;
+use windows::Win32::System::Threading::STARTUPINFOW;
 use zeroize::Zeroize as _;
+
+use crate::inheritable_handle_launch::ProcessThreadCreationSecurity;
 
 const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;
 const RPC_AUTHN_SERVICE_WINNT: u32 = 10;
@@ -58,6 +63,54 @@ impl fmt::Display for RpcAuthError {
 }
 
 impl std::error::Error for RpcAuthError {}
+
+/// Data-free failure classes for the sole desktop-user process-creation call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopProcessCreateError {
+    /// The authenticated client or retained desktop token failed revalidation.
+    Authentication,
+    /// A required process-creation input did not have the exact fixed shape.
+    InvalidInput,
+    /// Windows rejected the exact `CreateProcessAsUserW` request.
+    OperatingSystem,
+}
+
+impl fmt::Display for DesktopProcessCreateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Authentication => "desktop process authentication is unavailable",
+            Self::InvalidInput => "desktop process creation inputs are invalid",
+            Self::OperatingSystem => "desktop process creation failed",
+        })
+    }
+}
+
+impl std::error::Error for DesktopProcessCreateError {}
+
+/// Data-free failure classes reported after debugger-thread exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopProcessCleanupError {
+    /// The exact creator-owned process handle rejected the termination request.
+    TerminationRequest,
+    /// The terminated process did not signal within the fixed bounded wait.
+    Wait,
+    /// Both the termination request and the bounded wait failed.
+    TerminationRequestAndWait,
+}
+
+impl fmt::Display for DesktopProcessCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::TerminationRequest => "desktop process termination request failed",
+            Self::Wait => "desktop process cleanup wait failed",
+            Self::TerminationRequestAndWait => {
+                "desktop process termination request and cleanup wait failed"
+            }
+        })
+    }
+}
+
+impl std::error::Error for DesktopProcessCleanupError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObservationError {
@@ -280,6 +333,7 @@ pub(crate) struct AuthenticatedClient<P, T> {
     primary: TokenObservation,
     desktop_primary_token: T,
     desktop_primary: TokenObservation,
+    desktop_process_creation_claimed: Cell<bool>,
 }
 
 impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
@@ -290,6 +344,141 @@ impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
 
 pub(crate) type AuthenticatedRpcClient =
     AuthenticatedClient<sys::RetainedProcess, sys::DesktopPrimaryToken>;
+
+/// One-shot authority for the sole desktop-user process-creation call.
+///
+/// Claiming this value irreversibly consumes the authenticated client's launch
+/// capability before revalidation. The authority is move-only and thread-bound.
+#[must_use = "desktop process-creation authority must be consumed by one attempt"]
+pub(crate) struct AuthenticatedDesktopProcessCreateAttempt<'client> {
+    client: &'client AuthenticatedRpcClient,
+    _thread_bound: PhantomData<Rc<Cell<()>>>,
+}
+
+impl AuthenticatedDesktopProcessCreateAttempt<'_> {
+    /// Creates the exact desktop-user child suspended under the fixed policy.
+    ///
+    /// # Safety
+    ///
+    /// `startup_info` must point to the `STARTUPINFOW` prefix of the live
+    /// `STARTUPINFOEXW` retained by the service-probe startup owner. Its desktop
+    /// string, attribute list, and every attribute backing allocation must stay
+    /// valid and unmodified until this synchronous call returns.
+    pub(crate) unsafe fn create_suspended_process(
+        self,
+        application_name: &[u16],
+        security: ProcessThreadCreationSecurity<'_>,
+        environment: &[u16],
+        current_directory: &[u16],
+        startup_info: *const STARTUPINFOW,
+    ) -> Result<CreatedDesktopProcess, DesktopProcessCreateError> {
+        self.client
+            .revalidate()
+            .map_err(|_| DesktopProcessCreateError::Authentication)?;
+        // SAFETY: the caller upholds the complete startup allocation contract;
+        // the remaining borrowed slices and paired attributes stay live for
+        // this synchronous call by their ordinary Rust lifetimes.
+        let state = unsafe {
+            sys::create_process_as_desktop_user(
+                &self.client.desktop_primary_token,
+                application_name,
+                security,
+                environment,
+                current_directory,
+                startup_info,
+            )
+        }
+        .map_err(map_native_process_create_error)?;
+        Ok(CreatedDesktopProcess {
+            state,
+            _thread_bound: PhantomData,
+        })
+    }
+}
+
+impl fmt::Debug for AuthenticatedDesktopProcessCreateAttempt<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedDesktopProcessCreateAttempt([REDACTED])")
+    }
+}
+
+/// Creator-thread ownership of one suspended desktop-user process and thread.
+///
+/// This owner is deliberately `!Send + !Sync`. It must remain on the debugger
+/// thread until its consuming termination transition is requested.
+#[must_use = "the created desktop process requires an explicit cleanup transition"]
+pub(crate) struct CreatedDesktopProcess {
+    state: sys::CreatedDesktopProcess,
+    _thread_bound: PhantomData<Rc<Cell<()>>>,
+}
+
+impl CreatedDesktopProcess {
+    /// Borrows the exact process handle returned by successful creation.
+    pub(crate) fn process_handle(&self) -> BorrowedHandle<'_> {
+        self.state.process_handle()
+    }
+
+    /// Borrows the exact primary-thread handle returned by successful creation.
+    pub(crate) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        self.state.primary_thread_handle()
+    }
+
+    /// Returns the exact nonzero process identifier returned by creation.
+    pub(crate) const fn process_id(&self) -> NonZeroU32 {
+        self.state.process_id()
+    }
+
+    /// Returns the exact nonzero primary-thread identifier returned by creation.
+    pub(crate) const fn primary_thread_id(&self) -> NonZeroU32 {
+        self.state.primary_thread_id()
+    }
+
+    /// Requests termination without waiting and transfers both exact handles to
+    /// the cleanup owner that may cross the debugger-thread join boundary.
+    pub(crate) fn request_termination_into_pending_debugger_exit_cleanup(
+        self,
+    ) -> PendingDebuggerExitProcessCleanup {
+        PendingDebuggerExitProcessCleanup {
+            state: self
+                .state
+                .request_termination_into_pending_debugger_exit_cleanup(),
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for CreatedDesktopProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CreatedDesktopProcess([REDACTED])")
+    }
+}
+
+/// Sendable, non-shareable cleanup owner returned by the debugger thread.
+///
+/// The termination-request result is retained together with both exact handles;
+/// after joining the debugger thread, the receiving thread must consume this
+/// owner with `wait_and_close`.
+#[must_use = "join the debugger thread, then wait and close the created process"]
+pub(crate) struct PendingDebuggerExitProcessCleanup {
+    state: sys::PendingDebuggerExitProcessCleanup,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PendingDebuggerExitProcessCleanup {
+    /// Waits for the process for the fixed bound, closes both exact handles, and
+    /// reports the latched termination-request and wait outcomes.
+    pub(crate) fn wait_and_close(self) -> Result<(), DesktopProcessCleanupError> {
+        self.state
+            .wait_and_close()
+            .map_err(map_native_process_cleanup_error)
+    }
+}
+
+impl fmt::Debug for PendingDebuggerExitProcessCleanup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingDebuggerExitProcessCleanup([REDACTED])")
+    }
+}
 
 /// Exact-once, same-thread ownership of target desktop impersonation.
 ///
@@ -343,6 +532,36 @@ impl AuthenticatedRpcClient {
     /// restricted handle flags, then repeats the complete primary-token policy.
     pub(crate) fn revalidate(&self) -> Result<(), RpcAuthError> {
         self.revalidate_with(&sys::WindowsProcessAuthOps)
+    }
+
+    /// Revalidates and requires the retained client and desktop primary tokens
+    /// to belong to the exact expected interactive session.
+    pub(crate) fn require_desktop_session(&self, expected: NonZeroU32) -> Result<(), RpcAuthError> {
+        self.require_desktop_session_with(expected, &sys::WindowsProcessAuthOps)
+    }
+
+    /// Proves that a created primary token retains the authenticated desktop
+    /// user's exact identity while allowing the child's LPAC policy fields to
+    /// differ from the source desktop token.
+    pub(crate) fn require_desktop_child_identity(
+        &self,
+        token: BorrowedHandle<'_>,
+    ) -> Result<(), RpcAuthError> {
+        self.require_desktop_child_identity_with(&sys::WindowsProcessAuthOps, || {
+            sys::desktop_child_token_observation(token)
+        })
+    }
+
+    /// Irreversibly claims the client's single desktop process-creation attempt.
+    /// The claim remains consumed even if the following revalidation fails.
+    pub(crate) fn claim_desktop_process_creation(
+        &self,
+    ) -> Result<AuthenticatedDesktopProcessCreateAttempt<'_>, RpcAuthError> {
+        self.claim_desktop_process_creation_with(&sys::WindowsProcessAuthOps)?;
+        Ok(AuthenticatedDesktopProcessCreateAttempt {
+            client: self,
+            _thread_bound: PhantomData,
+        })
     }
 
     /// Revalidates and impersonates the exact retained desktop token, returning
@@ -402,6 +621,36 @@ const fn map_peer_revalidation_error(error: RpcAuthError) -> super::epoch::PeerR
     }
 }
 
+const fn map_native_process_create_error(
+    error: sys::NativeDesktopProcessCreateError,
+) -> DesktopProcessCreateError {
+    match error {
+        sys::NativeDesktopProcessCreateError::Authentication => {
+            DesktopProcessCreateError::Authentication
+        }
+        sys::NativeDesktopProcessCreateError::InvalidInput => {
+            DesktopProcessCreateError::InvalidInput
+        }
+        sys::NativeDesktopProcessCreateError::OperatingSystem => {
+            DesktopProcessCreateError::OperatingSystem
+        }
+    }
+}
+
+const fn map_native_process_cleanup_error(
+    error: sys::NativeDesktopProcessCleanupError,
+) -> DesktopProcessCleanupError {
+    match error {
+        sys::NativeDesktopProcessCleanupError::TerminationRequest => {
+            DesktopProcessCleanupError::TerminationRequest
+        }
+        sys::NativeDesktopProcessCleanupError::Wait => DesktopProcessCleanupError::Wait,
+        sys::NativeDesktopProcessCleanupError::TerminationRequestAndWait => {
+            DesktopProcessCleanupError::TerminationRequestAndWait
+        }
+    }
+}
+
 impl<P, T> AuthenticatedClient<P, T> {
     fn revalidate_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
     where
@@ -420,6 +669,53 @@ impl<P, T> AuthenticatedClient<P, T> {
             return Err(RpcAuthError::AccessDenied);
         }
         Ok(())
+    }
+
+    fn require_desktop_session_with<O>(
+        &self,
+        expected: NonZeroU32,
+        ops: &O,
+    ) -> Result<(), RpcAuthError>
+    where
+        O: ProcessAuthOps<Process = P, DesktopPrimaryToken = T>,
+    {
+        self.revalidate_with(ops)?;
+        if self.primary.session_id != expected.get()
+            || self.desktop_primary.session_id != expected.get()
+        {
+            return Err(RpcAuthError::AccessDenied);
+        }
+        Ok(())
+    }
+
+    fn require_desktop_child_identity_with<O, F>(
+        &self,
+        ops: &O,
+        observe_child: F,
+    ) -> Result<(), RpcAuthError>
+    where
+        O: ProcessAuthOps<Process = P, DesktopPrimaryToken = T>,
+        F: FnOnce() -> Result<TokenObservation, ObservationError>,
+    {
+        self.revalidate_with(ops)?;
+        let identity = observe_child()
+            .map_err(|_| RpcAuthError::CallFailed)
+            .and_then(|child| validate_desktop_child_identity(&self.desktop_primary, &child));
+        let post_revalidation = self.revalidate_with(ops);
+        match post_revalidation {
+            Ok(()) => identity,
+            Err(error) => Err(error),
+        }
+    }
+
+    fn claim_desktop_process_creation_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
+    where
+        O: ProcessAuthOps<Process = P, DesktopPrimaryToken = T>,
+    {
+        if self.desktop_process_creation_claimed.replace(true) {
+            return Err(RpcAuthError::AccessDenied);
+        }
+        self.revalidate_with(ops)
     }
 
     fn revalidate_effective_desktop_thread_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
@@ -528,6 +824,7 @@ where
         primary,
         desktop_primary_token,
         desktop_primary,
+        desktop_process_creation_claimed: Cell::new(false),
     };
     authenticated.revalidate_with(ops)?;
     Ok(authenticated)
@@ -721,6 +1018,30 @@ fn same_primary_token(first: &TokenObservation, second: &TokenObservation) -> bo
     same_token_identity(first, second) && first.token_id == second.token_id
 }
 
+fn validate_desktop_child_identity(
+    desktop: &TokenObservation,
+    child: &TokenObservation,
+) -> Result<(), RpcAuthError> {
+    let child_logon_sid_is_valid = child
+        .logon_sid
+        .as_ref()
+        .is_some_and(SidBytes::has_valid_length);
+    if child.token_kind != TokenKind::Primary
+        || child.token_level != TokenLevel::NotApplicable
+        || !child.user_sid.has_valid_length()
+        || child.logon_sid_count != 1
+        || !child_logon_sid_is_valid
+        || child.session_id == 0
+        || child.user_sid != desktop.user_sid
+        || child.logon_sid != desktop.logon_sid
+        || child.session_id != desktop.session_id
+        || child.authentication_id != desktop.authentication_id
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    Ok(())
+}
+
 #[must_use = "desktop impersonation must be reverted on this exact thread"]
 struct DesktopImpersonation<'client, 'ops, P, T, O>
 where
@@ -872,6 +1193,8 @@ mod tests {
     impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
     impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
+    fn assert_send<T: Send>() {}
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
         Call,
@@ -884,6 +1207,7 @@ mod tests {
         PrimaryToken,
         DuplicateDesktopPrimary,
         DesktopPrimaryToken,
+        DesktopChildToken,
         EffectiveThreadToken,
         Revert,
         ExactProcess,
@@ -908,6 +1232,26 @@ mod tests {
         let _ = <Authority as AmbiguousIfCopy<_>>::marker;
     }
 
+    #[test]
+    fn desktop_process_owners_enforce_thread_and_join_boundaries() {
+        type Attempt = super::AuthenticatedDesktopProcessCreateAttempt<'static>;
+        type Created = super::CreatedDesktopProcess;
+        type Pending = super::PendingDebuggerExitProcessCleanup;
+
+        let _ = <Attempt as AmbiguousIfSend<_>>::marker;
+        let _ = <Attempt as AmbiguousIfSync<_>>::marker;
+        let _ = <Attempt as AmbiguousIfClone<_>>::marker;
+        let _ = <Attempt as AmbiguousIfCopy<_>>::marker;
+        let _ = <Created as AmbiguousIfSend<_>>::marker;
+        let _ = <Created as AmbiguousIfSync<_>>::marker;
+        let _ = <Created as AmbiguousIfClone<_>>::marker;
+        let _ = <Created as AmbiguousIfCopy<_>>::marker;
+        assert_send::<Pending>();
+        let _ = <Pending as AmbiguousIfSync<_>>::marker;
+        let _ = <Pending as AmbiguousIfClone<_>>::marker;
+        let _ = <Pending as AmbiguousIfCopy<_>>::marker;
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum EffectiveTokenMutation {
         Exact,
@@ -925,6 +1269,18 @@ mod tests {
         WrongKind,
         WrongLevel,
         Delegation,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DesktopChildTokenMutation {
+        Exact,
+        UserSid,
+        LogonSidCount,
+        LogonSid,
+        SessionId,
+        AuthenticationId,
+        TokenKind,
+        TokenLevel,
     }
 
     impl Drop for FakeDesktopPrimaryToken {
@@ -1272,6 +1628,34 @@ mod tests {
             restricted: false,
             interactive_sid_enabled: true,
         }
+    }
+
+    fn desktop_child_token(mutation: DesktopChildTokenMutation) -> TokenObservation {
+        let mut token = approved_token(TokenKind::Primary, 1);
+        // A target LPAC token intentionally differs from its source desktop
+        // token on policy facts that are not identity: these changes must not
+        // be folded into the narrow child-identity comparison.
+        token.token_id.low_part = 91;
+        token.integrity_rid = 0x1000;
+        token.elevation = ElevationKind::Limited;
+        token.restricted = true;
+        token.app_container = true;
+        token.interactive_sid_enabled = false;
+        match mutation {
+            DesktopChildTokenMutation::Exact => {}
+            DesktopChildTokenMutation::UserSid => token.user_sid = SidBytes(vec![4; 12]),
+            DesktopChildTokenMutation::LogonSidCount => token.logon_sid_count = 2,
+            DesktopChildTokenMutation::LogonSid => {
+                token.logon_sid = Some(SidBytes(vec![4; 12]));
+            }
+            DesktopChildTokenMutation::SessionId => token.session_id = 4,
+            DesktopChildTokenMutation::AuthenticationId => {
+                token.authentication_id.low_part = 19;
+            }
+            DesktopChildTokenMutation::TokenKind => token.token_kind = TokenKind::Other,
+            DesktopChildTokenMutation::TokenLevel => token.token_level = TokenLevel::Other,
+        }
+        token
     }
 
     #[test]
@@ -1821,6 +2205,194 @@ mod tests {
     }
 
     #[test]
+    fn desktop_session_requirement_revalidates_and_matches_exactly() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert_eq!(
+                proof.require_desktop_session_with(
+                    NonZeroU32::new(3).unwrap_or(NonZeroU32::MIN),
+                    &ops,
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                proof.require_desktop_session_with(
+                    NonZeroU32::new(4).unwrap_or(NonZeroU32::MIN),
+                    &ops,
+                ),
+                Err(RpcAuthError::AccessDenied)
+            );
+            ops.primary_token_ok.set(false);
+            assert_eq!(
+                proof.require_desktop_session_with(
+                    NonZeroU32::new(3).unwrap_or(NonZeroU32::MIN),
+                    &ops,
+                ),
+                Err(RpcAuthError::CallFailed)
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_child_identity_is_narrow_and_post_revalidated_on_every_mismatch() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            let complete_order = [
+                Event::ExactProcess,
+                Event::PrimaryToken,
+                Event::DesktopPrimaryToken,
+                Event::DesktopChildToken,
+                Event::ExactProcess,
+                Event::PrimaryToken,
+                Event::DesktopPrimaryToken,
+            ];
+            ops.events.borrow_mut().clear();
+            assert_eq!(
+                proof.require_desktop_child_identity_with(&ops, || {
+                    ops.record(Event::DesktopChildToken);
+                    Ok(desktop_child_token(DesktopChildTokenMutation::Exact))
+                }),
+                Ok(())
+            );
+            assert_eq!(ops.events(), complete_order);
+
+            for mutation in [
+                DesktopChildTokenMutation::UserSid,
+                DesktopChildTokenMutation::LogonSidCount,
+                DesktopChildTokenMutation::LogonSid,
+                DesktopChildTokenMutation::SessionId,
+                DesktopChildTokenMutation::AuthenticationId,
+                DesktopChildTokenMutation::TokenKind,
+                DesktopChildTokenMutation::TokenLevel,
+            ] {
+                ops.events.borrow_mut().clear();
+                assert_eq!(
+                    proof.require_desktop_child_identity_with(&ops, || {
+                        ops.record(Event::DesktopChildToken);
+                        Ok(desktop_child_token(mutation))
+                    }),
+                    Err(RpcAuthError::AccessDenied),
+                    "mutation {mutation:?} must fail closed"
+                );
+                assert_eq!(
+                    ops.events(),
+                    complete_order,
+                    "mutation {mutation:?} must still perform full post revalidation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn desktop_child_identity_pre_observe_and_post_failures_have_exact_order() {
+        let pre_ops = FakeOps::approved();
+        let pre_proof = authenticate_with(&pre_ops);
+        assert!(pre_proof.is_ok());
+        if let Ok(pre_proof) = pre_proof {
+            pre_ops.events.borrow_mut().clear();
+            pre_ops.primary_token_ok.set(false);
+            let observed = Cell::new(false);
+            assert_eq!(
+                pre_proof.require_desktop_child_identity_with(&pre_ops, || {
+                    observed.set(true);
+                    Ok(desktop_child_token(DesktopChildTokenMutation::Exact))
+                }),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert!(!observed.get());
+            assert_eq!(pre_ops.events(), [Event::ExactProcess, Event::PrimaryToken]);
+        }
+
+        let observe_ops = FakeOps::approved();
+        let observe_proof = authenticate_with(&observe_ops);
+        assert!(observe_proof.is_ok());
+        if let Ok(observe_proof) = observe_proof {
+            observe_ops.events.borrow_mut().clear();
+            assert_eq!(
+                observe_proof.require_desktop_child_identity_with(&observe_ops, || {
+                    observe_ops.record(Event::DesktopChildToken);
+                    Err(ObservationError::Incomplete)
+                }),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert_eq!(
+                observe_ops.events(),
+                [
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::DesktopChildToken,
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                ]
+            );
+        }
+
+        let post_ops = FakeOps::approved();
+        let post_proof = authenticate_with(&post_ops);
+        assert!(post_proof.is_ok());
+        if let Ok(post_proof) = post_proof {
+            post_ops.events.borrow_mut().clear();
+            assert_eq!(
+                post_proof.require_desktop_child_identity_with(&post_ops, || {
+                    post_ops.record(Event::DesktopChildToken);
+                    post_ops.primary_token_ok.set(false);
+                    Ok(desktop_child_token(DesktopChildTokenMutation::Exact))
+                }),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert_eq!(
+                post_ops.events(),
+                [
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::DesktopChildToken,
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_process_creation_claim_is_one_shot_before_revalidation() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert_eq!(proof.claim_desktop_process_creation_with(&ops), Ok(()));
+            ops.events.borrow_mut().clear();
+            assert_eq!(
+                proof.claim_desktop_process_creation_with(&ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(ops.events().is_empty());
+        }
+
+        let failing_ops = FakeOps::approved();
+        let failing_proof = authenticate_with(&failing_ops);
+        assert!(failing_proof.is_ok());
+        if let Ok(failing_proof) = failing_proof {
+            failing_ops.primary_token_ok.set(false);
+            assert_eq!(
+                failing_proof.claim_desktop_process_creation_with(&failing_ops),
+                Err(RpcAuthError::CallFailed)
+            );
+            failing_ops.primary_token_ok.set(true);
+            assert_eq!(
+                failing_proof.claim_desktop_process_creation_with(&failing_ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+        }
+    }
+
+    #[test]
     fn debug_is_data_free() {
         let error = RpcAuthError::AccessDenied;
         assert_eq!(format!("{error:?}"), "AccessDenied");
@@ -1832,6 +2404,7 @@ mod tests {
                 drops: Rc::new(Cell::new(0)),
             },
             desktop_primary: approved_token(TokenKind::Primary, 9),
+            desktop_process_creation_claimed: Cell::new(false),
         };
         let debug = format!("{proof:?}");
         assert!(debug.contains("[REDACTED]"));

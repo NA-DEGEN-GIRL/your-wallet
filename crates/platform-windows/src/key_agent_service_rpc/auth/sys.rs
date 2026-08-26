@@ -4,27 +4,32 @@
 
 use core::ffi::c_void;
 use core::fmt;
-use core::mem::{offset_of, size_of};
+use core::mem::{MaybeUninit, align_of, offset_of, size_of};
 use core::ptr;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use key_agent_service_rpc_sys::{CallBinding, INTERFACE_UUID};
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, ERROR_NO_TOKEN, GetHandleInformation, HANDLE,
-    INVALID_HANDLE_VALUE, LUID, WAIT_TIMEOUT,
+    INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{
     DuplicateTokenEx, GetLengthSid, GetTokenInformation, ImpersonateLoggedOnUser, IsValidSid, PSID,
-    RevertToSelf, SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES, SecurityDelegation,
-    SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-    TOKEN_ELEVATION_TYPE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL,
-    TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE, TOKEN_USER, TokenElevationType,
-    TokenElevationTypeDefault, TokenElevationTypeFull, TokenElevationTypeLimited, TokenGroups,
-    TokenHasRestrictions, TokenImpersonation, TokenImpersonationLevel, TokenIntegrityLevel,
-    TokenIsAppContainer, TokenPrimary, TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
+    RevertToSelf, SECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES,
+    SecurityDelegation, SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ASSIGN_PRIMARY,
+    TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE, TOKEN_USER,
+    TokenElevationType, TokenElevationTypeDefault, TokenElevationTypeFull,
+    TokenElevationTypeLimited, TokenGroups, TokenHasRestrictions, TokenImpersonation,
+    TokenImpersonationLevel, TokenIntegrityLevel, TokenIsAppContainer, TokenPrimary,
+    TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
 };
 use windows::Win32::System::Diagnostics::Debug::RaiseFailFastException;
 use windows::Win32::System::Rpc::{
@@ -36,11 +41,17 @@ use windows::Win32::System::SystemServices::{
     SE_GROUP_ENABLED, SE_GROUP_INTEGRITY, SE_GROUP_INTEGRITY_ENABLED, SE_GROUP_LOGON_ID,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentThread, GetCurrentThreadId, GetProcessId, OpenProcess, OpenProcessToken,
-    OpenThreadToken, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+    DEBUG_ONLY_THIS_PROCESS, EXTENDED_STARTUPINFO_PRESENT, GetCurrentThread, GetCurrentThreadId,
+    GetProcessId, GetProcessIdOfThread, GetThreadId, OpenProcess, OpenProcessToken,
+    OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOEXW, STARTUPINFOW,
+    TerminateProcess, WaitForSingleObject,
 };
-use windows::core::GUID;
+use windows::core::{GUID, PCWSTR};
 use zeroize::Zeroize as _;
+
+use crate::inheritable_handle_launch::ProcessThreadCreationSecurity;
 
 use super::{
     AuthenticationId, AuthenticationObservation, CallKind, CallObservation, CallProtocol,
@@ -57,6 +68,22 @@ const MANDATORY_LABEL_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 16];
 const EXPECTED_INTERFACE_UUID: GUID = GUID::from_u128(u128::from_be_bytes(INTERFACE_UUID));
 const DESKTOP_PRIMARY_TOKEN_ACCESS: TOKEN_ACCESS_MASK =
     TOKEN_ACCESS_MASK(TOKEN_ASSIGN_PRIMARY.0 | TOKEN_DUPLICATE.0 | TOKEN_QUERY.0);
+const DESKTOP_PROCESS_CREATION_FLAGS: PROCESS_CREATION_FLAGS = PROCESS_CREATION_FLAGS(
+    CREATE_SUSPENDED.0
+        | DEBUG_ONLY_THIS_PROCESS.0
+        | CREATE_NO_WINDOW.0
+        | CREATE_UNICODE_ENVIRONMENT.0
+        | EXTENDED_STARTUPINFO_PRESENT.0,
+);
+const MAX_UNICODE_PROCESS_PARAMETER_UNITS: usize = 32_767;
+const DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS: u32 = 5_000;
+const DESKTOP_PROCESS_TERMINATION_EXIT_CODE: u32 = 0xE052_0001;
+const DESKTOP_NAME_WIDE: [u16; 16] = [
+    119, 105, 110, 115, 116, 97, 48, 92, 100, 101, 102, 97, 117, 108, 116, 0,
+];
+const LOCAL_APP_DATA_PREFIX: [u16; 13] = [76, 79, 67, 65, 76, 65, 80, 80, 68, 65, 84, 65, 61];
+const SYSTEM_ROOT_PREFIX: [u16; 11] = [83, 121, 115, 116, 101, 109, 82, 111, 111, 116, 61];
+const WINDIR_PREFIX: [u16; 7] = [87, 73, 78, 68, 73, 82, 61];
 
 pub(crate) struct RetainedProcess(HANDLE);
 
@@ -113,6 +140,167 @@ impl DesktopPrimaryToken {
 impl fmt::Debug for DesktopPrimaryToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DesktopPrimaryToken([REDACTED])")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum NativeDesktopProcessCreateError {
+    Authentication,
+    InvalidInput,
+    OperatingSystem,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum NativeDesktopProcessCleanupError {
+    TerminationRequest,
+    Wait,
+    TerminationRequestAndWait,
+}
+
+/// Private creator-thread ownership of successful process-creation outputs.
+pub(super) struct CreatedDesktopProcess {
+    process: Option<OwnedHandle>,
+    primary_thread: Option<OwnedHandle>,
+    process_id: NonZeroU32,
+    primary_thread_id: NonZeroU32,
+    creator_thread_id: NonZeroU32,
+    must_transition: bool,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl CreatedDesktopProcess {
+    pub(super) fn process_handle(&self) -> BorrowedHandle<'_> {
+        match self.process.as_ref() {
+            Some(process) => process.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
+    pub(super) fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        match self.primary_thread.as_ref() {
+            Some(thread) => thread.as_handle(),
+            None => fail_fast(),
+        }
+    }
+
+    pub(super) const fn process_id(&self) -> NonZeroU32 {
+        self.process_id
+    }
+
+    pub(super) const fn primary_thread_id(&self) -> NonZeroU32 {
+        self.primary_thread_id
+    }
+
+    pub(super) fn request_termination_into_pending_debugger_exit_cleanup(
+        mut self,
+    ) -> PendingDebuggerExitProcessCleanup {
+        // SAFETY: this scalar query has no preconditions and is compared with
+        // the exact creator-thread identity captured before the native call.
+        if NonZeroU32::new(unsafe { GetCurrentThreadId() }) != Some(self.creator_thread_id) {
+            fail_fast();
+        }
+        let Some(process) = self.process.as_ref() else {
+            fail_fast();
+        };
+        // SAFETY: this is the exact live process handle returned by the
+        // successful creation call. Termination is asynchronous; the result is
+        // retained without waiting while this thread still owns debugger state.
+        let termination_requested = unsafe {
+            TerminateProcess(
+                windows_handle(process.as_handle()),
+                DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+            )
+        }
+        .is_ok();
+        let Some(process) = self.process.take() else {
+            fail_fast();
+        };
+        let Some(primary_thread) = self.primary_thread.take() else {
+            fail_fast();
+        };
+        self.must_transition = false;
+        PendingDebuggerExitProcessCleanup {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            termination_requested,
+            must_wait_and_close: true,
+            _not_sync: PhantomData,
+        }
+    }
+}
+
+impl fmt::Debug for CreatedDesktopProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CreatedDesktopProcess([REDACTED])")
+    }
+}
+
+impl Drop for CreatedDesktopProcess {
+    fn drop(&mut self) {
+        if !self.must_transition {
+            return;
+        }
+        if let Some(process) = self.process.as_ref() {
+            // SAFETY: this owner still retains the exact successfully returned
+            // process handle. Best-effort termination precedes fail-fast so a
+            // missed explicit transition cannot silently leave a child alive.
+            unsafe {
+                let _ = TerminateProcess(
+                    windows_handle(process.as_handle()),
+                    DESKTOP_PROCESS_TERMINATION_EXIT_CODE,
+                );
+            }
+        }
+        fail_fast();
+    }
+}
+
+/// Private post-debugger-exit owner of the exact process and thread handles.
+pub(super) struct PendingDebuggerExitProcessCleanup {
+    process: Option<OwnedHandle>,
+    primary_thread: Option<OwnedHandle>,
+    termination_requested: bool,
+    must_wait_and_close: bool,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl PendingDebuggerExitProcessCleanup {
+    pub(super) fn wait_and_close(mut self) -> Result<(), NativeDesktopProcessCleanupError> {
+        let Some(process) = self.process.as_ref() else {
+            fail_fast();
+        };
+        // SAFETY: the debugger thread has been joined by the caller and this
+        // owner retains SYNCHRONIZE access on the exact process handle.
+        let wait_succeeded = unsafe {
+            WaitForSingleObject(
+                windows_handle(process.as_handle()),
+                DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS,
+            )
+        } == WAIT_OBJECT_0;
+        let termination_requested = self.termination_requested;
+        self.must_wait_and_close = false;
+        drop(self.primary_thread.take());
+        drop(self.process.take());
+        match (termination_requested, wait_succeeded) {
+            (true, true) => Ok(()),
+            (false, true) => Err(NativeDesktopProcessCleanupError::TerminationRequest),
+            (true, false) => Err(NativeDesktopProcessCleanupError::Wait),
+            (false, false) => Err(NativeDesktopProcessCleanupError::TerminationRequestAndWait),
+        }
+    }
+}
+
+impl fmt::Debug for PendingDebuggerExitProcessCleanup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingDebuggerExitProcessCleanup([REDACTED])")
+    }
+}
+
+impl Drop for PendingDebuggerExitProcessCleanup {
+    fn drop(&mut self) {
+        if self.must_wait_and_close {
+            fail_fast();
+        }
     }
 }
 
@@ -553,6 +741,358 @@ fn duplicate_current_thread_desktop_primary_token() -> Result<DesktopPrimaryToke
     Ok(token)
 }
 
+/// Calls the sole `CreateProcessAsUserW` boundary for an authenticated desktop
+/// primary token and immediately adopts every successful returned object.
+///
+/// # Safety
+///
+/// `startup_info` must be the prefix of the live extended startup allocation
+/// described by the facade method. Every nested pointer must remain valid and
+/// immutable for this synchronous call.
+pub(super) unsafe fn create_process_as_desktop_user(
+    token: &DesktopPrimaryToken,
+    application_name: &[u16],
+    security: ProcessThreadCreationSecurity<'_>,
+    environment: &[u16],
+    current_directory: &[u16],
+    startup_info: *const STARTUPINFOW,
+) -> Result<CreatedDesktopProcess, NativeDesktopProcessCreateError> {
+    let (process_attributes, thread_attributes) = security.as_pair();
+    if !application_name_is_exact(application_name)
+        || !creation_attributes_are_exact(process_attributes, thread_attributes)
+        || !environment_is_exact(environment)
+        || !current_directory_is_exact(current_directory)
+        // SAFETY: this function's caller upholds the complete live extended
+        // startup allocation contract while validation reads its fixed prefix.
+        || !unsafe { startup_info_is_exact(startup_info) }
+    {
+        return Err(NativeDesktopProcessCreateError::InvalidInput);
+    }
+    // SAFETY: this scalar query has no preconditions and binds the resulting
+    // owner to the exact process-creation/debugger thread.
+    let creator_thread_id = NonZeroU32::new(unsafe { GetCurrentThreadId() })
+        .ok_or(NativeDesktopProcessCreateError::Authentication)?;
+    match thread_token_state() {
+        Ok(ThreadTokenState::Clear) => {}
+        Ok(ThreadTokenState::Present) | Err(_) => {
+            return Err(NativeDesktopProcessCreateError::Authentication);
+        }
+    }
+    validate_desktop_primary_token_handle(token)
+        .map_err(|_| NativeDesktopProcessCreateError::Authentication)?;
+
+    let mut output = ProcessInformationOutput::new();
+    // SAFETY: every borrowed pointer was validated above and remains live for
+    // this synchronous call. The command line is absent, inheritance is false,
+    // both security attributes are mandatory and non-inheritable, and creation
+    // flags are the fixed five-value policy. `output` provides writable native
+    // storage whose bytes are ignored unless Windows reports success.
+    let result = unsafe {
+        CreateProcessAsUserW(
+            Some(token.raw()),
+            PCWSTR(application_name.as_ptr()),
+            None,
+            Some(ptr::from_ref(process_attributes)),
+            Some(ptr::from_ref(thread_attributes)),
+            false,
+            DESKTOP_PROCESS_CREATION_FLAGS,
+            Some(environment.as_ptr().cast::<c_void>()),
+            PCWSTR(current_directory.as_ptr()),
+            startup_info,
+            output.as_mut_ptr(),
+        )
+    };
+    if result.is_err() {
+        return Err(NativeDesktopProcessCreateError::OperatingSystem);
+    }
+    output.arm_success();
+    Ok(output.adopt_success(creator_thread_id))
+}
+
+struct ProcessInformationOutput {
+    raw: MaybeUninit<PROCESS_INFORMATION>,
+    successful: bool,
+}
+
+impl ProcessInformationOutput {
+    const fn new() -> Self {
+        Self {
+            raw: MaybeUninit::uninit(),
+            successful: false,
+        }
+    }
+
+    const fn as_mut_ptr(&mut self) -> *mut PROCESS_INFORMATION {
+        self.raw.as_mut_ptr()
+    }
+
+    const fn arm_success(&mut self) {
+        self.successful = true;
+    }
+
+    fn adopt_success(mut self, creator_thread_id: NonZeroU32) -> CreatedDesktopProcess {
+        // SAFETY: only the native success branch arms this output, and the API's
+        // success contract initializes the complete PROCESS_INFORMATION value.
+        let information = unsafe { self.raw.assume_init_ref() };
+        if !created_process_information_is_exact(information) {
+            terminate_safely_unique_malformed_process(information);
+            fail_fast();
+        }
+        // SAFETY: the same armed native-success contract initializes the value;
+        // validation above proved that both handles are live, distinct, exact,
+        // non-inheritable creator-owned handles.
+        let information = unsafe { self.raw.assume_init_read() };
+        self.successful = false;
+        // SAFETY: each validated native handle is non-null, non-pseudo, distinct,
+        // and transferred exactly once out of PROCESS_INFORMATION here.
+        let process = unsafe { OwnedHandle::from_raw_handle(information.hProcess.0) };
+        // SAFETY: the primary-thread handle passed the same exact validation and
+        // is distinct from the process handle transferred immediately above.
+        let primary_thread = unsafe { OwnedHandle::from_raw_handle(information.hThread.0) };
+        CreatedDesktopProcess {
+            process: Some(process),
+            primary_thread: Some(primary_thread),
+            process_id: NonZeroU32::new(information.dwProcessId).unwrap_or_else(|| fail_fast()),
+            primary_thread_id: NonZeroU32::new(information.dwThreadId)
+                .unwrap_or_else(|| fail_fast()),
+            creator_thread_id,
+            must_transition: true,
+            _thread_bound: PhantomData,
+        }
+    }
+}
+
+impl Drop for ProcessInformationOutput {
+    fn drop(&mut self) {
+        if !self.successful {
+            // Native failure deliberately observes none of the output bytes.
+            return;
+        }
+        // SAFETY: only a successful native return arms this guard, which makes
+        // the complete output initialized under the API contract.
+        let information = unsafe { self.raw.assume_init_ref() };
+        terminate_safely_unique_malformed_process(information);
+        fail_fast();
+    }
+}
+
+fn created_process_information_is_exact(information: &PROCESS_INFORMATION) -> bool {
+    let Some(process_id) = NonZeroU32::new(information.dwProcessId) else {
+        return false;
+    };
+    let Some(thread_id) = NonZeroU32::new(information.dwThreadId) else {
+        return false;
+    };
+    if invalid_handle(information.hProcess)
+        || invalid_handle(information.hThread)
+        || information.hProcess == information.hThread
+        || !handle_flags_are_zero(information.hProcess)
+        || !handle_flags_are_zero(information.hThread)
+    {
+        return false;
+    }
+    // SAFETY: both handles passed exact validity and handle-flag observations;
+    // the successful creation contract grants the required query/synchronize
+    // rights on these creator-owned process and primary-thread handles.
+    unsafe {
+        GetProcessId(information.hProcess) == process_id.get()
+            && GetThreadId(information.hThread) == thread_id.get()
+            && GetProcessIdOfThread(information.hThread) == process_id.get()
+            && WaitForSingleObject(information.hProcess, 0) == WAIT_TIMEOUT
+            && WaitForSingleObject(information.hThread, 0) == WAIT_TIMEOUT
+    }
+}
+
+fn terminate_safely_unique_malformed_process(information: &PROCESS_INFORMATION) {
+    if invalid_handle(information.hProcess)
+        || information.hProcess == information.hThread
+        || information.dwProcessId == 0
+    {
+        return;
+    }
+    // SAFETY: the scalar query proves that this distinct live handle names the
+    // exact process ID returned in the successful native output before the
+    // best-effort termination request is issued. Fail-fast follows regardless.
+    unsafe {
+        if GetProcessId(information.hProcess) == information.dwProcessId {
+            let _ = TerminateProcess(information.hProcess, DESKTOP_PROCESS_TERMINATION_EXIT_CODE);
+        }
+    }
+}
+
+fn handle_flags_are_zero(handle: HANDLE) -> bool {
+    let mut flags = u32::MAX;
+    // SAFETY: the successful native contract produced a creator-owned handle;
+    // this exact scalar query either proves its flags or fails closed.
+    unsafe { GetHandleInformation(handle, &raw mut flags) }.is_ok() && flags == 0
+}
+
+fn creation_attributes_are_exact(
+    process: &SECURITY_ATTRIBUTES,
+    thread: &SECURITY_ATTRIBUTES,
+) -> bool {
+    let expected_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>());
+    expected_length.ok() == Some(process.nLength)
+        && expected_length.ok() == Some(thread.nLength)
+        && !process.lpSecurityDescriptor.is_null()
+        && !thread.lpSecurityDescriptor.is_null()
+        && process.lpSecurityDescriptor != thread.lpSecurityDescriptor
+        && process.bInheritHandle.0 == 0
+        && thread.bInheritHandle.0 == 0
+        && !ptr::eq(process, thread)
+}
+
+fn application_name_is_exact(application_name: &[u16]) -> bool {
+    if !absolute_drive_path_with_nul(application_name, true) {
+        return false;
+    }
+    let path = &application_name[..application_name.len() - 1];
+    let file_name = path.rsplit(|unit| *unit == u16::from(b'\\')).next();
+    match file_name {
+        Some(file_name) if file_name.len() >= 4 => {
+            let extension = &file_name[file_name.len() - 4..];
+            extension[0] == u16::from(b'.')
+                && ascii_eq_ignore_case(extension[1], b'e')
+                && ascii_eq_ignore_case(extension[2], b'x')
+                && ascii_eq_ignore_case(extension[3], b'e')
+        }
+        Some(_) | None => false,
+    }
+}
+
+fn current_directory_is_exact(current_directory: &[u16]) -> bool {
+    absolute_drive_path_with_nul(current_directory, false)
+}
+
+fn absolute_drive_path_with_nul(value: &[u16], allow_extended: bool) -> bool {
+    if value.len() < 5
+        || value.len() > MAX_UNICODE_PROCESS_PARAMETER_UNITS
+        || value.last() != Some(&0)
+        || value[..value.len() - 1].contains(&0)
+    {
+        return false;
+    }
+    let path = &value[..value.len() - 1];
+    absolute_drive_path(path, allow_extended)
+}
+
+fn absolute_drive_path(path: &[u16], allow_extended: bool) -> bool {
+    let root_length = if allow_extended
+        && path.len() >= 7
+        && path[..4]
+            == [
+                u16::from(b'\\'),
+                u16::from(b'\\'),
+                u16::from(b'?'),
+                u16::from(b'\\'),
+            ]
+        && ascii_alpha(path[4])
+        && path[5] == u16::from(b':')
+        && path[6] == u16::from(b'\\')
+    {
+        7
+    } else if path.len() >= 3
+        && ascii_alpha(path[0])
+        && path[1] == u16::from(b':')
+        && path[2] == u16::from(b'\\')
+    {
+        3
+    } else {
+        return false;
+    };
+    let remainder = &path[root_length..];
+    !remainder.is_empty()
+        && !remainder.contains(&u16::from(b'/'))
+        && !remainder.contains(&u16::from(b':'))
+        && remainder
+            .split(|unit| *unit == u16::from(b'\\'))
+            .all(|segment| {
+                !segment.is_empty()
+                    && segment != [u16::from(b'.')]
+                    && segment != [u16::from(b'.'), u16::from(b'.')]
+            })
+}
+
+fn environment_is_exact(environment: &[u16]) -> bool {
+    if environment.len() > MAX_UNICODE_PROCESS_PARAMETER_UNITS || !environment.ends_with(&[0, 0]) {
+        return false;
+    }
+    let mut entries = environment[..environment.len() - 1].split(|unit| *unit == 0);
+    let (Some(local_app_data), Some(system_root), Some(windir), Some(final_empty)) = (
+        entries.next(),
+        entries.next(),
+        entries.next(),
+        entries.next(),
+    ) else {
+        return false;
+    };
+    if entries.next().is_some() || !final_empty.is_empty() {
+        return false;
+    }
+    let Some(local_value) = local_app_data.strip_prefix(&LOCAL_APP_DATA_PREFIX) else {
+        return false;
+    };
+    let Some(system_root_value) = system_root.strip_prefix(&SYSTEM_ROOT_PREFIX) else {
+        return false;
+    };
+    let Some(windir_value) = windir.strip_prefix(&WINDIR_PREFIX) else {
+        return false;
+    };
+    !local_value.is_empty()
+        && !system_root_value.is_empty()
+        && system_root_value == windir_value
+        && absolute_drive_path(local_value, false)
+        && absolute_drive_path(system_root_value, false)
+}
+
+unsafe fn startup_info_is_exact(startup_info: *const STARTUPINFOW) -> bool {
+    if startup_info.is_null()
+        || !(startup_info as usize).is_multiple_of(align_of::<STARTUPINFOEXW>())
+    {
+        return false;
+    }
+    // SAFETY: the caller guarantees that this aligned pointer is the live
+    // STARTUPINFOW prefix of a complete STARTUPINFOEXW allocation.
+    let startup = unsafe { &*startup_info.cast::<STARTUPINFOEXW>() };
+    let info = &startup.StartupInfo;
+    if info.lpDesktop.0.is_null() || !(info.lpDesktop.0 as usize).is_multiple_of(align_of::<u16>())
+    {
+        return false;
+    }
+    // SAFETY: the caller keeps the live desktop backing allocation valid; the
+    // exact expected desktop including its NUL occupies these fixed 16 units.
+    let desktop = unsafe {
+        core::slice::from_raw_parts(info.lpDesktop.0.cast_const(), DESKTOP_NAME_WIDE.len())
+    };
+    u32::try_from(size_of::<STARTUPINFOEXW>()).ok() == Some(info.cb)
+        && desktop == DESKTOP_NAME_WIDE
+        && !startup.lpAttributeList.0.is_null()
+        && info.lpReserved.0.is_null()
+        && info.lpTitle.0.is_null()
+        && info.dwX == 0
+        && info.dwY == 0
+        && info.dwXSize == 0
+        && info.dwYSize == 0
+        && info.dwXCountChars == 0
+        && info.dwYCountChars == 0
+        && info.dwFillAttribute == 0
+        && info.dwFlags.0 == 0
+        && info.wShowWindow == 0
+        && info.cbReserved2 == 0
+        && info.lpReserved2.is_null()
+        && info.hStdInput.0.is_null()
+        && info.hStdOutput.0.is_null()
+        && info.hStdError.0.is_null()
+}
+
+const fn ascii_alpha(unit: u16) -> bool {
+    (unit >= 65 && unit <= 90) || (unit >= 97 && unit <= 122)
+}
+
+const fn ascii_eq_ignore_case(unit: u16, expected_lower: u8) -> bool {
+    unit == expected_lower as u16 || unit == (expected_lower - (b'a' - b'A')) as u16
+}
+
 fn open_restricted_process(process_id: NonZeroU32) -> Result<RetainedProcess, ObservationError> {
     let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
     // SAFETY: a nonzero RPC-observed PID is supplied, inheritance is disabled,
@@ -612,6 +1152,14 @@ fn desktop_primary_token_observation(
 ) -> Result<TokenObservation, ObservationError> {
     validate_desktop_primary_token_handle(token)?;
     token_observation(token.raw())
+}
+
+/// Observes a lifetime-bound created-child token without exposing or retaining
+/// its raw handle outside this Windows adapter.
+pub(super) fn desktop_child_token_observation(
+    token: BorrowedHandle<'_>,
+) -> Result<TokenObservation, ObservationError> {
+    token_observation(windows_handle(token))
 }
 
 fn validate_desktop_primary_token_handle(
@@ -968,6 +1516,10 @@ const fn token_id(luid: LUID) -> TokenId {
     }
 }
 
+fn windows_handle(handle: BorrowedHandle<'_>) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
+}
+
 fn invalid_handle(handle: HANDLE) -> bool {
     handle.0.is_null() || handle == INVALID_HANDLE_VALUE || handle.is_invalid()
 }
@@ -975,17 +1527,36 @@ fn invalid_handle(handle: HANDLE) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DESKTOP_PRIMARY_TOKEN_ACCESS, DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, OwnedToken,
-        SidBytes, TokenLevel, classify_impersonation_level, exact_boolean, integrity_rid,
-        parse_token_has_restrictions, token_groups_bytes,
+        DESKTOP_NAME_WIDE, DESKTOP_PRIMARY_TOKEN_ACCESS, DESKTOP_PROCESS_CREATION_FLAGS,
+        DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, NativeDesktopProcessCleanupError,
+        NativeDesktopProcessCreateError, OwnedToken, PendingDebuggerExitProcessCleanup, SidBytes,
+        TokenLevel, application_name_is_exact, classify_impersonation_level,
+        creation_attributes_are_exact, current_directory_is_exact, environment_is_exact,
+        exact_boolean, integrity_rid, parse_token_has_restrictions, startup_info_is_exact,
+        token_groups_bytes,
     };
+    use core::ffi::c_void;
+    use core::mem::size_of;
+    use core::ptr;
     use std::marker::PhantomData;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Security::{
-        SecurityAnonymous, SecurityDelegation, SecurityIdentification, SecurityImpersonation,
-        TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID,
-        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+        SECURITY_ATTRIBUTES, SecurityAnonymous, SecurityDelegation, SecurityIdentification,
+        SecurityImpersonation, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
+        TOKEN_QUERY,
     };
+    use windows::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
+        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW,
+    };
+    use windows::core::{BOOL, PWSTR};
+
+    trait AmbiguousIfSend<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
 
     trait AmbiguousIfSync<A> {
         fn marker() {}
@@ -1013,6 +1584,134 @@ mod tests {
         let _ = <DesktopPrimaryToken as AmbiguousIfSync<_>>::marker;
         let _ = <DesktopPrimaryToken as AmbiguousIfClone<_>>::marker;
         let _ = <DesktopPrimaryToken as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn desktop_process_native_owners_have_exact_thread_traits() {
+        let _ = <super::CreatedDesktopProcess as AmbiguousIfSend<_>>::marker;
+        let _ = <super::CreatedDesktopProcess as AmbiguousIfSync<_>>::marker;
+        let _ = <super::CreatedDesktopProcess as AmbiguousIfClone<_>>::marker;
+        let _ = <super::CreatedDesktopProcess as AmbiguousIfCopy<_>>::marker;
+        assert_send::<PendingDebuggerExitProcessCleanup>();
+        let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfSync<_>>::marker;
+        let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfClone<_>>::marker;
+        let _ = <PendingDebuggerExitProcessCleanup as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn desktop_process_creation_flags_are_the_exact_five_values() {
+        assert_eq!(
+            DESKTOP_PROCESS_CREATION_FLAGS.0,
+            CREATE_SUSPENDED.0
+                | DEBUG_ONLY_THIS_PROCESS.0
+                | CREATE_NO_WINDOW.0
+                | CREATE_UNICODE_ENVIRONMENT.0
+                | EXTENDED_STARTUPINFO_PRESENT.0
+        );
+    }
+
+    #[test]
+    fn process_creation_paths_and_environment_require_exact_shapes() {
+        let application = wide_nul(r"C:\Program Files\Your Wallet\approval.exe");
+        let extended_application = wide_nul(r"\\?\C:\Program Files\Your Wallet\approval.exe");
+        let current_directory = wide_nul(r"C:\Windows\System32");
+        let environment = environment_block(
+            r"C:\Profiles\target\AppData\Local\Packages\profile\AC",
+            r"C:\Windows",
+        );
+        assert!(application_name_is_exact(&application));
+        assert!(application_name_is_exact(&extended_application));
+        assert!(current_directory_is_exact(&current_directory));
+        assert!(environment_is_exact(&environment));
+
+        assert!(!application_name_is_exact(&wide_nul(
+            r"\\server\share\approval.exe"
+        )));
+        assert!(!application_name_is_exact(&wide_nul(r"C:\tool.bin")));
+        assert!(!current_directory_is_exact(&wide_nul(
+            r"\\?\C:\Windows\System32"
+        )));
+        let mut wrong_environment = environment.clone();
+        wrong_environment[0] = u16::from(b'X');
+        assert!(!environment_is_exact(&wrong_environment));
+        let mut mismatched_roots = environment_block(
+            r"C:\Profiles\target\AppData\Local\Packages\profile\AC",
+            r"C:\Windows",
+        );
+        let windir_start = mismatched_roots
+            .windows(7)
+            .position(|units| units == super::WINDIR_PREFIX)
+            .unwrap_or(0);
+        if windir_start != 0 {
+            let value_start = windir_start + super::WINDIR_PREFIX.len();
+            mismatched_roots[value_start] = u16::from(b'D');
+        }
+        assert!(!environment_is_exact(&mismatched_roots));
+    }
+
+    #[test]
+    fn paired_security_and_startup_prefix_require_exact_non_inheriting_shape() {
+        let mut descriptors = [0_u8; 2];
+        let length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0);
+        let mut process = SECURITY_ATTRIBUTES {
+            nLength: length,
+            lpSecurityDescriptor: ptr::from_mut(&mut descriptors[0]).cast::<c_void>(),
+            bInheritHandle: BOOL(0),
+        };
+        let thread = SECURITY_ATTRIBUTES {
+            nLength: length,
+            lpSecurityDescriptor: ptr::from_mut(&mut descriptors[1]).cast::<c_void>(),
+            bInheritHandle: BOOL(0),
+        };
+        assert!(creation_attributes_are_exact(&process, &thread));
+        process.bInheritHandle = BOOL(1);
+        assert!(!creation_attributes_are_exact(&process, &thread));
+
+        let mut desktop = DESKTOP_NAME_WIDE;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>()).unwrap_or(0);
+        startup.StartupInfo.lpDesktop = PWSTR(desktop.as_mut_ptr());
+        startup.lpAttributeList = LPPROC_THREAD_ATTRIBUTE_LIST(ptr::dangling_mut::<c_void>());
+        // SAFETY: the live local extended startup value and desktop backing stay
+        // valid for the complete validator call.
+        assert!(unsafe { startup_info_is_exact(ptr::from_ref(&startup.StartupInfo)) });
+        startup.StartupInfo.hStdInput = HANDLE(ptr::dangling_mut::<c_void>());
+        // SAFETY: the same live local allocations remain valid after mutation.
+        assert!(!unsafe { startup_info_is_exact(ptr::from_ref(&startup.StartupInfo)) });
+    }
+
+    #[test]
+    fn process_creation_errors_are_data_free() {
+        assert_eq!(
+            format!("{:?}", NativeDesktopProcessCreateError::InvalidInput),
+            "InvalidInput"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                NativeDesktopProcessCleanupError::TerminationRequestAndWait
+            ),
+            "TerminationRequestAndWait"
+        );
+    }
+
+    fn wide_nul(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(core::iter::once(0)).collect()
+    }
+
+    fn environment_block(local_app_data: &str, windows_root: &str) -> Vec<u16> {
+        let mut environment = Vec::new();
+        for (name, value) in [
+            ("LOCALAPPDATA=", local_app_data),
+            ("SystemRoot=", windows_root),
+            ("WINDIR=", windows_root),
+        ] {
+            environment.extend(name.encode_utf16());
+            environment.extend(value.encode_utf16());
+            environment.push(0);
+        }
+        environment.push(0);
+        environment
     }
 
     #[test]

@@ -529,7 +529,7 @@ impl PreparedKeyAgentCreationSecurity {
 #[allow(dead_code)] // Consumed by the next compile-only service launch-input composition.
 pub(crate) struct PreparedServiceKeyAgentCreationSecurity<'proof> {
     security: PreparedKeyAgentCreationSecurity,
-    _service_token: VerifiedServiceCreationToken<'proof>,
+    service_token: VerifiedServiceCreationToken<'proof>,
 }
 
 #[cfg(all(
@@ -563,6 +563,25 @@ fn retain_after_service_creation_security_bookend<M, PrincipalError, Revalidatio
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",
     debug_assertions
 ))]
+fn revalidate_service_creation_security_bookend<M, PrincipalError, RevalidationError>(
+    security: &PreparedKeyAgentCreationSecurity,
+    marker: &mut M,
+    verify_creation_principals: impl FnOnce(&M, &[u8], &[u8]) -> Result<(), PrincipalError>,
+    revalidate: impl FnOnce(&mut M) -> Result<(), RevalidationError>,
+) -> Result<(), KeyAgentLpacError> {
+    verify_creation_principals(
+        marker,
+        &security.expected_owner_sid,
+        &security.expected_primary_group_sid,
+    )
+    .map_err(|_| KeyAgentLpacError::Attribute)?;
+    revalidate(marker).map_err(|_| KeyAgentLpacError::Attribute)
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 #[allow(dead_code)] // Consumed by the next compile-only service launch-input composition.
 impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof> {
     /// Derives both creation descriptors from the verified service principal.
@@ -582,15 +601,33 @@ impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof> {
         )?;
         Ok(Self {
             security,
-            _service_token: service_token,
+            service_token,
         })
     }
 
-    /// Borrows both service-owned creation attributes as one inseparable pair.
-    pub(crate) fn creation_security(
-        &self,
-    ) -> crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_> {
-        self.security.creation_security()
+    /// Revalidates the exact service principal and both copied descriptor
+    /// principals without exporting token, SID, or descriptor authority.
+    pub(crate) fn revalidate(&mut self) -> Result<(), KeyAgentLpacError> {
+        revalidate_service_creation_security_bookend(
+            &self.security,
+            &mut self.service_token,
+            |service_token, owner, primary_group| {
+                service_token.verify_creation_principals(owner, primary_group)
+            },
+            VerifiedServiceCreationToken::revalidate,
+        )
+    }
+
+    /// Revalidates the retained service token immediately before borrowing
+    /// the inseparable process/thread creation-security pair.
+    pub(crate) fn creation_security_for_attempt(
+        &mut self,
+    ) -> Result<
+        crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_>,
+        KeyAgentLpacError,
+    > {
+        self.revalidate()?;
+        Ok(self.security.creation_security())
     }
 
     /// Verifies the exact service-owned descriptors on both created objects.
@@ -3174,6 +3211,7 @@ mod tests {
     use super::{
         PREPARED_SERVICE_CREATION_SECURITY_DEBUG, PreparedServiceKeyAgentCreationSecurity,
         retain_after_service_creation_security_bookend,
+        revalidate_service_creation_security_bookend,
     };
     use crate::restricted_process_context::RestrictedProcessContext;
 
@@ -5437,6 +5475,62 @@ mod tests {
         ));
         assert!(principals_verified.get());
         assert!(revalidation_called.get());
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn service_creation_security_attempt_repeats_the_complete_bookend()
+    -> Result<(), KeyAgentLpacError> {
+        let security = PreparedKeyAgentCreationSecurity::prepare()?;
+        let expected_owner_sid = security.expected_owner_sid.clone();
+        let expected_primary_group_sid = security.expected_primary_group_sid.clone();
+        let order = std::cell::Cell::new(0_u8);
+        revalidate_service_creation_security_bookend(
+            &security,
+            &mut (),
+            |(), owner, primary_group| {
+                assert_eq!(order.get(), 0);
+                assert_eq!(owner, expected_owner_sid.as_slice());
+                assert_eq!(primary_group, expected_primary_group_sid.as_slice());
+                order.set(1);
+                Ok::<(), ()>(())
+            },
+            |()| {
+                assert_eq!(order.get(), 1);
+                order.set(2);
+                Ok::<(), ()>(())
+            },
+        )?;
+        assert_eq!(order.get(), 2);
+
+        let revalidation_called = std::cell::Cell::new(false);
+        assert!(matches!(
+            revalidate_service_creation_security_bookend(
+                &security,
+                &mut (),
+                |(), _, _| Err::<(), ()>(()),
+                |()| {
+                    revalidation_called.set(true);
+                    Ok::<(), ()>(())
+                },
+            ),
+            Err(KeyAgentLpacError::Attribute)
+        ));
+        assert!(!revalidation_called.get());
+
+        assert!(matches!(
+            revalidate_service_creation_security_bookend(
+                &security,
+                &mut (),
+                |(), _, _| Ok::<(), ()>(()),
+                |()| Err::<(), ()>(()),
+            ),
+            Err(KeyAgentLpacError::Attribute)
+        ));
         Ok(())
     }
 

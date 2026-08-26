@@ -2131,6 +2131,7 @@ const keyAgentServiceTokenFixtureDirectoryInventory = {
 const keyAgentServiceLaunchPaths = Object.freeze({
   root: "crates/platform-windows/src/key_agent_service_launch/mod.rs",
   job: "crates/platform-windows/src/key_agent_service_launch/job.rs",
+  process: "crates/platform-windows/src/key_agent_service_launch/process.rs",
   startup: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
   targetProfile:
     "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
@@ -2158,6 +2159,9 @@ const keyAgentServiceProfileApiSourceForLaunch = await text(
 );
 const keyAgentServiceRestrictedLauncherSourceForLaunch = await text(
   "crates/platform-windows/src/launch.rs",
+);
+const keyAgentServiceInheritableHandleLaunchSourceForLaunch = await text(
+  "crates/platform-windows/src/inheritable_handle_launch.rs",
 );
 const keyAgentServiceBoundaryAdr = await text(
   "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -6058,10 +6062,18 @@ const keyAgentServiceCreationSecurityContract = (source) => {
       production,
       "retain_after_service_creation_security_bookend",
     );
+    const revalidationBookend = rustFunctionBlock(
+      production,
+      "revalidate_service_creation_security_bookend",
+    );
     const servicePrepare = rustFunctionBlock(serviceImpl, "prepare");
     const serviceCreationSecurity = rustFunctionBlock(
       serviceImpl,
-      "creation_security",
+      "creation_security_for_attempt",
+    );
+    const serviceRevalidate = rustFunctionBlock(
+      serviceImpl,
+      "revalidate",
     );
     const serviceVerifyCreatedObjects = rustFunctionBlock(
       serviceImpl,
@@ -6072,18 +6084,23 @@ const keyAgentServiceCreationSecurityContract = (source) => {
     const compactBookend = compactRust(bookend);
     const compactServicePrepare = compactRust(servicePrepare);
     const compactServiceImpl = compactRust(serviceImpl);
-    const serviceItems = [bookend, serviceImpl, serviceDebugImpl].join("\n");
+    const serviceItems = [
+      bookend,
+      revalidationBookend,
+      serviceImpl,
+      serviceDebugImpl,
+    ].join("\n");
     const exactFeatureCfg = [
       ...production.matchAll(
         /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]/gu,
       ),
     ];
     return (
-      exactFeatureCfg.length === 6 &&
+      exactFeatureCfg.length === 7 &&
       /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*use\s+crate::key_agent_service_token::VerifiedServiceCreationToken\s*;/u.test(
         production,
       ) &&
-      /#\[must_use\s*=\s*"service creation security and its token proof must remain live through readback"\]\s*#\[allow\(dead_code\)\][^\n]*\n\s*pub\(crate\)\s+struct\s+PreparedServiceKeyAgentCreationSecurity<'proof>\s*\{\s*security\s*:\s*PreparedKeyAgentCreationSecurity\s*,\s*_service_token\s*:\s*VerifiedServiceCreationToken<'proof>\s*,\s*\}/u.test(
+      /#\[must_use\s*=\s*"service creation security and its token proof must remain live through readback"\]\s*#\[allow\(dead_code\)\][^\n]*\n\s*pub\(crate\)\s+struct\s+PreparedServiceKeyAgentCreationSecurity<'proof>\s*\{\s*security\s*:\s*PreparedKeyAgentCreationSecurity\s*,\s*service_token\s*:\s*VerifiedServiceCreationToken<'proof>\s*,\s*\}/u.test(
         production,
       ) &&
       !/\b(?:Clone|Copy)\b/u.test(
@@ -6129,21 +6146,33 @@ const keyAgentServiceCreationSecurityContract = (source) => {
         "revalidate(&mutmarker).map_err(|_|KeyAgentLpacError::Attribute)?",
         "Ok((security,marker))",
       ]) &&
+      hasOrderedCompactMarkers(revalidationBookend, [
+        "verify_creation_principals(marker,&security.expected_owner_sid,&security.expected_primary_group_sid,)",
+        ".map_err(|_|KeyAgentLpacError::Attribute)?",
+        "revalidate(marker).map_err(|_|KeyAgentLpacError::Attribute)",
+      ]) &&
       hasOrderedCompactMarkers(servicePrepare, [
         "service_token:VerifiedServiceCreationToken<'proof>",
         "PreparedKeyAgentCreationSecurity::prepare_from_principal_token(service_token.borrowed_handle(),)?",
         "retain_after_service_creation_security_bookend(security,service_token",
         "service_token.verify_creation_principals(owner,primary_group)",
         "VerifiedServiceCreationToken::revalidate",
-        "security,_service_token:service_token",
+        "Ok(Self{security,service_token,})",
       ]) &&
       keyAgentServiceLiteralCount(
         compactServicePrepare,
         "map_err(|_|KeyAgentLpacError::Attribute)",
       ) === 0 &&
       compactRust(serviceCreationSecurity).includes(
-        "self.security.creation_security()",
+        "self.revalidate()?;Ok(self.security.creation_security())",
       ) &&
+      hasOrderedCompactMarkers(serviceRevalidate, [
+        "revalidate_service_creation_security_bookend(",
+        "&self.security",
+        "&mutself.service_token",
+        "service_token.verify_creation_principals(owner,primary_group)",
+        "VerifiedServiceCreationToken::revalidate",
+      ]) &&
       compactRust(serviceVerifyCreatedObjects).includes(
         "self.security.verify_created_objects(process,primary_thread)",
       ) &&
@@ -6166,6 +6195,9 @@ const keyAgentServiceCreationSecurityContract = (source) => {
       ) &&
       source.includes(
         "fn service_creation_security_bookend_checks_principals_then_full_revalidation()",
+      ) &&
+      source.includes(
+        "fn service_creation_security_attempt_repeats_the_complete_bookend()",
       ) &&
       hasOrderedCompactMarkers(
         rustFunctionBlock(
@@ -6203,7 +6235,7 @@ const keyAgentServiceCreationSecurityMutationProbes = [
     "service_token: DesktopPrimaryToken",
   ),
   mutateKeyAgentServiceCreationSecurity(
-    "    _service_token: VerifiedServiceCreationToken<'proof>,",
+    "    service_token: VerifiedServiceCreationToken<'proof>,",
     "",
   ),
   mutateKeyAgentServiceCreationSecurity(
@@ -6219,6 +6251,14 @@ const keyAgentServiceCreationSecurityMutationProbes = [
     "            |_| Ok::<(), crate::key_agent_service_token::ServiceTokenFixtureError>(()),",
   ),
   mutateKeyAgentServiceCreationSecurity(
+    "    verify_creation_principals(\n        marker,\n        &security.expected_owner_sid,\n        &security.expected_primary_group_sid,\n    )\n    .map_err(|_| KeyAgentLpacError::Attribute)?;",
+    "    let _ = (security, &marker, verify_creation_principals);",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
+    "    revalidate(marker).map_err(|_| KeyAgentLpacError::Attribute)",
+    "    let _ = revalidate;\n    Ok(())",
+  ),
+  mutateKeyAgentServiceCreationSecurity(
     "            bInheritHandle: BOOL(0),",
     "            bInheritHandle: BOOL(1),",
   ),
@@ -6227,8 +6267,8 @@ const keyAgentServiceCreationSecurityMutationProbes = [
     "if false",
   ),
   mutateKeyAgentServiceCreationSecurity(
-    "self.security.creation_security()",
-    "unreachable!()",
+    "        self.revalidate()?;\n        Ok(self.security.creation_security())",
+    "        Ok(self.security.creation_security())",
   ),
   mutateKeyAgentServiceCreationSecurity(
     "#[must_use = \"service creation security and its token proof must remain live through readback\"]",
@@ -6248,6 +6288,7 @@ requireInvariant(
 const approvedKeyAgentServiceLaunchPaths = [
   keyAgentServiceLaunchPaths.job,
   keyAgentServiceLaunchPaths.root,
+  keyAgentServiceLaunchPaths.process,
   keyAgentServiceLaunchPaths.startup,
   keyAgentServiceLaunchPaths.targetProfile,
 ];
@@ -6256,6 +6297,7 @@ const approvedKeyAgentServiceLaunchDirectoryInventory = {
   entries: [
     { name: "job.rs", kind: "file" },
     { name: "mod.rs", kind: "file" },
+    { name: "process.rs", kind: "file" },
     { name: "startup.rs", kind: "file" },
     { name: "target_profile.rs", kind: "file" },
   ],
@@ -6283,6 +6325,11 @@ const keyAgentServiceLaunchTestNames = [
   "exact_one_process_kill_on_close_policy_rejects_every_mutation",
   "preparation_order_is_exact_and_every_partial_handle_is_closed",
   "job_owner_is_move_only_send_and_not_sync",
+  "split_termination_requests_once_then_waits_and_latches_shutdown",
+  "failed_termination_request_stays_pending_and_cannot_be_reissued",
+  "finish_requires_request_and_failed_wait_is_bounded_and_retriable",
+  "compatibility_cleanup_skips_a_second_request_while_pending",
+  "pending_and_shutdown_states_reject_all_admission",
   "errors_and_attribute_debug_are_data_free",
 ];
 const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
@@ -6292,9 +6339,11 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
     );
     const root = sources[keyAgentServiceLaunchPaths.root] ?? "";
     const job = sources[keyAgentServiceLaunchPaths.job] ?? "";
+    const process = sources[keyAgentServiceLaunchPaths.process] ?? "";
     const startup = sources[keyAgentServiceLaunchPaths.startup] ?? "";
     const targetProfile = sources[keyAgentServiceLaunchPaths.targetProfile] ?? "";
     const jobProduction = withoutBottomTestModule(job);
+    const processProduction = withoutBottomTestModule(process);
     const startupProduction = withoutBottomTestModule(startup);
     const targetProfileProduction = withoutBottomTestModule(targetProfile);
     const sysModule = rustLexicalItemBlock(jobProduction, /mod\s+sys\s*\{/u);
@@ -6310,6 +6359,19 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
     const createNonNested = rustFunctionBlock(jobImpl, "create_non_nested");
     const recheckNonNested = rustFunctionBlock(jobImpl, "recheck_non_nested");
     const creationAttribute = rustFunctionBlock(jobImpl, "creation_attribute");
+    const containsProcessOwner = rustFunctionBlock(jobImpl, "contains_process");
+    const activeProcessCountOwner = rustFunctionBlock(
+      jobImpl,
+      "active_process_count",
+    );
+    const requestTerminationOwner = rustFunctionBlock(
+      jobImpl,
+      "request_termination",
+    );
+    const finishTerminationOwner = rustFunctionBlock(
+      jobImpl,
+      "finish_termination_and_wait",
+    );
     const terminateAndWaitOwner = rustFunctionBlock(jobImpl, "terminate_and_wait");
     const installInto = rustFunctionBlock(attributeImpl, "install_into");
     const requireNotInJob = rustFunctionBlock(
@@ -6329,9 +6391,13 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
       sysModule,
       "active_process_count",
     );
-    const terminateAndWaitSys = rustFunctionBlock(
+    const requestTerminationSys = rustLexicalItemBlock(
       sysModule,
-      "terminate_and_wait",
+      /pub\(super\)\s+fn\s+request_termination\s*\(/u,
+    );
+    const waitUntilEmptySys = rustLexicalItemBlock(
+      sysModule,
+      /pub\(super\)\s+fn\s+wait_until_empty\s*\(/u,
     );
     const installCreationAttribute = rustFunctionBlock(
       sysModule,
@@ -6354,12 +6420,12 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         { path: keyAgentServiceLaunchPaths.root, source: root },
         { path: keyAgentServiceLaunchPaths.job, source: jobProduction },
         {
-          path: keyAgentServiceLaunchPaths.startup,
-          source: startupProduction,
+          path: keyAgentServiceLaunchPaths.process,
+          source: processProduction,
         },
         {
-          path: keyAgentServiceLaunchPaths.targetProfile,
-          source: targetProfileProduction,
+          path: keyAgentServiceLaunchPaths.startup,
+          source: startupProduction,
         },
       ],
       keyAgentServiceLaunchForbiddenIdentifiers,
@@ -6376,7 +6442,7 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
       JSON.stringify(directory) ===
         JSON.stringify(approvedKeyAgentServiceLaunchDirectoryInventory) &&
       compactRoot ===
-        "#![allow(dead_code)]modjob;modstartup;modtarget_profile;" &&
+        "#![allow(dead_code)]modjob;modprocess;modstartup;modtarget_profile;" &&
       rustUnsafeKeywordCount(root) === 0 &&
       job.includes("#![deny(unsafe_code)]") &&
       rustUnsafeKeywordCount(jobProduction) === 11 &&
@@ -6389,9 +6455,9 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
       JSON.stringify(observedApis) ===
         JSON.stringify(keyAgentServiceLaunchObservedApis) &&
       forbiddenIsEmpty &&
-      !/\b(?:wallet|signing|helper|request|response|endpoint)\b/u.test(
+      !/\b(?:SigningKey|PrivateKey|Mnemonic|Signature|Transaction|Wallet|RpcServer\w*|Command)\b/u.test(
         rustLexicalCode(
-          `${root}\n${jobProduction}\n${startupProduction}\n${targetProfileProduction}`,
+          `${root}\n${jobProduction}\n${processProduction}\n${startupProduction}\n${targetProfileProduction}`,
         ),
       ) &&
       compactJob.includes("constSERVICE_PROBE_PROCESS_LIMIT:u32=1;") &&
@@ -6415,12 +6481,15 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         "lethandle=prepare_job(&sys::WindowsJobPrepareOps)?",
       ) &&
       hasOrderedCompactMarkers(recheckNonNested, [
-        "ifself.shut_down",
+        "require_active_job(self.state)?",
         "sys::require_current_process_not_in_job()?",
         "sys::verify_exact_limits(self.handle.as_handle())",
       ]) &&
       compactJob.includes(
-        "pub(super)structServiceProbeJob{handle:OwnedHandle,shut_down:bool,_not_sync:PhantomData<Cell<()>>,}",
+        "pub(super)structServiceProbeJob{handle:OwnedHandle,state:ServiceProbeJobState,_not_sync:PhantomData<Cell<()>>,}",
+      ) &&
+      compactJob.includes(
+        "enumServiceProbeJobState{Active,TerminationRequested,ShutDown,}",
       ) &&
       compactJob.includes(
         "pub(super)structServiceProbeJobAttribute<'job>{handle:Box<HANDLE>,_job:PhantomData<&'jobServiceProbeJob>,}",
@@ -6430,6 +6499,10 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         "handle:Box::new(sys::windows_handle(self.handle.as_handle()))",
         "_job:PhantomData",
       ]) &&
+      compactRust(containsProcessOwner) ===
+        "pub(super)fncontains_process(&self,process:BorrowedHandle<'_>,)->Result<bool,ServiceProbeJobError>{require_active_job(self.state)?;sys::contains_process(self.handle.as_handle(),process)}" &&
+      compactRust(activeProcessCountOwner) ===
+        "pub(super)fnactive_process_count(&self)->Result<u32,ServiceProbeJobError>{require_active_job(self.state)?;sys::active_process_count(self.handle.as_handle())}" &&
       compactRust(installInto).includes(
         "unsafe{sys::install_creation_attribute(attribute_list,self.handle.as_ref())}",
       ) &&
@@ -6466,23 +6539,44 @@ const keyAgentServiceLaunchContract = ({ sources, directory, platformLib }) => {
         "QueryInformationJobObject(job,class,ptr::from_mut(information).cast::<c_void>(),expected,Some(&rawmutreturned),)",
         "ifreturned!=expected",
       ]) &&
-      hasOrderedCompactMarkers(terminateAndWaitOwner, [
-        "ifself.shut_down",
-        "sys::terminate_and_wait(self.handle.as_handle(),SERVICE_PROBE_TERMINATION_TIMEOUT)?",
-        "self.shut_down=true",
+      hasOrderedCompactMarkers(requestTerminationOwner, [
+        "letops=sys::WindowsJobTerminationOps::new(self.handle.as_handle())",
+        "request_job_termination(&mutself.state,&ops)",
       ]) &&
+      hasOrderedCompactMarkers(finishTerminationOwner, [
+        "letops=sys::WindowsJobTerminationOps::new(self.handle.as_handle())",
+        "finish_job_termination_and_wait(&mutself.state,&ops,SERVICE_PROBE_TERMINATION_TIMEOUT)",
+      ]) &&
+      hasOrderedCompactMarkers(terminateAndWaitOwner, [
+        "letops=sys::WindowsJobTerminationOps::new(self.handle.as_handle())",
+        "terminate_job_and_wait(&mutself.state,&ops,SERVICE_PROBE_TERMINATION_TIMEOUT)",
+      ]) &&
+      compactJob.includes(
+        "fnrequest_job_termination<O:JobTerminationOps>(state:&mutServiceProbeJobState,ops:&O,)->Result<(),ServiceProbeJobError>{require_active_job(*state)?;*state=ServiceProbeJobState::TerminationRequested;ops.request_termination()}",
+      ) &&
+      compactJob.includes(
+        "fnfinish_job_termination_and_wait<O:JobTerminationOps>(state:&mutServiceProbeJobState,ops:&O,timeout:Duration,)->Result<(),ServiceProbeJobError>{match*state{ServiceProbeJobState::Active=>{returnErr(ServiceProbeJobError::TerminationNotRequested);}ServiceProbeJobState::TerminationRequested=>{}ServiceProbeJobState::ShutDown=>returnErr(ServiceProbeJobError::ShutDown),}ops.wait_until_empty(timeout)?;*state=ServiceProbeJobState::ShutDown;Ok(())}",
+      ) &&
+      compactJob.includes(
+        "fnterminate_job_and_wait<O:JobTerminationOps>(state:&mutServiceProbeJobState,ops:&O,timeout:Duration,)->Result<(),ServiceProbeJobError>{if*state==ServiceProbeJobState::Active{request_job_termination(state,ops)?;}finish_job_termination_and_wait(state,ops,timeout)}",
+      ) &&
       compactSys.includes(
         "constTERMINATION_POLL_INTERVAL:Duration=Duration::from_millis(1);",
       ) &&
-      hasOrderedCompactMarkers(terminateAndWaitSys, [
-        "ifactive_process_count(job)?==0",
+      compactRust(requestTerminationSys).includes(
         "TerminateJobObject(windows_handle(job),SERVICE_PROBE_EXIT_CODE)",
+      ) &&
+      !/\b(?:WaitForSingleObject|sleep|wait_until_empty|active_process_count)\b/u.test(
+        rustLexicalCode(requestTerminationSys),
+      ) &&
+      hasOrderedCompactMarkers(waitUntilEmptySys, [
         "letdeadline=Instant::now().checked_add(timeout).ok_or(ServiceProbeJobError::TerminationTimeout)?",
         "loop",
         "ifactive_process_count(job)?==0",
         "ifInstant::now()>=deadline",
         "std::thread::sleep(TERMINATION_POLL_INTERVAL)",
       ]) &&
+      !/\bTerminateJobObject\b/u.test(rustLexicalCode(waitUntilEmptySys)) &&
       platformLib.includes("mod key_agent_service_launch;") &&
       !/\bpub(?:\s*\([^)]*\))?\s+mod\s+key_agent_service_launch\b/u.test(
         rustLexicalCode(platformLib),
@@ -6580,6 +6674,18 @@ const keyAgentServiceLaunchMutationProbes = [
   mutateKeyAgentServiceLaunchSource(
     keyAgentServiceLaunchInputs,
     keyAgentServiceLaunchPaths.job,
+    "    pub(super) fn contains_process(\n        &self,\n        process: BorrowedHandle<'_>,\n    ) -> Result<bool, ServiceProbeJobError> {\n        require_active_job(self.state)?;",
+    "    pub(super) fn contains_process(\n        &self,\n        process: BorrowedHandle<'_>,\n    ) -> Result<bool, ServiceProbeJobError> {",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
+    "    pub(super) fn active_process_count(&self) -> Result<u32, ServiceProbeJobError> {\n        require_active_job(self.state)?;",
+    "    pub(super) fn active_process_count(&self) -> Result<u32, ServiceProbeJobError> {",
+  ),
+  mutateKeyAgentServiceLaunchSource(
+    keyAgentServiceLaunchInputs,
+    keyAgentServiceLaunchPaths.job,
     "unsafe { TerminateJobObject(windows_handle(job), SERVICE_PROBE_EXIT_CODE) }",
     "Ok(())",
   ),
@@ -6603,15 +6709,22 @@ const keyAgentServiceLaunchMutationProbes = [
     ),
   },
 ];
+const keyAgentServiceLaunchBaseContract = keyAgentServiceLaunchContract(
+  keyAgentServiceLaunchInputs,
+);
+const keyAgentServiceLaunchMutationResults =
+  keyAgentServiceLaunchMutationProbes.map((probe) =>
+    keyAgentServiceLaunchContract(probe),
+  );
 requireInvariant(
-  keyAgentServiceLaunchContract(keyAgentServiceLaunchInputs) &&
+  keyAgentServiceLaunchBaseContract &&
     keyAgentServiceLaunchMutationProbes.every(
-      (probe) =>
+      (probe, index) =>
         (probe.sources !== keyAgentServiceLaunchInputs.sources ||
           probe.platformLib !== keyAgentServiceLaunchInputs.platformLib) &&
-        !keyAgentServiceLaunchContract(probe),
+        !keyAgentServiceLaunchMutationResults[index],
     ),
-  "the debug-only service launch primitive must remain an exact private four-file module whose Job is one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no process creation/handle duplication/RPC command, ignored live evidence, and effective mutation probes",
+  "the debug-only service launch primitive must remain an exact private five-file module whose Job is one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no direct handle duplication or RPC command, ignored live evidence, and effective mutation probes",
 );
 
 const keyAgentServiceTargetProfileTestNames = [
@@ -6623,6 +6736,16 @@ const keyAgentServiceTargetProfileTestNames = [
   "derive_only_fresh_observation_has_no_create_or_equality_call",
   "fresh_revalidation_rejects_wrong_sid_folder_and_environment",
   "stable_attribute_backing_is_exact_zero_capability_aap_opt_out",
+  "created_child_verification_observes_full_policy_twice_and_owns_exact_evidence",
+  "every_created_child_failure_stops_at_the_exact_prefix_and_drops_each_owner_once",
+  "exact_child_token_policy_rejects_every_scalar_and_membership_mutation",
+  "created_child_revalidation_rechecks_policy_twice_and_rejects_substitution",
+  "every_created_child_revalidation_failure_stops_at_the_exact_prefix",
+  "created_child_revalidation_rejects_fresh_expected_profile_mutations",
+  "created_child_revalidation_rejects_every_desktop_identity_substitution",
+  "created_child_revalidation_rejects_process_identity_liveness_and_policy_drift",
+  "bounded_sid_parser_rejects_short_wrong_revision_excess_and_truncation",
+  "verified_child_proof_is_opaque_move_only_thread_affine_and_owner_compatible",
   "fixed_profiles_are_distinct_and_versioned",
   "environment_is_exact_and_target_profile_bound",
   "environment_rejects_shape_and_base_mutations",
@@ -7187,6 +7310,9 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     keyAgentServiceRpcFixturePaths.epoch,
     keyAgentServiceRpcFixturePaths.lifecycle,
   ];
+  const nonLaunchCode = [keyAgentServiceRpcFixturePaths.root, ...purePaths]
+    .map((path) => rustLexicalCode(sources[path] ?? ""))
+    .join("\n");
   return (
     JSON.stringify(paths) ===
       JSON.stringify(approvedKeyAgentServiceRpcFixturePaths) &&
@@ -7201,7 +7327,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     ) &&
     !/(?:e?println|print|dbg)!/u.test(code) &&
     !keyAgentServiceRpcFixtureNetworkSurface.test(code) &&
-    !keyAgentServiceRpcFixtureProcessCreationSurface.test(code) &&
+    !keyAgentServiceRpcFixtureProcessCreationSurface.test(nonLaunchCode) &&
     !keyAgentServiceRpcFixtureAuthoritySurface.test(code) &&
     !/\b(?:secret_core|key_agent)::/u.test(code) &&
     !/\bpub\s+(?:unsafe\s+)?(?:fn|struct|enum|trait|type|const|static|mod)\b/u.test(
@@ -7259,6 +7385,11 @@ const keyAgentServiceRpcFixturePolicyMutationProbes = [
     keyAgentServiceRpcFixturePolicyInputs,
     keyAgentServiceRpcFixturePaths.dispatch,
     "fn sign_transaction(key: SigningKey, transaction: Transaction) -> Signature { todo!() }",
+  ),
+  appendKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcFixturePolicyInputs,
+    keyAgentServiceRpcFixturePaths.dispatch,
+    "fn hidden_process_creation() { let _ = CreateProcessAsUserW; }",
   ),
   {
     ...keyAgentServiceRpcFixturePolicyInputs,
@@ -8028,6 +8159,7 @@ requireInvariant(
 
 const keyAgentServiceRpcAuthTestNames = [
   "desktop_impersonation_authority_is_thread_bound_move_only",
+  "desktop_process_owners_enforce_thread_and_join_boundaries",
   "approved_call_runs_the_complete_order_and_reverts_before_revalidation",
   "callback_authenticates_independently_without_minting_launch_authority",
   "every_call_attribute_is_fail_closed_before_authentication",
@@ -8049,6 +8181,10 @@ const keyAgentServiceRpcAuthTestNames = [
   "residual_or_unobservable_thread_token_fail_fasts_on_success_and_error_paths",
   "unobservable_preclean_state_fails_before_open_or_impersonation",
   "retained_process_revalidation_and_exact_match_are_fail_closed",
+  "desktop_session_requirement_revalidates_and_matches_exactly",
+  "desktop_child_identity_is_narrow_and_post_revalidated_on_every_mismatch",
+  "desktop_child_identity_pre_observe_and_post_failures_have_exact_order",
+  "desktop_process_creation_claim_is_one_shot_before_revalidation",
   "debug_is_data_free",
   "desktop_impersonation_lease_rechecks_and_reverts_exactly_once",
   "desktop_impersonation_lease_drop_is_exact_once_fallback",
@@ -8056,6 +8192,11 @@ const keyAgentServiceRpcAuthTestNames = [
 ];
 const keyAgentServiceRpcAuthSysTestNames = [
   "desktop_primary_token_is_move_only_send_and_not_sync",
+  "desktop_process_native_owners_have_exact_thread_traits",
+  "desktop_process_creation_flags_are_the_exact_five_values",
+  "process_creation_paths_and_environment_require_exact_shapes",
+  "paired_security_and_startup_prefix_require_exact_non_inheriting_shape",
+  "process_creation_errors_are_data_free",
   "desktop_primary_token_debug_is_data_free",
   "desktop_primary_token_rights_are_exactly_create_process_as_user_minimum",
   "effective_thread_level_accepts_impersonation_or_delegation_only",
@@ -8621,6 +8762,11 @@ const keyAgentServiceTargetAuthLeaseContract = ({
     const authSys = withoutBottomTestModule(authSysSource);
     const profileApi = withoutBottomTestModule(profileApiSource);
     const targetProfile = withoutBottomTestModule(targetProfileSource);
+    const targetProfileSys = rustLexicalItemBlock(
+      targetProfile,
+      /mod\s+sys\s*\{/u,
+    );
+    const safeTargetProfile = targetProfile.replace(targetProfileSys, "");
     const startup = withoutBottomTestModule(startupSource);
     const launchRoot = withoutBottomTestModule(launchRootSource);
     const authenticatedImpl = rustImplItems(auth).find(
@@ -8829,8 +8975,8 @@ const keyAgentServiceTargetAuthLeaseContract = ({
             count: 1,
           },
         ]) &&
-      !/\b(?:HANDLE|BorrowedHandle|DesktopPrimaryToken)\b/u.test(
-        rustLexicalCode(targetProfile),
+      !/\b(?:HANDLE|DesktopPrimaryToken)\b/u.test(
+        rustLexicalCode(safeTargetProfile),
       ) &&
       JSON.stringify(
         keyAgentServiceRustTestNameInventory(profileApiSource),
@@ -8935,16 +9081,20 @@ const keyAgentServiceTargetAuthLeaseMutationProbes = [
     "fn desktop_impersonation_lease_drop_is_not_exact_once_fallback()",
   ),
 ];
+const keyAgentServiceTargetAuthLeaseBase =
+  keyAgentServiceTargetAuthLeaseContract(keyAgentServiceTargetAuthLeaseInputs);
+const keyAgentServiceTargetAuthLeaseMutationResults =
+  keyAgentServiceTargetAuthLeaseMutationProbes.map((probe) =>
+    keyAgentServiceTargetAuthLeaseContract(probe),
+  );
 requireInvariant(
-  keyAgentServiceTargetAuthLeaseContract(
-    keyAgentServiceTargetAuthLeaseInputs,
-  ) &&
+  keyAgentServiceTargetAuthLeaseBase &&
     keyAgentServiceTargetAuthLeaseMutationProbes.every(
-      (probe) =>
+      (probe, index) =>
         Object.keys(probe).some(
           (field) =>
             probe[field] !== keyAgentServiceTargetAuthLeaseInputs[field],
-        ) && !keyAgentServiceTargetAuthLeaseContract(probe),
+        ) && !keyAgentServiceTargetAuthLeaseMutationResults[index],
     ),
   "target profile observation must be the sole consumer of an authentication-owned handle-free same-thread desktop impersonation lease; it must acquire the shared profile mutex while clear, revalidate before impersonation, install exact-once fail-fast cleanup immediately, bookend effective identity, revert before releasing the mutex on explicit and implicit paths, retain no raw or borrowed token capability, pin exhaustive fake seams, and reject every effective mutation",
 );
@@ -8961,6 +9111,13 @@ const keyAgentServiceRpcDesktopPrimaryTokenContract = ({ sources }) => {
       authSys,
       "duplicate_current_thread_desktop_primary_token",
     );
+    const desktopPrimaryState = rustLexicalItemBlock(
+      authSys,
+      /pub\(crate\)\s+struct\s+DesktopPrimaryToken\b/u,
+    );
+    const desktopPrimaryImpl = rustImplItems(authSys).find(
+      (item) => item.header === "impl DesktopPrimaryToken",
+    )?.source;
     const validateDesktopPrimary = rustFunctionBlock(
       authSys,
       "validate_desktop_primary_token_handle",
@@ -8986,7 +9143,19 @@ const keyAgentServiceRpcDesktopPrimaryTokenContract = ({ sources }) => {
     const ownedTokenDrop = rustImplItems(authSys).find((item) =>
       item.header.includes("Drop for OwnedToken"),
     )?.source;
-    if (ownedTokenDrop === undefined) return false;
+    if (ownedTokenDrop === undefined || desktopPrimaryImpl === undefined) {
+      return false;
+    }
+    const desktopTokenCapabilitySurface = rustLexicalCode(
+      [
+        desktopPrimaryState,
+        desktopPrimaryImpl,
+        duplicateDesktopPrimary,
+        validateDesktopPrimary,
+        desktopPrimaryObservation,
+        ownedTokenDrop,
+      ].join("\n"),
+    );
     const duplicateCalls = rustCallSites(
       duplicateDesktopPrimary,
       "DuplicateTokenEx",
@@ -9084,14 +9253,17 @@ const keyAgentServiceRpcDesktopPrimaryTokenContract = ({ sources }) => {
       !/(?:derive\s*\([^)]*\b(?:Clone|Copy)\b|impl\s+(?:Clone|Copy|Sync)\s+for)\s*DesktopPrimaryToken/u.test(
         authSys,
       ) &&
-      !/\bBorrowedHandle\b/u.test(rustLexicalCode(authSys)) &&
+      !/\bBorrowedHandle\b/u.test(desktopTokenCapabilitySurface) &&
       !/pub\(crate\)\s+fn\s+(?:as_handle|borrowed_handle)\b/u.test(
-        rustLexicalCode(authSys),
+        rustLexicalCode(desktopPrimaryImpl),
       ) &&
-      keyAgentServiceLiteralCount(compactAuthSys, "BorrowedHandle::borrow_raw(") ===
+      keyAgentServiceLiteralCount(
+        compactRust(desktopTokenCapabilitySurface),
+        "BorrowedHandle::borrow_raw(",
+      ) ===
         0 &&
       !/\b(?:into_raw|from_raw_handle|as_raw_handle)\b/u.test(
-        rustLexicalCode(authSys),
+        desktopTokenCapabilitySurface,
       ) &&
       compactRust(ownedTokenDrop).includes(
         "if!invalid_handle(self.0){unsafe{let_=CloseHandle(self.0);}}",
@@ -9250,6 +9422,1295 @@ requireInvariant(
   "the authenticated RPC manager must retain the sole exact-rights non-inheritable DuplicateTokenEx TokenPrimary capability, while the callback remains data-free and launch-authority-free and all retained identity, handle, drop, move-only, rights, and negative-test evidence stays exact",
 );
 
+const keyAgentServiceDesktopProcessCreationInputs = Object.freeze({
+  authSource:
+    keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.auth],
+  authSysSource:
+    keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.authSys],
+  inheritableSource: keyAgentServiceInheritableHandleLaunchSourceForLaunch,
+});
+const keyAgentServiceDesktopProcessCreationContract = ({
+  authSource,
+  authSysSource,
+  inheritableSource,
+}) => {
+  try {
+    const auth = withoutBottomTestModule(authSource);
+    const authSys = withoutBottomTestModule(authSysSource);
+    const inheritable = withoutBottomTestModule(inheritableSource);
+    const publicClientImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl AuthenticatedRpcClient",
+    )?.source;
+    const genericClientImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl<P, T> AuthenticatedClient<P, T>",
+    )?.source;
+    const attemptImpl = rustImplItems(auth).find((item) =>
+      item.header.includes("AuthenticatedDesktopProcessCreateAttempt<'_>"),
+    )?.source;
+    const safeCreatedImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl CreatedDesktopProcess",
+    )?.source;
+    const safePendingImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl PendingDebuggerExitProcessCleanup",
+    )?.source;
+    const nativeCreatedImpl = rustImplItems(authSys).find(
+      (item) => item.header === "impl CreatedDesktopProcess",
+    )?.source;
+    const nativeCreatedDrop = rustImplItems(authSys).find((item) =>
+      item.header.includes("Drop for CreatedDesktopProcess"),
+    )?.source;
+    const nativePendingImpl = rustImplItems(authSys).find(
+      (item) => item.header === "impl PendingDebuggerExitProcessCleanup",
+    )?.source;
+    const nativePendingDrop = rustImplItems(authSys).find((item) =>
+      item.header.includes("Drop for PendingDebuggerExitProcessCleanup"),
+    )?.source;
+    const outputImpl = rustImplItems(authSys).find(
+      (item) => item.header === "impl ProcessInformationOutput",
+    )?.source;
+    const outputDrop = rustImplItems(authSys).find((item) =>
+      item.header.includes("Drop for ProcessInformationOutput"),
+    )?.source;
+    const creationSecurityImpl = rustImplItems(inheritable).find((item) =>
+      item.header.includes("ProcessThreadCreationSecurity<'attributes>"),
+    )?.source;
+    if (
+      publicClientImpl === undefined ||
+      genericClientImpl === undefined ||
+      attemptImpl === undefined ||
+      safeCreatedImpl === undefined ||
+      safePendingImpl === undefined ||
+      nativeCreatedImpl === undefined ||
+      nativeCreatedDrop === undefined ||
+      nativePendingImpl === undefined ||
+      nativePendingDrop === undefined ||
+      outputImpl === undefined ||
+      outputDrop === undefined ||
+      creationSecurityImpl === undefined
+    ) {
+      return false;
+    }
+    const publicClaim = rustFunctionBlock(
+      publicClientImpl,
+      "claim_desktop_process_creation",
+    );
+    const claim = rustFunctionBlock(
+      genericClientImpl,
+      "claim_desktop_process_creation_with",
+    );
+    const safeCreate = rustFunctionBlock(attemptImpl, "create_suspended_process");
+    const safeNativeCreateCalls = rustCallSites(
+      safeCreate,
+      "create_process_as_desktop_user",
+    );
+    const safeTransition = rustFunctionBlock(
+      safeCreatedImpl,
+      "request_termination_into_pending_debugger_exit_cleanup",
+    );
+    const safeWait = rustFunctionBlock(safePendingImpl, "wait_and_close");
+    const nativeCreate = rustFunctionBlock(
+      authSys,
+      "create_process_as_desktop_user",
+    );
+    const nativeTransition = rustFunctionBlock(
+      nativeCreatedImpl,
+      "request_termination_into_pending_debugger_exit_cleanup",
+    );
+    const nativeWait = rustFunctionBlock(nativePendingImpl, "wait_and_close");
+    const outputNew = rustFunctionBlock(outputImpl, "new");
+    const outputAsMutPtr = rustFunctionBlock(outputImpl, "as_mut_ptr");
+    const outputArmSuccess = rustFunctionBlock(outputImpl, "arm_success");
+    const outputAdopt = rustFunctionBlock(outputImpl, "adopt_success");
+    const outputDropFunction = rustFunctionBlock(outputDrop, "drop");
+    const createdInformation = rustFunctionBlock(
+      authSys,
+      "created_process_information_is_exact",
+    );
+    const terminateMalformedProcess = rustFunctionBlock(
+      authSys,
+      "terminate_safely_unique_malformed_process",
+    );
+    const attributes = rustFunctionBlock(
+      authSys,
+      "creation_attributes_are_exact",
+    );
+    const environment = rustFunctionBlock(authSys, "environment_is_exact");
+    const startup = rustFunctionBlock(authSys, "startup_info_is_exact");
+    const asPair = rustFunctionBlock(creationSecurityImpl, "as_pair");
+    const createCalls = rustCallSites(nativeCreate, "CreateProcessAsUserW");
+    const createArguments = createCalls[0]?.arguments.map(compactRust);
+    const lexicalAuthority = rustLexicalCode(
+      [
+        rustLexicalItemBlock(
+          auth,
+          /pub\(crate\)\s+struct\s+AuthenticatedDesktopProcessCreateAttempt\b/u,
+        ),
+        attemptImpl,
+      ].join("\n"),
+    );
+    const compactAuth = compactRust(auth);
+    const compactAuthSys = compactRust(authSys);
+    return (
+      compactAuth.includes(
+        "desktop_process_creation_claimed:Cell<bool>",
+      ) &&
+      compactAuth.includes(
+        "desktop_process_creation_claimed:Cell::new(false)",
+      ) &&
+      /pub\(crate\)\s+struct\s+AuthenticatedDesktopProcessCreateAttempt<'client>\s*\{\s*client:\s*&'client\s+AuthenticatedRpcClient,\s*_thread_bound:\s*PhantomData<Rc<Cell<\(\)>>>,?\s*\}/u.test(
+        auth,
+      ) &&
+      !/\b(?:Clone|Copy)\b/u.test(lexicalAuthority) &&
+      !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+AuthenticatedDesktopProcessCreateAttempt/u.test(
+        lexicalAuthority,
+      ) &&
+      !/#\[derive\([^)]*(?:Clone|Copy)[^)]*\)\]\s*pub\(crate\)\s+struct\s+AuthenticatedDesktopProcessCreateAttempt/u.test(
+        auth,
+      ) &&
+      hasOrderedCompactMarkers(claim, [
+        "self.desktop_process_creation_claimed.replace(true)",
+        "returnErr(RpcAuthError::AccessDenied)",
+        "self.revalidate_with(ops)",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactRust(claim),
+        "self.revalidate_with(ops)",
+      ) === 1 &&
+      hasOrderedCompactMarkers(publicClaim, [
+        "self.claim_desktop_process_creation_with(&sys::WindowsProcessAuthOps)?",
+        "Ok(AuthenticatedDesktopProcessCreateAttempt{client:self,_thread_bound:PhantomData,})",
+      ]) &&
+      hasOrderedCompactMarkers(safeCreate, [
+        "self.client.revalidate()",
+        "sys::create_process_as_desktop_user(",
+        "&self.client.desktop_primary_token",
+        "application_name",
+        "security",
+        "environment",
+        "current_directory",
+        "startup_info",
+        "Ok(CreatedDesktopProcess{state,_thread_bound:PhantomData,})",
+      ]) &&
+      safeNativeCreateCalls.length === 1 &&
+      rustCallSites(auth, "create_process_as_desktop_user").length === 1 &&
+      compactRust(asPair) ===
+        "pub(crate)constfnas_pair(self,)->(&'attributesSECURITY_ATTRIBUTES,&'attributesSECURITY_ATTRIBUTES,){(self.process,self.thread)}" &&
+      compactAuthSys.includes(
+        "constDESKTOP_PROCESS_CREATION_FLAGS:PROCESS_CREATION_FLAGS=PROCESS_CREATION_FLAGS(CREATE_SUSPENDED.0|DEBUG_ONLY_THIS_PROCESS.0|CREATE_NO_WINDOW.0|CREATE_UNICODE_ENVIRONMENT.0|EXTENDED_STARTUPINFO_PRESENT.0,);",
+      ) &&
+      authSys.includes(
+        "const DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS: u32 = 5_000;",
+      ) &&
+      createCalls.length === 1 &&
+      JSON.stringify(createArguments) ===
+        JSON.stringify([
+          "Some(token.raw())",
+          "PCWSTR(application_name.as_ptr())",
+          "None",
+          "Some(ptr::from_ref(process_attributes))",
+          "Some(ptr::from_ref(thread_attributes))",
+          "false",
+          "DESKTOP_PROCESS_CREATION_FLAGS",
+          "Some(environment.as_ptr().cast::<c_void>())",
+          "PCWSTR(current_directory.as_ptr())",
+          "startup_info",
+          "output.as_mut_ptr()",
+        ]) &&
+      hasOrderedCompactMarkers(nativeCreate, [
+        "let(process_attributes,thread_attributes)=security.as_pair()",
+        "application_name_is_exact(application_name)",
+        "creation_attributes_are_exact(process_attributes,thread_attributes)",
+        "environment_is_exact(environment)",
+        "current_directory_is_exact(current_directory)",
+        "startup_info_is_exact(startup_info)",
+        "GetCurrentThreadId()",
+        "thread_token_state()",
+        "ThreadTokenState::Clear",
+        "validate_desktop_primary_token_handle(token)",
+        "letmutoutput=ProcessInformationOutput::new()",
+        "CreateProcessAsUserW(",
+        "ifresult.is_err()",
+        "output.arm_success()",
+        "output.adopt_success(creator_thread_id)",
+      ]) &&
+      compactRust(nativeCreate).includes(
+        "ifresult.is_err(){returnErr(NativeDesktopProcessCreateError::OperatingSystem);}output.arm_success();",
+      ) &&
+      compactRust(nativeCreate).includes(
+        "Ok(ThreadTokenState::Present)|Err(_)=>{returnErr(NativeDesktopProcessCreateError::Authentication);}"
+      ) &&
+      hasOrderedCompactMarkers(attributes, [
+        "Some(process.nLength)",
+        "Some(thread.nLength)",
+        "!process.lpSecurityDescriptor.is_null()",
+        "!thread.lpSecurityDescriptor.is_null()",
+        "process.lpSecurityDescriptor!=thread.lpSecurityDescriptor",
+        "process.bInheritHandle.0==0",
+        "thread.bInheritHandle.0==0",
+      ]) &&
+      compactRust(environment).includes(
+        "let(Some(local_app_data),Some(system_root),Some(windir),Some(final_empty))=(entries.next(),entries.next(),entries.next(),entries.next(),)else{returnfalse;}"
+      ) &&
+      compactRust(environment).includes(
+        "system_root_value==windir_value",
+      ) &&
+      compactRust(startup).includes("DESKTOP_NAME_WIDE") &&
+      compactRust(startup).includes("info.hStdInput.0.is_null()") &&
+      compactRust(startup).includes("info.hStdOutput.0.is_null()") &&
+      compactRust(startup).includes("info.hStdError.0.is_null()") &&
+      hasOrderedCompactMarkers(createdInformation, [
+        "NonZeroU32::new(information.dwProcessId)",
+        "NonZeroU32::new(information.dwThreadId)",
+        "invalid_handle(information.hProcess)",
+        "invalid_handle(information.hThread)",
+        "information.hProcess==information.hThread",
+        "handle_flags_are_zero(information.hProcess)",
+        "handle_flags_are_zero(information.hThread)",
+        "GetProcessId(information.hProcess)==process_id.get()",
+        "GetThreadId(information.hThread)==thread_id.get()",
+        "GetProcessIdOfThread(information.hThread)==process_id.get()",
+        "WaitForSingleObject(information.hProcess,0)==WAIT_TIMEOUT",
+        "WaitForSingleObject(information.hThread,0)==WAIT_TIMEOUT",
+      ]) &&
+      hasOrderedCompactMarkers(outputAdopt, [
+        "self.raw.assume_init_ref()",
+        "created_process_information_is_exact(information)",
+        "terminate_safely_unique_malformed_process(information)",
+        "fail_fast()",
+        "self.raw.assume_init_read()",
+        "self.successful=false",
+        "OwnedHandle::from_raw_handle(information.hProcess.0)",
+        "OwnedHandle::from_raw_handle(information.hThread.0)",
+      ]) &&
+      compactAuthSys.includes(
+        "structProcessInformationOutput{raw:MaybeUninit<PROCESS_INFORMATION>,successful:bool,}",
+      ) &&
+      compactRust(outputNew) ===
+        "constfnnew()->Self{Self{raw:MaybeUninit::uninit(),successful:false,}}" &&
+      compactRust(outputAsMutPtr) ===
+        "constfnas_mut_ptr(&mutself)->*mutPROCESS_INFORMATION{self.raw.as_mut_ptr()}" &&
+      compactRust(outputArmSuccess) ===
+        "constfnarm_success(&mutself){self.successful=true;}" &&
+      compactRust(terminateMalformedProcess) ===
+        "fnterminate_safely_unique_malformed_process(information:&PROCESS_INFORMATION){ifinvalid_handle(information.hProcess)||information.hProcess==information.hThread||information.dwProcessId==0{return;}unsafe{ifGetProcessId(information.hProcess)==information.dwProcessId{let_=TerminateProcess(information.hProcess,DESKTOP_PROCESS_TERMINATION_EXIT_CODE);}}}" &&
+      hasOrderedCompactMarkers(outputDropFunction, [
+        "if!self.successful",
+        "return",
+        "self.raw.assume_init_ref()",
+        "terminate_safely_unique_malformed_process(information)",
+        "fail_fast()",
+      ]) &&
+      compactAuthSys.includes(
+        "pub(super)structCreatedDesktopProcess{process:Option<OwnedHandle>,primary_thread:Option<OwnedHandle>,process_id:NonZeroU32,primary_thread_id:NonZeroU32,creator_thread_id:NonZeroU32,must_transition:bool,_thread_bound:PhantomData<Rc<()>>,}",
+      ) &&
+      hasOrderedCompactMarkers(nativeTransition, [
+        "GetCurrentThreadId()",
+        "Some(self.creator_thread_id)",
+        "fail_fast()",
+        "TerminateProcess(",
+        "self.process.take()",
+        "self.primary_thread.take()",
+        "self.must_transition=false",
+        "PendingDebuggerExitProcessCleanup",
+      ]) &&
+      compactRust(safeTransition).includes(
+        "self.state.request_termination_into_pending_debugger_exit_cleanup()",
+      ) &&
+      hasOrderedCompactMarkers(nativeWait, [
+        "WaitForSingleObject(",
+        "DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS",
+        "==WAIT_OBJECT_0",
+        "self.must_wait_and_close=false",
+        "drop(self.primary_thread.take())",
+        "drop(self.process.take())",
+        "match(termination_requested,wait_succeeded)",
+      ]) &&
+      compactRust(safeWait).includes("self.state.wait_and_close()") &&
+      compactRust(rustFunctionBlock(nativeCreatedDrop, "drop")).includes(
+        "if!self.must_transition{return;}ifletSome(process)=self.process.as_ref(){unsafe{let_=TerminateProcess(windows_handle(process.as_handle()),DESKTOP_PROCESS_TERMINATION_EXIT_CODE,);}}fail_fast()",
+      ) &&
+      compactRust(rustFunctionBlock(nativePendingDrop, "drop")).includes(
+        "ifself.must_wait_and_close{fail_fast();}",
+      ) &&
+      authSource.includes(
+        "fn desktop_process_owners_enforce_thread_and_join_boundaries()",
+      ) &&
+      authSysSource.includes(
+        "fn desktop_process_native_owners_have_exact_thread_traits()",
+      ) &&
+      authSysSource.includes(
+        "fn paired_security_and_startup_prefix_require_exact_non_inheriting_shape()",
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const mutateKeyAgentServiceDesktopProcessCreation = (
+  field,
+  search,
+  replacement,
+) => ({
+  ...keyAgentServiceDesktopProcessCreationInputs,
+  [field]: keyAgentServiceDesktopProcessCreationInputs[field].replace(
+    search,
+    replacement,
+  ),
+});
+const keyAgentServiceDesktopProcessCreationMutationProbes = [
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSource",
+    "        if self.desktop_process_creation_claimed.replace(true) {",
+    "        self.revalidate_with(ops)?;\n        if self.desktop_process_creation_claimed.replace(true) {",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSource",
+    "        self.revalidate_with(ops)\n    }\n\n    fn revalidate_effective_desktop_thread_with",
+    "        Ok(())\n    }\n\n    fn revalidate_effective_desktop_thread_with",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        | EXTENDED_STARTUPINFO_PRESENT.0,",
+    "        | EXTENDED_STARTUPINFO_PRESENT.0\n        | CREATE_BREAKAWAY_FROM_JOB.0,",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            None,\n            Some(ptr::from_ref(process_attributes)),",
+    "            Some(PWSTR::null()),\n            Some(ptr::from_ref(process_attributes)),",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            false,\n            DESKTOP_PROCESS_CREATION_FLAGS,",
+    "            true,\n            DESKTOP_PROCESS_CREATION_FLAGS,",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            Some(ptr::from_ref(thread_attributes)),",
+    "            None,",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        && process.lpSecurityDescriptor != thread.lpSecurityDescriptor",
+    "        && true",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "    match thread_token_state() {\n        Ok(ThreadTokenState::Clear) => {}\n        Ok(ThreadTokenState::Present) | Err(_) => {",
+    "    match thread_token_state() {\n        Ok(ThreadTokenState::Clear) => {}\n        Ok(ThreadTokenState::Present) => {",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            raw: MaybeUninit::uninit(),",
+    "            raw: MaybeUninit::zeroed(),",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        self.raw.as_mut_ptr()",
+    "        core::ptr::null_mut()",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "    const fn arm_success(&mut self) {\n        self.successful = true;\n    }",
+    "    const fn arm_success(&mut self) {\n        let _ = self;\n    }",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "    if result.is_err() {\n        return Err(NativeDesktopProcessCreateError::OperatingSystem);\n    }",
+    "    if result.is_err() {\n        let _ = NativeDesktopProcessCreateError::OperatingSystem;\n    }",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "    if invalid_handle(information.hProcess)\n        || invalid_handle(information.hThread)",
+    "    if invalid_handle(information.hThread)",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "    if invalid_handle(information.hProcess)\n        || invalid_handle(information.hThread)",
+    "    if invalid_handle(information.hProcess)",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        || information.hProcess == information.hThread",
+    "        || false",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            && GetProcessIdOfThread(information.hThread) == process_id.get()",
+    "            && true",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        || information.hProcess == information.hThread\n        || information.dwProcessId == 0",
+    "        || information.dwProcessId == 0",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        if GetProcessId(information.hProcess) == information.dwProcessId {",
+    "        if true {",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "            let _ = TerminateProcess(information.hProcess, DESKTOP_PROCESS_TERMINATION_EXIT_CODE);",
+    "            let _ = information.hProcess;",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "        if NonZeroU32::new(unsafe { GetCurrentThreadId() }) != Some(self.creator_thread_id) {",
+    "        if false {",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSysSource",
+    "const DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS: u32 = 5_000;",
+    "const DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS: u32 = u32::MAX;",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "authSource",
+    "pub(crate) struct AuthenticatedDesktopProcessCreateAttempt<'client> {",
+    "#[derive(Clone)]\npub(crate) struct AuthenticatedDesktopProcessCreateAttempt<'client> {",
+  ),
+  mutateKeyAgentServiceDesktopProcessCreation(
+    "inheritableSource",
+    "        (self.process, self.thread)",
+    "        (self.process, self.process)",
+  ),
+];
+const keyAgentServiceDesktopProcessCreationBase =
+  keyAgentServiceDesktopProcessCreationContract(
+    keyAgentServiceDesktopProcessCreationInputs,
+  );
+const keyAgentServiceDesktopProcessCreationMutationResults =
+  keyAgentServiceDesktopProcessCreationMutationProbes.map((probe) =>
+    keyAgentServiceDesktopProcessCreationContract(probe),
+  );
+requireInvariant(
+  keyAgentServiceDesktopProcessCreationBase &&
+    keyAgentServiceDesktopProcessCreationMutationProbes.every(
+      (probe, index) =>
+        Object.keys(probe).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceDesktopProcessCreationInputs[field],
+        ) && !keyAgentServiceDesktopProcessCreationMutationResults[index],
+    ),
+  "the dormant service launch boundary must irreversibly claim one authenticated desktop process attempt before revalidation, consume only the exact paired security/startup/environment inputs at the sole five-flag non-inheriting CreateProcessAsUserW call, ignore failed output bytes, adopt and validate every successful object exactly once, retain creator-thread affinity, and split asynchronous termination from post-join bounded consuming cleanup with effective mutations",
+);
+
+const keyAgentServiceCreatedChildInputs = Object.freeze({
+  targetSource: keyAgentServiceTargetProfileSource,
+  authSource:
+    keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.auth],
+});
+const keyAgentServiceCreatedChildContract = ({ targetSource, authSource }) => {
+  try {
+    const target = withoutBottomTestModule(targetSource);
+    const auth = withoutBottomTestModule(authSource);
+    const sysModule = rustLexicalItemBlock(target, /mod\s+sys\s*\{/u);
+    const preparedImpl = rustImplItems(target).find((item) =>
+      item.header.includes("PreparedTargetUserLpac<'client>"),
+    )?.source;
+    const genericClientImpl = rustImplItems(auth).find(
+      (item) => item.header === "impl<P, T> AuthenticatedClient<P, T>",
+    )?.source;
+    const windowsChildVerification = rustImplItems(target).find((item) =>
+      item.header.startsWith(
+        "impl<'client> CreatedChildVerificationOps for WindowsCreatedChildVerificationOps",
+      ),
+    )?.source;
+    if (
+      preparedImpl === undefined ||
+      genericClientImpl === undefined ||
+      windowsChildVerification === undefined
+    ) {
+      return false;
+    }
+    const verifyPublic = rustFunctionBlock(
+      preparedImpl,
+      "verify_created_process",
+    );
+    const revalidatePublic = rustFunctionBlock(
+      preparedImpl,
+      "revalidate_created_process",
+    );
+    const verify = rustFunctionBlock(target, "verify_created_child_with");
+    const revalidate = rustFunctionBlock(
+      target,
+      "revalidate_created_child_with",
+    );
+    const policy = rustFunctionBlock(
+      target,
+      "validate_created_child_token_policy",
+    );
+    const duplicateProcess = rustFunctionBlock(
+      sysModule,
+      "duplicate_process_query",
+    );
+    const sameProcess = rustFunctionBlock(sysModule, "require_same_process");
+    const openToken = rustFunctionBlock(sysModule, "open_child_token");
+    const sameToken = rustFunctionBlock(sysModule, "require_same_token");
+    const observe = rustFunctionBlock(sysModule, "observe_child_token");
+    const membership = rustFunctionBlock(
+      sysModule,
+      "observe_appcontainer_membership",
+    );
+    const childIdentity = rustFunctionBlock(
+      genericClientImpl,
+      "require_desktop_child_identity_with",
+    );
+    const validateChildIdentity = rustFunctionBlock(
+      auth,
+      "validate_desktop_child_identity",
+    );
+    const windowsSealExpected = rustFunctionBlock(
+      windowsChildVerification,
+      "seal_expected",
+    );
+    const windowsDuplicateProcess = rustFunctionBlock(
+      windowsChildVerification,
+      "duplicate_process",
+    );
+    const windowsSourceMatchesProcess = rustFunctionBlock(
+      windowsChildVerification,
+      "source_matches_process",
+    );
+    const windowsProcessFlagsAreZero = rustFunctionBlock(
+      windowsChildVerification,
+      "process_flags_are_zero",
+    );
+    const windowsProcessIsLive = rustFunctionBlock(
+      windowsChildVerification,
+      "process_is_live",
+    );
+    const windowsOpenToken = rustFunctionBlock(
+      windowsChildVerification,
+      "open_token",
+    );
+    const windowsTokenFlagsAreZero = rustFunctionBlock(
+      windowsChildVerification,
+      "token_flags_are_zero",
+    );
+    const windowsTokenIdentityIsDesktop = rustFunctionBlock(
+      windowsChildVerification,
+      "token_identity_is_desktop",
+    );
+    const windowsObserveToken = rustFunctionBlock(
+      windowsChildVerification,
+      "observe_token",
+    );
+    const windowsSameToken = rustFunctionBlock(
+      windowsChildVerification,
+      "same_token",
+    );
+    const windowsExpectedIsCurrent = rustFunctionBlock(
+      windowsChildVerification,
+      "expected_is_current",
+    );
+    const duplicateCalls = rustCallSites(duplicateProcess, "DuplicateHandle");
+    const openCalls = rustCallSites(openToken, "OpenProcessToken");
+    const membershipDuplicateCalls = rustCallSites(
+      membership,
+      "DuplicateTokenEx",
+    );
+    const membershipCalls = rustCallSites(
+      membership,
+      "CheckTokenMembershipEx",
+    );
+    const proof = rustLexicalItemBlock(
+      target,
+      /pub\(super\)\s+struct\s+VerifiedCreatedTargetLpac\b/u,
+    );
+    const compactTarget = compactRust(target);
+    return (
+      compactRust(proof) ===
+        "pub(super)structVerifiedCreatedTargetLpac<'client>{token:sys::OwnedChildToken,process_query:sys::OwnedProcessQuery,expected:SealedExpectedTargetProfile<'client>,_thread_bound:PhantomData<Rc<Cell<()>>>,}" &&
+      !/#\[derive\([^)]*(?:Clone|Copy)[^)]*\)\][\s\S]{0,120}struct\s+VerifiedCreatedTargetLpac/u.test(
+        target,
+      ) &&
+      !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+VerifiedCreatedTargetLpac/u.test(
+        rustLexicalCode(target),
+      ) &&
+      compactRust(policy) ===
+        "fnvalidate_created_child_token_policy(evidence:&CreatedChildTokenPolicyEvidence,)->Result<(),TargetUserLpacError>{if!evidence.token_is_primary||evidence.token_type_bytes!=size_of::<windows::Win32::Security::TOKEN_TYPE>()||evidence.session_id.is_none()||evidence.session_bytes!=size_of::<u32>()||!evidence.session_matches||evidence.is_appcontainer.value!=1||evidence.is_appcontainer.returned_bytes!=size_of::<u32>()||evidence.is_lpac.value!=1||evidence.is_lpac.returned_bytes!=size_of::<u32>()||evidence.appcontainer_sid_bytes<size_of::<windows::Win32::Security::TOKEN_APPCONTAINER_INFORMATION>()||evidence.appcontainer_sid!=AppContainerSidEvidence::Exact||evidence.capability_bytes<size_of::<u32>()||evidence.capability_count!=CAPABILITY_COUNT||evidence.membership!=AppContainerMembershipEvidence::Lpac{returnErr(TargetUserLpacError::Verification);}Ok(())}" &&
+      hasOrderedCompactMarkers(verify, [
+        "letexpected=ops.seal_expected()?",
+        "letprocess_query=ops.duplicate_process()?",
+        "ops.source_matches_process(&process_query)?",
+        "ops.process_flags_are_zero(&process_query)?",
+        "ops.process_is_live(&process_query)?",
+        "lettoken=ops.open_token(&process_query)?",
+        "ops.token_flags_are_zero(&token)?",
+        "ops.token_identity_is_desktop(&token,&expected)?",
+        "validate_created_child_token_policy(&ops.observe_token(&token,&expected)?)?",
+        "ops.expected_is_current(&expected)?",
+        "ops.source_matches_process(&process_query)?",
+        "ops.process_is_live(&process_query)?",
+        "letfresh=ops.open_token(&process_query)?",
+        "ops.token_flags_are_zero(&fresh)?",
+        "ops.same_token(&token,&fresh)?",
+        "ops.token_identity_is_desktop(&fresh,&expected)?",
+        "validate_created_child_token_policy(&ops.observe_token(&fresh,&expected)?)?",
+        "ops.expected_is_current(&expected)?",
+        "ops.source_matches_process(&process_query)?",
+        "ops.process_is_live(&process_query)?",
+        "Ok(VerifiedCreatedChildOwners{token,process_query,expected,})",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactRust(verify),
+        "ops.open_token(&process_query)?",
+      ) === 2 &&
+      keyAgentServiceLiteralCount(
+        compactRust(verify),
+        "ops.token_identity_is_desktop(",
+      ) === 2 &&
+      hasOrderedCompactMarkers(revalidate, [
+        "ops.expected_is_current(expected)?",
+        "ops.source_matches_process(process_query)?",
+        "ops.process_flags_are_zero(process_query)?",
+        "ops.process_is_live(process_query)?",
+        "ops.token_flags_are_zero(retained_token)?",
+        "ops.token_identity_is_desktop(retained_token,expected)?",
+        "validate_created_child_token_policy(&ops.observe_token(retained_token,expected)?)?",
+        "ops.expected_is_current(expected)?",
+        "ops.source_matches_process(process_query)?",
+        "ops.process_is_live(process_query)?",
+        "letfresh=ops.open_token(process_query)?",
+        "ops.token_flags_are_zero(&fresh)?",
+        "ops.same_token(retained_token,&fresh)?",
+        "ops.token_identity_is_desktop(&fresh,expected)?",
+        "validate_created_child_token_policy(&ops.observe_token(&fresh,expected)?)?",
+        "ops.expected_is_current(expected)?",
+        "ops.source_matches_process(process_query)?",
+        "ops.process_is_live(process_query)",
+      ]) &&
+      hasOrderedCompactMarkers(verifyPublic, [
+        "verify_created_child_with(&ops)?",
+        "Ok(VerifiedCreatedTargetLpac{token,process_query,expected,_thread_bound:PhantomData,})",
+      ]) &&
+      compactRust(revalidatePublic).includes(
+        "revalidate_created_child_with(&ops,&proof.process_query,&proof.token,&proof.expected)"
+      ) &&
+      compactRust(windowsSealExpected) ===
+        "fnseal_expected(&self)->Result<Self::Expected,TargetUserLpacError>{self.prepared.seal_expected_profile(self.context)}" &&
+      compactRust(windowsDuplicateProcess) ===
+        "fnduplicate_process(&self)->Result<Self::ProcessQuery,TargetUserLpacError>{sys::duplicate_process_query(self.process)}" &&
+      compactRust(windowsSourceMatchesProcess) ===
+        "fnsource_matches_process(&self,process:&Self::ProcessQuery,)->Result<(),TargetUserLpacError>{sys::require_same_process(self.process,process)}" &&
+      compactRust(windowsProcessFlagsAreZero) ===
+        "fnprocess_flags_are_zero(&self,process:&Self::ProcessQuery,)->Result<(),TargetUserLpacError>{sys::require_process_flags_zero(process)}" &&
+      compactRust(windowsProcessIsLive) ===
+        "fnprocess_is_live(&self,process:&Self::ProcessQuery)->Result<(),TargetUserLpacError>{sys::require_process_live(process)}" &&
+      compactRust(windowsOpenToken) ===
+        "fnopen_token(&self,process:&Self::ProcessQuery)->Result<Self::Token,TargetUserLpacError>{sys::open_child_token(process)}" &&
+      compactRust(windowsTokenFlagsAreZero) ===
+        "fntoken_flags_are_zero(&self,token:&Self::Token)->Result<(),TargetUserLpacError>{sys::require_token_flags_zero(token)}" &&
+      compactRust(windowsTokenIdentityIsDesktop) ===
+        "fntoken_identity_is_desktop(&self,token:&Self::Token,expected:&Self::Expected,)->Result<(),TargetUserLpacError>{expected.client.require_desktop_child_identity(token.borrowed_handle()).map_err(|_|TargetUserLpacError::Authentication)}" &&
+      compactRust(windowsObserveToken) ===
+        "fnobserve_token(&self,token:&Self::Token,expected:&Self::Expected,)->Result<CreatedChildTokenPolicyEvidence,TargetUserLpacError>{letobserved=sys::observe_child_token(token,expected.profile_sid.as_psid())?;expected.client.require_desktop_session(observed.session_id).map_err(|_|TargetUserLpacError::Authentication)?;Ok(observed.with_session_match())}" &&
+      compactRust(windowsSameToken) ===
+        "fnsame_token(&self,retained:&Self::Token,fresh:&Self::Token,)->Result<(),TargetUserLpacError>{sys::require_same_token(retained,fresh)}" &&
+      compactRust(windowsExpectedIsCurrent) ===
+        "fnexpected_is_current(&self,expected:&Self::Expected)->Result<(),TargetUserLpacError>{self.prepared.require_expected_profile(expected,self.context)}" &&
+      duplicateCalls.length === 1 &&
+      JSON.stringify(duplicateCalls[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "current_process",
+          "source",
+          "current_process",
+          "&rawmutduplicate",
+          "(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE).0",
+          "false",
+          "DUPLICATE_HANDLE_OPTIONS(0)",
+        ]) &&
+      compactRust(sameProcess).includes(
+        "require_handle_flags_zero(source)?;unsafe{CompareObjectHandles(source,duplicate.raw())}.as_bool().then_some(()).ok_or(TargetUserLpacError::Verification)"
+      ) &&
+      openCalls.length === 1 &&
+      JSON.stringify(openCalls[0].arguments.map(compactRust)) ===
+        JSON.stringify([
+          "process.raw()",
+          "TOKEN_QUERY|TOKEN_DUPLICATE",
+          "&rawmuttoken",
+        ]) &&
+      compactRust(sameToken).includes(
+        "CompareObjectHandles(retained.raw(),fresh.raw())",
+      ) &&
+      hasOrderedCompactMarkers(observe, [
+        "query_token_fixed(token.raw(),TokenType,&muttoken_type)?",
+        "query_token_dword(token.raw(),TokenSessionId)?",
+        "query_token_dword(token.raw(),TokenIsAppContainer)?",
+        "query_token_dword(token.raw(),TokenIsLessPrivilegedAppContainer)?",
+        "query_token_information(token.raw(),TokenAppContainerSid)?",
+        "equal_sid(observed_sid,expected_sid)?",
+        "query_token_information(token.raw(),TokenCapabilities)?",
+        "letmembership=observe_appcontainer_membership(token)?",
+      ]) &&
+      !/ERROR_INVALID_PARAMETER/u.test(rustLexicalCode(observe)) &&
+      membershipDuplicateCalls.length === 1 &&
+      JSON.stringify(
+        membershipDuplicateCalls[0].arguments.map(compactRust),
+      ) ===
+        JSON.stringify([
+          "token.raw()",
+          "TOKEN_QUERY",
+          "None",
+          "SecurityIdentification",
+          "TokenImpersonation",
+          "&rawmutimpersonation",
+        ]) &&
+      membershipCalls.length === 1 &&
+      compactRust(membership).includes(
+        "letregular=check(CTMF_INCLUDE_APPCONTAINER)?;letlpac=check(CTMF_INCLUDE_APPCONTAINER|CTMF_INCLUDE_LPAC)?;Ok(match(regular,lpac){(false,true)=>AppContainerMembershipEvidence::Lpac,(true,true)=>AppContainerMembershipEvidence::RegularAppContainer,(false,false)=>AppContainerMembershipEvidence::Neither,(true,false)=>AppContainerMembershipEvidence::Inverted,})",
+      ) &&
+      hasOrderedCompactMarkers(childIdentity, [
+        "self.revalidate_with(ops)?",
+        "letidentity=observe_child()",
+        "validate_desktop_child_identity(&self.desktop_primary,&child)",
+        "letpost_revalidation=self.revalidate_with(ops)",
+        "matchpost_revalidation",
+        "Ok(())=>identity",
+        "Err(error)=>Err(error)",
+      ]) &&
+      compactRust(validateChildIdentity) ===
+        "fnvalidate_desktop_child_identity(desktop:&TokenObservation,child:&TokenObservation,)->Result<(),RpcAuthError>{letchild_logon_sid_is_valid=child.logon_sid.as_ref().is_some_and(SidBytes::has_valid_length);ifchild.token_kind!=TokenKind::Primary||child.token_level!=TokenLevel::NotApplicable||!child.user_sid.has_valid_length()||child.logon_sid_count!=1||!child_logon_sid_is_valid||child.session_id==0||child.user_sid!=desktop.user_sid||child.logon_sid!=desktop.logon_sid||child.session_id!=desktop.session_id||child.authentication_id!=desktop.authentication_id{returnErr(RpcAuthError::AccessDenied);}Ok(())}" &&
+      targetSource.includes(
+        'formatter.write_str("VerifiedCreatedTargetLpac([REDACTED])")',
+      ) &&
+      targetSource.includes(
+        "fn created_child_verification_observes_full_policy_twice_and_owns_exact_evidence()",
+      ) &&
+      targetSource.includes(
+        "fn every_created_child_revalidation_failure_stops_at_the_exact_prefix()",
+      ) &&
+      authSource.includes(
+        "fn desktop_child_identity_is_narrow_and_post_revalidated_on_every_mismatch()",
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const mutateKeyAgentServiceCreatedChild = (field, search, replacement) => ({
+  ...keyAgentServiceCreatedChildInputs,
+  [field]: keyAgentServiceCreatedChildInputs[field].replace(
+    search,
+    replacement,
+  ),
+});
+const keyAgentServiceCreatedChildMutationProbes = [
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        || evidence.is_lpac.value != 1",
+    "        || evidence.is_lpac.value != 0",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        || evidence.capability_count != CAPABILITY_COUNT",
+    "        || false",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        || evidence.membership != AppContainerMembershipEvidence::Lpac",
+    "        || evidence.membership != AppContainerMembershipEvidence::RegularAppContainer",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "    ops.process_flags_are_zero(&process_query)?;",
+    "",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "    ops.same_token(&token, &fresh)?;",
+    "",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "    ops.same_token(retained_token, &fresh)?;",
+    "",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "            (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0,",
+    "            PROCESS_QUERY_LIMITED_INFORMATION.0,",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "                false,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+    "                true,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "unsafe { OpenProcessToken(process.raw(), TOKEN_QUERY | TOKEN_DUPLICATE, &raw mut token) }",
+    "unsafe { OpenProcessToken(process.raw(), TOKEN_QUERY, &raw mut token) }",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        let is_lpac = query_token_dword(token.raw(), TokenIsLessPrivilegedAppContainer)?;",
+    "        let is_lpac = query_token_dword(token.raw(), TokenIsAppContainer)?;",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        let lpac = check(CTMF_INCLUDE_APPCONTAINER | CTMF_INCLUDE_LPAC)?;",
+    "        let lpac = regular;",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "authSource",
+    "        || child.user_sid != desktop.user_sid",
+    "        || false",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "authSource",
+    "        || child.authentication_id != desktop.authentication_id",
+    "        || false",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "authSource",
+    "        let post_revalidation = self.revalidate_with(ops);",
+    "        let post_revalidation = Ok(());",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        sys::require_same_process(self.process, process)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        sys::require_process_live(process)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        expected\n            .client\n            .require_desktop_child_identity(token.borrowed_handle())\n            .map_err(|_| TargetUserLpacError::Authentication)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        expected\n            .client\n            .require_desktop_session(observed.session_id)\n            .map_err(|_| TargetUserLpacError::Authentication)?;",
+    "",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        Ok(observed.with_session_match())",
+    "        Ok(observed)",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        sys::require_same_token(retained, fresh)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "        self.prepared\n            .require_expected_profile(expected, self.context)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceCreatedChild(
+    "targetSource",
+    "pub(super) struct VerifiedCreatedTargetLpac<'client> {",
+    "#[derive(Clone)]\npub(super) struct VerifiedCreatedTargetLpac<'client> {",
+  ),
+];
+const keyAgentServiceCreatedChildBase = keyAgentServiceCreatedChildContract(
+  keyAgentServiceCreatedChildInputs,
+);
+const keyAgentServiceCreatedChildMutationResults =
+  keyAgentServiceCreatedChildMutationProbes.map((probe) =>
+    keyAgentServiceCreatedChildContract(probe),
+  );
+requireInvariant(
+  keyAgentServiceCreatedChildBase &&
+    keyAgentServiceCreatedChildMutationProbes.every(
+      (probe, index) =>
+        Object.keys(probe).some(
+          (field) => probe[field] !== keyAgentServiceCreatedChildInputs[field],
+        ) && !keyAgentServiceCreatedChildMutationResults[index],
+    ),
+  "created service children must retain an opaque thread-bound down-scoped process/token proof, exact source/fresh kernel-object continuity, zero handle flags and liveness, primary nonzero-session fixed-SID zero-capability LPAC policy with the exact AppContainer-denied/LPAC-allowed differential, authenticated desktop user/logon/session/AuthenticationId identity before and after observation, exhaustive revalidation, and effective mutation negatives",
+);
+
+const keyAgentServiceProcessCoordinatorTestNames = [
+  "post_create_verification_is_exact_and_every_prefix_fails_closed",
+  "application_path_is_absolute_bounded_and_exactly_nul_terminated",
+  "process_state_is_move_only_thread_bound_and_debug_is_data_free",
+  "fresh_debugger_runner_mints_one_exact_post_join_proof",
+];
+const keyAgentServiceProcessCoordinatorInput =
+  keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.process];
+const keyAgentServiceProcessCoordinatorContract = (processSource) => {
+  try {
+    const process = withoutBottomTestModule(processSource);
+    const runner = rustFunctionBlock(process, "run_on_fresh_debugger_thread");
+    const debuggerExitMatches = rustFunctionBlock(
+      process,
+      "debugger_exit_matches",
+    );
+    const freshDebuggerImpl = rustImplItems(process).find(
+      (item) => item.header === "impl FreshDebuggerThread",
+    )?.source;
+    if (freshDebuggerImpl === undefined) return false;
+    const requireFreshDebuggerThread = rustFunctionBlock(
+      freshDebuggerImpl,
+      "require_current",
+    );
+    const prepareApproval = rustFunctionBlock(process, "prepare_approval");
+    const prepareSecret = rustFunctionBlock(process, "prepare_secret_input");
+    const createSuspended = rustFunctionBlock(process, "create_suspended");
+    const createNative = rustFunctionBlock(process, "create_native_suspended");
+    const verifyPreCreate = rustFunctionBlock(process, "verify_pre_create");
+    const suspendedRevalidate = rustLexicalItemBlock(
+      rustImplItems(process).find((item) =>
+        item.header.startsWith("impl SuspendedServiceProbe"),
+      )?.source ?? "",
+      /pub\(super\)\s+fn\s+revalidate\s*\(/u,
+    );
+    const suspendedCleanup = rustFunctionBlock(
+      rustImplItems(process).find((item) =>
+        item.header.startsWith("impl SuspendedServiceProbe"),
+      )?.source ?? "",
+      "into_pending_cleanup",
+    );
+    const finishCleanup = rustFunctionBlock(
+      rustImplItems(process).find((item) =>
+        item.header === "impl PendingServiceProbeCleanup",
+      )?.source ?? "",
+      "finish_after_debugger_exit",
+    );
+    const verifyPostCreate = rustFunctionBlock(process, "verify_post_create");
+    const windowsVerification = rustImplItems(process).find((item) =>
+      item.header.startsWith(
+        "impl<'client> PostCreateVerificationOps for WindowsPostCreateVerification",
+      ),
+    )?.source;
+    if (windowsVerification === undefined) return false;
+    const revalidateClient = rustFunctionBlock(
+      windowsVerification,
+      "revalidate_client",
+    );
+    const verifyHelper = rustFunctionBlock(
+      windowsVerification,
+      "verify_helper",
+    );
+    const verifyServiceObjects = rustFunctionBlock(
+      windowsVerification,
+      "verify_service_objects",
+    );
+    const revalidateService = rustFunctionBlock(
+      windowsVerification,
+      "revalidate_service",
+    );
+    const verifyTarget = rustFunctionBlock(windowsVerification, "verify_target");
+    const verifyJob = rustFunctionBlock(windowsVerification, "verify_job");
+    const revalidateTarget = rustFunctionBlock(
+      windowsVerification,
+      "revalidate_target",
+    );
+    const revalidateContext = rustFunctionBlock(
+      windowsVerification,
+      "revalidate_context",
+    );
+    const compactProcess = compactRust(process);
+    const forbiddenApis = [
+      "CreateProcessAsUserW",
+      "CreateProcessW",
+      "DuplicateHandle",
+      "DuplicateTokenEx",
+      "WaitForDebugEvent",
+      "ContinueDebugEvent",
+      "ResumeThread",
+      "DebugActiveProcessStop",
+      "DebugSetProcessKillOnExit",
+      "RpcBindingFromStringBindingW",
+      "RpcServerListen",
+      "RpcServerRegisterIf3",
+    ];
+    return (
+      process.includes("#![allow(unsafe_code)]") &&
+      rustUnsafeKeywordCount(process) === 1 &&
+      forbiddenApis.every((api) => rustCallSites(process, api).length === 0) &&
+      processSource.includes(
+        'const DEBUGGER_THREAD_NAME: &str = "yw-key-agent-service-probe";',
+      ) &&
+      compactProcess.includes(
+        "pub(super)structFreshDebuggerThread{thread_id:ThreadId,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+      ) &&
+      compactProcess.includes(
+        "pub(super)structDebuggerThreadExitProof{thread_id:ThreadId,_thread_bound:PhantomData<Rc<Cell<()>>>,}",
+      ) &&
+      !/#\[derive\([^)]*(?:Clone|Copy)[^)]*\)\]\s*(?:pub\(super\)\s+)?struct\s+(?:FreshDebuggerThread|DebuggerThreadExitProof|ServiceProbeCreateInputs|SuspendedServiceProbe|PendingServiceProbeCleanup)\b/u.test(
+        process,
+      ) &&
+      !/unsafe\s+impl\s+(?:Send|Sync)\s+for\s+(?:FreshDebuggerThread|DebuggerThreadExitProof|ServiceProbeCreateInputs|SuspendedServiceProbe)\b/u.test(
+        rustLexicalCode(process),
+      ) &&
+      !/\bimpl(?:<[^>{}]*>)?\s+(?:Clone|Copy)\s+for\s+(?:FreshDebuggerThread|DebuggerThreadExitProof|JoinedFreshDebuggerThread|ServiceProbeCreateInputs|SuspendedServiceProbe|PendingServiceProbeCleanup)\b/u.test(
+        rustLexicalCode(process),
+      ) &&
+      compactRust(requireFreshDebuggerThread) ===
+        "fnrequire_current(&self)->Result<ThreadId,ServiceProbeCreateError>{ifthread::current().id()!=self.thread_id{returnErr(ServiceProbeCreateError::Verification);}Ok(self.thread_id)}" &&
+      hasOrderedCompactMarkers(runner, [
+        "thread::scope(|scope|",
+        "thread::Builder::new()",
+        ".name(DEBUGGER_THREAD_NAME.to_owned())",
+        ".spawn_scoped(scope,move||",
+        "letthread_id=thread::current().id()",
+        "letoutput=operation(FreshDebuggerThread{thread_id,_thread_bound:PhantomData,})",
+        "let(output,thread_id)=handle.join().map_err(|_|FreshDebuggerThreadError::Panic)?",
+        "Ok(JoinedFreshDebuggerThread{output,proof:DebuggerThreadExitProof{thread_id,_thread_bound:PhantomData,},})",
+      ]) &&
+      compactRust(runner).includes(
+        "whereOutput:Send,Operation:FnOnce(FreshDebuggerThread)->Output+Send",
+      ) &&
+      compactRust(debuggerExitMatches) ===
+        "fndebugger_exit_matches(creator_thread_id:ThreadId,proof:&DebuggerThreadExitProof)->bool{proof.thread_id==creator_thread_id}" &&
+      hasOrderedCompactMarkers(prepareApproval, [
+        "if!helper.is_approval_frontend()",
+        "letapplication_name=wide_nul_absolute_path(helper.path())?",
+        "context.recheck_thread()",
+        "PreparedServiceKeyAgentCreationSecurity::prepare(service_token)",
+        "PreparedTargetUserLpac::prepare_approval(client,context)",
+        "ServiceProbeJob::create_non_nested()",
+        "role:ServiceProbeRole::Approval",
+        "prepared.verify_helper_binding()?",
+      ]) &&
+      hasOrderedCompactMarkers(prepareSecret, [
+        "if!helper.is_secret_input_frontend()",
+        "letapplication_name=wide_nul_absolute_path(helper.path())?",
+        "context.recheck_thread()",
+        "PreparedServiceKeyAgentCreationSecurity::prepare(service_token)",
+        "PreparedTargetUserLpac::prepare_secret_input(client,context)",
+        "ServiceProbeJob::create_non_nested()",
+        "role:ServiceProbeRole::SecretInput",
+        "prepared.verify_helper_binding()?",
+      ]) &&
+      hasOrderedCompactMarkers(createSuspended, [
+        "letcreator_thread_id=matchdebugger_thread.require_current()",
+        "self.verify_pre_create()",
+        "self.create_native_suspended()",
+        "letmutoperations=WindowsPostCreateVerification",
+        "verify_post_create(&mutoperations)",
+        "letprocess=created.request_termination_into_pending_debugger_exit_cleanup()",
+        "self.into_pending_cleanup(Some(process),failure,creator_thread_id)",
+        "Ok(SuspendedServiceProbe",
+      ]) &&
+      hasOrderedCompactMarkers(createNative, [
+        "letstartup=ServiceProbeStartup::prepare(&self.job,&self.target)",
+        "startup.revalidate(self.context)",
+        "self.client.claim_desktop_process_creation()",
+        "self.service_security.creation_security_for_attempt()",
+        "letview=startup.process_creation_view()",
+        "unsafe{attempt.create_suspended_process(&self.application_name,creation_security,self.target.environment(),self.context.current_directory(),view.as_raw(),)}",
+        "drop(view)",
+        "drop(startup)",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactProcess,
+        ".claim_desktop_process_creation()",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        compactProcess,
+        ".create_suspended_process(",
+      ) === 1 &&
+      hasOrderedCompactMarkers(verifyPreCreate, [
+        "self.verify_helper_binding()?",
+        "self.context.recheck_thread()",
+        "self.service_security.revalidate()",
+        "self.target.revalidate(self.context)",
+        "self.job.recheck_non_nested()",
+        "self.client.revalidate()",
+      ]) &&
+      hasOrderedCompactMarkers(verifyPostCreate, [
+        "operations.revalidate_client()?",
+        "operations.verify_helper()?",
+        "operations.verify_service_objects()?",
+        "operations.revalidate_service()?",
+        "letproof=operations.verify_target()?",
+        "operations.verify_job()?",
+        "operations.revalidate_context()?",
+        "operations.revalidate_target(&proof)?",
+        "operations.revalidate_service()?",
+        "operations.revalidate_client()?",
+        "Ok(proof)",
+      ]) &&
+      compactRust(revalidateClient) ===
+        "fnrevalidate_client(&mutself)->Result<(),ServiceProbeCreateError>{self.client.revalidate().map_err(|_|ServiceProbeCreateError::Authentication)}" &&
+      hasOrderedCompactMarkers(verifyHelper, [
+        "letrole_matches=matchself.role",
+        "ServiceProbeRole::Approval=>self.helper.is_approval_frontend()",
+        "ServiceProbeRole::SecretInput=>self.helper.is_secret_input_frontend()",
+        "if!role_matches||wide_nul_absolute_path(self.helper.path())?.as_ref()!=self.application_name",
+        "returnErr(ServiceProbeCreateError::Helper)",
+        "Ok(())",
+      ]) &&
+      hasOrderedCompactMarkers(verifyServiceObjects, [
+        "self.service_security.verify_created_objects(self.created.process_handle(),self.created.primary_thread_handle(),)",
+      ]) &&
+      compactRust(revalidateService) ===
+        "fnrevalidate_service(&mutself)->Result<(),ServiceProbeCreateError>{self.service_security.revalidate().map_err(|_|ServiceProbeCreateError::ServiceSecurity)}" &&
+      hasOrderedCompactMarkers(verifyTarget, [
+        "self.target.verify_created_process(self.created.process_handle(),self.context)",
+      ]) &&
+      hasOrderedCompactMarkers(verifyJob, [
+        "self.job.contains_process(self.created.process_handle())",
+        "self.job.active_process_count()",
+        "if!contains||count!=1",
+      ]) &&
+      hasOrderedCompactMarkers(revalidateTarget, [
+        "self.target.revalidate_created_process(proof,self.created.process_handle(),self.context)",
+      ]) &&
+      compactRust(revalidateContext) ===
+        "fnrevalidate_context(&mutself)->Result<(),ServiceProbeCreateError>{self.context.recheck_thread().map_err(|_|ServiceProbeCreateError::ProcessContext)}" &&
+      compactRust(suspendedRevalidate).startsWith(
+        "pub(super)fnrevalidate(mutself)->Result<Self,PendingServiceProbeCleanup>",
+      ) &&
+      hasOrderedCompactMarkers(suspendedRevalidate, [
+        "self.debugger_thread.require_current()",
+        "verify_post_create(&mutoperations)",
+        "self.target.revalidate_created_process(&self.target_proof,self.created.process_handle(),self.context,)",
+        "drop(fresh)",
+        "ifretained.is_err()",
+        "Ok(self)",
+      ]) &&
+      hasOrderedCompactMarkers(suspendedCleanup, [
+        "letcreator_thread_id=debugger_thread.thread_id",
+        "letprocess=created.request_termination_into_pending_debugger_exit_cleanup()",
+        "letjob_request_failed=job.request_termination().is_err()",
+        "drop(target_proof)",
+        "PendingServiceProbeCleanup",
+      ]) &&
+      hasOrderedCompactMarkers(finishCleanup, [
+        "if!debugger_exit_matches(self.creator_thread_id,proof)",
+        "letprocess_result=matchself.process.take()",
+        "Some(process)=>process.wait_and_close()",
+        "letjob_result=self.job.finish_termination_and_wait()",
+        "ifself.job_request_failed||self.process_cleanup_failed||job_result.is_err()",
+        "Ok(self.failure)",
+      ]) &&
+      compactRust(finishCleanup).startsWith(
+        "pub(super)fnfinish_after_debugger_exit(&mutself,proof:&DebuggerThreadExitProof,)->Result<ServiceProbeCreateError,ServiceProbeCreateError>{if!debugger_exit_matches(self.creator_thread_id,proof){returnErr(ServiceProbeCreateError::Cleanup);}",
+      ) &&
+      JSON.stringify(keyAgentServiceRustTestNameInventory(processSource)) ===
+        JSON.stringify(keyAgentServiceProcessCoordinatorTestNames) &&
+      processSource.includes(
+        'formatter.write_str("FreshDebuggerThread([REDACTED])")',
+      ) &&
+      processSource.includes(
+        'formatter.write_str("PendingServiceProbeCleanup([REDACTED])")',
+      )
+    );
+  } catch {
+    return false;
+  }
+};
+const mutateKeyAgentServiceProcessCoordinator = (search, replacement) =>
+  keyAgentServiceProcessCoordinatorInput.replace(search, replacement);
+const keyAgentServiceProcessCoordinatorMutationProbes = [
+  mutateKeyAgentServiceProcessCoordinator(
+    'const DEBUGGER_THREAD_NAME: &str = "yw-key-agent-service-probe";',
+    'const DEBUGGER_THREAD_NAME: &str = "shared-debugger-thread";',
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    Output: Send,",
+    "    Output: 'static,",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    ".spawn_scoped(scope, move || {",
+    ".spawn(move || {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    proof.thread_id == creator_thread_id",
+    "    true",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        if thread::current().id() != self.thread_id {",
+    "        if false {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        if let Err(failure) = self.verify_pre_create() {",
+    "        if let Err(failure) = Ok(()) {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "            .creation_security_for_attempt()",
+    "            .creation_security()",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        let view = startup.process_creation_view();",
+    "        let view = startup.copyable_startup_info();",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    operations.verify_service_objects()?;",
+    "",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        if !contains || count != 1 {",
+    "        if !contains || count > 1 {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    operations.revalidate_target(&proof)?;",
+    "",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    pub(super) fn revalidate(mut self) -> Result<Self, PendingServiceProbeCleanup> {",
+    "    pub(super) fn revalidate(&mut self) -> Result<&mut Self, PendingServiceProbeCleanup> {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        let process = created.request_termination_into_pending_debugger_exit_cleanup();\n        let job_request_failed = job.request_termination().is_err();",
+    "        let job_request_failed = job.request_termination().is_err();\n        let process = created.request_termination_into_pending_debugger_exit_cleanup();",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        if !debugger_exit_matches(self.creator_thread_id, proof) {",
+    "        if false {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "    ) -> Result<ServiceProbeCreateError, ServiceProbeCreateError> {\n        if !debugger_exit_matches(self.creator_thread_id, proof) {",
+    "    ) -> Result<ServiceProbeCreateError, ServiceProbeCreateError> {\n        let _ = self.process.take();\n        if !debugger_exit_matches(self.creator_thread_id, proof) {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        let job_result = self.job.finish_termination_and_wait();",
+    "        let job_result = Ok(());",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        self.client\n            .revalidate()\n            .map_err(|_| ServiceProbeCreateError::Authentication)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        if !role_matches\n            || wide_nul_absolute_path(self.helper.path())?.as_ref() != self.application_name\n        {",
+    "        if false {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        self.service_security\n            .revalidate()\n            .map_err(|_| ServiceProbeCreateError::ServiceSecurity)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "        self.context\n            .recheck_thread()\n            .map_err(|_| ServiceProbeCreateError::ProcessContext)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "pub(super) struct FreshDebuggerThread {",
+    "#[derive(Clone)]\npub(super) struct FreshDebuggerThread {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "#[cfg(test)]\nmod tests {",
+    "impl Clone for FreshDebuggerThread { fn clone(&self) -> Self { unreachable!() } }\n#[cfg(test)]\nmod tests {",
+  ),
+  mutateKeyAgentServiceProcessCoordinator(
+    "#[cfg(test)]\nmod tests {",
+    "impl Copy for DebuggerThreadExitProof {}\n#[cfg(test)]\nmod tests {",
+  ),
+];
+const keyAgentServiceProcessCoordinatorBase =
+  keyAgentServiceProcessCoordinatorContract(keyAgentServiceProcessCoordinatorInput);
+const keyAgentServiceProcessCoordinatorMutationResults =
+  keyAgentServiceProcessCoordinatorMutationProbes.map((probe) =>
+    keyAgentServiceProcessCoordinatorContract(probe),
+  );
+requireInvariant(
+  keyAgentServiceProcessCoordinatorBase &&
+    keyAgentServiceProcessCoordinatorMutationProbes.every(
+      (probe, index) =>
+        probe !== keyAgentServiceProcessCoordinatorInput &&
+        !keyAgentServiceProcessCoordinatorMutationResults[index],
+    ),
+  "the dormant service probe coordinator must compose only fixed helpers, the retained restricted context, one-shot authenticated creation, paired service descriptors, fixed target LPAC/startup/Job owners, create on one fresh scoped debugger thread, verify descriptors and the exact child/process/token/Job facts while suspended, retain move-only thread-bound authority, and consume it into exact process-then-Job cleanup that only a matching joined-thread proof may finish",
+);
+
 const keyAgentServiceTokenDocumentationSpecs = [
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -9294,14 +10755,21 @@ const keyAgentServiceTokenDocumentationPatterns = [
   /(?:repeats\s+full\s+token\s+revalidation\s+after\s+descriptor\s+construction|repeats\s+the\s+same-object\/full-baseline(?:\s+token)?\s+check)/iu,
   /(?:authenticated\s+desktop\s+primary\s+token\s+is\s+not\s+(?:an\s+accepted\s+owner|accepted\s+as\s+the\s+descriptor\s+principal)|cannot\s+accept\s+the\s+desktop\s+launch\s+token)/iu,
   /(?:paired\s+process\/thread\s+creation\s+descriptors|two\s+distinct,\s+non-inheritable\s+process\/thread\s+security\s+descriptors|two\s+separate\s+non-inheritable\s+process\/thread\s+descriptors)/iu,
-  /(?:consume\s+(?:it|them)\s+once[\s\S]{0,100}(?:live|retain)[\s\S]{0,100}readback|one-shot\s+launch\s+consumption[\s\S]{0,300}(?:later\s+STOP-SHIP|remain\s+STOP-SHIP))/iu,
+  /(?:Required\s+privilege|Endpoint\s+squatting|privilege\s+enablement)[\s\S]{0,500}(?:remain\s+unproved|remain\s+(?:\*\*)?STOP-SHIP(?:\*\*)?|STOP-SHIP\s+work)/iu,
   /unnamed,?\s+non-nested[\s\S]{0,80}(?:one-process\s+)?Job/iu,
   /KILL_ON_JOB_CLOSE\s*\|\s*ACTIVE_PROCESS[\s\S]{0,160}(?:active-process limit must equal one|`?ActiveProcessLimit`?\s*(?:=\s*1|of one))/iu,
   /(?:creation attribute is lifetime-bound|lifetime-bound creation attribute|stable lifetime-bound creation-attribute storage)/iu,
   /(?:terminal\s+cleanup\s+is\s+bounded\s+and\s+Job-authoritative|bounded\s+whole-Job\s+cleanup|bounded\s+whole-Job\s+termination)/iu,
   /(?:No\s+RPC\s+operation|no\s+RPC\s+command|Neither\s+primitive\s+is\s+reachable\s+from\s+an\s+RPC\s+command|compile-only\s+primitives?\s+is\s+reachable\s+from\s+an\s+RPC\s+command|None\s+of\s+these\s+compile-only\s+primitives\s+is\s+reachable\s+from\s+an\s+RPC\s+command)/iu,
-  /(?:no[\s\S]{0,200}(?:process[- ]creation|`CreateProcessAsUserW`)|neither\s+calls\s+`CreateProcessAsUserW`)/iu,
-  /(?:no[\s\S]{0,180}(?:helper\s+entrypoint|executable\s+entrypoint)|helper\s+entrypoint\s+is\s+added|executable\s+entrypoint[\s\S]{0,40}using\s+these\s+primitives|reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable)/iu,
+  /(?:dormant[\s\S]{0,180}(?:sole|only)[\s\S]{0,80}`CreateProcessAsUserW`|sole\s+`CreateProcessAsUserW`[\s\S]{0,100}dormant|auth-owned\s+one-shot\s+attempt[\s\S]{0,120}sole\s+`CreateProcessAsUserW`)/iu,
+  /CREATE_SUSPENDED\s*\|\s*DEBUG_ONLY_THIS_PROCESS\s*\|\s*CREATE_NO_WINDOW\s*\|\s*CREATE_UNICODE_ENVIRONMENT\s*\|\s*EXTENDED_STARTUPINFO_PRESENT/iu,
+  /(?:no\s+command\s+line|command\s+line\s+is\s+null)[\s\S]{0,180}(?:inheritance\s+(?:is\s+)?false|inheritance\s+disabled|`bInheritHandles\s*=\s*FALSE`)/iu,
+  /(?:Native\s+success\s+is\s+adopted\s+immediately|Native\s+success\s+immediately\s+transfers|Native\s+success\s+is\s+adopted\s+immediately\s+into\s+move-only\s+owners)/iu,
+  /(?:child\s+(?:must\s+have|token\s+proof\s+requires|token\s+pair)[\s\S]{0,500}(?:LPAC|AppContainer)[\s\S]{0,500}(?:TokenUser|authenticated\s+desktop)|(?:LPAC|AppContainer)[\s\S]{0,500}(?:TokenUser|authenticated\s+desktop)[\s\S]{0,300}AuthenticationId)/iu,
+  /(?:fresh\s+(?:scoped\s+)?debugger\s+(?:OS\s+)?thread|fresh-debugger-thread\s+witness)[\s\S]{0,400}(?:receives?\s+or\s+continues?\s+no\s+debug\s+event|neither\s+receives?\/continues?\s+a\s+debug\s+event|never\s+receives?\s+or\s+continues?\s+a\s+debug\s+event|before\s+any\s+(?:child\s+code\s+or\s+)?debug\s+event)/iu,
+  /(?:requests?\s+termination\s+of\s+the\s+exact\s+child\s+first\s+and\s+then\s+latches\s+whole-Job\s+termination|requests?\s+exact-process\s+termination\s+and\s+then\s+whole-Job\s+termination|first\s+requests?\s+termination\s+of\s+the\s+exact\s+process\s+and\s+then\s+latches\s+whole-Job\s+termination)/iu,
+  /(?:(?:matching\s+)?(?:debugger\s+)?thread(?:-exit)?[\s\/]+join\s+proof[\s\S]{0,220}(?:bounded\s+process|Job\s+reap)|(?:exited\s+and\s+joined|matching\s+debugger\s+thread)[\s\S]{0,220}(?:bounded\s+process\s+wait|wait\/close|Job\s+completion)|bounded\s+process\s+and\s+Job\s+reap[\s\S]{0,160}matching\s+thread-exit\/join\s+proof|bounded\s+process\s+wait\/close[\s\S]{0,220}matching\s+debugger\s+thread[\s\S]{0,100}exited\s+and\s+joined)/iu,
+  /(?:No\s+RPC\s+operation\s+or\s+executable\s+consumes|no\s+RPC\s+command\s+or\s+executable\s+caller|not\s+reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable|None\s+of\s+these\s+compile-only\s+primitives\s+is\s+reachable\s+from\s+an\s+RPC\s+command\s+or\s+executable)/iu,
   /(?:fixed\s+Approval\s+(?:or|and)\s+Secret\s+Input|target-user\s+Approval\s+and\s+Secret\s+Input)/iu,
   /(?:auth(?:entication)?-owned\s+exact-once\s+impersonation\s+lease|must-use,\s+same-thread\s+impersonation\s+lease)/iu,
   /(?:never\s+exposed\s+as\s+a\s+raw\s+or\s+borrowed\s+handle|no\s+raw\s+or\s+borrowed-handle\s+getter|exposes\s+no[^.]{0,100}raw\s+owned\s+handle)/iu,
@@ -9333,6 +10801,22 @@ const keyAgentServiceTokenDocumentationWindow = (spec) => {
   };
 };
 const keyAgentServiceTokenDocumentationContract = (specs) =>
+  JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
+    JSON.stringify([
+      {
+        path: "docs/adr/0001-windows-key-agent-service-boundary.md",
+        anchor: "The manager path now derives one non-inheritable move-only",
+      },
+      {
+        path: "docs/designs/windows-key-agent-service.md",
+        anchor: "The manager-side debug path now duplicates",
+      },
+      {
+        path: "docs/security-decisions.md",
+        anchor:
+          "Only the manager path may turn that authenticated desktop observation",
+      },
+    ]) &&
   specs.every((spec) => {
     const window = keyAgentServiceTokenDocumentationWindow(spec);
     return (
@@ -9344,6 +10828,17 @@ const keyAgentServiceTokenDocumentationContract = (specs) =>
       !keyAgentServiceTokenDocumentationContradiction.test(window.source)
     );
   });
+const keyAgentServiceTokenDocumentationInventoryMutationProbes = [
+  keyAgentServiceTokenDocumentationSpecs.slice(1),
+  [
+    keyAgentServiceTokenDocumentationSpecs[1],
+    keyAgentServiceTokenDocumentationSpecs[0],
+    keyAgentServiceTokenDocumentationSpecs[2],
+  ],
+  keyAgentServiceTokenDocumentationSpecs.map((spec, index) =>
+    index === 2 ? { ...spec, path: "docs/architecture.md" } : spec,
+  ),
+];
 const keyAgentServiceTokenDocumentationMutationProbes =
   keyAgentServiceTokenDocumentationSpecs.flatMap((spec, specIndex) => {
     const window = keyAgentServiceTokenDocumentationWindow(spec);
@@ -9384,6 +10879,9 @@ requireInvariant(
   keyAgentServiceTokenDocumentationContract(
     keyAgentServiceTokenDocumentationSpecs,
   ) &&
+    keyAgentServiceTokenDocumentationInventoryMutationProbes.every(
+      (probe) => !keyAgentServiceTokenDocumentationContract(probe),
+    ) &&
     keyAgentServiceTokenDocumentationMutationProbes.every(
       (probe) =>
         probe !== keyAgentServiceTokenDocumentationSpecs &&
@@ -9394,7 +10892,7 @@ requireInvariant(
         probe !== keyAgentServiceTokenDocumentationSpecs &&
         !keyAgentServiceTokenDocumentationContract(probe),
     ),
-  "the bounded Phase 1 service windows must document exact manager-only primary-token rights, retained same-object/full-baseline service-token authority, service-principal-only paired creation security with post-build revalidation, the one-process unnamed non-nested Job, explicit remaining one-shot work, and no production-proof contradiction",
+  "the bounded Phase 1 service windows must document exact manager-only primary-token rights, retained same-object/full-baseline service-token authority, service-principal-only paired creation security with post-build revalidation, split-phase one-process Job cleanup, the dormant sole five-flag process call, exact created-child LPAC/desktop/object proof, fresh debugger-thread join authority, direct unreachability, and no production-proof contradiction",
 );
 
 const keyAgentServiceRpcEpochTestNames = [
@@ -13121,7 +14619,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "9b2e2d8046c3764b652f2f85bdeb6997261e02898d7797e799f31896dc2e4456";
+  "d9287d6975744cb838687dafd348a781f62baa544d491413379a171819ca7836";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -13211,7 +14709,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "139461857b9e85614d431f6b165fbc9b20f199d59bf563cf30aecc488a8bc27d",
+    sha256: "02c33fda93de8fe13143dc70311b1d9423c845ac3edaefe5c05e2f0e0c3607de",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -13333,7 +14831,6 @@ const forbiddenKeyAgentServiceScmApis = [
   "DeleteService",
   "SetServiceObjectSecurity",
   "CreateProcessAsUserA",
-  "CreateProcessAsUserW",
   ...keyAgentServiceRpcForbiddenRuntimeApis,
 ];
 const forbiddenKeyAgentServiceScmUsage = rustIdentifierUsageInventory(
@@ -13367,6 +14864,14 @@ const keyAgentServiceDesktopPrimaryDuplicateUsage =
   rustIdentifierUsageInventory(workspaceRustProductionFiles, [
     "DuplicateTokenEx",
   ]);
+const keyAgentServiceDesktopProcessCreateCallPaths =
+  workspaceRustProductionFiles.flatMap((file) =>
+    rustCallSites(file.source, "CreateProcessAsUserW").map(() => file.path),
+  );
+const keyAgentServiceDesktopProcessCreateUsage =
+  rustIdentifierUsageInventory(workspaceRustProductionFiles, [
+    "CreateProcessAsUserW",
+  ]);
 requireInvariant(
   JSON.stringify(keyAgentServiceScmRuntimeCallSites) ===
     JSON.stringify([
@@ -13391,11 +14896,20 @@ requireInvariant(
     JSON.stringify(keyAgentServiceRpcWorkspaceProtocolLiteralPaths) ===
       JSON.stringify([keyAgentServiceRpcFixturePaths.lifecycle]) &&
     JSON.stringify(keyAgentServiceDesktopPrimaryDuplicateCallPaths) ===
-      JSON.stringify([keyAgentServiceRpcFixturePaths.authSys]) &&
-    keyAgentServiceDesktopPrimaryDuplicateUsage.calls.length === 1 &&
+      JSON.stringify([
+        keyAgentServiceLaunchPaths.targetProfile,
+        keyAgentServiceRpcFixturePaths.authSys,
+      ]) &&
+    keyAgentServiceDesktopPrimaryDuplicateUsage.calls.length === 2 &&
     keyAgentServiceDesktopPrimaryDuplicateUsage.aliases.length === 0 &&
-    keyAgentServiceDesktopPrimaryDuplicateUsage.references.length === 0,
-  "the Key Agent service fixtures must keep exact runtime-only SCM and authenticated local-RPC callsites, with DuplicateTokenEx confined to the sole reviewed manager-token adapter, while installer/configuration/deletion/user-process launch, endpoint mapper, dynamic binding, alternate registration, aliased native APIs, and non-reviewed ncalrpc surfaces remain absent",
+    keyAgentServiceDesktopPrimaryDuplicateUsage.references.length === 0 &&
+    JSON.stringify(keyAgentServiceDesktopProcessCreateCallPaths) ===
+      JSON.stringify([keyAgentServiceRpcFixturePaths.authSys]) &&
+    keyAgentServiceDesktopProcessCreateUsage.calls.length === 1 &&
+    keyAgentServiceDesktopProcessCreateUsage.aliases.length === 0 &&
+    keyAgentServiceDesktopProcessCreateUsage.references.length === 0 &&
+    keyAgentServiceDesktopProcessCreateUsage.qualified.length === 0,
+  "the Key Agent service fixtures must keep exact runtime-only SCM and authenticated local-RPC callsites, confine DuplicateTokenEx to the reviewed manager/child-observation adapters and the sole CreateProcessAsUserW call to the one-shot auth adapter, while installer/configuration/deletion, endpoint mapper, dynamic binding, alternate registration, aliased native APIs, and non-reviewed ncalrpc surfaces remain absent",
 );
 const dynamicResolverUsageProbes = {
   alias: rustIdentifierUsageInventory(
@@ -16481,8 +17995,12 @@ requireInvariant(
         path: "crates/platform-windows/src/inheritable_handle_launch.rs",
         api: "CreateProcessW",
       },
+      {
+        path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+        api: "CreateProcessAsUserW",
+      },
     ]),
-  "workspace production process creation must remain confined to the sealed Windows coordinator and the exact debug-only Native Host contract hook",
+  "workspace production process creation must remain confined to the sealed Windows coordinator, the exact debug-only Native Host contract hook, and the dormant one-shot service-auth adapter",
 );
 requireInvariant(
   productionProcessCreationSites.every(
@@ -16700,6 +18218,17 @@ const expectedDuplicateHandleInventory = [
     desiredAccess: "0",
     inheritable: "false",
     options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
+    sourceProcess: "current_process",
+    sourceHandle: "source",
+    targetProcess: "current_process",
+    targetHandle: "&raw mut duplicate",
+    desiredAccess:
+      "(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE).0",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
   },
   {
     path: "crates/platform-windows/src/launch.rs",
@@ -20272,6 +21801,7 @@ requireInvariant(
     JSON.stringify([...restrictedContextConsumers].sort()) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_service_launch/process.rs",
         "crates/platform-windows/src/key_agent_service_launch/startup.rs",
         "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
         "crates/platform-windows/src/launch.rs",
@@ -20293,7 +21823,7 @@ requireInvariant(
         rustLexicalCode(file.source),
       ),
     ),
-  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two existing launchers plus the two compile-only service launch-input owners",
+  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two existing launchers plus the three composed compile-only service launch owners",
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(restrictedContextPrepare)) ===
@@ -21394,11 +22924,33 @@ requireInvariant(
   "workspace Rust compilation inputs must reject every inline machine-code escape hatch outside the separately reviewed Key Agent cooperative gate",
 );
 requireInvariant(
-  identifierUsageIsEmpty(workspacePointerFabricationUsage) &&
+  workspacePointerFabricationUsage.calls.length === 0 &&
+    workspacePointerFabricationUsage.aliases.length === 0 &&
+    workspacePointerFabricationUsage.qualified.length === 0 &&
+    workspacePointerFabricationUsage.tokens.transmute.length === 0 &&
+    workspacePointerFabricationUsage.tokens.transmute_copy.length === 0 &&
+    workspacePointerFabricationUsage.tokens.union.length === 0 &&
+    JSON.stringify(workspacePointerFabricationUsage.tokens.MaybeUninit) ===
+      JSON.stringify([
+        "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+        "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+        "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+      ]) &&
+    JSON.stringify(workspacePointerFabricationUsage.references) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+          name: "MaybeUninit",
+        },
+        {
+          path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+          name: "MaybeUninit",
+        },
+      ]) &&
     pointerFabricationUsageProbe.tokens.transmute.length === 1 &&
     pointerFabricationUsageProbe.tokens.MaybeUninit.length === 1 &&
     pointerFabricationUsageProbe.tokens.union.length === 1,
-  "workspace Rust compilation inputs must reject unreviewed function-pointer fabrication primitives",
+  "workspace Rust compilation inputs must reject unreviewed function-pointer fabrication primitives while retaining only the exact success-armed CreateProcessAsUserW output owner",
 );
 requireInvariant(
   JSON.stringify(workspaceForeignBlocks) ===
@@ -21881,6 +23433,7 @@ requireInvariant(
         "crates/platform-windows/src/key_agent_child_bootstrap.rs",
         "crates/platform-windows/src/key_agent_install_adoption.rs",
         "crates/platform-windows/src/key_agent_install_provenance.rs",
+        "crates/platform-windows/src/key_agent_service_launch/process.rs",
         "crates/platform-windows/src/key_agent_storage.rs",
         "crates/platform-windows/src/key_agent_supervisor.rs",
       ]) &&
@@ -29268,6 +30821,149 @@ function rustNamedFunctionDeclarationInventory(files, names) {
     );
 }
 
+const keyAgentServiceLaunchAuthorityNames = [
+  "claim_desktop_process_creation",
+  "create_process_as_desktop_user",
+  "create_suspended_process",
+  "creation_security_for_attempt",
+];
+const keyAgentServiceLaunchAuthorityProcessPath =
+  "crates/platform-windows/src/key_agent_service_launch/process.rs";
+const keyAgentServiceLaunchAuthorityDeclarationPaths = {
+  claim_desktop_process_creation:
+    "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+  create_process_as_desktop_user:
+    "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+  create_suspended_process:
+    "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+  creation_security_for_attempt:
+    "crates/platform-windows/src/key_agent_lpac.rs",
+};
+const keyAgentServiceLaunchAuthorityUsageContract = (files) => {
+  const declarations = rustNamedFunctionDeclarationInventory(
+    files,
+    keyAgentServiceLaunchAuthorityNames,
+  );
+  const usageByName = Object.fromEntries(
+    keyAgentServiceLaunchAuthorityNames.map((name) => {
+      const stripped = files.map((file) => {
+        if (keyAgentServiceLaunchAuthorityDeclarationPaths[name] !== file.path) {
+          return file;
+        }
+        const declaration = rustFunctionBlock(file.source, name);
+        return {
+          ...file,
+          source:
+            declaration.length === 0
+              ? file.source
+              : file.source.replace(declaration, ""),
+        };
+      });
+      return [name, rustIdentifierUsageInventory(stripped, [name])];
+    }),
+  );
+  const usage = {
+    tokens: Object.fromEntries(
+      keyAgentServiceLaunchAuthorityNames.map((name) => [
+        name,
+        usageByName[name].tokens[name],
+      ]),
+    ),
+    calls: keyAgentServiceLaunchAuthorityNames.flatMap(
+      (name) => usageByName[name].calls,
+    ),
+    aliases: keyAgentServiceLaunchAuthorityNames.flatMap(
+      (name) => usageByName[name].aliases,
+    ),
+    qualified: keyAgentServiceLaunchAuthorityNames.flatMap(
+      (name) => usageByName[name].qualified,
+    ),
+    references: keyAgentServiceLaunchAuthorityNames.flatMap(
+      (name) => usageByName[name].references,
+    ),
+  };
+  const expectedTokens = Object.fromEntries(
+    keyAgentServiceLaunchAuthorityNames.map((name) => [
+      name,
+      [
+        name === "create_process_as_desktop_user"
+          ? "crates/platform-windows/src/key_agent_service_rpc/auth.rs"
+          : keyAgentServiceLaunchAuthorityProcessPath,
+      ],
+    ]),
+  );
+  const expectedCalls = keyAgentServiceLaunchAuthorityNames.map((name) => ({
+    name,
+    path:
+      name === "create_process_as_desktop_user"
+        ? "crates/platform-windows/src/key_agent_service_rpc/auth.rs"
+        : keyAgentServiceLaunchAuthorityProcessPath,
+  }));
+  return (
+    JSON.stringify(declarations) ===
+      JSON.stringify([
+        {
+          name: "claim_desktop_process_creation",
+          path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+          raw: false,
+          generics: "",
+        },
+        {
+          name: "create_process_as_desktop_user",
+          path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+          raw: false,
+          generics: "",
+        },
+        {
+          name: "create_suspended_process",
+          path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+          raw: false,
+          generics: "",
+        },
+        {
+          name: "creation_security_for_attempt",
+          path: "crates/platform-windows/src/key_agent_lpac.rs",
+          raw: false,
+          generics: "",
+        },
+      ]) &&
+    JSON.stringify(usage.tokens) === JSON.stringify(expectedTokens) &&
+    JSON.stringify(
+      usage.calls
+        .map(({ name, path }) => ({ name, path }))
+        .sort((left, right) => left.name.localeCompare(right.name, "en")),
+    ) === JSON.stringify(expectedCalls) &&
+    usage.aliases.length === 0 &&
+    usage.references.length === 0 &&
+    JSON.stringify(
+      usage.qualified
+        .map(({ name, path }) => ({ name, path }))
+        .sort((left, right) => left.name.localeCompare(right.name, "en")),
+    ) === JSON.stringify(expectedCalls)
+  );
+};
+const keyAgentServiceLaunchAuthorityUsageMutationProbes =
+  keyAgentServiceLaunchAuthorityNames.map((name) =>
+    workspaceRustProductionFiles.map((file) =>
+      file.path ===
+      (name === "create_process_as_desktop_user"
+        ? "crates/platform-windows/src/key_agent_service_rpc/auth.rs"
+        : "crates/platform-windows/src/key_agent_service.rs")
+        ? {
+            ...file,
+            source: `${file.source}\nfn hidden_service_launch_authority_bypass() { let _ = unexpected.${name}(); }\n`,
+          }
+        : file,
+    ),
+  );
+requireInvariant(
+  keyAgentServiceLaunchAuthorityUsageContract(workspaceRustProductionFiles) &&
+    keyAgentServiceLaunchAuthorityUsageMutationProbes.every(
+      (probe) => !keyAgentServiceLaunchAuthorityUsageContract(probe),
+    ),
+  "the dormant service process-creation claim, authenticated attempt facade, inner native creation leaf, and per-attempt creation-security borrow must each have one declaration and exactly one intended production call/token consumer, with the outer authorities confined to key_agent_service_launch/process.rs, the native leaf confined to that facade, and second-caller mutations rejected",
+);
+
 function rustCompilationBindingEdgeInventory(files) {
   const nativeBindings = [];
   const includeMacros = [];
@@ -30516,11 +32212,11 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
-    sites: 4,
+    sites: 13,
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
-    sites: 8,
+    sites: 13,
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
@@ -30565,7 +32261,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/inheritable_handle_launch.rs",
     unsafeCount: 2,
-    sha256: "208bba5940316972d5b5db1803e4e11f19929fdcbf89230e9045410412346b24",
+    sha256: "3ef88f0c1f13158f1a895a207f0811679cb7e5e0ce0c64db18fa66fd231edf88",
   },
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
@@ -30580,7 +32276,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
     unsafeCount: 86,
-    sha256: "4a91afc19472c202bb2b5b29b23689406ca5e48c602de49d0c85a7e3af4e5605",
+    sha256: "3cd2ba5efd7d9bc43e1a22a9bdcb4f9648f50d3759cc2f1f91d753d903502063",
   },
   {
     path: "crates/platform-windows/src/key_agent_root_job.rs",
@@ -30590,7 +32286,12 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
     unsafeCount: 11,
-    sha256: "92ed1af1d822ed22107fbca66081cbfb0d356aface693e248678e153cf2601e8",
+    sha256: "13a8f1415f58336675c5821647c06dcf7e87bf9743fd2b5a61480593cefe8278",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/process.rs",
+    unsafeCount: 1,
+    sha256: "bff6eadfccdf786d138f4eacb081fecbea19ecac4d2a6b72438ec885bffd5bdf",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
@@ -30599,23 +32300,23 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
-    unsafeCount: 21,
-    sha256: "1de76f0bd7a9a5266094a821ac2f76aef5acbddd8f37c86a147a029002379295",
+    unsafeCount: 41,
+    sha256: "501d87ef14cee458acf02bd61911849a836fd89c957ddae890768735a0348e5d",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
-    unsafeCount: 2,
-    sha256: "a6afd999135e8d5601d5baf7108d3a211fe9f24ffbbb66518f0b8a7b6d4a3c74",
+    unsafeCount: 4,
+    sha256: "4e87233536fa915cd04215609822ff88361fa13208e5cdc8fa426ed29cf4dbcd",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
-    unsafeCount: 39,
-    sha256: "a4a0cf0c7f7c0332be02a3409c31843b9d46ff0574a140b2e4f28431da003787",
+    unsafeCount: 58,
+    sha256: "4b97444a6fdb7631ca779d8b33d540af3859c76d984084724315ae2bb5a3bfdf",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 11,
-    sha256: "9fc5491e4e49e037c36cb8d1f1c800b91e00c5ac742941704bb54d7ff42676d6",
+    sha256: "bd4a63ae9ffcac600658dc25ff1e8e3f6f81477f09bf40184db281af5ca04d89",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -30661,6 +32362,14 @@ const approvedPlatformWindowsVisibleGenericFunctionInventory = [
     name: "run_on_fresh_key_agent_debug_thread",
     signature:
       "fnrun_on_fresh_key_agent_debug_thread<T,E,F>(worker:F,)->Result<(T,JoinedKeyAgentDebugThreadProof),E>whereT:Send+'static,E:From<KeyAgentActivationError>+Send+'static,F:FnOnce(FreshKeyAgentDebugThread)->Result<T,E>+Send+'static,",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_launch/process.rs",
+    owner: "free",
+    visibility: "pub(super)",
+    name: "run_on_fresh_debugger_thread",
+    signature:
+      "fnrun_on_fresh_debugger_thread<Output,Operation>(operation:Operation,)->Result<JoinedFreshDebuggerThread<Output>,FreshDebuggerThreadError>whereOutput:Send,Operation:FnOnce(FreshDebuggerThread)->Output+Send,",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/dispatch.rs",
@@ -31124,7 +32833,7 @@ requireInvariant(
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
 );
 requireInvariant(
-  keyAgentLpacVisibilityCount === 35 &&
+  keyAgentLpacVisibilityCount === 36 &&
     JSON.stringify(keyAgentLpacVisibleFunctionInventory) ===
       JSON.stringify([
         {
@@ -31231,9 +32940,16 @@ requireInvariant(
           owner:
             "impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof>",
           visibility: "pub(crate)",
-          name: "creation_security",
+          name: "revalidate",
+          signature: "fnrevalidate(&mutself)->Result<(),KeyAgentLpacError>",
+        },
+        {
+          owner:
+            "impl<'proof> PreparedServiceKeyAgentCreationSecurity<'proof>",
+          visibility: "pub(crate)",
+          name: "creation_security_for_attempt",
           signature:
-            "fncreation_security(&self,)->crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_>",
+            "fncreation_security_for_attempt(&mutself,)->Result<crate::inheritable_handle_launch::ProcessThreadCreationSecurity<'_>,KeyAgentLpacError,>",
         },
         {
           owner:
@@ -31395,6 +33111,7 @@ requireInvariant(
       ]) &&
     platformWindowsExpansionSensitiveUseInventory.every((item) =>
       [
+        "usecore::mem::{MaybeUninit,align_of,offset_of,size_of};",
         "usecore::mem::{offset_of,size_of};",
         "usecore::mem::{offset_of,size_of,size_of_val};",
         "usecore::ptr;",
@@ -31415,7 +33132,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "139461857b9e85614d431f6b165fbc9b20f199d59bf563cf30aecc488a8bc27d" &&
+    "02c33fda93de8fe13143dc70311b1d9423c845ac3edaefe5c05e2f0e0c3607de" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -31588,6 +33305,7 @@ requireInvariant(
       "#[cfg(all(feature=,debug_assertions))]",
       "#[must_use=]",
       "#[allow(dead_code)]",
+      "#[cfg(all(feature=,debug_assertions))]",
       "#[cfg(all(feature=,debug_assertions))]",
       "#[cfg(all(feature=,debug_assertions))]",
       "#[cfg(all(feature=,debug_assertions))]",
@@ -31802,6 +33520,7 @@ requireInvariant(
         "#[cfg(all(feature=,debug_assertions))]",
         "#[must_use=]",
         "#[allow(dead_code)]",
+        "#[cfg(all(feature=,debug_assertions))]",
         "#[cfg(all(feature=,debug_assertions))]",
         "#[cfg(all(feature=,debug_assertions))]",
         "#[cfg(all(feature=,debug_assertions))]",
@@ -35777,7 +37496,7 @@ const approvedKeyAgentCreationDaclLeafSha256 = Object.freeze({
   pairConstructor:
     "91173bd2d4ebfd5b6b789fdb5ec876941a2e69699abe7b540d2fb8f9d607838c",
   createWrapper:
-    "07d3b2101dd9951ae5581b309731b3c9f420b7deb31935c6bf2dc5e64b3f83b4",
+    "16433dc14275610e06ecc3eb4be434bd7cce891c9983cf42a57bf3203aadb657",
   activationCreate:
     "fe53cdf954739fc9f9be2846ea2692652b65b08e10a187aa63073ab6676f49a6",
   activationFacade:
@@ -35846,6 +37565,7 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
   let pairDefinition;
   let pairImpl;
   let pairNew;
+  let pairAsPair;
   let flightImpl;
   let wrapperLeaf;
   let activationSys;
@@ -35993,6 +37713,7 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
       0,
     );
     pairNew = rustFunctionBlockAtDepth(pairImpl, "new", 1);
+    pairAsPair = rustFunctionBlockAtDepth(pairImpl, "as_pair", 1);
     flightImpl = rustLexicalItemBlockAtDepth(
       wrapperProduction,
       /impl\s+InheritableHandleLaunchFlight<'_>\s*\{/u,
@@ -36064,7 +37785,7 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
   const createInnerCalls = rustCallSites(activationProduction, "create_inner");
   const creationRelatedActivation = `${prepareProcess}\n${createProcess}\n${createInner}`;
   const creationRelatedLpac = `${prepare}\n${prepareFromPrincipalToken}\n${creationSecurityAccessor}\n${verifyObjects}\n${ownedFromSddl}\n${ownedDrop}\n${openCreationToken}\n${queryCreationToken}\n${validateTokenSid}\n${sidString}\n${wideNul}\n${tokenDrop}\n${verifyObject}\n${readObject}\n${validateFlags}\n${inspectDescriptor}\n${sidComponent}\n${validateSid}\n${readU16}\n${readU32}`;
-  const creationRelatedWrapper = `${pairNew}\n${wrapperLeaf}`;
+  const creationRelatedWrapper = `${pairNew}\n${pairAsPair}\n${wrapperLeaf}`;
   return (
     rustAuthorityInlineModuleContract(
       activationProduction,
@@ -36229,8 +37950,10 @@ const keyAgentCreationDaclDeepCrossSourceContract = ({
     compactRust(rustLexicalCode(intoSecurityParts)) ===
       "fninto_security_parts(self,)->(PreparedKeyAgentLpac,PreparedKeyAgentCreationSecurity,PinnedSystemNtdll,){(self.lpac,self.creation_security,self.system_ntdll)}" &&
     compactRust(pairNew).includes("Self{process,thread}") &&
+    compactRust(pairAsPair) ===
+      "pub(crate)constfnas_pair(self,)->(&'attributesSECURITY_ATTRIBUTES,&'attributesSECURITY_ATTRIBUTES,){(self.process,self.thread)}" &&
     compactRust(wrapperLeaf).includes(
-      "process_thread_security.map_or((None,None),|security|{(Some(core::ptr::from_ref(security.process)),Some(core::ptr::from_ref(security.thread)),)})",
+      "process_thread_security.map_or((None,None),|security|{let(process,thread)=security.as_pair();(Some(core::ptr::from_ref(process)),Some(core::ptr::from_ref(thread)),)})",
     ) &&
     createCalls.length === 1 &&
     createCalls[0]?.arguments.length === 10 &&
@@ -36534,7 +38257,7 @@ const keyAgentCreationDaclProductionMutationProbes = [
     wrapperSource: replaceInsideExactRustItem(
       inheritableHandleLaunchSource,
       inheritableCreateProcessLeaf,
-      "Some(core::ptr::from_ref(security.thread))",
+      "Some(core::ptr::from_ref(thread))",
       "None",
     ),
   },
@@ -37029,6 +38752,7 @@ const keyAgentCreationDaclWrapperContract = (source) => {
   let definition;
   let implementation;
   let constructor;
+  let asPair;
   let flightImpl;
   let createLeaf;
   try {
@@ -37044,6 +38768,7 @@ const keyAgentCreationDaclWrapperContract = (source) => {
       0,
     );
     constructor = rustFunctionBlockAtDepth(implementation, "new", 1);
+    asPair = rustFunctionBlockAtDepth(implementation, "as_pair", 1);
     flightImpl = rustLexicalItemBlockAtDepth(
       production,
       /impl\s+InheritableHandleLaunchFlight<'_>\s*\{/u,
@@ -37058,7 +38783,7 @@ const keyAgentCreationDaclWrapperContract = (source) => {
     return false;
   }
   const calls = rustCallSites(createLeaf, "CreateProcessW");
-  const wrapperBoundary = `${constructor}\n${createLeaf}`;
+  const wrapperBoundary = `${constructor}\n${asPair}\n${createLeaf}`;
   return (
     rustAuthorityImplHeaderContract(
       production,
@@ -37088,8 +38813,10 @@ const keyAgentCreationDaclWrapperContract = (source) => {
     compactRust(rustLexicalCode(definition)) ===
       "pub(crate)structProcessThreadCreationSecurity<'attributes>{process:&'attributesSECURITY_ATTRIBUTES,thread:&'attributesSECURITY_ATTRIBUTES,}" &&
     compactRust(constructor).includes("Self{process,thread}") &&
+    compactRust(asPair) ===
+      "pub(crate)constfnas_pair(self,)->(&'attributesSECURITY_ATTRIBUTES,&'attributesSECURITY_ATTRIBUTES,){(self.process,self.thread)}" &&
     compactRust(createLeaf).includes(
-      "process_thread_security.map_or((None,None),|security|{(Some(core::ptr::from_ref(security.process)),Some(core::ptr::from_ref(security.thread)),)})",
+      "process_thread_security.map_or((None,None),|security|{let(process,thread)=security.as_pair();(Some(core::ptr::from_ref(process)),Some(core::ptr::from_ref(thread)),)})",
     ) &&
     calls.length === 1 &&
     compactRust(calls[0]?.arguments[2] ?? "") === "process_attributes" &&
@@ -37278,6 +39005,20 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+  ].sort();
+  const expectedPairReferences = [
+    wrapperPath,
+    wrapperPath,
+    wrapperPath,
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+    "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
   ].sort();
   const expectedCreationPolicyTokens = [
     "crates/platform-windows/src/key_agent_activation.rs",
@@ -37292,10 +39033,12 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
   ].sort();
   const expectedCreationPolicyReferences = [
     "crates/platform-windows/src/key_agent_activation.rs",
     "crates/platform-windows/src/key_agent_activation.rs",
+    "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
     "crates/platform-windows/src/key_agent_lpac.rs",
@@ -37326,7 +39069,7 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
       JSON.stringify(expectedPairTokens) &&
     JSON.stringify(
       pairUsage.references.map((usage) => usage.path).sort(),
-    ) === JSON.stringify(expectedPairTokens) &&
+    ) === JSON.stringify(expectedPairReferences) &&
     creationPolicyUsage.aliases.length === 0 &&
     creationPolicyUsage.calls.length === 0 &&
     creationPolicyUsage.qualified.length === 0 &&
@@ -37370,16 +39113,18 @@ const keyAgentCreationDaclAuthorityUsageContract = (files) => {
     { name: "creation_security", path: activationPath },
     { name: "creation_security", path: lpacPath },
     { name: "creation_security", path: lpacPath },
-    { name: "creation_security", path: lpacPath },
     { name: "verify_created_objects", path: activationPath },
     { name: "verify_created_objects", path: lpacPath },
     { name: "verify_created_objects", path: lpacPath },
     { name: "verify_created_objects", path: lpacPath },
+    {
+      name: "verify_created_objects",
+      path: "crates/platform-windows/src/key_agent_service_launch/process.rs",
+    },
   ]
     .sort((left, right) => left.name.localeCompare(right.name));
   const expectedDeclarations = [
     "prepare_creation_security",
-    "creation_security",
     "creation_security",
     "verify_created_objects",
     "verify_created_objects",
@@ -37989,7 +39734,7 @@ const approvedKeyAgentCreationDaclTestEvidenceSha256 = Object.freeze({
   threadHandlesDropRaw:
     "52182c0ac19f7cf2d74703c44e8849e7730437772ae8776351f7d23ce2521e38",
   evidenceModuleRaw:
-    "0669ed683f47807769becc0eee78c664251e1c5ca0eea8a59e43b23145e1c162",
+    "a1ad0437eef2caf9a1b75ee97c9fe55751926a088e628a9d4eb7bb4915726b11",
 });
 const keyAgentCreationDaclTestMutationProbes = [
   replaceInsideExactRustItem(
@@ -38296,11 +40041,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
   "docs/architecture.md":
-    "8a603b7049104d240cfdec05587771153b3d620989f3d02a22ccc1608793d1cd",
+    "dc44b1ed6b6f36d67e94c37f2992eaaa96efd060ac9444480af3924e9c25b0aa",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "1d14cbf42b0d9b8d4cbfca8c21c091981dcfadafd591e0c8be448174b16aafb4",
+    "001f03b174d5f17e07c42a55aa180448d1fe8b8d47c8ef845562ec527baf6971",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -43778,7 +45523,7 @@ const approvalParentDocumentationWindow = (document) => {
   ].map((match) => match.index);
   return [
     ...anchors.map((anchor) =>
-      document.slice(Math.max(0, anchor - 700), anchor + 36_000),
+      document.slice(Math.max(0, anchor - 700), anchor + 40_000),
     ),
     ...mandatoryLabelAnchors.map((anchor) =>
       document.slice(Math.max(0, anchor - 240), anchor + 520),
@@ -43796,7 +45541,7 @@ const approvalParentTokenContinuityContract = (window, normalizedWindow) => {
   }
   const continuity = normalizedWindow.slice(
     Math.max(0, start - 240),
-    start + 28_100,
+    start + 30_100,
   );
   const semanticContinuity = continuity.replaceAll("`", "");
   const initialMarkers = [
@@ -44059,20 +45804,19 @@ const currentCreationSecurityDocumentationContract = (documents) =>
   });
 const currentDebuggerExitDocumentationContradiction =
   /DebugSetProcessKillOnExit[\s\S]{0,160}(?:is|are|was|were)?\s*(?:not used|unused|never used)|DebugSetProcessKillOnExit[\s\S]{0,120}(?:with\s+)?(?:TRUE|non[- ]FALSE)|witness(?:es)?[\s\S]{0,160}(?:is|are|was|were)?\s*(?:not used|unused|never used)|(?:no|zero)\s+(?:OS\s+)?threads?\s+(?:is|are|was|were)?\s*joined|threads?[\s\S]{0,100}(?:is|are|was|were)?\s*never joined|cleanup[\s\S]{0,160}(?:does not|doesn't|never)[\s\S]{0,120}(?:wait(?:s|ed)?\s+for|join(?:s|ed)?)[\s\S]{0,120}debugger(?: OS)? thread|cleanup\s+returns?\s+before[\s\S]{0,80}debugger(?: OS)? thread[\s\S]{0,40}(?:terminates?|exits?)|debugging worker[\s\S]{0,80}(?:may|can|does|will)\s+outlive\s+activation|teardown[\s\S]{0,80}(?:does not|doesn't|never)[\s\S]{0,60}synchroniz(?:e|es|ed|ation)[\s\S]{0,80}(?:debugging worker|debugger(?: OS)? thread|it)/iu;
-const currentDebuggerExitDocumentationWindow = (document) => {
+const currentDebuggerExitDocumentationWindows = (document) => {
   const normalized = document.replaceAll("\\|", "|");
-  const anchor = normalized.indexOf("DebugSetProcessKillOnExit");
-  return anchor === -1
-    ? ""
-    : normalized.slice(Math.max(0, anchor - 8_000), anchor + 6_000);
+  return [...normalized.matchAll(/DebugSetProcessKillOnExit/gu)].map((match) =>
+    normalized.slice(Math.max(0, match.index - 8_000), match.index + 6_000),
+  );
 };
+const currentDebuggerExitDocumentationWindow = (document) =>
+  currentDebuggerExitDocumentationWindows(document).join("\n");
 const currentDebuggerExitDocumentationContract = (documents) =>
   documents.every((document) => {
-    const window = currentDebuggerExitDocumentationWindow(document);
-    if (window.length === 0) {
-      return false;
-    }
-    return (
+    const windows = currentDebuggerExitDocumentationWindows(document);
+    return windows.some((window) =>
+      (
       /\bOS\s+thread\b/u.test(window) &&
       window.includes("witness") &&
       window.includes("DebugSetProcessKillOnExit") &&
@@ -44084,14 +45828,15 @@ const currentDebuggerExitDocumentationContract = (documents) =>
       /post-join/iu.test(window) &&
       /shared\s+(?:join-)?cleanup\s+(?:owner|registry)/iu.test(window) &&
       !currentDebuggerExitDocumentationContradiction.test(document)
+      )
     );
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "e5d8105f85f6b134972cd06473a3e0ae74f7a27a1e233aad94219134ad72d4e7",
-  "8a603b7049104d240cfdec05587771153b3d620989f3d02a22ccc1608793d1cd",
+  "dc44b1ed6b6f36d67e94c37f2992eaaa96efd060ac9444480af3924e9c25b0aa",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "1d14cbf42b0d9b8d4cbfca8c21c091981dcfadafd591e0c8be448174b16aafb4",
+  "001f03b174d5f17e07c42a55aa180448d1fe8b8d47c8ef845562ec527baf6971",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
