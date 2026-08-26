@@ -5,22 +5,34 @@ use core::fmt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
 use windows::Win32::Foundation::{
-    CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
+    CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, FILETIME,
     GetHandleInformation, HANDLE,
 };
-use windows::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+use windows::Win32::Storage::FileSystem::{
+    FILE_TYPE_PIPE, FlushFileBuffers, GetFileType, ReadFile, WriteFile,
+};
 use windows::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
 
-use super::{REQUEST_INPUT_MARKER, RESPONSE_OUTPUT_MARKER};
+use crate::gate_spec::{
+    ADOPTION_COMPLETE_R10_MARKER, ADOPTION_COMPLETE_R11_MARKER, REQUEST_INPUT_MARKER,
+    RESPONSE_OUTPUT_MARKER,
+};
+use crate::wire::{
+    HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HelperAdoptionAck,
+    HelperBootstrapHello, HelperBootstrapRole,
+};
 
 const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0001;
 const RESPONSE_OUTPUT_DUPLICATE_ACCESS: u32 = 0x0010_0002;
 const DUPLICATE_OPTIONS_NONE: u32 = 0;
 const EXPECTED_HANDLE_FLAGS: u32 = 0;
 const EXPECTED_FILE_TYPE: u32 = FILE_TYPE_PIPE.0;
+const MAX_BOOTSTRAP_WINDOW_MILLISECONDS: u64 = 5_000;
 
 /// Fixed capture gate authenticated and edited by the service debugger.
 ///
@@ -48,6 +60,22 @@ unsafe extern "C" fn injected_channel_capture_gate(
     );
 }
 
+/// Independent gate proving that identity checks and the acknowledgement have
+/// completed while the parent debugger still controls child resumption.
+#[unsafe(naked)]
+unsafe extern "C" fn injected_channel_adoption_complete_gate() {
+    core::arch::naked_asm!(
+        "movabs r10, {r10_marker}",
+        "movabs r11, {r11_marker}",
+        "int3",
+        "xor r10d, r10d",
+        "xor r11d, r11d",
+        "ret",
+        r10_marker = const ADOPTION_COMPLETE_R10_MARKER,
+        r11_marker = const ADOPTION_COMPLETE_R11_MARKER,
+    );
+}
+
 #[inline(never)]
 fn capture_candidate_words() -> [u64; 2] {
     let mut request_input = 0_u64;
@@ -61,11 +89,21 @@ fn capture_candidate_words() -> [u64; 2] {
     [request_input, response_output]
 }
 
+#[inline(never)]
+fn enter_adoption_complete_gate() {
+    // SAFETY: this leaf has no Rust-level inputs or outputs. Its only purpose
+    // is the authenticated debugger breakpoint; after the debugger continues,
+    // it clears both marker registers before returning normally.
+    unsafe {
+        injected_channel_adoption_complete_gate();
+    }
+}
+
 /// Windows-owned half of the opaque public adoption proof.
 pub(super) struct AdoptedInjectedChannels {
-    _request_input: FreshHandle,
-    _response_output: FreshHandle,
-    _source_access_and_direction: UnverifiedSourceAccessAndDirection,
+    request_input: FreshHandle,
+    response_output: FreshHandle,
+    source_access_and_direction: UnverifiedSourceAccessAndDirection,
 }
 
 impl fmt::Debug for AdoptedInjectedChannels {
@@ -80,9 +118,43 @@ pub(super) fn capture_and_adopt_injected_channels() -> Result<AdoptedInjectedCha
     let (request_input, response_output) =
         adopt_candidate_words(&mut operations, request_input, response_output)?;
     Ok(AdoptedInjectedChannels {
-        _request_input: request_input,
-        _response_output: response_output,
-        _source_access_and_direction: UnverifiedSourceAccessAndDirection,
+        request_input,
+        response_output,
+        source_access_and_direction: UnverifiedSourceAccessAndDirection,
+    })
+}
+
+/// Windows-owned half of opaque ownership after bootstrap completion.
+pub(super) struct BootstrappedInjectedChannels {
+    _request_input: FreshHandle,
+    _response_output: FreshHandle,
+    _source_access_and_direction: UnverifiedSourceAccessAndDirection,
+}
+
+impl fmt::Debug for BootstrappedInjectedChannels {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BootstrappedInjectedChannels([OWNED PIPE HANDLES])")
+    }
+}
+
+pub(super) fn complete_injected_channel_bootstrap(
+    channels: AdoptedInjectedChannels,
+    expected_role: HelperBootstrapRole,
+) -> Result<BootstrappedInjectedChannels, ()> {
+    let request_input = channels.request_input.word();
+    let response_output = channels.response_output.word();
+    let mut operations = WindowsBootstrapOperations;
+    complete_bootstrap_with_operations(
+        &mut operations,
+        request_input,
+        response_output,
+        expected_role,
+    )?;
+
+    Ok(BootstrappedInjectedChannels {
+        _request_input: channels.request_input,
+        _response_output: channels.response_output,
+        _source_access_and_direction: channels.source_access_and_direction,
     })
 }
 
@@ -90,8 +162,11 @@ pub(super) fn capture_and_adopt_injected_channels() -> Result<AdoptedInjectedCha
 ///
 /// The supported Win32 queries in this seam prove handle validity, flags,
 /// kernel type, and object identity. They do not expose the source handles'
-/// exact granted access or anonymous-pipe direction, and `DuplicateHandle`
+/// exact granted access or effective pipe direction, and `DuplicateHandle`
 /// with an explicit desired mask is not itself a proof of either source fact.
+/// Nor does the minimum-rights request handle authorize a supported queued-byte
+/// query: exact framing therefore relies on the trusted service-owned sole
+/// writer boundary, without claiming independent trailing-byte attribution.
 #[derive(Debug)]
 struct UnverifiedSourceAccessAndDirection;
 
@@ -239,6 +314,91 @@ fn validate_no_standard_stream_alias<Operations: HandleOperations>(
     Ok(())
 }
 
+trait BootstrapOperations {
+    fn read_request(&mut self, handle: HandleWord, buffer: &mut [u8]) -> Result<usize, ()>;
+    fn current_process_id(&mut self) -> Result<u32, ()>;
+    fn current_process_creation_filetime(&mut self) -> Result<u64, ()>;
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()>;
+    fn named_pipe_client_process_id(&mut self, handle: HandleWord) -> Result<u32, ()>;
+    fn write_response(&mut self, handle: HandleWord, bytes: &[u8]) -> Result<usize, ()>;
+    fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()>;
+    fn enter_adoption_complete_gate(&mut self);
+}
+
+fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
+    operations: &mut Operations,
+    request_input: HandleWord,
+    response_output: HandleWord,
+    expected_role: HelperBootstrapRole,
+) -> Result<(), ()> {
+    let hello_bytes =
+        read_exact_request::<HELPER_BOOTSTRAP_HELLO_BYTES, _>(operations, request_input)?;
+    let hello = HelperBootstrapHello::decode(&hello_bytes).map_err(|_| ())?;
+    if hello.role() != expected_role {
+        return Err(());
+    }
+
+    if operations.current_process_id()? != hello.child_process_id().get()
+        || operations.current_process_creation_filetime()? != hello.child_creation_filetime().get()
+    {
+        return Err(());
+    }
+
+    let now = operations.tick_count_milliseconds()?;
+    let deadline = hello.deadline_tick_count_ms().get();
+    if now >= deadline || deadline - now > MAX_BOOTSTRAP_WINDOW_MILLISECONDS {
+        return Err(());
+    }
+
+    let service_process_id = hello.service_process_id().get();
+    if operations.named_pipe_client_process_id(request_input)? != service_process_id
+        || operations.named_pipe_client_process_id(response_output)? != service_process_id
+    {
+        return Err(());
+    }
+
+    let acknowledgement =
+        HelperAdoptionAck::new(hello.epoch_nonce(), hello.request_id(), hello.role()).encode();
+    write_exact_response(operations, response_output, &acknowledgement)?;
+    operations.flush_response(response_output)?;
+    operations.enter_adoption_complete_gate();
+    Ok(())
+}
+
+fn read_exact_request<const N: usize, Operations: BootstrapOperations>(
+    operations: &mut Operations,
+    handle: HandleWord,
+) -> Result<[u8; N], ()> {
+    let mut bytes = [0_u8; N];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let remaining = bytes.len() - offset;
+        let read = operations.read_request(handle, &mut bytes[offset..])?;
+        if read == 0 || read > remaining {
+            return Err(());
+        }
+        offset += read;
+    }
+    Ok(bytes)
+}
+
+fn write_exact_response<Operations: BootstrapOperations>(
+    operations: &mut Operations,
+    handle: HandleWord,
+    bytes: &[u8; HELPER_ADOPTION_ACK_BYTES],
+) -> Result<(), ()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let remaining = bytes.len() - offset;
+        let written = operations.write_response(handle, &bytes[offset..])?;
+        if written == 0 || written > remaining {
+            return Err(());
+        }
+        offset += written;
+    }
+    Ok(())
+}
+
 struct FreshHandle {
     _owner: OwnedHandle,
     word: HandleWord,
@@ -329,6 +489,98 @@ impl HandleOperations for WindowsHandleOperations {
     }
 }
 
+#[derive(Debug)]
+struct WindowsBootstrapOperations;
+
+impl BootstrapOperations for WindowsBootstrapOperations {
+    fn read_request(&mut self, handle: HandleWord, buffer: &mut [u8]) -> Result<usize, ()> {
+        let mut read = 0_u32;
+        // SAFETY: the adopted handle remains owned for the call, `buffer` is a
+        // live writable slice, the count pointer is live, and this synchronous
+        // bootstrap path deliberately supplies no OVERLAPPED state.
+        unsafe {
+            ReadFile(
+                native_handle(handle)?,
+                Some(buffer),
+                Some(&raw mut read),
+                None,
+            )
+        }
+        .map_err(|_| ())?;
+        usize::try_from(read).map_err(|_| ())
+    }
+
+    fn current_process_id(&mut self) -> Result<u32, ()> {
+        // SAFETY: this scalar query takes no caller-provided pointers.
+        Ok(unsafe { GetCurrentProcessId() })
+    }
+
+    fn current_process_creation_filetime(&mut self) -> Result<u64, ()> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: the pseudo-handle designates this process and all four output
+        // pointers name initialized, live FILETIME storage.
+        unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        }
+        .map_err(|_| ())?;
+        Ok(filetime_word(creation))
+    }
+
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+        // SAFETY: this scalar system-information query has no arguments.
+        Ok(unsafe { GetTickCount64() })
+    }
+
+    fn named_pipe_client_process_id(&mut self, handle: HandleWord) -> Result<u32, ()> {
+        let mut process_id = 0_u32;
+        // SAFETY: the adopted handle remains owned and is already proven to be
+        // a pipe; the process-id output pointer is initialized and live.
+        unsafe { GetNamedPipeClientProcessId(native_handle(handle)?, &raw mut process_id) }
+            .map_err(|_| ())?;
+        Ok(process_id)
+    }
+
+    fn write_response(&mut self, handle: HandleWord, bytes: &[u8]) -> Result<usize, ()> {
+        let mut written = 0_u32;
+        // SAFETY: the adopted handle remains owned for the call, `bytes` is a
+        // live readable slice, the count pointer is live, and this synchronous
+        // bootstrap path deliberately supplies no OVERLAPPED state.
+        unsafe {
+            WriteFile(
+                native_handle(handle)?,
+                Some(bytes),
+                Some(&raw mut written),
+                None,
+            )
+        }
+        .map_err(|_| ())?;
+        usize::try_from(written).map_err(|_| ())
+    }
+
+    fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()> {
+        // SAFETY: the adopted response server handle remains owned for the
+        // synchronous flush operation.
+        unsafe { FlushFileBuffers(native_handle(handle)?) }.map_err(|_| ())
+    }
+
+    fn enter_adoption_complete_gate(&mut self) {
+        enter_adoption_complete_gate();
+    }
+}
+
+fn filetime_word(filetime: FILETIME) -> u64 {
+    (u64::from(filetime.dwHighDateTime) << u32::BITS) | u64::from(filetime.dwLowDateTime)
+}
+
 fn handle_word(handle: HANDLE) -> Option<HandleWord> {
     let word = u64::try_from(handle.0 as usize).ok()?;
     HandleWord::new(word).ok()
@@ -343,12 +595,21 @@ fn native_handle(handle: HandleWord) -> Result<HANDLE, ()> {
 mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::num::{NonZeroU32, NonZeroU64};
     use std::rc::Rc;
 
+    use key_agent_service_wire::{EpochNonce, ServiceRequestId, WireError};
+    use windows::Win32::Foundation::FILETIME;
+
     use super::{
-        DUPLICATE_OPTIONS_NONE, EXPECTED_FILE_TYPE, EXPECTED_HANDLE_FLAGS, FreshHandleOwner,
-        HandleOperations, HandleWord, REQUEST_INPUT_DUPLICATE_ACCESS,
-        RESPONSE_OUTPUT_DUPLICATE_ACCESS, StandardStream, adopt_candidate_words,
+        BootstrapOperations, DUPLICATE_OPTIONS_NONE, EXPECTED_FILE_TYPE, EXPECTED_HANDLE_FLAGS,
+        FreshHandleOwner, HandleOperations, HandleWord, MAX_BOOTSTRAP_WINDOW_MILLISECONDS,
+        REQUEST_INPUT_DUPLICATE_ACCESS, RESPONSE_OUTPUT_DUPLICATE_ACCESS, StandardStream,
+        adopt_candidate_words, complete_bootstrap_with_operations, filetime_word,
+    };
+    use crate::wire::{
+        HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HelperAdoptionAck,
+        HelperBootstrapHello, HelperBootstrapRole,
     };
 
     const REQUEST: u64 = 10;
@@ -796,5 +1057,416 @@ mod tests {
             1
         );
         assert!(!events.iter().any(|event| matches!(event, Event::Close(_))));
+    }
+
+    const BOOTSTRAP_SERVICE_PROCESS_ID: u32 = 101;
+    const BOOTSTRAP_CHILD_PROCESS_ID: u32 = 202;
+    const BOOTSTRAP_CHILD_CREATION_FILETIME: u64 = 303;
+    const BOOTSTRAP_DEADLINE_MILLISECONDS: u64 = 20_000;
+    const BOOTSTRAP_NOW_MILLISECONDS: u64 = 16_000;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum BootstrapEvent {
+        Read { handle: u64, requested: usize },
+        CurrentProcessId,
+        CurrentProcessCreationFiletime,
+        TickCount,
+        NamedPipeClientProcessId(u64),
+        Write { handle: u64, offered: usize },
+        Flush(u64),
+        AdoptionCompleteGate,
+    }
+
+    struct FakeBootstrapOperations {
+        events: Vec<BootstrapEvent>,
+        calls: usize,
+        fail_at: Option<usize>,
+        hello_bytes: [u8; HELPER_BOOTSTRAP_HELLO_BYTES],
+        read_offset: usize,
+        read_sizes: VecDeque<usize>,
+        current_process_id: u32,
+        current_process_creation_filetime: u64,
+        tick_count_milliseconds: u64,
+        request_client_process_id: u32,
+        response_client_process_id: u32,
+        write_sizes: VecDeque<usize>,
+        written_response: Vec<u8>,
+    }
+
+    impl FakeBootstrapOperations {
+        fn scenario() -> Result<Self, WireError> {
+            Self::scenario_for_role(HelperBootstrapRole::Approval)
+        }
+
+        fn scenario_for_role(role: HelperBootstrapRole) -> Result<Self, WireError> {
+            Ok(Self {
+                events: Vec::new(),
+                calls: 0,
+                fail_at: None,
+                hello_bytes: sample_bootstrap_hello_for_role(role)?.encode(),
+                read_offset: 0,
+                read_sizes: VecDeque::new(),
+                current_process_id: BOOTSTRAP_CHILD_PROCESS_ID,
+                current_process_creation_filetime: BOOTSTRAP_CHILD_CREATION_FILETIME,
+                tick_count_milliseconds: BOOTSTRAP_NOW_MILLISECONDS,
+                request_client_process_id: BOOTSTRAP_SERVICE_PROCESS_ID,
+                response_client_process_id: BOOTSTRAP_SERVICE_PROCESS_ID,
+                write_sizes: VecDeque::new(),
+                written_response: Vec::new(),
+            })
+        }
+
+        fn record(&mut self, event: BootstrapEvent) -> Result<(), ()> {
+            self.events.push(event);
+            let call = self.calls;
+            self.calls = self.calls.checked_add(1).ok_or(())?;
+            if self.fail_at == Some(call) {
+                return Err(());
+            }
+            Ok(())
+        }
+
+        fn has_entered_gate(&self) -> bool {
+            self.events.contains(&BootstrapEvent::AdoptionCompleteGate)
+        }
+    }
+
+    impl BootstrapOperations for FakeBootstrapOperations {
+        fn read_request(&mut self, handle: HandleWord, buffer: &mut [u8]) -> Result<usize, ()> {
+            self.record(BootstrapEvent::Read {
+                handle: handle.get(),
+                requested: buffer.len(),
+            })?;
+            let read = self.read_sizes.pop_front().unwrap_or(buffer.len());
+            if read <= buffer.len() {
+                let source_remaining = self.hello_bytes.len().saturating_sub(self.read_offset);
+                let copied = read.min(source_remaining);
+                buffer[..copied].copy_from_slice(
+                    &self.hello_bytes[self.read_offset..self.read_offset + copied],
+                );
+                self.read_offset += copied;
+            }
+            Ok(read)
+        }
+
+        fn current_process_id(&mut self) -> Result<u32, ()> {
+            self.record(BootstrapEvent::CurrentProcessId)?;
+            Ok(self.current_process_id)
+        }
+
+        fn current_process_creation_filetime(&mut self) -> Result<u64, ()> {
+            self.record(BootstrapEvent::CurrentProcessCreationFiletime)?;
+            Ok(self.current_process_creation_filetime)
+        }
+
+        fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+            self.record(BootstrapEvent::TickCount)?;
+            Ok(self.tick_count_milliseconds)
+        }
+
+        fn named_pipe_client_process_id(&mut self, handle: HandleWord) -> Result<u32, ()> {
+            self.record(BootstrapEvent::NamedPipeClientProcessId(handle.get()))?;
+            if handle == HandleWord(FRESH_REQUEST) {
+                Ok(self.request_client_process_id)
+            } else if handle == HandleWord(FRESH_RESPONSE) {
+                Ok(self.response_client_process_id)
+            } else {
+                Err(())
+            }
+        }
+
+        fn write_response(&mut self, handle: HandleWord, bytes: &[u8]) -> Result<usize, ()> {
+            self.record(BootstrapEvent::Write {
+                handle: handle.get(),
+                offered: bytes.len(),
+            })?;
+            let written = self.write_sizes.pop_front().unwrap_or(bytes.len());
+            if written <= bytes.len() {
+                self.written_response.extend_from_slice(&bytes[..written]);
+            }
+            Ok(written)
+        }
+
+        fn flush_response(&mut self, handle: HandleWord) -> Result<(), ()> {
+            self.record(BootstrapEvent::Flush(handle.get()))
+        }
+
+        fn enter_adoption_complete_gate(&mut self) {
+            self.events.push(BootstrapEvent::AdoptionCompleteGate);
+        }
+    }
+
+    fn sample_bootstrap_hello() -> Result<HelperBootstrapHello, WireError> {
+        sample_bootstrap_hello_for_role(HelperBootstrapRole::Approval)
+    }
+
+    fn sample_bootstrap_hello_for_role(
+        role: HelperBootstrapRole,
+    ) -> Result<HelperBootstrapHello, WireError> {
+        Ok(HelperBootstrapHello::new(
+            EpochNonce::new([0xA5; 32])?,
+            ServiceRequestId::new([0x5A; 16])?,
+            role,
+            NonZeroU32::new(BOOTSTRAP_SERVICE_PROCESS_ID).ok_or(WireError::InvalidValue)?,
+            NonZeroU32::new(BOOTSTRAP_CHILD_PROCESS_ID).ok_or(WireError::InvalidValue)?,
+            NonZeroU64::new(BOOTSTRAP_CHILD_CREATION_FILETIME).ok_or(WireError::InvalidValue)?,
+            NonZeroU64::new(BOOTSTRAP_DEADLINE_MILLISECONDS).ok_or(WireError::InvalidValue)?,
+        ))
+    }
+
+    fn complete_with_fake(operations: &mut FakeBootstrapOperations) -> Result<(), ()> {
+        complete_with_expected_role(operations, HelperBootstrapRole::Approval)
+    }
+
+    fn complete_with_expected_role(
+        operations: &mut FakeBootstrapOperations,
+        expected_role: HelperBootstrapRole,
+    ) -> Result<(), ()> {
+        complete_bootstrap_with_operations(
+            operations,
+            HandleWord(FRESH_REQUEST),
+            HandleWord(FRESH_RESPONSE),
+            expected_role,
+        )
+    }
+
+    #[test]
+    fn successful_bootstrap_has_exact_order_ack_and_fake_gate() -> Result<(), WireError> {
+        let hello = sample_bootstrap_hello()?;
+        let mut operations = FakeBootstrapOperations::scenario()?;
+        assert_eq!(complete_with_fake(&mut operations), Ok(()));
+        assert_eq!(
+            operations.events,
+            [
+                BootstrapEvent::Read {
+                    handle: FRESH_REQUEST,
+                    requested: HELPER_BOOTSTRAP_HELLO_BYTES,
+                },
+                BootstrapEvent::CurrentProcessId,
+                BootstrapEvent::CurrentProcessCreationFiletime,
+                BootstrapEvent::TickCount,
+                BootstrapEvent::NamedPipeClientProcessId(FRESH_REQUEST),
+                BootstrapEvent::NamedPipeClientProcessId(FRESH_RESPONSE),
+                BootstrapEvent::Write {
+                    handle: FRESH_RESPONSE,
+                    offered: HELPER_ADOPTION_ACK_BYTES,
+                },
+                BootstrapEvent::Flush(FRESH_RESPONSE),
+                BootstrapEvent::AdoptionCompleteGate,
+            ]
+        );
+
+        let acknowledgement = HelperAdoptionAck::decode(&operations.written_response)?;
+        acknowledgement.ensure_correlates_with(
+            hello.epoch_nonce(),
+            hello.request_id(),
+            hello.role(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn partial_reads_and_writes_are_completed_before_flush_and_gate() -> Result<(), WireError> {
+        let mut operations = FakeBootstrapOperations::scenario()?;
+        operations.read_sizes = VecDeque::from([1, 2, HELPER_BOOTSTRAP_HELLO_BYTES - 3]);
+        operations.write_sizes = VecDeque::from([1, 2, HELPER_ADOPTION_ACK_BYTES - 3]);
+        assert_eq!(complete_with_fake(&mut operations), Ok(()));
+        assert_eq!(operations.written_response.len(), HELPER_ADOPTION_ACK_BYTES);
+        assert!(operations.has_entered_gate());
+        assert_eq!(
+            operations
+                .events
+                .iter()
+                .filter(|event| matches!(event, BootstrapEvent::Read { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            operations
+                .events
+                .iter()
+                .filter(|event| matches!(event, BootstrapEvent::Write { .. }))
+                .count(),
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn zero_or_oversized_read_and_write_progress_is_rejected() -> Result<(), WireError> {
+        for read_sizes in [
+            VecDeque::from([0]),
+            VecDeque::from([HELPER_BOOTSTRAP_HELLO_BYTES + 1]),
+        ] {
+            let mut operations = FakeBootstrapOperations::scenario()?;
+            operations.read_sizes = read_sizes;
+            assert!(complete_with_fake(&mut operations).is_err());
+            assert!(!operations.has_entered_gate());
+        }
+
+        for write_sizes in [
+            VecDeque::from([0]),
+            VecDeque::from([HELPER_ADOPTION_ACK_BYTES + 1]),
+        ] {
+            let mut operations = FakeBootstrapOperations::scenario()?;
+            operations.write_sizes = write_sizes;
+            assert!(complete_with_fake(&mut operations).is_err());
+            assert!(!operations.has_entered_gate());
+            assert!(!operations.events.iter().any(|event| matches!(
+                event,
+                BootstrapEvent::Flush(_) | BootstrapEvent::AdoptionCompleteGate
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_hello_stops_before_identity_queries() -> Result<(), WireError> {
+        let mut malformed = FakeBootstrapOperations::scenario()?;
+        malformed.hello_bytes[0] ^= 1;
+        assert!(complete_with_fake(&mut malformed).is_err());
+        assert_eq!(
+            malformed.events,
+            [BootstrapEvent::Read {
+                handle: FRESH_REQUEST,
+                requested: HELPER_BOOTSTRAP_HELLO_BYTES,
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn expected_role_is_bound_before_identity_queries_or_ack() -> Result<(), WireError> {
+        let mut operations = FakeBootstrapOperations::scenario()?;
+        assert!(
+            complete_with_expected_role(&mut operations, HelperBootstrapRole::SecretInput).is_err()
+        );
+        assert_eq!(
+            operations.events,
+            [BootstrapEvent::Read {
+                handle: FRESH_REQUEST,
+                requested: HELPER_BOOTSTRAP_HELLO_BYTES,
+            }]
+        );
+        assert!(operations.written_response.is_empty());
+        assert!(!operations.has_entered_gate());
+
+        let mut matched =
+            FakeBootstrapOperations::scenario_for_role(HelperBootstrapRole::SecretInput)?;
+        assert_eq!(
+            complete_with_expected_role(&mut matched, HelperBootstrapRole::SecretInput),
+            Ok(())
+        );
+        assert_eq!(
+            HelperAdoptionAck::decode(&matched.written_response)?.role(),
+            HelperBootstrapRole::SecretInput
+        );
+        assert!(matched.has_entered_gate());
+        Ok(())
+    }
+
+    #[test]
+    fn process_and_both_pipe_client_identities_are_required() -> Result<(), WireError> {
+        let mut child_process = FakeBootstrapOperations::scenario()?;
+        child_process.current_process_id = BOOTSTRAP_CHILD_PROCESS_ID + 1;
+        assert!(complete_with_fake(&mut child_process).is_err());
+
+        let mut creation = FakeBootstrapOperations::scenario()?;
+        creation.current_process_creation_filetime = BOOTSTRAP_CHILD_CREATION_FILETIME + 1;
+        assert!(complete_with_fake(&mut creation).is_err());
+
+        let mut request_client = FakeBootstrapOperations::scenario()?;
+        request_client.request_client_process_id = BOOTSTRAP_SERVICE_PROCESS_ID + 1;
+        assert!(complete_with_fake(&mut request_client).is_err());
+        assert!(
+            !request_client
+                .events
+                .contains(&BootstrapEvent::NamedPipeClientProcessId(FRESH_RESPONSE))
+        );
+
+        let mut response_client = FakeBootstrapOperations::scenario()?;
+        response_client.response_client_process_id = BOOTSTRAP_SERVICE_PROCESS_ID + 1;
+        assert!(complete_with_fake(&mut response_client).is_err());
+        assert!(
+            response_client
+                .events
+                .contains(&BootstrapEvent::NamedPipeClientProcessId(FRESH_REQUEST))
+        );
+        assert!(
+            response_client
+                .events
+                .contains(&BootstrapEvent::NamedPipeClientProcessId(FRESH_RESPONSE))
+        );
+
+        for operations in [&child_process, &creation, &request_client, &response_client] {
+            assert!(!operations.events.iter().any(|event| matches!(
+                event,
+                BootstrapEvent::Write { .. }
+                    | BootstrapEvent::Flush(_)
+                    | BootstrapEvent::AdoptionCompleteGate
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_is_strict_future_and_at_most_five_seconds() -> Result<(), WireError> {
+        for now in [
+            BOOTSTRAP_DEADLINE_MILLISECONDS,
+            BOOTSTRAP_DEADLINE_MILLISECONDS + 1,
+            BOOTSTRAP_DEADLINE_MILLISECONDS - MAX_BOOTSTRAP_WINDOW_MILLISECONDS - 1,
+        ] {
+            let mut operations = FakeBootstrapOperations::scenario()?;
+            operations.tick_count_milliseconds = now;
+            assert!(complete_with_fake(&mut operations).is_err());
+            assert!(!operations.has_entered_gate());
+        }
+
+        let mut exact_window = FakeBootstrapOperations::scenario()?;
+        exact_window.tick_count_milliseconds =
+            BOOTSTRAP_DEADLINE_MILLISECONDS - MAX_BOOTSTRAP_WINDOW_MILLISECONDS;
+        assert_eq!(complete_with_fake(&mut exact_window), Ok(()));
+        assert!(exact_window.has_entered_gate());
+        Ok(())
+    }
+
+    #[test]
+    fn every_fallible_bootstrap_operation_prefix_rejects_before_gate() -> Result<(), WireError> {
+        let mut baseline = FakeBootstrapOperations::scenario()?;
+        assert_eq!(complete_with_fake(&mut baseline), Ok(()));
+        let call_count = baseline.calls;
+
+        for failure in 0..call_count {
+            let mut operations = FakeBootstrapOperations::scenario()?;
+            operations.fail_at = Some(failure);
+            assert!(complete_with_fake(&mut operations).is_err());
+            assert!(!operations.has_entered_gate());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn flush_failure_keeps_complete_ack_but_never_enters_gate() -> Result<(), WireError> {
+        let mut baseline = FakeBootstrapOperations::scenario()?;
+        assert_eq!(complete_with_fake(&mut baseline), Ok(()));
+        let flush_call = baseline.calls.saturating_sub(1);
+
+        let mut operations = FakeBootstrapOperations::scenario()?;
+        operations.fail_at = Some(flush_call);
+        assert!(complete_with_fake(&mut operations).is_err());
+        assert_eq!(operations.written_response.len(), HELPER_ADOPTION_ACK_BYTES);
+        assert!(!operations.has_entered_gate());
+        Ok(())
+    }
+
+    #[test]
+    fn process_creation_filetime_combines_high_and_low_halves() {
+        assert_eq!(
+            filetime_word(FILETIME {
+                dwLowDateTime: 0x89AB_CDEF,
+                dwHighDateTime: 0x0123_4567,
+            }),
+            0x0123_4567_89AB_CDEF
+        );
     }
 }
