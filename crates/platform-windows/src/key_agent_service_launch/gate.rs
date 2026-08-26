@@ -203,6 +203,7 @@ fn parse_two_gate_layout(
     const IMAGE_NT_OPTIONAL_HDR64_MAGIC: u16 = 0x020B;
     const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
     const IMAGE_FILE_DLL: u16 = 0x2000;
+    const AMD64_PAGE_BYTES: u32 = 0x1000;
 
     if bytes.len() < DOS_HEADER_BYTES
         || u64::try_from(bytes.len()).map_or(true, |length| length > MAX_SERVICE_HELPER_IMAGE_BYTES)
@@ -300,6 +301,12 @@ fn parse_two_gate_layout(
     }
 
     let mut sections: Vec<PeSectionRange> = Vec::with_capacity(section_count);
+    // Image sections and their raw data must follow one canonical RVA order.
+    // Low-alignment images additionally require each physical data offset to
+    // equal its loaded RVA; enforcing that here keeps raw-to-RVA translation
+    // identical to the Windows loader rather than merely non-overlapping.
+    let mut expected_virtual_start = first_section_rva;
+    let mut prior_raw_end = size_of_headers_usize;
     for index in 0..section_count {
         let section_offset = optional_end
             .checked_add(
@@ -330,17 +337,24 @@ fn parse_two_gate_layout(
             .checked_add(mapped_size)
             .ok_or(ServiceHelperGatePreflightError::Image)?;
         if mapped_size == 0
-            || virtual_start < first_section_rva
+            || virtual_start != expected_virtual_start
             || virtual_start % section_alignment != 0
             || (raw_size == 0 && raw_start_u32 != 0)
             || (raw_size != 0
                 && (raw_start_u32 % file_alignment != 0
                     || raw_size % file_alignment != 0
                     || raw_start < size_of_headers_usize
+                    || raw_start < prior_raw_end
+                    || (section_alignment < AMD64_PAGE_BYTES && raw_start_u32 != virtual_start)
                     || raw_end > bytes.len()))
             || virtual_end > size_of_image
         {
             return Err(ServiceHelperGatePreflightError::Image);
+        }
+        expected_virtual_start = align_up(virtual_end, section_alignment)
+            .ok_or(ServiceHelperGatePreflightError::Image)?;
+        if raw_size != 0 {
+            prior_raw_end = raw_end;
         }
         let section = PeSectionRange {
             raw_start,
@@ -366,6 +380,9 @@ fn parse_two_gate_layout(
             }
         }
         sections.push(section);
+    }
+    if expected_virtual_start != size_of_image {
+        return Err(ServiceHelperGatePreflightError::Image);
     }
 
     let capture = locate_gate(
@@ -589,6 +606,15 @@ mod tests {
         image
     }
 
+    fn valid_low_alignment_image() -> Vec<u8> {
+        let mut image = valid_image();
+        put_u32(&mut image, OPTIONAL_OFFSET + 32, 0x200);
+        put_u32(&mut image, OPTIONAL_OFFSET + 56, 0x600);
+        put_u32(&mut image, SECTION_OFFSET + 12, 0x200);
+        put_u32(&mut image, SECTION_OFFSET + 40 + 12, 0x400);
+        image
+    }
+
     #[test]
     fn valid_fixture_binds_exact_sequence_breakpoint_and_image_rvas() {
         let layout = parse_service_helper_gate_layout(&valid_image())
@@ -697,6 +723,42 @@ mod tests {
         let mut outside_image = valid_image();
         put_u32(&mut outside_image, OPTIONAL_OFFSET + 56, 0x2000);
         assert!(parse_service_helper_gate_layout(&outside_image).is_err());
+    }
+
+    #[test]
+    fn low_alignment_requires_raw_offsets_to_equal_section_rvas() {
+        let canonical = valid_low_alignment_image();
+        assert!(parse_service_helper_gate_layout(&canonical).is_ok());
+
+        let mut mismatched = canonical;
+        mismatched.resize(0x800, 0);
+        put_u32(&mut mismatched, SECTION_OFFSET + 40 + 20, 0x600);
+        assert!(parse_service_helper_gate_layout(&mismatched).is_err());
+    }
+
+    #[test]
+    fn section_table_requires_canonical_virtual_and_raw_order() {
+        let data = SECTION_OFFSET + 40;
+
+        let mut virtual_gap = valid_image();
+        put_u32(&mut virtual_gap, data + 12, 0x3000);
+        put_u32(&mut virtual_gap, OPTIONAL_OFFSET + 56, 0x4000);
+        assert!(parse_service_helper_gate_layout(&virtual_gap).is_err());
+
+        let mut oversized_image = valid_image();
+        put_u32(&mut oversized_image, OPTIONAL_OFFSET + 56, 0x4000);
+        assert!(parse_service_helper_gate_layout(&oversized_image).is_err());
+
+        let mut raw_out_of_order = valid_image();
+        raw_out_of_order[CAPTURE_RAW_START..CAPTURE_RAW_START + CAPTURE_GATE_BYTES].fill(0);
+        raw_out_of_order[ADOPTION_RAW_START..ADOPTION_RAW_START + ADOPTION_COMPLETE_GATE_BYTES]
+            .fill(0);
+        raw_out_of_order[0x420..0x420 + CAPTURE_GATE_BYTES].copy_from_slice(&capture_gate_bytes());
+        raw_out_of_order[0x480..0x480 + ADOPTION_COMPLETE_GATE_BYTES]
+            .copy_from_slice(&adoption_complete_gate_bytes());
+        put_u32(&mut raw_out_of_order, SECTION_OFFSET + 20, 0x400);
+        put_u32(&mut raw_out_of_order, data + 20, 0x200);
+        assert!(parse_service_helper_gate_layout(&raw_out_of_order).is_err());
     }
 
     #[test]
