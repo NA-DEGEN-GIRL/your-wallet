@@ -390,9 +390,10 @@ alias closure remains debug-only **STOP-SHIP** kernel-matrix evidence, not an
 activation safety claim.
 
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into checked
-caller ownership and finishes checked close before loader-count increment or
-semantic/limit rejection; a cleanup failure dominates a simultaneous semantic
-failure. Rejected authority is single-assignment: if any rejected raw slot,
+caller ownership before semantic-proof evaluation, stores the semantic result,
+and then finishes checked close. Only after that close may the stored semantic
+error or subsequent loader-count-limit error return; a cleanup failure
+dominates a simultaneous semantic failure. Rejected authority is single-assignment: if any rejected raw slot,
 PID/TID, or canonical anchor is already retained, a second registration takes
 an unconditional process-wide fail-fast path before overwrite. These are local
 ordering guards, not proof of raw-slot generation or an atomic compare-and-

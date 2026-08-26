@@ -169,9 +169,10 @@ remains debug-only **STOP-SHIP** kernel-matrix evidence, not an activation
 safety claim.
 
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into the
-caller-owned checked-close path and completes that close before the loader
-counter or any semantic/limit rejection is evaluated. If cleanup and semantic
-validation both fail, the cleanup failure dominates. A second rejected-event
+caller-owned checked-close path before semantic-proof evaluation. It stores the
+semantic result and then completes checked close; only after that close may the
+stored semantic error or subsequent loader-count-limit error return. If cleanup
+and semantic validation both fail, the cleanup failure dominates. A second rejected-event
 registration is never allowed to overwrite retained authority: if any rejected
 raw slot, PID/TID, or canonical anchor is already present, the process takes an
 unconditional fail-fast path before assignment. This closes the local

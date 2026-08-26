@@ -232,8 +232,10 @@ The following are existing facts, not new service claims:
   compare-to-close TOCTOU. Local rejected-alias closure remains debug-only
   **STOP-SHIP** kernel-matrix evidence, not activation safety.
 - Every `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
-  ownership and completes checked close before loader-count increment or any
-  semantic/limit rejection; cleanup failure dominates if both fail. Rejected
+  ownership before semantic-proof evaluation, stores the semantic result, and
+  then completes checked close. Only after that close may the stored semantic
+  error or subsequent loader-count-limit error return; cleanup failure
+  dominates if both fail. Rejected
   authority is single-assignment: if any rejected raw slot, PID/TID, or
   canonical anchor already exists, a second registration unconditionally
   fail-fasts before overwrite. This fixes local ordering/overwrite hazards but

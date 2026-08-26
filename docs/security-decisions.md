@@ -1062,8 +1062,10 @@ unresolved, so local closure of rejected raw aliases is debug-only
 **STOP-SHIP** kernel-matrix evidence rather than activation safety.
 
 Each `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
-ownership and completes the checked close before loader-count increment or any
-semantic/limit rejection; when both fail, cleanup failure wins. Rejected-event
+ownership before semantic-proof evaluation, stores the semantic result, and
+then completes checked close. Only after that close may the stored semantic
+error or subsequent loader-count-limit error return; cleanup failure wins when
+both fail. Rejected-event
 authority is also single-assignment: a second registration that observes any
 retained rejected raw slot, PID/TID, or canonical anchor unconditionally
 fail-fasts before an overwrite. These orderings prevent a local leak or
