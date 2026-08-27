@@ -1120,25 +1120,42 @@ sentinel, `READY_FROZEN`, test-only helper-to-parent `DUPLICATE_SAME_ACCESS`
 pull-back,
 terminal `COMMIT`/`ABORT`, parent EOF, deadline, malformed-frame, forced-
 termination, natural-exit/Drop cleanup, and process-exit handle-table cleanup
-paths. Here
+paths. That creation also carries one `PROC_THREAD_ATTRIBUTE_JOB_LIST` entry
+backed by an unnamed, non-inheritable Job. Exact readback requires
+`KILL_ON_JOB_CLOSE` only, with no active-process limit or breakaway mode. The
+parent creates and retains one Job handle, then proves the suspended helper is a
+member and the current active count is one. A Job-only path terminates and
+reaches exact-zero accounting without consulting the process handle. A separate
+current-host path closes the parent-retained handle before benign suspended-
+helper code can run and, without an explicit termination API, proves that live
+helper becomes terminal. Here
 `READY_FROZEN` is only the decision-only protocol state with a fixed sentinel
 source set, not an operating-system suspend claim.
 
-The helper has no actual Key Agent target and invokes no LPAC, Job, secret, RPC,
-debug API, or `DEBUG_EVENT` operation. It validates transport mechanics, not raw
-event-slot generation, same-object ABA, or atomic compare-close. Production
+The helper has no actual Key Agent target and invokes no LPAC, secret, RPC,
+debug API, or `DEBUG_EVENT` operation. Its Job validates process-tree
+containment mechanics only, not raw event-slot generation, same-object ABA, or
+atomic compare-close. Production
 resolution still requires one atomic cutover that moves the whole debug engine
 into the dedicated process, never individually closes borrowed raw aliases,
 and lets debugger-process exit reclaim that isolated handle table. Signed and
 immutable release identity/bootstrap for the debugger executable, actual target
-handle transfer plus token/image/suspend/Job proof, supported-kernel evidence,
-and any production caller or enabled policy remain unverified **STOP-SHIP**
-work. Both compiled policies stay `None`.
+handle transfer plus token/image/suspend/Job proof, target membership and
+process-count topology, Job-owner handoff beyond helper exit, supported-kernel
+evidence, and any production caller or enabled policy remain unverified
+**STOP-SHIP** work. The suspended last-close path is benign-helper evidence
+only: after execution, a same-token helper may be able to acquire
+`PROCESS_DUP_HANDLE` on its parent and duplicate a Job handle. Immutable helper
+identity and launch admission, token/process-DACL separation, and adversarial
+parent-death containment proof therefore also remain **STOP-SHIP**. Both
+compiled policies stay `None`.
 Its deadlines are current-host measurements rather than unconditional kernel
 liveness: cancellation of pending overlapped pipe I/O must be drained before
-stack and buffer lifetimes end. With no creation-time kill-on-close Job,
-fail-fast prevents an unproved parent from continuing but cannot prove debugger
-child death. Both residuals remain **STOP-SHIP**.
+stack and buffer lifetimes end. Process-wide fail-fast closes the Job handle
+retained by the parent and prevents unsafe parent continuation, but kill-on-close
+terminates members only when that is the system-wide last Job handle; this slice
+does not prove that condition after helper code runs. Hard cancellation-drain
+liveness remains **STOP-SHIP**.
 
 Each `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
 ownership before semantic-proof evaluation, stores the semantic result, and

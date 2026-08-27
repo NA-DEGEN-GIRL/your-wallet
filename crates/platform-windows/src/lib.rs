@@ -159,9 +159,11 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
-// This secretless, dormant one-shot process transport proves only isolated
-// handle install/pull, frozen decision, and process-exit cleanup. It creates no
-// Key Agent target, handles no DEBUG_EVENT, and has no production caller.
+// This secretless, dormant one-shot process transport proves only creation-time
+// helper Job assignment, benign suspended-helper containment mechanics,
+// isolated handle install/pull, frozen decision, and process-exit cleanup. It
+// creates no Key Agent target, handles no DEBUG_EVENT, and has no production
+// caller.
 #[cfg(all(
     windows,
     feature = "key-agent-debugger-transport-feasibility-test-hook",

@@ -4,10 +4,16 @@
 //! one sentinel-handle install/pull round trip. It creates no Key Agent,
 //! receives no `DEBUG_EVENT`, and has no production caller or re-export.
 //!
-//! It deliberately owns no Job. Named-pipe cancellation still depends on the
-//! kernel completing the mandatory overlapped-I/O drain, and process fail-fast
-//! prevents parent continuation but cannot prove child death. Those liveness
-//! and parent-death-containment gaps remain production STOP-SHIP work.
+//! Its unnamed, non-inheritable containment Job is assigned before the helper's
+//! initial thread can run and uses exact kill-on-close with no breakaway or
+//! process-count policy. This implementation retains one Job handle, and its
+//! current-host last-close test runs while the benign helper is still suspended.
+//! It does not prove that an executed same-token helper cannot acquire
+//! `PROCESS_DUP_HANDLE` on the parent and retain another Job handle. Named-pipe
+//! cancellation drain, immutable helper identity and launch admission,
+//! token/process-DACL separation, actual target Job membership, process-count
+//! bounds, adversarial parent-death containment, and Job-owner handoff/lifetime
+//! remain production STOP-SHIP work.
 
 #![allow(dead_code)] // Entire module is an explicitly dormant feasibility surface.
 
@@ -59,6 +65,10 @@ enum DebuggerTransportError {
     PrivatePipes,
     #[error("debugger process creation failed")]
     ProcessCreation,
+    #[error("debugger containment Job preparation failed")]
+    JobPreparation,
+    #[error("debugger containment Job proof failed")]
+    JobProof,
     #[error("debugger process identity validation failed")]
     ProcessIdentity,
     #[error("debugger sentinel installation failed")]
@@ -168,6 +178,22 @@ impl SuspendedDebuggerTransport {
     fn terminate_while_suspended_for_test(mut self) -> Result<(), DebuggerTransportError> {
         self.child
             .terminate_and_wait(DebuggerExitCode::OperatingSystem, cleanup_deadline())
+    }
+
+    #[cfg(test)]
+    fn close_containment_job_while_suspended_for_test(
+        mut self,
+    ) -> Result<(), DebuggerTransportError> {
+        self.child
+            .close_job_and_wait_for_terminal_for_test(cleanup_deadline())
+    }
+
+    #[cfg(test)]
+    fn terminate_containment_job_without_process_wait_for_test(
+        mut self,
+    ) -> Result<(), DebuggerTransportError> {
+        self.child
+            .terminate_job_and_wait_empty_without_process_for_test(cleanup_deadline())
     }
 
     fn bootstrap(&self, deadline: Instant) -> Result<DebuggerBootstrap, DebuggerTransportError> {
@@ -313,7 +339,10 @@ impl ReadyFrozenDebugger {
         control
             .finish(&frame, deadline)
             .map_err(|_| DebuggerTransportError::Decision)?;
-        child.observe_terminal_without_reaping_for_test(cleanup_deadline())?;
+        child.observe_exact_exit_without_reaping_for_test(
+            DebuggerExitCode::Success,
+            cleanup_deadline(),
+        )?;
         let _sentinel_kept_live_until_exit = sentinel;
         // Drop deliberately begins with `reaped == false` after natural exit.
         // Its expected forced-exit code will mismatch, but terminal proof must
@@ -424,6 +453,12 @@ mod tests {
 
         SuspendedDebuggerTransport::launch_for_kernel_test(run_deadline())?
             .terminate_while_suspended_for_test()?;
+
+        SuspendedDebuggerTransport::launch_for_kernel_test(run_deadline())?
+            .close_containment_job_while_suspended_for_test()?;
+
+        SuspendedDebuggerTransport::launch_for_kernel_test(run_deadline())?
+            .terminate_containment_job_without_process_wait_for_test()?;
 
         let natural_exit_deadline = run_deadline();
         launch_ready(natural_exit_deadline)?

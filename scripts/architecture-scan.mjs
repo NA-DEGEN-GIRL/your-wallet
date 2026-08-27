@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "a2d2b3b0bf3cb290fb43b1049abcddfd1d207cdd357b09962185ad4f7ac75ef7",
+    sha256: "faf528fdeee1a248203301e78b6cccadba07099541b37511ec94d29ab5c9dddb",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
+    sha256: "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "94d58edbf9bab52c9f050dc389ff4666231e2b507537f18e68c05d0469ddb958",
+    sha256: "99a73fd86e05729c2a174bfaba7346281f60bddce01e984adfe33dd9baee9dae",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
+    sha256: "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 12_000);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 12_500);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 12_000 &&
+      window.length <= 12_500 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -18724,7 +18724,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "e1310546283fe56865223c4d8b691d9f780daa8de20ca2da8eb0acb9549d7319";
+  "eba017d5ffee080c25cbe65951b82dc89b4a49906bfd1625aa731ac4cdb3d21a";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -37424,7 +37424,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 15 },
   {
     path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
-    sites: 4,
+    sites: 7,
   },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
@@ -37509,8 +37509,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
-    unsafeCount: 34,
-    sha256: "6e0e3322098d567c5de4248d2570dd4a8a8e22a4ca646306f16b737f6b6bf2e9",
+    unsafeCount: 42,
+    sha256: "e73ff814bebebf9dd4632cf2bd3bb4a14796d3ab05ae56948902ce6c7b555404",
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
@@ -45298,13 +45298,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
+    "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
   "docs/architecture.md":
-    "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
+    "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
+    "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -51087,10 +51087,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
-  "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
+  "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
+  "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
+  "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -58924,10 +58924,10 @@ const keyAgentDebuggerPlatformSources = {
 };
 const keyAgentDebuggerPlatformPins = {
   manifest: "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5",
-  lib: "e19b304e0d6a217425a502f096eefa96b6aa2c054b8fcb74644591755e4da161",
+  lib: "68e14155db62368c1beae82a4057abb02ccc7acac594ceedfeae17e50a175f3b",
   pipe: "31bb57de66b86ea3d1e0857456433a1481a52164b11d1730c49c1f0f85da7dc4",
-  parent: "710d469149907b339d286e65447190b0921d53064fbcfd94b291c7f662992d71",
-  sys: "766ff2e812e7ca6339aa64906c6998efd5d177769b497b7e771e9767e2899c9a",
+  parent: "1afc87962eab6935e8d5a94d4195d528fbb5963eb8bb0c8dea6fc7aa4593269d",
+  sys: "05f98244499aaedd37cd0cd4fec95628c035801f123b8160b26447acf396a4cd",
 };
 const keyAgentDebuggerPlatformPinContract = (sources) =>
   Object.entries(keyAgentDebuggerPlatformPins).every(
@@ -58935,8 +58935,70 @@ const keyAgentDebuggerPlatformPinContract = (sources) =>
   );
 const keyAgentDebuggerKernelTestName =
   "kernel_matrix_dormant_one_shot_debugger_transport_is_exact_on_current_host";
+const keyAgentDebuggerProcessApiNames = Object.freeze([
+  "GetProcessId",
+  "GetThreadId",
+  "GetExitCodeProcess",
+  "TerminateProcess",
+  "WaitForSingleObject",
+  "ResumeThread",
+]);
+const keyAgentDebuggerJobApiNames = Object.freeze([
+  "CreateJobObjectW",
+  "GetHandleInformation",
+  "SetInformationJobObject",
+  "QueryInformationJobObject",
+  "IsProcessInJob",
+  "TerminateJobObject",
+]);
+const keyAgentDebuggerNativeApiNames = Object.freeze([
+  ...keyAgentDebuggerProcessApiNames,
+  ...keyAgentDebuggerJobApiNames,
+  "InitializeProcThreadAttributeList",
+  "UpdateProcThreadAttribute",
+  "DeleteProcThreadAttributeList",
+]);
+const keyAgentDebuggerNativeApiTokenCounts = Object.freeze({
+  GetProcessId: 2,
+  GetThreadId: 2,
+  GetExitCodeProcess: 3,
+  TerminateProcess: 3,
+  WaitForSingleObject: 9,
+  ResumeThread: 2,
+  CreateJobObjectW: 2,
+  GetHandleInformation: 3,
+  SetInformationJobObject: 2,
+  QueryInformationJobObject: 3,
+  IsProcessInJob: 2,
+  TerminateJobObject: 2,
+  InitializeProcThreadAttributeList: 3,
+  UpdateProcThreadAttribute: 2,
+  DeleteProcThreadAttributeList: 2,
+});
+const keyAgentDebuggerNativeApiModules = Object.freeze({
+  GetProcessId: "windows::Win32::System::Threading",
+  GetThreadId: "windows::Win32::System::Threading",
+  GetExitCodeProcess: "windows::Win32::System::Threading",
+  TerminateProcess: "windows::Win32::System::Threading",
+  WaitForSingleObject: "windows::Win32::System::Threading",
+  ResumeThread: "windows::Win32::System::Threading",
+  CreateJobObjectW: "windows::Win32::System::JobObjects",
+  GetHandleInformation: "windows::Win32::Foundation",
+  SetInformationJobObject: "windows::Win32::System::JobObjects",
+  QueryInformationJobObject: "windows::Win32::System::JobObjects",
+  IsProcessInJob: "windows::Win32::System::JobObjects",
+  TerminateJobObject: "windows::Win32::System::JobObjects",
+  InitializeProcThreadAttributeList: "windows::Win32::System::Threading",
+  UpdateProcThreadAttribute: "windows::Win32::System::Threading",
+  DeleteProcThreadAttributeList: "windows::Win32::System::Threading",
+});
+const keyAgentDebuggerForbiddenContainmentOverclaims = Object.freeze([
+  /\b(?:the\s+)?(?:debugger\s+)?helper\b[\s\S]{0,80}\b(?:cannot|can\s+never|will\s+not|never)\s+(?:survive|outlive|escape)\b[\s\S]{0,80}\bparent(?:al)?(?:[-\s]+(?:teardown|death|exit|termination))?\b/iu,
+  /\b(?:clos(?:e|es|ed|ing)|drop(?:s|ped|ping)?)\b[\s\S]{0,100}\b(?:parent[-\s]retained|parent(?:'s)?[-\s]+retained)\b[\s\S]{0,50}\bJob\s+handle\b[\s\S]{0,80}(?:\b(?:always|unconditionally|necessarily)\s+(?:terminates?|kills?)\b|\b(?:guarantees?|ensures?)\b[\s\S]{0,30}\b(?:termination|death)\b)/iu,
+  /\b(?:this\s+(?:slice|implementation)|the\s+(?:current[-\s]host\s+)?(?:test|evidence)|parent[-\s]retained\s+(?:Job\s+)?handle)\b[\s\S]{0,100}\b(?:proves?|guarantees?|establishes?|is|remains)\b[\s\S]{0,50}\b(?:the\s+)?system[-\s]wide\s+(?:last|sole|only)\s+Job\s+(?:handle|owner)\b/iu,
+]);
 const keyAgentDebuggerForbiddenPlatformCode =
-  /\b(?:DEBUG_EVENT|WaitForDebugEventEx|ContinueDebugEvent|DebugSetProcessKillOnExit|DebugActiveProcessStop|DebugActiveProcess|KeyAgentActivation|PreparedKeyAgentLpac|KeyAgentRootJob|AssignProcessToJobObject|RpcServer|RpcClient|COMPILED_(?:PARENT|RELEASE)_POLICY)\b/u;
+  /\b(?:DEBUG_EVENT|WaitForDebugEventEx|ContinueDebugEvent|DebugSetProcessKillOnExit|DebugActiveProcessStop|DebugActiveProcess|KeyAgentActivation|PreparedKeyAgentLpac|KeyAgentRootJob|AssignProcessToJobObject|OpenJobObject[AW]?|RpcServer|RpcClient|COMPILED_(?:PARENT|RELEASE)_POLICY)\b/u;
 const keyAgentDebuggerPlatformSemanticContract = (sources) => {
   const compactManifest = sources.manifest
     .replace(/^\s*#.*$/gmu, "")
@@ -58953,8 +59015,34 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
   let kernelTest;
   let createCalls;
   let duplicateCalls;
-  let handleListCalls;
+  let attributeUpdateCalls;
   let debuggerProcessApiCalls;
+  let debuggerJobApiCalls;
+  let debuggerNativeApiUsage;
+  let debuggerParentNativeApiUsage;
+  let creationAttributesNew;
+  let creationAttributesInstall;
+  let creationAttributesDrop;
+  let creationAttributesDeleteCalls;
+  let containmentJobCreate;
+  let verifyExactLimits;
+  let verifyExactMember;
+  let activeProcessCount;
+  let terminateJob;
+  let terminateAndWaitEmpty;
+  let waitUntilEmpty;
+  let exactContainmentLimits;
+  let createSuspended;
+  let adoptChild;
+  let waitForExactExit;
+  let terminateAndWait;
+  let closeJobAndWait;
+  let jobOnlyCleanupForTest;
+  let observeExactExitWithoutReapingForTest;
+  let naturalExitThenDropCleanupForTest;
+  let childDrop;
+  let malformedProcessCleanup;
+  let containmentPolicyTest;
   const orderedPositions = (source, markers) => {
     let cursor = -1;
     return markers.map((marker) => {
@@ -58980,25 +59068,167 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       keyAgentDebuggerKernelTestName,
       1,
     );
+    const readyFrozenImpl = rustImplItemAtDepth(
+      sources.parent,
+      "impl ReadyFrozenDebugger",
+      0,
+    );
+    naturalExitThenDropCleanupForTest = rustFunctionBlockAtDepth(
+      readyFrozenImpl,
+      "natural_exit_then_drop_cleanup_for_test",
+      1,
+    );
     createCalls = rustCallSites(
       sources.sys,
       "create_process_with_explicit_handle_list",
     );
     duplicateCalls = rustCallSites(sources.sys, "DuplicateHandle");
-    handleListCalls = rustCallSites(sources.sys, "UpdateProcThreadAttribute");
-    debuggerProcessApiCalls = [
-      "GetProcessId",
-      "GetThreadId",
-      "GetExitCodeProcess",
-      "TerminateProcess",
-      "WaitForSingleObject",
-      "ResumeThread",
-    ].map((api) => ({
+    attributeUpdateCalls = rustCallSites(
+      sources.sys,
+      "UpdateProcThreadAttribute",
+    );
+    debuggerProcessApiCalls = keyAgentDebuggerProcessApiNames.map((api) => ({
       api,
       calls: rustCallSites(sources.sys, api).map((call) =>
         call.arguments.map(compactRust),
       ),
     }));
+    debuggerJobApiCalls = keyAgentDebuggerJobApiNames.map((api) => ({
+      api,
+      calls: rustCallSites(sources.sys, api).map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    }));
+    debuggerNativeApiUsage = rustIdentifierUsageInventory(
+      [{ path: "key_agent_debugger_transport/sys.rs", source: sources.sys }],
+      keyAgentDebuggerNativeApiNames,
+    );
+    debuggerParentNativeApiUsage = rustIdentifierUsageInventory(
+      [{ path: "key_agent_debugger_transport/mod.rs", source: sources.parent }],
+      keyAgentDebuggerNativeApiNames,
+    );
+    const creationAttributesImpl = rustImplItemAtDepth(
+      sources.sys,
+      "impl<'resources, 'pipes, 'flight> DebuggerCreationAttributes<'resources, 'pipes, 'flight>",
+      0,
+    );
+    creationAttributesNew = rustFunctionBlockAtDepth(
+      creationAttributesImpl,
+      "new",
+      1,
+    );
+    creationAttributesInstall = rustFunctionBlockAtDepth(
+      creationAttributesImpl,
+      "install",
+      1,
+    );
+    const creationAttributesDropImpl = rustImplItemAtDepth(
+      sources.sys,
+      "impl Drop for DebuggerCreationAttributes<'_, '_, '_>",
+      0,
+    );
+    creationAttributesDrop = rustFunctionBlockAtDepth(
+      creationAttributesDropImpl,
+      "drop",
+      1,
+    );
+    creationAttributesDeleteCalls = rustCallSites(
+      creationAttributesDrop,
+      "DeleteProcThreadAttributeList",
+    ).map((call) => call.arguments.map(compactRust));
+    const containmentJobImpl = rustImplItemAtDepth(
+      sources.sys,
+      "impl DebuggerContainmentJob",
+      0,
+    );
+    containmentJobCreate = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "create",
+      1,
+    );
+    verifyExactLimits = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "verify_exact_limits",
+      1,
+    );
+    verifyExactMember = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "verify_exact_member",
+      1,
+    );
+    activeProcessCount = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "active_process_count",
+      1,
+    );
+    terminateJob = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "terminate",
+      1,
+    );
+    terminateAndWaitEmpty = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "terminate_and_wait_empty",
+      1,
+    );
+    waitUntilEmpty = rustFunctionBlockAtDepth(
+      containmentJobImpl,
+      "wait_until_empty",
+      1,
+    );
+    exactContainmentLimits = rustFunctionBlockAtDepth(
+      sources.sys,
+      "exact_containment_limits",
+      0,
+    );
+    const childImpl = rustImplItemAtDepth(sources.sys, "impl DebuggerChild", 0);
+    createSuspended = rustFunctionBlockAtDepth(
+      childImpl,
+      "create_suspended",
+      1,
+    );
+    adoptChild = rustFunctionBlockAtDepth(childImpl, "adopt", 1);
+    waitForExactExit = rustFunctionBlockAtDepth(
+      childImpl,
+      "wait_for_exact_exit",
+      1,
+    );
+    terminateAndWait = rustFunctionBlockAtDepth(
+      childImpl,
+      "terminate_and_wait",
+      1,
+    );
+    closeJobAndWait = rustFunctionBlockAtDepth(
+      childImpl,
+      "close_job_and_wait_for_terminal",
+      1,
+    );
+    jobOnlyCleanupForTest = rustFunctionBlockAtDepth(
+      childImpl,
+      "terminate_job_and_wait_empty_without_process_for_test",
+      1,
+    );
+    observeExactExitWithoutReapingForTest = rustFunctionBlockAtDepth(
+      childImpl,
+      "observe_exact_exit_without_reaping_for_test",
+      1,
+    );
+    const childDropImpl = rustImplItemAtDepth(
+      sources.sys,
+      "impl Drop for DebuggerChild",
+      0,
+    );
+    childDrop = rustFunctionBlockAtDepth(childDropImpl, "drop", 1);
+    malformedProcessCleanup = rustFunctionBlockAtDepth(
+      sources.sys,
+      "terminate_live_process_and_reap",
+      0,
+    );
+    containmentPolicyTest = rustFunctionBlockAtDepth(
+      sources.sys,
+      "containment_policy_is_kill_only_without_topology_or_breakaway_policy",
+      1,
+    );
   } catch {
     return false;
   }
@@ -59022,21 +59252,82 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     "native_granted_access_for_test(sentinel.observer())?!=sys::SYNCHRONIZE_ACCESS",
     "Ok(ReadyFrozenDebugger{",
   ]);
-  const malformedHalfOrder = orderedPositions(compactSys, [
-    "ifinformation.hProcess.is_invalid(){fail_fast();}",
+  const missingProcessCleanupOrder = orderedPositions(compactRust(adoptChild), [
+    "ifinformation.hProcess.is_invalid(){lettermination=job.active_process_count().and_then(|active|",
+    "ifactive==0{Ok(())}else{job.terminate(DebuggerExitCode::OperatingSystem)}",
+    "iftermination.is_err(){fail_fast();}",
+    "if!information.hThread.is_invalid()",
+    "OwnedHandle::from_raw_handle(information.hThread.0)",
+    "ifjob.wait_until_empty(cleanup_deadline).is_err(){fail_fast();}",
+    "returnErr(DebuggerTransportError::ProcessIdentity);",
+  ]);
+  const malformedHalfOrder = orderedPositions(compactRust(adoptChild), [
     "letprocess=unsafe{OwnedHandle::from_raw_handle(information.hProcess.0)};",
-    "ifunsafe{GetProcessId(windows_owned_handle(&process))}==0{fail_fast();}",
     "ifterminate_live_process_and_reap(",
+    "windows_owned_handle(&process)",
+    "&job",
     "drop(process);",
     "returnErr(DebuggerTransportError::ProcessIdentity);",
   ]);
-  const identityRejectOrder = orderedPositions(compactSys, [
-    "ifactual_process_id==0||actual_thread_id==0||actual_process_id!=information.dwProcessId||actual_thread_id!=information.dwThreadId",
+  const identityRejectOrder = orderedPositions(compactRust(adoptChild), [
+    "letidentity_valid=actual_process_id!=0&&actual_thread_id!=0&&actual_process_id==information.dwProcessId&&actual_thread_id==information.dwThreadId;",
+    "letjob_valid=job.verify_exact_member(process_handle).is_ok();",
+    "if!identity_valid||!job_valid",
+    "letrejection=ifidentity_valid{DebuggerTransportError::JobProof}else{DebuggerTransportError::ProcessIdentity};",
     "letmutrejected=Self{",
+    "job:Some(job)",
     "letcleanup=rejected.terminate_and_wait(",
     "ifcleanup.is_err()&&!rejected.reaped",
     "fail_fast();",
-    "returnErr(DebuggerTransportError::ProcessIdentity);",
+    "returnErr(rejection);",
+  ]);
+  const attributeInstallOrder = orderedPositions(
+    compactRust(creationAttributesNew),
+    [
+      "letmutbytes=0_usize;",
+      "InitializeProcThreadAttributeList(None,CREATION_ATTRIBUTE_COUNT,None,&rawmutbytes)",
+      "ifbytes==0",
+      "letword_size=size_of::<usize>();",
+      "letword_count=bytes.checked_add(word_size-1).and_then(|rounded|rounded.checked_div(word_size)).ok_or(DebuggerTransportError::ProcessCreation)?;",
+      "letmutwords=vec![0_usize;word_count];",
+      "letpointer=LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());",
+      "unsafe{InitializeProcThreadAttributeList(Some(pointer),CREATION_ATTRIBUTE_COUNT,None,&rawmutbytes,)}.map_err(|_|DebuggerTransportError::ProcessCreation)?;",
+      "lethandles=Box::new([windows_handle(inheritance.stdin()),windows_handle(inheritance.stdout()),windows_handle(inheritance.stderr()),]);",
+      "letjob_handle=Box::new([job.raw()]);",
+      "letattributes=Self{pointer,_words:words,handles,job_handle,_inheritance:inheritance,_job:job,};",
+      "attributes.install(usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
+      "attributes.handles.as_ref()",
+      "attributes.install(usize::try_from(PROC_THREAD_ATTRIBUTE_JOB_LIST)",
+      "attributes.job_handle.as_ref()",
+      "Ok(attributes)",
+    ],
+  );
+  const suspendedCreationOrder = orderedPositions(compactRust(createSuspended), [
+    "letjob=DebuggerContainmentJob::create()?;",
+    "letattributes=DebuggerCreationAttributes::new(inheritance,&job)?;",
+    "letmutinformation=PROCESS_INFORMATION::default();",
+    ".create_process_with_explicit_handle_list(",
+    "drop(attributes);",
+    "Self::adopt(information,job)",
+  ]);
+  const exactMemberOrder = orderedPositions(compactRust(verifyExactMember), [
+    "self.verify_exact_limits()?;",
+    "letmutin_job=BOOL(0);",
+    "IsProcessInJob(process,Some(self.raw()),&rawmutin_job)",
+    "if!in_job.as_bool()||self.active_process_count()?!=1",
+  ]);
+  const jobEmptyOrder = orderedPositions(compactRust(waitUntilEmpty), [
+    "loop",
+    "ifself.active_process_count()?==0",
+    "ifInstant::now()>=deadline",
+    "std::thread::sleep(JOB_TERMINATION_POLL_INTERVAL)",
+  ]);
+  const dropContainmentOrder = orderedPositions(compactRust(childDrop), [
+    "ifself.reaped{return;}",
+    "letcleanup=self.terminate_and_wait(DebuggerExitCode::OperatingSystem,deadline);",
+    "ifcleanup.is_err()&&!self.reaped",
+    "ifself.close_job_and_wait_for_terminal(containment_deadline).is_err()&&!self.reaped",
+    "fail_fast();",
   ]);
   return (
     compactManifest.includes(
@@ -59119,7 +59410,10 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "It does **not** mean\n/// the helper process or primary thread is suspended by the operating system.",
     ) &&
     sources.parent.includes(
-      "process fail-fast\n//! prevents parent continuation but cannot prove child death",
+      "Its unnamed, non-inheritable containment Job is assigned before the helper's\n//! initial thread can run and uses exact kill-on-close with no breakaway or\n//! process-count policy. This implementation retains one Job handle, and its\n//! current-host last-close test runs while the benign helper is still suspended.",
+    ) &&
+    sources.parent.includes(
+      "It does not prove that an executed same-token helper cannot acquire\n//! `PROCESS_DUP_HANDLE` on the parent and retain another Job handle. Named-pipe\n//! cancellation drain, immutable helper identity and launch admission,\n//! token/process-DACL separation, actual target Job membership, process-count\n//! bounds, adversarial parent-death containment, and Job-owner handoff/lifetime\n//! remain production STOP-SHIP work.",
     ) &&
     (sources.parent.match(/#\s*\[\s*test\s*\]/gu) ?? []).length === 1 &&
     rustFunctionOuterAttributesAtDepth(
@@ -59143,28 +59437,50 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       ".wait_for_protocol_deadline()?;",
       ".resume_with_malformed_bootstrap_for_test(malformed_deadline)?;",
       ".terminate_while_suspended_for_test()?;",
+      ".close_containment_job_while_suspended_for_test()?;",
+      ".terminate_containment_job_without_process_wait_for_test()?;",
       ".natural_exit_then_drop_cleanup_for_test(natural_exit_deadline)?;",
       "SENTINEL SOURCE SET FIXED; DECISION-ONLY; NOT OS-SUSPENDED; HANDLES REDACTED",
     ].every((marker) => kernelTest.includes(marker)) &&
     compactSys.includes("constSYNCHRONIZE_ACCESS:u32=0x0010_0000;") &&
     compactSys.includes("constCLEANUP_TIMEOUT_MILLISECONDS:u32=5_000;") &&
     compactSys.includes("constMAX_RUN_MILLISECONDS:u64=5_000;") &&
-    compactSys.includes("constHANDLE_ATTRIBUTE_COUNT:u32=1;") &&
+    compactSys.includes(
+      "constJOB_TERMINATION_POLL_INTERVAL:Duration=Duration::from_millis(1);",
+    ) &&
+    compactSys.includes("constCREATION_ATTRIBUTE_COUNT:u32=2;") &&
+    compactSys.includes(
+      "constDEBUGGER_CONTAINMENT_JOB_LIMITS:JOB_OBJECT_LIMIT=JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0);",
+    ) &&
+    compactSys.includes(
+      "structDebuggerCreationAttributes<'resources,'pipes,'flight>{pointer:LPPROC_THREAD_ATTRIBUTE_LIST,_words:Vec<usize>,handles:Box<[HANDLE;3]>,job_handle:Box<[HANDLE;1]>,_inheritance:&'resourcesPreparedKeyAgentDebuggerInheritance<'pipes,'flight>,_job:&'resourcesDebuggerContainmentJob,}",
+    ) &&
     compactSys.includes("handles:Box<[HANDLE;3]>") &&
+    compactSys.includes("job_handle:Box<[HANDLE;1]>") &&
     compactSys.includes(
       "lethandles=Box::new([windows_handle(inheritance.stdin()),windows_handle(inheritance.stdout()),windows_handle(inheritance.stderr()),]);",
     ) &&
-    handleListCalls.length === 1 &&
-    JSON.stringify(handleListCalls[0].arguments.map(compactRust)) ===
+    attributeInstallOrder.every((position) => position !== -1) &&
+    attributeInstallOrder
+      .slice(1)
+      .every((position, index) => position > attributeInstallOrder[index]) &&
+    attributeUpdateCalls.length === 1 &&
+    JSON.stringify(attributeUpdateCalls[0].arguments.map(compactRust)) ===
       JSON.stringify([
-        "attributes.pointer",
+        "self.pointer",
         "0",
-        "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST).map_err(|_|DebuggerTransportError::ProcessCreation)?",
-        "Some(attributes.handles.as_ptr().cast::<c_void>())",
-        "size_of_val(attributes.handles.as_ref())",
+        "kind",
+        "Some(handles.as_ptr().cast::<c_void>())",
+        "size_of_val(handles)",
         "None",
         "None",
       ]) &&
+    compactRust(creationAttributesInstall) ===
+      "fninstall(&self,kind:usize,handles:&[HANDLE])->Result<(),DebuggerTransportError>{unsafe{UpdateProcThreadAttribute(self.pointer,0,kind,Some(handles.as_ptr().cast::<c_void>()),size_of_val(handles),None,None,)}.map_err(|_|DebuggerTransportError::ProcessCreation)}" &&
+    suspendedCreationOrder.every((position) => position !== -1) &&
+    suspendedCreationOrder
+      .slice(1)
+      .every((position, index) => position > suspendedCreationOrder[index]) &&
     createCalls.length === 1 &&
     JSON.stringify(createCalls[0].arguments.map(compactRust)) ===
       JSON.stringify([
@@ -59184,12 +59500,15 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       JSON.stringify([
         {
           api: "GetProcessId",
-          calls: [["windows_owned_handle(&process)"], ["process_handle"]],
+          calls: [["process_handle"]],
         },
         { api: "GetThreadId", calls: [["thread_handle"]] },
         {
           api: "GetExitCodeProcess",
-          calls: [["self.process_handle()", "&rawmutexit_code"]],
+          calls: [
+            ["self.process_handle()", "&rawmutexit_code"],
+            ["self.process_handle()", "&rawmutexit_code"],
+          ],
         },
         {
           api: "TerminateProcess",
@@ -59216,6 +59535,149 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
           calls: [["windows_owned_handle(thread)"]],
         },
       ]) &&
+    JSON.stringify(debuggerJobApiCalls) ===
+      JSON.stringify([
+        {
+          api: "CreateJobObjectW",
+          calls: [["None", "PCWSTR::null()"]],
+        },
+        {
+          api: "GetHandleInformation",
+          calls: [
+            ["job.raw()", "&rawmutflags"],
+            ["handle", "&rawmutflags"],
+          ],
+        },
+        {
+          api: "SetInformationJobObject",
+          calls: [
+            [
+              "job.raw()",
+              "JobObjectExtendedLimitInformation",
+              "ptr::from_ref(&information).cast::<c_void>()",
+              "u32::try_from(size_of_val(&information)).map_err(|_|DebuggerTransportError::JobPreparation)?",
+            ],
+          ],
+        },
+        {
+          api: "QueryInformationJobObject",
+          calls: [
+            [
+              "Some(self.raw())",
+              "JobObjectExtendedLimitInformation",
+              "ptr::from_mut(&mutinformation).cast::<c_void>()",
+              "expected",
+              "Some(&rawmutreturned)",
+            ],
+            [
+              "Some(self.raw())",
+              "JobObjectBasicAccountingInformation",
+              "ptr::from_mut(&mutaccounting).cast::<c_void>()",
+              "expected",
+              "Some(&rawmutreturned)",
+            ],
+          ],
+        },
+        {
+          api: "IsProcessInJob",
+          calls: [["process", "Some(self.raw())", "&rawmutin_job"]],
+        },
+        {
+          api: "TerminateJobObject",
+          calls: [["self.raw()", "exit_code_u32(code)"]],
+        },
+      ]) &&
+    Object.entries(keyAgentDebuggerNativeApiTokenCounts).every(
+      ([api, count]) => debuggerNativeApiUsage.tokens[api].length === count,
+    ) &&
+    debuggerNativeApiUsage.aliases.length === 0 &&
+    debuggerNativeApiUsage.qualified.length === 0 &&
+    debuggerNativeApiUsage.references.length === 0 &&
+    Object.values(debuggerParentNativeApiUsage.tokens).every(
+      (paths) => paths.length === 0,
+    ) &&
+    debuggerParentNativeApiUsage.calls.length === 0 &&
+    debuggerParentNativeApiUsage.aliases.length === 0 &&
+    debuggerParentNativeApiUsage.qualified.length === 0 &&
+    debuggerParentNativeApiUsage.references.length === 0 &&
+    JSON.stringify(creationAttributesDeleteCalls) ===
+      JSON.stringify([["self.pointer"]]) &&
+    compactRust(creationAttributesDrop) ===
+      "fndrop(&mutself){unsafe{DeleteProcThreadAttributeList(self.pointer)};}" &&
+    compactSys.includes("structDebuggerContainmentJob(OwnedHandle);") &&
+    compactSys.includes(
+      "pub(super)structDebuggerChild{process:OwnedHandle,primary_thread:Option<OwnedHandle>,job:Option<DebuggerContainmentJob>,process_id:u32,reaped:bool,}",
+    ) &&
+    hasOrderedCompactMarkers(containmentJobCreate, [
+      "CreateJobObjectW(None,PCWSTR::null())",
+      "letjob=Self(unsafe{OwnedHandle::from_raw_handle(handle.0)});",
+      "letmutflags=HANDLE_FLAG_INHERIT.0;",
+      "GetHandleInformation(job.raw(),&rawmutflags)",
+      "ifflags!=0",
+      "letmutinformation=JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();",
+      "information.BasicLimitInformation.LimitFlags=DEBUGGER_CONTAINMENT_JOB_LIMITS;",
+      "SetInformationJobObject(",
+      "job.verify_exact_limits()?;",
+      "Ok(job)",
+    ]) &&
+    !/\.\s*ActiveProcessLimit\s*=/u.test(
+      rustLexicalCode(containmentJobCreate),
+    ) &&
+    compactRust(exactContainmentLimits) ===
+      "constfnexact_containment_limits(flags:JOB_OBJECT_LIMIT)->bool{flags.0==DEBUGGER_CONTAINMENT_JOB_LIMITS.0&&flags.0&JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0==0&&flags.0&JOB_OBJECT_LIMIT_BREAKAWAY_OK.0==0&&flags.0&JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0==0}" &&
+    hasOrderedCompactMarkers(verifyExactLimits, [
+      "letmutinformation=JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();",
+      "letexpected=u32::try_from(size_of_val(&information))",
+      "QueryInformationJobObject(Some(self.raw()),JobObjectExtendedLimitInformation",
+      "ifreturned!=expected||!exact_containment_limits(information.BasicLimitInformation.LimitFlags)",
+      "returnErr(DebuggerTransportError::JobProof);",
+    ]) &&
+    exactMemberOrder.every((position) => position !== -1) &&
+    exactMemberOrder
+      .slice(1)
+      .every((position, index) => position > exactMemberOrder[index]) &&
+    hasOrderedCompactMarkers(activeProcessCount, [
+      "letmutaccounting=JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();",
+      "QueryInformationJobObject(Some(self.raw()),JobObjectBasicAccountingInformation",
+      "ifreturned!=expected",
+      "Ok(accounting.ActiveProcesses)",
+    ]) &&
+    compactRust(verifyExactLimits) ===
+      "fnverify_exact_limits(&self)->Result<(),DebuggerTransportError>{letmutinformation=JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();letexpected=u32::try_from(size_of_val(&information)).map_err(|_|DebuggerTransportError::JobProof)?;letmutreturned=0_u32;unsafe{QueryInformationJobObject(Some(self.raw()),JobObjectExtendedLimitInformation,ptr::from_mut(&mutinformation).cast::<c_void>(),expected,Some(&rawmutreturned),)}.map_err(|_|DebuggerTransportError::JobProof)?;ifreturned!=expected||!exact_containment_limits(information.BasicLimitInformation.LimitFlags){returnErr(DebuggerTransportError::JobProof);}Ok(())}" &&
+    compactRust(verifyExactMember) ===
+      "fnverify_exact_member(&self,process:HANDLE)->Result<(),DebuggerTransportError>{self.verify_exact_limits()?;letmutin_job=BOOL(0);unsafe{IsProcessInJob(process,Some(self.raw()),&rawmutin_job)}.map_err(|_|DebuggerTransportError::JobProof)?;if!in_job.as_bool()||self.active_process_count()?!=1{returnErr(DebuggerTransportError::JobProof);}Ok(())}" &&
+    compactRust(activeProcessCount) ===
+      "fnactive_process_count(&self)->Result<u32,DebuggerTransportError>{letmutaccounting=JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();letexpected=u32::try_from(size_of_val(&accounting)).map_err(|_|DebuggerTransportError::JobProof)?;letmutreturned=0_u32;unsafe{QueryInformationJobObject(Some(self.raw()),JobObjectBasicAccountingInformation,ptr::from_mut(&mutaccounting).cast::<c_void>(),expected,Some(&rawmutreturned),)}.map_err(|_|DebuggerTransportError::JobProof)?;ifreturned!=expected{returnErr(DebuggerTransportError::JobProof);}Ok(accounting.ActiveProcesses)}" &&
+    compactRust(terminateJob) ===
+      "fnterminate(&self,code:DebuggerExitCode)->Result<(),DebuggerTransportError>{unsafe{TerminateJobObject(self.raw(),exit_code_u32(code))}.map_err(|_|DebuggerTransportError::ProcessExit)}" &&
+    sources.sys.includes(
+      "termination targets every\n        // process still associated with it. Pre-resume readback excludes\n        // breakaway then; excluding post-resume policy mutation or escape by an\n        // executed helper remains production STOP-SHIP.",
+    ) &&
+    !/\b(?:WaitForSingleObject|sleep)\b/u.test(rustLexicalCode(terminateJob)) &&
+    hasOrderedCompactMarkers(terminateAndWaitEmpty, [
+      "ifself.active_process_count()?!=0",
+      "self.terminate(code)?;",
+      "self.wait_until_empty(deadline)",
+    ]) &&
+    compactRust(terminateAndWaitEmpty) ===
+      "fnterminate_and_wait_empty(&self,code:DebuggerExitCode,deadline:Instant,)->Result<(),DebuggerTransportError>{ifself.active_process_count()?!=0{self.terminate(code)?;}self.wait_until_empty(deadline)}" &&
+    jobEmptyOrder.every((position) => position !== -1) &&
+    jobEmptyOrder
+      .slice(1)
+      .every((position, index) => position > jobEmptyOrder[index]) &&
+    compactRust(waitUntilEmpty) ===
+      "fnwait_until_empty(&self,deadline:Instant)->Result<(),DebuggerTransportError>{loop{ifself.active_process_count()?==0{returnOk(());}ifInstant::now()>=deadline{returnErr(DebuggerTransportError::ProcessExit);}std::thread::sleep(JOB_TERMINATION_POLL_INTERVAL);}}" &&
+    !/\bWaitForSingleObject\b/u.test(
+      rustLexicalCode(terminateAndWaitEmpty),
+    ) &&
+    !/\bWaitForSingleObject\b/u.test(rustLexicalCode(waitUntilEmpty)) &&
+    sources.sys.includes(
+      'formatter.write_str("DebuggerContainmentJob([OWNED HANDLE REDACTED; KILL-ON-CLOSE])")',
+    ) &&
+    sources.sys.includes(
+      'formatter.write_str("DebuggerChild([PROCESS; PRIMARY THREAD; CONTAINMENT JOB REDACTED])")',
+    ) &&
+    !/impl\s+(?:Clone|Copy)\s+for\s+DebuggerContainmentJob\b/u.test(sysCode) &&
     !/\bCreateProcess(?:W|AsUserW|WithTokenW|WithLogonW)\b/u.test(sysCode) &&
     duplicateCalls.length === 2 &&
     JSON.stringify(duplicateCalls.map((call) => call.arguments.map(compactRust))) ===
@@ -59261,6 +59723,15 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     compactParent.includes(
       "native_granted_access_for_test(sentinel.observer())?!=sys::SYNCHRONIZE_ACCESS",
     ) &&
+    compactRust(adoptChild).includes(
+      "ifinformation.hProcess.is_invalid()||information.hThread.is_invalid()||information.hProcess==information.hThread{",
+    ) &&
+    missingProcessCleanupOrder.every((position) => position !== -1) &&
+    missingProcessCleanupOrder
+      .slice(1)
+      .every(
+        (position, index) => position > missingProcessCleanupOrder[index],
+      ) &&
     malformedHalfOrder.every((position) => position !== -1) &&
     malformedHalfOrder
       .slice(1)
@@ -59270,20 +59741,92 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       .slice(1)
       .every((position, index) => position > identityRejectOrder[index]) &&
     compactSys.includes(
-      "ifunsafe{WaitForSingleObject(self.process_handle(),timeout)}!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}self.reaped=true;letmutexit_code=u32::MAX;unsafe{GetExitCodeProcess(self.process_handle(),&rawmutexit_code)}",
+      "fnwait_for_terminal(&mutself,deadline:Instant)->Result<(),DebuggerTransportError>{lettimeout=remaining_milliseconds(deadline)?;ifunsafe{WaitForSingleObject(self.process_handle(),timeout)}!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}self.reaped=true;Ok(())}",
     ) &&
-    compactSys.includes(
-      "let_=unsafe{TerminateProcess(self.process_handle(),exit_code_u32(code))};",
+    compactRust(waitForExactExit) ===
+      "pub(super)fnwait_for_exact_exit(&mutself,expected:DebuggerExitCode,deadline:Instant,)->Result<(),DebuggerTransportError>{self.wait_for_terminal(deadline)?;letmutexit_code=u32::MAX;unsafe{GetExitCodeProcess(self.process_handle(),&rawmutexit_code)}.map_err(|_|DebuggerTransportError::ProcessExit)?;ifexit_code!=exit_code_u32(expected){returnErr(DebuggerTransportError::ProcessExit);}Ok(())}" &&
+    hasOrderedCompactMarkers(terminateAndWait, [
+      "letstate=unsafe{WaitForSingleObject(self.process_handle(),0)};",
+      "letjob_termination=self.job.as_ref().ok_or(DebuggerTransportError::JobProof).and_then(|job|job.terminate(code));",
+      "letprocess_termination=unsafe{TerminateProcess(self.process_handle(),exit_code_u32(code))};",
+      "ifjob_termination.is_err()&&process_termination.is_err()",
+      "self.wait_for_exact_exit(code,deadline)",
+    ]) &&
+    compactRust(terminateAndWait) ===
+      "pub(super)fnterminate_and_wait(&mutself,code:DebuggerExitCode,deadline:Instant,)->Result<(),DebuggerTransportError>{letstate=unsafe{WaitForSingleObject(self.process_handle(),0)};ifstate==WAIT_TIMEOUT{letjob_termination=self.job.as_ref().ok_or(DebuggerTransportError::JobProof).and_then(|job|job.terminate(code));letprocess_termination=unsafe{TerminateProcess(self.process_handle(),exit_code_u32(code))};ifjob_termination.is_err()&&process_termination.is_err(){returnErr(DebuggerTransportError::ProcessExit);}}elseifstate!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}self.wait_for_exact_exit(code,deadline)}" &&
+    hasOrderedCompactMarkers(malformedProcessCleanup, [
+      "letstate=unsafe{WaitForSingleObject(process,0)};",
+      "letjob_termination=job.terminate(code);",
+      "letprocess_termination=unsafe{TerminateProcess(process,exit_code_u32(code))};",
+      "ifjob_termination.is_err()&&process_termination.is_err()",
+      "lettimeout=remaining_milliseconds(deadline)?;",
+      "WaitForSingleObject(process,timeout)",
+    ]) &&
+    compactRust(malformedProcessCleanup) ===
+      "fnterminate_live_process_and_reap(process:HANDLE,job:&DebuggerContainmentJob,code:DebuggerExitCode,deadline:Instant,)->Result<(),DebuggerTransportError>{letstate=unsafe{WaitForSingleObject(process,0)};ifstate==WAIT_TIMEOUT{letjob_termination=job.terminate(code);letprocess_termination=unsafe{TerminateProcess(process,exit_code_u32(code))};ifjob_termination.is_err()&&process_termination.is_err(){returnErr(DebuggerTransportError::ProcessExit);}}elseifstate!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}else{returnOk(());}lettimeout=remaining_milliseconds(deadline)?;ifunsafe{WaitForSingleObject(process,timeout)}!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}Ok(())}" &&
+    compactRust(closeJobAndWait).includes(
+      "letjob=self.job.take().ok_or(DebuggerTransportError::JobProof)?;drop(job);self.wait_for_terminal(deadline)",
     ) &&
-    compactSys.includes(
-      "let_=unsafe{TerminateProcess(process,exit_code_u32(code))};",
+    sources.sys.includes(
+      "The live\n        // suspended helper becoming terminal is benign current-host evidence\n        // for last-close mechanics; this test neither enumerates nor excludes\n        // system-wide duplicates. Production must prove that separately.",
     ) &&
-    compactSys.includes(
-      "implDropforDebuggerChild{fndrop(&mutself){ifself.reaped{return;}letdeadline=Instant::now()+Duration::from_millis(u64::from(CLEANUP_TIMEOUT_MILLISECONDS));letcleanup=self.terminate_and_wait(DebuggerExitCode::OperatingSystem,deadline);ifcleanup.is_err()&&!self.reaped{fail_fast();}}}",
+    !/\b(?:TerminateJobObject|TerminateProcess)\b/u.test(
+      rustLexicalCode(closeJobAndWait),
     ) &&
+    hasOrderedCompactMarkers(jobOnlyCleanupForTest, [
+      ".active_process_count()?!=1",
+      "drop(self.primary_thread.take());",
+      ".terminate_and_wait_empty(DebuggerExitCode::OperatingSystem,deadline)?;",
+      "self.reaped=true;",
+      "Ok(())",
+    ]) &&
+    !/\b(?:WaitForSingleObject|process_handle)\b/u.test(
+      rustLexicalCode(jobOnlyCleanupForTest),
+    ) &&
+    hasOrderedCompactMarkers(naturalExitThenDropCleanupForTest, [
+      "control.finish(&frame,deadline)",
+      "child.observe_exact_exit_without_reaping_for_test(DebuggerExitCode::Success,cleanup_deadline(),)?;",
+      "drop(child);",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(observeExactExitWithoutReapingForTest, [
+      "lettimeout=remaining_milliseconds(deadline)?;",
+      "WaitForSingleObject(self.process_handle(),timeout)",
+      "letmutexit_code=u32::MAX;",
+      "GetExitCodeProcess(self.process_handle(),&rawmutexit_code)",
+      "ifexit_code!=exit_code_u32(expected)",
+      "Ok(())",
+    ]) &&
+    compactRust(observeExactExitWithoutReapingForTest) ===
+      "pub(super)fnobserve_exact_exit_without_reaping_for_test(&self,expected:DebuggerExitCode,deadline:Instant,)->Result<(),DebuggerTransportError>{lettimeout=remaining_milliseconds(deadline)?;ifunsafe{WaitForSingleObject(self.process_handle(),timeout)}!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}letmutexit_code=u32::MAX;unsafe{GetExitCodeProcess(self.process_handle(),&rawmutexit_code)}.map_err(|_|DebuggerTransportError::ProcessExit)?;ifexit_code!=exit_code_u32(expected){returnErr(DebuggerTransportError::ProcessExit);}Ok(())}" &&
+    !compactRust(observeExactExitWithoutReapingForTest).includes(
+      "self.reaped=true",
+    ) &&
+    dropContainmentOrder.every((position) => position !== -1) &&
+    dropContainmentOrder
+      .slice(1)
+      .every((position, index) => position > dropContainmentOrder[index]) &&
+    rustFunctionOuterAttributesAtDepth(
+      sources.sys,
+      "containment_policy_is_kill_only_without_topology_or_breakaway_policy",
+      1,
+    ).includes("#[test]") &&
+    !hasVacuousRustTestEscape(containmentPolicyTest) &&
+    [
+      "JOB_OBJECT_LIMIT(0)",
+      "JOB_OBJECT_LIMIT_ACTIVE_PROCESS",
+      "JOB_OBJECT_LIMIT_BREAKAWAY_OK",
+      "JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK",
+      "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0",
+      "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_BREAKAWAY_OK.0",
+      "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0",
+    ].every((marker) => containmentPolicyTest.includes(marker)) &&
     !/\bINFINITE\b/u.test(sysCode) &&
     !keyAgentDebuggerForbiddenPlatformCode.test(
       `${parentCode}\n${sysCode}\n${rustLexicalCode(sources.pipe)}`,
+    ) &&
+    keyAgentDebuggerForbiddenContainmentOverclaims.every(
+      (pattern) => !pattern.test(`${sources.parent}\n${sources.sys}`),
     )
   );
 };
@@ -59296,6 +59839,20 @@ const mutateKeyAgentDebuggerPlatform = (name, search, replacement) => ({
     replacement,
   ),
 });
+const keyAgentDebuggerNativeApiMutationProbes =
+  keyAgentDebuggerNativeApiNames.flatMap((api, index) => {
+    const alias = `hidden_native_api_alias_${index}`;
+    return [
+      {
+        ...keyAgentDebuggerPlatformSources,
+        sys: `${keyAgentDebuggerTransportSysSource}\nuse ${keyAgentDebuggerNativeApiModules[api]}::${api} as ${alias};\nfn hidden_native_api_alias_probe_${index}() { let _ = ${alias}; }\n`,
+      },
+      {
+        ...keyAgentDebuggerPlatformSources,
+        sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_native_api_reference_probe_${index}() { let _ = ${api}; }\n`,
+      },
+    ];
+  });
 const keyAgentDebuggerPlatformMutationProbes = [
   mutateKeyAgentDebuggerPlatform(
     "manifest",
@@ -59349,6 +59906,16 @@ const keyAgentDebuggerPlatformMutationProbes = [
   ),
   mutateKeyAgentDebuggerPlatform(
     "parent",
+    "This implementation retains one Job handle, and its\n//! current-host last-close test runs while the benign helper is still suspended.",
+    "This implementation is the system-wide sole Job owner after helper execution.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "It does not prove that an executed same-token helper cannot acquire\n//! `PROCESS_DUP_HANDLE` on the parent and retain another Job handle.",
+    "The helper cannot survive parent teardown.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
     '#[ignore = "requires an explicitly built debug-only key-agent-debugger.exe and supported Windows kernel"]\n',
     "",
   ),
@@ -59368,14 +59935,204 @@ const keyAgentDebuggerPlatformMutationProbes = [
     "            .abort(natural_exit_deadline)?;",
   ),
   mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "        child.observe_exact_exit_without_reaping_for_test(\n            DebuggerExitCode::Success,",
+    "        child.observe_exact_exit_without_reaping_for_test(\n            DebuggerExitCode::OperatingSystem,",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "            .close_containment_job_while_suspended_for_test()?;",
+    "            .terminate_while_suspended_for_test()?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "            .terminate_containment_job_without_process_wait_for_test()?;",
+    "            .terminate_while_suspended_for_test()?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
     "sys",
     "handles: Box<[HANDLE; 3]>",
     "handles: Box<[HANDLE; 4]>",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
+    "        let mut words = vec![0_usize; word_count];",
+    "        let mut words = vec![0_usize; 1];",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(words.as_mut_ptr().cast::<c_void>());",
+    "        let pointer = LPPROC_THREAD_ATTRIBUTE_LIST(1_usize as _);",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            _words: words,",
+    "            _words: Vec::new(),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        }\n        .map_err(|_| DebuggerTransportError::ProcessCreation)?;\n\n        let handles = Box::new([",
+    "        };\n\n        let handles = Box::new([",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        .map_err(|_| DebuggerTransportError::ProcessCreation)\n    }\n\n    const fn pointer(&self)",
+    "        .map_err(|_| DebuggerTransportError::ProcessCreation)\n        .ok();\n        Ok(())\n    }\n\n    const fn pointer(&self)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "job_handle: Box<[HANDLE; 1]>",
+    "job_handle: Box<[HANDLE; 2]>",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "const CREATION_ATTRIBUTE_COUNT: u32 = 2;",
+    "const CREATION_ATTRIBUTE_COUNT: u32 = 1;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
     "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
     "usize::try_from(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_JOB_LIST)",
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0);",
+    "    JOB_OBJECT_LIMIT(\n        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0,\n    );",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "CreateJobObjectW(None, PCWSTR::null())",
+    "CreateJobObjectW(None, PCWSTR::from_raw(1_usize as _))",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if flags != 0 {\n            return Err(DebuggerTransportError::JobPreparation);\n        }",
+    "        if false && flags != 0 {\n            return Err(DebuggerTransportError::JobPreparation);\n        }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        information.BasicLimitInformation.LimitFlags = DEBUGGER_CONTAINMENT_JOB_LIMITS;",
+    "        information.BasicLimitInformation.LimitFlags = DEBUGGER_CONTAINMENT_JOB_LIMITS;\n        information.BasicLimitInformation.ActiveProcessLimit = 1;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "flags.0 & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0 == 0",
+    "flags.0 & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0 != 0",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "flags.0 & JOB_OBJECT_LIMIT_BREAKAWAY_OK.0 == 0",
+    "flags.0 & JOB_OBJECT_LIMIT_BREAKAWAY_OK.0 != 0",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "flags.0 & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0 == 0",
+    "flags.0 & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0 != 0",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "IsProcessInJob(process, Some(self.raw()), &raw mut in_job)",
+    "IsProcessInJob(process, None, &raw mut in_job)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if !in_job.as_bool() || self.active_process_count()? != 1 {",
+    "        if !in_job.as_bool() || self.active_process_count()? == 1 {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    job: Option<DebuggerContainmentJob>,",
+    "    job: Option<OwnedHandle>,",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        drop(attributes);\n        Self::adopt(information, job)",
+    "        let _ = attributes;\n        Self::adopt(information, job)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                let termination = job.active_process_count().and_then(|active| {\n                    if active == 0 {\n                        Ok(())\n                    } else {\n                        job.terminate(DebuggerExitCode::OperatingSystem)\n                    }\n                });",
+    "                let termination: Result<(), DebuggerTransportError> = Ok(());",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                if job.wait_until_empty(cleanup_deadline).is_err() {",
+    "                if job.active_process_count().is_err() {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                if termination.is_err() {\n                    fail_fast();\n                }",
+    "                if false && termination.is_err() {\n                    fail_fast();\n                }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if self.active_process_count()? != 0 {\n            self.terminate(code)?;\n        }\n        self.wait_until_empty(deadline)",
+    "        if self.active_process_count()? == 0 {\n            self.terminate(code)?;\n        }\n        self.wait_until_empty(deadline)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if self.active_process_count()? == 0 {\n                return Ok(());\n            }",
+    "            if self.active_process_count()? == 1 {\n                return Ok(());\n            }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "unsafe { TerminateJobObject(self.raw(), exit_code_u32(code)) }",
+    "Ok(())",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        unsafe { TerminateJobObject(self.raw(), exit_code_u32(code)) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)\n    }\n\n    fn terminate_and_wait_empty(",
+    "        let _ = unsafe { TerminateJobObject(self.raw(), exit_code_u32(code)) };\n        Ok(())\n    }\n\n    fn terminate_and_wait_empty(",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "excluding post-resume policy mutation or escape by an\n        // executed helper remains production STOP-SHIP.",
+    "an executed helper cannot mutate policy or escape after resume.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            let job_termination = self\n                .job\n                .as_ref()\n                .ok_or(DebuggerTransportError::JobProof)\n                .and_then(|job| job.terminate(code));",
+    "            let job_termination = Ok(());",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let job_termination = job.terminate(code);",
+    "        let job_termination = Ok(());",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        drop(job);\n        self.wait_for_terminal(deadline)",
+    "        let _ = &job;\n        self.wait_for_terminal(deadline)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "this test neither enumerates nor excludes\n        // system-wide duplicates. Production must prove that separately.",
+    "this test excludes every system-wide duplicate.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            .terminate_and_wait_empty(DebuggerExitCode::OperatingSystem, deadline)?;",
+    "            .terminate(DebuggerExitCode::OperatingSystem)?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            .active_process_count()?\n            != 1\n        {",
+    "            .active_process_count()?\n            == 1\n        {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        drop(self.primary_thread.take());\n        self.job",
+    "        let _ = self.primary_thread.as_ref();\n        self.job",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if self\n                .close_job_and_wait_for_terminal(containment_deadline)\n                .is_err()\n                && !self.reaped",
+    "            if false\n                && self\n                    .close_job_and_wait_for_terminal(containment_deadline)\n                    .is_err()\n                && !self.reaped",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
@@ -59399,13 +60156,18 @@ const keyAgentDebuggerPlatformMutationProbes = [
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)?;",
-    "        let _ = &mut exit_code;",
+    "        self.wait_for_terminal(deadline)?;\n        let mut exit_code = u32::MAX;\n        // SAFETY: the exact process is signaled and output storage is writable.\n        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)?;",
+    "        self.wait_for_terminal(deadline)?;\n        let mut exit_code = u32::MAX;\n        let _ = &mut exit_code;",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "        let _ = unsafe { TerminateProcess(process, exit_code_u32(code)) };",
-    "        let _ = process;",
+    "        if exit_code != exit_code_u32(expected) {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        Ok(())\n    }\n\n    fn process_handle(&self) -> HANDLE {",
+    "        let _ = expected;\n        Ok(())\n    }\n\n    fn process_handle(&self) -> HANDLE {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let process_termination = unsafe { TerminateProcess(process, exit_code_u32(code)) };",
+    "        let process_termination = Ok(());",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
@@ -59458,8 +60220,8 @@ const keyAgentDebuggerPlatformMutationProbes = [
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "        self.reaped = true;\n        let mut exit_code = u32::MAX;",
-    "        let mut exit_code = u32::MAX;\n        self.reaped = true;",
+    "        self.reaped = true;\n        Ok(())\n    }\n\n    pub(super) fn terminate_and_wait(",
+    "        Ok(())\n    }\n\n    pub(super) fn terminate_and_wait(",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
@@ -59468,18 +60230,143 @@ const keyAgentDebuggerPlatformMutationProbes = [
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "            let _ = unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) };",
-    "            unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) }\n                .map_err(|_| DebuggerTransportError::ProcessExit)?;",
+    "            let process_termination =\n                unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) };",
+    "            let process_termination = Ok(());",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "            if information.hProcess.is_invalid() {\n                fail_fast();\n            }",
-    "            if information.hProcess.is_invalid() {\n                return Err(DebuggerTransportError::ProcessIdentity);\n            }",
+    "            if information.hProcess.is_invalid() {",
+    "            if false && information.hProcess.is_invalid() {",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
-    "            if unsafe { GetProcessId(windows_owned_handle(&process)) } == 0 {\n                fail_fast();\n            }",
-    "            if unsafe { GetProcessId(windows_owned_handle(&process)) } == 0 {\n                return Err(DebuggerTransportError::ProcessIdentity);\n            }",
+    "        if information.hProcess.is_invalid()\n            || information.hThread.is_invalid()\n            || information.hProcess == information.hThread\n        {",
+    "        if information.hProcess.is_invalid()\n            || information.hProcess == information.hThread\n        {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if information.hProcess.is_invalid()\n            || information.hThread.is_invalid()\n            || information.hProcess == information.hThread\n        {",
+    "        if information.hProcess.is_invalid()\n            || information.hThread.is_invalid()\n        {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        }\n        .map_err(|_| DebuggerTransportError::JobProof)?;\n        if returned != expected\n            ||",
+    "        }\n        .map_err(|_| DebuggerTransportError::JobProof)\n        .ok();\n        if returned != expected\n            ||",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();\n        let expected =",
+    "        let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();\n        information.BasicLimitInformation.LimitFlags = DEBUGGER_CONTAINMENT_JOB_LIMITS;\n        let expected =",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let mut returned = 0_u32;\n        // SAFETY: output is exact writable storage",
+    "        let mut returned = expected;\n        // SAFETY: output is exact writable storage",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if returned != expected\n            || !exact_containment_limits(information.BasicLimitInformation.LimitFlags)\n        {",
+    "        if false\n            && (returned != expected\n                || !exact_containment_limits(information.BasicLimitInformation.LimitFlags))\n        {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        unsafe { IsProcessInJob(process, Some(self.raw()), &raw mut in_job) }\n            .map_err(|_| DebuggerTransportError::JobProof)?;",
+    "        unsafe { IsProcessInJob(process, Some(self.raw()), &raw mut in_job) }\n            .map_err(|_| DebuggerTransportError::JobProof)\n            .ok();",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let mut in_job = BOOL(0);",
+    "        let mut in_job = BOOL(1);",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if !in_job.as_bool() || self.active_process_count()? != 1 {",
+    "        if false && (!in_job.as_bool() || self.active_process_count()? != 1) {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        }\n        .map_err(|_| DebuggerTransportError::JobProof)?;\n        if returned != expected {",
+    "        }\n        .map_err(|_| DebuggerTransportError::JobProof)\n        .ok();\n        if returned != expected {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let mut returned = 0_u32;\n        // SAFETY: output is the exact structure selected by the information",
+    "        let mut returned = expected;\n        // SAFETY: output is the exact structure selected by the information",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if returned != expected {\n            return Err(DebuggerTransportError::JobProof);\n        }\n        Ok(accounting.ActiveProcesses)",
+    "        if false && returned != expected {\n            return Err(DebuggerTransportError::JobProof);\n        }\n        Ok(accounting.ActiveProcesses)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if self.active_process_count()? == 0 {\n                return Ok(());\n            }",
+    "            if false && self.active_process_count()? == 0 {\n                return Ok(());\n            }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if Instant::now() >= deadline {\n                return Err(DebuggerTransportError::ProcessExit);\n            }",
+    "            if false && Instant::now() >= deadline {\n                return Err(DebuggerTransportError::ProcessExit);\n            }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        self.wait_for_terminal(deadline)?;\n        let mut exit_code = u32::MAX;",
+    "        self.wait_for_terminal(deadline).ok();\n        let mut exit_code = u32::MAX;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        self.wait_for_terminal(deadline)?;\n        let mut exit_code = u32::MAX;\n        // SAFETY: the exact process is signaled and output storage is writable.\n        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)?;",
+    "        self.wait_for_terminal(deadline)?;\n        let mut exit_code = u32::MAX;\n        // SAFETY: the exact process is signaled and output storage is writable.\n        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)\n            .ok();\n        exit_code = exit_code_u32(expected);",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if exit_code != exit_code_u32(expected) {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        Ok(())\n    }\n\n    fn wait_for_terminal",
+    "        if false && exit_code != exit_code_u32(expected) {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        Ok(())\n    }\n\n    fn wait_for_terminal",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if unsafe { WaitForSingleObject(self.process_handle(), timeout) } != WAIT_OBJECT_0 {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        let mut exit_code = u32::MAX;",
+    "        if false\n            && unsafe { WaitForSingleObject(self.process_handle(), timeout) } != WAIT_OBJECT_0\n        {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        let mut exit_code = u32::MAX;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        }\n        let mut exit_code = u32::MAX;\n        // SAFETY: the exact process is signaled and output storage is writable.\n        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)?;\n        if exit_code != exit_code_u32(expected)",
+    "        }\n        let mut exit_code = u32::MAX;\n        // SAFETY: the exact process is signaled and output storage is writable.\n        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)\n            .ok();\n        exit_code = exit_code_u32(expected);\n        if exit_code != exit_code_u32(expected)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if exit_code != exit_code_u32(expected) {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        Ok(())\n    }\n\n    fn process_handle",
+    "        if false && exit_code != exit_code_u32(expected) {\n            return Err(DebuggerTransportError::ProcessExit);\n        }\n        Ok(())\n    }\n\n    fn process_handle",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let state = unsafe { WaitForSingleObject(self.process_handle(), 0) };\n        if state == WAIT_TIMEOUT {",
+    "        let state = unsafe { WaitForSingleObject(self.process_handle(), 0) };\n        let state = WAIT_OBJECT_0;\n        if state == WAIT_TIMEOUT {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            let process_termination =\n                unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) };\n            if job_termination.is_err() && process_termination.is_err() {",
+    "            let process_termination =\n                unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) };\n            let process_termination: Result<(), ()> = Ok(());\n            if job_termination.is_err() && process_termination.is_err() {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    let state = unsafe { WaitForSingleObject(process, 0) };\n    if state == WAIT_TIMEOUT {",
+    "    let state = unsafe { WaitForSingleObject(process, 0) };\n    let state = WAIT_OBJECT_0;\n    if state == WAIT_TIMEOUT {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let process_termination = unsafe { TerminateProcess(process, exit_code_u32(code)) };\n        if job_termination.is_err() && process_termination.is_err() {",
+    "        let process_termination = unsafe { TerminateProcess(process, exit_code_u32(code)) };\n        let process_termination: Result<(), ()> = Ok(());\n        if job_termination.is_err() && process_termination.is_err() {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    if unsafe { WaitForSingleObject(process, timeout) } != WAIT_OBJECT_0 {\n        return Err(DebuggerTransportError::ProcessExit);\n    }",
+    "    if false && unsafe { WaitForSingleObject(process, timeout) } != WAIT_OBJECT_0 {\n        return Err(DebuggerTransportError::ProcessExit);\n    }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let job_valid = job.verify_exact_member(process_handle).is_ok();",
+    "        let job_valid = true;",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
@@ -59491,10 +60378,40 @@ const keyAgentDebuggerPlatformMutationProbes = [
     "            if cleanup.is_err() && !rejected.reaped {",
     "            if false && cleanup.is_err() && !rejected.reaped {",
   ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        unsafe { DeleteProcThreadAttributeList(self.pointer) };",
+    "        let _ = self.pointer;",
+  ),
+  {
+    ...keyAgentDebuggerPlatformSources,
+    parent: `${keyAgentDebuggerTransportSource}\n//! The helper cannot survive parent teardown.\n`,
+  },
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: `${keyAgentDebuggerTransportSysSource}\n// Closing the parent-retained Job handle always terminates the helper.\n`,
+  },
+  {
+    ...keyAgentDebuggerPlatformSources,
+    parent: `${keyAgentDebuggerTransportSource}\nuse windows::Win32::System::JobObjects::SetInformationJobObject as mutate_job_policy;\nfn hidden_parent_job_policy_alias() { let _ = mutate_job_policy; }\n`,
+  },
+  {
+    ...keyAgentDebuggerPlatformSources,
+    parent: `${keyAgentDebuggerTransportSource}\nfn hidden_parent_process_api_reference() { let _ = TerminateProcess; }\n`,
+  },
   {
     ...keyAgentDebuggerPlatformSources,
     sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_debug_api() { let _ = WaitForDebugEventEx; }\n`,
   },
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_post_creation_job_assignment() { let _ = AssignProcessToJobObject; }\n`,
+  },
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_named_job_reopen() { let _ = OpenJobObjectW; }\n`,
+  },
+  ...keyAgentDebuggerNativeApiMutationProbes,
 ];
 const keyAgentDebuggerPlatformMutationResults =
   keyAgentDebuggerPlatformMutationProbes.map((probe) => ({
@@ -59511,7 +60428,7 @@ requireInvariant(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
     ),
-  "the dormant platform debugger transport must remain private and exactly Windows+feature+debug gated, with exact three-handle flight/sole restricted CreateProcess wrapper/four flags, bounded typestate and READY+EOF sequence, SYNCHRONIZE-only noninheritable no-option install, SAME_ACCESS noninheritable pull-back, test-only exact WDK access evidence, local fresh-observer zero flags without remote-source-flag overclaim, no remote-word close, process-exit-only helper ownership, exact malformed-half and identity-mismatch cleanup/fail-fast distinctions, bounded Drop, ignored terminal-path evidence, no debug/target/LPAC/Job/RPC/policy surface, and effective mutations",
+  "the dormant platform debugger transport must remain private and exactly Windows+feature+debug gated, with exact three-handle HANDLE_LIST plus one-handle JOB_LIST creation attributes backed by checked word storage and exactly-once list deletion on the sole restricted CreateProcess wrapper/four flags, an exact alias/qualified/reference-free native process/Job/attribute API inventory, an unnamed non-inheritable parent-retained helper-containment Job, exact KILL_ON_JOB_CLOSE-only limits with neither active-process nor breakaway policy, observed membership and active count one, bounded typestate and READY+EOF sequence, SYNCHRONIZE-only noninheritable no-option sentinel install, SAME_ACCESS noninheritable pull-back, test-only exact WDK access evidence, local fresh-observer zero flags without remote-source-flag overclaim, no remote-word close, Job-first malformed cleanup with bounded zero accounting, benign suspended-helper parent-handle-close and Job-only kernel evidence without claiming system-wide duplicate exclusion, exact malformed-half and identity-mismatch cleanup/fail-fast distinctions, bounded Drop, no debug/actual-target/LPAC/RPC/release-policy or post-create/named-Job surface, residual post-resume Job-policy mutation/escape, adversarial parent-death, actual-target topology/owner-handoff, and cancellation liveness, and effective additive/replacement mutations",
 );
 
 const keyAgentDebuggerTopologyInputs = {
@@ -59717,33 +60634,33 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
+    sha256: "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only the transport mechanics",
-    sha256: "a2d2b3b0bf3cb290fb43b1049abcddfd1d207cdd357b09962185ad4f7ac75ef7",
+    sha256: "faf528fdeee1a248203301e78b6cccadba07099541b37511ec94d29ab5c9dddb",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
+    sha256: "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "94d58edbf9bab52c9f050dc389ff4666231e2b507537f18e68c05d0469ddb958",
+    sha256: "99a73fd86e05729c2a174bfaba7346281f60bddce01e984adfe33dd9baee9dae",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor:
       "The first dedicated-process feasibility slice is deliberately narrower",
-    sha256: "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
+    sha256: "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -59756,7 +60673,7 @@ const keyAgentDebuggerDocumentationPatterns = [
   /CRC32C/u,
   /(?:not|neither|do not) (?:peer )?authentication|do not authenticate|corruption\s+detection, not authentication/iu,
   /key-agent-debugger\.exe/u,
-  /(?:silent|produces no output|emits nothing)/iu,
+  /(?:silent|produces\s+no\s+output|emits\s+nothing)/iu,
   /exits? 78/iu,
   /debug test hook/iu,
   /ignored current-host\s+kernel test/iu,
@@ -59795,9 +60712,38 @@ const keyAgentDebuggerDocumentationPatterns = [
   /overlapped pipe I\/O/iu,
   /cancel/iu,
   /drain/iu,
-  /(?:no|without a) creation-time\s+kill-on-close Job|owns no\s+kill-on-close Job/iu,
+  /PROC_THREAD_ATTRIBUTE_JOB_LIST/u,
   /fail-fast/iu,
-  /(?:does not|cannot)\s+prove\s+(?:debugger[-\s]+)?child death/iu,
+  /system-wide\s+last\s+Job\s+handle/iu,
+];
+const keyAgentDebuggerDocumentationPerDocumentJobPatterns = [
+  /PROC_THREAD_ATTRIBUTE_JOB_LIST/u,
+  /unnamed/iu,
+  /non-inheritable/iu,
+  /parent-retained\s+(?:Job\s+)?handle|Job\s+handle\s+retained\s+by\s+the\s+parent/iu,
+  /KILL_ON_JOB_CLOSE/u,
+  /(?:no|neither\s+an)\s+active-\s*process\s+limit/iu,
+  /breakaway/iu,
+  /active\s+count\s+(?:is\s+)?one/iu,
+  /last-(?:owner-)?close/iu,
+  /(?:no|without\s+an)\s+explicit\s+termination\s+API|invokes\s+no\s+explicit\s+termination\s+API/iu,
+  /proves?\s+(?:that\s+|the\s+)?live\s+(?:suspended\s+)?helper\s+becomes\s+terminal/iu,
+  /target\s+membership/iu,
+  /process-count\s+topology/iu,
+  /Job-owner\s+handoff/iu,
+  /system-wide\s+last\s+Job\s+handle/iu,
+  /cancellation(?:-\s*drain)?\s+liveness/iu,
+  /benign(?:\s+|-\s*)(?:suspended-)?helper\s+evidence\s+only/iu,
+  /same-token\s+helper\s+may\s+be\s+able\s+to\s+acquire/iu,
+  /PROCESS_DUP_HANDLE/u,
+  /duplicate\s+a\s+Job\s+handle/iu,
+  /immutable\s+helper\s+identity\s+(?:and|plus)\s+launch\s+admission/iu,
+  /token\/process-\s*DACL\s+separation/iu,
+  /(?:proof\s+of\s+adversarial|adversarial)\s+parent-death\s+containment(?:\s+proof)?/iu,
+  /kill-on-close\s+terminates\s+members\s+only\s+when\s+(?:that\s+is\s+)?the\s+system-wide\s+last\s+Job\s+handle/iu,
+  /(?:this\s+slice|slice)\s+does\s+not\s+prove\s+that\s+condition\s+after\s+helper\s+code\s+runs/iu,
+  /\bPROC_THREAD_ATTRIBUTE_JOB_LIST\b[\s\S]{0,240}\bunnamed\b[\s\S]{0,80}\bnon-inheritable\b[\s\S]{0,40}\bJob\b/iu,
+  /\bKILL_ON_JOB_CLOSE\b[\s\S]{0,160}\b(?:no|neither(?:\s+an)?)\s+active-\s*process\s+limit\b[\s\S]{0,80}\b(?:no|nor|or)\s+breakaway\b/iu,
 ];
 const keyAgentDebuggerDocumentationCommonPatternIndexes =
   keyAgentDebuggerDocumentationPatterns
@@ -59810,8 +60756,32 @@ const keyAgentDebuggerDocumentationContradictions = [
   "READY_FROZEN proves that the helper is suspended by the operating system.",
   "The canonical environment path is a signed debugger identity.",
   "The current-host deadline is an unconditional kernel-liveness guarantee.",
-  "Parent fail-fast proves debugger-child death.",
+  "The helper containment Job enforces an active-process limit of one.",
+  "The helper containment Job proves the actual Key Agent target Job topology.",
+  "KILL_ON_JOB_CLOSE makes overlapped pipe cancellation unconditionally live.",
+  "The helper cannot survive parent teardown.",
+  "Closing the parent-retained Job handle always terminates the helper.",
+  "This slice proves the system-wide last Job handle condition after helper code runs.",
   "The helper debugs the actual Key Agent target and enables release policy.",
+];
+const keyAgentDebuggerDocumentationJobContradictionInsertions = Object.freeze([
+  "The helper containment Job is named.",
+  "The helper containment Job is inheritable.",
+  "The helper containment Job enforces an active-process limit of two.",
+  "The helper containment Job allows breakaway.",
+  "The helper containment Job permits breakaway.",
+  "The helper containment Job enables breakaway.",
+  "The helper containment Job is named and inheritable, enforces an active-process limit of two, and permits breakaway.",
+]);
+const keyAgentDebuggerDocumentationForbiddenJobClaims = Object.freeze([
+  /\b(?:helper(?:[-\s]+containment)?|containment|debugger[-\s]+helper)\s+Job\b[\s\S]{0,120}\bnamed\b/iu,
+  /\b(?:helper(?:[-\s]+containment)?|containment|debugger[-\s]+helper)\s+Job\b[\s\S]{0,120}(?<!non-)(?<!non-\s)(?<!non\s)\binheritable\b/iu,
+  /\b(?:helper(?:[-\s]+containment)?|containment|debugger[-\s]+helper)\s+Job\b[\s\S]{0,160}\b(?:enforces?|sets?|uses?|has)\b(?:(?!\b(?:no|neither)\b)[\s\S]){0,40}\bactive-\s*process\s+limit\b/iu,
+  /\b(?:helper(?:[-\s]+containment)?|containment|debugger[-\s]+helper)\s+Job\b[\s\S]{0,160}(?:\b(?:allows?|permits?|enables?)\b[\s\S]{0,30}\bbreakaway\b|\bbreakaway\b[\s\S]{0,30}\b(?:allowed|permitted|enabled)\b)/iu,
+]);
+const keyAgentDebuggerDocumentationForbiddenOverclaims = [
+  ...keyAgentDebuggerForbiddenContainmentOverclaims,
+  ...keyAgentDebuggerDocumentationForbiddenJobClaims,
 ];
 const keyAgentDebuggerDocumentationWindow = (spec) => {
   const first = spec.source.indexOf(spec.anchor);
@@ -59838,6 +60808,12 @@ const keyAgentDebuggerDocumentationSemanticContract = (specs) =>
       window !== null &&
       keyAgentDebuggerDocumentationCommonPatternIndexes.every((index) =>
         keyAgentDebuggerDocumentationPatterns[index].test(window),
+      ) &&
+      keyAgentDebuggerDocumentationPerDocumentJobPatterns.every((pattern) =>
+        pattern.test(window),
+      ) &&
+      keyAgentDebuggerDocumentationForbiddenOverclaims.every(
+        (pattern) => !pattern.test(window),
       ) &&
       keyAgentDebuggerDocumentationContradictions.every(
         (statement) => !window.includes(statement),
@@ -59878,6 +60854,32 @@ const keyAgentDebuggerDocumentationMarkerMutations =
       };
     });
   });
+const keyAgentDebuggerDocumentationPerDocumentJobMarkerMutations =
+  keyAgentDebuggerDocumentationPerDocumentJobPatterns.flatMap((pattern) =>
+    keyAgentDebuggerDocumentationSpecs.map((spec, specIndex) => {
+      const window = keyAgentDebuggerDocumentationWindow(spec);
+      if (window === null || !pattern.test(window)) {
+        return keyAgentDebuggerDocumentationSpecs;
+      }
+      const globalPattern = new RegExp(
+        pattern.source,
+        pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+      );
+      const windowStart = spec.source.indexOf(spec.anchor);
+      const mutatedWindow = window.replace(
+        globalPattern,
+        "REMOVED_PER_DOCUMENT_JOB_MARKER",
+      );
+      return keyAgentDebuggerDocumentationSpecs.map((entry, index) =>
+        index === specIndex
+          ? {
+              ...entry,
+              source: `${spec.source.slice(0, windowStart)}${mutatedWindow}${spec.source.slice(windowStart + window.length)}`,
+            }
+          : entry,
+      );
+    }),
+  );
 const keyAgentDebuggerDocumentationContradictionMutations =
   keyAgentDebuggerDocumentationSpecs.flatMap((spec, specIndex) => {
     const insertion = spec.source.indexOf(spec.anchor) + spec.anchor.length;
@@ -59890,6 +60892,21 @@ const keyAgentDebuggerDocumentationContradictionMutations =
             }
           : entry,
       ),
+    );
+  });
+const keyAgentDebuggerDocumentationJobContradictionMutations =
+  keyAgentDebuggerDocumentationSpecs.flatMap((spec, specIndex) => {
+    const insertion = spec.source.indexOf(spec.anchor) + spec.anchor.length;
+    return keyAgentDebuggerDocumentationJobContradictionInsertions.map(
+      (statement) =>
+        keyAgentDebuggerDocumentationSpecs.map((entry, index) =>
+          index === specIndex
+            ? {
+                ...entry,
+                source: `${spec.source.slice(0, insertion)}\n${statement}\n${spec.source.slice(insertion)}`,
+              }
+            : entry,
+        ),
     );
   });
 requireInvariant(
@@ -59909,14 +60926,28 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ) &&
+    keyAgentDebuggerDocumentationPerDocumentJobMarkerMutations.every(
+      (probe) =>
+        JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs) &&
+        !keyAgentDebuggerDocumentationSemanticContract(probe) &&
+        !keyAgentDebuggerDocumentationPinContract(probe),
+    ) &&
     keyAgentDebuggerDocumentationContradictionMutations.every(
       (probe) =>
         JSON.stringify(probe) !==
           JSON.stringify(keyAgentDebuggerDocumentationSpecs) &&
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
+    ) &&
+    keyAgentDebuggerDocumentationJobContradictionMutations.every(
+      (probe) =>
+        JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs) &&
+        !keyAgentDebuggerDocumentationSemanticContract(probe) &&
+        !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/Job/secret/RPC reachability, atomic borrowed-alias process-exit design, unsigned/unverified identity and supported-kernel/production-policy STOP-SHIP status, overlapped-cancellation drain and Job-free fail-fast child-death residuals, and effective mutations",
+  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so immutable identity/admission, token/process-DACL separation, the system-wide-last-handle condition, and adversarial parent-death containment remain STOP-SHIP alongside actual-target topology/owner-handoff and cancellation liveness, with broad categorical parent-teardown and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {
