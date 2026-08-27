@@ -121,9 +121,10 @@ Implemented:
   comes from successful forward and rejected reverse I/O. The WDK wrappers link
   native symbols as test-binary load-time imports rather than resolving them
   dynamically, leaving a test-host compatibility limit but no production
-  reachability. That evidence covers only
-  `PrivateKeyAgentPipes`, not the separate Phase 1 service-helper source
-  candidates, and does not permit production activation. One `STARTUPINFOEXW` call
+  reachability. That probe covers only `PrivateKeyAgentPipes`; separate ignored
+  probes now cover the common attenuation path and Phase 1 service-helper
+  target candidates. Neither evidence set permits production activation. One
+  `STARTUPINFOEXW` call
   uses an exact five-slot list in handle, Job, full mitigation, security-
   capabilities, and ALL APPLICATION PACKAGES opt-out order. The mitigation is
   identical to the restricted-helper and service-startup policy, including the
@@ -158,9 +159,18 @@ Implemented:
   observed in the surrounding process, the full-policy kernel matrix fails
   closed earlier at process creation. This is host-local evidence, not proof of
   injection causation or supported-kernel readiness. Raw `DEBUG_EVENT`
-  generation/same-object ABA/atomic compare-close and the separate Phase 1 source-candidate pipe
-  rights/direction proof remain unresolved, so production activation stays
-  forbidden and both compiled policies remain `None`.
+  generation/same-object ABA/atomic compare-close remain unresolved and require
+  a dedicated debugger process that contains all borrowed raw aliases until
+  process exit. Separate ignored host-local probes now measure exact Approval/
+  Secret Input service-local source authority/direction and the actual
+  `channel.rs::WindowsDuplicateHandle` target-table candidates through test-only
+  `DUPLICATE_SAME_ACCESS` pull-back, WDK `NtQueryObject`, and I/O. This is
+  change-prone test evidence, not runtime admission or universal supported-
+  kernel proof. The real helper child's production
+  `WindowsHandleOperations::duplicate` and capture/adoption path, plus signed-
+  helper E2E, remain `UnverifiedSourceAccessAndDirection` **STOP-SHIP** work, so
+  production activation stays forbidden and both compiled policies remain
+  `None`.
   The adoption transition, release-binding, and dormant supervisor binder all
   have zero production call sites. A separate dormant storage-only
   `open_existing_fixed_key_agent_storage_root` also has zero production callers.

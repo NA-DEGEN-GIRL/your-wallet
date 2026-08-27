@@ -429,10 +429,276 @@ where
 #[cfg(test)]
 mod tests {
     use core::cell::RefCell;
-    use std::os::windows::io::AsRawHandle;
+    use core::ffi::c_void;
+    use core::mem::size_of;
+    use std::io::Read as _;
+    use std::os::windows::io::{
+        AsHandle as _, AsRawHandle, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+    };
+    use std::process::{Child, Command, Stdio};
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
+    use windows::Win32::Foundation::{
+        CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, STATUS_SUCCESS,
+        WAIT_OBJECT_0,
+    };
+    use windows::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, ReadFile, WriteFile};
+    use windows::Win32::System::Threading::{GetCurrentProcess, WaitForSingleObject};
+    use windows::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
 
     use super::*;
+
+    const IDLE_CHILD_FIXTURE: &str =
+        "key_agent_service_launch::channel::tests::service_channel_idle_child_fixture";
+    const IDLE_CHILD_ENV: &str = "YOUR_WALLET_SERVICE_CHANNEL_IDLE_CHILD";
+    const CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;
+
+    struct IdleChildGuard(Option<Child>);
+
+    impl IdleChildGuard {
+        fn spawn() -> Result<Self, Box<dyn std::error::Error>> {
+            let executable = std::env::current_exe()?;
+            let child = Command::new(executable)
+                .arg(IDLE_CHILD_FIXTURE)
+                .arg("--exact")
+                .arg("--ignored")
+                .arg("--test-threads=1")
+                .arg("--quiet")
+                .env(IDLE_CHILD_ENV, "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            Ok(Self(Some(child)))
+        }
+
+        fn process_handle(&mut self) -> Result<BorrowedHandle<'_>, Box<dyn std::error::Error>> {
+            {
+                let child = self.0.as_mut().ok_or("idle child was already reaped")?;
+                if child.try_wait()?.is_some() {
+                    return Err("idle child exited before channel injection".into());
+                }
+            }
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or("idle child was already reaped")?
+                .as_handle())
+        }
+
+        fn terminate_and_reap(mut self) -> Result<(), Box<dyn std::error::Error>> {
+            self.terminate_and_reap_in_place()
+        }
+
+        fn terminate_and_reap_in_place(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+            let child = self.0.as_mut().ok_or("idle child was already reaped")?;
+            if child.try_wait()?.is_some() {
+                self.0.take();
+                return Err("idle child exited before bounded cleanup".into());
+            }
+            child.kill()?;
+            let process = HANDLE(child.as_raw_handle());
+            // SAFETY: the Child owner retains its live process handle throughout
+            // the bounded wait. A signaled process makes the following Rust wait
+            // nonblocking while allowing Child to cache and close its status.
+            if unsafe { WaitForSingleObject(process, CHILD_CLEANUP_TIMEOUT_MILLISECONDS) }
+                != WAIT_OBJECT_0
+            {
+                return Err("idle child did not terminate within the cleanup bound".into());
+            }
+            let _status = child.wait()?;
+            self.0.take();
+            Ok(())
+        }
+    }
+
+    impl Drop for IdleChildGuard {
+        fn drop(&mut self) {
+            let Some(child) = self.0.as_mut() else {
+                return;
+            };
+            let _ = child.kill();
+            let process = HANDLE(child.as_raw_handle());
+            // SAFETY: the guard retains the Child process handle for this one
+            // bounded best-effort failure-path wait. It calls Child::wait only
+            // after the kernel reports the process signaled.
+            if unsafe { WaitForSingleObject(process, CHILD_CLEANUP_TIMEOUT_MILLISECONDS) }
+                == WAIT_OBJECT_0
+            {
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn native_handle(handle: &OwnedHandle) -> HANDLE {
+        HANDLE(handle.as_raw_handle())
+    }
+
+    fn duplicate_same_access_observer(
+        source_process: HANDLE,
+        source_handle: HANDLE,
+    ) -> Result<OwnedHandle, Box<dyn std::error::Error>> {
+        let mut observer = HANDLE::default();
+        // SAFETY: source_process identifies a retained live process, source_handle
+        // is valid in that process, the current-process pseudo-handle is the exact
+        // observer target, and successful output ownership is adopted immediately.
+        unsafe {
+            DuplicateHandle(
+                source_process,
+                source_handle,
+                GetCurrentProcess(),
+                &raw mut observer,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )?;
+        }
+        // `false` constrains only the fresh local observer's inherit flag. It
+        // does not reveal the remote source slot's per-handle flags; the
+        // production injection call separately pins remote noninheritance.
+        if observer.is_invalid() {
+            return Err("DuplicateHandle returned an invalid observer".into());
+        }
+        // SAFETY: successful DuplicateHandle returned one fresh current-process
+        // handle and no owner has yet been constructed from the numeric value.
+        Ok(unsafe { OwnedHandle::from_raw_handle(observer.0.cast::<c_void>()) })
+    }
+
+    fn duplicate_local_source_observer(
+        source: BorrowedHandle<'_>,
+    ) -> Result<OwnedHandle, Box<dyn std::error::Error>> {
+        // SAFETY: this scalar pseudo-handle query has no caller-provided storage.
+        let process = unsafe { GetCurrentProcess() };
+        duplicate_same_access_observer(process, HANDLE(source.as_raw_handle()))
+    }
+
+    fn duplicate_remote_candidate_observer(
+        target_process: BorrowedHandle<'_>,
+        remote_word: u64,
+    ) -> Result<OwnedHandle, Box<dyn std::error::Error>> {
+        let remote = usize::try_from(remote_word)?;
+        duplicate_same_access_observer(
+            HANDLE(target_process.as_raw_handle()),
+            HANDLE(remote as *mut c_void),
+        )
+    }
+
+    fn native_granted_access(handle: &OwnedHandle) -> Result<u32, Box<dyn std::error::Error>> {
+        let mut information = PUBLIC_OBJECT_BASIC_INFORMATION::default();
+        let information_size = u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>())?;
+        let mut returned_length = 0_u32;
+        // SAFETY: the observer owns one live handle and both output objects are
+        // correctly sized writable storage. This native query is test-only.
+        let status = unsafe {
+            NtQueryObject(
+                Some(native_handle(handle)),
+                ObjectBasicInformation,
+                Some((&raw mut information).cast()),
+                information_size,
+                Some(&raw mut returned_length),
+            )
+        };
+        if status != STATUS_SUCCESS || returned_length != information_size {
+            return Err("NtQueryObject did not return exact basic information".into());
+        }
+        Ok(information.GrantedAccess)
+    }
+
+    fn same_object(left: &OwnedHandle, right: &OwnedHandle) -> bool {
+        // SAFETY: both observer owners retain live handles for the comparison.
+        unsafe { CompareObjectHandles(native_handle(left), native_handle(right)) }.as_bool()
+    }
+
+    fn read_exact_from_observer(
+        handle: &OwnedHandle,
+        bytes: &mut [u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let mut read = 0_u32;
+            // SAFETY: the observer owns a synchronous pipe handle, the remaining
+            // output slice and scalar count remain live, and no OVERLAPPED is used.
+            unsafe {
+                ReadFile(
+                    native_handle(handle),
+                    Some(&mut bytes[offset..]),
+                    Some(&raw mut read),
+                    None,
+                )?;
+            }
+            let read = usize::try_from(read)?;
+            if read == 0 || read > bytes.len() - offset {
+                return Err("observer read made invalid progress".into());
+            }
+            offset += read;
+        }
+        Ok(())
+    }
+
+    fn write_all_to_observer(
+        handle: &OwnedHandle,
+        bytes: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let mut written = 0_u32;
+            // SAFETY: the observer owns a synchronous pipe handle, the remaining
+            // input slice and scalar count remain live, and no OVERLAPPED is used.
+            unsafe {
+                WriteFile(
+                    native_handle(handle),
+                    Some(&bytes[offset..]),
+                    Some(&raw mut written),
+                    None,
+                )?;
+            }
+            let written = usize::try_from(written)?;
+            if written == 0 || written > bytes.len() - offset {
+                return Err("observer write made invalid progress".into());
+            }
+            offset += written;
+        }
+        Ok(())
+    }
+
+    fn assert_candidate_observers(
+        source_request: &OwnedHandle,
+        source_response: &OwnedHandle,
+        candidate_request: &OwnedHandle,
+        candidate_response: &OwnedHandle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(native_granted_access(source_request)?, CHILD_REQUEST_ACCESS);
+        assert_eq!(
+            native_granted_access(source_response)?,
+            CHILD_RESPONSE_ACCESS
+        );
+        assert_eq!(
+            native_granted_access(candidate_request)?,
+            CHILD_REQUEST_ACCESS
+        );
+        assert_eq!(
+            native_granted_access(candidate_response)?,
+            CHILD_RESPONSE_ACCESS
+        );
+        // SAFETY: the observer owns a live handle for this scalar type query.
+        let request_type = unsafe { GetFileType(native_handle(candidate_request)) };
+        // SAFETY: the observer owns a live handle for this scalar type query.
+        let response_type = unsafe { GetFileType(native_handle(candidate_response)) };
+        assert_eq!(request_type, FILE_TYPE_PIPE);
+        assert_eq!(response_type, FILE_TYPE_PIPE);
+        assert!(same_object(source_request, candidate_request));
+        assert!(same_object(source_response, candidate_response));
+        assert!(!same_object(candidate_request, candidate_response));
+        Ok(())
+    }
+
+    fn observer_deadline() -> Result<Instant, Box<dyn std::error::Error>> {
+        Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or_else(|| "observer deadline overflow".into())
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
@@ -777,6 +1043,111 @@ mod tests {
             format!("{:?}", expected_call(0x101, CHILD_REQUEST_ACCESS)),
             "DuplicateCall { source_process: Current, source_handle: \"[LOCAL HANDLE]\", target_process: \"[LOCAL HANDLE]\", desired_access: 1048577, inherit_handle: false, options: 0 }"
         );
+        Ok(())
+    }
+
+    fn prove_approval_target_candidates() -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateApprovalPipes::create()?;
+        let source_request = duplicate_local_source_observer(pipes.child_input())?;
+        let source_response = duplicate_local_source_observer(pipes.child_output())?;
+        let mut target = IdleChildGuard::spawn()?;
+        let injected = duplicate_approval_channels_for_child(pipes, target.process_handle()?)?;
+        let (remote, parent) = injected.into_parts();
+        let (remote_request, remote_response) = remote.into_register_words();
+        let candidate_request =
+            duplicate_remote_candidate_observer(target.process_handle()?, remote_request)?;
+        let candidate_response =
+            duplicate_remote_candidate_observer(target.process_handle()?, remote_response)?;
+        assert_candidate_observers(
+            &source_request,
+            &source_response,
+            &candidate_request,
+            &candidate_response,
+        )?;
+
+        assert!(write_all_to_observer(&candidate_request, b"wrong request direction").is_err());
+        let mut wrong_response_direction = [0_u8; 1];
+        assert!(
+            read_exact_from_observer(&candidate_response, &mut wrong_response_direction).is_err()
+        );
+
+        let (request_writer, response_reader) = parent.into_parts();
+        let request = [0x71_u8; 32];
+        request_writer.write_all(&request, observer_deadline()?)?;
+        let mut observed_request = [0_u8; 32];
+        read_exact_from_observer(&candidate_request, &mut observed_request)?;
+        assert_eq!(observed_request, request);
+
+        let response = [0x72_u8; 32];
+        write_all_to_observer(&candidate_response, &response)?;
+        assert_eq!(
+            response_reader
+                .read_exact(response.len(), observer_deadline()?)?
+                .as_slice(),
+            response
+        );
+        target.terminate_and_reap()
+    }
+
+    fn prove_secret_input_target_candidates() -> Result<(), Box<dyn std::error::Error>> {
+        let pipes = PrivateSecretInputPipes::create()?;
+        let source_request = duplicate_local_source_observer(pipes.child_input())?;
+        let source_response = duplicate_local_source_observer(pipes.child_output())?;
+        let mut target = IdleChildGuard::spawn()?;
+        let injected = duplicate_secret_input_channels_for_child(pipes, target.process_handle()?)?;
+        let (remote, parent) = injected.into_parts();
+        let (remote_request, remote_response) = remote.into_register_words();
+        let candidate_request =
+            duplicate_remote_candidate_observer(target.process_handle()?, remote_request)?;
+        let candidate_response =
+            duplicate_remote_candidate_observer(target.process_handle()?, remote_response)?;
+        assert_candidate_observers(
+            &source_request,
+            &source_response,
+            &candidate_request,
+            &candidate_response,
+        )?;
+
+        assert!(write_all_to_observer(&candidate_request, b"wrong request direction").is_err());
+        let mut wrong_response_direction = [0_u8; 1];
+        assert!(
+            read_exact_from_observer(&candidate_response, &mut wrong_response_direction).is_err()
+        );
+
+        let (request_writer, response_reader) = parent.into_parts();
+        let request = [0x73_u8; 32];
+        request_writer.write_all(&request, observer_deadline()?)?;
+        let mut observed_request = [0_u8; 32];
+        read_exact_from_observer(&candidate_request, &mut observed_request)?;
+        assert_eq!(observed_request, request);
+
+        let response = [0x74_u8; 32];
+        write_all_to_observer(&candidate_response, &response)?;
+        assert_eq!(
+            response_reader
+                .read_exact(response.len(), observer_deadline()?)?
+                .as_slice(),
+            response
+        );
+        target.terminate_and_reap()
+    }
+
+    #[test]
+    #[ignore = "cross-process NtQueryObject service-channel kernel-matrix evidence only"]
+    fn kernel_matrix_cross_process_service_channel_candidates_have_exact_authority_and_direction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        prove_approval_target_candidates()?;
+        prove_secret_input_target_candidates()
+    }
+
+    #[test]
+    #[ignore = "launched only as the service-channel idle target process"]
+    fn service_channel_idle_child_fixture() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os(IDLE_CHILD_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return Ok(());
+        }
+        let mut release = [0_u8; 1];
+        std::io::stdin().read_exact(&mut release)?;
         Ok(())
     }
 

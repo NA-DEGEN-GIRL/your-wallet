@@ -382,21 +382,21 @@ successful forward I/O and rejected reverse I/O. Handle flags and same-object
 comparison cover inheritance and continuity. The WDK wrappers create native-symbol
 load-time imports in the test binary rather than resolving them dynamically,
 which leaves a test-host compatibility limit but no production call or import
-reachability. This is
-test-only kernel evidence for `PrivateKeyAgentPipes`, not runtime admission or
-proof of the separate Phase 1 service-helper source candidates, and it does not
-enable production activation.
+reachability. This is test-only kernel evidence for `PrivateKeyAgentPipes`, not
+runtime admission. Separate ignored probes now cover the common attenuation
+path and Phase 1 service-helper target candidates; neither evidence set enables
+production activation.
 
 On 2026-08-27, the locked `platform-windows` all-target/all-feature run on Windows
 build 26200, with the freshly built Key Agent test executable explicitly bound,
 reported 567 passed, 16 failed, and 27 ignored. The affected cases failed
 earlier at process creation on a host where third-party injected modules were
 observed; coexistence is not causal proof. This result does not authenticate raw
-`DEBUG_EVENT` slot
-generations, eliminate same-object ABA or the compare-to-close TOCTOU, or prove
-the separate Phase 1 helper bootstrap's source-candidate `GrantedAccess` and
-pipe direction. Production activation remains forbidden and both compiled
-policies remain `None`.
+`DEBUG_EVENT` slot generations or eliminate same-object ABA or the compare-to-
+close TOCTOU. The separate Phase 1 ignored probes measure source and target-
+candidate pipe authority on this host, but do not provide runtime admission,
+real child adoption, or a supported-kernel result. Production activation
+remains forbidden and both compiled policies remain `None`.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -1099,7 +1099,10 @@ compares each raw alias with `CompareObjectHandles` before checked close. This
 rejects a wrong ID or different object, but a raw `DEBUG_EVENT` slot has no
 authenticated generation. Same-object ABA and the compare-to-close TOCTOU remain
 unresolved, so local closure of rejected raw aliases is debug-only
-**STOP-SHIP** kernel-matrix evidence rather than activation safety.
+**STOP-SHIP** kernel-matrix evidence rather than activation safety. Production
+resolution requires a dedicated debugger process to contain every borrowed raw
+event alias in an isolated handle table until that process exits; the product
+process must not close the aliases individually.
 
 Each `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
 ownership before semantic-proof evaluation, stores the semantic result, and
@@ -1112,13 +1115,21 @@ fail-fasts before an overwrite. These orderings prevent a local leak or
 registry replacement but do not authenticate raw-slot generation or make the
 compare-to-close step atomic, so the kernel-matrix blocker remains.
 
-The exact source-candidate `GrantedAccess` and pipe direction remain
-**UNVERIFIED**. Supported Win32 APIs do not expose that admission fact, and an
-explicit-rights `DuplicateHandle` result may still be stronger than its source.
-`NtQueryObject` is test/change-prone and is not a runtime admission dependency.
-The compile-only flow therefore does not establish source access/direction, UI
-integration, real signed-helper E2E, installer/service composition, or a full
-kernel matrix. Those remain **STOP-SHIP**.
+The common attenuation path now has ignored, host-local kernel evidence for
+Approval and Secret Input service-local creator sources and fresh local
+duplicates: WDK `NtQueryObject`, handle flags, pipe-local information, and I/O
+report exact request `0x00100001` and response `0x00100002` authority, zero
+inheritance, and the intended directions. A separate cross-process ignored test
+uses the real `channel.rs::WindowsDuplicateHandle` production duplication path,
+then test-only `DUPLICATE_SAME_ACCESS` pull-back, WDK `NtQueryObject`, object
+comparison, and positive/rejected reverse I/O to measure the actual target-table
+candidates as exact too. These native probes are test/change-prone evidence for
+the current host, not runtime admission or a universal supported-kernel claim.
+The real helper child's production `WindowsHandleOperations::duplicate` and
+capture/adoption path has not run end-to-end, and signed-helper E2E, UI,
+installer/service composition, and the full kernel matrix remain unverified.
+The `UnverifiedSourceAccessAndDirection` marker and **STOP-SHIP** gate therefore
+remain.
 
 None of these compile-only primitives is reachable from an RPC command or
 executable. Required privilege enablement, exact interactive desktop DACL

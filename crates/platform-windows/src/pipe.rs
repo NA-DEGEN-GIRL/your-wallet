@@ -2466,6 +2466,109 @@ mod tests {
         Ok(())
     }
 
+    fn assert_service_helper_local_source_authority_and_directions(
+        parent_request: &sys::OwnedWinHandle,
+        child_request_source: &sys::OwnedWinHandle,
+        parent_response: &sys::OwnedWinHandle,
+        child_response_source: &sys::OwnedWinHandle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(FILE_FLAG_FIRST_PIPE_INSTANCE.0, KERNEL_WRITE_OWNER);
+        assert!(!sys::same_kernel_object_for_test(
+            child_request_source,
+            child_response_source
+        ));
+        assert!(!sys::handle_inheritable_for_test(child_request_source)?);
+        assert!(!sys::handle_inheritable_for_test(child_response_source)?);
+
+        let request_source_access =
+            native_granted_access_evidence(child_request_source, "helper request source query")?;
+        let response_source_access =
+            native_granted_access_evidence(child_response_source, "helper response source query")?;
+        assert_eq!(request_source_access, sys::CHILD_REQUEST_INPUT_ACCESS);
+        assert_eq!(response_source_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(request_source_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(response_source_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(request_source_access & KERNEL_FILE_WRITE_DATA, 0);
+        assert_eq!(response_source_access & KERNEL_FILE_READ_DATA, 0);
+
+        let request_input = sys::duplicate_exact_noninheritable_for_test(
+            child_request_source,
+            sys::CHILD_REQUEST_INPUT_ACCESS,
+        )?;
+        let response_output = sys::duplicate_exact_noninheritable_for_test(
+            child_response_source,
+            sys::CHILD_RESPONSE_OUTPUT_ACCESS,
+        )?;
+        assert_ne!(
+            sys::raw_handle_for_test(child_request_source),
+            sys::raw_handle_for_test(&request_input)
+        );
+        assert_ne!(
+            sys::raw_handle_for_test(child_response_source),
+            sys::raw_handle_for_test(&response_output)
+        );
+        assert!(sys::same_kernel_object_for_test(
+            child_request_source,
+            &request_input
+        ));
+        assert!(sys::same_kernel_object_for_test(
+            child_response_source,
+            &response_output
+        ));
+        assert!(!sys::same_kernel_object_for_test(
+            &request_input,
+            &response_output
+        ));
+        assert!(!sys::handle_inheritable_for_test(&request_input)?);
+        assert!(!sys::handle_inheritable_for_test(&response_output)?);
+        let request_access =
+            native_granted_access_evidence(&request_input, "helper fresh request query")?;
+        let response_access =
+            native_granted_access_evidence(&response_output, "helper fresh response query")?;
+        assert_eq!(request_access, sys::CHILD_REQUEST_INPUT_ACCESS);
+        assert_eq!(response_access, sys::CHILD_RESPONSE_OUTPUT_ACCESS);
+        assert_eq!(request_access & KERNEL_WRITE_OWNER, 0);
+        assert_eq!(response_access & KERNEL_WRITE_OWNER, 0);
+
+        // Exact sources omit FILE_READ_ATTRIBUTES. Observe outbound/client-end
+        // topology through the sealed readable parent endpoint; prove the
+        // request direction with successful forward and rejected reverse I/O.
+        let response_instance = sys::native_pipe_local_information_for_test(parent_response)
+            .map_err(|_| "helper response local-information query")?;
+        assert_eq!(
+            response_instance.named_pipe_configuration,
+            sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentReads)
+        );
+        assert_eq!(
+            response_instance.named_pipe_end,
+            sys::native_pipe_client_end_for_test()
+        );
+
+        let request = [0x61_u8; 32];
+        sys::write_all_before(parent_request.raw(), &request, future_deadline()?)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&request_input, request.len())?,
+            request
+        );
+        assert_eq!(
+            sys::write_child_for_test(&request_input, b"wrong helper request direction"),
+            Err(PipeError::OperatingSystem)
+        );
+
+        let response = [0x62_u8; 32];
+        sys::write_child_for_test(&response_output, &response)?;
+        assert_eq!(
+            sys::read_exact_before(parent_response.raw(), response.len(), future_deadline()?)?
+                .as_slice(),
+            response
+        );
+        assert_eq!(
+            sys::read_child_exact_for_test(&response_output, 1),
+            Err(PipeError::OperatingSystem)
+        );
+        Ok(())
+    }
+
     #[test]
     #[ignore = "native NtQueryObject/NtQueryInformationFile kernel-matrix evidence only"]
     fn kernel_matrix_key_agent_sources_and_fresh_capabilities_have_exact_authority()
@@ -2477,6 +2580,35 @@ mod tests {
         let prepared = pipes.prepare_child_inheritance(&flight)?;
         assert_prepared_key_agent_authority(&pipes, &prepared)?;
         assert_fresh_key_agent_authority_and_directions(&pipes, &prepared)
+    }
+
+    #[test]
+    #[ignore = "native Phase 1 helper-source kernel-matrix evidence only"]
+    fn kernel_matrix_service_helper_local_sources_and_local_fresh_duplicates_have_exact_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let approval = PrivateApprovalPipes::create()?;
+        let (
+            approval_request,
+            approval_request_source,
+            approval_response,
+            approval_response_source,
+        ) = approval.into_test_parts();
+        assert_service_helper_local_source_authority_and_directions(
+            &approval_request.0,
+            &approval_request_source,
+            &approval_response.0,
+            &approval_response_source,
+        )?;
+
+        let secret_input = PrivateSecretInputPipes::create()?;
+        let (secret_request, secret_request_source, secret_response, secret_response_source) =
+            secret_input.into_test_parts();
+        assert_service_helper_local_source_authority_and_directions(
+            &secret_request.0,
+            &secret_request_source,
+            &secret_response.0,
+            &secret_response_source,
+        )
     }
 
     #[test]

@@ -230,7 +230,10 @@ The following are existing facts, not new service claims:
   uses `CompareObjectHandles` before checked close. This does not authenticate a
   raw `DEBUG_EVENT` slot generation or eliminate same-object ABA and the
   compare-to-close TOCTOU. Local rejected-alias closure remains debug-only
-  **STOP-SHIP** kernel-matrix evidence, not activation safety.
+  **STOP-SHIP** kernel-matrix evidence, not activation safety. Removing this
+  blocker requires a dedicated debugger process whose isolated handle table
+  retains every borrowed raw event alias until process exit; the product process
+  must not close those aliases individually.
 - Every `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
   ownership before semantic-proof evaluation, stores the semantic result, and
   then completes checked close. Only after that close may the stored semantic
@@ -240,13 +243,19 @@ The following are existing facts, not new service claims:
   canonical anchor already exists, a second registration unconditionally
   fail-fasts before overwrite. This fixes local ordering/overwrite hazards but
   does not remove the raw-generation, ABA, or compare-to-close limitations.
-- Each source candidate's exact `GrantedAccess` and direction remain
-  **UNVERIFIED**: supported Win32 APIs cannot read that admission fact, and
-  `DuplicateHandle` may produce a stronger-access result.
-  `NtQueryObject` is test/change-prone and is not runtime admission. The target
-  exact-access/direction invariant therefore remains unproved, as do UI/
-  production integration, real signed-helper E2E, and complete kernel-matrix
-  evidence.
+- The common attenuation path has ignored host-local kernel evidence for both
+  Approval and Secret Input: service-local creator sources and fresh duplicates
+  have exact request `0x00100001` and response `0x00100002` access, zero
+  inheritance, and the intended direction. A separate ignored cross-process
+  probe uses the real `channel.rs::WindowsDuplicateHandle` production
+  duplication path and then test-only `DUPLICATE_SAME_ACCESS` pull-back, WDK
+  `NtQueryObject`, object comparison, and I/O to measure the target-table
+  candidates as exact. This is test/change-prone evidence for the current host,
+  not runtime admission or a universal supported-kernel claim. The real helper
+  child's production `WindowsHandleOperations::duplicate` and capture/adoption
+  path, UI/production integration, signed-helper E2E, and the complete kernel
+  matrix remain unverified. `UnverifiedSourceAccessAndDirection` and the Phase 1
+  **STOP-SHIP** gate remain.
 - The fixed zero-padded 76-byte MIDL frame and canonical decoder are the hard
   message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints; the
   server independently caps callback-authentication work at eight concurrent
@@ -817,9 +826,11 @@ exchange, gate-two suspend installation, no-kill thread-exit detach, and
 post-join verification described above. The child-only capture/completion API
 remains under its Windows x86_64 debug feasibility gate, and every partial state
 is process-terminal. These types still have no RPC/executable caller and reach
-no UI or release path. They do not prove source-candidate exact
-`GrantedAccess`/direction, real signed-helper composition, or cross-kernel event
-and alias behavior. Privilege enablement,
+no UI or release path. Ignored host-local probes now measure exact Approval and
+Secret Input service-local sources plus the actual `WindowsDuplicateHandle`
+target-table candidates, but they do not exercise the real helper child's
+production duplicate/capture/adoption path, prove signed-helper composition, or
+establish cross-kernel event and alias behavior. Privilege enablement,
 interactive desktop DACL access, child-token query access, the actual
 cross-session call, claimed-build matrix, endpoint-squatting, SCM
 configuration/service identity, and real Broker-client evidence are absent.
@@ -923,6 +934,15 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-27 - Added ignored host-local kernel evidence for exact Approval and
+  Secret Input service-local source authority/direction and the actual
+  `channel.rs::WindowsDuplicateHandle` target-table candidates. The latter are
+  measured through test-only `DUPLICATE_SAME_ACCESS` pull-back, WDK
+  `NtQueryObject`, and positive/rejected reverse I/O. Recorded that this is
+  change-prone test evidence, not runtime admission or universal kernel support;
+  real child production duplicate/capture/adoption and signed-helper E2E remain
+  `UnverifiedSourceAccessAndDirection` **STOP-SHIP** work. Raw `DEBUG_EVENT`
+  alias ABA/TOCTOU still requires a dedicated debugger-process design.
 - 2026-08-26 - Added the dormant parent two-gate feasibility flow: bounded
   pinned-PE preflight, exact minimum-right non-inherited channel duplication,
   authenticated capture/context mutation, 100-byte hello/72-byte ACK ordering,

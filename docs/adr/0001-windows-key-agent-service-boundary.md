@@ -387,7 +387,9 @@ with `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, PID)` or
 different objects but cannot authenticate a raw `DEBUG_EVENT` slot generation
 or eliminate same-object ABA and the compare-to-close TOCTOU. Local rejected-
 alias closure remains debug-only **STOP-SHIP** kernel-matrix evidence, not an
-activation safety claim.
+activation safety claim. The production design must instead isolate borrowed
+raw event aliases in a dedicated debugger process and let process exit close its
+handle table; the product process must not close those aliases individually.
 
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into checked
 caller ownership before semantic-proof evaluation, stores the semantic result,
@@ -399,14 +401,21 @@ an unconditional process-wide fail-fast path before overwrite. These are local
 ordering guards, not proof of raw-slot generation or an atomic compare-and-
 close primitive, so they do not discharge the kernel-matrix **STOP-SHIP** item.
 
-The source candidates' exact `GrantedAccess` and pipe direction remain
-**UNVERIFIED**. Supported Win32 APIs cannot query that admission fact, and the
-explicit-rights `DuplicateHandle` result may be stronger than the candidate.
-`NtQueryObject` is test/change-prone evidence and is not permitted as runtime
-admission. The compile-only two-gate flow therefore does not establish source
-access/direction, UI integration, real signed-helper E2E, installer/service
-composition, or the supported-kernel matrix. Those remain Phase 1
-**STOP-SHIP** blockers.
+Ignored host-local kernel probes now cover the common attenuation path for both
+Approval and Secret Input. WDK `NtQueryObject`, flags, pipe-local information,
+and I/O measure the service-local creator sources and fresh duplicates as exact
+request `0x00100001` and response `0x00100002` authority, non-inheritable, and
+correctly directed. A separate cross-process probe uses the real
+`channel.rs::WindowsDuplicateHandle` production duplication path and then
+test-only `DUPLICATE_SAME_ACCESS` pull-back, WDK `NtQueryObject`, object
+comparison, and positive/rejected reverse I/O to measure the actual target-table
+candidates as exact too. This is test/change-prone evidence for the current
+host, not runtime admission or a universal supported-kernel claim. The real
+helper child's production `WindowsHandleOperations::duplicate` and capture/
+adoption path remains unexecuted end-to-end. UI integration, signed-helper E2E,
+installer/service composition, and the supported-kernel matrix also remain
+unverified, so `UnverifiedSourceAccessAndDirection` and the Phase 1
+**STOP-SHIP** gate remain.
 
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not

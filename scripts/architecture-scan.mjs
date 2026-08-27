@@ -6881,7 +6881,7 @@ const keyAgentServiceChannelTestNames = [
 ];
 const keyAgentServiceChannelPinContract = (source) =>
   normalizedSourceSha256(source) ===
-  "9e6dc564b18a0630b56cc4d9d2dbe0be27462b1cdfc9c8148b7272c27bf44698";
+  "700525a9634c961aa79cac8a115d769c92a0df363b3e7df276dd62affdf97d15";
 const keyAgentServiceChannelSemanticContract = (source) => {
   const production = withoutBottomTestModule(source);
   const code = rustLexicalCode(production);
@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "2c6b0d2d92dc2b0b71433057df5300e7f038631e883ab9844c4f433ede4cb13a",
+    sha256: "f95fb0339c34ad7d1335c2c069cf6608a58207033887f86fd57fcecc78e2fbbd",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
+    sha256: "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "655fe7810ff8705e5046cedfdfc6db781440c03b9f28d1000c7b421a8d1fd84c",
+    sha256: "5c5a6bc9261dd2965ec12d6e180131e11e4251b1fcec73a125af5f6e0d27dd29",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
+    sha256: "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12379,14 +12379,16 @@ const keyAgentServiceHelperBootstrapDocumentationPatterns = [
   /raw\s+`?DEBUG_EVENT`?\s+slot[\s\S]{0,160}generation[\s\S]{0,180}same-object\s+ABA[\s\S]{0,160}compare-to-close\s+TOCTOU[\s\S]{0,240}debug-only[\s\S]{0,100}STOP-SHIP/iu,
   /LOAD_DLL_DEBUG_EVENT[\s\S]{0,180}adopts?[\s\S]{0,100}hFile[\s\S]{0,180}before\s+semantic-proof\s+evaluation[\s\S]{0,160}stores?\s+the\s+semantic\s+result[\s\S]{0,180}(?:checked close|checked-close)[\s\S]{0,180}after\s+that\s+close[\s\S]{0,160}stored\s+semantic\s+error[\s\S]{0,180}loader-count-limit\s+error[\s\S]{0,220}cleanup\s+failure[\s\S]{0,80}(?:dominates|wins)/iu,
   /(?:second\s+rejected-event\s+registration|rejected[\s\S]{0,360}(?:single-assignment|second\s+registration))[\s\S]{0,420}fail-fast[\s\S]{0,120}before[\s\S]{0,60}(?:overwrite|assignment)/iu,
-  /(?:GrantedAccess|granted access)[\s\S]{0,120}(?:pipe )?direction[\s\S]{0,100}UNVERIFIED/iu,
-  /NtQueryObject[\s\S]{0,160}(?:not\s+permitted\s+as\s+runtime\s+admission|not\s+a\s+runtime\s+admission|not\s+runtime\s+admission)/iu,
+  /(?:host-local|host evidence|observed on this host|measured host)[\s\S]{0,520}service-local[\s\S]{0,240}(?:source|creator)[\s\S]{0,260}0x00100001[\s\S]{0,160}0x00100002/iu,
+  /(?:target-table[\s\S]{0,360}test-only\s+`?DUPLICATE_SAME_ACCESS`?|test-only\s+`?DUPLICATE_SAME_ACCESS`?[\s\S]{0,360}target-table)[\s\S]{0,560}(?:current\s+(?:Windows\s+)?host|host-local|host evidence|test\/change-prone)/iu,
+  /(?:real\s+helper\s+child|actual\s+child|child\s+production|production\s+child)[\s\S]{0,260}(?:adoption|capture)[\s\S]{0,420}(?:UNVERIFIED|not(?:\s+yet)?\s+verified|remains?\s+unverified)/iu,
+  /NtQueryObject[\s\S]{0,700}(?:not\s+permitted\s+as\s+runtime\s+admission|not\s+a\s+runtime\s+admission|not\s+runtime\s+admission)/iu,
   /(?:real signed-helper|real signed helpers|signed-helper E2E|signed artifacts?)[\s\S]{0,220}(?:kernel|STOP-SHIP)/iu,
 ];
 const keyAgentServiceHelperBootstrapDocumentationContradiction =
-  /The source handle access and pipe direction are proven exact\.|Capture failures return to the UI for recovery\.|The release executable consumes the child capture API\.|The ACK authenticates the helper and grants authority\.|A partial remote duplicate is recoverable without terminating the child\.|Create-event aliases are universally guaranteed to survive debugger-thread exit\.|Registration-time canonical anchors eliminate raw-event ABA and close TOCTOU\.|CompareObjectHandles proves rejected raw aliases safe to close\.|LOAD_DLL limits may be checked before hFile cleanup\.|The LOAD_DLL hFile checked close completes before semantic-proof evaluation\.|A second rejected registration may overwrite prior authority\./u;
+  /The target-process injected candidates and child production adoption are universally proven exact\.|Capture failures return to the UI for recovery\.|The release executable consumes the child capture API\.|The ACK authenticates the helper and grants authority\.|A partial remote duplicate is recoverable without terminating the child\.|Create-event aliases are universally guaranteed to survive debugger-thread exit\.|Registration-time canonical anchors eliminate raw-event ABA and close TOCTOU\.|CompareObjectHandles proves rejected raw aliases safe to close\.|LOAD_DLL limits may be checked before hFile cleanup\.|The LOAD_DLL hFile checked close completes before semantic-proof evaluation\.|A second rejected registration may overwrite prior authority\./u;
 const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
-  "The source handle access and pipe direction are proven exact.",
+  "The target-process injected candidates and child production adoption are universally proven exact.",
   "Registration-time canonical anchors eliminate raw-event ABA and close TOCTOU.",
   "CompareObjectHandles proves rejected raw aliases safe to close.",
   "LOAD_DLL limits may be checked before hFile cleanup.",
@@ -12494,7 +12496,7 @@ requireInvariant(
       (probe) =>
         !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
     ),
-  "the exact four frozen helper-bootstrap document windows must preserve the optional parent-neutral dependency boundary, canonical 100-byte hello/72-byte ACK, two exact gates, canonical PE raw/RVA order with low-alignment equality and exact SizeOfImage extent, minimum-right injection, process-terminal partial-duplicate cleanup, role/PID/FILETIME/deadline/two-peer binding, ACK/gate ordering without rights-broadening peek/flush, debugger-thread/post-join proof, host-scoped alias evidence, LOAD_DLL hFile adopt-before-semantic-evaluation, stored-result-then-checked-close, close-before-return, cleanup-error precedence, fail-fast-before-overwrite rejected authority, query-only anchors without overclaiming raw-slot generation or compare-to-close TOCTOU safety, source-access/direction uncertainty, no production reachability, signed-helper/kernel STOP-SHIP status, and effective mutations",
+  "the exact four frozen helper-bootstrap document windows must preserve the optional parent-neutral dependency boundary, canonical 100-byte hello/72-byte ACK, two exact gates, canonical PE raw/RVA order with low-alignment equality and exact SizeOfImage extent, minimum-right injection, process-terminal partial-duplicate cleanup, role/PID/FILETIME/deadline/two-peer binding, ACK/gate ordering without rights-broadening peek/flush, debugger-thread/post-join proof, host-scoped alias evidence, LOAD_DLL hFile adopt-before-semantic-evaluation, stored-result-then-checked-close, close-before-return, cleanup-error precedence, fail-fast-before-overwrite rejected authority, query-only anchors without overclaiming raw-slot generation or compare-to-close TOCTOU safety, host-local service source and target-candidate access/direction evidence separated from actual child production-adoption and support-matrix uncertainty, no production reachability, signed-helper/kernel STOP-SHIP status, and effective mutations",
 );
 
 const keyAgentServiceRpcEpochTestNames = [
@@ -18699,7 +18701,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "1cb12fe974eac13c390241a2d810c4affbbe64211f69d26834af252256a6b35c";
+  "3c8a0e9fc8480cb1110f27c33674b198093aedfe8eeb713f401974f7e0cfb162";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -45114,13 +45116,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "6ef6bca3fb748061e581fbe93ad47dae5740572b583aa4936a43703c8052693c",
+    "42a74c065ba0c0c1fb5124769c8fb2147b26a078ade7ded0d691618cd9da474d",
   "docs/architecture.md":
-    "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
+    "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
+    "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -50903,10 +50905,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "6ef6bca3fb748061e581fbe93ad47dae5740572b583aa4936a43703c8052693c",
-  "a5c120c345d9f6696ddb7da7d1b6272458611e191ae807d6d80da1dc5bf5d088",
+  "42a74c065ba0c0c1fb5124769c8fb2147b26a078ade7ded0d691618cd9da474d",
+  "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "bb5e285bdd842029ec842b5f472db9a31e27360ecacbf566e66c8c117892b855",
+  "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -58220,7 +58222,7 @@ requireInvariant(
   "Approval held-process authority must retain exact process/job handles, PID requery, exact Job membership, live active-one and kill-on-close limit requery, verified file/digest identity, and proof injection before resume",
 );
 
-const approvalPipeContract = (source) => {
+const approvalPipeContract = (source, serviceChannelSource) => {
   const production = withoutBottomTestModule(source);
   let approvalPipesImpl;
   let create;
@@ -58250,8 +58252,21 @@ const approvalPipeContract = (source) => {
   let keyAgentSourceAuthorityTest;
   let keyAgentPreparedAuthorityTest;
   let keyAgentFreshAuthorityTest;
+  let serviceHelperLocalAuthorityKernelTest;
+  let serviceHelperLocalAuthorityAssertion;
   let nativeGrantedAccessTestAdapter;
   let nativePipeInformationTestAdapter;
+  let serviceChannelTests;
+  let serviceChannelAuthorityKernelTest;
+  let approvalTargetCandidateProof;
+  let secretInputTargetCandidateProof;
+  let duplicateSameAccessObserver;
+  let duplicateRemoteCandidateObserver;
+  let nativeGrantedAccessCandidateObserver;
+  let candidateObserversAssertion;
+  let idleChildGuardImpl;
+  let idleChildDropImpl;
+  let serviceChannelIdleChildFixture;
   try {
     approvalPipesImpl = rustImplItemAtDepth(
       production,
@@ -58369,6 +58384,16 @@ const approvalPipeContract = (source) => {
       "assert_fresh_key_agent_authority_and_directions",
       1,
     );
+    serviceHelperLocalAuthorityKernelTest = rustFunctionBlockAtDepth(
+      source,
+      "kernel_matrix_service_helper_local_sources_and_local_fresh_duplicates_have_exact_authority",
+      1,
+    );
+    serviceHelperLocalAuthorityAssertion = rustFunctionBlockAtDepth(
+      source,
+      "assert_service_helper_local_source_authority_and_directions",
+      1,
+    );
     nativeGrantedAccessTestAdapter = rustFunctionBlockAtDepth(
       source,
       "native_granted_access_for_test",
@@ -58377,6 +58402,60 @@ const approvalPipeContract = (source) => {
     nativePipeInformationTestAdapter = rustFunctionBlockAtDepth(
       source,
       "native_pipe_local_information_for_test",
+      1,
+    );
+    serviceChannelTests = rustTopLevelLexicalItemBlock(
+      serviceChannelSource,
+      /mod\s+tests\s*\{/u,
+    );
+    serviceChannelAuthorityKernelTest = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "kernel_matrix_cross_process_service_channel_candidates_have_exact_authority_and_direction",
+      1,
+    );
+    approvalTargetCandidateProof = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "prove_approval_target_candidates",
+      1,
+    );
+    secretInputTargetCandidateProof = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "prove_secret_input_target_candidates",
+      1,
+    );
+    duplicateSameAccessObserver = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "duplicate_same_access_observer",
+      1,
+    );
+    duplicateRemoteCandidateObserver = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "duplicate_remote_candidate_observer",
+      1,
+    );
+    nativeGrantedAccessCandidateObserver = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "native_granted_access",
+      1,
+    );
+    candidateObserversAssertion = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "assert_candidate_observers",
+      1,
+    );
+    idleChildGuardImpl = rustImplItemAtDepth(
+      serviceChannelSource,
+      "impl IdleChildGuard",
+      1,
+    );
+    idleChildDropImpl = rustImplItemAtDepth(
+      serviceChannelSource,
+      "impl Drop for IdleChildGuard",
+      1,
+    );
+    serviceChannelIdleChildFixture = rustFunctionBlockAtDepth(
+      serviceChannelSource,
+      "service_channel_idle_child_fixture",
       1,
     );
   } catch {
@@ -58391,10 +58470,94 @@ const approvalPipeContract = (source) => {
   const sourceAuthorityCompact = compactRust(keyAgentSourceAuthorityTest);
   const preparedAuthorityCompact = compactRust(keyAgentPreparedAuthorityTest);
   const freshAuthorityCompact = compactRust(keyAgentFreshAuthorityTest);
+  const serviceHelperLocalAuthorityCompact = compactRust(
+    serviceHelperLocalAuthorityAssertion,
+  );
+  const serviceChannelAuthorityCompact = compactRust(
+    serviceChannelAuthorityKernelTest,
+  );
+  const duplicateSameAccessObserverCompact = compactRust(
+    duplicateSameAccessObserver,
+  );
+  const nativeGrantedAccessCandidateCompact = compactRust(
+    nativeGrantedAccessCandidateObserver,
+  );
+  const candidateObserversCompact = compactRust(candidateObserversAssertion);
+  const idleChildGuardCompact = compactRust(idleChildGuardImpl);
+  const idleChildDropCompact = compactRust(idleChildDropImpl);
   const nativeGrantedAccessCompact = compactRust(nativeGrantedAccessTestAdapter);
   const nativePipeInformationCompact = compactRust(
     nativePipeInformationTestAdapter,
   );
+  const serviceChannelCandidateProofContract = (
+    proof,
+    pipeType,
+    duplicateFunction,
+    requestByte,
+    responseByte,
+  ) => {
+    const proofCompact = compactRust(proof);
+    return (
+      rustCallSites(proof, `${pipeType}::create`).length === 1 &&
+      JSON.stringify(
+        rustCallSites(proof, "duplicate_local_source_observer").map((call) =>
+          call.arguments.map(compactRust),
+        ),
+      ) ===
+        JSON.stringify([
+          ["pipes.child_input()"],
+          ["pipes.child_output()"],
+        ]) &&
+      JSON.stringify(
+        rustCallSites(proof, duplicateFunction).map((call) =>
+          call.arguments.map(compactRust),
+        ),
+      ) === JSON.stringify([["pipes", "target.process_handle()?"]]) &&
+      proofCompact.includes(
+        "let(remote_request,remote_response)=remote.into_register_words();",
+      ) &&
+      JSON.stringify(
+        rustCallSites(proof, "duplicate_remote_candidate_observer").map(
+          (call) => call.arguments.map(compactRust),
+        ),
+      ) ===
+        JSON.stringify([
+          ["target.process_handle()?", "remote_request"],
+          ["target.process_handle()?", "remote_response"],
+        ]) &&
+      JSON.stringify(
+        rustCallSites(proof, "assert_candidate_observers").map((call) =>
+          call.arguments.map(compactRust),
+        ),
+      ) ===
+        JSON.stringify([
+          [
+            "&source_request",
+            "&source_response",
+            "&candidate_request",
+            "&candidate_response",
+          ],
+        ]) &&
+      hasOrderedCompactMarkers(proof, [
+        "letmuttarget=IdleChildGuard::spawn()?",
+        `letinjected=${duplicateFunction}(pipes,target.process_handle()?)?`,
+        "let(remote,parent)=injected.into_parts()",
+        "assert_candidate_observers(",
+        "assert!(write_all_to_observer(&candidate_request,b).is_err())",
+        "read_exact_from_observer(&candidate_response,&mutwrong_response_direction).is_err()",
+        `letrequest=[${requestByte}_u8;32]`,
+        "request_writer.write_all(&request,observer_deadline()?)?",
+        "read_exact_from_observer(&candidate_request,&mutobserved_request)?",
+        `letresponse=[${responseByte}_u8;32]`,
+        "write_all_to_observer(&candidate_response,&response)?",
+        "response_reader.read_exact(response.len(),observer_deadline()?)?",
+        "target.terminate_and_reap()",
+      ]) &&
+      proof.includes(
+        'write_all_to_observer(&candidate_request, b"wrong request direction").is_err()',
+      )
+    );
+  };
   return (
     JSON.stringify(
       rustCallSites(create, "sys::create_child_server_pipe").map((call) =>
@@ -58713,6 +58876,330 @@ const approvalPipeContract = (source) => {
       "sys::read_child_exact_for_test(&response_output,1),Err(PipeError::OperatingSystem)",
     ) &&
     JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        source,
+        "kernel_matrix_service_helper_local_sources_and_local_fresh_duplicates_have_exact_authority",
+        1,
+      ),
+    ) ===
+      JSON.stringify([
+        "#[test]",
+        '#[ignore = "native Phase 1 helper-source kernel-matrix evidence only"]',
+      ]) &&
+    !hasVacuousRustTestEscape(serviceHelperLocalAuthorityKernelTest) &&
+    rustCallSites(
+      serviceHelperLocalAuthorityKernelTest,
+      "PrivateApprovalPipes::create",
+    ).length === 1 &&
+    rustCallSites(
+      serviceHelperLocalAuthorityKernelTest,
+      "PrivateSecretInputPipes::create",
+    ).length === 1 &&
+    rustCallSites(serviceHelperLocalAuthorityKernelTest, "into_test_parts")
+      .length === 2 &&
+    JSON.stringify(
+      rustCallSites(
+        serviceHelperLocalAuthorityKernelTest,
+        "assert_service_helper_local_source_authority_and_directions",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        [
+          "&approval_request.0",
+          "&approval_request_source",
+          "&approval_response.0",
+          "&approval_response_source",
+        ],
+        [
+          "&secret_request.0",
+          "&secret_request_source",
+          "&secret_response.0",
+          "&secret_response_source",
+        ],
+      ]) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(FILE_FLAG_FIRST_PIPE_INSTANCE.0,KERNEL_WRITE_OWNER);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::same_kernel_object_for_test(child_request_source,child_response_source));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(child_request_source)?);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(child_response_source)?);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(request_source_access,sys::CHILD_REQUEST_INPUT_ACCESS);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(response_source_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        serviceHelperLocalAuthorityAssertion,
+        "native_granted_access_evidence",
+      ).map((call) => ({
+        argumentCount: call.arguments.length,
+        handle: compactRust(call.arguments[0]),
+      })),
+    ) ===
+      JSON.stringify([
+        { argumentCount: 2, handle: "child_request_source" },
+        { argumentCount: 2, handle: "child_response_source" },
+        { argumentCount: 2, handle: "&request_input" },
+        { argumentCount: 2, handle: "&response_output" },
+      ]) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(request_source_access&KERNEL_FILE_WRITE_DATA,0);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(response_source_access&KERNEL_FILE_READ_DATA,0);",
+    ) &&
+    (serviceHelperLocalAuthorityCompact.match(
+      /assert_eq!\([^;]*&KERNEL_WRITE_OWNER,0\);/gu,
+    ) ?? []).length === 4 &&
+    JSON.stringify(
+      rustCallSites(
+        serviceHelperLocalAuthorityAssertion,
+        "sys::duplicate_exact_noninheritable_for_test",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        ["child_request_source", "sys::CHILD_REQUEST_INPUT_ACCESS"],
+        ["child_response_source", "sys::CHILD_RESPONSE_OUTPUT_ACCESS"],
+      ]) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_ne!(sys::raw_handle_for_test(child_request_source),sys::raw_handle_for_test(&request_input));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_ne!(sys::raw_handle_for_test(child_response_source),sys::raw_handle_for_test(&response_output));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(child_request_source,&request_input));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(sys::same_kernel_object_for_test(child_response_source,&response_output));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::same_kernel_object_for_test(&request_input,&response_output));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&request_input)?);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert!(!sys::handle_inheritable_for_test(&response_output)?);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(request_access,sys::CHILD_REQUEST_INPUT_ACCESS);",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(response_access,sys::CHILD_RESPONSE_OUTPUT_ACCESS);",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        serviceHelperLocalAuthorityAssertion,
+        "sys::native_pipe_local_information_for_test",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([["parent_response"]]) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(response_instance.named_pipe_configuration,sys::native_pipe_configuration_for_test(sys::PipeDirection::ParentReads));",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "assert_eq!(response_instance.named_pipe_end,sys::native_pipe_client_end_for_test());",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "sys::write_all_before(parent_request.raw(),&request,future_deadline()?)?;",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "sys::read_child_exact_for_test(&request_input,request.len())?,request",
+    ) &&
+    serviceHelperLocalAuthorityAssertion.includes(
+      'sys::write_child_for_test(&request_input, b"wrong helper request direction"),\n            Err(PipeError::OperatingSystem)',
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "sys::write_child_for_test(&response_output,&response)?;",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "sys::read_exact_before(parent_response.raw(),response.len(),future_deadline()?)?",
+    ) &&
+    serviceHelperLocalAuthorityCompact.includes(
+      "sys::read_child_exact_for_test(&response_output,1),Err(PipeError::OperatingSystem)",
+    ) &&
+    JSON.stringify(
+      rustInlineModuleOuterAttributesAtDepth(
+        serviceChannelSource,
+        "tests",
+        0,
+      ),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        serviceChannelSource,
+        "kernel_matrix_cross_process_service_channel_candidates_have_exact_authority_and_direction",
+        1,
+      ),
+    ) ===
+      JSON.stringify([
+        "#[test]",
+        '#[ignore = "cross-process NtQueryObject service-channel kernel-matrix evidence only"]',
+      ]) &&
+    !hasVacuousRustTestEscape(serviceChannelAuthorityKernelTest) &&
+    JSON.stringify(
+      rustCallSites(
+        serviceChannelAuthorityKernelTest,
+        "prove_approval_target_candidates",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([[]]) &&
+    JSON.stringify(
+      rustCallSites(
+        serviceChannelAuthorityKernelTest,
+        "prove_secret_input_target_candidates",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) === JSON.stringify([[]]) &&
+    serviceChannelAuthorityCompact.indexOf(
+      "prove_approval_target_candidates()?",
+    ) <
+      serviceChannelAuthorityCompact.indexOf(
+        "prove_secret_input_target_candidates()",
+      ) &&
+    serviceChannelCandidateProofContract(
+      approvalTargetCandidateProof,
+      "PrivateApprovalPipes",
+      "duplicate_approval_channels_for_child",
+      "0x71",
+      "0x72",
+    ) &&
+    serviceChannelCandidateProofContract(
+      secretInputTargetCandidateProof,
+      "PrivateSecretInputPipes",
+      "duplicate_secret_input_channels_for_child",
+      "0x73",
+      "0x74",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        duplicateSameAccessObserver,
+        "DuplicateHandle",
+      )[0]?.arguments.map(compactRust),
+    ) ===
+      JSON.stringify([
+        "source_process",
+        "source_handle",
+        "GetCurrentProcess()",
+        "&rawmutobserver",
+        "0",
+        "false",
+        "DUPLICATE_SAME_ACCESS",
+      ]) &&
+    rustCallSites(duplicateSameAccessObserver, "DuplicateHandle").length ===
+      1 &&
+    duplicateSameAccessObserverCompact.includes(
+      "Ok(unsafe{OwnedHandle::from_raw_handle(observer.0.cast::<c_void>())})",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        duplicateRemoteCandidateObserver,
+        "duplicate_same_access_observer",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        [
+          "HANDLE(target_process.as_raw_handle())",
+          "HANDLE(remoteas*mutc_void)",
+        ],
+      ]) &&
+    rustLexicalCode(serviceChannelTests).includes(
+      "use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+    ) &&
+    JSON.stringify(
+      rustCallSites(
+        nativeGrantedAccessCandidateObserver,
+        "NtQueryObject",
+      ).map((call) => call.arguments.map(compactRust)),
+    ) ===
+      JSON.stringify([
+        [
+          "Some(native_handle(handle))",
+          "ObjectBasicInformation",
+          "Some((&rawmutinformation).cast())",
+          "information_size",
+          "Some(&rawmutreturned_length)",
+        ],
+      ]) &&
+    nativeGrantedAccessCandidateCompact.includes(
+      "ifstatus!=STATUS_SUCCESS||returned_length!=information_size{",
+    ) &&
+    nativeGrantedAccessCandidateCompact.includes(
+      "Ok(information.GrantedAccess)",
+    ) &&
+    (candidateObserversCompact.match(
+      /assert_eq!\(native_granted_access\([^;]*\)\?,CHILD_(?:REQUEST|RESPONSE)_ACCESS\);/gu,
+    ) ?? []).length === 4 &&
+    candidateObserversCompact.includes(
+      "assert_eq!(request_type,FILE_TYPE_PIPE);",
+    ) &&
+    candidateObserversCompact.includes(
+      "assert_eq!(response_type,FILE_TYPE_PIPE);",
+    ) &&
+    candidateObserversCompact.includes(
+      "assert!(same_object(source_request,candidate_request));",
+    ) &&
+    candidateObserversCompact.includes(
+      "assert!(same_object(source_response,candidate_response));",
+    ) &&
+    candidateObserversCompact.includes(
+      "assert!(!same_object(candidate_request,candidate_response));",
+    ) &&
+    !/\bDUPLICATE_SAME_ACCESS\b/u.test(
+      rustLexicalCode(withoutBottomTestModule(serviceChannelSource)),
+    ) &&
+    serviceChannelSource.includes(
+      "const CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;",
+    ) &&
+    hasOrderedCompactMarkers(idleChildGuardImpl, [
+      "letchild=Command::new(executable)",
+      ".arg(IDLE_CHILD_FIXTURE)",
+      ".stdin(Stdio::piped())",
+      "ifchild.try_wait()?.is_some()",
+      "child.kill()?",
+      "WaitForSingleObject(process,CHILD_CLEANUP_TIMEOUT_MILLISECONDS)",
+      "child.wait()?",
+      "self.0.take()",
+    ]) &&
+    idleChildGuardImpl.includes('.arg("--exact")') &&
+    idleChildGuardImpl.includes('.arg("--ignored")') &&
+    idleChildGuardImpl.includes('.arg("--test-threads=1")') &&
+    idleChildGuardImpl.includes('.env(IDLE_CHILD_ENV, "1")') &&
+    idleChildGuardCompact.includes(
+      "ifunsafe{WaitForSingleObject(process,CHILD_CLEANUP_TIMEOUT_MILLISECONDS)}!=WAIT_OBJECT_0",
+    ) &&
+    idleChildDropCompact.includes("let_=child.kill();") &&
+    idleChildDropCompact.includes(
+      "ifunsafe{WaitForSingleObject(process,CHILD_CLEANUP_TIMEOUT_MILLISECONDS)}==WAIT_OBJECT_0",
+    ) &&
+    idleChildDropCompact.includes("let_=child.wait();") &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        serviceChannelSource,
+        "service_channel_idle_child_fixture",
+        1,
+      ),
+    ) ===
+      JSON.stringify([
+        "#[test]",
+        '#[ignore = "launched only as the service-channel idle target process"]',
+      ]) &&
+    serviceChannelIdleChildFixture.includes(
+      'if std::env::var_os(IDLE_CHILD_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {',
+    ) &&
+    compactRust(serviceChannelIdleChildFixture).includes(
+      "ifstd::env::var_os(IDLE_CHILD_ENV).as_deref()!=Some(std::ffi::OsStr::new()){returnOk(());}",
+    ) &&
+    compactRust(serviceChannelIdleChildFixture).includes(
+      "std::io::stdin().read_exact(&mutrelease)?;",
+    ) &&
+    JSON.stringify(
       rustAttachedOuterAttributes(
         source,
         source.indexOf(nativeGrantedAccessTestAdapter),
@@ -58859,6 +59346,54 @@ const approvalPipeMutationProbes = [
   keyAgentPipeSource.replace(
     '    #[ignore = "native NtQueryObject/NtQueryInformationFile kernel-matrix evidence only"]\n',
     "",
+  ),
+  keyAgentPipeSource.replace(
+    '    #[ignore = "native Phase 1 helper-source kernel-matrix evidence only"]\n',
+    "",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentPipeSource,
+    "kernel_matrix_service_helper_local_sources_and_local_fresh_duplicates_have_exact_authority",
+  ),
+  keyAgentPipeSource.replace(
+    "        let approval = PrivateApprovalPipes::create()?;",
+    "        let approval = PrivateSecretInputPipes::create()?;",
+  ),
+  keyAgentPipeSource.replace(
+    "        let secret_input = PrivateSecretInputPipes::create()?;",
+    "        let secret_input = PrivateApprovalPipes::create()?;",
+  ),
+  keyAgentPipeSource.replace(
+    "            &secret_response_source,\n        )",
+    "            &approval_response_source,\n        )",
+  ),
+  keyAgentPipeSource.replace(
+    '            native_granted_access_evidence(child_request_source, "helper request source query")?;',
+    '            native_granted_access_evidence(child_response_source, "helper request source query")?;',
+  ),
+  keyAgentPipeSource.replace(
+    "            child_request_source,\n            sys::CHILD_REQUEST_INPUT_ACCESS,\n        )?;",
+    "            child_request_source,\n            sys::CHILD_RESPONSE_OUTPUT_ACCESS,\n        )?;",
+  ),
+  keyAgentPipeSource.replace(
+    "        assert!(!sys::handle_inheritable_for_test(child_request_source)?);",
+    "        assert!(sys::handle_inheritable_for_test(child_request_source)?);",
+  ),
+  keyAgentPipeSource.replace(
+    "            child_request_source,\n            &request_input\n        ));",
+    "            child_response_source,\n            &request_input\n        ));",
+  ),
+  keyAgentPipeSource.replace(
+    "        assert_eq!(request_access & KERNEL_WRITE_OWNER, 0);\n        assert_eq!(response_access & KERNEL_WRITE_OWNER, 0);",
+    "        assert_ne!(request_access & KERNEL_WRITE_OWNER, 0);\n        assert_eq!(response_access & KERNEL_WRITE_OWNER, 0);",
+  ),
+  keyAgentPipeSource.replace(
+    "        let response_instance = sys::native_pipe_local_information_for_test(parent_response)",
+    "        let response_instance = sys::native_pipe_local_information_for_test(child_response_source)",
+  ),
+  keyAgentPipeSource.replace(
+    "sys::write_child_for_test(&request_input, b\"wrong helper request direction\"),\n            Err(PipeError::OperatingSystem)",
+    "sys::write_child_for_test(&request_input, b\"wrong helper request direction\"),\n            Ok(())",
   ),
   keyAgentPipeSource.replace(
     "assert_eq!(request_source_access & KERNEL_WRITE_OWNER, 0);",
@@ -59009,12 +59544,81 @@ const approvalPipeMutationProbes = [
     "            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
   ),
 ];
+const serviceChannelAuthorityEvidenceMutationProbes = [
+  keyAgentServiceChannelSource.replace(
+    '    #[ignore = "cross-process NtQueryObject service-channel kernel-matrix evidence only"]\n',
+    "",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentServiceChannelSource,
+    "kernel_matrix_cross_process_service_channel_candidates_have_exact_authority_and_direction",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        prove_secret_input_target_candidates()",
+    "        Ok(())",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        let injected = duplicate_approval_channels_for_child(pipes, target.process_handle()?)?;",
+    "        let injected = duplicate_secret_input_channels_for_child(pipes, target.process_handle()?)?;",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        let injected = duplicate_secret_input_channels_for_child(pipes, target.process_handle()?)?;",
+    "        let injected = duplicate_approval_channels_for_child(pipes, target.process_handle()?)?;",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "                DUPLICATE_SAME_ACCESS,\n            )?;",
+    "                DUPLICATE_HANDLE_OPTIONS(0),\n            )?;",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "                &raw mut observer,\n                0,\n                false,",
+    "                &raw mut observer,\n                CHILD_REQUEST_ACCESS,\n                false,",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "                Some(native_handle(handle)),\n                ObjectBasicInformation,",
+    "                Some(HANDLE::default()),\n                ObjectBasicInformation,",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        Ok(information.GrantedAccess)",
+    "        Ok(information.Attributes)",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        assert!(same_object(source_request, candidate_request));",
+    "        assert!(!same_object(source_request, candidate_request));",
+  ),
+  keyAgentServiceChannelSource.replace(
+    '        assert!(write_all_to_observer(&candidate_request, b"wrong request direction").is_err());',
+    '        assert!(write_all_to_observer(&candidate_request, b"wrong request direction").is_ok());',
+  ),
+  keyAgentServiceChannelSource.replace(
+    "        target.terminate_and_reap()",
+    "        Ok(())",
+  ),
+  keyAgentServiceChannelSource.replace(
+    "    const CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;",
+    "    const CHILD_CLEANUP_TIMEOUT_MILLISECONDS: u32 = u32::MAX;",
+  ),
+  keyAgentServiceChannelSource.replace(
+    '                .arg("--ignored")',
+    '                .arg("--nocapture")',
+  ),
+  keyAgentServiceChannelSource.replace(
+    '    #[ignore = "launched only as the service-channel idle target process"]\n',
+    "",
+  ),
+];
 requireInvariant(
-  approvalPipeContract(keyAgentPipeSource) &&
+  approvalPipeContract(keyAgentPipeSource, keyAgentServiceChannelSource) &&
     approvalPipeMutationProbes.every(
-      (probe) => probe !== keyAgentPipeSource && !approvalPipeContract(probe),
+      (probe) =>
+        probe !== keyAgentPipeSource &&
+        !approvalPipeContract(probe, keyAgentServiceChannelSource),
+    ) &&
+    serviceChannelAuthorityEvidenceMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServiceChannelSource &&
+        !approvalPipeContract(keyAgentPipeSource, probe),
     ),
-  "Approval and Key Agent pipes must retain child-server/parent-overlapped-client topology, exact attenuated source and child-stdio rights with checked broad-source close, cfg(test)-only ABI-checked kernel evidence, parent-write/parent-read direction pairing, v2 staged IO, consuming finish/response IO, zeroized exact child hello, and final exact EOF",
+  "Approval and Key Agent pipes must retain child-server/parent-overlapped-client topology, exact attenuated source and child-stdio rights with checked broad-source close, cfg(test)-only ABI-checked kernel evidence for Approval and Secret Input service-local source/fresh-duplicate access, noninheritance, object continuity, and direction plus actual WindowsDuplicateHandle remote target-candidate access, object continuity, and direction observed through a test-only SAME_ACCESS pullback; remote noninheritance remains the separate static production injection contract, bounded child cleanup must remain exact, and actual child production adoption and support-matrix admission remain unverified; v2 staged IO, consuming finish/response IO, zeroized exact child hello, and final exact EOF must remain intact",
 );
 
 const approvalChildServerStdioContract = (source) => {

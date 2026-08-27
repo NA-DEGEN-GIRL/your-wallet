@@ -166,7 +166,10 @@ That narrows wrong-ID and wrong-object closure; it does not authenticate a raw
 `DEBUG_EVENT` slot generation, same-object ABA, or the compare-to-close TOCTOU.
 Local closure of a rejected raw event alias therefore
 remains debug-only **STOP-SHIP** kernel-matrix evidence, not an activation
-safety claim.
+safety claim. Discharging this blocker requires a dedicated debugger process
+whose isolated handle table contains the borrowed raw event aliases until process exit;
+individually closing those borrowed aliases in the product process is not an
+acceptable production design.
 
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into the
 caller-owned checked-close path before semantic-proof evaluation. It stores the
@@ -179,15 +182,22 @@ unconditional fail-fast path before assignment. This closes the local
 resource-order and overwrite hazards; it does not resolve raw-slot generation,
 same-object ABA, or compare-to-close atomicity across kernels.
 
-The source candidates' exact `GrantedAccess` and pipe direction remain
-**UNVERIFIED**. Supported Win32 APIs do not report that admission fact, and an
-explicit-rights `DuplicateHandle` result can still be stronger than the
-candidate. `NtQueryObject` is test/change-prone evidence and is deliberately
-not a runtime admission dependency. The current static preflight, parent
-injection, two-gate protocol, and child completion are compile-only feasibility
-code. They do not establish the source admission fact, real signed-helper E2E,
-UI entrypoint, installer identity, cross-session service composition, or the
-supported-kernel matrix; all remain Phase 1 **STOP-SHIP** work.
+The common attenuation path now has ignored, host-local kernel evidence for
+both Approval and Secret Input. Their service-local creator sources and fresh
+local duplicates report exact request `0x00100001` and response `0x00100002`
+access, zero inheritance, and the intended directions. The actual
+`channel.rs::WindowsDuplicateHandle` production duplication path also installs
+target-table candidates with that exact authority: test-only
+`DUPLICATE_SAME_ACCESS` pull-back, WDK `NtQueryObject`, object comparison, and
+positive/rejected reverse I/O measure the candidates without changing the
+production API. These ignored native probes are test/change-prone evidence for
+the current Windows host, not runtime admission or a universal supported-kernel
+claim. The real helper child's production `WindowsHandleOperations::duplicate`
+and capture/adoption path, plus signed-helper E2E, remain unverified; the
+`UnverifiedSourceAccessAndDirection` marker and Phase 1 **STOP-SHIP** gate stay
+in force. The static preflight, parent injection, two-gate protocol, and child
+completion remain compile-only feasibility code with no UI entrypoint,
+installer identity, or cross-session service composition.
 
 Direct execution, non-Windows/default builds, and feature-enabled release
 builds remain silent exit 78. No executable or RPC operation reaches this
@@ -1430,9 +1440,9 @@ and same-object comparison additionally check inheritance and continuity. The WD
 wrappers create native-symbol load-time imports in the test binary rather than
 resolving them dynamically, so this ignored evidence has a test-host compatibility
 limit; no query or import is production-reachable. It is evidence for
-`PrivateKeyAgentPipes` on that host,
-not runtime admission and not proof of the separate Phase 1 service-helper source
-candidates. It does not permit production activation.
+`PrivateKeyAgentPipes` on that host, not runtime admission. Separate ignored
+probes now cover the common attenuation path and Phase 1 service-helper target
+candidates; neither evidence set permits production activation.
 
 The activation-owned fresh thread creates the Job and pipes, acquires the shared
 flight up to the startup-lease deadline, and creates exactly three short-lived
@@ -1464,9 +1474,13 @@ at process creation. This is narrow host-local evidence, not proof that
 injection caused the failures and not a supported-kernel result. Neither the
 mitigation change nor this observation resolves generation authentication for raw
 `DEBUG_EVENT` aliases, same-object ABA, or atomic compare-and-close. The separate
-Phase 1 helper bootstrap also lacks exact source-candidate `GrantedAccess` and
-pipe-direction proof. Production activation therefore remains forbidden and the
-compiled policies remain `None`.
+Phase 1 ignored probes now measure exact Approval/Secret Input service-local
+sources and actual `WindowsDuplicateHandle` target-table candidates on this
+host, but do not exercise the real helper child's production duplicate/capture/
+adoption path or provide runtime admission, signed-helper E2E, or a supported-
+kernel matrix. Raw debug aliases require a dedicated debugger-process design;
+production activation therefore remains forbidden and the compiled policies
+remain `None`.
 
 The child constructs one exact 88-byte `YWKSRES1` response only when the request's
 nonce, PID, creation time, and complete root identity equal its own observations.
