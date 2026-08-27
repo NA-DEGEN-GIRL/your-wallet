@@ -19,6 +19,14 @@ use zeroize::Zeroizing;
 
 #[cfg(windows)]
 use crate::key_agent_startup::{KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTUP_RESPONSE_BYTES};
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+use key_agent_debugger_wire::{
+    BOOTSTRAP_FRAME_BYTES, DECISION_FRAME_BYTES, READY_FROZEN_FRAME_BYTES,
+};
 
 /// Maximum bytes buffered by the operating system in either direction.
 pub const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
@@ -712,6 +720,302 @@ fn exact_key_agent_startup_response(
 impl fmt::Debug for KeyAgentStartupResponseReader {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyAgentStartupResponseReader([HANDLE])")
+    }
+}
+
+/// Persistent private pipe sources for the dormant one-shot debugger helper.
+///
+/// The topology matches the private Key Agent channel while keeping its roles
+/// distinct: the helper inherits a request-only stdin server, a response-only
+/// stdout server, and an independent write-only null stderr sink. All stored
+/// sources are non-inheritable. The only inheritable duplicates exist under one
+/// process-wide launch flight and are dropped immediately after process creation.
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+pub(crate) struct PrivateKeyAgentDebuggerPipes {
+    parent_control: sys::OwnedWinHandle,
+    child_stdin_source: sys::OwnedWinHandle,
+    parent_status: sys::OwnedWinHandle,
+    child_stdout_source: sys::OwnedWinHandle,
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+impl PrivateKeyAgentDebuggerPipes {
+    pub(crate) fn create() -> Result<Self, PipeError> {
+        let control_name = SensitivePipeName::generate("key-agent-debugger-control")?;
+        let status_name = SensitivePipeName::generate("key-agent-debugger-status")?;
+        let security = sys::PipeSecurity::for_current_logon()?;
+        let (parent_control, child_stdin_source) = sys::create_child_server_pipe(
+            &control_name,
+            &security,
+            sys::PipeDirection::ParentWrites,
+        )?;
+        let (parent_status, child_stdout_source) = sys::create_child_server_pipe(
+            &status_name,
+            &security,
+            sys::PipeDirection::ParentReads,
+        )?;
+        sys::validate_private_pipe_handles(
+            &parent_control,
+            &child_stdin_source,
+            &parent_status,
+            &child_stdout_source,
+        )?;
+        Ok(Self {
+            parent_control,
+            child_stdin_source,
+            parent_status,
+            child_stdout_source,
+        })
+    }
+
+    pub(crate) fn prepare_child_inheritance<'pipes, 'flight>(
+        &'pipes self,
+        flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,
+    ) -> Result<PreparedKeyAgentDebuggerInheritance<'pipes, 'flight>, PipeError> {
+        let stdin = sys::duplicate_inheritable(
+            &self.child_stdin_source,
+            sys::CHILD_REQUEST_INPUT_ACCESS,
+            flight,
+        )?;
+        let stdout = sys::duplicate_inheritable(
+            &self.child_stdout_source,
+            sys::CHILD_RESPONSE_OUTPUT_ACCESS,
+            flight,
+        )?;
+        let stderr = sys::create_inheritable_null_sink(flight)?;
+        sys::validate_prepared_key_agent_inheritance(
+            &self.child_stdin_source,
+            &self.child_stdout_source,
+            &stdin,
+            &stdout,
+            &stderr,
+        )?;
+        Ok(PreparedKeyAgentDebuggerInheritance {
+            stdin,
+            stdout,
+            stderr,
+            owner: PhantomData,
+            flight,
+        })
+    }
+
+    pub(crate) fn into_parent(
+        self,
+    ) -> (KeyAgentDebuggerControlWriter, KeyAgentDebuggerStatusReader) {
+        let Self {
+            parent_control,
+            child_stdin_source,
+            parent_status,
+            child_stdout_source,
+        } = self;
+        drop(child_stdin_source);
+        drop(child_stdout_source);
+        (
+            KeyAgentDebuggerControlWriter {
+                handle: parent_control,
+                state: DebuggerControlState::AwaitingBootstrap,
+            },
+            KeyAgentDebuggerStatusReader(parent_status),
+        )
+    }
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+impl fmt::Debug for PrivateKeyAgentDebuggerPipes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrivateKeyAgentDebuggerPipes")
+            .field("parent_control", &"[HANDLE]")
+            .field("child_stdin_source", &"[HANDLE]")
+            .field("parent_status", &"[HANDLE]")
+            .field("child_stdout_source", &"[HANDLE]")
+            .finish()
+    }
+}
+
+/// Short-lived inherited stdio handles for one debugger-helper launch.
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+#[must_use = "inheritable handles must cover only the exact debugger creation call"]
+pub(crate) struct PreparedKeyAgentDebuggerInheritance<'pipes, 'flight> {
+    stdin: sys::OwnedWinHandle,
+    stdout: sys::OwnedWinHandle,
+    stderr: sys::OwnedWinHandle,
+    owner: PhantomData<&'pipes PrivateKeyAgentDebuggerPipes>,
+    flight: &'flight crate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+impl PreparedKeyAgentDebuggerInheritance<'_, '_> {
+    pub(crate) fn stdin(&self) -> BorrowedHandle<'_> {
+        self.stdin.as_handle()
+    }
+
+    pub(crate) fn stdout(&self) -> BorrowedHandle<'_> {
+        self.stdout.as_handle()
+    }
+
+    pub(crate) fn stderr(&self) -> BorrowedHandle<'_> {
+        self.stderr.as_handle()
+    }
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+impl fmt::Debug for PreparedKeyAgentDebuggerInheritance<'_, '_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedKeyAgentDebuggerInheritance")
+            .field("stdin", &"[BORROWED HANDLE]")
+            .field("stdout", &"[BORROWED HANDLE]")
+            .field("stderr", &"[BORROWED HANDLE]")
+            .finish()
+    }
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DebuggerControlState {
+    AwaitingBootstrap,
+    AwaitingDecision,
+}
+
+/// Stateful parent control endpoint for one debugger-helper run.
+///
+/// A successful bootstrap write leaves the endpoint open for exactly one final
+/// decision. Sending that decision consumes and closes the endpoint.
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+pub(crate) struct KeyAgentDebuggerControlWriter {
+    handle: sys::OwnedWinHandle,
+    state: DebuggerControlState,
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+impl KeyAgentDebuggerControlWriter {
+    pub(crate) fn write_bootstrap(
+        &mut self,
+        frame: &[u8; BOOTSTRAP_FRAME_BYTES],
+        deadline: Instant,
+    ) -> Result<(), PipeError> {
+        if self.state != DebuggerControlState::AwaitingBootstrap {
+            return Err(PipeError::OperatingSystem);
+        }
+        sys::write_all_before(self.handle.raw(), frame, deadline)?;
+        self.state = DebuggerControlState::AwaitingDecision;
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        self,
+        frame: &[u8; DECISION_FRAME_BYTES],
+        deadline: Instant,
+    ) -> Result<(), PipeError> {
+        if self.state != DebuggerControlState::AwaitingDecision {
+            return Err(PipeError::OperatingSystem);
+        }
+        sys::write_all_before(self.handle.raw(), frame, deadline)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_after_bootstrap_for_test(self) -> Result<(), PipeError> {
+        if self.state != DebuggerControlState::AwaitingDecision {
+            return Err(PipeError::OperatingSystem);
+        }
+        drop(self);
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+impl fmt::Debug for KeyAgentDebuggerControlWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeyAgentDebuggerControlWriter")
+            .field("handle", &"[HANDLE]")
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+/// Consuming parent status endpoint for one exact `READY_FROZEN` frame plus EOF.
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+pub(crate) struct KeyAgentDebuggerStatusReader(sys::OwnedWinHandle);
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+#[allow(dead_code)] // Dormant transport feasibility surface; no production caller.
+impl KeyAgentDebuggerStatusReader {
+    pub(crate) fn receive(
+        self,
+        deadline: Instant,
+    ) -> Result<[u8; READY_FROZEN_FRAME_BYTES], PipeError> {
+        let frame = sys::read_exact_frame_before(self.0.raw(), READY_FROZEN_FRAME_BYTES, deadline)?;
+        let mut exact = [0_u8; READY_FROZEN_FRAME_BYTES];
+        exact.copy_from_slice(&frame);
+        Ok(exact)
+    }
+}
+
+#[cfg(all(
+    windows,
+    debug_assertions,
+    feature = "key-agent-debugger-transport-feasibility-test-hook"
+))]
+impl fmt::Debug for KeyAgentDebuggerStatusReader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyAgentDebuggerStatusReader([HANDLE])")
     }
 }
 

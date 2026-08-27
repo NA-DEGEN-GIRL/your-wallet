@@ -1339,6 +1339,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-agent-debugger"
+version = "0.1.0"
+dependencies = [
+ "key-agent-debugger-wire",
+ "windows",
+]
+
+[[package]]
+name = "key-agent-debugger-wire"
+version = "0.1.0"
+
+[[package]]
 name = "key-agent-service"
 version = "0.1.0"
 dependencies = [
@@ -1958,6 +1970,7 @@ dependencies = [
  "approval-wire",
  "getrandom 0.3.3",
  "hmac",
+ "key-agent-debugger-wire",
  "key-agent-service-helper-bootstrap",
  "key-agent-service-rpc-sys",
  "key-agent-service-wire",

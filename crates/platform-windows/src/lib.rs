@@ -159,6 +159,15 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
+// This secretless, dormant one-shot process transport proves only isolated
+// handle install/pull, frozen decision, and process-exit cleanup. It creates no
+// Key Agent target, handles no DEBUG_EVENT, and has no production caller.
+#[cfg(all(
+    windows,
+    feature = "key-agent-debugger-transport-feasibility-test-hook",
+    debug_assertions
+))]
+mod key_agent_debugger_transport;
 // The fixed-name SCM host provides inert and bounded local-RPC, debug-only
 // Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
 // a signing path. Default and release callers fail closed as unavailable.

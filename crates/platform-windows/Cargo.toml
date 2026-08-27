@@ -33,11 +33,17 @@ key-agent-service-rpc-status-feasibility-test-hook = [
     "dep:key-agent-service-rpc-sys",
     "dep:key-agent-service-wire",
 ]
+# Dormant, secretless one-shot process/handle-transfer transport evidence. It
+# creates no Key Agent target and exposes no production or RPC entrypoint.
+key-agent-debugger-transport-feasibility-test-hook = [
+    "dep:key-agent-debugger-wire",
+]
 
 [dependencies]
 approval-wire = { path = "../approval-wire" }
 getrandom.workspace = true
 hmac.workspace = true
+key-agent-debugger-wire = { workspace = true, optional = true }
 key-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap", optional = true, default-features = false }
 key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }
 key-agent-service-wire = { path = "../key-agent-service-wire", optional = true }

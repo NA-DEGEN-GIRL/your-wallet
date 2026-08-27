@@ -171,6 +171,33 @@ Implemented:
   helper E2E, remain `UnverifiedSourceAccessAndDirection` **STOP-SHIP** work, so
   production activation stays forbidden and both compiled policies remain
   `None`.
+  A separate dormant solution-mechanics probe adds fixed, big-endian
+  `key-agent-debugger-wire` bootstrap/`READY_FROZEN`/decision frames of exactly
+  80/72/56 bytes with CRC32C framing. The CRC, run nonce, and private-pipe PID
+  topology are not authentication or authority. Secretless
+  `key-agent-debugger.exe` is silent and exits 78 in default and release builds;
+  only its debug test hook runs the protocol. Private platform typestate and an
+  ignored current-host kernel test cover a suspended helper with an exact
+  three-handle `HANDLE_LIST` and private control/status pipes, parent-to-helper
+  installation of a `SYNCHRONIZE`-only sentinel, `READY_FROZEN`, test-only
+  helper-to-parent `DUPLICATE_SAME_ACCESS` pull-back, `COMMIT`, `ABORT`, EOF,
+  timeout, malformed input, forced termination, natural-exit/Drop cleanup, and
+  process-exit handle-table cleanup.
+  `READY_FROZEN` is a fixed-source, decision-only protocol state, not an OS
+  suspend claim.
+  The helper creates or debugs no Key Agent target and uses no LPAC, Job,
+  secret, RPC, debug API, or `DEBUG_EVENT`; the raw-slot generation/ABA/compare-
+  close blocker is unchanged. A future atomic cutover must move the complete
+  debug engine into the dedicated process, keep raw aliases borrowed without
+  individual close, and reclaim them only at debugger-process exit. Signed
+  immutable debugger release identity/bootstrap, actual target transfer and
+  token/image/suspend/Job proof, supported-kernel evidence, and every production
+  caller/policy remain unverified **STOP-SHIP** work; compiled policies remain
+  `None`.
+  The current-host deadlines are not a universal liveness proof: cancellation
+  must still drain pending overlapped pipe I/O, and without a creation-time
+  kill-on-close Job, parent fail-fast prevents continuation but does not prove
+  debugger-child death. Both are explicit **STOP-SHIP** containment work.
   The adoption transition, release-binding, and dormant supervisor binder all
   have zero production call sites. A separate dormant storage-only
   `open_existing_fixed_key_agent_storage_root` also has zero production callers.

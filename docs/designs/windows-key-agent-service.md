@@ -234,6 +234,35 @@ The following are existing facts, not new service claims:
   blocker requires a dedicated debugger process whose isolated handle table
   retains every borrowed raw event alias until process exit; the product process
   must not close those aliases individually.
+- The dormant solution-mechanics slice adds `key-agent-debugger-wire`, whose
+  bootstrap, `READY_FROZEN`, and decision frames are exactly 80, 72, and 56
+  bytes with big-endian integers, zeroed reserved fields, and CRC32C framing.
+  CRC32C, the run nonce, and private-pipe PID topology do not authenticate a
+  peer or grant authority. Secretless `key-agent-debugger.exe` is silent and
+  exits 78 in default and release builds; its one-shot protocol exists only
+  behind an explicit debug test hook. Private platform typestate and an ignored
+  current-host kernel test cover a suspended helper, an exact three-entry
+  `HANDLE_LIST` with private control/status pipes, parent-to-helper installation
+  of a `SYNCHRONIZE`-only sentinel, `READY_FROZEN`, test-only helper-to-parent
+  `DUPLICATE_SAME_ACCESS` pull-back, `COMMIT`, `ABORT`, parent EOF, timeout,
+  malformed input, forced termination, natural-exit/Drop cleanup, and
+  process-exit handle-table cleanup.
+  `READY_FROZEN` means only fixed sentinel-source and decision-only protocol
+  state, not that the helper is suspended by the OS.
+- The feasibility helper creates or debugs no Key Agent target and touches no
+  LPAC, Job, secret, RPC, debug API, or `DEBUG_EVENT`. It therefore does not
+  resolve raw-slot generation, same-object ABA, or compare-to-close. A later
+  atomic cutover must move the complete debug engine into the dedicated process,
+  keep raw event aliases borrowed, never close them individually, and use only
+  process exit for their handle-table cleanup. Signed immutable debugger release
+  identity/bootstrap, actual target-handle transfer and token/image/suspend/Job
+  proof, the supported-kernel matrix, and every production caller/policy remain
+  unverified **STOP-SHIP** work. Compiled policies remain `None`.
+- The transport deadlines are current-host evidence, not an unconditional
+  kernel-liveness guarantee: cancelled overlapped pipe I/O must still drain
+  before its borrowed buffers can leave scope. Because this probe intentionally
+  owns no kill-on-close Job, parent fail-fast prevents continuation but cannot
+  prove child death. Both residuals remain **STOP-SHIP**.
 - Every `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
   ownership before semantic-proof evaluation, stores the semantic result, and
   then completes checked close. Only after that close may the stored semantic
@@ -835,6 +864,15 @@ interactive desktop DACL access, child-token query access, the actual
 cross-session call, claimed-build matrix, endpoint-squatting, SCM
 configuration/service identity, and real Broker-client evidence are absent.
 
+A separate dormant `key-agent-debugger-wire`/`key-agent-debugger.exe` slice now
+proves the current-host, deadline-driven one-shot process and sentinel-transfer
+mechanics listed above. It is not wired to these Key Agent launch states and
+deliberately owns no target, debug event, service-helper channel, or release
+authority. Its
+`READY_FROZEN` state is a protocol marker rather than an OS suspend, and its
+ignored current-host result neither resolves the raw-alias blocker nor advances
+the Phase 1 exit gate.
+
 ### Phase 2 — Installer, service host, storage, and network boundary
 
 Add production SCM lifecycle, immutable installation/configuration readback,
@@ -934,6 +972,19 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-27 - Added the dormant dedicated-debugger transport-mechanics slice:
+  exact 80/72/56-byte big-endian CRC32C-framed wire values, a secretless
+  default/release-disabled silent exit-78 executable, and a private debug-only
+  typestate. An ignored current-host kernel test covers exact three-handle
+  private inheritance, suspended bootstrap, `SYNCHRONIZE` sentinel install,
+  `READY_FROZEN` (a protocol state, not OS suspension),
+  `DUPLICATE_SAME_ACCESS` pull-back, the listed terminal/error scenarios, and
+  process-exit table cleanup. Recorded that nonce/PID/CRC are not
+  authentication, the helper
+  has no target/debug/LPAC/Job/secret/RPC surface, raw-event ABA remains
+  unresolved, and signed immutable identity, real target transfer/proofs,
+  supported kernels, hard cancellation liveness, kill-on-close containment,
+  production callers, and enabled policies remain **STOP-SHIP**.
 - 2026-08-27 - Added ignored host-local kernel evidence for exact Approval and
   Secret Input service-local source authority/direction and the actual
   `channel.rs::WindowsDuplicateHandle` target-table candidates. The latter are
@@ -942,7 +993,7 @@ the corresponding evidence and returns release status to disabled.
   change-prone test evidence, not runtime admission or universal kernel support;
   real child production duplicate/capture/adoption and signed-helper E2E remain
   `UnverifiedSourceAccessAndDirection` **STOP-SHIP** work. Raw `DEBUG_EVENT`
-  alias ABA/TOCTOU still requires a dedicated debugger-process design.
+  alias ABA/TOCTOU still requires the atomic dedicated-debugger cutover.
 - 2026-08-26 - Added the dormant parent two-gate feasibility flow: bounded
   pinned-PE preflight, exact minimum-right non-inherited channel duplication,
   authenticated capture/context mutation, 100-byte hello/72-byte ACK ordering,

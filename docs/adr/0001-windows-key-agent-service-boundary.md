@@ -391,6 +391,35 @@ activation safety claim. The production design must instead isolate borrowed
 raw event aliases in a dedicated debugger process and let process exit close its
 handle table; the product process must not close those aliases individually.
 
+The dormant feasibility implementation proves only the transport mechanics for
+that eventual shape. `key-agent-debugger-wire` uses exact 80-byte bootstrap,
+72-byte `READY_FROZEN`, and 56-byte decision frames with big-endian integers,
+zeroed reserved fields, and CRC32C framing; CRC32C, the nonce, and private-pipe
+PID topology are not authentication or authority. Secretless
+`key-agent-debugger.exe` is silent and exits 78 outside its debug test hook. An
+ignored current-host kernel test drives private platform typestate through a
+suspended helper with exactly three inherited `HANDLE_LIST` entries, private
+pipes, parent-to-helper `SYNCHRONIZE` sentinel installation, protocol-only
+`READY_FROZEN`, test-only helper-to-parent `DUPLICATE_SAME_ACCESS` pull-back,
+`COMMIT`, `ABORT`, EOF, timeout, malformed input, forced termination,
+natural-exit/Drop cleanup, and process-exit handle-table cleanup.
+`READY_FROZEN` does not assert OS suspension.
+
+This helper creates or debugs no Key Agent target and uses no LPAC, Job, secret,
+RPC, debug API, or `DEBUG_EVENT`, so raw-slot generation, ABA, and compare-close
+remain unresolved. The production transition must be atomic: move the entire
+debug engine into the dedicated process, retain borrowed raw aliases without
+individual `CloseHandle`, and reclaim them only by process exit. Signed immutable
+debugger release identity/bootstrap, actual target transfer and
+token/image/suspend/Job proof, a supported-kernel matrix, and all production
+callers/policies remain unverified **STOP-SHIP** work; compiled policies remain
+`None`.
+The observed deadlines are not unconditional kernel-liveness proof: pending
+overlapped pipe I/O must still drain after cancellation before borrowed storage
+can leave scope. Because the probe intentionally has no creation-time
+kill-on-close Job, parent fail-fast prevents continuation but does not prove
+debugger-child death. Both containment gaps remain **STOP-SHIP**.
+
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into checked
 caller ownership before semantic-proof evaluation, stores the semantic result,
 and then finishes checked close. Only after that close may the stored semantic

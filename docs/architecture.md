@@ -166,10 +166,44 @@ That narrows wrong-ID and wrong-object closure; it does not authenticate a raw
 `DEBUG_EVENT` slot generation, same-object ABA, or the compare-to-close TOCTOU.
 Local closure of a rejected raw event alias therefore
 remains debug-only **STOP-SHIP** kernel-matrix evidence, not an activation
-safety claim. Discharging this blocker requires a dedicated debugger process
+safety claim. Discharging this blocker requires an atomic cutover to a
+dedicated debugger process
 whose isolated handle table contains the borrowed raw event aliases until process exit;
 individually closing those borrowed aliases in the product process is not an
 acceptable production design.
+
+A separate dormant transport slice now tests only the mechanics needed by that
+future process boundary. `key-agent-debugger-wire` defines exact 80-byte
+bootstrap, 72-byte `READY_FROZEN`, and 56-byte decision frames with big-endian
+integers, zeroed reserved fields, and CRC32C framing; the CRC is corruption
+detection, not authentication. The secretless `key-agent-debugger.exe` produces
+no output and exits 78 in ordinary or release builds, and runs only behind its
+debug test hook. A private platform typestate and one ignored current-host
+kernel test cover a suspended helper with an exact three-handle `HANDLE_LIST`
+and private control/status pipes, parent-to-helper installation of a
+`SYNCHRONIZE`-only sentinel, `READY_FROZEN`, helper-to-parent
+`DUPLICATE_SAME_ACCESS` pull-back,
+`COMMIT`, `ABORT`, parent EOF, timeout, malformed input, forced termination,
+natural-exit/Drop cleanup, and helper-process-exit handle-table cleanup.
+`READY_FROZEN` means the protocol's
+source-handle set is fixed and decision-only; it does not mean an OS-suspended
+process or thread. Pipe PID topology, the nonce, and CRC32C do not authenticate
+the peer or confer authority.
+
+That helper creates or debugs no Key Agent target and touches no LPAC, Job,
+secret, RPC, Windows debug API, or `DEBUG_EVENT`; this evidence therefore does
+not resolve raw-slot generation, ABA, or compare-to-close. A later atomic
+cutover must move the complete debug engine into the dedicated process, treat
+all raw event aliases as borrowed, and rely only on debugger-process exit to
+close its isolated handle table. Signed immutable release identity/bootstrap
+for the debugger, actual target-handle transfer and token/image/suspend/Job
+proof, the supported-kernel matrix, and every production caller/policy remain
+unverified **STOP-SHIP** work; compiled activation policies remain `None`.
+The measured deadlines are current-host evidence, not a hard kernel-liveness
+guarantee: timed-out overlapped pipe I/O must still drain cancellation before
+its buffers can be released. This Job-free probe's parent fail-fast also blocks
+continuation but does not prove child death, so creation-time kill-on-close
+containment remains **STOP-SHIP**.
 
 Every `LOAD_DLL_DEBUG_EVENT` first adopts its optional `hFile` into the
 caller-owned checked-close path before semantic-proof evaluation. It stores the
@@ -1478,7 +1512,8 @@ Phase 1 ignored probes now measure exact Approval/Secret Input service-local
 sources and actual `WindowsDuplicateHandle` target-table candidates on this
 host, but do not exercise the real helper child's production duplicate/capture/
 adoption path or provide runtime admission, signed-helper E2E, or a supported-
-kernel matrix. Raw debug aliases require a dedicated debugger-process design;
+kernel matrix. Raw debug aliases still require the atomic dedicated-debugger
+cutover described above;
 production activation therefore remains forbidden and the compiled policies
 remain `None`.
 

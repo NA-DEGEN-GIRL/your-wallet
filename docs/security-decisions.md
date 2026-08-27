@@ -397,6 +397,8 @@ close TOCTOU. The separate Phase 1 ignored probes measure source and target-
 candidate pipe authority on this host, but do not provide runtime admission,
 real child adoption, or a supported-kernel result. Production activation
 remains forbidden and both compiled policies remain `None`.
+The new dormant debugger-process transport probe verifies solution mechanics
+only; it does not alter any raw-`DEBUG_EVENT` or release conclusion below.
 
 The Key Agent executable now seals its child-side standard handles as its first
 Windows application operation. It prevalidates exactly three distinct inherited
@@ -1103,6 +1105,40 @@ unresolved, so local closure of rejected raw aliases is debug-only
 resolution requires a dedicated debugger process to contain every borrowed raw
 event alias in an isolated handle table until that process exits; the product
 process must not close the aliases individually.
+
+The first dedicated-process feasibility slice is deliberately narrower than
+that resolution. `key-agent-debugger-wire` carries exact 80/72/56-byte
+bootstrap/`READY_FROZEN`/decision frames with big-endian integers, zeroed
+reserved fields, and CRC32C framing. CRC32C, the per-run nonce, and private-pipe
+PID topology are neither peer authentication nor authority. The secretless
+`key-agent-debugger.exe` emits nothing and exits 78 for default and release
+builds; only the explicit debug test hook enables its one-shot protocol. Private
+platform typestate plus an ignored current-host kernel test proves a suspended
+helper launch with exactly three inherited `HANDLE_LIST` entries and private
+control/status pipes, parent-to-helper installation of a `SYNCHRONIZE`-only
+sentinel, `READY_FROZEN`, test-only helper-to-parent `DUPLICATE_SAME_ACCESS`
+pull-back,
+terminal `COMMIT`/`ABORT`, parent EOF, deadline, malformed-frame, forced-
+termination, natural-exit/Drop cleanup, and process-exit handle-table cleanup
+paths. Here
+`READY_FROZEN` is only the decision-only protocol state with a fixed sentinel
+source set, not an operating-system suspend claim.
+
+The helper has no actual Key Agent target and invokes no LPAC, Job, secret, RPC,
+debug API, or `DEBUG_EVENT` operation. It validates transport mechanics, not raw
+event-slot generation, same-object ABA, or atomic compare-close. Production
+resolution still requires one atomic cutover that moves the whole debug engine
+into the dedicated process, never individually closes borrowed raw aliases,
+and lets debugger-process exit reclaim that isolated handle table. Signed and
+immutable release identity/bootstrap for the debugger executable, actual target
+handle transfer plus token/image/suspend/Job proof, supported-kernel evidence,
+and any production caller or enabled policy remain unverified **STOP-SHIP**
+work. Both compiled policies stay `None`.
+Its deadlines are current-host measurements rather than unconditional kernel
+liveness: cancellation of pending overlapped pipe I/O must be drained before
+stack and buffer lifetimes end. With no creation-time kill-on-close Job,
+fail-fast prevents an unproved parent from continuing but cannot prove debugger
+child death. Both residuals remain **STOP-SHIP**.
 
 Each `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
 ownership before semantic-proof evaluation, stores the semantic result, and

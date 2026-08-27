@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "f95fb0339c34ad7d1335c2c069cf6608a58207033887f86fd57fcecc78e2fbbd",
+    sha256: "a2d2b3b0bf3cb290fb43b1049abcddfd1d207cdd357b09962185ad4f7ac75ef7",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
+    sha256: "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "5c5a6bc9261dd2965ec12d6e180131e11e4251b1fcec73a125af5f6e0d27dd29",
+    sha256: "94d58edbf9bab52c9f050dc389ff4666231e2b507537f18e68c05d0469ddb958",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
+    sha256: "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 9_000);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 12_000);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 9_000 &&
+      window.length <= 12_000 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -12489,8 +12489,10 @@ requireInvariant(
     ) &&
     keyAgentServiceHelperBootstrapDocumentationMarkerMutations.every(
       (probe) =>
-        probe !== keyAgentServiceHelperBootstrapDocumentationSpecs &&
-        !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe),
+        JSON.stringify(probe) !==
+          JSON.stringify(keyAgentServiceHelperBootstrapDocumentationSpecs) &&
+        !keyAgentServiceHelperBootstrapDocumentationSemanticContract(probe) &&
+        !keyAgentServiceHelperBootstrapDocumentationPinContract(probe),
     ) &&
     keyAgentServiceHelperBootstrapDocumentationContradictionMutations.every(
       (probe) =>
@@ -18632,6 +18634,27 @@ const keyAgentRootJobRelease = withoutCfgTestItems(keyAgentRootJob);
 const keyAgentPipeSource = await text("crates/platform-windows/src/pipe.rs");
 const keyAgentPipeProduction = withoutBottomTestModule(keyAgentPipeSource);
 const keyAgentPipeRelease = withoutCfgTestItems(keyAgentPipeProduction);
+const keyAgentDebuggerWireSource = await text(
+  "crates/key-agent-debugger-wire/src/lib.rs",
+);
+const keyAgentDebuggerManifest = await text(
+  "crates/key-agent-debugger/Cargo.toml",
+);
+const keyAgentDebuggerMainSource = await text(
+  "crates/key-agent-debugger/src/main.rs",
+);
+const keyAgentDebuggerChildSource = await text(
+  "crates/key-agent-debugger/src/child.rs",
+);
+const keyAgentDebuggerDisabledTestSource = await text(
+  "crates/key-agent-debugger/tests/default_disabled.rs",
+);
+const keyAgentDebuggerTransportSource = await text(
+  "crates/platform-windows/src/key_agent_debugger_transport/mod.rs",
+);
+const keyAgentDebuggerTransportSysSource = await text(
+  "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+);
 const keyAgentSupervisorSource = await text(
   "crates/platform-windows/src/key_agent_supervisor.rs",
 );
@@ -18701,7 +18724,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "3c8a0e9fc8480cb1110f27c33674b198093aedfe8eeb713f401974f7e0cfb162";
+  "e1310546283fe56865223c4d8b691d9f780daa8de20ca2da8eb0acb9549d7319";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -18723,6 +18746,8 @@ const workspaceCargoManifestPaths = [
   "crates/dashboard/Cargo.toml",
   "crates/eip712/Cargo.toml",
   "crates/key-agent/Cargo.toml",
+  "crates/key-agent-debugger/Cargo.toml",
+  "crates/key-agent-debugger-wire/Cargo.toml",
   "crates/key-agent-service/Cargo.toml",
   "crates/key-agent-service-helper-bootstrap/Cargo.toml",
   "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -18744,7 +18769,7 @@ const workspaceCargoManifestInventory = await Promise.all(
 const approvedWorkspaceCargoManifestPins = [
   {
     path: "Cargo.toml",
-    sha256: "ae82bc1d65c28dc023df61fae592e1c7c722e8ab6bbf8c014686707ebaf39352",
+    sha256: "9918490697127f3e4ad1496365f6dad29d23ecc8edacdb0b75e203b19a2bc796",
   },
   {
     path: "crates/approval-ui/Cargo.toml",
@@ -18775,6 +18800,14 @@ const approvedWorkspaceCargoManifestPins = [
     sha256: "2464e3b9dc86089a4d3f05cf936e3cc4988ed698215e83fb7555416bd9f62bba",
   },
   {
+    path: "crates/key-agent-debugger/Cargo.toml",
+    sha256: "297a9768ec7e96bbcfcb93a6728b80581557083d9e986f076c3fcf43e908f19b",
+  },
+  {
+    path: "crates/key-agent-debugger-wire/Cargo.toml",
+    sha256: "0de73a607524058105e30ccf6427bc4ecb082ba96f46e2e836d9d8bde817a7cf",
+  },
+  {
     path: "crates/key-agent-service/Cargo.toml",
     sha256: "ff65268aaba1ebdd9c5253840fe89fe6e93b8347fef6a4aa73a5cde0135d4148",
   },
@@ -18796,7 +18829,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "ffd29ef516e420944ffa18e40d42f107e2bd020ba641ce9cc5761af82fe03223",
+    sha256: "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -19744,10 +19777,17 @@ const compilationBindingEdgeProbes = {
   ]),
 };
 const secretInputUiManifest = await text("crates/secret-input-ui/Cargo.toml");
+const keyAgentDebuggerWireManifest = await text(
+  "crates/key-agent-debugger-wire/Cargo.toml",
+);
 const platformWindowsLocalDependencyManifestInventory = [
   {
     path: "crates/approval-wire/Cargo.toml",
     source: approvalWireManifest,
+  },
+  {
+    path: "crates/key-agent-debugger-wire/Cargo.toml",
+    source: keyAgentDebuggerWireManifest,
   },
   {
     path: "crates/secret-input-ui/Cargo.toml",
@@ -19758,16 +19798,22 @@ const platformWindowsLocalDependencyManifestInventory = [
   sha256: normalizedSourceSha256(source),
 }));
 const platformWindowsLocalDependencyCrateRootInventory = await Promise.all(
-  ["crates/approval-wire", "crates/secret-input-ui"].map(async (path) => ({
+  [
+    "crates/approval-wire",
+    "crates/key-agent-debugger-wire",
+    "crates/secret-input-ui",
+  ].map(async (path) => ({
     path,
     entries: await trustedDirectoryEntryInventory(path),
   })),
 );
 const platformWindowsLocalDependencySourceInventory = (
   await Promise.all(
-    ["crates/approval-wire/src", "crates/secret-input-ui/src"].map((path) =>
-      rustProductionSources(path, { withTestCode: true }),
-    ),
+    [
+      "crates/approval-wire/src",
+      "crates/key-agent-debugger-wire/src",
+      "crates/secret-input-ui/src",
+    ].map((path) => rustProductionSources(path, { withTestCode: true })),
   )
 )
   .flat()
@@ -19781,6 +19827,10 @@ const approvedPlatformWindowsLocalDependencyManifestInventory = [
     sha256: "c4425735387a3699cd3fd51eb6ae613a7e42f23a4fa8e282406103b09230f913",
   },
   {
+    path: "crates/key-agent-debugger-wire/Cargo.toml",
+    sha256: "0de73a607524058105e30ccf6427bc4ecb082ba96f46e2e836d9d8bde817a7cf",
+  },
+  {
     path: "crates/secret-input-ui/Cargo.toml",
     sha256: "a1fdd15bff500909518a7a9ba357775ad4bf65d40703f4db77e047a905e39572",
   },
@@ -19788,6 +19838,13 @@ const approvedPlatformWindowsLocalDependencyManifestInventory = [
 const approvedPlatformWindowsLocalDependencyCrateRootInventory = [
   {
     path: "crates/approval-wire",
+    entries: [
+      { name: "Cargo.toml", kind: "file" },
+      { name: "src", kind: "directory" },
+    ],
+  },
+  {
+    path: "crates/key-agent-debugger-wire",
     entries: [
       { name: "Cargo.toml", kind: "file" },
       { name: "src", kind: "directory" },
@@ -19807,6 +19864,11 @@ const approvedPlatformWindowsLocalDependencySourceInventory = [
     path: "crates/approval-wire/src/lib.rs",
     sha256:
       "24ebae101bcd07787b2e72226c5edb1ba43e9b08f1ca656615a427ba7983c443",
+  },
+  {
+    path: "crates/key-agent-debugger-wire/src/lib.rs",
+    sha256:
+      "4c65668660e5e91fb4d2aeb129a347e93a02fa6b8154f59b90cb07b793a0550b",
   },
   {
     path: "crates/secret-input-ui/src/bootstrap.rs",
@@ -19843,6 +19905,22 @@ const platformWindowsManifestSha256 = normalizedSourceSha256(
 const platformWindowsCrateRootInventory = await trustedDirectoryEntryInventory(
   "crates/platform-windows",
 );
+const keyAgentDebuggerWireCrateRootInventory =
+  await trustedDirectoryEntryInventory("crates/key-agent-debugger-wire");
+const keyAgentDebuggerWireSourceRootInventory =
+  await trustedDirectoryEntryInventory("crates/key-agent-debugger-wire/src");
+const keyAgentDebuggerCrateRootInventory = await trustedDirectoryEntryInventory(
+  "crates/key-agent-debugger",
+);
+const keyAgentDebuggerSourceRootInventory =
+  await trustedDirectoryEntryInventory("crates/key-agent-debugger/src");
+const keyAgentDebuggerTestRootInventory = await trustedDirectoryEntryInventory(
+  "crates/key-agent-debugger/tests",
+);
+const keyAgentDebuggerTransportDirectoryInventory =
+  await trustedDirectoryEntryInventory(
+    "crates/platform-windows/src/key_agent_debugger_transport",
+  );
 const workspaceManifest = rootManifest;
 const workspaceLock = await trustedRegularFileText("Cargo.lock");
 const workspaceLockSha256 = normalizedSourceSha256(workspaceLock);
@@ -19877,6 +19955,51 @@ requireInvariant(
         !keyAgentServiceHelperBootstrapLockContract(probe),
     ),
   "Cargo.lock must contain exactly one local helper-bootstrap record with only service-wire and windows dependencies, with effective removal and dependency-expansion mutations",
+);
+const keyAgentDebuggerLockContract = (source) => {
+  const records = cargoLockPackageRecords(source).filter((record) =>
+    ["key-agent-debugger", "key-agent-debugger-wire"].includes(record.name),
+  );
+  return (
+    JSON.stringify(records) ===
+    JSON.stringify([
+      {
+        name: "key-agent-debugger",
+        version: "0.1.0",
+        source: null,
+        checksum: null,
+        dependencies: ["key-agent-debugger-wire", "windows"],
+      },
+      {
+        name: "key-agent-debugger-wire",
+        version: "0.1.0",
+        source: null,
+        checksum: null,
+        dependencies: [],
+      },
+    ])
+  );
+};
+const keyAgentDebuggerLockMutationProbes = [
+  workspaceLock.replace(
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "windows",\n]',
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n]',
+  ),
+  workspaceLock.replace(
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "windows",\n]',
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "platform-windows",\n "windows",\n]',
+  ),
+  workspaceLock.replace(
+    'name = "key-agent-debugger-wire"\nversion = "0.1.0"',
+    'name = "key-agent-debugger-wire"\nversion = "0.1.0"\ndependencies = [\n "serde",\n]',
+  ),
+];
+requireInvariant(
+  keyAgentDebuggerLockContract(workspaceLock) &&
+    keyAgentDebuggerLockMutationProbes.every(
+      (probe) => probe !== workspaceLock && !keyAgentDebuggerLockContract(probe),
+    ),
+  "Cargo.lock must retain exactly one dependency-free debugger-wire record and one debugger helper record depending only on debugger-wire plus windows, with effective removal and expansion mutations",
 );
 const approvedKeyAgentServiceRpcSysProviderClosure = [
   {
@@ -22943,6 +23066,26 @@ const expectedDuplicateHandleInventory = [
     options: "DUPLICATE_SAME_ACCESS",
   },
   {
+    path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+    sourceProcess: "self.process_handle()",
+    sourceHandle: "remote",
+    targetProcess: "GetCurrentProcess()",
+    targetHandle: "&raw mut observer",
+    desiredAccess: "0",
+    inheritable: "false",
+    options: "DUPLICATE_SAME_ACCESS",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+    sourceProcess: "GetCurrentProcess()",
+    sourceHandle: "sentinel_handle",
+    targetProcess: "debugger_process",
+    targetHandle: "&raw mut remote",
+    desiredAccess: "SYNCHRONIZE_ACCESS",
+    inheritable: "false",
+    options: "DUPLICATE_HANDLE_OPTIONS(0)",
+  },
+  {
     path: "crates/platform-windows/src/key_agent_service_launch/channel.rs",
     sourceProcess: "GetCurrentProcess()",
     sourceHandle: "HANDLE(call.source_handle.0 as *mut c_void)",
@@ -23018,6 +23161,12 @@ const expectedDuplicateHandleInventory = [
 const expectedSetHandleInformationInventory = [
   {
     path: "crates/approval-ui/src/bootstrap/windows.rs",
+    handle: "handle",
+    mask: "HANDLE_FLAG_INHERIT.0",
+    flags: "HANDLE_FLAGS(0)",
+  },
+  {
+    path: "crates/key-agent-debugger/src/child.rs",
     handle: "handle",
     mask: "HANDLE_FLAG_INHERIT.0",
     flags: "HANDLE_FLAGS(0)",
@@ -26537,6 +26686,7 @@ requireInvariant(
     JSON.stringify([...restrictedContextConsumers].sort()) ===
       JSON.stringify([
         "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
         "crates/platform-windows/src/key_agent_service_launch/process.rs",
         "crates/platform-windows/src/key_agent_service_launch/startup.rs",
         "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
@@ -26559,7 +26709,7 @@ requireInvariant(
         rustLexicalCode(file.source),
       ),
     ),
-  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two existing launchers plus the three composed compile-only service launch owners",
+  "the restricted Windows process context must remain private, opaque, thread-affine, zero-input, and consumed only by the two existing launchers, the private dormant debugger transport leaf, and the three composed compile-only service launch owners",
 );
 requireInvariant(
   normalizeRustFragment(rustLexicalCode(restrictedContextPrepare)) ===
@@ -27602,11 +27752,17 @@ requireInvariant(
     cargoManifestPinsHold(workspaceCargoManifestInventory) &&
     !cargoManifestPinsHold(cargoNonRustTargetMutationProbe) &&
     (rootManifest.match(
+      /^\s*"crates\/key-agent-debugger",\s*$/gmu,
+    ) ?? []).length === 1 &&
+    (rootManifest.match(
+      /^\s*"crates\/key-agent-debugger-wire",\s*$/gmu,
+    ) ?? []).length === 1 &&
+    (rootManifest.match(
       /^\s*"crates\/key-agent-service-helper-bootstrap",\s*$/gmu,
     ) ?? []).length === 1 &&
     (rootManifest.match(
       /^\s*"crates\/key-agent-service-rpc-sys",\s*$/gmu) ?? []).length === 1,
-  "workspace Cargo manifests must be exact-pinned, retain only the reviewed rpc-sys build script, reject non-Rust explicit target roots, and include helper-bootstrap plus rpc-sys exactly once",
+  "workspace Cargo manifests must be exact-pinned, retain only the reviewed rpc-sys build script, reject non-Rust explicit target roots, and include debugger helper, debugger wire, helper-bootstrap, and rpc-sys exactly once",
 );
 requireInvariant(
   isWorkspaceBuildOutputPath(
@@ -27960,11 +28116,16 @@ requireInvariant(
         "crates/platform-windows/src/launch.rs",
       ]) &&
     JSON.stringify(coordinatorCreateConsumers) ===
-      JSON.stringify(coordinatorConsumers) &&
+      JSON.stringify([
+        "crates/platform-windows/src/broker_supervisor.rs",
+        "crates/platform-windows/src/key_agent_activation.rs",
+        "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+        "crates/platform-windows/src/launch.rs",
+      ]) &&
     JSON.stringify(coordinatorAcquireCallSites) ===
       JSON.stringify(coordinatorConsumers) &&
     JSON.stringify(coordinatorCreateCallSites) ===
-      JSON.stringify(coordinatorConsumers) &&
+      JSON.stringify(coordinatorCreateConsumers) &&
     restrictedLaunchLeaf.indexOf("if Instant::now() >= coordination_deadline") >
       restrictedLaunchLeaf.indexOf(
         "acquire_inheritable_handle_launch(coordination_deadline)",
@@ -37261,6 +37422,10 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/exact_image.rs", sites: 1 },
   { path: "crates/platform-windows/src/helper.rs", sites: 6 },
   { path: "crates/platform-windows/src/key_agent_activation.rs", sites: 15 },
+  {
+    path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+    sites: 4,
+  },
   { path: "crates/platform-windows/src/key_agent_lpac.rs", sites: 43 },
   { path: "crates/platform-windows/src/key_agent_root_job.rs", sites: 4 },
   {
@@ -37343,6 +37508,11 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
     sha256: "95e6bd5636ab75d09ad0465bb16ee7a1b653f6630357166bef0e86a8bfc97191",
   },
   {
+    path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+    unsafeCount: 34,
+    sha256: "6e0e3322098d567c5de4248d2570dd4a8a8e22a4ca646306f16b737f6b6bf2e9",
+  },
+  {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
     unsafeCount: 86,
     sha256: "3cd2ba5efd7d9bc43e1a22a9bdcb4f9648f50d3759cc2f1f91d753d903502063",
@@ -37420,7 +37590,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/pipe.rs",
     unsafeCount: 34,
-    sha256: "e6e34ed3ffec556c29baaec015c1b973ec5686a285ef0fef3299bc95bf5dc10e",
+    sha256: "131b43c97e1fc26ed493734ba8d4f358a4bd6230842c4307fbf6c570bf73978f",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -37466,6 +37636,14 @@ const approvedPlatformWindowsVisibleGenericFunctionInventory = [
     name: "prepare_child_inheritance",
     signature:
       "fnprepare_child_inheritance<'pipes,'flight>(&'pipesself,flight:&'flightcrate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,)->Result<PreparedKeyAgentInheritance<'pipes,'flight>,PipeError>",
+  },
+  {
+    path: "crates/platform-windows/src/pipe.rs",
+    owner: "impl PrivateKeyAgentDebuggerPipes",
+    visibility: "pub(crate)",
+    name: "prepare_child_inheritance",
+    signature:
+      "fnprepare_child_inheritance<'pipes,'flight>(&'pipesself,flight:&'flightcrate::inheritable_handle_launch::InheritableHandleLaunchFlight<'static>,)->Result<PreparedKeyAgentDebuggerInheritance<'pipes,'flight>,PipeError>",
   },
 ];
 const preparedKeyAgentProvisioningReturningFunctions =
@@ -38212,7 +38390,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "ffd29ef516e420944ffa18e40d42f107e2bd020ba641ce9cc5761af82fe03223" &&
+    "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -38227,9 +38405,11 @@ requireInvariant(
       ) &&
     JSON.stringify(platformWindowsLocalDependencySourceInventory) ===
       JSON.stringify(approvedPlatformWindowsLocalDependencySourceInventory) &&
-    [approvalWireManifest, secretInputUiManifest].every((manifest) =>
-      /^build\s*=\s*false$/gmu.test(manifest),
-    ) &&
+    [
+      approvalWireManifest,
+      keyAgentDebuggerWireManifest,
+      secretInputUiManifest,
+    ].every((manifest) => /^build\s*=\s*false$/gmu.test(manifest)) &&
     /^build\s*=\s*false$/gmu.test(platformWindowsManifest) &&
     JSON.stringify(platformWindowsDependencySectionInventory) ===
       JSON.stringify(["dependencies"]) &&
@@ -38238,6 +38418,7 @@ requireInvariant(
         'approval-wire={path="../approval-wire"}',
         "getrandom.workspace=true",
         "hmac.workspace=true",
+        "key-agent-debugger-wire={workspace=true,optional=true}",
         'key-agent-service-helper-bootstrap={path="../key-agent-service-helper-bootstrap",optional=true,default-features=false}',
         'key-agent-service-rpc-sys={path="../key-agent-service-rpc-sys",optional=true}',
         'key-agent-service-wire={path="../key-agent-service-wire",optional=true}',
@@ -38270,9 +38451,9 @@ requireInvariant(
         "zeroize.workspace=true",
       ].join("") &&
     rootManifestSha256 ===
-      "ae82bc1d65c28dc023df61fae592e1c7c722e8ab6bbf8c014686707ebaf39352" &&
+      "9918490697127f3e4ad1496365f6dad29d23ecc8edacdb0b75e203b19a2bc796" &&
     workspaceLockSha256 ===
-      "8af6eaa3658dc33abf5656cee86517b03209075883998b8424052d61a072ba12" &&
+      "de80e1b4b343dcd07a88d7146c99eaab67f2c3bfe7c7a60273ae0228313db78f" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -44056,6 +44237,7 @@ const keyAgentCreationDaclWorkspaceUsageContract = (files) => {
   const expectedCreateConsumers = [
     "crates/platform-windows/src/broker_supervisor.rs",
     "crates/platform-windows/src/key_agent_activation.rs",
+    "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
     "crates/platform-windows/src/launch.rs",
   ];
   const createUsage = rustIdentifierUsageInventory(
@@ -44332,7 +44514,7 @@ requireInvariant(
     keyAgentCreateCalls.length === 1 &&
     compactRust(keyAgentCreateCalls[0]?.arguments[2] ?? "") ===
       "Some(process_thread_security)",
-  "creation-time Key Agent process/thread DACLs must remain an opaque paired, two-allocation OWNER-RIGHTS deny policy passed only by the Key Agent and verified exactly on creator handles before resume without PID/TID reopen or temporary mutation",
+  "creation-time Key Agent process/thread DACLs must remain an opaque paired, two-allocation OWNER-RIGHTS deny policy passed only by the Key Agent and verified exactly on its creator handles before resume without PID/TID reopen or temporary mutation; the dormant debugger is a separate private gated wrapper consumer that passes no process/thread creation security and proves its own creator-handle identity",
 );
 const keyAgentCreationDaclTestEvidenceContract = (source) => {
   let testModule;
@@ -45116,13 +45298,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "42a74c065ba0c0c1fb5124769c8fb2147b26a078ade7ded0d691618cd9da474d",
+    "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
   "docs/architecture.md":
-    "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
+    "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
+    "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -50905,10 +51087,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "42a74c065ba0c0c1fb5124769c8fb2147b26a078ade7ded0d691618cd9da474d",
-  "956a17f9c59a5bafe61c6eec9cfb756319b73fb306a8bef1f829b1e0774c1ecd",
+  "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
+  "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "f64839e6c08790a95aa481244b42184c89ba32b5f9534d6df23160d5aa7bc65e",
+  "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -58220,6 +58402,1521 @@ requireInvariant(
         !approvalHeldProcessRevalidationContract(probe),
     ),
   "Approval held-process authority must retain exact process/job handles, PID requery, exact Job membership, live active-one and kill-on-close limit requery, verified file/digest identity, and proof injection before resume",
+);
+
+const keyAgentDebuggerWireTestNames = [
+  "all_frames_round_trip_with_exact_big_endian_layouts",
+  "field_accessors_return_validated_values",
+  "consuming_accessors_move_security_values_without_clone_or_copy",
+  "every_prefix_and_trailing_byte_is_rejected",
+  "every_single_byte_mutation_without_checksum_rewrite_is_rejected",
+  "semantic_header_failures_have_stable_categories",
+  "every_reserved_bit_is_rejected_after_checksum_rewrite",
+  "all_zero_and_numeric_zero_sentinels_are_rejected",
+  "cross_kind_decoders_reject_every_other_canonical_frame",
+  "unknown_decision_and_checksum_mismatch_are_rejected",
+  "security_value_debug_output_is_fixed_and_redacted",
+  "every_wire_error_display_is_stable_and_data_free",
+  "crc32c_matches_the_standard_check_value",
+  "debugger_exit_codes_and_debug_names_are_stable",
+];
+const keyAgentDebuggerWirePinContract = (source) =>
+  normalizedSourceSha256(source) ===
+  "4c65668660e5e91fb4d2aeb129a347e93a02fa6b8154f59b90cb07b793a0550b";
+const keyAgentDebuggerWireSemanticContract = (source) => {
+  const production = withoutBottomTestModule(source);
+  const code = rustLexicalCode(production);
+  const compact = compactRust(production);
+  let exitCodes;
+  let wireErrors;
+  const tests = {};
+  try {
+    exitCodes = rustLexicalItemBlock(production, /pub\s+enum\s+DebuggerExitCode\s*\{/u);
+    wireErrors = rustLexicalItemBlock(production, /pub\s+enum\s+WireError\s*\{/u);
+    for (const name of keyAgentDebuggerWireTestNames) {
+      tests[name] = rustFunctionBlockAtDepth(source, name, 1);
+    }
+  } catch {
+    return false;
+  }
+  const deriveInventory = rustAttributeItems(production)
+    .map((attribute) => compactRust(attribute.source))
+    .filter((attribute) => /^#\[derive\(/u.test(attribute));
+  return (
+    production.includes("#![forbid(unsafe_code)]") &&
+    compact.includes("pubconstBOOTSTRAP_FRAME_BYTES:usize=80;") &&
+    compact.includes("pubconstREADY_FROZEN_FRAME_BYTES:usize=72;") &&
+    compact.includes("pubconstDECISION_FRAME_BYTES:usize=56;") &&
+    production.includes('const PROTOCOL_MAGIC: [u8; 8] = *b"YWKDBG01";') &&
+    compact.includes("constVERSION_V1:u16=1;") &&
+    compact.includes("constFRAME_BOOTSTRAP:u16=1;") &&
+    compact.includes("constFRAME_READY_FROZEN:u16=2;") &&
+    compact.includes("constFRAME_DECISION:u16=3;") &&
+    compact.includes("constDECISION_COMMIT:u16=1;") &&
+    compact.includes("constDECISION_ABORT:u16=2;") &&
+    compact.includes("constCRC32C_POLYNOMIAL_REVERSED:u32=0x82F6_3B78;") &&
+    (code.match(/\bto_be_bytes\b/gu) ?? []).length === 3 &&
+    (code.match(/\bfrom_be_bytes\b/gu) ?? []).length === 3 &&
+    !/\b(?:to_le_bytes|from_le_bytes)\b/u.test(code) &&
+    compact.includes(
+      "fndecode_header(bytes:&[u8],expected_kind:u16)->Result<(),WireError>{ifbytes[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET+PROTOCOL_MAGIC.len()]!=PROTOCOL_MAGIC{returnErr(WireError::InvalidMagic);}ifread_u16(bytes,HEADER_VERSION_OFFSET)!=VERSION_V1{returnErr(WireError::UnsupportedVersion);}ifread_u16(bytes,HEADER_KIND_OFFSET)!=expected_kind{returnErr(WireError::UnexpectedFrameKind);}require_zero_u32(bytes,HEADER_RESERVED_OFFSET)}",
+    ) &&
+    compact.includes(
+      "fnverify_checksum(bytes:&[u8],checksum_offset:usize)->Result<(),WireError>{ifcrc32c(&bytes[..checksum_offset])==read_u32(bytes,checksum_offset){Ok(())}else{Err(WireError::Integrity)}}",
+    ) &&
+    compact.includes(
+      "pubfnnew(bytes:[u8;NONCE_BYTES])->Result<Self,WireError>{ifbytes.iter().all(|byte|*byte==0){returnErr(WireError::InvalidValue);}Ok(Self(bytes))}",
+    ) &&
+    compact.includes(
+      "pubconstfnnew(value:u64)->Result<Self,WireError>{ifvalue==0{returnErr(WireError::InvalidValue);}Ok(Self(value))}",
+    ) &&
+    compact.includes(
+      "ifparent_process_id==0||debugger_process_id==0||absolute_tick_deadline==0{returnErr(WireError::InvalidValue);}",
+    ) &&
+    compact.includes(
+      "pubstructDebuggerRunNonce([u8;NONCE_BYTES]);",
+    ) &&
+    compact.includes("pubstructRemoteHandleWord(u64);") &&
+    [
+      "DebuggerRunNonce([REDACTED])",
+      "RemoteHandleWord([REDACTED])",
+      "DebuggerBootstrap([REDACTED])",
+      "DebuggerReadyFrozen([REDACTED])",
+      "DebuggerDecision([REDACTED])",
+      "DebuggerDecisionFrame([REDACTED])",
+    ].every((marker) => production.includes(marker)) &&
+    JSON.stringify(deriveInventory.filter((item) => /\b(?:Clone|Copy)\b/u.test(item))) ===
+      JSON.stringify(["#[derive(Clone,Copy,Debug,Eq,PartialEq)]"]) &&
+    compactRust(exitCodes) ===
+      "pubenumDebuggerExitCode{Success=0,Disabled=78,Aborted=80,ParentEof=81,DeadlineElapsed=82,ProtocolViolation=83,OperatingSystem=84,}" &&
+    compactRust(wireErrors) ===
+      "pubenumWireError{Truncated,TrailingData,InvalidMagic,UnsupportedVersion,UnexpectedFrameKind,NonZeroReserved,InvalidValue,Integrity,UnknownDecision,}" &&
+    source.includes(
+      "checksum detects corruption; it does not authenticate the transport.",
+    ) &&
+    source.includes(
+      "The bound parent control channel reached end-of-file.",
+    ) &&
+    !/checksum authenticates|CRC32C authenticates|grants authority|authenticated\s+parent\s+control\s+channel/iu.test(
+      source,
+    ) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
+      JSON.stringify(keyAgentDebuggerWireTestNames) &&
+    keyAgentDebuggerWireTestNames.every(
+      (name) =>
+        rustFunctionOuterAttributesAtDepth(source, name, 1).includes("#[test]") &&
+        !hasVacuousRustTestEscape(tests[name]),
+    ) &&
+    compactRust(tests.every_prefix_and_trailing_byte_is_rejected).includes(
+      "assert_all_truncations_and_trailing(&bootstrap()?.encode(),decode_bootstrap_unit)",
+    ) &&
+    compactRust(
+      tests.every_single_byte_mutation_without_checksum_rewrite_is_rejected,
+    ).includes(
+      "assert_every_single_byte_mutation_is_rejected(&decision(DebuggerDecision::Abort)?.encode(),decode_decision_unit,)",
+    ) &&
+    compactRust(tests.every_reserved_bit_is_rejected_after_checksum_rewrite).includes(
+      "(ready()?.encode().to_vec(),READY_CHECKSUM_OFFSET,vec![12..16,52..56,64..68],)",
+    ) &&
+    compactRust(tests.all_zero_and_numeric_zero_sentinels_are_rejected).includes(
+      "RemoteHandleWord::new(0)",
+    ) &&
+    compactRust(tests.cross_kind_decoders_reject_every_other_canonical_frame).includes(
+      "assert!(DebuggerDecisionFrame::decode_exact(&ready).is_err())",
+    ) &&
+    /crc32c\(b"123456789"\)\s*,\s*0xE306_9283/u.test(
+      tests.crc32c_matches_the_standard_check_value,
+    )
+  );
+};
+const keyAgentDebuggerWireMutationProbes = [
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "pub const BOOTSTRAP_FRAME_BYTES: usize = 80;",
+    "pub const BOOTSTRAP_FRAME_BYTES: usize = 79;",
+  ),
+  replaceExactStringOnce(keyAgentDebuggerWireSource, "YWKDBG01", "YWKDBG02"),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "const VERSION_V1: u16 = 1;",
+    "const VERSION_V1: u16 = 2;",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;",
+    "const CRC32C_POLYNOMIAL_REVERSED: u32 = 0xEDB8_8320;",
+  ),
+  keyAgentDebuggerWireSource.replace("value.to_be_bytes()", "value.to_le_bytes()"),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "checksum detects corruption; it does not authenticate the transport.",
+    "checksum authenticates the transport and grants authority.",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "The bound parent control channel reached end-of-file.",
+    "The authenticated parent control channel reached end-of-file.",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "#[derive(Eq, PartialEq)]\npub struct DebuggerRunNonce",
+    "#[derive(Clone, Eq, PartialEq)]\npub struct DebuggerRunNonce",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "    require_zero_u32(bytes, HEADER_RESERVED_OFFSET)\n}",
+    "    Ok(())\n}",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "if bytes.iter().all(|byte| *byte == 0)",
+    "if false",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "    Disabled = 78,",
+    "    Disabled = 79,",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    "    #[test]\n    fn every_reserved_bit_is_rejected_after_checksum_rewrite",
+    "    fn every_reserved_bit_is_rejected_after_checksum_rewrite",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentDebuggerWireSource,
+    "every_prefix_and_trailing_byte_is_rejected",
+  ),
+  replaceExactStringOnce(
+    keyAgentDebuggerWireSource,
+    'formatter.write_str("RemoteHandleWord([REDACTED])")',
+    'write!(formatter, "RemoteHandleWord({})", self.0)',
+  ),
+];
+const keyAgentDebuggerWireMutationResults = exactSourceMutationResults(
+  keyAgentDebuggerWireMutationProbes,
+  keyAgentDebuggerWireSource,
+  keyAgentDebuggerWireSemanticContract,
+  keyAgentDebuggerWirePinContract,
+);
+requireInvariant(
+  keyAgentDebuggerWirePinContract(keyAgentDebuggerWireSource) &&
+    keyAgentDebuggerWireSemanticContract(keyAgentDebuggerWireSource) &&
+    keyAgentDebuggerWireMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ),
+  "key-agent-debugger-wire must remain dependency-free and unsafe-free with exact 80/72/56-byte big-endian YWKDBG01 v1 frames, closed kinds/decisions/errors/exits, zero reserved and nonzero binding validation, corruption-only CRC32C, move-only redacted security values, exhaustive tests, and effective mutations",
+);
+
+const keyAgentDebuggerHelperSources = {
+  manifest: keyAgentDebuggerManifest,
+  main: keyAgentDebuggerMainSource,
+  child: keyAgentDebuggerChildSource,
+  disabledTest: keyAgentDebuggerDisabledTestSource,
+};
+const keyAgentDebuggerHelperPins = {
+  manifest: "297a9768ec7e96bbcfcb93a6728b80581557083d9e986f076c3fcf43e908f19b",
+  main: "9cb127ea53ed22bd73d3bf3bf7648eed70b11154e6fbfa1c0dbfaf05fd51c42a",
+  child: "f196bae008bf37207a0ae7800c6d84d8dbac586fe6d657a3e2bfce6f6da7d3d3",
+  disabledTest:
+    "4a432a8276c12cdd8a295bb424ec5fa436a60395d5857ccd89e443392e9a7dcf",
+};
+const keyAgentDebuggerHelperPinContract = (sources) =>
+  Object.entries(keyAgentDebuggerHelperPins).every(
+    ([name, sha256]) => normalizedSourceSha256(sources[name]) === sha256,
+  );
+const keyAgentDebuggerChildTestNames = [
+  "sealed_stdio_debug_is_fixed_and_redacted",
+  "transport_failures_have_stable_data_free_exit_categories",
+  "decision_validation_accepts_only_the_bound_nonce_and_closed_set",
+];
+const keyAgentDebuggerDisabledTestNames = [
+  "direct_launch_is_silent_and_unavailable",
+  "release_hook_launch_is_silent_and_unavailable",
+];
+const keyAgentDebuggerForbiddenHelperCode =
+  /\b(?:CreateProcess(?:AsUser)?W|CreateProcessWithTokenW|CreateProcessWithLogonW|DEBUG_EVENT|WaitForDebugEventEx|ContinueDebugEvent|DebugSetProcessKillOnExit|DebugActiveProcessStop|DebugActiveProcess|OpenProcess|OpenThread|CommandLineToArgvW)\b/u;
+const keyAgentDebuggerHelperSemanticContract = (sources) => {
+  const compactManifest = sources.manifest
+    .replace(/^\s*#.*$/gmu, "")
+    .replace(/\s+/gu, "");
+  const mainCode = rustLexicalCode(withoutBottomTestModule(sources.main));
+  const compactMain = compactRust(sources.main);
+  const childProduction = withoutBottomTestModule(sources.child);
+  const childCode = rustLexicalCode(childProduction);
+  const compactChild = compactRust(childProduction);
+  const tests = [];
+  try {
+    tests.push(
+      rustFunctionBlockAtDepth(
+        sources.main,
+        "unavailable_exit_category_is_stable",
+        1,
+      ),
+    );
+    for (const name of keyAgentDebuggerChildTestNames) {
+      tests.push(rustFunctionBlockAtDepth(sources.child, name, 1));
+    }
+    for (const name of keyAgentDebuggerDisabledTestNames) {
+      tests.push(rustFunctionBlockAtDepth(sources.disabledTest, name, 0));
+    }
+  } catch {
+    return false;
+  }
+  const protocolOrder = [
+    "letstdio=seal_inherited_stdio()?;",
+    "read_exact_polled(stdio.stdin,&mutbootstrap_bytes,bootstrap_intake_deadline)?;",
+    "letrun_deadline=validate_bootstrap(&bootstrap,current_process_id)?;",
+    "validate_parent_pipe_identity(stdio,bootstrap.parent_process_id())?;",
+    "letsentinel=adopt_sentinel(sentinel_word.value())?;",
+    "validate_sentinel(&sentinel,stdio)?;",
+    "require_no_early_input(stdio.stdin)?;",
+    "letready_bytes=ready.encode();",
+    "letsentinel=ManuallyDrop::new(sentinel);",
+    "write_exact(stdio.stdout,&ready_bytes)?;",
+    "close_ready_output(stdio.stdout)?;",
+    "read_exact_polled(stdio.stdin,&mutdecision_bytes,run_deadline)",
+    "letdecision=validate_decision(decision,&run_nonce)?;",
+    "await_exact_eof(stdio.stdin,run_deadline)?;",
+  ].map((marker) => compactChild.indexOf(marker));
+  return (
+    /^name\s*=\s*"key-agent-debugger"$/gmu.test(sources.manifest) &&
+    /^build\s*=\s*false$/gmu.test(sources.manifest) &&
+    /^publish\s*=\s*false$/gmu.test(sources.manifest) &&
+    JSON.stringify(tomlTableKeyInventory(sources.manifest, "features")) ===
+      JSON.stringify(["default", "transport-feasibility-test-hook"]) &&
+    /\[features\]\s*default\s*=\s*\[\]\s*transport-feasibility-test-hook\s*=\s*\[\]/u.test(
+      sources.manifest,
+    ) &&
+    JSON.stringify(tomlTableKeyInventory(sources.manifest, "dependencies")) ===
+      JSON.stringify(["key-agent-debugger-wire"]) &&
+    JSON.stringify(
+      tomlTableKeyInventory(
+        sources.manifest,
+        "target.'cfg(windows)'.dependencies",
+      ),
+    ) === JSON.stringify(["windows"]) &&
+    compactManifest.includes(
+      'key-agent-debugger-wire={path="../key-agent-debugger-wire",default-features=false}',
+    ) &&
+    compactManifest.includes(
+      'windows={version="=0.61.1",features=["Win32_Foundation","Win32_Storage_FileSystem","Win32_System_Console","Win32_System_Pipes","Win32_System_SystemInformation","Win32_System_Threading",]}',
+    ) &&
+    !/\bplatform-windows\s*=/u.test(sources.manifest) &&
+    !/Diagnostics_Debug|ToolHelp|JobObjects|RemoteDesktop|System_Rpc/u.test(
+      sources.manifest,
+    ) &&
+    /unsafe_code\s*=\s*"deny"/u.test(sources.manifest) &&
+    /print_stdout\s*=\s*"deny"/u.test(sources.manifest) &&
+    /print_stderr\s*=\s*"deny"/u.test(sources.manifest) &&
+    sources.main.includes(
+      '#![cfg_attr(windows, windows_subsystem = "windows")]',
+    ) &&
+    /#\[cfg\(all\(windows, feature = "transport-feasibility-test-hook", debug_assertions\)\)\]\s*#\[allow\(unsafe_code\)\]\s*mod child;/u.test(
+      sources.main,
+    ) &&
+    /#\[cfg\(all\(windows, feature = "transport-feasibility-test-hook", debug_assertions\)\)\]\s*fn main\(\)\s*\{\s*std::process::exit\(child::run\(\)\.code\(\)\);\s*\}/u.test(
+      sources.main,
+    ) &&
+    /#\[cfg\(not\(all\(windows, feature = "transport-feasibility-test-hook", debug_assertions\)\)\)\]\s*fn main\(\)\s*\{\s*std::process::exit\(key_agent_debugger_wire::DebuggerExitCode::Disabled\.code\(\)\);\s*\}/u.test(
+      sources.main,
+    ) &&
+    (mainCode.match(/\bstd\s*::\s*process\s*::\s*exit\b/gu) ?? []).length ===
+      2 &&
+    (sources.main.match(/#\s*\[\s*allow\s*\(\s*unsafe_code\s*\)\s*\]/gu) ?? [])
+      .length === 1 &&
+    !keyAgentDebuggerForbiddenHelperCode.test(`${mainCode}\n${childCode}`) &&
+    !/\b(?:std\s*::\s*env|std\s*::\s*process\s*::\s*Command|args(?:_os)?|clap|argh|getopts)\b/u.test(
+      `${mainCode}\n${childCode}`,
+    ) &&
+    !/\b(?:print|println|eprint|eprintln|dbg)\s*!/u.test(
+      `${mainCode}\n${childCode}`,
+    ) &&
+    compactChild.includes("constMAX_RUN_WINDOW_MILLISECONDS:u64=5_000;") &&
+    protocolOrder.every((position) => position !== -1) &&
+    protocolOrder
+      .slice(1)
+      .every((position, index) => position > protocolOrder[index]) &&
+    compactChild.includes(
+      "ifhandles.iter().copied().any(invalid_handle)||same_object(stdin,stdout)?||same_object(stdin,stderr)?||same_object(stdout,stderr)?||file_type(stdin)!=FILE_TYPE_PIPE||file_type(stdout)!=FILE_TYPE_PIPE||file_type(stderr)!=FILE_TYPE_CHAR",
+    ) &&
+    /impl fmt::Debug for SealedStdio\s*\{[\s\S]*formatter\.write_str\("SealedStdio\(\[STDIO HANDLES REDACTED\]\)"\)[\s\S]*\}/u.test(
+      childProduction,
+    ) &&
+    compactChild.includes(
+      "ifhandle_flags(handle)?!=HANDLE_FLAG_INHERIT.0{returnErr(TransportFailure::ProtocolViolation);}",
+    ) &&
+    compactChild.includes(
+      "SetHandleInformation(handle,HANDLE_FLAG_INHERIT.0,HANDLE_FLAGS(0))",
+    ) &&
+    compactChild.includes(
+      "letexact_zero_flags=handles.iter().all(|handle|handle_flags(*handle)==Ok(0));",
+    ) &&
+    compactChild.includes(
+      "ifbootstrap.debugger_process_id()!=current_process_id||bootstrap.parent_process_id()==current_process_id",
+    ) &&
+    compactChild.includes(
+      "ifdeadline<=now{returnErr(TransportFailure::DeadlineElapsed);}ifdeadline>maximum{returnErr(TransportFailure::ProtocolViolation);}",
+    ) &&
+    compactChild.includes("GetNamedPipeClientProcessId(pipe,&rawmutclient_process_id)") &&
+    compactChild.includes("Ok(unsafe{OwnedHandle::from_raw_handle(handle.0)})") &&
+    compactChild.includes(
+      "ifhandle_flags(handle)?!=0||same_object(handle,stdio.stdin)?||same_object(handle,stdio.stdout)?||same_object(handle,stdio.stderr)?",
+    ) &&
+    compactChild.includes(
+      "ifunsafe{WaitForSingleObject(handle,0)}!=WAIT_TIMEOUT",
+    ) &&
+    compactChild.includes(
+      "Err(error)iferror.code()==ERROR_ACCESS_DENIED.to_hresult()=>{}Ok(())|Err(_)=>returnErr(TransportFailure::ProtocolViolation)",
+    ) &&
+    compactChild.includes(
+      "letdetached=unsafe{SetStdHandle(STD_OUTPUT_HANDLE,HANDLE::default())};letclosed=unsafe{CloseHandle(stdout)};ifdetached.is_err()||closed.is_err()",
+    ) &&
+    compactChild.includes(
+      "ifdecision_nonce.as_bytes()!=expected_nonce.as_bytes(){returnErr(TransportFailure::ProtocolViolation);}",
+    ) &&
+    /Process exit\s*\n\s*\/\/ is therefore the sole reclamation path before attempting the write\./u.test(
+      sources.child,
+    ) &&
+    sources.child.includes("not create, debug, or suspend a target process") &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(sources.main)) ===
+      JSON.stringify(["unavailable_exit_category_is_stable"]) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(sources.child)) ===
+      JSON.stringify(keyAgentDebuggerChildTestNames) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(sources.disabledTest)) ===
+      JSON.stringify(keyAgentDebuggerDisabledTestNames) &&
+    tests.every((test) => !hasVacuousRustTestEscape(test)) &&
+    compactRust(sources.disabledTest).includes(
+      "assert_eq!(output.status.code(),Some(78));assert!(output.stdout.is_empty());assert!(output.stderr.is_empty());",
+    )
+  );
+};
+
+const mutateKeyAgentDebuggerHelper = (name, search, replacement) => ({
+  ...keyAgentDebuggerHelperSources,
+  [name]: replaceExactStringOnce(
+    keyAgentDebuggerHelperSources[name],
+    search,
+    replacement,
+  ),
+});
+const keyAgentDebuggerHelperMutationProbes = [
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    "[dependencies]\n",
+    '[dependencies]\nplatform-windows = { path = "../platform-windows" }\n',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    '    "Win32_System_Threading",',
+    '    "Win32_System_Threading",\n    "Win32_System_Diagnostics_Debug",',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    "default = []",
+    'default = ["transport-feasibility-test-hook"]',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    'print_stdout = "deny"',
+    'print_stdout = "allow"',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "main",
+    '#[cfg(all(windows, feature = "transport-feasibility-test-hook", debug_assertions))]\n#[allow(unsafe_code)]\nmod child;',
+    '#[cfg(all(windows, feature = "transport-feasibility-test-hook"))]\n#[allow(unsafe_code)]\nmod child;',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "main",
+    "key_agent_debugger_wire::DebuggerExitCode::Disabled.code()",
+    "key_agent_debugger_wire::DebuggerExitCode::Success.code()",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "main",
+    "fn main() {\n    std::process::exit(child::run().code());",
+    'fn main() {\n    println!("debugger enabled");\n    std::process::exit(child::run().code());',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    'formatter.write_str("SealedStdio([STDIO HANDLES REDACTED])")',
+    'write!(formatter, "SealedStdio({:?}, {:?}, {:?})", self.stdin, self.stdout, self.stderr)',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "if handle_flags(handle)? != HANDLE_FLAG_INHERIT.0",
+    "if handle_flags(handle)? == HANDLE_FLAG_INHERIT.0",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "const MAX_RUN_WINDOW_MILLISECONDS: u64 = 5_000;",
+    "const MAX_RUN_WINDOW_MILLISECONDS: u64 = u64::MAX;",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "bootstrap.debugger_process_id() != current_process_id",
+    "bootstrap.debugger_process_id() == current_process_id",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "if handle_flags(handle)? != 0",
+    "if handle_flags(handle)? == 0",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT",
+    "unsafe { WaitForSingleObject(handle, 1) } != WAIT_TIMEOUT",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {}",
+    "Ok(()) => {}",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "    close_ready_output(stdio.stdout)?;",
+    "    let _ = stdio.stdout;",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "if decision_nonce.as_bytes() != expected_nonce.as_bytes()",
+    "if decision_nonce.as_bytes() == expected_nonce.as_bytes()",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "            await_exact_eof(stdio.stdin, run_deadline)?;",
+    "            let _ = stdio.stdin;",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "child",
+    "    #[test]\n    fn decision_validation_accepts_only_the_bound_nonce_and_closed_set",
+    "    fn decision_validation_accepts_only_the_bound_nonce_and_closed_set",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "disabledTest",
+    "    assert!(output.stdout.is_empty());",
+    "    assert!(true);",
+  ),
+];
+const keyAgentDebuggerHelperMutationResults =
+  keyAgentDebuggerHelperMutationProbes.map((probe) => ({
+    changed: Object.keys(keyAgentDebuggerHelperSources).some(
+      (name) => probe[name] !== keyAgentDebuggerHelperSources[name],
+    ),
+    semanticRejected: !keyAgentDebuggerHelperSemanticContract(probe),
+    pinRejected: !keyAgentDebuggerHelperPinContract(probe),
+  }));
+requireInvariant(
+  keyAgentDebuggerHelperPinContract(keyAgentDebuggerHelperSources) &&
+    keyAgentDebuggerHelperSemanticContract(keyAgentDebuggerHelperSources) &&
+    keyAgentDebuggerHelperMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ),
+  "key-agent-debugger must remain a platform-windows-independent, silent default/release exit-78 helper with an exact Windows+feature+debug gate, unsafe confined to its child module, no debug/target/CLI/env/print surface, exact inherited-stdio seal, PID/deadline/sentinel proof, process-exit-only transition before the first READY byte, closed decision/EOF exits, exhaustive tests, and effective mutations",
+);
+
+const keyAgentDebuggerPlatformSources = {
+  manifest: platformWindowsManifest,
+  lib: platformWindowsLib,
+  pipe: keyAgentPipeSource,
+  parent: keyAgentDebuggerTransportSource,
+  sys: keyAgentDebuggerTransportSysSource,
+};
+const keyAgentDebuggerPlatformPins = {
+  manifest: "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5",
+  lib: "e19b304e0d6a217425a502f096eefa96b6aa2c054b8fcb74644591755e4da161",
+  pipe: "31bb57de66b86ea3d1e0857456433a1481a52164b11d1730c49c1f0f85da7dc4",
+  parent: "710d469149907b339d286e65447190b0921d53064fbcfd94b291c7f662992d71",
+  sys: "766ff2e812e7ca6339aa64906c6998efd5d177769b497b7e771e9767e2899c9a",
+};
+const keyAgentDebuggerPlatformPinContract = (sources) =>
+  Object.entries(keyAgentDebuggerPlatformPins).every(
+    ([name, sha256]) => normalizedSourceSha256(sources[name]) === sha256,
+  );
+const keyAgentDebuggerKernelTestName =
+  "kernel_matrix_dormant_one_shot_debugger_transport_is_exact_on_current_host";
+const keyAgentDebuggerForbiddenPlatformCode =
+  /\b(?:DEBUG_EVENT|WaitForDebugEventEx|ContinueDebugEvent|DebugSetProcessKillOnExit|DebugActiveProcessStop|DebugActiveProcess|KeyAgentActivation|PreparedKeyAgentLpac|KeyAgentRootJob|AssignProcessToJobObject|RpcServer|RpcClient|COMPILED_(?:PARENT|RELEASE)_POLICY)\b/u;
+const keyAgentDebuggerPlatformSemanticContract = (sources) => {
+  const compactManifest = sources.manifest
+    .replace(/^\s*#.*$/gmu, "")
+    .replace(/\s+/gu, "");
+  const compactLib = compactRust(sources.lib);
+  const compactPipe = compactRust(sources.pipe);
+  const parentCode = rustLexicalCode(sources.parent);
+  const compactParent = compactRust(sources.parent);
+  const sysCode = rustLexicalCode(sources.sys);
+  const compactSys = compactRust(sources.sys);
+  let statusReceive;
+  let exactFrameRead;
+  let exactEnd;
+  let kernelTest;
+  let createCalls;
+  let duplicateCalls;
+  let handleListCalls;
+  let debuggerProcessApiCalls;
+  const orderedPositions = (source, markers) => {
+    let cursor = -1;
+    return markers.map((marker) => {
+      cursor = source.indexOf(marker, cursor + 1);
+      return cursor;
+    });
+  };
+  try {
+    const statusImpl = rustImplItemAtDepth(
+      sources.pipe,
+      "impl KeyAgentDebuggerStatusReader",
+      0,
+    );
+    statusReceive = rustFunctionBlockAtDepth(statusImpl, "receive", 1);
+    exactFrameRead = rustFunctionBlockAtDepth(
+      sources.pipe,
+      "read_exact_frame_before",
+      1,
+    );
+    exactEnd = rustFunctionBlockAtDepth(sources.pipe, "require_end_before", 1);
+    kernelTest = rustFunctionBlockAtDepth(
+      sources.parent,
+      keyAgentDebuggerKernelTestName,
+      1,
+    );
+    createCalls = rustCallSites(
+      sources.sys,
+      "create_process_with_explicit_handle_list",
+    );
+    duplicateCalls = rustCallSites(sources.sys, "DuplicateHandle");
+    handleListCalls = rustCallSites(sources.sys, "UpdateProcThreadAttribute");
+    debuggerProcessApiCalls = [
+      "GetProcessId",
+      "GetThreadId",
+      "GetExitCodeProcess",
+      "TerminateProcess",
+      "WaitForSingleObject",
+      "ResumeThread",
+    ].map((api) => ({
+      api,
+      calls: rustCallSites(sources.sys, api).map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    }));
+  } catch {
+    return false;
+  }
+  const launchOrder = orderedPositions(compactParent, [
+    "letcontext=RestrictedProcessContext::prepare_for_kernel_test()",
+    "letpipes=PrivateKeyAgentDebuggerPipes::create()",
+    "letflight=acquire_inheritable_handle_launch(deadline)",
+    "letinheritance=pipes.prepare_child_inheritance(&flight)",
+    "letchild=sys::DebuggerChild::create_suspended(",
+    "drop(inheritance);",
+    "drop(flight);",
+    "let(control,status)=pipes.into_parent();",
+    "let(sentinel,remote_sentinel_word)=child.install_sentinel()?;",
+  ]);
+  const readyOrder = orderedPositions(compactParent, [
+    "letframe=self.status.receive(deadline)",
+    "letready=DebuggerReadyFrozen::decode_exact(&frame)",
+    "ifready.run_nonce()!=self.bootstrap.run_nonce()",
+    "letobserver=self.child.pull_sentinel_observer(source_word.value())?;",
+    "letsentinel=sys::SentinelEvidence::prove(self.sentinel,observer)?;",
+    "native_granted_access_for_test(sentinel.observer())?!=sys::SYNCHRONIZE_ACCESS",
+    "Ok(ReadyFrozenDebugger{",
+  ]);
+  const malformedHalfOrder = orderedPositions(compactSys, [
+    "ifinformation.hProcess.is_invalid(){fail_fast();}",
+    "letprocess=unsafe{OwnedHandle::from_raw_handle(information.hProcess.0)};",
+    "ifunsafe{GetProcessId(windows_owned_handle(&process))}==0{fail_fast();}",
+    "ifterminate_live_process_and_reap(",
+    "drop(process);",
+    "returnErr(DebuggerTransportError::ProcessIdentity);",
+  ]);
+  const identityRejectOrder = orderedPositions(compactSys, [
+    "ifactual_process_id==0||actual_thread_id==0||actual_process_id!=information.dwProcessId||actual_thread_id!=information.dwThreadId",
+    "letmutrejected=Self{",
+    "letcleanup=rejected.terminate_and_wait(",
+    "ifcleanup.is_err()&&!rejected.reaped",
+    "fail_fast();",
+    "returnErr(DebuggerTransportError::ProcessIdentity);",
+  ]);
+  return (
+    compactManifest.includes(
+      'key-agent-debugger-transport-feasibility-test-hook=["dep:key-agent-debugger-wire",]',
+    ) &&
+    compactManifest.includes(
+      "key-agent-debugger-wire={workspace=true,optional=true}",
+    ) &&
+    (sources.manifest.split("key-agent-debugger-wire").length - 1) === 2 &&
+    /#\[cfg\(all\(\s*windows,\s*feature = "key-agent-debugger-transport-feasibility-test-hook",\s*debug_assertions\s*\)\)\]\s*mod key_agent_debugger_transport;/u.test(
+      sources.lib,
+    ) &&
+    !/pub(?:\([^)]*\))?\s+(?:mod|use)\s+[^;]*key_agent_debugger_transport/u.test(
+      rustLexicalCode(sources.lib),
+    ) &&
+    (sources.pipe.split("key-agent-debugger-transport-feasibility-test-hook")
+      .length -
+      1) ===
+      14 &&
+    compactPipe.includes(
+      "pub(crate)structPrivateKeyAgentDebuggerPipes{parent_control:sys::OwnedWinHandle,child_stdin_source:sys::OwnedWinHandle,parent_status:sys::OwnedWinHandle,child_stdout_source:sys::OwnedWinHandle,}",
+    ) &&
+    compactPipe.includes(
+      "letstdin=sys::duplicate_inheritable(&self.child_stdin_source,sys::CHILD_REQUEST_INPUT_ACCESS,flight,)?;letstdout=sys::duplicate_inheritable(&self.child_stdout_source,sys::CHILD_RESPONSE_OUTPUT_ACCESS,flight,)?;letstderr=sys::create_inheritable_null_sink(flight)?;",
+    ) &&
+    compactPipe.includes(
+      "enumDebuggerControlState{AwaitingBootstrap,AwaitingDecision,}",
+    ) &&
+    compactPipe.includes(
+      "ifself.state!=DebuggerControlState::AwaitingBootstrap{returnErr(PipeError::OperatingSystem);}sys::write_all_before(self.handle.raw(),frame,deadline)?;self.state=DebuggerControlState::AwaitingDecision;",
+    ) &&
+    compactPipe.includes(
+      "ifself.state!=DebuggerControlState::AwaitingDecision{returnErr(PipeError::OperatingSystem);}sys::write_all_before(self.handle.raw(),frame,deadline)",
+    ) &&
+    compactRust(statusReceive).includes(
+      "read_exact_frame_before(self.0.raw(),READY_FROZEN_FRAME_BYTES,deadline)?",
+    ) &&
+    compactRust(exactFrameRead).includes("require_end_before(handle,deadline)?;") &&
+    compactRust(exactEnd).includes(
+      "matchread_once_before(handle,&muttrailing,deadline)?",
+    ) &&
+    compactRust(exactEnd).includes(
+      "IoRead::End|IoRead::Bytes(0)=>Ok(())",
+    ) &&
+    compactRust(exactEnd).includes(
+      "IoRead::Bytes(_)=>Err(PipeError::TrailingData)",
+    ) &&
+    launchOrder.every((position) => position !== -1) &&
+    launchOrder
+      .slice(1)
+      .every((position, index) => position > launchOrder[index]) &&
+    readyOrder.every((position) => position !== -1) &&
+    readyOrder
+      .slice(1)
+      .every((position, index) => position > readyOrder[index]) &&
+    compactParent.includes("constRUN_BOUND:Duration=Duration::from_secs(4);") &&
+    compactParent.includes("constCLEANUP_BOUND:Duration=Duration::from_secs(5);") &&
+    sources.parent.includes(
+      'const TEST_DEBUGGER_EXECUTABLE_ENV: &str = "YW_TEST_KEY_AGENT_DEBUGGER_EXECUTABLE";',
+    ) &&
+    sources.parent.includes(
+      'const EXACT_DEBUGGER_FILENAME: &str = "key-agent-debugger.exe";',
+    ) &&
+    compactParent.includes(
+      "if!candidate.is_absolute()||candidate.file_name()!=Some(OsStr::new(EXACT_DEBUGGER_FILENAME))||candidate.components().any(|component|matches!(component,Component::CurDir|Component::ParentDir))",
+    ) &&
+    compactParent.includes(
+      "letcanonical=fs::canonicalize(&candidate).map_err(|_|DebuggerTransportError::ExecutablePath)?;if!canonical.is_absolute()||canonical.file_name()!=Some(OsStr::new(EXACT_DEBUGGER_FILENAME))||!canonical.is_file()",
+    ) &&
+    compactParent.includes(
+      "structSuspendedDebuggerTransport{child:sys::DebuggerChild,control:KeyAgentDebuggerControlWriter,status:KeyAgentDebuggerStatusReader,sentinel:sys::SentinelOwner,remote_sentinel_word:u64,}",
+    ) &&
+    compactParent.includes(
+      "structAwaitingReadyDebugger{child:sys::DebuggerChild,control:KeyAgentDebuggerControlWriter,status:KeyAgentDebuggerStatusReader,sentinel:sys::SentinelOwner,bootstrap:DebuggerBootstrap,}",
+    ) &&
+    compactParent.includes(
+      "structReadyFrozenDebugger{child:sys::DebuggerChild,control:KeyAgentDebuggerControlWriter,nonce:DebuggerRunNonce,sentinel:sys::SentinelEvidence,}",
+    ) &&
+    sources.parent.includes(
+      "It does **not** mean\n/// the helper process or primary thread is suspended by the operating system.",
+    ) &&
+    sources.parent.includes(
+      "process fail-fast\n//! prevents parent continuation but cannot prove child death",
+    ) &&
+    (sources.parent.match(/#\s*\[\s*test\s*\]/gu) ?? []).length === 1 &&
+    rustFunctionOuterAttributesAtDepth(
+      sources.parent,
+      keyAgentDebuggerKernelTestName,
+      1,
+    ).includes("#[test]") &&
+    rustFunctionOuterAttributesAtDepth(
+      sources.parent,
+      keyAgentDebuggerKernelTestName,
+      1,
+    ).includes(
+      '#[ignore = "requires an explicitly built debug-only key-agent-debugger.exe and supported Windows kernel"]',
+    ) &&
+    !hasVacuousRustTestEscape(kernelTest) &&
+    [
+      ".commit(commit_deadline)?;",
+      ".abort(abort_deadline)?;",
+      ".parent_eof()?;",
+      "Duration::from_millis(750)",
+      ".wait_for_protocol_deadline()?;",
+      ".resume_with_malformed_bootstrap_for_test(malformed_deadline)?;",
+      ".terminate_while_suspended_for_test()?;",
+      ".natural_exit_then_drop_cleanup_for_test(natural_exit_deadline)?;",
+      "SENTINEL SOURCE SET FIXED; DECISION-ONLY; NOT OS-SUSPENDED; HANDLES REDACTED",
+    ].every((marker) => kernelTest.includes(marker)) &&
+    compactSys.includes("constSYNCHRONIZE_ACCESS:u32=0x0010_0000;") &&
+    compactSys.includes("constCLEANUP_TIMEOUT_MILLISECONDS:u32=5_000;") &&
+    compactSys.includes("constMAX_RUN_MILLISECONDS:u64=5_000;") &&
+    compactSys.includes("constHANDLE_ATTRIBUTE_COUNT:u32=1;") &&
+    compactSys.includes("handles:Box<[HANDLE;3]>") &&
+    compactSys.includes(
+      "lethandles=Box::new([windows_handle(inheritance.stdin()),windows_handle(inheritance.stdout()),windows_handle(inheritance.stderr()),]);",
+    ) &&
+    handleListCalls.length === 1 &&
+    JSON.stringify(handleListCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify([
+        "attributes.pointer",
+        "0",
+        "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST).map_err(|_|DebuggerTransportError::ProcessCreation)?",
+        "Some(attributes.handles.as_ptr().cast::<c_void>())",
+        "size_of_val(attributes.handles.as_ref())",
+        "None",
+        "None",
+      ]) &&
+    createCalls.length === 1 &&
+    JSON.stringify(createCalls[0].arguments.map(compactRust)) ===
+      JSON.stringify([
+        "PCWSTR(application.as_ptr())",
+        "None",
+        "None",
+        "debugger_creation_flags()",
+        "Some(context.environment().as_ptr().cast::<c_void>())",
+        "PCWSTR(context.current_directory().as_ptr())",
+        "ptr::from_ref(&startup.StartupInfo)",
+        "&rawmutinformation",
+      ]) &&
+    compactSys.includes(
+      "CREATE_SUSPENDED.0|CREATE_NO_WINDOW.0|CREATE_UNICODE_ENVIRONMENT.0|EXTENDED_STARTUPINFO_PRESENT.0",
+    ) &&
+    JSON.stringify(debuggerProcessApiCalls) ===
+      JSON.stringify([
+        {
+          api: "GetProcessId",
+          calls: [["windows_owned_handle(&process)"], ["process_handle"]],
+        },
+        { api: "GetThreadId", calls: [["thread_handle"]] },
+        {
+          api: "GetExitCodeProcess",
+          calls: [["self.process_handle()", "&rawmutexit_code"]],
+        },
+        {
+          api: "TerminateProcess",
+          calls: [
+            ["self.process_handle()", "exit_code_u32(code)"],
+            ["process", "exit_code_u32(code)"],
+          ],
+        },
+        {
+          api: "WaitForSingleObject",
+          calls: [
+            ["self.process_handle()", "timeout"],
+            ["self.process_handle()", "0"],
+            ["self.process_handle()", "timeout"],
+            ["sentinel_handle", "0"],
+            ["observer.raw()", "0"],
+            ["observer.raw()", "1_000"],
+            ["process", "0"],
+            ["process", "timeout"],
+          ],
+        },
+        {
+          api: "ResumeThread",
+          calls: [["windows_owned_handle(thread)"]],
+        },
+      ]) &&
+    !/\bCreateProcess(?:W|AsUserW|WithTokenW|WithLogonW)\b/u.test(sysCode) &&
+    duplicateCalls.length === 2 &&
+    JSON.stringify(duplicateCalls.map((call) => call.arguments.map(compactRust))) ===
+      JSON.stringify([
+        [
+          "self.process_handle()",
+          "remote",
+          "GetCurrentProcess()",
+          "&rawmutobserver",
+          "0",
+          "false",
+          "DUPLICATE_SAME_ACCESS",
+        ],
+        [
+          "GetCurrentProcess()",
+          "sentinel_handle",
+          "debugger_process",
+          "&rawmutremote",
+          "SYNCHRONIZE_ACCESS",
+          "false",
+          "DUPLICATE_HANDLE_OPTIONS(0)",
+        ],
+      ]) &&
+    !/\bCloseHandle\b/u.test(sysCode) &&
+    compactSys.includes(
+      "ifhandle_flags(windows_owned_handle(&observer))?!=0{returnErr(DebuggerTransportError::SentinelProof);}",
+    ) &&
+    compactSys.includes(
+      "CompareObjectHandles(original.raw(),observer.raw())",
+    ) &&
+    compactSys.includes(
+      "denied.code()!=ERROR_ACCESS_DENIED.to_hresult()||unsafe{WaitForSingleObject(observer.raw(),0)}!=WAIT_TIMEOUT",
+    ) &&
+    compactSys.includes(
+      "unsafe{WaitForSingleObject(observer.raw(),1_000)}!=WAIT_OBJECT_0",
+    ) &&
+    sources.sys.includes(
+      "#[cfg(test)]\nuse windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+    ) &&
+    !/\b(?:NtQueryObject|ObjectBasicInformation|PUBLIC_OBJECT_BASIC_INFORMATION)\b/u.test(
+      rustLexicalCode(withoutCfgTestItems(sources.sys)),
+    ) &&
+    compactParent.includes(
+      "native_granted_access_for_test(sentinel.observer())?!=sys::SYNCHRONIZE_ACCESS",
+    ) &&
+    malformedHalfOrder.every((position) => position !== -1) &&
+    malformedHalfOrder
+      .slice(1)
+      .every((position, index) => position > malformedHalfOrder[index]) &&
+    identityRejectOrder.every((position) => position !== -1) &&
+    identityRejectOrder
+      .slice(1)
+      .every((position, index) => position > identityRejectOrder[index]) &&
+    compactSys.includes(
+      "ifunsafe{WaitForSingleObject(self.process_handle(),timeout)}!=WAIT_OBJECT_0{returnErr(DebuggerTransportError::ProcessExit);}self.reaped=true;letmutexit_code=u32::MAX;unsafe{GetExitCodeProcess(self.process_handle(),&rawmutexit_code)}",
+    ) &&
+    compactSys.includes(
+      "let_=unsafe{TerminateProcess(self.process_handle(),exit_code_u32(code))};",
+    ) &&
+    compactSys.includes(
+      "let_=unsafe{TerminateProcess(process,exit_code_u32(code))};",
+    ) &&
+    compactSys.includes(
+      "implDropforDebuggerChild{fndrop(&mutself){ifself.reaped{return;}letdeadline=Instant::now()+Duration::from_millis(u64::from(CLEANUP_TIMEOUT_MILLISECONDS));letcleanup=self.terminate_and_wait(DebuggerExitCode::OperatingSystem,deadline);ifcleanup.is_err()&&!self.reaped{fail_fast();}}}",
+    ) &&
+    !/\bINFINITE\b/u.test(sysCode) &&
+    !keyAgentDebuggerForbiddenPlatformCode.test(
+      `${parentCode}\n${sysCode}\n${rustLexicalCode(sources.pipe)}`,
+    )
+  );
+};
+
+const mutateKeyAgentDebuggerPlatform = (name, search, replacement) => ({
+  ...keyAgentDebuggerPlatformSources,
+  [name]: replaceExactStringOnce(
+    keyAgentDebuggerPlatformSources[name],
+    search,
+    replacement,
+  ),
+});
+const keyAgentDebuggerPlatformMutationProbes = [
+  mutateKeyAgentDebuggerPlatform(
+    "manifest",
+    'key-agent-debugger-transport-feasibility-test-hook = [\n    "dep:key-agent-debugger-wire",\n]',
+    "key-agent-debugger-transport-feasibility-test-hook = []",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "manifest",
+    "key-agent-debugger-wire = { workspace = true, optional = true }",
+    "key-agent-debugger-wire = { workspace = true }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "lib",
+    '    feature = "key-agent-debugger-transport-feasibility-test-hook",\n    debug_assertions',
+    '    feature = "key-agent-debugger-transport-feasibility-test-hook"',
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "lib",
+    "mod key_agent_debugger_transport;",
+    "pub mod key_agent_debugger_transport;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "pipe",
+    '    feature = "key-agent-debugger-transport-feasibility-test-hook"\n))]\nuse key_agent_debugger_wire',
+    "))]\nuse key_agent_debugger_wire",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "pipe",
+    "        self.state = DebuggerControlState::AwaitingDecision;",
+    "        self.state = DebuggerControlState::AwaitingBootstrap;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "pipe",
+    "\n        require_end_before(handle, deadline)?;\n        Ok(frame)\n    }\n\n    #[allow(dead_code)] // Reserved for the private Key Agent arming seam.",
+    "\n        let _ = deadline;\n        Ok(frame)\n    }\n\n    #[allow(dead_code)] // Reserved for the private Key Agent arming seam.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    'const TEST_DEBUGGER_EXECUTABLE_ENV: &str = "YW_TEST_KEY_AGENT_DEBUGGER_EXECUTABLE";',
+    'const TEST_DEBUGGER_EXECUTABLE_ENV: &str = "PATH";',
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "        || !canonical.is_file()",
+    "        || canonical.is_file()",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "It does **not** mean\n/// the helper process or primary thread is suspended by the operating system.",
+    "It means the helper process is suspended by the operating system.",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    '#[ignore = "requires an explicitly built debug-only key-agent-debugger.exe and supported Windows kernel"]\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "Duration::from_millis(750)",
+    "Duration::from_millis(751)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "launch_ready(commit_deadline)?.commit(commit_deadline)?;",
+    "launch_ready(commit_deadline)?.abort(commit_deadline)?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "            .natural_exit_then_drop_cleanup_for_test(natural_exit_deadline)?;",
+    "            .abort(natural_exit_deadline)?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "handles: Box<[HANDLE; 3]>",
+    "handles: Box<[HANDLE; 4]>",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)",
+    "usize::try_from(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            | CREATE_NO_WINDOW.0",
+    "",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                    PCWSTR(application.as_ptr()),\n                    None,",
+    "                    PCWSTR(application.as_ptr()),\n                    Some(application.as_ptr().cast_mut()),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let actual_process_id = unsafe { GetProcessId(process_handle) };",
+    "        let actual_process_id = unsafe { GetCurrentProcessId() };",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let actual_thread_id = unsafe { GetThreadId(thread_handle) };",
+    "        let actual_thread_id = information.dwThreadId;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        unsafe { GetExitCodeProcess(self.process_handle(), &raw mut exit_code) }\n            .map_err(|_| DebuggerTransportError::ProcessExit)?;",
+    "        let _ = &mut exit_code;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        let _ = unsafe { TerminateProcess(process, exit_code_u32(code)) };",
+    "        let _ = process;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "unsafe { WaitForSingleObject(observer.raw(), 1_000) }",
+    "unsafe { WaitForSingleObject(observer.raw(), 0) }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "unsafe { ResumeThread(windows_owned_handle(thread)) }",
+    "unsafe { ResumeThread(self.process_handle()) }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                SYNCHRONIZE_ACCESS,\n                false,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+    "                u32::MAX,\n                false,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                SYNCHRONIZE_ACCESS,\n                false,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+    "                SYNCHRONIZE_ACCESS,\n                true,\n                DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "                DUPLICATE_SAME_ACCESS,\n            )",
+    "                DUPLICATE_HANDLE_OPTIONS(0),\n            )",
+  ),
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_remote_word_close() { let _ = CloseHandle(HANDLE::default()); }\n`,
+  },
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "#[cfg(test)]\nuse windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+    "use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "parent",
+    "!= sys::SYNCHRONIZE_ACCESS",
+    "== sys::SYNCHRONIZE_ACCESS",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "const CLEANUP_TIMEOUT_MILLISECONDS: u32 = 5_000;",
+    "const CLEANUP_TIMEOUT_MILLISECONDS: u32 = u32::MAX;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if self.reaped {\n            return;\n        }",
+    "        return;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        self.reaped = true;\n        let mut exit_code = u32::MAX;",
+    "        let mut exit_code = u32::MAX;\n        self.reaped = true;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if cleanup.is_err() && !self.reaped {",
+    "        if cleanup.is_err() {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            let _ = unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) };",
+    "            unsafe { TerminateProcess(self.process_handle(), exit_code_u32(code)) }\n                .map_err(|_| DebuggerTransportError::ProcessExit)?;",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if information.hProcess.is_invalid() {\n                fail_fast();\n            }",
+    "            if information.hProcess.is_invalid() {\n                return Err(DebuggerTransportError::ProcessIdentity);\n            }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if unsafe { GetProcessId(windows_owned_handle(&process)) } == 0 {\n                fail_fast();\n            }",
+    "            if unsafe { GetProcessId(windows_owned_handle(&process)) } == 0 {\n                return Err(DebuggerTransportError::ProcessIdentity);\n            }",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if terminate_live_process_and_reap(\n",
+    "            if false && terminate_live_process_and_reap(\n",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            if cleanup.is_err() && !rejected.reaped {",
+    "            if false && cleanup.is_err() && !rejected.reaped {",
+  ),
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: `${keyAgentDebuggerTransportSysSource}\nfn hidden_debug_api() { let _ = WaitForDebugEventEx; }\n`,
+  },
+];
+const keyAgentDebuggerPlatformMutationResults =
+  keyAgentDebuggerPlatformMutationProbes.map((probe) => ({
+    changed: Object.keys(keyAgentDebuggerPlatformSources).some(
+      (name) => probe[name] !== keyAgentDebuggerPlatformSources[name],
+    ),
+    semanticRejected: !keyAgentDebuggerPlatformSemanticContract(probe),
+    pinRejected: !keyAgentDebuggerPlatformPinContract(probe),
+  }));
+requireInvariant(
+  keyAgentDebuggerPlatformPinContract(keyAgentDebuggerPlatformSources) &&
+    keyAgentDebuggerPlatformSemanticContract(keyAgentDebuggerPlatformSources) &&
+    keyAgentDebuggerPlatformMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ),
+  "the dormant platform debugger transport must remain private and exactly Windows+feature+debug gated, with exact three-handle flight/sole restricted CreateProcess wrapper/four flags, bounded typestate and READY+EOF sequence, SYNCHRONIZE-only noninheritable no-option install, SAME_ACCESS noninheritable pull-back, test-only exact WDK access evidence, local fresh-observer zero flags without remote-source-flag overclaim, no remote-word close, process-exit-only helper ownership, exact malformed-half and identity-mismatch cleanup/fail-fast distinctions, bounded Drop, ignored terminal-path evidence, no debug/target/LPAC/Job/RPC/policy surface, and effective mutations",
+);
+
+const keyAgentDebuggerTopologyInputs = {
+  rootManifest,
+  wireManifest: keyAgentDebuggerWireManifest,
+  helperManifest: keyAgentDebuggerManifest,
+  platformManifest: platformWindowsManifest,
+  manifests: workspaceCargoManifestInventory,
+  rustFiles: workspaceRustCompilationInputs,
+  wireRoot: keyAgentDebuggerWireCrateRootInventory,
+  wireSourceRoot: keyAgentDebuggerWireSourceRootInventory,
+  helperRoot: keyAgentDebuggerCrateRootInventory,
+  helperSourceRoot: keyAgentDebuggerSourceRootInventory,
+  helperTestRoot: keyAgentDebuggerTestRootInventory,
+  platformTransportRoot: keyAgentDebuggerTransportDirectoryInventory,
+};
+const keyAgentDebuggerTopologySemanticContract = (inputs) => {
+  const manifestConsumers = inputs.manifests
+    .filter(
+      ({ path }) =>
+        path !== "Cargo.toml" &&
+        path !== "crates/key-agent-debugger-wire/Cargo.toml",
+    )
+    .filter(
+      ({ source }) =>
+        hasDependency(source, "key-agent-debugger-wire") ||
+        /^\s*\[(?:[^\]\r\n]+\.)?dependencies\.key-agent-debugger-wire\]\s*$/mu.test(
+          source,
+        ),
+    )
+    .map(({ path }) => path);
+  const wireSourceConsumers = inputs.rustFiles
+    .filter(({ source }) =>
+      /\bkey_agent_debugger_wire\b/u.test(rustLexicalCode(source)),
+    )
+    .map(({ path }) => path);
+  const moduleDeclarationConsumers = inputs.rustFiles
+    .filter(({ source }) =>
+      /\bkey_agent_debugger_transport\b/u.test(rustLexicalCode(source)),
+    )
+    .map(({ path }) => path);
+  const debuggerAuthorityPattern =
+    /\b(?:SuspendedDebuggerTransport|AwaitingReadyDebugger|ReadyFrozenDebugger|DebuggerChild|SentinelOwner|SentinelObserver|SentinelEvidence|PrivateKeyAgentDebuggerPipes|PreparedKeyAgentDebuggerInheritance|KeyAgentDebuggerControlWriter|KeyAgentDebuggerStatusReader)\b/u;
+  const allowedAuthorityFiles = new Set([
+    "crates/platform-windows/src/key_agent_debugger_transport/mod.rs",
+    "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+    "crates/platform-windows/src/pipe.rs",
+  ]);
+  const outsideAuthorityConsumers = inputs.rustFiles
+    .filter(({ path }) => !allowedAuthorityFiles.has(path))
+    .filter(({ source }) => debuggerAuthorityPattern.test(rustLexicalCode(source)))
+    .map(({ path }) => path);
+  return (
+    /^name\s*=\s*"key-agent-debugger-wire"$/gmu.test(inputs.wireManifest) &&
+    /^build\s*=\s*false$/gmu.test(inputs.wireManifest) &&
+    /^publish\s*=\s*false$/gmu.test(inputs.wireManifest) &&
+    JSON.stringify(tomlTableKeyInventory(inputs.wireManifest, "dependencies")) ===
+      JSON.stringify([]) &&
+    /^\[lints\]\s*workspace\s*=\s*true\s*$/mu.test(inputs.wireManifest) &&
+    normalizedSourceSha256(inputs.wireManifest) ===
+      "0de73a607524058105e30ccf6427bc4ecb082ba96f46e2e836d9d8bde817a7cf" &&
+    JSON.stringify(inputs.wireRoot) ===
+      JSON.stringify([
+        { name: "Cargo.toml", kind: "file" },
+        { name: "src", kind: "directory" },
+      ]) &&
+    JSON.stringify(inputs.wireSourceRoot) ===
+      JSON.stringify([{ name: "lib.rs", kind: "file" }]) &&
+    JSON.stringify(inputs.helperRoot) ===
+      JSON.stringify([
+        { name: "Cargo.toml", kind: "file" },
+        { name: "src", kind: "directory" },
+        { name: "tests", kind: "directory" },
+      ]) &&
+    JSON.stringify(inputs.helperSourceRoot) ===
+      JSON.stringify([
+        { name: "child.rs", kind: "file" },
+        { name: "main.rs", kind: "file" },
+      ]) &&
+    JSON.stringify(inputs.helperTestRoot) ===
+      JSON.stringify([{ name: "default_disabled.rs", kind: "file" }]) &&
+    JSON.stringify(inputs.platformTransportRoot) ===
+      JSON.stringify([
+        { name: "mod.rs", kind: "file" },
+        { name: "sys.rs", kind: "file" },
+      ]) &&
+    (inputs.rootManifest.match(
+      /^\s*"crates\/key-agent-debugger",\s*$/gmu,
+    ) ?? []).length === 1 &&
+    (inputs.rootManifest.match(
+      /^\s*"crates\/key-agent-debugger-wire",\s*$/gmu,
+    ) ?? []).length === 1 &&
+    (inputs.rootManifest.match(
+      /^key-agent-debugger-wire\s*=\s*\{\s*path\s*=\s*"crates\/key-agent-debugger-wire"\s*\}\s*$/gmu,
+    ) ?? []).length === 1 &&
+    JSON.stringify(manifestConsumers) ===
+      JSON.stringify([
+        "crates/key-agent-debugger/Cargo.toml",
+        "crates/platform-windows/Cargo.toml",
+      ]) &&
+    JSON.stringify(wireSourceConsumers) ===
+      JSON.stringify([
+        "crates/key-agent-debugger/src/child.rs",
+        "crates/key-agent-debugger/src/main.rs",
+        "crates/platform-windows/src/key_agent_debugger_transport/mod.rs",
+        "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
+        "crates/platform-windows/src/pipe.rs",
+      ]) &&
+    JSON.stringify(moduleDeclarationConsumers) ===
+      JSON.stringify(["crates/platform-windows/src/lib.rs"]) &&
+    JSON.stringify(outsideAuthorityConsumers) === JSON.stringify([]) &&
+    !hasDependency(inputs.helperManifest, "platform-windows") &&
+    hasDependency(inputs.helperManifest, "key-agent-debugger-wire") &&
+    hasDependency(inputs.platformManifest, "key-agent-debugger-wire")
+  );
+};
+const mutateKeyAgentDebuggerTopologyManifest = (
+  name,
+  search,
+  replacement,
+) => ({
+  ...keyAgentDebuggerTopologyInputs,
+  [name]: replaceExactStringOnce(
+    keyAgentDebuggerTopologyInputs[name],
+    search,
+    replacement,
+  ),
+});
+const keyAgentDebuggerTopologyMutationProbes = [
+  mutateKeyAgentDebuggerTopologyManifest(
+    "rootManifest",
+    '    "crates/key-agent-debugger",\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerTopologyManifest(
+    "rootManifest",
+    'key-agent-debugger-wire = { path = "crates/key-agent-debugger-wire" }\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerTopologyManifest(
+    "wireManifest",
+    "[dependencies]\n",
+    '[dependencies]\nserde = "1"\n',
+  ),
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    wireSourceRoot: [
+      ...keyAgentDebuggerTopologyInputs.wireSourceRoot,
+      { name: "hidden.rs", kind: "file" },
+    ],
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    helperSourceRoot: keyAgentDebuggerTopologyInputs.helperSourceRoot.slice(1),
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    platformTransportRoot: [
+      ...keyAgentDebuggerTopologyInputs.platformTransportRoot,
+      { name: "target.rs", kind: "file" },
+    ],
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    manifests: keyAgentDebuggerTopologyInputs.manifests.map((entry) =>
+      entry.path === "crates/approval-ui/Cargo.toml"
+        ? {
+            ...entry,
+            source: `${entry.source}\n[dependencies.key-agent-debugger-wire]\nworkspace = true\n`,
+          }
+        : entry,
+    ),
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    rustFiles: keyAgentDebuggerTopologyInputs.rustFiles.map((entry) =>
+      entry.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...entry,
+            source: `${entry.source}\nuse key_agent_debugger_wire::DebuggerExitCode;\n`,
+          }
+        : entry,
+    ),
+  },
+  mutateKeyAgentDebuggerTopologyManifest(
+    "helperManifest",
+    "[dependencies]\n",
+    '[dependencies]\nplatform-windows = { path = "../platform-windows" }\n',
+  ),
+];
+requireInvariant(
+  keyAgentDebuggerTopologySemanticContract(keyAgentDebuggerTopologyInputs) &&
+    keyAgentDebuggerTopologyMutationProbes.every(
+      (probe) =>
+        JSON.stringify(probe) !== JSON.stringify(keyAgentDebuggerTopologyInputs) &&
+        !keyAgentDebuggerTopologySemanticContract(probe),
+    ),
+  "the debugger helper and dependency-free wire crate must retain exact workspace members, manifests, local dependency graph, source/root inventories, private platform consumers, no helper-to-platform cycle, no production authority consumer, and effective inventory/dependency/reachability mutations",
+);
+
+const keyAgentDebuggerDocumentationSpecs = [
+  {
+    path: "crates/platform-windows/README.md",
+    source: activationReadme,
+    anchor: "A separate dormant solution-mechanics probe",
+    sha256: "f2a5ccb808cb5122ba32dfd0597a2720df568a114d4e5aad8b9315ea7fa3cfd0",
+  },
+  {
+    path: "docs/adr/0001-windows-key-agent-service-boundary.md",
+    source: keyAgentServiceBoundaryAdr,
+    anchor:
+      "The dormant feasibility implementation proves only the transport mechanics",
+    sha256: "a2d2b3b0bf3cb290fb43b1049abcddfd1d207cdd357b09962185ad4f7ac75ef7",
+  },
+  {
+    path: "docs/architecture.md",
+    source: activationArchitecture,
+    anchor: "A separate dormant transport slice now tests only the mechanics",
+    sha256: "17b8bdc78ac949125d1a8dc3a1be639882e31e69f35588c12e2d7ac2c0209dc1",
+  },
+  {
+    path: "docs/designs/windows-key-agent-service.md",
+    source: keyAgentServiceDesign,
+    anchor: "The dormant solution-mechanics slice adds",
+    sha256: "94d58edbf9bab52c9f050dc389ff4666231e2b507537f18e68c05d0469ddb958",
+  },
+  {
+    path: "docs/security-decisions.md",
+    source: keyAgentServiceSecurityDecisions,
+    anchor:
+      "The first dedicated-process feasibility slice is deliberately narrower",
+    sha256: "e52a9a0f8b66e9109edb544030d4a35a214c929bd5659590390c3b56fdbc9def",
+  },
+];
+const keyAgentDebuggerDocumentationPatterns = [
+  /key-agent-debugger-wire/u,
+  /\b80\b/u,
+  /\b72\b/u,
+  /\b56\b/u,
+  /big-endian/iu,
+  /zeroed\s+reserved fields/iu,
+  /CRC32C/u,
+  /(?:not|neither|do not) (?:peer )?authentication|do not authenticate|corruption\s+detection, not authentication/iu,
+  /key-agent-debugger\.exe/u,
+  /(?:silent|produces no output|emits nothing)/iu,
+  /exits? 78/iu,
+  /debug test hook/iu,
+  /ignored current-host\s+kernel test/iu,
+  /three(?:-handle|-entr(?:y|ies)| inherited| inherited `HANDLE_LIST`| entries)/iu,
+  /HANDLE_LIST/u,
+  /SYNCHRONIZE/u,
+  /DUPLICATE_SAME_ACCESS/u,
+  /COMMIT/u,
+  /ABORT/u,
+  /EOF/u,
+  /(?:timeout|deadline)/iu,
+  /malformed/iu,
+  /(?:forced termination|forced-\s*termination)/iu,
+  /natural-exit\/Drop cleanup/iu,
+  /process-exit handle-table cleanup|helper-process-exit handle-table cleanup/iu,
+  /READY_FROZEN/u,
+  /(?:not an OS\s+suspend|does not assert OS suspension|does not mean an OS-suspended|not that the helper is suspended by the OS|not an operating-system suspend)/iu,
+  /no (?:actual )?Key Agent target|creates or debugs no Key Agent target/iu,
+  /LPAC/u,
+  /Job/u,
+  /secret/u,
+  /RPC/u,
+  /debug API/u,
+  /DEBUG_EVENT/u,
+  /atomic (?:cutover|transition)|transition must be atomic/iu,
+  /borrowed raw (?:event )?aliases|raw event aliases as borrowed|(?:keep|keeps) raw (?:event )?aliases borrowed/iu,
+  /(?:reclaim|close)[\s\S]{0,90}(?:process exit|debugger-process exit)|(?:process exit|debugger-process exit)[\s\S]{0,90}(?:reclaim|close)/iu,
+  /Signed/iu,
+  /(?:release identity\/bootstrap|immutable\s+(?:debugger\s+)?release\s+identity\/bootstrap)/iu,
+  /supported-kernel/iu,
+  /production\s+callers?/iu,
+  /polic/iu,
+  /unverified/iu,
+  /STOP-SHIP/u,
+  /None/u,
+  /overlapped pipe I\/O/iu,
+  /cancel/iu,
+  /drain/iu,
+  /(?:no|without a) creation-time\s+kill-on-close Job|owns no\s+kill-on-close Job/iu,
+  /fail-fast/iu,
+  /(?:does not|cannot)\s+prove\s+(?:debugger[-\s]+)?child death/iu,
+];
+const keyAgentDebuggerDocumentationCommonPatternIndexes =
+  keyAgentDebuggerDocumentationPatterns
+    .map((_, index) => index)
+    .filter(
+      (index) => !new Set([5, 12, 13, 34, 35, 36, 38, 40, 48]).has(index),
+    );
+const keyAgentDebuggerDocumentationContradictions = [
+  "CRC32C authenticates the peer and grants debugger authority.",
+  "READY_FROZEN proves that the helper is suspended by the operating system.",
+  "The canonical environment path is a signed debugger identity.",
+  "The current-host deadline is an unconditional kernel-liveness guarantee.",
+  "Parent fail-fast proves debugger-child death.",
+  "The helper debugs the actual Key Agent target and enables release policy.",
+];
+const keyAgentDebuggerDocumentationWindow = (spec) => {
+  const first = spec.source.indexOf(spec.anchor);
+  if (first === -1 || spec.source.indexOf(spec.anchor, first + 1) !== -1) {
+    return null;
+  }
+  return spec.source.slice(first, first + 4_500);
+};
+const keyAgentDebuggerDocumentationPinContract = (specs) =>
+  specs.every(
+    (spec) => normalizedSourceSha256(spec.source) === spec.sha256,
+  );
+const keyAgentDebuggerDocumentationSemanticContract = (specs) =>
+  JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
+    JSON.stringify(
+      keyAgentDebuggerDocumentationSpecs.map(({ path, anchor }) => ({
+        path,
+        anchor,
+      })),
+    ) &&
+  specs.every((spec) => {
+    const window = keyAgentDebuggerDocumentationWindow(spec);
+    return (
+      window !== null &&
+      keyAgentDebuggerDocumentationCommonPatternIndexes.every((index) =>
+        keyAgentDebuggerDocumentationPatterns[index].test(window),
+      ) &&
+      keyAgentDebuggerDocumentationContradictions.every(
+        (statement) => !window.includes(statement),
+      )
+    );
+  }) &&
+  keyAgentDebuggerDocumentationPatterns.every((pattern) =>
+    specs.some((spec) => pattern.test(keyAgentDebuggerDocumentationWindow(spec))),
+  );
+const keyAgentDebuggerDocumentationInventoryMutations = [
+  keyAgentDebuggerDocumentationSpecs.slice(1),
+  [
+    keyAgentDebuggerDocumentationSpecs[1],
+    keyAgentDebuggerDocumentationSpecs[0],
+    ...keyAgentDebuggerDocumentationSpecs.slice(2),
+  ],
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) =>
+    index === 4 ? { ...spec, path: "docs/architecture.md" } : spec,
+  ),
+];
+const keyAgentDebuggerDocumentationMarkerMutations =
+  keyAgentDebuggerDocumentationPatterns.map((pattern) => {
+    const globalPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+    );
+    return keyAgentDebuggerDocumentationSpecs.map((spec) => {
+      const window = keyAgentDebuggerDocumentationWindow(spec);
+      if (window === null || !pattern.test(window)) return spec;
+      const windowStart = spec.source.indexOf(spec.anchor);
+      const mutatedWindow = window.replace(
+        globalPattern,
+        "REMOVED_DEBUGGER_DOCUMENTATION_MARKER",
+      );
+      return {
+        ...spec,
+        source: `${spec.source.slice(0, windowStart)}${mutatedWindow}${spec.source.slice(windowStart + window.length)}`,
+      };
+    });
+  });
+const keyAgentDebuggerDocumentationContradictionMutations =
+  keyAgentDebuggerDocumentationSpecs.flatMap((spec, specIndex) => {
+    const insertion = spec.source.indexOf(spec.anchor) + spec.anchor.length;
+    return keyAgentDebuggerDocumentationContradictions.map((statement) =>
+      keyAgentDebuggerDocumentationSpecs.map((entry, index) =>
+        index === specIndex
+          ? {
+              ...entry,
+              source: `${spec.source.slice(0, insertion)}\n${statement}\n${spec.source.slice(insertion)}`,
+            }
+          : entry,
+      ),
+    );
+  });
+requireInvariant(
+  keyAgentDebuggerDocumentationPinContract(
+    keyAgentDebuggerDocumentationSpecs,
+  ) &&
+    keyAgentDebuggerDocumentationSemanticContract(
+      keyAgentDebuggerDocumentationSpecs,
+    ) &&
+    keyAgentDebuggerDocumentationInventoryMutations.every(
+      (probe) => !keyAgentDebuggerDocumentationSemanticContract(probe),
+    ) &&
+    keyAgentDebuggerDocumentationMarkerMutations.every(
+      (probe) =>
+        JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs) &&
+        !keyAgentDebuggerDocumentationSemanticContract(probe) &&
+        !keyAgentDebuggerDocumentationPinContract(probe),
+    ) &&
+    keyAgentDebuggerDocumentationContradictionMutations.every(
+      (probe) =>
+        JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs) &&
+        !keyAgentDebuggerDocumentationSemanticContract(probe) &&
+        !keyAgentDebuggerDocumentationPinContract(probe),
+    ),
+  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/Job/secret/RPC reachability, atomic borrowed-alias process-exit design, unsigned/unverified identity and supported-kernel/production-policy STOP-SHIP status, overlapped-cancellation drain and Job-free fail-fast child-death residuals, and effective mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {
