@@ -198,38 +198,87 @@ source-handle set is fixed and decision-only; it does not mean an OS-suspended
 process or thread. Pipe PID topology, the nonce, and CRC32C do not authenticate
 the peer or confer authority.
 
-A separate dormant artifact-admission seam accepts an already verified, pinned
-helper only in this order: the exact manifest-derived `KeyAgentDebugger` role,
-opaque whole-release attestation, the dedicated debugger-manifest digest kept
-separate from the three generic helpers and the Broker, an absolute verified
-path whose file is held without write/delete sharing, and complete
-`FILE_ID_INFO` queried from that same held file handle without reopen or path
-lookup. Its `PreflightDebuggerArtifact` and
-`PreparedReleaseDebuggerArtifact` capabilities are crate-private,
-move-only/non-cloneable, and redacted; they
-expose no path, raw handle, artifact, release digest, or launch operation. The
-seam allocates no Job, pipe, channel, thread, process, or debug resource and has
-no production caller. `COMPILED_RELEASE_POLICY` remains `None`, so ordinary
-evaluation cannot mint either capability.
+A private umbrella now composes the production-compiled artifact seam with its
+sole debug-gated transport consumer. Admission still accepts an already
+verified, pinned helper only in this order: the exact manifest-derived
+`KeyAgentDebugger` role, opaque whole-release attestation, the dedicated
+debugger-manifest digest kept separate from the three generic helpers and the
+Broker, an absolute verified path held without write/delete sharing, and full
+`FILE_ID_INFO` from that same held handle without reopen or path lookup.
+`PreflightDebuggerArtifact`, `PreparedReleaseDebuggerArtifact`, and
+`MappedReleaseDebuggerArtifact` remain private, move-only/non-cloneable, and
+redacted. Only the sibling transport can borrow the prepared path or consume the
+capability; no external path, raw handle, artifact, release digest, or generic
+launcher is exposed. Admission and preparation allocate no Job, pipe, channel,
+thread, process, or debug resource.
 
-That helper creates or debugs no Key Agent target and touches no LPAC, secret,
-RPC, Windows debug API, or `DEBUG_EVENT`; its Job proves process-tree
-containment mechanics only. This evidence therefore does not resolve raw-slot
-generation, ABA, or compare-to-close. A later atomic
-cutover must move the complete debug engine into the dedicated process, treat
-all raw event aliases as borrowed, and rely only on debugger-process exit to
-close its isolated handle table. A signed packaged debugger artifact, exact PE
-version-resource and Authenticode/signer E2E, launch/bootstrap consumption of
-the admitted capability, and mapped-image proof against the held
-`FILE_ID_INFO` remain unverified **STOP-SHIP** work. Actual target-handle
-transfer and token/image/suspend/Job proof, target membership and process-count
-topology, Job-owner handoff beyond helper exit, and every production
-caller/policy also remain **STOP-SHIP**. The suspended last-close path is benign-
-helper evidence only: after execution, a same-token helper may be able to
-acquire `PROCESS_DUP_HANDLE` on its parent and duplicate a Job handle. A
-separate principal and from-birth process DACL, explicit `PROCESS_DUP_HANDLE`
-denial, adversarial parent-death containment, and the supported-kernel matrix
-therefore remain **STOP-SHIP**; compiled activation policies remain `None`.
+The transport's non-test creation path accepts only the held absolute path and
+uses exactly `CREATE_SUSPENDED | CREATE_NO_WINDOW |
+CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | DEBUG_PROCESS |
+DEBUG_ONLY_THIS_PROCESS`. The existing exact three-entry stdio `HANDLE_LIST`,
+one-entry containment Job list, private control/status pipes, sentinel design,
+and 80/72/56-byte wire are unchanged. Before adopting the native-returned
+process/thread owners, raw numeric slots must be pairwise distinct across the
+held artifact, Job, all three exact pipe handles, and both outputs; ambiguity
+aborts. A creator-thread-bound owner then proves creator PID/TID, thread-owner
+PID, zero handle flags, and exact Job limits/membership/count. Its initial
+`ResumeThread` must report previous count one or fail-fast; only that result
+establishes count zero. `WaitForDebugEventEx` is bounded by the operation
+deadline and a five-second first-event cap. It records the returned event before
+semantic checks and accepts only the first
+`CREATE_PROCESS_DEBUG_EVENT` with exact event PID/TID; borrowed event
+process/thread aliases must have the same IDs, owning PID, zero flags, and
+compare as the creator-owned objects. Before event-file ownership is adopted,
+raw numeric distinctness is rechecked across the held artifact, three pipe
+handles, creator process/thread, Job, and event process/thread/file slots. The
+event `hFile` must also be present, zero-flag, and exact-object-distinct from the
+event process/thread aliases. Exact-object comparison otherwise binds only
+those aliases to their creator counterparts; artifact binding is full
+`FILE_ID_INFO` equality, not object comparison.
+
+The held event-file handle is borrowed by the safe artifact boundary, which
+queries its complete `FILE_ID_INFO` and compares it to the identity retained in
+`PreparedReleaseDebuggerArtifact`. Equality alone consumes that prepared value
+into `MappedReleaseDebuggerArtifact`; no path, PID, image name,
+canonicalization, or expected-file reopen participates. The transferred event
+file is checked-closed before later suspend or continuation, and an ambiguous
+close aborts the parent. While the create event still freezes every thread,
+`SuspendThread` must report prior count zero, installing one explicit count.
+The same creator thread then performs `ContinueDebugEvent(DBG_CONTINUE)` followed
+by `DebugActiveProcessStop`. Post-detach proof requires
+`CheckRemoteDebuggerPresent == false`, a live exact process, the suspend probe
+1 -> 2 -> 1, and unchanged one-member Job proof. The mapped artifact remains
+inside `DebuggerChild` through terminal cleanup. If the process is not already
+terminal, rejected attached cleanup first requests exact Job/process
+termination. It then releases any pending event, detaches on its creator thread,
+proves process termination, drops the creator primary-thread owner, and only
+then polls Job count to zero. A failed probe-resume rejects, but a successful
+resume reporting anything other than previous count two fail-fasts because it
+may have released execution. Other ambiguous cleanup also fail-fasts.
+
+Only after mapped-image authentication and detach does the parent install the
+existing `SYNCHRONIZE`-only sentinel. It writes the same 80-byte bootstrap while
+the explicit count remains one and performs the sole user-mode resume afterward;
+the 72-byte `READY_FROZEN` and 56-byte decision frames and all sentinel
+install/pull checks are unchanged. Artifact tests cover equal and distinct
+file-object identities; source-local tests fix the six flags, raw-slot
+distinctness, and every first-event field ambiguity. Separate ignored
+current-host kernel tests cover the positive end-to-end transport and a
+`cfg(test)` application override that maps a different image and must fail as
+`MappedImage` with terminal cleanup.
+
+The secretless helper still creates or debugs no Key Agent target and receives
+no target event. The parent-side helper-image gate does not resolve target raw-
+slot generation, ABA, or atomic compare-close. A later atomic cutover must move
+the complete target debug engine into the dedicated process, keep target-event
+aliases borrowed, and reclaim them only at debugger-process exit. Signed
+packaged-artifact, exact PE version-resource, and Authenticode/signer E2E remain
+**STOP-SHIP**, as do a separate principal plus from-birth process DACL and
+explicit `PROCESS_DUP_HANDLE` denial, actual target transfer and
+token/image/suspend/Job proof, target membership and process-count topology,
+Job-owner handoff beyond helper exit, adversarial parent-death containment, and
+supported-kernel debug-event-alias retirement and cancellation-drain matrices. No
+production caller exists, and `COMPILED_RELEASE_POLICY` remains `None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is only a
 cancellation request. Async `ReadFile`/`WriteFile` receive no byte-count output
 pointer; one raw `*mut OVERLAPPED` established before initiation is carried

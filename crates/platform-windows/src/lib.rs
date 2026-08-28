@@ -159,25 +159,12 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
-// This dormant admission seam binds the exact Key Agent debugger role to a
-// dedicated release-manifest slot, absolute verified path, held no-write/delete-
-// share file, opaque whole-release identity, and same-handle FILE_ID_INFO before
-// any launch resource exists. It has no production caller or launch/debug API;
-// transport composition, mapped-image proof, principal/DACL separation, target
-// transfer, and enabled release policy remain blocking.
+// This private umbrella keeps release-bound debugger admission production-
+// compiled while gating its only consumer, a secretless dormant transport, to
+// the exact Windows debug feasibility feature. The transport authenticates the
+// first mapped image before helper user mode but still has no production caller.
 #[allow(dead_code)]
-mod key_agent_debugger_artifact;
-// This secretless, dormant one-shot process transport proves only creation-time
-// helper Job assignment, benign suspended-helper containment mechanics,
-// isolated handle install/pull, frozen decision, and process-exit cleanup. It
-// creates no Key Agent target, handles no DEBUG_EVENT, and has no production
-// caller.
-#[cfg(all(
-    windows,
-    feature = "key-agent-debugger-transport-feasibility-test-hook",
-    debug_assertions
-))]
-mod key_agent_debugger_transport;
+mod key_agent_debugger;
 // The fixed-name SCM host provides inert and bounded local-RPC, debug-only
 // Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
 // a signing path. Default and release callers fail closed as unavailable.

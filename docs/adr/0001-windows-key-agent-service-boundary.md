@@ -413,38 +413,73 @@ the parent-retained handle before benign suspended-helper code can run and,
 without an explicit termination API, proves that live helper becomes terminal.
 `READY_FROZEN` does not assert OS suspension.
 
-A separate dormant artifact-admission boundary now accepts an already verified,
-pinned helper only in this order: the exact manifest-derived
-`KeyAgentDebugger` role, opaque whole-release attestation, the dedicated
-debugger-manifest digest kept distinct from the three generic helpers and the
-Broker, an absolute verified path whose file is held without write/delete
-sharing, and complete
+A dormant artifact-admission boundary now accepts an already verified, pinned
+helper only in this order: the exact manifest-derived `KeyAgentDebugger` role,
+opaque whole-release attestation, the dedicated debugger-manifest digest kept
+distinct from the three generic helpers and the Broker, an absolute verified
+path whose file is held without write/delete sharing, and complete
 `FILE_ID_INFO` queried from that same held file handle without reopen or path
-lookup. Its `PreflightDebuggerArtifact` and
-`PreparedReleaseDebuggerArtifact` capabilities are private,
-move-only/non-cloneable, and redacted; they expose no path, raw handle, artifact,
-release digest, or launch operation. This boundary allocates no Job, pipe,
-channel, thread, process, or debug resource and has no production caller.
-`COMPILED_RELEASE_POLICY` remains `None`, so ordinary evaluation cannot mint
-either capability.
+lookup. `PreflightDebuggerArtifact`, `PreparedReleaseDebuggerArtifact`, and the
+linear `MappedReleaseDebuggerArtifact` proof are private,
+move-only/non-cloneable, and redacted. Only the sibling transport inside the
+private debugger umbrella may borrow the held path or consume prepared
+admission; no external path, raw-handle, artifact, release-digest, or generic
+launcher surface exists. Admission and preparation allocate no Job, pipe,
+channel, thread, process, or debug resource.
 
-This helper creates or debugs no Key Agent target and uses no LPAC, secret, RPC,
-debug API, or `DEBUG_EVENT`; its Job proves process-tree containment mechanics
-only, so raw-slot generation, ABA, and compare-close remain unresolved. The
-production transition must be atomic: move the entire
-debug engine into the dedicated process, retain borrowed raw aliases without
-individual `CloseHandle`, and reclaim them only by process exit. A signed
-packaged debugger artifact, exact PE version-resource and Authenticode/signer
-E2E, launch/bootstrap consumption of the admitted capability, and mapped-image
-proof against the held `FILE_ID_INFO` remain unverified **STOP-SHIP** work.
-Actual target transfer and token/image/suspend/Job proof, target membership and
-process-count topology, Job-owner handoff beyond helper exit, and all production
-callers/policies also remain **STOP-SHIP**. That suspended last-close path is
-benign-helper evidence only: after execution, a same-token helper may be able to
-acquire `PROCESS_DUP_HANDLE` on its parent and duplicate a Job handle. A separate
-principal and from-birth process DACL, explicit `PROCESS_DUP_HANDLE` denial,
-adversarial parent-death containment, and the supported-kernel matrix therefore
-remain **STOP-SHIP**; compiled policies remain `None`.
+The debug-only transport now consumes that prepared value before helper user
+mode. The ordinary path accepts no application override and creates only the
+held path with exactly `CREATE_SUSPENDED | CREATE_NO_WINDOW |
+CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | DEBUG_PROCESS |
+DEBUG_ONLY_THIS_PROCESS`, preserving the existing exact three-handle stdio list,
+one Job-list entry, private pipes, sentinel, and 80/72/56-byte wire. Before the
+returned process/thread slots are adopted, raw numeric values must be distinct
+across the held artifact, Job, the exact three stdio pipe slots, and both native
+outputs; ambiguity aborts. The creator thread then validates those handles and
+the Job. Initial `ResumeThread` must report previous count one or fail-fast;
+only that exact result establishes count zero before the bounded first
+`CREATE_PROCESS_DEBUG_EVENT` with exact PID/TID, zero-flag borrowed aliases,
+same-object process/thread comparisons, and a present, distinct, zero-flag
+`hFile`. Before adopting the event file, the transport again requires raw
+numeric distinctness across the held artifact, all three pipes, creator
+process/thread, Job, and event process/thread/file slots. Exact-object
+comparison binds only each event process/thread alias to its creator counterpart
+and keeps `hFile` distinct from those aliases; the held artifact is instead
+bound by full `FILE_ID_INFO` equality. Equality with the simultaneously held
+prepared artifact consumes `PreparedReleaseDebuggerArtifact` into
+`MappedReleaseDebuggerArtifact`; the event file is checked-closed before any
+continuation, with ambiguous close fail-fast.
+
+While that event still freezes the helper, `SuspendThread` must report prior
+count zero. The same creator thread then continues the event and calls
+`DebugActiveProcessStop`; post-detach checks require no remote debugger, a live
+exact process, a 1 -> 2 -> 1 suspend-count probe, and the same one-member Job.
+Probe-resume failure rejects, while any successful result other than previous
+count two fail-fasts. Rejected attached cleanup drops the creator primary-thread
+owner before polling the Job to exact zero.
+
+Only afterward is the unchanged `SYNCHRONIZE`-only sentinel installed, and the
+80-byte bootstrap is written before the sole user-mode resume. The mapped
+artifact remains held through exact process/Job cleanup; retirement of the
+system-managed event aliases is excluded and remains in the supported-kernel
+**STOP-SHIP** matrix. Equal/distinct-file unit tests, exact-flag/raw-slot/first-
+event-classifier tests, and separate ignored current-host kernel tests for the
+positive path and `cfg(test)` mismatched-application override are the present
+evidence.
+
+The secretless helper still creates or debugs no Key Agent target and receives
+no target `DEBUG_EVENT`. This parent-side first-event image proof does not solve
+target raw-slot generation, same-object ABA, or atomic compare-close; the target
+debug engine must still move atomically into the dedicated process and retain
+borrowed target-event aliases until process exit. Signed packaged-artifact,
+exact PE version-resource, and Authenticode/signer E2E remain **STOP-SHIP**.
+A separate principal and from-birth process DACL with explicit
+`PROCESS_DUP_HANDLE` denial, actual target transfer and token/image/suspend/Job
+proof, target membership and process-count topology, Job-owner handoff beyond
+helper exit, adversarial parent-death containment, and supported-kernel
+debug-event-alias retirement and cancellation-drain matrices also remain
+**STOP-SHIP**.
+There is no production caller, and `COMPILED_RELEASE_POLICY` remains `None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is only a
 cancellation request. Async `ReadFile`/`WriteFile` receive no byte-count output
 pointer; one raw `*mut OVERLAPPED` established before initiation is carried

@@ -1,19 +1,23 @@
 //! Dormant one-shot parent transport for an isolated Key Agent debugger helper.
 //!
 //! This module proves only current-host, deadline-driven process transport and
-//! one sentinel-handle install/pull round trip. It creates no Key Agent,
-//! receives no `DEBUG_EVENT`, and has no production caller or re-export.
+//! one sentinel-handle install/pull round trip. Before helper user mode it also
+//! consumes release-bound artifact admission, authenticates the first
+//! `CREATE_PROCESS_DEBUG_EVENT` image, installs one explicit suspend count, and
+//! detaches on the same creator thread. It creates no Key Agent and has no
+//! production caller or re-export.
 //!
 //! Its unnamed, non-inheritable containment Job is assigned before the helper's
 //! initial thread can run and uses exact kill-on-close with no breakaway or
 //! process-count policy. This implementation retains one Job handle, and its
 //! current-host last-close test runs while the benign helper is still suspended.
 //! It does not prove that an executed same-token helper cannot acquire
-//! `PROCESS_DUP_HANDLE` on the parent and retain another Job handle. Named-pipe
-//! cancellation drain, immutable helper identity and launch admission,
+//! `PROCESS_DUP_HANDLE` on the parent and retain another Job handle. Signed and
+//! versioned package evidence, production release-policy enablement,
 //! token/process-DACL separation, actual target Job membership, process-count
-//! bounds, adversarial parent-death containment, and Job-owner handoff/lifetime
-//! remain production STOP-SHIP work.
+//! bounds, supported-kernel cancellation and post-detach event-alias accounting,
+//! adversarial parent-death containment, and Job-owner handoff/lifetime remain
+//! production STOP-SHIP work.
 
 #![allow(dead_code)] // Entire module is an explicitly dormant feasibility surface.
 
@@ -25,7 +29,7 @@ use std::ffi::OsStr;
 #[cfg(test)]
 use std::fs;
 #[cfg(test)]
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use key_agent_debugger_wire::{
@@ -34,6 +38,14 @@ use key_agent_debugger_wire::{
 };
 use thiserror::Error;
 
+#[cfg(test)]
+use super::artifact::{
+    PreparedReleaseDebuggerArtifact, preflight_debugger_artifact, prepare_release_debugger_artifact,
+};
+#[cfg(test)]
+use crate::attestation::{ArtifactDigest, ReleaseAttestation};
+#[cfg(test)]
+use crate::helper::VerifiedHelper;
 #[cfg(test)]
 use crate::inheritable_handle_launch::acquire_inheritable_handle_launch;
 #[cfg(test)]
@@ -47,6 +59,8 @@ const TEST_DEBUGGER_EXECUTABLE_ENV: &str = "YW_TEST_KEY_AGENT_DEBUGGER_EXECUTABL
 #[cfg(test)]
 const EXACT_DEBUGGER_FILENAME: &str = "key-agent-debugger.exe";
 #[cfg(test)]
+const TEST_DEBUGGER_MANIFEST: [u8; 32] = [0x51; 32];
+#[cfg(test)]
 const RUN_BOUND: Duration = Duration::from_secs(4);
 const CLEANUP_BOUND: Duration = Duration::from_secs(5);
 
@@ -57,6 +71,8 @@ enum DebuggerTransportError {
     ExecutableEnvironment,
     #[error("debugger executable path was invalid")]
     ExecutablePath,
+    #[error("debugger release artifact admission failed")]
+    ArtifactAdmission,
     #[error("debugger process context preparation failed")]
     ProcessContext,
     #[error("debugger inheritable-handle launch flight failed")]
@@ -71,6 +87,14 @@ enum DebuggerTransportError {
     JobProof,
     #[error("debugger process identity validation failed")]
     ProcessIdentity,
+    #[error("debugger first process-creation event validation failed")]
+    DebugEvent,
+    #[error("debugger mapped executable image validation failed")]
+    MappedImage,
+    #[error("debugger explicit suspension proof failed")]
+    Suspension,
+    #[error("debugger detach proof failed")]
+    DebugDetach,
     #[error("debugger sentinel installation failed")]
     SentinelInstall,
     #[error("debugger bootstrap construction failed")]
@@ -93,9 +117,9 @@ enum DebuggerTransportError {
     Deadline,
 }
 
-/// Newly created debugger helper whose primary thread still has the exact
-/// `CREATE_SUSPENDED` count and whose SYNCHRONIZE-only sentinel source is already
-/// installed in its private handle table.
+/// Mapped-image-authenticated and detached debugger helper whose primary thread
+/// retains the exact explicit suspend count installed at the first event and
+/// whose SYNCHRONIZE-only sentinel source is already in its private handle table.
 #[must_use = "a suspended debugger helper must be resumed or terminal cleanup attempted"]
 struct SuspendedDebuggerTransport {
     child: sys::DebuggerChild,
@@ -109,6 +133,16 @@ impl SuspendedDebuggerTransport {
     #[cfg(test)]
     fn launch_for_kernel_test(deadline: Instant) -> Result<Self, DebuggerTransportError> {
         let executable = debugger_executable_from_test_environment()?;
+        let prepared = prepare_kernel_test_artifact(executable)?;
+        Self::launch_prepared_for_kernel_test(prepared, None, deadline)
+    }
+
+    #[cfg(test)]
+    fn launch_prepared_for_kernel_test(
+        prepared: PreparedReleaseDebuggerArtifact,
+        application_override: Option<&Path>,
+        deadline: Instant,
+    ) -> Result<Self, DebuggerTransportError> {
         let context = RestrictedProcessContext::prepare_for_kernel_test()
             .map_err(|_| DebuggerTransportError::ProcessContext)?;
         let pipes = PrivateKeyAgentDebuggerPipes::create()
@@ -118,13 +152,24 @@ impl SuspendedDebuggerTransport {
         let inheritance = pipes
             .prepare_child_inheritance(&flight)
             .map_err(|_| DebuggerTransportError::PrivatePipes)?;
-        let child = sys::DebuggerChild::create_suspended(
-            &executable,
-            &context,
-            &inheritance,
-            &flight,
-            deadline,
-        )?;
+        let child = if let Some(application_override) = application_override {
+            sys::DebuggerChild::create_suspended_with_application_override_for_test(
+                prepared,
+                application_override,
+                &context,
+                &inheritance,
+                &flight,
+                deadline,
+            )
+        } else {
+            sys::DebuggerChild::create_suspended(
+                prepared,
+                &context,
+                &inheritance,
+                &flight,
+                deadline,
+            )
+        }?;
         drop(inheritance);
         drop(flight);
         let (control, status) = pipes.into_parent();
@@ -404,6 +449,23 @@ fn debugger_executable_from_test_environment() -> Result<PathBuf, DebuggerTransp
     Ok(canonical)
 }
 
+#[cfg(test)]
+fn prepare_kernel_test_artifact(
+    path: PathBuf,
+) -> Result<PreparedReleaseDebuggerArtifact, DebuggerTransportError> {
+    let artifact =
+        VerifiedHelper::for_key_agent_debugger_artifact_test(path, TEST_DEBUGGER_MANIFEST, true)
+            .map_err(|_| DebuggerTransportError::ArtifactAdmission)?;
+    let attestation = ReleaseAttestation::with_key_agent_debugger_manifest_for_test(
+        ArtifactDigest::for_test([0x50; 32]),
+        TEST_DEBUGGER_MANIFEST,
+    );
+    let preflight = preflight_debugger_artifact(attestation, artifact)
+        .map_err(|_| DebuggerTransportError::ArtifactAdmission)?;
+    prepare_release_debugger_artifact(preflight)
+        .map_err(|_| DebuggerTransportError::ArtifactAdmission)
+}
+
 fn fresh_nonce() -> Result<DebuggerRunNonce, DebuggerTransportError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| DebuggerTransportError::Bootstrap)?;
@@ -422,7 +484,8 @@ fn run_deadline() -> Instant {
 #[cfg(test)]
 mod tests {
     use super::{
-        DebuggerTransportError, ReadyFrozenDebugger, SuspendedDebuggerTransport, run_deadline,
+        DebuggerTransportError, ReadyFrozenDebugger, SuspendedDebuggerTransport,
+        debugger_executable_from_test_environment, prepare_kernel_test_artifact, run_deadline,
     };
     use std::time::{Duration, Instant};
 
@@ -484,5 +547,24 @@ mod tests {
             "ReadyFrozenDebugger([SENTINEL SOURCE SET FIXED; DECISION-ONLY; NOT OS-SUSPENDED; HANDLES REDACTED])"
         );
         ready.abort(awaiting_deadline)
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly built debug-only key-agent-debugger.exe and supported Windows kernel"]
+    fn kernel_matrix_mapped_image_mismatch_is_reaped_before_return()
+    -> Result<(), DebuggerTransportError> {
+        let actual_debugger = debugger_executable_from_test_environment()?;
+        let mismatched = prepare_kernel_test_artifact(
+            std::env::current_exe().map_err(|_| DebuggerTransportError::ArtifactAdmission)?,
+        )?;
+        assert!(matches!(
+            SuspendedDebuggerTransport::launch_prepared_for_kernel_test(
+                mismatched,
+                Some(&actual_debugger),
+                run_deadline(),
+            ),
+            Err(DebuggerTransportError::MappedImage)
+        ));
+        Ok(())
     }
 }
