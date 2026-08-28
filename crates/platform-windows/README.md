@@ -238,19 +238,30 @@ Implemented:
   While the create event still freezes the process, `SuspendThread` must report
   prior count zero, leaving one explicit count. Only then may the same creator
   thread call `ContinueDebugEvent(DBG_CONTINUE)` and
-  `DebugActiveProcessStop`. Post-detach proof requires no remote debugger, a
-  live exact process, a 1 -> 2 -> 1 suspend-count probe, and the same one-member
-  Job. A failed probe resume rejects; a successful resume reporting anything
-  other than previous count two fail-fasts because execution may have escaped.
+  `DebugActiveProcessStop`. Immediately after a successful stop and before any
+  later Win32 call, that creator thread probes both borrowed `CREATE_PROCESS`
+  event process/thread raw slots with `GetHandleInformation`. Only two failures
+  with exact `ERROR_INVALID_HANDLE` retire their accounting record; a live slot,
+  asymmetric result, or any other error fail-fasts. The same rule applies to
+  ordinary detach and attached rejection cleanup. The transport never calls
+  `CloseHandle` on those system-managed borrowed aliases; among event-supplied
+  handles, checked ownership and close remain limited to `hFile`. Later
+  post-detach proof requires no remote debugger, a live exact process, a
+  1 -> 2 -> 1 suspend-count probe, and the same one-member Job. A failed probe
+  resume rejects; a successful resume reporting anything other than previous
+  count two fail-fasts because execution may have escaped.
   Rejected attached cleanup drops the creator primary-thread owner before its
   exact-zero Job poll. The mapped release capability remains owned by
   `DebuggerChild` through cleanup. Only after this gate does the parent install
   the existing `SYNCHRONIZE`-only sentinel; it writes the unchanged 80-byte
-  bootstrap before the sole resume into helper user mode. Separate ignored
-  current-host kernel tests cover this positive path and a `cfg(test)`
-  application-override mismatch that must return `MappedImage`; unit tests cover
-  equal/distinct file identities, the exact creation flags, raw-slot
-  distinctness, and first-event rejection fields.
+  bootstrap before the sole resume into helper user mode. Both ignored
+  current-host kernel tests pass: the positive transport test exercises
+  normal-detach retirement, while the `cfg(test)` application-override mismatch
+  returns `MappedImage` after attached rejection cleanup proves the same result.
+  This establishes only that both numeric slots were invalid at those
+  observation points on the measured host, not object destruction or a
+  Windows-wide contract. Unit tests cover equal/distinct file identities, the
+  exact creation flags, raw-slot distinctness, and first-event rejection fields.
 
   The secretless helper still creates or debugs no Key Agent target and receives
   no target `DEBUG_EVENT`; this parent-side first-event image gate does not
@@ -263,8 +274,9 @@ Implemented:
   `PROCESS_DUP_HANDLE` denial, actual target transfer and token/image/suspend/Job
   proof, target membership and process-count topology, Job-owner handoff beyond
   helper exit, adversarial parent-death containment, and supported-kernel
-  debug-event-alias retirement and cancellation-drain matrices. There is still no
-  production caller, and `COMPILED_RELEASE_POLICY` remains `None`.
+  generalization of debug-event-alias retirement and cancellation-drain
+  matrices. There is still no production caller, and
+  `COMPILED_RELEASE_POLICY` remains `None`.
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

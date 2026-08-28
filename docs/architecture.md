@@ -245,16 +245,23 @@ file is checked-closed before later suspend or continuation, and an ambiguous
 close aborts the parent. While the create event still freezes every thread,
 `SuspendThread` must report prior count zero, installing one explicit count.
 The same creator thread then performs `ContinueDebugEvent(DBG_CONTINUE)` followed
-by `DebugActiveProcessStop`. Post-detach proof requires
-`CheckRemoteDebuggerPresent == false`, a live exact process, the suspend probe
-1 -> 2 -> 1, and unchanged one-member Job proof. The mapped artifact remains
-inside `DebuggerChild` through terminal cleanup. If the process is not already
-terminal, rejected attached cleanup first requests exact Job/process
-termination. It then releases any pending event, detaches on its creator thread,
-proves process termination, drops the creator primary-thread owner, and only
-then polls Job count to zero. A failed probe-resume rejects, but a successful
-resume reporting anything other than previous count two fail-fasts because it
-may have released execution. Other ambiguous cleanup also fail-fasts.
+by `DebugActiveProcessStop`. Immediately after a successful stop and before any
+later Win32 call, that creator thread probes both borrowed `CREATE_PROCESS`
+event process/thread raw slots with `GetHandleInformation`. Only two failures
+with exact `ERROR_INVALID_HANDLE` retire their accounting record; a live slot,
+asymmetric result, or any other error fail-fasts. The same rule applies to
+ordinary detach and attached rejection cleanup. The transport never calls
+`CloseHandle` on those system-managed borrowed aliases; among event-supplied
+handles, checked ownership and close remain limited to `hFile`. Later
+post-detach proof requires `CheckRemoteDebuggerPresent == false`, a live exact
+process, the suspend probe 1 -> 2 -> 1, and unchanged one-member Job proof. The
+mapped artifact remains inside `DebuggerChild` through terminal cleanup. If the
+process is not already terminal, rejected attached cleanup first requests exact
+Job/process termination. It then releases any pending event, detaches on its
+creator thread, proves process termination, drops the creator primary-thread
+owner, and only then polls Job count to zero. A failed probe-resume rejects, but
+a successful resume reporting anything other than previous count two fail-fasts
+because it may have released execution. Other ambiguous cleanup also fail-fasts.
 
 Only after mapped-image authentication and detach does the parent install the
 existing `SYNCHRONIZE`-only sentinel. It writes the same 80-byte bootstrap while
@@ -262,10 +269,12 @@ the explicit count remains one and performs the sole user-mode resume afterward;
 the 72-byte `READY_FROZEN` and 56-byte decision frames and all sentinel
 install/pull checks are unchanged. Artifact tests cover equal and distinct
 file-object identities; source-local tests fix the six flags, raw-slot
-distinctness, and every first-event field ambiguity. Separate ignored
-current-host kernel tests cover the positive end-to-end transport and a
-`cfg(test)` application override that maps a different image and must fail as
-`MappedImage` with terminal cleanup.
+distinctness, and every first-event field ambiguity. Both ignored current-host
+kernel tests pass: the positive end-to-end transport exercises normal-detach
+retirement, and a `cfg(test)` application override that maps a different image
+fails as `MappedImage` after attached rejection cleanup proves the same result.
+This establishes only that both numeric slots were invalid at those observation
+points on the measured host, not object destruction or a Windows-wide contract.
 
 The secretless helper still creates or debugs no Key Agent target and receives
 no target event. The parent-side helper-image gate does not resolve target raw-
@@ -277,8 +286,9 @@ packaged-artifact, exact PE version-resource, and Authenticode/signer E2E remain
 explicit `PROCESS_DUP_HANDLE` denial, actual target transfer and
 token/image/suspend/Job proof, target membership and process-count topology,
 Job-owner handoff beyond helper exit, adversarial parent-death containment, and
-supported-kernel debug-event-alias retirement and cancellation-drain matrices. No
-production caller exists, and `COMPILED_RELEASE_POLICY` remains `None`.
+supported-kernel generalization of debug-event-alias retirement and
+cancellation-drain matrices. No production caller exists, and
+`COMPILED_RELEASE_POLICY` remains `None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is only a
 cancellation request. Async `ReadFile`/`WriteFile` receive no byte-count output
 pointer; one raw `*mut OVERLAPPED` established before initiation is carried

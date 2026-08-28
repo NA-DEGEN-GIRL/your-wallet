@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "8ae8b1499230b0001a8d9634650a92f7adfcbc866d3cc6746d329870cd27b7c9",
+    sha256: "63d018e9bb9727d5e1bc0484b6cb4edf101628dbc85d5283dc90a9082e9312f1",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "4557b31dad1ac520947d1e37e6af6e291d1df242cee3b386ab0597d237941123",
+    sha256: "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "c0fd5d2d51e53b381159454ac63106882aa6c999ccc0ebcfe2c87fe33c147e0e",
+    sha256: "35551328711c04bbd4b960f12e76b95922334df6709726a53a0893b09cbbd3fb",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "fd6989cb4cd22c66a875a94821fba2c76971f53c1a75b9a27029da9ae3b9710b",
+    sha256: "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 18_000);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 18_500);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 18_000 &&
+      window.length <= 18_500 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -18746,7 +18746,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "dbe1e2f171128aa3eeb88b2694883ee738137d0f6b2e7d23a5661530d8e02742";
+  "675c21f9b7276e0ebbbbd7b8c73812e7411d1773e5fdd58c5ed496fe17f8014a";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -38712,8 +38712,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_debugger_transport/sys.rs",
-    unsafeCount: 66,
-    sha256: "dd3d2f4203051d15e7b2be77f1eba81b65a459b22f69c8e3c045c4ae347abd84",
+    unsafeCount: 68,
+    sha256: "33c059020913ece9a0b73061f519f6e1a51f91749fee47c6217221f53de9ec22",
   },
   {
     path: "crates/platform-windows/src/key_agent_lpac.rs",
@@ -46524,13 +46524,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "b341355f32094c19185ac482343c0ddfaaaa4969c955c54baeb498a97f2aea8f",
+    "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
   "docs/architecture.md":
-    "4557b31dad1ac520947d1e37e6af6e291d1df242cee3b386ab0597d237941123",
+    "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "fd6989cb4cd22c66a875a94821fba2c76971f53c1a75b9a27029da9ae3b9710b",
+    "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -52313,10 +52313,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "b341355f32094c19185ac482343c0ddfaaaa4969c955c54baeb498a97f2aea8f",
-  "4557b31dad1ac520947d1e37e6af6e291d1df242cee3b386ab0597d237941123",
+  "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
+  "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "fd6989cb4cd22c66a875a94821fba2c76971f53c1a75b9a27029da9ae3b9710b",
+  "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -60157,7 +60157,7 @@ const keyAgentDebuggerPlatformPins = {
   artifact: "f7abcc220bd737894655ccb48e80d10c179626fb634b6c88294008faec035abc",
   pipe: "17c984914ad835ec51a4cac22cf21562fce8286a7edc72b5b35a4fd1c10fdd45",
   parent: "18d6a0a17d23ae1e5055bf334e11429dfb549fc12951c8700a7ba1adc78d6607",
-  sys: "047cc98d8d2ea57fd4b51ba5490eedebd4569d20fb46d883703a6fe5cc5076b2",
+  sys: "d114369026ed1a2ca5f9116c7a2c219c51efc77076ea4b0df8dc4028b7c29026",
 };
 const keyAgentDebuggerPlatformPinContract = (sources) =>
   Object.entries(keyAgentDebuggerPlatformPins).every(
@@ -60174,6 +60174,61 @@ const keyAgentDebuggerForbiddenContainmentOverclaims = Object.freeze([
 ]);
 const keyAgentDebuggerForbiddenPlatformCode =
   /\b(?:KeyAgentActivation|PreparedKeyAgentLpac|KeyAgentRootJob|AssignProcessToJobObject|OpenJobObject[AW]?|RpcServer|RpcClient|COMPILED_(?:PARENT|RELEASE)_POLICY|GetProcAddress|LoadLibrary[AW]?)\b/u;
+const keyAgentDebuggerAliasOwnershipSemanticContract = (source) => {
+  let checkedFileClose;
+  let checkedFileDrop;
+  let aliasBlocks;
+  try {
+    const production = withoutCfgTestItems(withoutBottomTestModule(source));
+    const checkedFileImpl = rustImplItemAtDepth(
+      production,
+      "impl CheckedDebugEventFile",
+      0,
+    );
+    checkedFileClose = rustFunctionBlockAtDepth(checkedFileImpl, "close", 1);
+    const checkedFileDropImpl = rustImplItemAtDepth(
+      production,
+      "impl Drop for CheckedDebugEventFile",
+      0,
+    );
+    checkedFileDrop = rustFunctionBlockAtDepth(
+      checkedFileDropImpl,
+      "drop",
+      1,
+    );
+    const attachedImpl = rustImplItemAtDepth(
+      production,
+      "impl AttachedDebuggerCreation",
+      0,
+    );
+    aliasBlocks = [
+      "receive_first_event",
+      "validate_first_event",
+      "register_first_event_alias_slots",
+      "require_event_alias_slots_retired",
+      "detach_while_suspended",
+      "abort_and_prove_terminal",
+    ].map((name) => rustFunctionBlockAtDepth(attachedImpl, name, 1));
+    const productionCloseCalls = rustCallSites(production, "CloseHandle");
+    const closeCalls = rustCallSites(checkedFileClose, "CloseHandle");
+    const dropCalls = rustCallSites(checkedFileDrop, "CloseHandle");
+    return (
+      productionCloseCalls.length === 2 &&
+      JSON.stringify(closeCalls.map((call) => call.arguments)) ===
+        JSON.stringify([["handle"]]) &&
+      JSON.stringify(dropCalls.map((call) => call.arguments)) ===
+        JSON.stringify([["handle"]]) &&
+      aliasBlocks.every(
+        (block) =>
+          !/\b(?:CloseHandle|from_raw_handle)\s*\(/u.test(
+            rustLexicalCode(block),
+          ),
+      )
+    );
+  } catch {
+    return false;
+  }
+};
 const keyAgentDebuggerPlatformSemanticContract = (sources) => {
   const compactManifest = sources.manifest
     .replace(/^\s*#.*$/gmu, "")
@@ -60195,6 +60250,9 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
   let creationFlagsTest;
   let firstEventClassifier;
   let firstEventClassifierTest;
+  let aliasRetirementClassifier;
+  let observeHandleRetirement;
+  let aliasRetirementClassifierTest;
   let rawSlotsComparator;
   let rawSlotsArtifactComparator;
   let rawSlotsTest;
@@ -60208,6 +60266,8 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
   let authenticateFirstEvent;
   let receiveFirstEvent;
   let validateFirstEvent;
+  let registerFirstEventAliasSlots;
+  let requireEventAliasSlotsRetired;
   let detachWhileSuspended;
   let proveDetachedSuspended;
   let intoChild;
@@ -60280,6 +60340,21 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "first_event_classifier_rejects_every_identity_or_ownership_ambiguity",
       1,
     );
+    aliasRetirementClassifier = rustFunctionBlockAtDepth(
+      sources.sys,
+      "exact_event_alias_retirement",
+      0,
+    );
+    observeHandleRetirement = rustFunctionBlockAtDepth(
+      sources.sys,
+      "observe_handle_retirement",
+      0,
+    );
+    aliasRetirementClassifierTest = rustFunctionBlockAtDepth(
+      sources.sys,
+      "event_alias_retirement_requires_two_exact_invalid_handle_observations",
+      1,
+    );
     rawSlotsComparator = rustFunctionBlockAtDepth(
       sources.sys,
       "raw_handle_slots_are_distinct",
@@ -60344,6 +60419,16 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "validate_first_event",
       1,
     );
+    registerFirstEventAliasSlots = rustFunctionBlockAtDepth(
+      attachedImpl,
+      "register_first_event_alias_slots",
+      1,
+    );
+    requireEventAliasSlotsRetired = rustFunctionBlockAtDepth(
+      attachedImpl,
+      "require_event_alias_slots_retired",
+      1,
+    );
     detachWhileSuspended = rustFunctionBlockAtDepth(
       attachedImpl,
       "detach_while_suspended",
@@ -60401,6 +60486,10 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     "constfndebugger_creation_flags()->PROCESS_CREATION_FLAGS{PROCESS_CREATION_FLAGS(CREATE_SUSPENDED.0|CREATE_NO_WINDOW.0|CREATE_UNICODE_ENVIRONMENT.0|EXTENDED_STARTUPINFO_PRESENT.0|DEBUG_PROCESS.0|DEBUG_ONLY_THIS_PROCESS.0,)}";
   const classifier =
     "fnexact_first_event_fields(facts:&FirstEventFacts)->bool{facts.kind==CREATE_PROCESS_DEBUG_EVENT&&facts.expected_process_id!=0&&facts.expected_thread_id!=0&&facts.event_process_id==facts.expected_process_id&&facts.event_thread_id==facts.expected_thread_id&&facts.alias_process_id==facts.expected_process_id&&facts.alias_thread_id==facts.expected_thread_id&&facts.alias_thread_process_id==facts.expected_process_id&&facts.proofs==ALL_FIRST_EVENT_PROOFS}";
+  const aliasRetirementClassifierExact =
+    "constfnexact_event_alias_retirement(process:HandleRetirementObservation,thread:HandleRetirementObservation,)->bool{!process.query_succeeded&&process.error==ERROR_INVALID_HANDLE.0&&!thread.query_succeeded&&thread.error==ERROR_INVALID_HANDLE.0}";
+  const handleRetirementObserver =
+    "fnobserve_handle_retirement(handle:HANDLE)->HandleRetirementObservation{letmutflags=0_u32;letquery_succeeded=unsafe{GetHandleInformation(handle,&rawmutflags)}.is_ok();leterror=ifquery_succeeded{0}else{unsafe{GetLastError()}.0};HandleRetirementObservation{query_succeeded,error,}}";
   return (
     compactManifest.includes(
       'key-agent-debugger-transport-feasibility-test-hook=["dep:key-agent-debugger-wire",]',
@@ -60412,6 +60501,7 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     debuggerArtifactProductionContract(
       withoutCfgTestItems(withoutBottomTestModule(sources.artifact)),
     ) &&
+    keyAgentDebuggerAliasOwnershipSemanticContract(sources.sys) &&
     (sources.pipe.split("key-agent-debugger-transport-feasibility-test-hook")
       .length -
       1) ===
@@ -60512,6 +60602,10 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "assert_eq!(debugger_creation_flags(),PROCESS_CREATION_FLAGS(CREATE_SUSPENDED.0|CREATE_NO_WINDOW.0|CREATE_UNICODE_ENVIRONMENT.0|EXTENDED_STARTUPINFO_PRESENT.0|DEBUG_PROCESS.0|DEBUG_ONLY_THIS_PROCESS.0))",
     ) &&
     compactRust(firstEventClassifier) === classifier &&
+    compactRust(aliasRetirementClassifier) ===
+      aliasRetirementClassifierExact &&
+    compactRust(observeHandleRetirement) === handleRetirementObserver &&
+    !/\bCloseHandle\b/u.test(rustLexicalCode(observeHandleRetirement)) &&
     exactTestAttributes(
       sources.sys,
       "creation_flags_are_exactly_suspended_private_debug_process_flags",
@@ -60526,10 +60620,15 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     ) === JSON.stringify(["#[test]"]) &&
     exactTestAttributes(
       sources.sys,
+      "event_alias_retirement_requires_two_exact_invalid_handle_observations",
+    ) === JSON.stringify(["#[test]"]) &&
+    exactTestAttributes(
+      sources.sys,
       "containment_policy_is_kill_only_without_topology_or_breakaway_policy",
     ) === JSON.stringify(["#[test]"]) &&
     !hasVacuousRustTestEscape(creationFlagsTest) &&
     !hasVacuousRustTestEscape(firstEventClassifierTest) &&
+    !hasVacuousRustTestEscape(aliasRetirementClassifierTest) &&
     !hasVacuousRustTestEscape(rawSlotsTest) &&
     !hasVacuousRustTestEscape(containmentPolicyTest) &&
     [
@@ -60548,6 +60647,16 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
     ].every((marker) =>
       compactRust(firstEventClassifierTest).includes(marker),
     ) &&
+    [
+      "letinvalid=HandleRetirementObservation{query_succeeded:false,error:windows::Win32::Foundation::ERROR_INVALID_HANDLE.0,}",
+      "assert!(exact_event_alias_retirement(invalid,invalid))",
+      "letlive=HandleRetirementObservation{query_succeeded:true,error:0,}",
+      "letambiguous=HandleRetirementObservation{query_succeeded:false,error:windows::Win32::Foundation::ERROR_ACCESS_DENIED.0,}",
+      "forrejectedin[(live,invalid),(invalid,live),(live,live),(ambiguous,invalid),(invalid,ambiguous),(ambiguous,ambiguous),]",
+      "assert!(!exact_event_alias_retirement(rejected.0,rejected.1))",
+    ].every((marker) =>
+      compactRust(aliasRetirementClassifierTest).includes(marker),
+    ) &&
     compactRust(rawSlotsComparator) ===
       "fnraw_handle_slots_are_distinct(slots:&[HANDLE])->bool{for(index,left)inslots.iter().enumerate(){ifleft.is_invalid(){continue;}forrightin&slots[index+1..]{if!right.is_invalid()&&left==right{returnfalse;}}}true}" &&
     hasOrderedCompactMarkers(rawSlotsArtifactComparator, [
@@ -60562,7 +60671,13 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "assert!(!raw_handle_slots_are_distinct(&[first,second,first,third,]))",
     ) &&
     compactSys.includes(
-      "structAttachedDebuggerCreation{process:Option<OwnedHandle>,primary_thread:Option<OwnedHandle>,job:Option<DebuggerContainmentJob>,prepared_artifact:Option<PreparedReleaseDebuggerArtifact>,mapped_artifact:Option<MappedReleaseDebuggerArtifact>,creation_resource_slots:[HANDLE;3],process_id:u32,thread_id:u32,pending_event:Option<PendingDebugEvent>,debug_attached:bool,suspend_count:u32,released:bool,_creator_thread:PhantomData<Rc<()>>,}",
+      "structDebugEventAliasSlots{process:HANDLE,thread:HANDLE,}",
+    ) &&
+    compactSys.includes(
+      "structHandleRetirementObservation{query_succeeded:bool,error:u32,}",
+    ) &&
+    compactSys.includes(
+      "structAttachedDebuggerCreation{process:Option<OwnedHandle>,primary_thread:Option<OwnedHandle>,job:Option<DebuggerContainmentJob>,prepared_artifact:Option<PreparedReleaseDebuggerArtifact>,mapped_artifact:Option<MappedReleaseDebuggerArtifact>,creation_resource_slots:[HANDLE;3],process_id:u32,thread_id:u32,pending_event:Option<PendingDebugEvent>,event_alias_slots:Option<DebugEventAliasSlots>,debug_attached:bool,suspend_count:u32,released:bool,_creator_thread:PhantomData<Rc<()>>,}",
     ) &&
     !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*struct AttachedDebuggerCreation/u.test(
       sources.sys,
@@ -60574,11 +60689,22 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "prepared_artifact:Some(prepared_artifact)",
       "mapped_artifact:None",
       "creation_resource_slots",
+      "event_alias_slots:None",
       "debug_attached:true",
       "suspend_count:1",
       "released:false",
       "_creator_thread:PhantomData",
     ]) &&
+    compactRust(registerFirstEventAliasSlots) ===
+      "fnregister_first_event_alias_slots(&mutself,process:HANDLE,thread:HANDLE){ifself.event_alias_slots.is_some(){fail_fast();}self.event_alias_slots=Some(DebugEventAliasSlots{process,thread});}" &&
+    compactRust(requireEventAliasSlotsRetired) ===
+      "fnrequire_event_alias_slots_retired(&mutself){letSome(slots)=self.event_alias_slotselse{return;};letprocess=observe_handle_retirement(slots.process);letthread=observe_handle_retirement(slots.thread);if!exact_event_alias_retirement(process,thread){fail_fast();}self.event_alias_slots=None;}" &&
+    (compactSys.match(/event_alias_slots=Some\(/gu) ?? []).length === 1 &&
+    (
+      rustLexicalCode(sources.sys).match(
+        /\bself\s*\.\s*register_first_event_alias_slots\s*\(/gu,
+      ) ?? []
+    ).length === 1 &&
     hasOrderedCompactMarkers(validateCreation, [
       "GetProcessId(process_handle)",
       "GetThreadId(thread_handle)",
@@ -60627,6 +60753,9 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "raw_slots_are_distinct_from_artifact(prepared_artifact,&event_slots)",
       "CheckedDebugEventFile::adopt(create.hFile)?",
     ]) &&
+    compactRust(receiveFirstEvent).includes(
+      "if!raw_handle_slots_are_distinct(&event_slots)||!raw_slots_are_distinct_from_artifact(prepared_artifact,&event_slots){fail_fast();}self.register_first_event_alias_slots(create.hProcess,create.hThread);(Some(CheckedDebugEventFile::adopt(create.hFile)?),create.hProcess,create.hThread,)",
+    ) &&
     hasOrderedCompactMarkers(validateFirstEvent, [
       "ifevent.process_id!=self.process_id||event.thread_id!=self.thread_id",
       "fail_fast()",
@@ -60665,8 +60794,12 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "self.pending_event=None",
       "DebugActiveProcessStop(self.process_id)",
       "self.debug_attached=false",
+      "self.require_event_alias_slots_retired()",
       "self.prove_detached_suspended()",
     ]) &&
+    compactRust(detachWhileSuspended).includes(
+      "unsafe{DebugActiveProcessStop(self.process_id)}.map_err(|_|DebuggerTransportError::DebugDetach)?;self.debug_attached=false;self.require_event_alias_slots_retired();self.prove_detached_suspended()",
+    ) &&
     hasOrderedCompactMarkers(proveDetachedSuspended, [
       "CheckRemoteDebuggerPresent(process_handle,&rawmutdebugger_present)",
       "WaitForSingleObject(process_handle,0)",
@@ -60679,7 +60812,7 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       ".verify_exact_member(process_handle)",
     ]) &&
     hasOrderedCompactMarkers(intoChild, [
-      "self.debug_attached||self.pending_event.is_some()||self.suspend_count!=1||self.prepared_artifact.is_some()",
+      "self.debug_attached||self.pending_event.is_some()||self.event_alias_slots.is_some()||self.suspend_count!=1||self.prepared_artifact.is_some()",
       "_artifact:self.mapped_artifact.take()",
       "self.released=true",
       "Ok(child)",
@@ -60692,10 +60825,21 @@ const keyAgentDebuggerPlatformSemanticContract = (sources) => {
       "ContinueDebugEvent(pending.process_id,pending.thread_id,DBG_CONTINUE)",
       "ifself.debug_attached",
       "DebugActiveProcessStop(self.process_id)",
+      "self.debug_attached=false",
+      "self.require_event_alias_slots_retired()",
+      "ifself.event_alias_slots.is_some()",
+      "fail_fast()",
       "WaitForSingleObject(process,timeout)",
       "drop(self.primary_thread.take())",
       ".wait_until_empty(deadline)",
     ]) &&
+    compactRust(abortAndProveTerminal).includes(
+      "unsafe{DebugActiveProcessStop(self.process_id)}.map_err(|_|DebuggerTransportError::DebugDetach)?;self.debug_attached=false;self.require_event_alias_slots_retired();}ifself.event_alias_slots.is_some(){fail_fast();}",
+    ) &&
+    rustCallSites(
+      withoutBottomTestModule(sources.sys),
+      "DebugActiveProcessStop",
+    ).length === 2 &&
     compactRust(attachedDrop) ===
       "fndrop(&mutself){if!self.released&&self.abort_and_prove_terminal().is_err(){fail_fast();}}" &&
     compactSys.includes(
@@ -60751,6 +60895,41 @@ const mutateKeyAgentDebuggerPlatform = (name, search, replacement) => ({
   ...keyAgentDebuggerPlatformSources,
   [name]: keyAgentDebuggerPlatformSources[name].replace(search, replacement),
 });
+const mutateKeyAgentDebuggerAliasFunctionEntry = (name, insertion) => {
+  const functionBlock = rustFunctionBlockAtDepth(
+    keyAgentDebuggerTransportSysSource,
+    name,
+    1,
+  );
+  const opening = rustLexicalCode(functionBlock).indexOf("{");
+  return {
+    ...keyAgentDebuggerPlatformSources,
+    sys: keyAgentDebuggerTransportSysSource.replace(
+      functionBlock,
+      `${functionBlock.slice(0, opening + 1)}${insertion}${functionBlock.slice(opening + 1)}`,
+    ),
+  };
+};
+const mutateKeyAgentDebuggerCheckedFileFunction = (
+  implHeader,
+  name,
+  search,
+  replacement,
+) => {
+  const impl = rustImplItemAtDepth(
+    keyAgentDebuggerTransportSysSource,
+    implHeader,
+    0,
+  );
+  const functionBlock = rustFunctionBlockAtDepth(impl, name, 1);
+  return {
+    ...keyAgentDebuggerPlatformSources,
+    sys: keyAgentDebuggerTransportSysSource.replace(
+      functionBlock,
+      functionBlock.replace(search, replacement),
+    ),
+  };
+};
 const keyAgentDebuggerPlatformMutationProbes = [
   mutateKeyAgentDebuggerPlatform(
     "artifact",
@@ -60785,6 +60964,78 @@ const keyAgentDebuggerPlatformMutationProbes = [
     "sys",
     "    #[test]\n    fn raw_debug_event_slots_must_be_distinct_before_ownership_adoption",
     "    fn raw_debug_event_slots_must_be_distinct_before_ownership_adoption",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    #[test]\n    fn event_alias_retirement_requires_two_exact_invalid_handle_observations",
+    "    fn event_alias_retirement_requires_two_exact_invalid_handle_observations",
+  ),
+  ...[
+    ["!process.query_succeeded", "process.query_succeeded"],
+    [
+      "process.error == ERROR_INVALID_HANDLE.0",
+      "process.error != ERROR_INVALID_HANDLE.0",
+    ],
+    ["!thread.query_succeeded", "thread.query_succeeded"],
+    [
+      "thread.error == ERROR_INVALID_HANDLE.0",
+      "thread.error != ERROR_INVALID_HANDLE.0",
+    ],
+  ].map(([search, replacement]) =>
+    mutateKeyAgentDebuggerPlatform("sys", search, replacement),
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        assert!(exact_event_alias_retirement(invalid, invalid));",
+    "        assert!(true);",
+  ),
+  ...[
+    "            (live, invalid),\n",
+    "            (invalid, live),\n",
+    "            (live, live),\n",
+    "            (ambiguous, invalid),\n",
+    "            (invalid, ambiguous),\n",
+    "            (ambiguous, ambiguous),\n",
+  ].map((entry) => mutateKeyAgentDebuggerPlatform("sys", entry, "")),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "    event_alias_slots: Option<DebugEventAliasSlots>,\n",
+    "",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            event_alias_slots: None,",
+    "            event_alias_slots: Some(DebugEventAliasSlots { process: HANDLE::default(), thread: HANDLE::default() }),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if self.event_alias_slots.is_some() {\n            fail_fast();\n        }\n        self.event_alias_slots = Some(DebugEventAliasSlots { process, thread });",
+    "        self.event_alias_slots = Some(DebugEventAliasSlots { process, thread });",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            self.register_first_event_alias_slots(create.hProcess, create.hThread);\n            (\n                Some(CheckedDebugEventFile::adopt(create.hFile)?),",
+    "            let file = CheckedDebugEventFile::adopt(create.hFile)?;\n            self.register_first_event_alias_slots(create.hProcess, create.hThread);\n            (\n                Some(file),",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        unsafe { GetLastError() }.0\n",
+    "        unsafe { CloseHandle(handle) };\n        unsafe { GetLastError() }.0\n",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        0\n    } else {\n        // SAFETY: sampled immediately after the failed query",
+    "        unsafe { GetLastError() }.0\n    } else {\n        // SAFETY: sampled immediately after the failed query",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        if !exact_event_alias_retirement(process, thread) {",
+    "        if exact_event_alias_retirement(process, thread) {",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "        self.event_alias_slots = None;\n    }\n\n    fn detach_while_suspended",
+    "    }\n\n    fn detach_while_suspended",
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
@@ -60838,6 +61089,28 @@ const keyAgentDebuggerPlatformMutationProbes = [
   ),
   mutateKeyAgentDebuggerPlatform(
     "sys",
+    "        self.debug_attached = false;\n        self.require_event_alias_slots_retired();\n        self.prove_detached_suspended()",
+    "        self.debug_attached = false;\n        let proof = self.prove_detached_suspended();\n        self.require_event_alias_slots_retired();\n        proof",
+  ),
+  {
+    ...keyAgentDebuggerPlatformSources,
+    sys: keyAgentDebuggerTransportSysSource
+      .replace(
+        "            self.debug_attached = false;\n            self.require_event_alias_slots_retired();\n        }\n        if self.event_alias_slots.is_some()",
+        "            self.debug_attached = false;\n        }\n        if self.event_alias_slots.is_some()",
+      )
+      .replace(
+        "            if unsafe { WaitForSingleObject(process, timeout) } != WAIT_OBJECT_0 {\n                return Err(DebuggerTransportError::ProcessExit);\n            }\n        }\n        // Terminal process proof",
+        "            if unsafe { WaitForSingleObject(process, timeout) } != WAIT_OBJECT_0 {\n                return Err(DebuggerTransportError::ProcessExit);\n            }\n        }\n        self.require_event_alias_slots_retired();\n        // Terminal process proof",
+      ),
+  },
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
+    "            || self.event_alias_slots.is_some()\n",
+    "",
+  ),
+  mutateKeyAgentDebuggerPlatform(
+    "sys",
     "        if resumed != 2 {\n            // A successful unexpected decrement could have released helper\n            // user mode after detach; ordinary cleanup cannot undo that race.\n            fail_fast();\n        }",
     "        if resumed != 2 {\n            return Err(DebuggerTransportError::Suspension);\n        }",
   ),
@@ -60887,14 +61160,57 @@ const keyAgentDebuggerPlatformMutationResults =
     semanticRejected: !keyAgentDebuggerPlatformSemanticContract(probe),
     pinRejected: !keyAgentDebuggerPlatformPinContract(probe),
   }));
+const keyAgentDebuggerAliasOwnershipMutationProbes = [
+  ...[
+    "receive_first_event",
+    "validate_first_event",
+    "register_first_event_alias_slots",
+    "require_event_alias_slots_retired",
+    "detach_while_suspended",
+    "abort_and_prove_terminal",
+  ].flatMap((name) => [
+    mutateKeyAgentDebuggerAliasFunctionEntry(
+      name,
+      "\n        let _unexpected_close = unsafe { CloseHandle(HANDLE::default()) };",
+    ),
+    mutateKeyAgentDebuggerAliasFunctionEntry(
+      name,
+      "\n        let _unexpected_owner = unsafe { OwnedHandle::from_raw_handle(core::ptr::null_mut()) };",
+    ),
+  ]),
+  mutateKeyAgentDebuggerCheckedFileFunction(
+    "impl CheckedDebugEventFile",
+    "close",
+    "CloseHandle(handle)",
+    "CloseHandle(HANDLE::default())",
+  ),
+  mutateKeyAgentDebuggerCheckedFileFunction(
+    "impl Drop for CheckedDebugEventFile",
+    "drop",
+    "CloseHandle(handle)",
+    "CloseHandle(HANDLE::default())",
+  ),
+];
+const keyAgentDebuggerAliasOwnershipMutationResults =
+  keyAgentDebuggerAliasOwnershipMutationProbes.map((probe) => ({
+    changed: probe.sys !== keyAgentDebuggerPlatformSources.sys,
+    semanticRejected: !keyAgentDebuggerAliasOwnershipSemanticContract(
+      probe.sys,
+    ),
+    pinRejected: !keyAgentDebuggerPlatformPinContract(probe),
+  }));
 requireInvariant(
   keyAgentDebuggerPlatformPinContract(keyAgentDebuggerPlatformSources) &&
     keyAgentDebuggerPlatformSemanticContract(keyAgentDebuggerPlatformSources) &&
     keyAgentDebuggerPlatformMutationResults.every(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
+    ) &&
+    keyAgentDebuggerAliasOwnershipMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
     ),
-  "the mapped-image debugger transport must remain private and dormant with exact six creation flags, one creator-thread-bound attached guard, fail-fast ambiguity handling, bounded first-event classification, raw-slot separation including the held artifact and three creation resources, same-event BorrowedHandle FILE_ID_INFO authentication before mint, checked hFile close, suspended continue-detach proof, terminal Drop cleanup, a cfg(test)-only mismatch override, exact classifier/slot/kernel tests, no production caller, and effective source-local mutations",
+  "the mapped-image debugger transport must remain private and dormant with exact six creation flags, one creator-thread-bound attached guard, fail-fast ambiguity handling, bounded first-event classification, raw-slot separation including the held artifact and three creation resources, single-assignment borrowed event-alias accounting before fallible adoption, same-event BorrowedHandle FILE_ID_INFO authentication before mint, exactly two hFile-owner CloseHandle(handle) calls and no alias-block close/ownership construction, exact failure-plus-ERROR_INVALID_HANDLE alias retirement immediately after both successful detach paths, retained-slot child rejection, terminal Drop cleanup, a cfg(test)-only mismatch override, exact classifier/slot/kernel tests, no production caller, and effective source-local mutations",
 );
 
 const keyAgentDebuggerTopologyInputs = {
@@ -61103,33 +61419,33 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "b341355f32094c19185ac482343c0ddfaaaa4969c955c54baeb498a97f2aea8f",
+    sha256: "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only the transport mechanics",
-    sha256: "8ae8b1499230b0001a8d9634650a92f7adfcbc866d3cc6746d329870cd27b7c9",
+    sha256: "63d018e9bb9727d5e1bc0484b6cb4edf101628dbc85d5283dc90a9082e9312f1",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "4557b31dad1ac520947d1e37e6af6e291d1df242cee3b386ab0597d237941123",
+    sha256: "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "c0fd5d2d51e53b381159454ac63106882aa6c999ccc0ebcfe2c87fe33c147e0e",
+    sha256: "35551328711c04bbd4b960f12e76b95922334df6709726a53a0893b09cbbd3fb",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor:
       "The first dedicated-process feasibility slice is deliberately narrower",
-    sha256: "fd6989cb4cd22c66a875a94821fba2c76971f53c1a75b9a27029da9ae3b9710b",
+    sha256: "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -61228,6 +61544,14 @@ const keyAgentDebuggerDocumentationPerDocumentJobPatterns = [
   /\bPROC_THREAD_ATTRIBUTE_JOB_LIST\b[\s\S]{0,240}\bunnamed\b[\s\S]{0,80}\bnon-inheritable\b[\s\S]{0,40}\bJob\b/iu,
   /\bKILL_ON_JOB_CLOSE\b[\s\S]{0,160}\b(?:no|neither(?:\s+an)?)\s+active-\s*process\s+limit\b[\s\S]{0,80}\b(?:no|nor|or)\s+breakaway\b/iu,
 ];
+const keyAgentDebuggerAliasRetirementDocumentationPatterns = Object.freeze([
+  /Immediately\s+after\s+a\s+successful\s+stop[\s\S]{0,100}before\s+any\s+later\s+Win32\s+call/iu,
+  /both\s+borrowed\s+`?CREATE_PROCESS`?\s+event\s+process\/thread\s+raw\s+slots[\s\S]{0,100}`?GetHandleInformation`?[\s\S]{0,100}(?:Only\s+)?two\s+failures[\s\S]{0,60}exact\s+`?ERROR_INVALID_HANDLE`?/iu,
+  /(?:a\s+)?live\s+slot[\s\S]{0,60}asymmetric\s+result[\s\S]{0,60}(?:any\s+)?other\s+error[\s\S]{0,40}fail-\s*fasts/iu,
+  /(?:same\s+rule\s+applies\s+to|rule\s+covers\s+both)\s+ordinary\s+detach[\s\S]{0,60}attached\s+rejection\s+cleanup[\s\S]{0,100}never\s+calls\s+`?CloseHandle`?[\s\S]{0,100}system-\s*managed\s+borrowed\s+aliases[\s\S]{0,140}(?:limited\s+to|only\s+for)\s+`?hFile`?/iu,
+  /(?:proves?|establishes?)\s+only\s+that\s+both\s+numeric\s+slots\s+were\s+invalid[\s\S]{0,100}observation\s+points[\s\S]{0,80}measured\s+host[\s\S]{0,60}not\s+object\s+destruction[\s\S]{0,40}(?:a\s+)?Windows-\s*wide\s+contract/iu,
+  /(?:(?:remain|remains)\s+\*\*STOP-SHIP\*\*,?\s+as\s+do[\s\S]{0,560}supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement|supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement[\s\S]{0,240}(?:also\s+|therefore\s+)?(?:remain|remains)\s+\*\*STOP-SHIP\*\*)/iu,
+]);
 const keyAgentDebuggerArtifactAdmissionDocumentationPatterns = Object.freeze([
   /\bPreflightDebuggerArtifact\b/u,
   /\bPreparedReleaseDebuggerArtifact\b/u,
@@ -61241,6 +61565,7 @@ const keyAgentDebuggerArtifactAdmissionDocumentationPatterns = Object.freeze([
   /(?:creator-\s*thread-\s*bound|same\s+creator\s+thread)/iu,
   /first[\s\S]{0,120}CREATE_PROCESS_DEBUG_EVENT/iu,
   /(?:hFile[\s\S]{0,120}(?:zero-\s*flag|zero\s+flag)[\s\S]{0,160}(?:distinct|exact-\s*object-\s*distinct)|(?:present[\s\S]{0,40})?distinct[\s\S]{0,40}(?:zero-\s*flag|zero\s+flag)[\s\S]{0,30}hFile|present[\s\S]{0,40}(?:zero-\s*flag|zero\s+flag)[\s\S]{0,30}hFile[\s\S]{0,100}distinct)/iu,
+  ...keyAgentDebuggerAliasRetirementDocumentationPatterns,
   /FILE_ID_INFO[\s\S]{0,420}(?:PreparedReleaseDebuggerArtifact[\s\S]{0,260}(?:consum(?:e|es|ed)|transition)[\s\S]{0,120}MappedReleaseDebuggerArtifact|(?:consum(?:e|es|ed)|transition)[\s\S]{0,100}PreparedReleaseDebuggerArtifact[\s\S]{0,100}MappedReleaseDebuggerArtifact)/iu,
   /(?:Rejected\s+attached\s+cleanup|rejected\s+attached\s+cleanup|Rejection\s+requests)[\s\S]{0,520}drops?\s+the\s+creator\s+primary-\s*thread\s+owner[\s\S]{0,180}(?:exact-\s*zero\s+Job|Job\s+(?:count\s+to\s+zero|to\s+exact\s+zero|empty|accounting))/iu,
   /(?:80\/72\/56-\s*byte\s+wire[\s\S]{0,60}(?:unchanged|remain)|(?:unchanged|preserv(?:e|ing)|remain)[\s\S]{0,180}80\/72\/56-\s*byte\s+wire|80-\s*byte[\s\S]{0,180}72-\s*byte[\s\S]{0,180}56-\s*byte[\s\S]{0,220}(?:unchanged|remain))/iu,
@@ -61377,6 +61702,8 @@ const keyAgentDebuggerDocumentationContradictions = [
   "An unexpected initial ResumeThread count is a recoverable error.",
   "A successful unexpected post-detach resume count is a recoverable error.",
   "Prepared debugger admission may reopen the verified path before launch.",
+  "The measured-host invalid numeric slots prove object destruction and a Windows-wide API contract.",
+  "Supported-kernel alias retirement is proven and no longer STOP-SHIP.",
 ];
 const keyAgentDebuggerDocumentationJobContradictionInsertions = Object.freeze([
   "The helper containment Job is named.",
@@ -61526,6 +61853,41 @@ const keyAgentDebuggerArtifactAdmissionDocumentationMutationResults =
         pinRejected: normalizedSourceSha256(mutatedSource) !== spec.sha256,
       };
     });
+  });
+const keyAgentDebuggerAliasStopShipDocumentationMutationResults =
+  keyAgentDebuggerDocumentationSpecs.map((spec) => {
+    const window = keyAgentDebuggerDocumentationWindow(spec);
+    const match =
+      window === null
+        ? null
+        : /supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement/iu.exec(
+            window,
+          );
+    if (window === null || match === null) {
+      return { changed: false, semanticRejected: false, pinRejected: false };
+    }
+    const neighborhoodStart = Math.max(0, match.index - 600);
+    const neighborhoodEnd = Math.min(
+      window.length,
+      match.index + match[0].length + 600,
+    );
+    const mutatedNeighborhood = window
+      .slice(neighborhoodStart, neighborhoodEnd)
+      .replaceAll(
+      "**STOP-SHIP**",
+      "REMOVED_ALIAS_RETIREMENT_STOP_SHIP",
+    );
+    const mutatedWindow = `${window.slice(0, neighborhoodStart)}${mutatedNeighborhood}${window.slice(neighborhoodEnd)}`;
+    const windowStart = spec.source.indexOf(spec.anchor);
+    const mutatedSource = `${spec.source.slice(0, windowStart)}${mutatedWindow}${spec.source.slice(windowStart + window.length)}`;
+    return {
+      changed: mutatedSource !== spec.source,
+      semanticRejected:
+        !keyAgentDebuggerArtifactAdmissionDocumentationWindowContract(
+          mutatedWindow,
+        ),
+      pinRejected: normalizedSourceSha256(mutatedSource) !== spec.sha256,
+    };
   });
 const keyAgentDebuggerRawSlotDocumentationMutationResults =
   keyAgentDebuggerRawSlotDocumentationScopes.flatMap((scope) =>
@@ -61693,6 +62055,10 @@ requireInvariant(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
     ) &&
+    keyAgentDebuggerAliasStopShipDocumentationMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ) &&
     keyAgentDebuggerRawSlotDocumentationMutationResults.every(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
@@ -61719,7 +62085,7 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-package/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, condensed rejection cleanup in README/ADR plus strict conditional terminate/pending-event/detach/terminal-proof/owner-drop/Job-zero ordering in architecture/design/security, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
+  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-package/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, current-host-only invalid numeric alias slots without object-destruction or Windows-wide-contract overclaim and direct supported-kernel alias-retirement STOP-SHIP linkage, condensed rejection cleanup in README/ADR plus strict conditional terminate/pending-event/detach/terminal-proof/owner-drop/Job-zero ordering in architecture/design/security, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {

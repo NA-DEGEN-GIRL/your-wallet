@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS,
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_SEM_TIMEOUT,
-    GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE,
+    ERROR_SEM_TIMEOUT, GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     CREATE_PROCESS_DEBUG_EVENT, CheckRemoteDebuggerPresent, ContinueDebugEvent, DEBUG_EVENT,
@@ -351,6 +352,18 @@ struct ReceivedFirstDebugEvent {
 }
 
 #[derive(Clone, Copy)]
+struct DebugEventAliasSlots {
+    process: HANDLE,
+    thread: HANDLE,
+}
+
+#[derive(Clone, Copy)]
+struct HandleRetirementObservation {
+    query_succeeded: bool,
+    error: u32,
+}
+
+#[derive(Clone, Copy)]
 struct FirstEventFacts {
     kind: DEBUG_EVENT_CODE,
     event_process_id: u32,
@@ -438,6 +451,7 @@ struct AttachedDebuggerCreation {
     process_id: u32,
     thread_id: u32,
     pending_event: Option<PendingDebugEvent>,
+    event_alias_slots: Option<DebugEventAliasSlots>,
     debug_attached: bool,
     suspend_count: u32,
     released: bool,
@@ -477,6 +491,7 @@ impl AttachedDebuggerCreation {
             process_id: information.dwProcessId,
             thread_id: information.dwThreadId,
             pending_event: None,
+            event_alias_slots: None,
             debug_attached: true,
             suspend_count: 1,
             released: false,
@@ -635,6 +650,7 @@ impl AttachedDebuggerCreation {
                 // creator/event alias or double close.
                 fail_fast();
             }
+            self.register_first_event_alias_slots(create.hProcess, create.hThread);
             (
                 Some(CheckedDebugEventFile::adopt(create.hFile)?),
                 create.hProcess,
@@ -773,6 +789,28 @@ impl AttachedDebuggerCreation {
         Ok(())
     }
 
+    fn register_first_event_alias_slots(&mut self, process: HANDLE, thread: HANDLE) {
+        if self.event_alias_slots.is_some() {
+            fail_fast();
+        }
+        self.event_alias_slots = Some(DebugEventAliasSlots { process, thread });
+    }
+
+    fn require_event_alias_slots_retired(&mut self) {
+        let Some(slots) = self.event_alias_slots else {
+            return;
+        };
+        // These are system-managed borrowed aliases, not handles owned by this
+        // transport. Never CloseHandle them. Immediately after detach, accept
+        // only exact invalid-slot observations from this creator thread.
+        let process = observe_handle_retirement(slots.process);
+        let thread = observe_handle_retirement(slots.thread);
+        if !exact_event_alias_retirement(process, thread) {
+            fail_fast();
+        }
+        self.event_alias_slots = None;
+    }
+
     fn detach_while_suspended(&mut self) -> Result<(), DebuggerTransportError> {
         if self.suspend_count != 1 || self.mapped_artifact.is_none() || !self.debug_attached {
             return Err(DebuggerTransportError::DebugDetach);
@@ -789,6 +827,7 @@ impl AttachedDebuggerCreation {
         unsafe { DebugActiveProcessStop(self.process_id) }
             .map_err(|_| DebuggerTransportError::DebugDetach)?;
         self.debug_attached = false;
+        self.require_event_alias_slots_retired();
         self.prove_detached_suspended()
     }
 
@@ -840,6 +879,7 @@ impl AttachedDebuggerCreation {
     fn into_child(mut self) -> Result<DebuggerChild, DebuggerTransportError> {
         if self.debug_attached
             || self.pending_event.is_some()
+            || self.event_alias_slots.is_some()
             || self.suspend_count != 1
             || self.prepared_artifact.is_some()
         {
@@ -905,6 +945,10 @@ impl AttachedDebuggerCreation {
             unsafe { DebugActiveProcessStop(self.process_id) }
                 .map_err(|_| DebuggerTransportError::DebugDetach)?;
             self.debug_attached = false;
+            self.require_event_alias_slots_retired();
+        }
+        if self.event_alias_slots.is_some() {
+            fail_fast();
         }
         if let Some(process) = process_handle {
             let timeout = remaining_milliseconds(deadline)?;
@@ -1500,6 +1544,34 @@ fn exact_first_event_fields(facts: &FirstEventFacts) -> bool {
         && facts.proofs == ALL_FIRST_EVENT_PROOFS
 }
 
+const fn exact_event_alias_retirement(
+    process: HandleRetirementObservation,
+    thread: HandleRetirementObservation,
+) -> bool {
+    !process.query_succeeded
+        && process.error == ERROR_INVALID_HANDLE.0
+        && !thread.query_succeeded
+        && thread.error == ERROR_INVALID_HANDLE.0
+}
+
+fn observe_handle_retirement(handle: HANDLE) -> HandleRetirementObservation {
+    let mut flags = 0_u32;
+    // SAFETY: the numeric slot is retained only as a borrowed event-alias
+    // accounting record. This probe neither adopts nor closes the handle.
+    let query_succeeded = unsafe { GetHandleInformation(handle, &raw mut flags) }.is_ok();
+    let error = if query_succeeded {
+        0
+    } else {
+        // SAFETY: sampled immediately after the failed query on this same
+        // creator thread, before any other Win32 call can overwrite it.
+        unsafe { GetLastError() }.0
+    };
+    HandleRetirementObservation {
+        query_succeeded,
+        error,
+    }
+}
+
 fn debug_handle_flags(handle: HANDLE) -> Result<u32, DebuggerTransportError> {
     let mut flags = HANDLE_FLAG_INHERIT.0;
     // SAFETY: callers retain the creator/event handle for this scalar query.
@@ -1594,8 +1666,9 @@ mod tests {
     use super::{
         ALL_FIRST_EVENT_PROOFS, DEBUGGER_CONTAINMENT_JOB_LIMITS, FIRST_EVENT_FILE_PRESENT,
         FIRST_EVENT_PROCESS_ALIAS, FIRST_EVENT_THREAD_ALIAS, FIRST_EVENT_ZERO_FLAGS,
-        FirstEventFacts, debugger_creation_flags, exact_containment_limits,
-        exact_first_event_fields, raw_handle_slots_are_distinct,
+        FirstEventFacts, HandleRetirementObservation, debugger_creation_flags,
+        exact_containment_limits, exact_event_alias_retirement, exact_first_event_fields,
+        raw_handle_slots_are_distinct,
     };
 
     #[test]
@@ -1713,5 +1786,33 @@ mod tests {
         assert!(!raw_handle_slots_are_distinct(&[
             first, second, first, third,
         ]));
+    }
+
+    #[test]
+    fn event_alias_retirement_requires_two_exact_invalid_handle_observations() {
+        let invalid = HandleRetirementObservation {
+            query_succeeded: false,
+            error: windows::Win32::Foundation::ERROR_INVALID_HANDLE.0,
+        };
+        assert!(exact_event_alias_retirement(invalid, invalid));
+
+        let live = HandleRetirementObservation {
+            query_succeeded: true,
+            error: 0,
+        };
+        let ambiguous = HandleRetirementObservation {
+            query_succeeded: false,
+            error: windows::Win32::Foundation::ERROR_ACCESS_DENIED.0,
+        };
+        for rejected in [
+            (live, invalid),
+            (invalid, live),
+            (live, live),
+            (ambiguous, invalid),
+            (invalid, ambiguous),
+            (ambiguous, ambiguous),
+        ] {
+            assert!(!exact_event_alias_retirement(rejected.0, rejected.1));
+        }
     }
 }

@@ -1178,26 +1178,37 @@ owned `hFile` is then closed through a checked close whose ambiguous failure
 aborts the parent, and `SuspendThread` must report the prior zero count before
 installing one explicit suspension. Only then does the same creator thread
 continue the pending event with `DBG_CONTINUE` and detach with
-`DebugActiveProcessStop`. Post-detach probes require no remote debugger, a live
-process, the exact suspend-count transition and restoration, and unchanged
-one-member Job accounting. The mapped capability stays retained by the child;
-the sentinel is installed only after authentication and detach, the bootstrap
-is written while the child is still suspended, and the final user-mode resume
-must remove exactly that one explicit count. Rejection requests Job/process
-termination only if the process is not already terminal. It then continues a
-pending event, detaches, proves process terminal state, drops the creator
-primary-thread owner, and only then polls exact-zero Job accounting. A failed
-post-probe resume rejects; a successful resume that reports anything other than
-previous count two fail-fasts because it may have released execution. Other
-ambiguous attached cleanup also aborts instead of returning an unproved state.
+`DebugActiveProcessStop`. Immediately after a successful stop and before any
+later Win32 call, that creator thread probes both borrowed `CREATE_PROCESS`
+event process/thread raw slots with `GetHandleInformation`. Only two failures
+with exact `ERROR_INVALID_HANDLE` retire their accounting record; a live slot,
+asymmetric result, or any other error fail-fasts. The same rule applies to
+ordinary detach and attached rejection cleanup. The transport never calls
+`CloseHandle` on those system-managed borrowed aliases; among event-supplied
+handles, checked ownership and close remain limited to `hFile`. Later
+post-detach probes require no remote debugger, a live process, the exact suspend-
+count transition and restoration, and unchanged one-member Job accounting. The
+mapped capability stays retained by the child; the sentinel is installed only
+after authentication and detach, the bootstrap is written while the child is
+still suspended, and the final user-mode resume must remove exactly that one
+explicit count. Rejection requests Job/process termination only if the process
+is not already terminal. It then continues a pending event, detaches, proves
+process terminal state, drops the creator primary-thread owner, and only then
+polls exact-zero Job accounting. A failed post-probe resume rejects; a successful
+resume that reports anything other than previous count two fail-fasts because it
+may have released execution. Other ambiguous attached cleanup also aborts
+instead of returning an unproved state.
 
 Source-local tests pin the exact six creation flags, raw-slot distinctness, and
-the first-event identity classifier. Separate ignored current-host feasibility
-tests cover a matching held/mapped image and a `cfg(test)`-only application
-override whose distinct mapped image is rejected before capability mint;
-ordinary creation exposes no override. This is proof for the debugger helper's
-first mapped image only. The helper still has no actual Key Agent target and
-does not resolve target raw
+the first-event identity classifier. Both ignored current-host feasibility tests
+pass: the matching held/mapped-image path exercises normal-detach retirement,
+and the `cfg(test)`-only application override's distinct mapped image is rejected
+before capability mint, after attached rejection cleanup proves the same result;
+ordinary creation exposes no override. This establishes only that both numeric
+slots were invalid at those observation points on the measured host, not object
+destruction or a Windows-wide contract. It is proof for the debugger helper's
+first mapped image only. The helper still has no actual Key Agent target and does
+not resolve target raw
 event slots, same-object ABA, atomic compare-close, LPAC, secret, or RPC
 semantics. Production resolution still requires one atomic cutover that moves
 the whole target debug engine into the dedicated process, never individually
@@ -1213,8 +1224,9 @@ path is benign-helper evidence only: after execution, a same-token helper may
 be able to acquire `PROCESS_DUP_HANDLE` on its parent and duplicate a Job
 handle. A separate principal and from-birth process DACL, explicit
 `PROCESS_DUP_HANDLE` denial, adversarial parent-death containment, and the
-supported-kernel debug-alias-retirement plus cancellation-drain matrix therefore
-remain **STOP-SHIP**. Both compiled policies stay `None`.
+supported-kernel generalization of debug-alias retirement plus cancellation-
+drain matrices therefore remain **STOP-SHIP**. Both compiled policies stay
+`None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is treated
 only as a cancellation request and never as completion evidence. Async
 `ReadFile`/`WriteFile` receive no byte-count output pointer; one raw

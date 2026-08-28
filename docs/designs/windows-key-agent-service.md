@@ -301,24 +301,34 @@ The following are existing facts, not new service claims:
   the event still freezes the process, `SuspendThread` must report previous
   count zero. The creator thread then performs
   `ContinueDebugEvent(DBG_CONTINUE)` followed by `DebugActiveProcessStop`.
-  Post-detach proof requires no remote debugger, a live exact process, a
-  1 -> 2 -> 1 suspend-count probe, and the same one-member Job. The mapped
-  artifact remains owned through child cleanup. Only after this proof does the
-  parent install the existing `SYNCHRONIZE`-only sentinel, write the unchanged
-  80-byte bootstrap, and consume the sole explicit count to enter helper user
-  mode. If the process is not already terminal, rejected attached cleanup
-  requests Job/process termination. It then releases a pending event, detaches,
-  proves process terminal, drops the creator primary-thread owner, and polls the
-  Job empty. A failed post-probe resume rejects, while a successful result other
-  than previous count two
+  Immediately after a successful stop and before any later Win32 call, that
+  creator thread probes both borrowed `CREATE_PROCESS` event process/thread raw
+  slots with `GetHandleInformation`. Only two failures with exact
+  `ERROR_INVALID_HANDLE` retire their accounting record; a live slot, asymmetric
+  result, or any other error fail-fasts. The same rule applies to ordinary detach
+  and attached rejection cleanup. The transport never calls `CloseHandle` on
+  those system-managed borrowed aliases; among event-supplied handles, checked
+  ownership and close remain limited to `hFile`. Later post-detach proof requires
+  no remote debugger, a live exact process, a 1 -> 2 -> 1 suspend-count probe,
+  and the same one-member Job. The mapped artifact remains owned through child
+  cleanup. Only after this proof does the parent install the existing
+  `SYNCHRONIZE`-only sentinel, write the unchanged 80-byte bootstrap, and consume
+  the sole explicit count to enter helper user mode. If the process is not
+  already terminal, rejected attached cleanup requests Job/process termination.
+  It then releases a pending event, detaches, proves process terminal, drops the
+  creator primary-thread owner, and polls the Job empty. A failed post-probe
+  resume rejects, while a successful result other than previous count two
   fail-fasts because execution may have escaped; other ambiguous cleanup aborts.
 - Same-file and distinct-file artifact tests cover the linear mapped capability;
   source-local tests fix the exact six flags, raw-slot distinctness, and every
-  first-event classifier field. Separate ignored current-host kernel tests now
-  cover the admitted positive path and a mismatched prepared-file/`cfg(test)`
-  application pair that must return `MappedImage`, while preserving the existing
-  sentinel, `READY_FROZEN`, decision, EOF, timeout, malformed-input, and cleanup
-  cases.
+  first-event classifier field. Both ignored current-host kernel tests pass: the
+  admitted positive path exercises normal-detach retirement, and a mismatched
+  prepared-file/`cfg(test)` application pair returns `MappedImage` after attached
+  rejection cleanup proves the same result. This establishes only that both
+  numeric slots were invalid at those observation points on the measured host,
+  not object destruction or a Windows-wide contract. The existing sentinel,
+  `READY_FROZEN`, decision, EOF, timeout, malformed-input, and cleanup cases are
+  preserved.
 - The secretless helper still creates or debugs no Key Agent target and receives
   no target `DEBUG_EVENT`. This parent-side first-event image gate does not
   resolve target raw-slot generation, same-object ABA, or atomic compare-close.
@@ -329,9 +339,9 @@ The following are existing facts, not new service claims:
   from-birth process DACL with explicit `PROCESS_DUP_HANDLE` denial, actual
   target transfer and token/image/suspend/Job proof, target membership and
   process-count topology, Job-owner handoff beyond helper exit, adversarial
-  parent-death containment, and supported-kernel debug-event-alias retirement and
-  cancellation-drain matrices also remain **STOP-SHIP**. There is no production
-  caller, and `COMPILED_RELEASE_POLICY` remains `None`.
+  parent-death containment, and supported-kernel generalization of debug-event-
+  alias retirement and cancellation-drain matrices also remain **STOP-SHIP**.
+  There is no production caller, and `COMPILED_RELEASE_POLICY` remains `None`.
 - When a transport deadline observes pending overlapped pipe I/O, `CancelIoEx`
   is only a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation
@@ -1064,6 +1074,17 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-29 - Added fail-closed accounting for the two borrowed
+  `CREATE_PROCESS` event process/thread raw slots. Immediately after each
+  successful `DebugActiveProcessStop` and before another Win32 call, the creator
+  thread now accepts only two `GetHandleInformation` failures with exact
+  `ERROR_INVALID_HANDLE`; a live slot, asymmetric result, or other error
+  fail-fasts. Normal detach and attached mapped-image rejection use the same
+  rule, never call `CloseHandle` on those system-managed aliases, and retain
+  checked ownership/close only for event `hFile`. Both ignored current-host
+  kernel tests pass. This proves only invalid numeric slots at the measured
+  observation points, not object destruction or a Windows-wide contract;
+  supported-kernel alias-retirement remains **STOP-SHIP**.
 - 2026-08-28 - Composed the dormant Key Agent debugger admission and transport
   under one private umbrella. The debug-gated transport now consumes
   `PreparedReleaseDebuggerArtifact`, creates the held absolute path with the
