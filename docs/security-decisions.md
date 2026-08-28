@@ -1149,13 +1149,29 @@ only: after execution, a same-token helper may be able to acquire
 identity and launch admission, token/process-DACL separation, and adversarial
 parent-death containment proof therefore also remain **STOP-SHIP**. Both
 compiled policies stay `None`.
-Its deadlines are current-host measurements rather than unconditional kernel
-liveness: cancellation of pending overlapped pipe I/O must be drained before
-stack and buffer lifetimes end. Process-wide fail-fast closes the Job handle
-retained by the parent and prevents unsafe parent continuation, but kill-on-close
-terminates members only when that is the system-wide last Job handle; this slice
-does not prove that condition after helper code runs. Hard cancellation-drain
-liveness remains **STOP-SHIP**.
+When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is treated
+only as a cancellation request and never as completion evidence. Async
+`ReadFile`/`WriteFile` receive no byte-count output pointer; one raw
+`*mut OVERLAPPED` established before initiation is carried unchanged through
+completion and cancellation, without forming a shared Rust reference while the
+kernel may update it. The same exact buffer, manual-reset event, and
+`OVERLAPPED` remain live through a separate fixed five-second, non-alertable
+`GetOverlappedResultEx` drain, which is also the sole source of the transferred-
+byte count. Only success,
+`ERROR_OPERATION_ABORTED`, or an exact pipe-terminal status may return. A drain
+timeout, incomplete or alertable result, or any ambiguous error invokes
+`std::process::abort()` without unwinding, so stack and borrowed buffer lifetimes
+cannot end while kernel I/O may still reference them. Abort does not run
+`Zeroizing` drops; this lifetime fail-safe is not evidence against WER/minidump,
+paging, or hibernation capture, whose host policies remain **STOP-SHIP**.
+Current-host pending-read
+tests exercise the ordinary terminal-cancellation path. This is bounded
+fail-closed implementation evidence, not unconditional kernel liveness.
+Process-wide abort closes the Job handle retained by the parent and prevents
+unsafe parent continuation, but kill-on-close terminates members only when that
+is the system-wide last Job handle; this slice does not prove that condition
+after helper code runs. Supported-kernel cancellation-drain liveness remains
+**STOP-SHIP**.
 
 Each `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
 ownership before semantic-proof evaluation, stores the semantic result, and

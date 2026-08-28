@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "faf528fdeee1a248203301e78b6cccadba07099541b37511ec94d29ab5c9dddb",
+    sha256: "c29837e8cb2d5b8d14eecd7ddde03101f2ee8b3a429728dd16a83386252055c3",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
+    sha256: "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "99a73fd86e05729c2a174bfaba7346281f60bddce01e984adfe33dd9baee9dae",
+    sha256: "3f5691b919168071e3742c5bda3f0385b2e35029d862fed1b025aac8906c4d10",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
+    sha256: "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 12_500);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 13_500);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 12_500 &&
+      window.length <= 13_500 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -18724,7 +18724,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "eba017d5ffee080c25cbe65951b82dc89b4a49906bfd1625aa731ac4cdb3d21a";
+  "221e0514482c39444ff2bdc4063f23b7d9a1ccc88c10333d0d112714a0fac43a";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -31590,22 +31590,15 @@ fn read_once_before(
         hEvent: event.raw(),
         ..OVERLAPPED::default()
     };
-    let mut transferred = 0_u32;
-    let started = unsafe {
-        ReadFile(
-            handle,
-            Some(bytes),
-            Some(&raw mut transferred),
-            Some(&raw mut overlapped),
-        )
-    };
+    let overlapped_ptr = &raw mut overlapped;
+    let started = unsafe { ReadFile(handle, Some(bytes), None, Some(overlapped_ptr)) };
     if let Err(error) = &started
         && is_pipe_end(error.code())
     {
         deadline_result(deadline, 0)?;
         return Ok(IoRead::End);
     }
-    match complete_before(handle, &overlapped, started, transferred, deadline) {
+    match complete_before(handle, overlapped_ptr, started, deadline) {
         Ok(count) => Ok(IoRead::Bytes(usize::try_from(count).unwrap_or(usize::MAX))),
         Err(PipeError::UnexpectedEnd) => {
             deadline_result(deadline, 0)?;
@@ -37590,7 +37583,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/pipe.rs",
     unsafeCount: 34,
-    sha256: "131b43c97e1fc26ed493734ba8d4f358a4bd6230842c4307fbf6c570bf73978f",
+    sha256: "55205fd77e9f99006e9ee5cb3f7fc71ff461462ed8dff664996f12f255ab5152",
   },
   {
     path: "crates/platform-windows/src/restricted_process_context.rs",
@@ -45298,13 +45291,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
+    "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
   "docs/architecture.md":
-    "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
+    "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
+    "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -51087,10 +51080,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
-  "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
+  "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
+  "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
+  "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -58925,7 +58918,7 @@ const keyAgentDebuggerPlatformSources = {
 const keyAgentDebuggerPlatformPins = {
   manifest: "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5",
   lib: "68e14155db62368c1beae82a4057abb02ccc7acac594ceedfeae17e50a175f3b",
-  pipe: "31bb57de66b86ea3d1e0857456433a1481a52164b11d1730c49c1f0f85da7dc4",
+  pipe: "17c984914ad835ec51a4cac22cf21562fce8286a7edc72b5b35a4fd1c10fdd45",
   parent: "1afc87962eab6935e8d5a94d4195d528fbb5963eb8bb0c8dea6fc7aa4593269d",
   sys: "05f98244499aaedd37cd0cd4fec95628c035801f123b8160b26447acf396a4cd",
 };
@@ -60634,33 +60627,33 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "94f4a0d7a480976a9d210a8e4e0902b6cdaa4faca4207248cda28858853e61f1",
+    sha256: "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only the transport mechanics",
-    sha256: "faf528fdeee1a248203301e78b6cccadba07099541b37511ec94d29ab5c9dddb",
+    sha256: "c29837e8cb2d5b8d14eecd7ddde03101f2ee8b3a429728dd16a83386252055c3",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "217c7167b1d1c3938d792c8680013ad47529aa63a50a1011c53718fd8ee9f669",
+    sha256: "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "99a73fd86e05729c2a174bfaba7346281f60bddce01e984adfe33dd9baee9dae",
+    sha256: "3f5691b919168071e3742c5bda3f0385b2e35029d862fed1b025aac8906c4d10",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor:
       "The first dedicated-process feasibility slice is deliberately narrower",
-    sha256: "9ccaaaa228737de10b4216075afc647035a18f242d7b68ef394ca0ea64ad91a7",
+    sha256: "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -60713,8 +60706,27 @@ const keyAgentDebuggerDocumentationPatterns = [
   /cancel/iu,
   /drain/iu,
   /PROC_THREAD_ATTRIBUTE_JOB_LIST/u,
-  /fail-fast/iu,
+  /fail-(?:fast|closed)/iu,
   /system-wide\s+last\s+Job\s+handle/iu,
+  /CancelIoEx/u,
+  /GetOverlappedResultEx/u,
+  /fixed\s+five-\s*second/iu,
+  /non-alertable/iu,
+  /ERROR_OPERATION_ABORTED/u,
+  /std::process::abort\(\)/u,
+  /without unwind/iu,
+  /borrowed storage|borrowed buffer|stack and borrowed buffer/iu,
+  /supported-kernel\s+cancellation-drain\s+liveness\s+remains/iu,
+  /ReadFile/u,
+  /WriteFile/u,
+  /no\s+byte-\s*count\s+output\s+pointer/iu,
+  /raw\s+`?\*mut\s+OVERLAPPED`?/u,
+  /without\s+forming\s+a\s+shared\s+Rust\s+reference/iu,
+  /sole\s+source\s+of\s+the\s+transferred-?\s*byte\s+count/iu,
+  /Zeroizing/u,
+  /WER\/minidump/iu,
+  /paging/iu,
+  /hibernation/iu,
 ];
 const keyAgentDebuggerDocumentationPerDocumentJobPatterns = [
   /PROC_THREAD_ATTRIBUTE_JOB_LIST/u,
@@ -60763,6 +60775,13 @@ const keyAgentDebuggerDocumentationContradictions = [
   "Closing the parent-retained Job handle always terminates the helper.",
   "This slice proves the system-wide last Job handle condition after helper code runs.",
   "The helper debugs the actual Key Agent target and enables release policy.",
+  "CancelIoEx is completion evidence and permits immediate buffer release.",
+  "A cancellation-drain timeout safely returns to the caller.",
+  "The bounded cancellation drain proves helper termination on every supported kernel.",
+  "A shared Rust reference to OVERLAPPED remains valid while kernel I/O is pending.",
+  "Async ReadFile and WriteFile receive a non-null byte-count output pointer.",
+  "Immediate overlapped success may skip exact result retrieval.",
+  "Fail-fast abort zeroizes every pending secret before process termination.",
 ];
 const keyAgentDebuggerDocumentationJobContradictionInsertions = Object.freeze([
   "The helper containment Job is named.",
@@ -60788,7 +60807,7 @@ const keyAgentDebuggerDocumentationWindow = (spec) => {
   if (first === -1 || spec.source.indexOf(spec.anchor, first + 1) !== -1) {
     return null;
   }
-  return spec.source.slice(first, first + 4_500);
+  return spec.source.slice(first, first + 5_000);
 };
 const keyAgentDebuggerDocumentationPinContract = (specs) =>
   specs.every(
@@ -60947,7 +60966,7 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so immutable identity/admission, token/process-DACL separation, the system-wide-last-handle condition, and adversarial parent-death containment remain STOP-SHIP alongside actual-target topology/owner-handoff and cancellation liveness, with broad categorical parent-teardown and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
+  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so immutable identity/admission, token/process-DACL separation, the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP alongside actual-target topology/owner-handoff, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {
@@ -60972,7 +60991,17 @@ const approvalPipeContract = (source, serviceChannelSource) => {
   let readExactBefore;
   let readExactFrameBefore;
   let requireEndBefore;
+  let writeOnceBefore;
+  let readOnceBefore;
   let completeBefore;
+  let cancelAndDrain;
+  let classifyCancellationDrainCompletion;
+  let failFastPendingOverlappedIo;
+  let cancellationDrainCompletionTestAdapter;
+  let cancellationDrainTimeoutTestAdapter;
+  let pendingReadCancellationTestAdapter;
+  let cancellationDrainClassifierTest;
+  let pendingReadCancellationTest;
   let stagedTest;
   let parentPeerTest;
   let expiredPendingReadTest;
@@ -61076,7 +61105,57 @@ const approvalPipeContract = (source, serviceChannelSource) => {
       "require_end_before",
       1,
     );
+    writeOnceBefore = rustFunctionBlockAtDepth(
+      sysModule,
+      "write_once_before",
+      1,
+    );
+    readOnceBefore = rustFunctionBlockAtDepth(
+      sysModule,
+      "read_once_before",
+      1,
+    );
     completeBefore = rustFunctionBlockAtDepth(sysModule, "complete_before", 1);
+    cancelAndDrain = rustFunctionBlockAtDepth(
+      sysModule,
+      "cancel_and_drain",
+      1,
+    );
+    classifyCancellationDrainCompletion = rustFunctionBlockAtDepth(
+      sysModule,
+      "classify_cancellation_drain_completion",
+      1,
+    );
+    failFastPendingOverlappedIo = rustFunctionBlockAtDepth(
+      sysModule,
+      "fail_fast_pending_overlapped_io",
+      1,
+    );
+    cancellationDrainCompletionTestAdapter = rustFunctionBlockAtDepth(
+      sysModule,
+      "cancellation_drain_completion_is_terminal_for_test",
+      1,
+    );
+    cancellationDrainTimeoutTestAdapter = rustFunctionBlockAtDepth(
+      sysModule,
+      "cancellation_drain_timeout_milliseconds_for_test",
+      1,
+    );
+    pendingReadCancellationTestAdapter = rustFunctionBlockAtDepth(
+      sysModule,
+      "pending_read_cancellation_is_exact_for_test",
+      1,
+    );
+    cancellationDrainClassifierTest = rustFunctionBlockAtDepth(
+      source,
+      "cancellation_drain_classifier_accepts_only_proven_terminal_results",
+      1,
+    );
+    pendingReadCancellationTest = rustFunctionBlockAtDepth(
+      source,
+      "key_agent_pending_read_cancellation_completes_operation_aborted_and_pipe_remains_reusable",
+      1,
+    );
     stagedTest = rustFunctionBlockAtDepth(
       source,
       "approval_pipe_supports_staged_parent_authentication_then_exact_response_eof",
@@ -61194,7 +61273,20 @@ const approvalPipeContract = (source, serviceChannelSource) => {
   const sysCompact = compactRust(sysModule);
   const sourceCompact = compactRust(source);
   const frameCompact = compactRust(readExactFrameBefore);
+  const writeOnceCompact = compactRust(writeOnceBefore);
+  const readOnceCompact = compactRust(readOnceBefore);
   const completionCompact = compactRust(completeBefore);
+  const cancelAndDrainCompact = compactRust(cancelAndDrain);
+  const cancellationClassifierCompact = compactRust(
+    classifyCancellationDrainCompletion,
+  );
+  const failFastPendingIoCompact = compactRust(failFastPendingOverlappedIo);
+  const cancellationDrainClassifierTestCompact = compactRust(
+    cancellationDrainClassifierTest,
+  );
+  const pendingReadCancellationTestCompact = compactRust(
+    pendingReadCancellationTest,
+  );
   const sourceAuthorityCompact = compactRust(keyAgentSourceAuthorityTest);
   const preparedAuthorityCompact = compactRust(keyAgentPreparedAuthorityTest);
   const freshAuthorityCompact = compactRust(keyAgentFreshAuthorityTest);
@@ -61431,14 +61523,131 @@ const approvalPipeContract = (source, serviceChannelSource) => {
     rustCallSites(createChildServerPipe, "CreateNamedPipeW").length === 1 &&
     rustCallSites(createChildServerPipe, "CreateFileW").length === 1 &&
     rustCallSites(createChildServerPipe, "ConnectNamedPipe").length === 0 &&
+    sysCompact.includes(
+      "constCANCELLATION_DRAIN_TIMEOUT_MILLISECONDS:u32=5_000;",
+    ) &&
+    sysCompact.includes(
+      "enumCancellationDrainTerminal{Completed,OperationAborted,PipeEnded,}",
+    ) &&
+    !/\bGetOverlappedResult\s*\(/u.test(rustLexicalCode(production)) &&
+    writeOnceCompact.includes("letoverlapped_ptr=&rawmutoverlapped;") &&
+    writeOnceCompact.includes(
+      "WriteFile(handle,Some(bytes),None,Some(overlapped_ptr))",
+    ) &&
+    writeOnceCompact.includes(
+      "complete_before(handle,overlapped_ptr,started,deadline)",
+    ) &&
+    readOnceCompact.includes("letoverlapped_ptr=&rawmutoverlapped;") &&
+    readOnceCompact.includes(
+      "ReadFile(handle,Some(bytes),None,Some(overlapped_ptr))",
+    ) &&
+    readOnceCompact.includes(
+      "complete_before(handle,overlapped_ptr,started,deadline)",
+    ) &&
+    !writeOnceCompact.includes("Some(&rawmuttransferred)") &&
+    !readOnceCompact.includes("Some(&rawmuttransferred)") &&
+    completionCompact.startsWith(
+      "fncomplete_before(handle:HANDLE,overlapped:*mutOVERLAPPED,started:windows::core::Result<()>,deadline:Instant,)->Result<u32,PipeError>{",
+    ) &&
+    completionCompact ===
+      "fncomplete_before(handle:HANDLE,overlapped:*mutOVERLAPPED,started:windows::core::Result<()>,deadline:Instant,)->Result<u32,PipeError>{letwas_pending=matchstarted{Ok(())=>false,Err(error)ifis_pipe_end(error.code())=>{returnErr(PipeError::UnexpectedEnd);}Err(error)iferror.code()==ERROR_IO_PENDING.to_hresult()=>true,Err(_)=>returnErr(PipeError::OperatingSystem),};lettimeout_ms=ifwas_pending{matchremaining_milliseconds(deadline){Ok(timeout_ms)=>timeout_ms,Err(error)=>{cancel_and_drain(handle,overlapped);returnErr(error);}}}else{0};letmuttransferred=0_u32;letcompletion=unsafe{GetOverlappedResultEx(handle,overlapped.cast_const(),&rawmuttransferred,timeout_ms,false,)};ifletErr(error)=completion{ifwas_pending{cancel_and_drain(handle,overlapped);}iferror.code()==HRESULT::from_win32(WAIT_TIMEOUT.0){Err(PipeError::DeadlineElapsed)}elseifis_pipe_end(error.code()){Err(PipeError::UnexpectedEnd)}else{Err(PipeError::OperatingSystem)}}else{deadline_result(deadline,transferred)}}" &&
+    completionCompact.includes(
+      "GetOverlappedResultEx(handle,overlapped.cast_const(),&rawmuttransferred,timeout_ms,false,)",
+    ) &&
+    !completionCompact.includes("ptr::from_ref(overlapped)") &&
+    rustCallSites(cancelAndDrain, "CancelIoEx").length === 1 &&
+    rustCallSites(cancelAndDrain, "GetOverlappedResultEx").length === 1 &&
+    rustCallSites(cancelAndDrain, "classify_cancellation_drain_completion")
+      .length === 1 &&
+    rustCallSites(cancelAndDrain, "fail_fast_pending_overlapped_io").length ===
+      1 &&
+    cancelAndDrainCompact.startsWith(
+      "fncancel_and_drain(handle:HANDLE,overlapped:*mutOVERLAPPED)->CancellationDrainTerminal{",
+    ) &&
+    cancelAndDrainCompact ===
+      "fncancel_and_drain(handle:HANDLE,overlapped:*mutOVERLAPPED)->CancellationDrainTerminal{let_=unsafe{CancelIoEx(handle,Some(overlapped.cast_const()))};letmutignored=0_u32;letcompletion=unsafe{GetOverlappedResultEx(handle,overlapped.cast_const(),&rawmutignored,CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS,false,)}.map_err(|error|error.code());matchclassify_cancellation_drain_completion(completion){Some(terminal)=>terminal,None=>fail_fast_pending_overlapped_io(),}}" &&
+    !/\breturn\b/u.test(rustLexicalCode(cancelAndDrain)) &&
+    cancelAndDrainCompact.includes(
+      "let_=unsafe{CancelIoEx(handle,Some(overlapped.cast_const()))};",
+    ) &&
+    cancelAndDrainCompact.includes(
+      "GetOverlappedResultEx(handle,overlapped.cast_const(),&rawmutignored,CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS,false,)",
+    ) &&
+    hasOrderedCompactMarkers(cancelAndDrain, [
+      "CancelIoEx(handle,Some(overlapped.cast_const()))",
+      "GetOverlappedResultEx(",
+      ".map_err(|error|error.code())",
+      "classify_cancellation_drain_completion(completion)",
+      "Some(terminal)=>terminal",
+      "None=>fail_fast_pending_overlapped_io()",
+    ]) &&
+    cancellationClassifierCompact.includes(
+      "Ok(())=>Some(CancellationDrainTerminal::Completed)",
+    ) &&
+    cancellationClassifierCompact ===
+      "fnclassify_cancellation_drain_completion(completion:Result<(),HRESULT>,)->Option<CancellationDrainTerminal>{matchcompletion{Ok(())=>Some(CancellationDrainTerminal::Completed),Err(code)ifcode==ERROR_OPERATION_ABORTED.to_hresult()=>{Some(CancellationDrainTerminal::OperationAborted)}Err(code)ifis_pipe_end(code)=>Some(CancellationDrainTerminal::PipeEnded),Err(_)=>None,}}" &&
+    cancellationClassifierCompact.includes(
+      "Err(code)ifcode==ERROR_OPERATION_ABORTED.to_hresult()=>{Some(CancellationDrainTerminal::OperationAborted)}",
+    ) &&
+    cancellationClassifierCompact.includes(
+      "Err(code)ifis_pipe_end(code)=>Some(CancellationDrainTerminal::PipeEnded)",
+    ) &&
+    cancellationClassifierCompact.includes("Err(_)=>None") &&
+    failFastPendingIoCompact ===
+      "fnfail_fast_pending_overlapped_io()->!{std::process::abort()}" &&
+    compactRust(cancellationDrainCompletionTestAdapter).includes(
+      "classify_cancellation_drain_completion(completion).is_some()",
+    ) &&
+    compactRust(cancellationDrainTimeoutTestAdapter).includes(
+      "CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS",
+    ) &&
+    compactRust(pendingReadCancellationTestAdapter).includes(
+      "letoverlapped_ptr=&rawmutoverlapped;",
+    ) &&
+    compactRust(pendingReadCancellationTestAdapter).includes(
+      "ReadFile(handle.raw(),Some(&mutbyte),None,Some(overlapped_ptr))",
+    ) &&
+    compactRust(pendingReadCancellationTestAdapter).includes(
+      "cancel_and_drain(handle.raw(),overlapped_ptr)==CancellationDrainTerminal::OperationAborted",
+    ) &&
+    cancellationDrainClassifierTestCompact.includes(
+      "sys::cancellation_drain_timeout_milliseconds_for_test(),5_000",
+    ) &&
+    cancellationDrainClassifierTestCompact.includes(
+      "ERROR_OPERATION_ABORTED.to_hresult()",
+    ) &&
+    cancellationDrainClassifierTestCompact.includes(
+      "HRESULT::from_win32(WAIT_TIMEOUT.0)",
+    ) &&
+    cancellationDrainClassifierTestCompact.includes(
+      "ERROR_IO_INCOMPLETE.to_hresult()",
+    ) &&
+    cancellationDrainClassifierTestCompact.includes(
+      "HRESULT::from_win32(WAIT_IO_COMPLETION.0)",
+    ) &&
+    !hasVacuousRustTestEscape(cancellationDrainClassifierTest) &&
+    hasOrderedCompactMarkers(pendingReadCancellationTest, [
+      "PrivateKeyAgentPipes::create()?.into_test_parts()",
+      "pending_read_cancellation_is_exact_for_test(&reader.0)?",
+      "write_child_for_test(&child_response,&response)?",
+      "drop(child_response)",
+      "reader.receive(future_deadline()?)?",
+    ]) &&
+    pendingReadCancellationTestCompact.includes(
+      "assert!(sys::pending_read_cancellation_is_exact_for_test(&reader.0)?)",
+    ) &&
+    !hasVacuousRustTestEscape(pendingReadCancellationTest) &&
     rustCallSites(completeBefore, "cancel_and_drain").length === 2 &&
     completionCompact.includes(
-      "lettimeout_ms=matchremaining_milliseconds(deadline){Ok(timeout_ms)=>timeout_ms,Err(error)=>{cancel_and_drain(handle,overlapped);returnErr(error);}};",
+      "letwas_pending=matchstarted{Ok(())=>false,Err(error)ifis_pipe_end(error.code())=>{returnErr(PipeError::UnexpectedEnd);}Err(error)iferror.code()==ERROR_IO_PENDING.to_hresult()=>true,Err(_)=>returnErr(PipeError::OperatingSystem),};",
     ) &&
     completionCompact.includes(
-      "ifletErr(error)=completion{cancel_and_drain(handle,overlapped);iferror.code()==HRESULT::from_win32(WAIT_TIMEOUT.0)",
+      "lettimeout_ms=ifwas_pending{matchremaining_milliseconds(deadline){Ok(timeout_ms)=>timeout_ms,Err(error)=>{cancel_and_drain(handle,overlapped);returnErr(error);}}}else{0};",
     ) &&
-    completionCompact.indexOf("error.code()!=ERROR_IO_PENDING.to_hresult()") <
+    completionCompact.includes(
+      "ifletErr(error)=completion{ifwas_pending{cancel_and_drain(handle,overlapped);}iferror.code()==HRESULT::from_win32(WAIT_TIMEOUT.0)",
+    ) &&
+    completionCompact.indexOf("error.code()==ERROR_IO_PENDING.to_hresult()") <
       completionCompact.indexOf("remaining_milliseconds(deadline)") &&
     completionCompact.indexOf("remaining_milliseconds(deadline)") <
       completionCompact.indexOf("GetOverlappedResultEx(") &&
@@ -62264,12 +62473,81 @@ const approvalPipeMutationProbes = [
     "Ok((child_server, OwnedWinHandle(parent_client)))",
   ),
   keyAgentPipeSource.replace(
-    "        let timeout_ms = match remaining_milliseconds(deadline) {\n            Ok(timeout_ms) => timeout_ms,\n            Err(error) => {\n                cancel_and_drain(handle, overlapped);\n                return Err(error);\n            }\n        };",
-    "        let timeout_ms = remaining_milliseconds(deadline)?;",
+    "        let timeout_ms = if was_pending {\n            match remaining_milliseconds(deadline) {\n                Ok(timeout_ms) => timeout_ms,\n                Err(error) => {\n                    cancel_and_drain(handle, overlapped);\n                    return Err(error);\n                }\n            }\n        } else {\n            0\n        };",
+    "        let timeout_ms = 0;",
   ),
   keyAgentPipeSource.replace(
-    "            cancel_and_drain(handle, overlapped);\n            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
+    "            if was_pending {\n                // Once an operation returned IO_PENDING, every failure exit\n                // must synchronously drain it before the OVERLAPPED and caller\n                // buffer leave scope. This is safe even if completion won the\n                // race.\n                cancel_and_drain(handle, overlapped);\n            }\n            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
     "            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {",
+  ),
+  keyAgentPipeSource.replace(
+    "const CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS: u32 = 5_000;",
+    "const CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS: u32 = u32::MAX;",
+  ),
+  keyAgentPipeSource.replace(
+    "                CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS,\n                false,",
+    "                CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS,\n                true,",
+  ),
+  keyAgentPipeSource.replace(
+    "        let _ = unsafe { CancelIoEx(handle, Some(overlapped.cast_const())) };",
+    "        let _ = Ok::<(), windows::core::Error>(());",
+  ),
+  keyAgentPipeSource.replace(
+    "                overlapped.cast_const(),\n                &raw mut ignored,",
+    "                ptr::null(),\n                &raw mut ignored,",
+  ),
+  keyAgentPipeSource.replace(
+    "fn cancel_and_drain(handle: HANDLE, overlapped: *mut OVERLAPPED)",
+    "fn cancel_and_drain(handle: HANDLE, overlapped: &OVERLAPPED)",
+  ),
+  keyAgentPipeSource.replace(
+    "        let started = unsafe { WriteFile(handle, Some(bytes), None, Some(overlapped_ptr)) };",
+    "        let mut immediate_transferred = 0_u32;\n        let started = unsafe { WriteFile(handle, Some(bytes), Some(&raw mut immediate_transferred), Some(overlapped_ptr)) };",
+  ),
+  keyAgentPipeSource.replace(
+    "        let started = unsafe { ReadFile(handle, Some(bytes), None, Some(overlapped_ptr)) };",
+    "        let mut immediate_transferred = 0_u32;\n        let started = unsafe { ReadFile(handle, Some(bytes), Some(&raw mut immediate_transferred), Some(overlapped_ptr)) };",
+  ),
+  keyAgentPipeSource.replace(
+    "complete_before(handle, overlapped_ptr, started, deadline)",
+    "complete_before(handle, ptr::null_mut(), started, deadline)",
+  ),
+  keyAgentPipeSource.replace(
+    "            Err(_) => None,",
+    "            Err(_) => Some(CancellationDrainTerminal::Completed),",
+  ),
+  keyAgentPipeSource.replace(
+    "    ) -> Option<CancellationDrainTerminal> {\n        match completion {",
+    "    ) -> Option<CancellationDrainTerminal> {\n        if completion == Err(HRESULT::from_win32(5)) { return Some(CancellationDrainTerminal::Completed); }\n        match completion {",
+  ),
+  keyAgentPipeSource.replace(
+    "        .map_err(|error| error.code());\n        match classify_cancellation_drain_completion(completion) {",
+    "        .map_err(|error| error.code());\n        if completion == Err(HRESULT::from_win32(WAIT_TIMEOUT.0)) { return CancellationDrainTerminal::Completed; }\n        match classify_cancellation_drain_completion(completion) {",
+  ),
+  keyAgentPipeSource.replace(
+    "        };\n        if let Err(error) = completion {",
+    "        };\n        if completion == Err(HRESULT::from_win32(ERROR_IO_INCOMPLETE.0)) { return Err(PipeError::OperatingSystem); }\n        if let Err(error) = completion {",
+  ),
+  keyAgentPipeSource.replace(
+    "        std::process::abort()",
+    "        panic!(\"ambiguous pending I/O\")",
+  ),
+  keyAgentPipeSource.replace(
+    "        assert!(sys::pending_read_cancellation_is_exact_for_test(&reader.0)?);",
+    "        assert!(true);",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentPipeSource,
+    "key_agent_pending_read_cancellation_completes_operation_aborted_and_pipe_remains_reusable",
+  ),
+  withVacuousRustEarlyOk(
+    keyAgentPipeSource,
+    "cancellation_drain_classifier_accepts_only_proven_terminal_results",
+    "()",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentPipeSource,
+    "\nfn hidden_unbounded_drain(handle: HANDLE, overlapped: *mut OVERLAPPED) { let mut ignored = 0_u32; let _ = GetOverlappedResult(handle, overlapped.cast_const(), &raw mut ignored, true); }\n",
   ),
 ];
 const serviceChannelAuthorityEvidenceMutationProbes = [

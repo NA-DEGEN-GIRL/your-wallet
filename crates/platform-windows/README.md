@@ -209,12 +209,28 @@ Implemented:
   a Job handle. Immutable helper identity plus launch admission, token/process-
   DACL separation, and proof of adversarial parent-death containment therefore
   also remain **STOP-SHIP**; compiled policies remain `None`.
-  The current-host deadlines are not a universal liveness proof: cancellation
-  must still drain pending overlapped pipe I/O. Process-wide fail-fast closes
-  the Job handle retained by the parent and prevents unsafe parent continuation,
-  but kill-on-close terminates members only when that is the system-wide last
-  Job handle. This slice does not prove that condition after helper code runs.
-  Hard cancellation-drain liveness remains explicit **STOP-SHIP** work.
+  A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
+  only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
+  count output pointer; one raw `*mut OVERLAPPED` established before initiation
+  is carried unchanged through completion and cancellation, without forming a
+  shared Rust reference while the kernel may update it. The exact buffer,
+  manual-reset event, and `OVERLAPPED` stay live through a separate fixed five-
+  second, non-alertable `GetOverlappedResultEx` drain, which is also the sole
+  source of the transferred-byte count, and returns only after success,
+  `ERROR_OPERATION_ABORTED`, or an exact pipe-terminal status. A drain timeout,
+  incomplete or alertable result, or any ambiguous error calls
+  `std::process::abort()` without unwinding, so borrowed storage cannot leave
+  scope while kernel I/O may still reference it. Abort does not run `Zeroizing`
+  drops; this lifetime fail-safe is not evidence against WER/minidump, paging,
+  or hibernation capture, whose host policies remain **STOP-SHIP**. Current-host
+  pending-read tests
+  exercise the ordinary terminal-cancellation path, but this remains bounded
+  fail-closed implementation evidence rather than universal kernel liveness.
+  Process-wide abort closes the Job handle retained by the parent and prevents
+  unsafe parent continuation, but kill-on-close terminates members only when
+  that is the system-wide last Job handle. This slice does not prove that
+  condition after helper code runs. Supported-kernel cancellation-drain
+  liveness remains explicit **STOP-SHIP** work.
   The adoption transition, release-binding, and dormant supervisor binder all
   have zero production call sites. A separate dormant storage-only
   `open_existing_fixed_key_agent_storage_root` also has zero production callers.

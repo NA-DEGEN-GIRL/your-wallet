@@ -1208,9 +1208,9 @@ mod sys {
     use windows::Win32::Foundation::STATUS_SUCCESS;
     use windows::Win32::Foundation::{
         CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle,
-        ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_READ,
-        GENERIC_WRITE, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL, LocalFree,
-        WAIT_TIMEOUT,
+        ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
+        ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetHandleInformation, HANDLE,
+        HANDLE_FLAG_INHERIT, HLOCAL, LocalFree, WAIT_TIMEOUT,
     };
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -1228,9 +1228,7 @@ mod sys {
     };
     #[cfg(test)]
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
-    use windows::Win32::System::IO::{
-        CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED,
-    };
+    use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId,
         GetNamedPipeClientSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
@@ -1256,6 +1254,14 @@ mod sys {
     const NATIVE_FILE_PIPE_OUTBOUND: u32 = 1;
     #[cfg(test)]
     const NATIVE_FILE_PIPE_CLIENT_END: u32 = 0;
+    const CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS: u32 = 5_000;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CancellationDrainTerminal {
+        Completed,
+        OperationAborted,
+        PipeEnded,
+    }
 
     /// Test-only declaration of the native `FILE_PIPE_LOCAL_INFORMATION` ABI.
     ///
@@ -1871,18 +1877,13 @@ mod sys {
             hEvent: event.raw(),
             ..OVERLAPPED::default()
         };
-        let mut transferred = 0_u32;
+        let overlapped_ptr = &raw mut overlapped;
         // SAFETY: the immutable source buffer, OVERLAPPED, event, and handle stay
-        // live until `complete_before` reports or drains cancellation.
-        let started = unsafe {
-            WriteFile(
-                handle,
-                Some(bytes),
-                Some(&raw mut transferred),
-                Some(&raw mut overlapped),
-            )
-        };
-        complete_before(handle, &overlapped, started, transferred, deadline)
+        // live until `complete_before` reports or drains cancellation. The raw
+        // pointer is retained unchanged because the kernel mutates OVERLAPPED
+        // while the operation is pending.
+        let started = unsafe { WriteFile(handle, Some(bytes), None, Some(overlapped_ptr)) };
+        complete_before(handle, overlapped_ptr, started, deadline)
             .map(|outcome| usize::try_from(outcome).unwrap_or(usize::MAX))
     }
 
@@ -1896,24 +1897,19 @@ mod sys {
             hEvent: event.raw(),
             ..OVERLAPPED::default()
         };
-        let mut transferred = 0_u32;
+        let overlapped_ptr = &raw mut overlapped;
         // SAFETY: the mutable destination buffer, OVERLAPPED, event, and handle
         // stay live until the operation completes or cancellation is drained.
-        let started = unsafe {
-            ReadFile(
-                handle,
-                Some(bytes),
-                Some(&raw mut transferred),
-                Some(&raw mut overlapped),
-            )
-        };
+        // The raw pointer is retained unchanged because the kernel mutates
+        // OVERLAPPED while the operation is pending.
+        let started = unsafe { ReadFile(handle, Some(bytes), None, Some(overlapped_ptr)) };
         if let Err(error) = &started
             && is_pipe_end(error.code())
         {
             deadline_result(deadline, 0)?;
             return Ok(IoRead::End);
         }
-        match complete_before(handle, &overlapped, started, transferred, deadline) {
+        match complete_before(handle, overlapped_ptr, started, deadline) {
             Ok(count) => Ok(IoRead::Bytes(usize::try_from(count).unwrap_or(usize::MAX))),
             Err(PipeError::UnexpectedEnd) => {
                 deadline_result(deadline, 0)?;
@@ -1925,27 +1921,28 @@ mod sys {
 
     fn complete_before(
         handle: HANDLE,
-        overlapped: &OVERLAPPED,
+        overlapped: *mut OVERLAPPED,
         started: windows::core::Result<()>,
-        immediate_transferred: u32,
         deadline: Instant,
     ) -> Result<u32, PipeError> {
-        if started.is_ok() {
-            return deadline_result(deadline, immediate_transferred);
-        }
-        let error = started.err().ok_or(PipeError::OperatingSystem)?;
-        if is_pipe_end(error.code()) {
-            return Err(PipeError::UnexpectedEnd);
-        }
-        if error.code() != ERROR_IO_PENDING.to_hresult() {
-            return Err(PipeError::OperatingSystem);
-        }
-        let timeout_ms = match remaining_milliseconds(deadline) {
-            Ok(timeout_ms) => timeout_ms,
-            Err(error) => {
-                cancel_and_drain(handle, overlapped);
-                return Err(error);
+        let was_pending = match started {
+            Ok(()) => false,
+            Err(error) if is_pipe_end(error.code()) => {
+                return Err(PipeError::UnexpectedEnd);
             }
+            Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => true,
+            Err(_) => return Err(PipeError::OperatingSystem),
+        };
+        let timeout_ms = if was_pending {
+            match remaining_milliseconds(deadline) {
+                Ok(timeout_ms) => timeout_ms,
+                Err(error) => {
+                    cancel_and_drain(handle, overlapped);
+                    return Err(error);
+                }
+            }
+        } else {
+            0
         };
         let mut transferred = 0_u32;
         // SAFETY: this function is called only while the initiating buffer,
@@ -1954,17 +1951,20 @@ mod sys {
         let completion = unsafe {
             GetOverlappedResultEx(
                 handle,
-                ptr::from_ref(overlapped),
+                overlapped.cast_const(),
                 &raw mut transferred,
                 timeout_ms,
                 false,
             )
         };
         if let Err(error) = completion {
-            // Once an operation returned IO_PENDING, every failure exit must
-            // synchronously drain it before the OVERLAPPED and caller buffer
-            // leave scope. This is safe even if completion won the race.
-            cancel_and_drain(handle, overlapped);
+            if was_pending {
+                // Once an operation returned IO_PENDING, every failure exit
+                // must synchronously drain it before the OVERLAPPED and caller
+                // buffer leave scope. This is safe even if completion won the
+                // race.
+                cancel_and_drain(handle, overlapped);
+            }
             if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
                 Err(PipeError::DeadlineElapsed)
             } else if is_pipe_end(error.code()) {
@@ -1977,18 +1977,92 @@ mod sys {
         }
     }
 
-    fn cancel_and_drain(handle: HANDLE, overlapped: &OVERLAPPED) {
+    fn cancel_and_drain(handle: HANDLE, overlapped: *mut OVERLAPPED) -> CancellationDrainTerminal {
         // SAFETY: this targets precisely the operation represented by the live
         // OVERLAPPED pointer. Completion may win the race, so cancellation's
         // return value is not itself a safe lifetime signal.
-        let _ = unsafe { CancelIoEx(handle, Some(ptr::from_ref(overlapped))) };
+        let _ = unsafe { CancelIoEx(handle, Some(overlapped.cast_const())) };
         let mut ignored = 0_u32;
-        // SAFETY: always drain, even if cancellation reported an unexpected
-        // failure. Returning while kernel I/O still references the stack
-        // OVERLAPPED or caller buffer would violate their lifetime contract.
-        let _ = unsafe {
-            GetOverlappedResult(handle, ptr::from_ref(overlapped), &raw mut ignored, true)
+        // SAFETY: always wait on the exact initiating handle and OVERLAPPED,
+        // even if cancellation reported an unexpected failure. The independent
+        // fixed five-second wait budget limits the non-alertable API interval
+        // counted by the kernel. Supported-kernel cancellation liveness remains
+        // an external requirement. A nonterminal or ambiguous result never
+        // returns to Rust and therefore cannot end either borrowed lifetime.
+        let completion = unsafe {
+            GetOverlappedResultEx(
+                handle,
+                overlapped.cast_const(),
+                &raw mut ignored,
+                CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS,
+                false,
+            )
+        }
+        .map_err(|error| error.code());
+        match classify_cancellation_drain_completion(completion) {
+            Some(terminal) => terminal,
+            None => fail_fast_pending_overlapped_io(),
+        }
+    }
+
+    fn classify_cancellation_drain_completion(
+        completion: Result<(), HRESULT>,
+    ) -> Option<CancellationDrainTerminal> {
+        match completion {
+            Ok(()) => Some(CancellationDrainTerminal::Completed),
+            Err(code) if code == ERROR_OPERATION_ABORTED.to_hresult() => {
+                Some(CancellationDrainTerminal::OperationAborted)
+            }
+            Err(code) if is_pipe_end(code) => Some(CancellationDrainTerminal::PipeEnded),
+            Err(_) => None,
+        }
+    }
+
+    fn fail_fast_pending_overlapped_io() -> ! {
+        // No unwind, diagnostic, or ordinary return may release the initiating
+        // OVERLAPPED, event, or caller buffer while their kernel lifetime is
+        // ambiguous. Process termination is the only safe fallback after the
+        // independent cancellation-drain bound expires or an impossible result
+        // is observed.
+        std::process::abort()
+    }
+
+    #[cfg(test)]
+    pub(super) fn cancellation_drain_completion_is_terminal_for_test(
+        completion: Result<(), HRESULT>,
+    ) -> bool {
+        classify_cancellation_drain_completion(completion).is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn cancellation_drain_timeout_milliseconds_for_test() -> u32 {
+        CANCELLATION_DRAIN_TIMEOUT_MILLISECONDS
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_read_cancellation_is_exact_for_test(
+        handle: &OwnedWinHandle,
+    ) -> Result<bool, PipeError> {
+        let event = create_event()?;
+        let mut byte = [0_u8; 1];
+        let mut overlapped = OVERLAPPED {
+            hEvent: event.raw(),
+            ..OVERLAPPED::default()
         };
+        let overlapped_ptr = &raw mut overlapped;
+        // SAFETY: the one-byte buffer, exact OVERLAPPED, event, and pipe owner
+        // remain live until the mandatory bounded cancellation drain below.
+        // No shared reference to the kernel-mutated OVERLAPPED is formed.
+        let started =
+            unsafe { ReadFile(handle.raw(), Some(&mut byte), None, Some(overlapped_ptr)) };
+        let Err(error) = started else {
+            return Err(PipeError::OperatingSystem);
+        };
+        if error.code() != ERROR_IO_PENDING.to_hresult() {
+            return Err(PipeError::OperatingSystem);
+        }
+        Ok(cancel_and_drain(handle.raw(), overlapped_ptr)
+            == CancellationDrainTerminal::OperationAborted)
     }
 
     fn create_event() -> Result<OwnedWinHandle, PipeError> {
@@ -2524,8 +2598,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use approval_wire::{CHILD_HELLO_BYTES, PARENT_HELLO_BYTES, RESPONSE_BYTES};
+    use windows::Win32::Foundation::{
+        ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_INVALID_HANDLE, ERROR_IO_INCOMPLETE,
+        ERROR_OPERATION_ABORTED, WAIT_IO_COMPLETION, WAIT_TIMEOUT,
+    };
     use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, WRITE_OWNER};
     use windows::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
+    use windows::core::HRESULT;
 
     use super::{
         PipeError, PrivateApprovalPipes, PrivateKeyAgentPipes, PrivatePipeServer,
@@ -2589,6 +2668,37 @@ mod tests {
             sys::open_mode_for_test() & FILE_FLAG_FIRST_PIPE_INSTANCE.0,
             0
         );
+    }
+
+    #[test]
+    fn cancellation_drain_classifier_accepts_only_proven_terminal_results() {
+        assert_eq!(
+            sys::cancellation_drain_timeout_milliseconds_for_test(),
+            5_000
+        );
+        let completed: Result<(), HRESULT> = Ok(());
+        assert!(sys::cancellation_drain_completion_is_terminal_for_test(
+            completed
+        ));
+        for code in [
+            ERROR_OPERATION_ABORTED.to_hresult(),
+            ERROR_BROKEN_PIPE.to_hresult(),
+            ERROR_HANDLE_EOF.to_hresult(),
+        ] {
+            assert!(sys::cancellation_drain_completion_is_terminal_for_test(
+                Err(code)
+            ));
+        }
+        for code in [
+            HRESULT::from_win32(WAIT_TIMEOUT.0),
+            ERROR_IO_INCOMPLETE.to_hresult(),
+            HRESULT::from_win32(WAIT_IO_COMPLETION.0),
+            ERROR_INVALID_HANDLE.to_hresult(),
+        ] {
+            assert!(!sys::cancellation_drain_completion_is_terminal_for_test(
+                Err(code)
+            ));
+        }
     }
 
     #[test]
@@ -3253,6 +3363,23 @@ mod tests {
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(child_response);
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_pending_read_cancellation_completes_operation_aborted_and_pipe_remains_reusable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (writer, child_request, reader, child_response) =
+            PrivateKeyAgentPipes::create()?.into_test_parts();
+        drop(writer);
+        drop(child_request);
+
+        assert!(sys::pending_read_cancellation_is_exact_for_test(&reader.0)?);
+
+        let response = [0x5c_u8; KEY_AGENT_STARTUP_RESPONSE_BYTES];
+        sys::write_child_for_test(&child_response, &response)?;
+        drop(child_response);
+        assert_eq!(reader.receive(future_deadline()?)?.as_slice(), response);
         Ok(())
     }
 

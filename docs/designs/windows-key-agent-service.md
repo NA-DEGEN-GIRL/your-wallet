@@ -273,13 +273,28 @@ The following are existing facts, not new service claims:
   Immutable helper identity and launch admission, token/process-DACL separation,
   and adversarial parent-death containment proof therefore remain **STOP-SHIP**.
   Compiled policies remain `None`.
-- The transport deadlines are current-host evidence, not an unconditional
-  kernel-liveness guarantee: cancelled overlapped pipe I/O must still drain
-  before its borrowed buffers can leave scope. Parent fail-fast closes its
-  retained Job handle and prevents unsafe parent continuation, but kill-on-close
-  terminates members only when that is the system-wide last Job handle; this
-  slice does not prove that condition after helper code runs. Hard cancellation-
-  drain liveness remains **STOP-SHIP**.
+- When a transport deadline observes pending overlapped pipe I/O, `CancelIoEx`
+  is only a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
+  count output pointer; one raw `*mut OVERLAPPED` established before initiation
+  is carried unchanged through completion and cancellation, without forming a
+  shared Rust reference while the kernel may update it. The exact buffer,
+  manual-reset event, and `OVERLAPPED` remain live through a separate fixed five-
+  second, non-alertable `GetOverlappedResultEx` drain, which is also the sole
+  source of the transferred-byte count, and control returns only after success,
+  `ERROR_OPERATION_ABORTED`, or an exact pipe-terminal status. A drain timeout,
+  incomplete or alertable result, or any ambiguous error calls
+  `std::process::abort()` without unwinding, so borrowed storage cannot leave
+  scope while kernel I/O may still reference it. Abort does not run `Zeroizing`
+  drops; this lifetime fail-safe is not evidence against WER/minidump, paging,
+  or hibernation capture, whose host policies remain **STOP-SHIP**. Current-host
+  pending-read tests
+  exercise the ordinary terminal-cancellation path; this is bounded fail-closed
+  implementation evidence rather than an unconditional kernel-liveness
+  guarantee. Parent abort closes its retained Job handle and prevents unsafe
+  parent continuation, but kill-on-close terminates members only when that is
+  the system-wide last Job handle; this slice does not prove that condition
+  after helper code runs. Supported-kernel cancellation-drain liveness remains
+  **STOP-SHIP**.
 - Every `LOAD_DLL_DEBUG_EVENT` adopts its optional `hFile` into checked caller
   ownership before semantic-proof evaluation, stores the semantic result, and
   then completes checked close. Only after that close may the stored semantic
@@ -990,6 +1005,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-28 - Replaced the unbounded post-`CancelIoEx` pipe wait with a fixed
+  five-second, non-alertable `GetOverlappedResultEx` terminal drain. Async
+  `ReadFile`/`WriteFile` now receive no byte-count pointer, and the same raw
+  `*mut OVERLAPPED` flows from initiation through completion and cancellation
+  without a shared Rust reference. The exact buffer, event, and `OVERLAPPED`
+  remain live until success, cancellation, or an exact pipe-terminal status;
+  timeout, incomplete/alertable completion, and ambiguous errors abort without
+  unwind instead of releasing borrowed storage.
+  Current-host pending-read tests cover the ordinary cancellation path. This
+  does not prove universal kernel liveness, the system-wide last Job handle, or
+  helper death after adversarial Job-handle duplication; those remain
+  **STOP-SHIP**.
 - 2026-08-27 - Added the dormant dedicated-debugger transport-mechanics slice:
   exact 80/72/56-byte big-endian CRC32C-framed wire values, a secretless
   default/release-disabled silent exit-78 executable, and a private debug-only
