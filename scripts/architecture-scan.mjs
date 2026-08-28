@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "63d018e9bb9727d5e1bc0484b6cb4edf101628dbc85d5283dc90a9082e9312f1",
+    sha256: "64cf6f1d2ed6730f6d61799f744161bded273aaae596f0add287c5e48d4d5ff8",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
+    sha256: "e487d3b11f2256386111d304f19776f980212949431f939f910192c3241f4974",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "35551328711c04bbd4b960f12e76b95922334df6709726a53a0893b09cbbd3fb",
+    sha256: "9019263fb042cd3a962629cb1bb191445b1416da2628dec5291d509a0b0ca232",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
+    sha256: "f64646f8aaabbba795d7a39d020baf396cc3c642bcaec8a568d778388024523d",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 18_500);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 21_000);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 18_500 &&
+      window.length <= 21_000 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -18662,6 +18662,12 @@ const keyAgentDebuggerWireSource = await text(
 const keyAgentDebuggerManifest = await text(
   "crates/key-agent-debugger/Cargo.toml",
 );
+const keyAgentDebuggerBuildSource = await text(
+  "crates/key-agent-debugger/build.rs",
+);
+const keyAgentDebuggerResourceSource = await text(
+  "crates/key-agent-debugger/key-agent-debugger.rc",
+);
 const keyAgentDebuggerMainSource = await text(
   "crates/key-agent-debugger/src/main.rs",
 );
@@ -18670,6 +18676,9 @@ const keyAgentDebuggerChildSource = await text(
 );
 const keyAgentDebuggerDisabledTestSource = await text(
   "crates/key-agent-debugger/tests/default_disabled.rs",
+);
+const keyAgentDebuggerVersionInfoTestSource = await text(
+  "crates/key-agent-debugger/tests/version_info.rs",
 );
 const keyAgentDebuggerTransportSource = await text(
   "crates/platform-windows/src/key_agent_debugger_transport/mod.rs",
@@ -18746,7 +18755,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "675c21f9b7276e0ebbbbd7b8c73812e7411d1773e5fdd58c5ed496fe17f8014a";
+  "f905d27569253e84fd2f78bd70fbdb9602189f2630c9dcfcabfb416f23c8ed3e";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -18823,7 +18832,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/key-agent-debugger/Cargo.toml",
-    sha256: "297a9768ec7e96bbcfcb93a6728b80581557083d9e986f076c3fcf43e908f19b",
+    sha256: "f660ff86e5f2057fe482a820db34e802a2631ce6a2aa49037127b743f08d0d8c",
   },
   {
     path: "crates/key-agent-debugger-wire/Cargo.toml",
@@ -19987,8 +19996,12 @@ requireInvariant(
   "Cargo.lock must contain exactly one local helper-bootstrap record with only service-wire and windows dependencies, with effective removal and dependency-expansion mutations",
 );
 const keyAgentDebuggerLockContract = (source) => {
-  const records = cargoLockPackageRecords(source).filter((record) =>
+  const allRecords = cargoLockPackageRecords(source);
+  const records = allRecords.filter((record) =>
     ["key-agent-debugger", "key-agent-debugger-wire"].includes(record.name),
+  );
+  const compilerProvider = allRecords.filter(
+    (record) => record.name === "find-msvc-tools",
   );
   return (
     JSON.stringify(records) ===
@@ -19998,7 +20011,7 @@ const keyAgentDebuggerLockContract = (source) => {
         version: "0.1.0",
         source: null,
         checksum: null,
-        dependencies: ["key-agent-debugger-wire", "windows"],
+        dependencies: ["find-msvc-tools", "key-agent-debugger-wire", "windows"],
       },
       {
         name: "key-agent-debugger-wire",
@@ -20007,21 +20020,36 @@ const keyAgentDebuggerLockContract = (source) => {
         checksum: null,
         dependencies: [],
       },
-    ])
+    ]) &&
+    JSON.stringify(compilerProvider) ===
+      JSON.stringify([
+        {
+          name: "find-msvc-tools",
+          version: "0.1.10",
+          source: "registry+https://github.com/rust-lang/crates.io-index",
+          checksum:
+            "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de",
+          dependencies: [],
+        },
+      ])
   );
 };
 const keyAgentDebuggerLockMutationProbes = [
   workspaceLock.replace(
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "find-msvc-tools",\n "key-agent-debugger-wire",\n "windows",\n]',
     'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "windows",\n]',
-    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n]',
   ),
   workspaceLock.replace(
-    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "windows",\n]',
-    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "key-agent-debugger-wire",\n "platform-windows",\n "windows",\n]',
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "find-msvc-tools",\n "key-agent-debugger-wire",\n "windows",\n]',
+    'name = "key-agent-debugger"\nversion = "0.1.0"\ndependencies = [\n "find-msvc-tools",\n "key-agent-debugger-wire",\n "platform-windows",\n "windows",\n]',
   ),
   workspaceLock.replace(
     'name = "key-agent-debugger-wire"\nversion = "0.1.0"',
     'name = "key-agent-debugger-wire"\nversion = "0.1.0"\ndependencies = [\n "serde",\n]',
+  ),
+  workspaceLock.replace(
+    'name = "find-msvc-tools"\nversion = "0.1.10"',
+    'name = "find-msvc-tools"\nversion = "0.1.9"',
   ),
 ];
 requireInvariant(
@@ -20029,7 +20057,7 @@ requireInvariant(
     keyAgentDebuggerLockMutationProbes.every(
       (probe) => probe !== workspaceLock && !keyAgentDebuggerLockContract(probe),
     ),
-  "Cargo.lock must retain exactly one dependency-free debugger-wire record and one debugger helper record depending only on debugger-wire plus windows, with effective removal and expansion mutations",
+  "Cargo.lock must retain exactly one dependency-free debugger-wire record, one debugger helper record depending directly on pinned find-msvc-tools plus debugger-wire and windows, and the exact find-msvc-tools 0.1.10 provider, with effective removal, version, and expansion mutations",
 );
 const approvedKeyAgentServiceRpcSysProviderClosure = [
   {
@@ -28958,7 +28986,10 @@ requireInvariant(
 );
 requireInvariant(
   JSON.stringify(workspaceBuildScriptPaths) ===
-    JSON.stringify(["crates/key-agent-service-rpc-sys/build.rs"]) &&
+    JSON.stringify([
+      "crates/key-agent-debugger/build.rs",
+      "crates/key-agent-service-rpc-sys/build.rs",
+    ]) &&
     cargoManifestPinsHold(workspaceCargoManifestInventory) &&
     !cargoManifestPinsHold(cargoNonRustTargetMutationProbe) &&
     (rootManifest.match(
@@ -38693,7 +38724,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/helper.rs",
     unsafeCount: 15,
-    sha256: "560d5bd84cae04f85222d848c8ebb0595e4405d5133aecf2959265ecb2dd8cb0",
+    sha256: "0b9209a3c16824ece9a75d59edbacf9885081d257765d4de3eacaa574be46887",
   },
   {
     path: "crates/platform-windows/src/inheritable_handle_launch.rs",
@@ -39679,7 +39710,7 @@ requireInvariant(
     rootManifestSha256 ===
       "9918490697127f3e4ad1496365f6dad29d23ecc8edacdb0b75e203b19a2bc796" &&
     workspaceLockSha256 ===
-      "de80e1b4b343dcd07a88d7146c99eaab67f2c3bfe7c7a60273ae0228313db78f" &&
+      "5cb7050398d71a7967fe5145bf447b217adce5a52c06f88043ca57eefbfa8c42" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -46522,15 +46553,15 @@ const keyAgentHandleAttenuationDocumentation = [
 ];
 const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
-    "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
+    "1d28009bcb4e24488748d364ba67a9ae865cbcf44a9da01b31cbefa382fd8764",
   "crates/platform-windows/README.md":
-    "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
+    "599a900a588d3344b5121f09d9a1f73af1a3af54826e37a36f60acb1e43d46c5",
   "docs/architecture.md":
-    "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
+    "e487d3b11f2256386111d304f19776f980212949431f939f910192c3241f4974",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
+    "f64646f8aaabbba795d7a39d020baf396cc3c642bcaec8a568d778388024523d",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -52312,11 +52343,11 @@ const currentDebuggerExitDocumentationContract = (documents) =>
     );
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
-  "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
-  "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
+  "1d28009bcb4e24488748d364ba67a9ae865cbcf44a9da01b31cbefa382fd8764",
+  "599a900a588d3344b5121f09d9a1f73af1a3af54826e37a36f60acb1e43d46c5",
+  "e487d3b11f2256386111d304f19776f980212949431f939f910192c3241f4974",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
+  "f64646f8aaabbba795d7a39d020baf396cc3c642bcaec8a568d778388024523d",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -59836,21 +59867,285 @@ requireInvariant(
 
 const keyAgentDebuggerHelperSources = {
   manifest: keyAgentDebuggerManifest,
+  build: keyAgentDebuggerBuildSource,
+  resource: keyAgentDebuggerResourceSource,
   main: keyAgentDebuggerMainSource,
   child: keyAgentDebuggerChildSource,
   disabledTest: keyAgentDebuggerDisabledTestSource,
+  versionInfoTest: keyAgentDebuggerVersionInfoTestSource,
+  platformHelper: activationHelperSource,
 };
 const keyAgentDebuggerHelperPins = {
-  manifest: "297a9768ec7e96bbcfcb93a6728b80581557083d9e986f076c3fcf43e908f19b",
+  manifest: "f660ff86e5f2057fe482a820db34e802a2631ce6a2aa49037127b743f08d0d8c",
+  build: "7582ec859b17bb81578ac3ad46271f67f6377e91dd7ba283a7b6ec1fbd5c0550",
+  resource:
+    "bb40ebfeceab212696e008c7ccfa868f73dca68e6221c6e245c0ea9d14bdfb91",
   main: "9cb127ea53ed22bd73d3bf3bf7648eed70b11154e6fbfa1c0dbfaf05fd51c42a",
   child: "f196bae008bf37207a0ae7800c6d84d8dbac586fe6d657a3e2bfce6f6da7d3d3",
   disabledTest:
     "4a432a8276c12cdd8a295bb424ec5fa436a60395d5857ccd89e443392e9a7dcf",
+  versionInfoTest:
+    "a3f844d0d9f2a9bead4cd061bec38943d919da9ecfd7f696ad2adfc5818bb386",
+  platformHelper:
+    "8bd2f07bcee4ea632f90f0c20b83de242cd477657484b10d0339f650767b5809",
 };
 const keyAgentDebuggerHelperPinContract = (sources) =>
   Object.entries(keyAgentDebuggerHelperPins).every(
     ([name, sha256]) => normalizedSourceSha256(sources[name]) === sha256,
   );
+const keyAgentDebuggerVersionResourceContract = (sources) => {
+  let buildMain;
+  let inspectorPath;
+  let inspect;
+  let positiveTest;
+  let nonPeTest;
+  try {
+    buildMain = rustTopLevelFunctionBlock(sources.build, "main");
+    inspectorPath = rustTopLevelFunctionBlock(
+      sources.versionInfoTest,
+      "inspector_path",
+    );
+    inspect = rustTopLevelFunctionBlock(sources.versionInfoTest, "inspect");
+    positiveTest = rustTopLevelFunctionBlock(
+      sources.versionInfoTest,
+      "built_executable_has_exact_release_candidate_version_info",
+    );
+    nonPeTest = rustTopLevelFunctionBlock(
+      sources.versionInfoTest,
+      "non_pe_candidate_with_exact_filename_is_rejected",
+    );
+  } catch {
+    return false;
+  }
+  const compactPositiveTest = compactRust(positiveTest);
+  const normalizedResource = sources.resource
+    .replace(/\r\n?/gu, "\n")
+    .trim();
+  const expectedResource = [
+    "LANGUAGE 0x09, 0x01",
+    "",
+    "1 VERSIONINFO",
+    "FILEVERSION 0,1,0,0",
+    "PRODUCTVERSION 0,1,0,0",
+    "FILEFLAGSMASK 0x3fL",
+    "FILEFLAGS 0x0L",
+    "FILEOS 0x40004L",
+    "FILETYPE 0x1L",
+    "FILESUBTYPE 0x0L",
+    "BEGIN",
+    '    BLOCK "StringFileInfo"',
+    "    BEGIN",
+    '        BLOCK "040904B0"',
+    "        BEGIN",
+    '            VALUE "FileDescription", "Your Wallet Key Agent Debugger\\0"',
+    '            VALUE "FileVersion", "0.1.0.0\\0"',
+    '            VALUE "InternalName", "key-agent-debugger\\0"',
+    '            VALUE "OriginalFilename", "key-agent-debugger.exe\\0"',
+    '            VALUE "ProductName", "Your Wallet\\0"',
+    '            VALUE "ProductVersion", "0.1.0.0\\0"',
+    "        END",
+    "    END",
+    '    BLOCK "VarFileInfo"',
+    "    BEGIN",
+    '        VALUE "Translation", 0x0409, 1200',
+    "    END",
+    "END",
+  ].join("\n");
+  return (
+    /^build\s*=\s*"build\.rs"\s*$/mu.test(sources.manifest) &&
+    JSON.stringify(
+      tomlTableKeyInventory(sources.manifest, "build-dependencies"),
+    ) === JSON.stringify(["find-msvc-tools"]) &&
+    /^find-msvc-tools\s*=\s*"=0\.1\.10"\s*$/mu.test(sources.manifest) &&
+    sources.build.includes(
+      'reason = "Cargo build scripts communicate link metadata on stdout"',
+    ) &&
+    (
+      sources.build.match(
+        /^const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";$/gmu,
+      ) ?? []
+    ).length === 1 &&
+    (
+      sources.build.match(
+        /^const RESOURCE_SOURCE: &str = "key-agent-debugger\.rc";$/gmu,
+      ) ?? []
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(buildMain, "var").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [""],
+        [""],
+        [""],
+      ]) &&
+    (buildMain.match(/env::var\("CARGO_CFG_TARGET_OS"\)/gu) ?? []).length ===
+      1 &&
+    (buildMain.match(/env::var\("TARGET"\)/gu) ?? []).length === 1 &&
+    (buildMain.match(/env::var\("CARGO_PKG_VERSION"\)/gu) ?? []).length ===
+      1 &&
+    (
+      buildMain.match(
+        /env::var\("CARGO_PKG_VERSION"\)\.as_deref\(\) != Ok\("0\.1\.0"\)/gu,
+      ) ?? []
+    ).length === 1 &&
+    JSON.stringify(
+      rustCallSites(buildMain, "var_os").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) ===
+      JSON.stringify([
+        [""],
+        [""],
+      ]) &&
+    (buildMain.match(/env::var_os\("CARGO_MANIFEST_DIR"\)/gu) ?? []).length ===
+      1 &&
+    (buildMain.match(/env::var_os\("OUT_DIR"\)/gu) ?? []).length === 1 &&
+    JSON.stringify(
+      rustCallSites(buildMain, "find").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&target", ""]]) &&
+    buildMain.includes(
+      'println!("cargo:rerun-if-changed={RESOURCE_SOURCE}")',
+    ) &&
+    buildMain.includes('find_msvc_tools::find(&target, "rc.exe")') &&
+    hasOrderedTextMarkers(buildMain, [
+      'env::var("CARGO_CFG_TARGET_OS")',
+      "return Ok(())",
+      'env::var("TARGET")',
+      "target != WINDOWS_TARGET",
+      'env::var("CARGO_PKG_VERSION")',
+      'env::var_os("CARGO_MANIFEST_DIR")',
+      'env::var_os("OUT_DIR")',
+      'output_dir.join("key-agent-debugger.res")',
+      'find_msvc_tools::find(&target, "rc.exe")',
+      '.arg("/nologo")',
+      '.arg("/fo")',
+      ".arg(&resource)",
+      ".arg(manifest_dir.join(RESOURCE_SOURCE))",
+      ".output()?",
+      "if !result.status.success()",
+      ".to_str()",
+      'println!("cargo:rustc-link-arg-bin=key-agent-debugger={resource}")',
+    ]) &&
+    (sources.build.match(/cargo:rustc-link-arg-bin=key-agent-debugger=/gu) ?? [])
+      .length === 1 &&
+    !/cargo:rustc-link-arg=(?!bin=)|\b(?:Command|spawn|status)\s*\(|\b(?:git|commit|date|time|SOURCE_DATE_EPOCH|CARGO_PKG_VERSION_(?:MAJOR|MINOR|PATCH|PRE))\b/iu.test(
+      rustLexicalCode(sources.build),
+    ) &&
+    normalizedResource === expectedResource &&
+    (sources.resource.match(/^\s*VALUE\s+"/gmu) ?? []).length === 7 &&
+    !/\b(?:DATE|TIME|GIT|COMMIT|ENV|INCLUDE)\b/iu.test(sources.resource) &&
+    inspectorPath.includes(
+      'env!("CARGO_MANIFEST_DIR")',
+    ) &&
+    inspectorPath.includes(
+      '.join("../../scripts/release/assert-key-agent-debugger-version.ps1")',
+    ) &&
+    inspect.includes('Command::new("powershell.exe")') &&
+    hasOrderedTextMarkers(inspect, [
+      '"-NoLogo"',
+      '"-NoProfile"',
+      '"-NonInteractive"',
+      '"-ExecutionPolicy"',
+      '"Bypass"',
+      '"-File"',
+      ".arg(inspector_path())",
+      '.arg("-ExecutablePath")',
+      ".arg(executable)",
+      "if quiet",
+      "command.stdout(Stdio::null()).stderr(Stdio::null())",
+      "command.status()",
+    ]) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        sources.versionInfoTest,
+        "built_executable_has_exact_release_candidate_version_info",
+        0,
+      ),
+    ) === JSON.stringify(["#[cfg(windows)]", "#[test]"]) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        sources.versionInfoTest,
+        "non_pe_candidate_with_exact_filename_is_rejected",
+        0,
+      ),
+    ) === JSON.stringify(["#[cfg(windows)]", "#[test]"]) &&
+    positiveTest.includes(
+      'inspect(Path::new(env!("CARGO_BIN_EXE_key-agent-debugger")), false)?',
+    ) &&
+    compactPositiveTest.includes("assert!(status.success())") &&
+    hasOrderedTextMarkers(nonPeTest, [
+      "std::env::temp_dir().join(format!(",
+      '"your-wallet-key-agent-debugger-version-{}-{unique}"',
+      'directory.join("key-agent-debugger.exe")',
+      'fs::write(&candidate, b"not a portable executable")',
+      "let inspection = inspect(&candidate, true)",
+      "fs::remove_file(&candidate)?",
+      "fs::remove_dir(&directory)?",
+      "assert!(!inspection?.success())",
+    ]) &&
+    !hasVacuousRustTestEscape(positiveTest) &&
+    !hasVacuousRustTestEscape(nonPeTest)
+  );
+};
+const keyAgentDebuggerFixedFileVersionDecoderContract = (source) => {
+  let fileVersion;
+  let decoder;
+  let test;
+  try {
+    fileVersion = rustFunctionBlockAtDepth(source, "file_version", 1);
+    decoder = rustFunctionBlockAtDepth(
+      source,
+      "decode_fixed_file_version",
+      1,
+    );
+    test = rustFunctionBlockAtDepth(
+      source,
+      "fixed_file_version_requires_the_canonical_structure_signature",
+      1,
+    );
+  } catch {
+    return false;
+  }
+  const compactSource = compactRust(source);
+  const compactDecoder = compactRust(decoder);
+  const compactTest = compactRust(test);
+  return (
+    (compactSource.match(
+      /constVS_FIXEDFILEINFO_SIGNATURE:u32=0xFEEF_04BD;/gu,
+    ) ?? []).length === 1 &&
+    rustCallSites(fileVersion, "decode_fixed_file_version").length === 1 &&
+    compactDecoder.startsWith(
+      "pub(super)fndecode_fixed_file_version(fixed:VS_FIXEDFILEINFO,)->Result<super::HelperVersion,HelperError>{iffixed.dwSignature!=VS_FIXEDFILEINFO_SIGNATURE{returnErr(HelperError::VersionMismatch);}",
+    ) &&
+    compactDecoder.includes(
+      "Ok(super::HelperVersion{major:u16::try_from(fixed.dwFileVersionMS>>16).unwrap_or(u16::MAX),minor:u16::try_from(fixed.dwFileVersionMS&0xffff).unwrap_or(u16::MAX),patch:u16::try_from(fixed.dwFileVersionLS>>16).unwrap_or(u16::MAX),build:u16::try_from(fixed.dwFileVersionLS&0xffff).unwrap_or(u16::MAX),})",
+    ) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        source,
+        "fixed_file_version_requires_the_canonical_structure_signature",
+        1,
+      ),
+    ) === JSON.stringify(["#[test]"]) &&
+    compactTest.includes(
+      "dwSignature:VS_FIXEDFILEINFO_SIGNATURE,dwFileVersionMS:(1_u32<<16)|2,dwFileVersionLS:(3_u32<<16)|4",
+    ) &&
+    compactTest.includes(
+      "decode_fixed_file_version(fixed)?",
+    ) &&
+    compactTest.includes(
+      "HelperVersion{major:1,minor:2,patch:3,build:4,}",
+    ) &&
+    compactTest.includes(
+      "fixed.dwSignature^=1;assert!(matches!(decode_fixed_file_version(fixed),Err(HelperError::VersionMismatch)))",
+    ) &&
+    !hasVacuousRustTestEscape(test)
+  );
+};
 const keyAgentDebuggerChildTestNames = [
   "sealed_stdio_debug_is_fixed_and_redacted",
   "transport_failures_have_stable_data_free_exit_categories",
@@ -59907,7 +60202,7 @@ const keyAgentDebuggerHelperSemanticContract = (sources) => {
   ].map((marker) => compactChild.indexOf(marker));
   return (
     /^name\s*=\s*"key-agent-debugger"$/gmu.test(sources.manifest) &&
-    /^build\s*=\s*false$/gmu.test(sources.manifest) &&
+    /^build\s*=\s*"build\.rs"$/gmu.test(sources.manifest) &&
     /^publish\s*=\s*false$/gmu.test(sources.manifest) &&
     JSON.stringify(tomlTableKeyInventory(sources.manifest, "features")) ===
       JSON.stringify(["default", "transport-feasibility-test-hook"]) &&
@@ -59916,6 +60211,9 @@ const keyAgentDebuggerHelperSemanticContract = (sources) => {
     ) &&
     JSON.stringify(tomlTableKeyInventory(sources.manifest, "dependencies")) ===
       JSON.stringify(["key-agent-debugger-wire"]) &&
+    JSON.stringify(
+      tomlTableKeyInventory(sources.manifest, "build-dependencies"),
+    ) === JSON.stringify(["find-msvc-tools"]) &&
     JSON.stringify(
       tomlTableKeyInventory(
         sources.manifest,
@@ -59935,6 +60233,8 @@ const keyAgentDebuggerHelperSemanticContract = (sources) => {
     /unsafe_code\s*=\s*"deny"/u.test(sources.manifest) &&
     /print_stdout\s*=\s*"deny"/u.test(sources.manifest) &&
     /print_stderr\s*=\s*"deny"/u.test(sources.manifest) &&
+    keyAgentDebuggerVersionResourceContract(sources) &&
+    keyAgentDebuggerFixedFileVersionDecoderContract(sources.platformHelper) &&
     sources.main.includes(
       '#![cfg_attr(windows, windows_subsystem = "windows")]',
     ) &&
@@ -60027,6 +60327,81 @@ const mutateKeyAgentDebuggerHelper = (name, search, replacement) => ({
   ),
 });
 const keyAgentDebuggerHelperMutationProbes = [
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    'build = "build.rs"',
+    "build = false",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "manifest",
+    'find-msvc-tools = "=0.1.10"',
+    'find-msvc-tools = "0.1"',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "build",
+    'const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";',
+    'const WINDOWS_TARGET: &str = "aarch64-pc-windows-msvc";',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "build",
+    'env::var("CARGO_PKG_VERSION").as_deref() != Ok("0.1.0")',
+    "false",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "build",
+    'env::var("CARGO_PKG_VERSION").as_deref() != Ok("0.1.0")',
+    'env::var("CARGO_PKG_VERSION").as_deref() != Ok("0.1.1")',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "build",
+    '.arg(manifest_dir.join(RESOURCE_SOURCE))',
+    '.arg("generated.rc")',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "build",
+    "cargo:rustc-link-arg-bin=key-agent-debugger={resource}",
+    "cargo:rustc-link-arg={resource}",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "resource",
+    "FILEVERSION 0,1,0,0",
+    "FILEVERSION 0,1,0,1",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "resource",
+    '            VALUE "InternalName", "key-agent-debugger\\0"\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "resource",
+    '        VALUE "Translation", 0x0409, 1200',
+    '        VALUE "Translation", 0x0409, 1252',
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "versionInfoTest",
+    "#[cfg(windows)]\n#[test]\nfn built_executable_has_exact_release_candidate_version_info",
+    "#[cfg(windows)]\nfn built_executable_has_exact_release_candidate_version_info",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "versionInfoTest",
+    "    assert!(status.success());",
+    "    assert!(true);",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "versionInfoTest",
+    "    assert!(!inspection?.success());",
+    "    assert!(true);",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "platformHelper",
+    "        if fixed.dwSignature != VS_FIXEDFILEINFO_SIGNATURE {",
+    "        if false {",
+  ),
+  mutateKeyAgentDebuggerHelper(
+    "platformHelper",
+    "        fixed.dwSignature ^= 1;",
+    "        fixed.dwSignature ^= 0;",
+  ),
   mutateKeyAgentDebuggerHelper(
     "manifest",
     "[dependencies]\n",
@@ -60138,7 +60513,7 @@ requireInvariant(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
     ),
-  "key-agent-debugger must remain a platform-windows-independent, silent default/release exit-78 helper with an exact Windows+feature+debug gate, unsafe confined to its child module, no debug/target/CLI/env/print surface, exact inherited-stdio seal, PID/deadline/sentinel proof, process-exit-only transition before the first READY byte, closed decision/EOF exits, exhaustive tests, and effective mutations",
+  "key-agent-debugger must remain a platform-windows-independent, silent default/release exit-78 helper with an exact Windows+feature+debug gate, a deterministic x64-MSVC-only pinned VERSIONINFO resource and binary-only captured rc.exe link, canonical fixed-info signature decoding, positive/non-PE tests, unsafe confined to its child module, no debug/target/CLI/env/print surface, exact inherited-stdio seal, PID/deadline/sentinel proof, process-exit-only transition before the first READY byte, closed decision/EOF exits, exhaustive tests, and effective mutations",
 );
 
 const keyAgentDebuggerPlatformSources = {
@@ -61284,7 +61659,9 @@ const keyAgentDebuggerTopologySemanticContract = (inputs) => {
       JSON.stringify([{ name: "lib.rs", kind: "file" }]) &&
     JSON.stringify(inputs.helperRoot) ===
       JSON.stringify([
+        { name: "build.rs", kind: "file" },
         { name: "Cargo.toml", kind: "file" },
+        { name: "key-agent-debugger.rc", kind: "file" },
         { name: "src", kind: "directory" },
         { name: "tests", kind: "directory" },
       ]) &&
@@ -61294,7 +61671,10 @@ const keyAgentDebuggerTopologySemanticContract = (inputs) => {
         { name: "main.rs", kind: "file" },
       ]) &&
     JSON.stringify(inputs.helperTestRoot) ===
-      JSON.stringify([{ name: "default_disabled.rs", kind: "file" }]) &&
+      JSON.stringify([
+        { name: "default_disabled.rs", kind: "file" },
+        { name: "version_info.rs", kind: "file" },
+      ]) &&
     JSON.stringify(inputs.platformTransportRoot) ===
       JSON.stringify([
         { name: "mod.rs", kind: "file" },
@@ -61371,6 +61751,18 @@ const keyAgentDebuggerTopologyMutationProbes = [
   },
   {
     ...keyAgentDebuggerTopologyInputs,
+    helperRoot: keyAgentDebuggerTopologyInputs.helperRoot.filter(
+      ({ name }) => name !== "key-agent-debugger.rc",
+    ),
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
+    helperTestRoot: keyAgentDebuggerTopologyInputs.helperTestRoot.filter(
+      ({ name }) => name !== "version_info.rs",
+    ),
+  },
+  {
+    ...keyAgentDebuggerTopologyInputs,
     platformTransportRoot: [
       ...keyAgentDebuggerTopologyInputs.platformTransportRoot,
       { name: "target.rs", kind: "file" },
@@ -61419,33 +61811,33 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "630e113cab6d4b5e3f8127878549211fa9a0910732a71d2298adf0f717cad77a",
+    sha256: "599a900a588d3344b5121f09d9a1f73af1a3af54826e37a36f60acb1e43d46c5",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only the transport mechanics",
-    sha256: "63d018e9bb9727d5e1bc0484b6cb4edf101628dbc85d5283dc90a9082e9312f1",
+    sha256: "64cf6f1d2ed6730f6d61799f744161bded273aaae596f0add287c5e48d4d5ff8",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "0a3289b28c954fd0f2dc73b06047c35fdb2a80495bc0bf33c0fcb90a7aede396",
+    sha256: "e487d3b11f2256386111d304f19776f980212949431f939f910192c3241f4974",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "35551328711c04bbd4b960f12e76b95922334df6709726a53a0893b09cbbd3fb",
+    sha256: "9019263fb042cd3a962629cb1bb191445b1416da2628dec5291d509a0b0ca232",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor:
       "The first dedicated-process feasibility slice is deliberately narrower",
-    sha256: "e40a97647070d9ccc865f8a4aa338fdf645c0e91ee1b64473b3fc1af697e396c",
+    sha256: "f64646f8aaabbba795d7a39d020baf396cc3c642bcaec8a568d778388024523d",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -61487,11 +61879,11 @@ const keyAgentDebuggerDocumentationPatterns = [
   /borrowed raw (?:event )?aliases|raw event aliases as borrowed|(?:keep|keeps) raw (?:event )?aliases borrowed/iu,
   /(?:reclaim|close)[\s\S]{0,90}(?:process exit|debugger-process exit)|(?:process exit|debugger-process exit)[\s\S]{0,90}(?:reclaim|close)/iu,
   /Signed/iu,
-  /signed\s+packaged(?:-\s*|\s+debugger\s+)artifact/iu,
+  /(?:signed\s+packaged(?:-\s*|\s+debugger\s+)artifact|(?:real|actual|completed)\s+signed[-\s]+product(?:\s+E2E)?|immutable\s+(?:installed\s+artifact|installation))/iu,
   /supported-kernel/iu,
   /production\s+callers?/iu,
   /polic/iu,
-  /unverified/iu,
+  /(?:unverified|fixture\/proxy|not\s+(?:proof\s+of\s+)?(?:an?\s+)?actual\s+signed[-\s]+product|not\s+a\s+completed\s+signed[-\s]+product)/iu,
   /STOP-SHIP/u,
   /None/u,
   /overlapped pipe I\/O/iu,
@@ -61550,7 +61942,7 @@ const keyAgentDebuggerAliasRetirementDocumentationPatterns = Object.freeze([
   /(?:a\s+)?live\s+slot[\s\S]{0,60}asymmetric\s+result[\s\S]{0,60}(?:any\s+)?other\s+error[\s\S]{0,40}fail-\s*fasts/iu,
   /(?:same\s+rule\s+applies\s+to|rule\s+covers\s+both)\s+ordinary\s+detach[\s\S]{0,60}attached\s+rejection\s+cleanup[\s\S]{0,100}never\s+calls\s+`?CloseHandle`?[\s\S]{0,100}system-\s*managed\s+borrowed\s+aliases[\s\S]{0,140}(?:limited\s+to|only\s+for)\s+`?hFile`?/iu,
   /(?:proves?|establishes?)\s+only\s+that\s+both\s+numeric\s+slots\s+were\s+invalid[\s\S]{0,100}observation\s+points[\s\S]{0,80}measured\s+host[\s\S]{0,60}not\s+object\s+destruction[\s\S]{0,40}(?:a\s+)?Windows-\s*wide\s+contract/iu,
-  /(?:(?:remain|remains)\s+\*\*STOP-SHIP\*\*,?\s+as\s+do[\s\S]{0,560}supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement|supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement[\s\S]{0,240}(?:also\s+|therefore\s+)?(?:remain|remains)\s+\*\*STOP-SHIP\*\*)/iu,
+  /(?:(?:remain|remains)(?:\s+external)?\s+\*\*STOP-SHIP\*\*(?:\s+work)?,?\s+as\s+do[\s\S]{0,560}supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement|supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[-\s]+retirement[\s\S]{0,240}(?:also\s+|therefore\s+)?(?:remain|remains)\s+\*\*STOP-SHIP\*\*)/iu,
 ]);
 const keyAgentDebuggerArtifactAdmissionDocumentationPatterns = Object.freeze([
   /\bPreflightDebuggerArtifact\b/u,
@@ -61571,7 +61963,7 @@ const keyAgentDebuggerArtifactAdmissionDocumentationPatterns = Object.freeze([
   /(?:80\/72\/56-\s*byte\s+wire[\s\S]{0,60}(?:unchanged|remain)|(?:unchanged|preserv(?:e|ing)|remain)[\s\S]{0,180}80\/72\/56-\s*byte\s+wire|80-\s*byte[\s\S]{0,180}72-\s*byte[\s\S]{0,180}56-\s*byte[\s\S]{0,220}(?:unchanged|remain))/iu,
   /(?:There\s+is\s+(?:still\s+)?no\s+production\s+caller|No\s+production\s+caller\s+exists|there\s+is\s+no\s+production\s+caller)/iu,
   /COMPILED_RELEASE_POLICY[\s\S]{0,30}remains[\s\S]{0,20}None/u,
-  /signed\s+packaged(?:-\s*|\s+(?:debugger\s+)?)artifact[\s\S]{0,240}STOP-SHIP/iu,
+  /(?:(?:signed\s+packaged(?:-\s*|\s+(?:debugger\s+)?)artifact|(?:real|actual|completed)\s+signed[-\s]+product(?:\s+E2E)?|immutable\s+(?:installed\s+artifact|installation))[\s\S]{0,360}STOP-SHIP)/iu,
   /separate\s+principal[\s\S]{0,160}from-\s*birth\s+process\s+DACL[\s\S]{0,220}PROCESS_DUP_HANDLE/iu,
   /actual\s+target\s+(?:handle\s+)?transfer[\s\S]{0,280}target\s+membership[\s\S]{0,180}process-\s*count\s+topology[\s\S]{0,180}Job-\s*owner\s+handoff/iu,
   /adversarial\s+parent-\s*death\s+containment[\s\S]{0,280}supported-\s*kernel[\s\S]{0,220}(?:debug-\s*event-\s*alias|debug-\s*alias|alias)[\s\S]{0,100}retirement[\s\S]{0,180}cancellation-\s*drain/iu,
@@ -61729,7 +62121,7 @@ const keyAgentDebuggerDocumentationWindow = (spec) => {
   if (first === -1 || spec.source.indexOf(spec.anchor, first + 1) !== -1) {
     return null;
   }
-  return spec.source.slice(first, first + 12_000);
+  return spec.source.slice(first, first + 14_000);
 };
 const keyAgentDebuggerDocumentationPinContract = (specs) =>
   specs.every(
@@ -62085,7 +62477,7 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-package/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, current-host-only invalid numeric alias slots without object-destruction or Windows-wide-contract overclaim and direct supported-kernel alias-retirement STOP-SHIP linkage, condensed rejection cleanup in README/ADR plus strict conditional terminate/pending-event/detach/terminal-proof/owner-drop/Job-zero ordering in architecture/design/security, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
+  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-product/immutable-install/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, current-host-only invalid numeric alias slots without object-destruction or Windows-wide-contract overclaim and direct supported-kernel alias-retirement STOP-SHIP linkage, condensed rejection cleanup in README/ADR plus strict conditional terminate/pending-event/detach/terminal-proof/owner-drop/Job-zero ordering in architecture/design/security, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {
@@ -64228,6 +64620,9 @@ const releaseCommon = repositoryPowerShellSource("scripts/release/common.ps1");
 const releaseCommonTests = repositoryPowerShellSource(
   "scripts/release/common.test.ps1",
 );
+const releaseDebuggerVersionInspector = repositoryPowerShellSource(
+  "scripts/release/assert-key-agent-debugger-version.ps1",
+);
 const releaseUnsignedPreparation = repositoryPowerShellSource(
   "scripts/release/prepare-unsigned.ps1",
 );
@@ -64381,6 +64776,7 @@ requireInvariant(
 const releaseManifestVerifier = await text(
   "scripts/release/release-manifest.mjs",
 );
+const releaseHashPayload = await text("scripts/release/hash-payload.mjs");
 const releaseManifestTests = releasePolicyTestSource(
   "scripts/release/release-manifest.test.mjs",
 );
@@ -64415,6 +64811,9 @@ const approvedSealedReleasePowerShellEntryPaths = [
   "scripts/release/verify-authenticode.ps1",
   "scripts/release/verify-release-offline.ps1",
 ];
+const approvedDirectReleasePowerShellLeafPaths = [
+  "scripts/release/assert-key-agent-debugger-version.ps1",
+];
 const approvedOtherPowerShellScriptPaths = [
   "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1",
   "scripts/check.ps1",
@@ -64424,6 +64823,7 @@ const approvedOtherPowerShellScriptPaths = [
 ];
 const approvedRepositoryPowerShellScriptPaths = [
   ...approvedSealedReleasePowerShellEntryPaths,
+  ...approvedDirectReleasePowerShellLeafPaths,
   ...approvedOtherPowerShellScriptPaths,
 ];
 const approvedPowerShellSourceSha256 = Object.freeze({
@@ -64433,24 +64833,26 @@ const approvedPowerShellSourceSha256 = Object.freeze({
     "5b7cccbe090a546be0e0ac263fbad2ec41beb814a6a1b69b8d6271e0c9436c15",
   "scripts/launcher-contract.test.ps1":
     "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
+  "scripts/release/assert-key-agent-debugger-version.ps1":
+    "66f1121549851d1c4d3915e69fe66112533cfe3d858efd77e14380d25db5ad6a",
   "scripts/release/check.ps1":
-    "a9d5d263f07a5bd8459597e3749aa5617708ac0b87536ca6fdd3341adfcde378",
+    "ff9ea2f2f3023e6a372556eaba35e73540f53577cec91ef35f1c0a3cde69dc4d",
   "scripts/release/common.ps1":
-    "82368bd92780baaffd487c5b674203349a7a4f1ee56b9d71a4ba3e58bd3db5fb",
+    "4aec3dab41181d7906e2989ea5b749fc8c4bd9aea1181adfcb04751e7bb8c1b2",
   "scripts/release/common.test.ps1":
-    "d67800a958a60df98ccbdf8d522344cc3f84d49c44b373d9dfc46faf851442a7",
+    "7063aa01ecee3f80a0fefaba26509827c25cc2099a22984266d8b3407be66175",
   "scripts/release/prepare-unsigned.ps1":
-    "5b84c796d4a9899b37666f295793e193b101e0a3564d7492ea26dd00bd0cbb3b",
+    "34129d5aca0831d6bdd9457ee60725224a24e103841594748821ca9d25ef8ffd",
   "scripts/release/prepare-verifier-toolset.ps1":
-    "0523e4a106675d161a385e50fea097d859a9e0a3c942396ca4c1de0d0224a013",
+    "bfa69388b6de85cf2bf3d2be63d4f56f73fa245507e7078947e1bc04da86a50e",
   "scripts/release/review-evidence-set.ps1":
     "1d9575c405d0c01d3787270c5d5853a13f814ac0636cb7959ef7dc0d7d8e53fa",
   "scripts/release/verifier-toolset.test.ps1":
-    "aa9f4e1e4a13a47dba1032c528a0f0e2febf09134653b4300cd82c57fe766945",
+    "678ce47c3be9a2454181312a1e455c7b974bb15ab2d78962ce817f91a31cf982",
   "scripts/release/verify-authenticode.ps1":
-    "179923bb1c5cf2acd349fd97e5c7731a63fefe8627969afaf6447d4841f3bbdd",
+    "f2dce87dd5f5d64b2cef7c4b2c9c037db5ae1da850c86e69d6a43795b00ef25c",
   "scripts/release/verify-release-offline.ps1":
-    "8f25897182ab4da26cd40b0f8abe4259cf9d72b3d69ac2c7bd007b987fe5bff6",
+    "30b0a64f26429fbee00825f2b0e6c0f320d22fcc1690b19d164833b1259f197c",
   "scripts/run-sepolia-wallet.ps1":
     "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
 });
@@ -64460,13 +64862,16 @@ const approvedReleasePolicyTestSha256 = Object.freeze({
   "scripts/release/generate-inventories.test.mjs":
     "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc",
   "scripts/release/release-manifest.test.mjs":
-    "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a",
+    "72fedde11de2e28a2a351697f0a2e733c6297adcbd161c6d167913c875902c9b",
   "scripts/release/release-verifier-integration.test.mjs":
-    "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e",
+    "3b92f785e9bd81dc7f1a4173c2fb506f2d7ac74b32552e5b2955a332d0d0b2c7",
   "scripts/release/review-evidence-set.test.mjs":
     "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470",
 });
 const sealedReleasePowerShellEntries = approvedSealedReleasePowerShellEntryPaths
+  .map((path) => repositoryPowerShellScriptsByPath.get(path.toLowerCase()))
+  .filter((script) => script !== undefined);
+const directReleasePowerShellLeaves = approvedDirectReleasePowerShellLeafPaths
   .map((path) => repositoryPowerShellScriptsByPath.get(path.toLowerCase()))
   .filter((script) => script !== undefined);
 const discoveredReleaseCommonConsumerPaths = repositoryPowerShellScripts
@@ -64519,7 +64924,747 @@ const missingHostFlagProbeBlock =
 const releaseTestSuiteNames = releasePolicyTests.map(({ path }) =>
   path.slice("scripts/release/".length),
 );
+const exactPowerShellStringArray = (source, variableName) => {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const body = new RegExp(
+    `\\$${escaped}\\s*=\\s*@\\((?<body>[\\s\\S]*?)\\)`,
+    "u",
+  ).exec(source)?.groups?.body;
+  if (body === undefined) return null;
+  const residue = body.replace(/"[^"\r\n]*"\s*,?/gu, "").trim();
+  if (residue !== "") return null;
+  return [...body.matchAll(/"(?<value>[^"\r\n]*)"/gu)].map(
+    (match) => match.groups.value,
+  );
+};
+const exactPowerShellOrderedMapKeys = (source, variableName) => {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const body = new RegExp(
+    `\\$${escaped}\\s*=\\s*\\[ordered\\]@\\{(?<body>[\\s\\S]*?)\\r?\\n\\s*\\}`,
+    "u",
+  ).exec(source)?.groups?.body;
+  if (body === undefined) return null;
+  return [...body.matchAll(/^\s*"(?<key>[^"\r\n]+)"\s*=/gmu)].map(
+    (match) => match.groups.key,
+  );
+};
+const exactJavascriptStringMap = (source, declarationPattern) => {
+  const body = declarationPattern.exec(source)?.groups?.body;
+  if (body === undefined) return null;
+  const entries = [];
+  const entryPattern =
+    /^\s*(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[A-Za-z_$][A-Za-z0-9_$]*))\s*:\s*"(?<value>[^"\r\n]+)"\s*,?\s*$/gmu;
+  for (const match of body.matchAll(entryPattern)) {
+    entries.push([match.groups.quoted ?? match.groups.bare, match.groups.value]);
+  }
+  const residue = body.replace(entryPattern, "").trim();
+  return residue === "" ? entries : null;
+};
+const keyAgentDebuggerReleaseArtifacts = Object.freeze([
+  ["approval-ui-exe", "payload/approval-ui.exe"],
+  ["broker-exe", "payload/broker.exe"],
+  ["dashboard-exe", "payload/dashboard.exe"],
+  ["extension-package", "payload/extension-package.zip"],
+  ["installer", "payload/your-wallet-canary.msi"],
+  ["key-agent-debugger-exe", "payload/key-agent-debugger.exe"],
+  ["key-agent-exe", "payload/key-agent.exe"],
+  ["native-host-exe", "payload/native-host.exe"],
+  ["secret-input-ui-exe", "payload/secret-input-ui.exe"],
+]);
+const keyAgentDebuggerReleasePayloadFiles = Object.freeze(
+  [
+    "approval-ui.exe",
+    "broker.exe",
+    "dashboard.exe",
+    "extension-package.zip",
+    "key-agent-debugger.exe",
+    "key-agent.exe",
+    "native-host.exe",
+    "secret-input-ui.exe",
+    "your-wallet-canary.msi",
+  ],
+);
+const keyAgentDebuggerSignedPayloadFiles = Object.freeze(
+  keyAgentDebuggerReleasePayloadFiles.filter(
+    (path) => path !== "extension-package.zip",
+  ),
+);
+const keyAgentDebuggerReleaseBinaryNames = Object.freeze([
+  "approval-ui",
+  "broker",
+  "dashboard",
+  "key-agent-debugger",
+  "key-agent",
+  "native-host",
+  "secret-input-ui",
+]);
+const keyAgentDebuggerVerifierToolsetFiles = Object.freeze([
+  "extension/native-host/validate-manifest.mjs",
+  "node.exe",
+  "scripts/release/assert-key-agent-debugger-version.ps1",
+  "scripts/release/common.ps1",
+  "scripts/release/release-manifest.mjs",
+  "scripts/release/review-evidence-set.mjs",
+  "scripts/release/review-evidence-set.ps1",
+  "scripts/release/verify-release-offline.ps1",
+]);
+const keyAgentDebuggerVersionInspectorContract = (source) => {
+  const analysis = analyzePowerShellSource(source);
+  const numericParts = [
+    ["FileMajorPart", "0"],
+    ["FileMinorPart", "1"],
+    ["FileBuildPart", "0"],
+    ["FilePrivatePart", "0"],
+    ["ProductMajorPart", "0"],
+    ["ProductMinorPart", "1"],
+    ["ProductBuildPart", "0"],
+    ["ProductPrivatePart", "0"],
+  ];
+  const strings = [
+    ["FileDescription", "Your Wallet Key Agent Debugger"],
+    ["FileVersion", "0.1.0.0"],
+    ["InternalName", "key-agent-debugger"],
+    ["OriginalFilename", "key-agent-debugger.exe"],
+    ["ProductName", "Your Wallet"],
+    ["ProductVersion", "0.1.0.0"],
+  ];
+  return (
+    analysis.valid &&
+    /^param\(\s*\[Parameter\(Mandatory = \$true\)\]\s*\[string\]\$ExecutablePath\s*\)/u.test(
+      source,
+    ) &&
+    source.includes("Set-StrictMode -Version Latest") &&
+    source.includes('$ErrorActionPreference = "Stop"') &&
+    source.includes(
+      "$candidate = [System.IO.FileInfo]::new([System.IO.Path]::GetFullPath($ExecutablePath))",
+    ) &&
+    source.includes("-not $candidate.Exists") &&
+    source.includes(
+      "($candidate.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0",
+    ) &&
+    source.includes(
+      "($candidate.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0",
+    ) &&
+    source.includes('$candidate.Name -cne "key-agent-debugger.exe"') &&
+    (
+      source.match(
+        /\[System\.Diagnostics\.FileVersionInfo\]::GetVersionInfo\(\$candidate\.FullName\)/gu,
+      ) ?? []
+    ).length === 1 &&
+    numericParts.every(
+      ([name, value]) =>
+        (source.match(new RegExp(`\\$version\\.${name} -ne ${value}\\b`, "gu")) ??
+          []).length === 1,
+    ) &&
+    strings.every(
+      ([name, value]) =>
+        (
+          source.match(
+            new RegExp(
+              `\\$version\\.${name} -cne "${value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`,
+              "gu",
+            ),
+          ) ?? []
+        ).length === 1,
+    ) &&
+    !/\b(?:Get-AuthenticodeSignature|Get-ItemProperty|Write-(?:Output|Host|Error)|Invoke-Expression|Start-Process)\b|\$env:|\b(?:git|commit|date|time|SOURCE_DATE_EPOCH)\b/iu.test(
+      analysis.commentFreeCode,
+    )
+  );
+};
+const keyAgentDebuggerReleaseInputs = {
+  inspector: releaseDebuggerVersionInspector,
+  manifest: releaseManifestVerifier,
+  hashPayload: releaseHashPayload,
+  prepareUnsigned: releaseUnsignedPreparation,
+  prepareToolset: releaseVerifierToolsetPreparation,
+  common: releaseCommon,
+  commonTests: releaseCommonTests,
+  authenticode: releaseAuthenticodeVerifier,
+  offline: releaseVerifier,
+  manifestTests: releaseManifestTests,
+  integrationTests: releaseVerifierIntegrationTests,
+  toolsetTests: releaseVerifierToolsetTests,
+};
+const keyAgentDebuggerReleasePins = Object.freeze({
+  inspector: "e5241b895cf3314ad0caac848d206d00f5fbc4993e7790fc03577c4fc64bca8a",
+  manifest: "2dd88b03e734c34b67a6a74680cb9d0a4480c56c98429b469abf873f20a497f6",
+  hashPayload:
+    "1b19fa8baf98c47ecd8d9e596745af121b9ab3720f3e9d6763b41c6858443597",
+  prepareUnsigned:
+    "6702c69679e0ede7267b340d7e9ad21f72356a20d548798aef08613c42933221",
+  prepareToolset:
+    "321cc2e880cffd9f7f05b121bf824fc40a6af3b595a5f8ef32e5c91509a3cc4e",
+  common: "bb016f653ecb3fe69040fc4c08374cd1e90402af224bb8030beb2e0b044ebb30",
+  commonTests:
+    "d91899783146e816ca8aee4d4b87dc3fa8d218ab722a022ad3ef3725311488ea",
+  authenticode:
+    "659fbd0f8132bcded40b3267f88e1c35dfaeccb75125ac9ab745a325d1a7700a",
+  offline:
+    "7486f76d7033fe74c748146b4d8bf42983ea9091dea7ba89e39c5ff860ab33d7",
+  manifestTests:
+    "72fedde11de2e28a2a351697f0a2e733c6297adcbd161c6d167913c875902c9b",
+  integrationTests:
+    "3b92f785e9bd81dc7f1a4173c2fb506f2d7ac74b32552e5b2955a332d0d0b2c7",
+  toolsetTests:
+    "4e0720f279dd899dab5e71a6394cf9fa9b020997b51594b0257812ed42dfb09f",
+});
+const keyAgentDebuggerReleasePinContract = (inputs) =>
+  Object.entries(keyAgentDebuggerReleasePins).every(
+    ([name, sha256]) => normalizedSourceSha256(inputs[name]) === sha256,
+  );
+const keyAgentDebuggerReleaseSemanticContract = (inputs) => {
+  let prepareUnsigned;
+  let prepareToolset;
+  let openToolset;
+  let inspectToolsetDebugger;
+  let exactAuthenticodeInventory;
+  try {
+    prepareUnsigned = inputs.prepareUnsigned;
+    prepareToolset = powerShellFunctionBlock(
+      inputs.prepareToolset,
+      "Invoke-PrepareVerifierToolset",
+    );
+    openToolset = powerShellFunctionBlock(
+      inputs.common,
+      "Open-VerifiedReleaseToolset",
+    );
+    inspectToolsetDebugger = powerShellFunctionBlock(
+      inputs.common,
+      "Assert-ReleaseToolsetDebuggerVersion",
+    );
+    exactAuthenticodeInventory = powerShellFunctionBlock(
+      inputs.authenticode,
+      "Assert-ExactAuthenticodePayloadInventory",
+    );
+  } catch {
+    return false;
+  }
+  const manifestArtifacts = exactJavascriptStringMap(
+    inputs.manifest,
+    /export const REQUIRED_ARTIFACT_PATHS\s*=\s*Object\.freeze\(\{(?<body>[\s\S]*?)\}\);/u,
+  );
+  const hashPayloadArtifacts = exactJavascriptStringMap(
+    inputs.hashPayload,
+    /const ROLE_FILES\s*=\s*Object\.freeze\(\{(?<body>[\s\S]*?)\}\);/u,
+  )?.map(([role, file]) => [role, `payload/${file}`]);
+  const manifestDebuggerRoleCount =
+    manifestArtifacts?.filter(
+      ([role, path]) =>
+        role === "key-agent-debugger-exe" &&
+        path === "payload/key-agent-debugger.exe",
+    ).length ?? 0;
+  let authenticodeCursor = 0;
+  const authenticodeOrder = [
+    "$outputParentPin = Open-PinnedReleaseDirectoryPath",
+    "$payloadLocks = Open-ReadOnlyReleaseTreeLocks",
+    "Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $payloadRoot",
+    "Assert-ExactAuthenticodePayloadInventory",
+    "$inspectorPin = Open-PinnedReleaseFilePath",
+    '& $debuggerVersionInspector -ExecutablePath $filePath',
+    "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
+    "Assert-NoReparseTree -LiteralPath $payloadRoot",
+    "Assert-ExactAuthenticodePayloadInventory",
+    "Write-NewUtf8File -LiteralPath $OutputPath -Content $report",
+    "$outputFilePin = Open-PinnedReleaseFilePath",
+    "[System.IO.File]::ReadAllBytes($outputFilePin.CanonicalPath)",
+  ].map((marker) => {
+    const position = inputs.authenticode.indexOf(marker, authenticodeCursor);
+    if (position !== -1) authenticodeCursor = position + marker.length;
+    return position;
+  });
+  const offlineDebuggerStart = inputs.offline.indexOf(
+    '[System.String]::Equals(\n            $fileName,\n            "key-agent-debugger.exe"',
+  );
+  const offlineVersion = inputs.offline.indexOf(
+    "Assert-ReleaseToolsetDebuggerVersion",
+    offlineDebuggerStart,
+  );
+  const offlineSignature = inputs.offline.indexOf(
+    "Get-ReleaseAuthenticodeSignature -LiteralPath $filePath",
+    offlineDebuggerStart,
+  );
+  return (
+    keyAgentDebuggerVersionInspectorContract(inputs.inspector) &&
+    JSON.stringify(manifestArtifacts) ===
+      JSON.stringify(keyAgentDebuggerReleaseArtifacts) &&
+    JSON.stringify(hashPayloadArtifacts) ===
+      JSON.stringify(keyAgentDebuggerReleaseArtifacts) &&
+    manifestDebuggerRoleCount === 1 &&
+    inputs.manifest.includes(
+      "Object.freeze(Object.keys(REQUIRED_ARTIFACT_PATHS).sort())",
+    ) &&
+    inputs.hashPayload.includes(
+      'fail("payload root must contain exactly the reviewed artifact filenames")',
+    ) &&
+    JSON.stringify(exactPowerShellStringArray(prepareUnsigned, "binaryNames")) ===
+      JSON.stringify(keyAgentDebuggerReleaseBinaryNames) &&
+    hasOrderedTextMarkers(prepareUnsigned, [
+      "if ([System.String]::Equals(",
+      '"key-agent-debugger"',
+      '& (Join-Path $PSScriptRoot "assert-key-agent-debugger-version.ps1")',
+      "-ExecutablePath $binary",
+      "Copy-Item -LiteralPath $binary -Destination",
+    ]) &&
+    JSON.stringify(exactPowerShellStringArray(openToolset, "expectedFiles")) ===
+      JSON.stringify(keyAgentDebuggerVerifierToolsetFiles) &&
+    JSON.stringify(
+      exactPowerShellOrderedMapKeys(prepareToolset, "sourceFiles"),
+    ) === JSON.stringify(keyAgentDebuggerVerifierToolsetFiles) &&
+    JSON.stringify(
+      exactPowerShellStringArray(inputs.toolsetTests, "toolsetFiles"),
+    ) === JSON.stringify(keyAgentDebuggerVerifierToolsetFiles) &&
+    inputs.toolsetTests.includes(
+      "Test toolset fixture was not the exact eight-file/four-directory shape",
+    ) &&
+    inputs.toolsetTests.includes("$preparedFiles.Count -ne 8") &&
+    hasOrderedTextMarkers(inspectToolsetDebugger, [
+      "Get-VerifiedReleaseToolsetRecord -Toolset $Toolset",
+      '$relative = "scripts/release/assert-key-agent-debugger-version.ps1"',
+      "$script:ReleaseDirectoryLockType::OpenFile(",
+      "$script:ReleaseDirectoryLockType::SameIdentity(",
+      "$script:ReleaseDirectoryLockType::GetFinalVolumePath(",
+      "& $record.VolumePaths[$relative] -ExecutablePath $ExecutablePath",
+      "$candidate.Dispose()",
+    ]) &&
+    JSON.stringify(
+      exactPowerShellStringArray(inputs.authenticode, "requiredFiles"),
+    ) === JSON.stringify(keyAgentDebuggerReleasePayloadFiles) &&
+    JSON.stringify(
+      exactPowerShellStringArray(inputs.offline, "payloadFiles"),
+    ) === JSON.stringify(keyAgentDebuggerSignedPayloadFiles) &&
+    exactAuthenticodeInventory.includes(
+      "Get-ChildItem -LiteralPath $PayloadRoot -Force",
+    ) &&
+    exactAuthenticodeInventory.includes(
+      "$actualEntries.Count -ne $RequiredFiles.Count",
+    ) &&
+    exactAuthenticodeInventory.includes(
+      '($actualFiles -join "`n") -cne ($expectedFiles -join "`n")',
+    ) &&
+    (inputs.authenticode.match(
+      /^    Assert-ExactAuthenticodePayloadInventory\b/gmu,
+    ) ?? []).length === 2 &&
+    authenticodeOrder.every((position) => position !== -1) &&
+    authenticodeOrder
+      .slice(1)
+      .every((position, index) => position > authenticodeOrder[index]) &&
+    inputs.authenticode.includes(
+      "$inspectorPin = Open-PinnedReleaseFilePath -LiteralPath $debuggerVersionInspector",
+    ) &&
+    inputs.authenticode.includes(
+      "$debuggerVersionInspector = $inspectorPin.CanonicalPath",
+    ) &&
+    inputs.authenticode.includes(
+      "$outputLeaf = [System.IO.Path]::GetFileName($OutputPath)",
+    ) &&
+    inputs.authenticode.includes(
+      "'^[A-Za-z0-9][A-Za-z0-9._-]*$'",
+    ) &&
+    inputs.authenticode.includes(
+      "Authenticode evidence output requires one existing non-root parent",
+    ) &&
+    inputs.authenticode.includes(
+      "Open-PinnedReleaseDirectoryPath -LiteralPath $outputParentInput",
+    ) &&
+    inputs.authenticode.includes(
+      "Authenticode evidence output parent must not alias a volume root",
+    ) &&
+    inputs.authenticode.includes(
+      "Authenticode evidence output must be outside the held payload tree",
+    ) &&
+    inputs.authenticode.includes(
+      "Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $payloadRoot",
+    ) &&
+    inputs.authenticode.includes(
+      "Authenticode evidence output identity changed after creation",
+    ) &&
+    inputs.authenticode.includes(
+      "Authenticode evidence output bytes changed after creation",
+    ) &&
+    inputs.authenticode.includes(
+      "Close-ReadOnlyReleaseTreeLocks -LockSet $payloadLocks",
+    ) &&
+    offlineDebuggerStart !== -1 &&
+    offlineVersion > offlineDebuggerStart &&
+    offlineSignature > offlineVersion &&
+    inputs.manifestTests.includes(
+      'test("key-agent debugger has one dedicated release artifact role and path"',
+    ) &&
+    inputs.manifestTests.includes(
+      'test("missing key-agent debugger artifact is rejected"',
+    ) &&
+    inputs.manifestTests.includes(
+      'test("key-agent debugger role cannot be swapped with the key-agent path"',
+    ) &&
+    inputs.integrationTests.includes(
+      'test("hash-payload CLI binds the exact key-agent debugger role and path"',
+    ) &&
+    inputs.integrationTests.includes(
+      'test("hash-payload CLI rejects a missing key-agent debugger"',
+    ) &&
+    inputs.integrationTests.includes(
+      'test("final verifier rejects key-agent debugger byte substitution"',
+    ) &&
+    inputs.toolsetTests.includes(
+      '-Label "alternate data stream output"',
+    ) &&
+    inputs.toolsetTests.includes(
+      '-Label "junction-aliased output parent"',
+    ) &&
+    inputs.toolsetTests.includes('-Label "payload-contained output"') &&
+    inputs.toolsetTests.includes('-Label "attribute-only writable payload"') &&
+    inputs.toolsetTests.includes(
+      "Authenticode evidence boundary rejected its exact protected external output fixture",
+    ) &&
+    inputs.toolsetTests.includes(
+      "Pinned debugger version inspector did not fail before Authenticode on substituted bytes",
+    ) &&
+    inputs.toolsetTests.includes(
+      "Debugger-specific Authenticode rejection did not occur after version admission",
+    ) &&
+    inputs.toolsetTests.includes(
+      '-Label "version-admitted unsigned key-agent debugger Authenticode"',
+    ) &&
+    inputs.toolsetTests.includes(
+      "Debugger VERSIONINFO inspector accepted a signed wrong-version executable",
+    )
+  );
+};
+const mutateKeyAgentDebuggerRelease = (name, search, replacement) => ({
+  ...keyAgentDebuggerReleaseInputs,
+  [name]: replaceExactStringOnce(
+    keyAgentDebuggerReleaseInputs[name],
+    search,
+    replacement,
+  ),
+});
+const keyAgentDebuggerReleaseMutationProbes = [
+  mutateKeyAgentDebuggerRelease(
+    "inspector",
+    '$candidate.Name -cne "key-agent-debugger.exe"',
+    '$candidate.Name -ne "key-agent-debugger.exe"',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "inspector",
+    "$version.FileMajorPart -ne 0",
+    "$version.FileMajorPart -ne 1",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "inspector",
+    '    $version.InternalName -cne "key-agent-debugger" -or\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "manifest",
+    '  "key-agent-debugger-exe": "payload/key-agent-debugger.exe",',
+    '  "key-agent-debugger-exe": "payload/key-agent.exe",',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "hashPayload",
+    '  "key-agent-debugger-exe": "key-agent-debugger.exe",',
+    '  "key-agent-debugger-exe": "key-agent.exe",',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "prepareUnsigned",
+    '    $binaryNames = @("approval-ui", "broker", "dashboard", "key-agent-debugger", "key-agent", "native-host", "secret-input-ui")',
+    '    $binaryNames = @("approval-ui", "broker", "dashboard", "key-agent", "native-host", "secret-input-ui")',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "prepareUnsigned",
+    '                & (Join-Path $PSScriptRoot "assert-key-agent-debugger-version.ps1") `\n                    -ExecutablePath $binary\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "common",
+    '        "scripts/release/assert-key-agent-debugger-version.ps1",\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "common",
+    '    $relative = "scripts/release/assert-key-agent-debugger-version.ps1"\n    $candidate = $null\n    try {\n        $candidate = $script:ReleaseDirectoryLockType::OpenFile($record.VolumePaths[$relative])\n        if (\n            -not $script:ReleaseDirectoryLockType::SameIdentity($record.IdentityHandles[$relative], $candidate) -or',
+    '    $relative = "scripts/release/assert-key-agent-debugger-version.ps1"\n    $candidate = $null\n    try {\n        $candidate = $script:ReleaseDirectoryLockType::OpenFile($record.VolumePaths[$relative])\n        if (\n            $false -or',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "prepareToolset",
+    '        "scripts/release/assert-key-agent-debugger-version.ps1" = Join-Path $repoRoot "scripts\\release\\assert-key-agent-debugger-version.ps1"\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    '    "extension-package.zip",\n    "key-agent-debugger.exe",\n    "key-agent.exe",',
+    '    "extension-package.zip",\n    "key-agent.exe",',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "    $payloadLocks = Open-ReadOnlyReleaseTreeLocks -BundleRoot $PayloadDirectory",
+    "    $payloadLocks = Resolve-Path -LiteralPath $PayloadDirectory",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "    Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot $payloadRoot\n",
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "    $inspectorPin = Open-PinnedReleaseFilePath -LiteralPath $debuggerVersionInspector",
+    "    $inspectorPin = [pscustomobject]@{ CanonicalPath = $debuggerVersionInspector }",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    '            & $debuggerVersionInspector -ExecutablePath $filePath\n',
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "    Assert-NoReparseTree -LiteralPath $payloadRoot\n    Assert-ExactAuthenticodePayloadInventory `\n        -PayloadRoot $payloadRoot `\n        -RequiredFiles $requiredFiles\n    Write-NewUtf8File",
+    "    Assert-NoReparseTree -LiteralPath $payloadRoot\n    Write-NewUtf8File",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "'^[A-Za-z0-9][A-Za-z0-9._-]*$'",
+    "'^.+$'",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "    $outputParentPin = Open-PinnedReleaseDirectoryPath -LiteralPath $outputParentInput",
+    "    $outputParentPin = [pscustomobject]@{ CanonicalPath = $outputParentInput; DirectoryHandles = @() }",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "authenticode",
+    "        throw \"Authenticode evidence output must be outside the held payload tree\"",
+    "        Write-Output \"payload output allowed\"",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "offline",
+    "            Assert-ReleaseToolsetDebuggerVersion `\n                -Toolset $toolset `\n                -ExecutablePath $filePath\n",
+    "",
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "manifestTests",
+    'test("missing key-agent debugger artifact is rejected", () => {',
+    'test.skip("missing key-agent debugger artifact is rejected", () => {',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "integrationTests",
+    'test("final verifier rejects key-agent debugger byte substitution", async () => {',
+    'test.skip("final verifier rejects key-agent debugger byte substitution", async () => {',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "toolsetTests",
+    '-Label "alternate data stream output"',
+    '-Label "ordinary output"',
+  ),
+  mutateKeyAgentDebuggerRelease(
+    "toolsetTests",
+    "Debugger-specific Authenticode rejection did not occur after version admission",
+    "Debugger rejection failed",
+  ),
+];
+const keyAgentDebuggerReleaseMutationResults =
+  keyAgentDebuggerReleaseMutationProbes.map((probe) => ({
+    changed: Object.keys(keyAgentDebuggerReleaseInputs).some(
+      (name) => probe[name] !== keyAgentDebuggerReleaseInputs[name],
+    ),
+    semanticRejected: !keyAgentDebuggerReleaseSemanticContract(probe),
+    pinRejected: !keyAgentDebuggerReleasePinContract(probe),
+  }));
+requireInvariant(
+  keyAgentDebuggerReleasePinContract(keyAgentDebuggerReleaseInputs) &&
+    keyAgentDebuggerReleaseSemanticContract(keyAgentDebuggerReleaseInputs) &&
+    keyAgentDebuggerReleaseMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ),
+  "the release boundary must retain one exact debugger role/path across nine payload artifacts, an eight-file sealed verifier toolset, the deterministic VERSIONINFO inspector before Authenticode in unsigned/post-sign/offline flows, held read-only payload identity with final inventory, safe external plain-leaf evidence output, ADS/alias/contained-output rejection, separate wrong-version and invalid-signature regressions, exact source pins, and effective bounded mutations",
+);
 const releaseSecurity = await text("docs/release-security.md");
+const keyAgentDebuggerVersionReleaseDocumentationSpecs = Object.freeze([
+  ...keyAgentDebuggerDocumentationSpecs.map(({ path, source, sha256 }) => ({
+    path,
+    source,
+    sha256,
+  })),
+  Object.freeze({
+    path: "docs/release-security.md",
+    source: releaseSecurity,
+    sha256: "88d265d5d298591c6f677f82ce883a97ece2241f80be98a69b052266ca1e51e6",
+  }),
+]);
+const keyAgentDebuggerVersionReleaseDocumentationPaths = Object.freeze([
+  "crates/platform-windows/README.md",
+  "docs/adr/0001-windows-key-agent-service-boundary.md",
+  "docs/architecture.md",
+  "docs/designs/windows-key-agent-service.md",
+  "docs/security-decisions.md",
+  "docs/release-security.md",
+]);
+const keyAgentDebuggerVersionReleaseDocumentationMarkers = Object.freeze([
+  "VERSIONINFO",
+  "0.1.0.0",
+  "FileDescription",
+  "FileVersion",
+  "InternalName",
+  "OriginalFilename",
+  "ProductName",
+  "ProductVersion",
+  "0409",
+  "Unicode",
+  "find-msvc-tools 0.1.10",
+  "rc.exe",
+  "key-agent-debugger-exe",
+  "payload/key-agent-debugger.exe",
+  "FileVersionInfo",
+  "eight-file",
+  "VS_FIXEDFILEINFO.dwSignature",
+  "0xFEEF04BD",
+  "non-PE",
+  "STOP-SHIP",
+  "COMPILED_RELEASE_POLICY",
+]);
+const keyAgentDebuggerVersionReleaseDocumentationPatterns = Object.freeze([
+  /(?:x86_64-pc-windows-msvc|non-x64-MSVC Windows target|other Windows targets?|any other Windows target)/iu,
+  /(?:package-version drift|Cargo package version[\s\S]{0,40}drifts)/iu,
+  /(?:non-Windows targets[\s\S]{0,45}(?:does\s+nothing|do\s+nothing|is\s+inert)|(?:no-op|does\s+nothing|inert)[\s\S]{0,45}(?:for|on)?\s*non-Windows targets)/iu,
+  /(?:not a cryptographic pin|does not cryptographically pin|not cryptographically pinned|neither[\s\S]{0,50}cryptographically pinned|does not authenticate\s+`?rc\.exe)/iu,
+  /(?:built (?:binary|executable)|built-binary)[\s\S]{0,260}(?:unsigned|pre-staging|before staging)[\s\S]{0,260}(?:after signing|post-sign|Authenticode)[\s\S]{0,300}(?:held (?:final )?bundle|final offline|offline verification)/iu,
+  /effectively\s+read-only/iu,
+  /(?:canonicalizes? and pins?|pins?)[\s\S]{0,70}(?:the )?output parent/iu,
+  /volume-root(?:\s+parent)?/iu,
+  /(?:\bADS\b|alternate-data-stream|alternate data stream)/iu,
+  /(?:payload containment|below the payload|beneath the payload|inside the payload|equal to or below the payload)/iu,
+  /(?:post-create\s+identity\s+drift|identity\s+changed\s+after\s+creation|mismatch\s+between\s+the\s+pinned\s+canonical\s+output\s+path)/iu,
+  /(?:(?:retains?|holds?)[\s\S]{0,100}(?:canonical )?payload handles|holds?\s+the\s+canonical payload directories[\s\S]{0,50}read-only files)/iu,
+  /(?:final\s+(?:exact-inventory|exact inventory)\s+recheck|rechecks?\s+the\s+exact\s+inventory)/iu,
+  /(?:output-byte confirmation|byte-compares|output bytes)/iu,
+  /exit(?:s|ing|ed)?\s+78/iu,
+  /(?:no\s+production\s+caller|there\s+is\s+no\s+production\s+caller)/iu,
+  /COMPILED_RELEASE_POLICY[\s\S]{0,50}(?:remains|stay|stays)[\s\S]{0,25}None/iu,
+]);
+const keyAgentDebuggerVersionReleaseDocumentationMutationMarkers =
+  Object.freeze([
+    "VERSIONINFO",
+    "0.1.0.0",
+    "FileDescription",
+    "FileVersion",
+    "InternalName",
+    "OriginalFilename",
+    "ProductName",
+    "ProductVersion",
+    "find-msvc-tools 0.1.10",
+    "key-agent-debugger-exe",
+    "payload/key-agent-debugger.exe",
+    "FileVersionInfo",
+    "eight-file",
+    "VS_FIXEDFILEINFO.dwSignature",
+    "0xFEEF04BD",
+    "non-PE",
+    "STOP-SHIP",
+    "COMPILED_RELEASE_POLICY",
+  ]);
+const keyAgentDebuggerVersionReleaseDocumentationMutationPatterns =
+  Object.freeze(
+    [0, 3, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16].map(
+      (index) => keyAgentDebuggerVersionReleaseDocumentationPatterns[index],
+    ),
+  );
+const keyAgentDebuggerVersionReleaseDocumentationPinContract = (specs) =>
+  specs.every(
+    ({ source, sha256 }) => normalizedSourceSha256(source) === sha256,
+  );
+const keyAgentDebuggerVersionReleaseDocumentationSemanticContract = (specs) =>
+  JSON.stringify(specs.map(({ path }) => path)) ===
+    JSON.stringify(keyAgentDebuggerVersionReleaseDocumentationPaths) &&
+  specs.every(({ source }) =>
+    keyAgentDebuggerVersionReleaseDocumentationMarkers.every((marker) =>
+      source.includes(marker),
+    ),
+  ) &&
+  specs.every(({ source }) =>
+    keyAgentDebuggerVersionReleaseDocumentationPatterns.every((pattern) =>
+      pattern.test(source),
+    ),
+  );
+const mutateKeyAgentDebuggerVersionReleaseDocumentation = (
+  specIndex,
+  mutateSource,
+) =>
+  keyAgentDebuggerVersionReleaseDocumentationSpecs.map((spec, index) =>
+    index === specIndex
+      ? { ...spec, source: mutateSource(spec.source) }
+      : spec,
+  );
+const keyAgentDebuggerVersionReleaseDocumentationInventoryMutations = [
+  keyAgentDebuggerVersionReleaseDocumentationSpecs.slice(1),
+  [
+    keyAgentDebuggerVersionReleaseDocumentationSpecs[1],
+    keyAgentDebuggerVersionReleaseDocumentationSpecs[0],
+    ...keyAgentDebuggerVersionReleaseDocumentationSpecs.slice(2),
+  ],
+  keyAgentDebuggerVersionReleaseDocumentationSpecs.map((spec, index) =>
+    index === 5 ? { ...spec, path: "docs/architecture.md" } : spec,
+  ),
+];
+const keyAgentDebuggerVersionReleaseDocumentationMarkerMutations =
+  keyAgentDebuggerVersionReleaseDocumentationMutationMarkers.flatMap((marker) =>
+    keyAgentDebuggerVersionReleaseDocumentationSpecs.map((_, specIndex) =>
+      mutateKeyAgentDebuggerVersionReleaseDocumentation(
+        specIndex,
+        (source) =>
+          source.replaceAll(
+            marker,
+            "REMOVED_KEY_AGENT_DEBUGGER_VERSION_RELEASE_MARKER",
+          ),
+      ),
+    ),
+  );
+const keyAgentDebuggerVersionReleaseDocumentationPatternMutations =
+  keyAgentDebuggerVersionReleaseDocumentationMutationPatterns.flatMap((pattern) => {
+    const globalPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+    );
+    return keyAgentDebuggerVersionReleaseDocumentationSpecs.map(
+      (_, specIndex) =>
+        mutateKeyAgentDebuggerVersionReleaseDocumentation(
+          specIndex,
+          (source) =>
+            source.replace(
+              globalPattern,
+              "REMOVED_KEY_AGENT_DEBUGGER_VERSION_RELEASE_RELATION",
+            ),
+        ),
+    );
+  });
+const keyAgentDebuggerVersionReleaseDocumentationMutationResults = [
+  ...keyAgentDebuggerVersionReleaseDocumentationMarkerMutations,
+  ...keyAgentDebuggerVersionReleaseDocumentationPatternMutations,
+].map((probe) => ({
+  changed:
+    JSON.stringify(probe) !==
+    JSON.stringify(keyAgentDebuggerVersionReleaseDocumentationSpecs),
+  semanticRejected:
+    !keyAgentDebuggerVersionReleaseDocumentationSemanticContract(probe),
+  pinRejected:
+    !keyAgentDebuggerVersionReleaseDocumentationPinContract(probe),
+}));
+requireInvariant(
+  keyAgentDebuggerVersionReleaseDocumentationPinContract(
+    keyAgentDebuggerVersionReleaseDocumentationSpecs,
+  ) &&
+    keyAgentDebuggerVersionReleaseDocumentationSemanticContract(
+      keyAgentDebuggerVersionReleaseDocumentationSpecs,
+    ) &&
+    keyAgentDebuggerVersionReleaseDocumentationInventoryMutations.every(
+      (probe) =>
+        !keyAgentDebuggerVersionReleaseDocumentationSemanticContract(probe),
+    ) &&
+    keyAgentDebuggerVersionReleaseDocumentationMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ),
+  "the exact six debugger VERSIONINFO/release documents must retain deterministic header-free x64-MSVC-only resource scope, exact 0.1.0.0 and six 0409/Unicode strings, package-version and target rejection, locked but non-cryptographic rc.exe discovery with binary-only linking, one mandatory release role/path, safe built/unsigned/post-sign/offline inspection, held effectively-read-only payload and canonical output boundary with volume-root/ADS/containment/post-create drift rejection, exact final inventory and output-byte confirmation, the independently pinned eight-file toolset, positive/non-PE and fixed-signature decoder coverage, disabled production caller/policy, signed-product STOP-SHIP limits, exact hashes/inventory, and effective source-local mutations",
+);
 const ciWorkflow = await text(".github/workflows/ci.yml");
 const releaseEvidencePolicyWorkflow = await text(
   ".github/workflows/release-evidence-policy.yml",
@@ -65413,8 +66558,8 @@ const expectedReleaseCheckInvokeTestsBlock = [
   "    $approvedTestSha256 = [ordered]@{",
   '        "audit-extension.test.mjs" = "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906"',
   '        "generate-inventories.test.mjs" = "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc"',
-  '        "release-manifest.test.mjs" = "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a"',
-  '        "release-verifier-integration.test.mjs" = "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e"',
+  '        "release-manifest.test.mjs" = "72fedde11de2e28a2a351697f0a2e733c6297adcbd161c6d167913c875902c9b"',
+  '        "release-verifier-integration.test.mjs" = "3b92f785e9bd81dc7f1a4173c2fb506f2d7ac74b32552e5b2955a332d0d0b2c7"',
   '        "review-evidence-set.test.mjs" = "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470"',
   "    }",
   '    $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.test.mjs" -File | Sort-Object -Property Name | ForEach-Object { $_.FullName })',
@@ -65768,6 +66913,140 @@ const sealedPowerShellEntryPrefix = [
 ].join("\n");
 const exactReleaseCommonDotSource =
   '. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))';
+const directReleasePowerShellLeafCommandPattern =
+  /^[ \t]*(?<command>[A-Za-z][A-Za-z0-9]*-[A-Za-z][A-Za-z0-9-]*)\b/gmu;
+const directReleasePowerShellLeafRoleContract = ({ sealed, direct }) =>
+  JSON.stringify(direct) ===
+    JSON.stringify([
+      "scripts/release/assert-key-agent-debugger-version.ps1",
+    ]) &&
+  !sealed.includes("scripts/release/assert-key-agent-debugger-version.ps1");
+const directReleasePowerShellLeafRoleMutationProbes = Object.freeze([
+  Object.freeze({
+    sealed: [
+      ...approvedSealedReleasePowerShellEntryPaths,
+      "scripts/release/assert-key-agent-debugger-version.ps1",
+    ],
+    direct: [],
+  }),
+  Object.freeze({
+    sealed: approvedSealedReleasePowerShellEntryPaths,
+    direct: [],
+  }),
+]);
+const directReleasePowerShellLeafContract = ({ path, source }) => {
+  const analysis = analyzePowerShellSource(source);
+  const commandNames = activePowerShellMatches(
+    analysis,
+    directReleasePowerShellLeafCommandPattern,
+  ).map((match) => match.groups.command);
+  return (
+    path === "scripts/release/assert-key-agent-debugger-version.ps1" &&
+    analysis.valid &&
+    !analysis.hasPreExecutionDirective &&
+    /^param\(\s*\[Parameter\(Mandatory = \$true\)\]\s*\[string\]\$ExecutablePath\s*\)\n\nSet-StrictMode -Version Latest\n\$ErrorActionPreference = "Stop"\n\n\$candidate =/u.test(
+      analysis.commentFreeCode,
+    ) &&
+    JSON.stringify(commandNames) === JSON.stringify(["Set-StrictMode"]) &&
+    activePowerShellMatches(
+      analysis,
+      /^[ \t]*(?:&|\.)[ \t]+/gmu,
+    ).length === 0 &&
+    !powerShellReferencesReleaseCommon(source) &&
+    !analysis.commentFreeCode.includes("$PSModuleAutoLoadingPreference") &&
+    !/\b(?:Import-Module|Get-Command|Invoke-Expression|Start-Process)\b/iu.test(
+      analysis.commentFreeCode,
+    )
+  );
+};
+const directReleasePowerShellLeafMutationProbes = [
+  `#Requires -Modules AmbientModule\n${releaseDebuggerVersionInspector}`,
+  releaseDebuggerVersionInspector.replace(
+    "    [Parameter(Mandatory = $true)]\n",
+    "    [Parameter(Mandatory = $true)]\n    [ValidateScript({ Write-Output \"ran\"; $true })]\n",
+  ),
+  releaseDebuggerVersionInspector.replace(
+    "Set-StrictMode -Version Latest\n",
+    "",
+  ),
+  releaseDebuggerVersionInspector.replace(
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Continue"',
+  ),
+  releaseDebuggerVersionInspector.replace(
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\n$PSModuleAutoLoadingPreference = "All"',
+  ),
+  releaseDebuggerVersionInspector.replace(
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\nImport-Module AmbientModule',
+  ),
+  releaseDebuggerVersionInspector.replace(
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\n. ([System.IO.Path]::Combine($PSScriptRoot, "common.ps1"))',
+  ),
+];
+const directReleasePowerShellLeafInvocationSpecs = Object.freeze([
+  Object.freeze({
+    path: "scripts/release/prepare-unsigned.ps1",
+    source: releaseUnsignedPreparation,
+    invocation:
+      '& (Join-Path $PSScriptRoot "assert-key-agent-debugger-version.ps1") `\n                    -ExecutablePath $binary',
+  }),
+  Object.freeze({
+    path: "scripts/release/common.ps1",
+    source: releaseCommon,
+    invocation:
+      "& $record.VolumePaths[$relative] -ExecutablePath $ExecutablePath",
+  }),
+  Object.freeze({
+    path: "scripts/release/verify-authenticode.ps1",
+    source: releaseAuthenticodeVerifier,
+    invocation:
+      "& $debuggerVersionInspector -ExecutablePath $filePath",
+  }),
+  Object.freeze({
+    path: "scripts/release/verifier-toolset.test.ps1",
+    source: releaseVerifierToolsetTests,
+    invocation:
+      '& (Join-Path $RepoRoot "scripts\\release\\assert-key-agent-debugger-version.ps1") `\n            -ExecutablePath $wrongVersionDebugger',
+  }),
+]);
+const directReleasePowerShellLeafInvocationContract = (specs) =>
+  JSON.stringify(specs.map(({ path }) => path)) ===
+    JSON.stringify([
+      "scripts/release/prepare-unsigned.ps1",
+      "scripts/release/common.ps1",
+      "scripts/release/verify-authenticode.ps1",
+      "scripts/release/verifier-toolset.test.ps1",
+    ]) &&
+  specs.every(({ source, invocation }) => {
+    const analysis = analyzePowerShellSource(source);
+    return (
+      analysis.valid &&
+      activePowerShellLiteralIndexes(analysis, invocation).length === 1
+    );
+  }) &&
+  repositoryPowerShellScripts.every(({ source }) =>
+    activePowerShellMatches(
+      analyzePowerShellSource(source),
+      /^[ \t]*\.[^\r\n]*assert-key-agent-debugger-version\.ps1/gimu,
+    ).length === 0,
+  );
+const directReleasePowerShellLeafInvocationMutationProbes =
+  directReleasePowerShellLeafInvocationSpecs.map((spec, specIndex) =>
+    directReleasePowerShellLeafInvocationSpecs.map((entry, index) =>
+      index === specIndex
+        ? {
+            ...entry,
+            source: entry.source.replace(
+              entry.invocation,
+              "REMOVED_DIRECT_DEBUGGER_VERSION_INSPECTOR_INVOCATION",
+            ),
+          }
+        : entry,
+    ),
+  );
 for (const { path, source } of sealedReleasePowerShellEntries) {
   const analysis = analyzePowerShellSource(source);
   requireInvariant(
@@ -65796,6 +67075,33 @@ requireInvariant(
     repositoryPowerShellScripts.map(({ path }) => path),
     approvedRepositoryPowerShellScriptPaths,
   ) &&
+    directReleasePowerShellLeafRoleContract({
+      sealed: approvedSealedReleasePowerShellEntryPaths,
+      direct: approvedDirectReleasePowerShellLeafPaths,
+    }) &&
+    directReleasePowerShellLeafRoleMutationProbes.every(
+      (probe) => !directReleasePowerShellLeafRoleContract(probe),
+    ) &&
+    directReleasePowerShellLeaves.length ===
+      approvedDirectReleasePowerShellLeafPaths.length &&
+    directReleasePowerShellLeaves.every(directReleasePowerShellLeafContract) &&
+    directReleasePowerShellLeafMutationProbes.every(
+      (source) =>
+        source !== releaseDebuggerVersionInspector &&
+        !directReleasePowerShellLeafContract({
+          path: "scripts/release/assert-key-agent-debugger-version.ps1",
+          source,
+        }),
+    ) &&
+    directReleasePowerShellLeafInvocationContract(
+      directReleasePowerShellLeafInvocationSpecs,
+    ) &&
+    directReleasePowerShellLeafInvocationMutationProbes.every(
+      (probe) =>
+        JSON.stringify(probe) !==
+          JSON.stringify(directReleasePowerShellLeafInvocationSpecs) &&
+        !directReleasePowerShellLeafInvocationContract(probe),
+    ) &&
     hasExactSourcePins(
       repositoryPowerShellScripts,
       approvedPowerShellSourceSha256,
@@ -65977,7 +67283,7 @@ requireInvariant(
     releaseCommon.includes(
       'throw "Release PowerShell runtime bootstrap failed closed"',
     ),
-  "the exact approved PowerShell inventory must use one unambiguous encoding and exact reviewed raw-byte SHA-256 pins, and every sealed release entry must reject pre-execution directives, disable autoload before ambient code, and bind common.ps1 to one exact direct system Windows PowerShell 5.1 invocation",
+  "the exact approved PowerShell inventory must use one unambiguous encoding and exact reviewed raw-byte SHA-256 pins; every sealed release entry must reject pre-execution directives, disable autoload before ambient code, and bind common.ps1 to one exact direct system Windows PowerShell 5.1 invocation; and the debugger VERSIONINFO inspector must remain a directly invoked, non-dot-sourced, pre-execution-directive-free leaf with exact strict/error setup and no module-autoload or ambient-command surface beyond Set-StrictMode",
 );
 requireInvariant(
   releaseCommon.includes('"YourWallet.ReleaseDirectoryLock"') &&
@@ -67509,6 +68815,9 @@ requireInvariant(
       '"extension/native-host/validate-manifest.mjs"',
     ) &&
     releaseVerifierToolsetPreparation.includes(
+      '"scripts/release/assert-key-agent-debugger-version.ps1"',
+    ) &&
+    releaseVerifierToolsetPreparation.includes(
       '"scripts/release/review-evidence-set.ps1"',
     ) &&
     releaseVerifierToolsetPreparation.includes(
@@ -67528,7 +68837,7 @@ requireInvariant(
 );
 requireInvariant(
   releaseVerifierToolsetTests.includes(
-    "Test toolset fixture was not the exact seven-file/four-directory shape",
+    "Test toolset fixture was not the exact eight-file/four-directory shape",
   ) &&
     releaseVerifierToolsetTests.includes("extra-file") &&
     releaseVerifierToolsetTests.includes("empty-extra-directory") &&
@@ -67617,7 +68926,7 @@ requireInvariant(
     releaseVerifierToolsetTests.includes(
       "VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE`n",
     ) &&
-    releaseVerifierToolsetTests.includes("$preparedFiles.Count -ne 7") &&
+    releaseVerifierToolsetTests.includes("$preparedFiles.Count -ne 8") &&
     releaseVerifierToolsetTests.includes("$preparedDirectories.Count -ne 4") &&
     releaseVerifierToolsetTests.includes(
       "Preparation-only output was accepted without effective write protection",
@@ -67865,7 +69174,7 @@ requireInvariant(
       "-ExpectedVerifierToolsetSha256 <independently checkpointed 64-lower-hex>",
     ) &&
     releaseSecurity.includes(
-      "exactly four directories and these seven files",
+      "exactly four directories and these eight files",
     ) &&
     releaseSecurity.includes(
       "VERIFIER_TOOLSET_PREPARED_NOT_RELEASE_ELIGIBLE",
@@ -67945,7 +69254,7 @@ requireInvariant(
       "exact initial/successor argument counts before any candidate file or tree",
     ) &&
     sepoliaArchitectureDoc.includes("correctly signed old sequence-1 tree") &&
-    rootReadme.includes("릴리스 정책·검증기 테스트 60개 통과") &&
+    rootReadme.includes("릴리스 정책·검증기 테스트 66개 통과") &&
     rootReadme.includes("rollback-resistant offline checkpoint에서") &&
     rootReadme.includes("유효하게 서명된 과거 sequence-1") &&
     rootReadme.includes("봉인된 Windows 검증 도구셋") &&
@@ -67978,8 +69287,8 @@ requireInvariant(
         "release-verifier-integration.test.mjs",
         "review-evidence-set.test.mjs",
       ]) &&
-    releasePolicyTestCount === 60,
-  "the five executed Node suites must match their exact reviewed raw-byte SHA-256 pins and documented 60-test total",
+    releasePolicyTestCount === 66,
+  "the five executed Node suites must match their exact reviewed raw-byte SHA-256 pins and documented 66-test total",
 );
 
 process.stdout.write("architecture scan passed\n");

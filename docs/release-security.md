@@ -6,6 +6,16 @@ This repository contains a fail-closed release-evidence scaffold. It does **not*
 
 The only command allowed to print an eligibility result is `verify-release-offline.ps1` from an independently pinned, write-protected verifier toolset. It succeeds only after its mapped Node image and module graph, the signed manifest, every hashed bundle file, independently signed review attestation, exact Windows negative-test set, independently pinned Authenticode and stable extension identities, installer evidence, checkpointed lineage, and key-lifecycle drills verify together. This release evidence does not waive any application-level STOP-SHIP item.
 
+The release artifact contract now includes one mandatory
+`key-agent-debugger-exe` at `payload/key-agent-debugger.exe`. Its Windows x64
+MSVC build embeds the deterministic version contract described below, and a
+safe inspector checks the real built binary, both unsigned reproducibility
+outputs before staging, the signed payload while Authenticode evidence is
+created, and the held final bundle during offline verification. This is release
+scaffolding, not production activation: the helper still exits 78 in default
+and release builds, no production caller exists, and
+`COMPILED_RELEASE_POLICY` remains `None`.
+
 ## Commands and trust separation
 
 The CI-safe check is read-only apart from test-owned temporary directories:
@@ -29,6 +39,27 @@ $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPat
 ```
 
 Preparation refuses a dirty or uncommitted worktree and ambient Cargo target/flags. It uses `cargo vendor --frozen`, creates two clean directories from the same `git archive`, adds the same audited vendor tree to each, and runs the workspace binary build with `--frozen --offline --locked`. `CARGO_INCREMENTAL=0`, the commit timestamp, the pinned Rust toolchain, the Windows MSVC target, and `/Brepro` are explicit. It compares every unsigned payload byte and stops if the inventories differ.
+
+For `key-agent-debugger.exe`, the Windows x64 MSVC build embeds a deterministic,
+header-free ASCII `VERSIONINFO` resource. `FILEVERSION` and `PRODUCTVERSION` are
+both `0,1,0,0`; `FileVersion` and `ProductVersion` are both `0.1.0.0`; and the
+other exact strings are `FileDescription = Your Wallet Key Agent Debugger`,
+`InternalName = key-agent-debugger`,
+`OriginalFilename = key-agent-debugger.exe`, and
+`ProductName = Your Wallet`, in the `0409`/Unicode string table. The build is a
+no-op for non-Windows targets and fails closed for any Windows target other
+than `x86_64-pc-windows-msvc` or if Cargo package version `0.1.0` drifts from
+the resource. Locked `find-msvc-tools 0.1.10` locates `rc.exe` and the resulting
+`.res` is linked only into this binary. That discovery is not a cryptographic
+pin of `rc.exe` or of the Windows SDK.
+
+The safe `FileVersionInfo` inspector requires all four fixed numeric version
+parts and every exact string above. `prepare-unsigned.ps1` applies it to both
+independent built executables before either payload is accepted for staging.
+The built-binary integration test applies it to the real Cargo-built executable
+and rejects an exact-name non-PE proxy. Separately, the runtime generic helper
+reader requires the canonical `VS_FIXEDFILEINFO.dwSignature` value
+`0xFEEF04BD` before it extracts a version.
 
 The command also creates deterministic, uncompressed extension ZIPs with sorted entries and fixed ZIP timestamps; an SPDX 2.3 SBOM; dependency, build-script, proc-macro, feature, and license inventories; source/toolchain/lockfile/vendor hashes; and a static extension audit. Its output contains `INELIGIBLE.txt`. Missing cached crates cause an offline failure; dependency acquisition is a separate audited provisioning action.
 
@@ -59,6 +90,7 @@ release-bundle/
     broker.exe
     dashboard.exe
     extension-package.zip
+    key-agent-debugger.exe
     key-agent.exe
     native-host.exe
     secret-input-ui.exe
@@ -107,6 +139,30 @@ node scripts/release/hash-payload.mjs `
 
 The command prints the artifact-set SHA-256. Supply that value and the independently pinned Authenticode leaf-certificate SHA-256 to the Windows verifier:
 
+First mark the payload root, every descendant directory, and every file
+read-only:
+
+```powershell
+$payloadRoot = (Get-Item -LiteralPath .\release-bundle\payload -Force).FullName
+Get-ChildItem -LiteralPath $payloadRoot -Force -Recurse | ForEach-Object {
+  $_.Attributes = $_.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+}
+$payloadItem = Get-Item -LiteralPath $payloadRoot -Force
+$payloadItem.Attributes = $payloadItem.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+```
+
+Then place or protect that tree on access-controlled or physically
+write-protected storage that denies the verifier token writes and both file and
+directory creation. The read-only attributes are required but are not by
+themselves an access-control boundary. Use a new output filename beneath a
+separately controlled evidence directory, never beneath the payload tree. The
+output parent must already exist; the leaf must be a plain filename, not an
+alternate-data-stream name or existing entry. The verifier canonicalizes and
+pins the handle-derived ancestor chain rather than treating caller spelling as
+identity, rejects a reparse/junction final parent, and independently checks the
+attributes and effective no-create/no-write conditions. It fails closed if any
+mutation probe succeeds:
+
 ```powershell
 $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System), "WindowsPowerShell\v1.0\powershell.exe")
 & $systemPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/release/verify-authenticode.ps1 `
@@ -116,7 +172,26 @@ $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPat
   -OutputPath .\release-bundle\evidence\authenticode.json
 ```
 
-The script invokes Windows Authenticode verification for every EXE and the MSI, rejects an invalid/missing signature, rejects any leaf certificate other than the independently pinned certificate, and binds the report to the final artifact set. Entries are emitted once each in canonical payload-path order. The final Node verifier independently requires that every manifest artifact and every report entry name that same pinned certificate hash. It never signs a file.
+The script canonicalizes and pins ancestors of the existing output parent and
+accepts only one plain leaf outside the payload; it rejects a reparse/junction
+final parent, volume-root parent, alternate data stream, existing output, and a
+canonical output parent equal to or below the payload. After creation it rejects
+any mismatch between the pinned canonical output path and the new file.
+It holds the canonical payload directories and read-only files without write or
+delete sharing, plus the separately canonicalized sibling
+`assert-key-agent-debugger-version.ps1` inspector source, for the whole
+inventory-to-evidence operation. It requires the exact payload inventory,
+checks `key-agent-debugger.exe` VERSIONINFO from that held tree, invokes Windows
+Authenticode verification for every EXE and the MSI, rejects an invalid or
+missing signature, rejects any leaf certificate other than the independently
+pinned certificate, hashes the same held files, and then rechecks the exact
+inventory immediately before it creates the evidence leaf. Only after those
+checks does it write a report bound to the final artifact set. Entries are
+emitted once each in canonical payload-path order. The final Node verifier
+independently requires that every manifest artifact and every report entry name
+that same pinned certificate hash. Before success, the script pins the created
+output and byte-compares it with the exact report it constructed. It never signs
+a file.
 
 ## Mandatory external evidence
 
@@ -176,11 +251,12 @@ The exact tool versions, binary hashes, and database identifiers/hashes are rele
 
 The independent reviewer uses a signing key distinct from the release-manifest key. The public key is `review-public-key.pem`; `review-attestation.sig` is canonical base64 for the raw 64-byte Ed25519 signature over the exact bytes of `review-attestation.json`.
 
-Both Windows wrappers must run from a separately staged verifier toolset, not from the working repository and not from inside the candidate bundle. The approved runtime tree has exactly four directories and these seven files, with the spelling and casing shown and no other entry:
+Both Windows wrappers must run from a separately staged verifier toolset, not from the working repository and not from inside the candidate bundle. The approved runtime tree has exactly four directories and these eight files, with the spelling and casing shown and no other entry:
 
 ```text
 node.exe
 extension/native-host/validate-manifest.mjs
+scripts/release/assert-key-agent-debugger-version.ps1
 scripts/release/common.ps1
 scripts/release/release-manifest.mjs
 scripts/release/review-evidence-set.mjs
@@ -334,6 +410,14 @@ $systemPowerShell = [System.IO.Path]::Combine([System.Environment]::GetFolderPat
 
 For non-initial releases, add both `-PreviousManifest .\accepted-previous-manifest.json` and `-ExpectedPreviousManifestSha256 <independently pinned 64-lower-hex>`. Supplying only one is refused. The expected release sequence and previous-manifest hash must come only from the write-protected, rollback-resistant offline checkpoint and its canonical successor calculation, never from the candidate bundle, a copied command, or a merely separate but rollbackable source. The two expected key IDs, certificate hash, stable extension ID, and verifier-toolset aggregate must come from that checkpoint or another independently controlled trusted source. The switch records an operator assertion; software cannot prove physical network isolation. The command pins the extension ID and release sequence immediately after the release-key identity and before bundle/evidence reads, hashes all payload/evidence files, validates every attestation and independent-review signature, verifies lineage and the release signature, reruns Windows Authenticode validation, then repeats the complete bundle and signature verification through the same held executable/module identities and immutable argument list. Both passes must return exit zero, no stderr, and exactly `CRYPTOGRAPHIC_BUNDLE_VERIFICATION_PASS_REQUIRES_WINDOWS_WRAPPER` plus one LF. Only then can it print `PRIVATE_MAINNET_CANARY_RELEASE_ELIGIBLE_AFTER_OFFLINE_VERIFICATION`.
 
+The offline wrapper also takes
+`scripts/release/assert-key-agent-debugger-version.ps1` from the exact
+eight-file verifier toolset, retains that inspector identity, and applies it to
+the held `payload/key-agent-debugger.exe` after the first cryptographic pass and
+before Authenticode re-verification. The second cryptographic pass follows, so
+both passes and the intervening version/signature checks use the same held
+executable, module, bundle, and version-inspector identities.
+
 Record the accepted sequence, version, canonical manifest hash, stable extension ID, release public-key ID, reviewer public-key ID, and Authenticode certificate hash in a write-protected offline checkpoint. Local state alone does not resist disk/snapshot rollback; restoring an older machine image must require reconciliation with that independent checkpoint.
 
 Final verification refuses a bundle root, descendant, manifest, signature, public key, previous manifest, or verifier runtime entry that is not marked read-only, and rejects reparse points, hard-linked runtime/bundle files, missing entries, and unlisted files/directories. Mark the complete staging tree and external inputs read-only before invoking the command. A read-only attribute alone is deliberately insufficient: the wrapper attempts separate uniquely named create-new file and empty-subdirectory probes in every bundle and toolset directory and refuses eligibility unless both operations are denied to the verifier token (or the medium reports write protection), including the checks around Authenticode inspection. As with the review subject wrapper, it first converts the exact raw arguments into a case-sensitive duplicate-free dictionary inside the protected boundary; every root and external input is then bootstrap-opened, converted to a handle-derived local volume-GUID path, pinned through its full canonical ancestor chain, and matched by non-sentinel volume serial plus all 128 file-ID bits before the original aliases are discarded. It holds every directory, input file, runtime file, and the authenticated mapped Node image across both cryptographic passes, Authenticode inspection, and eligibility output. This binds the path-based checks to the same objects and bytes even if an untrusted ancestor alias or DOS-device mapping is retargeted during the ceremony; access-controlled read-only media remains mandatory because owner/DACL changes by a same-user privileged process and mutation after verification exits are outside the script's proof. Parameter-binding, preflight, child-output, and process-identity failures collapse to one fixed wrapper error line without path disclosure.
@@ -342,7 +426,12 @@ Final verification refuses a bundle root, descendant, manifest, signature, publi
 
 This scaffold guarantees, when its final verifier succeeds, byte-level binding among the independently pinned exact verifier toolset, authenticated mapped Node image and in-memory module graph, exact canonical signed manifest, mandatory external release sequence, fixed role-to-path artifact set, fixed evidence paths, source/vendor/toolchain/lockfile records, the independently pinned stable extension identity, final native-host/installer identity, exact Windows tests, independently pinned signing identities, and independently signed review. The review signature binds the payload artifact-set commitment and the separate non-circular commitment over all reviewable evidence records, so a release-key holder cannot silently substitute those evidence bytes while reusing an older review signature. It rejects duplicate JSON keys, non-canonical integer representation, unknown manifest members, path traversal/reparse points/hard links in the bundle or verifier runtime, Windows case-folded path reuse, unlisted tree entries, artifact substitution, missing evidence, an extension-ID change across successor lineage, an old signed sequence replay against a newer checkpoint, uncheckpointed lineage, and semantic-version rollback.
 
-It does not prove that a reviewer is organizationally independent, that an operator truly disconnected networking, that a hardware key was protected correctly, that GitHub's runner image is honest, that the compiler is free from compromise, or that an evidence-generating test was competently designed. For the ambient PowerShell bootstrap boundary, however, module, protected-type, and command-shadow cleanliness is verified by code and is not delegated to an operator cleanliness assumption. The residual external bootstrap trust is limited to the Windows OS and exact system Windows PowerShell 5.1 image, the independently reviewed write-protected verifier toolset that is already executing, and the absence of live same-integrity process injection into the bootstrap PowerShell or resumed Node process. Release preparation additionally assumes no concurrent same-user mutation of its fresh temporary extraction tree; that staging step cannot make a hostile peer process trustworthy. The toolset's runtime self-hash does not bootstrap trust in the code already performing that check, and the VM context is a resolution boundary for reviewed source rather than a hostile-code sandbox. Authenticode bytes are expected to differ from reproducible unsigned bytes; reproducibility is checked before platform signing and final hashes bind the signed form. Consumers must require process exit zero and the exact success bytes; grepping a marker while ignoring the exit status is never an eligibility check.
+That fixed artifact set includes exactly the mandatory
+`key-agent-debugger-exe` role at `payload/key-agent-debugger.exe`. The final
+binding includes its exact `0.1.0.0` VERSIONINFO contract and the retained
+identity of the safe inspector from the exact eight-file toolset.
+
+It does not prove that a reviewer is organizationally independent, that an operator truly disconnected networking, that a hardware key was protected correctly, that GitHub's runner image is honest, that the compiler is free from compromise, or that an evidence-generating test was competently designed. Locked `find-msvc-tools` supplies reviewed discovery logic but does not authenticate `rc.exe`, the Windows SDK, or their provenance. The built-binary/non-PE, invalid-Authenticode, and other behavioral tests are fixtures or fail-closed proxies; they do not demonstrate the real product signer, an immutable installed debugger, or a successful signed-product E2E. For the ambient PowerShell bootstrap boundary, however, module, protected-type, and command-shadow cleanliness is verified by code and is not delegated to an operator cleanliness assumption. The residual external bootstrap trust is limited to the Windows OS and exact system Windows PowerShell 5.1 image, the independently reviewed write-protected verifier toolset that is already executing, and the absence of live same-integrity process injection into the bootstrap PowerShell or resumed Node process. Release preparation additionally assumes no concurrent same-user mutation of its fresh temporary extraction tree; that staging step cannot make a hostile peer process trustworthy. Authenticode evidence generation requires the payload to remain effectively read-only while its held-tree and final-inventory checks run; those checks fail closed on observed mutation but cannot turn a hostile same-token or privileged peer into a trusted writer. The toolset's runtime self-hash does not bootstrap trust in the code already performing that check, and the VM context is a resolution boundary for reviewed source rather than a hostile-code sandbox. Authenticode bytes are expected to differ from reproducible unsigned bytes; reproducibility is checked before platform signing and final hashes bind the signed form. Consumers must require process exit zero and the exact success bytes; grepping a marker while ignoring the exit status is never an eligibility check.
 
 ## Remaining release STOP-SHIP conditions
 
@@ -352,6 +441,9 @@ At repository scaffold time, all of the following remain unresolved:
 - no production installer or verified install/uninstall/upgrade ACL behavior exists;
 - no stable production extension ID and store/update ceremony is recorded;
 - no Authenticode certificate or independently pinned leaf-certificate hash is configured;
+- no real product-signer run, immutable installed debugger, or generated
+  compiled release-policy E2E exists; the helper remains dormant with
+  `COMPILED_RELEASE_POLICY = None`;
 - no offline hardware-backed release key, reviewer key, signatures, rotation drill, or revocation drill exists;
 - none of the 17 exact Windows negative-test evidence files has been produced for a final artifact set;
 - no independently signed review with zero Critical/High findings exists;
@@ -359,6 +451,10 @@ At repository scaffold time, all of the following remain unresolved:
 - no accepted release-sequence/previous-manifest checkpoint or rollback-resistant external ledger exists;
 - dependency cache provisioning, advisory review, compiler/SDK provenance, and diverse-build review remain external work;
 - pinned cargo-audit/OSV Scanner binaries, immutable RustSec/OSV snapshots, and zero-finding raw reports are absent;
+- distinct-principal launch, from-birth process DACL and explicit
+  `PROCESS_DUP_HANDLE` denial, target transfer/topology and Job-owner handoff,
+  and supported-kernel cancellation/debug-alias matrices remain application
+  **STOP-SHIP** work;
 - the canonical, exact-envelope-anchored device key-bundle model is present, including predecessor-linked pending rotation, canonical SPKI identities, role-typed secret access, module-private identity constructors/sealing markers, and a whole-production-source PCP adapter absence check, but no production Microsoft Platform Crypto Provider provisioning, TPM NV rollback/auth adapter, hardware key rotation/recovery ceremony, or signed-artifact lifecycle evidence exists;
 - application-level STOP-SHIP items documented elsewhere remain in force.
 

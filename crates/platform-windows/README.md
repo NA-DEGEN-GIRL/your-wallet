@@ -268,14 +268,46 @@ Implemented:
   resolve target raw-slot generation, ABA, or atomic compare-close. A future
   atomic cutover must move the complete target debug engine into the dedicated
   process, keep target-event aliases borrowed without individual close, and
-  reclaim them only at debugger-process exit. Signed packaged-artifact, exact PE
-  version-resource, and Authenticode/signer E2E remain **STOP-SHIP**, as do a
-  separate principal plus from-birth process DACL and explicit
+  reclaim them only at debugger-process exit.
+
+  The Windows x64 MSVC helper build now embeds one deterministic, header-free
+  ASCII `VERSIONINFO` definition. Both fixed file and product versions are
+  `0.1.0.0`; its `0409`/Unicode translation fixes
+  `FileDescription = Your Wallet Key Agent Debugger`,
+  `FileVersion = 0.1.0.0`, `InternalName = key-agent-debugger`,
+  `OriginalFilename = key-agent-debugger.exe`, `ProductName = Your Wallet`, and
+  `ProductVersion = 0.1.0.0`. The build fails closed on package-version drift or
+  any other Windows target, is a no-op for non-Windows targets, and uses the
+  already locked `find-msvc-tools 0.1.10`
+  to discover `rc.exe` and link the `.res` only into this binary. That is tool
+  discovery, not a cryptographic pin of `rc.exe` or the Windows SDK.
+
+  The release scaffold now requires exactly one `key-agent-debugger-exe` at
+  `payload/key-agent-debugger.exe`. A safe `FileVersionInfo` inspector checks
+  the built binary, both unsigned reproducibility outputs before staging, the
+  signed payload while generating Authenticode evidence, and the held bundle
+  during final offline verification. Post-sign generation requires the payload
+  to be effectively read-only, canonicalizes and pins the output parent, and
+  rejects a volume-root parent, ADS/existing leaf, payload containment, or
+  post-create identity drift. It retains canonical payload handles plus a pinned
+  canonical inspector source across inventory, version, signature, hash, final
+  exact-inventory recheck, evidence creation, and output-byte confirmation.
+  Offline verification uses the held bundle plus the inspector identity
+  in the independently pinned exact eight-file/four-directory verifier toolset.
+  Tests include the real built binary and an exact-name non-PE negative. The
+  runtime helper reader also requires canonical
+  `VS_FIXEDFILEINFO.dwSignature == 0xFEEF04BD` before decoding file version.
+
+  These build, scaffold, and fixture/proxy checks are not a real signed-product
+  E2E. An actual product signer, immutable installed artifact, and generated
+  compiled release policy remain external **STOP-SHIP** work, as do a separate
+  principal plus from-birth process DACL and explicit
   `PROCESS_DUP_HANDLE` denial, actual target transfer and token/image/suspend/Job
   proof, target membership and process-count topology, Job-owner handoff beyond
   helper exit, adversarial parent-death containment, and supported-kernel
   generalization of debug-event-alias retirement and cancellation-drain
-  matrices. There is still no production caller, and
+  matrices. The helper still exits 78 in default and release builds, there is no
+  production caller, and
   `COMPILED_RELEASE_POLICY` remains `None`.
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-

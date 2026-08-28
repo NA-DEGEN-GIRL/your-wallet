@@ -943,6 +943,8 @@ mod sys {
 
     use super::{FileIdentity, HelperError, HelperRole, HelperVerifier, VerifiedHelper};
 
+    pub(super) const VS_FIXEDFILEINFO_SIGNATURE: u32 = 0xFEEF_04BD;
+
     #[cfg(all(feature = "broker-channel-contract-test-hook", debug_assertions))]
     pub(super) fn hold_dormant_broker(candidate: &Path) -> Result<VerifiedHelper, HelperError> {
         if !candidate.is_absolute()
@@ -1203,6 +1205,15 @@ mod sys {
         // SAFETY: VerQueryValueW returned at least a VS_FIXEDFILEINFO. read_unaligned
         // avoids imposing alignment assumptions on the version-data buffer.
         let fixed = unsafe { ptr::read_unaligned(fixed_ptr.cast::<VS_FIXEDFILEINFO>()) };
+        decode_fixed_file_version(fixed)
+    }
+
+    pub(super) fn decode_fixed_file_version(
+        fixed: VS_FIXEDFILEINFO,
+    ) -> Result<super::HelperVersion, HelperError> {
+        if fixed.dwSignature != VS_FIXEDFILEINFO_SIGNATURE {
+            return Err(HelperError::VersionMismatch);
+        }
         Ok(super::HelperVersion {
             major: u16::try_from(fixed.dwFileVersionMS >> 16).unwrap_or(u16::MAX),
             minor: u16::try_from(fixed.dwFileVersionMS & 0xffff).unwrap_or(u16::MAX),
@@ -1321,6 +1332,9 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use windows::Win32::Storage::FileSystem::VS_FIXEDFILEINFO;
+
+    use super::sys::{VS_FIXEDFILEINFO_SIGNATURE, decode_fixed_file_version};
     use super::{
         HelperError, HelperManifest, HelperVerifier, HelperVersion,
         MINIMAL_KEY_AGENT_GATE_HEADERS_BYTES, MINIMAL_KEY_AGENT_GATE_PE_BYTES,
@@ -1529,6 +1543,31 @@ mod tests {
             [2; 32],
         )?;
         assert_ne!(first.digest(), second.digest());
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_file_version_requires_the_canonical_structure_signature() -> Result<(), HelperError> {
+        let mut fixed = VS_FIXEDFILEINFO {
+            dwSignature: VS_FIXEDFILEINFO_SIGNATURE,
+            dwFileVersionMS: (1_u32 << 16) | 2,
+            dwFileVersionLS: (3_u32 << 16) | 4,
+            ..VS_FIXEDFILEINFO::default()
+        };
+        assert_eq!(
+            decode_fixed_file_version(fixed)?,
+            HelperVersion {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                build: 4,
+            }
+        );
+        fixed.dwSignature ^= 1;
+        assert!(matches!(
+            decode_fixed_file_version(fixed),
+            Err(HelperError::VersionMismatch)
+        ));
         Ok(())
     }
 

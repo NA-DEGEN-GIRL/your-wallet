@@ -46,6 +46,7 @@ function Invoke-PrepareVerifierToolset {
     $sourceFiles = [ordered]@{
         "extension/native-host/validate-manifest.mjs" = Join-Path $repoRoot "extension\native-host\validate-manifest.mjs"
         "node.exe" = $nodePath
+        "scripts/release/assert-key-agent-debugger-version.ps1" = Join-Path $repoRoot "scripts\release\assert-key-agent-debugger-version.ps1"
         "scripts/release/common.ps1" = Join-Path $repoRoot "scripts\release\common.ps1"
         "scripts/release/release-manifest.mjs" = Join-Path $repoRoot "scripts\release\release-manifest.mjs"
         "scripts/release/review-evidence-set.mjs" = Join-Path $repoRoot "scripts\release\review-evidence-set.mjs"

@@ -33,6 +33,9 @@ import {
 const SOURCE_COMMIT = "1".repeat(40);
 const EXTENSION_ID = "a".repeat(32);
 const VERSION = "0.1.0";
+const DEBUGGER_ARTIFACT_ROLE = "key-agent-debugger-exe";
+const DEBUGGER_ARTIFACT_PATH = "payload/key-agent-debugger.exe";
+const HASH_PAYLOAD_CLI = path.resolve("scripts/release/hash-payload.mjs");
 const execFileAsync = promisify(execFile);
 
 function digest(label) {
@@ -62,6 +65,26 @@ async function fileRecord(root, relativePath) {
   const absolutePath = path.join(root, ...relativePath.split("/"));
   const [contents, metadata] = await Promise.all([readFile(absolutePath), stat(absolutePath)]);
   return { bytes: metadata.size.toString(), path: relativePath, sha256: sha256Hex(contents) };
+}
+
+async function createHashPayloadFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "your-wallet-payload-hash-"));
+  const payloadRoot = path.join(root, "payload");
+  const outputPath = path.join(root, "payload-hashes.json");
+  await mkdir(payloadRoot);
+  const expectedPaths = new Set([
+    ...Object.values(REQUIRED_ARTIFACT_PATHS),
+    DEBUGGER_ARTIFACT_PATH,
+  ]);
+  for (const relativePath of [...expectedPaths].sort()) {
+    assert.match(relativePath, /^payload\/[A-Za-z0-9._-]+$/u);
+    await writeFile(
+      path.join(payloadRoot, relativePath.slice("payload/".length)),
+      Buffer.from(`hash-payload fixture for ${relativePath}\n`, "utf8"),
+      { flag: "wx" },
+    );
+  }
+  return { outputPath, payloadRoot, root };
 }
 
 async function createSyntheticBundle() {
@@ -598,6 +621,52 @@ async function verifySyntheticBundle(fixture) {
     fixture.signerCertificateSha256,
   );
 }
+
+test("hash-payload CLI binds the exact key-agent debugger role and path", async () => {
+  const fixture = await createHashPayloadFixture();
+  try {
+    assert.equal(REQUIRED_ARTIFACT_PATHS[DEBUGGER_ARTIFACT_ROLE], DEBUGGER_ARTIFACT_PATH);
+    const { stderr, stdout } = await execFileAsync(process.execPath, [
+      HASH_PAYLOAD_CLI,
+      "--payload-root", fixture.payloadRoot,
+      "--output", fixture.outputPath,
+    ]);
+    assert.equal(stderr, "");
+    const report = JSON.parse(await readFile(fixture.outputPath, "utf8"));
+    const debuggerArtifact = report.artifacts.find(
+      (artifact) => artifact.role === DEBUGGER_ARTIFACT_ROLE,
+    );
+    assert.deepEqual(
+      { path: debuggerArtifact?.file.path, role: debuggerArtifact?.role },
+      { path: DEBUGGER_ARTIFACT_PATH, role: DEBUGGER_ARTIFACT_ROLE },
+    );
+    assert.equal(stdout, `${report.artifactSetSha256}\n`);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("hash-payload CLI rejects a missing key-agent debugger", async () => {
+  const fixture = await createHashPayloadFixture();
+  try {
+    await rm(path.join(fixture.payloadRoot, "key-agent-debugger.exe"), { force: true });
+    await assert.rejects(
+      () => execFileAsync(process.execPath, [
+        HASH_PAYLOAD_CLI,
+        "--payload-root", fixture.payloadRoot,
+        "--output", fixture.outputPath,
+      ]),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, "");
+        assert.equal(error.stderr, "PAYLOAD_HASHING_FAILED\n");
+        return true;
+      },
+    );
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
 
 test("synthetic final bundle verifies with canonical path-ordered Authenticode evidence", async () => {
   const fixture = await createSyntheticBundle();
@@ -1151,6 +1220,36 @@ test("final verifier rejects role/path swaps and unlisted bundle files", async (
     await writeRelative(fixture.root, "payload/unlisted.dll", "unlisted\n");
     const validated = validateManifest(fixture.manifest);
     await assert.rejects(() => verifyBundleFiles(validated, fixture.root), /unexpected or duplicate file/u);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("final verifier rejects key-agent debugger byte substitution", async () => {
+  const fixture = await createSyntheticBundle();
+  try {
+    assert.equal(REQUIRED_ARTIFACT_PATHS[DEBUGGER_ARTIFACT_ROLE], DEBUGGER_ARTIFACT_PATH);
+    const validated = validateManifest(fixture.manifest);
+    const debuggerBytes = await readFile(
+      path.join(fixture.root, ...DEBUGGER_ARTIFACT_PATH.split("/")),
+    );
+    const substitutedDebuggerBytes = Buffer.from(debuggerBytes);
+    substitutedDebuggerBytes[0] ^= 1;
+    await replaceRelative(
+      fixture.root,
+      DEBUGGER_ARTIFACT_PATH,
+      substitutedDebuggerBytes,
+    );
+    await assert.rejects(
+      () => verifyBundleFiles(validated, fixture.root),
+      (error) => {
+        assert.equal(
+          error.message,
+          `release bundle hash mismatch: ${DEBUGGER_ARTIFACT_PATH}`,
+        );
+        return true;
+      },
+    );
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }

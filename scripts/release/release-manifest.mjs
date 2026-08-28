@@ -19,6 +19,7 @@ export const REQUIRED_ARTIFACT_PATHS = Object.freeze({
   "dashboard-exe": "payload/dashboard.exe",
   "extension-package": "payload/extension-package.zip",
   installer: "payload/your-wallet-canary.msi",
+  "key-agent-debugger-exe": "payload/key-agent-debugger.exe",
   "key-agent-exe": "payload/key-agent.exe",
   "native-host-exe": "payload/native-host.exe",
   "secret-input-ui-exe": "payload/secret-input-ui.exe",

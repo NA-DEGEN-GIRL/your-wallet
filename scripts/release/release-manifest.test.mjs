@@ -316,6 +316,26 @@ test("a complete initial candidate is structurally valid", () => {
   assert.doesNotThrow(() => validateManifest(initialManifest()));
 });
 
+test("key-agent debugger has one dedicated release artifact role and path", () => {
+  assert.equal(
+    REQUIRED_ARTIFACT_PATHS["key-agent-debugger-exe"],
+    "payload/key-agent-debugger.exe",
+  );
+  assert.equal(
+    REQUIRED_ARTIFACT_ROLES.filter((role) => role === "key-agent-debugger-exe").length,
+    1,
+  );
+});
+
+test("missing key-agent debugger artifact is rejected", () => {
+  const manifest = initialManifest();
+  manifest.artifacts = manifest.artifacts.filter(
+    (artifact) => artifact.role !== "key-agent-debugger-exe",
+  );
+  manifest.artifactSetSha256 = computeArtifactSetSha256(manifest.artifacts);
+  assert.throws(() => validateManifest(manifest), /artifact roles must be exactly/u);
+});
+
 test("release verification requires an independently pinned release key id", () => {
   const manifest = initialManifest();
   const validated = validateManifest(manifest);
@@ -507,6 +527,24 @@ test("artifact substitution without a new artifact-set commitment is rejected", 
   const manifest = initialManifest();
   manifest.artifacts[0].file.sha256 = digest("substituted-binary");
   assert.throws(() => validateManifest(manifest), /artifactSetSha256/u);
+});
+
+test("key-agent debugger role cannot be swapped with the key-agent path", () => {
+  const manifest = initialManifest();
+  const debuggerArtifact = manifest.artifacts.find(
+    (artifact) => artifact.role === "key-agent-debugger-exe",
+  );
+  const keyAgentArtifact = manifest.artifacts.find(
+    (artifact) => artifact.role === "key-agent-exe",
+  );
+  assert.ok(debuggerArtifact);
+  assert.ok(keyAgentArtifact);
+  [debuggerArtifact.file.path, keyAgentArtifact.file.path] = [
+    keyAgentArtifact.file.path,
+    debuggerArtifact.file.path,
+  ];
+  manifest.artifactSetSha256 = computeArtifactSetSha256(manifest.artifacts);
+  assert.throws(() => validateManifest(manifest), /file\.path/u);
 });
 
 test("artifact and evidence roles cannot be rebound to alternate Windows paths", () => {

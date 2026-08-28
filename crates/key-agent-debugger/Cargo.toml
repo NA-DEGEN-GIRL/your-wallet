@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-build = false
+build = "build.rs"
 publish = false
 
 [features]
@@ -14,6 +14,9 @@ transport-feasibility-test-hook = []
 
 [dependencies]
 key-agent-debugger-wire = { path = "../key-agent-debugger-wire", default-features = false }
+
+[build-dependencies]
+find-msvc-tools = "=0.1.10"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.61.1", features = [

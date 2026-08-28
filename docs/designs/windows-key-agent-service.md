@@ -334,14 +334,42 @@ The following are existing facts, not new service claims:
   resolve target raw-slot generation, same-object ABA, or atomic compare-close.
   The complete target debug engine must still move atomically into the dedicated
   process, keep target-event aliases borrowed, and reclaim them only through
-  debugger-process exit. Signed packaged-artifact, exact PE version-resource,
-  and Authenticode/signer E2E remain **STOP-SHIP**. A separate principal and
-  from-birth process DACL with explicit `PROCESS_DUP_HANDLE` denial, actual
+  debugger-process exit.
+- The Windows x64 MSVC build now embeds one deterministic, header-free ASCII
+  `VERSIONINFO` definition. Fixed file and product versions are `0.1.0.0`; the
+  exact `0409`/Unicode strings are
+  `FileDescription = Your Wallet Key Agent Debugger`,
+  `FileVersion = 0.1.0.0`, `InternalName = key-agent-debugger`,
+  `OriginalFilename = key-agent-debugger.exe`, `ProductName = Your Wallet`, and
+  `ProductVersion = 0.1.0.0`. Package-version drift and other Windows targets
+  fail closed, while non-Windows targets do
+  nothing. Locked `find-msvc-tools 0.1.10` discovers `rc.exe` and links the
+  `.res` only to this binary; it does not cryptographically pin that tool or the
+  Windows SDK.
+- The release scaffold requires the exact `key-agent-debugger-exe` role at
+  `payload/key-agent-debugger.exe`. A safe `FileVersionInfo` inspector runs on
+  the built binary, both unsigned outputs before staging, the signed payload
+  while generating Authenticode evidence, and the held final bundle during
+  offline verification. Post-sign generation requires an effectively read-only
+  payload, canonicalizes and pins the output parent, and rejects a volume-root
+  parent, ADS/existing leaf, payload containment, or post-create identity drift.
+  It retains canonical payload handles plus a pinned inspector source
+  through inventory, version, signature, hashes, final exact-inventory recheck,
+  evidence creation, and output-byte confirmation. Offline verification
+  uses the held bundle plus the inspector identity in the independently pinned
+  exact eight-file/four-directory verifier toolset. Tests include a real-binary
+  positive and an exact-name non-PE negative; runtime helper decoding also
+  requires `VS_FIXEDFILEINFO.dwSignature == 0xFEEF04BD`.
+- These are build/scaffold and fixture/proxy checks, not an actual signed-product
+  E2E. The real product signer, immutable installation, and generated compiled
+  policy remain external **STOP-SHIP** work. A separate principal and from-birth
+  process DACL with explicit `PROCESS_DUP_HANDLE` denial, actual
   target transfer and token/image/suspend/Job proof, target membership and
   process-count topology, Job-owner handoff beyond helper exit, adversarial
   parent-death containment, and supported-kernel generalization of debug-event-
   alias retirement and cancellation-drain matrices also remain **STOP-SHIP**.
-  There is no production caller, and `COMPILED_RELEASE_POLICY` remains `None`.
+  The helper still exits 78 in default and release builds, there is no production
+  caller, and `COMPILED_RELEASE_POLICY` remains `None`.
 - When a transport deadline observes pending overlapped pipe I/O, `CancelIoEx`
   is only a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation
@@ -1101,11 +1129,12 @@ the corresponding evidence and returns release status to disabled.
   exact flag/raw-slot/event-classifier, and separate ignored current-host
   positive and mapped-mismatch tests cover this slice; the exact
   80/72/56-byte wire and sentinel protocol are unchanged. There is no production
-  caller and `COMPILED_RELEASE_POLICY` remains `None`. Signed packaging, exact PE
-  version-resource and Authenticode/signer E2E, separate principal/from-birth
-  process DACL and `PROCESS_DUP_HANDLE` denial, actual target transfer/topology,
-  Job-owner handoff, adversarial parent-death containment, and supported-kernel
-  alias-retirement and cancellation-drain matrices remain **STOP-SHIP**.
+  caller and `COMPILED_RELEASE_POLICY` remains `None`. A real product signer,
+  immutable installed debugger, generated compiled-policy E2E, separate
+  principal/from-birth process DACL and `PROCESS_DUP_HANDLE` denial, actual
+  target transfer/topology, Job-owner handoff, adversarial parent-death
+  containment, and supported-kernel alias-retirement and cancellation-drain
+  matrices remain **STOP-SHIP**.
 - 2026-08-28 - Replaced the unbounded post-`CancelIoEx` pipe wait with a fixed
   five-second, non-alertable `GetOverlappedResultEx` terminal drain. Async
   `ReadFile`/`WriteFile` now receive no byte-count pointer, and the same raw

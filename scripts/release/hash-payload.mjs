@@ -10,6 +10,7 @@ const ROLE_FILES = Object.freeze({
   "dashboard-exe": "dashboard.exe",
   "extension-package": "extension-package.zip",
   installer: "your-wallet-canary.msi",
+  "key-agent-debugger-exe": "key-agent-debugger.exe",
   "key-agent-exe": "key-agent.exe",
   "native-host-exe": "native-host.exe",
   "secret-input-ui-exe": "secret-input-ui.exe",

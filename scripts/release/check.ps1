@@ -47,8 +47,8 @@ function Invoke-Tests {
     $approvedTestSha256 = [ordered]@{
         "audit-extension.test.mjs" = "ad38466ba18481611a6e55575231b313c12644464d643580edc9aaede73a6906"
         "generate-inventories.test.mjs" = "cf6a80cd902dc3a35fc88a8cb5c65fe84790254bc1e9693a0404a311223f7dbc"
-        "release-manifest.test.mjs" = "4549e101f37087dcde8ed02ceeef9fb68db88c6593475a3a06b9496c7b11eb6a"
-        "release-verifier-integration.test.mjs" = "9094bc4d988c3290d6f7b3bf7243367ac90499c470e500205f5c49a40993b80e"
+        "release-manifest.test.mjs" = "72fedde11de2e28a2a351697f0a2e733c6297adcbd161c6d167913c875902c9b"
+        "release-verifier-integration.test.mjs" = "3b92f785e9bd81dc7f1a4173c2fb506f2d7ac74b32552e5b2955a332d0d0b2c7"
         "review-evidence-set.test.mjs" = "b556b49d3c349c6519edddf5817e16972540ed55f613cb208a738c4e3ed6f470"
     }
     $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.test.mjs" -File | Sort-Object -Property Name | ForEach-Object { $_.FullName })

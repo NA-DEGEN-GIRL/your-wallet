@@ -23,6 +23,7 @@ $toolsetDirectories = @(
 $toolsetFiles = @(
     "extension/native-host/validate-manifest.mjs",
     "node.exe",
+    "scripts/release/assert-key-agent-debugger-version.ps1",
     "scripts/release/common.ps1",
     "scripts/release/release-manifest.mjs",
     "scripts/release/review-evidence-set.mjs",
@@ -69,7 +70,8 @@ function New-TestToolsetFixture {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         [Parameter(Mandatory = $true)][string]$NodeSource,
-        [Parameter(Mandatory = $false)][string]$ReviewScriptContent
+        [Parameter(Mandatory = $false)][string]$ReviewScriptContent,
+        [Parameter(Mandatory = $false)][string]$DebuggerVersionInspectorContent
     )
 
     foreach ($relativeDirectory in $toolsetDirectories) {
@@ -77,6 +79,7 @@ function New-TestToolsetFixture {
     }
     foreach ($relativeFile in @(
         "extension/native-host/validate-manifest.mjs",
+        "scripts/release/assert-key-agent-debugger-version.ps1",
         "scripts/release/common.ps1",
         "scripts/release/release-manifest.mjs",
         "scripts/release/review-evidence-set.mjs",
@@ -95,10 +98,17 @@ function New-TestToolsetFixture {
             [System.Text.UTF8Encoding]::new($false, $true)
         )
     }
+    if ($PSBoundParameters.ContainsKey("DebuggerVersionInspectorContent")) {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $Root "scripts\release\assert-key-agent-debugger-version.ps1"),
+            $DebuggerVersionInspectorContent,
+            [System.Text.UTF8Encoding]::new($false, $true)
+        )
+    }
     $actualFiles = @(Get-ChildItem -LiteralPath $Root -File -Force -Recurse)
     $actualDirectories = @(Get-ChildItem -LiteralPath $Root -Directory -Force -Recurse)
-    if ($actualFiles.Count -ne 7 -or $actualDirectories.Count -ne 4) {
-        throw "Test toolset fixture was not the exact seven-file/four-directory shape"
+    if ($actualFiles.Count -ne 8 -or $actualDirectories.Count -ne 4) {
+        throw "Test toolset fixture was not the exact eight-file/four-directory shape"
     }
 }
 
@@ -557,6 +567,69 @@ function Invoke-OfflineWrapperRaw {
             (Join-Path $ToolsetRoot "scripts\release\verify-release-offline.ps1")
         ) + @($RawArguments)) `
         -TimeoutMilliseconds 60000
+}
+
+function Invoke-AuthenticodeEvidenceRaw {
+    param(
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$VerifierPath,
+        [Parameter(Mandatory = $true)][string]$PayloadRoot,
+        [Parameter(Mandatory = $true)][string]$OutputPath,
+        [Parameter(Mandatory = $true)][string]$SignerCertificateSha256
+    )
+
+    Invoke-TestRawProcess `
+        -Executable $PowerShellPath `
+        -WorkingDirectory ([System.IO.Path]::GetDirectoryName($VerifierPath)) `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $VerifierPath,
+            "-PayloadDirectory",
+            $PayloadRoot,
+            "-ArtifactSetSha256",
+            ("1" * 64),
+            "-ExpectedSignerCertificateSha256",
+            $SignerCertificateSha256,
+            "-OutputPath",
+            $OutputPath
+        ) `
+        -TimeoutMilliseconds 60000
+}
+
+function Assert-AuthenticodeEvidenceRejected {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][string]$OutputPath,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $false)][string[]]$PrivateValues = @()
+    )
+
+    if (
+        $Result.ExitCode -ne 1 -or
+        -not [string]::Equals($Result.Stdout, "", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals(
+            $Result.Stderr,
+            "AUTHENTICODE_EVIDENCE_REJECTED`n",
+            [System.StringComparison]::Ordinal
+        ) -or
+        [System.IO.File]::Exists($OutputPath) -or
+        [System.IO.Directory]::Exists($OutputPath)
+    ) {
+        throw "Authenticode evidence boundary accepted a rejected output case: $Label"
+    }
+    foreach ($privateValue in $PrivateValues) {
+        if (
+            -not [string]::IsNullOrEmpty($privateValue) -and
+            ($Result.Stdout.Contains($privateValue) -or $Result.Stderr.Contains($privateValue))
+        ) {
+            throw "Authenticode evidence boundary disclosed a private input: $Label"
+        }
+    }
 }
 
 function Assert-FixedOfflineWrapperFailure {
@@ -1284,6 +1357,417 @@ public static class VerifierBehaviorNode {
     $systemPowerShell = Join-Path `
         ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::System)) `
         "WindowsPowerShell\v1.0\powershell.exe"
+
+    $authenticodeVerifierSource = Join-Path $RepoRoot "scripts\release\verify-authenticode.ps1"
+    $authenticodeVerifierText = [System.IO.File]::ReadAllText($authenticodeVerifierSource)
+    $exactInventoryCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^    Assert-ExactAuthenticodePayloadInventory',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $firstInventoryIndex = $authenticodeVerifierText.IndexOf(
+        "    Assert-ExactAuthenticodePayloadInventory",
+        [System.StringComparison]::Ordinal
+    )
+    $lastInventoryIndex = $authenticodeVerifierText.LastIndexOf(
+        "    Assert-ExactAuthenticodePayloadInventory",
+        [System.StringComparison]::Ordinal
+    )
+    $signatureLoopIndex = $authenticodeVerifierText.IndexOf(
+        "        `$signature = Get-ReleaseAuthenticodeSignature -LiteralPath `$filePath",
+        [System.StringComparison]::Ordinal
+    )
+    $writeEvidenceIndex = $authenticodeVerifierText.IndexOf(
+        "    Write-NewUtf8File",
+        [System.StringComparison]::Ordinal
+    )
+    $effectiveReadOnlyIndex = $authenticodeVerifierText.IndexOf(
+        "    Assert-ReleaseTreeEffectivelyReadOnly -BundleRoot `$payloadRoot",
+        [System.StringComparison]::Ordinal
+    )
+    $outputPinCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^    \$outputFilePin = Open-PinnedReleaseFilePath -LiteralPath \$OutputPath\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputCanonicalPathCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^        \$outputFilePin\.CanonicalPath,\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputCanonicalExpectedCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^        \$OutputPath,\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputReadCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^    \$actualOutputBytes = \[System\.IO\.File\]::ReadAllBytes\(\$outputFilePin\.CanonicalPath\)\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputLengthCompareCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^    if \(\$actualOutputBytes\.Count -ne \$expectedOutputBytes\.Count\) \{\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputByteCompareCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^        if \(\$actualOutputBytes\[\$byteIndex\] -ne \$expectedOutputBytes\[\$byteIndex\]\) \{\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputSuccessCalls = [System.Text.RegularExpressions.Regex]::Matches(
+        $authenticodeVerifierText,
+        '(?m)^    Write-Output "AUTHENTICODE_EVIDENCE_WRITTEN"\r?$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    $outputPinIndex = $authenticodeVerifierText.IndexOf(
+        "    `$outputFilePin = Open-PinnedReleaseFilePath -LiteralPath `$OutputPath",
+        [System.StringComparison]::Ordinal
+    )
+    $outputCanonicalPathIndex = $authenticodeVerifierText.IndexOf(
+        "        `$outputFilePin.CanonicalPath,",
+        [System.StringComparison]::Ordinal
+    )
+    $outputCanonicalExpectedIndex = $authenticodeVerifierText.IndexOf(
+        "        `$OutputPath,",
+        [System.StringComparison]::Ordinal
+    )
+    $outputReadIndex = $authenticodeVerifierText.IndexOf(
+        "    `$actualOutputBytes = [System.IO.File]::ReadAllBytes(`$outputFilePin.CanonicalPath)",
+        [System.StringComparison]::Ordinal
+    )
+    $outputLengthCompareIndex = $authenticodeVerifierText.IndexOf(
+        "    if (`$actualOutputBytes.Count -ne `$expectedOutputBytes.Count) {",
+        [System.StringComparison]::Ordinal
+    )
+    $outputByteCompareIndex = $authenticodeVerifierText.IndexOf(
+        "        if (`$actualOutputBytes[`$byteIndex] -ne `$expectedOutputBytes[`$byteIndex]) {",
+        [System.StringComparison]::Ordinal
+    )
+    $outputSuccessIndex = $authenticodeVerifierText.IndexOf(
+        '    Write-Output "AUTHENTICODE_EVIDENCE_WRITTEN"',
+        [System.StringComparison]::Ordinal
+    )
+    if (
+        $exactInventoryCalls.Count -ne 2 -or
+        $effectiveReadOnlyIndex -lt 0 -or
+        $effectiveReadOnlyIndex -gt $firstInventoryIndex -or
+        $firstInventoryIndex -ge $signatureLoopIndex -or
+        $lastInventoryIndex -le $signatureLoopIndex -or
+        $lastInventoryIndex -ge $writeEvidenceIndex -or
+        $outputPinCalls.Count -ne 1 -or
+        $outputCanonicalPathCalls.Count -ne 1 -or
+        $outputCanonicalExpectedCalls.Count -ne 1 -or
+        $outputReadCalls.Count -ne 1 -or
+        $outputLengthCompareCalls.Count -ne 1 -or
+        $outputByteCompareCalls.Count -ne 1 -or
+        $outputSuccessCalls.Count -ne 1 -or
+        $writeEvidenceIndex -ge $outputPinIndex -or
+        $outputPinIndex -ge $outputCanonicalPathIndex -or
+        $outputCanonicalPathIndex -ge $outputCanonicalExpectedIndex -or
+        $outputCanonicalExpectedIndex -ge $outputReadIndex -or
+        $outputReadIndex -ge $outputLengthCompareIndex -or
+        $outputLengthCompareIndex -ge $outputByteCompareIndex -or
+        $outputByteCompareIndex -ge $outputSuccessIndex
+    ) {
+        throw "Authenticode evidence source did not retain its read-only, inventory, and output-identity gates"
+    }
+
+    $authenticodeFixtureScriptRoot = Join-Path $testRoot "authenticode-evidence-script-fixture"
+    [void](New-Item -ItemType Directory -Path $authenticodeFixtureScriptRoot)
+    Copy-Item `
+        -LiteralPath (Join-Path $RepoRoot "scripts\release\common.ps1") `
+        -Destination (Join-Path $authenticodeFixtureScriptRoot "common.ps1")
+    $authenticodePostCreateMutationScriptRoot = Join-Path `
+        $testRoot `
+        "authenticode-evidence-post-create-mutation-script-fixture"
+    [void](New-Item -ItemType Directory -Path $authenticodePostCreateMutationScriptRoot)
+    Copy-Item `
+        -LiteralPath (Join-Path $RepoRoot "scripts\release\common.ps1") `
+        -Destination (Join-Path $authenticodePostCreateMutationScriptRoot "common.ps1")
+    $fixtureErrorTrap = @'
+trap {
+    [Console]::Error.Write("AUTHENTICODE_EVIDENCE_REJECTED`n")
+    exit 1
+}
+$PSModuleAutoLoadingPreference = "None"
+'@
+    $authenticodeFixtureVerifierText = $authenticodeVerifierText.Replace(
+        '$PSModuleAutoLoadingPreference = "None"',
+        $fixtureErrorTrap
+    )
+    if ([System.String]::Equals(
+        $authenticodeFixtureVerifierText,
+        $authenticodeVerifierText,
+        [System.StringComparison]::Ordinal
+    )) {
+        throw "Authenticode evidence fixture could not install its path-free failure trap"
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $authenticodeFixtureScriptRoot "verify-authenticode.ps1"),
+        $authenticodeFixtureVerifierText,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    $postCreateMutationNeedle = '    $outputFilePin = Open-PinnedReleaseFilePath -LiteralPath $OutputPath'
+    if (
+        [System.Text.RegularExpressions.Regex]::Matches(
+            $authenticodeFixtureVerifierText,
+            [System.Text.RegularExpressions.Regex]::Escape($postCreateMutationNeedle),
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+        ).Count -ne 1
+    ) {
+        throw "Authenticode evidence fixture could not locate its exact post-create output pin"
+    }
+    $postCreateMutationVerifierText = $authenticodeFixtureVerifierText.Replace(
+        $postCreateMutationNeedle,
+        @'
+    [System.IO.File]::AppendAllText(
+        $OutputPath,
+        "post-create-mutation",
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    $outputFilePin = Open-PinnedReleaseFilePath -LiteralPath $OutputPath
+'@
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $authenticodePostCreateMutationScriptRoot "verify-authenticode.ps1"),
+        $postCreateMutationVerifierText,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $authenticodeFixtureScriptRoot "assert-key-agent-debugger-version.ps1"),
+        @'
+param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+$candidate = [System.IO.FileInfo]::new([System.IO.Path]::GetFullPath($ExecutablePath))
+if (
+    -not $candidate.Exists -or
+    ($candidate.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+    ($candidate.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    $candidate.Name -cne "key-agent-debugger.exe"
+) {
+    throw "Fixture debugger inspector requires the exact real executable"
+}
+'@,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    Copy-Item `
+        -LiteralPath (Join-Path $authenticodeFixtureScriptRoot "assert-key-agent-debugger-version.ps1") `
+        -Destination (Join-Path $authenticodePostCreateMutationScriptRoot "assert-key-agent-debugger-version.ps1")
+    $authenticodeFixtureVerifier = Join-Path `
+        $authenticodeFixtureScriptRoot `
+        "verify-authenticode.ps1"
+    $authenticodePostCreateMutationVerifier = Join-Path `
+        $authenticodePostCreateMutationScriptRoot `
+        "verify-authenticode.ps1"
+    $authenticodePayloadRoot = Join-Path $testRoot "authenticode-evidence-payload"
+    $authenticodeEvidenceParent = Join-Path $testRoot "authenticode-evidence-output"
+    [void](New-Item -ItemType Directory -Path $authenticodePayloadRoot)
+    [void](New-Item -ItemType Directory -Path $authenticodeEvidenceParent)
+    foreach ($payloadName in @(
+        "approval-ui.exe",
+        "broker.exe",
+        "dashboard.exe",
+        "key-agent-debugger.exe",
+        "key-agent.exe",
+        "native-host.exe",
+        "secret-input-ui.exe",
+        "your-wallet-canary.msi"
+    )) {
+        Copy-Item `
+            -LiteralPath $systemPowerShell `
+            -Destination (Join-Path $authenticodePayloadRoot $payloadName)
+    }
+    Write-NewUtf8File `
+        -LiteralPath (Join-Path $authenticodePayloadRoot "extension-package.zip") `
+        -Content "fixture extension package"
+    $authenticodePayloadSignature = Get-ReleaseAuthenticodeSignature `
+        -LiteralPath $systemPowerShell
+    if (
+        $authenticodePayloadSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $authenticodePayloadSignature.SignerCertificate
+    ) {
+        throw "System PowerShell did not provide a valid Authenticode evidence fixture"
+    }
+    $authenticodeCertificateHasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $authenticodeCertificateBytes = $authenticodeCertificateHasher.ComputeHash(
+            $authenticodePayloadSignature.SignerCertificate.RawData
+        )
+    }
+    finally {
+        $authenticodeCertificateHasher.Dispose()
+    }
+    $authenticodeSignerCertificateSha256 = [System.BitConverter]::ToString(
+        $authenticodeCertificateBytes
+    ).Replace("-", "").ToLowerInvariant()
+
+    $authenticodeOutputAlias = Join-Path $testRoot "authenticode-output-alias"
+    [void](New-Item `
+        -ItemType Junction `
+        -Path $authenticodeOutputAlias `
+        -Target $authenticodeEvidenceParent)
+    [void](Protect-TestTree -Root $authenticodePayloadRoot)
+    try {
+        $authenticodeOutput = Join-Path $authenticodeEvidenceParent "authenticode.json"
+        $authenticodeSuccess = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodeFixtureVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $authenticodeOutput `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+        if (
+            $authenticodeSuccess.ExitCode -ne 0 -or
+            -not [string]::Equals(
+                $authenticodeSuccess.Stdout,
+                "AUTHENTICODE_EVIDENCE_WRITTEN`r`n",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [string]::Equals(
+                $authenticodeSuccess.Stderr,
+                "",
+                [System.StringComparison]::Ordinal
+            ) -or
+            -not [System.IO.File]::Exists($authenticodeOutput)
+        ) {
+            throw "Authenticode evidence boundary rejected its exact protected external output fixture"
+        }
+        $authenticodeReport = ConvertFrom-Json ([System.IO.File]::ReadAllText($authenticodeOutput))
+        if (
+            $authenticodeReport.schema -cne "your-wallet-authenticode-evidence-v1" -or
+            @($authenticodeReport.entries).Count -ne 8
+        ) {
+            throw "Authenticode evidence boundary wrote an invalid exact fixture report"
+        }
+
+        $postCreateMutationOutput = Join-Path `
+            $authenticodeEvidenceParent `
+            "post-create-mutated.json"
+        $postCreateMutationResult = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodePostCreateMutationVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $postCreateMutationOutput `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+        try {
+            if (
+                $postCreateMutationResult.ExitCode -ne 1 -or
+                -not [string]::Equals(
+                    $postCreateMutationResult.Stdout,
+                    "",
+                    [System.StringComparison]::Ordinal
+                )
+            ) {
+                throw "Authenticode evidence boundary accepted post-create output mutation"
+            }
+            if (-not [string]::Equals(
+                    $postCreateMutationResult.Stderr,
+                    "AUTHENTICODE_EVIDENCE_REJECTED`n",
+                    [System.StringComparison]::Ordinal
+                )) {
+                throw "Authenticode evidence post-create mutation did not use its fixed failure surface"
+            }
+            if (-not [System.IO.File]::Exists($postCreateMutationOutput)) {
+                throw "Authenticode evidence fixture did not reach its post-create mutation"
+            }
+            if (-not [System.IO.File]::ReadAllText($postCreateMutationOutput).EndsWith(
+                    "post-create-mutation",
+                    [System.StringComparison]::Ordinal
+                )) {
+                throw "Authenticode evidence fixture did not retain its post-create mutation bytes"
+            }
+        }
+        finally {
+            if ([System.IO.File]::Exists($postCreateMutationOutput)) {
+                Remove-Item -LiteralPath $postCreateMutationOutput -Force
+            }
+        }
+
+        $adsBasePath = Join-Path $authenticodeEvidenceParent "ads-base.json"
+        Write-NewUtf8File -LiteralPath $adsBasePath -Content "base"
+        $adsOutputPath = $adsBasePath + ":unexpected"
+        $adsResult = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodeFixtureVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $adsOutputPath `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+        Assert-AuthenticodeEvidenceRejected `
+            -Result $adsResult `
+            -OutputPath $adsOutputPath `
+            -Label "alternate data stream output" `
+            -PrivateValues @($authenticodePayloadRoot, $adsOutputPath)
+
+        $aliasOutputPath = Join-Path $authenticodeOutputAlias "aliased.json"
+        $aliasResult = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodeFixtureVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $aliasOutputPath `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+        Assert-AuthenticodeEvidenceRejected `
+            -Result $aliasResult `
+            -OutputPath $aliasOutputPath `
+            -Label "junction-aliased output parent" `
+            -PrivateValues @($authenticodePayloadRoot, $authenticodeOutputAlias)
+
+        $containedOutputPath = Join-Path $authenticodePayloadRoot "contained.json"
+        $containedResult = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodeFixtureVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $containedOutputPath `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+        Assert-AuthenticodeEvidenceRejected `
+            -Result $containedResult `
+            -OutputPath $containedOutputPath `
+            -Label "payload-contained output" `
+            -PrivateValues @($authenticodePayloadRoot, $containedOutputPath)
+    }
+    finally {
+        Unprotect-TestTree -Root $authenticodePayloadRoot
+    }
+    if ([System.IO.Directory]::Exists($authenticodeOutputAlias)) {
+        [System.IO.Directory]::Delete($authenticodeOutputAlias)
+    }
+
+    $writablePayloadItems = @(
+        (Get-Item -LiteralPath $authenticodePayloadRoot -Force)
+    ) + @(Get-ChildItem -LiteralPath $authenticodePayloadRoot -Force)
+    foreach ($item in $writablePayloadItems) {
+        [System.IO.File]::SetAttributes(
+            $item.FullName,
+            ([System.IO.File]::GetAttributes($item.FullName) -bor [System.IO.FileAttributes]::ReadOnly)
+        )
+    }
+    $writablePayloadOutput = Join-Path $authenticodeEvidenceParent "writable-rejected.json"
+    try {
+        $writablePayloadResult = Invoke-AuthenticodeEvidenceRaw `
+            -PowerShellPath $systemPowerShell `
+            -VerifierPath $authenticodeFixtureVerifier `
+            -PayloadRoot $authenticodePayloadRoot `
+            -OutputPath $writablePayloadOutput `
+            -SignerCertificateSha256 $authenticodeSignerCertificateSha256
+    }
+    finally {
+        foreach ($item in $writablePayloadItems) {
+            $attributes = [int][System.IO.File]::GetAttributes($item.FullName)
+            [System.IO.File]::SetAttributes(
+                $item.FullName,
+                [System.IO.FileAttributes](
+                    $attributes -band (-bnot [int][System.IO.FileAttributes]::ReadOnly)
+                )
+            )
+        }
+    }
+    Assert-AuthenticodeEvidenceRejected `
+        -Result $writablePayloadResult `
+        -OutputPath $writablePayloadOutput `
+        -Label "attribute-only writable payload" `
+        -PrivateValues @($authenticodePayloadRoot, $writablePayloadOutput)
+    if (@(Get-ChildItem -LiteralPath $authenticodePayloadRoot -Force).Count -ne 9) {
+        throw "Authenticode effective-read-only probe left an unexpected payload entry"
+    }
+
     $preparationArguments = @(
         "-NoLogo",
         "-NoProfile",
@@ -1312,7 +1796,7 @@ public static class VerifierBehaviorNode {
     if ($preparationResult.ExitCode -ne 0 -or
         -not [string]::Equals($preparationResult.Stdout, $expectedPreparationOutput, [System.StringComparison]::Ordinal) -or
         -not [string]::Equals($preparationResult.Stderr, "", [System.StringComparison]::Ordinal) -or
-        $preparedFiles.Count -ne 7 -or
+        $preparedFiles.Count -ne 8 -or
         $preparedDirectories.Count -ne 4 -or
         @($preparedItems | Where-Object {
             ($_.Attributes -band [System.IO.FileAttributes]::ReadOnly) -eq 0
@@ -1402,6 +1886,115 @@ public static class VerifierBehaviorNode {
     $releaseSignerCertificateSha256 = [System.BitConverter]::ToString(
         $releaseCertificateBytes
     ).Replace("-", "").ToLowerInvariant()
+    $wrongVersionRoot = Join-Path $testRoot "wrong-version-debugger"
+    [void](New-Item -ItemType Directory -Path $wrongVersionRoot)
+    $wrongVersionDebugger = Join-Path $wrongVersionRoot "key-agent-debugger.exe"
+    Copy-Item -LiteralPath $systemPowerShell -Destination $wrongVersionDebugger
+    $wrongVersionRejected = $false
+    try {
+        & (Join-Path $RepoRoot "scripts\release\assert-key-agent-debugger-version.ps1") `
+            -ExecutablePath $wrongVersionDebugger
+    }
+    catch {
+        $wrongVersionRejected = $true
+    }
+    if (-not $wrongVersionRejected) {
+        throw "Debugger VERSIONINFO inspector accepted a signed wrong-version executable"
+    }
+
+    # The system-signed fixture preserves the pre-existing real Authenticode
+    # success gate, but it cannot carry the product's debugger VERSIONINFO. This
+    # fixture-only, toolset-pinned inspector therefore proves the wrapper's exact
+    # invocation and ordering. The source inspector is exercised above for the
+    # wrong-version case and by the built-debugger resource test for success.
+    $releaseDebuggerFixtureSha256 = Get-Sha256Lower -LiteralPath $systemPowerShell
+    $authenticodeInvalidDebuggerSource = Join-Path $testRoot "version-admitted-unsigned-debugger.bin"
+    [System.IO.File]::WriteAllText(
+        $authenticodeInvalidDebuggerSource,
+        "version-admitted unsigned debugger fixture",
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    $authenticodeInvalidDebuggerSha256 = Get-Sha256Lower `
+        -LiteralPath $authenticodeInvalidDebuggerSource
+    $authenticodeInvalidDebuggerSignature = Get-ReleaseAuthenticodeSignature `
+        -LiteralPath $authenticodeInvalidDebuggerSource
+    if ($authenticodeInvalidDebuggerSignature.Status -eq
+        [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Version-admitted unsigned debugger fixture unexpectedly had valid Authenticode"
+    }
+    $releaseVersionCapturePath = Join-Path $testRoot "release-version-inspector.capture"
+    $releaseVersionCaptureBase64 = [System.Convert]::ToBase64String(
+        [System.Text.UTF8Encoding]::new($false, $true).GetBytes($releaseVersionCapturePath)
+    )
+    $releaseVersionInspectorTemplate = @'
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$ExecutablePath
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$candidate = [System.IO.FileInfo]::new([System.IO.Path]::GetFullPath($ExecutablePath))
+if (
+    -not $candidate.Exists -or
+    ($candidate.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+    ($candidate.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    $candidate.Name -cne "key-agent-debugger.exe"
+) {
+    throw "Fixture debugger inspector requires the exact real executable"
+}
+
+$stream = [System.IO.File]::Open(
+    $candidate.FullName,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::Read
+)
+try {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $hasher.ComputeHash($stream)
+    }
+    finally {
+        $hasher.Dispose()
+    }
+}
+finally {
+    $stream.Dispose()
+}
+$actualSha256 = [System.BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+$accepted = [System.String]::Equals(
+    $actualSha256,
+    "__EXPECTED_SHA256__",
+    [System.StringComparison]::Ordinal
+) -or [System.String]::Equals(
+    $actualSha256,
+    "__AUTHENTICODE_INVALID_SHA256__",
+    [System.StringComparison]::Ordinal
+)
+$capturePath = [System.Text.UTF8Encoding]::new($false, $true).GetString(
+    [System.Convert]::FromBase64String("__CAPTURE_PATH_BASE64__")
+)
+[System.IO.File]::AppendAllText(
+    $capturePath,
+    $(if ($accepted) { "pass`n" } else { "reject`n" }),
+    [System.Text.UTF8Encoding]::new($false, $true)
+)
+if (-not $accepted) {
+    throw "Fixture debugger inspector rejected substituted bytes"
+}
+'@
+    $releaseVersionInspectorContent = $releaseVersionInspectorTemplate.Replace(
+        "__EXPECTED_SHA256__",
+        $releaseDebuggerFixtureSha256
+    ).Replace(
+        "__AUTHENTICODE_INVALID_SHA256__",
+        $authenticodeInvalidDebuggerSha256
+    ).Replace(
+        "__CAPTURE_PATH_BASE64__",
+        $releaseVersionCaptureBase64
+    )
     $releaseBehaviorProxy = Join-Path $testRoot "compiled-release-successor-node.exe"
     $releaseBehaviorProxySource = $behaviorProxyTemplate.Replace(
         "__WRAPPER_MODE__",
@@ -1833,7 +2426,8 @@ public static class DecoyNode {
     New-TestToolsetFixture `
         -Root $releaseToolsetRoot `
         -NodeSource $releaseBehaviorProxy `
-        -ReviewScriptContent "release-successor"
+        -ReviewScriptContent "release-successor" `
+        -DebuggerVersionInspectorContent $releaseVersionInspectorContent
     $releaseToolsetHash = Get-TestToolsetSha256 -Root $releaseToolsetRoot
     $releaseBundleRoot = Join-Path $testRoot "release-successor-bundle"
     $releasePayloadRoot = Join-Path $releaseBundleRoot "payload"
@@ -1842,6 +2436,7 @@ public static class DecoyNode {
         "approval-ui.exe",
         "broker.exe",
         "dashboard.exe",
+        "key-agent-debugger.exe",
         "key-agent.exe",
         "native-host.exe",
         "secret-input-ui.exe",
@@ -1860,6 +2455,21 @@ public static class DecoyNode {
     Write-NewUtf8File -LiteralPath $releaseSignature -Content "signature"
     Write-NewUtf8File -LiteralPath $releasePublicKey -Content "public-key"
     Write-NewUtf8File -LiteralPath $releasePreviousManifest -Content "previous-manifest"
+    $releaseSuccessorArguments = @(
+        "-Manifest", $releaseManifest,
+        "-Signature", $releaseSignature,
+        "-ReleasePublicKey", $releasePublicKey,
+        "-BundleRoot", $releaseBundleRoot,
+        "-ExpectedReleaseSequence", "2",
+        "-ExpectedReleaseKeyIdSha256", ("1" * 64),
+        "-ExpectedExtensionId", ("a" * 32),
+        "-ExpectedReviewerKeyIdSha256", ("2" * 64),
+        "-ExpectedSignerCertificateSha256", $releaseSignerCertificateSha256,
+        "-ExpectedVerifierToolsetSha256", $releaseToolsetHash,
+        "-PreviousManifest", $releasePreviousManifest,
+        "-ExpectedPreviousManifestSha256", ("5" * 64),
+        "-OperatorConfirmedNetworkIsolation"
+    )
     [void](Protect-TestTree -Root $releaseToolsetRoot)
     [void](Protect-TestTree -Root $releaseBundleRoot)
     [void](Protect-TestTree -Root $releaseInputRoot)
@@ -1932,21 +2542,7 @@ public static class DecoyNode {
         [System.IO.File]::Delete($releaseCapturePath)
         $releaseSuccessorResult = Invoke-OfflineWrapperRaw `
             -ToolsetRoot $releaseToolsetRoot `
-            -RawArguments @(
-                "-Manifest", $releaseManifest,
-                "-Signature", $releaseSignature,
-                "-ReleasePublicKey", $releasePublicKey,
-                "-BundleRoot", $releaseBundleRoot,
-                "-ExpectedReleaseSequence", "2",
-                "-ExpectedReleaseKeyIdSha256", ("1" * 64),
-                "-ExpectedExtensionId", ("a" * 32),
-                "-ExpectedReviewerKeyIdSha256", ("2" * 64),
-                "-ExpectedSignerCertificateSha256", $releaseSignerCertificateSha256,
-                "-ExpectedVerifierToolsetSha256", $releaseToolsetHash,
-                "-PreviousManifest", $releasePreviousManifest,
-                "-ExpectedPreviousManifestSha256", ("5" * 64),
-                "-OperatorConfirmedNetworkIsolation"
-            )
+            -RawArguments $releaseSuccessorArguments
     }
     finally {
         Unprotect-TestTree -Root $releaseInputRoot
@@ -2001,6 +2597,18 @@ public static class DecoyNode {
         -not [string]::Equals($releaseCaptureLines[0], "2", [System.StringComparison]::Ordinal)) {
         throw "Final release wrapper did not execute two immutable verifier passes"
     }
+    $releaseVersionCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseVersionCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($releaseVersionCaptureLines.Count -ne 1 -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[0],
+            "pass",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Final release wrapper did not invoke the pinned debugger version inspector exactly once"
+    }
     $releaseCapturedArguments = @(
         foreach ($encodedArgument in $releaseCaptureLines[1..33]) {
             [System.Text.UTF8Encoding]::new($false, $true).GetString(
@@ -2026,6 +2634,117 @@ public static class DecoyNode {
             [System.StringComparison]::Ordinal
         )) {
         throw "Final release wrapper did not pass the pinned release sequence exactly once"
+    }
+
+    [System.IO.File]::Delete($releaseCapturePath)
+    $unsignedDebuggerPath = Join-Path $releasePayloadRoot "key-agent-debugger.exe"
+    [System.IO.File]::WriteAllText(
+        $unsignedDebuggerPath,
+        "unsigned key-agent debugger fixture",
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    [void](Protect-TestTree -Root $releaseToolsetRoot)
+    [void](Protect-TestTree -Root $releaseBundleRoot)
+    [void](Protect-TestTree -Root $releaseInputRoot)
+    try {
+        $unsignedDebuggerResult = Invoke-OfflineWrapperRaw `
+            -ToolsetRoot $releaseToolsetRoot `
+            -RawArguments $releaseSuccessorArguments
+    }
+    finally {
+        Unprotect-TestTree -Root $releaseInputRoot
+        Unprotect-TestTree -Root $releaseBundleRoot
+        Unprotect-TestTree -Root $releaseToolsetRoot
+    }
+    Assert-FixedOfflineWrapperFailure `
+        -Result $unsignedDebuggerResult `
+        -Label "substituted key-agent debugger post-sign admission" `
+        -PrivateValues @($unsignedDebuggerPath, $releaseBundleRoot)
+    $unsignedDebuggerCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($unsignedDebuggerCaptureLines.Count -ne 34 -or
+        -not [string]::Equals(
+            $unsignedDebuggerCaptureLines[0],
+            "1",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Offline wrapper did not reject the unsigned key-agent debugger between verifier passes"
+    }
+    $releaseVersionCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseVersionCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($releaseVersionCaptureLines.Count -ne 2 -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[0],
+            "pass",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[1],
+            "reject",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Pinned debugger version inspector did not fail before Authenticode on substituted bytes"
+    }
+
+    [System.IO.File]::Delete($releaseCapturePath)
+    [System.IO.File]::WriteAllBytes(
+        $unsignedDebuggerPath,
+        [System.IO.File]::ReadAllBytes($authenticodeInvalidDebuggerSource)
+    )
+    [void](Protect-TestTree -Root $releaseToolsetRoot)
+    [void](Protect-TestTree -Root $releaseBundleRoot)
+    [void](Protect-TestTree -Root $releaseInputRoot)
+    try {
+        $authenticodeInvalidDebuggerResult = Invoke-OfflineWrapperRaw `
+            -ToolsetRoot $releaseToolsetRoot `
+            -RawArguments $releaseSuccessorArguments
+    }
+    finally {
+        Unprotect-TestTree -Root $releaseInputRoot
+        Unprotect-TestTree -Root $releaseBundleRoot
+        Unprotect-TestTree -Root $releaseToolsetRoot
+    }
+    Assert-FixedOfflineWrapperFailure `
+        -Result $authenticodeInvalidDebuggerResult `
+        -Label "version-admitted unsigned key-agent debugger Authenticode" `
+        -PrivateValues @($unsignedDebuggerPath, $releaseBundleRoot)
+    $authenticodeInvalidCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($authenticodeInvalidCaptureLines.Count -ne 34 -or
+        -not [string]::Equals(
+            $authenticodeInvalidCaptureLines[0],
+            "1",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Offline wrapper did not reject the version-admitted unsigned debugger between verifier passes"
+    }
+    $releaseVersionCaptureLines = [System.IO.File]::ReadAllLines(
+        $releaseVersionCapturePath,
+        [System.Text.UTF8Encoding]::new($false, $true)
+    )
+    if ($releaseVersionCaptureLines.Count -ne 3 -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[0],
+            "pass",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[1],
+            "reject",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not [string]::Equals(
+            $releaseVersionCaptureLines[2],
+            "pass",
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Debugger-specific Authenticode rejection did not occur after version admission"
     }
 
     foreach ($attack in @(

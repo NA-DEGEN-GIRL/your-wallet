@@ -1215,8 +1215,35 @@ the whole target debug engine into the dedicated process, never individually
 closes borrowed raw aliases, and lets debugger-process exit reclaim that
 isolated handle table.
 
-A signed packaged debugger artifact plus exact PE version-resource and
-Authenticode/signer E2E remain unverified **STOP-SHIP** work. Actual target
+The Windows x64 MSVC helper build now embeds one deterministic, header-free
+ASCII `VERSIONINFO` definition. Its fixed file and product versions are
+`0.1.0.0`; the exact `0409`/Unicode strings are
+`FileDescription = Your Wallet Key Agent Debugger`,
+`FileVersion = 0.1.0.0`, `InternalName = key-agent-debugger`,
+`OriginalFilename = key-agent-debugger.exe`, `ProductName = Your Wallet`, and
+`ProductVersion = 0.1.0.0`. The build rejects package-version drift and
+non-x64-MSVC Windows targets, is inert for non-Windows targets, and uses locked
+`find-msvc-tools 0.1.10` to discover `rc.exe` and link the `.res` only into this
+binary. Discovery is not a cryptographic pin of `rc.exe` or the Windows SDK.
+
+The release contract now makes `key-agent-debugger-exe` at
+`payload/key-agent-debugger.exe` mandatory. A safe `FileVersionInfo` inspector
+runs on the built binary, before unsigned staging, after signing during
+Authenticode-evidence generation, and against the held bundle in final offline
+verification. The post-sign generator requires an effectively read-only
+payload, canonicalizes and pins the output parent, and rejects a volume-root
+parent, ADS/existing leaf, payload containment, or post-create identity drift.
+It retains canonical payload handles plus a pinned inspector source
+through inventory, version, signature, hashes, final exact-inventory recheck,
+evidence creation, and output-byte confirmation; the offline pass combines the
+held bundle with that inspector identity inside the independently pinned exact
+eight-file/four-directory verifier toolset. Tests cover the real built binary
+and an exact-name non-PE negative. Runtime helper version parsing also requires
+`VS_FIXEDFILEINFO.dwSignature == 0xFEEF04BD` before field extraction.
+
+This is build/scaffold and fixture/proxy enforcement, not an actual signed-
+product E2E. A real product signer, immutable installation, and generated
+compiled release policy remain external **STOP-SHIP** work. Actual target
 handle transfer plus token/image/suspend/Job proof, target membership and
 process-count topology, Job-owner handoff beyond helper exit, and any production
 caller or enabled policy also remain **STOP-SHIP**. The suspended last-close
@@ -1226,7 +1253,7 @@ handle. A separate principal and from-birth process DACL, explicit
 `PROCESS_DUP_HANDLE` denial, adversarial parent-death containment, and the
 supported-kernel generalization of debug-alias retirement plus cancellation-
 drain matrices therefore remain **STOP-SHIP**. Both compiled policies stay
-`None`.
+`None`, and the helper continues to exit 78 in default and release builds.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is treated
 only as a cancellation request and never as completion evidence. Async
 `ReadFile`/`WriteFile` receive no byte-count output pointer; one raw

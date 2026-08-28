@@ -2506,6 +2506,7 @@ function Open-VerifiedReleaseToolset {
     $expectedFiles = @(
         "extension/native-host/validate-manifest.mjs",
         "node.exe",
+        "scripts/release/assert-key-agent-debugger-version.ps1",
         "scripts/release/common.ps1",
         "scripts/release/release-manifest.mjs",
         "scripts/release/review-evidence-set.mjs",
@@ -2914,6 +2915,43 @@ const { fileURLToPath } = require("node:url");
     finally {
         foreach ($handle in $temporaryHandles) {
             $handle.Dispose()
+        }
+    }
+}
+
+function Assert-ReleaseToolsetDebuggerVersion {
+    param(
+        [Parameter(Mandatory = $true)][object]$Toolset,
+        [Parameter(Mandatory = $true)][string]$ExecutablePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath) -or $ExecutablePath.Contains([char]0)) {
+        throw "Release toolset debugger version inspection received an invalid path"
+    }
+
+    $record = Get-VerifiedReleaseToolsetRecord -Toolset $Toolset
+    $relative = "scripts/release/assert-key-agent-debugger-version.ps1"
+    $candidate = $null
+    try {
+        $candidate = $script:ReleaseDirectoryLockType::OpenFile($record.VolumePaths[$relative])
+        if (
+            -not $script:ReleaseDirectoryLockType::SameIdentity($record.IdentityHandles[$relative], $candidate) -or
+            -not [System.String]::Equals(
+                $script:ReleaseDirectoryLockType::GetFinalVolumePath($candidate),
+                $record.VolumePaths[$relative],
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw "Release toolset debugger version inspector identity changed before execution"
+        }
+        & $record.VolumePaths[$relative] -ExecutablePath $ExecutablePath
+    }
+    catch {
+        throw "Release toolset debugger version inspection failed closed"
+    }
+    finally {
+        if ($null -ne $candidate) {
+            $candidate.Dispose()
         }
     }
 }

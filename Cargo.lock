@@ -1342,6 +1342,7 @@ dependencies = [
 name = "key-agent-debugger"
 version = "0.1.0"
 dependencies = [
+ "find-msvc-tools",
  "key-agent-debugger-wire",
  "windows",
 ]

@@ -94,7 +94,7 @@ offline = true
     [void](Invoke-ReleaseCommand -Executable "cargo" -CommandArguments $buildArguments -WorkingDirectory $firstSource)
     [void](Invoke-ReleaseCommand -Executable "cargo" -CommandArguments $buildArguments -WorkingDirectory $secondSource)
 
-    $binaryNames = @("approval-ui", "broker", "dashboard", "key-agent", "native-host", "secret-input-ui")
+    $binaryNames = @("approval-ui", "broker", "dashboard", "key-agent-debugger", "key-agent", "native-host", "secret-input-ui")
     $payloadRoots = @()
     $buildPairs = @(
         [pscustomobject]@{ Source = $firstSource; Payload = "payload-a" },
@@ -108,6 +108,10 @@ offline = true
             $binary = Join-Path $source "target\x86_64-pc-windows-msvc\release\${binaryName}.exe"
             if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
                 throw "Expected release binary was not produced: ${binaryName}.exe"
+            }
+            if ([System.String]::Equals($binaryName, "key-agent-debugger", [System.StringComparison]::Ordinal)) {
+                & (Join-Path $PSScriptRoot "assert-key-agent-debugger-version.ps1") `
+                    -ExecutablePath $binary
             }
             Copy-Item -LiteralPath $binary -Destination (Join-Path $payload "${binaryName}.exe")
         }

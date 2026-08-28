@@ -101,6 +101,7 @@ try {
         "approval-ui.exe",
         "broker.exe",
         "dashboard.exe",
+        "key-agent-debugger.exe",
         "key-agent.exe",
         "native-host.exe",
         "secret-input-ui.exe",
@@ -108,6 +109,15 @@ try {
     )
     foreach ($fileName in $payloadFiles) {
         $filePath = Join-Path $bundle "payload\$fileName"
+        if ([System.String]::Equals(
+            $fileName,
+            "key-agent-debugger.exe",
+            [System.StringComparison]::Ordinal
+        )) {
+            Assert-ReleaseToolsetDebuggerVersion `
+                -Toolset $toolset `
+                -ExecutablePath $filePath
+        }
         $signatureStatus = Get-ReleaseAuthenticodeSignature -LiteralPath $filePath
         if ($signatureStatus.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signatureStatus.SignerCertificate) {
             throw "Offline Authenticode re-verification failed closed"
