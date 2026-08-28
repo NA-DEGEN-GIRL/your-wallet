@@ -17,12 +17,13 @@ const MANIFEST_DOMAIN: &[u8] = b"your-wallet/helper-manifest/v1\0";
 /// Helper role derived only from the release-bound manifest file name.
 ///
 /// This type deliberately stays private: callers may choose a manifest for
-/// verification, but they cannot inject a role into a [`VerifiedHelper`]. The
-/// restricted launcher separately requires that manifest's digest to appear in
-/// the compiled release allowlist.
+/// verification, but they cannot inject a role into a [`VerifiedHelper`]. Each
+/// private activation boundary then applies its own dedicated manifest policy;
+/// the generic restricted launcher never admits Broker or debugger roles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HelperRole {
     KeyAgent,
+    KeyAgentDebugger,
     Broker,
     ApprovalFrontend,
     SecretInputFrontend,
@@ -33,6 +34,8 @@ impl HelperRole {
     fn from_release_file_name(file_name: &str) -> Self {
         if file_name.eq_ignore_ascii_case("key-agent.exe") {
             Self::KeyAgent
+        } else if file_name.eq_ignore_ascii_case("key-agent-debugger.exe") {
+            Self::KeyAgentDebugger
         } else if file_name.eq_ignore_ascii_case("broker.exe") {
             Self::Broker
         } else if file_name.eq_ignore_ascii_case("approval-ui.exe") {
@@ -402,6 +405,13 @@ impl VerifiedHelper {
         matches!(self.role, HelperRole::KeyAgent)
     }
 
+    /// Returns whether the verified release manifest names the exact isolated
+    /// Key Agent debugger role. Only the private debugger artifact-admission
+    /// boundary may use this narrower role proof.
+    pub(crate) const fn is_key_agent_debugger(&self) -> bool {
+        matches!(self.role, HelperRole::KeyAgentDebugger)
+    }
+
     /// Returns whether the verified release manifest names the exact Broker
     /// role. Only the private Broker artifact-admission boundary may use this
     /// narrower role proof in ordinary builds.
@@ -640,6 +650,58 @@ impl VerifiedHelper {
     }
 
     #[cfg(test)]
+    pub(crate) fn for_key_agent_debugger_artifact_test(
+        path: PathBuf,
+        manifest_digest: [u8; 32],
+        debugger_role: bool,
+    ) -> Result<Self, HelperError> {
+        let executable = std::env::current_exe().map_err(|_| HelperError::OperatingSystem)?;
+        let held_path = if path.is_absolute() {
+            path.as_path()
+        } else {
+            executable.as_path()
+        };
+        let file = {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt as _;
+
+                use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(FILE_SHARE_READ.0)
+                    .open(held_path)
+                    .map_err(|_| HelperError::OperatingSystem)?
+            }
+            #[cfg(not(windows))]
+            {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(held_path)
+                    .map_err(|_| HelperError::OperatingSystem)?
+            }
+        };
+        Ok(Self {
+            path,
+            file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
+            identity: FileIdentity {
+                volume_serial_number: 51,
+                file_index: 52,
+                file_size: 53,
+            },
+            manifest_digest,
+            role: if debugger_role {
+                HelperRole::KeyAgentDebugger
+            } else {
+                HelperRole::Other
+            },
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_approval_artifact_test(
         path: PathBuf,
         manifest_digest: [u8; 32],
@@ -766,6 +828,14 @@ mod debug_tests {
             HelperRole::KeyAgent
         );
         assert_eq!(
+            HelperRole::from_release_file_name("key-agent-debugger.exe"),
+            HelperRole::KeyAgentDebugger
+        );
+        assert_eq!(
+            HelperRole::from_release_file_name("KEY-AGENT-DEBUGGER.EXE"),
+            HelperRole::KeyAgentDebugger
+        );
+        assert_eq!(
             HelperRole::from_release_file_name("approval-ui.exe"),
             HelperRole::ApprovalFrontend
         );
@@ -779,6 +849,18 @@ mod debug_tests {
         );
         assert_eq!(
             HelperRole::from_release_file_name("secret-input-ui.exe.backup"),
+            HelperRole::Other
+        );
+        assert_eq!(
+            HelperRole::from_release_file_name("key-agent-debugger.exe.backup"),
+            HelperRole::Other
+        );
+        assert_eq!(
+            HelperRole::from_release_file_name("old-key-agent-debugger.exe"),
+            HelperRole::Other
+        );
+        assert_eq!(
+            HelperRole::from_release_file_name("key-agent-debugger.exe-new"),
             HelperRole::Other
         );
     }

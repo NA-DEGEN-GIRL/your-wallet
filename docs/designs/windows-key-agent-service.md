@@ -257,22 +257,39 @@ The following are existing facts, not new service claims:
   without an explicit termination API, proves the live helper becomes terminal.
   `READY_FROZEN` means only fixed sentinel-source and decision-only protocol
   state, not that the helper is suspended by the OS.
+- A separate dormant artifact-admission seam accepts an already verified and
+  pinned helper only in this order: the exact manifest-derived
+  `KeyAgentDebugger` role, opaque whole-release attestation, the dedicated
+  debugger-manifest digest kept separate from the three generic helpers and the
+  Broker, an absolute verified path whose file is held without write/delete
+  sharing, and complete
+  `FILE_ID_INFO` queried from that same held file handle without reopen or path
+  lookup. Its `PreflightDebuggerArtifact` and
+  `PreparedReleaseDebuggerArtifact` capabilities are crate-private,
+  move-only/non-cloneable, and redacted; they expose no path, raw handle,
+  artifact, release digest, or launch operation. The seam allocates no Job,
+  pipe, channel, thread, process, or debug resource and has no production
+  caller. `COMPILED_RELEASE_POLICY` remains `None`, so ordinary evaluation
+  cannot mint either capability.
 - The feasibility helper creates or debugs no Key Agent target and touches no
   LPAC, secret, RPC, debug API, or `DEBUG_EVENT`; its Job proves process-tree
   containment mechanics only. It therefore does not resolve raw-slot
   generation, same-object ABA, or compare-to-close. A later
   atomic cutover must move the complete debug engine into the dedicated process,
   keep raw event aliases borrowed, never close them individually, and use only
-  process exit for their handle-table cleanup. Signed immutable debugger release
-  identity/bootstrap, actual target-handle transfer and token/image/suspend/Job
-  proof, target membership and process-count topology, Job-owner handoff beyond
-  helper exit, the supported-kernel matrix, and every production caller/policy
-  remain unverified **STOP-SHIP** work. The suspended last-close path is benign-
-  helper evidence only: after execution, a same-token helper may be able to
-  acquire `PROCESS_DUP_HANDLE` on its parent and duplicate a Job handle.
-  Immutable helper identity and launch admission, token/process-DACL separation,
-  and adversarial parent-death containment proof therefore remain **STOP-SHIP**.
-  Compiled policies remain `None`.
+  process exit for their handle-table cleanup. A signed packaged debugger
+  artifact, exact PE version-resource and Authenticode/signer E2E,
+  launch/bootstrap consumption of the admitted capability, and mapped-image
+  proof against the held `FILE_ID_INFO` remain unverified **STOP-SHIP** work.
+  Actual target-handle transfer and token/image/suspend/Job proof, target
+  membership and process-count topology, Job-owner handoff beyond helper exit,
+  and every production caller/policy also remain **STOP-SHIP**. The suspended
+  last-close path is benign-helper evidence only: after execution, a same-token
+  helper may be able to acquire `PROCESS_DUP_HANDLE` on its parent and duplicate
+  a Job handle. A separate principal and from-birth process DACL, explicit
+  `PROCESS_DUP_HANDLE` denial, adversarial parent-death containment, and the
+  supported-kernel matrix therefore remain **STOP-SHIP**. Compiled policies
+  remain `None`.
 - When a transport deadline observes pending overlapped pipe I/O, `CancelIoEx`
   is only a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation
@@ -1005,6 +1022,19 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-28 - Added a dormant, allocation-free Key Agent debugger artifact-
+  admission boundary. It orders exact manifest-derived role, opaque whole-
+  release attestation, a dedicated debugger-manifest digest, an absolute
+  verified path plus its still-held/pinned file, and full `FILE_ID_INFO` from
+  that same file handle into private,
+  move-only/non-cloneable, redacted `PreflightDebuggerArtifact` and
+  `PreparedReleaseDebuggerArtifact` capabilities. It has
+  no launch operation or production caller, and `COMPILED_RELEASE_POLICY`
+  remains `None`. Signed packaging, PE version-resource and Authenticode/signer
+  E2E, mapped-image proof, separate principal/process-DACL and
+  `PROCESS_DUP_HANDLE` denial, actual target transfer/topology, Job-owner
+  handoff, adversarial parent-death containment, and the supported-kernel matrix
+  remain **STOP-SHIP**.
 - 2026-08-28 - Replaced the unbounded post-`CancelIoEx` pipe wait with a fixed
   five-second, non-alertable `GetOverlappedResultEx` terminal drain. Async
   `ReadFile`/`WriteFile` now receive no byte-count pointer, and the same raw

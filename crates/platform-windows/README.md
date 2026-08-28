@@ -194,21 +194,38 @@ Implemented:
   the live helper becomes terminal without an explicit termination API.
   `READY_FROZEN` is a fixed-source, decision-only protocol state, not an OS
   suspend claim.
+  A separate dormant artifact-admission seam accepts an already verified and
+  pinned helper only in this order: the exact manifest-derived
+  `KeyAgentDebugger` role, opaque whole-release attestation, the dedicated
+  debugger-manifest digest kept separate from the three generic helpers and the
+  Broker, an absolute verified path whose file is held without write/delete
+  sharing, and complete
+  `FILE_ID_INFO` queried from that same held file handle without reopen or path
+  lookup. Its `PreflightDebuggerArtifact` and
+  `PreparedReleaseDebuggerArtifact` capabilities are crate-private,
+  move-only/non-cloneable, and redacted; they expose no path, raw handle,
+  artifact, release digest, or launch operation. The seam allocates no Job,
+  pipe, channel, thread, process, or debug resource and has no production
+  caller. `COMPILED_RELEASE_POLICY` remains `None`, so ordinary evaluation
+  cannot mint either capability.
   The helper creates or debugs no Key Agent target and uses no LPAC, secret,
   RPC, debug API, or `DEBUG_EVENT`; its Job is process-tree containment only,
   so the raw-slot generation/ABA/compare-close blocker is unchanged. A future
   atomic cutover must move the complete
   debug engine into the dedicated process, keep raw aliases borrowed without
-  individual close, and reclaim them only at debugger-process exit. Signed
-  immutable debugger release identity/bootstrap, actual target transfer and
-  token/image/suspend/Job proof, target membership and process-count topology,
-  Job-owner handoff beyond helper exit, supported-kernel evidence, and every
-  production caller/policy remain unverified **STOP-SHIP** work. The suspended
-  last-close test is benign-helper evidence only: after execution, a same-token
-  helper may be able to acquire `PROCESS_DUP_HANDLE` on the parent and duplicate
-  a Job handle. Immutable helper identity plus launch admission, token/process-
-  DACL separation, and proof of adversarial parent-death containment therefore
-  also remain **STOP-SHIP**; compiled policies remain `None`.
+  individual close, and reclaim them only at debugger-process exit. A signed
+  packaged debugger artifact, exact PE version-resource and Authenticode/signer
+  E2E, launch/bootstrap consumption of the admitted capability, and mapped-image
+  proof against the held `FILE_ID_INFO` remain unverified **STOP-SHIP** work.
+  Actual target transfer and token/image/suspend/Job proof, target membership
+  and process-count topology, Job-owner handoff beyond helper exit, and every
+  production caller/policy also remain **STOP-SHIP**. The suspended last-close
+  test is benign-helper evidence only: after execution, a same-token helper may
+  be able to acquire `PROCESS_DUP_HANDLE` on the parent and duplicate a Job
+  handle. A separate principal and from-birth process DACL, explicit
+  `PROCESS_DUP_HANDLE` denial, adversarial parent-death containment, and the
+  supported-kernel matrix therefore remain **STOP-SHIP**; compiled policies
+  remain `None`.
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

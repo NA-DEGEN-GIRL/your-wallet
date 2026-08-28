@@ -159,6 +159,14 @@ mod inheritable_handle_launch;
 mod key_agent_activation;
 #[cfg(windows)]
 mod key_agent_child_bootstrap;
+// This dormant admission seam binds the exact Key Agent debugger role to a
+// dedicated release-manifest slot, absolute verified path, held no-write/delete-
+// share file, opaque whole-release identity, and same-handle FILE_ID_INFO before
+// any launch resource exists. It has no production caller or launch/debug API;
+// transport composition, mapped-image proof, principal/DACL separation, target
+// transfer, and enabled release policy remain blocking.
+#[allow(dead_code)]
+mod key_agent_debugger_artifact;
 // This secretless, dormant one-shot process transport proves only creation-time
 // helper Job assignment, benign suspended-helper containment mechanics,
 // isolated handle install/pull, frozen decision, and process-exit cleanup. It

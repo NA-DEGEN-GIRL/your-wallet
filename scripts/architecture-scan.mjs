@@ -12329,27 +12329,27 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor: "A separate Phase 1 helper-bootstrap crate exposes",
-    sha256: "c29837e8cb2d5b8d14eecd7ddde03101f2ee8b3a429728dd16a83386252055c3",
+    sha256: "9558a5befae266d1510434a0228e1001cd2d519b86d036e0dfc761815758d020",
   },
   {
     path: "docs/architecture.md",
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate now has two deliberately different surfaces.",
-    sha256: "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
+    sha256: "fdea55e7e4822625a4572c11e6b84aa9878060bb1314772cecd68e1a77dcfc1f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes only a safe platform-neutral gate-byte",
-    sha256: "3f5691b919168071e3742c5bda3f0385b2e35029d862fed1b025aac8906c4d10",
+    sha256: "1aa908b961d9b8e1b622757301e0caf5b688ec386aabd71b85780c7b6d3558a8",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate now exposes",
-    sha256: "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
+    sha256: "691c9152fae38a9947574bd28f395aa96da7e1ddcb6f339a97b43dfc91796e35",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -12398,7 +12398,7 @@ const keyAgentServiceHelperBootstrapDocumentationContradictionStatements = [
 const keyAgentServiceHelperBootstrapDocumentationWindow = (spec) => {
   const anchors = [...spec.source.matchAll(new RegExp(spec.anchor, "gu"))];
   if (anchors.length !== 1) return null;
-  return spec.source.slice(anchors[0].index, anchors[0].index + 13_500);
+  return spec.source.slice(anchors[0].index, anchors[0].index + 15_000);
 };
 const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
   JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) ===
@@ -12411,7 +12411,7 @@ const keyAgentServiceHelperBootstrapDocumentationSemanticContract = (specs) =>
     const window = keyAgentServiceHelperBootstrapDocumentationWindow(spec);
     return (
       window !== null &&
-      window.length <= 13_500 &&
+      window.length <= 15_000 &&
       keyAgentServiceHelperBootstrapDocumentationPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
@@ -18539,6 +18539,25 @@ requireInvariant(
     /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(attestation),
   "Broker transport evidence and manifest must remain separate from the three helper manifests and release-disabled",
 );
+requireInvariant(
+  attestation.includes("key_agent_debugger_manifest_digest") &&
+    attestation.includes("allowed_key_agent_debugger_manifest_digest") &&
+    attestation.includes("allows_key_agent_debugger_manifest") &&
+    attestation.includes("valid_key_agent_debugger_manifest") &&
+    attestation.includes("debugger != broker") &&
+    attestation.includes("!helpers.contains(&debugger)") &&
+    /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(attestation),
+  "Key Agent debugger manifest authority must remain distinct from the three helpers and Broker and release-disabled",
+);
+const keyAgentDebuggerArtifactSource = await text(
+  "crates/platform-windows/src/key_agent_debugger_artifact.rs",
+);
+const keyAgentDebuggerArtifactProduction = withoutBottomTestModule(
+  keyAgentDebuggerArtifactSource,
+);
+const keyAgentDebuggerArtifactRelease = withoutCfgTestItems(
+  keyAgentDebuggerArtifactProduction,
+);
 const brokerArtifactSource = await text(
   "crates/platform-windows/src/broker_artifact.rs",
 );
@@ -18724,7 +18743,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "221e0514482c39444ff2bdc4063f23b7d9a1ccc88c10333d0d112714a0fac43a";
+  "d6f12c55222f8f8deea6c9fa316aebb49dd2e2dfc86395b232e73d0c9a5e5888";
 const workspaceRustDynamicRebindingMutationProbe =
   workspaceRustCompilationInputs.map((file) =>
     file.path === "crates/approval-ui/src/native.rs"
@@ -20202,11 +20221,27 @@ requireInvariant(
     ) &&
     (activationHelper.match(/\bfor_approval_artifact_test\b/gu) ?? [])
       .length === 1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) fn for_key_agent_debugger_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*debugger_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
+      activationHelper,
+    ) &&
+    (
+      activationHelper.match(
+        /\bfor_key_agent_debugger_artifact_test\b/gu,
+      ) ?? []
+    ).length === 1 &&
     /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_broker_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
     (attestationProduction.match(/\bwith_broker_manifest_for_test\b/gu) ?? [])
       .length === 1 &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_key_agent_debugger_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
+      attestationProduction,
+    ) &&
+    (
+      attestationProduction.match(
+        /\bwith_key_agent_debugger_manifest_for_test\b/gu,
+      ) ?? []
+    ).length === 1 &&
     /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_helper_manifests_for_test\(\s*artifact: ArtifactDigest,\s*digests: \[\[u8; 32\]; REQUIRED_HELPER_MANIFESTS\],\s*\) -> Self\s*\{/u.test(
       attestationProduction,
     ) &&
@@ -20216,7 +20251,7 @@ requireInvariant(
       attestationProduction,
     ) &&
     (attestationProduction.match(/\bfor_test\b/gu) ?? []).length === 1,
-  "Broker/Approval/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
+  "Broker/Approval/debugger/helper artifact and signing-enabled attestation test constructors must remain test-only with no production duplicate",
 );
 requireInvariant(
   /#\[derive\(Clone,\s*Copy,\s*Eq,\s*PartialEq\)\]\s*pub\(crate\)\s+struct\s+AttestedArtifactDigest\(ArtifactDigest\)\s*;/u.test(
@@ -20228,7 +20263,7 @@ requireInvariant(
       "attested_artifact: signing_enabled.then_some(AttestedArtifactDigest(artifact))",
     ) &&
     rustLexicalCode(releaseAttestationBlock).replace(/\s+/gu, "") ===
-      "pubstructReleaseAttestation{attested_artifact:Option<AttestedArtifactDigest>,allowed_helper_manifest_digests:Option<[[u8;32];REQUIRED_HELPER_MANIFESTS]>,allowed_broker_manifest_digest:Option<[u8;32]>,}" &&
+      "pubstructReleaseAttestation{attested_artifact:Option<AttestedArtifactDigest>,allowed_helper_manifest_digests:Option<[[u8;32];REQUIRED_HELPER_MANIFESTS]>,allowed_broker_manifest_digest:Option<[u8;32]>,allowed_key_agent_debugger_manifest_digest:Option<[u8;32]>,}" &&
     rustLexicalCode(attestedArtifactMatches).replace(/\s+/gu, "") ===
       "pub(crate)fnmatches(self,expected:&[u8;32])->bool{self.0.0.ct_eq(expected).into()}" &&
     rustLexicalCode(attestedArtifactAccessor).replace(/\s+/gu, "") ===
@@ -20250,10 +20285,11 @@ requireInvariant(
       JSON.stringify([
         "evaluate",
         "signing_enabled",
-        "attested_artifact",
-        "allows_helper_manifest",
-        "allows_broker_manifest",
-      ]) &&
+         "attested_artifact",
+         "allows_helper_manifest",
+         "allows_broker_manifest",
+          "allows_key_agent_debugger_manifest",
+       ]) &&
     JSON.stringify(
       rustImplItems(attestationRelease)
         .filter((item) => /\bAttestedArtifactDigest\b/u.test(item.header))
@@ -20270,21 +20306,24 @@ requireInvariant(
       JSON.stringify([
         "crates/platform-windows/src/approval_supervisor.rs",
         "crates/platform-windows/src/broker_artifact.rs",
-        "crates/platform-windows/src/broker_supervisor.rs",
-        "crates/platform-windows/src/key_agent_activation.rs",
-      ]) &&
+         "crates/platform-windows/src/broker_supervisor.rs",
+         "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_debugger_artifact.rs",
+       ]) &&
     JSON.stringify(attestedArtifactAccessorConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/approval_supervisor.rs",
-        "crates/platform-windows/src/broker_artifact.rs",
-        "crates/platform-windows/src/key_agent_activation.rs",
-      ]) &&
+         "crates/platform-windows/src/broker_artifact.rs",
+         "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_debugger_artifact.rs",
+       ]) &&
     JSON.stringify(attestedArtifactAccessorTokenConsumers) ===
       JSON.stringify([
         "crates/platform-windows/src/approval_supervisor.rs",
-        "crates/platform-windows/src/broker_artifact.rs",
-        "crates/platform-windows/src/key_agent_activation.rs",
-      ]) &&
+         "crates/platform-windows/src/broker_artifact.rs",
+         "crates/platform-windows/src/key_agent_activation.rs",
+          "crates/platform-windows/src/key_agent_debugger_artifact.rs",
+       ]) &&
     platformWindowsProductionFiles
       .filter(
         (file) => file.path !== "crates/platform-windows/src/attestation.rs",
@@ -20303,7 +20342,7 @@ requireInvariant(
     !/pub\(crate\)\s+(?:const\s+)?fn\s+(?:raw\w*|as_bytes|into_inner|into_parts|artifact_digest|manifest_digest)\b/u.test(
       attestedArtifactDigestImpl,
     ) &&
-    !/\b(?:allowed_helper_manifest_digests|allowed_broker_manifest_digest)\s*:\s*Option<AttestedArtifactDigest>/u.test(
+    !/\b(?:allowed_helper_manifest_digests|allowed_broker_manifest_digest|allowed_key_agent_debugger_manifest_digest)\s*:\s*Option<AttestedArtifactDigest>/u.test(
       attestationReleaseCode,
     ),
   "whole-release AttestedArtifactDigest authority must be opaque, compiled-policy-minted once, raw-getter-free, and distinct from helper or Broker manifest digests",
@@ -21550,6 +21589,1012 @@ requireInvariant(
     rootReadme.includes("같은 `platform-windows` crate instance") &&
     rootReadme.includes("`COMPILED_RELEASE_POLICY`는 계속 `None`"),
   "Broker preflight and dormant activation must document opaque whole-release retention separately from manifest/file identity, no cohort/runtime authority, caller zero, and existing STOP-SHIP gates",
+);
+
+const debuggerArtifactPath =
+  "crates/platform-windows/src/key_agent_debugger_artifact.rs";
+const debuggerHelperRoleContract = (source) => {
+  let production;
+  let release;
+  let roleDefinition;
+  let roleImpl;
+  let derivation;
+  let verifiedHelperImpl;
+  let accessor;
+  let roleTest;
+  try {
+    production = withoutBottomTestModule(source);
+    release = withoutCfgTestItems(production);
+    roleDefinition = rustTopLevelLexicalItemBlock(
+      production,
+      /(?:^|\n)enum\s+HelperRole\s*\{/u,
+    );
+    roleImpl = rustTopLevelLexicalItemBlock(
+      production,
+      /(?:^|\n)impl\s+HelperRole\s*\{/u,
+    );
+    derivation = rustFunctionBlock(roleImpl, "from_release_file_name");
+    verifiedHelperImpl = rustTopLevelLexicalItemBlock(
+      production,
+      /(?:^|\n)impl\s+VerifiedHelper\s*\{/u,
+    );
+    accessor = rustFunctionBlock(verifiedHelperImpl, "is_key_agent_debugger");
+    roleTest = rustFunctionBlock(
+      source,
+      "helper_roles_are_derived_only_from_exact_release_file_names",
+    );
+  } catch {
+    return false;
+  }
+  const derivationMarkers = [
+    'file_name.eq_ignore_ascii_case("key-agent.exe")',
+    "Self::KeyAgent",
+    'file_name.eq_ignore_ascii_case("key-agent-debugger.exe")',
+    "Self::KeyAgentDebugger",
+    'file_name.eq_ignore_ascii_case("broker.exe")',
+    "Self::Broker",
+    'file_name.eq_ignore_ascii_case("approval-ui.exe")',
+    "Self::ApprovalFrontend",
+    'file_name.eq_ignore_ascii_case("secret-input-ui.exe")',
+    "Self::SecretInputFrontend",
+    "Self::Other",
+  ].map((marker) => derivation.indexOf(marker));
+  return (
+    normalizeRustFragment(rustLexicalCode(roleDefinition)) ===
+      "enum HelperRole { KeyAgent, KeyAgentDebugger, Broker, ApprovalFrontend, SecretInputFrontend, Other, }" &&
+    compactRust(derivation) ===
+      "fnfrom_release_file_name(file_name:&str)->Self{iffile_name.eq_ignore_ascii_case(){Self::KeyAgent}elseiffile_name.eq_ignore_ascii_case(){Self::KeyAgentDebugger}elseiffile_name.eq_ignore_ascii_case(){Self::Broker}elseiffile_name.eq_ignore_ascii_case(){Self::ApprovalFrontend}elseiffile_name.eq_ignore_ascii_case(){Self::SecretInputFrontend}else{Self::Other}}" &&
+    rustCallSites(derivation, "eq_ignore_ascii_case").length === 5 &&
+    derivationMarkers.every((position) => position !== -1) &&
+    derivationMarkers.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    compactRust(accessor) ===
+      "pub(crate)constfnis_key_agent_debugger(&self)->bool{matches!(self.role,HelperRole::KeyAgentDebugger)}" &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) fn for_key_agent_debugger_artifact_test\(\s*path: PathBuf,\s*manifest_digest: \[u8; 32\],\s*debugger_role: bool,\s*\) -> Result<Self, HelperError>\s*\{/u.test(
+      production,
+    ) &&
+    (production.match(/\bfor_key_agent_debugger_artifact_test\b/gu) ?? [])
+      .length === 1 &&
+    !/\bfor_key_agent_debugger_artifact_test\b/u.test(
+      rustLexicalCode(release),
+    ) &&
+    !hasVacuousRustTestEscape(roleTest) &&
+    [
+      'HelperRole::from_release_file_name("key-agent-debugger.exe")',
+      'HelperRole::from_release_file_name("KEY-AGENT-DEBUGGER.EXE")',
+      'HelperRole::from_release_file_name("key-agent-debugger.exe.backup")',
+      'HelperRole::from_release_file_name("old-key-agent-debugger.exe")',
+      'HelperRole::from_release_file_name("key-agent-debugger.exe-new")',
+    ].every((marker) => roleTest.includes(marker)) &&
+    (
+      roleTest.match(/HelperRole::KeyAgentDebugger/gu) ?? []
+    ).length === 2 &&
+    (roleTest.match(/HelperRole::Other/gu) ?? []).length >= 3
+  );
+};
+const debuggerHelperRoleMutationProbes = [
+  activationHelperSource.replace(
+    'file_name.eq_ignore_ascii_case("key-agent-debugger.exe")',
+    'file_name.contains("key-agent-debugger.exe")',
+  ),
+  activationHelperSource.replace(
+    '} else if file_name.eq_ignore_ascii_case("key-agent-debugger.exe") {\n            Self::KeyAgentDebugger',
+    '} else if file_name.eq_ignore_ascii_case("key-agent-debugger.exe") {\n            Self::KeyAgent',
+  ),
+  activationHelperSource.replace(
+    "matches!(self.role, HelperRole::KeyAgentDebugger)",
+    "matches!(self.role, HelperRole::KeyAgent)",
+  ),
+  activationHelperSource.replace(
+    'HelperRole::from_release_file_name("KEY-AGENT-DEBUGGER.EXE"),\n            HelperRole::KeyAgentDebugger',
+    'HelperRole::from_release_file_name("KEY-AGENT-DEBUGGER.EXE"),\n            HelperRole::Other',
+  ),
+  activationHelperSource.replace(
+    'HelperRole::from_release_file_name("key-agent-debugger.exe.backup"),\n            HelperRole::Other',
+    'HelperRole::from_release_file_name("key-agent-debugger.exe.backup"),\n            HelperRole::KeyAgentDebugger',
+  ),
+  activationHelperSource.replace(
+    "    #[cfg(test)]\n    pub(crate) fn for_key_agent_debugger_artifact_test(",
+    "    pub(crate) fn for_key_agent_debugger_artifact_test(",
+  ),
+];
+requireInvariant(
+  debuggerHelperRoleContract(activationHelperSource) &&
+    debuggerHelperRoleMutationProbes.every(
+      (probe) =>
+        probe !== activationHelperSource && !debuggerHelperRoleContract(probe),
+    ),
+  "the Key Agent debugger helper role must remain private, exact-filename-derived, generic-launcher-ineligible, and backed only by a test-scoped constructor with effective near-name and role mutations",
+);
+
+const debuggerAttestationContract = (source) => {
+  let production;
+  let release;
+  let policyDefinition;
+  let attestationDefinition;
+  let attestationImpl;
+  let evaluateAgainstPolicy;
+  let allowsDebuggerManifest;
+  let validDebuggerManifest;
+  let distinctnessTest;
+  try {
+    production = withoutBottomTestModule(source);
+    release = withoutCfgTestItems(production);
+    policyDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /(?:^|\n)struct\s+ReleasePolicy\s*\{/u,
+    );
+    attestationDefinition = rustTopLevelLexicalItemBlock(
+      release,
+      /(?:^|\n)pub\s+struct\s+ReleaseAttestation\s*\{/u,
+    );
+    attestationImpl = rustTopLevelLexicalItemBlock(
+      release,
+      /(?:^|\n)impl\s+ReleaseAttestation\s*\{/u,
+    );
+    evaluateAgainstPolicy = rustFunctionBlock(
+      attestationImpl,
+      "evaluate_against_policy",
+    );
+    allowsDebuggerManifest = rustFunctionBlock(
+      attestationImpl,
+      "allows_key_agent_debugger_manifest",
+    );
+    validDebuggerManifest = rustTopLevelFunctionBlock(
+      release,
+      "valid_key_agent_debugger_manifest",
+    );
+    distinctnessTest = rustFunctionBlock(
+      source,
+      "key_agent_debugger_manifest_is_distinct_and_requires_exact_evidence",
+    );
+  } catch {
+    return false;
+  }
+  const validCallArguments = rustCallSites(
+    evaluateAgainstPolicy,
+    "valid_key_agent_debugger_manifest",
+  ).map((call) => call.arguments.map(compactRust));
+  const evaluationOrder = [
+    "valid_helper_manifest_allowlist(&policy.helper_manifest_digests)",
+    "valid_broker_manifest(",
+    "valid_key_agent_debugger_manifest(",
+    "let allowed_helper_manifest_digests =",
+    "let allowed_broker_manifest_digest =",
+    "let allowed_key_agent_debugger_manifest_digest =",
+    "attested_artifact: signing_enabled.then_some(AttestedArtifactDigest(artifact))",
+    "allowed_key_agent_debugger_manifest_digest,",
+  ].map((marker) => evaluateAgainstPolicy.indexOf(marker));
+  return (
+    /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(release) &&
+    normalizeRustFragment(rustLexicalCode(policyDefinition)) ===
+      "struct ReleasePolicy { artifact: ArtifactDigest, appcontainer_suite_digest: [u8; 32], helper_suite_digest: [u8; 32], handle_suite_digest: [u8; 32], broker_transport_suite_digest: [u8; 32], helper_manifest_digests: [[u8; 32]; REQUIRED_HELPER_MANIFESTS], broker_manifest_digest: [u8; 32], key_agent_debugger_manifest_digest: [u8; 32], }" &&
+    normalizeRustFragment(rustLexicalCode(attestationDefinition)) ===
+      "pub struct ReleaseAttestation { attested_artifact: Option<AttestedArtifactDigest>, allowed_helper_manifest_digests: Option<[[u8; 32]; REQUIRED_HELPER_MANIFESTS]>, allowed_broker_manifest_digest: Option<[u8; 32]>, allowed_key_agent_debugger_manifest_digest: Option<[u8; 32]>, }" &&
+    compactRust(validDebuggerManifest) ===
+      "fnvalid_key_agent_debugger_manifest(debugger:[u8;32],broker:[u8;32],helpers:&[[u8;32];REQUIRED_HELPER_MANIFESTS],)->bool{debugger!=[0;32]&&debugger!=broker&&!helpers.contains(&debugger)}" &&
+    compactRust(allowsDebuggerManifest) ===
+      "pub(crate)fnallows_key_agent_debugger_manifest(self,digest:[u8;32])->bool{self.attested_artifact.is_some()&&self.allowed_key_agent_debugger_manifest_digest==Some(digest)}" &&
+    JSON.stringify(validCallArguments) ===
+      JSON.stringify([
+        [
+          "policy.key_agent_debugger_manifest_digest",
+          "policy.broker_manifest_digest",
+          "&policy.helper_manifest_digests",
+        ],
+      ]) &&
+    evaluationOrder.every((position) => position !== -1) &&
+    evaluationOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    evaluateAgainstPolicy.includes(
+      "signing_enabled.then_some(policy.key_agent_debugger_manifest_digest)",
+    ) &&
+    /#\[cfg\(test\)\]\s*pub\(crate\) const fn with_key_agent_debugger_manifest_for_test\(\s*artifact: ArtifactDigest,\s*digest: \[u8; 32\],\s*\) -> Self\s*\{/u.test(
+      production,
+    ) &&
+    (
+      production.match(/\bwith_key_agent_debugger_manifest_for_test\b/gu) ??
+      []
+    ).length === 1 &&
+    !/\bwith_key_agent_debugger_manifest_for_test\b/u.test(
+      rustLexicalCode(release),
+    ) &&
+    !hasVacuousRustTestEscape(distinctnessTest) &&
+    hasOrderedCompactMarkers(distinctnessTest, [
+      "enabled.allows_key_agent_debugger_manifest(KEY_AGENT_DEBUGGER_MANIFEST)",
+      "!enabled.allows_helper_manifest(KEY_AGENT_DEBUGGER_MANIFEST)",
+      "!enabled.allows_broker_manifest(KEY_AGENT_DEBUGGER_MANIFEST)",
+      "[0;32]",
+      "BROKER_MANIFEST",
+      "HELPER_MANIFESTS[0]",
+      "HELPER_MANIFESTS[1]",
+      "HELPER_MANIFESTS[2]",
+      "key_agent_debugger_manifest_digest:invalid_debugger_manifest",
+      "!disabled.signing_enabled()",
+      "!disabled.allows_key_agent_debugger_manifest(invalid_debugger_manifest)",
+    ])
+  );
+};
+const debuggerAttestationMutationProbes = [
+  attestation.replace(
+    "debugger != [0; 32] && debugger != broker && !helpers.contains(&debugger)",
+    "debugger != [0; 32] && !helpers.contains(&debugger)",
+  ),
+  attestation.replace(
+    "debugger != [0; 32] && debugger != broker && !helpers.contains(&debugger)",
+    "debugger != [0; 32] && debugger != broker && debugger != helpers[0]",
+  ),
+  attestation.replace(
+    "signing_enabled.then_some(policy.key_agent_debugger_manifest_digest)",
+    "Some(policy.key_agent_debugger_manifest_digest)",
+  ),
+  attestation.replace(
+    "self.attested_artifact.is_some()\n            && self.allowed_key_agent_debugger_manifest_digest == Some(digest)",
+    "self.allowed_key_agent_debugger_manifest_digest == Some(digest)",
+  ),
+  attestation.replace(
+    "                    && valid_key_agent_debugger_manifest(\n                        policy.key_agent_debugger_manifest_digest,\n                        policy.broker_manifest_digest,\n                        &policy.helper_manifest_digests,\n                    )",
+    "                    && true",
+  ),
+  attestation.replace(
+    "    #[cfg(test)]\n    pub(crate) const fn with_key_agent_debugger_manifest_for_test(",
+    "    pub(crate) const fn with_key_agent_debugger_manifest_for_test(",
+  ),
+  attestation.replace(
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;",
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = Some(unreviewed_policy());",
+  ),
+  attestation.replace(
+    "            HELPER_MANIFESTS[2],",
+    "            [0x60; 32],",
+  ),
+];
+requireInvariant(
+  debuggerAttestationContract(attestation) &&
+    debuggerAttestationMutationProbes.every(
+      (probe) =>
+        probe !== attestation && !debuggerAttestationContract(probe),
+    ) &&
+    JSON.stringify(
+      brokerLexicalTokenInventory(
+        platformWindowsProductionFiles,
+        "allows_key_agent_debugger_manifest",
+      ),
+    ) ===
+      JSON.stringify([
+        "crates/platform-windows/src/attestation.rs",
+        debuggerArtifactPath,
+      ]),
+  "the dedicated debugger manifest must remain nonzero, distinct from all three helpers and Broker, retained only by complete compiled evidence, and consumable only by debugger admission with effective mutations",
+);
+
+const debuggerArtifactProductionContract = (source) => {
+  let artifactError;
+  let preparationError;
+  let preflightDefinition;
+  let preparedDefinition;
+  let preflight;
+  let prepare;
+  let errorConversion;
+  let preflightDebug;
+  let preparedDebug;
+  let preparedDrop;
+  let implItems;
+  let innerAttributes;
+  try {
+    innerAttributes = rustInnerAttributesAtDepth(source, 0);
+    artifactError = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+enum\s+DebuggerArtifactError\s*\{/u,
+    );
+    preparationError = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+enum\s+DebuggerArtifactPreparationError\s*\{/u,
+    );
+    preflightDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PreflightDebuggerArtifact\s*\{/u,
+    );
+    preparedDefinition = rustTopLevelLexicalItemBlock(
+      source,
+      /pub\(crate\)\s+struct\s+PreparedReleaseDebuggerArtifact\s*\{/u,
+    );
+    preflight = rustTopLevelFunctionBlock(source, "preflight_debugger_artifact");
+    prepare = rustTopLevelFunctionBlock(
+      source,
+      "prepare_release_debugger_artifact",
+    );
+    implItems = rustImplItems(source);
+    errorConversion =
+      implItems.find(
+        (item) =>
+          item.header ===
+          "impl From<ExactImageError> for DebuggerArtifactPreparationError",
+      )?.source ?? "";
+    preflightDebug =
+      implItems.find(
+        (item) => item.header === "impl fmt::Debug for PreflightDebuggerArtifact",
+      )?.source ?? "";
+    preparedDebug =
+      implItems.find(
+        (item) =>
+          item.header === "impl fmt::Debug for PreparedReleaseDebuggerArtifact",
+      )?.source ?? "";
+    preparedDrop =
+      implItems.find(
+        (item) => item.header === "impl Drop for PreparedReleaseDebuggerArtifact",
+      )?.source ?? "";
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  const preflightCompact = compactRust(preflight);
+  const prepareCompact = compactRust(prepare);
+  const preflightSites = rustStructLiteralSites(
+    source,
+    "PreflightDebuggerArtifact",
+  ).map((site) => compactRust(site.source));
+  const preparedSites = rustStructLiteralSites(
+    source,
+    "PreparedReleaseDebuggerArtifact",
+  ).map((site) => compactRust(site.source));
+  const authorityInventory = brokerReleaseAuthorityInventory(
+    [{ path: debuggerArtifactPath, source }],
+    /\b(?:PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact)\b/u,
+  );
+  const visibleFunctions = rustVisibleFunctionItems(source).map(
+    ({ owner, visibility, name }) => ({ owner, visibility, name }),
+  );
+  const completeFunctionSurface = rustFunctionSignatures(source).map(
+    (signature) => {
+      const signatureCode = rustLexicalCode(signature.source);
+      const owner = implItems
+        .filter(
+          (item) =>
+            item.index < signature.index &&
+            signature.index < item.index + item.source.length,
+        )
+        .at(-1)?.header;
+      const name =
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          signatureCode,
+        )?.groups.name;
+      return { owner: owner ?? "free", name: name ?? "[UNPARSED]" };
+    },
+  );
+  const gateOrder = [
+    "if!artifact.is_key_agent_debugger()",
+    "letrelease_identity=attestation.attested_artifact().ok_or(DebuggerArtifactError::ReleaseNotAttested)?",
+    "if!attestation.allows_key_agent_debugger_manifest(artifact.manifest_digest())",
+    "if!artifact.path().is_absolute()",
+    "Ok(PreflightDebuggerArtifact{artifact,release_identity,})",
+  ].map((marker) => preflightCompact.indexOf(marker));
+  const preparationOrder = [
+    "letidentity=held_helper_file_identity(&preflight.artifact)?",
+    "letPreflightDebuggerArtifact{artifact,release_identity,}=preflight",
+    "Ok(PreparedReleaseDebuggerArtifact{artifact,release_identity,identity,})",
+  ].map((marker) => prepareCompact.indexOf(marker));
+  return (
+    JSON.stringify(innerAttributes) ===
+      JSON.stringify(["#![forbid(unsafe_code)]"]) &&
+    normalizeRustFragment(rustLexicalCode(artifactError)) ===
+      "pub(crate) enum DebuggerArtifactError { #[error( )] WrongRole, #[error( )] ReleaseNotAttested, #[error( )] ManifestNotAllowed, #[error( )] InvalidPath, }" &&
+    normalizeRustFragment(rustLexicalCode(preparationError)) ===
+      "pub(crate) enum DebuggerArtifactPreparationError { #[error( )] IdentityUnavailable, }" &&
+    normalizeRustFragment(rustLexicalCode(preflightDefinition)) ===
+      "pub(crate) struct PreflightDebuggerArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, }" &&
+    normalizeRustFragment(rustLexicalCode(preparedDefinition)) ===
+      "pub(crate) struct PreparedReleaseDebuggerArtifact { artifact: VerifiedHelper, release_identity: AttestedArtifactDigest, identity: ExactFileIdentity, }" &&
+    /#\[must_use = "dropping debugger preflight closes its pinned file"\]\s*pub\(crate\) struct PreflightDebuggerArtifact/u.test(
+      source,
+    ) &&
+    /#\[must_use = "dropping prepared debugger admission closes its pinned file"\]\s*pub\(crate\) struct PreparedReleaseDebuggerArtifact/u.test(
+      source,
+    ) &&
+    compactRust(errorConversion) ===
+      "implFrom<ExactImageError>forDebuggerArtifactPreparationError{fnfrom(_error:ExactImageError)->Self{Self::IdentityUnavailable}}" &&
+    compactRust(preflightDebug) ===
+      "implfmt::DebugforPreflightDebuggerArtifact{fnfmt(&self,formatter:&mutfmt::Formatter<'_>)->fmt::Result{formatter.write_str()}}" &&
+    preflightDebug.includes(
+      'PreflightDebuggerArtifact([PINNED VERIFIED KEY AGENT DEBUGGER])',
+    ) &&
+    compactRust(preparedDebug) ===
+      "implfmt::DebugforPreparedReleaseDebuggerArtifact{fnfmt(&self,formatter:&mutfmt::Formatter<'_>)->fmt::Result{formatter.write_str()}}" &&
+    preparedDebug.includes(
+      "PreparedReleaseDebuggerArtifact([HELD DEBUGGER/RELEASE/FILE_ID_INFO])",
+    ) &&
+    compactRust(preparedDrop) ===
+      "implDropforPreparedReleaseDebuggerArtifact{fndrop(&mutself){self.identity.zeroize();}}" &&
+    preflightCompact ===
+      "pub(crate)fnpreflight_debugger_artifact(attestation:ReleaseAttestation,artifact:VerifiedHelper,)->Result<PreflightDebuggerArtifact,DebuggerArtifactError>{if!artifact.is_key_agent_debugger(){returnErr(DebuggerArtifactError::WrongRole);}letrelease_identity=attestation.attested_artifact().ok_or(DebuggerArtifactError::ReleaseNotAttested)?;if!attestation.allows_key_agent_debugger_manifest(artifact.manifest_digest()){returnErr(DebuggerArtifactError::ManifestNotAllowed);}if!artifact.path().is_absolute(){returnErr(DebuggerArtifactError::InvalidPath);}Ok(PreflightDebuggerArtifact{artifact,release_identity,})}" &&
+    prepareCompact ===
+      "pub(crate)fnprepare_release_debugger_artifact(preflight:PreflightDebuggerArtifact,)->Result<PreparedReleaseDebuggerArtifact,DebuggerArtifactPreparationError>{letidentity=held_helper_file_identity(&preflight.artifact)?;letPreflightDebuggerArtifact{artifact,release_identity,}=preflight;Ok(PreparedReleaseDebuggerArtifact{artifact,release_identity,identity,})}" &&
+    gateOrder.every((position) => position !== -1) &&
+    gateOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    preparationOrder.every((position) => position !== -1) &&
+    preparationOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    rustCallSites(preflight, "attested_artifact").length === 1 &&
+    rustCallSites(preflight, "allows_key_agent_debugger_manifest").length === 1 &&
+    rustCallSites(prepare, "held_helper_file_identity").length === 1 &&
+    JSON.stringify(
+      rustCallSites(prepare, "held_helper_file_identity").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["&preflight.artifact"]]) &&
+    !/\bsigning_enabled\b/u.test(preflightCompact) &&
+    JSON.stringify(preflightSites) ===
+      JSON.stringify([
+        "PreflightDebuggerArtifact{artifact,release_identity,}",
+        "PreflightDebuggerArtifact{artifact,release_identity,}",
+      ]) &&
+    JSON.stringify(preparedSites) ===
+      JSON.stringify([
+        "PreparedReleaseDebuggerArtifact{artifact,release_identity,identity,}",
+      ]) &&
+    JSON.stringify(visibleFunctions) ===
+      JSON.stringify([
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "preflight_debugger_artifact",
+        },
+        {
+          owner: "free",
+          visibility: "pub(crate)",
+          name: "prepare_release_debugger_artifact",
+        },
+      ]) &&
+    JSON.stringify(completeFunctionSurface) ===
+      JSON.stringify([
+        {
+          owner:
+            "impl From<ExactImageError> for DebuggerArtifactPreparationError",
+          name: "from",
+        },
+        {
+          owner: "impl fmt::Debug for PreflightDebuggerArtifact",
+          name: "fmt",
+        },
+        { owner: "free", name: "preflight_debugger_artifact" },
+        {
+          owner: "impl fmt::Debug for PreparedReleaseDebuggerArtifact",
+          name: "fmt",
+        },
+        {
+          owner: "impl Drop for PreparedReleaseDebuggerArtifact",
+          name: "drop",
+        },
+        { owner: "free", name: "prepare_release_debugger_artifact" },
+      ]) &&
+    JSON.stringify(authorityInventory.typeAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.useAliases) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.reexports) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.conversions) === JSON.stringify([]) &&
+    JSON.stringify(authorityInventory.impls) ===
+      JSON.stringify([
+        {
+          path: debuggerArtifactPath,
+          header: "impl fmt::Debug for PreflightDebuggerArtifact",
+        },
+        {
+          path: debuggerArtifactPath,
+          header: "impl fmt::Debug for PreparedReleaseDebuggerArtifact",
+        },
+        {
+          path: debuggerArtifactPath,
+          header: "impl Drop for PreparedReleaseDebuggerArtifact",
+        },
+      ]) &&
+    !/#\[derive\([^\]]*\b(?:Clone|Copy|Debug|Serialize)\b[^\]]*\)\]\s*(?:#\[[^\]\r\n]+\]\s*)*pub\(crate\)\s+struct\s+(?:PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact)\b/u.test(
+      code,
+    ) &&
+    !/\bpub\(in\s+[^)]+\)/u.test(code) &&
+    !/\brelease_identity\s*\.\s*(?:matches|eq|ct_eq|as_ref|as_bytes|into_inner|into_parts)\s*\(/u.test(
+      code,
+    ) &&
+    !/\bpub(?:\([^)]*\))?\s+(?:const\s+)?fn\s+(?:artifact|into_artifact|path|raw\w*|release_identity|attested_artifact|artifact_digest|manifest_digest|as_bytes|into_inner|into_parts|matches(?:_release_identity)?|launch|spawn)\b/u.test(
+      code,
+    ) &&
+    rustTypeAliasItems(source).length === 0 &&
+    !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+/u.test(
+      code,
+    ) &&
+    !/(?:CreateProcess\w*|OpenProcess|DuplicateHandle|CreateFile\w*|CreateNamedPipe\w*|CreatePipe|ShellExecute\w*|WinExec|Command::new|std::process|std::thread|thread::Builder|\bmpsc\b|\b(?:sync_)?channel\s*\(|JobObject|DebugActiveProcess|WaitForDebugEvent|ContinueDebugEvent|ReadFile|WriteFile|CancelIoEx|GetOverlappedResultEx|std::fs|OpenOptions|File::open|canonicalize\s*\(|std::env|GetProcAddress|LoadLibrary\w*|include!|macro_rules!)/u.test(
+      code,
+    ) &&
+    !/(?:^|\W)unsafe(?:\W|$)/u.test(code)
+  );
+};
+
+const debuggerArtifactTestNames = [
+  "role_is_rejected_before_release_evidence",
+  "absent_compiled_release_attestation_rejects_debugger",
+  "exact_manifest_is_required_before_path_admission",
+  "relative_path_is_rejected_after_exact_manifest",
+  "exact_release_bound_debugger_mints_only_redacted_opaque_preflight",
+  "preparation_retains_release_artifact_and_complete_same_handle_identity",
+];
+const debuggerArtifactTestsContract = (source) => {
+  let wrongRole;
+  let absentRelease;
+  let wrongManifest;
+  let relativePath;
+  let success;
+  let sameHandle;
+  let testAttributes;
+  let testModuleAttributes;
+  try {
+    wrongRole = rustFunctionBlock(source, "role_is_rejected_before_release_evidence");
+    absentRelease = rustFunctionBlock(
+      source,
+      "absent_compiled_release_attestation_rejects_debugger",
+    );
+    wrongManifest = rustFunctionBlock(
+      source,
+      "exact_manifest_is_required_before_path_admission",
+    );
+    relativePath = rustFunctionBlock(
+      source,
+      "relative_path_is_rejected_after_exact_manifest",
+    );
+    success = rustFunctionBlock(
+      source,
+      "exact_release_bound_debugger_mints_only_redacted_opaque_preflight",
+    );
+    sameHandle = rustFunctionBlock(
+      source,
+      "preparation_retains_release_artifact_and_complete_same_handle_identity",
+    );
+    testAttributes = debuggerArtifactTestNames.map((name) =>
+      rustFunctionOuterAttributesAtDepth(source, name, 1),
+    );
+    testModuleAttributes = rustInlineModuleOuterAttributesAtDepth(
+      source,
+      "tests",
+      0,
+    );
+  } catch {
+    return false;
+  }
+  const sameHandleOrder = [
+    "letheld_handle=debugger.raw_handle()",
+    "letexpected_identity=held_helper_file_identity(&debugger)?",
+    "preflight_debugger_artifact(attestation(DEBUGGER_MANIFEST),debugger)?",
+    "prepare_release_debugger_artifact(admitted)?",
+    "assert_eq!(prepared.artifact.raw_handle(),held_handle)",
+    "assert_eq!(prepared.artifact.manifest_digest(),DEBUGGER_MANIFEST)",
+    "prepared.release_identity.matches(&[0x50;32])",
+    "assert_eq!(prepared.identity,expected_identity)",
+    "format!()",
+  ].map((marker) => compactRust(sameHandle).indexOf(marker));
+  return (
+    JSON.stringify(testModuleAttributes) ===
+      JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(testAttributes) ===
+      JSON.stringify([
+        ["#[test]"],
+        ["#[test]"],
+        ["#[test]"],
+        ["#[test]"],
+        ["#[test]"],
+        ["#[cfg(windows)]", "#[test]"],
+      ]) &&
+    [wrongRole, absentRelease, wrongManifest, relativePath, success, sameHandle].every(
+      (test) => !hasVacuousRustTestEscape(test),
+    ) &&
+    compactRust(wrongRole).includes("Err(DebuggerArtifactError::WrongRole)") &&
+    compactRust(absentRelease).includes(
+      "Err(DebuggerArtifactError::ReleaseNotAttested)",
+    ) &&
+    compactRust(wrongManifest).includes(
+      "Err(DebuggerArtifactError::ManifestNotAllowed)",
+    ) &&
+    compactRust(relativePath).includes(
+      "Err(DebuggerArtifactError::InvalidPath)",
+    ) &&
+    compactRust(success).includes(
+      "admitted.release_identity.matches(&[0x50;32])",
+    ) &&
+    success.includes(
+      "PreflightDebuggerArtifact([PINNED VERIFIED KEY AGENT DEBUGGER])",
+    ) &&
+    rustCallSites(sameHandle, "held_helper_file_identity").length === 1 &&
+    rustCallSites(sameHandle, "raw_handle").length === 2 &&
+    sameHandleOrder.every((position) => position !== -1) &&
+    sameHandleOrder.every(
+      (position, index, positions) =>
+        index === 0 || positions[index - 1] < position,
+    ) &&
+    sameHandle.includes(
+      "PreparedReleaseDebuggerArtifact([HELD DEBUGGER/RELEASE/FILE_ID_INFO])",
+    )
+  );
+};
+
+const debuggerArtifactContract = (source) => {
+  let production;
+  let release;
+  try {
+    production = withoutBottomTestModule(source);
+    release = withoutCfgTestItems(production);
+  } catch {
+    return false;
+  }
+  return (
+    debuggerArtifactProductionContract(release) &&
+    debuggerArtifactTestsContract(source)
+  );
+};
+const debuggerArtifactMutationProbes = [
+  keyAgentDebuggerArtifactSource.replace(
+    "#![forbid(unsafe_code)]\n",
+    "",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "#![forbid(unsafe_code)]",
+    "#![allow(unsafe_code)]",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(any())]\nmod tests {",
+  ),
+  ...debuggerArtifactTestNames.map((name) =>
+    keyAgentDebuggerArtifactSource.replace(
+      `    #[test]\n    fn ${name}`,
+      `    fn ${name}`,
+    ),
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "    #[cfg(windows)]\n    #[test]\n    fn preparation_retains_release_artifact_and_complete_same_handle_identity",
+    "    #[test]\n    fn preparation_retains_release_artifact_and_complete_same_handle_identity",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "if !artifact.is_key_agent_debugger() {",
+    "if false {",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "        .attested_artifact()",
+    "        .unattested_artifact()",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "attestation.allows_key_agent_debugger_manifest(artifact.manifest_digest())",
+    "attestation.allows_helper_manifest(artifact.manifest_digest())",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "    if !attestation.allows_key_agent_debugger_manifest(artifact.manifest_digest()) {\n        return Err(DebuggerArtifactError::ManifestNotAllowed);\n    }\n    if !artifact.path().is_absolute() {",
+    "    if !artifact.path().is_absolute() {\n        return Err(DebuggerArtifactError::InvalidPath);\n    }\n    if !attestation.allows_key_agent_debugger_manifest(artifact.manifest_digest()) {",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "let identity = held_helper_file_identity(&preflight.artifact)?;",
+    "let identity = ExactFileIdentity::default();",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    '#[must_use = "dropping debugger preflight closes its pinned file"]',
+    '#[derive(Clone)]\n#[must_use = "dropping debugger preflight closes its pinned file"]',
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\nimpl Clone for PreflightDebuggerArtifact { fn clone(&self) -> Self { unreachable!() } }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\ntype DebuggerAuthorityAlias = PreparedReleaseDebuggerArtifact;\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\npub(crate) fn leak_debugger_path(value: &PreflightDebuggerArtifact) { let _ = value.artifact.path(); }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\nfn hidden_activation() { std::thread::spawn(|| {}); }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\nuse std::{thread as execution}; fn aliased_activation() { let run = execution::spawn; let _ = run(|| ()); }\n",
+  ),
+  insertBeforeBottomTestModule(
+    keyAgentDebuggerArtifactSource,
+    "\nmacro_rules! hidden_authority { () => { unsafe { core::hint::unreachable_unchecked() } }; }\n",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "preparation_retains_release_artifact_and_complete_same_handle_identity",
+    "prepared_identity_is_nonzero",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "        assert_eq!(prepared.artifact.raw_handle(), held_handle);",
+    "        assert!(true);",
+  ),
+  keyAgentDebuggerArtifactSource.replace(
+    "        assert_eq!(prepared.identity, expected_identity);",
+    "        assert_ne!(prepared.identity.encode_be(), [0; 24]);",
+  ),
+];
+requireInvariant(
+  debuggerArtifactProductionContract(keyAgentDebuggerArtifactRelease),
+  "private dormant debugger artifact production admission must retain exact ordered role/release/dedicated-manifest/path gates and same-held-handle full FILE_ID_INFO in non-cloneable redacted resource-free capabilities",
+);
+requireInvariant(
+  debuggerArtifactTestsContract(keyAgentDebuggerArtifactSource),
+  "debugger artifact admission tests must retain ordered role/release/manifest/path negatives and full same-handle identity equality",
+);
+const ineffectiveDebuggerArtifactMutation =
+  debuggerArtifactMutationProbes.findIndex(
+    (probe) =>
+      probe === keyAgentDebuggerArtifactSource || debuggerArtifactContract(probe),
+  );
+requireInvariant(
+  ineffectiveDebuggerArtifactMutation === -1,
+  `debugger artifact mutation ${ineffectiveDebuggerArtifactMutation} must be effective`,
+);
+
+const debuggerGenericLauncherDispatchContract = (source) => {
+  let roleImpl;
+  let roleDispatch;
+  try {
+    roleImpl = rustTopLevelLexicalItemBlock(
+      source,
+      /(?:^|\n)impl\s+VerifiedLpacRole\s*\{/u,
+    );
+    roleDispatch = rustFunctionBlock(roleImpl, "from_helper");
+  } catch {
+    return false;
+  }
+  return (
+    compactRust(roleDispatch) ===
+      "fnfrom_helper(helper:&VerifiedHelper)->Result<Self,LaunchError>{ifhelper.is_approval_frontend(){returnOk(Self::ApprovalFrontend);}ifhelper.is_secret_input_frontend(){returnOk(Self::SecretInputFrontend);}ifhelper.is_key_agent(){returnErr(LaunchError::KeyAgentRequiresSupervisorActivation);}Err(LaunchError::HelperRoleNotAllowed)}" &&
+    rustCallSites(roleDispatch, "is_key_agent_debugger").length === 0 &&
+    rustCallSites(roleDispatch, "is_approval_frontend").length === 1 &&
+    rustCallSites(roleDispatch, "is_secret_input_frontend").length === 1 &&
+    rustCallSites(roleDispatch, "is_key_agent").length === 1
+  );
+};
+const debuggerGenericLauncherDenialTestContract = (source) => {
+  let test;
+  let testAttributes;
+  let testModuleAttributes;
+  try {
+    test = rustFunctionBlock(
+      source,
+      "generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation",
+    );
+    testAttributes = rustFunctionOuterAttributesAtDepth(
+      source,
+      "generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation",
+      1,
+    );
+    testModuleAttributes = rustInlineModuleOuterAttributesAtDepth(
+      source,
+      "tests",
+      0,
+    );
+  } catch {
+    return false;
+  }
+  return (
+    JSON.stringify(testModuleAttributes) ===
+      JSON.stringify(["#[cfg(all(test, windows))]"]) &&
+    JSON.stringify(testAttributes) === JSON.stringify(["#[test]"]) &&
+    !hasVacuousRustTestEscape(test) &&
+    rustCallSites(test, "for_key_agent_debugger_artifact_test").length === 1 &&
+    rustCallSites(test, "with_key_agent_debugger_manifest_for_test").length ===
+      1 &&
+    rustCallSites(test, "spawn").length === 2 &&
+    rustCallSites(test, "spawn_secret_input").length === 2 &&
+    (compactRust(test).match(/Err\(LaunchError::HelperRoleNotAllowed\)/gu) ?? [])
+      .length === 1 &&
+    hasOrderedCompactMarkers(test, [
+      "VerifiedHelper::for_key_agent_debugger_artifact_test(",
+      "ReleaseAttestation::with_key_agent_debugger_manifest_for_test(",
+      "RestrictedLauncher::new(release,NoNetworkLpacProfile::v1())",
+      "RestrictedLauncher::new(ReleaseAttestation::default(),NoNetworkLpacProfile::v1())",
+      "development.spawn(&debugger,&stdio)",
+      "development.spawn_secret_input(&debugger,&stdio)",
+      "launcher.spawn(&debugger,&stdio)",
+      "launcher.spawn_secret_input(&debugger,&stdio)",
+      "Err(LaunchError::HelperRoleNotAllowed)",
+    ])
+  );
+};
+const debuggerGenericLauncherDenialTestMutationProbes = [
+  restrictedLauncher.replace(
+    "#[cfg(all(test, windows))]\nmod tests {",
+    "#[cfg(test)]\nmod tests {",
+  ),
+  restrictedLauncher.replace(
+    "    #[test]\n    fn generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation",
+    "    fn generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation",
+  ),
+  restrictedLauncher.replace(
+    "generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation",
+    "generic_launcher_accepts_debugger",
+  ),
+  restrictedLauncher.replace(
+    "            launcher.spawn_secret_input(&debugger, &stdio),",
+    "            launcher.spawn(&debugger, &stdio),",
+  ),
+  restrictedLauncher.replace(
+    "assert!(matches!(result, Err(LaunchError::HelperRoleNotAllowed)));",
+    "assert!(true);",
+  ),
+];
+const debuggerGenericLauncherDispatchMutationProbe =
+  restrictedLauncherRelease.replace(
+    "        if helper.is_key_agent() {\n            return Err(LaunchError::KeyAgentRequiresSupervisorActivation);\n        }",
+    "        if helper.is_key_agent_debugger() {\n            return Ok(Self::SecretInputFrontend);\n        }\n        if helper.is_key_agent() {\n            return Err(LaunchError::KeyAgentRequiresSupervisorActivation);\n        }",
+  );
+requireInvariant(
+  debuggerGenericLauncherDispatchContract(restrictedLauncherRelease) &&
+    debuggerGenericLauncherDenialTestContract(restrictedLauncher) &&
+    debuggerGenericLauncherDenialTestMutationProbes.every(
+      (probe) =>
+        probe !== restrictedLauncher &&
+        !debuggerGenericLauncherDenialTestContract(probe),
+    ) &&
+    debuggerGenericLauncherDispatchMutationProbe !== restrictedLauncherRelease &&
+    !debuggerGenericLauncherDispatchContract(
+      debuggerGenericLauncherDispatchMutationProbe,
+    ),
+  "the generic Approval and Secret Input launchers must reject the dedicated debugger role before release allowance or process creation with effective entrypoint and vacuity mutations",
+);
+
+const debuggerArtifactLibContract = (source) => {
+  let declaration;
+  let attributes;
+  try {
+    const declarations = rustModuleDeclarations(source).filter(
+      (item) => item.name === "key_agent_debugger_artifact",
+    );
+    if (declarations.length !== 1) {
+      return false;
+    }
+    [declaration] = declarations;
+    attributes = rustAttachedOuterAttributes(source, declaration.index).map(
+      (attribute) => normalizeRustFragment(attribute.source),
+    );
+  } catch {
+    return false;
+  }
+  const code = rustLexicalCode(source);
+  return (
+    normalizeRustFragment(rustLexicalCode(declaration.source)) ===
+      "mod key_agent_debugger_artifact;" &&
+    JSON.stringify(attributes) === JSON.stringify(["#[allow(dead_code)]"]) &&
+    !/pub(?:\([^)]*\))?\s+use\s+[^;]*(?:key_agent_debugger_artifact|PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact|preflight_debugger_artifact|prepare_release_debugger_artifact)/u.test(
+      code,
+    )
+  );
+};
+const debuggerArtifactLibMutationProbes = [
+  platformWindowsLib.replace(
+    "#[allow(dead_code)]\nmod key_agent_debugger_artifact;",
+    "#[cfg(test)]\n#[allow(dead_code)]\nmod key_agent_debugger_artifact;",
+  ),
+  platformWindowsLib.replace(
+    "#[allow(dead_code)]\nmod key_agent_debugger_artifact;",
+    "#[cfg(any())]\n#[allow(dead_code)]\nmod key_agent_debugger_artifact;",
+  ),
+  platformWindowsLib.replace(
+    "mod key_agent_debugger_artifact;",
+    "pub mod key_agent_debugger_artifact;",
+  ),
+  `${platformWindowsLib}\npub use key_agent_debugger_artifact::preflight_debugger_artifact;\n`,
+  `${platformWindowsLib}\npub use key_agent_debugger_artifact::*;\n`,
+];
+const debuggerArtifactAuthorityTokens = [
+  "PreflightDebuggerArtifact",
+  "PreparedReleaseDebuggerArtifact",
+  "preflight_debugger_artifact",
+  "prepare_release_debugger_artifact",
+];
+const debuggerArtifactExternalAuthorityFreeFile = (file) =>
+  rustUseItems(file.source).every(
+    (item) =>
+      !/\bkey_agent_debugger_artifact\b/u.test(
+        rustLexicalCode(item.source),
+      ),
+  ) &&
+  !/\b(?:PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact|preflight_debugger_artifact|prepare_release_debugger_artifact)\b/u.test(
+    rustLexicalCode(file.source),
+  );
+const debuggerArtifactExternalAuthorityContract = (files) =>
+  debuggerArtifactAuthorityTokens.every((token) => {
+    const consumers = brokerLexicalTokenInventory(files, token);
+    return (
+      consumers.length > 0 &&
+      [...new Set(consumers)].every((path) => path === debuggerArtifactPath)
+    );
+  }) &&
+  files
+    .filter((file) => file.path !== debuggerArtifactPath)
+    .every(debuggerArtifactExternalAuthorityFreeFile);
+const debuggerArtifactExternalAuthorityMutationTarget =
+  workspaceRustProductionFiles.find(
+    (file) => file.path === "crates/platform-windows/src/approval_channel.rs",
+  );
+const debuggerArtifactExternalAuthorityMutationProbes =
+  debuggerArtifactExternalAuthorityMutationTarget === undefined
+    ? []
+    : [
+        `${debuggerArtifactExternalAuthorityMutationTarget.source}\nuse crate::key_agent_debugger_artifact::*;\n`,
+        `${debuggerArtifactExternalAuthorityMutationTarget.source}\nfn retain_debugger_authority() { let mint = preflight_debugger_artifact; }\n`,
+      ];
+const debuggerHelperRoleProductionConsumerInventory =
+  brokerLexicalTokenInventory(
+    workspaceRustProductionFiles,
+    "is_key_agent_debugger",
+  );
+const debuggerHelperRoleProductionConsumerContract = (inventory) =>
+  JSON.stringify(inventory) ===
+  JSON.stringify([
+    "crates/platform-windows/src/helper.rs",
+    debuggerArtifactPath,
+  ]);
+const debuggerHelperRoleExternalUseMutation =
+  debuggerArtifactExternalAuthorityMutationTarget === undefined
+    ? undefined
+    : {
+        path: debuggerArtifactExternalAuthorityMutationTarget.path,
+        source: `${debuggerArtifactExternalAuthorityMutationTarget.source}\nfn broaden_debugger_role(helper: &crate::helper::VerifiedHelper) -> bool { helper.is_key_agent_debugger() }\n`,
+      };
+const debuggerHelperRoleExternalUseMutationDelta =
+  debuggerHelperRoleExternalUseMutation === undefined
+    ? []
+    : brokerLexicalTokenInventory(
+        [debuggerHelperRoleExternalUseMutation],
+        "is_key_agent_debugger",
+      );
+const debuggerHelperRoleExternalUseMutationInventory = [
+  ...debuggerHelperRoleProductionConsumerInventory,
+  ...debuggerHelperRoleExternalUseMutationDelta,
+].sort((left, right) => left.localeCompare(right, "en"));
+requireInvariant(
+  debuggerArtifactLibContract(platformWindowsLib) &&
+    debuggerArtifactLibMutationProbes.every(
+      (probe) =>
+        probe !== platformWindowsLib && !debuggerArtifactLibContract(probe),
+    ) &&
+    debuggerArtifactExternalAuthorityContract(workspaceRustProductionFiles) &&
+    debuggerArtifactExternalAuthorityMutationTarget !== undefined &&
+    debuggerArtifactExternalAuthorityMutationProbes.length === 2 &&
+    debuggerArtifactExternalAuthorityMutationProbes.every(
+      (probe) =>
+        probe !== debuggerArtifactExternalAuthorityMutationTarget.source &&
+        !debuggerArtifactExternalAuthorityFreeFile({
+          path: debuggerArtifactExternalAuthorityMutationTarget.path,
+          source: probe,
+        }),
+    ) &&
+    debuggerHelperRoleProductionConsumerContract(
+      debuggerHelperRoleProductionConsumerInventory,
+    ) &&
+    debuggerHelperRoleExternalUseMutation !== undefined &&
+    debuggerHelperRoleExternalUseMutation.source !==
+      debuggerArtifactExternalAuthorityMutationTarget.source &&
+    debuggerHelperRoleExternalUseMutationDelta.length === 1 &&
+    debuggerHelperRoleExternalUseMutationDelta[0] ===
+      debuggerArtifactExternalAuthorityMutationTarget.path &&
+    !debuggerHelperRoleProductionConsumerContract(
+      debuggerHelperRoleExternalUseMutationInventory,
+    ) &&
+    !/\b(?:PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact|preflight_debugger_artifact|prepare_release_debugger_artifact)\b/u.test(
+      rustLexicalCode(keyAgentDebuggerTransportSource),
+    ) &&
+    !/\b(?:PreflightDebuggerArtifact|PreparedReleaseDebuggerArtifact|preflight_debugger_artifact|prepare_release_debugger_artifact)\b/u.test(
+      rustLexicalCode(
+        `${keyAgentDebuggerMainSource}\n${keyAgentDebuggerChildSource}`,
+      ),
+    ),
+  "debugger artifact capabilities must remain private, unconditionally production-compiled, non-exported, and unreachable from every production caller, while the debugger-role accessor remains consumed only by its definition and debugger admission, with effective cfg/import/function-item/external-use mutations",
 );
 
 const keyAgentWindowsMainNormalized = normalizeRustFragment(
@@ -37483,7 +38528,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/helper.rs",
     unsafeCount: 15,
-    sha256: "a05d720c1600be1c95f94b2df2f31d71330467a5c03f42aa365d029f40e7dfa0",
+    sha256: "560d5bd84cae04f85222d848c8ebb0595e4405d5133aecf2959265ecb2dd8cb0",
   },
   {
     path: "crates/platform-windows/src/inheritable_handle_launch.rs",
@@ -45291,13 +46336,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
   "crates/platform-windows/README.md":
-    "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
+    "e23bb19b909ac41e37be4c5c86c847256127db3e7eae6f333b5dff39691690a7",
   "docs/architecture.md":
-    "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
+    "fdea55e7e4822625a4572c11e6b84aa9878060bb1314772cecd68e1a77dcfc1f",
   "docs/protocol-contract.md":
     "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
   "docs/security-decisions.md":
-    "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
+    "691c9152fae38a9947574bd28f395aa96da7e1ddcb6f339a97b43dfc91796e35",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -51080,10 +52125,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "3565a2a1abb7f82c255530a9fc2a7442ca7fb890493a63938170d34dff1ea91e",
-  "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
-  "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
+  "e23bb19b909ac41e37be4c5c86c847256127db3e7eae6f333b5dff39691690a7",
+  "fdea55e7e4822625a4572c11e6b84aa9878060bb1314772cecd68e1a77dcfc1f",
   "29e40d5e4b4515da802fbaf6970181687120ce1d661150caa9d939a1f63cad34",
-  "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
+  "691c9152fae38a9947574bd28f395aa96da7e1ddcb6f339a97b43dfc91796e35",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -58917,7 +59962,7 @@ const keyAgentDebuggerPlatformSources = {
 };
 const keyAgentDebuggerPlatformPins = {
   manifest: "11ccd1a6c9d2d696e8ee885d63f04a1050f2fec7791029e74dfa64ed5affd7a5",
-  lib: "68e14155db62368c1beae82a4057abb02ccc7acac594ceedfeae17e50a175f3b",
+  lib: "397118c6f215a8a3bcc5b9f58db7266825fba5f9c0c5e5a029a6ffa63f041304",
   pipe: "17c984914ad835ec51a4cac22cf21562fce8286a7edc72b5b35a4fd1c10fdd45",
   parent: "1afc87962eab6935e8d5a94d4195d528fbb5963eb8bb0c8dea6fc7aa4593269d",
   sys: "05f98244499aaedd37cd0cd4fec95628c035801f123b8160b26447acf396a4cd",
@@ -60627,33 +61672,33 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "4aca929fb167735994c409c082e305a9231be452a665e54b06c9c8e6be7ce005",
+    sha256: "e23bb19b909ac41e37be4c5c86c847256127db3e7eae6f333b5dff39691690a7",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only the transport mechanics",
-    sha256: "c29837e8cb2d5b8d14eecd7ddde03101f2ee8b3a429728dd16a83386252055c3",
+    sha256: "9558a5befae266d1510434a0228e1001cd2d519b86d036e0dfc761815758d020",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "a6ed50b459f42b4a90bc38ba02435d139507195ab39c633be8b3cb34ffc927d8",
+    sha256: "fdea55e7e4822625a4572c11e6b84aa9878060bb1314772cecd68e1a77dcfc1f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "3f5691b919168071e3742c5bda3f0385b2e35029d862fed1b025aac8906c4d10",
+    sha256: "1aa908b961d9b8e1b622757301e0caf5b688ec386aabd71b85780c7b6d3558a8",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor:
       "The first dedicated-process feasibility slice is deliberately narrower",
-    sha256: "24bc1f08ec0010ec1b4852f97abfe125607a434b6503e4540abaeab8bb2ed366",
+    sha256: "691c9152fae38a9947574bd28f395aa96da7e1ddcb6f339a97b43dfc91796e35",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -60695,7 +61740,7 @@ const keyAgentDebuggerDocumentationPatterns = [
   /borrowed raw (?:event )?aliases|raw event aliases as borrowed|(?:keep|keeps) raw (?:event )?aliases borrowed/iu,
   /(?:reclaim|close)[\s\S]{0,90}(?:process exit|debugger-process exit)|(?:process exit|debugger-process exit)[\s\S]{0,90}(?:reclaim|close)/iu,
   /Signed/iu,
-  /(?:release identity\/bootstrap|immutable\s+(?:debugger\s+)?release\s+identity\/bootstrap)/iu,
+  /signed\s+packaged\s+debugger\s+artifact/iu,
   /supported-kernel/iu,
   /production\s+callers?/iu,
   /polic/iu,
@@ -60749,14 +61794,36 @@ const keyAgentDebuggerDocumentationPerDocumentJobPatterns = [
   /same-token\s+helper\s+may\s+be\s+able\s+to\s+acquire/iu,
   /PROCESS_DUP_HANDLE/u,
   /duplicate\s+a\s+Job\s+handle/iu,
-  /immutable\s+helper\s+identity\s+(?:and|plus)\s+launch\s+admission/iu,
-  /token\/process-\s*DACL\s+separation/iu,
+  /launch\/bootstrap\s+consumption\s+of\s+the\s+admitted\s+capability/iu,
+  /separate\s+principal\s+and\s+from-birth\s+process\s+DACL/iu,
   /(?:proof\s+of\s+adversarial|adversarial)\s+parent-death\s+containment(?:\s+proof)?/iu,
   /kill-on-close\s+terminates\s+members\s+only\s+when\s+(?:that\s+is\s+)?the\s+system-wide\s+last\s+Job\s+handle/iu,
   /(?:this\s+slice|slice)\s+does\s+not\s+prove\s+that\s+condition\s+after\s+helper\s+code\s+runs/iu,
   /\bPROC_THREAD_ATTRIBUTE_JOB_LIST\b[\s\S]{0,240}\bunnamed\b[\s\S]{0,80}\bnon-inheritable\b[\s\S]{0,40}\bJob\b/iu,
   /\bKILL_ON_JOB_CLOSE\b[\s\S]{0,160}\b(?:no|neither(?:\s+an)?)\s+active-\s*process\s+limit\b[\s\S]{0,80}\b(?:no|nor|or)\s+breakaway\b/iu,
 ];
+const keyAgentDebuggerArtifactAdmissionDocumentationPatterns = Object.freeze([
+  /\bKeyAgentDebugger\b/u,
+  /\bPreflightDebuggerArtifact\b/u,
+  /\bPreparedReleaseDebuggerArtifact\b/u,
+  /opaque\s+whole-\s*release\s+attestation/iu,
+  /dedicated\s+debugger-\s*manifest\s+digest\s+kept\s+(?:separate|distinct)\s+from\s+the\s+three\s+generic\s+helpers\s+and\s+the\s+Broker/iu,
+  /absolute\s+verified\s+path\s+whose\s+file\s+is\s+held\s+without\s+write\/delete\s+sharing/iu,
+  /complete\s+`FILE_ID_INFO`\s+queried\s+from\s+that\s+same\s+held\s+file\s+handle\s+without\s+reopen\s+or\s+path\s+lookup/iu,
+  /(?:crate-)?private,\s*move-only\/non-cloneable,\s+and\s+redacted/iu,
+  /expose\s+no\s+path,\s+raw\s+handle,\s+artifact,\s+release\s+digest,\s+or\s+launch\s+operation/iu,
+  /(?:seam|boundary)\s+allocates\s+no\s+Job,\s+pipe,\s+channel,\s+thread,\s+process,\s+or\s+debug\s+resource/iu,
+  /has\s+no\s+production\s+caller/iu,
+  /`COMPILED_RELEASE_POLICY`\s+remains\s+`None`/u,
+  /ordinary\s+evaluation\s+cannot\s+mint\s+either\s+capability/iu,
+  /signed\s+packaged\s+debugger\s+artifact[\s\S]{0,320}launch\/bootstrap\s+consumption\s+of\s+the\s+admitted\s+capability[\s\S]{0,180}mapped-image\s+proof\s+against\s+the\s+held\s+`FILE_ID_INFO`[\s\S]{0,100}unverified\s+\*\*STOP-SHIP\*\*/iu,
+  /Actual\s+target(?:-handle|\s+handle)?\s+transfer[\s\S]{0,360}Job-owner\s+handoff[\s\S]{0,220}(?:every|all|any)\s+production\s+caller/iu,
+  /separate\s+principal\s+and\s+from-birth\s+process\s+DACL[\s\S]{0,100}PROCESS_DUP_HANDLE[\s\S]{0,160}adversarial\s+parent-death\s+containment[\s\S]{0,160}supported-kernel\s+matrix[\s\S]{0,160}\*\*STOP-SHIP\*\*/iu,
+]);
+const keyAgentDebuggerArtifactAdmissionDocumentationWindowContract = (window) =>
+  keyAgentDebuggerArtifactAdmissionDocumentationPatterns.every((pattern) =>
+    pattern.test(window),
+  );
 const keyAgentDebuggerDocumentationCommonPatternIndexes =
   keyAgentDebuggerDocumentationPatterns
     .map((_, index) => index)
@@ -60807,7 +61874,7 @@ const keyAgentDebuggerDocumentationWindow = (spec) => {
   if (first === -1 || spec.source.indexOf(spec.anchor, first + 1) !== -1) {
     return null;
   }
-  return spec.source.slice(first, first + 5_000);
+  return spec.source.slice(first, first + 6_500);
 };
 const keyAgentDebuggerDocumentationPinContract = (specs) =>
   specs.every(
@@ -60831,6 +61898,7 @@ const keyAgentDebuggerDocumentationSemanticContract = (specs) =>
       keyAgentDebuggerDocumentationPerDocumentJobPatterns.every((pattern) =>
         pattern.test(window),
       ) &&
+      keyAgentDebuggerArtifactAdmissionDocumentationWindowContract(window) &&
       keyAgentDebuggerDocumentationForbiddenOverclaims.every(
         (pattern) => !pattern.test(window),
       ) &&
@@ -60899,6 +61967,33 @@ const keyAgentDebuggerDocumentationPerDocumentJobMarkerMutations =
       );
     }),
   );
+const keyAgentDebuggerArtifactAdmissionDocumentationMutationResults =
+  keyAgentDebuggerArtifactAdmissionDocumentationPatterns.flatMap((pattern) => {
+    const globalPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+    );
+    return keyAgentDebuggerDocumentationSpecs.map((spec) => {
+      const window = keyAgentDebuggerDocumentationWindow(spec);
+      if (window === null || !pattern.test(window)) {
+        return { changed: false, semanticRejected: false, pinRejected: false };
+      }
+      const mutatedWindow = window.replace(
+        globalPattern,
+        "REMOVED_DEBUGGER_ARTIFACT_ADMISSION_MARKER",
+      );
+      const windowStart = spec.source.indexOf(spec.anchor);
+      const mutatedSource = `${spec.source.slice(0, windowStart)}${mutatedWindow}${spec.source.slice(windowStart + window.length)}`;
+      return {
+        changed: mutatedSource !== spec.source,
+        semanticRejected:
+          !keyAgentDebuggerArtifactAdmissionDocumentationWindowContract(
+            mutatedWindow,
+          ),
+        pinRejected: normalizedSourceSha256(mutatedSource) !== spec.sha256,
+      };
+    });
+  });
 const keyAgentDebuggerDocumentationContradictionMutations =
   keyAgentDebuggerDocumentationSpecs.flatMap((spec, specIndex) => {
     const insertion = spec.source.indexOf(spec.anchor) + spec.anchor.length;
@@ -60952,6 +62047,10 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ) &&
+    keyAgentDebuggerArtifactAdmissionDocumentationMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ) &&
     keyAgentDebuggerDocumentationContradictionMutations.every(
       (probe) =>
         JSON.stringify(probe) !==
@@ -60966,7 +62065,7 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so immutable identity/admission, token/process-DACL separation, the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP alongside actual-target topology/owner-handoff, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
+  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-package/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the corruption-only 80/72/56 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension, no actual target/debug/LPAC/secret/RPC reachability, relational JOB_LIST-to-unnamed/non-inheritable parent-retained helper Job evidence before run, relational KILL_ON_JOB_CLOSE-to-no-active-limit-to-no-breakaway policy, observed active count one, explicit Job termination plus zero accounting for malformed cleanup, benign suspended-helper parent-handle-close terminal evidence without an explicit termination API, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit caveat that a same-token helper may acquire PROCESS_DUP_HANDLE and duplicate a Job handle so the system-wide-last-handle condition, adversarial parent-death containment, and supported-kernel cancellation liveness remain STOP-SHIP, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/positive-limit/breakaway overclaims forbidden by effective per-document mutations",
 );
 
 const approvalPipeContract = (source, serviceChannelSource) => {

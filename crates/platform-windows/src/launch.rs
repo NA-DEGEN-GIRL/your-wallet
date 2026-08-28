@@ -4192,6 +4192,35 @@ mod tests {
     }
 
     #[test]
+    fn generic_launcher_rejects_dedicated_debugger_before_release_or_process_creation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let debugger = VerifiedHelper::for_key_agent_debugger_artifact_test(
+            std::env::current_exe()?,
+            [0x51; 32],
+            true,
+        )?;
+        let release = ReleaseAttestation::with_key_agent_debugger_manifest_for_test(
+            ArtifactDigest::for_test([0x50; 32]),
+            debugger.manifest_digest(),
+        );
+        let launcher = RestrictedLauncher::new(release, NoNetworkLpacProfile::v1());
+        let development =
+            RestrictedLauncher::new(ReleaseAttestation::default(), NoNetworkLpacProfile::v1());
+        let (read, write) = anonymous_pipe()?;
+        let stdio = InheritedStdio::new(read.as_handle(), write.as_handle(), write.as_handle())?;
+
+        for result in [
+            development.spawn(&debugger, &stdio),
+            development.spawn_secret_input(&debugger, &stdio),
+            launcher.spawn(&debugger, &stdio),
+            launcher.spawn_secret_input(&debugger, &stdio),
+        ] {
+            assert!(matches!(result, Err(LaunchError::HelperRoleNotAllowed)));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn launch_entry_points_reject_cross_role_and_other_before_release_or_win32()
     -> Result<(), Box<dyn std::error::Error>> {
         let approval = VerifiedHelper::for_approval_channel_test(true)?;

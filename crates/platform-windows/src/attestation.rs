@@ -30,6 +30,9 @@ struct ReleasePolicy {
     // Broker is deliberately separate from the three signing-TCB helpers. Its
     // manifest may authorize only the private Broker admission boundary.
     broker_manifest_digest: [u8; 32],
+    // The isolated Key Agent debugger is a separate process authority. Its
+    // manifest may authorize only the private debugger admission boundary.
+    key_agent_debugger_manifest_digest: [u8; 32],
 }
 
 /// A non-zero digest that identifies an exact release artifact.
@@ -162,6 +165,7 @@ pub struct ReleaseAttestation {
     attested_artifact: Option<AttestedArtifactDigest>,
     allowed_helper_manifest_digests: Option<[[u8; 32]; REQUIRED_HELPER_MANIFESTS]>,
     allowed_broker_manifest_digest: Option<[u8; 32]>,
+    allowed_key_agent_debugger_manifest_digest: Option<[u8; 32]>,
 }
 
 impl ReleaseAttestation {
@@ -208,6 +212,11 @@ impl ReleaseAttestation {
                         policy.broker_manifest_digest,
                         &policy.helper_manifest_digests,
                     )
+                    && valid_key_agent_debugger_manifest(
+                        policy.key_agent_debugger_manifest_digest,
+                        policy.broker_manifest_digest,
+                        &policy.helper_manifest_digests,
+                    )
             }
             _ => false,
         };
@@ -215,10 +224,13 @@ impl ReleaseAttestation {
             signing_enabled.then_some(policy.helper_manifest_digests);
         let allowed_broker_manifest_digest =
             signing_enabled.then_some(policy.broker_manifest_digest);
+        let allowed_key_agent_debugger_manifest_digest =
+            signing_enabled.then_some(policy.key_agent_debugger_manifest_digest);
         Self {
             attested_artifact: signing_enabled.then_some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests,
             allowed_broker_manifest_digest,
+            allowed_key_agent_debugger_manifest_digest,
         }
     }
 
@@ -251,6 +263,13 @@ impl ReleaseAttestation {
         self.attested_artifact.is_some() && self.allowed_broker_manifest_digest == Some(digest)
     }
 
+    /// Returns whether this successful attestation retained the one exact Key
+    /// Agent debugger manifest digest compiled into the signed release policy.
+    pub(crate) fn allows_key_agent_debugger_manifest(self, digest: [u8; 32]) -> bool {
+        self.attested_artifact.is_some()
+            && self.allowed_key_agent_debugger_manifest_digest == Some(digest)
+    }
+
     #[cfg(test)]
     pub(crate) const fn with_helper_manifests_for_test(
         artifact: ArtifactDigest,
@@ -260,6 +279,7 @@ impl ReleaseAttestation {
             attested_artifact: Some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests: Some(digests),
             allowed_broker_manifest_digest: None,
+            allowed_key_agent_debugger_manifest_digest: None,
         }
     }
 
@@ -272,6 +292,20 @@ impl ReleaseAttestation {
             attested_artifact: Some(AttestedArtifactDigest(artifact)),
             allowed_helper_manifest_digests: None,
             allowed_broker_manifest_digest: Some(digest),
+            allowed_key_agent_debugger_manifest_digest: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_key_agent_debugger_manifest_for_test(
+        artifact: ArtifactDigest,
+        digest: [u8; 32],
+    ) -> Self {
+        Self {
+            attested_artifact: Some(AttestedArtifactDigest(artifact)),
+            allowed_helper_manifest_digests: None,
+            allowed_broker_manifest_digest: None,
+            allowed_key_agent_debugger_manifest_digest: Some(digest),
         }
     }
 }
@@ -290,6 +324,14 @@ fn valid_broker_manifest(
     broker != [0; 32] && !helpers.contains(&broker)
 }
 
+fn valid_key_agent_debugger_manifest(
+    debugger: [u8; 32],
+    broker: [u8; 32],
+    helpers: &[[u8; 32]; REQUIRED_HELPER_MANIFESTS],
+) -> bool {
+    debugger != [0; 32] && debugger != broker && !helpers.contains(&debugger)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ArtifactDigest, ReleaseAttestation, ReleaseEvidence, ReleasePolicy, TestEvidence};
@@ -300,6 +342,7 @@ mod tests {
     const BROKER_TRANSPORT_SUITE: u8 = 5;
     const HELPER_MANIFESTS: [[u8; 32]; 3] = [[6; 32], [7; 32], [8; 32]];
     const BROKER_MANIFEST: [u8; 32] = [9; 32];
+    const KEY_AGENT_DEBUGGER_MANIFEST: [u8; 32] = [10; 32];
 
     fn artifact(byte: u8) -> Result<ArtifactDigest, Box<dyn std::error::Error>> {
         Ok(ArtifactDigest::new([byte; 32])?)
@@ -321,6 +364,7 @@ mod tests {
             broker_transport_suite_digest: [BROKER_TRANSPORT_SUITE; 32],
             helper_manifest_digests: HELPER_MANIFESTS,
             broker_manifest_digest: BROKER_MANIFEST,
+            key_agent_debugger_manifest_digest: KEY_AGENT_DEBUGGER_MANIFEST,
         }
     }
 
@@ -347,6 +391,10 @@ mod tests {
         assert!(!ReleaseAttestation::default().signing_enabled());
         assert!(ReleaseAttestation::default().attested_artifact().is_none());
         assert!(!ReleaseAttestation::default().allows_broker_manifest(BROKER_MANIFEST));
+        assert!(
+            !ReleaseAttestation::default()
+                .allows_key_agent_debugger_manifest(KEY_AGENT_DEBUGGER_MANIFEST)
+        );
         Ok(())
     }
 
@@ -384,6 +432,8 @@ mod tests {
         assert!(!attestation.allows_helper_manifest(BROKER_MANIFEST));
         assert!(attestation.allows_broker_manifest(BROKER_MANIFEST));
         assert!(!attestation.allows_broker_manifest(HELPER_MANIFESTS[0]));
+        assert!(attestation.allows_key_agent_debugger_manifest(KEY_AGENT_DEBUGGER_MANIFEST));
+        assert!(!attestation.allows_key_agent_debugger_manifest(BROKER_MANIFEST));
         assert!(
             !ReleaseAttestation::evaluate(release, complete).signing_enabled(),
             "development builds have no compiled release policy"
@@ -396,6 +446,10 @@ mod tests {
         assert!(
             !ReleaseAttestation::evaluate(release, complete)
                 .allows_broker_manifest(BROKER_MANIFEST)
+        );
+        assert!(
+            !ReleaseAttestation::evaluate(release, complete)
+                .allows_key_agent_debugger_manifest(KEY_AGENT_DEBUGGER_MANIFEST)
         );
         Ok(())
     }
@@ -455,6 +509,37 @@ mod tests {
                 ReleaseAttestation::evaluate_against_policy(&invalid_policy, release, &complete);
             assert!(!disabled.signing_enabled());
             assert!(!disabled.allows_broker_manifest(invalid_broker_manifest));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn key_agent_debugger_manifest_is_distinct_and_requires_exact_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let release = artifact(1)?;
+        let complete = complete_evidence(release)?;
+        let base = policy(release);
+
+        let enabled = ReleaseAttestation::evaluate_against_policy(&base, release, &complete);
+        assert!(enabled.allows_key_agent_debugger_manifest(KEY_AGENT_DEBUGGER_MANIFEST));
+        assert!(!enabled.allows_helper_manifest(KEY_AGENT_DEBUGGER_MANIFEST));
+        assert!(!enabled.allows_broker_manifest(KEY_AGENT_DEBUGGER_MANIFEST));
+
+        for invalid_debugger_manifest in [
+            [0; 32],
+            BROKER_MANIFEST,
+            HELPER_MANIFESTS[0],
+            HELPER_MANIFESTS[1],
+            HELPER_MANIFESTS[2],
+        ] {
+            let invalid_policy = ReleasePolicy {
+                key_agent_debugger_manifest_digest: invalid_debugger_manifest,
+                ..base
+            };
+            let disabled =
+                ReleaseAttestation::evaluate_against_policy(&invalid_policy, release, &complete);
+            assert!(!disabled.signing_enabled());
+            assert!(!disabled.allows_key_agent_debugger_manifest(invalid_debugger_manifest));
         }
         Ok(())
     }
