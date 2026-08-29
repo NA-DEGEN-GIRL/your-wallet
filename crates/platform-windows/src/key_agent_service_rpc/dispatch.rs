@@ -68,10 +68,6 @@ impl From<DispatchError> for ManagerError {
 /// helper or holds a launch coordinator lock.
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 #[must_use = "dispatch outcomes may own authenticated launch authority"]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 pub(super) enum DesktopV2Dispatch<P> {
     /// A complete response that can be returned immediately.
     Immediate(RpcFrame),
@@ -92,20 +88,12 @@ impl<P> fmt::Debug for DesktopV2Dispatch<P> {
 /// One authenticated version-2 desktop launch action.
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 #[must_use = "launch actions own authenticated peer authority until consumed"]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 pub(super) struct DesktopV2Launch<P> {
     current_peer: P,
     pending_completion: DesktopV2PendingCompletion,
 }
 
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 impl<P> DesktopV2Launch<P> {
     /// Separates the move-only peer authority from its one-shot completion.
     #[must_use = "the returned tuple owns authenticated peer authority"]
@@ -129,19 +117,11 @@ impl<P> fmt::Debug for DesktopV2Launch<P> {
 /// twice for one launch action.
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 #[must_use = "pending launch completion must be settled exactly once"]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 pub(super) struct DesktopV2PendingCompletion {
     request: DesktopCommandRequest,
 }
 
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 impl DesktopV2PendingCompletion {
     /// Borrows the exact request for launch-side role and correlation checks.
     #[must_use]
@@ -215,6 +195,10 @@ where
     /// `authenticate` must consume the call-scoped RPC binding in production.
     /// It is invoked exactly once, before any wire parsing, so every manager
     /// entry independently authenticates even malformed input.
+    #[cfg(any(
+        not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+        test
+    ))]
     pub(super) fn exchange_with<F>(
         &self,
         request_frame: &RpcFrame,
@@ -269,11 +253,7 @@ where
     }
 
     /// Authenticates and dispatches one debug-only version-2 desktop call.
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
-    #[allow(
-        dead_code,
-        reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-    )]
+    #[cfg(all(feature = "key-agent-service-lpac-launch-feasibility-test-hook", test))]
     pub(super) fn exchange_v2_desktop_with<F>(
         &self,
         request_frame: &RpcFrame,
@@ -291,10 +271,6 @@ where
     /// Helper-ready belongs exclusively to a matched service-created helper.
     /// This desktop path rejects it before looking up or consuming an epoch.
     #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
-    #[allow(
-        dead_code,
-        reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-    )]
     pub(super) fn exchange_authenticated_v2_desktop(
         &self,
         request_frame: &RpcFrame,
@@ -356,10 +332,6 @@ where
 }
 
 #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
-#[allow(
-    dead_code,
-    reason = "runtime role-aware manager wiring follows this pure V2 dispatch slice"
-)]
 fn encode_v2_response(response: &debug_v2::ServiceResponse) -> Result<RpcFrame, DispatchError> {
     let encoded = Zeroizing::new(debug_v2::encode_response(response));
     RpcFrame::from_payload(encoded.as_slice()).map_err(|_| DispatchError::Internal)
@@ -375,6 +347,10 @@ where
     }
 }
 
+#[cfg(any(
+    not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+    test
+))]
 const fn map_authentication_failure(error: AuthenticationFailure) -> DispatchError {
     match error {
         AuthenticationFailure::Denied => DispatchError::Authentication,

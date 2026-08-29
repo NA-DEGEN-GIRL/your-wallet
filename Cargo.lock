@@ -88,6 +88,7 @@ version = "0.1.0"
 dependencies = [
  "approval-wire",
  "getrandom 0.3.3",
+ "key-agent-service-helper-bootstrap",
  "sha2",
  "subtle",
  "windows",
@@ -1362,6 +1363,7 @@ dependencies = [
 name = "key-agent-service-helper-bootstrap"
 version = "0.1.0"
 dependencies = [
+ "key-agent-service-rpc-sys",
  "key-agent-service-wire",
  "windows",
  "zeroize",
@@ -2314,6 +2316,7 @@ name = "secret-input-ui"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.3",
+ "key-agent-service-helper-bootstrap",
  "sha2",
  "subtle",
  "windows",

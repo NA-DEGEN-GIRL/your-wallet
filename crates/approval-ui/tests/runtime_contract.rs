@@ -1,4 +1,8 @@
-#![cfg(all(feature = "runtime-contract-test-hook", debug_assertions))]
+#![cfg(all(
+    feature = "runtime-contract-test-hook",
+    not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+    debug_assertions
+))]
 #![cfg_attr(windows, allow(unsafe_code))]
 
 #[cfg(not(windows))]

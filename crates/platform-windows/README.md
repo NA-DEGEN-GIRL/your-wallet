@@ -327,16 +327,17 @@ Implemented:
   with exact `ERROR_ACCESS_DENIED`. This proves only that authenticated desktop
   token against that exact child.
 
-  The dormant role-aware RPC foundation splits a low-integrity restricted
-  AppContainer transport candidate from service-owned exact LPAC profile,
-  capability, image, process/token, and helper-role evidence. Its fixed-capacity
-  expected-peer registry registers while suspended, revalidates before the sole
-  resume, publishes running state before callback progress, keeps callback
-  observation non-consuming, consumes manager authority exactly once, and
-  bounded-reaps on terminal cancellation. A dormant malformed-candidate manager
-  rejection additionally retires exact and identity-indeterminate peers while
-  preserving only peers proved unrelated. No production RPC/lifecycle/wire
-  caller reaches either state machine.
+  Under the LPAC debug feature, the live role-aware manager and independent If3
+  callback split a low-integrity restricted AppContainer transport candidate
+  from service-owned exact LPAC profile, capability, image, process/token, and
+  helper-role evidence. The expected-peer registry has exactly eight slots,
+  registers while suspended, revalidates before the sole resume, publishes
+  running state before callback progress, keeps callback observation non-
+  consuming, consumes manager authority exactly once, and bounded-reaps on
+  terminal cancellation with a five-second quiescence bound. Retired slots are
+  never reused during one server lifetime. Malformed-candidate manager rejection
+  additionally retires exact and identity-indeterminate peers while preserving
+  only peers proved unrelated. No production caller reaches these state machines.
 
   The stable `YWKASV01` version-1 codec remains byte-for-byte and API immutable.
   A non-default `debug-feasibility-v2` module separately defines debug-only
@@ -348,32 +349,61 @@ Implemented:
   Epoch storage permanently binds each nonce to V1 or V2, shares capacity across
   versions, and removes a nonce before rejecting a wrong-version attempt.
 
-  Under the same debug feature, a pure V2 desktop dispatcher authenticates
-  before decoding, returns open-epoch and Status/`Unavailable` immediately, and
-  converts either launch probe into a move-only action that owns the freshly
-  authenticated peer plus exact consumed request. It rejects a desktop
-  `HelperReady` as authentication failure before epoch lookup or consumption.
-  The immutable V1 path delegates through an explicit authenticated-V1 method
-  without changing behavior. Neither V2 outcome is wired into `ServerContext`,
-  the actual RPC manager, launch waiting, or helper I/O.
+  Under the same debug feature, the V2 desktop dispatcher authenticates before
+  decoding and is wired into `ServerContext`. It returns open-epoch and
+  Status/`Unavailable` immediately and converts either launch probe into a move-
+  only action owning the authenticated peer plus exact consumed request. It
+  rejects a desktop `HelperReady` as authentication failure before epoch lookup
+  or consumption. The immutable V1 path delegates through an explicit
+  authenticated-V1 method without changing behavior. The exact consumed desktop
+  request is the only source of helper role, epoch, request ID, and matching
+  completed result.
+
+  The RPC manager retains the one-shot pending completion locally and sends one
+  coordinator worker only the authenticated desktop authority plus an exact
+  request copy. One occupied launch spans the worker and its capacity-one
+  transport, so a second launch completes as correlated `Unavailable` instead of
+  queuing. The manager-side wait is bounded at 20 seconds. Cleanup, registry-
+  internal, debugger-invariant, and role-correlation failures latch fatal health
+  and close new RPC admission.
+
+  Status-only preserves its original single AU/SY-`GA`, Medium/`NW` descriptor
+  for endpoint and If3. The LPAC probe derives canonical, distinct package SIDs
+  from the fixed Approval and Secret Input profile monikers using OS APIs. It
+  owns a Low/`NW` endpoint descriptor granting connect `0x1` and a separate
+  Low/`NW` If3 descriptor granting `GA`, both to AU, SY, and the two package
+  SIDs. This closes the previous descriptor-level transport-reachability defect
+  in debug wiring; installed restricted-SCM fixed-LPAC E2E remains unproved.
 
   Helper bootstrap keeps the validated 100-byte hello's epoch/request/role key
-  and absolute deadline only in private zeroizing continuation state. The
-  separate 72-byte `YWKHRC01` helper confirmation is correlation evidence for a
-  later helper-ready round trip, never role authority and never a reuse of the
-  72-byte adoption ACK. No runtime helper RPC send or launch coordinator consumes
-  that state yet.
+  and absolute deadline only in private zeroizing continuation state. Separate
+  debug features on `approval-ui.exe` and `secret-input-ui.exe` fix their roles
+  and reach this transition. Each helper uses the fixed local endpoint with
+  implicit WINNT credentials, packet privacy, and authz-none; sends exact
+  `HelperReady`; accepts only the correlated ACK; releases the RPC binding;
+  exact-writes the separate 72-byte `YWKHRC01` confirmation; closes the response
+  pipe; and waits on the request pipe for service termination. The confirmation
+  is correlation evidence only, never role authority or a reuse of the 72-byte
+  adoption ACK. Every fallible helper step is process-terminal.
+
+  The service reports the matching completed result only after confirmation plus
+  EOF, expected-peer admission and role match, and exact process/Job cancellation
+  while the request writer remains retained. Shutdown orders RPC rundown,
+  coordinator stop/join, then helper-registry stop. The LPAC-only 30-second SCM
+  watchdog is a derived hard fail-fast bound, not evidence that every Windows
+  call is interruptible or a clean operation deadline.
 
   These build, scaffold, and fixture/proxy checks are not a real signed-product
   E2E or the Phase 1 exit gate. An actual product signer, immutable installed
   artifact, generated compiled policy, parent-pinned target image, system-wide
   sole Job-handle proof, and supported-kernel alias/access/parent-death/
   cancellation matrices remain external **STOP-SHIP** work. Signed-helper
-  `ncalrpc`, installed SCM identity, cross-session LPAC, and elevated-service
-  proof are also absent. The pure V2 dispatcher remains runtime-unreachable and
-  the helper send/launch round trip is dormant; the helper still exits 78 in
-  default and release builds, there is no production caller, and both compiled
-  policies remain `None`.
+  `ncalrpc`, installed restricted-SCM identity, an actual cross-session LPAC
+  exchange under elevation, and the supported-kernel matrix are also absent. The
+  debug path is executable, but its fixed sibling file pin is not Authenticode,
+  version, manifest, or immutable-installation proof. Helpers still exit 78 in
+  default and release builds, there is no production caller, Phase 1 is not
+  passed, and both compiled policies remain `None`.
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

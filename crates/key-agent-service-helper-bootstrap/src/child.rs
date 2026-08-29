@@ -107,10 +107,46 @@ pub fn complete_injected_channel_bootstrap(
     }
 }
 
+/// Consumes bootstrapped channels, performs the fixed authenticated version-2
+/// `HelperReady` RPC round trip, emits one exactly correlated confirmation,
+/// closes the response pipe, and waits on the request pipe until the service
+/// terminates the admitted helper.
+///
+/// `expected_role` must again be fixed by the signed helper entrypoint. It is
+/// checked against the privately retained bootstrap correlation before any RPC
+/// or pipe operation. The role is correlation evidence only: it is never sent
+/// over RPC and cannot replace the service's expected-peer classification.
+///
+/// # Process termination
+///
+/// Every deadline, binding, authentication, RPC, acknowledgement, correlation,
+/// confirmation-write, or response-close failure aborts the child. After a
+/// successful confirmation, any request-pipe read completion is likewise
+/// process-terminal. The function therefore never returns.
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+pub fn complete_helper_ready_rpc_probe(
+    channels: BootstrappedInjectedChannels,
+    expected_role: HelperBootstrapRole,
+) -> ! {
+    let BootstrappedInjectedChannels {
+        _inner: inner,
+        _not_send_or_sync: _,
+    } = channels;
+    windows::complete_helper_ready_rpc_probe(inner, expected_role)
+}
+
 #[cfg(test)]
 mod tests {
     use core::fmt::Debug;
 
+    #[cfg(all(
+        target_env = "msvc",
+        feature = "helper-ready-rpc-feasibility-test-hook"
+    ))]
+    use super::complete_helper_ready_rpc_probe;
     use super::{
         AdoptedInjectedChannels, BootstrappedInjectedChannels, capture_and_adopt_injected_channels,
         complete_injected_channel_bootstrap,
@@ -150,6 +186,20 @@ mod tests {
         }
 
         require_signature(complete_injected_channel_bootstrap);
+    }
+
+    #[cfg(all(
+        target_env = "msvc",
+        feature = "helper-ready-rpc-feasibility-test-hook"
+    ))]
+    #[test]
+    fn public_helper_ready_signature_consumes_bootstrap_and_never_returns() {
+        fn require_signature(
+            _complete: fn(BootstrappedInjectedChannels, crate::HelperBootstrapRole) -> !,
+        ) {
+        }
+
+        require_signature(complete_helper_ready_rpc_probe);
     }
 
     #[test]

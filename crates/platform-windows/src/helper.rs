@@ -457,6 +457,33 @@ impl VerifiedHelper {
         sys::hold_dormant_broker(candidate)
     }
 
+    /// Holds the exact sibling debug Approval helper without write/delete sharing.
+    ///
+    /// This is deliberately a feasibility-only artifact pin. It derives the
+    /// role from the exact canonical file name and hashes the held bytes, but it
+    /// is not Authenticode, version, manifest, or immutable-installation proof.
+    #[cfg(all(
+        windows,
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(crate) fn hold_dormant_service_approval(candidate: &Path) -> Result<Self, HelperError> {
+        sys::hold_dormant_service_approval(candidate)
+    }
+
+    /// Holds the exact sibling debug Secret Input helper without write/delete sharing.
+    ///
+    /// As with the Approval fixture, this authenticates only a pinned debug
+    /// artifact and never substitutes for the release helper manifest.
+    #[cfg(all(
+        windows,
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(crate) fn hold_dormant_service_secret_input(candidate: &Path) -> Result<Self, HelperError> {
+        sys::hold_dormant_service_secret_input(candidate)
+    }
+
     #[cfg(all(test, windows))]
     pub(crate) fn for_approval_channel_test(approval_frontend: bool) -> Result<Self, HelperError> {
         let file = std::fs::OpenOptions::new()
@@ -979,6 +1006,77 @@ mod sys {
             identity,
             manifest_digest: artifact_digest,
             role: HelperRole::Broker,
+        })
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(super) fn hold_dormant_service_approval(
+        candidate: &Path,
+    ) -> Result<VerifiedHelper, HelperError> {
+        hold_dormant_service_ui(candidate, "approval-ui.exe", HelperRole::ApprovalFrontend)
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(super) fn hold_dormant_service_secret_input(
+        candidate: &Path,
+    ) -> Result<VerifiedHelper, HelperError> {
+        hold_dormant_service_ui(
+            candidate,
+            "secret-input-ui.exe",
+            HelperRole::SecretInputFrontend,
+        )
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    fn hold_dormant_service_ui(
+        candidate: &Path,
+        exact_file_name: &str,
+        exact_role: HelperRole,
+    ) -> Result<VerifiedHelper, HelperError> {
+        if !candidate.is_absolute()
+            || candidate.file_name().and_then(|name| name.to_str()) != Some(exact_file_name)
+        {
+            return Err(HelperError::WrongFileName);
+        }
+        let canonical = fs::canonicalize(candidate).map_err(|_| HelperError::OperatingSystem)?;
+        let canonical_name = canonical.file_name().and_then(|name| name.to_str());
+        if canonical_name != Some(exact_file_name)
+            || HelperRole::from_release_file_name(exact_file_name) != exact_role
+        {
+            return Err(HelperError::WrongFileName);
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN).0)
+            .open(&canonical)
+            .map_err(|_| HelperError::OperatingSystem)?;
+        if !file
+            .metadata()
+            .map_err(|_| HelperError::OperatingSystem)?
+            .is_file()
+        {
+            return Err(HelperError::NotRegularFile);
+        }
+        let identity = file_identity(&file)?;
+        let artifact_digest = hash_file(&mut file)?;
+        Ok(VerifiedHelper {
+            path: canonical,
+            file,
+            #[cfg(all(test, windows))]
+            _key_agent_lpac_fixture: None,
+            identity,
+            manifest_digest: artifact_digest,
+            role: exact_role,
         })
     }
 

@@ -1,18 +1,23 @@
-//! Debug-only authenticated local-RPC Status/Unavailable service.
+//! Debug-only authenticated local-RPC status and helper-probe service.
 //!
-//! This fixture proves a bounded transport and fresh per-call Windows desktop
-//! identity. It deliberately does not prove an enrolled Broker image, helper
-//! role, service mutual identity, or any wallet/signing authority.
+//! This fixture proves bounded V1/V2 transport, fresh per-call Windows desktop
+//! identity, and expected service-created LPAC helper correlation. It does not
+//! prove an enrolled Broker, signed immutable helpers, complete service mutual
+//! identity, supported-build coverage, or any wallet/signing authority.
 
 #![allow(unsafe_code)]
 
 mod auth;
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+mod coordinator;
 mod dispatch;
 mod epoch;
 #[allow(dead_code)]
-// Dormant role-aware registry; runtime RPC wiring is the next feasibility slice.
+// Coordinator-only guards remain dormant after the feature-gated router wiring.
 mod expected_peer;
 mod lifecycle;
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+mod router;
 
 use core::{ffi::c_void, fmt};
 use std::sync::{
@@ -34,7 +39,19 @@ use windows::Win32::System::Rpc::{
     RpcServerRegisterAuthInfoW, RpcServerRegisterIf3, RpcServerUnregisterIf,
     RpcServerUseProtseqEpW,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::PCWSTR;
+
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+use crate::key_agent_service_launch::ServiceHelperAdmission;
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+use crate::key_agent_service_launch::{
+    FixedLpacRpcEndpointProfileSids, derive_fixed_lpac_rpc_endpoint_profile_sids,
+};
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+use crate::key_agent_service_token::ServiceTokenFixtureProof;
 
 #[cfg(not(all(
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",
@@ -49,9 +66,14 @@ use self::auth::RpcAuthError;
 ))]
 pub(crate) use self::auth::{
     AuthenticatedDesktopImpersonation, AuthenticatedRpcClient, CreatedDesktopProcess,
-    DetachedDesktopProcess, PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
+    DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS, DetachedDesktopProcess,
+    PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
     PreparedDebuggerExitProcessSuccess, ServiceCreatedLpacCandidate,
 };
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+use self::coordinator::{ServiceProbeCoordinator, ServiceProbeCoordinatorClient};
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+use self::dispatch::DispatchError;
 use self::dispatch::{AuthenticationFailure, DispatchEngine};
 use self::epoch::SystemMonotonicClock;
 #[cfg(all(
@@ -59,15 +81,51 @@ use self::epoch::SystemMonotonicClock;
     debug_assertions
 ))]
 pub(crate) use self::expected_peer::{
-    ExpectedHelperAdmission, ExpectedHelperLease, ExpectedHelperPeer, ExpectedHelperRole,
-    ExpectedPeerKey, ExpectedPeerRegistryError, ExpectedPeerVerificationError,
+    EXPECTED_HELPER_QUIESCENCE_MILLISECONDS, ExpectedHelperAdmission, ExpectedHelperLease,
+    ExpectedHelperPeer, ExpectedHelperRole, ExpectedPeerKey, ExpectedPeerRegistryError,
+    ExpectedPeerVerificationError,
 };
 use self::lifecycle::{LifecycleHooks, ListeningStatusRpcServer, PreparedStatusRpcServer, RpcOps};
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+use self::router::{RoleAwareCallbackPeer, RoleAwareManagerDispatch, RoleAwareManagerPeer};
 
 const RPC_S_OK: i32 = 0;
 const RPC_S_ACCESS_DENIED: i32 = 5;
 static LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];
-const STATUS_RPC_SECURITY_DESCRIPTOR: PCWSTR = w!("D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)");
+const STATUS_RPC_SECURITY_DESCRIPTOR_SDDL: &str = "D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)";
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+const RPC_ENDPOINT_CONNECT_ACCESS: &str = "0x1";
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+const RPC_INTERFACE_CALL_ACCESS: &str = "GA";
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+const LPAC_RPC_LOW_MANDATORY_LABEL: &str = "S:(ML;;NW;;;LW)";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RpcSecurityProfile {
+    StatusOnly,
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    LpacProbe,
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+const fn lpac_probe_security_profile() -> RpcSecurityProfile {
+    RpcSecurityProfile::LpacProbe
+}
 
 const _: () = assert!(
     lifecycle::STATUS_RPC_MAX_RPC_SIZE as usize == key_agent_service_rpc_sys::RPC_FRAME_SIZE
@@ -95,7 +153,15 @@ struct ServerContext {
     admission: AtomicBool,
     fatal: AtomicBool,
     callback_auth_inflight: AtomicUsize,
-    dispatch: Mutex<DispatchEngine<AuthenticatedRpcClient, SystemMonotonicClock>>,
+    dispatch: DispatchEngine<AuthenticatedRpcClient, SystemMonotonicClock>,
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    helpers: ServiceHelperAdmission,
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    probe_coordinator_client: Option<ServiceProbeCoordinatorClient>,
+    // The join owner must share the globally published context lifetime. An
+    // RPC rundown failure retains this mutex and the helper registry together.
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    probe_coordinator_owner: Mutex<Option<ServiceProbeCoordinator>>,
 }
 
 impl ServerContext {
@@ -105,12 +171,41 @@ impl ServerContext {
             admission: AtomicBool::new(false),
             fatal: AtomicBool::new(false),
             callback_auth_inflight: AtomicUsize::new(0),
-            dispatch: Mutex::new(dispatch),
+            dispatch,
+            #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+            helpers: ServiceHelperAdmission::new(),
+            #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+            probe_coordinator_client: None,
+            #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+            probe_coordinator_owner: Mutex::new(None),
+        })
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    fn new_with_probe_coordinator(
+        helpers: ServiceHelperAdmission,
+        probe_coordinator: ServiceProbeCoordinator,
+    ) -> Result<Self, StatusRpcWorkerError> {
+        let dispatch = DispatchEngine::new().map_err(|_| StatusRpcWorkerError::Unavailable)?;
+        let probe_coordinator_client = probe_coordinator.client();
+        Ok(Self {
+            admission: AtomicBool::new(false),
+            fatal: AtomicBool::new(false),
+            callback_auth_inflight: AtomicUsize::new(0),
+            dispatch,
+            helpers,
+            probe_coordinator_client: Some(probe_coordinator_client),
+            probe_coordinator_owner: Mutex::new(Some(probe_coordinator)),
         })
     }
 
     fn try_callback_auth_permit(&self) -> Option<CallbackAuthPermit<'_>> {
         if self.fatal.load(Ordering::Acquire) || !self.admission.load(Ordering::Acquire) {
+            return None;
+        }
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if self.probe_coordinator_has_failed() {
+            self.latch_fatal_runtime();
             return None;
         }
         self.callback_auth_inflight
@@ -129,33 +224,132 @@ impl ServerContext {
         if self.fatal.load(Ordering::Acquire) {
             return Err(ManagerError::CallFailed);
         }
-        if !self.admission.load(Ordering::Acquire) {
-            return Err(ManagerError::ServerUnavailable);
-        }
-
-        let dispatch = self.dispatch.lock().map_err(|_| ManagerError::CallFailed)?;
-        if self.fatal.load(Ordering::Acquire) {
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if self.probe_coordinator_has_failed() {
+            self.latch_fatal_runtime();
             return Err(ManagerError::CallFailed);
         }
         if !self.admission.load(Ordering::Acquire) {
             return Err(ManagerError::ServerUnavailable);
         }
 
-        dispatch
-            .exchange_with(request, move || {
-                auth::authenticate_call(binding).map_err(AuthenticationFailure::from)
-            })
-            .map_err(ManagerError::from)
+        #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
+        {
+            return self
+                .dispatch
+                .exchange_with(request, move || {
+                    auth::authenticate_call(binding).map_err(AuthenticationFailure::from)
+                })
+                .map_err(ManagerError::from);
+        }
+
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        {
+            let routed = self.map_lpac_dispatch_result(router::route_manager(
+                &self.dispatch,
+                &self.helpers,
+                request,
+                move || {
+                    let peer = auth::authenticate_role_aware_call(binding)
+                        .map_err(AuthenticationFailure::from)?;
+                    Ok(match peer {
+                        auth::AuthenticatedManagerPeer::Desktop(desktop) => {
+                            RoleAwareManagerPeer::Desktop(desktop)
+                        }
+                        auth::AuthenticatedManagerPeer::ServiceCreatedLpac(helper) => {
+                            RoleAwareManagerPeer::Helper(helper)
+                        }
+                    })
+                },
+            ))?;
+
+            match routed {
+                RoleAwareManagerDispatch::Immediate(response) => Ok(response),
+                RoleAwareManagerDispatch::Launch(launch) => {
+                    if let Some(coordinator) = &self.probe_coordinator_client {
+                        let response = coordinator.complete_launch(launch);
+                        if coordinator.has_failed() {
+                            self.latch_fatal_runtime();
+                        }
+                        self.map_lpac_dispatch_result(response)
+                    } else {
+                        let (authenticated_desktop, completion) = launch.into_parts();
+                        let response = completion
+                            .complete(key_agent_service_wire::debug_v2::DesktopResult::Unavailable);
+                        drop(authenticated_desktop);
+                        self.map_lpac_dispatch_result(response)
+                    }
+                }
+            }
+        }
     }
 
     fn invalidate_epochs(&self) {
-        let result = self
-            .dispatch
-            .lock()
-            .map_err(|_| ())
-            .and_then(|dispatch| dispatch.stop().map_err(|_| ()));
-        if result.is_err() {
-            self.fatal.store(true, Ordering::Release);
+        let dispatch_failed = self.dispatch.stop().is_err();
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if let Some(coordinator) = &self.probe_coordinator_client {
+            coordinator.begin_stop();
+        }
+
+        if dispatch_failed {
+            self.latch_fatal_runtime();
+        }
+    }
+
+    fn latch_fatal_runtime(&self) {
+        self.admission.store(false, Ordering::Release);
+        self.fatal.store(true, Ordering::Release);
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if let Some(coordinator) = &self.probe_coordinator_client {
+            coordinator.begin_stop();
+        }
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    fn probe_coordinator_has_failed(&self) -> bool {
+        self.probe_coordinator_client
+            .as_ref()
+            .is_some_and(ServiceProbeCoordinatorClient::has_failed)
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    fn map_lpac_dispatch_result<T>(
+        &self,
+        result: Result<T, DispatchError>,
+    ) -> Result<T, ManagerError> {
+        result.map_err(|error| {
+            if error == DispatchError::Internal {
+                self.latch_fatal_runtime();
+            }
+            ManagerError::from(error)
+        })
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    fn stop_probe_coordinator_and_helpers(&self) -> Result<(), StatusRpcWorkerError> {
+        // Take the join owner under the mutex, but never hold the mutex across
+        // the bounded coordinator join or helper process cleanup.
+        let coordinator = match self.probe_coordinator_owner.lock() {
+            Ok(mut owner) => match (self.probe_coordinator_client.is_some(), owner.is_some()) {
+                (false, false) => Ok(None),
+                (true, true) => Ok(owner.take()),
+                (false, true) | (true, false) => Err(()),
+            },
+            Err(_) => Err(()),
+        };
+
+        let coordinator_failed = match coordinator {
+            Ok(Some(coordinator)) => coordinator.stop_and_drain().is_err(),
+            Ok(None) => false,
+            Err(()) => true,
+        };
+        let coordinator_reported_failure = self.probe_coordinator_has_failed();
+        let helpers_failed = self.helpers.stop().is_err();
+        if coordinator_failed || coordinator_reported_failure || helpers_failed {
+            self.latch_fatal_runtime();
+            Err(StatusRpcWorkerError::Unavailable)
+        } else {
+            Ok(())
         }
     }
 }
@@ -216,36 +410,32 @@ pub(super) struct StatusRpcWorker {
 impl StatusRpcWorker {
     pub(super) fn start() -> Result<Self, StatusRpcWorkerError> {
         let context = Arc::new(ServerContext::new()?);
-        let security_descriptor = OwnedSecurityDescriptor::new()?;
-        let interface_spec = server_interface_spec().ok_or(StatusRpcWorkerError::Unavailable)?;
-        publish_context(Arc::clone(&context))?;
+        let (server, context) = start_status_rpc_server(context, RpcSecurityProfile::StatusOnly)?;
+        Ok(Self { server, context })
+    }
 
-        let prepared = PreparedStatusRpcServer::new(
-            WindowsRpcOps,
-            interface_spec,
-            security_descriptor,
-            ServerHooks {
-                context: Arc::clone(&context),
-            },
-        );
-        match prepared.start() {
-            Ok(server) => Ok(Self { server, context }),
-            Err(failure) => {
-                let _ = (failure.stage(), failure.error());
-                if let Some(cleanup) = failure.cleanup_failure() {
-                    let _ = (cleanup.stage(), cleanup.error(), cleanup.secondary());
-                }
-                if failure.resources_are_retained() {
-                    return Err(StatusRpcWorkerError::RuntimeStateRetained);
-                }
-                clear_context(&context)?;
-                Err(StatusRpcWorkerError::Unavailable)
-            }
-        }
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    pub(super) fn start_lpac_rpc_probe(
+        service_token: ServiceTokenFixtureProof,
+    ) -> Result<Self, StatusRpcWorkerError> {
+        let helpers = ServiceHelperAdmission::new();
+        let probe_coordinator = ServiceProbeCoordinator::start(service_token, helpers.clone())
+            .map_err(|_| StatusRpcWorkerError::Unavailable)?;
+        let context = Arc::new(ServerContext::new_with_probe_coordinator(
+            helpers,
+            probe_coordinator,
+        )?);
+        let (server, context) = start_status_rpc_server(context, lpac_probe_security_profile())?;
+        Ok(Self { server, context })
     }
 
     pub(super) fn begin_accepting(&mut self) -> Result<(), StatusRpcWorkerError> {
         if self.context.fatal.load(Ordering::Acquire) {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if self.context.probe_coordinator_has_failed() {
+            self.context.latch_fatal_runtime();
             return Err(StatusRpcWorkerError::Unavailable);
         }
         self.server.enable_admission_after_scm_running();
@@ -263,11 +453,54 @@ impl StatusRpcWorker {
             debug_assert!(failure.resources_are_retained());
             return Err(StatusRpcWorkerError::RuntimeStateRetained);
         }
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        context.stop_probe_coordinator_and_helpers()?;
         clear_context(&context)?;
         if context.fatal.load(Ordering::Acquire) {
             return Err(StatusRpcWorkerError::Unavailable);
         }
         Ok(())
+    }
+}
+
+fn start_status_rpc_server(
+    context: Arc<ServerContext>,
+    security_profile: RpcSecurityProfile,
+) -> Result<(LiveStatusServer, Arc<ServerContext>), StatusRpcWorkerError> {
+    let security_descriptor = OwnedSecurityDescriptor::new(security_profile)?;
+    let interface_spec = server_interface_spec().ok_or(StatusRpcWorkerError::Unavailable)?;
+    publish_context(Arc::clone(&context))?;
+
+    let prepared = PreparedStatusRpcServer::new(
+        WindowsRpcOps,
+        interface_spec,
+        security_descriptor,
+        ServerHooks {
+            context: Arc::clone(&context),
+        },
+    );
+    match prepared.start() {
+        Ok(server) => Ok((server, context)),
+        Err(failure) => {
+            let _ = (failure.stage(), failure.error());
+            if let Some(cleanup) = failure.cleanup_failure() {
+                let _ = (cleanup.stage(), cleanup.error(), cleanup.secondary());
+            }
+            if failure.resources_are_retained() {
+                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+            }
+            #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+            if context.stop_probe_coordinator_and_helpers().is_err() {
+                // The published context and uncertain terminal owners must stay
+                // retained, and SCM must not classify this as a clean boundary
+                // failure that permits SERVICE_STOPPED.
+                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+            }
+            if clear_context(&context).is_err() {
+                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+            }
+            Err(StatusRpcWorkerError::Unavailable)
+        }
     }
 }
 
@@ -328,10 +561,34 @@ unsafe extern "system" fn interface_security_callback(
     let Some(_permit) = context.try_callback_auth_permit() else {
         return RPC_STATUS(RPC_S_ACCESS_DENIED);
     };
+    #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
     // SAFETY: Rpcrt4 supplies the synchronous call binding as callback context;
     // the authentication helper neither retains nor frees it.
-    match unsafe { auth::authenticate_callback_context(call_context) } {
-        Ok(_) => RPC_STATUS(RPC_S_OK),
+    let authorization = unsafe { auth::authenticate_callback_context(call_context) }.map(|_| ());
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    let authorization = router::authorize_callback(&context.helpers, || {
+        // SAFETY: Rpcrt4 supplies the synchronous call binding as callback
+        // context; the authentication helper neither retains nor frees it.
+        let peer = unsafe { auth::authenticate_role_aware_callback_context(call_context) }
+            .map_err(AuthenticationFailure::from)?;
+        Ok(match peer {
+            auth::AuthenticatedCallbackPeer::Desktop(desktop) => {
+                RoleAwareCallbackPeer::Desktop(desktop)
+            }
+            auth::AuthenticatedCallbackPeer::ServiceCreatedLpac(helper) => {
+                RoleAwareCallbackPeer::Helper(helper)
+            }
+        })
+    });
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    if matches!(authorization, Err(DispatchError::Internal)) {
+        context.latch_fatal_runtime();
+    }
+
+    match authorization {
+        Ok(()) => RPC_STATUS(RPC_S_OK),
         // The RPC runtime exposes every non-OK If3 callback result to the
         // client as access denied, so both closed auth categories intentionally
         // collapse here. The manager still authenticates independently.
@@ -339,16 +596,71 @@ unsafe extern "system" fn interface_security_callback(
     }
 }
 
-struct OwnedSecurityDescriptor(PSECURITY_DESCRIPTOR);
+struct OwnedSecurityDescriptor {
+    endpoint: OwnedLocalSecurityDescriptor,
+    // Status-only preserves its historical one-descriptor contract. The LPAC
+    // probe uses a connect-only endpoint DACL and a separate interface DACL,
+    // both bound to the same exact package identities.
+    interface: Option<OwnedLocalSecurityDescriptor>,
+}
 
 impl OwnedSecurityDescriptor {
-    fn new() -> Result<Self, StatusRpcWorkerError> {
+    fn new(profile: RpcSecurityProfile) -> Result<Self, StatusRpcWorkerError> {
+        match profile {
+            RpcSecurityProfile::StatusOnly => Ok(Self {
+                endpoint: OwnedLocalSecurityDescriptor::from_sddl(
+                    STATUS_RPC_SECURITY_DESCRIPTOR_SDDL,
+                )?,
+                interface: None,
+            }),
+            #[cfg(all(
+                feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                debug_assertions
+            ))]
+            RpcSecurityProfile::LpacProbe => {
+                let profile_sids = derive_fixed_lpac_rpc_endpoint_profile_sids()
+                    .map_err(|_| StatusRpcWorkerError::Unavailable)?;
+                let policy = LpacRpcSecuritySddl::new(&profile_sids)?;
+                Ok(Self {
+                    endpoint: OwnedLocalSecurityDescriptor::from_sddl(&policy.endpoint)?,
+                    interface: Some(OwnedLocalSecurityDescriptor::from_sddl(&policy.interface)?),
+                })
+            }
+        }
+    }
+
+    const fn endpoint_raw(&self) -> *const c_void {
+        self.endpoint.as_raw()
+    }
+
+    fn interface_raw(&self) -> *const c_void {
+        self.interface.as_ref().map_or_else(
+            || self.endpoint.as_raw(),
+            OwnedLocalSecurityDescriptor::as_raw,
+        )
+    }
+}
+
+impl fmt::Debug for OwnedSecurityDescriptor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedSecurityDescriptor([REDACTED])")
+    }
+}
+
+struct OwnedLocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+impl OwnedLocalSecurityDescriptor {
+    fn from_sddl(sddl: &str) -> Result<Self, StatusRpcWorkerError> {
+        if sddl.is_empty() || sddl.contains('\0') {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        let wide: Vec<u16> = sddl.encode_utf16().chain(core::iter::once(0)).collect();
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
-        // SAFETY: the fixed SDDL is NUL-terminated; the API allocates one
-        // self-relative descriptor which this owner releases with LocalFree.
+        // SAFETY: `wide` is a live NUL-terminated SDDL string. Success returns
+        // one self-relative LocalAlloc descriptor owned by this wrapper.
         unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                STATUS_RPC_SECURITY_DESCRIPTOR,
+                PCWSTR(wide.as_ptr()),
                 SDDL_REVISION_1,
                 &raw mut descriptor,
                 None,
@@ -366,13 +678,13 @@ impl OwnedSecurityDescriptor {
     }
 }
 
-impl fmt::Debug for OwnedSecurityDescriptor {
+impl fmt::Debug for OwnedLocalSecurityDescriptor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("OwnedSecurityDescriptor([REDACTED])")
+        formatter.write_str("OwnedLocalSecurityDescriptor([REDACTED])")
     }
 }
 
-impl Drop for OwnedSecurityDescriptor {
+impl Drop for OwnedLocalSecurityDescriptor {
     fn drop(&mut self) {
         if self.0.0.is_null() {
             return;
@@ -385,6 +697,63 @@ impl Drop for OwnedSecurityDescriptor {
         }
         self.0 = PSECURITY_DESCRIPTOR::default();
     }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+struct LpacRpcSecuritySddl {
+    endpoint: String,
+    interface: String,
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+impl LpacRpcSecuritySddl {
+    fn new(profile_sids: &FixedLpacRpcEndpointProfileSids) -> Result<Self, StatusRpcWorkerError> {
+        let expected_sids = profile_sids.as_ordered_pair();
+        if expected_sids[0] == expected_sids[1] {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        let policy = Self {
+            endpoint: lpac_rpc_sddl(RPC_ENDPOINT_CONNECT_ACCESS, expected_sids),
+            interface: lpac_rpc_sddl(RPC_INTERFACE_CALL_ACCESS, expected_sids),
+        };
+        if !policy.is_exact_for(expected_sids) {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        Ok(policy)
+    }
+
+    fn is_exact_for(&self, expected_sids: [&str; 2]) -> bool {
+        expected_sids[0] != expected_sids[1]
+            && self.endpoint == lpac_rpc_sddl(RPC_ENDPOINT_CONNECT_ACCESS, expected_sids)
+            && self.interface == lpac_rpc_sddl(RPC_INTERFACE_CALL_ACCESS, expected_sids)
+    }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+impl fmt::Debug for LpacRpcSecuritySddl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LpacRpcSecuritySddl([REDACTED])")
+    }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+fn lpac_rpc_sddl(access: &str, expected_sids: [&str; 2]) -> String {
+    let [approval, secret_input] = expected_sids;
+    format!(
+        "D:P(A;;{access};;;AU)(A;;{access};;;SY)(A;;{access};;;{approval})(A;;{access};;;{secret_input}){LPAC_RPC_LOW_MANDATORY_LABEL}"
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -425,7 +794,7 @@ impl RpcOps for WindowsRpcOps {
                 PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr()),
                 max_calls,
                 PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),
-                Some(security_descriptor.as_raw()),
+                Some(security_descriptor.endpoint_raw()),
             )
         })
     }
@@ -453,7 +822,7 @@ impl RpcOps for WindowsRpcOps {
                 max_calls,
                 max_rpc_size,
                 Some(interface_security_callback),
-                Some(security_descriptor.as_raw()),
+                Some(security_descriptor.interface_raw()),
             )
         })
     }
@@ -644,6 +1013,144 @@ mod tests {
     }
 
     #[test]
+    fn status_only_security_profile_preserves_the_existing_descriptor_contract()
+    -> Result<(), StatusRpcWorkerError> {
+        assert_eq!(
+            STATUS_RPC_SECURITY_DESCRIPTOR_SDDL,
+            "D:P(A;;GA;;;AU)(A;;GA;;;SY)S:(ML;;NW;;;ME)"
+        );
+        let descriptor = OwnedSecurityDescriptor::new(RpcSecurityProfile::StatusOnly)?;
+        assert!(descriptor.interface.is_none());
+        assert_eq!(
+            format!("{descriptor:?}"),
+            "OwnedSecurityDescriptor([REDACTED])"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn lpac_probe_security_profile_is_debug_only() {
+        assert_eq!(lpac_probe_security_profile(), RpcSecurityProfile::LpacProbe);
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn lpac_probe_sddl_binds_exact_connect_and_interface_aces() -> Result<(), StatusRpcWorkerError>
+    {
+        const APPROVAL_SID: &str = "S-1-15-2-1-2-3-4-5-6-7";
+        const SECRET_INPUT_SID: &str = "S-1-15-2-8-9-10-11-12-13-14";
+        let expected_sids = [APPROVAL_SID, SECRET_INPUT_SID];
+        let policy = LpacRpcSecuritySddl {
+            endpoint: lpac_rpc_sddl(RPC_ENDPOINT_CONNECT_ACCESS, expected_sids),
+            interface: lpac_rpc_sddl(RPC_INTERFACE_CALL_ACCESS, expected_sids),
+        };
+
+        assert!(policy.is_exact_for(expected_sids));
+        assert!(
+            policy.endpoint
+                == "D:P(A;;0x1;;;AU)(A;;0x1;;;SY)(A;;0x1;;;S-1-15-2-1-2-3-4-5-6-7)(A;;0x1;;;S-1-15-2-8-9-10-11-12-13-14)S:(ML;;NW;;;LW)"
+        );
+        assert!(
+            policy.interface
+                == "D:P(A;;GA;;;AU)(A;;GA;;;SY)(A;;GA;;;S-1-15-2-1-2-3-4-5-6-7)(A;;GA;;;S-1-15-2-8-9-10-11-12-13-14)S:(ML;;NW;;;LW)"
+        );
+        assert_eq!(format!("{policy:?}"), "LpacRpcSecuritySddl([REDACTED])");
+        let endpoint = OwnedLocalSecurityDescriptor::from_sddl(&policy.endpoint)?;
+        let interface = OwnedLocalSecurityDescriptor::from_sddl(&policy.interface)?;
+        assert!(!endpoint.as_raw().is_null());
+        assert!(!interface.as_raw().is_null());
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn lpac_probe_descriptor_reaches_os_derivation_and_owns_distinct_descriptors()
+    -> Result<(), &'static str> {
+        let profile_sids = derive_fixed_lpac_rpc_endpoint_profile_sids()
+            .map_err(|_| "derive fixed profile identities")?;
+        let policy = LpacRpcSecuritySddl::new(&profile_sids).map_err(|_| "compose exact policy")?;
+        let endpoint = OwnedLocalSecurityDescriptor::from_sddl(&policy.endpoint)
+            .map_err(|_| "parse endpoint descriptor")?;
+        let interface = OwnedLocalSecurityDescriptor::from_sddl(&policy.interface)
+            .map_err(|_| "parse interface descriptor")?;
+        assert!(endpoint.as_raw() != interface.as_raw());
+
+        let descriptor = OwnedSecurityDescriptor::new(RpcSecurityProfile::LpacProbe)
+            .map_err(|_| "construct retained descriptors")?;
+        assert!(descriptor.interface.is_some());
+        assert!(descriptor.endpoint_raw() != descriptor.interface_raw());
+        assert_eq!(
+            format!("{descriptor:?}"),
+            "OwnedSecurityDescriptor([REDACTED])"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn lpac_probe_sddl_rejects_wrong_missing_duplicate_and_relaxed_policy() {
+        const APPROVAL_SID: &str = "S-1-15-2-1-2-3-4-5-6-7";
+        const SECRET_INPUT_SID: &str = "S-1-15-2-8-9-10-11-12-13-14";
+        const WRONG_SID: &str = "S-1-15-2-15-16-17-18-19-20-21";
+        let expected_sids = [APPROVAL_SID, SECRET_INPUT_SID];
+        let endpoint = lpac_rpc_sddl(RPC_ENDPOINT_CONNECT_ACCESS, expected_sids);
+        let interface = lpac_rpc_sddl(RPC_INTERFACE_CALL_ACCESS, expected_sids);
+
+        let candidates = [
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replace(SECRET_INPUT_SID, WRONG_SID),
+                interface: interface.clone(),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replace(&format!("(A;;0x1;;;{SECRET_INPUT_SID})"), ""),
+                interface: interface.clone(),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.clone(),
+                interface: interface.replace(SECRET_INPUT_SID, APPROVAL_SID),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replacen("D:P", "D:", 1),
+                interface: interface.clone(),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replacen("0x1", "GA", 1),
+                interface: interface.clone(),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replace("S:(ML;;NW;;;LW)", "S:(ML;;NW;;;ME)"),
+                interface: interface.clone(),
+            },
+            LpacRpcSecuritySddl {
+                endpoint: endpoint.replace("S:(ML;;NW;;;LW)", "S:(ML;;;;;LW)"),
+                interface,
+            },
+        ];
+
+        for candidate in candidates {
+            assert!(!candidate.is_exact_for(expected_sids));
+        }
+        let exact = LpacRpcSecuritySddl {
+            endpoint: lpac_rpc_sddl(RPC_ENDPOINT_CONNECT_ACCESS, expected_sids),
+            interface: lpac_rpc_sddl(RPC_INTERFACE_CALL_ACCESS, expected_sids),
+        };
+        assert!(!exact.is_exact_for([APPROVAL_SID, APPROVAL_SID]));
+    }
+
+    #[test]
     fn errors_and_context_debug_are_data_free() -> Result<(), StatusRpcWorkerError> {
         let context = ServerContext::new()?;
         assert_eq!(format!("{context:?}"), "ServerContext([REDACTED])");
@@ -670,6 +1177,90 @@ mod tests {
         assert!(context.try_callback_auth_permit().is_none());
         drop(permits);
         assert!(context.try_callback_auth_permit().is_some());
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn invalidation_defers_expected_helper_stop_until_post_rpc_cleanup()
+    -> Result<(), StatusRpcWorkerError> {
+        let context = ServerContext::new()?;
+        context.invalidate_epochs();
+
+        context.stop_probe_coordinator_and_helpers()?;
+        assert_eq!(
+            context.helpers.stop(),
+            Err(ExpectedPeerRegistryError::Stopping)
+        );
+        assert!(!context.fatal.load(Ordering::Acquire));
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn only_internal_dispatch_failure_latches_fatal_and_closes_admission()
+    -> Result<(), StatusRpcWorkerError> {
+        let context = ServerContext::new()?;
+        context.admission.store(true, Ordering::Release);
+
+        for error in [
+            DispatchError::Malformed,
+            DispatchError::Authentication,
+            DispatchError::Epoch,
+            DispatchError::Full,
+            DispatchError::Stopping,
+        ] {
+            assert!(context.map_lpac_dispatch_result::<()>(Err(error)).is_err());
+            assert!(!context.fatal.load(Ordering::Acquire));
+            assert!(context.admission.load(Ordering::Acquire));
+        }
+
+        assert_eq!(
+            context.map_lpac_dispatch_result::<()>(Err(DispatchError::Internal)),
+            Err(ManagerError::CallFailed)
+        );
+        assert!(context.fatal.load(Ordering::Acquire));
+        assert!(!context.admission.load(Ordering::Acquire));
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn fatal_health_latch_preserves_an_already_completed_response()
+    -> Result<(), StatusRpcWorkerError> {
+        let context = ServerContext::new()?;
+        context.latch_fatal_runtime();
+
+        assert_eq!(context.map_lpac_dispatch_result::<u32>(Ok(7)), Ok(7));
+        assert!(context.fatal.load(Ordering::Acquire));
+        assert!(!context.admission.load(Ordering::Acquire));
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn coordinator_owner_invariant_failure_is_fatal_but_still_stops_helpers()
+    -> Result<(), StatusRpcWorkerError> {
+        let context = ServerContext::new()?;
+        context.admission.store(true, Ordering::Release);
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Ok(_owner) = context.probe_coordinator_owner.lock() else {
+                return;
+            };
+            std::panic::resume_unwind(Box::new(()));
+        }));
+        assert!(poisoned.is_err());
+
+        assert_eq!(
+            context.stop_probe_coordinator_and_helpers(),
+            Err(StatusRpcWorkerError::Unavailable)
+        );
+        assert!(context.fatal.load(Ordering::Acquire));
+        assert!(!context.admission.load(Ordering::Acquire));
+        assert_eq!(
+            context.helpers.stop(),
+            Err(ExpectedPeerRegistryError::Stopping)
+        );
         Ok(())
     }
 

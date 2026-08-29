@@ -20,6 +20,14 @@ rpc-status-feasibility-test-hook = [
     "scm-feasibility-test-hook",
     "platform-windows/key-agent-service-rpc-status-feasibility-test-hook",
 ]
+# Debug-only role-aware V2 service/helper RPC composition with OS-derived fixed-
+# package-SID Low/NW endpoint/If3 ACLs. This is no-secret executable wiring,
+# not installed restricted-SCM or signed-helper E2E evidence.
+lpac-rpc-probe-feasibility-test-hook = [
+    "rpc-status-feasibility-test-hook",
+    "service-token-feasibility-test-hook",
+    "platform-windows/key-agent-service-lpac-launch-feasibility-test-hook",
+]
 
 [dependencies]
 platform-windows = { path = "../platform-windows" }

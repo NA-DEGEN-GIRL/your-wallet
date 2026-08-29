@@ -57,7 +57,7 @@ pub(super) fn capture_current_service_token()
     not(test),
     allow(
         dead_code,
-        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
     )
 )]
 pub(super) fn recapture_current_service_token(
@@ -256,7 +256,7 @@ fn token_handle_flags(token: &OwnedToken) -> Result<u32, ServiceTokenFixtureErro
     not(test),
     allow(
         dead_code,
-        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
     )
 )]
 fn same_kernel_object(first: HANDLE, second: HANDLE) -> bool {

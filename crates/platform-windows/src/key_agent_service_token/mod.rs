@@ -90,7 +90,7 @@ pub(crate) struct ServiceTokenFixtureProof {
         not(test),
         allow(
             dead_code,
-            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+            reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
         )
     )]
     baseline: ServiceTokenBaseline,
@@ -134,7 +134,7 @@ impl ServiceTokenFixtureProof {
         not(test),
         allow(
             dead_code,
-            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+            reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
         )
     )]
     pub(crate) fn creation_token(
@@ -454,7 +454,7 @@ struct CapturedServiceToken {
     not(test),
     allow(
         dead_code,
-        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
     )
 )]
 struct RecapturedServiceToken {
@@ -475,7 +475,7 @@ enum PolicyRejection {
         not(test),
         allow(
             dead_code,
-            reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+            reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
         )
     )]
     BaselineContinuity,
@@ -492,7 +492,7 @@ fn verify_fixture_baseline(baseline: &ServiceTokenBaseline) -> Result<(), Policy
     not(test),
     allow(
         dead_code,
-        reason = "compile-only Phase 1 launch seam has no service launch caller yet"
+        reason = "debug-only Phase 1 service probe is gated out of ordinary builds"
     )
 )]
 fn verify_creation_token_revalidation(

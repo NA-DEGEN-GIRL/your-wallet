@@ -36,6 +36,8 @@ const RPC_CALL_STATUS_ACTIVE: u32 = 0;
 const MEDIUM_INTEGRITY_RID: u32 = 0x2000;
 const LOW_INTEGRITY_RID: u32 = 0x1000;
 const MAX_BINARY_SID_BYTES: usize = 68;
+pub(crate) const DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS: u64 =
+    sys::DESKTOP_PROCESS_CLEANUP_WAIT_MILLISECONDS as u64;
 
 /// Data-free authentication failure returned to the RPC manager.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -439,10 +441,7 @@ pub(crate) enum AuthenticatedManagerPeer<P, T> {
     ServiceCreatedLpac(ServiceCreatedLpacCandidate<P>),
 }
 
-#[allow(
-    dead_code,
-    reason = "dormant role-aware RPC integration follows this foundation"
-)]
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 pub(crate) type AuthenticatedRpcManagerPeer =
     AuthenticatedManagerPeer<sys::RetainedProcess, sys::DesktopPrimaryToken>;
 
@@ -452,10 +451,7 @@ pub(crate) enum AuthenticatedCallbackPeer<P> {
     ServiceCreatedLpac(ServiceCreatedLpacCandidate<P>),
 }
 
-#[allow(
-    dead_code,
-    reason = "dormant role-aware RPC integration follows this foundation"
-)]
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 pub(crate) type AuthenticatedRpcCallbackPeer = AuthenticatedCallbackPeer<sys::RetainedProcess>;
 
 /// One-shot authority for the sole desktop-user process-creation call.
@@ -1053,6 +1049,7 @@ impl<P, T> AuthenticatedClient<P, T> {
 ///
 /// The `CallBinding` is consumed and remains confined to the Windows adapter;
 /// it cannot be retained by the returned process proof.
+#[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
 pub(crate) fn authenticate_call(
     binding: CallBinding<'_>,
 ) -> Result<AuthenticatedRpcClient, RpcAuthError> {
@@ -1064,10 +1061,7 @@ pub(crate) fn authenticate_call(
 ///
 /// A helper candidate is not admitted here. Exact LPAC/image/role provenance
 /// remains a separate expected-peer registry decision.
-#[expect(
-    dead_code,
-    reason = "dormant role-aware RPC integration follows this foundation"
-)]
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 pub(crate) fn authenticate_role_aware_call(
     binding: CallBinding<'_>,
 ) -> Result<AuthenticatedRpcManagerPeer, RpcAuthError> {
@@ -1083,6 +1077,10 @@ pub(crate) fn authenticate_role_aware_call(
 /// `raw` must be the non-null binding context passed by the RPC runtime to the
 /// currently executing security callback. It must remain valid on this thread
 /// until this function returns and must not be retained or freed by the caller.
+#[cfg(any(
+    not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+    test
+))]
 pub(crate) unsafe fn authenticate_callback_context(
     raw: *const c_void,
 ) -> Result<AuthenticatedRpcCallback, RpcAuthError> {
@@ -1099,12 +1097,9 @@ pub(crate) unsafe fn authenticate_callback_context(
 ///
 /// # Safety
 ///
-/// `raw` has the same synchronous callback-binding contract as
-/// [`authenticate_callback_context`].
-#[expect(
-    dead_code,
-    reason = "dormant role-aware RPC integration follows this foundation"
-)]
+/// `raw` must be the non-null synchronous callback binding supplied by the RPC
+/// runtime and must remain valid until this function returns.
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
 pub(crate) unsafe fn authenticate_role_aware_callback_context(
     raw: *const c_void,
 ) -> Result<AuthenticatedRpcCallbackPeer, RpcAuthError> {
@@ -1115,6 +1110,10 @@ pub(crate) unsafe fn authenticate_role_aware_callback_context(
     authenticate_role_aware_callback_with(&ops)
 }
 
+#[cfg(any(
+    not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+    test
+))]
 fn authenticate_with<O>(
     ops: &O,
 ) -> Result<AuthenticatedClient<O::Process, O::DesktopPrimaryToken>, RpcAuthError>
@@ -1201,6 +1200,10 @@ where
     }
 }
 
+#[cfg(any(
+    not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+    test
+))]
 fn authenticate_callback_with<O>(ops: &O) -> Result<(), RpcAuthError>
 where
     O: RpcAuthOps,

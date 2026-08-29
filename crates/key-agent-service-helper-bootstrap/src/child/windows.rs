@@ -2,8 +2,25 @@
 
 use core::ffi::c_void;
 use core::fmt;
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+use std::os::windows::io::IntoRawHandle;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+use key_agent_service_rpc_sys::{BindingHandle, RpcFrame};
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+use key_agent_service_wire::debug_v2::{
+    self as wire_v2, HelperReadyRequest, ServiceRequest, ServiceResponse,
+};
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, FILETIME,
     GetHandleInformation, HANDLE,
@@ -13,8 +30,22 @@ use windows::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+use windows::Win32::System::Rpc::{
+    RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, RPC_C_OPT_CALL_TIMEOUT, RPC_STATUS, RpcBindingFree,
+    RpcBindingFromStringBindingW, RpcBindingSetAuthInfoW, RpcBindingSetOption,
+    RpcStringBindingComposeW, RpcStringFreeW,
+};
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+use windows::core::{PCWSTR, PWSTR};
 use zeroize::Zeroizing;
 
 use crate::gate_spec::{
@@ -32,6 +63,16 @@ const DUPLICATE_OPTIONS_NONE: u32 = 0;
 const EXPECTED_HANDLE_FLAGS: u32 = 0;
 const EXPECTED_FILE_TYPE: u32 = FILE_TYPE_PIPE.0;
 const MAX_BOOTSTRAP_WINDOW_MILLISECONDS: u64 = 5_000;
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+const LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;
 
 /// Fixed capture gate authenticated and edited by the service debugger.
 ///
@@ -163,10 +204,11 @@ pub(super) fn complete_injected_channel_bootstrap(
 ///
 /// The encoded correlation key is retained instead of reconstructing it from
 /// ambient process state. The absolute deadline is likewise kept private: it
-/// is neither cloneable nor available through a raw accessor. A later reviewed
-/// integration must consume this state only after the authenticated
-/// `HelperReady` acknowledgement and must still treat expected-peer registry
-/// classification as the sole server-side role authority.
+/// is neither cloneable nor available through a raw accessor. The debug-only
+/// RPC transition borrows it only to create and verify the exact `HelperReady`
+/// exchange, then releases it before entering the terminal request-pipe wait.
+/// Expected-peer registry classification remains the sole server-side role
+/// authority.
 struct RetainedHelperRpcCorrelation {
     confirmation_frame: Zeroizing<[u8; HELPER_RPC_CONFIRMATION_BYTES]>,
     deadline_tick_count_ms: Zeroizing<u64>,
@@ -211,6 +253,352 @@ impl fmt::Debug for RetainedHelperRpcCorrelation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("RetainedHelperRpcCorrelation([REDACTED])")
     }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+pub(super) fn complete_helper_ready_rpc_probe(
+    channels: BootstrappedInjectedChannels,
+    expected_role: HelperBootstrapRole,
+) -> ! {
+    let BootstrappedInjectedChannels {
+        _request_input: request_input,
+        _response_output: response_output,
+        _source_access_and_direction: source_access_and_direction,
+        _helper_rpc_correlation: helper_rpc_correlation,
+    } = channels;
+    let mut operations = WindowsHelperReadyOperations {
+        request_input,
+        response_output: Some(response_output),
+        _source_access_and_direction: source_access_and_direction,
+    };
+
+    if complete_helper_ready_with_operations(
+        &mut operations,
+        &helper_rpc_correlation,
+        expected_role,
+    )
+    .is_err()
+    {
+        std::process::abort();
+    }
+    drop(helper_rpc_correlation);
+    operations.block_on_request_input()
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+trait HelperReadyOperations {
+    type Binding;
+
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()>;
+    fn connect_fixed_binding(&mut self) -> Result<Self::Binding, ()>;
+    fn exchange(
+        &mut self,
+        binding: &Self::Binding,
+        request: &[u8],
+        timeout_milliseconds: u32,
+    ) -> Result<Zeroizing<Vec<u8>>, ()>;
+    fn write_confirmation(&mut self, bytes: &[u8; HELPER_RPC_CONFIRMATION_BYTES])
+    -> Result<(), ()>;
+    fn close_response(&mut self) -> Result<(), ()>;
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+fn complete_helper_ready_with_operations<Operations: HelperReadyOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+    expected_role: HelperBootstrapRole,
+) -> Result<(), ()> {
+    let confirmation = retained.confirmation()?;
+    if confirmation.role() != expected_role {
+        return Err(());
+    }
+
+    let request = HelperReadyRequest::new(confirmation.epoch_nonce(), confirmation.request_id());
+    let request = ServiceRequest::HelperReady(request);
+    let request_bytes = Zeroizing::new(wire_v2::encode_request(&request));
+    if request_bytes.len() != wire_v2::HELPER_READY_REQUEST_BYTES {
+        return Err(());
+    }
+
+    let deadline = *retained.deadline_tick_count_ms;
+    let initial_now = operations.tick_count_milliseconds()?;
+    remaining_call_timeout_milliseconds(deadline, initial_now)?;
+    let binding = operations.connect_fixed_binding()?;
+    let call_now = operations.tick_count_milliseconds()?;
+    let timeout_milliseconds = remaining_call_timeout_milliseconds(deadline, call_now)?;
+    let response_bytes =
+        operations.exchange(&binding, request_bytes.as_slice(), timeout_milliseconds)?;
+    drop(request_bytes);
+    // Free the authenticated RPC binding before emitting confirmation. A
+    // native binding-free failure is process-terminal in the Windows owner and
+    // therefore cannot occur after the parent has observed confirmation EOF.
+    drop(binding);
+    let response_now = operations.tick_count_milliseconds()?;
+    remaining_call_timeout_milliseconds(deadline, response_now)?;
+
+    let response = wire_v2::decode_response(response_bytes.as_slice()).map_err(|_| ())?;
+    let ServiceResponse::HelperReady(acknowledgement) = response else {
+        return Err(());
+    };
+    let ServiceRequest::HelperReady(request) = request else {
+        return Err(());
+    };
+    acknowledgement
+        .ensure_correlates_with(&request)
+        .map_err(|_| ())?;
+    drop(response_bytes);
+
+    operations.write_confirmation(&retained.confirmation_frame)?;
+    let confirmation_now = operations.tick_count_milliseconds()?;
+    remaining_call_timeout_milliseconds(deadline, confirmation_now)?;
+    operations.close_response()?;
+    Ok(())
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+fn remaining_call_timeout_milliseconds(deadline: u64, now: u64) -> Result<u32, ()> {
+    let remaining = deadline
+        .checked_sub(now)
+        .filter(|remaining| *remaining != 0)
+        .ok_or(())?;
+    if remaining > MAX_BOOTSTRAP_WINDOW_MILLISECONDS {
+        return Err(());
+    }
+    u32::try_from(remaining).map_err(|_| ())
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+struct WindowsHelperReadyOperations {
+    request_input: FreshHandle,
+    response_output: Option<FreshHandle>,
+    _source_access_and_direction: UnverifiedSourceAccessAndDirection,
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+impl WindowsHelperReadyOperations {
+    fn block_on_request_input(self) -> ! {
+        if self.response_output.is_some() {
+            std::process::abort();
+        }
+        let Ok(request_input) = native_handle(self.request_input.word()) else {
+            std::process::abort();
+        };
+        let mut byte = [0_u8; 1];
+        let mut read = 0_u32;
+        // SAFETY: the retained request handle remains owned by `self`, the
+        // one-byte destination and count remain live for the complete
+        // synchronous wait, and no OVERLAPPED state is supplied. Any read,
+        // EOF, or error is an unexpected parent-channel transition and is
+        // process-terminal below.
+        let _read_result =
+            unsafe { ReadFile(request_input, Some(&mut byte), Some(&raw mut read), None) };
+        std::process::abort()
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+impl HelperReadyOperations for WindowsHelperReadyOperations {
+    type Binding = OwnedRpcBinding;
+
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+        // SAFETY: this scalar system-information query has no arguments.
+        Ok(unsafe { GetTickCount64() })
+    }
+
+    fn connect_fixed_binding(&mut self) -> Result<Self::Binding, ()> {
+        OwnedRpcBinding::connect()
+    }
+
+    fn exchange(
+        &mut self,
+        binding: &Self::Binding,
+        request: &[u8],
+        timeout_milliseconds: u32,
+    ) -> Result<Zeroizing<Vec<u8>>, ()> {
+        let timeout = usize::try_from(timeout_milliseconds).map_err(|_| ())?;
+        // SAFETY: the binding owner remains live through the option update;
+        // the exact nonzero timeout is derived from the retained absolute
+        // bootstrap deadline immediately before this synchronous call.
+        rpc_success(unsafe {
+            RpcBindingSetOption(binding.0.cast_const(), RPC_C_OPT_CALL_TIMEOUT, timeout)
+        })?;
+        // SAFETY: `binding` owns the non-null RPC binding for the complete
+        // synchronous generated call and does not concurrently free it.
+        let borrowed = unsafe { BindingHandle::from_raw(binding.0) }.ok_or(())?;
+        // The checked-in classic-MIDL ABI requires one fixed `RpcFrame` value
+        // in each direction. `RpcFrame` deliberately exposes no mutable raw
+        // payload or `Zeroize` implementation, so these unavoidable bounded
+        // stack copies are kept inside this synchronous leaf. The owning V2
+        // byte vectors on both sides are zeroized.
+        let request_frame = RpcFrame::from_payload(request).map_err(|_| ())?;
+        let response_frame =
+            key_agent_service_rpc_sys::exchange(&borrowed, &request_frame).map_err(|_| ())?;
+        Ok(Zeroizing::new(response_frame.payload().to_vec()))
+    }
+
+    fn write_confirmation(
+        &mut self,
+        bytes: &[u8; HELPER_RPC_CONFIRMATION_BYTES],
+    ) -> Result<(), ()> {
+        let response = self.response_output.as_ref().ok_or(())?.word();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let mut written = 0_u32;
+            // SAFETY: the response pipe owner remains live; the selected
+            // suffix and count remain valid for the complete synchronous
+            // write, and no OVERLAPPED state is supplied.
+            unsafe {
+                WriteFile(
+                    native_handle(response)?,
+                    Some(&bytes[offset..]),
+                    Some(&raw mut written),
+                    None,
+                )
+            }
+            .map_err(|_| ())?;
+            let written = usize::try_from(written).map_err(|_| ())?;
+            let remaining = bytes.len() - offset;
+            if written == 0 || written > remaining {
+                return Err(());
+            }
+            offset += written;
+        }
+        Ok(())
+    }
+
+    fn close_response(&mut self) -> Result<(), ()> {
+        self.response_output.take().ok_or(())?.close()
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+struct OwnedRpcBinding(*mut c_void);
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+impl OwnedRpcBinding {
+    fn connect() -> Result<Self, ()> {
+        let mut string_binding = PWSTR::null();
+        // SAFETY: every input is a fixed NUL-terminated string and the RPC
+        // runtime returns one independently owned string through the output.
+        let compose_status = unsafe {
+            RpcStringBindingComposeW(
+                PCWSTR::null(),
+                PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),
+                PCWSTR::null(),
+                Some(&raw mut string_binding),
+            )
+        };
+        let string_binding = OwnedRpcString(string_binding);
+        rpc_success(compose_status)?;
+        if string_binding.0.is_null() {
+            return Err(());
+        }
+
+        let mut binding = core::ptr::null_mut::<c_void>();
+        // SAFETY: the composed string remains live through conversion and the
+        // runtime returns one independent binding owner through the output.
+        let binding_status = unsafe {
+            RpcBindingFromStringBindingW(PCWSTR(string_binding.0.0.cast_const()), &raw mut binding)
+        };
+        let binding = Self(binding);
+        rpc_success(binding_status)?;
+        if binding.0.is_null() {
+            return Err(());
+        }
+
+        // SAFETY: the fixed local binding is live. Implicit credentials are
+        // restricted to exact WINNT packet-privacy authentication and no
+        // caller-selectable principal, auth service, or authz mode exists.
+        rpc_success(unsafe {
+            RpcBindingSetAuthInfoW(
+                binding.0.cast_const(),
+                PCWSTR::null(),
+                RPC_AUTHN_LEVEL_PACKET_PRIVACY,
+                RPC_C_AUTHN_WINNT,
+                None,
+                RPC_C_AUTHZ_NONE,
+            )
+        })?;
+        Ok(binding)
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+impl Drop for OwnedRpcBinding {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: this is the exact binding owner returned by Rpcrt4 and the
+        // generated synchronous call has already completed.
+        let status = unsafe { RpcBindingFree(&raw mut self.0) };
+        if status.0 != 0 || !self.0.is_null() {
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+struct OwnedRpcString(PWSTR);
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+impl Drop for OwnedRpcString {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: this is the exact string owner returned by Rpcrt4.
+        let status = unsafe { RpcStringFreeW(&raw mut self.0) };
+        if status.0 != 0 || !self.0.is_null() {
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+fn rpc_success(status: RPC_STATUS) -> Result<(), ()> {
+    if status.0 == 0 { Ok(()) } else { Err(()) }
 }
 
 /// Deliberate kernel-evidence blocker retained in the adopted type.
@@ -466,6 +854,24 @@ fn write_exact_response<Operations: BootstrapOperations>(
 struct FreshHandle {
     _owner: OwnedHandle,
     word: HandleWord,
+}
+
+impl FreshHandle {
+    #[cfg(all(
+        target_env = "msvc",
+        feature = "helper-ready-rpc-feasibility-test-hook"
+    ))]
+    fn close(self) -> Result<(), ()> {
+        let Self {
+            _owner: owner,
+            word: _,
+        } = self;
+        let raw = owner.into_raw_handle();
+        // SAFETY: `into_raw_handle` transfers the sole owned kernel handle to
+        // this exact close. On failure the caller aborts the process instead of
+        // retrying an indeterminate handle state.
+        unsafe { CloseHandle(HANDLE(raw)) }.map_err(|_| ())
+    }
 }
 
 impl fmt::Debug for FreshHandle {
@@ -1575,6 +1981,387 @@ mod tests {
                 dwHighDateTime: 0x0123_4567,
             }),
             0x0123_4567_89AB_CDEF
+        );
+    }
+}
+
+#[cfg(all(
+    test,
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+mod helper_ready_tests {
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use key_agent_service_wire::debug_v2::{
+        self as wire_v2, HelperReadyAck, OpenEpochAck, ServiceRequest, ServiceResponse,
+    };
+    use key_agent_service_wire::{EpochNonce, ServiceRequestId, WireError};
+    use zeroize::Zeroizing;
+
+    use super::{
+        HELPER_RPC_CONFIRMATION_BYTES, HelperReadyOperations, MAX_BOOTSTRAP_WINDOW_MILLISECONDS,
+        RPC_AUTHN_LEVEL_PACKET_PRIVACY, RetainedHelperRpcCorrelation,
+        complete_helper_ready_with_operations, remaining_call_timeout_milliseconds,
+    };
+    use crate::wire::{HelperBootstrapRole, HelperRpcConfirmation};
+
+    const DEADLINE: u64 = 20_000;
+    const INITIAL_NOW: u64 = 15_000;
+    const CALL_NOW: u64 = 15_100;
+    const RESPONSE_NOW: u64 = 15_200;
+    const CONFIRMATION_NOW: u64 = 15_300;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum Event {
+        Tick(u64),
+        Connect,
+        Exchange {
+            request_bytes: usize,
+            timeout_milliseconds: u32,
+        },
+        Write(usize),
+        CloseResponse,
+    }
+
+    struct FakeHelperReadyOperations {
+        events: Vec<Event>,
+        calls: usize,
+        fail_at: Option<usize>,
+        ticks: VecDeque<u64>,
+        response: Zeroizing<Vec<u8>>,
+        observed_request: Option<Zeroizing<Vec<u8>>>,
+        written_confirmation: Option<Zeroizing<Vec<u8>>>,
+        binding_dropped: Rc<Cell<bool>>,
+    }
+
+    struct FakeBinding {
+        dropped: Rc<Cell<bool>>,
+    }
+
+    impl Drop for FakeBinding {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+
+    impl FakeHelperReadyOperations {
+        fn scenario() -> Result<Self, WireError> {
+            Ok(Self {
+                events: Vec::new(),
+                calls: 0,
+                fail_at: None,
+                ticks: VecDeque::from([INITIAL_NOW, CALL_NOW, RESPONSE_NOW, CONFIRMATION_NOW]),
+                response: Zeroizing::new(canonical_ack_bytes()?),
+                observed_request: None,
+                written_confirmation: None,
+                binding_dropped: Rc::new(Cell::new(false)),
+            })
+        }
+
+        fn record(&mut self, event: Event) -> Result<(), ()> {
+            self.events.push(event);
+            let call = self.calls;
+            self.calls = self.calls.checked_add(1).ok_or(())?;
+            if self.fail_at == Some(call) {
+                return Err(());
+            }
+            Ok(())
+        }
+    }
+
+    impl HelperReadyOperations for FakeHelperReadyOperations {
+        type Binding = FakeBinding;
+
+        fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+            let tick = self.ticks.pop_front().ok_or(())?;
+            self.record(Event::Tick(tick))?;
+            Ok(tick)
+        }
+
+        fn connect_fixed_binding(&mut self) -> Result<Self::Binding, ()> {
+            self.record(Event::Connect)?;
+            Ok(FakeBinding {
+                dropped: Rc::clone(&self.binding_dropped),
+            })
+        }
+
+        fn exchange(
+            &mut self,
+            _binding: &Self::Binding,
+            request: &[u8],
+            timeout_milliseconds: u32,
+        ) -> Result<Zeroizing<Vec<u8>>, ()> {
+            self.record(Event::Exchange {
+                request_bytes: request.len(),
+                timeout_milliseconds,
+            })?;
+            self.observed_request = Some(Zeroizing::new(request.to_vec()));
+            Ok(self.response.clone())
+        }
+
+        fn write_confirmation(
+            &mut self,
+            bytes: &[u8; HELPER_RPC_CONFIRMATION_BYTES],
+        ) -> Result<(), ()> {
+            if !self.binding_dropped.get() {
+                return Err(());
+            }
+            self.record(Event::Write(bytes.len()))?;
+            self.written_confirmation = Some(Zeroizing::new(bytes.to_vec()));
+            Ok(())
+        }
+
+        fn close_response(&mut self) -> Result<(), ()> {
+            self.record(Event::CloseResponse)
+        }
+    }
+
+    fn epoch_nonce() -> Result<EpochNonce, WireError> {
+        EpochNonce::new([0xA5; 32])
+    }
+
+    fn request_id() -> Result<ServiceRequestId, WireError> {
+        ServiceRequestId::new([0x5A; 16])
+    }
+
+    fn retained(role: HelperBootstrapRole) -> Result<RetainedHelperRpcCorrelation, WireError> {
+        Ok(RetainedHelperRpcCorrelation {
+            confirmation_frame: Zeroizing::new(
+                HelperRpcConfirmation::new(epoch_nonce()?, request_id()?, role).encode(),
+            ),
+            deadline_tick_count_ms: Zeroizing::new(DEADLINE),
+        })
+    }
+
+    fn canonical_ack_bytes() -> Result<Vec<u8>, WireError> {
+        Ok(wire_v2::encode_response(&ServiceResponse::HelperReady(
+            HelperReadyAck::new(epoch_nonce()?, request_id()?),
+        )))
+    }
+
+    #[test]
+    fn exact_helper_ready_round_trip_uses_original_deadline_and_confirmation_order()
+    -> Result<(), WireError> {
+        let retained = retained(HelperBootstrapRole::Approval)?;
+        let expected_confirmation = retained.confirmation_frame.clone();
+        let mut operations = FakeHelperReadyOperations::scenario()?;
+
+        assert_eq!(
+            complete_helper_ready_with_operations(
+                &mut operations,
+                &retained,
+                HelperBootstrapRole::Approval,
+            ),
+            Ok(())
+        );
+        assert_eq!(operations.events.len(), 8);
+        assert_eq!(operations.events[0], Event::Tick(INITIAL_NOW));
+        assert_eq!(operations.events[1], Event::Connect);
+        assert_eq!(operations.events[2], Event::Tick(CALL_NOW));
+        let Event::Exchange {
+            request_bytes,
+            timeout_milliseconds,
+        } = &operations.events[3]
+        else {
+            return Err(WireError::InvalidValue);
+        };
+        assert_eq!(*request_bytes, wire_v2::HELPER_READY_REQUEST_BYTES);
+        assert_eq!(
+            *timeout_milliseconds,
+            u32::try_from(DEADLINE - CALL_NOW).map_err(|_| WireError::InvalidValue)?
+        );
+        let observed_request = operations
+            .observed_request
+            .as_ref()
+            .ok_or(WireError::InvalidValue)?;
+        let ServiceRequest::HelperReady(request) =
+            wire_v2::decode_request(observed_request.as_slice())?
+        else {
+            return Err(WireError::InvalidValue);
+        };
+        assert_eq!(request.epoch_nonce(), epoch_nonce()?);
+        assert_eq!(request.request_id(), request_id()?);
+        assert_eq!(operations.events[4], Event::Tick(RESPONSE_NOW));
+        assert_eq!(
+            operations.events[5],
+            Event::Write(HELPER_RPC_CONFIRMATION_BYTES)
+        );
+        assert_eq!(
+            operations
+                .written_confirmation
+                .as_ref()
+                .ok_or(WireError::InvalidValue)?
+                .as_slice(),
+            expected_confirmation.as_slice()
+        );
+        assert_eq!(operations.events[6], Event::Tick(CONFIRMATION_NOW));
+        assert_eq!(operations.events[7], Event::CloseResponse);
+        assert!(operations.binding_dropped.get());
+        Ok(())
+    }
+
+    #[test]
+    fn entrypoint_role_mismatch_rejects_before_time_rpc_or_pipe_operations() -> Result<(), WireError>
+    {
+        let retained = retained(HelperBootstrapRole::Approval)?;
+        let mut operations = FakeHelperReadyOperations::scenario()?;
+        assert!(
+            complete_helper_ready_with_operations(
+                &mut operations,
+                &retained,
+                HelperBootstrapRole::SecretInput,
+            )
+            .is_err()
+        );
+        assert!(operations.events.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_is_strict_at_start_before_call_after_call_and_after_confirmation()
+    -> Result<(), WireError> {
+        for expired_tick_index in 0..4 {
+            let retained = retained(HelperBootstrapRole::Approval)?;
+            let mut operations = FakeHelperReadyOperations::scenario()?;
+            operations.ticks[expired_tick_index] = DEADLINE;
+            assert!(
+                complete_helper_ready_with_operations(
+                    &mut operations,
+                    &retained,
+                    HelperBootstrapRole::Approval,
+                )
+                .is_err()
+            );
+            assert!(!operations.events.contains(&Event::CloseResponse));
+            if expired_tick_index < 2 {
+                assert!(
+                    !operations
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, Event::Exchange { .. }))
+                );
+            }
+            if expired_tick_index < 3 {
+                assert!(
+                    !operations
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, Event::Write(_)))
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_wrong_variant_and_wrong_correlation_never_emit_confirmation()
+    -> Result<(), WireError> {
+        let mut malformed = FakeHelperReadyOperations::scenario()?;
+        malformed.response = Zeroizing::new(vec![0_u8; wire_v2::HELPER_READY_ACK_BYTES]);
+
+        let mut wrong_variant = FakeHelperReadyOperations::scenario()?;
+        wrong_variant.response = Zeroizing::new(wire_v2::encode_response(
+            &ServiceResponse::OpenEpoch(OpenEpochAck::new(epoch_nonce()?)),
+        ));
+
+        let mut wrong_correlation = FakeHelperReadyOperations::scenario()?;
+        wrong_correlation.response =
+            Zeroizing::new(wire_v2::encode_response(&ServiceResponse::HelperReady(
+                HelperReadyAck::new(epoch_nonce()?, ServiceRequestId::new([0x6B; 16])?),
+            )));
+
+        for operations in [&mut malformed, &mut wrong_variant, &mut wrong_correlation] {
+            let retained = retained(HelperBootstrapRole::Approval)?;
+            assert!(
+                complete_helper_ready_with_operations(
+                    operations,
+                    &retained,
+                    HelperBootstrapRole::Approval,
+                )
+                .is_err()
+            );
+            assert!(
+                !operations
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, Event::Write(_) | Event::CloseResponse))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_fallible_operation_prefix_is_terminal_and_close_follows_exact_write()
+    -> Result<(), WireError> {
+        let baseline_retained = retained(HelperBootstrapRole::Approval)?;
+        let mut baseline = FakeHelperReadyOperations::scenario()?;
+        assert_eq!(
+            complete_helper_ready_with_operations(
+                &mut baseline,
+                &baseline_retained,
+                HelperBootstrapRole::Approval,
+            ),
+            Ok(())
+        );
+        let call_count = baseline.calls;
+
+        for failure in 0..call_count {
+            let retained = retained(HelperBootstrapRole::Approval)?;
+            let mut operations = FakeHelperReadyOperations::scenario()?;
+            operations.fail_at = Some(failure);
+            assert!(
+                complete_helper_ready_with_operations(
+                    &mut operations,
+                    &retained,
+                    HelperBootstrapRole::Approval,
+                )
+                .is_err()
+            );
+            assert!(operations.events.len() <= failure + 1);
+            if operations.events.contains(&Event::CloseResponse) {
+                assert!(matches!(
+                    operations.events.as_slice(),
+                    [.., Event::Write(_), Event::Tick(_), Event::CloseResponse]
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_timeout_is_nonzero_bounded_and_fixed_rpc_profile_is_exact() {
+        assert_eq!(
+            remaining_call_timeout_milliseconds(DEADLINE, DEADLINE - 1),
+            Ok(1)
+        );
+        assert_eq!(
+            remaining_call_timeout_milliseconds(
+                DEADLINE,
+                DEADLINE - MAX_BOOTSTRAP_WINDOW_MILLISECONDS,
+            ),
+            Ok(u32::try_from(MAX_BOOTSTRAP_WINDOW_MILLISECONDS).unwrap_or(u32::MAX))
+        );
+        for now in [
+            DEADLINE,
+            DEADLINE + 1,
+            DEADLINE - MAX_BOOTSTRAP_WINDOW_MILLISECONDS - 1,
+        ] {
+            assert!(remaining_call_timeout_milliseconds(DEADLINE, now).is_err());
+        }
+        assert_eq!(RPC_AUTHN_LEVEL_PACKET_PRIVACY, 6);
+        assert_eq!(super::RPC_C_AUTHN_WINNT, 10);
+        assert_eq!(super::RPC_C_AUTHZ_NONE, 0);
+        assert_eq!(super::RPC_C_OPT_CALL_TIMEOUT, 12);
+        assert_eq!(
+            super::LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE,
+            [110, 99, 97, 108, 114, 112, 99, 0]
+        );
+        assert_eq!(
+            key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT,
+            "YourWallet.KeyAgentService.v1"
         );
     }
 }

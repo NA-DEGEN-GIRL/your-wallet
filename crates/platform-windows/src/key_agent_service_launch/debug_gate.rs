@@ -28,9 +28,9 @@ use std::time::{Duration, Instant};
 use key_agent_service_helper_bootstrap::{
     ADOPTION_COMPLETE_GATE_BREAKPOINT_OFFSET, ADOPTION_COMPLETE_GATE_BYTES,
     ADOPTION_COMPLETE_R10_MARKER, ADOPTION_COMPLETE_R11_MARKER, CAPTURE_GATE_BREAKPOINT_OFFSET,
-    CAPTURE_GATE_BYTES, HELPER_ADOPTION_ACK_BYTES, HelperAdoptionAck, HelperBootstrapHello,
-    HelperBootstrapRole, REQUEST_INPUT_MARKER, RESPONSE_OUTPUT_MARKER,
-    adoption_complete_gate_bytes, capture_gate_bytes,
+    CAPTURE_GATE_BYTES, HELPER_ADOPTION_ACK_BYTES, HELPER_RPC_CONFIRMATION_BYTES,
+    HelperAdoptionAck, HelperBootstrapHello, HelperBootstrapRole, HelperRpcConfirmation,
+    REQUEST_INPUT_MARKER, RESPONSE_OUTPUT_MARKER, adoption_complete_gate_bytes, capture_gate_bytes,
 };
 use key_agent_service_wire::{EpochNonce, ServiceRequestId};
 use thiserror::Error;
@@ -83,7 +83,7 @@ use crate::pipe::{
     SecretRequestWriter, SecretResponseReader,
 };
 
-const MAX_COORDINATION_MILLISECONDS: u32 = 5_000;
+pub(super) const MAX_COORDINATION_MILLISECONDS: u32 = 5_000;
 const MAX_LOADER_DEBUG_EVENTS: usize = 128;
 const MAX_PRE_CAPTURE_DEBUG_EVENTS: usize = 160;
 
@@ -134,25 +134,25 @@ impl fmt::Debug for ServiceProbeChannelSources {
 enum ParentBootstrapChannelKind {
     Approval {
         request: ApprovalRequestWriter,
-        response: ApprovalResponseReader,
+        response: Option<ApprovalResponseReader>,
     },
     SecretInput {
         request: SecretRequestWriter,
-        response: SecretResponseReader,
+        response: Option<SecretResponseReader>,
     },
 }
 
-/// Unique parent endpoints retained across join only after all I/O completed.
+/// Unique parent endpoints retained across join after bootstrap I/O completed.
 struct ParentBootstrapChannels {
     kind: ParentBootstrapChannelKind,
     _not_sync: PhantomData<Cell<()>>,
 }
 
 // SAFETY: each variant exclusively owns two non-inheritable process-wide named
-// pipe handles. All overlapped bootstrap I/O is synchronously completed or
-// cancelled-and-drained before this owner crosses the join boundary. No method
-// shares a handle or performs debugger-thread-affine work, and `Cell` keeps the
-// owner deliberately `!Sync`.
+// pipe handles. All in-flight bootstrap I/O is synchronously completed or
+// cancelled-and-drained before this owner crosses the join boundary; the later
+// confirmation read has not started yet. No method shares a handle or performs
+// debugger-thread-affine work, and `Cell` keeps the owner deliberately `!Sync`.
 unsafe impl Send for ParentBootstrapChannels {}
 
 impl ParentBootstrapChannels {
@@ -184,11 +184,53 @@ impl ParentBootstrapChannels {
     ) -> Result<Zeroizing<Vec<u8>>, ServiceProbeDebugGateError> {
         match &self.kind {
             ParentBootstrapChannelKind::Approval { response, .. } => response
+                .as_ref()
+                .ok_or(ServiceProbeDebugGateError::Correlation)?
                 .read_exact(HELPER_ADOPTION_ACK_BYTES, deadline)
                 .map_err(|_| ServiceProbeDebugGateError::Correlation),
             ParentBootstrapChannelKind::SecretInput { response, .. } => response
+                .as_ref()
+                .ok_or(ServiceProbeDebugGateError::Correlation)?
                 .read_exact(HELPER_ADOPTION_ACK_BYTES, deadline)
                 .map_err(|_| ServiceProbeDebugGateError::Correlation),
+        }
+    }
+
+    fn read_exact_confirmation(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<Zeroizing<Vec<u8>>, ServiceProbeDebugGateError> {
+        match &mut self.kind {
+            ParentBootstrapChannelKind::Approval { response, .. } => {
+                let response = response
+                    .take()
+                    .ok_or(ServiceProbeDebugGateError::Correlation)?;
+                let result = response
+                    .read_exact_frame(HELPER_RPC_CONFIRMATION_BYTES, deadline)
+                    .map(Zeroizing::new)
+                    .map_err(|_| ServiceProbeDebugGateError::Correlation);
+                // Keep the child's request reader open until the exact frame and
+                // EOF observation has completed. The enclosing waiter continues
+                // to own it after this method returns; this branch never moves
+                // or drops the request field.
+                result
+            }
+            ParentBootstrapChannelKind::SecretInput { response, .. } => {
+                let response = response
+                    .take()
+                    .ok_or(ServiceProbeDebugGateError::Correlation)?;
+                let result = response
+                    .read_bounded_to_end(HELPER_RPC_CONFIRMATION_BYTES, deadline)
+                    .map_err(|_| ServiceProbeDebugGateError::Correlation)
+                    .and_then(|bytes| {
+                        (bytes.len() == HELPER_RPC_CONFIRMATION_BYTES)
+                            .then_some(bytes)
+                            .ok_or(ServiceProbeDebugGateError::Correlation)
+                    });
+                // As above, the request field remains owned by the waiter
+                // throughout the frame-plus-EOF read and afterward.
+                result
+            }
         }
     }
 }
@@ -199,11 +241,71 @@ impl fmt::Debug for ParentBootstrapChannels {
     }
 }
 
+/// Post-join owner for one role-typed helper confirmation channel pair.
+///
+/// Reading consumes only the response endpoint. The request writer remains
+/// owned by this value so a helper that closes its response after the exact
+/// confirmation frame stays blocked on request input until the coordinator has
+/// independently completed server-side admission and drops this waiter.
+#[must_use = "retain the helper request writer through server-side admission"]
+pub(super) struct ServiceHelperConfirmationWaiter {
+    channels: ParentBootstrapChannels,
+    expected: HelperRpcConfirmation,
+    deadline: Instant,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl ServiceHelperConfirmationWaiter {
+    fn new(
+        channels: ParentBootstrapChannels,
+        expected: HelperRpcConfirmation,
+        deadline: Instant,
+    ) -> Self {
+        Self {
+            channels,
+            expected,
+            deadline,
+            _not_sync: PhantomData,
+        }
+    }
+
+    /// Returns the fixed bootstrap role carried only as correlation evidence.
+    /// Server-side authority must still come from expected-peer admission.
+    pub(super) fn role(&self) -> HelperBootstrapRole {
+        self.expected.role()
+    }
+
+    /// Reads exactly one 72-byte confirmation plus EOF before the original
+    /// two-gate coordination deadline. The retained request writer stays owned
+    /// by `self` on both success and failure and a second read fails closed.
+    pub(super) fn wait_for_confirmation(
+        &mut self,
+    ) -> Result<HelperRpcConfirmation, ServiceProbeDebugGateError> {
+        let bytes = self.channels.read_exact_confirmation(self.deadline)?;
+        let confirmation = HelperRpcConfirmation::decode(&bytes)
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        confirmation
+            .ensure_correlates_with(
+                self.expected.epoch_nonce(),
+                self.expected.request_id(),
+                self.expected.role(),
+            )
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        Ok(confirmation)
+    }
+}
+
+impl fmt::Debug for ServiceHelperConfirmationWaiter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServiceHelperConfirmationWaiter([REDACTED])")
+    }
+}
+
 /// Sendable two-gate success owner that exposes no process or channel handle.
 #[must_use = "consume the exact debugger-thread join proof"]
 pub(super) struct PendingDebuggerExitServiceProbe {
     process: PendingServiceProbeDetach,
-    channels: ParentBootstrapChannels,
+    confirmation: ServiceHelperConfirmationWaiter,
     expected_key: ExpectedPeerKey,
     _not_sync: PhantomData<Cell<()>>,
 }
@@ -215,17 +317,23 @@ impl PendingDebuggerExitServiceProbe {
     ) -> Result<DetachedServiceProbe, ServiceProbeDebugGateError> {
         let Self {
             process,
-            channels,
+            confirmation,
             expected_key,
             _not_sync: _,
         } = self;
         let process = process
             .finish_after_debugger_exit(proof)
             .map_err(|_| ServiceProbeDebugGateError::Cleanup)?;
+        let expected_role = expected_role_for_channel(process.role(), confirmation.role())
+            .ok_or(ServiceProbeDebugGateError::Correlation)?;
         Ok(DetachedServiceProbe {
-            process,
-            channels,
-            expected_key,
+            peer: DetachedExpectedServiceHelper {
+                process,
+                expected_key,
+                expected_role,
+                _not_sync: PhantomData,
+            },
+            confirmation,
             _not_sync: PhantomData,
         })
     }
@@ -239,19 +347,32 @@ impl fmt::Debug for PendingDebuggerExitServiceProbe {
 
 /// Post-join detached, explicitly suspended service-helper foundation.
 ///
-/// This slice deliberately provides no resident handle attenuation or resume.
+/// Resident handle attenuation remains outside this type. Its only resume path
+/// first registers and revalidates the exact suspended peer, then resumes once.
 #[must_use = "the detached helper remains process-terminal on drop"]
 pub(super) struct DetachedServiceProbe {
-    process: DetachedSuspendedServiceProbe,
-    channels: ParentBootstrapChannels,
-    expected_key: ExpectedPeerKey,
+    peer: DetachedExpectedServiceHelper,
+    confirmation: ServiceHelperConfirmationWaiter,
     _not_sync: PhantomData<Cell<()>>,
 }
 
-pub(super) type ServiceHelperAdmission =
-    ExpectedHelperAdmission<DetachedServiceProbe, ServiceCreatedLpacCandidate>;
+/// Process-only expected-peer owner moved into the admission registry.
+///
+/// No bootstrap pipe endpoint crosses this boundary. The independently owned
+/// confirmation waiter therefore remains available to the launch coordinator
+/// while RPC manager admission operates on the exact process owner.
+#[must_use = "the detached helper remains process-terminal on drop"]
+pub(crate) struct DetachedExpectedServiceHelper {
+    process: DetachedSuspendedServiceProbe,
+    expected_key: ExpectedPeerKey,
+    expected_role: ExpectedHelperRole,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+pub(crate) type ServiceHelperAdmission =
+    ExpectedHelperAdmission<DetachedExpectedServiceHelper, ServiceCreatedLpacCandidate>;
 pub(super) type ServiceHelperLease =
-    ExpectedHelperLease<DetachedServiceProbe, ServiceCreatedLpacCandidate>;
+    ExpectedHelperLease<DetachedExpectedServiceHelper, ServiceCreatedLpacCandidate>;
 
 impl DetachedServiceProbe {
     /// Registers the exact still-suspended service-created peer before the sole
@@ -259,19 +380,28 @@ impl DetachedServiceProbe {
     pub(super) fn register_revalidate_and_resume_once(
         self,
         admission: &ServiceHelperAdmission,
-    ) -> Result<ServiceHelperLease, ExpectedPeerRegistryError> {
-        admission
-            .register_suspended(self)?
-            .revalidate_and_resume_once()
+    ) -> Result<(ServiceHelperLease, ServiceHelperConfirmationWaiter), ExpectedPeerRegistryError>
+    {
+        let Self {
+            peer,
+            confirmation,
+            _not_sync: _,
+        } = self;
+        let lease = admission
+            .register_suspended(peer)?
+            .revalidate_and_resume_once()?;
+        Ok((lease, confirmation))
     }
+}
 
+impl DetachedExpectedServiceHelper {
     fn revalidate_role_binding(&self) -> Result<(), ExpectedPeerVerificationError> {
         let exact = matches!(
-            (self.process.role(), self.channels.role()),
-            (ServiceProbeRole::Approval, HelperBootstrapRole::Approval)
+            (self.process.role(), self.expected_role),
+            (ServiceProbeRole::Approval, ExpectedHelperRole::Approval)
                 | (
                     ServiceProbeRole::SecretInput,
-                    HelperBootstrapRole::SecretInput
+                    ExpectedHelperRole::SecretInput
                 )
         );
         exact
@@ -280,16 +410,13 @@ impl DetachedServiceProbe {
     }
 }
 
-impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedServiceProbe {
+impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedExpectedServiceHelper {
     fn key(&self) -> ExpectedPeerKey {
         self.expected_key
     }
 
     fn role(&self) -> ExpectedHelperRole {
-        match self.process.role() {
-            ServiceProbeRole::Approval => ExpectedHelperRole::Approval,
-            ServiceProbeRole::SecretInput => ExpectedHelperRole::SecretInput,
-        }
+        self.expected_role
     }
 
     fn revalidate_suspended(&self) -> Result<(), ExpectedPeerVerificationError> {
@@ -328,10 +455,32 @@ impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedServiceProbe {
     }
 }
 
+impl fmt::Debug for DetachedExpectedServiceHelper {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.process;
+        formatter.write_str("DetachedExpectedServiceHelper([REDACTED])")
+    }
+}
+
 impl fmt::Debug for DetachedServiceProbe {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (&self.process, &self.channels);
+        let _ = (&self.peer, &self.confirmation);
         formatter.write_str("DetachedServiceProbe([REDACTED])")
+    }
+}
+
+fn expected_role_for_channel(
+    process_role: ServiceProbeRole,
+    channel_role: HelperBootstrapRole,
+) -> Option<ExpectedHelperRole> {
+    match (process_role, channel_role) {
+        (ServiceProbeRole::Approval, HelperBootstrapRole::Approval) => {
+            Some(ExpectedHelperRole::Approval)
+        }
+        (ServiceProbeRole::SecretInput, HelperBootstrapRole::SecretInput) => {
+            Some(ExpectedHelperRole::SecretInput)
+        }
+        _ => None,
     }
 }
 
@@ -2513,7 +2662,10 @@ impl<'client, 'proof, 'context> WindowsGateAttempt<'client, 'proof, 'context> {
                 Ok((
                     child,
                     ParentBootstrapChannels {
-                        kind: ParentBootstrapChannelKind::Approval { request, response },
+                        kind: ParentBootstrapChannelKind::Approval {
+                            request,
+                            response: Some(response),
+                        },
                         _not_sync: PhantomData,
                     },
                 ))
@@ -2527,7 +2679,10 @@ impl<'client, 'proof, 'context> WindowsGateAttempt<'client, 'proof, 'context> {
                 Ok((
                     child,
                     ParentBootstrapChannels {
-                        kind: ParentBootstrapChannelKind::SecretInput { request, response },
+                        kind: ParentBootstrapChannelKind::SecretInput {
+                            request,
+                            response: Some(response),
+                        },
                         _not_sync: PhantomData,
                     },
                 ))
@@ -2835,10 +2990,20 @@ pub(super) fn authenticate_and_arm_service_probe(
         });
     }
 
+    let expected_confirmation = HelperRpcConfirmation::new(
+        attempt.correlation.epoch_nonce,
+        attempt.correlation.request_id,
+        channels.role(),
+    );
+    let confirmation = ServiceHelperConfirmationWaiter::new(
+        channels,
+        expected_confirmation,
+        attempt.deadline.instant,
+    );
     let process = prepared.commit_after_no_kill();
     Ok(PendingDebuggerExitServiceProbe {
         process,
-        channels,
+        confirmation,
         expected_key,
         _not_sync: PhantomData,
     })
@@ -2859,6 +3024,7 @@ mod tests {
     use std::process::{Child, Command};
     use std::time::Duration;
 
+    use key_agent_service_helper_bootstrap::HelperBootstrapRole;
     use key_agent_service_wire::{EpochNonce, ServiceRequestId};
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
     use windows::Win32::System::Diagnostics::Debug::{
@@ -2870,16 +3036,19 @@ mod tests {
     use super::{
         CheckedCanonicalAlias, CheckedFileHandle, ContinueDebugEvent, DBG_CONTINUE,
         DebugEventAliasIdentityApi, DebugProtocolPhase, DebugProtocolTransition,
-        DetachedDebugEventAliases, MAX_LOADER_DEBUG_EVENTS, ParentBootstrapChannels,
-        PendingDebuggerExitServiceProbe, ServiceProbeDebugCorrelation,
+        DetachedDebugEventAliases, DetachedExpectedServiceHelper, DetachedServiceProbe,
+        MAX_LOADER_DEBUG_EVENTS, ParentBootstrapChannels, PendingDebuggerExitServiceProbe,
+        ServiceHelperConfirmationWaiter, ServiceProbeDebugCorrelation,
         ServiceProbeDebugEventCleanup, ServiceProbeDebugGateError, ThreadAliasIdentity,
         WaitForDebugEventEx, WaitForSingleObject, WindowsDebugEventAliasIdentityApi,
         authenticate_loader_event_then_increment, cleanup_registry_drop_is_safe,
         cleanup_result_dominates, close_registered_alias, contexts_match_except_r10_r11,
-        handle_flags_are_zero, merge_authority_errors, raw_handle_word,
+        expected_role_for_channel, handle_flags_are_zero, merge_authority_errors, raw_handle_word,
         repeated_rejected_registration_requires_fail_fast, retain_process_anchor,
         retain_thread_anchor,
     };
+    use crate::key_agent_service_launch::process::ServiceProbeRole;
+    use crate::key_agent_service_rpc::ExpectedHelperRole;
 
     trait AmbiguousIfSync<A> {
         fn marker() {}
@@ -3899,12 +4068,47 @@ mod tests {
     fn pending_success_is_send_but_not_sync_clone_or_copy() {
         assert_send::<PendingDebuggerExitServiceProbe>();
         assert_send::<ParentBootstrapChannels>();
+        assert_send::<DetachedServiceProbe>();
+        assert_send::<DetachedExpectedServiceHelper>();
+        assert_send::<ServiceHelperConfirmationWaiter>();
         let _ = <PendingDebuggerExitServiceProbe as AmbiguousIfSync<_>>::marker;
         let _ = <PendingDebuggerExitServiceProbe as AmbiguousIfClone<_>>::marker;
         let _ = <PendingDebuggerExitServiceProbe as AmbiguousIfCopy<_>>::marker;
         let _ = <ParentBootstrapChannels as AmbiguousIfSync<_>>::marker;
         let _ = <ParentBootstrapChannels as AmbiguousIfClone<_>>::marker;
         let _ = <ParentBootstrapChannels as AmbiguousIfCopy<_>>::marker;
+        let _ = <DetachedServiceProbe as AmbiguousIfSync<_>>::marker;
+        let _ = <DetachedServiceProbe as AmbiguousIfClone<_>>::marker;
+        let _ = <DetachedServiceProbe as AmbiguousIfCopy<_>>::marker;
+        let _ = <DetachedExpectedServiceHelper as AmbiguousIfSync<_>>::marker;
+        let _ = <DetachedExpectedServiceHelper as AmbiguousIfClone<_>>::marker;
+        let _ = <DetachedExpectedServiceHelper as AmbiguousIfCopy<_>>::marker;
+        let _ = <ServiceHelperConfirmationWaiter as AmbiguousIfSync<_>>::marker;
+        let _ = <ServiceHelperConfirmationWaiter as AmbiguousIfClone<_>>::marker;
+        let _ = <ServiceHelperConfirmationWaiter as AmbiguousIfCopy<_>>::marker;
+    }
+
+    #[test]
+    fn process_and_confirmation_roles_split_only_on_exact_pair() {
+        assert_eq!(
+            expected_role_for_channel(ServiceProbeRole::Approval, HelperBootstrapRole::Approval,),
+            Some(ExpectedHelperRole::Approval)
+        );
+        assert_eq!(
+            expected_role_for_channel(
+                ServiceProbeRole::SecretInput,
+                HelperBootstrapRole::SecretInput,
+            ),
+            Some(ExpectedHelperRole::SecretInput)
+        );
+        assert_eq!(
+            expected_role_for_channel(ServiceProbeRole::Approval, HelperBootstrapRole::SecretInput,),
+            None
+        );
+        assert_eq!(
+            expected_role_for_channel(ServiceProbeRole::SecretInput, HelperBootstrapRole::Approval,),
+            None
+        );
     }
 
     #[test]

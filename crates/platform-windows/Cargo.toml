@@ -18,10 +18,12 @@ key-agent-service-scm-feasibility-test-hook = []
 key-agent-service-token-feasibility-test-hook = [
     "key-agent-service-scm-feasibility-test-hook",
 ]
-# Debug-only dormant Phase 1 launch composition through the authenticated
-# parent two-gate handoff. Its V2 launch commands have no runtime/manager
-# reachability, production caller, or executable entrypoint, and the feature
-# remains kernel-matrix STOP-SHIP.
+# Debug-only Phase 1B service/helper RPC composition: live role-aware V2 manager,
+# one launch coordinator, OS-derived fixed-package-SID Low/NW endpoint/If3
+# ACLs, authenticated parent two-gate handoff, HelperReady, and terminal cleanup.
+# This has executable feasibility reachability
+# but no production caller or installed/signed/cross-session proof and remains
+# kernel-matrix STOP-SHIP.
 key-agent-service-lpac-launch-feasibility-test-hook = [
     "dep:key-agent-service-helper-bootstrap",
     "key-agent-service-rpc-status-feasibility-test-hook",

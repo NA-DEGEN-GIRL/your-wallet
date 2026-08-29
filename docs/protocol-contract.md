@@ -105,28 +105,39 @@ permanently binds each issued nonce to V1 or V2 with a distinct derivation domai
 It removes a matching nonce before checking the presented version, so a wrong-
 version attempt is terminal and cannot be retried through the issuing version.
 
-The feature-gated pure V2 desktop dispatcher authenticates exactly once before
-decoding. Open-epoch and Status produce immediate correlated responses; either
-probe launch consumes the V2 epoch and returns a move-only action owning the
-freshly authenticated peer and exact request. A desktop `HelperReady` is rejected
-as authentication failure before the epoch is looked up or consumed. V1 delegates
-through an explicit already-authenticated V1 path with unchanged behavior. No
-`ServerContext`, real RPC-manager, launch-wait, or helper-send path consumes a V2
-dispatch outcome yet.
+The feature-gated V2 desktop dispatcher authenticates exactly once before
+decoding and is connected to the live `ServerContext` RPC manager. Open-epoch
+and Status produce immediate correlated responses; either probe launch consumes
+the V2 epoch and returns a move-only action owning the freshly authenticated peer
+and exact request. A desktop `HelperReady` is rejected as authentication failure
+before the epoch is looked up or consumed. V1 delegates through an explicit
+already-authenticated V1 path with unchanged behavior.
+
+The exact consumed `DesktopCommandRequest` is the only launch-side source of
+role, epoch nonce, request ID, and role-matching completed result. The RPC manager
+thread keeps the move-only pending-completion capability and queues only the
+authenticated desktop authority plus an exact request copy. One occupied launch
+spans the coordinator worker and its capacity-one transport; another launch does
+not wait behind it and completes locally as correlated `Unavailable`. Stop,
+queue rejection, worker disconnect, and the bounded manager wait likewise settle
+that manager-local capability exactly once, so the worker cannot emit a second
+wire response.
 
 The helper transport candidate proves only local RPC plus a low-integrity,
 restricted, limited-elevation AppContainer shape without UI access, interactive
-SID, or `SeDebugPrivilege`. The fixed-capacity expected-peer registry separately
-owns exact profile SID, capabilities, image, process/token identity, and
-Approval/Secret Input role. It registers while suspended, revalidates before a
-single resume, publishes `ExpectedRunning` before a callback can proceed,
-permits non-consuming callback observation, and lets a key-bearing manager call
-consume the expected peer exactly once. Duplicate identity/key races, replay,
-wrong role/phase, stop, and cancellation fail closed; cancellation performs
-bounded process reap and exact-zero Job cleanup.
+SID, or `SeDebugPrivilege`. The expected-peer registry has exactly eight slots
+and separately owns exact profile SID, capabilities, image, process/token
+identity, and Approval/Secret Input role. It registers while suspended,
+revalidates before a single resume, publishes `ExpectedRunning` before a callback
+can proceed, permits non-consuming callback observation, and lets a key-bearing
+manager call consume the expected peer exactly once. A retired slot is never
+reused during that server lifetime. Duplicate identity/key races, replay, wrong
+role/phase, stop, and cancellation fail closed; terminal cleanup performs
+bounded process reap and exact-zero Job cleanup with a five-second registry
+quiescence bound.
 
-When a malformed helper manager frame yields no trustworthy registry key, a
-dormant rejection transition scans the retained candidates outside the registry
+When a malformed helper manager frame yields no trustworthy registry key, the
+role-aware rejection transition scans retained candidates outside the registry
 mutex. It retires exact matches and peers whose relationship cannot be proved,
 preserves only definite non-matches, and treats ambiguity, revalidation failure,
 query failure, panic, and a conflicting registration race as fail-closed terminal
@@ -134,19 +145,44 @@ outcomes for affected owners.
 
 The helper-adoption ACK remains the exact 72-byte `YWKHBA01` frame. A separate
 72-byte `YWKHRC01` helper-RPC confirmation carries the bootstrap hello's epoch
-nonce, request ID, and fixed role only as launch-side correlation after a future
+nonce, request ID, and fixed role only as launch-side correlation after the exact
 helper-ready acknowledgement. It never authenticates the helper, grants role
-authority, or reuses the adoption ACK. The child bootstrap now retains that
-encoded correlation key and the validated absolute hello deadline privately in
-zeroizing, non-cloneable state with no raw accessor. The actual helper-ready RPC
-send, confirmation send, and launch-coordinator round trip are not wired.
+authority, or reuses the adoption ACK. The child bootstrap retains that encoded
+correlation key and the validated absolute hello deadline privately in
+zeroizing, non-cloneable state with no raw accessor.
 
-No production/runtime RPC manager, lifecycle, or helper send/launch path calls
-this role-aware foundation. Signed-helper `ncalrpc` E2E, endpoint and service
-identity, installed SCM/cross-session/elevated-service evidence, parent-pinned
-target image, system-wide Job-handle exclusion, and the supported-kernel matrix
-remain **STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY`
-remain `None`.
+The status-only RPC profile keeps the existing single AU/SY-`GA`, Medium/`NW`
+descriptor for endpoint and If3. Only the LPAC probe derives the exact Approval
+and Secret Input package SIDs from their fixed profile monikers through OS APIs.
+Its endpoint descriptor grants connect `0x1` to AU, SY, and those two package
+SIDs; its separate If3 descriptor grants `GA` to the same principals; both carry
+Low/`NW`. This repairs the prior descriptor-level transport reachability defect,
+not the still-unproved installed restricted-SCM fixed-LPAC E2E.
+
+The feature-gated Approval and Secret Input executable entrypoints fix their own
+roles, complete the debugger-injected bootstrap, and then use the fixed `ncalrpc`
+endpoint with WINNT packet privacy and authz-none. The helper derives and sends
+the exact 68-byte `HelperReady`, accepts only its correlated 68-byte ACK, frees
+the binding, exact-writes `YWKHRC01`, closes the response pipe, and keeps the
+request pipe blocked until the service terminates it. Every fallible helper step
+is process-terminal. The server does not accept the completed probe result until
+it has observed the confirmation plus EOF, consumed the matching expected peer,
+and completed process/Job cancellation while retaining the request writer.
+
+Cleanup, registry-internal, debugger-invariant, and role-correlation failures
+latch fatal coordinator health and close RPC admission. Shutdown orders RPC
+rundown before coordinator stop/join and helper-registry stop. The LPAC-only SCM
+fixture derives a 30-second hard fail-fast watchdog from its cleanup bounds and
+margin; it is neither evidence that every OS call is interruptible nor a clean
+operation deadline.
+
+This is debug-only executable wiring, not a production or proven installed-
+service path. Signed immutable helpers, release-manifest binding, endpoint and
+service mutual identity, an installed restricted SCM service, an actual cross-
+session/elevated service-created LPAC exchange, parent-pinned production image,
+system-wide Job-handle exclusion, and the supported-kernel matrix remain
+**STOP-SHIP**. Phase 1 is not passed; `COMPILED_PARENT_POLICY` and
+`COMPILED_RELEASE_POLICY` remain `None`.
 
 ### Debug-only subprocess contract
 

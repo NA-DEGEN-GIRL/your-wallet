@@ -11,6 +11,11 @@ default = []
 runtime-entrypoint = []
 # Noninteractive presenter used only by debug-profile child-process contract tests.
 runtime-contract-test-hook = ["runtime-entrypoint"]
+# Debug-only fixed-Secret-Input SCM helper bootstrap and authenticated
+# HelperReady RPC probe; not signing, release attestation, or production activation.
+service-helper-rpc-probe-feasibility-test-hook = [
+    "dep:key-agent-service-helper-bootstrap",
+]
 
 [dependencies]
 getrandom.workspace = true
@@ -26,6 +31,12 @@ windows = { workspace = true, features = [
     "Win32_Security_Isolation",
     "Win32_Security_WinTrust",
     "Win32_System_RemoteDesktop",
+] }
+
+[target.'cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))'.dependencies]
+key-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap", optional = true, features = [
+    "child-capture-feasibility-test-hook",
+    "helper-ready-rpc-feasibility-test-hook",
 ] }
 
 [lints.rust]

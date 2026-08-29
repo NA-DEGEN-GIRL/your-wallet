@@ -1,9 +1,11 @@
 //! Fixed-name Windows SCM feasibility host.
 //!
-//! This module deliberately contains no wallet state, secret, child-process
-//! creation, or signing transition. The inert lifecycle and bounded local-RPC
-//! status fixture are compiled only for Windows debug builds with their exact
-//! feasibility features. Every other build fails closed before touching SCM.
+//! This module deliberately contains no wallet state, secret, or signing
+//! transition. Its inert lifecycle, bounded status RPC, and restricted-token
+//! helper-launch probe are compiled only for Windows debug builds with their
+//! exact feasibility features. Every other build fails closed before touching
+//! SCM; the helper-launch probe remains feasibility evidence, not production
+//! authorization or installer provenance.
 
 use thiserror::Error;
 
@@ -118,12 +120,46 @@ pub fn run_status_rpc_key_agent_service_fixture() -> Result<(), KeyAgentServiceF
     }
 }
 
+/// Runs the debug-only restricted-service LPAC/helper RPC probe fixture.
+///
+/// This composes the retained service-token proof, role-aware V2 RPC manager,
+/// one-at-a-time launch coordinator, fixed sibling Approval/Secret Input helper
+/// entrypoints, expected-peer admission, confirmation, and terminal cleanup.
+/// It remains no-secret feasibility evidence and is unavailable in every
+/// default, release, non-Windows, or feature-disabled build.
+///
+/// # Errors
+///
+/// Returns [`KeyAgentServiceFixtureError::Unavailable`] outside the exact debug
+/// feasibility build, or [`KeyAgentServiceFixtureError::OperatingSystemBoundary`]
+/// when SCM, token, RPC, helper, or cleanup composition fails closed.
+pub fn run_lpac_rpc_probe_key_agent_service_fixture() -> Result<(), KeyAgentServiceFixtureError> {
+    #[cfg(all(
+        windows,
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    {
+        sys::run_lpac_rpc_probe_dispatcher()
+    }
+
+    #[cfg(not(all(
+        windows,
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )))]
+    {
+        Err(KeyAgentServiceFixtureError::Unavailable)
+    }
+}
+
 #[cfg(all(
     windows,
     any(
         feature = "key-agent-service-scm-feasibility-test-hook",
         feature = "key-agent-service-token-feasibility-test-hook",
-        feature = "key-agent-service-rpc-status-feasibility-test-hook"
+        feature = "key-agent-service-rpc-status-feasibility-test-hook",
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook"
     ),
     debug_assertions
 ))]
@@ -165,6 +201,16 @@ mod sys {
     const STOP_WAIT_HINT_MILLISECONDS: u32 = 3_000;
     const CONTROL_POLL_MILLISECONDS: u32 = 250;
     const STOP_PROGRESS_MILLISECONDS: u64 = 500;
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    const STOP_DEADLINE_MILLISECONDS: u64 =
+        crate::key_agent_service_launch::SERVICE_RPC_PROBE_STOP_DEADLINE_MILLISECONDS;
+    #[cfg(not(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )))]
     const STOP_DEADLINE_MILLISECONDS: u64 = 15_000;
 
     const OUTCOME_NOT_STARTED: u32 = 0;
@@ -379,6 +425,40 @@ mod sys {
         }
     }
 
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    struct LpacRpcProbeWorker(crate::key_agent_service_rpc::StatusRpcWorker);
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    impl ScmWorker for LpacRpcProbeWorker {
+        fn start() -> Result<Self, WorkerStartFailure> {
+            let service_token =
+                crate::key_agent_service_token::verify_current_key_agent_service_token_fixture()
+                    .map_err(|_| WorkerStartFailure::Boundary)?;
+            match crate::key_agent_service_rpc::StatusRpcWorker::start_lpac_rpc_probe(service_token)
+            {
+                Ok(worker) => Ok(Self(worker)),
+                Err(crate::key_agent_service_rpc::StatusRpcWorkerError::Unavailable) => {
+                    Err(WorkerStartFailure::Boundary)
+                }
+                Err(crate::key_agent_service_rpc::StatusRpcWorkerError::RuntimeStateRetained) => {
+                    Err(WorkerStartFailure::RuntimeStateRetained)
+                }
+            }
+        }
+
+        fn begin_accepting(&mut self) -> Result<(), KeyAgentServiceFixtureError> {
+            self.0
+                .begin_accepting()
+                .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
+        }
+
+        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+            self.0
+                .stop_and_drain()
+                .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
+        }
+    }
+
     pub(super) fn run_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
         run_dispatcher_with(service_main)
     }
@@ -391,6 +471,11 @@ mod sys {
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
     pub(super) fn run_status_rpc_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
         run_dispatcher_with(status_rpc_service_main)
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    pub(super) fn run_lpac_rpc_probe_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
+        run_dispatcher_with(lpac_rpc_probe_service_main)
     }
 
     fn run_dispatcher_with(
@@ -443,6 +528,14 @@ mod sys {
         _arguments: *mut PWSTR,
     ) {
         service_main_impl::<StatusRpcWorker>();
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    unsafe extern "system" fn lpac_rpc_probe_service_main(
+        _argument_count: u32,
+        _arguments: *mut PWSTR,
+    ) {
+        service_main_impl::<LpacRpcProbeWorker>();
     }
 
     fn service_main_impl<W: ScmWorker>() {
@@ -991,6 +1084,19 @@ mod tests {
     fn service_token_fixture_is_unavailable_outside_the_exact_debug_build() {
         assert_eq!(
             run_service_token_key_agent_service_fixture(),
+            Err(KeyAgentServiceFixtureError::Unavailable)
+        );
+    }
+
+    #[cfg(not(all(
+        windows,
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )))]
+    #[test]
+    fn lpac_rpc_probe_fixture_is_unavailable_outside_the_exact_debug_build() {
+        assert_eq!(
+            run_lpac_rpc_probe_key_agent_service_fixture(),
             Err(KeyAgentServiceFixtureError::Unavailable)
         );
     }

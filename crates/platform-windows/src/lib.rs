@@ -166,8 +166,9 @@ mod key_agent_child_bootstrap;
 #[allow(dead_code)]
 mod key_agent_debugger;
 // The fixed-name SCM host provides inert and bounded local-RPC, debug-only
-// Phase 1 feasibility fixtures. Neither owns wallet state, helper authority, or
-// a signing path. Default and release callers fail closed as unavailable.
+// Phase 1 feasibility fixtures. Its explicit LPAC probe owns only temporary
+// expected-helper authority; it owns no wallet state or signing path. Default
+// and release callers fail closed as unavailable.
 mod key_agent_service;
 // The composed parent two-gate launch remains private, debug-only, dormant, and
 // unreachable from production. Its event-alias cleanup is kernel-matrix
@@ -187,9 +188,10 @@ mod key_agent_service_launch;
     debug_assertions
 ))]
 mod key_agent_service_token;
-// The local-RPC module is present only in the exact debug feasibility build.
-// It may expose Status/Unavailable after fresh per-call desktop authentication,
-// but supplies no production Broker/helper role or wallet authority.
+// The local-RPC module is present only in the exact debug feasibility build. V1
+// exposes Status/Unavailable; the LPAC feature adds role-aware V2 desktop/helper
+// routing and bounded probe coordination. Neither supplies production Broker,
+// signed-helper, wallet, or signing authority.
 #[cfg(all(
     windows,
     feature = "key-agent-service-rpc-status-feasibility-test-hook",
@@ -281,6 +283,7 @@ pub use key_agent_child_bootstrap::{
 };
 pub use key_agent_service::{
     KEY_AGENT_SERVICE_NAME, KeyAgentServiceFixtureError, run_inert_key_agent_service_fixture,
-    run_service_token_key_agent_service_fixture, run_status_rpc_key_agent_service_fixture,
+    run_lpac_rpc_probe_key_agent_service_fixture, run_service_token_key_agent_service_fixture,
+    run_status_rpc_key_agent_service_fixture,
 };
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

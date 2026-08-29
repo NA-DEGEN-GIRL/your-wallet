@@ -28,6 +28,8 @@ use crate::appcontainer_profile_api::{
 use crate::key_agent_service_rpc::AuthenticatedRpcClient;
 use crate::restricted_process_context::RestrictedProcessContext;
 
+use super::FixedLpacRpcEndpointProfileSidError;
+
 const CAPABILITY_COUNT: u32 = 0;
 const MAX_ENVIRONMENT_UNITS: usize = 32_767;
 const SID_REVISION: u8 = 1;
@@ -43,6 +45,7 @@ const SECRET_INPUT_PROFILE_V1_NAME: &str = "YourWallet.SecretInputFrontend.LPAC.
 const SECRET_INPUT_PROFILE_DISPLAY_NAME: &str = "Your Wallet secret input frontend";
 const SECRET_INPUT_PROFILE_DESCRIPTION: &str =
     "Persistent no-network LPAC identity for Your Wallet secret input";
+const PACKAGE_SID_HASH_COMPONENTS: usize = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TargetProfileRole {
@@ -71,6 +74,87 @@ const SECRET_INPUT_PROFILE: ProfileMetadata = ProfileMetadata {
     display_name: SECRET_INPUT_PROFILE_DISPLAY_NAME,
     description: SECRET_INPUT_PROFILE_DESCRIPTION,
 };
+
+/// Canonical package SID strings for the two fixed service-helper profiles.
+///
+/// The fields stay sealed so the RPC endpoint policy can only consume the
+/// identities derived here from the same monikers used for process creation.
+pub(crate) struct FixedLpacRpcEndpointProfileSids {
+    approval: String,
+    secret_input: String,
+}
+
+impl fmt::Debug for FixedLpacRpcEndpointProfileSids {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedLpacRpcEndpointProfileSids([REDACTED])")
+    }
+}
+
+impl FixedLpacRpcEndpointProfileSids {
+    /// Returns Approval then Secret Input in the fixed endpoint-ACE order.
+    pub(crate) fn as_ordered_pair(&self) -> [&str; 2] {
+        [&self.approval, &self.secret_input]
+    }
+}
+
+/// Derives and canonicalizes the two package SIDs used by the debug-only RPC
+/// helper endpoint.
+///
+/// Each OS allocation is immediately transferred to a `FreeSid` owner. The
+/// temporary SID-string allocation is separately released with `LocalFree`
+/// before the package SID owners leave this function.
+pub(crate) fn derive_fixed_lpac_rpc_endpoint_profile_sids()
+-> Result<FixedLpacRpcEndpointProfileSids, FixedLpacRpcEndpointProfileSidError> {
+    derive_fixed_lpac_rpc_endpoint_profile_sids_with(|profile_name| {
+        let sid = sys::derive_profile(&wide_nul(profile_name))?;
+        let wide = sys::sid_string(sid.raw())?;
+        let Some((&0, body)) = wide.split_last() else {
+            return Err(TargetUserLpacError::Verification);
+        };
+        if body.is_empty() || body.contains(&0) {
+            return Err(TargetUserLpacError::Verification);
+        }
+        String::from_utf16(body).map_err(|_| TargetUserLpacError::Verification)
+    })
+    .map_err(|_| FixedLpacRpcEndpointProfileSidError)
+}
+
+fn derive_fixed_lpac_rpc_endpoint_profile_sids_with<F>(
+    mut derive: F,
+) -> Result<FixedLpacRpcEndpointProfileSids, TargetUserLpacError>
+where
+    F: FnMut(&'static str) -> Result<String, TargetUserLpacError>,
+{
+    let approval = derive(APPROVAL_PROFILE_V1_NAME)?;
+    let secret_input = derive(SECRET_INPUT_PROFILE_V1_NAME)?;
+    if !is_canonical_package_sid_string(&approval)
+        || !is_canonical_package_sid_string(&secret_input)
+        || approval == secret_input
+    {
+        return Err(TargetUserLpacError::Verification);
+    }
+    Ok(FixedLpacRpcEndpointProfileSids {
+        approval,
+        secret_input,
+    })
+}
+
+fn is_canonical_package_sid_string(value: &str) -> bool {
+    let Some(hash) = value.strip_prefix("S-1-15-2-") else {
+        return false;
+    };
+    let mut count = 0_usize;
+    for component in hash.split('-') {
+        let Ok(parsed) = component.parse::<u32>() else {
+            return false;
+        };
+        if parsed.to_string() != component {
+            return false;
+        }
+        count += 1;
+    }
+    count == PACKAGE_SID_HASH_COMPONENTS
+}
 
 /// Data-free failures from target-user profile preparation and revalidation.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -1646,7 +1730,7 @@ mod sys {
         owned.to_path()
     }
 
-    fn sid_string(sid: PSID) -> Result<Vec<u16>, TargetUserLpacError> {
+    pub(super) fn sid_string(sid: PSID) -> Result<Vec<u16>, TargetUserLpacError> {
         if !is_valid_sid(sid) {
             return Err(TargetUserLpacError::Verification);
         }
@@ -1668,8 +1752,9 @@ mod sys {
     pub(super) fn free_sid(sid: PSID) {
         if !sid.is_invalid() {
             // SAFETY: callers transfer exactly one profile-API SID allocation.
-            unsafe {
-                let _ = FreeSid(sid);
+            let remainder = unsafe { FreeSid(sid) };
+            if !remainder.is_null() {
+                std::process::abort();
             }
         }
     }
@@ -1746,9 +1831,11 @@ mod sys {
         fn drop(&mut self) {
             if !self.0.is_null() {
                 // SAFETY: ConvertSidToStringSidW returns LocalAlloc storage.
-                unsafe {
-                    let _ = LocalFree(Some(HLOCAL(self.0.0.cast::<c_void>())));
+                let remainder = unsafe { LocalFree(Some(HLOCAL(self.0.0.cast::<c_void>()))) };
+                if !remainder.0.is_null() {
+                    std::process::abort();
                 }
+                self.0 = PWSTR::null();
             }
         }
     }
@@ -1798,7 +1885,8 @@ mod tests {
         ObservedProfile, PreparedTargetUserLpac, ProfileMetadata, ProfileObservation,
         ProfileObservationGuard, ProfileObservationOps, SECRET_INPUT_PROFILE,
         SECRET_INPUT_PROFILE_V1_NAME, TargetUserLpacError, VerifiedCreatedTargetLpac,
-        base_environment_is_exact, bounded_sid_length, environment_for_folder,
+        base_environment_is_exact, bounded_sid_length,
+        derive_fixed_lpac_rpc_endpoint_profile_sids_with, environment_for_folder,
         observe_profile_under_guard, revalidate_created_child_with,
         stable_attribute_backing_is_exact, validate_created_child_token_policy,
         verify_created_child_with, verify_fresh_observation,
@@ -2902,6 +2990,61 @@ mod tests {
         assert_ne!(APPROVAL_PROFILE_V1_NAME, SECRET_INPUT_PROFILE_V1_NAME);
         assert!(APPROVAL_PROFILE_V1_NAME.ends_with(".LPAC.v1"));
         assert!(SECRET_INPUT_PROFILE_V1_NAME.ends_with(".LPAC.v1"));
+    }
+
+    #[test]
+    fn rpc_endpoint_sid_derivation_is_bound_to_exact_fixed_profile_monikers()
+    -> Result<(), TargetUserLpacError> {
+        const APPROVAL_SID: &str = "S-1-15-2-1-2-3-4-5-6-7";
+        const SECRET_INPUT_SID: &str = "S-1-15-2-8-9-10-11-12-13-14";
+        let mut observed_names = Vec::new();
+        let identities = derive_fixed_lpac_rpc_endpoint_profile_sids_with(|name| {
+            observed_names.push(name);
+            match name {
+                APPROVAL_PROFILE_V1_NAME => Ok(APPROVAL_SID.to_owned()),
+                SECRET_INPUT_PROFILE_V1_NAME => Ok(SECRET_INPUT_SID.to_owned()),
+                _ => Err(TargetUserLpacError::Verification),
+            }
+        })?;
+
+        assert_eq!(
+            observed_names,
+            [APPROVAL_PROFILE_V1_NAME, SECRET_INPUT_PROFILE_V1_NAME]
+        );
+        assert!(identities.as_ordered_pair() == [APPROVAL_SID, SECRET_INPUT_SID]);
+        assert_eq!(
+            format!("{identities:?}"),
+            "FixedLpacRpcEndpointProfileSids([REDACTED])"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_endpoint_sid_derivation_rejects_non_package_and_duplicate_sids() {
+        const PACKAGE_SID: &str = "S-1-15-2-1-2-3-4-5-6-7";
+        for malformed in [
+            "",
+            "S-1-5-18",
+            "S-1-15-2-1",
+            "S-1-15-2-01-2-3-4-5-6-7",
+            "S-1-15-2-1-2-3-4-5-6-not-a-number",
+        ] {
+            assert!(matches!(
+                derive_fixed_lpac_rpc_endpoint_profile_sids_with(|name| {
+                    if name == APPROVAL_PROFILE_V1_NAME {
+                        Ok(malformed.to_owned())
+                    } else {
+                        Ok("S-1-15-2-8-9-10-11-12-13-14".to_owned())
+                    }
+                }),
+                Err(TargetUserLpacError::Verification)
+            ));
+        }
+
+        assert!(matches!(
+            derive_fixed_lpac_rpc_endpoint_profile_sids_with(|_| Ok(PACKAGE_SID.to_owned())),
+            Err(TargetUserLpacError::Verification)
+        ));
     }
 
     #[test]

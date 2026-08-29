@@ -3,7 +3,11 @@
 //! Ordinary builds remain disabled until the Key Agent can prove an authenticated
 //! private parent/channel and an immutable helper image before launch. The
 //! `runtime-entrypoint` feature only defines the child-side authenticated
-//! inherited-stream contract. On Windows the child first seals its exact
+//! inherited-stream contract. The separate
+//! `service-helper-rpc-probe-feasibility-test-hook` entrypoint is restricted to
+//! debug Windows x64 MSVC builds and only completes the debugger-injected
+//! service-channel bootstrap plus the authenticated `HelperReady` RPC probe; it
+//! is not a production activation path. On Windows the child first seals its exact
 //! inherited synchronous server pipe objects while the parent retains the
 //! overlapped client ends. It then checks LPAC and Job policy and makes fresh
 //! child-local duplicates of the three injected proof handles: the ordinary
@@ -62,21 +66,60 @@
 //! executable direct launch exits without diagnostics, while the legacy Rust API
 //! returns `LogicalParentUnavailable` before resource allocation.
 
-#[cfg(feature = "runtime-entrypoint")]
+#[cfg(all(
+    not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+    feature = "runtime-entrypoint"
+))]
 mod bootstrap;
 
-#[cfg(not(feature = "runtime-entrypoint"))]
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+use key_agent_service_helper_bootstrap::{
+    HelperBootstrapRole, capture_and_adopt_injected_channels, complete_helper_ready_rpc_probe,
+    complete_injected_channel_bootstrap,
+};
+
+#[cfg(any(
+    all(
+        not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+        not(feature = "runtime-entrypoint")
+    ),
+    all(
+        feature = "service-helper-rpc-probe-feasibility-test-hook",
+        not(all(windows, target_arch = "x86_64", target_env = "msvc", debug_assertions))
+    )
+))]
 const PRIVATE_LAUNCH_UNAVAILABLE: i32 = 78;
 
-#[cfg(not(feature = "runtime-entrypoint"))]
+#[cfg(any(
+    all(
+        not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+        not(feature = "runtime-entrypoint")
+    ),
+    all(
+        feature = "service-helper-rpc-probe-feasibility-test-hook",
+        not(all(windows, target_arch = "x86_64", target_env = "msvc", debug_assertions))
+    )
+))]
 fn main() {
     std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);
 }
 
-#[cfg(feature = "runtime-entrypoint")]
+#[cfg(all(
+    not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+    feature = "runtime-entrypoint"
+))]
 const RUNTIME_FAILURE: i32 = 1;
 
-#[cfg(feature = "runtime-entrypoint")]
+#[cfg(all(
+    not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+    feature = "runtime-entrypoint"
+))]
 fn main() {
     let exit_code = match run_once() {
         Ok(()) => 0,
@@ -85,7 +128,10 @@ fn main() {
     std::process::exit(exit_code);
 }
 
-#[cfg(feature = "runtime-entrypoint")]
+#[cfg(all(
+    not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+    feature = "runtime-entrypoint"
+))]
 fn run_once() -> Result<(), approval_ui::ApprovalError> {
     let authenticated = bootstrap::authenticate_inherited_parent()?;
     let request = authenticated.request();
@@ -102,4 +148,56 @@ fn run_once() -> Result<(), approval_ui::ApprovalError> {
     drop(writer);
     drop(authenticated);
     result
+}
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+const SERVICE_HELPER_ROLE: HelperBootstrapRole = HelperBootstrapRole::Approval;
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+fn main() {
+    run_service_helper_rpc_probe();
+}
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+fn run_service_helper_rpc_probe() -> ! {
+    let adopted = capture_and_adopt_injected_channels();
+    let bootstrapped = complete_injected_channel_bootstrap(adopted, SERVICE_HELPER_ROLE);
+    complete_helper_ready_rpc_probe(bootstrapped, SERVICE_HELPER_ROLE)
+}
+
+#[cfg(all(
+    test,
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+mod service_helper_rpc_probe_contract_tests {
+    use super::{HelperBootstrapRole, SERVICE_HELPER_ROLE, run_service_helper_rpc_probe};
+
+    const _: fn() -> ! = run_service_helper_rpc_probe;
+
+    #[test]
+    fn entrypoint_role_is_fixed_to_approval() {
+        assert_eq!(SERVICE_HELPER_ROLE, HelperBootstrapRole::Approval);
+    }
 }

@@ -10,27 +10,40 @@ The accepted Design Brief is
 [`docs/designs/windows-key-agent-service.md`](../designs/windows-key-agent-service.md).
 
 As of 2026-08-30, debug-only current-host fixtures cover a real suspended inert
-target, exact two-member Job topology and forced-parent-death stages, authenticated
-desktop `PROCESS_DUP_HANDLE` denial, and a dormant role-aware expected-peer
-registry foundation. The original `YWKASV01` service wire remains immutable;
-the separate non-default debug-only `YWKASV02` foundation adds exact
-20/52/72/72/68/68-byte open-epoch, desktop-command, and helper-ready frames,
-closed Status/Approval-probe/Secret-Input-probe commands and matching results,
-and a fail-closed `Unavailable` result. It carries no role, PID, or image
-authority. Epochs bind permanently to V1 or V2 and a wrong-version attempt is
-terminal.
+target, exact two-member Job topology and forced-parent-death stages, and
+authenticated desktop `PROCESS_DUP_HANDLE` denial. The original `YWKASV01`
+service wire remains immutable; the separate non-default debug-only `YWKASV02`
+generation adds exact 20/52/72/72/68/68-byte open-epoch, desktop-command, and
+helper-ready frames, closed Status/Approval-probe/Secret-Input-probe commands and
+matching results, and fail-closed `Unavailable`. It carries no role, PID, or
+image authority. Epochs bind permanently to V1 or V2 and a wrong-version attempt
+is terminal.
 
-The helper-bootstrap foundation also defines a distinct 72-byte `YWKHRC01`
-correlation confirmation and privately retains its validated hello key and
-deadline in zeroizing state; this is neither the adoption ACK nor helper-role
-authority. A malformed manager candidate is rejected fail closed by retiring
-exact or indeterminate expected peers. A pure debug V2 desktop dispatcher returns open/
-status responses or move-only authenticated launch actions, but it is not
-connected to the real RPC manager, launch wait, or helper I/O. These results do
-not pass the Phase 1 exit gate: target image pinning, system-wide sole Job-handle
-proof, signed-helper `ncalrpc`, installed SCM/cross-session/elevated-service
-evidence, and the supported-kernel matrix remain unresolved. Both compiled
-policies remain `None`.
+The same LPAC debug feature now wires V2 through the live role-aware manager and
+independent callback, one coordinator worker, the service-owned expected peer,
+and fixed-role Approval/Secret Input probe entrypoints. The exact consumed
+desktop request alone derives helper role and correlation; manager-local one-shot
+completion cannot move to the worker, and one occupied launch prevents queueing
+behind active work. The expected-peer registry has eight lifetime-retired slots
+and a five-second quiescence bound. Helpers use exact WINNT packet-private
+`ncalrpc` for `HelperReady`/ACK, then write the distinct 72-byte `YWKHRC01`
+confirmation and wait for service termination. `YWKHRC01` is neither the
+adoption ACK nor helper-role authority.
+
+Status-only preserves one AU/SY-`GA`, Medium/`NW` descriptor for endpoint and
+If3. The LPAC probe derives the exact package SIDs for the fixed Approval and
+Secret Input profile monikers with OS APIs and retains separate Low/`NW`
+descriptors: endpoint connect `0x1`, and If3 `GA`, both for AU, SY, and the two
+package SIDs. This closes the prior descriptor-level transport-reachability
+defect, not the installed restricted-SCM fixed-LPAC E2E requirement.
+
+This is executable no-secret debug wiring, not the Phase 1 exit gate. No actual
+installed restricted SCM service has proved the service-created LPAC exchange
+across sessions under elevation, and the fixed sibling helpers are not proved
+signed, immutable, or release-manifest-bound. Parent-pinned production image,
+system-wide sole Job-handle proof, signed-helper `ncalrpc`, and the supported-
+kernel matrix remain unresolved. Phase 1 is not passed, release remains
+`STOP-SHIP`, and both compiled policies remain `None`.
 
 ## Context
 
@@ -228,16 +241,16 @@ evidence set passes.
 
 Implementation status on 2026-08-30: the repository contains only no-secret
 Phase 1 feasibility fixtures—an inert SCM host, immutable V1 Status/Unavailable
-wire/server, debug-only V2 wire and pure desktop dispatch, a checked-in x64
-MIDL/SEH boundary, and a dormant compile-only one-shot helper-creation seam. The
-V2 dispatcher returns immediate open/status results or an owned authenticated
-Approval/Secret Input launch action and rejects desktop HelperReady before epoch
-consumption, but no `ServerContext`/RPC-manager/launch-wait/helper-send path calls
-it. The live RPC surface exists only in the exact Windows debug build with the
-explicit feature; default, production, non-Windows, and release paths remain
+wire/server, debug-only V2 wire and role-aware dispatch, a checked-in x64 MIDL/
+SEH boundary, one launch coordinator, service-owned helper creation/gates, and
+role-fixed Approval/Secret Input probe entrypoints. The V2 dispatcher returns
+immediate open/status results or an owned authenticated launch action and rejects
+desktop HelperReady before epoch consumption. The live `ServerContext` manager
+consumes those outcomes only in the exact Windows debug build with the explicit
+LPAC probe feature; default, production, non-Windows, and release paths remain
 silent and fail closed as unavailable. There is no production RPC client and no
-proof of an enrolled Broker, Broker role or image, helper role, or service mutual
-identity. The admission predicate proves at most a local, medium-integrity,
+proof of an enrolled Broker, Broker role or image, production helper role, or
+service mutual identity. The admission predicate proves at most a local, medium-integrity,
 interactive, non-AppContainer caller. It requires the SDK-defined `CallStatus`
 cancellation/disconnection bit field to be zero (active), rejecting values 1,
 2, and 3. `TokenHasRestrictions` is observed in the canonical one- or four-byte
@@ -267,13 +280,23 @@ exact child.
 
 A separate role-aware feasibility path treats a local low-integrity restricted
 AppContainer only as a service-created-LPAC transport candidate. Exact profile
-SID, zero capabilities, image, process/token object, and role remain in a fixed-
-capacity service-owned expected-peer registry. The registry registers while
-suspended, revalidates before the sole resume, publishes running state before a
-callback can proceed, keeps callback observation non-consuming, consumes a
-key-bearing manager admission exactly once, and bounded-reaps terminal cancel
-paths. It has no production RPC dispatch, lifecycle, or wire caller and is not
-signed-helper `ncalrpc` E2E evidence.
+SID, zero capabilities, image, process/token object, and role remain in the
+service-owned expected-peer registry. It has exactly eight slots, never reuses a
+retired slot during one server lifetime, registers while suspended, revalidates
+before the sole resume, publishes running state before a callback can proceed,
+keeps callback observation non-consuming, consumes a key-bearing manager
+admission exactly once, and bounded-reaps terminal cancel paths with a five-
+second quiescence bound. The debug manager/callback route is live under the LPAC
+feature, but it has no production caller and is not signed-helper `ncalrpc` E2E
+evidence.
+
+The status-only and LPAC RPC security profiles are deliberately distinct.
+Status-only keeps its original single AU/SY-`GA`, Medium/`NW` descriptor. The
+LPAC probe derives canonical distinct package SIDs from the two fixed profile
+monikers via OS APIs; its separate Low/`NW` endpoint and If3 descriptors grant
+connect `0x1` and `GA`, respectively, to AU, SY, and both package identities.
+This makes the intended helper transport descriptor-reachable but is not a
+positive installed-SCM cross-session/elevated fixed-LPAC exchange.
 
 A separate explicit debug fixture observes the current service process token
 before `SERVICE_RUNNING`. It can enforce the fixed virtual-account user SID,
@@ -294,18 +317,18 @@ equal the fixed service SID, and `TokenPrimaryGroup` must occur exactly once in
 descriptors only from that service principal; it compares the copied owner/group
 bytes to the sealed baseline and repeats full token revalidation after descriptor
 construction. The authenticated desktop primary token is not an accepted owner.
-The compile-only launch-attempt state now consumes that authority once and keeps
+The debug-only launch-attempt state consumes that authority once and keeps
 the paired descriptor owners and service-token proof live through created-object
 readback.
 
-The same compile-only feature contains a separate unnamed, non-nested,
+The same debug-only feature contains a separate unnamed, non-nested,
 one-process Job primitive. Its effective flags must equal
 `KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, its active-process limit must equal one,
 its creation attribute is lifetime-bound to the Job owner, and terminal cleanup
 is bounded and Job-authoritative. This is not the existing two-process Key Agent
 root Job.
 
-The same feature also contains compile-only target-user launch inputs. The
+The same feature also contains debug-only target-user launch inputs. The
 manager-retained desktop token is never exposed as a raw or borrowed handle;
 auth instead returns a must-use, same-thread impersonation lease whose explicit
 finish and drop fallback each own exact-once revert, clean-thread proof, and
@@ -323,7 +346,7 @@ existing helper mitigation policy, those two LPAC attributes, and the
 restricted-child policy. It fixes `winsta0\default`, leaves every standard
 handle null, and has no inherited-handle-list slot.
 
-The dormant launch attempt owns the sole `CreateProcessAsUserW` call. It accepts
+The debug-only launch attempt owns the sole `CreateProcessAsUserW` call. It accepts
 only the fixed application name, no command line, `bInheritHandles = FALSE`,
 the paired non-inheritable service-owned process/thread security attributes,
 and exactly `CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW |
@@ -346,23 +369,25 @@ termination of the exact child first and then latches whole-Job termination.
 The pending owner can be reaped only after the exact creator/debugger thread has
 exited and joined; the matching join proof then permits bounded process wait and
 exact-zero Job completion.
-This restriction is scoped to creation/pre-event cleanup; the later dormant
-parent gate below owns the admitted debug-event sequence.
+This restriction is scoped to creation/pre-event cleanup; the subsequent debug-
+only parent gate below owns the admitted debug-event sequence.
 
-No RPC operation or executable consumes this creation seam. Required
-privilege enablement, exact interactive window-station/desktop DACL access,
-child-token query access, the actual cross-session call, and the positive
-installed-service/nonnested-Job matrix remain unproved.
+The debug-only V2 coordinator consumes this creation seam. That reachability is
+not evidence that the installed composition works: required privilege
+enablement, exact interactive window-station/desktop DACL access, child-token
+query access, the actual cross-session/elevated call, and the positive installed-
+service/nonnested-Job matrix remain unproved.
 
-A separate Phase 1 helper-bootstrap crate exposes only its platform-neutral gate
-byte specification and secret-free canonical 100-byte hello/72-byte ACK codecs
-to the optional, default-feature-disabled `platform-windows` launch feature.
-Those values are correlation evidence, not authentication or authority. Child
-register capture, adoption, and completion compile only for Windows x86_64 with
-the explicit `child-capture-feasibility-test-hook` feature and
-`debug_assertions`. The child API remains unreachable from either UI, the
-service executable, RPC, default, and release paths and MUST NOT run unless the
-authenticated parent debugger is ready to own both breakpoints.
+A separate Phase 1 helper-bootstrap crate exposes its platform-neutral gate-byte
+specification, secret-free canonical 100-byte hello/72-byte ACK codecs, and
+distinct 72-byte helper-RPC confirmation codec to the optional, default-feature-
+disabled `platform-windows` launch feature. Those values are correlation
+evidence, not authentication or authority. Child register capture, adoption,
+bootstrap, and helper-ready completion compile only for Windows x86_64 with
+explicit feasibility features and `debug_assertions`. Matching debug probe
+features on Approval and Secret Input UI fix the two roles and reach the child
+API; default, release, and production paths remain unavailable. The API MUST NOT
+run unless the authenticated parent debugger is ready to own both breakpoints.
 
 The child leaf contains one exact 34-byte capture sequence: `movabs` loads public
 markers into R10 and R11, `INT3` stops at the gate, register-only stores through
@@ -377,16 +402,26 @@ its sole `INT3`, clears both registers, and returns. Both sequences have their
 only breakpoint at offset 20.
 
 After adoption the child exact-reads and canonically decodes the 100-byte hello.
-It binds the expected role that a future signed entrypoint must fix, current
-child PID, distinct nonzero service PID, child creation `FILETIME`, strict-future
-deadline no more than five seconds away, and the client PID of both child-owned
-server handles to that service PID. It synchronously writes the exact 72-byte
-ACK and immediately enters gate two. Every capture, adoption, framing, role,
-identity, deadline, peer, write, or gate failure calls `std::process::abort()`
-and exposes no failure return.
+It binds the role fixed by its calling entrypoint, current child PID, distinct
+nonzero service PID, child creation `FILETIME`, strict-future deadline no more
+than five seconds away, and the client PID of both child-owned server handles to
+that service PID. The two debug entrypoints fix Approval and Secret Input
+respectively; a production entrypoint must additionally be signed and immutably
+installed. The child synchronously writes the exact 72-byte ACK and immediately
+enters gate two. Every capture, adoption, framing, role, identity, deadline,
+peer, write, or gate failure calls `std::process::abort()` and exposes no failure
+return.
 
-The dormant parent first performs a bounded read-only/reparse-point reopen of the
-pinned helper with file identity checked before and after reading, and accepts
+After gate two, the debug helper uses the fixed local endpoint with implicit
+WINNT credentials, packet privacy, and authz-none. It sends exact `HelperReady`,
+accepts only the correlated ACK, frees the RPC binding, writes the distinct
+72-byte `YWKHRC01` confirmation, closes the response pipe, and blocks on the
+request pipe until service termination. Any fallible step aborts. The service
+accepts success only after confirmation plus EOF, exact expected-peer admission
+and role match, and process/Job cancellation while retaining the request writer.
+
+The debug-only parent first performs a bounded read-only/reparse-point reopen of
+the pinned helper with file identity checked before and after reading, and accepts
 exactly one nonoverlapping copy of each complete gate only in initialized
 executable nonwritable AMD64 PE32+ code. It requires canonical virtual/raw
 section order, raw offsets equal to RVAs for every nonempty raw section in a
@@ -569,11 +604,12 @@ an actual signed product or the Phase 1 exit gate. The product signer, immutable
 installation, generated compiled-policy E2E, parent-pinned target image,
 system-wide last-Job-handle proof, and supported-kernel generalization of debug-
 event alias retirement, native target access, parent death, and cancellation-
-drain matrices remain external **STOP-SHIP** work. The role-aware registry has
-no production RPC/lifecycle/wire caller; signed-helper `ncalrpc`, installed SCM
-identity, cross-session LPAC, and elevated-service evidence remain unproved.
-The helper still exits 78 in default and release builds, there is no production
-caller, and both compiled policies remain `None`.
+drain matrices remain external **STOP-SHIP** work. The role-aware registry has a
+debug RPC/lifecycle/wire caller but no production caller. Signed immutable-
+helper `ncalrpc`, installed restricted-SCM identity, an actual cross-session LPAC
+exchange under elevation, and the supported-kernel matrix remain unproved. The
+helper still exits 78 in default and release builds, Phase 1 is not passed, and
+both compiled policies remain `None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is only a
 cancellation request. Async `ReadFile`/`WriteFile` receive no byte-count output
 pointer; one raw `*mut OVERLAPPED` established before initiation is carried
@@ -625,12 +661,22 @@ unverified, so `UnverifiedSourceAccessAndDirection` and the Phase 1
 The fixed zero-padded 76-byte MIDL frame and its canonical decoder are the hard
 message bound. RPC `MaxCalls = 8` and `MaxRpcSize = 76` are runtime hints, not
 that bound. The server separately caps concurrent callback-authentication work
-at eight permits and serializes manager dispatch. If failed startup rollback or
-stop rundown retains RPC-referenced runtime state, the SCM host deliberately
-omits `SERVICE_STOPPED`. During worker rundown, its progress reporter advances
-the `SERVICE_STOP_PENDING` checkpoint every 500 ms with a 3-second wait hint and
-aborts on a 15-second deadline, status-report failure, or reporter disconnect;
-uncertain cleanup is never presented as a clean stop.
+at eight permits. The V2 manager keeps pending completion on its own thread and
+admits at most one occupied helper launch across the worker and capacity-one
+transport, so no launch queues behind active work. Cleanup, registry-internal,
+debugger-invariant, and role-correlation failures latch fatal health and close
+RPC admission. If failed startup rollback or stop rundown retains RPC-referenced
+runtime state, the SCM host deliberately omits `SERVICE_STOPPED`.
+
+LPAC shutdown completes RPC rundown first, then stops and joins the coordinator,
+then calls the helper registry's five-second quiescence stop. During worker
+rundown, the progress reporter advances `SERVICE_STOP_PENDING` every 500 ms with
+a 3-second wait hint. The ordinary status fixture keeps its 15-second fail-fast
+bound; the LPAC-only fixture derives a 30-second hard fail-fast watchdog from
+the terminal-resource bounds and margin. It aborts on deadline, status-report
+failure, or reporter disconnect. That watchdog neither proves all Windows calls
+interruptible nor represents a clean per-operation deadline; uncertain cleanup
+is never presented as a clean stop.
 
 The ignored Windows same-process authenticated round-trip now passes on the
 current interactive host, including manager-only primary-token duplication and

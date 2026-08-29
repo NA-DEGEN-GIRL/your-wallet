@@ -10,11 +10,22 @@ publish = false
 
 [features]
 default = []
+# Debug-only Windows x64 debugger-injected bootstrap gates.
 child-capture-feasibility-test-hook = []
+# Extends the captured bootstrap with fixed-endpoint WINNT packet-private
+# HelperReady/ACK and YWKHRC01 confirmation; never a production entrypoint.
+helper-ready-rpc-feasibility-test-hook = [
+    "child-capture-feasibility-test-hook",
+    "dep:key-agent-service-rpc-sys",
+    "key-agent-service-wire/debug-feasibility-v2",
+]
 
 [dependencies]
 key-agent-service-wire = { path = "../key-agent-service-wire" }
 zeroize.workspace = true
+
+[target.'cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))'.dependencies]
+key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
@@ -23,6 +34,7 @@ windows = { workspace = true, features = [
     "Win32_System_Console",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    "Win32_System_Rpc",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }

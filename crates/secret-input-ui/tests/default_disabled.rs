@@ -1,4 +1,13 @@
-#![cfg(not(feature = "runtime-entrypoint"))]
+#![cfg(any(
+    all(
+        not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+        not(feature = "runtime-entrypoint")
+    ),
+    all(
+        feature = "service-helper-rpc-probe-feasibility-test-hook",
+        not(all(windows, target_arch = "x86_64", target_env = "msvc", debug_assertions))
+    )
+))]
 
 use std::process::Command;
 

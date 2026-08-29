@@ -41,3 +41,12 @@ pub use self::child::{
     AdoptedInjectedChannels, BootstrappedInjectedChannels, capture_and_adopt_injected_channels,
     complete_injected_channel_bootstrap,
 };
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook",
+    debug_assertions
+))]
+pub use self::child::complete_helper_ready_rpc_probe;

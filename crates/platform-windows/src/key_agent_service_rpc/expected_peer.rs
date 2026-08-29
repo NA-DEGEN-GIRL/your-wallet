@@ -5,18 +5,23 @@
 //! suspended; only a successful registered revalidation may perform its sole
 //! resume. The RPC security callback observes without consuming, while the
 //! manager spends the expected state exactly once. Retired slots are never
-//! reused during one server lifetime.
+//! reused during one server lifetime, deliberately limiting that lifetime to
+//! eight registrations so replay-resistant evidence cannot be recycled.
 
 #![deny(unsafe_code)]
 
 use core::fmt;
 use std::array;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use key_agent_service_wire::{EpochNonce, ServiceRequestId};
 
 pub(crate) const EXPECTED_HELPER_CAPACITY: usize = 8;
+pub(crate) const EXPECTED_HELPER_QUIESCENCE_MILLISECONDS: u64 = 5_000;
+pub(crate) const EXPECTED_HELPER_QUIESCENCE_TIMEOUT: Duration =
+    Duration::from_millis(EXPECTED_HELPER_QUIESCENCE_MILLISECONDS);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExpectedHelperRole {
@@ -104,8 +109,124 @@ enum ExpectedPeerSlot<P> {
         phase: PeerPhase,
         generation: u64,
         cancel_requested: bool,
+        settlement: Arc<InFlightSettlement>,
     },
     Retired(ExpectedPeerKey),
+}
+
+struct InFlightSettlement {
+    key: ExpectedPeerKey,
+    generation: u64,
+    result: Mutex<Option<Result<(), ExpectedPeerRegistryError>>>,
+    completed: Condvar,
+}
+
+impl InFlightSettlement {
+    fn new(key: ExpectedPeerKey, generation: u64) -> Self {
+        Self {
+            key,
+            generation,
+            result: Mutex::new(None),
+            completed: Condvar::new(),
+        }
+    }
+
+    fn complete(&self, result: Result<(), ExpectedPeerRegistryError>) {
+        let mut settled = match self.result.lock() {
+            Ok(settled) => settled,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if settled.is_none() {
+            *settled = Some(result);
+        } else {
+            *settled = Some(Err(ExpectedPeerRegistryError::Internal));
+        }
+        self.result.clear_poison();
+        self.completed.notify_all();
+    }
+
+    fn wait_until(&self, deadline: Instant) -> Result<(), ExpectedPeerRegistryError> {
+        let mut settled = self
+            .result
+            .lock()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        loop {
+            if let Some(result) = *settled {
+                return result;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ExpectedPeerRegistryError::Internal);
+            }
+            let (next, timeout) = self
+                .completed
+                .wait_timeout(settled, remaining)
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+            settled = next;
+            if timeout.timed_out() && settled.is_none() {
+                return Err(ExpectedPeerRegistryError::Internal);
+            }
+        }
+    }
+}
+
+struct InFlightSettlementGuard {
+    settlement: Arc<InFlightSettlement>,
+    completed: bool,
+}
+
+impl InFlightSettlementGuard {
+    fn complete(&mut self, result: Result<(), ExpectedPeerRegistryError>) {
+        if !self.completed {
+            self.settlement.complete(result);
+            self.completed = true;
+        }
+    }
+}
+
+impl Drop for InFlightSettlementGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.settlement
+                .complete(Err(ExpectedPeerRegistryError::Internal));
+        }
+    }
+}
+
+struct InFlightCancellation {
+    key: ExpectedPeerKey,
+    generation: u64,
+    settlement: Arc<InFlightSettlement>,
+}
+
+impl InFlightCancellation {
+    fn wait_until(&self, deadline: Instant) -> Result<(), ExpectedPeerRegistryError> {
+        if self.settlement.key != self.key || self.settlement.generation != self.generation {
+            return Err(ExpectedPeerRegistryError::Internal);
+        }
+        self.settlement.wait_until(deadline)
+    }
+}
+
+struct GuardOperation<T> {
+    result: Result<T, ExpectedPeerRegistryError>,
+    delegated: bool,
+}
+
+impl<T> GuardOperation<T> {
+    const fn direct(result: Result<T, ExpectedPeerRegistryError>) -> Self {
+        Self {
+            result,
+            delegated: false,
+        }
+    }
+
+    const fn delegated(result: Result<T, ExpectedPeerRegistryError>) -> Self {
+        Self {
+            result,
+            delegated: true,
+        }
+    }
 }
 
 struct ExpectedPeerState<P> {
@@ -148,6 +269,7 @@ struct LocalPeer<P> {
     original_phase: PeerPhase,
     next_phase: Option<PeerPhase>,
     peer: P,
+    settlement: InFlightSettlementGuard,
 }
 
 pub(crate) struct ExpectedHelperAdmission<P, C>
@@ -372,13 +494,6 @@ where
     /// whose relationship cannot be determined are retired; definite
     /// non-matches remain live. A failed candidate revalidation is still
     /// followed by exact comparison so its related launch cannot be retried.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "dormant malformed-helper manager integration follows this foundation"
-        )
-    )]
     pub(crate) fn reject_manager_candidate(
         &self,
         candidate: &C,
@@ -438,34 +553,47 @@ where
 
     #[expect(
         dead_code,
-        reason = "dormant role-aware manager integration follows this foundation"
+        reason = "the live router rejects malformed peers by candidate, not by decoded key alone"
     )]
     pub(crate) fn reject_manager(
         &self,
         key: ExpectedPeerKey,
     ) -> Result<(), ExpectedPeerRegistryError> {
         self.cancel_key(key, ExpectedPeerRegistryError::Denied)
+            .result
     }
 
-    /// Stop never waits for an in-flight OS observation. Peers resident in the
-    /// registry are extracted and cancelled outside the mutex; an operation
-    /// already holding a peer sees `cancel_requested` before any reinsert and
-    /// terminally drops its owner.
+    /// Closes registration, terminally cancels resident peers, and waits a
+    /// bounded interval for every exact in-flight owner to finish delegated
+    /// cleanup. No operating-system cleanup or condition-variable wait runs
+    /// while the registry mutex is held.
     pub(crate) fn stop(&self) -> Result<(), ExpectedPeerRegistryError> {
+        self.stop_with_timeout(EXPECTED_HELPER_QUIESCENCE_TIMEOUT)
+    }
+
+    fn stop_with_timeout(&self, timeout: Duration) -> Result<(), ExpectedPeerRegistryError> {
         let mut state = lock_expected_state(&self.inner)?;
         if state.stopping {
             return Err(ExpectedPeerRegistryError::Stopping);
         }
         state.stopping = true;
         let mut cleanup = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
-        let mut in_flight = false;
+        let mut in_flight = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
         for slot in &mut state.slots {
             match slot {
                 ExpectedPeerSlot::InFlight {
-                    cancel_requested, ..
+                    key,
+                    generation,
+                    cancel_requested,
+                    settlement,
+                    ..
                 } => {
                     *cancel_requested = true;
-                    in_flight = true;
+                    in_flight.push(InFlightCancellation {
+                        key: *key,
+                        generation: *generation,
+                        settlement: Arc::clone(settlement),
+                    });
                 }
                 ExpectedPeerSlot::Live { .. } => {
                     if let Some(peer) = retire_live_slot(slot) {
@@ -477,11 +605,8 @@ where
         }
         drop(state);
         let cleanup = cleanup_peers(cleanup);
-        if in_flight {
-            cleanup.and(Err(ExpectedPeerRegistryError::Internal))
-        } else {
-            cleanup
-        }
+        let settled = wait_for_cancellations(in_flight, timeout);
+        cleanup.and(settled)
     }
 
     fn begin_single_registered(
@@ -498,20 +623,7 @@ where
             .iter()
             .any(|slot| matches!(slot, ExpectedPeerSlot::InFlight { .. }))
         {
-            let mut cleanup = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
-            for slot in &mut state.slots {
-                match slot {
-                    ExpectedPeerSlot::InFlight {
-                        cancel_requested, ..
-                    } => *cancel_requested = true,
-                    ExpectedPeerSlot::Live { .. } => {
-                        if let Some(peer) = retire_live_slot(slot) {
-                            cleanup.push(peer);
-                        }
-                    }
-                    ExpectedPeerSlot::Vacant | ExpectedPeerSlot::Retired(_) => {}
-                }
-            }
+            let cleanup = request_in_flight_cancellation_and_retire_live(&mut state.slots);
             drop(state);
             return cleanup_peers(cleanup).and(Err(ExpectedPeerRegistryError::Internal));
         }
@@ -574,20 +686,7 @@ where
             .iter()
             .any(|slot| matches!(slot, ExpectedPeerSlot::InFlight { .. }))
         {
-            let mut cleanup = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
-            for slot in &mut state.slots {
-                match slot {
-                    ExpectedPeerSlot::InFlight {
-                        cancel_requested, ..
-                    } => *cancel_requested = true,
-                    ExpectedPeerSlot::Live { .. } => {
-                        if let Some(peer) = retire_live_slot(slot) {
-                            cleanup.push(peer);
-                        }
-                    }
-                    ExpectedPeerSlot::Vacant | ExpectedPeerSlot::Retired(_) => {}
-                }
-            }
+            let cleanup = request_in_flight_cancellation_and_retire_live(&mut state.slots);
             drop(state);
             return cleanup_peers(cleanup).and(Err(ExpectedPeerRegistryError::Internal));
         }
@@ -612,7 +711,15 @@ where
                         Err(error) => {
                             let mut resident = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
                             for local in &peers {
-                                state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
+                                if let Some(ExpectedPeerSlot::InFlight {
+                                    generation,
+                                    cancel_requested,
+                                    ..
+                                }) = state.slots.get_mut(local.index)
+                                    && *generation == local.generation
+                                {
+                                    *cancel_requested = true;
+                                }
                             }
                             for slot in &mut state.slots {
                                 if let Some(peer) = retire_live_slot(slot) {
@@ -621,9 +728,9 @@ where
                             }
                             drop(state);
                             retire_all(&mut peers);
-                            let cleanup =
-                                cleanup_local_peers::<P, C>(peers)
-                                    .and(cleanup_peers::<P, C>(resident));
+                            let cleanup = self
+                                .cleanup_local_peers(peers)
+                                .and(cleanup_peers::<P, C>(resident));
                             return cleanup.and(Err(error));
                         }
                     };
@@ -639,7 +746,7 @@ where
             Ok(state) => state,
             Err(error) => {
                 retire_all(&mut peers);
-                let cleanup = cleanup_local_peers(peers);
+                let cleanup = self.cleanup_local_peers(peers);
                 return cleanup.and(Err(error));
             }
         };
@@ -655,6 +762,7 @@ where
                     phase,
                     generation,
                     cancel_requested: false,
+                    ..
                 }) if *key == local.key
                     && *phase == local.original_phase
                     && *generation == local.generation
@@ -676,18 +784,11 @@ where
                     ExpectedPeerSlot::Vacant | ExpectedPeerSlot::Retired(_) => {}
                 }
             }
-            for local in &peers {
-                if matches!(
-                    state.slots.get(local.index),
-                    Some(ExpectedPeerSlot::InFlight { generation, .. })
-                        if *generation == local.generation
-                ) {
-                    state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
-                }
-            }
             drop(state);
             retire_all(&mut peers);
-            let cleanup = cleanup_local_peers(peers).and(cleanup_peers(concurrent));
+            let cleanup = self
+                .cleanup_local_peers(peers)
+                .and(cleanup_peers(concurrent));
             return cleanup.and(Err(if stopping {
                 ExpectedPeerRegistryError::Stopping
             } else {
@@ -697,22 +798,31 @@ where
 
         let mut cleanup = Vec::new();
         for local in peers {
-            let LocalPeer {
-                index,
-                key,
-                next_phase,
-                peer,
-                ..
-            } = local;
-            if let Some(phase) = next_phase {
+            if let Some(phase) = local.next_phase {
+                let LocalPeer {
+                    index,
+                    key,
+                    peer,
+                    mut settlement,
+                    ..
+                } = local;
                 state.slots[index] = ExpectedPeerSlot::Live { key, phase, peer };
+                settlement.complete(Ok(()));
             } else {
-                state.slots[index] = ExpectedPeerSlot::Retired(key);
-                cleanup.push(peer);
+                if let Some(ExpectedPeerSlot::InFlight {
+                    generation,
+                    cancel_requested,
+                    ..
+                }) = state.slots.get_mut(local.index)
+                    && *generation == local.generation
+                {
+                    *cancel_requested = true;
+                }
+                cleanup.push(local);
             }
         }
         drop(state);
-        cleanup_peers(cleanup)
+        self.cleanup_local_peers(cleanup)
     }
 
     fn finish_single(
@@ -723,7 +833,7 @@ where
         let mut state = match lock_expected_state(&self.inner) {
             Ok(state) => state,
             Err(error) => {
-                let cleanup = cleanup_local_peers::<P, C>(vec![local]);
+                let cleanup = self.cleanup_local_peers(vec![local]);
                 return cleanup.and(Err(error));
             }
         };
@@ -734,33 +844,49 @@ where
                 phase,
                 generation,
                 cancel_requested: false,
+                ..
             }) if *key == local.key
                 && *phase == local.original_phase
                 && *generation == local.generation
         );
         let stopping = state.stopping;
         if exact && !stopping {
-            let LocalPeer {
-                index, key, peer, ..
-            } = local;
             if let Some(phase) = next_phase {
+                let LocalPeer {
+                    index,
+                    key,
+                    peer,
+                    mut settlement,
+                    ..
+                } = local;
                 state.slots[index] = ExpectedPeerSlot::Live { key, phase, peer };
+                settlement.complete(Ok(()));
                 return Ok(());
             }
-            state.slots[index] = ExpectedPeerSlot::Retired(key);
+            if let Some(ExpectedPeerSlot::InFlight {
+                generation,
+                cancel_requested,
+                ..
+            }) = state.slots.get_mut(local.index)
+                && *generation == local.generation
+            {
+                *cancel_requested = true;
+            }
             drop(state);
-            let cleanup = cleanup_peers::<P, C>(vec![peer]);
+            let cleanup = self.cleanup_local_peers(vec![local]);
             return cleanup;
         }
-        if matches!(
-            state.slots.get(local.index),
-            Some(ExpectedPeerSlot::InFlight { generation, .. })
-                if *generation == local.generation
-        ) {
-            state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
+        if let Some(ExpectedPeerSlot::InFlight {
+            generation,
+            cancel_requested,
+            ..
+        }) = state.slots.get_mut(local.index)
+            && *generation == local.generation
+        {
+            *cancel_requested = true;
         }
         drop(state);
-        let cleanup = cleanup_local_peers::<P, C>(vec![local]);
+        let cleanup = self.cleanup_local_peers(vec![local]);
         cleanup.and(Err(if stopping {
             ExpectedPeerRegistryError::Stopping
         } else {
@@ -777,7 +903,7 @@ where
         let mut state = match lock_expected_state(&self.inner) {
             Ok(state) => state,
             Err(error) => {
-                let cleanup = cleanup_local_peers::<P, C>(vec![local]);
+                let cleanup = self.cleanup_local_peers(vec![local]);
                 return cleanup.and(Err(error));
             }
         };
@@ -788,20 +914,23 @@ where
                 phase: PeerPhase::RegisteredSuspended,
                 generation,
                 cancel_requested: false,
+                ..
             }) if *key == local.key && *generation == local.generation
         );
         if state.stopping || !exact {
             let stopping = state.stopping;
-            if matches!(
-                state.slots.get(local.index),
-                Some(ExpectedPeerSlot::InFlight { generation, .. })
-                    if *generation == local.generation
-            ) {
-                state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
+            if let Some(ExpectedPeerSlot::InFlight {
+                generation,
+                cancel_requested,
+                ..
+            }) = state.slots.get_mut(local.index)
+                && *generation == local.generation
+            {
+                *cancel_requested = true;
             }
             drop(state);
             local.next_phase = None;
-            let cleanup = cleanup_local_peers::<P, C>(vec![local]);
+            let cleanup = self.cleanup_local_peers(vec![local]);
             return cleanup.and(Err(if stopping {
                 ExpectedPeerRegistryError::Stopping
             } else {
@@ -814,68 +943,267 @@ where
         let resume = match resume {
             Ok(resume) => resume,
             Err(payload) => {
-                state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
+                if let ExpectedPeerSlot::InFlight {
+                    cancel_requested, ..
+                } = &mut state.slots[local.index]
+                {
+                    *cancel_requested = true;
+                }
                 drop(state);
                 local.next_phase = None;
-                let _ = cleanup_local_peers::<P, C>(vec![local]);
+                let _ = self.cleanup_local_peers(vec![local]);
                 std::panic::resume_unwind(payload);
             }
         };
         if let Err(error) = resume {
-            state.slots[local.index] = ExpectedPeerSlot::Retired(local.key);
+            if let ExpectedPeerSlot::InFlight {
+                cancel_requested, ..
+            } = &mut state.slots[local.index]
+            {
+                *cancel_requested = true;
+            }
             drop(state);
             local.next_phase = None;
-            let cleanup = cleanup_local_peers::<P, C>(vec![local]);
+            let cleanup = self.cleanup_local_peers(vec![local]);
             return cleanup.and(Err(map_verification_error(error)));
         }
         let LocalPeer {
-            index, key, peer, ..
+            index,
+            key,
+            peer,
+            mut settlement,
+            ..
         } = local;
         state.slots[index] = ExpectedPeerSlot::Live {
             key,
             phase: PeerPhase::ExpectedRunning,
             peer,
         };
+        settlement.complete(Ok(()));
         Ok(())
+    }
+
+    /// Runs terminal peer cleanup first, then retires the exact key/generation
+    /// and only afterward wakes cancellation waiters. Keeping the slot
+    /// `InFlight` until this point prevents stop or a second guard from
+    /// mistaking delegated-but-still-running cleanup for quiescence.
+    fn cleanup_local_peers(
+        &self,
+        peers: Vec<LocalPeer<P>>,
+    ) -> Result<(), ExpectedPeerRegistryError> {
+        let mut cleanup_result = Ok(());
+        let mut completed = Vec::with_capacity(peers.len());
+        for local in peers {
+            let LocalPeer {
+                index,
+                key,
+                generation,
+                mut peer,
+                settlement,
+                ..
+            } = local;
+            let cleanup = cleanup_peer::<P, C>(&mut peer);
+            drop(peer);
+            cleanup_result = cleanup_result.and(cleanup);
+            completed.push((index, key, generation, settlement, cleanup));
+        }
+
+        if completed.is_empty() {
+            return cleanup_result;
+        }
+
+        let (mut state, poisoned) = match self.inner.state.lock() {
+            Ok(state) => (state, false),
+            Err(poisoned) => (poisoned.into_inner(), true),
+        };
+        let mut resident = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
+        if poisoned {
+            state.stopping = true;
+            for slot in &mut state.slots {
+                match slot {
+                    ExpectedPeerSlot::Live { .. } => {
+                        if let Some(peer) = retire_live_slot(slot) {
+                            resident.push(peer);
+                        }
+                    }
+                    ExpectedPeerSlot::InFlight {
+                        cancel_requested, ..
+                    } => *cancel_requested = true,
+                    ExpectedPeerSlot::Vacant | ExpectedPeerSlot::Retired(_) => {}
+                }
+            }
+        }
+        let poison_result = if poisoned {
+            Err(ExpectedPeerRegistryError::Internal)
+        } else {
+            Ok(())
+        };
+        let mut registry_result = poison_result;
+        let mut signals = Vec::with_capacity(completed.len());
+        for (index, key, generation, settlement, cleanup) in completed {
+            let exact = matches!(
+                state.slots.get(index),
+                Some(ExpectedPeerSlot::InFlight {
+                    key: current_key,
+                    generation: current_generation,
+                    ..
+                }) if *current_key == key && *current_generation == generation
+            );
+            let slot_result = if exact {
+                state.slots[index] = ExpectedPeerSlot::Retired(key);
+                Ok(())
+            } else {
+                Err(ExpectedPeerRegistryError::Internal)
+            };
+            registry_result = registry_result.and(slot_result);
+            signals.push((settlement, cleanup.and(slot_result).and(poison_result)));
+        }
+        if poisoned {
+            self.inner.state.clear_poison();
+        }
+        drop(state);
+        let resident_cleanup = cleanup_peers::<P, C>(resident);
+        for (mut settlement, result) in signals {
+            settlement.complete(result);
+        }
+        cleanup_result.and(resident_cleanup).and(registry_result)
     }
 
     fn cancel_key(
         &self,
         key: ExpectedPeerKey,
         absent: ExpectedPeerRegistryError,
-    ) -> Result<(), ExpectedPeerRegistryError> {
-        let mut state = lock_expected_state(&self.inner)?;
+    ) -> GuardOperation<()> {
+        self.cancel_key_with_timeout(key, absent, EXPECTED_HELPER_QUIESCENCE_TIMEOUT)
+    }
+
+    fn cancel_key_with_timeout(
+        &self,
+        key: ExpectedPeerKey,
+        absent: ExpectedPeerRegistryError,
+        timeout: Duration,
+    ) -> GuardOperation<()> {
+        let mut state = match lock_expected_state(&self.inner) {
+            Ok(state) => state,
+            Err(error) => return GuardOperation::direct(Err(error)),
+        };
         let Some(index) = state
             .slots
             .iter()
             .position(|slot| slot_key(slot) == Some(key))
         else {
-            return Err(absent);
+            return GuardOperation::direct(Err(absent));
         };
-        let mut in_flight = false;
+        let mut in_flight = None;
         let cleanup = match &mut state.slots[index] {
             ExpectedPeerSlot::Live { .. } => retire_live_slot(&mut state.slots[index]),
             ExpectedPeerSlot::InFlight {
-                cancel_requested, ..
+                key,
+                generation,
+                cancel_requested,
+                settlement,
+                ..
             } => {
                 *cancel_requested = true;
-                in_flight = true;
+                in_flight = Some(InFlightCancellation {
+                    key: *key,
+                    generation: *generation,
+                    settlement: Arc::clone(settlement),
+                });
                 None
             }
-            ExpectedPeerSlot::Retired(_) => return Err(absent),
-            ExpectedPeerSlot::Vacant => return Err(ExpectedPeerRegistryError::Internal),
+            ExpectedPeerSlot::Retired(_) => return GuardOperation::direct(Err(absent)),
+            ExpectedPeerSlot::Vacant => {
+                return GuardOperation::direct(Err(ExpectedPeerRegistryError::Internal));
+            }
         };
         drop(state);
+        if let Some(in_flight) = in_flight {
+            let result =
+                deadline_after(timeout).and_then(|deadline| in_flight.wait_until(deadline));
+            return GuardOperation::delegated(result);
+        }
         let cleanup = cleanup.map_or(Ok(()), |mut peer| {
             let result = cleanup_peer(&mut peer);
             drop(peer);
             result
         });
-        if in_flight {
-            cleanup.and(Err(ExpectedPeerRegistryError::Internal))
-        } else {
-            cleanup
+        GuardOperation::direct(cleanup)
+    }
+
+    fn finish_admitted_key(&self, key: ExpectedPeerKey) -> GuardOperation<ExpectedHelperRole> {
+        self.finish_admitted_key_with_timeout(key, EXPECTED_HELPER_QUIESCENCE_TIMEOUT)
+    }
+
+    fn finish_admitted_key_with_timeout(
+        &self,
+        key: ExpectedPeerKey,
+        timeout: Duration,
+    ) -> GuardOperation<ExpectedHelperRole> {
+        let mut state = match lock_expected_state(&self.inner) {
+            Ok(state) => state,
+            Err(error) => return GuardOperation::direct(Err(error)),
+        };
+        let Some(index) = state
+            .slots
+            .iter()
+            .position(|slot| slot_key(slot) == Some(key))
+        else {
+            return GuardOperation::direct(Err(ExpectedPeerRegistryError::Denied));
+        };
+        let mut in_flight = None;
+        let phase = match &mut state.slots[index] {
+            ExpectedPeerSlot::Live { phase, .. } => *phase,
+            ExpectedPeerSlot::InFlight {
+                key,
+                generation,
+                cancel_requested,
+                settlement,
+                ..
+            } => {
+                *cancel_requested = true;
+                in_flight = Some(InFlightCancellation {
+                    key: *key,
+                    generation: *generation,
+                    settlement: Arc::clone(settlement),
+                });
+                PeerPhase::ExpectedRunning
+            }
+            ExpectedPeerSlot::Retired(_) => {
+                return GuardOperation::direct(Err(ExpectedPeerRegistryError::Denied));
+            }
+            ExpectedPeerSlot::Vacant => {
+                return GuardOperation::direct(Err(ExpectedPeerRegistryError::Internal));
+            }
+        };
+        if let Some(in_flight) = in_flight {
+            drop(state);
+            let _settled =
+                deadline_after(timeout).and_then(|deadline| in_flight.wait_until(deadline));
+            return GuardOperation::delegated(Err(ExpectedPeerRegistryError::Internal));
         }
+        let Some(mut peer) = retire_live_slot(&mut state.slots[index]) else {
+            return GuardOperation::direct(Err(ExpectedPeerRegistryError::Internal));
+        };
+        drop(state);
+
+        if phase != PeerPhase::Admitted {
+            let cleanup = cleanup_peer::<P, C>(&mut peer);
+            drop(peer);
+            return GuardOperation::direct(cleanup.and(Err(ExpectedPeerRegistryError::Denied)));
+        }
+
+        let role = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| peer.role()));
+        let cleanup = cleanup_peer::<P, C>(&mut peer);
+        drop(peer);
+        let result = match role {
+            Ok(role) => cleanup.map(|()| role),
+            Err(payload) => {
+                let _ = cleanup;
+                std::panic::resume_unwind(payload);
+            }
+        };
+        GuardOperation::direct(result)
     }
 }
 
@@ -950,9 +1278,10 @@ where
             let admission = ExpectedHelperAdmission {
                 inner: Arc::clone(&self.inner),
             };
-            enforce_guard_drop_cleanup(
-                admission.cancel_key(self.key, ExpectedPeerRegistryError::Denied),
-            );
+            let outcome = admission.cancel_key(self.key, ExpectedPeerRegistryError::Denied);
+            if !outcome.delegated {
+                enforce_guard_drop_cleanup(outcome.result);
+            }
         }
     }
 }
@@ -984,14 +1313,37 @@ where
     P: ExpectedHelperPeer<C>,
 {
     pub(crate) fn cancel(&mut self) -> Result<(), ExpectedPeerRegistryError> {
+        self.cancel_with_timeout(EXPECTED_HELPER_QUIESCENCE_TIMEOUT)
+    }
+
+    fn cancel_with_timeout(&mut self, timeout: Duration) -> Result<(), ExpectedPeerRegistryError> {
         let admission = ExpectedHelperAdmission {
             inner: Arc::clone(&self.inner),
         };
-        let result = admission.cancel_key(self.key, ExpectedPeerRegistryError::Denied);
-        if result.is_ok() {
+        let outcome =
+            admission.cancel_key_with_timeout(self.key, ExpectedPeerRegistryError::Denied, timeout);
+        if outcome.result.is_ok() || outcome.delegated {
             self.armed = false;
         }
-        result
+        outcome.result
+    }
+
+    /// Completes a server-admitted helper and terminally reaps its process.
+    ///
+    /// The role comes from the registry-owned launch proof. A live slot in any
+    /// phase other than `Admitted` is still terminally retired, but can never
+    /// produce a successful completion.
+    pub(crate) fn finish_admitted_and_cancel(
+        &mut self,
+    ) -> Result<ExpectedHelperRole, ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission {
+            inner: Arc::clone(&self.inner),
+        };
+        let outcome = admission.finish_admitted_key(self.key);
+        if outcome.result.is_ok() || outcome.delegated {
+            self.armed = false;
+        }
+        outcome.result
     }
 }
 
@@ -1005,9 +1357,10 @@ where
             let admission = ExpectedHelperAdmission {
                 inner: Arc::clone(&self.inner),
             };
-            enforce_guard_drop_cleanup(
-                admission.cancel_key(self.key, ExpectedPeerRegistryError::Denied),
-            );
+            let outcome = admission.cancel_key(self.key, ExpectedPeerRegistryError::Denied);
+            if !outcome.delegated {
+                enforce_guard_drop_cleanup(outcome.result);
+            }
         }
     }
 }
@@ -1032,11 +1385,13 @@ fn extract_live_slot<P>(
         *slot = previous;
         return Err(ExpectedPeerRegistryError::Internal);
     };
+    let settlement = Arc::new(InFlightSettlement::new(key, generation));
     *slot = ExpectedPeerSlot::InFlight {
         key,
         phase,
         generation,
         cancel_requested: false,
+        settlement: Arc::clone(&settlement),
     };
     Ok(LocalPeer {
         index,
@@ -1045,6 +1400,10 @@ fn extract_live_slot<P>(
         original_phase: phase,
         next_phase: Some(phase),
         peer,
+        settlement: InFlightSettlementGuard {
+            settlement,
+            completed: false,
+        },
     })
 }
 
@@ -1062,6 +1421,24 @@ fn retire_live_slot<P>(slot: &mut ExpectedPeerSlot<P>) -> Option<P> {
     }
 }
 
+fn request_in_flight_cancellation_and_retire_live<P>(slots: &mut [ExpectedPeerSlot<P>]) -> Vec<P> {
+    let mut cleanup = Vec::with_capacity(EXPECTED_HELPER_CAPACITY);
+    for slot in slots {
+        match slot {
+            ExpectedPeerSlot::InFlight {
+                cancel_requested, ..
+            } => *cancel_requested = true,
+            ExpectedPeerSlot::Live { .. } => {
+                if let Some(peer) = retire_live_slot(slot) {
+                    cleanup.push(peer);
+                }
+            }
+            ExpectedPeerSlot::Vacant | ExpectedPeerSlot::Retired(_) => {}
+        }
+    }
+    cleanup
+}
+
 fn slot_key<P>(slot: &ExpectedPeerSlot<P>) -> Option<ExpectedPeerKey> {
     match slot {
         ExpectedPeerSlot::Live { key, .. }
@@ -1075,6 +1452,27 @@ fn retire_all<P>(peers: &mut [LocalPeer<P>]) {
     for local in peers {
         local.next_phase = None;
     }
+}
+
+fn deadline_after(timeout: Duration) -> Result<Instant, ExpectedPeerRegistryError> {
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or(ExpectedPeerRegistryError::Internal)
+}
+
+fn wait_for_cancellations(
+    cancellations: Vec<InFlightCancellation>,
+    timeout: Duration,
+) -> Result<(), ExpectedPeerRegistryError> {
+    if cancellations.is_empty() {
+        return Ok(());
+    }
+    let deadline = deadline_after(timeout)?;
+    let mut result = Ok(());
+    for cancellation in cancellations {
+        result = result.and(cancellation.wait_until(deadline));
+    }
+    result
 }
 
 fn cleanup_peer<P, C>(peer: &mut P) -> Result<(), ExpectedPeerRegistryError>
@@ -1096,14 +1494,6 @@ where
         drop(peer);
     }
     result
-}
-
-fn cleanup_local_peers<P, C>(peers: Vec<LocalPeer<P>>) -> Result<(), ExpectedPeerRegistryError>
-where
-    C: ExpectedHelperCandidate,
-    P: ExpectedHelperPeer<C>,
-{
-    cleanup_peers::<P, C>(peers.into_iter().map(|local| local.peer).collect())
 }
 
 fn lock_expected_state<P, C>(
@@ -1234,6 +1624,7 @@ mod tests {
         match_pause: Option<Arc<Barrier>>,
         suspended_pause: Option<Arc<Barrier>>,
         resume_pause: Option<Arc<Barrier>>,
+        cancel_pause: Option<Arc<Barrier>>,
         panic_on_match: bool,
     }
 
@@ -1306,6 +1697,10 @@ mod tests {
 
         fn cancel(&mut self) -> Result<(), ExpectedPeerVerificationError> {
             self.trace.push(Event::Cancel);
+            if let Some(pause) = &self.cancel_pause {
+                pause.wait();
+                pause.wait();
+            }
             (self.fail != Some(Event::Cancel))
                 .then_some(())
                 .ok_or(ExpectedPeerVerificationError::Internal)
@@ -1337,6 +1732,7 @@ mod tests {
             match_pause: None,
             suspended_pause: None,
             resume_pause: None,
+            cancel_pause: None,
             panic_on_match: false,
         })
     }
@@ -1347,6 +1743,57 @@ mod tests {
             valid,
             trace: trace.clone(),
         }
+    }
+
+    fn wait_for_cancel_request(
+        admission: &ExpectedHelperAdmission<FakePeer, FakeCandidate>,
+        expected_key: ExpectedPeerKey,
+    ) -> Result<(), ExpectedPeerRegistryError> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .ok_or(ExpectedPeerRegistryError::Internal)?;
+        loop {
+            let state = admission
+                .inner
+                .state
+                .lock()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+            let requested = state.slots.iter().any(|slot| {
+                matches!(
+                    slot,
+                    ExpectedPeerSlot::InFlight {
+                        key,
+                        cancel_requested: true,
+                        ..
+                    } if *key == expected_key
+                )
+            });
+            drop(state);
+            if requested {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(ExpectedPeerRegistryError::Internal);
+            }
+            thread::yield_now();
+        }
+    }
+
+    fn is_in_flight(
+        admission: &ExpectedHelperAdmission<FakePeer, FakeCandidate>,
+        expected_key: ExpectedPeerKey,
+    ) -> Result<bool, ExpectedPeerRegistryError> {
+        let state = admission
+            .inner
+            .state
+            .lock()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        Ok(state.slots.iter().any(|slot| {
+            matches!(
+                slot,
+                ExpectedPeerSlot::InFlight { key, .. } if *key == expected_key
+            )
+        }))
     }
 
     #[test]
@@ -1378,6 +1825,248 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(lease);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_returns_server_role_and_is_exactly_once()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut lease = admission
+            .register_suspended(peer(
+                21,
+                21,
+                ExpectedHelperRole::SecretInput,
+                &trace,
+                &drops,
+            )?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.consume_manager(key(21)?, &candidate(21, true, &trace)),
+            Ok(ExpectedHelperRole::SecretInput)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Ok(ExpectedHelperRole::SecretInput)
+        );
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let cancel_count = trace
+            .0
+            .lock()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?
+            .iter()
+            .filter(|event| **event == Event::Cancel)
+            .count();
+        assert_eq!(cancel_count, 1);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn finish_before_manager_admission_is_denied_and_terminal()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut lease = admission
+            .register_suspended(peer(22, 22, ExpectedHelperRole::Approval, &trace, &drops)?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admission.consume_manager(key(22)?, &candidate(22, true, &trace)),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn registered_phase_cannot_be_finished_as_admitted() -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let registered = admission.register_suspended(peer(
+            23,
+            23,
+            ExpectedHelperRole::SecretInput,
+            &trace,
+            &drops,
+        )?)?;
+        let mut lease = ExpectedHelperLease {
+            inner: Arc::clone(&admission.inner),
+            key: key(23)?,
+            armed: true,
+        };
+
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        drop(registered);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_cleanup_error_dominates_role_success()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut failing = peer(24, 24, ExpectedHelperRole::Approval, &trace, &drops)?;
+        failing.fail = Some(Event::Cancel);
+        let mut lease = admission
+            .register_suspended(failing)?
+            .revalidate_and_resume_once()?;
+        assert_eq!(
+            admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+            Ok(ExpectedHelperRole::Approval)
+        );
+
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        Ok(())
+    }
+
+    #[test]
+    fn in_flight_finish_is_not_success_and_requests_terminal_cleanup()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let pause = Arc::new(Barrier::new(2));
+        let mut helper = peer(25, 25, ExpectedHelperRole::Approval, &trace, &drops)?;
+        helper.match_pause = Some(Arc::clone(&pause));
+        let mut lease = admission
+            .register_suspended(helper)?
+            .revalidate_and_resume_once()?;
+        let worker_admission = admission.clone();
+        let worker_trace = trace.clone();
+        let worker = thread::spawn(move || {
+            worker_admission.consume_manager(key(25)?, &candidate(25, true, &worker_trace))
+        });
+
+        pause.wait();
+        let (finish_sent, finish_received) = mpsc::channel();
+        let finish = thread::spawn(move || {
+            let result = lease.finish_admitted_and_cancel();
+            let dropped =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease))).is_ok();
+            let _ = finish_sent.send((result, dropped));
+        });
+        wait_for_cancel_request(&admission, key(25)?)?;
+        assert!(
+            finish_received
+                .recv_timeout(Duration::from_millis(25))
+                .is_err()
+        );
+        pause.wait();
+        assert_eq!(
+            worker
+                .join()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(
+            finish_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            (Err(ExpectedPeerRegistryError::Internal), true)
+        );
+        finish
+            .join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        assert!(!is_in_flight(&admission, key(25)?)?);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_cancels_outside_registry_mutex() -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let pause = Arc::new(Barrier::new(2));
+        let mut helper = peer(26, 26, ExpectedHelperRole::Approval, &trace, &drops)?;
+        helper.cancel_pause = Some(Arc::clone(&pause));
+        let mut lease = admission
+            .register_suspended(helper)?
+            .revalidate_and_resume_once()?;
+        assert_eq!(
+            admission.consume_manager(key(26)?, &candidate(26, true, &trace)),
+            Ok(ExpectedHelperRole::Approval)
+        );
+
+        let (finish_sent, finish_received) = mpsc::channel();
+        let finish = thread::spawn(move || {
+            let result = lease.finish_admitted_and_cancel();
+            let _ = finish_sent.send(result);
+        });
+        pause.wait();
+
+        let registration_admission = admission.clone();
+        let registration_trace = trace.clone();
+        let registration_drops = Arc::clone(&drops);
+        let (registration_sent, registration_received) = mpsc::channel();
+        let registration = thread::spawn(move || {
+            let result = peer(
+                27,
+                27,
+                ExpectedHelperRole::SecretInput,
+                &registration_trace,
+                &registration_drops,
+            )
+            .and_then(|peer| registration_admission.register_suspended(peer));
+            let _ = registration_sent.send(result);
+        });
+        let early_registration = registration_received.recv_timeout(Duration::from_millis(25));
+        let completed_while_cancel_blocked = early_registration.is_ok();
+        pause.wait();
+        let registered = match early_registration {
+            Ok(result) => result?,
+            Err(mpsc::RecvTimeoutError::Timeout) => registration_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)??,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ExpectedPeerRegistryError::Internal);
+            }
+        };
+        assert!(completed_while_cancel_blocked);
+        assert_eq!(
+            finish_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            Ok(ExpectedHelperRole::Approval)
+        );
+        finish
+            .join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        registration
+            .join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        drop(registered);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
@@ -1802,7 +2491,7 @@ mod tests {
                 &trace,
                 &drops,
             )?)?;
-            core::mem::forget(registered);
+            drop(registered);
         }
         assert!(matches!(
             admission
@@ -1855,7 +2544,8 @@ mod tests {
     }
 
     #[test]
-    fn slow_os_observation_never_holds_registry_mutex() -> Result<(), ExpectedPeerRegistryError> {
+    fn stop_waits_for_in_flight_cleanup_without_holding_registry_mutex()
+    -> Result<(), ExpectedPeerRegistryError> {
         let admission = ExpectedHelperAdmission::new();
         let trace = Trace::new();
         let drops = Arc::new(AtomicU32::new(0));
@@ -1869,7 +2559,18 @@ mod tests {
             let _ = sent.send(result);
         });
         pause.wait();
-        assert_eq!(admission.stop(), Err(ExpectedPeerRegistryError::Internal));
+        let stop_admission = admission.clone();
+        let (stop_sent, stop_received) = mpsc::channel();
+        let stop = thread::spawn(move || {
+            let result = stop_admission.stop();
+            let _ = stop_sent.send(result);
+        });
+        wait_for_cancel_request(&admission, key(7)?)?;
+        assert!(
+            stop_received
+                .recv_timeout(Duration::from_millis(25))
+                .is_err()
+        );
         assert!(received.recv_timeout(Duration::from_millis(25)).is_err());
         pause.wait();
         assert!(
@@ -1878,9 +2579,18 @@ mod tests {
                 .map_err(|_| ExpectedPeerRegistryError::Internal)?
                 .is_err()
         );
+        assert_eq!(
+            stop_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            Ok(())
+        );
         worker
             .join()
             .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        stop.join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        assert!(!is_in_flight(&admission, key(7)?)?);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         Ok(())
     }
@@ -1936,7 +2646,7 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_cancel_is_not_success_and_guard_drop_fails_fast()
+    fn in_flight_cancel_waits_for_observer_cleanup_and_guard_drop_is_quiet()
     -> Result<(), ExpectedPeerRegistryError> {
         let admission = ExpectedHelperAdmission::new();
         let trace = Trace::new();
@@ -1953,9 +2663,19 @@ mod tests {
             worker_admission.observe_callback(&candidate(11, true, &worker_trace))
         });
         pause.wait();
-        assert_eq!(lease.cancel(), Err(ExpectedPeerRegistryError::Internal));
-        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease)));
-        assert!(dropped.is_err());
+        let (cancel_sent, cancel_received) = mpsc::channel();
+        let cancel = thread::spawn(move || {
+            let result = lease.cancel();
+            let dropped =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease))).is_ok();
+            let _ = cancel_sent.send((result, dropped));
+        });
+        wait_for_cancel_request(&admission, key(11)?)?;
+        assert!(
+            cancel_received
+                .recv_timeout(Duration::from_millis(25))
+                .is_err()
+        );
         pause.wait();
         assert!(
             worker
@@ -1963,6 +2683,103 @@ mod tests {
                 .map_err(|_| ExpectedPeerRegistryError::Internal)?
                 .is_err()
         );
+        assert_eq!(
+            cancel_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            (Ok(()), true)
+        );
+        cancel
+            .join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        assert!(!is_in_flight(&admission, key(11)?)?);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn in_flight_cancel_timeout_delegates_cleanup_without_guard_abort()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let pause = Arc::new(Barrier::new(2));
+        let mut helper = peer(12, 12, ExpectedHelperRole::Approval, &trace, &drops)?;
+        helper.match_pause = Some(Arc::clone(&pause));
+        let mut lease = admission
+            .register_suspended(helper)?
+            .revalidate_and_resume_once()?;
+        let worker_admission = admission.clone();
+        let worker_trace = trace.clone();
+        let worker = thread::spawn(move || {
+            worker_admission.observe_callback(&candidate(12, true, &worker_trace))
+        });
+
+        pause.wait();
+        assert_eq!(
+            lease.cancel_with_timeout(Duration::ZERO),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease)));
+        assert!(dropped.is_ok());
+        assert!(is_in_flight(&admission, key(12)?)?);
+        pause.wait();
+        assert!(
+            worker
+                .join()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?
+                .is_err()
+        );
+        assert!(!is_in_flight(&admission, key(12)?)?);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn delegated_cleanup_error_is_returned_without_second_guard_cleanup()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let pause = Arc::new(Barrier::new(2));
+        let mut helper = peer(13, 13, ExpectedHelperRole::Approval, &trace, &drops)?;
+        helper.match_pause = Some(Arc::clone(&pause));
+        helper.fail = Some(Event::Cancel);
+        let mut lease = admission
+            .register_suspended(helper)?
+            .revalidate_and_resume_once()?;
+        let worker_admission = admission.clone();
+        let worker_trace = trace.clone();
+        let worker = thread::spawn(move || {
+            worker_admission.observe_callback(&candidate(13, true, &worker_trace))
+        });
+        pause.wait();
+
+        let (cancel_sent, cancel_received) = mpsc::channel();
+        let cancel = thread::spawn(move || {
+            let result = lease.cancel();
+            let dropped =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease))).is_ok();
+            let _ = cancel_sent.send((result, dropped));
+        });
+        wait_for_cancel_request(&admission, key(13)?)?;
+        pause.wait();
+        assert_eq!(
+            worker
+                .join()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(
+            cancel_received
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            (Err(ExpectedPeerRegistryError::Internal), true)
+        );
+        cancel
+            .join()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        assert!(!is_in_flight(&admission, key(13)?)?);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         Ok(())
     }

@@ -16,10 +16,13 @@ normalization remains a supported-kernel matrix obligation.
 Desktop RPC admission now rejects `SeDebugPrivilege` whenever it is assigned,
 including assigned-but-disabled, and the authenticated desktop token must receive
 exact `ERROR_ACCESS_DENIED` when opening the still-suspended child with only
-`PROCESS_DUP_HANDLE`. A separate role-aware helper transport-candidate path and
-fixed-capacity expected-peer registry provide suspended registration, independent
-non-consuming callback observation, exact-once manager consumption, ordered
-resume/publication, and bounded cancel/reap foundations.
+`PROCESS_DUP_HANDLE`. Under the LPAC probe feature, the live RPC manager and its
+independent If3 callback now classify desktop and service-created-LPAC callers
+through the role-aware router. The service-owned expected-peer registry has
+exactly eight slots, never reuses a retired slot during one server lifetime,
+registers while the helper is suspended, publishes running state across the sole
+resume, keeps callback observation non-consuming, consumes manager authority
+exactly once, and uses a five-second terminal-cleanup quiescence bound.
 
 The immutable version-1 `YWKASV01` service wire remains unchanged. A separate,
 non-default `debug-feasibility-v2` module defines the debug-only `YWKASV02`
@@ -31,28 +34,57 @@ result for every command. No frame carries caller role, PID, or image authority.
 Epoch slots permanently bind V1 or V2, and a wrong-version use consumes the
 epoch before returning denial.
 
-The feature-gated pure V2 desktop dispatcher now returns open-epoch and status
-responses immediately, while Approval/Secret Input probes become move-only
-launch actions that own the freshly authenticated peer and exact consumed
-request. A desktop `HelperReady` is rejected as authentication failure before
-epoch consumption. This pure boundary is not connected to `ServerContext`, the
-actual RPC manager, launch waiting, or helper I/O.
+The feature-gated V2 desktop dispatcher now reaches the live `ServerContext`.
+Open-epoch and status responses remain immediate, while Approval/Secret Input
+probes become move-only launch actions. The exact consumed
+`DesktopCommandRequest` is the sole source of helper role, epoch, request ID, and
+matching success result; a caller cannot supply those values independently. The
+RPC manager thread retains the one-shot response capability and sends only the
+authenticated desktop authority plus an exact request copy to one coordinator
+worker. One occupied flag spans the worker and its one-slot transport, so a
+second launch returns correlated `Unavailable` instead of queuing behind active
+work; the manager-side result wait is bounded at 20 seconds.
 
-The helper bootstrap now privately retains the validated hello's
-epoch/request/role correlation key and absolute deadline in zeroizing storage.
-Its distinct 72-byte `YWKHRC01` confirmation is correlation evidence only, is
-not the adoption ACK, and cannot replace expected-peer role authority. A dormant
-manager rejection path also retires exact or indeterminate peers after a
-malformed helper candidate rather than leaving related launch authority live.
+The debug coordinator derives an exact fixed sibling Approval or Secret Input
+image, holds and hashes that file without write/delete sharing, creates the
+service-owned LPAC on a fresh debugger thread, completes both authenticated
+bootstrap gates, registers before resume, and waits while retaining the request
+writer. This artifact pin is not Authenticode, version, manifest, or immutable-
+installation proof. The sibling names `approval-ui.exe` and
+`secret-input-ui.exe` are exact, including case after canonicalization; a
+differently spelled or cased name fails closed as an availability failure.
+Separate feature-gated entrypoints fix their roles. The status-only server keeps
+its existing single AU/SY-`GA`, Medium/`NW` descriptor for both endpoint and
+If3. The LPAC probe derives the exact Approval and Secret Input package SIDs from
+their fixed profile monikers with OS APIs, then retains a separate Low/`NW`
+endpoint descriptor granting connect `0x1` and an If3 descriptor granting `GA`
+to AU, SY, and those two package SIDs. This closes the prior descriptor-level
+transport-reachability defect in the debug composition; it is not installed-SCM
+fixed-LPAC E2E evidence. Each helper uses the fixed
+local endpoint with implicit WINNT credentials, packet privacy, and no RPC authz
+mode; it sends the exact `HelperReady`, accepts only the correlated ACK, frees
+the RPC binding, writes the distinct 72-byte `YWKHRC01` confirmation, closes the
+response pipe, and blocks on the request pipe until service termination. The
+confirmation remains correlation evidence only, not the adoption ACK or helper-
+role authority.
 
-This is fixture evidence, not the Phase 1 exit gate. The target is the debug-only
-helper's untrusted `current_exe`, not a parent-pinned signed target; system-wide
-sole ownership of the Job handle is not proven; and the results are current-host
-only. The pure V2 dispatcher has no runtime manager reachability, and there is no
-helper send/launch integration or signed-helper `ncalrpc` E2E. The installed
-restricted-service, cross-session, elevated
-service, and supported-kernel matrices remain open. Both compiled policies stay
-`None`.
+Malformed helper candidates retire exact or identity-indeterminate peers rather
+than preserving related authority. Cleanup, registry-internal, debugger-
+invariant, or role-correlation failures latch fatal coordinator health and close
+new RPC admission. Shutdown first completes RPC rundown, then stops and joins the
+coordinator, then calls the helper registry's five-second quiescence stop. Only
+the LPAC probe build derives a 30-second SCM hard fail-fast watchdog from the
+terminal-resource bounds plus margin; that watchdog does not prove every Windows
+call is interruptible and is not a clean per-operation deadline.
+
+This is a no-secret, debug-only composition path, not proof that the Phase 1
+exit gate has passed. No actual installed restricted SCM service has yet
+completed the service-created LPAC
+round trip across sessions under elevation, and the exact helpers have not been
+proved signed, immutable, or release-manifest-bound. Parent-pinned production
+image identity, system-wide sole Job-handle ownership, signed-helper `ncalrpc`
+E2E, and the supported-kernel matrix remain open. Phase 1 is not passed, release
+status remains **STOP-SHIP**, and both compiled policies stay `None`.
 
 정식 지갑의 백업 원칙과 복구 연습은
 [한국어 지갑 백업·복구 안내](docs/recovery-guide.ko.md)에 따로 정리했습니다.

@@ -10,6 +10,18 @@ const SERVICE_UNAVAILABLE: i32 = 78;
 
 #[cfg(all(
     windows,
+    feature = "lpac-rpc-probe-feasibility-test-hook",
+    debug_assertions
+))]
+fn main() {
+    let exit_code = platform_windows::run_lpac_rpc_probe_key_agent_service_fixture()
+        .map_or(SERVICE_UNAVAILABLE, |()| 0);
+    std::process::exit(exit_code);
+}
+
+#[cfg(all(
+    windows,
+    not(feature = "lpac-rpc-probe-feasibility-test-hook"),
     feature = "rpc-status-feasibility-test-hook",
     debug_assertions
 ))]
@@ -21,6 +33,7 @@ fn main() {
 
 #[cfg(all(
     windows,
+    not(feature = "lpac-rpc-probe-feasibility-test-hook"),
     not(feature = "rpc-status-feasibility-test-hook"),
     feature = "service-token-feasibility-test-hook",
     debug_assertions
@@ -33,6 +46,7 @@ fn main() {
 
 #[cfg(all(
     windows,
+    not(feature = "lpac-rpc-probe-feasibility-test-hook"),
     not(feature = "rpc-status-feasibility-test-hook"),
     not(feature = "service-token-feasibility-test-hook"),
     feature = "scm-feasibility-test-hook",
@@ -47,17 +61,25 @@ fn main() {
 #[cfg(not(any(
     all(
         windows,
+        feature = "lpac-rpc-probe-feasibility-test-hook",
+        debug_assertions
+    ),
+    all(
+        windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
         feature = "rpc-status-feasibility-test-hook",
         debug_assertions
     ),
     all(
         windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
         not(feature = "rpc-status-feasibility-test-hook"),
         feature = "service-token-feasibility-test-hook",
         debug_assertions
     ),
     all(
         windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
         not(feature = "rpc-status-feasibility-test-hook"),
         not(feature = "service-token-feasibility-test-hook"),
         feature = "scm-feasibility-test-hook",
