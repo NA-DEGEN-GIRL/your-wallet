@@ -33,8 +33,9 @@ key-agent-service-rpc-status-feasibility-test-hook = [
     "dep:key-agent-service-rpc-sys",
     "dep:key-agent-service-wire",
 ]
-# Dormant, secretless one-shot process/handle-transfer transport evidence. It
-# creates no Key Agent target and exposes no production or RPC entrypoint.
+# Dormant, secretless debugger/target-topology and forced-parent-death evidence.
+# Its inert target is debug-only and untrusted; no production or RPC entrypoint
+# reaches the transport.
 key-agent-debugger-transport-feasibility-test-hook = [
     "dep:key-agent-debugger-wire",
 ]

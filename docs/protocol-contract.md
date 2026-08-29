@@ -32,6 +32,70 @@ retention does not construct a Broker-plus-Key-Agent same-release aggregate,
 topology or single-instance proof, or runtime/signing authority. No production caller
 reaches the dormant Broker path.
 
+### Phase 1 debugger and service-RPC feasibility contract
+
+**Phase 1 is not passed and release remains STOP-SHIP.** The separate debug-only
+debugger wire now has six exact, non-negotiated frame kinds: 80-byte bootstrap,
+72-byte `READY_FROZEN`, 56-byte decision, 96-byte `TARGET_FROZEN`, 56-byte
+parent-death command, and 96-byte parent-death report. Integers are big-endian;
+reserved fields must be zero; exact kind and length are mandatory; and CRC32C
+detects corruption but authenticates neither the peer nor authority. The
+parent-death command binds a run nonce and one closed stage (`PreReady`, `Ready`,
+or `PostHandoff`). Its report binds that nonce/stage plus supervisor, debugger,
+and applicable target PID/creation-time identities and the exact required proof
+ bits. Cross-kind decoding, malformed fields, suffixes, out-of-phase reports,
+ nonce/stage mismatches, and unexpected extra frames fail closed. The
+ `PostHandoff` checkpoint deliberately reuses the exact command as its
+ acknowledgement, so the codec itself does not claim stateless replay rejection.
+
+Behind the debugger executable's explicit debug hook, `TARGET_FROZEN` reports a
+real suspended inert target's PID/TID, creation time, and source process/thread
+handle words. The parent pulls back only process access `0x00101001` and thread
+access `0x00100802`; current-host native readback must be exactly `0x00101001`
+and `0x00101802`, respectively. The latter includes the measured object-manager
+addition of `THREAD_RESUME` (`0x1000`) and is not yet a supported-kernel
+contract. The target remains untrusted because the helper resolves its own
+`current_exe`; no parent-pinned signed target-image assertion is carried by this
+frame.
+
+The fixture's unnamed non-inheritable Job must read back exactly
+`KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, `ActiveProcessLimit = 2`, and no
+breakaway. Current-host tests require exact debugger-plus-target membership at
+two, denial of an attempted third suspended member at the quota, target-only
+membership after debugger exit, and exact-zero terminal cleanup. Forced outer-
+parent-death probes cover pre-`READY_FROZEN`, `READY_FROZEN`, and post-handoff
+states by observing exact PID plus creation time until every applicable process
+is terminal. These are test-control frames and current-host evidence, not a
+production protocol or proof that the parent owns the system-wide last Job
+handle.
+
+The authenticated service-RPC feasibility boundary now has distinct transport
+results for an interactive desktop caller and a service-created-LPAC candidate.
+Desktop policy accepts only an absent `SeDebugPrivilege`; assigned-but-disabled
+and enabled are both denied. After the one-shot process-creation claim, the
+server impersonates the retained authenticated desktop token and requires exact
+`ERROR_ACCESS_DENIED` from
+`OpenProcess(PROCESS_DUP_HANDLE, FALSE, suspended_child_pid)`, with token
+bookends and exact-once revert.
+
+The helper transport candidate proves only local RPC plus a low-integrity,
+restricted, limited-elevation AppContainer shape without UI access, interactive
+SID, or `SeDebugPrivilege`. The fixed-capacity expected-peer registry separately
+owns exact profile SID, capabilities, image, process/token identity, and
+Approval/Secret Input role. It registers while suspended, revalidates before a
+single resume, publishes `ExpectedRunning` before a callback can proceed,
+permits non-consuming callback observation, and lets a key-bearing manager call
+consume the expected peer exactly once. Duplicate identity/key races, replay,
+wrong role/phase, stop, and cancellation fail closed; cancellation performs
+bounded process reap and exact-zero Job cleanup.
+
+No production RPC dispatch, lifecycle, or helper wire calls this role-aware
+foundation. Signed-helper `ncalrpc` E2E, endpoint and service identity, installed
+SCM/cross-session/elevated-service evidence, parent-pinned target image,
+system-wide Job-handle exclusion, and the supported-kernel matrix remain
+**STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
+`None`.
+
 ### Debug-only subprocess contract
 
 An explicit `broker-ipc-contract-test-hook` Cargo feature can connect the native
@@ -542,10 +606,13 @@ matrix for marker decoding, context semantics, and the authenticated ntdll
 breakpoint are also **STOP-SHIP**. The `cfg(test)`
 integration executes the production-compiled token and creation hardening,
 proves the Approval query-only outcome, and exercises the creation DACL kernel
-behavior. The fixture does not directly read back the copied image's
-mandatory-label state. Its test-only mitigation removes only
-`NO_LOW_LABEL` to permit the profile-scoped copy; production mitigation is
-unchanged. Mapped-image and
+behavior. On both its CSPRNG directory and copied executable, the Key Agent
+fixture requires and reads back the exact current-user owner, explicitly
+applies and reads back the protected current-user/profile DACL plus a
+Medium/`NW` mandatory label, and retains the full mitigation policy including
+`NO_LOW_LABEL`. The separate Approval copied-image fixture does not read back
+that image label and removes only `NO_LOW_LABEL` under `cfg(test)`; production
+mitigation is unchanged. Mapped-image and
 DLL/dependency provenance, a distinct OS principal/service design with
 IPC/lifecycle proof and same-user owner separation, bypass-thread and high-right
 handle policy, enabled privileges,

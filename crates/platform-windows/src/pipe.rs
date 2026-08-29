@@ -26,6 +26,7 @@ use crate::key_agent_startup::{KEY_AGENT_STARTUP_REQUEST_BYTES, KEY_AGENT_STARTU
 ))]
 use key_agent_debugger_wire::{
     BOOTSTRAP_FRAME_BYTES, DECISION_FRAME_BYTES, READY_FROZEN_FRAME_BYTES,
+    TARGET_FROZEN_FRAME_BYTES,
 };
 
 /// Maximum bytes buffered by the operating system in either direction.
@@ -1005,6 +1006,35 @@ impl KeyAgentDebuggerStatusReader {
         let mut exact = [0_u8; READY_FROZEN_FRAME_BYTES];
         exact.copy_from_slice(&frame);
         Ok(exact)
+    }
+
+    pub(crate) fn receive_frozen_topology(
+        self,
+        deadline: Instant,
+    ) -> Result<
+        (
+            [u8; READY_FROZEN_FRAME_BYTES],
+            [u8; TARGET_FROZEN_FRAME_BYTES],
+        ),
+        PipeError,
+    > {
+        let exact_bytes = READY_FROZEN_FRAME_BYTES
+            .checked_add(TARGET_FROZEN_FRAME_BYTES)
+            .ok_or(PipeError::OperatingSystem)?;
+        let frame = sys::read_exact_frame_before(self.0.raw(), exact_bytes, deadline)?;
+        let mut ready = [0_u8; READY_FROZEN_FRAME_BYTES];
+        let mut target = [0_u8; TARGET_FROZEN_FRAME_BYTES];
+        ready.copy_from_slice(
+            frame
+                .get(..READY_FROZEN_FRAME_BYTES)
+                .ok_or(PipeError::UnexpectedEnd)?,
+        );
+        target.copy_from_slice(
+            frame
+                .get(READY_FROZEN_FRAME_BYTES..)
+                .ok_or(PipeError::UnexpectedEnd)?,
+        );
+        Ok((ready, target))
     }
 }
 

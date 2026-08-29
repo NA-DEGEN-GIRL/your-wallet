@@ -17,19 +17,21 @@ use std::rc::Rc;
 
 use key_agent_service_rpc_sys::{CallBinding, INTERFACE_UUID};
 use windows::Win32::Foundation::{
-    CloseHandle, CompareObjectHandles, ERROR_NO_TOKEN, GetHandleInformation, HANDLE,
-    INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, CompareObjectHandles, ERROR_ACCESS_DENIED, ERROR_NO_TOKEN, GetHandleInformation,
+    HANDLE, INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, GetLengthSid, GetTokenInformation, ImpersonateLoggedOnUser, IsValidSid, PSID,
-    RevertToSelf, SECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES,
-    SecurityDelegation, SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ASSIGN_PRIMARY,
-    TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE, TOKEN_USER,
-    TokenElevationType, TokenElevationTypeDefault, TokenElevationTypeFull,
-    TokenElevationTypeLimited, TokenGroups, TokenHasRestrictions, TokenImpersonation,
-    TokenImpersonationLevel, TokenIntegrityLevel, TokenIsAppContainer, TokenPrimary,
-    TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
+    DuplicateTokenEx, GetLengthSid, GetTokenInformation, ImpersonateLoggedOnUser, IsValidSid,
+    LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID, RevertToSelf, SE_PRIVILEGE_ENABLED,
+    SE_PRIVILEGE_ENABLED_BY_DEFAULT, SE_PRIVILEGE_REMOVED, SE_PRIVILEGE_USED_FOR_ACCESS,
+    SECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL, SID_AND_ATTRIBUTES, SecurityDelegation,
+    SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+    TOKEN_ELEVATION_TYPE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL,
+    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_TYPE, TOKEN_USER, TokenElevationType,
+    TokenElevationTypeDefault, TokenElevationTypeFull, TokenElevationTypeLimited, TokenGroups,
+    TokenHasRestrictions, TokenImpersonation, TokenImpersonationLevel, TokenIntegrityLevel,
+    TokenIsAppContainer, TokenPrimary, TokenPrivileges, TokenSessionId, TokenStatistics,
+    TokenUIAccess, TokenUser,
 };
 use windows::Win32::System::Diagnostics::Debug::RaiseFailFastException;
 use windows::Win32::System::Rpc::{
@@ -44,7 +46,7 @@ use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
     DEBUG_ONLY_THIS_PROCESS, EXTENDED_STARTUPINFO_PRESENT, GetCurrentThread, GetCurrentThreadId,
     GetProcessId, GetProcessIdOfThread, GetThreadId, OpenProcess, OpenProcessToken,
-    OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_DUP_HANDLE, PROCESS_INFORMATION,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOEXW, STARTUPINFOW,
     TerminateProcess, WaitForSingleObject,
 };
@@ -55,9 +57,9 @@ use crate::inheritable_handle_launch::ProcessThreadCreationSecurity;
 
 use super::{
     AuthenticationId, AuthenticationObservation, CallKind, CallObservation, CallProtocol,
-    DesktopImpersonationOps, EffectiveThreadAuthOps, ElevationKind, ObservationError,
-    ProcessAuthOps, RpcAuthOps, SidBytes, ThreadTokenState, TokenId, TokenKind, TokenLevel,
-    TokenObservation,
+    DebugPrivilegeState, DesktopImpersonationOps, DesktopProcessAccessError,
+    EffectiveThreadAuthOps, ElevationKind, ObservationError, ProcessAuthOps, RpcAuthOps, SidBytes,
+    ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
 };
 
 const MAX_TOKEN_INFORMATION_BYTES: usize = 64 * 1024;
@@ -98,6 +100,19 @@ impl RetainedProcess {
     }
 }
 
+pub(super) fn retained_process_matches_borrowed(
+    retained: &RetainedProcess,
+    process: BorrowedHandle<'_>,
+) -> Result<bool, ObservationError> {
+    let process = windows_handle(process);
+    if invalid_handle(retained.raw()) || invalid_handle(process) {
+        return Err(ObservationError::Incomplete);
+    }
+    // SAFETY: the retained owner and lifetime-bound borrowed handle remain live
+    // for the complete object-manager comparison.
+    Ok(unsafe { CompareObjectHandles(retained.raw(), process) }.as_bool())
+}
+
 impl fmt::Debug for RetainedProcess {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("RetainedProcess([REDACTED])")
@@ -109,6 +124,39 @@ impl Drop for RetainedProcess {
         if !invalid_handle(self.0) {
             // SAFETY: every RetainedProcess owns one successful OpenProcess
             // result and closes it exactly once.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+struct UnexpectedProcessAccess(HANDLE);
+
+impl UnexpectedProcessAccess {
+    fn new(handle: HANDLE) -> Result<Self, DesktopProcessAccessError> {
+        if invalid_handle(handle) {
+            Err(DesktopProcessAccessError::Incomplete)
+        } else {
+            Ok(Self(handle))
+        }
+    }
+
+    fn close_checked(mut self) -> Result<(), DesktopProcessAccessError> {
+        let handle = self.0;
+        // SAFETY: this owner was created only from one successful OpenProcess
+        // result and still owns the exact live handle.
+        unsafe { CloseHandle(handle) }.map_err(|_| DesktopProcessAccessError::Incomplete)?;
+        self.0 = HANDLE::default();
+        Ok(())
+    }
+}
+
+impl Drop for UnexpectedProcessAccess {
+    fn drop(&mut self) {
+        if !invalid_handle(self.0) {
+            // SAFETY: a failed checked close leaves this exact owner armed for
+            // one ordinary RAII retry without exporting the handle.
             unsafe {
                 let _ = CloseHandle(self.0);
             }
@@ -765,6 +813,13 @@ impl DesktopImpersonationOps for WindowsProcessAuthOps {
         unsafe { RevertToSelf() }.map_err(|_| ObservationError::Incomplete)
     }
 
+    fn require_process_dup_handle_denied(
+        &self,
+        process_id: NonZeroU32,
+    ) -> Result<(), DesktopProcessAccessError> {
+        require_process_dup_handle_denied(process_id)
+    }
+
     fn fail_fast(&self) -> ! {
         fail_fast()
     }
@@ -982,6 +1037,21 @@ pub(super) fn impersonate_desktop_primary_token(
     // The caller installs an exact-once RevertToSelf owner immediately after
     // this success and independently validates the resulting thread token.
     unsafe { ImpersonateLoggedOnUser(token.raw()) }.map_err(|_| ObservationError::Incomplete)
+}
+
+fn require_process_dup_handle_denied(
+    process_id: NonZeroU32,
+) -> Result<(), DesktopProcessAccessError> {
+    // SAFETY: the nonzero PID names the still-suspended creator-owned child.
+    // Inheritance is disabled and the desired mask is exactly one process bit.
+    match unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, process_id.get()) } {
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => Ok(()),
+        Err(_) => Err(DesktopProcessAccessError::Incomplete),
+        Ok(handle) => {
+            UnexpectedProcessAccess::new(handle)?.close_checked()?;
+            Err(DesktopProcessAccessError::AccessAllowed)
+        }
+    }
 }
 
 fn duplicate_current_thread_desktop_primary_token() -> Result<DesktopPrimaryToken, ObservationError>
@@ -1485,6 +1555,7 @@ fn token_observation(token: HANDLE) -> Result<TokenObservation, ObservationError
     let ui_access = exact_boolean(token_u32(token, TokenUIAccess)?)?;
     let integrity_rid = token_integrity_rid(token)?;
     let elevation = token_elevation(token)?;
+    let debug_privilege = token_debug_privilege_state(token)?;
     // TokenHasRestrictions distinguishes an unfiltered token from any token
     // produced by filtering. Supported Windows builds report either the
     // documented DWORD or the native one-byte BOOLEAN width; all other shapes
@@ -1506,6 +1577,7 @@ fn token_observation(token: HANDLE) -> Result<TokenObservation, ObservationError
         elevation,
         restricted,
         interactive_sid_enabled: groups.interactive_sid_enabled,
+        debug_privilege,
     })
 }
 
@@ -1615,6 +1687,82 @@ fn token_groups_bytes(count: usize) -> Result<usize, ObservationError> {
         .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
         .and_then(|bytes| bytes.checked_add(offset_of!(TOKEN_GROUPS, Groups)))
         .ok_or(ObservationError::Incomplete)
+}
+
+fn token_debug_privilege_state(token: HANDLE) -> Result<DebugPrivilegeState, ObservationError> {
+    let privilege_name: Vec<u16> = "SeDebugPrivilege"
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    let mut debug_luid = LUID::default();
+    // SAFETY: the fixed privilege name is NUL terminated and the output is one
+    // initialized LUID. A null system name selects the local system.
+    unsafe {
+        LookupPrivilegeValueW(
+            PCWSTR::null(),
+            PCWSTR(privilege_name.as_ptr()),
+            &raw mut debug_luid,
+        )
+    }
+    .map_err(|_| ObservationError::Incomplete)?;
+
+    let minimum_bytes = offset_of!(TOKEN_PRIVILEGES, Privileges).max(size_of::<u32>());
+    let information = token_information(token, TokenPrivileges, minimum_bytes)?;
+    debug_privilege_state_from_bytes(information.initialized_bytes(), debug_luid)
+}
+
+fn debug_privilege_state_from_bytes(
+    bytes: &[u8],
+    debug_luid: LUID,
+) -> Result<DebugPrivilegeState, ObservationError> {
+    let entries_offset = offset_of!(TOKEN_PRIVILEGES, Privileges);
+    if bytes.len() < entries_offset.max(size_of::<u32>()) {
+        return Err(ObservationError::Incomplete);
+    }
+    let count = usize::try_from(u32::from_ne_bytes(
+        bytes[..size_of::<u32>()]
+            .try_into()
+            .map_err(|_| ObservationError::Incomplete)?,
+    ))
+    .map_err(|_| ObservationError::Incomplete)?;
+    let expected_bytes = count
+        .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+        .and_then(|bytes| entries_offset.checked_add(bytes))
+        .ok_or(ObservationError::Incomplete)?;
+    if expected_bytes != bytes.len() {
+        return Err(ObservationError::Incomplete);
+    }
+
+    let known_attributes = SE_PRIVILEGE_ENABLED_BY_DEFAULT.0
+        | SE_PRIVILEGE_ENABLED.0
+        | SE_PRIVILEGE_REMOVED.0
+        | SE_PRIVILEGE_USED_FOR_ACCESS.0;
+    let mut debug_privilege = DebugPrivilegeState::Absent;
+    for index in 0..count {
+        let offset = index
+            .checked_mul(size_of::<LUID_AND_ATTRIBUTES>())
+            .and_then(|bytes| entries_offset.checked_add(bytes))
+            .ok_or(ObservationError::Incomplete)?;
+        // SAFETY: exact flexible-array length and total returned extent were
+        // checked above; unaligned read avoids assuming entry alignment.
+        let entry = unsafe {
+            ptr::read_unaligned(bytes.as_ptr().add(offset).cast::<LUID_AND_ATTRIBUTES>())
+        };
+        if entry.Attributes.0 & !known_attributes != 0 {
+            return Err(ObservationError::Incomplete);
+        }
+        if entry.Luid == debug_luid {
+            if debug_privilege != DebugPrivilegeState::Absent {
+                return Err(ObservationError::Incomplete);
+            }
+            debug_privilege = if entry.Attributes.0 & SE_PRIVILEGE_ENABLED.0 == 0 {
+                DebugPrivilegeState::PresentDisabled
+            } else {
+                DebugPrivilegeState::PresentEnabled
+            };
+        }
+    }
+    Ok(debug_privilege)
 }
 
 fn token_integrity_rid(token: HANDLE) -> Result<u32, ObservationError> {
@@ -1818,28 +1966,30 @@ fn invalid_handle(handle: HANDLE) -> bool {
 mod tests {
     use super::{
         DESKTOP_NAME_WIDE, DESKTOP_PRIMARY_TOKEN_ACCESS, DESKTOP_PROCESS_CREATION_FLAGS,
-        DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY, NativeDesktopProcessCleanupError,
-        NativeDesktopProcessCreateError, OwnedToken, PendingDebuggerExitProcessCleanup,
-        PendingDebuggerExitProcessSuccess, PreparedDebuggerExitProcessSuccess, SidBytes,
-        TokenLevel, application_name_is_exact, classify_impersonation_level,
-        creation_attributes_are_exact, current_directory_is_exact, environment_is_exact,
-        exact_boolean, integrity_rid, parse_token_has_restrictions, startup_info_is_exact,
-        token_groups_bytes,
+        DebugPrivilegeState, DesktopPrimaryToken, MANDATORY_LABEL_AUTHORITY,
+        NativeDesktopProcessCleanupError, NativeDesktopProcessCreateError, OwnedToken,
+        PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
+        PreparedDebuggerExitProcessSuccess, SidBytes, TokenLevel, application_name_is_exact,
+        classify_impersonation_level, creation_attributes_are_exact, current_directory_is_exact,
+        debug_privilege_state_from_bytes, environment_is_exact, exact_boolean, integrity_rid,
+        parse_token_has_restrictions, startup_info_is_exact, token_groups_bytes,
     };
     use core::ffi::c_void;
-    use core::mem::size_of;
+    use core::mem::{offset_of, size_of};
     use core::ptr;
     use std::marker::PhantomData;
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{HANDLE, LUID};
     use windows::Win32::Security::{
+        LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_PRIVILEGE_ENABLED_BY_DEFAULT,
         SECURITY_ATTRIBUTES, SecurityAnonymous, SecurityDelegation, SecurityIdentification,
         SecurityImpersonation, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_GROUPS, TOKEN_ADJUST_PRIVILEGES,
         TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
-        TOKEN_QUERY,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
-        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW,
+        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_DUP_HANDLE,
+        STARTUPINFOEXW,
     };
     use windows::core::{BOOL, PWSTR};
 
@@ -1908,6 +2058,99 @@ mod tests {
                 | CREATE_NO_WINDOW.0
                 | CREATE_UNICODE_ENVIRONMENT.0
                 | EXTENDED_STARTUPINFO_PRESENT.0
+        );
+    }
+
+    #[test]
+    fn desktop_reopen_probe_requests_exactly_process_dup_handle() {
+        assert_eq!(PROCESS_DUP_HANDLE.0, 0x0000_0040);
+        assert_eq!(PROCESS_DUP_HANDLE.0.count_ones(), 1);
+    }
+
+    #[test]
+    fn debug_privilege_parser_distinguishes_presence_and_rejects_ambiguous_bytes() {
+        let debug = LUID {
+            LowPart: 7,
+            HighPart: 11,
+        };
+        let other = LUID {
+            LowPart: 13,
+            HighPart: 17,
+        };
+        let bytes = |entries: &[(LUID, u32)]| {
+            assert_eq!(offset_of!(TOKEN_PRIVILEGES, Privileges), size_of::<u32>());
+            assert_eq!(size_of::<LUID_AND_ATTRIBUTES>(), 12);
+            let mut bytes = Vec::with_capacity(size_of::<u32>() + entries.len() * 12);
+            bytes.extend_from_slice(
+                &u32::try_from(entries.len())
+                    .unwrap_or(u32::MAX)
+                    .to_ne_bytes(),
+            );
+            for (luid, attributes) in entries {
+                bytes.extend_from_slice(&luid.LowPart.to_ne_bytes());
+                bytes.extend_from_slice(&luid.HighPart.to_ne_bytes());
+                bytes.extend_from_slice(&attributes.to_ne_bytes());
+            }
+            bytes
+        };
+
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[]), debug),
+            Ok(DebugPrivilegeState::Absent)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(other, SE_PRIVILEGE_ENABLED.0)]), debug),
+            Ok(DebugPrivilegeState::Absent)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(debug, 0)]), debug),
+            Ok(DebugPrivilegeState::PresentDisabled)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(
+                &bytes(&[(debug, SE_PRIVILEGE_ENABLED_BY_DEFAULT.0)]),
+                debug,
+            ),
+            Ok(DebugPrivilegeState::PresentDisabled)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(debug, SE_PRIVILEGE_ENABLED.0)]), debug,),
+            Ok(DebugPrivilegeState::PresentEnabled)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(debug, 0), (debug, 0)]), debug),
+            Err(super::ObservationError::Incomplete)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(other, 0x0000_0008)]), debug),
+            Err(super::ObservationError::Incomplete)
+        );
+        assert_eq!(
+            debug_privilege_state_from_bytes(&bytes(&[(debug, 0x0000_0008)]), debug),
+            Err(super::ObservationError::Incomplete)
+        );
+
+        let exact = bytes(&[(debug, 0)]);
+        for truncated_len in 0..exact.len() {
+            assert_eq!(
+                debug_privilege_state_from_bytes(&exact[..truncated_len], debug),
+                Err(super::ObservationError::Incomplete),
+                "truncated extent {truncated_len} must fail closed"
+            );
+        }
+        for wrong_count in [0_u32, 2, u32::MAX] {
+            let mut wrong_extent = exact.clone();
+            wrong_extent[..size_of::<u32>()].copy_from_slice(&wrong_count.to_ne_bytes());
+            assert_eq!(
+                debug_privilege_state_from_bytes(&wrong_extent, debug),
+                Err(super::ObservationError::Incomplete)
+            );
+        }
+        let mut trailing = exact;
+        trailing.push(0);
+        assert_eq!(
+            debug_privilege_state_from_bytes(&trailing, debug),
+            Err(super::ObservationError::Incomplete)
         );
     }
 

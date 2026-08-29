@@ -9,6 +9,9 @@
 mod auth;
 mod dispatch;
 mod epoch;
+#[allow(dead_code)]
+// Dormant role-aware registry; runtime RPC wiring is the next feasibility slice.
+mod expected_peer;
 mod lifecycle;
 
 use core::{ffi::c_void, fmt};
@@ -47,10 +50,18 @@ use self::auth::RpcAuthError;
 pub(crate) use self::auth::{
     AuthenticatedDesktopImpersonation, AuthenticatedRpcClient, CreatedDesktopProcess,
     DetachedDesktopProcess, PendingDebuggerExitProcessCleanup, PendingDebuggerExitProcessSuccess,
-    PreparedDebuggerExitProcessSuccess,
+    PreparedDebuggerExitProcessSuccess, ServiceCreatedLpacCandidate,
 };
 use self::dispatch::{AuthenticationFailure, DispatchEngine};
 use self::epoch::SystemMonotonicClock;
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+pub(crate) use self::expected_peer::{
+    ExpectedHelperAdmission, ExpectedHelperLease, ExpectedHelperPeer, ExpectedHelperRole,
+    ExpectedPeerKey, ExpectedPeerRegistryError, ExpectedPeerVerificationError,
+};
 use self::lifecycle::{LifecycleHooks, ListeningStatusRpcServer, PreparedStatusRpcServer, RpcOps};
 
 const RPC_S_OK: i32 = 0;

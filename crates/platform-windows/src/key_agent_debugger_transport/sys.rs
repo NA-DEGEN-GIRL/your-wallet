@@ -10,15 +10,16 @@ use core::ptr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
+#[cfg(test)]
+use std::process::Child;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
 use windows::Wdk::Foundation::{NtQueryObject, ObjectBasicInformation};
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DBG_CONTINUE, DUPLICATE_HANDLE_OPTIONS,
     DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE,
-    ERROR_SEM_TIMEOUT, GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
+    ERROR_SEM_TIMEOUT, FILETIME, GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
     WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Diagnostics::Debug::{
@@ -30,19 +31,22 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    TerminateJobObject,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
     DEBUG_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-    GetCurrentProcessId, GetExitCodeProcess, GetProcessId, GetProcessIdOfThread, GetThreadId,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    GetCurrentProcessId, GetExitCodeProcess, GetProcessId, GetProcessIdOfThread, GetProcessTimes,
+    GetThreadId, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_CREATION_FLAGS,
     PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent,
     SuspendThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 #[cfg(test)]
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+};
 use windows::Win32::System::WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION;
 use windows::core::{BOOL, PCWSTR};
 
@@ -63,8 +67,19 @@ const FIRST_EVENT_TIMEOUT_MILLISECONDS: u32 = 5_000;
 const MAX_RUN_MILLISECONDS: u64 = 5_000;
 const JOB_TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const CREATION_ATTRIBUTE_COUNT: u32 = 2;
+const DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT: u32 = 2;
 const DEBUGGER_CONTAINMENT_JOB_LIMITS: JOB_OBJECT_LIMIT =
-    JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0);
+    JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0);
+const TARGET_PROCESS_REQUESTED_ACCESS: u32 = SYNCHRONIZE_ACCESS | 0x0000_1000 | 0x0000_0001;
+const TARGET_PROCESS_GRANTED_ACCESS: u32 = TARGET_PROCESS_REQUESTED_ACCESS;
+const TARGET_THREAD_REQUESTED_ACCESS: u32 = SYNCHRONIZE_ACCESS | 0x0000_0800 | 0x0000_0002;
+// Current-host object-manager normalization adds THREAD_RESUME when
+// THREAD_SUSPEND_RESUME is requested. Supported-kernel generalization remains
+// STOP-SHIP; this dormant fixture accepts this one observed granted mask only.
+const TARGET_THREAD_GRANTED_ACCESS: u32 = TARGET_THREAD_REQUESTED_ACCESS | 0x0000_1000;
+#[cfg(test)]
+const PARENT_DEATH_OBSERVATION_ACCESS: u32 =
+    PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0;
 
 /// Heap-stable two-slot process attribute list containing exactly three stdio
 /// handles and one borrowed containment Job handle. Drop deletes the native
@@ -183,11 +198,9 @@ impl Drop for DebuggerCreationAttributes<'_, '_, '_> {
 
 /// One parent-created and retained handle for the unnamed debugger Job.
 ///
-/// The exact policy is kill-on-close with neither an active-process limit nor
-/// either breakaway mode. Creation-time assignment proves the benign suspended
-/// helper is a member without prematurely deciding whether a future Key Agent
-/// target is an external peer or a descendant in the same Job tree. It does not
-/// prove that an executed helper could not duplicate another Job handle.
+/// The exact policy is kill-on-close plus an active-process limit of two, with
+/// neither breakaway mode. Creation-time assignment admits the debugger and
+/// inherited Job membership admits exactly one subsequently created target.
 struct DebuggerContainmentJob(OwnedHandle);
 
 impl DebuggerContainmentJob {
@@ -210,6 +223,8 @@ impl DebuggerContainmentJob {
 
         let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         information.BasicLimitInformation.LimitFlags = DEBUGGER_CONTAINMENT_JOB_LIMITS;
+        information.BasicLimitInformation.ActiveProcessLimit =
+            DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT;
         // SAFETY: the exact Job and immutable correctly sized policy remain
         // live for the complete configuration call.
         unsafe {
@@ -247,24 +262,157 @@ impl DebuggerContainmentJob {
         }
         .map_err(|_| DebuggerTransportError::JobProof)?;
         if returned != expected
-            || !exact_containment_limits(information.BasicLimitInformation.LimitFlags)
+            || !exact_containment_limits(
+                information.BasicLimitInformation.LimitFlags,
+                information.BasicLimitInformation.ActiveProcessLimit,
+            )
         {
             return Err(DebuggerTransportError::JobProof);
         }
         Ok(())
     }
 
-    fn verify_exact_member(&self, process: HANDLE) -> Result<(), DebuggerTransportError> {
+    fn verify_exact_member(
+        &self,
+        process: HANDLE,
+        process_id: u32,
+    ) -> Result<(), DebuggerTransportError> {
         self.verify_exact_limits()?;
+        if !self.is_member(process)? || !self.has_exact_process_ids(&[process_id])? {
+            return Err(DebuggerTransportError::JobProof);
+        }
+        Ok(())
+    }
+
+    fn verify_exact_pair(
+        &self,
+        debugger_process: HANDLE,
+        debugger_process_id: u32,
+        target_process: HANDLE,
+        target_process_id: u32,
+    ) -> Result<(), DebuggerTransportError> {
+        self.verify_exact_limits()?;
+        if debugger_process_id == 0
+            || target_process_id == 0
+            || debugger_process_id == target_process_id
+            || !self.is_member(debugger_process)?
+            || !self.is_member(target_process)?
+            || !self.has_exact_process_ids(&[debugger_process_id, target_process_id])?
+        {
+            return Err(DebuggerTransportError::JobProof);
+        }
+        Ok(())
+    }
+
+    fn prove_slot_not_inherited_by(&self, process: HANDLE) -> Result<(), DebuggerTransportError> {
+        if handle_flags(self.raw()).map_err(|_| DebuggerTransportError::JobProof)? != 0 {
+            return Err(DebuggerTransportError::JobProof);
+        }
+        let mut duplicate = HANDLE::default();
+        // SAFETY: `process` is the retained debugger process with duplication
+        // authority. An inherited handle retains its numeric slot, so probing
+        // the exact parent Job word either finds no source slot or duplicates
+        // an object that must compare different from this Job. This does not
+        // exclude a same-token duplicate placed in another slot.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                process,
+                self.raw(),
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        match duplicated {
+            Err(error) if error.code() == ERROR_INVALID_HANDLE.to_hresult() => Ok(()),
+            Err(_) => Err(DebuggerTransportError::JobProof),
+            Ok(()) if duplicate.is_invalid() => Err(DebuggerTransportError::JobProof),
+            Ok(()) => {
+                // SAFETY: successful DuplicateHandle returned one fresh owner.
+                let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate.0) };
+                // SAFETY: both retained handles are live for this identity
+                // comparison. A different object occupying the same numeric
+                // child slot is permitted but cannot satisfy Job inheritance.
+                let inherited_job =
+                    unsafe { CompareObjectHandles(windows_owned_handle(&duplicate), self.raw()) }
+                        .as_bool();
+                if handle_flags(windows_owned_handle(&duplicate))
+                    .map_err(|_| DebuggerTransportError::JobProof)?
+                    != 0
+                    || inherited_job
+                {
+                    Err(DebuggerTransportError::JobProof)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn wait_for_exact_member(
+        &self,
+        process: HANDLE,
+        process_id: u32,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        self.verify_exact_limits()?;
+        if !self.is_member(process)? {
+            return Err(DebuggerTransportError::JobProof);
+        }
+        loop {
+            if self.has_exact_process_ids(&[process_id])? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(DebuggerTransportError::JobProof);
+            }
+            std::thread::sleep(JOB_TERMINATION_POLL_INTERVAL);
+        }
+    }
+
+    fn is_member(&self, process: HANDLE) -> Result<bool, DebuggerTransportError> {
         let mut in_job = BOOL(0);
         // SAFETY: the exact process and Job owners remain live and output is
         // one writable BOOL.
         unsafe { IsProcessInJob(process, Some(self.raw()), &raw mut in_job) }
             .map_err(|_| DebuggerTransportError::JobProof)?;
-        if !in_job.as_bool() || self.active_process_count()? != 1 {
+        Ok(in_job.as_bool())
+    }
+
+    fn has_exact_process_ids(&self, expected_ids: &[u32]) -> Result<bool, DebuggerTransportError> {
+        let facts = self.process_id_facts()?;
+        Ok(exact_process_id_topology(facts, expected_ids))
+    }
+
+    fn process_id_facts(&self) -> Result<JobProcessIdFacts, DebuggerTransportError> {
+        let mut list = TwoProcessIdList::default();
+        let mut returned = 0_u32;
+        let supplied = u32::try_from(size_of::<TwoProcessIdList>())
+            .map_err(|_| DebuggerTransportError::JobProof)?;
+        // SAFETY: the output is a repr(C) two-entry extension of the documented
+        // variable-size process-id list and the Job remains live throughout.
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.raw()),
+                JobObjectBasicProcessIdList,
+                ptr::from_mut(&mut list).cast::<c_void>(),
+                supplied,
+                Some(&raw mut returned),
+            )
+        }
+        .map_err(|_| DebuggerTransportError::JobProof)?;
+        let minimum = u32::try_from(size_of::<u32>() * 2 + size_of::<usize>())
+            .map_err(|_| DebuggerTransportError::JobProof)?;
+        if returned < minimum || returned > supplied {
             return Err(DebuggerTransportError::JobProof);
         }
-        Ok(())
+        Ok(JobProcessIdFacts {
+            assigned: list.assigned,
+            listed: list.listed,
+            ids: list.ids,
+        })
     }
 
     fn active_process_count(&self) -> Result<u32, DebuggerTransportError> {
@@ -296,7 +444,7 @@ impl DebuggerContainmentJob {
         // breakaway then; excluding post-resume policy mutation or escape by an
         // executed helper remains production STOP-SHIP.
         unsafe { TerminateJobObject(self.raw(), exit_code_u32(code)) }
-            .map_err(|_| DebuggerTransportError::ProcessExit)
+            .map_err(|_| DebuggerTransportError::JobTermination)
     }
 
     fn terminate_and_wait_empty(
@@ -304,10 +452,17 @@ impl DebuggerContainmentJob {
         code: DebuggerExitCode,
         deadline: Instant,
     ) -> Result<(), DebuggerTransportError> {
-        if self.active_process_count()? != 0 {
-            self.terminate(code)?;
+        let active = self.active_process_count();
+        let termination = if job_termination_required(active) {
+            self.terminate(code)
+        } else {
+            Ok(())
+        };
+        let empty = self.wait_until_empty(deadline);
+        match (termination, empty) {
+            (_, Err(error)) | (Err(error), Ok(())) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
         }
-        self.wait_until_empty(deadline)
     }
 
     fn wait_until_empty(&self, deadline: Instant) -> Result<(), DebuggerTransportError> {
@@ -316,11 +471,15 @@ impl DebuggerContainmentJob {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(DebuggerTransportError::ProcessExit);
+                return Err(DebuggerTransportError::JobNotEmpty);
             }
             std::thread::sleep(JOB_TERMINATION_POLL_INTERVAL);
         }
     }
+}
+
+fn job_termination_required(active: Result<u32, DebuggerTransportError>) -> bool {
+    !matches!(active, Ok(0))
 }
 
 impl core::fmt::Debug for DebuggerContainmentJob {
@@ -329,11 +488,56 @@ impl core::fmt::Debug for DebuggerContainmentJob {
     }
 }
 
-const fn exact_containment_limits(flags: JOB_OBJECT_LIMIT) -> bool {
+const fn exact_containment_limits(flags: JOB_OBJECT_LIMIT, active_process_limit: u32) -> bool {
     flags.0 == DEBUGGER_CONTAINMENT_JOB_LIMITS.0
-        && flags.0 & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0 == 0
+        && active_process_limit == DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT
+        && flags.0 & JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0 != 0
         && flags.0 & JOB_OBJECT_LIMIT_BREAKAWAY_OK.0 == 0
         && flags.0 & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0 == 0
+}
+
+const fn exact_target_access(process_access: u32, thread_access: u32) -> bool {
+    process_access == TARGET_PROCESS_GRANTED_ACCESS && thread_access == TARGET_THREAD_GRANTED_ACCESS
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TwoProcessIdList {
+    assigned: u32,
+    listed: u32,
+    ids: [usize; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JobProcessIdFacts {
+    assigned: u32,
+    listed: u32,
+    ids: [usize; 2],
+}
+
+fn exact_process_id_topology(facts: JobProcessIdFacts, expected_ids: &[u32]) -> bool {
+    let Ok(expected_count) = u32::try_from(expected_ids.len()) else {
+        return false;
+    };
+    if expected_ids.is_empty()
+        || expected_ids.len() > facts.ids.len()
+        || facts.assigned != expected_count
+        || facts.listed != expected_count
+        || expected_ids.contains(&0)
+    {
+        return false;
+    }
+    let mut observed = facts.ids;
+    observed.sort_unstable();
+    let mut expected = [0_usize; 2];
+    for (slot, process_id) in expected.iter_mut().zip(expected_ids.iter().copied()) {
+        let Ok(process_id) = usize::try_from(process_id) else {
+            return false;
+        };
+        *slot = process_id;
+    }
+    expected.sort_unstable();
+    observed == expected
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -529,7 +733,7 @@ impl AttachedDebuggerCreation {
         self.job
             .as_ref()
             .ok_or(DebuggerTransportError::JobProof)?
-            .verify_exact_member(process_handle)
+            .verify_exact_member(process_handle, self.process_id)
     }
 
     fn release_creation_suspend(&mut self) -> Result<(), DebuggerTransportError> {
@@ -873,7 +1077,7 @@ impl AttachedDebuggerCreation {
         self.job
             .as_ref()
             .ok_or(DebuggerTransportError::JobProof)?
-            .verify_exact_member(process_handle)
+            .verify_exact_member(process_handle, self.process_id)
     }
 
     fn into_child(mut self) -> Result<DebuggerChild, DebuggerTransportError> {
@@ -995,6 +1199,9 @@ pub(super) struct DebuggerChild {
     reaped: bool,
 }
 
+#[cfg(test)]
+pub(super) type ParentDeathProcessIdentity = (u32, u64);
+
 impl DebuggerChild {
     pub(super) fn create_suspended(
         prepared_artifact: PreparedReleaseDebuggerArtifact,
@@ -1115,6 +1322,63 @@ impl DebuggerChild {
         self.process_id
     }
 
+    #[cfg(test)]
+    pub(super) fn prove_pre_ready_parent_death_identity(
+        &self,
+    ) -> Result<(u32, u64), DebuggerTransportError> {
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        job.verify_exact_member(self.process_handle(), self.process_id)?;
+        self.prove_parent_death_identity()
+    }
+
+    #[cfg(test)]
+    pub(super) fn prove_ready_parent_death_identities(
+        &self,
+        target: &FrozenTargetEvidence,
+    ) -> Result<(ParentDeathProcessIdentity, ParentDeathProcessIdentity), DebuggerTransportError>
+    {
+        target.prove_exact()?;
+        self.job
+            .as_ref()
+            .ok_or(DebuggerTransportError::JobProof)?
+            .verify_exact_pair(
+                self.process_handle(),
+                self.process_id,
+                target.process_handle(),
+                target.process_id,
+            )?;
+        Ok((
+            self.prove_parent_death_identity()?,
+            target.parent_death_identity(),
+        ))
+    }
+
+    #[cfg(test)]
+    fn prove_parent_death_identity(&self) -> Result<(u32, u64), DebuggerTransportError> {
+        if self.process_id == 0
+            // SAFETY: the retained process owner is live for this scalar query.
+            || unsafe { GetProcessId(self.process_handle()) } != self.process_id
+            || debug_handle_flags(self.process_handle())? != 0
+            // SAFETY: zero-timeout wait observes only helper liveness.
+            || unsafe { WaitForSingleObject(self.process_handle(), 0) } != WAIT_TIMEOUT
+        {
+            return Err(DebuggerTransportError::ProcessIdentity);
+        }
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        job.verify_exact_limits()?;
+        if !job.is_member(self.process_handle())? {
+            return Err(DebuggerTransportError::JobProof);
+        }
+        job.prove_slot_not_inherited_by(self.process_handle())?;
+        Ok((
+            self.process_id,
+            process_creation_time(
+                self.process_handle(),
+                DebuggerTransportError::ProcessIdentity,
+            )?,
+        ))
+    }
+
     pub(super) fn install_sentinel(&self) -> Result<(SentinelOwner, u64), DebuggerTransportError> {
         SentinelOwner::create_and_install(self.process_handle())
     }
@@ -1172,6 +1436,129 @@ impl DebuggerChild {
             return Err(DebuggerTransportError::SentinelProof);
         }
         Ok(SentinelObserver(observer))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pull_target_topology(
+        &self,
+        target_process_id: u32,
+        target_thread_id: u32,
+        process_source_word: u64,
+        thread_source_word: u64,
+        creation_time: u64,
+    ) -> Result<FrozenTargetEvidence, DebuggerTransportError> {
+        if target_process_id == 0
+            || target_thread_id == 0
+            || target_process_id == self.process_id
+            || process_source_word == 0
+            || thread_source_word == 0
+            || process_source_word == thread_source_word
+            || creation_time == 0
+        {
+            return Err(DebuggerTransportError::TargetBinding);
+        }
+        let process =
+            self.pull_target_handle(process_source_word, TARGET_PROCESS_REQUESTED_ACCESS)?;
+        let primary_thread =
+            self.pull_target_handle(thread_source_word, TARGET_THREAD_REQUESTED_ACCESS)?;
+        let target = FrozenTargetEvidence {
+            process,
+            primary_thread,
+            process_id: target_process_id,
+            primary_thread_id: target_thread_id,
+            creation_time,
+        };
+        target.prove_exact()?;
+        self.job
+            .as_ref()
+            .ok_or(DebuggerTransportError::JobProof)?
+            .verify_exact_pair(
+                self.process_handle(),
+                self.process_id,
+                target.process_handle(),
+                target.process_id,
+            )?;
+        Ok(target)
+    }
+
+    fn pull_target_handle(
+        &self,
+        remote_word: u64,
+        exact_access: u32,
+    ) -> Result<OwnedHandle, DebuggerTransportError> {
+        let remote_word =
+            usize::try_from(remote_word).map_err(|_| DebuggerTransportError::TargetPull)?;
+        let remote = HANDLE(remote_word as *mut c_void);
+        if remote.is_invalid() {
+            return Err(DebuggerTransportError::TargetPull);
+        }
+        let mut observer = HANDLE::default();
+        // SAFETY: the retained debugger process names the source table and the
+        // frozen frame supplies the exact source word. The new local handle is
+        // non-inheritable and receives only the explicit narrow access mask.
+        unsafe {
+            DuplicateHandle(
+                self.process_handle(),
+                remote,
+                GetCurrentProcess(),
+                &raw mut observer,
+                exact_access,
+                false,
+                DUPLICATE_HANDLE_OPTIONS(0),
+            )
+        }
+        .map_err(|_| DebuggerTransportError::TargetPull)?;
+        if observer.is_invalid() {
+            return Err(DebuggerTransportError::TargetPull);
+        }
+        // SAFETY: DuplicateHandle returned one fresh current-process owner.
+        Ok(unsafe { OwnedHandle::from_raw_handle(observer.0) })
+    }
+
+    pub(super) fn handoff_target_after_exact_exit(
+        mut self,
+        target: FrozenTargetEvidence,
+        expected: DebuggerExitCode,
+        deadline: Instant,
+    ) -> Result<DetachedTargetTopology, DebuggerTransportError> {
+        self.wait_for_exact_exit(expected, deadline)?;
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        job.wait_for_exact_member(target.process_handle(), target.process_id, deadline)?;
+        target.prove_exact()?;
+        let job = self.job.take().ok_or(DebuggerTransportError::JobProof)?;
+        Ok(DetachedTargetTopology {
+            job: Some(job),
+            target,
+            cleaned: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn reject_post_exit_target_termination_for_test(
+        mut self,
+        target: &FrozenTargetEvidence,
+        expected: DebuggerExitCode,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        self.wait_for_exact_exit(expected, deadline)?;
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        job.wait_for_exact_member(target.process_handle(), target.process_id, deadline)?;
+        target.terminate_for_test(deadline)?;
+        match target.prove_exact() {
+            Err(DebuggerTransportError::TargetState) => Ok(()),
+            Ok(()) | Err(_) => Err(DebuggerTransportError::TargetProof),
+        }
+    }
+
+    pub(super) fn terminate_job_and_wait_empty(
+        &mut self,
+        code: DebuggerExitCode,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        self.job
+            .as_ref()
+            .ok_or(DebuggerTransportError::JobProof)?
+            .terminate_and_wait_empty(code, deadline)
     }
 
     pub(super) fn wait_for_exact_exit(
@@ -1307,9 +1694,252 @@ impl DebuggerChild {
     }
 }
 
+/// Parent-pulled narrow process and primary-thread handles after exact target
+/// identity, creation-time, suspended-count, and Job-pair proof.
+pub(super) struct FrozenTargetEvidence {
+    process: OwnedHandle,
+    primary_thread: OwnedHandle,
+    process_id: u32,
+    primary_thread_id: u32,
+    creation_time: u64,
+}
+
+impl FrozenTargetEvidence {
+    fn prove_exact(&self) -> Result<(), DebuggerTransportError> {
+        let process = self.process_handle();
+        let thread = self.thread_handle();
+        // SAFETY: both pulled handles remain live for exact scalar identity
+        // queries and carry the corresponding limited-query rights.
+        let observed_process_id = unsafe { GetProcessId(process) };
+        // SAFETY: retained primary-thread observer.
+        let observed_thread_id = unsafe { GetThreadId(thread) };
+        // SAFETY: retained primary-thread observer.
+        let observed_thread_process_id = unsafe { GetProcessIdOfThread(thread) };
+        if observed_process_id != self.process_id
+            || observed_thread_id != self.primary_thread_id
+            || observed_thread_process_id != self.process_id
+        {
+            return Err(DebuggerTransportError::TargetIdentity);
+        }
+        if target_handle_flags(process)? != 0 || target_handle_flags(thread)? != 0 {
+            return Err(DebuggerTransportError::TargetAccess);
+        }
+        if native_granted_access(process, DebuggerTransportError::TargetProcessAccess)?
+            != TARGET_PROCESS_GRANTED_ACCESS
+        {
+            return Err(DebuggerTransportError::TargetProcessAccess);
+        }
+        let thread_access =
+            native_granted_access(thread, DebuggerTransportError::TargetThreadAccess)?;
+        if thread_access != TARGET_THREAD_GRANTED_ACCESS {
+            return Err(DebuggerTransportError::TargetThreadAccess);
+        }
+        if
+        // SAFETY: distinct retained objects are compared without mutation.
+        unsafe { CompareObjectHandles(process, thread) }.as_bool()
+            // SAFETY: zero-timeout waits only observe target liveness.
+            || unsafe { WaitForSingleObject(process, 0) } != WAIT_TIMEOUT
+            // SAFETY: same for the primary thread.
+            || unsafe { WaitForSingleObject(thread, 0) } != WAIT_TIMEOUT
+        {
+            return Err(DebuggerTransportError::TargetState);
+        }
+
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: all outputs are initialized and the process observer remains
+        // live with limited-query rights for the complete call.
+        unsafe {
+            GetProcessTimes(
+                process,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        }
+        .map_err(|_| DebuggerTransportError::TargetCreation)?;
+        if filetime_word(creation) != self.creation_time {
+            return Err(DebuggerTransportError::TargetCreation);
+        }
+
+        // A 1->2->1 probe proves the target's one creation suspend count
+        // without permitting its primary thread to execute.
+        // SAFETY: the exact retained thread has THREAD_SUSPEND_RESUME.
+        let previous = unsafe { SuspendThread(thread) };
+        if previous != 1 {
+            return Err(DebuggerTransportError::Suspension);
+        }
+        // SAFETY: successful SuspendThread added exactly one count above.
+        let resumed = unsafe { ResumeThread(thread) };
+        if resumed == u32::MAX {
+            return Err(DebuggerTransportError::Suspension);
+        }
+        if resumed != 2 {
+            fail_fast();
+        }
+        Ok(())
+    }
+
+    fn process_handle(&self) -> HANDLE {
+        windows_owned_handle(&self.process)
+    }
+
+    fn thread_handle(&self) -> HANDLE {
+        windows_owned_handle(&self.primary_thread)
+    }
+
+    #[cfg(test)]
+    const fn parent_death_identity(&self) -> (u32, u64) {
+        (self.process_id, self.creation_time)
+    }
+
+    #[cfg(test)]
+    fn terminate_for_test(&self, deadline: Instant) -> Result<(), DebuggerTransportError> {
+        // SAFETY: the exact pulled process observer intentionally carries only
+        // TERMINATE, limited-query, and synchronize rights.
+        unsafe {
+            TerminateProcess(
+                self.process_handle(),
+                exit_code_u32(DebuggerExitCode::OperatingSystem),
+            )
+        }
+        .map_err(|_| DebuggerTransportError::TargetState)?;
+        let timeout = remaining_milliseconds(deadline)?;
+        // SAFETY: the retained process observer remains live for this bounded
+        // terminal-state wait.
+        if unsafe { WaitForSingleObject(self.process_handle(), timeout) } != WAIT_OBJECT_0 {
+            return Err(DebuggerTransportError::TargetState);
+        }
+        Ok(())
+    }
+}
+
+impl core::fmt::Debug for FrozenTargetEvidence {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .write_str("FrozenTargetEvidence([NARROW TARGET PROCESS AND THREAD HANDLES REDACTED])")
+    }
+}
+
+/// The only Job handle retained by this implementation after the debugger
+/// exits, plus the frozen target. System-wide last-handle status is unproved.
+pub(super) struct DetachedTargetTopology {
+    job: Option<DebuggerContainmentJob>,
+    target: FrozenTargetEvidence,
+    cleaned: bool,
+}
+
+impl DetachedTargetTopology {
+    pub(super) fn terminate_and_wait_empty(
+        mut self,
+        code: DebuggerExitCode,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        self.cleanup(code, deadline)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn prove_parent_death_target_identity(
+        &self,
+    ) -> Result<(u32, u64), DebuggerTransportError> {
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        job.verify_exact_member(self.target.process_handle(), self.target.process_id)?;
+        self.target.prove_exact()?;
+        Ok(self.target.parent_death_identity())
+    }
+
+    fn cleanup(
+        &mut self,
+        code: DebuggerExitCode,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        if self.cleaned {
+            return Ok(());
+        }
+        let job = self.job.as_ref().ok_or(DebuggerTransportError::JobProof)?;
+        let topology =
+            job.verify_exact_member(self.target.process_handle(), self.target.process_id);
+        let containment = job.terminate_and_wait_empty(code, deadline);
+        let process_timeout = remaining_milliseconds(deadline)
+            .map_err(|_| DebuggerTransportError::TargetProcessTerminal);
+        let terminal = process_timeout.and_then(|timeout| {
+            // SAFETY: the exact target process observer remains retained. Job
+            // zero can precede object signaling briefly, so this wait consumes
+            // only the remaining cleanup bound.
+            if unsafe { WaitForSingleObject(self.target.process_handle(), timeout) }
+                != WAIT_OBJECT_0
+            {
+                return Err(DebuggerTransportError::TargetProcessTerminal);
+            }
+            let timeout = remaining_milliseconds(deadline)
+                .map_err(|_| DebuggerTransportError::TargetThreadTerminal)?;
+            // SAFETY: same bounded terminal proof for the retained thread.
+            if unsafe { WaitForSingleObject(self.target.thread_handle(), timeout) } != WAIT_OBJECT_0
+            {
+                return Err(DebuggerTransportError::TargetThreadTerminal);
+            }
+            Ok(())
+        });
+        let (cleaned, result) = detached_cleanup_result(topology, containment, terminal);
+        self.cleaned = cleaned;
+        result
+    }
+}
+
+impl Drop for DetachedTargetTopology {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        let deadline =
+            Instant::now() + Duration::from_millis(u64::from(CLEANUP_TIMEOUT_MILLISECONDS));
+        let cleanup = self.cleanup(DebuggerExitCode::OperatingSystem, deadline);
+        if cleanup.is_err() && !self.cleaned {
+            fail_fast();
+        }
+    }
+}
+
+fn detached_cleanup_result(
+    topology: Result<(), DebuggerTransportError>,
+    containment: Result<(), DebuggerTransportError>,
+    terminal: Result<(), DebuggerTransportError>,
+) -> (bool, Result<(), DebuggerTransportError>) {
+    if let Err(error) = containment {
+        return (false, Err(error));
+    }
+    if let Err(error) = terminal {
+        return (false, Err(error));
+    }
+    (true, topology)
+}
+
+impl core::fmt::Debug for DetachedTargetTopology {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(
+            "DetachedTargetTopology([TARGET PROCESS; PRIMARY THREAD; JOB OWNER REDACTED])",
+        )
+    }
+}
+
 impl Drop for DebuggerChild {
     fn drop(&mut self) {
         if self.reaped {
+            let Some(job) = self.job.as_ref() else {
+                return;
+            };
+            let deadline =
+                Instant::now() + Duration::from_millis(u64::from(CLEANUP_TIMEOUT_MILLISECONDS));
+            if job
+                .terminate_and_wait_empty(DebuggerExitCode::OperatingSystem, deadline)
+                .is_err()
+            {
+                fail_fast();
+            }
             return;
         }
         let deadline =
@@ -1468,15 +2098,22 @@ impl core::fmt::Debug for SentinelEvidence {
 pub(super) fn native_granted_access_for_test(
     observer: &SentinelObserver,
 ) -> Result<u32, DebuggerTransportError> {
+    native_granted_access(observer.raw(), DebuggerTransportError::SentinelProof)
+}
+
+fn native_granted_access(
+    handle: HANDLE,
+    failure: DebuggerTransportError,
+) -> Result<u32, DebuggerTransportError> {
     let mut information = PUBLIC_OBJECT_BASIC_INFORMATION::default();
-    let information_size = u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>())
-        .map_err(|_| DebuggerTransportError::SentinelProof)?;
+    let information_size =
+        u32::try_from(size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>()).map_err(|_| failure)?;
     let mut returned = 0_u32;
-    // SAFETY: this kernel-matrix-only query receives one exact live observer,
+    // SAFETY: this dormant proof query receives one exact live observer,
     // correctly sized initialized output, and writable returned-length storage.
     let status = unsafe {
         NtQueryObject(
-            Some(observer.raw()),
+            Some(handle),
             ObjectBasicInformation,
             Some((&raw mut information).cast()),
             information_size,
@@ -1484,7 +2121,7 @@ pub(super) fn native_granted_access_for_test(
         )
     };
     if status != windows::Win32::Foundation::STATUS_SUCCESS || returned != information_size {
-        return Err(DebuggerTransportError::SentinelProof);
+        return Err(failure);
     }
     Ok(information.GrantedAccess)
 }
@@ -1492,6 +2129,132 @@ pub(super) fn native_granted_access_for_test(
 pub(super) fn current_process_id() -> u32 {
     // SAFETY: this scalar query has no preconditions.
     unsafe { GetCurrentProcessId() }
+}
+
+#[cfg(test)]
+pub(super) fn current_process_creation_time() -> Result<u64, DebuggerTransportError> {
+    process_creation_time(
+        // SAFETY: this pseudohandle is valid for the lifetime of the process.
+        unsafe { GetCurrentProcess() },
+        DebuggerTransportError::ProcessIdentity,
+    )
+}
+
+/// Outer-process observation-only owner bound to one PID and creation time.
+#[cfg(test)]
+pub(super) struct ParentDeathProcessObservation {
+    process: OwnedHandle,
+    process_id: u32,
+    creation_time: u64,
+}
+
+#[cfg(test)]
+impl ParentDeathProcessObservation {
+    pub(super) fn open_exact(
+        process_id: u32,
+        creation_time: u64,
+    ) -> Result<Self, DebuggerTransportError> {
+        if process_id == 0 || creation_time == 0 {
+            return Err(DebuggerTransportError::ProcessIdentity);
+        }
+        // SAFETY: the report supplies a numeric PID only. The returned handle
+        // is observation-only, is adopted immediately, and is subsequently
+        // bound to creation time to exclude PID reuse.
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                process_id,
+            )
+        }
+        .map_err(|_| DebuggerTransportError::ProcessIdentity)?;
+        if process.is_invalid() {
+            return Err(DebuggerTransportError::ProcessIdentity);
+        }
+        // SAFETY: OpenProcess returned one fresh owned handle.
+        let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+        let observation = Self {
+            process,
+            process_id,
+            creation_time,
+        };
+        observation.prove_live()?;
+        Ok(observation)
+    }
+
+    pub(super) fn prove_live(&self) -> Result<(), DebuggerTransportError> {
+        let process = windows_owned_handle(&self.process);
+        if
+        // SAFETY: the retained observation owner is live for this query.
+        unsafe { GetProcessId(process) } != self.process_id
+            || handle_flags(process).map_err(|_| DebuggerTransportError::ProcessIdentity)? != 0
+            || native_granted_access(process, DebuggerTransportError::ProcessIdentity)?
+                != PARENT_DEATH_OBSERVATION_ACCESS
+            || process_creation_time(process, DebuggerTransportError::ProcessIdentity)?
+                != self.creation_time
+            // SAFETY: zero-timeout wait only observes process liveness.
+            || unsafe { WaitForSingleObject(process, 0) } != WAIT_TIMEOUT
+        {
+            return Err(DebuggerTransportError::ProcessIdentity);
+        }
+        Ok(())
+    }
+
+    pub(super) fn wait_for_terminal(
+        &self,
+        deadline: Instant,
+    ) -> Result<(), DebuggerTransportError> {
+        let timeout = remaining_milliseconds(deadline)?;
+        // SAFETY: this retained process observer has SYNCHRONIZE and the wait
+        // is bounded by the outer fixture deadline.
+        if unsafe { WaitForSingleObject(windows_owned_handle(&self.process), timeout) }
+            != WAIT_OBJECT_0
+        {
+            return Err(DebuggerTransportError::ProcessExit);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl core::fmt::Debug for ParentDeathProcessObservation {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .write_str("ParentDeathProcessObservation([QUERY-LIMITED SYNCHRONIZE HANDLE REDACTED])")
+    }
+}
+
+#[cfg(test)]
+pub(super) fn terminate_parent_death_supervisor(
+    child: &Child,
+) -> Result<(), DebuggerTransportError> {
+    prove_parent_death_supervisor_identity(child)?;
+    let process = HANDLE(child.as_raw_handle());
+    // SAFETY: this exact Child owner has termination authority; the fixture
+    // parks only after emitting a fully bound checkpoint report.
+    unsafe { TerminateProcess(process, exit_code_u32(DebuggerExitCode::OperatingSystem)) }
+        .map_err(|_| DebuggerTransportError::ProcessExit)
+}
+
+#[cfg(test)]
+pub(super) fn prove_parent_death_supervisor_identity(
+    child: &Child,
+) -> Result<(u32, u64), DebuggerTransportError> {
+    let process = HANDLE(child.as_raw_handle());
+    if process.is_invalid()
+        || child.id() == 0
+        // SAFETY: Child retains its process owner for this identity query.
+        || unsafe { GetProcessId(process) } != child.id()
+        || handle_flags(process).map_err(|_| DebuggerTransportError::ProcessIdentity)? != 0
+        // SAFETY: zero-timeout wait observes only supervisor liveness.
+        || unsafe { WaitForSingleObject(process, 0) } != WAIT_TIMEOUT
+    {
+        return Err(DebuggerTransportError::ProcessIdentity);
+    }
+    Ok((
+        child.id(),
+        process_creation_time(process, DebuggerTransportError::ProcessIdentity)?,
+    ))
 }
 
 pub(super) fn absolute_tick_deadline(deadline: Instant) -> Result<u64, DebuggerTransportError> {
@@ -1519,6 +2282,33 @@ fn encoded_application(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(core::iter::once(0))
         .collect()
+}
+
+fn process_creation_time(
+    process: HANDLE,
+    failure: DebuggerTransportError,
+) -> Result<u64, DebuggerTransportError> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: caller retains a process handle with limited-query authority and
+    // all four outputs are writable exact FILETIME storage.
+    unsafe {
+        GetProcessTimes(
+            process,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    }
+    .map_err(|_| failure)?;
+    let creation = filetime_word(creation);
+    if creation == 0 {
+        return Err(failure);
+    }
+    Ok(creation)
 }
 
 const fn debugger_creation_flags() -> PROCESS_CREATION_FLAGS {
@@ -1634,6 +2424,18 @@ fn handle_flags(handle: HANDLE) -> Result<u32, DebuggerTransportError> {
     Ok(flags)
 }
 
+fn target_handle_flags(handle: HANDLE) -> Result<u32, DebuggerTransportError> {
+    let mut flags = HANDLE_FLAG_INHERIT.0;
+    // SAFETY: callers retain a live pulled target handle for this query.
+    unsafe { GetHandleInformation(handle, &raw mut flags) }
+        .map_err(|_| DebuggerTransportError::TargetAccess)?;
+    Ok(flags)
+}
+
+const fn filetime_word(value: FILETIME) -> u64 {
+    (value.dwHighDateTime as u64) << 32 | value.dwLowDateTime as u64
+}
+
 const fn exit_code_u32(code: DebuggerExitCode) -> u32 {
     code.code().cast_unsigned()
 }
@@ -1664,37 +2466,151 @@ mod tests {
     };
 
     use super::{
-        ALL_FIRST_EVENT_PROOFS, DEBUGGER_CONTAINMENT_JOB_LIMITS, FIRST_EVENT_FILE_PRESENT,
-        FIRST_EVENT_PROCESS_ALIAS, FIRST_EVENT_THREAD_ALIAS, FIRST_EVENT_ZERO_FLAGS,
-        FirstEventFacts, HandleRetirementObservation, debugger_creation_flags,
+        ALL_FIRST_EVENT_PROOFS, DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT,
+        DEBUGGER_CONTAINMENT_JOB_LIMITS, FIRST_EVENT_FILE_PRESENT, FIRST_EVENT_PROCESS_ALIAS,
+        FIRST_EVENT_THREAD_ALIAS, FIRST_EVENT_ZERO_FLAGS, FirstEventFacts,
+        HandleRetirementObservation, JobProcessIdFacts, TARGET_PROCESS_GRANTED_ACCESS,
+        TARGET_PROCESS_REQUESTED_ACCESS, TARGET_THREAD_GRANTED_ACCESS,
+        TARGET_THREAD_REQUESTED_ACCESS, debugger_creation_flags, detached_cleanup_result,
         exact_containment_limits, exact_event_alias_retirement, exact_first_event_fields,
+        exact_process_id_topology, exact_target_access, job_termination_required,
         raw_handle_slots_are_distinct,
     };
 
     #[test]
-    fn containment_policy_is_kill_only_without_topology_or_breakaway_policy() {
+    fn containment_policy_is_kill_and_two_process_limit_without_breakaway() {
         assert_eq!(
             DEBUGGER_CONTAINMENT_JOB_LIMITS,
-            JOB_OBJECT_LIMIT(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0)
+            JOB_OBJECT_LIMIT(
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0
+            )
         );
-        assert!(exact_containment_limits(DEBUGGER_CONTAINMENT_JOB_LIMITS));
-        for rejected in [
+        assert_eq!(DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT, 2);
+        assert!(exact_containment_limits(
+            DEBUGGER_CONTAINMENT_JOB_LIMITS,
+            DEBUGGER_CONTAINMENT_ACTIVE_PROCESS_LIMIT,
+        ));
+        for rejected_flags in [
             JOB_OBJECT_LIMIT(0),
             JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOB_OBJECT_LIMIT_BREAKAWAY_OK,
             JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+            JOB_OBJECT_LIMIT(DEBUGGER_CONTAINMENT_JOB_LIMITS.0 | JOB_OBJECT_LIMIT_BREAKAWAY_OK.0),
             JOB_OBJECT_LIMIT(
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS.0,
-            ),
-            JOB_OBJECT_LIMIT(
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_BREAKAWAY_OK.0,
-            ),
-            JOB_OBJECT_LIMIT(
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0 | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0,
+                DEBUGGER_CONTAINMENT_JOB_LIMITS.0 | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0,
             ),
         ] {
-            assert!(!exact_containment_limits(rejected));
+            assert!(!exact_containment_limits(rejected_flags, 2));
         }
+        for rejected_limit in [0, 1, 3, u32::MAX] {
+            assert!(!exact_containment_limits(
+                DEBUGGER_CONTAINMENT_JOB_LIMITS,
+                rejected_limit,
+            ));
+        }
+    }
+
+    #[test]
+    fn process_id_topology_rejects_every_count_slot_and_identity_mutation() {
+        let exact = JobProcessIdFacts {
+            assigned: 2,
+            listed: 2,
+            ids: [11, 12],
+        };
+        assert!(exact_process_id_topology(exact, &[11, 12]));
+        assert!(exact_process_id_topology(
+            JobProcessIdFacts {
+                ids: [12, 11],
+                ..exact
+            },
+            &[11, 12],
+        ));
+        for rejected in [
+            JobProcessIdFacts {
+                assigned: 1,
+                ..exact
+            },
+            JobProcessIdFacts { listed: 1, ..exact },
+            JobProcessIdFacts {
+                ids: [0, 12],
+                ..exact
+            },
+            JobProcessIdFacts {
+                ids: [11, 0],
+                ..exact
+            },
+            JobProcessIdFacts {
+                ids: [11, 11],
+                ..exact
+            },
+            JobProcessIdFacts {
+                ids: [11, 13],
+                ..exact
+            },
+        ] {
+            assert!(!exact_process_id_topology(rejected, &[11, 12]));
+        }
+        assert!(exact_process_id_topology(
+            JobProcessIdFacts {
+                assigned: 1,
+                listed: 1,
+                ids: [11, 0],
+            },
+            &[11],
+        ));
+        for rejected_expected in [Vec::new(), vec![0], vec![11, 12, 13]] {
+            assert!(!exact_process_id_topology(exact, &rejected_expected));
+        }
+    }
+
+    #[test]
+    fn target_access_masks_reject_every_single_bit_mutation() {
+        assert_eq!(
+            TARGET_PROCESS_REQUESTED_ACCESS,
+            TARGET_PROCESS_GRANTED_ACCESS
+        );
+        assert_eq!(TARGET_THREAD_REQUESTED_ACCESS, 0x0010_0802);
+        assert_eq!(TARGET_THREAD_GRANTED_ACCESS, 0x0010_1802);
+        assert!(exact_target_access(
+            TARGET_PROCESS_GRANTED_ACCESS,
+            TARGET_THREAD_GRANTED_ACCESS,
+        ));
+        for bit in 0..u32::BITS {
+            assert!(!exact_target_access(
+                TARGET_PROCESS_GRANTED_ACCESS ^ (1_u32 << bit),
+                TARGET_THREAD_GRANTED_ACCESS,
+            ));
+            assert!(!exact_target_access(
+                TARGET_PROCESS_GRANTED_ACCESS,
+                TARGET_THREAD_GRANTED_ACCESS ^ (1_u32 << bit),
+            ));
+        }
+    }
+
+    #[test]
+    fn cleanup_policy_requests_containment_on_count_error_and_prioritizes_cleanup_failure() {
+        assert!(!job_termination_required(Ok(0)));
+        assert!(job_termination_required(Ok(1)));
+        assert!(job_termination_required(Err(
+            super::DebuggerTransportError::JobProof
+        )));
+
+        let topology_error = Err(super::DebuggerTransportError::JobProof);
+        let containment_error = Err(super::DebuggerTransportError::ProcessExit);
+        let terminal_error = Err(super::DebuggerTransportError::TargetState);
+        assert_eq!(
+            detached_cleanup_result(topology_error, Ok(()), Ok(())),
+            (true, topology_error)
+        );
+        assert_eq!(
+            detached_cleanup_result(topology_error, containment_error, Ok(())),
+            (false, containment_error)
+        );
+        assert_eq!(
+            detached_cleanup_result(topology_error, Ok(()), terminal_error),
+            (false, terminal_error)
+        );
     }
 
     #[test]

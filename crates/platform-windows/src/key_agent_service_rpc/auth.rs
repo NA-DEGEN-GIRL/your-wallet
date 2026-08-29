@@ -25,6 +25,8 @@ use zeroize::Zeroize as _;
 
 use crate::inheritable_handle_launch::ProcessThreadCreationSecurity;
 
+use super::expected_peer::{ExpectedHelperCandidate, ExpectedPeerVerificationError};
+
 const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;
 const RPC_AUTHN_SERVICE_WINNT: u32 = 10;
 const RPC_AUTHZ_SERVICE_NONE: u32 = 0;
@@ -32,6 +34,7 @@ const RPC_AUTHZ_SERVICE_NONE: u32 = 0;
 // zero is an active call, bit 0 is cancelled, and bit 1 is disconnected.
 const RPC_CALL_STATUS_ACTIVE: u32 = 0;
 const MEDIUM_INTEGRITY_RID: u32 = 0x2000;
+const LOW_INTEGRITY_RID: u32 = 0x1000;
 const MAX_BINARY_SID_BYTES: usize = 68;
 
 /// Data-free authentication failure returned to the RPC manager.
@@ -114,6 +117,12 @@ impl std::error::Error for DesktopProcessCleanupError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObservationError {
+    Incomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopProcessAccessError {
+    AccessAllowed,
     Incomplete,
 }
 
@@ -226,6 +235,19 @@ enum ElevationKind {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DebugPrivilegeState {
+    Absent,
+    PresentDisabled,
+    PresentEnabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TokenPolicy {
+    DesktopBroker,
+    ServiceCreatedLpacCandidate,
+}
+
 #[allow(clippy::struct_excessive_bools)] // Each boolean is an independently queried token-policy fact.
 struct TokenObservation {
     user_sid: SidBytes,
@@ -242,6 +264,7 @@ struct TokenObservation {
     elevation: ElevationKind,
     restricted: bool,
     interactive_sid_enabled: bool,
+    debug_privilege: DebugPrivilegeState,
 }
 
 impl fmt::Debug for TokenObservation {
@@ -297,6 +320,11 @@ trait DesktopImpersonationOps: EffectiveThreadAuthOps {
 
     fn revert_desktop_impersonation(&self) -> Result<(), ObservationError>;
 
+    fn require_process_dup_handle_denied(
+        &self,
+        process_id: NonZeroU32,
+    ) -> Result<(), DesktopProcessAccessError>;
+
     fn fail_fast(&self) -> !;
 }
 
@@ -334,6 +362,7 @@ pub(crate) struct AuthenticatedClient<P, T> {
     desktop_primary_token: T,
     desktop_primary: TokenObservation,
     desktop_process_creation_claimed: Cell<bool>,
+    desktop_process_dup_handle_denial_claimed: Cell<bool>,
 }
 
 impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
@@ -344,6 +373,90 @@ impl<P, T> fmt::Debug for AuthenticatedClient<P, T> {
 
 pub(crate) type AuthenticatedRpcClient =
     AuthenticatedClient<sys::RetainedProcess, sys::DesktopPrimaryToken>;
+
+/// A transport-authenticated `AppContainer` caller awaiting exact expected-peer
+/// correlation.
+///
+/// This value proves only the local RPC transport, a retained process object,
+/// and the deliberately broad `AppContainer` candidate policy. It does not by
+/// itself prove LPAC, helper image, role, or service-created provenance. Those
+/// facts remain owned by the expected-peer registry and must match this exact
+/// process object before admission.
+pub(crate) struct ServiceCreatedLpacCandidate<P = sys::RetainedProcess> {
+    process_id: NonZeroU32,
+    process: P,
+    primary: TokenObservation,
+}
+
+impl<P> fmt::Debug for ServiceCreatedLpacCandidate<P> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServiceCreatedLpacCandidate([REDACTED])")
+    }
+}
+
+impl<P> ServiceCreatedLpacCandidate<P> {
+    fn revalidate_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
+    where
+        O: ProcessAuthOps<Process = P>,
+    {
+        let _current = revalidate_client_process(
+            self.process_id,
+            &self.process,
+            &self.primary,
+            TokenPolicy::ServiceCreatedLpacCandidate,
+            ops,
+        )?;
+        Ok(())
+    }
+}
+
+impl ServiceCreatedLpacCandidate {
+    /// Compares the retained RPC caller process with another live process
+    /// handle without exposing either raw handle.
+    pub(crate) fn exactly_matches_process(
+        &self,
+        process: BorrowedHandle<'_>,
+    ) -> Result<bool, RpcAuthError> {
+        sys::retained_process_matches_borrowed(&self.process, process)
+            .map_err(|_| RpcAuthError::CallFailed)
+    }
+}
+
+impl ExpectedHelperCandidate for ServiceCreatedLpacCandidate {
+    fn revalidate(&self) -> Result<(), ExpectedPeerVerificationError> {
+        self.revalidate_with(&sys::WINDOWS_PROCESS_AUTH_OPS)
+            .map_err(|error| match error {
+                RpcAuthError::AccessDenied => ExpectedPeerVerificationError::Denied,
+                RpcAuthError::CallFailed => ExpectedPeerVerificationError::Internal,
+            })
+    }
+}
+
+/// Server-derived manager-call kind. No helper role is accepted from the
+/// client; a successful helper match receives its role from the registry.
+pub(crate) enum AuthenticatedManagerPeer<P, T> {
+    Desktop(AuthenticatedClient<P, T>),
+    ServiceCreatedLpac(ServiceCreatedLpacCandidate<P>),
+}
+
+#[allow(
+    dead_code,
+    reason = "dormant role-aware RPC integration follows this foundation"
+)]
+pub(crate) type AuthenticatedRpcManagerPeer =
+    AuthenticatedManagerPeer<sys::RetainedProcess, sys::DesktopPrimaryToken>;
+
+/// Callback authentication deliberately cannot mint desktop launch authority.
+pub(crate) enum AuthenticatedCallbackPeer<P> {
+    Desktop(AuthenticatedRpcCallback),
+    ServiceCreatedLpac(ServiceCreatedLpacCandidate<P>),
+}
+
+#[allow(
+    dead_code,
+    reason = "dormant role-aware RPC integration follows this foundation"
+)]
+pub(crate) type AuthenticatedRpcCallbackPeer = AuthenticatedCallbackPeer<sys::RetainedProcess>;
 
 /// One-shot authority for the sole desktop-user process-creation call.
 ///
@@ -679,6 +792,25 @@ impl AuthenticatedRpcClient {
         })
     }
 
+    /// Proves that the exact retained authenticated desktop token has no
+    /// assigned `SeDebugPrivilege` and cannot reopen the exact still-suspended
+    /// child with `PROCESS_DUP_HANDLE`.
+    ///
+    /// This authority is available exactly once and only after the client's
+    /// process-creation authority was consumed. The access check runs while the
+    /// current thread is impersonating the retained desktop primary token; both
+    /// the effective token and retained client are revalidated around it. This
+    /// is not evidence about external administrators or distinct tokens.
+    pub(crate) fn require_desktop_process_dup_handle_denied(
+        &self,
+        process_id: NonZeroU32,
+    ) -> Result<(), RpcAuthError> {
+        self.require_desktop_process_dup_handle_denied_with(
+            process_id,
+            &sys::WINDOWS_PROCESS_AUTH_OPS,
+        )
+    }
+
     /// Revalidates and impersonates the exact retained desktop token, returning
     /// the only exact-once revert authority without exposing a token handle.
     pub(crate) fn impersonate_desktop_user(
@@ -771,13 +903,22 @@ impl<P, T> AuthenticatedClient<P, T> {
     where
         O: ProcessAuthOps<Process = P, DesktopPrimaryToken = T>,
     {
-        let current =
-            revalidate_client_process(self.process_id, &self.process, &self.primary, ops)?;
+        let current = revalidate_client_process(
+            self.process_id,
+            &self.process,
+            &self.primary,
+            TokenPolicy::DesktopBroker,
+            ops,
+        )?;
 
         let desktop_primary = ops
             .desktop_primary_token(&self.desktop_primary_token)
             .map_err(|_| RpcAuthError::CallFailed)?;
-        validate_token(&desktop_primary, TokenKind::Primary)?;
+        validate_token_policy(
+            &desktop_primary,
+            TokenKind::Primary,
+            TokenPolicy::DesktopBroker,
+        )?;
         if !same_primary_token(&self.desktop_primary, &desktop_primary)
             || !same_token_identity(&desktop_primary, &current)
         {
@@ -831,6 +972,34 @@ impl<P, T> AuthenticatedClient<P, T> {
             return Err(RpcAuthError::AccessDenied);
         }
         self.revalidate_with(ops)
+    }
+
+    fn require_desktop_process_dup_handle_denied_with<O>(
+        &self,
+        process_id: NonZeroU32,
+        ops: &O,
+    ) -> Result<(), RpcAuthError>
+    where
+        O: DesktopImpersonationOps<Process = P, DesktopPrimaryToken = T>,
+    {
+        let already_claimed = self.desktop_process_dup_handle_denial_claimed.replace(true);
+        if already_claimed || !self.desktop_process_creation_claimed.get() {
+            return Err(RpcAuthError::AccessDenied);
+        }
+
+        let impersonation = self.impersonate_desktop_user_with(ops)?;
+        let access =
+            ops.require_process_dup_handle_denied(process_id)
+                .map_err(|error| match error {
+                    DesktopProcessAccessError::AccessAllowed => RpcAuthError::AccessDenied,
+                    DesktopProcessAccessError::Incomplete => RpcAuthError::CallFailed,
+                });
+        let effective_postcheck = impersonation.recheck();
+        let finish = impersonation.finish();
+
+        finish?;
+        effective_postcheck?;
+        access
     }
 
     fn revalidate_effective_desktop_thread_with<O>(&self, ops: &O) -> Result<(), RpcAuthError>
@@ -891,6 +1060,21 @@ pub(crate) fn authenticate_call(
     authenticate_with(&ops)
 }
 
+/// Authenticates a manager invocation and derives only its transport peer kind.
+///
+/// A helper candidate is not admitted here. Exact LPAC/image/role provenance
+/// remains a separate expected-peer registry decision.
+#[expect(
+    dead_code,
+    reason = "dormant role-aware RPC integration follows this foundation"
+)]
+pub(crate) fn authenticate_role_aware_call(
+    binding: CallBinding<'_>,
+) -> Result<AuthenticatedRpcManagerPeer, RpcAuthError> {
+    let ops = sys::WindowsRpcAuthOps::new(binding);
+    authenticate_role_aware_with(&ops)
+}
+
 /// Independently authenticates the binding context supplied to an If3
 /// security callback.
 ///
@@ -910,49 +1094,156 @@ pub(crate) unsafe fn authenticate_callback_context(
     Ok(AuthenticatedRpcCallback { _private: () })
 }
 
+/// Independently derives the callback transport peer kind without minting
+/// desktop launch authority or consuming an expected helper.
+///
+/// # Safety
+///
+/// `raw` has the same synchronous callback-binding contract as
+/// [`authenticate_callback_context`].
+#[expect(
+    dead_code,
+    reason = "dormant role-aware RPC integration follows this foundation"
+)]
+pub(crate) unsafe fn authenticate_role_aware_callback_context(
+    raw: *const c_void,
+) -> Result<AuthenticatedRpcCallbackPeer, RpcAuthError> {
+    // SAFETY: the caller supplies the active callback's synchronous context;
+    // the adapter retains it only inside this function.
+    let ops = unsafe { sys::WindowsRpcAuthOps::from_callback(raw) }
+        .map_err(|_| RpcAuthError::CallFailed)?;
+    authenticate_role_aware_callback_with(&ops)
+}
+
 fn authenticate_with<O>(
     ops: &O,
 ) -> Result<AuthenticatedClient<O::Process, O::DesktopPrimaryToken>, RpcAuthError>
 where
     O: RpcAuthOps,
 {
-    let (process_id, process, primary, (desktop_primary_token, desktop_primary)) =
-        authenticate_identity_with(ops, |ops, impersonation, primary| {
-            let desktop_primary_token = ops
-                .duplicate_desktop_primary_token()
-                .map_err(|_| RpcAuthError::CallFailed)?;
-            let desktop_primary = ops
-                .desktop_primary_token(&desktop_primary_token)
-                .map_err(|_| RpcAuthError::CallFailed)?;
-            validate_token(&desktop_primary, TokenKind::Primary)?;
-            if !same_token_identity(impersonation, &desktop_primary)
-                || !same_token_identity(primary, &desktop_primary)
-            {
-                return Err(RpcAuthError::AccessDenied);
-            }
-            Ok((desktop_primary_token, desktop_primary))
-        })?;
+    match authenticate_role_aware_with(ops)? {
+        AuthenticatedManagerPeer::Desktop(client) => Ok(client),
+        AuthenticatedManagerPeer::ServiceCreatedLpac(_) => Err(RpcAuthError::AccessDenied),
+    }
+}
 
-    let authenticated = AuthenticatedClient {
-        process_id,
-        process,
-        primary,
-        desktop_primary_token,
-        desktop_primary,
-        desktop_process_creation_claimed: Cell::new(false),
-    };
-    authenticated.revalidate_with(ops)?;
-    Ok(authenticated)
+enum AuthenticatedPeerMaterial<T> {
+    Desktop {
+        primary_token: T,
+        primary: TokenObservation,
+    },
+    ServiceCreatedLpacCandidate,
+}
+
+fn authenticate_role_aware_with<O>(
+    ops: &O,
+) -> Result<AuthenticatedManagerPeer<O::Process, O::DesktopPrimaryToken>, RpcAuthError>
+where
+    O: RpcAuthOps,
+{
+    let (process_id, process, primary, material) = authenticate_identity_with(
+        ops,
+        |ops, impersonation, primary| match classify_peer_policy(impersonation, primary)? {
+            TokenPolicy::DesktopBroker => {
+                let desktop_primary_token = ops
+                    .duplicate_desktop_primary_token()
+                    .map_err(|_| RpcAuthError::CallFailed)?;
+                let desktop_primary = ops
+                    .desktop_primary_token(&desktop_primary_token)
+                    .map_err(|_| RpcAuthError::CallFailed)?;
+                validate_token_policy(
+                    &desktop_primary,
+                    TokenKind::Primary,
+                    TokenPolicy::DesktopBroker,
+                )?;
+                if !same_token_identity(impersonation, &desktop_primary)
+                    || !same_token_identity(primary, &desktop_primary)
+                {
+                    return Err(RpcAuthError::AccessDenied);
+                }
+                Ok(AuthenticatedPeerMaterial::Desktop {
+                    primary_token: desktop_primary_token,
+                    primary: desktop_primary,
+                })
+            }
+            TokenPolicy::ServiceCreatedLpacCandidate => {
+                Ok(AuthenticatedPeerMaterial::ServiceCreatedLpacCandidate)
+            }
+        },
+    )?;
+
+    match material {
+        AuthenticatedPeerMaterial::Desktop {
+            primary_token: desktop_primary_token,
+            primary: desktop_primary,
+        } => {
+            let authenticated = AuthenticatedClient {
+                process_id,
+                process,
+                primary,
+                desktop_primary_token,
+                desktop_primary,
+                desktop_process_creation_claimed: Cell::new(false),
+                desktop_process_dup_handle_denial_claimed: Cell::new(false),
+            };
+            authenticated.revalidate_with(ops)?;
+            Ok(AuthenticatedManagerPeer::Desktop(authenticated))
+        }
+        AuthenticatedPeerMaterial::ServiceCreatedLpacCandidate => {
+            let candidate = ServiceCreatedLpacCandidate {
+                process_id,
+                process,
+                primary,
+            };
+            candidate.revalidate_with(ops)?;
+            Ok(AuthenticatedManagerPeer::ServiceCreatedLpac(candidate))
+        }
+    }
 }
 
 fn authenticate_callback_with<O>(ops: &O) -> Result<(), RpcAuthError>
 where
     O: RpcAuthOps,
 {
-    let (process_id, process, primary, ()) =
-        authenticate_identity_with(ops, |_ops, _impersonation, _primary| Ok(()))?;
-    let _current = revalidate_client_process(process_id, &process, &primary, ops)?;
-    Ok(())
+    match authenticate_role_aware_callback_with(ops)? {
+        AuthenticatedCallbackPeer::Desktop(_) => Ok(()),
+        AuthenticatedCallbackPeer::ServiceCreatedLpac(_) => Err(RpcAuthError::AccessDenied),
+    }
+}
+
+fn authenticate_role_aware_callback_with<O>(
+    ops: &O,
+) -> Result<AuthenticatedCallbackPeer<O::Process>, RpcAuthError>
+where
+    O: RpcAuthOps,
+{
+    let (process_id, process, primary, policy) =
+        authenticate_identity_with(ops, |_ops, impersonation, primary| {
+            classify_peer_policy(impersonation, primary)
+        })?;
+    match policy {
+        TokenPolicy::DesktopBroker => {
+            let _current = revalidate_client_process(
+                process_id,
+                &process,
+                &primary,
+                TokenPolicy::DesktopBroker,
+                ops,
+            )?;
+            Ok(AuthenticatedCallbackPeer::Desktop(
+                AuthenticatedRpcCallback { _private: () },
+            ))
+        }
+        TokenPolicy::ServiceCreatedLpacCandidate => {
+            let candidate = ServiceCreatedLpacCandidate {
+                process_id,
+                process,
+                primary,
+            };
+            candidate.revalidate_with(ops)?;
+            Ok(AuthenticatedCallbackPeer::ServiceCreatedLpac(candidate))
+        }
+    }
 }
 
 fn authenticate_identity_with<O, T, F>(
@@ -1004,12 +1295,12 @@ where
     let impersonation = ops
         .impersonation_token()
         .map_err(|_| RpcAuthError::CallFailed)?;
-    validate_token(&impersonation, TokenKind::Impersonation)?;
+    validate_transport_token(&impersonation, TokenKind::Impersonation)?;
 
     let primary = ops
         .primary_token(&process)
         .map_err(|_| RpcAuthError::CallFailed)?;
-    validate_token(&primary, TokenKind::Primary)?;
+    validate_transport_token(&primary, TokenKind::Primary)?;
     if !same_token_identity(&impersonation, &primary) {
         return Err(RpcAuthError::AccessDenied);
     }
@@ -1023,6 +1314,7 @@ fn revalidate_client_process<P, O>(
     process_id: NonZeroU32,
     process: &P,
     primary: &TokenObservation,
+    policy: TokenPolicy,
     ops: &O,
 ) -> Result<TokenObservation, RpcAuthError>
 where
@@ -1037,7 +1329,7 @@ where
     let current = ops
         .primary_token(process)
         .map_err(|_| RpcAuthError::CallFailed)?;
-    validate_token(&current, TokenKind::Primary)?;
+    validate_token_policy(&current, TokenKind::Primary, policy)?;
     if !same_primary_token(primary, &current) {
         return Err(RpcAuthError::AccessDenied);
     }
@@ -1071,19 +1363,61 @@ fn validate_authentication(authentication: AuthenticationObservation) -> Result<
     Ok(())
 }
 
-fn validate_token(token: &TokenObservation, expected: TokenKind) -> Result<(), RpcAuthError> {
+fn validate_transport_token(
+    token: &TokenObservation,
+    expected: TokenKind,
+) -> Result<(), RpcAuthError> {
     let expected_level = match expected {
         TokenKind::Primary => TokenLevel::NotApplicable,
         TokenKind::Impersonation => TokenLevel::Impersonation,
         TokenKind::Other => return Err(RpcAuthError::AccessDenied),
     };
-    if token.token_kind != expected
-        || token.token_level != expected_level
-        || !satisfies_desktop_token_policy(token)
-    {
+    if token.token_kind != expected || token.token_level != expected_level {
         return Err(RpcAuthError::AccessDenied);
     }
     Ok(())
+}
+
+fn validate_token_policy(
+    token: &TokenObservation,
+    expected: TokenKind,
+    policy: TokenPolicy,
+) -> Result<(), RpcAuthError> {
+    validate_transport_token(token, expected)?;
+    let accepted = match policy {
+        TokenPolicy::DesktopBroker => satisfies_desktop_token_policy(token),
+        TokenPolicy::ServiceCreatedLpacCandidate => {
+            satisfies_service_created_lpac_candidate_policy(token)
+        }
+    };
+    accepted.then_some(()).ok_or(RpcAuthError::AccessDenied)
+}
+
+fn classify_peer_policy(
+    impersonation: &TokenObservation,
+    primary: &TokenObservation,
+) -> Result<TokenPolicy, RpcAuthError> {
+    if validate_token_policy(
+        impersonation,
+        TokenKind::Impersonation,
+        TokenPolicy::DesktopBroker,
+    )
+    .is_ok()
+        && validate_token_policy(primary, TokenKind::Primary, TokenPolicy::DesktopBroker).is_ok()
+    {
+        return Ok(TokenPolicy::DesktopBroker);
+    }
+    validate_token_policy(
+        impersonation,
+        TokenKind::Impersonation,
+        TokenPolicy::ServiceCreatedLpacCandidate,
+    )?;
+    validate_token_policy(
+        primary,
+        TokenKind::Primary,
+        TokenPolicy::ServiceCreatedLpacCandidate,
+    )?;
+    Ok(TokenPolicy::ServiceCreatedLpacCandidate)
 }
 
 fn validate_effective_desktop_thread_token(token: &TokenObservation) -> Result<(), RpcAuthError> {
@@ -1100,6 +1434,9 @@ fn validate_effective_desktop_thread_token(token: &TokenObservation) -> Result<(
 }
 
 fn satisfies_desktop_token_policy(token: &TokenObservation) -> bool {
+    // Reject assignment itself, not only an enabled bit: an assigned-but-
+    // disabled SeDebugPrivilege could otherwise be enabled after admission and
+    // bypass the child process DACL.
     if !token.user_sid.has_valid_length()
         || token.logon_sid_count != 1
         || token.session_id == 0
@@ -1112,10 +1449,31 @@ fn satisfies_desktop_token_policy(token: &TokenObservation) -> bool {
         || token.integrity_rid != MEDIUM_INTEGRITY_RID
         || matches!(token.elevation, ElevationKind::Full | ElevationKind::Other)
         || !token.interactive_sid_enabled
+        || token.debug_privilege != DebugPrivilegeState::Absent
     {
         return false;
     }
     true
+}
+
+fn satisfies_service_created_lpac_candidate_policy(token: &TokenObservation) -> bool {
+    // This is intentionally only a transport candidate policy. Authoritative
+    // LPAC class, exact profile SID, zero capabilities, image, and role remain
+    // facts of the independently retained service-created peer.
+    token.user_sid.has_valid_length()
+        && token.logon_sid_count == 1
+        && token.session_id != 0
+        && token
+            .logon_sid
+            .as_ref()
+            .is_some_and(SidBytes::has_valid_length)
+        && token.app_container
+        && !token.ui_access
+        && token.integrity_rid == LOW_INTEGRITY_RID
+        && token.restricted
+        && token.elevation == ElevationKind::Limited
+        && !token.interactive_sid_enabled
+        && token.debug_privilege == DebugPrivilegeState::Absent
 }
 
 fn same_token_identity(first: &TokenObservation, second: &TokenObservation) -> bool {
@@ -1127,6 +1485,7 @@ fn same_token_identity(first: &TokenObservation, second: &TokenObservation) -> b
         && first.integrity_rid == second.integrity_rid
         && first.elevation == second.elevation
         && first.restricted == second.restricted
+        && first.debug_privilege == second.debug_privilege
 }
 
 fn same_primary_token(first: &TokenObservation, second: &TokenObservation) -> bool {
@@ -1275,11 +1634,12 @@ impl<O: RpcAuthOps> Drop for ImpersonationGuard<'_, O> {
 mod tests {
     use super::{
         AuthenticatedClient, AuthenticationId, AuthenticationObservation, CallKind,
-        CallObservation, CallProtocol, DesktopImpersonationOps, EffectiveThreadAuthOps,
-        ElevationKind, ImpersonationGuard, NonZeroU32, ObservationError, ProcessAuthOps,
-        RPC_AUTHN_LEVEL_PACKET_PRIVACY, RPC_AUTHN_SERVICE_WINNT, RPC_AUTHZ_SERVICE_NONE,
-        RPC_CALL_STATUS_ACTIVE, RpcAuthError, RpcAuthOps, SidBytes, ThreadTokenState, TokenId,
-        TokenKind, TokenLevel, TokenObservation, authenticate_callback_with, authenticate_with,
+        CallObservation, CallProtocol, DebugPrivilegeState, DesktopImpersonationOps,
+        DesktopProcessAccessError, EffectiveThreadAuthOps, ElevationKind, ImpersonationGuard,
+        NonZeroU32, ObservationError, ProcessAuthOps, RPC_AUTHN_LEVEL_PACKET_PRIVACY,
+        RPC_AUTHN_SERVICE_WINNT, RPC_AUTHZ_SERVICE_NONE, RPC_CALL_STATUS_ACTIVE, RpcAuthError,
+        RpcAuthOps, SidBytes, ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
+        authenticate_callback_with, authenticate_with,
     };
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -1324,6 +1684,7 @@ mod tests {
         DesktopPrimaryToken,
         DesktopChildToken,
         EffectiveThreadToken,
+        ProcessDupHandleDenial,
         Revert,
         ExactProcess,
         SameProcess,
@@ -1381,10 +1742,30 @@ mod tests {
         AppContainer,
         UiAccess,
         InteractiveSidDisabled,
+        DebugPrivilegePresentDisabled,
+        DebugPrivilegePresentEnabled,
         WrongKind,
         WrongLevel,
         Delegation,
     }
+
+    const REJECTED_EFFECTIVE_TOKEN_MUTATIONS: [EffectiveTokenMutation; 15] = [
+        EffectiveTokenMutation::UserSid,
+        EffectiveTokenMutation::LogonSidCount,
+        EffectiveTokenMutation::LogonSid,
+        EffectiveTokenMutation::SessionId,
+        EffectiveTokenMutation::AuthenticationId,
+        EffectiveTokenMutation::IntegrityRid,
+        EffectiveTokenMutation::Elevation,
+        EffectiveTokenMutation::Restricted,
+        EffectiveTokenMutation::AppContainer,
+        EffectiveTokenMutation::UiAccess,
+        EffectiveTokenMutation::InteractiveSidDisabled,
+        EffectiveTokenMutation::DebugPrivilegePresentDisabled,
+        EffectiveTokenMutation::DebugPrivilegePresentEnabled,
+        EffectiveTokenMutation::WrongKind,
+        EffectiveTokenMutation::WrongLevel,
+    ];
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum DesktopChildTokenMutation {
@@ -1417,8 +1798,11 @@ mod tests {
         thread_cookie: Cell<u32>,
         impersonate_ok: Cell<bool>,
         impersonation_token_ok: Cell<bool>,
+        service_created_lpac_candidate: Cell<bool>,
+        impersonation_debug_privilege: Cell<DebugPrivilegeState>,
         matching_tokens: Cell<bool>,
         primary_token_id: Cell<u32>,
+        primary_debug_privilege: Cell<DebugPrivilegeState>,
         open_process_ok: Cell<bool>,
         primary_token_ok: Cell<bool>,
         duplicate_desktop_primary_ok: Cell<bool>,
@@ -1427,9 +1811,14 @@ mod tests {
         desktop_primary_kind: Cell<TokenKind>,
         desktop_primary_session_id: Cell<u32>,
         desktop_primary_token_id: Cell<u32>,
+        desktop_primary_debug_privilege: Cell<DebugPrivilegeState>,
         desktop_primary_drops: Rc<Cell<u32>>,
         effective_thread_token_ok: Cell<bool>,
         effective_token_mutation: Cell<EffectiveTokenMutation>,
+        effective_token_mutation_after_access: Cell<Option<EffectiveTokenMutation>>,
+        primary_debug_privilege_after_access: Cell<Option<DebugPrivilegeState>>,
+        desktop_primary_debug_privilege_after_access: Cell<Option<DebugPrivilegeState>>,
+        process_dup_handle_result: Cell<Result<(), DesktopProcessAccessError>>,
         exact_process: Cell<bool>,
         same_process: Cell<bool>,
         revert_ok: Cell<bool>,
@@ -1450,8 +1839,11 @@ mod tests {
                 thread_cookie: Cell::new(7),
                 impersonate_ok: Cell::new(true),
                 impersonation_token_ok: Cell::new(true),
+                service_created_lpac_candidate: Cell::new(false),
+                impersonation_debug_privilege: Cell::new(DebugPrivilegeState::Absent),
                 matching_tokens: Cell::new(true),
                 primary_token_id: Cell::new(12),
+                primary_debug_privilege: Cell::new(DebugPrivilegeState::Absent),
                 open_process_ok: Cell::new(true),
                 primary_token_ok: Cell::new(true),
                 duplicate_desktop_primary_ok: Cell::new(true),
@@ -1460,9 +1852,14 @@ mod tests {
                 desktop_primary_kind: Cell::new(TokenKind::Primary),
                 desktop_primary_session_id: Cell::new(3),
                 desktop_primary_token_id: Cell::new(21),
+                desktop_primary_debug_privilege: Cell::new(DebugPrivilegeState::Absent),
                 desktop_primary_drops: Rc::new(Cell::new(0)),
                 effective_thread_token_ok: Cell::new(true),
                 effective_token_mutation: Cell::new(EffectiveTokenMutation::Exact),
+                effective_token_mutation_after_access: Cell::new(None),
+                primary_debug_privilege_after_access: Cell::new(None),
+                desktop_primary_debug_privilege_after_access: Cell::new(None),
+                process_dup_handle_result: Cell::new(Ok(())),
                 exact_process: Cell::new(true),
                 same_process: Cell::new(true),
                 revert_ok: Cell::new(true),
@@ -1504,6 +1901,12 @@ mod tests {
                 EffectiveTokenMutation::InteractiveSidDisabled => {
                     token.interactive_sid_enabled = false;
                 }
+                EffectiveTokenMutation::DebugPrivilegePresentDisabled => {
+                    token.debug_privilege = DebugPrivilegeState::PresentDisabled;
+                }
+                EffectiveTokenMutation::DebugPrivilegePresentEnabled => {
+                    token.debug_privilege = DebugPrivilegeState::PresentEnabled;
+                }
                 EffectiveTokenMutation::WrongKind => token.token_kind = TokenKind::Primary,
                 EffectiveTokenMutation::WrongLevel => token.token_level = TokenLevel::Other,
                 EffectiveTokenMutation::Delegation => {
@@ -1535,8 +1938,13 @@ mod tests {
                 return Err(ObservationError::Incomplete);
             }
             let marker = if self.matching_tokens.get() { 1 } else { 2 };
-            let mut token = approved_token(TokenKind::Primary, marker);
+            let mut token = if self.service_created_lpac_candidate.get() {
+                approved_service_created_lpac_candidate_token(TokenKind::Primary, marker)
+            } else {
+                approved_token(TokenKind::Primary, marker)
+            };
             token.token_id.low_part = self.primary_token_id.get();
+            token.debug_privilege = self.primary_debug_privilege.get();
             Ok(token)
         }
 
@@ -1556,6 +1964,7 @@ mod tests {
             let mut token = approved_token(self.desktop_primary_kind.get(), marker);
             token.session_id = self.desktop_primary_session_id.get();
             token.token_id.low_part = self.desktop_primary_token_id.get();
+            token.debug_privilege = self.desktop_primary_debug_privilege.get();
             Ok(token)
         }
 
@@ -1637,7 +2046,15 @@ mod tests {
             self.record(Event::ImpersonationToken);
             self.impersonation_token_ok
                 .get()
-                .then(|| approved_token(TokenKind::Impersonation, 1))
+                .then(|| {
+                    let mut token = if self.service_created_lpac_candidate.get() {
+                        approved_service_created_lpac_candidate_token(TokenKind::Impersonation, 1)
+                    } else {
+                        approved_token(TokenKind::Impersonation, 1)
+                    };
+                    token.debug_privilege = self.impersonation_debug_privilege.get();
+                    token
+                })
                 .ok_or(ObservationError::Incomplete)
         }
 
@@ -1685,6 +2102,23 @@ mod tests {
 
         fn revert_desktop_impersonation(&self) -> Result<(), ObservationError> {
             <Self as RpcAuthOps>::revert(self)
+        }
+
+        fn require_process_dup_handle_denied(
+            &self,
+            _process_id: NonZeroU32,
+        ) -> Result<(), DesktopProcessAccessError> {
+            self.record(Event::ProcessDupHandleDenial);
+            if let Some(mutation) = self.effective_token_mutation_after_access.get() {
+                self.effective_token_mutation.set(mutation);
+            }
+            if let Some(state) = self.primary_debug_privilege_after_access.get() {
+                self.primary_debug_privilege.set(state);
+            }
+            if let Some(state) = self.desktop_primary_debug_privilege_after_access.get() {
+                self.desktop_primary_debug_privilege.set(state);
+            }
+            self.process_dup_handle_result.get()
         }
 
         fn fail_fast(&self) -> ! {
@@ -1742,7 +2176,21 @@ mod tests {
             elevation: ElevationKind::Default,
             restricted: false,
             interactive_sid_enabled: true,
+            debug_privilege: DebugPrivilegeState::Absent,
         }
+    }
+
+    fn approved_service_created_lpac_candidate_token(
+        kind: TokenKind,
+        marker: u8,
+    ) -> TokenObservation {
+        let mut token = approved_token(kind, marker);
+        token.app_container = true;
+        token.integrity_rid = super::LOW_INTEGRITY_RID;
+        token.elevation = ElevationKind::Limited;
+        token.restricted = true;
+        token.interactive_sid_enabled = false;
+        token
     }
 
     fn desktop_child_token(mutation: DesktopChildTokenMutation) -> TokenObservation {
@@ -1815,6 +2263,114 @@ mod tests {
                 .filter(|event| **event == Event::Revert)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn role_aware_transport_derives_helper_without_desktop_launch_authority() {
+        let manager_ops = FakeOps::approved();
+        manager_ops.service_created_lpac_candidate.set(true);
+        let manager = super::authenticate_role_aware_with(&manager_ops);
+        assert!(matches!(
+            manager,
+            Ok(super::AuthenticatedManagerPeer::ServiceCreatedLpac(_))
+        ));
+        assert!(
+            !manager_ops
+                .events()
+                .contains(&Event::DuplicateDesktopPrimary)
+        );
+        assert!(!manager_ops.events().contains(&Event::DesktopPrimaryToken));
+        assert_eq!(manager_ops.desktop_primary_drops.get(), 0);
+
+        let callback_ops = FakeOps::approved();
+        callback_ops.service_created_lpac_candidate.set(true);
+        let callback = super::authenticate_role_aware_callback_with(&callback_ops);
+        assert!(matches!(
+            callback,
+            Ok(super::AuthenticatedCallbackPeer::ServiceCreatedLpac(_))
+        ));
+        assert!(
+            !callback_ops
+                .events()
+                .contains(&Event::DuplicateDesktopPrimary)
+        );
+        assert!(!callback_ops.events().contains(&Event::DesktopPrimaryToken));
+
+        let desktop_only_ops = FakeOps::approved();
+        desktop_only_ops.service_created_lpac_candidate.set(true);
+        assert!(matches!(
+            authenticate_with(&desktop_only_ops),
+            Err(RpcAuthError::AccessDenied)
+        ));
+    }
+
+    #[test]
+    fn helper_candidate_policy_rejects_every_selected_transport_fact() {
+        let exact = approved_service_created_lpac_candidate_token(TokenKind::Primary, 1);
+        assert_eq!(
+            super::validate_token_policy(
+                &exact,
+                TokenKind::Primary,
+                super::TokenPolicy::ServiceCreatedLpacCandidate,
+            ),
+            Ok(())
+        );
+
+        let mutations: [fn(&mut TokenObservation); 17] = [
+            |token| token.user_sid = SidBytes(vec![1; 7]),
+            |token| token.logon_sid_count = 0,
+            |token| token.logon_sid_count = 2,
+            |token| token.logon_sid = None,
+            |token| token.logon_sid = Some(SidBytes(vec![2; 7])),
+            |token| token.session_id = 0,
+            |token| token.app_container = false,
+            |token| token.ui_access = true,
+            |token| token.integrity_rid = super::MEDIUM_INTEGRITY_RID,
+            |token| token.elevation = ElevationKind::Default,
+            |token| token.elevation = ElevationKind::Full,
+            |token| token.restricted = false,
+            |token| token.interactive_sid_enabled = true,
+            |token| token.debug_privilege = DebugPrivilegeState::PresentDisabled,
+            |token| token.debug_privilege = DebugPrivilegeState::PresentEnabled,
+            |token| token.token_kind = TokenKind::Other,
+            |token| token.token_level = TokenLevel::Other,
+        ];
+        for mutate in mutations {
+            let mut rejected = approved_service_created_lpac_candidate_token(TokenKind::Primary, 1);
+            mutate(&mut rejected);
+            assert_eq!(
+                super::validate_token_policy(
+                    &rejected,
+                    TokenKind::Primary,
+                    super::TokenPolicy::ServiceCreatedLpacCandidate,
+                ),
+                Err(RpcAuthError::AccessDenied)
+            );
+        }
+
+        let helper = approved_service_created_lpac_candidate_token(TokenKind::Impersonation, 1);
+        let desktop = approved_token(TokenKind::Primary, 1);
+        assert_eq!(
+            super::classify_peer_policy(&helper, &desktop),
+            Err(RpcAuthError::AccessDenied)
+        );
+    }
+
+    #[test]
+    fn helper_candidate_is_move_only_send_and_data_free() {
+        type Candidate = super::ServiceCreatedLpacCandidate<FakeProcess>;
+        assert_send::<Candidate>();
+        let _ = <Candidate as AmbiguousIfClone<_>>::marker;
+        let _ = <Candidate as AmbiguousIfCopy<_>>::marker;
+        let candidate = Candidate {
+            process_id: NonZeroU32::MIN,
+            process: FakeProcess(1),
+            primary: approved_service_created_lpac_candidate_token(TokenKind::Primary, 1),
+        };
+        assert_eq!(
+            format!("{candidate:?}"),
+            "ServiceCreatedLpacCandidate([REDACTED])"
         );
     }
 
@@ -2061,6 +2617,12 @@ mod tests {
         token.interactive_sid_enabled = false;
         tokens.push(token);
         let mut token = approved_token(TokenKind::Impersonation, 1);
+        token.debug_privilege = DebugPrivilegeState::PresentDisabled;
+        tokens.push(token);
+        let mut token = approved_token(TokenKind::Impersonation, 1);
+        token.debug_privilege = DebugPrivilegeState::PresentEnabled;
+        tokens.push(token);
+        let mut token = approved_token(TokenKind::Impersonation, 1);
         token.token_level = TokenLevel::Other;
         tokens.push(token);
         let mut token = approved_token(TokenKind::Other, 1);
@@ -2070,26 +2632,86 @@ mod tests {
 
         for rejected in tokens {
             assert_eq!(
-                super::validate_token(&rejected, TokenKind::Impersonation),
+                super::validate_token_policy(
+                    &rejected,
+                    TokenKind::Impersonation,
+                    super::TokenPolicy::DesktopBroker,
+                ),
                 Err(RpcAuthError::AccessDenied)
             );
         }
 
         let mut primary = approved_token(TokenKind::Primary, 1);
-        assert!(super::validate_token(&primary, TokenKind::Primary).is_ok());
+        assert!(
+            super::validate_token_policy(
+                &primary,
+                TokenKind::Primary,
+                super::TokenPolicy::DesktopBroker,
+            )
+            .is_ok()
+        );
         primary.token_level = TokenLevel::Impersonation;
         assert_eq!(
-            super::validate_token(&primary, TokenKind::Primary),
+            super::validate_token_policy(
+                &primary,
+                TokenKind::Primary,
+                super::TokenPolicy::DesktopBroker,
+            ),
             Err(RpcAuthError::AccessDenied)
         );
 
         let mut limited = approved_token(TokenKind::Impersonation, 1);
         limited.elevation = ElevationKind::Limited;
-        assert!(super::validate_token(&limited, TokenKind::Impersonation).is_ok());
+        assert!(
+            super::validate_token_policy(
+                &limited,
+                TokenKind::Impersonation,
+                super::TokenPolicy::DesktopBroker,
+            )
+            .is_ok()
+        );
 
         let mut filtered = approved_token(TokenKind::Impersonation, 1);
         filtered.restricted = true;
-        assert!(super::validate_token(&filtered, TokenKind::Impersonation).is_ok());
+        assert!(
+            super::validate_token_policy(
+                &filtered,
+                TokenKind::Impersonation,
+                super::TokenPolicy::DesktopBroker,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn authentication_rejects_debug_privilege_presence_in_each_initial_token() {
+        for state in [
+            DebugPrivilegeState::PresentDisabled,
+            DebugPrivilegeState::PresentEnabled,
+        ] {
+            for observed_token in 0..3 {
+                let ops = FakeOps::approved();
+                match observed_token {
+                    0 => ops.impersonation_debug_privilege.set(state),
+                    1 => ops.primary_debug_privilege.set(state),
+                    2 => ops.desktop_primary_debug_privilege.set(state),
+                    _ => unreachable!(),
+                }
+
+                assert_eq!(
+                    authenticate_with(&ops).map(|_| ()),
+                    Err(RpcAuthError::AccessDenied),
+                    "state {state:?}, observed token {observed_token} must fail closed"
+                );
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::Revert)
+                        .count(),
+                    1
+                );
+            }
+        }
     }
 
     #[test]
@@ -2116,6 +2738,16 @@ mod tests {
         impersonation.elevation = ElevationKind::Limited;
         assert!(!super::same_token_identity(&impersonation, &primary));
         primary.elevation = ElevationKind::Limited;
+        assert!(super::same_token_identity(&impersonation, &primary));
+
+        impersonation.debug_privilege = DebugPrivilegeState::PresentDisabled;
+        assert!(!super::same_token_identity(&impersonation, &primary));
+        primary.debug_privilege = DebugPrivilegeState::PresentDisabled;
+        assert!(super::same_token_identity(&impersonation, &primary));
+
+        impersonation.debug_privilege = DebugPrivilegeState::PresentEnabled;
+        assert!(!super::same_token_identity(&impersonation, &primary));
+        primary.debug_privilege = DebugPrivilegeState::PresentEnabled;
         assert!(super::same_token_identity(&impersonation, &primary));
     }
 
@@ -2151,21 +2783,7 @@ mod tests {
         let proof = authenticate_with(&ops);
         assert!(proof.is_ok());
         if let Ok(proof) = proof {
-            for mutation in [
-                EffectiveTokenMutation::UserSid,
-                EffectiveTokenMutation::LogonSidCount,
-                EffectiveTokenMutation::LogonSid,
-                EffectiveTokenMutation::SessionId,
-                EffectiveTokenMutation::AuthenticationId,
-                EffectiveTokenMutation::IntegrityRid,
-                EffectiveTokenMutation::Elevation,
-                EffectiveTokenMutation::Restricted,
-                EffectiveTokenMutation::AppContainer,
-                EffectiveTokenMutation::UiAccess,
-                EffectiveTokenMutation::InteractiveSidDisabled,
-                EffectiveTokenMutation::WrongKind,
-                EffectiveTokenMutation::WrongLevel,
-            ] {
+            for mutation in REJECTED_EFFECTIVE_TOKEN_MUTATIONS {
                 ops.events.borrow_mut().clear();
                 ops.effective_token_mutation.set(mutation);
                 assert_eq!(
@@ -2508,6 +3126,345 @@ mod tests {
     }
 
     #[test]
+    fn process_dup_handle_denial_is_ordered_after_creation_and_consumed_once() {
+        let ops = FakeOps::approved();
+        let proof = authenticate_with(&ops);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert_eq!(proof.claim_desktop_process_creation_with(&ops), Ok(()));
+            ops.events.borrow_mut().clear();
+
+            assert_eq!(
+                proof.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &ops,
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                ops.events(),
+                [
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::ThreadState,
+                    Event::ThreadCookie,
+                    Event::Impersonate,
+                    Event::ThreadCookie,
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::EffectiveThreadToken,
+                    Event::ProcessDupHandleDenial,
+                    Event::ThreadCookie,
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                    Event::EffectiveThreadToken,
+                    Event::ThreadCookie,
+                    Event::Revert,
+                    Event::ThreadState,
+                    Event::ExactProcess,
+                    Event::PrimaryToken,
+                    Event::DesktopPrimaryToken,
+                ]
+            );
+
+            ops.events.borrow_mut().clear();
+            assert_eq!(
+                proof.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &ops,
+                ),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(ops.events().is_empty());
+        }
+
+        let premature_ops = FakeOps::approved();
+        let premature = authenticate_with(&premature_ops);
+        assert!(premature.is_ok());
+        if let Ok(premature) = premature {
+            premature_ops.events.borrow_mut().clear();
+            assert_eq!(
+                premature.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &premature_ops,
+                ),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(premature_ops.events().is_empty());
+            assert_eq!(
+                premature.claim_desktop_process_creation_with(&premature_ops),
+                Ok(())
+            );
+            premature_ops.events.borrow_mut().clear();
+            assert_eq!(
+                premature.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &premature_ops,
+                ),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert!(premature_ops.events().is_empty());
+        }
+    }
+
+    #[test]
+    fn process_dup_handle_denial_classifies_access_and_os_failures_after_revert() {
+        for (native, expected) in [
+            (
+                DesktopProcessAccessError::AccessAllowed,
+                RpcAuthError::AccessDenied,
+            ),
+            (
+                DesktopProcessAccessError::Incomplete,
+                RpcAuthError::CallFailed,
+            ),
+        ] {
+            let ops = FakeOps::approved();
+            let proof = authenticate_with(&ops);
+            assert!(proof.is_ok());
+            if let Ok(proof) = proof {
+                assert_eq!(proof.claim_desktop_process_creation_with(&ops), Ok(()));
+                ops.process_dup_handle_result.set(Err(native));
+                ops.events.borrow_mut().clear();
+                assert_eq!(
+                    proof.require_desktop_process_dup_handle_denied_with(
+                        NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                        &ops,
+                    ),
+                    Err(expected)
+                );
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::ProcessDupHandleDenial)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::Revert)
+                        .count(),
+                    1
+                );
+                assert_eq!(ops.events().last(), Some(&Event::DesktopPrimaryToken));
+            }
+        }
+    }
+
+    #[test]
+    fn process_dup_handle_denial_never_runs_under_unverified_effective_identity() {
+        for mutation in REJECTED_EFFECTIVE_TOKEN_MUTATIONS {
+            let ops = FakeOps::approved();
+            let proof = authenticate_with(&ops);
+            assert!(proof.is_ok());
+            if let Ok(proof) = proof {
+                assert_eq!(proof.claim_desktop_process_creation_with(&ops), Ok(()));
+                ops.effective_token_mutation.set(mutation);
+                ops.events.borrow_mut().clear();
+                assert_eq!(
+                    proof.require_desktop_process_dup_handle_denied_with(
+                        NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                        &ops,
+                    ),
+                    Err(RpcAuthError::AccessDenied),
+                    "mutation {mutation:?} must fail closed"
+                );
+                assert!(!ops.events().contains(&Event::ProcessDupHandleDenial));
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::Revert)
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn process_dup_handle_denial_rejects_retained_debug_privilege_before_and_after_access() {
+        for state in [
+            DebugPrivilegeState::PresentDisabled,
+            DebugPrivilegeState::PresentEnabled,
+        ] {
+            for retained_token in 0..2 {
+                let pre_ops = FakeOps::approved();
+                let pre_proof = authenticate_with(&pre_ops);
+                assert!(pre_proof.is_ok());
+                if let Ok(pre_proof) = pre_proof {
+                    assert_eq!(
+                        pre_proof.claim_desktop_process_creation_with(&pre_ops),
+                        Ok(())
+                    );
+                    match retained_token {
+                        0 => pre_ops.primary_debug_privilege.set(state),
+                        1 => pre_ops.desktop_primary_debug_privilege.set(state),
+                        _ => unreachable!(),
+                    }
+                    pre_ops.events.borrow_mut().clear();
+                    assert_eq!(
+                        pre_proof.require_desktop_process_dup_handle_denied_with(
+                            NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                            &pre_ops,
+                        ),
+                        Err(RpcAuthError::AccessDenied)
+                    );
+                    assert!(!pre_ops.events().contains(&Event::Impersonate));
+                    assert!(!pre_ops.events().contains(&Event::ProcessDupHandleDenial));
+                }
+
+                let post_ops = FakeOps::approved();
+                let post_proof = authenticate_with(&post_ops);
+                assert!(post_proof.is_ok());
+                if let Ok(post_proof) = post_proof {
+                    assert_eq!(
+                        post_proof.claim_desktop_process_creation_with(&post_ops),
+                        Ok(())
+                    );
+                    match retained_token {
+                        0 => post_ops
+                            .primary_debug_privilege_after_access
+                            .set(Some(state)),
+                        1 => post_ops
+                            .desktop_primary_debug_privilege_after_access
+                            .set(Some(state)),
+                        _ => unreachable!(),
+                    }
+                    post_ops.events.borrow_mut().clear();
+                    assert_eq!(
+                        post_proof.require_desktop_process_dup_handle_denied_with(
+                            NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                            &post_ops,
+                        ),
+                        Err(RpcAuthError::AccessDenied)
+                    );
+                    assert_eq!(
+                        post_ops
+                            .events()
+                            .iter()
+                            .filter(|event| **event == Event::ProcessDupHandleDenial)
+                            .count(),
+                        1
+                    );
+                    assert_eq!(
+                        post_ops
+                            .events()
+                            .iter()
+                            .filter(|event| **event == Event::Revert)
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn process_dup_handle_denial_postcheck_rejects_every_changed_effective_fact() {
+        for mutation in REJECTED_EFFECTIVE_TOKEN_MUTATIONS {
+            let ops = FakeOps::approved();
+            let proof = authenticate_with(&ops);
+            assert!(proof.is_ok());
+            if let Ok(proof) = proof {
+                assert_eq!(proof.claim_desktop_process_creation_with(&ops), Ok(()));
+                ops.effective_token_mutation_after_access
+                    .set(Some(mutation));
+                ops.events.borrow_mut().clear();
+                assert_eq!(
+                    proof.require_desktop_process_dup_handle_denied_with(
+                        NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                        &ops,
+                    ),
+                    Err(RpcAuthError::AccessDenied),
+                    "post-access mutation {mutation:?} must fail closed"
+                );
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::ProcessDupHandleDenial)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    ops.events()
+                        .iter()
+                        .filter(|event| **event == Event::Revert)
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn process_dup_handle_denial_impersonation_and_revert_fail_closed() {
+        let impersonate_ops = FakeOps::approved();
+        let impersonate_proof = authenticate_with(&impersonate_ops);
+        assert!(impersonate_proof.is_ok());
+        if let Ok(impersonate_proof) = impersonate_proof {
+            assert_eq!(
+                impersonate_proof.claim_desktop_process_creation_with(&impersonate_ops),
+                Ok(())
+            );
+            impersonate_ops.impersonate_ok.set(false);
+            impersonate_ops.events.borrow_mut().clear();
+            assert_eq!(
+                impersonate_proof.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &impersonate_ops,
+                ),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert_eq!(impersonate_ops.events().last(), Some(&Event::Impersonate));
+            assert!(
+                !impersonate_ops
+                    .events()
+                    .contains(&Event::ProcessDupHandleDenial)
+            );
+            assert!(!impersonate_ops.events().contains(&Event::Revert));
+        }
+
+        let revert_ops = FakeOps::approved();
+        let revert_proof = authenticate_with(&revert_ops);
+        assert!(revert_proof.is_ok());
+        if let Ok(revert_proof) = revert_proof {
+            assert_eq!(
+                revert_proof.claim_desktop_process_creation_with(&revert_ops),
+                Ok(())
+            );
+            revert_ops.revert_ok.set(false);
+            revert_ops.events.borrow_mut().clear();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = revert_proof.require_desktop_process_dup_handle_denied_with(
+                    NonZeroU32::new(77).unwrap_or(NonZeroU32::MIN),
+                    &revert_ops,
+                );
+            }));
+            assert!(result.is_err());
+            assert_eq!(
+                revert_ops
+                    .events()
+                    .iter()
+                    .filter(|event| **event == Event::Revert)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                revert_ops
+                    .events()
+                    .iter()
+                    .filter(|event| **event == Event::FailFast)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
     fn debug_is_data_free() {
         let error = RpcAuthError::AccessDenied;
         assert_eq!(format!("{error:?}"), "AccessDenied");
@@ -2520,6 +3477,7 @@ mod tests {
             },
             desktop_primary: approved_token(TokenKind::Primary, 9),
             desktop_process_creation_claimed: Cell::new(false),
+            desktop_process_dup_handle_denial_claimed: Cell::new(false),
         };
         let debug = format!("{proof:?}");
         assert!(debug.contains("[REDACTED]"));

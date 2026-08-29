@@ -29,6 +29,28 @@ one-shot process-correlated epochs, SCM rundown, and `Unavailable` as its only
 application response. Its admission proves only a local medium-integrity,
 interactive, non-AppContainer desktop caller, not an enrolled Broker or role.
 
+That desktop admission now rejects `SeDebugPrivilege` by assignment state, not
+only by enabled state: absent is the sole accepted state, while assigned-but-
+disabled and enabled are both denied. After the one authenticated desktop
+process-creation claim is consumed, a same-thread impersonation bookended by
+retained/effective-token revalidation must make an exact
+`OpenProcess(PROCESS_DUP_HANDLE, FALSE, child_pid)` fail with
+`ERROR_ACCESS_DENIED`; an unexpected handle is checked-closed and any other
+status fails closed. This proves only the admitted desktop token against that
+exact still-suspended child, not administrators or another token.
+
+A separate dormant role-aware path classifies a local low-integrity restricted
+AppContainer caller only as a service-created-LPAC transport candidate. Exact
+profile SID, zero capabilities, image, role, process, and token facts remain in
+the service-owned expected peer. A fixed-capacity registry registers that peer
+while suspended, revalidates it before a sole resume, holds the slot publication
+boundary across that resume so callbacks cannot observe pre-publication state,
+allows non-consuming callback observation, and lets the manager consume the
+matching epoch/request exactly once. Duplicate, replay, cross-role, race, stop,
+and cancellation paths retire and bounded-reap the exact process and Job. This
+is a foundation only: no production RPC dispatch, helper lifecycle, or wire
+caller reaches it.
+
 Compile-only launch inputs now retain and revalidate an exact restricted service
 token for service-owned process/thread descriptors, an unnamed non-nested
 one-process Job, and fixed target-user Approval or Secret Input LPAC profiles.
@@ -174,29 +196,28 @@ acceptable production design.
 
 A separate dormant transport slice now tests only the mechanics needed by that
 future process boundary. `key-agent-debugger-wire` defines exact 80-byte
-bootstrap, 72-byte `READY_FROZEN`, and 56-byte decision frames with big-endian
-integers, zeroed reserved fields, and CRC32C framing; the CRC is corruption
-detection, not authentication. The secretless `key-agent-debugger.exe` produces
-no output and exits 78 in ordinary or release builds, and runs only behind its
-debug test hook. A private platform typestate and one ignored current-host
-kernel test cover a suspended helper with an exact three-handle `HANDLE_LIST`
-and private control/status pipes, parent-to-helper installation of a
-`SYNCHRONIZE`-only sentinel, `READY_FROZEN`, helper-to-parent
-`DUPLICATE_SAME_ACCESS` pull-back,
-`COMMIT`, `ABORT`, parent EOF, timeout, malformed input, forced termination,
-natural-exit/Drop cleanup, and helper-process-exit handle-table cleanup. The
-same creation call carries one `PROC_THREAD_ATTRIBUTE_JOB_LIST` entry backed by
-an unnamed, non-inheritable Job with exact `KILL_ON_JOB_CLOSE` only: no active-
-process limit and no breakaway mode. The parent creates and retains one Job
-handle; before resume, readback proves the exact policy, helper membership,
-and current active count one. A Job-only path terminates and reaches exact-zero
-accounting without consulting the process handle; a current-host path closes
-the parent-retained handle before benign suspended-helper code can run and,
-with no explicit termination API, proves the live helper becomes terminal.
-`READY_FROZEN` means the protocol's
-source-handle set is fixed and decision-only; it does not mean an OS-suspended
-process or thread. Pipe PID topology, the nonce, and CRC32C do not authenticate
-the peer or confer authority.
+bootstrap, 72-byte `READY_FROZEN`, 56-byte decision, 96-byte `TARGET_FROZEN`,
+56-byte parent-death command, and 96-byte parent-death report frames with big-
+endian integers, zeroed reserved fields, and CRC32C framing; the CRC is
+corruption detection, not authentication. The secretless
+`key-agent-debugger.exe` produces no output and exits 78 in ordinary or release
+builds, and runs only behind its debug test hook. A private platform typestate
+and ignored current-host kernel probes cover the exact three-handle
+`HANDLE_LIST`, private control/status pipes, `SYNCHRONIZE`-only sentinel,
+`READY_FROZEN`, `TARGET_FROZEN`, `COMMIT`, `ABORT`, EOF, timeout, malformed
+input, forced termination, natural-exit/Drop cleanup, and process-exit handle-
+table cleanup.
+
+The same debugger creation carries one `PROC_THREAD_ATTRIBUTE_JOB_LIST` entry
+backed by an unnamed, non-inheritable Job whose readback must equal
+`KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, `ActiveProcessLimit = 2`, and no
+breakaway. The parent creates and retains the only Job handle owned by this
+implementation. The fixture proves one debugger member before target creation,
+then the exact debugger/target PID set at count two; an attempted third
+suspended child must fail with the Job quota. This does not prove that no other
+process has duplicated a Job handle system-wide. `READY_FROZEN` still names a
+fixed-source, decision-only protocol state rather than an OS suspension claim;
+the target reported by `TARGET_FROZEN` is separately proven suspended.
 
 A private umbrella now composes the production-compiled artifact seam with its
 sole debug-gated transport consumer. Admission still accepts an already
@@ -217,7 +238,8 @@ uses exactly `CREATE_SUSPENDED | CREATE_NO_WINDOW |
 CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | DEBUG_PROCESS |
 DEBUG_ONLY_THIS_PROCESS`. The existing exact three-entry stdio `HANDLE_LIST`,
 one-entry containment Job list, private control/status pipes, sentinel design,
-and 80/72/56-byte wire are unchanged. Before adopting the native-returned
+and the three original debugger-wire frame kinds are retained alongside the
+target and parent-death frames. Before adopting the native-returned
 process/thread owners, raw numeric slots must be pairwise distinct across the
 held artifact, Job, all three exact pipe handles, and both outputs; ambiguity
 aborts. A creator-thread-bound owner then proves creator PID/TID, thread-owner
@@ -265,22 +287,32 @@ because it may have released execution. Other ambiguous cleanup also fail-fasts.
 
 Only after mapped-image authentication and detach does the parent install the
 existing `SYNCHRONIZE`-only sentinel. It writes the same 80-byte bootstrap while
-the explicit count remains one and performs the sole user-mode resume afterward;
-the 72-byte `READY_FROZEN` and 56-byte decision frames and all sentinel
-install/pull checks are unchanged. Artifact tests cover equal and distinct
-file-object identities; source-local tests fix the six flags, raw-slot
-distinctness, and every first-event field ambiguity. Both ignored current-host
-kernel tests pass: the positive end-to-end transport exercises normal-detach
-retirement, and a `cfg(test)` application override that maps a different image
-fails as `MappedImage` after attached rejection cleanup proves the same result.
-This establishes only that both numeric slots were invalid at those observation
-points on the measured host, not object destruction or a Windows-wide contract.
+the explicit count remains one and performs the sole user-mode resume afterward.
+The debug-hook helper then creates a real suspended, inert target, currently by
+reopening its own `current_exe`, and sends its PID/TID, creation time, and source
+process/thread handle words in `TARGET_FROZEN`. The parent duplicates only
+process access `0x00101001` and thread access `0x00100802`. Exact native access
+readback on the measured host is `0x00101001` for the process and `0x00101802`
+for the thread because the object manager adds `THREAD_RESUME` (`0x1000`) to the
+requested `THREAD_SUSPEND_RESUME` mask. Every other mask is rejected.
 
-The secretless helper still creates or debugs no Key Agent target and receives
-no target event. The parent-side helper-image gate does not resolve target raw-
-slot generation, ABA, or atomic compare-close. A later atomic cutover must move
-the complete target debug engine into the dedicated process, keep target-event
-aliases borrowed, and reclaim them only at debugger-process exit.
+Current-host topology probes prove Job count `2 -> 1 -> 0`: exact debugger plus
+target before handoff, the still-suspended target alone after debugger exit,
+and exact-zero after terminal cleanup. They reprove target identity, creation
+time, access, liveness, Job membership, and a `1 -> 2 -> 1` suspend probe after
+debugger exit. A separate outer-supervisor fixture binds PID plus creation time
+and force-terminates the supervisor before `READY_FROZEN`, at `READY_FROZEN`,
+and after target handoff; the retained observation handles require both debugger
+and target to become terminal at every applicable stage. Parent-death command
+and report framing is exact 56/96 bytes.
+
+This is debug-only topology evidence. The inert target is untrusted because the
+helper resolves `current_exe`; it is not a parent-pinned, signed Key Agent image
+and is never exposed as resumable production authority. The helper-image event
+gate also does not authenticate target debug-event aliases. Parent-pinned target
+image admission, atomic dedicated-debugger target-event ownership, system-wide
+last-Job-handle exclusion, and supported-kernel generalization of the native
+thread-mask normalization and parent-death behavior remain open.
 
 The Windows x64 MSVC helper build now embeds one deterministic, header-free
 ASCII `VERSIONINFO` definition with fixed file/product version `0.1.0.0` and
@@ -307,17 +339,17 @@ exact eight-file/four-directory verifier toolset. Tests include a real built
 binary and an exact-name non-PE negative. Runtime helper version decoding now
 first requires `VS_FIXEDFILEINFO.dwSignature == 0xFEEF04BD`.
 
-Those are build/scaffold and fixture/proxy guarantees, not a completed signed-
-product E2E. The actual product signer, immutable installation, and generated
-compiled release policy remain external **STOP-SHIP**, as do a separate
-principal plus from-birth process DACL and
-explicit `PROCESS_DUP_HANDLE` denial, actual target transfer and
-token/image/suspend/Job proof, target membership and process-count topology,
-Job-owner handoff beyond helper exit, adversarial parent-death containment, and
-supported-kernel generalization of debug-event-alias retirement and
-cancellation-drain matrices. The helper still exits 78 in default and release
-builds, no production caller exists, and
-`COMPILED_RELEASE_POLICY` remains `None`.
+Those are build/scaffold and current-host fixture/proxy guarantees, not a
+completed signed-product E2E or the Phase 1 exit gate. The actual product signer,
+immutable installation, generated compiled release policy, parent-pinned target
+image, system-wide last-Job-handle proof, and supported-kernel generalization of
+debug-event-alias retirement, target access normalization, parent-death, and
+cancellation-drain matrices remain external **STOP-SHIP** work. The role-aware
+registry has no production RPC/lifecycle/wire caller; signed-helper `ncalrpc`
+E2E, installed SCM restricted-service identity, cross-session LPAC, and elevated
+service evidence are also unproved. The helper still exits 78 in default and
+release builds, no production caller exists, and both compiled policies remain
+`None`.
 When a deadline observes pending overlapped pipe I/O, `CancelIoEx` is only a
 cancellation request. Async `ReadFile`/`WriteFile` receive no byte-count output
 pointer; one raw `*mut OVERLAPPED` established before initiation is carried
@@ -1574,8 +1606,12 @@ constructor is absent from the release path; production has no elevated bypass.
 
 The separate `cfg(test)`-only LPAC launch fixture opens the persistent fixed
 profile, copies the current test image into a CSPRNG-named directory beneath its
-OS-managed `AC` folder, and applies a protected DACL granting the current user
-full access and only the fixed profile SID read/execute. The kernel-only
+OS-managed `AC` folder, requires the exact current-user owner, and explicitly
+applies a protected DACL granting the current user full access and only the
+fixed profile SID read/execute. On both the directory and copied executable it
+then reads back that owner/DACL and a non-defaulted, one-ACE Medium/`NW`
+mandatory label. This models a medium-integrity installed image while retaining
+the unchanged full Key Agent mitigation policy, including `NO_LOW_LABEL`. The kernel-only
 provisioning seam likewise reuses that persistent test profile and creates a
 separate CSPRNG-named storage leaf. Drop removes only those exact test objects;
 it neither changes the workspace image ACL nor deletes the persistent profile.

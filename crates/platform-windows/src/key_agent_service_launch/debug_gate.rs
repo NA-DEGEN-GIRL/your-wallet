@@ -73,6 +73,11 @@ use super::process::{
     PendingServiceProbeDetach, PreparedServiceProbeDetach, ServiceProbeRole, SuspendedServiceProbe,
 };
 use crate::exact_image::{authenticate_mapped_image, held_helper_file_identity};
+use crate::key_agent_service_rpc::{
+    ExpectedHelperAdmission, ExpectedHelperLease, ExpectedHelperPeer, ExpectedHelperRole,
+    ExpectedPeerKey, ExpectedPeerRegistryError, ExpectedPeerVerificationError,
+    ServiceCreatedLpacCandidate,
+};
 use crate::pipe::{
     ApprovalRequestWriter, ApprovalResponseReader, PrivateApprovalPipes, PrivateSecretInputPipes,
     SecretRequestWriter, SecretResponseReader,
@@ -199,6 +204,7 @@ impl fmt::Debug for ParentBootstrapChannels {
 pub(super) struct PendingDebuggerExitServiceProbe {
     process: PendingServiceProbeDetach,
     channels: ParentBootstrapChannels,
+    expected_key: ExpectedPeerKey,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -210,6 +216,7 @@ impl PendingDebuggerExitServiceProbe {
         let Self {
             process,
             channels,
+            expected_key,
             _not_sync: _,
         } = self;
         let process = process
@@ -218,6 +225,7 @@ impl PendingDebuggerExitServiceProbe {
         Ok(DetachedServiceProbe {
             process,
             channels,
+            expected_key,
             _not_sync: PhantomData,
         })
     }
@@ -236,7 +244,88 @@ impl fmt::Debug for PendingDebuggerExitServiceProbe {
 pub(super) struct DetachedServiceProbe {
     process: DetachedSuspendedServiceProbe,
     channels: ParentBootstrapChannels,
+    expected_key: ExpectedPeerKey,
     _not_sync: PhantomData<Cell<()>>,
+}
+
+pub(super) type ServiceHelperAdmission =
+    ExpectedHelperAdmission<DetachedServiceProbe, ServiceCreatedLpacCandidate>;
+pub(super) type ServiceHelperLease =
+    ExpectedHelperLease<DetachedServiceProbe, ServiceCreatedLpacCandidate>;
+
+impl DetachedServiceProbe {
+    /// Registers the exact still-suspended service-created peer before the sole
+    /// resume transition. No unregistered resume is exposed by this type.
+    pub(super) fn register_revalidate_and_resume_once(
+        self,
+        admission: &ServiceHelperAdmission,
+    ) -> Result<ServiceHelperLease, ExpectedPeerRegistryError> {
+        admission
+            .register_suspended(self)?
+            .revalidate_and_resume_once()
+    }
+
+    fn revalidate_role_binding(&self) -> Result<(), ExpectedPeerVerificationError> {
+        let exact = matches!(
+            (self.process.role(), self.channels.role()),
+            (ServiceProbeRole::Approval, HelperBootstrapRole::Approval)
+                | (
+                    ServiceProbeRole::SecretInput,
+                    HelperBootstrapRole::SecretInput
+                )
+        );
+        exact
+            .then_some(())
+            .ok_or(ExpectedPeerVerificationError::Denied)
+    }
+}
+
+impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedServiceProbe {
+    fn key(&self) -> ExpectedPeerKey {
+        self.expected_key
+    }
+
+    fn role(&self) -> ExpectedHelperRole {
+        match self.process.role() {
+            ServiceProbeRole::Approval => ExpectedHelperRole::Approval,
+            ServiceProbeRole::SecretInput => ExpectedHelperRole::SecretInput,
+        }
+    }
+
+    fn revalidate_suspended(&self) -> Result<(), ExpectedPeerVerificationError> {
+        self.process
+            .revalidate_suspended()
+            .map_err(|_| ExpectedPeerVerificationError::Internal)?;
+        self.revalidate_role_binding()
+    }
+
+    fn resume_once(&mut self) -> Result<(), ExpectedPeerVerificationError> {
+        self.process
+            .resume_once()
+            .map_err(|_| ExpectedPeerVerificationError::Internal)
+    }
+
+    fn exactly_matches(
+        &self,
+        candidate: &ServiceCreatedLpacCandidate,
+    ) -> Result<bool, ExpectedPeerVerificationError> {
+        candidate
+            .exactly_matches_process(self.process.process_handle())
+            .map_err(|_| ExpectedPeerVerificationError::Internal)
+    }
+
+    fn revalidate_running(&self) -> Result<(), ExpectedPeerVerificationError> {
+        self.process
+            .revalidate_running()
+            .map_err(|_| ExpectedPeerVerificationError::Internal)?;
+        self.revalidate_role_binding()
+    }
+
+    fn cancel(&mut self) -> Result<(), ExpectedPeerVerificationError> {
+        self.process
+            .terminate_and_reap()
+            .map_err(|_| ExpectedPeerVerificationError::Internal)
+    }
 }
 
 impl fmt::Debug for DetachedServiceProbe {
@@ -2714,6 +2803,7 @@ pub(super) fn authenticate_and_arm_service_probe(
     correlation: ServiceProbeDebugCorrelation,
     sources: ServiceProbeChannelSources,
 ) -> Result<PendingDebuggerExitServiceProbe, FailedServiceProbeDebugGate> {
+    let expected_key = ExpectedPeerKey::new(correlation.epoch_nonce, correlation.request_id);
     let deadline = match CoordinationDeadline::start(correlation.timeout_milliseconds) {
         Ok(deadline) => deadline,
         Err(error) => {
@@ -2749,6 +2839,7 @@ pub(super) fn authenticate_and_arm_service_probe(
     Ok(PendingDebuggerExitServiceProbe {
         process,
         channels,
+        expected_key,
         _not_sync: PhantomData,
     })
 }

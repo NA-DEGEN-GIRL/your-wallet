@@ -129,6 +129,22 @@ pub(super) struct VerifiedCreatedTargetLpac<'client> {
     _thread_bound: PhantomData<Rc<Cell<()>>>,
 }
 
+/// Independent exact helper identity minted only from a fully revalidated
+/// service-created target LPAC proof.
+///
+/// It retains the exact process and primary-token objects, sealed profile SID,
+/// authenticated desktop session, and service-selected profile role. It does
+/// not retain target impersonation or desktop launch authority and is safe to
+/// move across the debugger-thread join boundary.
+#[must_use = "expected service-created LPAC identity must remain process-bound"]
+pub(super) struct ExpectedServiceCreatedLpac {
+    token: sys::OwnedChildToken,
+    process_query: sys::OwnedProcessQuery,
+    profile_sid: sys::OwnedAlignedSidCopy,
+    session_id: NonZeroU32,
+    role: TargetProfileRole,
+}
+
 struct SealedExpectedTargetProfile<'client> {
     client: &'client AuthenticatedRpcClient,
     profile_sid: sys::OwnedAlignedSidCopy,
@@ -139,6 +155,86 @@ struct SealedExpectedTargetProfile<'client> {
 impl fmt::Debug for VerifiedCreatedTargetLpac<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("VerifiedCreatedTargetLpac([REDACTED])")
+    }
+}
+
+impl fmt::Debug for ExpectedServiceCreatedLpac {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExpectedServiceCreatedLpac([REDACTED])")
+    }
+}
+
+impl VerifiedCreatedTargetLpac<'_> {
+    /// Irreversibly removes desktop-thread authority after one final complete
+    /// created-child revalidation by the caller.
+    pub(super) fn into_expected_service_created(
+        self,
+    ) -> Result<ExpectedServiceCreatedLpac, TargetUserLpacError> {
+        let Self {
+            token,
+            process_query,
+            expected,
+            _thread_bound: _,
+        } = self;
+        let observed = sys::observe_child_token(&token, expected.profile_sid.as_psid())?;
+        expected
+            .client
+            .require_desktop_session(observed.session_id)
+            .map_err(|_| TargetUserLpacError::Authentication)?;
+        let session_id = observed.session_id;
+        validate_created_child_token_policy(&observed.with_session_match())?;
+        let SealedExpectedTargetProfile {
+            client: _,
+            profile_sid,
+            role,
+            _thread_bound: _,
+        } = expected;
+        let independent = ExpectedServiceCreatedLpac {
+            token,
+            process_query,
+            profile_sid,
+            session_id,
+            role,
+        };
+        independent.revalidate()?;
+        Ok(independent)
+    }
+}
+
+impl ExpectedServiceCreatedLpac {
+    pub(super) fn revalidate_for_process(
+        &self,
+        process: BorrowedHandle<'_>,
+    ) -> Result<(), TargetUserLpacError> {
+        sys::require_same_process(process, &self.process_query)?;
+        self.revalidate()
+    }
+
+    pub(super) const fn is_approval(&self) -> bool {
+        matches!(self.role, TargetProfileRole::Approval)
+    }
+
+    pub(super) const fn is_secret_input(&self) -> bool {
+        matches!(self.role, TargetProfileRole::SecretInput)
+    }
+
+    fn revalidate(&self) -> Result<(), TargetUserLpacError> {
+        sys::require_process_flags_zero(&self.process_query)?;
+        sys::require_process_live(&self.process_query)?;
+        self.revalidate_token(&self.token)?;
+        let fresh = sys::open_child_token(&self.process_query)?;
+        sys::require_token_flags_zero(&fresh)?;
+        sys::require_same_token(&self.token, &fresh)?;
+        self.revalidate_token(&fresh)
+    }
+
+    fn revalidate_token(&self, token: &sys::OwnedChildToken) -> Result<(), TargetUserLpacError> {
+        sys::require_token_flags_zero(token)?;
+        let observed = sys::observe_child_token(token, self.profile_sid.as_psid())?;
+        if observed.session_id != self.session_id {
+            return Err(TargetUserLpacError::Verification);
+        }
+        validate_created_child_token_policy(&observed.with_session_match())
     }
 }
 
@@ -1025,6 +1121,16 @@ mod sys {
 
     /// A real, non-inheritable query/duplicate handle for the child's primary token.
     pub(super) struct OwnedChildToken(HANDLE);
+
+    // SAFETY: these owners contain only non-inheritable process-wide kernel
+    // handles used by synchronous query/object-comparison operations. Neither
+    // handle carries impersonation, RPC-binding, or creator-thread affinity;
+    // moving unique ownership across the completed debugger-thread join still
+    // closes each handle exactly once.
+    unsafe impl Send for OwnedProcessQuery {}
+    // SAFETY: `OwnedChildToken` has the same non-inheritable, process-wide,
+    // uniquely owned kernel-handle contract described immediately above.
+    unsafe impl Send for OwnedChildToken {}
 
     struct OwnedMembershipToken(HANDLE);
 

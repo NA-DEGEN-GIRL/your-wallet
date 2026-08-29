@@ -1,9 +1,10 @@
 //! Fixed, transport-neutral wire contract for the Windows Key Agent debugger.
 //!
-//! Version 1 carries one bootstrap, one frozen-ready acknowledgement, and one
-//! commit-or-abort decision. Every frame has an exact length, big-endian
-//! integers, zeroed reserved fields, and a trailing CRC32C framing check. The
-//! checksum detects corruption; it does not authenticate the transport.
+//! Version 1 carries one bootstrap, one frozen-ready acknowledgement, one
+//! frozen-target description, one commit-or-abort decision, and dormant
+//! parent-death fixture command/report frames. Every frame has an exact length,
+//! big-endian integers, zeroed reserved fields, and a trailing CRC32C framing
+//! check. The checksum detects corruption; it does not authenticate transport.
 
 #![forbid(unsafe_code)]
 
@@ -13,14 +14,23 @@ use core::fmt;
 pub const BOOTSTRAP_FRAME_BYTES: usize = 80;
 /// Exact byte length of a frozen-ready frame.
 pub const READY_FROZEN_FRAME_BYTES: usize = 72;
+/// Exact byte length of a frozen-target frame.
+pub const TARGET_FROZEN_FRAME_BYTES: usize = 96;
 /// Exact byte length of a debugger decision frame.
 pub const DECISION_FRAME_BYTES: usize = 56;
+/// Exact byte length of a parent-death supervisor command frame.
+pub const PARENT_DEATH_COMMAND_FRAME_BYTES: usize = 56;
+/// Exact byte length of a parent-death supervisor report frame.
+pub const PARENT_DEATH_REPORT_FRAME_BYTES: usize = 96;
 
 const PROTOCOL_MAGIC: [u8; 8] = *b"YWKDBG01";
 const VERSION_V1: u16 = 1;
 const FRAME_BOOTSTRAP: u16 = 1;
 const FRAME_READY_FROZEN: u16 = 2;
 const FRAME_DECISION: u16 = 3;
+const FRAME_TARGET_FROZEN: u16 = 4;
+const FRAME_PARENT_DEATH_COMMAND: u16 = 5;
+const FRAME_PARENT_DEATH_REPORT: u16 = 6;
 const DECISION_COMMIT: u16 = 1;
 const DECISION_ABORT: u16 = 2;
 const HEADER_BYTES: usize = 16;
@@ -48,15 +58,51 @@ const READY_SENTINEL_OFFSET: usize = READY_PID_RESERVED_OFFSET + 4;
 const READY_SENTINEL_RESERVED_OFFSET: usize = READY_SENTINEL_OFFSET + 8;
 const READY_CHECKSUM_OFFSET: usize = READY_SENTINEL_RESERVED_OFFSET + 4;
 
+const TARGET_NONCE_OFFSET: usize = HEADER_BYTES;
+const TARGET_DEBUGGER_PID_OFFSET: usize = TARGET_NONCE_OFFSET + NONCE_BYTES;
+const TARGET_PROCESS_PID_OFFSET: usize = TARGET_DEBUGGER_PID_OFFSET + 4;
+const TARGET_THREAD_TID_OFFSET: usize = TARGET_PROCESS_PID_OFFSET + 4;
+const TARGET_ID_RESERVED_OFFSET: usize = TARGET_THREAD_TID_OFFSET + 4;
+const TARGET_PROCESS_HANDLE_OFFSET: usize = TARGET_ID_RESERVED_OFFSET + 4;
+const TARGET_THREAD_HANDLE_OFFSET: usize = TARGET_PROCESS_HANDLE_OFFSET + 8;
+const TARGET_CREATION_TIME_OFFSET: usize = TARGET_THREAD_HANDLE_OFFSET + 8;
+const TARGET_TIME_RESERVED_OFFSET: usize = TARGET_CREATION_TIME_OFFSET + 8;
+const TARGET_CHECKSUM_OFFSET: usize = TARGET_TIME_RESERVED_OFFSET + 4;
+
 const DECISION_NONCE_OFFSET: usize = HEADER_BYTES;
 const DECISION_VALUE_OFFSET: usize = DECISION_NONCE_OFFSET + NONCE_BYTES;
 const DECISION_RESERVED_OFFSET: usize = DECISION_VALUE_OFFSET + 2;
 const DECISION_CHECKSUM_OFFSET: usize = DECISION_RESERVED_OFFSET + 2;
 
+const PARENT_DEATH_COMMAND_NONCE_OFFSET: usize = HEADER_BYTES;
+const PARENT_DEATH_COMMAND_STAGE_OFFSET: usize = PARENT_DEATH_COMMAND_NONCE_OFFSET + NONCE_BYTES;
+const PARENT_DEATH_COMMAND_RESERVED_OFFSET: usize = PARENT_DEATH_COMMAND_STAGE_OFFSET + 2;
+const PARENT_DEATH_COMMAND_CHECKSUM_OFFSET: usize = PARENT_DEATH_COMMAND_RESERVED_OFFSET + 2;
+
+const PARENT_DEATH_REPORT_NONCE_OFFSET: usize = HEADER_BYTES;
+const PARENT_DEATH_REPORT_STAGE_OFFSET: usize = PARENT_DEATH_REPORT_NONCE_OFFSET + NONCE_BYTES;
+const PARENT_DEATH_REPORT_STAGE_RESERVED_OFFSET: usize = PARENT_DEATH_REPORT_STAGE_OFFSET + 2;
+const PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET: usize =
+    PARENT_DEATH_REPORT_STAGE_RESERVED_OFFSET + 2;
+const PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET: usize =
+    PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET + 4;
+const PARENT_DEATH_REPORT_TARGET_PID_OFFSET: usize = PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET + 4;
+const PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET: usize = PARENT_DEATH_REPORT_TARGET_PID_OFFSET + 4;
+const PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET: usize =
+    PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET + 8;
+const PARENT_DEATH_REPORT_TARGET_TIME_OFFSET: usize = PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET + 8;
+const PARENT_DEATH_REPORT_PROOFS_OFFSET: usize = PARENT_DEATH_REPORT_TARGET_TIME_OFFSET + 8;
+const PARENT_DEATH_REPORT_CHECKSUM_OFFSET: usize = PARENT_DEATH_REPORT_PROOFS_OFFSET + 4;
+
 const _: [(); HEADER_BYTES] = [(); HEADER_RESERVED_OFFSET + 4];
 const _: [(); BOOTSTRAP_FRAME_BYTES] = [(); BOOTSTRAP_CHECKSUM_OFFSET + CHECKSUM_BYTES];
 const _: [(); READY_FROZEN_FRAME_BYTES] = [(); READY_CHECKSUM_OFFSET + CHECKSUM_BYTES];
+const _: [(); TARGET_FROZEN_FRAME_BYTES] = [(); TARGET_CHECKSUM_OFFSET + CHECKSUM_BYTES];
 const _: [(); DECISION_FRAME_BYTES] = [(); DECISION_CHECKSUM_OFFSET + CHECKSUM_BYTES];
+const _: [(); PARENT_DEATH_COMMAND_FRAME_BYTES] =
+    [(); PARENT_DEATH_COMMAND_CHECKSUM_OFFSET + CHECKSUM_BYTES];
+const _: [(); PARENT_DEATH_REPORT_FRAME_BYTES] =
+    [(); PARENT_DEATH_REPORT_CHECKSUM_OFFSET + CHECKSUM_BYTES];
 
 /// Fresh nonce binding every frame in one debugger run.
 ///
@@ -363,6 +409,522 @@ impl fmt::Debug for DebuggerReadyFrozen {
     }
 }
 
+/// Debugger-to-parent description of one real suspended target.
+///
+/// The handle words are source-table values in the named debugger process.
+/// They grant no authority until the parent pulls independently constrained
+/// duplicates from that exact process and revalidates every identity field.
+#[derive(Eq, PartialEq)]
+pub struct DebuggerTargetFrozen {
+    run_nonce: DebuggerRunNonce,
+    debugger_process_id: u32,
+    target_process_id: u32,
+    target_thread_id: u32,
+    target_process_source_handle: RemoteHandleWord,
+    target_thread_source_handle: RemoteHandleWord,
+    target_creation_time: u64,
+}
+
+impl DebuggerTargetFrozen {
+    /// Constructs a canonical frozen-target description.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::InvalidValue`] for a zero identifier or creation
+    /// time, equal debugger/target process identifiers, or equal source words.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        run_nonce: DebuggerRunNonce,
+        debugger_process_id: u32,
+        target_process_id: u32,
+        target_thread_id: u32,
+        target_process_source_handle: RemoteHandleWord,
+        target_thread_source_handle: RemoteHandleWord,
+        target_creation_time: u64,
+    ) -> Result<Self, WireError> {
+        if debugger_process_id == 0
+            || target_process_id == 0
+            || target_thread_id == 0
+            || target_creation_time == 0
+            || debugger_process_id == target_process_id
+            || target_process_source_handle.value() == target_thread_source_handle.value()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self {
+            run_nonce,
+            debugger_process_id,
+            target_process_id,
+            target_thread_id,
+            target_process_source_handle,
+            target_thread_source_handle,
+            target_creation_time,
+        })
+    }
+
+    /// Returns the debugger-run nonce.
+    #[must_use]
+    pub const fn run_nonce(&self) -> &DebuggerRunNonce {
+        &self.run_nonce
+    }
+
+    /// Returns the debugger process identifier naming the source table.
+    #[must_use]
+    pub const fn debugger_process_id(&self) -> u32 {
+        self.debugger_process_id
+    }
+
+    /// Returns the suspended target process identifier.
+    #[must_use]
+    pub const fn target_process_id(&self) -> u32 {
+        self.target_process_id
+    }
+
+    /// Returns the suspended target primary-thread identifier.
+    #[must_use]
+    pub const fn target_thread_id(&self) -> u32 {
+        self.target_thread_id
+    }
+
+    /// Returns the target-process source word in the debugger table.
+    #[must_use]
+    pub const fn target_process_source_handle(&self) -> &RemoteHandleWord {
+        &self.target_process_source_handle
+    }
+
+    /// Returns the target-thread source word in the debugger table.
+    #[must_use]
+    pub const fn target_thread_source_handle(&self) -> &RemoteHandleWord {
+        &self.target_thread_source_handle
+    }
+
+    /// Returns the target process creation `FILETIME` as one 64-bit word.
+    #[must_use]
+    pub const fn target_creation_time(&self) -> u64 {
+        self.target_creation_time
+    }
+
+    /// Consumes the frame and returns its validated fields without cloning
+    /// security-bearing values.
+    #[must_use]
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        DebuggerRunNonce,
+        u32,
+        u32,
+        u32,
+        RemoteHandleWord,
+        RemoteHandleWord,
+        u64,
+    ) {
+        (
+            self.run_nonce,
+            self.debugger_process_id,
+            self.target_process_id,
+            self.target_thread_id,
+            self.target_process_source_handle,
+            self.target_thread_source_handle,
+            self.target_creation_time,
+        )
+    }
+
+    /// Encodes this value as the exact canonical version-1 frame.
+    #[must_use]
+    pub fn encode(&self) -> [u8; TARGET_FROZEN_FRAME_BYTES] {
+        let mut frame = [0_u8; TARGET_FROZEN_FRAME_BYTES];
+        encode_header(&mut frame, FRAME_TARGET_FROZEN);
+        frame[TARGET_NONCE_OFFSET..TARGET_NONCE_OFFSET + NONCE_BYTES]
+            .copy_from_slice(self.run_nonce.as_bytes());
+        write_u32(
+            &mut frame,
+            TARGET_DEBUGGER_PID_OFFSET,
+            self.debugger_process_id,
+        );
+        write_u32(
+            &mut frame,
+            TARGET_PROCESS_PID_OFFSET,
+            self.target_process_id,
+        );
+        write_u32(&mut frame, TARGET_THREAD_TID_OFFSET, self.target_thread_id);
+        write_u64(
+            &mut frame,
+            TARGET_PROCESS_HANDLE_OFFSET,
+            self.target_process_source_handle.value(),
+        );
+        write_u64(
+            &mut frame,
+            TARGET_THREAD_HANDLE_OFFSET,
+            self.target_thread_source_handle.value(),
+        );
+        write_u64(
+            &mut frame,
+            TARGET_CREATION_TIME_OFFSET,
+            self.target_creation_time,
+        );
+        finish_frame(&mut frame, TARGET_CHECKSUM_OFFSET);
+        frame
+    }
+
+    /// Decodes one exact canonical version-1 frozen-target frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`WireError`] category for malformed input.
+    pub fn decode_exact(bytes: &[u8]) -> Result<Self, WireError> {
+        require_exact_length(bytes, TARGET_FROZEN_FRAME_BYTES)?;
+        decode_header(bytes, FRAME_TARGET_FROZEN)?;
+        require_zero_u32(bytes, TARGET_ID_RESERVED_OFFSET)?;
+        require_zero_u32(bytes, TARGET_TIME_RESERVED_OFFSET)?;
+        verify_checksum(bytes, TARGET_CHECKSUM_OFFSET)?;
+        Self::new(
+            decode_nonce(bytes, TARGET_NONCE_OFFSET)?,
+            read_u32(bytes, TARGET_DEBUGGER_PID_OFFSET),
+            read_u32(bytes, TARGET_PROCESS_PID_OFFSET),
+            read_u32(bytes, TARGET_THREAD_TID_OFFSET),
+            RemoteHandleWord::new(read_u64(bytes, TARGET_PROCESS_HANDLE_OFFSET))?,
+            RemoteHandleWord::new(read_u64(bytes, TARGET_THREAD_HANDLE_OFFSET))?,
+            read_u64(bytes, TARGET_CREATION_TIME_OFFSET),
+        )
+    }
+}
+
+impl fmt::Debug for DebuggerTargetFrozen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DebuggerTargetFrozen([REDACTED])")
+    }
+}
+
+const PARENT_DEATH_PROOF_JOB_SLOT_ABSENT: u32 = 1 << 0;
+const PARENT_DEATH_PROOF_DEBUGGER_FLAGS_ZERO: u32 = 1 << 1;
+const PARENT_DEATH_PROOF_TARGET_FLAGS_ZERO: u32 = 1 << 2;
+
+/// Exact forced-parent-death checkpoint selected by the dormant fixture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum ParentDeathStage {
+    /// The debugger exists but its explicit creation suspend is retained.
+    PreReady = 1,
+    /// The debugger has frozen and reported one suspended target.
+    Ready = 2,
+    /// The debugger exited and this implementation retained the target Job.
+    PostHandoff = 3,
+}
+
+impl ParentDeathStage {
+    const fn from_wire(value: u16) -> Result<Self, WireError> {
+        match value {
+            1 => Ok(Self::PreReady),
+            2 => Ok(Self::Ready),
+            3 => Ok(Self::PostHandoff),
+            _ => Err(WireError::InvalidValue),
+        }
+    }
+
+    const fn requires_target(self) -> bool {
+        matches!(self, Self::Ready | Self::PostHandoff)
+    }
+
+    const fn required_proofs(self) -> u32 {
+        let base = PARENT_DEATH_PROOF_JOB_SLOT_ABSENT | PARENT_DEATH_PROOF_DEBUGGER_FLAGS_ZERO;
+        if self.requires_target() {
+            base | PARENT_DEATH_PROOF_TARGET_FLAGS_ZERO
+        } else {
+            base
+        }
+    }
+}
+
+/// Outer-to-supervisor command for one exact parent-death checkpoint.
+#[derive(Eq, PartialEq)]
+pub struct DebuggerParentDeathCommand {
+    run_nonce: DebuggerRunNonce,
+    stage: ParentDeathStage,
+}
+
+impl DebuggerParentDeathCommand {
+    /// Constructs one canonical supervisor command.
+    #[must_use]
+    pub const fn new(run_nonce: DebuggerRunNonce, stage: ParentDeathStage) -> Self {
+        Self { run_nonce, stage }
+    }
+
+    /// Returns the debugger-run nonce.
+    #[must_use]
+    pub const fn run_nonce(&self) -> &DebuggerRunNonce {
+        &self.run_nonce
+    }
+
+    /// Returns the requested forced-parent-death checkpoint.
+    #[must_use]
+    pub const fn stage(&self) -> ParentDeathStage {
+        self.stage
+    }
+
+    /// Consumes the command without cloning its nonce.
+    #[must_use]
+    pub fn into_parts(self) -> (DebuggerRunNonce, ParentDeathStage) {
+        (self.run_nonce, self.stage)
+    }
+
+    /// Encodes this command as one exact canonical frame.
+    #[must_use]
+    pub fn encode(&self) -> [u8; PARENT_DEATH_COMMAND_FRAME_BYTES] {
+        let mut frame = [0_u8; PARENT_DEATH_COMMAND_FRAME_BYTES];
+        encode_header(&mut frame, FRAME_PARENT_DEATH_COMMAND);
+        frame[PARENT_DEATH_COMMAND_NONCE_OFFSET..PARENT_DEATH_COMMAND_NONCE_OFFSET + NONCE_BYTES]
+            .copy_from_slice(self.run_nonce.as_bytes());
+        write_u16(
+            &mut frame,
+            PARENT_DEATH_COMMAND_STAGE_OFFSET,
+            self.stage as u16,
+        );
+        finish_frame(&mut frame, PARENT_DEATH_COMMAND_CHECKSUM_OFFSET);
+        frame
+    }
+
+    /// Decodes one exact canonical supervisor command.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`WireError`] category for malformed input.
+    pub fn decode_exact(bytes: &[u8]) -> Result<Self, WireError> {
+        require_exact_length(bytes, PARENT_DEATH_COMMAND_FRAME_BYTES)?;
+        decode_header(bytes, FRAME_PARENT_DEATH_COMMAND)?;
+        require_zero_u16(bytes, PARENT_DEATH_COMMAND_RESERVED_OFFSET)?;
+        verify_checksum(bytes, PARENT_DEATH_COMMAND_CHECKSUM_OFFSET)?;
+        Ok(Self::new(
+            decode_nonce(bytes, PARENT_DEATH_COMMAND_NONCE_OFFSET)?,
+            ParentDeathStage::from_wire(read_u16(bytes, PARENT_DEATH_COMMAND_STAGE_OFFSET))?,
+        ))
+    }
+}
+
+impl fmt::Debug for DebuggerParentDeathCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DebuggerParentDeathCommand([REDACTED])")
+    }
+}
+
+/// Supervisor-to-outer fixed identity report at one parent-death checkpoint.
+#[derive(Eq, PartialEq)]
+pub struct DebuggerParentDeathReport {
+    run_nonce: DebuggerRunNonce,
+    stage: ParentDeathStage,
+    supervisor_process_id: u32,
+    debugger_process_id: u32,
+    target_process_id: u32,
+    supervisor_creation_time: u64,
+    debugger_creation_time: u64,
+    target_creation_time: u64,
+}
+
+impl DebuggerParentDeathReport {
+    /// Constructs one canonical checkpoint identity report.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero or aliased required identities and rejects any target
+    /// identity outside the READY and post-handoff stages.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        run_nonce: DebuggerRunNonce,
+        stage: ParentDeathStage,
+        supervisor_process_id: u32,
+        debugger_process_id: u32,
+        target_process_id: u32,
+        supervisor_creation_time: u64,
+        debugger_creation_time: u64,
+        target_creation_time: u64,
+    ) -> Result<Self, WireError> {
+        let base_invalid = supervisor_process_id == 0
+            || debugger_process_id == 0
+            || supervisor_process_id == debugger_process_id
+            || supervisor_creation_time == 0
+            || debugger_creation_time == 0;
+        let target_invalid = if stage.requires_target() {
+            target_process_id == 0
+                || target_creation_time == 0
+                || target_process_id == supervisor_process_id
+                || target_process_id == debugger_process_id
+        } else {
+            target_process_id != 0 || target_creation_time != 0
+        };
+        if base_invalid || target_invalid {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self {
+            run_nonce,
+            stage,
+            supervisor_process_id,
+            debugger_process_id,
+            target_process_id,
+            supervisor_creation_time,
+            debugger_creation_time,
+            target_creation_time,
+        })
+    }
+
+    /// Returns the run nonce.
+    #[must_use]
+    pub const fn run_nonce(&self) -> &DebuggerRunNonce {
+        &self.run_nonce
+    }
+
+    /// Returns the reported checkpoint.
+    #[must_use]
+    pub const fn stage(&self) -> ParentDeathStage {
+        self.stage
+    }
+
+    /// Returns the supervisor PID.
+    #[must_use]
+    pub const fn supervisor_process_id(&self) -> u32 {
+        self.supervisor_process_id
+    }
+
+    /// Returns the debugger PID.
+    #[must_use]
+    pub const fn debugger_process_id(&self) -> u32 {
+        self.debugger_process_id
+    }
+
+    /// Returns the target PID, or zero before READY.
+    #[must_use]
+    pub const fn target_process_id(&self) -> u32 {
+        self.target_process_id
+    }
+
+    /// Returns the supervisor creation `FILETIME` word.
+    #[must_use]
+    pub const fn supervisor_creation_time(&self) -> u64 {
+        self.supervisor_creation_time
+    }
+
+    /// Returns the debugger creation `FILETIME` word.
+    #[must_use]
+    pub const fn debugger_creation_time(&self) -> u64 {
+        self.debugger_creation_time
+    }
+
+    /// Returns the target creation `FILETIME` word, or zero before READY.
+    #[must_use]
+    pub const fn target_creation_time(&self) -> u64 {
+        self.target_creation_time
+    }
+
+    /// Consumes the report without cloning its nonce.
+    #[must_use]
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        DebuggerRunNonce,
+        ParentDeathStage,
+        u32,
+        u32,
+        u32,
+        u64,
+        u64,
+        u64,
+    ) {
+        (
+            self.run_nonce,
+            self.stage,
+            self.supervisor_process_id,
+            self.debugger_process_id,
+            self.target_process_id,
+            self.supervisor_creation_time,
+            self.debugger_creation_time,
+            self.target_creation_time,
+        )
+    }
+
+    /// Encodes this report as one exact canonical frame.
+    #[must_use]
+    pub fn encode(&self) -> [u8; PARENT_DEATH_REPORT_FRAME_BYTES] {
+        let mut frame = [0_u8; PARENT_DEATH_REPORT_FRAME_BYTES];
+        encode_header(&mut frame, FRAME_PARENT_DEATH_REPORT);
+        frame[PARENT_DEATH_REPORT_NONCE_OFFSET..PARENT_DEATH_REPORT_NONCE_OFFSET + NONCE_BYTES]
+            .copy_from_slice(self.run_nonce.as_bytes());
+        write_u16(
+            &mut frame,
+            PARENT_DEATH_REPORT_STAGE_OFFSET,
+            self.stage as u16,
+        );
+        write_u32(
+            &mut frame,
+            PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET,
+            self.supervisor_process_id,
+        );
+        write_u32(
+            &mut frame,
+            PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET,
+            self.debugger_process_id,
+        );
+        write_u32(
+            &mut frame,
+            PARENT_DEATH_REPORT_TARGET_PID_OFFSET,
+            self.target_process_id,
+        );
+        write_u64(
+            &mut frame,
+            PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET,
+            self.supervisor_creation_time,
+        );
+        write_u64(
+            &mut frame,
+            PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET,
+            self.debugger_creation_time,
+        );
+        write_u64(
+            &mut frame,
+            PARENT_DEATH_REPORT_TARGET_TIME_OFFSET,
+            self.target_creation_time,
+        );
+        write_u32(
+            &mut frame,
+            PARENT_DEATH_REPORT_PROOFS_OFFSET,
+            self.stage.required_proofs(),
+        );
+        finish_frame(&mut frame, PARENT_DEATH_REPORT_CHECKSUM_OFFSET);
+        frame
+    }
+
+    /// Decodes one exact canonical checkpoint report.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`WireError`] category for malformed input.
+    pub fn decode_exact(bytes: &[u8]) -> Result<Self, WireError> {
+        require_exact_length(bytes, PARENT_DEATH_REPORT_FRAME_BYTES)?;
+        decode_header(bytes, FRAME_PARENT_DEATH_REPORT)?;
+        require_zero_u16(bytes, PARENT_DEATH_REPORT_STAGE_RESERVED_OFFSET)?;
+        verify_checksum(bytes, PARENT_DEATH_REPORT_CHECKSUM_OFFSET)?;
+        let stage = ParentDeathStage::from_wire(read_u16(bytes, PARENT_DEATH_REPORT_STAGE_OFFSET))?;
+        if read_u32(bytes, PARENT_DEATH_REPORT_PROOFS_OFFSET) != stage.required_proofs() {
+            return Err(WireError::InvalidValue);
+        }
+        Self::new(
+            decode_nonce(bytes, PARENT_DEATH_REPORT_NONCE_OFFSET)?,
+            stage,
+            read_u32(bytes, PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET),
+            read_u32(bytes, PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET),
+            read_u32(bytes, PARENT_DEATH_REPORT_TARGET_PID_OFFSET),
+            read_u64(bytes, PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET),
+            read_u64(bytes, PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET),
+            read_u64(bytes, PARENT_DEATH_REPORT_TARGET_TIME_OFFSET),
+        )
+    }
+}
+
+impl fmt::Debug for DebuggerParentDeathReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DebuggerParentDeathReport([REDACTED])")
+    }
+}
+
 /// Stable process-exit categories shared by the parent and debugger helper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -661,8 +1223,15 @@ mod tests {
 
     const TEST_PARENT_PID: u32 = 0x1020_3040;
     const TEST_DEBUGGER_PID: u32 = 0x5060_7080;
+    const TEST_TARGET_PID: u32 = 0x90A0_B0C0;
+    const TEST_TARGET_TID: u32 = 0xD0E0_F001;
+    const TEST_SUPERVISOR_PID: u32 = 0x0102_0304;
     const TEST_HANDLE: u64 = 0x1122_3344_5566_7788;
+    const TEST_THREAD_HANDLE: u64 = 0x8877_6655_4433_2211;
     const TEST_DEADLINE: u64 = 0x8877_6655_4433_2211;
+    const TEST_CREATION_TIME: u64 = 0x0123_4567_89AB_CDEF;
+    const TEST_SUPERVISOR_CREATION_TIME: u64 = 0x1020_3040_5060_7080;
+    const TEST_DEBUGGER_CREATION_TIME: u64 = 0x2030_4050_6070_8090;
 
     fn nonce() -> Result<DebuggerRunNonce, WireError> {
         DebuggerRunNonce::new([0xA5; NONCE_BYTES])
@@ -686,8 +1255,46 @@ mod tests {
         DebuggerReadyFrozen::new(nonce()?, TEST_DEBUGGER_PID, handle()?)
     }
 
+    fn target() -> Result<DebuggerTargetFrozen, WireError> {
+        DebuggerTargetFrozen::new(
+            nonce()?,
+            TEST_DEBUGGER_PID,
+            TEST_TARGET_PID,
+            TEST_TARGET_TID,
+            handle()?,
+            RemoteHandleWord::new(TEST_THREAD_HANDLE)?,
+            TEST_CREATION_TIME,
+        )
+    }
+
     fn decision(decision: DebuggerDecision) -> Result<DebuggerDecisionFrame, WireError> {
         Ok(DebuggerDecisionFrame::new(nonce()?, decision))
+    }
+
+    fn parent_death_command(
+        stage: ParentDeathStage,
+    ) -> Result<DebuggerParentDeathCommand, WireError> {
+        Ok(DebuggerParentDeathCommand::new(nonce()?, stage))
+    }
+
+    fn parent_death_report(
+        stage: ParentDeathStage,
+    ) -> Result<DebuggerParentDeathReport, WireError> {
+        let (target_process_id, target_creation_time) = if stage == ParentDeathStage::PreReady {
+            (0, 0)
+        } else {
+            (TEST_TARGET_PID, TEST_CREATION_TIME)
+        };
+        DebuggerParentDeathReport::new(
+            nonce()?,
+            stage,
+            TEST_SUPERVISOR_PID,
+            TEST_DEBUGGER_PID,
+            target_process_id,
+            TEST_SUPERVISOR_CREATION_TIME,
+            TEST_DEBUGGER_CREATION_TIME,
+            target_creation_time,
+        )
     }
 
     fn rewrite_checksum(frame: &mut [u8], checksum_offset: usize) {
@@ -742,6 +1349,7 @@ mod tests {
             FRAME_BOOTSTRAP,
             FRAME_READY_FROZEN,
             FRAME_DECISION,
+            FRAME_TARGET_FROZEN,
             u16::MAX,
         ] {
             if wrong_kind == expected_kind {
@@ -764,6 +1372,234 @@ mod tests {
 
     fn decode_decision_unit(bytes: &[u8]) -> Result<(), WireError> {
         DebuggerDecisionFrame::decode_exact(bytes).map(|_| ())
+    }
+
+    fn decode_target_unit(bytes: &[u8]) -> Result<(), WireError> {
+        DebuggerTargetFrozen::decode_exact(bytes).map(|_| ())
+    }
+
+    fn decode_parent_death_command_unit(bytes: &[u8]) -> Result<(), WireError> {
+        DebuggerParentDeathCommand::decode_exact(bytes).map(|_| ())
+    }
+
+    fn decode_parent_death_report_unit(bytes: &[u8]) -> Result<(), WireError> {
+        DebuggerParentDeathReport::decode_exact(bytes).map(|_| ())
+    }
+
+    #[test]
+    fn parent_death_frames_round_trip_every_stage_and_expose_bound_fields() -> Result<(), WireError>
+    {
+        for stage in [
+            ParentDeathStage::PreReady,
+            ParentDeathStage::Ready,
+            ParentDeathStage::PostHandoff,
+        ] {
+            let command = parent_death_command(stage)?;
+            let command_frame = command.encode();
+            assert_eq!(command_frame.len(), PARENT_DEATH_COMMAND_FRAME_BYTES);
+            assert_eq!(
+                DebuggerParentDeathCommand::decode_exact(&command_frame)?,
+                command
+            );
+            assert_eq!(command.run_nonce().as_bytes(), &[0xA5; NONCE_BYTES]);
+            assert_eq!(command.stage(), stage);
+
+            let report = parent_death_report(stage)?;
+            let report_frame = report.encode();
+            assert_eq!(report_frame.len(), PARENT_DEATH_REPORT_FRAME_BYTES);
+            assert_eq!(
+                DebuggerParentDeathReport::decode_exact(&report_frame)?,
+                report
+            );
+            assert_eq!(report.run_nonce().as_bytes(), &[0xA5; NONCE_BYTES]);
+            assert_eq!(report.stage(), stage);
+            assert_eq!(report.supervisor_process_id(), TEST_SUPERVISOR_PID);
+            assert_eq!(report.debugger_process_id(), TEST_DEBUGGER_PID);
+            assert_eq!(
+                report.target_process_id(),
+                if stage == ParentDeathStage::PreReady {
+                    0
+                } else {
+                    TEST_TARGET_PID
+                }
+            );
+            assert_eq!(
+                report.supervisor_creation_time(),
+                TEST_SUPERVISOR_CREATION_TIME
+            );
+            assert_eq!(report.debugger_creation_time(), TEST_DEBUGGER_CREATION_TIME);
+            assert_eq!(
+                report.target_creation_time(),
+                if stage == ParentDeathStage::PreReady {
+                    0
+                } else {
+                    TEST_CREATION_TIME
+                }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parent_death_frames_reject_every_prefix_trailer_and_byte_mutation() -> Result<(), WireError>
+    {
+        for stage in [
+            ParentDeathStage::PreReady,
+            ParentDeathStage::Ready,
+            ParentDeathStage::PostHandoff,
+        ] {
+            let command = parent_death_command(stage)?.encode();
+            assert_all_truncations_and_trailing(&command, decode_parent_death_command_unit);
+            assert_every_single_byte_mutation_is_rejected(
+                &command,
+                decode_parent_death_command_unit,
+            );
+
+            let report = parent_death_report(stage)?.encode();
+            assert_all_truncations_and_trailing(&report, decode_parent_death_report_unit);
+            assert_every_single_byte_mutation_is_rejected(&report, decode_parent_death_report_unit);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parent_death_semantics_reject_every_field_class_after_checksum_rewrite()
+    -> Result<(), WireError> {
+        let command = parent_death_command(ParentDeathStage::Ready)?.encode();
+        assert_semantic_header_failures(
+            &command,
+            PARENT_DEATH_COMMAND_CHECKSUM_OFFSET,
+            FRAME_PARENT_DEATH_COMMAND,
+            decode_parent_death_command_unit,
+        );
+        for invalid_stage in [0, 4, u16::MAX] {
+            let mut mutated = command;
+            write_u16(
+                &mut mutated,
+                PARENT_DEATH_COMMAND_STAGE_OFFSET,
+                invalid_stage,
+            );
+            rewrite_checksum(&mut mutated, PARENT_DEATH_COMMAND_CHECKSUM_OFFSET);
+            assert_eq!(
+                DebuggerParentDeathCommand::decode_exact(&mutated),
+                Err(WireError::InvalidValue)
+            );
+        }
+
+        let report = parent_death_report(ParentDeathStage::Ready)?.encode();
+        assert_semantic_header_failures(
+            &report,
+            PARENT_DEATH_REPORT_CHECKSUM_OFFSET,
+            FRAME_PARENT_DEATH_REPORT,
+            decode_parent_death_report_unit,
+        );
+        for range in [
+            PARENT_DEATH_REPORT_NONCE_OFFSET..PARENT_DEATH_REPORT_NONCE_OFFSET + NONCE_BYTES,
+            PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET
+                ..PARENT_DEATH_REPORT_SUPERVISOR_PID_OFFSET + 4,
+            PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET..PARENT_DEATH_REPORT_DEBUGGER_PID_OFFSET + 4,
+            PARENT_DEATH_REPORT_TARGET_PID_OFFSET..PARENT_DEATH_REPORT_TARGET_PID_OFFSET + 4,
+            PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET
+                ..PARENT_DEATH_REPORT_SUPERVISOR_TIME_OFFSET + 8,
+            PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET..PARENT_DEATH_REPORT_DEBUGGER_TIME_OFFSET + 8,
+            PARENT_DEATH_REPORT_TARGET_TIME_OFFSET..PARENT_DEATH_REPORT_TARGET_TIME_OFFSET + 8,
+        ] {
+            let mut mutated = report;
+            mutated[range].fill(0);
+            rewrite_checksum(&mut mutated, PARENT_DEATH_REPORT_CHECKSUM_OFFSET);
+            assert_eq!(
+                DebuggerParentDeathReport::decode_exact(&mutated),
+                Err(WireError::InvalidValue)
+            );
+        }
+        for invalid_stage in [0, 4, u16::MAX] {
+            let mut mutated = report;
+            write_u16(
+                &mut mutated,
+                PARENT_DEATH_REPORT_STAGE_OFFSET,
+                invalid_stage,
+            );
+            rewrite_checksum(&mut mutated, PARENT_DEATH_REPORT_CHECKSUM_OFFSET);
+            assert_eq!(
+                DebuggerParentDeathReport::decode_exact(&mutated),
+                Err(WireError::InvalidValue)
+            );
+        }
+        for invalid_proofs in [0, 1, 3, 5, 6, 8, u32::MAX] {
+            let mut mutated = report;
+            write_u32(
+                &mut mutated,
+                PARENT_DEATH_REPORT_PROOFS_OFFSET,
+                invalid_proofs,
+            );
+            rewrite_checksum(&mut mutated, PARENT_DEATH_REPORT_CHECKSUM_OFFSET);
+            assert_eq!(
+                DebuggerParentDeathReport::decode_exact(&mutated),
+                Err(WireError::InvalidValue)
+            );
+        }
+
+        let mut reserved = report;
+        reserved[PARENT_DEATH_REPORT_STAGE_RESERVED_OFFSET] = 1;
+        rewrite_checksum(&mut reserved, PARENT_DEATH_REPORT_CHECKSUM_OFFSET);
+        assert_eq!(
+            DebuggerParentDeathReport::decode_exact(&reserved),
+            Err(WireError::NonZeroReserved)
+        );
+        let mut command_reserved = command;
+        command_reserved[PARENT_DEATH_COMMAND_RESERVED_OFFSET] = 1;
+        rewrite_checksum(&mut command_reserved, PARENT_DEATH_COMMAND_CHECKSUM_OFFSET);
+        assert_eq!(
+            DebuggerParentDeathCommand::decode_exact(&command_reserved),
+            Err(WireError::NonZeroReserved)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_death_report_stage_specific_target_semantics_are_closed() -> Result<(), WireError> {
+        assert_eq!(
+            DebuggerParentDeathReport::new(
+                nonce()?,
+                ParentDeathStage::PreReady,
+                TEST_SUPERVISOR_PID,
+                TEST_DEBUGGER_PID,
+                TEST_TARGET_PID,
+                TEST_SUPERVISOR_CREATION_TIME,
+                TEST_DEBUGGER_CREATION_TIME,
+                TEST_CREATION_TIME,
+            ),
+            Err(WireError::InvalidValue)
+        );
+        assert_eq!(
+            DebuggerParentDeathReport::new(
+                nonce()?,
+                ParentDeathStage::Ready,
+                TEST_SUPERVISOR_PID,
+                TEST_DEBUGGER_PID,
+                0,
+                TEST_SUPERVISOR_CREATION_TIME,
+                TEST_DEBUGGER_CREATION_TIME,
+                0,
+            ),
+            Err(WireError::InvalidValue)
+        );
+        for aliased_target in [TEST_SUPERVISOR_PID, TEST_DEBUGGER_PID] {
+            assert_eq!(
+                DebuggerParentDeathReport::new(
+                    nonce()?,
+                    ParentDeathStage::PostHandoff,
+                    TEST_SUPERVISOR_PID,
+                    TEST_DEBUGGER_PID,
+                    aliased_target,
+                    TEST_SUPERVISOR_CREATION_TIME,
+                    TEST_DEBUGGER_CREATION_TIME,
+                    TEST_CREATION_TIME,
+                ),
+                Err(WireError::InvalidValue)
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -789,6 +1625,19 @@ mod tests {
         assert_eq!(ready_frame.len(), READY_FROZEN_FRAME_BYTES);
         assert_eq!(DebuggerReadyFrozen::decode_exact(&ready_frame)?, ready);
 
+        let target = target()?;
+        let target_frame = target.encode();
+        assert_eq!(target_frame.len(), TARGET_FROZEN_FRAME_BYTES);
+        assert_eq!(
+            &target_frame[TARGET_PROCESS_PID_OFFSET..TARGET_PROCESS_PID_OFFSET + 4],
+            &TEST_TARGET_PID.to_be_bytes()
+        );
+        assert_eq!(
+            &target_frame[TARGET_CREATION_TIME_OFFSET..TARGET_CREATION_TIME_OFFSET + 8],
+            &TEST_CREATION_TIME.to_be_bytes()
+        );
+        assert_eq!(DebuggerTargetFrozen::decode_exact(&target_frame)?, target);
+
         for value in [DebuggerDecision::Commit, DebuggerDecision::Abort] {
             let decision = decision(value)?;
             let frame = decision.encode();
@@ -812,6 +1661,18 @@ mod tests {
         assert_eq!(ready.debugger_process_id(), TEST_DEBUGGER_PID);
         assert_eq!(ready.sentinel_source_handle().value(), TEST_HANDLE);
 
+        let target = target()?;
+        assert_eq!(target.run_nonce().as_bytes(), &[0xA5; NONCE_BYTES]);
+        assert_eq!(target.debugger_process_id(), TEST_DEBUGGER_PID);
+        assert_eq!(target.target_process_id(), TEST_TARGET_PID);
+        assert_eq!(target.target_thread_id(), TEST_TARGET_TID);
+        assert_eq!(target.target_process_source_handle().value(), TEST_HANDLE);
+        assert_eq!(
+            target.target_thread_source_handle().value(),
+            TEST_THREAD_HANDLE
+        );
+        assert_eq!(target.target_creation_time(), TEST_CREATION_TIME);
+
         let decision = decision(DebuggerDecision::Commit)?;
         assert_eq!(decision.run_nonce().as_bytes(), &[0xA5; NONCE_BYTES]);
         assert_eq!(decision.decision(), &DebuggerDecision::Commit);
@@ -833,6 +1694,16 @@ mod tests {
         assert_eq!(debugger_pid, TEST_DEBUGGER_PID);
         assert_eq!(sentinel.value(), TEST_HANDLE);
 
+        let (run_nonce, debugger_pid, target_pid, target_thread_id, process, thread, creation_time) =
+            target()?.into_parts();
+        assert_eq!(run_nonce.as_bytes(), &[0xA5; NONCE_BYTES]);
+        assert_eq!(debugger_pid, TEST_DEBUGGER_PID);
+        assert_eq!(target_pid, TEST_TARGET_PID);
+        assert_eq!(target_thread_id, TEST_TARGET_TID);
+        assert_eq!(process.value(), TEST_HANDLE);
+        assert_eq!(thread.value(), TEST_THREAD_HANDLE);
+        assert_eq!(creation_time, TEST_CREATION_TIME);
+
         let (run_nonce, decision) = decision(DebuggerDecision::Abort)?.into_parts();
         assert_eq!(run_nonce.as_bytes(), &[0xA5; NONCE_BYTES]);
         assert_eq!(decision, DebuggerDecision::Abort);
@@ -843,6 +1714,7 @@ mod tests {
     fn every_prefix_and_trailing_byte_is_rejected() -> Result<(), WireError> {
         assert_all_truncations_and_trailing(&bootstrap()?.encode(), decode_bootstrap_unit);
         assert_all_truncations_and_trailing(&ready()?.encode(), decode_ready_unit);
+        assert_all_truncations_and_trailing(&target()?.encode(), decode_target_unit);
         assert_all_truncations_and_trailing(
             &decision(DebuggerDecision::Commit)?.encode(),
             decode_decision_unit,
@@ -857,6 +1729,7 @@ mod tests {
             decode_bootstrap_unit,
         );
         assert_every_single_byte_mutation_is_rejected(&ready()?.encode(), decode_ready_unit);
+        assert_every_single_byte_mutation_is_rejected(&target()?.encode(), decode_target_unit);
         assert_every_single_byte_mutation_is_rejected(
             &decision(DebuggerDecision::Abort)?.encode(),
             decode_decision_unit,
@@ -877,6 +1750,12 @@ mod tests {
             READY_CHECKSUM_OFFSET,
             FRAME_READY_FROZEN,
             decode_ready_unit,
+        );
+        assert_semantic_header_failures(
+            &target()?.encode(),
+            TARGET_CHECKSUM_OFFSET,
+            FRAME_TARGET_FROZEN,
+            decode_target_unit,
         );
         assert_semantic_header_failures(
             &decision(DebuggerDecision::Commit)?.encode(),
@@ -905,6 +1784,11 @@ mod tests {
                 DECISION_CHECKSUM_OFFSET,
                 vec![12..16, 50..52],
             ),
+            (
+                target()?.encode().to_vec(),
+                TARGET_CHECKSUM_OFFSET,
+                vec![12..16, 60..64, 88..92],
+            ),
         ];
 
         for (canonical, checksum_offset, ranges) in cases {
@@ -924,6 +1808,9 @@ mod tests {
                             DECISION_FRAME_BYTES => {
                                 DebuggerDecisionFrame::decode_exact(&mutated).err()
                             }
+                            TARGET_FROZEN_FRAME_BYTES => {
+                                DebuggerTargetFrozen::decode_exact(&mutated).err()
+                            }
                             _ => None,
                         };
                         assert_eq!(error, Some(WireError::NonZeroReserved));
@@ -935,6 +1822,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn all_zero_and_numeric_zero_sentinels_are_rejected() -> Result<(), WireError> {
         assert_eq!(
             DebuggerRunNonce::new([0; NONCE_BYTES]),
@@ -955,6 +1843,30 @@ mod tests {
         );
         assert_eq!(
             DebuggerReadyFrozen::new(nonce()?, 0, handle()?),
+            Err(WireError::InvalidValue)
+        );
+        assert_eq!(
+            DebuggerTargetFrozen::new(
+                nonce()?,
+                TEST_DEBUGGER_PID,
+                TEST_DEBUGGER_PID,
+                TEST_TARGET_TID,
+                handle()?,
+                RemoteHandleWord::new(TEST_THREAD_HANDLE)?,
+                TEST_CREATION_TIME,
+            ),
+            Err(WireError::InvalidValue)
+        );
+        assert_eq!(
+            DebuggerTargetFrozen::new(
+                nonce()?,
+                TEST_DEBUGGER_PID,
+                TEST_TARGET_PID,
+                TEST_TARGET_TID,
+                handle()?,
+                handle()?,
+                TEST_CREATION_TIME,
+            ),
             Err(WireError::InvalidValue)
         );
 
@@ -1003,6 +1915,24 @@ mod tests {
             );
         }
 
+        for range in [
+            TARGET_NONCE_OFFSET..TARGET_NONCE_OFFSET + NONCE_BYTES,
+            TARGET_DEBUGGER_PID_OFFSET..TARGET_DEBUGGER_PID_OFFSET + 4,
+            TARGET_PROCESS_PID_OFFSET..TARGET_PROCESS_PID_OFFSET + 4,
+            TARGET_THREAD_TID_OFFSET..TARGET_THREAD_TID_OFFSET + 4,
+            TARGET_PROCESS_HANDLE_OFFSET..TARGET_PROCESS_HANDLE_OFFSET + 8,
+            TARGET_THREAD_HANDLE_OFFSET..TARGET_THREAD_HANDLE_OFFSET + 8,
+            TARGET_CREATION_TIME_OFFSET..TARGET_CREATION_TIME_OFFSET + 8,
+        ] {
+            let mut frame = target()?.encode();
+            frame[range].fill(0);
+            rewrite_checksum(&mut frame, TARGET_CHECKSUM_OFFSET);
+            assert_eq!(
+                DebuggerTargetFrozen::decode_exact(&frame),
+                Err(WireError::InvalidValue)
+            );
+        }
+
         let mut zero_decision_nonce = decision(DebuggerDecision::Abort)?.encode();
         zero_decision_nonce[DECISION_NONCE_OFFSET..DECISION_NONCE_OFFSET + NONCE_BYTES].fill(0);
         rewrite_checksum(&mut zero_decision_nonce, DECISION_CHECKSUM_OFFSET);
@@ -1017,14 +1947,21 @@ mod tests {
     fn cross_kind_decoders_reject_every_other_canonical_frame() -> Result<(), WireError> {
         let bootstrap = bootstrap()?.encode();
         let ready = ready()?.encode();
+        let target = target()?.encode();
         let decision = decision(DebuggerDecision::Commit)?.encode();
 
         assert!(DebuggerBootstrap::decode_exact(&ready).is_err());
         assert!(DebuggerBootstrap::decode_exact(&decision).is_err());
+        assert!(DebuggerBootstrap::decode_exact(&target).is_err());
         assert!(DebuggerReadyFrozen::decode_exact(&bootstrap).is_err());
         assert!(DebuggerReadyFrozen::decode_exact(&decision).is_err());
+        assert!(DebuggerReadyFrozen::decode_exact(&target).is_err());
+        assert!(DebuggerTargetFrozen::decode_exact(&bootstrap).is_err());
+        assert!(DebuggerTargetFrozen::decode_exact(&ready).is_err());
+        assert!(DebuggerTargetFrozen::decode_exact(&decision).is_err());
         assert!(DebuggerDecisionFrame::decode_exact(&bootstrap).is_err());
         assert!(DebuggerDecisionFrame::decode_exact(&ready).is_err());
+        assert!(DebuggerDecisionFrame::decode_exact(&target).is_err());
         Ok(())
     }
 
@@ -1058,6 +1995,10 @@ mod tests {
             "DebuggerBootstrap([REDACTED])"
         );
         assert_eq!(format!("{:?}", ready()?), "DebuggerReadyFrozen([REDACTED])");
+        assert_eq!(
+            format!("{:?}", target()?),
+            "DebuggerTargetFrozen([REDACTED])"
+        );
         assert_eq!(
             format!("{:?}", DebuggerDecision::Commit),
             "DebuggerDecision([REDACTED])"

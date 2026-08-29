@@ -37,8 +37,6 @@ use windows::Win32::Security::Isolation::GetAppContainerFolderPath;
 use windows::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
-#[cfg(test)]
-use windows::Win32::Security::SetFileSecurityW;
 use windows::Win32::Security::{
     ACL, ACL_REVISION, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
     GetKernelObjectSecurity, GetSecurityDescriptorLength, IsValidSecurityDescriptor,
@@ -55,11 +53,24 @@ use windows::Win32::Security::{
     TokenIsAppContainer, TokenIsLessPrivilegedAppContainer, TokenOwner, TokenPrimary,
     TokenPrimaryGroup, TokenStatistics, TokenUser,
 };
+#[cfg(test)]
+use windows::Win32::Security::{
+    GetFileSecurityW, LABEL_SECURITY_INFORMATION, SE_DACL_DEFAULTED, SE_OWNER_DEFAULTED,
+    SE_SACL_DEFAULTED, SE_SACL_PRESENT, SetFileSecurityW,
+};
+#[cfg(test)]
+use windows::Win32::Storage::FileSystem::{
+    FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+};
 use windows::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, CTMF_INCLUDE_APPCONTAINER, CTMF_INCLUDE_LPAC,
     SECURITY_DESCRIPTOR_REVISION,
+};
+#[cfg(test)]
+use windows::Win32::System::SystemServices::{
+    SYSTEM_MANDATORY_LABEL_ACE_TYPE, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
@@ -109,6 +120,10 @@ const MIN_BINARY_SID_BYTES: usize = 8;
 const MAX_CREATION_SECURITY_DESCRIPTOR_BYTES: usize = 256;
 const CREATION_SECURITY_DENIED_ACCESS: u32 = 0x000e_0000;
 const OWNER_RIGHTS_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 3, 4, 0, 0, 0];
+#[cfg(test)]
+const MAX_FIXTURE_SECURITY_DESCRIPTOR_BYTES: usize = 4 * 1024;
+#[cfg(test)]
+const MEDIUM_MANDATORY_LABEL_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 16, 0, 32, 0, 0];
 const EXACT_TOKEN_DEFAULT_DACL_BYTES: usize =
     ACL_HEADER_BYTES + ACCESS_DENIED_ACE_FIXED_BYTES + OWNER_RIGHTS_SID_BYTES.len();
 const EXACT_TOKEN_DEFAULT_DACL_WORDS: usize = EXACT_TOKEN_DEFAULT_DACL_BYTES / size_of::<u32>();
@@ -1582,9 +1597,11 @@ impl KeyAgentLpacKernelTestFixture {
 
         let directory = create_unique_fixture_directory(&profile_folder)?;
         let executable = directory.join("key-agent-kernel-test.exe");
-        let result = apply_exact_fixture_dacl(&directory, profile_sid.as_psid())
+        let result = apply_and_verify_exact_fixture_security(&directory, profile_sid.as_psid())
             .and_then(|()| copy_executable_image(source, &executable))
-            .and_then(|()| apply_exact_fixture_dacl(&executable, profile_sid.as_psid()));
+            .and_then(|()| {
+                apply_and_verify_exact_fixture_security(&executable, profile_sid.as_psid())
+            });
         if let Err(error) = result {
             let _ = std::fs::remove_file(&executable);
             let _ = std::fs::remove_dir(&directory);
@@ -3021,7 +3038,7 @@ fn base_environment_is_exact(environment: &[u16]) -> bool {
 }
 
 #[cfg(test)]
-fn current_user_sid_string() -> Result<String, KeyAgentLpacError> {
+fn current_user_sid_identity() -> Result<(String, Vec<u8>), KeyAgentLpacError> {
     let mut raw_token = HANDLE::default();
     // SAFETY: the pseudo handle names this process and output receives one
     // exclusively owned query-only token handle.
@@ -3034,14 +3051,51 @@ fn current_user_sid_string() -> Result<String, KeyAgentLpacError> {
     }
     // SAFETY: aligned storage contains at least the returned TOKEN_USER prefix.
     let user = unsafe { ptr::read_unaligned(information.words.as_ptr().cast::<TOKEN_USER>()) };
-    sid_string(user.User.Sid)
+    let text = sid_string(user.User.Sid)?;
+    let bytes = copied_sid_bytes(user.User.Sid).map_err(|_| KeyAgentLpacError::Profile)?;
+    Ok((text, bytes))
 }
 
 #[cfg(test)]
-fn apply_exact_fixture_dacl(path: &Path, profile_sid: PSID) -> Result<(), KeyAgentLpacError> {
-    let user_sid = current_user_sid_string()?;
-    let profile_sid = sid_string(profile_sid)?;
-    let sddl = format!("D:P(A;;FA;;;{user_sid})(A;;GRGX;;;{profile_sid})");
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FixtureAceEvidence {
+    kind: u8,
+    flags: u8,
+    mask: u32,
+    sid: Vec<u8>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FixtureAclEvidence {
+    revision: u8,
+    aces: Vec<FixtureAceEvidence>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FixtureSecurityEvidence {
+    owner_sid: Vec<u8>,
+    control: u16,
+    dacl: FixtureAclEvidence,
+    label: FixtureAclEvidence,
+}
+
+#[cfg(test)]
+fn apply_and_verify_exact_fixture_security(
+    path: &Path,
+    profile_sid: PSID,
+) -> Result<(), KeyAgentLpacError> {
+    let (user_sid_text, expected_user_sid) = current_user_sid_identity()?;
+    let profile_sid_text = sid_string(profile_sid)?;
+    let expected_profile_sid =
+        copied_sid_bytes(profile_sid).map_err(|_| KeyAgentLpacError::Profile)?;
+    // The fixture lives below the OS-managed low-integrity AppContainer
+    // folder only so the zero-capability LPAC can traverse to it. Its image
+    // must model the immutable medium-integrity production install artifact;
+    // otherwise the unchanged NO_LOW_LABEL image-load mitigation rejects the
+    // primary image before the debugger receives its first event.
+    let sddl = format!("D:P(A;;FA;;;{user_sid_text})(A;;GRGX;;;{profile_sid_text})S:(ML;;NW;;;ME)");
     let sddl = wide_nul_str(&sddl)?;
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: the SDDL is live and NUL terminated; the output descriptor is
@@ -3056,7 +3110,8 @@ fn apply_exact_fixture_dacl(path: &Path, profile_sid: PSID) -> Result<(), KeyAge
     }
     .map_err(|_| KeyAgentLpacError::Profile)?;
     // SAFETY: the conversion succeeded and returned one self-relative
-    // descriptor. Validate it before applying only its protected DACL.
+    // descriptor. Validate it before applying its protected DACL and exact
+    // mandatory label together.
     let valid = unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool();
     let path_wide: Vec<u16> = path
         .as_os_str()
@@ -3068,7 +3123,9 @@ fn apply_exact_fixture_dacl(path: &Path, profile_sid: PSID) -> Result<(), KeyAge
         unsafe {
             SetFileSecurityW(
                 PCWSTR(path_wide.as_ptr()),
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION
+                    | LABEL_SECURITY_INFORMATION,
                 descriptor,
             )
         }
@@ -3081,7 +3138,262 @@ fn apply_exact_fixture_dacl(path: &Path, profile_sid: PSID) -> Result<(), KeyAge
     unsafe {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
-    applied
+    applied?;
+
+    let descriptor = fixture_security_descriptor(path)?;
+    let evidence = fixture_security_evidence(&descriptor)?;
+    inspect_exact_fixture_security_evidence(&evidence, &expected_user_sid, &expected_profile_sid)
+}
+
+#[cfg(test)]
+fn fixture_security_descriptor(path: &Path) -> Result<Vec<u8>, KeyAgentLpacError> {
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(core::iter::once(0))
+        .collect();
+    let requested =
+        (OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION).0;
+    let mut first_required = 0_u32;
+    // SAFETY: this is the documented sizing call. The exact path is live and
+    // NUL terminated, and the output length points to writable DWORD storage.
+    let sizing = unsafe {
+        GetFileSecurityW(
+            PCWSTR(path_wide.as_ptr()),
+            requested,
+            None,
+            0,
+            &raw mut first_required,
+        )
+    }
+    .ok();
+    if !matches!(
+        sizing,
+        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()
+    ) {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let required = usize::try_from(first_required).map_err(|_| KeyAgentLpacError::Profile)?;
+    if !(SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES..=MAX_FIXTURE_SECURITY_DESCRIPTOR_BYTES)
+        .contains(&required)
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let word_bytes = size_of::<usize>();
+    let word_count = required
+        .checked_add(word_bytes.saturating_sub(1))
+        .and_then(|rounded| rounded.checked_div(word_bytes))
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let mut words = vec![0_usize; word_count];
+    let descriptor = PSECURITY_DESCRIPTOR(words.as_mut_ptr().cast::<c_void>());
+    let mut second_required = 0_u32;
+    // SAFETY: the aligned allocation has at least `first_required` writable
+    // bytes and the same exact path remains live for this second query.
+    unsafe {
+        GetFileSecurityW(
+            PCWSTR(path_wide.as_ptr()),
+            requested,
+            Some(descriptor),
+            first_required,
+            &raw mut second_required,
+        )
+    }
+    .ok()
+    .map_err(|_| KeyAgentLpacError::Profile)?;
+    if second_required != first_required
+        // SAFETY: the successful second query initialized a complete descriptor.
+        || !unsafe { IsValidSecurityDescriptor(descriptor) }.as_bool()
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    // SAFETY: IsValidSecurityDescriptor accepted the complete live descriptor.
+    let reported_length = usize::try_from(unsafe { GetSecurityDescriptorLength(descriptor) })
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+    if reported_length != required {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    // SAFETY: the second query initialized exactly `required` bytes.
+    Ok(unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), required) }.to_vec())
+}
+
+#[cfg(test)]
+fn fixture_security_evidence(
+    descriptor: &[u8],
+) -> Result<FixtureSecurityEvidence, KeyAgentLpacError> {
+    if !(SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES..=MAX_FIXTURE_SECURITY_DESCRIPTOR_BYTES)
+        .contains(&descriptor.len())
+        || descriptor[0] != u8::try_from(SECURITY_DESCRIPTOR_REVISION).unwrap_or(u8::MAX)
+        || descriptor[1] != 0
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let control =
+        read_creation_security_u16_at(descriptor, 2).map_err(|_| KeyAgentLpacError::Profile)?;
+    if control & SE_SELF_RELATIVE.0 == 0 {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let owner_offset = usize::try_from(
+        read_creation_security_u32_at(descriptor, 4).map_err(|_| KeyAgentLpacError::Profile)?,
+    )
+    .map_err(|_| KeyAgentLpacError::Profile)?;
+    let group_offset =
+        read_creation_security_u32_at(descriptor, 8).map_err(|_| KeyAgentLpacError::Profile)?;
+    let label_offset = usize::try_from(
+        read_creation_security_u32_at(descriptor, 12).map_err(|_| KeyAgentLpacError::Profile)?,
+    )
+    .map_err(|_| KeyAgentLpacError::Profile)?;
+    let dacl_offset = usize::try_from(
+        read_creation_security_u32_at(descriptor, 16).map_err(|_| KeyAgentLpacError::Profile)?,
+    )
+    .map_err(|_| KeyAgentLpacError::Profile)?;
+    if group_offset != 0 || owner_offset == 0 || label_offset == 0 || dacl_offset == 0 {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let (owner_sid, owner_end) = creation_security_sid_component(descriptor, owner_offset)
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+    let (label, label_end) = fixture_acl_evidence(descriptor, label_offset)?;
+    let (dacl, dacl_end) = fixture_acl_evidence(descriptor, dacl_offset)?;
+    let mut regions = [
+        (owner_offset, owner_end),
+        (label_offset, label_end),
+        (dacl_offset, dacl_end),
+    ];
+    regions.sort_unstable_by_key(|region| region.0);
+    if regions[0].0 != SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || regions[0].1 != regions[1].0
+        || regions[1].1 != regions[2].0
+        || regions[2].1 != descriptor.len()
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    Ok(FixtureSecurityEvidence {
+        owner_sid: owner_sid.to_vec(),
+        control,
+        dacl,
+        label,
+    })
+}
+
+#[cfg(test)]
+fn fixture_acl_evidence(
+    descriptor: &[u8],
+    offset: usize,
+) -> Result<(FixtureAclEvidence, usize), KeyAgentLpacError> {
+    let header_end = offset
+        .checked_add(ACL_HEADER_BYTES)
+        .ok_or(KeyAgentLpacError::Profile)?;
+    if offset < SELF_RELATIVE_SECURITY_DESCRIPTOR_BYTES
+        || !offset.is_multiple_of(size_of::<u32>())
+        || header_end > descriptor.len()
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let region_width = usize::from(
+        read_creation_security_u16_at(descriptor, offset + 2)
+            .map_err(|_| KeyAgentLpacError::Profile)?,
+    );
+    let region_end = offset
+        .checked_add(region_width)
+        .ok_or(KeyAgentLpacError::Profile)?;
+    let acl = descriptor
+        .get(offset..region_end)
+        .ok_or(KeyAgentLpacError::Profile)?;
+    if acl.len() < ACL_HEADER_BYTES
+        || acl[1] != 0
+        || read_creation_security_u16_at(acl, 6).map_err(|_| KeyAgentLpacError::Profile)? != 0
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    let ace_count =
+        usize::from(read_creation_security_u16_at(acl, 4).map_err(|_| KeyAgentLpacError::Profile)?);
+    let mut aces = Vec::with_capacity(ace_count);
+    let mut cursor = ACL_HEADER_BYTES;
+    for _ in 0..ace_count {
+        let fixed_end = cursor
+            .checked_add(ACCESS_ALLOWED_ACE_FIXED_BYTES)
+            .ok_or(KeyAgentLpacError::Profile)?;
+        if fixed_end > acl.len() {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        let entry_width = usize::from(
+            read_creation_security_u16_at(acl, cursor + 2)
+                .map_err(|_| KeyAgentLpacError::Profile)?,
+        );
+        let entry_end = cursor
+            .checked_add(entry_width)
+            .ok_or(KeyAgentLpacError::Profile)?;
+        if entry_width < ACCESS_ALLOWED_ACE_FIXED_BYTES + MIN_BINARY_SID_BYTES
+            || !entry_width.is_multiple_of(size_of::<u32>())
+            || entry_end > acl.len()
+        {
+            return Err(KeyAgentLpacError::Profile);
+        }
+        let sid = acl
+            .get(cursor + ACCESS_ALLOWED_ACE_FIXED_BYTES..entry_end)
+            .ok_or(KeyAgentLpacError::Profile)?;
+        validate_creation_security_sid_bytes(sid).map_err(|_| KeyAgentLpacError::Profile)?;
+        aces.push(FixtureAceEvidence {
+            kind: acl[cursor],
+            flags: acl[cursor + 1],
+            mask: read_creation_security_u32_at(acl, cursor + 4)
+                .map_err(|_| KeyAgentLpacError::Profile)?,
+            sid: sid.to_vec(),
+        });
+        cursor = entry_end;
+    }
+    if cursor != acl.len() {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    Ok((
+        FixtureAclEvidence {
+            revision: acl[0],
+            aces,
+        },
+        region_end,
+    ))
+}
+
+#[cfg(test)]
+fn inspect_exact_fixture_security_evidence(
+    evidence: &FixtureSecurityEvidence,
+    expected_user_sid: &[u8],
+    expected_profile_sid: &[u8],
+) -> Result<(), KeyAgentLpacError> {
+    validate_creation_security_sid_bytes(expected_user_sid)
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+    validate_creation_security_sid_bytes(expected_profile_sid)
+        .map_err(|_| KeyAgentLpacError::Profile)?;
+    let dacl_revision = u8::try_from(ACL_REVISION.0).map_err(|_| KeyAgentLpacError::Profile)?;
+    let allowed_kind =
+        u8::try_from(ACCESS_ALLOWED_ACE_TYPE).map_err(|_| KeyAgentLpacError::Profile)?;
+    let mandatory_kind =
+        u8::try_from(SYSTEM_MANDATORY_LABEL_ACE_TYPE).map_err(|_| KeyAgentLpacError::Profile)?;
+    let required_control =
+        SE_SELF_RELATIVE.0 | SE_DACL_PRESENT.0 | SE_DACL_PROTECTED.0 | SE_SACL_PRESENT.0;
+    let forbidden_control = SE_OWNER_DEFAULTED.0 | SE_DACL_DEFAULTED.0 | SE_SACL_DEFAULTED.0;
+    if evidence.owner_sid != expected_user_sid
+        || evidence.control & required_control != required_control
+        || evidence.control & forbidden_control != 0
+        || evidence.dacl.revision != dacl_revision
+        || evidence.dacl.aces.len() != 2
+        || evidence.dacl.aces[0].kind != allowed_kind
+        || evidence.dacl.aces[0].flags != 0
+        || evidence.dacl.aces[0].mask != FILE_ALL_ACCESS.0
+        || evidence.dacl.aces[0].sid != expected_user_sid
+        || evidence.dacl.aces[1].kind != allowed_kind
+        || evidence.dacl.aces[1].flags != 0
+        || evidence.dacl.aces[1].mask != FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0
+        || evidence.dacl.aces[1].sid != expected_profile_sid
+        || evidence.label.revision != dacl_revision
+        || evidence.label.aces.len() != 1
+        || evidence.label.aces[0].kind != mandatory_kind
+        || evidence.label.aces[0].flags != 0
+        || evidence.label.aces[0].mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
+        || evidence.label.aces[0].sid != MEDIUM_MANDATORY_LABEL_SID_BYTES
+    {
+        return Err(KeyAgentLpacError::Profile);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3146,11 +3458,12 @@ mod tests {
     use windows::Win32::Security::{
         ACL, ACL_REVISION, EqualSid, IsValidAcl, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
         SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
-        SE_DACL_PROTECTED, SE_OWNER_DEFAULTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE,
-        SECURITY_ATTRIBUTES, SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
-        TOKEN_APPCONTAINER_INFORMATION, TOKEN_DEFAULT_DACL, TOKEN_GROUPS, TOKEN_OWNER,
-        TOKEN_PRIVILEGES, TOKEN_STATISTICS, TOKEN_USER, TokenDefaultDacl, TokenGroups,
-        TokenImpersonation, TokenOwner, TokenPrimary, TokenPrivileges, TokenUser,
+        SE_DACL_PROTECTED, SE_OWNER_DEFAULTED, SE_PRIVILEGE_ENABLED, SE_SACL_DEFAULTED,
+        SE_SACL_PRESENT, SE_SELF_RELATIVE, SECURITY_ATTRIBUTES, SID_AND_ATTRIBUTES,
+        SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_APPCONTAINER_INFORMATION,
+        TOKEN_DEFAULT_DACL, TOKEN_GROUPS, TOKEN_OWNER, TOKEN_PRIVILEGES, TOKEN_STATISTICS,
+        TOKEN_USER, TokenDefaultDacl, TokenGroups, TokenImpersonation, TokenOwner, TokenPrimary,
+        TokenPrivileges, TokenUser,
     };
     use windows::Win32::Security::{TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows::Win32::Storage::FileSystem::{
@@ -3184,18 +3497,22 @@ mod tests {
 
     use super::{
         APPROVAL_PARENT_TOKEN_ACCESS, AppContainerMembershipEvidence, CAPABILITY_COUNT,
-        CREATION_SECURITY_DENIED_ACCESS, EXACT_TOKEN_DEFAULT_DACL_BYTES,
-        HeldExistingKeyAgentInstallObjects, KEY_AGENT_PROFILE_V1_NAME, KEY_AGENT_TOKEN_SELF_ACCESS,
-        KeyAgentLpacError, KeyAgentLpacKernelTestFixture, KeyAgentStorageError,
-        OWNER_RIGHTS_SID_BYTES, OwnedAppContainerSid, OwnedExactTokenDefaultDacl, OwnedToken,
-        PendingKeyAgentLpac, PendingKeyAgentProvisioning, PreparedKeyAgentCreationSecurity,
-        PreparedKeyAgentLpac, PreparedKeyAgentProfile, PreparedKeyAgentProvisioning,
-        SUPERVISOR_TOKEN_ACCESS, TokenDword, TokenIdentityBaseline, TokenInformation,
-        TokenLuidBaseline, TokenPolicyEvidence, VerifiedKeyAgentLpac, appcontainer_folder,
-        appcontainer_membership_evidence, create_unique_key_agent_storage_root_for_test,
+        CREATION_SECURITY_DENIED_ACCESS, EXACT_TOKEN_DEFAULT_DACL_BYTES, FILE_ALL_ACCESS,
+        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FixtureAceEvidence, FixtureAclEvidence,
+        FixtureSecurityEvidence, HeldExistingKeyAgentInstallObjects, KEY_AGENT_PROFILE_V1_NAME,
+        KEY_AGENT_TOKEN_SELF_ACCESS, KeyAgentLpacError, KeyAgentLpacKernelTestFixture,
+        KeyAgentStorageError, MEDIUM_MANDATORY_LABEL_SID_BYTES, OWNER_RIGHTS_SID_BYTES,
+        OwnedAppContainerSid, OwnedExactTokenDefaultDacl, OwnedToken, PendingKeyAgentLpac,
+        PendingKeyAgentProvisioning, PreparedKeyAgentCreationSecurity, PreparedKeyAgentLpac,
+        PreparedKeyAgentProfile, PreparedKeyAgentProvisioning, SUPERVISOR_TOKEN_ACCESS,
+        SYSTEM_MANDATORY_LABEL_ACE_TYPE, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP, TokenDword,
+        TokenIdentityBaseline, TokenInformation, TokenLuidBaseline, TokenPolicyEvidence,
+        VerifiedKeyAgentLpac, appcontainer_folder, appcontainer_membership_evidence,
+        copied_sid_bytes, create_unique_key_agent_storage_root_for_test,
         created_object_security_descriptor, creation_security_sid_component,
-        creation_security_token_information, creation_security_wide_nul,
-        exact_token_statistics_baseline, inspect_exact_creation_security_descriptor,
+        creation_security_token_information, creation_security_wide_nul, current_user_sid_identity,
+        exact_token_statistics_baseline, fixture_security_descriptor, fixture_security_evidence,
+        inspect_exact_creation_security_descriptor, inspect_exact_fixture_security_evidence,
         inspect_exact_token_dacl_descriptor, inspect_exact_token_default_dacl_bytes,
         inspect_exact_token_default_dacl_information, open_current_process_creation_security_token,
         open_existing_key_agent_storage_root_for_test, open_process_token_with_access,
@@ -3233,6 +3550,64 @@ mod tests {
     const STATUS_DLL_INIT_FAILED: u32 = 0xc000_0142;
     const MAX_TEST_DEFAULT_DACL_BYTES: usize = 4 * 1024;
     const LOCAL_SYSTEM_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
+    const TEST_FIXTURE_USER_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 0xe9, 0x03, 0, 0];
+    const TEST_FIXTURE_PROFILE_SID_BYTES: [u8; 16] =
+        [1, 2, 0, 0, 0, 0, 0, 15, 2, 0, 0, 0, 7, 0, 0, 0];
+    const LOW_MANDATORY_LABEL_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 16, 0, 0x10, 0, 0];
+    const HIGH_MANDATORY_LABEL_SID_BYTES: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 16, 0, 0x30, 0, 0];
+
+    fn exact_fixture_security_evidence_for_test() -> FixtureSecurityEvidence {
+        let acl_revision = u8::try_from(ACL_REVISION.0).unwrap_or(u8::MAX);
+        let allowed_kind = u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX);
+        let mandatory_kind = u8::try_from(SYSTEM_MANDATORY_LABEL_ACE_TYPE).unwrap_or(u8::MAX);
+        FixtureSecurityEvidence {
+            owner_sid: TEST_FIXTURE_USER_SID_BYTES.to_vec(),
+            control: SE_SELF_RELATIVE.0
+                | SE_DACL_PRESENT.0
+                | SE_DACL_PROTECTED.0
+                | SE_SACL_PRESENT.0,
+            dacl: FixtureAclEvidence {
+                revision: acl_revision,
+                aces: vec![
+                    FixtureAceEvidence {
+                        kind: allowed_kind,
+                        flags: 0,
+                        mask: FILE_ALL_ACCESS.0,
+                        sid: TEST_FIXTURE_USER_SID_BYTES.to_vec(),
+                    },
+                    FixtureAceEvidence {
+                        kind: allowed_kind,
+                        flags: 0,
+                        mask: FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0,
+                        sid: TEST_FIXTURE_PROFILE_SID_BYTES.to_vec(),
+                    },
+                ],
+            },
+            label: FixtureAclEvidence {
+                revision: acl_revision,
+                aces: vec![FixtureAceEvidence {
+                    kind: mandatory_kind,
+                    flags: 0,
+                    mask: SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+                    sid: MEDIUM_MANDATORY_LABEL_SID_BYTES.to_vec(),
+                }],
+            },
+        }
+    }
+
+    fn require_fixture_security_rejected(name: &str, evidence: &FixtureSecurityEvidence) {
+        assert!(
+            matches!(
+                inspect_exact_fixture_security_evidence(
+                    evidence,
+                    &TEST_FIXTURE_USER_SID_BYTES,
+                    &TEST_FIXTURE_PROFILE_SID_BYTES,
+                ),
+                Err(KeyAgentLpacError::Profile)
+            ),
+            "fixture security mutation was accepted: {name}"
+        );
+    }
 
     fn exact_ignored_child_command_line(
         executable: &Path,
@@ -7152,6 +7527,129 @@ mod tests {
     }
 
     #[test]
+    fn fixture_security_policy_accepts_only_the_exact_contract() {
+        let evidence = exact_fixture_security_evidence_for_test();
+        assert!(
+            inspect_exact_fixture_security_evidence(
+                &evidence,
+                &TEST_FIXTURE_USER_SID_BYTES,
+                &TEST_FIXTURE_PROFILE_SID_BYTES,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn fixture_security_policy_rejects_wrong_or_defaulted_owner_and_dacl() {
+        let exact = exact_fixture_security_evidence_for_test();
+
+        let mut wrong_owner = exact.clone();
+        wrong_owner.owner_sid = TEST_FIXTURE_PROFILE_SID_BYTES.to_vec();
+        require_fixture_security_rejected("wrong owner", &wrong_owner);
+
+        let mut owner_defaulted = exact.clone();
+        owner_defaulted.control |= SE_OWNER_DEFAULTED.0;
+        require_fixture_security_rejected("defaulted owner", &owner_defaulted);
+
+        let mut dacl_absent = exact.clone();
+        dacl_absent.control &= !SE_DACL_PRESENT.0;
+        require_fixture_security_rejected("absent DACL", &dacl_absent);
+
+        let mut non_self_relative = exact.clone();
+        non_self_relative.control &= !SE_SELF_RELATIVE.0;
+        require_fixture_security_rejected("non-self-relative descriptor", &non_self_relative);
+
+        let mut dacl_defaulted = exact.clone();
+        dacl_defaulted.control |= SE_DACL_DEFAULTED.0;
+        require_fixture_security_rejected("defaulted DACL", &dacl_defaulted);
+
+        let mut dacl_unprotected = exact.clone();
+        dacl_unprotected.control &= !SE_DACL_PROTECTED.0;
+        require_fixture_security_rejected("unprotected DACL", &dacl_unprotected);
+
+        let mut wrong_revision = exact.clone();
+        wrong_revision.dacl.revision = wrong_revision.dacl.revision.wrapping_add(1);
+        require_fixture_security_rejected("wrong DACL revision", &wrong_revision);
+
+        let mut wrong_kind = exact.clone();
+        wrong_kind.dacl.aces[0].kind = u8::try_from(ACCESS_DENIED_ACE_TYPE).unwrap_or(u8::MAX);
+        require_fixture_security_rejected("wrong DACL ACE kind", &wrong_kind);
+
+        let mut inherited_ace = exact.clone();
+        inherited_ace.dacl.aces[0].flags = 0x10;
+        require_fixture_security_rejected("flagged DACL ACE", &inherited_ace);
+
+        let mut wrong_owner_mask = exact.clone();
+        wrong_owner_mask.dacl.aces[0].mask ^= 1;
+        require_fixture_security_rejected("wrong owner ACE mask", &wrong_owner_mask);
+
+        let mut wrong_profile_mask = exact.clone();
+        wrong_profile_mask.dacl.aces[1].mask ^= 1;
+        require_fixture_security_rejected("wrong profile ACE mask", &wrong_profile_mask);
+
+        let mut wrong_profile_sid = exact.clone();
+        wrong_profile_sid.dacl.aces[1].sid = TEST_FIXTURE_USER_SID_BYTES.to_vec();
+        require_fixture_security_rejected("wrong profile ACE SID", &wrong_profile_sid);
+
+        let mut wrong_order = exact.clone();
+        wrong_order.dacl.aces.swap(0, 1);
+        require_fixture_security_rejected("wrong DACL ACE order", &wrong_order);
+
+        let mut extra_ace = exact;
+        extra_ace.dacl.aces.push(extra_ace.dacl.aces[1].clone());
+        require_fixture_security_rejected("extra DACL ACE", &extra_ace);
+    }
+
+    #[test]
+    fn fixture_security_policy_rejects_low_wrong_defaulted_or_mutated_label() {
+        let exact = exact_fixture_security_evidence_for_test();
+
+        let mut low_label = exact.clone();
+        low_label.label.aces[0].sid = LOW_MANDATORY_LABEL_SID_BYTES.to_vec();
+        require_fixture_security_rejected("low mandatory label", &low_label);
+
+        let mut wrong_label = exact.clone();
+        wrong_label.label.aces[0].sid = HIGH_MANDATORY_LABEL_SID_BYTES.to_vec();
+        require_fixture_security_rejected("wrong mandatory label", &wrong_label);
+
+        let mut label_absent = exact.clone();
+        label_absent.control &= !SE_SACL_PRESENT.0;
+        require_fixture_security_rejected("absent mandatory label", &label_absent);
+
+        let mut label_defaulted = exact.clone();
+        label_defaulted.control |= SE_SACL_DEFAULTED.0;
+        require_fixture_security_rejected("defaulted mandatory label", &label_defaulted);
+
+        let mut wrong_revision = exact.clone();
+        wrong_revision.label.revision = wrong_revision.label.revision.wrapping_add(1);
+        require_fixture_security_rejected("wrong mandatory-label ACL revision", &wrong_revision);
+
+        let mut wrong_kind = exact.clone();
+        wrong_kind.label.aces[0].kind = u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX);
+        require_fixture_security_rejected("wrong mandatory-label ACE kind", &wrong_kind);
+
+        let mut flagged_label = exact.clone();
+        flagged_label.label.aces[0].flags = 1;
+        require_fixture_security_rejected("flagged mandatory-label ACE", &flagged_label);
+
+        let mut missing_no_write_up = exact.clone();
+        missing_no_write_up.label.aces[0].mask = 0;
+        require_fixture_security_rejected("missing no-write-up policy", &missing_no_write_up);
+
+        let mut extra_label_policy = exact.clone();
+        extra_label_policy.label.aces[0].mask |= 2;
+        require_fixture_security_rejected("extra mandatory-label policy", &extra_label_policy);
+
+        let mut missing_ace = exact.clone();
+        missing_ace.label.aces.clear();
+        require_fixture_security_rejected("missing mandatory-label ACE", &missing_ace);
+
+        let mut extra_ace = exact;
+        extra_ace.label.aces.push(extra_ace.label.aces[0].clone());
+        require_fixture_security_rejected("extra mandatory-label ACE", &extra_ace);
+    }
+
+    #[test]
     fn kernel_fixture_is_profile_scoped_redacted_and_exactly_cleaned()
     -> Result<(), KeyAgentLpacError> {
         let profile = OwnedAppContainerSid::open_or_create()?;
@@ -7185,6 +7683,19 @@ mod tests {
             format!("{fixture:?}"),
             "KeyAgentLpacKernelTestFixture([REDACTED PATH])"
         );
+
+        let (_, expected_user_sid) = current_user_sid_identity()?;
+        let expected_profile_sid =
+            copied_sid_bytes(profile.as_psid()).map_err(|_| KeyAgentLpacError::Profile)?;
+        for path in [&directory, &executable] {
+            let descriptor = fixture_security_descriptor(path)?;
+            let evidence = fixture_security_evidence(&descriptor)?;
+            inspect_exact_fixture_security_evidence(
+                &evidence,
+                &expected_user_sid,
+                &expected_profile_sid,
+            )?;
+        }
 
         drop(fixture);
         assert!(!executable.exists());

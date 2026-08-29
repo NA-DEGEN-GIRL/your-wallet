@@ -29,7 +29,9 @@ use windows::core::BOOL;
 use super::debug_gate::ServiceProbeDebugEventCleanup;
 use super::job::ServiceProbeJob;
 use super::startup::ServiceProbeStartup;
-use super::target_profile::{PreparedTargetUserLpac, VerifiedCreatedTargetLpac};
+use super::target_profile::{
+    ExpectedServiceCreatedLpac, PreparedTargetUserLpac, VerifiedCreatedTargetLpac,
+};
 use crate::helper::VerifiedHelper;
 use crate::key_agent_lpac::PreparedServiceKeyAgentCreationSecurity;
 use crate::key_agent_service_rpc::{
@@ -356,7 +358,7 @@ impl<'client, 'proof, 'context> ServiceProbeCreateInputs<'client, 'proof, 'conte
                 job: &self.job,
                 created: &created,
             };
-            verify_post_create(&mut operations)
+            verify_initial_post_create(&mut operations)
         };
         let target_proof = match verification {
             Ok(proof) => proof,
@@ -560,7 +562,7 @@ impl SuspendedServiceProbe<'_, '_, '_> {
                 job: &self.job,
                 created: &self.created,
             };
-            verify_post_create(&mut operations)
+            revalidate_held_post_create(&mut operations)
         }?;
         let retained = self.target.revalidate_created_process(
             &self.target_proof,
@@ -594,27 +596,46 @@ impl SuspendedServiceProbe<'_, '_, '_> {
             debugger_thread,
             created,
             target_proof,
-            job,
+            mut job,
             helper,
             application_name,
             service_security,
             target,
             client: _,
             context: _,
-            role: _,
+            role,
             _thread_bound: _,
         } = self;
         let creator_thread_id = debugger_thread.thread_id;
         let debug_event_cleanup = Arc::clone(&debugger_thread.debug_event_cleanup);
+        let Ok(expected_target) = target_proof.into_expected_service_created() else {
+            let process = created.request_termination_into_pending_debugger_exit_cleanup();
+            let job_request_failed = job.request_termination().is_err();
+            drop(helper);
+            drop(application_name);
+            drop(service_security);
+            drop(target);
+            return Err(PendingServiceProbeCleanup {
+                process: Some(process),
+                job,
+                failure: ServiceProbeCreateError::Verification,
+                job_request_failed,
+                process_cleanup_failed: false,
+                worker_cleanup_failed: false,
+                creator_thread_id,
+                debug_event_cleanup,
+            });
+        };
         let process = created.prepare_pending_debugger_exit_success();
-        drop(target_proof);
-        drop(helper);
         drop(application_name);
         drop(service_security);
         drop(target);
         Ok(PreparedServiceProbeDetach {
             process,
             job,
+            expected_target,
+            helper,
+            role,
             creator_thread_id,
             debug_event_cleanup,
             _thread_bound: PhantomData,
@@ -669,6 +690,9 @@ impl SuspendedServiceProbe<'_, '_, '_> {
 pub(super) struct PreparedServiceProbeDetach {
     process: PreparedDebuggerExitProcessSuccess,
     job: ServiceProbeJob,
+    expected_target: ExpectedServiceCreatedLpac,
+    helper: VerifiedHelper,
+    role: ServiceProbeRole,
     creator_thread_id: ThreadId,
     debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
     _thread_bound: PhantomData<Rc<Cell<()>>>,
@@ -681,6 +705,9 @@ impl PreparedServiceProbeDetach {
         let Self {
             process,
             job,
+            expected_target,
+            helper,
+            role,
             creator_thread_id,
             debug_event_cleanup,
             _thread_bound: _,
@@ -688,6 +715,9 @@ impl PreparedServiceProbeDetach {
         PendingServiceProbeDetach {
             process: process.commit_after_no_kill(),
             job,
+            expected_target,
+            helper,
+            role,
             creator_thread_id,
             debug_event_cleanup,
             _not_sync: PhantomData,
@@ -699,12 +729,17 @@ impl PreparedServiceProbeDetach {
         let Self {
             process,
             mut job,
+            expected_target,
+            helper,
+            role: _,
             creator_thread_id,
             debug_event_cleanup,
             _thread_bound: _,
         } = self;
         let process = process.abort_into_pending_cleanup();
         let job_request_failed = job.request_termination().is_err();
+        drop(expected_target);
+        drop(helper);
         PendingServiceProbeCleanup {
             process: Some(process),
             job,
@@ -731,6 +766,9 @@ impl fmt::Debug for PreparedServiceProbeDetach {
 pub(super) struct PendingServiceProbeDetach {
     process: PendingDebuggerExitProcessSuccess,
     job: ServiceProbeJob,
+    expected_target: ExpectedServiceCreatedLpac,
+    helper: VerifiedHelper,
+    role: ServiceProbeRole,
     creator_thread_id: ThreadId,
     debug_event_cleanup: Arc<ServiceProbeDebugEventCleanup>,
     _not_sync: PhantomData<Cell<()>>,
@@ -746,6 +784,9 @@ impl PendingServiceProbeDetach {
         let Self {
             process,
             mut job,
+            expected_target,
+            helper,
+            role,
             creator_thread_id,
             debug_event_cleanup,
             _not_sync: _,
@@ -804,6 +845,10 @@ impl PendingServiceProbeDetach {
         Ok(DetachedSuspendedServiceProbe {
             process,
             job,
+            expected_target,
+            helper,
+            role,
+            resumed: false,
             _not_sync: PhantomData,
         })
     }
@@ -817,12 +862,82 @@ impl fmt::Debug for PendingServiceProbeDetach {
 
 /// Post-join detached process/Job owner with exactly one explicit suspend count.
 ///
-/// This dormant slice intentionally exposes no resume or resident attenuation.
 #[must_use = "the detached suspended service probe remains process-terminal"]
 pub(super) struct DetachedSuspendedServiceProbe {
     process: DetachedDesktopProcess,
     job: ServiceProbeJob,
+    expected_target: ExpectedServiceCreatedLpac,
+    helper: VerifiedHelper,
+    role: ServiceProbeRole,
+    resumed: bool,
     _not_sync: PhantomData<Cell<()>>,
+}
+
+impl DetachedSuspendedServiceProbe {
+    pub(super) const fn role(&self) -> ServiceProbeRole {
+        self.role
+    }
+
+    pub(super) fn revalidate_suspended(&self) -> Result<(), ServiceProbeCreateError> {
+        if self.resumed {
+            return Err(ServiceProbeCreateError::Verification);
+        }
+        verify_detached_suspended_process(&self.process, &self.job)?;
+        self.revalidate_identity_and_role()
+    }
+
+    pub(super) fn resume_once(&mut self) -> Result<(), ServiceProbeCreateError> {
+        if self.resumed {
+            return Err(ServiceProbeCreateError::Verification);
+        }
+        // SAFETY: the joined-debugger proof retained exactly one explicit
+        // suspend count on this exact primary thread. The returned previous
+        // count must therefore be exactly one for the sole resume transition.
+        let previous =
+            unsafe { ResumeThread(windows_handle(self.process.primary_thread_handle())) };
+        if previous != 1 {
+            return Err(ServiceProbeCreateError::Verification);
+        }
+        self.resumed = true;
+        Ok(())
+    }
+
+    pub(super) fn revalidate_running(&self) -> Result<(), ServiceProbeCreateError> {
+        if !self.resumed {
+            return Err(ServiceProbeCreateError::Verification);
+        }
+        verify_detached_running_process(&self.process, &self.job)?;
+        self.revalidate_identity_and_role()
+    }
+
+    pub(super) fn process_handle(&self) -> BorrowedHandle<'_> {
+        self.process.process_handle()
+    }
+
+    pub(super) fn terminate_and_reap(&mut self) -> Result<(), ServiceProbeCreateError> {
+        let mut operations = WindowsDetachedTermination {
+            process: &self.process,
+            job: &mut self.job,
+        };
+        terminate_and_reap_detached(&mut operations)
+    }
+
+    fn revalidate_identity_and_role(&self) -> Result<(), ServiceProbeCreateError> {
+        self.expected_target
+            .revalidate_for_process(self.process.process_handle())
+            .map_err(|_| ServiceProbeCreateError::Verification)?;
+        let exact_role = match self.role {
+            ServiceProbeRole::Approval => {
+                self.helper.is_approval_frontend() && self.expected_target.is_approval()
+            }
+            ServiceProbeRole::SecretInput => {
+                self.helper.is_secret_input_frontend() && self.expected_target.is_secret_input()
+            }
+        };
+        exact_role
+            .then_some(())
+            .ok_or(ServiceProbeCreateError::Verification)
+    }
 }
 
 impl fmt::Debug for DetachedSuspendedServiceProbe {
@@ -866,6 +981,28 @@ fn verify_detached_suspended_process(
     Ok(())
 }
 
+fn verify_detached_running_process(
+    process: &DetachedDesktopProcess,
+    job: &ServiceProbeJob,
+) -> Result<(), ServiceProbeCreateError> {
+    // SAFETY: the exact process handle owns synchronize access; a zero wait is
+    // only a liveness observation.
+    if unsafe { WaitForSingleObject(windows_handle(process.process_handle()), 0) } != WAIT_TIMEOUT {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    if !job
+        .contains_process(process.process_handle())
+        .map_err(|_| ServiceProbeCreateError::Cleanup)?
+        || job
+            .active_process_count()
+            .map_err(|_| ServiceProbeCreateError::Cleanup)?
+            != 1
+    {
+        return Err(ServiceProbeCreateError::Cleanup);
+    }
+    Ok(())
+}
+
 fn verify_debugger_absent(process: &DetachedDesktopProcess) -> Result<(), ServiceProbeCreateError> {
     // SAFETY: the exact creator process handle remains live after the debugger
     // thread joined; a zero wait observes only liveness.
@@ -885,6 +1022,62 @@ fn verify_debugger_absent(process: &DetachedDesktopProcess) -> Result<(), Servic
         Err(ServiceProbeCreateError::Cleanup)
     } else {
         Ok(())
+    }
+}
+
+trait DetachedTerminationOps {
+    fn request_job_termination(&mut self) -> bool;
+    fn request_process_termination(&mut self) -> bool;
+    fn wait_for_process_exit(&mut self) -> bool;
+    fn wait_for_empty_job(&mut self) -> bool;
+    fn fail_fast_with_owners(&mut self) -> !;
+}
+
+/// Attempts both termination requests before either bounded terminal proof.
+/// Success means both requests succeeded, the exact process exited, and the
+/// one-process Job reached exact zero. A missing terminal proof cannot return:
+/// the concrete owner remains live through the process-wide fail-fast boundary.
+fn terminate_and_reap_detached<O: DetachedTerminationOps>(
+    operations: &mut O,
+) -> Result<(), ServiceProbeCreateError> {
+    let job_request = operations.request_job_termination();
+    let process_request = operations.request_process_termination();
+    let process_terminal = operations.wait_for_process_exit();
+    let job_terminal = operations.wait_for_empty_job();
+    if !process_terminal || !job_terminal {
+        operations.fail_fast_with_owners();
+    }
+    if job_request && process_request {
+        Ok(())
+    } else {
+        Err(ServiceProbeCreateError::Cleanup)
+    }
+}
+
+struct WindowsDetachedTermination<'process, 'job> {
+    process: &'process DetachedDesktopProcess,
+    job: &'job mut ServiceProbeJob,
+}
+
+impl DetachedTerminationOps for WindowsDetachedTermination<'_, '_> {
+    fn request_job_termination(&mut self) -> bool {
+        self.job.request_termination().is_ok()
+    }
+
+    fn request_process_termination(&mut self) -> bool {
+        self.process.request_termination_for_cleanup().is_ok()
+    }
+
+    fn wait_for_process_exit(&mut self) -> bool {
+        self.process.wait_for_exit_for_cleanup().is_ok()
+    }
+
+    fn wait_for_empty_job(&mut self) -> bool {
+        self.job.finish_termination_and_wait().is_ok()
+    }
+
+    fn fail_fast_with_owners(&mut self) -> ! {
+        std::process::abort()
     }
 }
 
@@ -1044,6 +1237,7 @@ trait PostCreateVerificationOps {
     fn revalidate_client(&mut self) -> Result<(), ServiceProbeCreateError>;
     fn verify_helper(&mut self) -> Result<(), ServiceProbeCreateError>;
     fn verify_service_objects(&mut self) -> Result<(), ServiceProbeCreateError>;
+    fn verify_desktop_dup_handle_denial(&mut self) -> Result<(), ServiceProbeCreateError>;
     fn revalidate_service(&mut self) -> Result<(), ServiceProbeCreateError>;
     fn verify_target(&mut self) -> Result<Self::TargetProof, ServiceProbeCreateError>;
     fn verify_job(&mut self) -> Result<(), ServiceProbeCreateError>;
@@ -1054,12 +1248,32 @@ trait PostCreateVerificationOps {
     ) -> Result<(), ServiceProbeCreateError>;
 }
 
-fn verify_post_create<O: PostCreateVerificationOps>(
+/// Performs the creation-only verification sequence. The desktop access denial
+/// is a one-shot authenticated-client claim and must not be repeated later.
+fn verify_initial_post_create<O: PostCreateVerificationOps>(
     operations: &mut O,
 ) -> Result<O::TargetProof, ServiceProbeCreateError> {
     operations.revalidate_client()?;
     operations.verify_helper()?;
     operations.verify_service_objects()?;
+    operations.verify_desktop_dup_handle_denial()?;
+    verify_post_create_tail(operations)
+}
+
+/// Repeats only object-bound proofs while the process remains held. The
+/// creation-only desktop access denial has already been consumed and proven.
+fn revalidate_held_post_create<O: PostCreateVerificationOps>(
+    operations: &mut O,
+) -> Result<O::TargetProof, ServiceProbeCreateError> {
+    operations.revalidate_client()?;
+    operations.verify_helper()?;
+    operations.verify_service_objects()?;
+    verify_post_create_tail(operations)
+}
+
+fn verify_post_create_tail<O: PostCreateVerificationOps>(
+    operations: &mut O,
+) -> Result<O::TargetProof, ServiceProbeCreateError> {
     operations.revalidate_service()?;
     let proof = operations.verify_target()?;
     operations.verify_job()?;
@@ -1110,6 +1324,12 @@ impl<'client> PostCreateVerificationOps for WindowsPostCreateVerification<'_, 'c
                 self.created.process_handle(),
                 self.created.primary_thread_handle(),
             )
+            .map_err(|_| ServiceProbeCreateError::Verification)
+    }
+
+    fn verify_desktop_dup_handle_denial(&mut self) -> Result<(), ServiceProbeCreateError> {
+        self.client
+            .require_desktop_process_dup_handle_denied(self.created.process_id())
             .map_err(|_| ServiceProbeCreateError::Verification)
     }
 
@@ -1171,10 +1391,11 @@ fn wide_nul_absolute_path(path: &Path) -> Result<Box<[u16]>, ServiceProbeCreateE
 #[cfg(test)]
 mod tests {
     use super::{
-        DebuggerThreadExitProof, FreshDebuggerThread, JoinedFreshDebuggerThread,
-        PendingServiceProbeCleanup, PostCreateVerificationOps, ServiceProbeCreateError,
-        SuspendedServiceProbe, debugger_exit_matches, run_on_fresh_debugger_thread,
-        verify_post_create, wide_nul_absolute_path,
+        DebuggerThreadExitProof, DetachedTerminationOps, FreshDebuggerThread,
+        JoinedFreshDebuggerThread, PendingServiceProbeCleanup, PostCreateVerificationOps,
+        ServiceProbeCreateError, SuspendedServiceProbe, debugger_exit_matches,
+        revalidate_held_post_create, run_on_fresh_debugger_thread, terminate_and_reap_detached,
+        verify_initial_post_create, wide_nul_absolute_path,
     };
 
     trait AmbiguousIfClone<A = Self> {
@@ -1233,6 +1454,10 @@ mod tests {
             self.record("objects")
         }
 
+        fn verify_desktop_dup_handle_denial(&mut self) -> Result<(), ServiceProbeCreateError> {
+            self.record("desktop-dup-denied")
+        }
+
         fn revalidate_service(&mut self) -> Result<(), ServiceProbeCreateError> {
             self.record("service")
         }
@@ -1257,12 +1482,114 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TerminationEvent {
+        RequestJob,
+        RequestProcess,
+        WaitProcess,
+        WaitJob,
+        FailFast,
+    }
+
+    struct FakeDetachedTermination {
+        events: Vec<TerminationEvent>,
+        failure: Option<TerminationEvent>,
+    }
+
+    impl FakeDetachedTermination {
+        fn outcome(&mut self, event: TerminationEvent) -> bool {
+            self.events.push(event);
+            self.failure != Some(event)
+        }
+    }
+
+    impl DetachedTerminationOps for FakeDetachedTermination {
+        fn request_job_termination(&mut self) -> bool {
+            self.outcome(TerminationEvent::RequestJob)
+        }
+
+        fn request_process_termination(&mut self) -> bool {
+            self.outcome(TerminationEvent::RequestProcess)
+        }
+
+        fn wait_for_process_exit(&mut self) -> bool {
+            self.outcome(TerminationEvent::WaitProcess)
+        }
+
+        fn wait_for_empty_job(&mut self) -> bool {
+            self.outcome(TerminationEvent::WaitJob)
+        }
+
+        #[allow(clippy::panic)]
+        fn fail_fast_with_owners(&mut self) -> ! {
+            self.events.push(TerminationEvent::FailFast);
+            panic!("detached cleanup terminal proof missing")
+        }
+    }
+
     #[test]
-    fn post_create_verification_is_exact_and_every_prefix_fails_closed() {
-        const EVENTS: [&str; 10] = [
+    fn detached_termination_orders_both_requests_before_both_terminal_proofs() {
+        const COMPLETE: [TerminationEvent; 4] = [
+            TerminationEvent::RequestJob,
+            TerminationEvent::RequestProcess,
+            TerminationEvent::WaitProcess,
+            TerminationEvent::WaitJob,
+        ];
+
+        let mut success = FakeDetachedTermination {
+            events: Vec::new(),
+            failure: None,
+        };
+        assert_eq!(terminate_and_reap_detached(&mut success), Ok(()));
+        assert_eq!(success.events, COMPLETE);
+
+        for failure in [
+            TerminationEvent::RequestJob,
+            TerminationEvent::RequestProcess,
+        ] {
+            let mut operations = FakeDetachedTermination {
+                events: Vec::new(),
+                failure: Some(failure),
+            };
+            assert_eq!(
+                terminate_and_reap_detached(&mut operations),
+                Err(ServiceProbeCreateError::Cleanup)
+            );
+            assert_eq!(operations.events, COMPLETE);
+        }
+    }
+
+    #[test]
+    fn detached_termination_fail_fast_keeps_owner_through_every_missing_terminal_proof() {
+        for failure in [TerminationEvent::WaitProcess, TerminationEvent::WaitJob] {
+            let mut operations = FakeDetachedTermination {
+                events: Vec::new(),
+                failure: Some(failure),
+            };
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = terminate_and_reap_detached(&mut operations);
+            }));
+            assert!(outcome.is_err());
+            assert_eq!(
+                operations.events,
+                [
+                    TerminationEvent::RequestJob,
+                    TerminationEvent::RequestProcess,
+                    TerminationEvent::WaitProcess,
+                    TerminationEvent::WaitJob,
+                    TerminationEvent::FailFast,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn initial_post_create_verification_is_exact_and_every_prefix_fails_closed() {
+        const INITIAL_EVENTS: [&str; 11] = [
             "client",
             "helper",
             "objects",
+            "desktop-dup-denied",
             "service",
             "target",
             "job",
@@ -1276,19 +1603,56 @@ mod tests {
             events: Vec::new(),
             failure_at: None,
         };
-        assert_eq!(verify_post_create(&mut success), Ok(()));
-        assert_eq!(success.events, EVENTS);
+        assert_eq!(verify_initial_post_create(&mut success), Ok(()));
+        assert_eq!(success.events, INITIAL_EVENTS);
 
-        for failure_at in 0..EVENTS.len() {
+        for failure_at in 0..INITIAL_EVENTS.len() {
             let mut failure = FakePostCreate {
                 events: Vec::new(),
                 failure_at: Some(failure_at),
             };
             assert_eq!(
-                verify_post_create(&mut failure),
+                verify_initial_post_create(&mut failure),
                 Err(ServiceProbeCreateError::Verification)
             );
-            assert_eq!(failure.events, EVENTS[..=failure_at]);
+            assert_eq!(failure.events, INITIAL_EVENTS[..=failure_at]);
+        }
+    }
+
+    #[test]
+    fn held_post_create_revalidation_is_repeatable_without_reusing_denial_claim() {
+        const HELD_EVENTS: [&str; 10] = [
+            "client",
+            "helper",
+            "objects",
+            "service",
+            "target",
+            "job",
+            "context",
+            "target-fresh",
+            "service",
+            "client",
+        ];
+
+        let mut repeated = FakePostCreate {
+            events: Vec::new(),
+            failure_at: None,
+        };
+        assert_eq!(revalidate_held_post_create(&mut repeated), Ok(()));
+        assert_eq!(repeated.events, HELD_EVENTS);
+        assert_eq!(revalidate_held_post_create(&mut repeated), Ok(()));
+        assert_eq!(&repeated.events[HELD_EVENTS.len()..], HELD_EVENTS);
+
+        for failure_at in 0..HELD_EVENTS.len() {
+            let mut failure = FakePostCreate {
+                events: Vec::new(),
+                failure_at: Some(failure_at),
+            };
+            assert_eq!(
+                revalidate_held_post_create(&mut failure),
+                Err(ServiceProbeCreateError::Verification)
+            );
+            assert_eq!(failure.events, HELD_EVENTS[..=failure_at]);
         }
     }
 

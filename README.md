@@ -1,5 +1,34 @@
 # Your Wallet
 
+## Windows Phase 1 checkpoint (2026-08-29)
+
+**Release status remains STOP-SHIP.** The debug-only Windows feasibility path
+now creates a real suspended, inert target and reports it with the exact
+96-byte `TARGET_FROZEN` frame. Its containment Job reads back exactly
+`KILL_ON_JOB_CLOSE | ACTIVE_PROCESS`, `ActiveProcessLimit = 2`, and no
+breakaway. Current-host probes cover the exact debugger/target topology
+`2 -> 1 -> 0`, denial of a third member at the Job quota, and forced outer-
+parent death before `READY_FROZEN`, at `READY_FROZEN`, and after target handoff.
+The parent retains only narrow target process/thread handles; the measured host
+adds native `THREAD_RESUME` (`0x1000`) to the requested thread mask, so this
+normalization remains a supported-kernel matrix obligation.
+
+Desktop RPC admission now rejects `SeDebugPrivilege` whenever it is assigned,
+including assigned-but-disabled, and the authenticated desktop token must receive
+exact `ERROR_ACCESS_DENIED` when opening the still-suspended child with only
+`PROCESS_DUP_HANDLE`. A separate role-aware helper transport-candidate path and
+fixed-capacity expected-peer registry provide suspended registration, independent
+non-consuming callback observation, exact-once manager consumption, ordered
+resume/publication, and bounded cancel/reap foundations.
+
+This is fixture evidence, not the Phase 1 exit gate. The target is the debug-only
+helper's untrusted `current_exe`, not a parent-pinned signed target; system-wide
+sole ownership of the Job handle is not proven; and the results are current-host
+only. There is no production helper RPC/lifecycle/wire caller or signed helper
+`ncalrpc` E2E, and the installed restricted-service, cross-session, elevated
+service, and supported-kernel matrices remain open. Both compiled policies stay
+`None`.
+
 정식 지갑의 백업 원칙과 복구 연습은
 [한국어 지갑 백업·복구 안내](docs/recovery-guide.ko.md)에 따로 정리했습니다.
 
@@ -946,10 +975,12 @@ Sepolia 앱은 프로덕션 지갑과 분리된 연습용 실행판입니다. �
   typestate 또는 authority 사용 전에 fail closed합니다.
   `cfg(test)` integration은 token-object/creation DACL과 post-loader default-DACL kernel
   feasibility를 실행하고 Approval query-only 결과를 증명하지만,
-  same-user isolation이나 release evidence는 아닙니다.
-  fixture는 copied image의 mandatory-label state도 직접 read back하지 않습니다.
-  profile-scoped copy를 허용하기 위해 test-only mitigation에서 `NO_LOW_LABEL` 한 비트만
-  제거하며 production mitigation은 그대로입니다.
+  same-user isolation이나 release evidence는 아닙니다. Key Agent fixture는 CSPRNG
+  directory와 copied executable 각각에서 exact current-user owner를 요구하고 read back하며,
+  protected two-ACE DACL과 Medium/`NW` mandatory label을 명시 적용·재검증한 상태로
+  `NO_LOW_LABEL`을 포함한 full mitigation을 유지합니다. 별도 Approval copied-image
+  fixture만 mandatory label을 직접 read back하지 않고 profile-scoped copy를 위해
+  `cfg(test)`에서 `NO_LOW_LABEL` 한 비트만 제거하며 production mitigation은 그대로입니다.
   이는 signed/mapped release proof가 아닙니다. signed DLL/TLS provenance, pre-gate
   non-thread object inventory, loader-worker provenance/lifetime/exit/reopen-denial
   policy, distinct OS principal/service design과 그 IPC/lifecycle proof,
