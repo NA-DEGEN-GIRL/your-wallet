@@ -366,6 +366,76 @@ where
         self.settle_scan(peers).and(result)
     }
 
+    /// Manager-side terminal rejection when a malformed helper frame did not
+    /// yield a trustworthy key. Candidate and peer comparisons run with every
+    /// live peer outside the registry mutex. Exactly matching peers and peers
+    /// whose relationship cannot be determined are retired; definite
+    /// non-matches remain live. A failed candidate revalidation is still
+    /// followed by exact comparison so its related launch cannot be retried.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "dormant malformed-helper manager integration follows this foundation"
+        )
+    )]
+    pub(crate) fn reject_manager_candidate(
+        &self,
+        candidate: &C,
+    ) -> Result<(), ExpectedPeerRegistryError> {
+        let mut peers = self.begin_exclusive_scan(None)?;
+        let rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut failure = candidate.revalidate().err().map(map_verification_error);
+            let mut matched = Vec::with_capacity(2);
+
+            for (position, local) in peers.iter_mut().enumerate() {
+                match local.peer.exactly_matches(candidate) {
+                    Ok(false) => {}
+                    Ok(true) => matched.push(position),
+                    Err(error) => {
+                        // A failed identity query cannot prove this peer is
+                        // unrelated, so terminal ownership is the only safe
+                        // result for that slot.
+                        local.next_phase = None;
+                        let error = map_verification_error(error);
+                        failure = Some(
+                            if failure == Some(ExpectedPeerRegistryError::Internal)
+                                || error == ExpectedPeerRegistryError::Internal
+                            {
+                                ExpectedPeerRegistryError::Internal
+                            } else {
+                                error
+                            },
+                        );
+                    }
+                }
+            }
+
+            for position in &matched {
+                peers[*position].next_phase = None;
+            }
+            if matched.len() > 1 {
+                failure = Some(ExpectedPeerRegistryError::Internal);
+            } else if matched.is_empty() && failure.is_none() {
+                failure = Some(ExpectedPeerRegistryError::Denied);
+            }
+
+            failure.map_or(Ok(()), Err)
+        }));
+        let result = match rejection {
+            Ok(result) => result,
+            Err(payload) => {
+                // A panic leaves the remaining comparisons indeterminate.
+                // Preserve the existing guard contract by retiring every
+                // extracted owner before propagating the panic.
+                retire_all(&mut peers);
+                let _ = self.settle_scan(peers);
+                std::panic::resume_unwind(payload);
+            }
+        };
+        self.settle_scan(peers).and(result)
+    }
+
     #[expect(
         dead_code,
         reason = "dormant role-aware manager integration follows this foundation"
@@ -1345,6 +1415,237 @@ mod tests {
         );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(lease);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_retires_one_exact_running_peer()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let lease = admission
+            .register_suspended(peer(12, 12, ExpectedHelperRole::Approval, &trace, &drops)?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(12, true, &trace)),
+            Ok(())
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_no_match_preserves_unrelated_peer()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let lease = admission
+            .register_suspended(peer(
+                13,
+                13,
+                ExpectedHelperRole::SecretInput,
+                &trace,
+                &drops,
+            )?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(14, true, &trace)),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            admission.consume_manager(key(13)?, &candidate(13, true, &trace)),
+            Ok(ExpectedHelperRole::SecretInput)
+        );
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_revalidation_failure_still_retires_exact_peer()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let lease = admission
+            .register_suspended(peer(15, 15, ExpectedHelperRole::Approval, &trace, &drops)?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(15, false, &trace)),
+            Err(ExpectedPeerRegistryError::Denied)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_retires_ambiguous_matches()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let first = admission
+            .register_suspended(peer(16, 18, ExpectedHelperRole::Approval, &trace, &drops)?)?
+            .revalidate_and_resume_once()?;
+        let second = admission
+            .register_suspended(peer(
+                17,
+                18,
+                ExpectedHelperRole::SecretInput,
+                &trace,
+                &drops,
+            )?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(18, true, &trace)),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        drop(first);
+        drop(second);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_retires_query_failure_and_preserves_nonmatch()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut failing = peer(19, 19, ExpectedHelperRole::Approval, &trace, &drops)?;
+        failing.fail = Some(Event::Match);
+        let failing_lease = admission
+            .register_suspended(failing)?
+            .revalidate_and_resume_once()?;
+        let unrelated_lease = admission
+            .register_suspended(peer(
+                20,
+                20,
+                ExpectedHelperRole::SecretInput,
+                &trace,
+                &drops,
+            )?)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(19, true, &trace)),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            admission.consume_manager(key(20)?, &candidate(20, true, &trace)),
+            Ok(ExpectedHelperRole::SecretInput)
+        );
+        drop(failing_lease);
+        drop(unrelated_lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_cleanup_error_dominates_success()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut failing = peer(21, 21, ExpectedHelperRole::Approval, &trace, &drops)?;
+        failing.fail = Some(Event::Cancel);
+        let lease = admission
+            .register_suspended(failing)?
+            .revalidate_and_resume_once()?;
+
+        assert_eq!(
+            admission.reject_manager_candidate(&candidate(21, true, &trace)),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_panic_retires_indeterminate_peers()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut panicking = peer(22, 22, ExpectedHelperRole::Approval, &trace, &drops)?;
+        panicking.panic_on_match = true;
+        let panicking_lease = admission
+            .register_suspended(panicking)?
+            .revalidate_and_resume_once()?;
+        let other_lease = admission
+            .register_suspended(peer(
+                23,
+                23,
+                ExpectedHelperRole::SecretInput,
+                &trace,
+                &drops,
+            )?)?
+            .revalidate_and_resume_once()?;
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = admission.reject_manager_candidate(&candidate(22, true, &trace));
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(admission.stop(), Ok(()));
+        drop(panicking_lease);
+        drop(other_lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn manager_candidate_rejection_registration_race_retires_every_owner()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let pause = Arc::new(Barrier::new(2));
+        let mut slow = peer(24, 24, ExpectedHelperRole::Approval, &trace, &drops)?;
+        slow.match_pause = Some(Arc::clone(&pause));
+        let lease = admission
+            .register_suspended(slow)?
+            .revalidate_and_resume_once()?;
+        let worker_admission = admission.clone();
+        let worker_trace = trace.clone();
+        let worker = thread::spawn(move || {
+            worker_admission.reject_manager_candidate(&candidate(24, true, &worker_trace))
+        });
+
+        pause.wait();
+        let raced = admission.register_suspended(peer(
+            25,
+            25,
+            ExpectedHelperRole::SecretInput,
+            &trace,
+            &drops,
+        )?)?;
+        pause.wait();
+        assert_eq!(
+            worker
+                .join()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        drop(raced);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
         Ok(())
     }
 

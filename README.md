@@ -1,6 +1,6 @@
 # Your Wallet
 
-## Windows Phase 1 checkpoint (2026-08-29)
+## Windows Phase 1 checkpoint (2026-08-30)
 
 **Release status remains STOP-SHIP.** The debug-only Windows feasibility path
 now creates a real suspended, inert target and reports it with the exact
@@ -21,11 +21,36 @@ fixed-capacity expected-peer registry provide suspended registration, independen
 non-consuming callback observation, exact-once manager consumption, ordered
 resume/publication, and bounded cancel/reap foundations.
 
+The immutable version-1 `YWKASV01` service wire remains unchanged. A separate,
+non-default `debug-feasibility-v2` module defines the debug-only `YWKASV02`
+generation with six exact 20/52/72/72/68/68-byte request/response frames for
+open-epoch, desktop command, and helper-ready exchanges. Its closed desktop
+commands are status, Approval RPC probe, and Secret Input RPC probe; completed
+results bind only to the matching probe, while `Unavailable` is the fail-closed
+result for every command. No frame carries caller role, PID, or image authority.
+Epoch slots permanently bind V1 or V2, and a wrong-version use consumes the
+epoch before returning denial.
+
+The feature-gated pure V2 desktop dispatcher now returns open-epoch and status
+responses immediately, while Approval/Secret Input probes become move-only
+launch actions that own the freshly authenticated peer and exact consumed
+request. A desktop `HelperReady` is rejected as authentication failure before
+epoch consumption. This pure boundary is not connected to `ServerContext`, the
+actual RPC manager, launch waiting, or helper I/O.
+
+The helper bootstrap now privately retains the validated hello's
+epoch/request/role correlation key and absolute deadline in zeroizing storage.
+Its distinct 72-byte `YWKHRC01` confirmation is correlation evidence only, is
+not the adoption ACK, and cannot replace expected-peer role authority. A dormant
+manager rejection path also retires exact or indeterminate peers after a
+malformed helper candidate rather than leaving related launch authority live.
+
 This is fixture evidence, not the Phase 1 exit gate. The target is the debug-only
 helper's untrusted `current_exe`, not a parent-pinned signed target; system-wide
 sole ownership of the Job handle is not proven; and the results are current-host
-only. There is no production helper RPC/lifecycle/wire caller or signed helper
-`ncalrpc` E2E, and the installed restricted-service, cross-session, elevated
+only. The pure V2 dispatcher has no runtime manager reachability, and there is no
+helper send/launch integration or signed-helper `ncalrpc` E2E. The installed
+restricted-service, cross-session, elevated
 service, and supported-kernel matrices remain open. Both compiled policies stay
 `None`.
 

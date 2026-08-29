@@ -15,6 +15,13 @@
 
 use core::fmt;
 
+/// Debug-only version-2 feasibility wire contract.
+///
+/// This module is excluded from default builds and does not change the
+/// immutable version-1 public contract.
+#[cfg(feature = "debug-feasibility-v2")]
+pub mod debug_v2;
+
 /// Fixed protocol magic for every version-1 frame.
 pub const PROTOCOL_MAGIC: [u8; 8] = *b"YWKASV01";
 
@@ -340,7 +347,7 @@ pub enum WireError {
     InvalidMagic,
     /// The encoded protocol version is not supported.
     UnsupportedVersion,
-    /// A frame, command, or status kind is not in the closed version-1 set.
+    /// A frame, command, status, or result kind is outside the decoded generation's closed set.
     UnknownKind,
     /// A reserved field was not exactly zero.
     NonZeroReserved,

@@ -9,14 +9,28 @@ composition has been implemented or proven. Release status remains `STOP-SHIP`.
 The accepted Design Brief is
 [`docs/designs/windows-key-agent-service.md`](../designs/windows-key-agent-service.md).
 
-As of 2026-08-29, debug-only current-host fixtures cover a real suspended inert
+As of 2026-08-30, debug-only current-host fixtures cover a real suspended inert
 target, exact two-member Job topology and forced-parent-death stages, authenticated
 desktop `PROCESS_DUP_HANDLE` denial, and a dormant role-aware expected-peer
-registry foundation. These results do not pass the Phase 1 exit gate: target
-image pinning, system-wide sole Job-handle proof, production RPC/lifecycle/wire
-integration, signed-helper `ncalrpc`, installed SCM/cross-session/elevated-
-service evidence, and the supported-kernel matrix remain unresolved. Both
-compiled policies remain `None`.
+registry foundation. The original `YWKASV01` service wire remains immutable;
+the separate non-default debug-only `YWKASV02` foundation adds exact
+20/52/72/72/68/68-byte open-epoch, desktop-command, and helper-ready frames,
+closed Status/Approval-probe/Secret-Input-probe commands and matching results,
+and a fail-closed `Unavailable` result. It carries no role, PID, or image
+authority. Epochs bind permanently to V1 or V2 and a wrong-version attempt is
+terminal.
+
+The helper-bootstrap foundation also defines a distinct 72-byte `YWKHRC01`
+correlation confirmation and privately retains its validated hello key and
+deadline in zeroizing state; this is neither the adoption ACK nor helper-role
+authority. A malformed manager candidate is rejected fail closed by retiring
+exact or indeterminate expected peers. A pure debug V2 desktop dispatcher returns open/
+status responses or move-only authenticated launch actions, but it is not
+connected to the real RPC manager, launch wait, or helper I/O. These results do
+not pass the Phase 1 exit gate: target image pinning, system-wide sole Job-handle
+proof, signed-helper `ncalrpc`, installed SCM/cross-session/elevated-service
+evidence, and the supported-kernel matrix remain unresolved. Both compiled
+policies remain `None`.
 
 ## Context
 
@@ -212,14 +226,17 @@ evidence set passes.
 
 ## Release blockers
 
-Implementation status on 2026-08-29: the repository contains only no-secret
-Phase 1 feasibility fixtures—an inert SCM host, bounded Status/Unavailable wire,
-a checked-in x64 MIDL/SEH boundary, an authenticated local-RPC server, and a
-dormant compile-only one-shot helper-creation seam. That
-RPC surface exists only in the exact Windows debug build with the explicit
-feature; default, production, non-Windows, and release paths remain silent and
-fail closed as unavailable. There is no production RPC client and no proof of
-an enrolled Broker, Broker role or image, helper role, or service mutual
+Implementation status on 2026-08-30: the repository contains only no-secret
+Phase 1 feasibility fixtures—an inert SCM host, immutable V1 Status/Unavailable
+wire/server, debug-only V2 wire and pure desktop dispatch, a checked-in x64
+MIDL/SEH boundary, and a dormant compile-only one-shot helper-creation seam. The
+V2 dispatcher returns immediate open/status results or an owned authenticated
+Approval/Secret Input launch action and rejects desktop HelperReady before epoch
+consumption, but no `ServerContext`/RPC-manager/launch-wait/helper-send path calls
+it. The live RPC surface exists only in the exact Windows debug build with the
+explicit feature; default, production, non-Windows, and release paths remain
+silent and fail closed as unavailable. There is no production RPC client and no
+proof of an enrolled Broker, Broker role or image, helper role, or service mutual
 identity. The admission predicate proves at most a local, medium-integrity,
 interactive, non-AppContainer caller. It requires the SDK-defined `CallStatus`
 cancellation/disconnection bit field to be zero (active), rejecting values 1,

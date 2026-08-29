@@ -29,6 +29,27 @@ one-shot process-correlated epochs, SCM rundown, and `Unavailable` as its only
 application response. Its admission proves only a local medium-integrity,
 interactive, non-AppContainer desktop caller, not an enrolled Broker or role.
 
+That `YWKASV01` version-1 public contract remains immutable. A separate
+non-default `debug-feasibility-v2` module defines the debug-only `YWKASV02`
+generation as six fixed frames: 20-byte open-epoch request, 52-byte open-epoch
+ACK, 72-byte desktop-command request, 72-byte desktop-command response, 68-byte
+helper-ready request, and 68-byte helper-ready ACK. Its closed desktop commands
+are `Status`, `LaunchApprovalRpcProbe`, and `LaunchSecretInputRpcProbe`; results
+are fail-closed `Unavailable` or the matching Approval/Secret Input probe-
+completed value. No V2 frame carries caller role, PID, image identity, or other
+peer authority. Each epoch slot permanently records V1 or V2, uses a distinct
+nonce-derivation domain, and is removed before a wrong-version attempt is denied,
+so cross-version use is terminal.
+
+The feature-gated pure V2 desktop dispatcher authenticates before decode.
+Open-epoch and Status/`Unavailable` return as immediate frames. Approval and
+Secret Input probe requests consume the bound epoch and return a move-only launch
+action owning the freshly authenticated peer plus exact request; a desktop
+`HelperReady` is authentication-denied before epoch lookup or consumption. V1
+delegates through a separate already-authenticated method with unchanged wire
+behavior. The V2 outcomes are not connected to `ServerContext`, the real RPC
+manager, launch waiting, or helper I/O.
+
 That desktop admission now rejects `SeDebugPrivilege` by assignment state, not
 only by enabled state: absent is the sole accepted state, while assigned-but-
 disabled and enabled are both denied. After the one authenticated desktop
@@ -48,8 +69,10 @@ boundary across that resume so callbacks cannot observe pre-publication state,
 allows non-consuming callback observation, and lets the manager consume the
 matching epoch/request exactly once. Duplicate, replay, cross-role, race, stop,
 and cancellation paths retire and bounded-reap the exact process and Job. This
-is a foundation only: no production RPC dispatch, helper lifecycle, or wire
-caller reaches it.
+foundation also has a dormant malformed-candidate manager rejection: exact and
+identity-indeterminate peers are retired, while only definitely unrelated peers
+remain live. This is a foundation only: no runtime manager calls the pure V2
+dispatcher, and no helper send/launch lifecycle or wire caller reaches it.
 
 Compile-only launch inputs now retain and revalidate an exact restricted service
 token for service-owned process/thread descriptors, an unnamed non-nested
@@ -89,9 +112,12 @@ does receive and continue an admitted event sequence.
 
 The helper-bootstrap crate now has two deliberately different surfaces. Its
 platform-neutral gate-byte specification and secret-free canonical 100-byte
-hello/72-byte ACK codecs are available to the optional, default-feature-disabled
-`platform-windows` launch-feasibility dependency. They prove framing and
-correlation only, not authentication or authority. Child register capture,
+hello/72-byte adoption-ACK codecs plus the separate 72-byte `YWKHRC01` helper-
+RPC confirmation codec are available to the optional, default-feature-disabled
+`platform-windows` launch-feasibility dependency. All three frames prove framing
+and correlation only, not authentication or authority; the confirmation is not
+an adoption ACK and its carried role never replaces expected-peer authority.
+Child register capture,
 adoption, and completion still compile only for Windows x86_64 with the explicit
 `child-capture-feasibility-test-hook` feature and `debug_assertions`. No UI,
 service executable, RPC operation, default build, or release path reaches that
@@ -124,6 +150,14 @@ enters the adoption-complete gate. Every capture,
 adoption, read, framing, role, identity, deadline, peer, write, or second-gate
 failure calls `std::process::abort()`; no recoverable API can expose a partial
 state to UI code.
+
+Before the adoption ACK write, the child derives the distinct `YWKHRC01` frame
+from the validated hello's epoch nonce, request ID, and fixed role, and retains
+that encoded key together with the absolute deadline only inside private
+zeroizing continuation state. The retained value is non-cloneable, has no raw
+accessor, and is intended for a later helper-ready acknowledgement transition.
+No implemented runtime path sends that confirmation or completes the helper RPC
+and launch-coordinator round trip yet.
 
 The dormant parent preflights the pinned helper with a bounded read-only,
 reparse-point reopen and file-identity checks before and after reading. It

@@ -101,6 +101,13 @@ The following are existing facts, not new service claims:
   boundary, and an opt-in authenticated local-RPC server. The RPC surface is
   compiled only by the explicit Windows debug feature. Default, production,
   non-Windows, and release paths remain silent and fail closed as unavailable.
+- The four-frame `YWKASV01` V1 public contract remains immutable. A separate
+  non-default `debug-feasibility-v2` module adds the debug-only `YWKASV02`
+  foundation with exact 20/52-byte open-epoch, 72/72-byte desktop-command, and
+  68/68-byte helper-ready request/response frames. Desktop commands are closed
+  to Status, Approval RPC probe, and Secret Input RPC probe; results are closed
+  to fail-closed `Unavailable` plus the two matching probe-completed values. No
+  V2 frame carries caller role, PID, or image authority.
 - The debug caller predicate proves only a local, medium-integrity, interactive,
   non-AppContainer caller. It requires the SDK-defined `CallStatus`
   cancellation/disconnection bit field to be zero and rejects 1, 2, and 3. It
@@ -387,14 +394,33 @@ The following are existing facts, not new service claims:
   state before callbacks can proceed, keeps callbacks non-consuming, gives the
   key-bearing manager exact-once consumption, and bounded-reaps on cancel. It
   remains dormant with no production RPC, lifecycle, or wire caller.
+- Epoch slots share fixed capacity across V1 and V2 but permanently bind the
+  issuing generation and derive under distinct domains. A wrong-version attempt
+  removes the nonce before denial and is terminal. A dormant malformed-candidate
+  manager rejection retires exact and identity-indeterminate expected peers and
+  preserves only definite non-matches.
+- The pure V2 desktop dispatcher authenticates before decode, returns immediate
+  open-epoch and Status/`Unavailable` responses, and returns either probe as a
+  move-only launch action owning the freshly authenticated peer plus exact
+  request. Desktop `HelperReady` is authentication-denied before epoch
+  consumption. V1 dispatch behavior is unchanged. No `ServerContext`, actual
+  RPC manager, launch wait, or helper send consumes a V2 outcome.
+- The helper bootstrap now retains the validated 100-byte hello's
+  epoch/request/role key and absolute deadline in private zeroizing continuation
+  state. Its separate 72-byte `YWKHRC01` confirmation is correlation only for a
+  future helper-ready acknowledgement, does not reuse the 72-byte adoption ACK,
+  and never replaces expected-peer role authority. Runtime helper RPC send and
+  launch-coordinator integration remain absent.
 - These are build/scaffold and fixture/proxy checks, not an actual signed-product
   E2E or the Phase 1 exit gate. The real product signer, immutable installation,
   generated compiled policy, parent-pinned target image, system-wide sole Job-
   handle proof, and supported-kernel alias/access/parent-death/cancellation
   matrices remain external **STOP-SHIP** work. Signed-helper `ncalrpc` E2E,
   installed SCM identity, cross-session LPAC, and elevated-service proof are
-  also absent. The helper still exits 78 in default and release builds, there is
-  no production caller, and both compiled policies remain `None`.
+  also absent. Pure V2 dispatch remains runtime-unreachable and the helper send/
+  launch round trip remains dormant; the helper still exits 78 in default and
+  release builds, there is no production caller, and both compiled policies
+  remain `None`.
 - When a transport deadline observes pending overlapped pipe I/O, `CancelIoEx`
   is only a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation
@@ -1017,10 +1043,35 @@ from the service-owned expected peer. The fixed-capacity registry supports
 suspended registration, exact role/process revalidation, sole resume with
 running-state publication before callback progress, non-consuming callback
 observation, exact-once key-bearing manager consumption, replay/race rejection,
-and bounded terminal cancel/reap. No production RPC dispatch, lifecycle, or
-helper wire reaches it. Signed-helper `ncalrpc` E2E, SCM/cross-session/elevated-
-service proof, and production callers remain **STOP-SHIP**. Neither compiled
-policy may change from `None`, and none of this advances the Phase 1 exit gate.
+and bounded terminal cancel/reap. A malformed-candidate rejection now retires
+exact and identity-indeterminate peers even when no trustworthy manager key can
+be decoded, preserving only definitely unrelated entries.
+
+The immutable `YWKASV01` V1 codec remains the only live `ServerContext` manager
+generation. The non-default debug-only `YWKASV02` V2 codec defines exact
+20/52/72/72/68/68-byte open-epoch, desktop-command, and helper-ready frames. Its
+closed desktop command/result matrix permits Status, Approval/Secret Input RPC
+probes, matching probe-completed results, and fail-closed `Unavailable`; the
+wire has no role, PID, or image authority. Epoch slots permanently bind V1 or V2
+and a wrong-version use consumes the nonce before denial.
+
+A pure V2 desktop dispatch boundary now authenticates before decode, returns
+open-epoch and Status/`Unavailable` immediately, and transfers either probe into
+a move-only action that owns the freshly authenticated peer and exact consumed
+request. Desktop `HelperReady` is authentication-denied before epoch lookup. V1
+delegates to a separate already-authenticated path without behavior change. No
+real RPC manager, `ServerContext`, launch waiter, or helper sender calls this V2
+boundary.
+
+The helper bootstrap retains the validated hello correlation key and absolute
+deadline privately in zeroizing state and defines a separate 72-byte `YWKHRC01`
+confirmation for correlation after a future helper-ready ACK. It is not the
+adoption ACK and is not role authority. No runtime V2 manager dispatch,
+helper-ready/confirmation send, launch-coordinator lifecycle, or helper wire
+reaches these foundations. Signed-helper `ncalrpc` E2E, SCM/cross-session/
+elevated-service proof, and production callers remain **STOP-SHIP**. Neither
+compiled policy may change from `None`, and none of this advances the Phase 1
+exit gate.
 
 ### Phase 2 — Installer, service host, storage, and network boundary
 
@@ -1121,6 +1172,19 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-30 - Added the Phase 1A debug-only protocol foundation without
+  changing immutable `YWKASV01` V1: non-default `YWKASV02` V2 now has six exact
+  20/52/72/72/68/68-byte open-epoch, desktop-command, and helper-ready frames,
+  closed Status/Approval-probe/Secret-Input-probe commands and results, and
+  fail-closed `Unavailable`. Bound epochs now permanently record V1 or V2 and
+  make wrong-version use terminal. Added the distinct 72-byte `YWKHRC01`
+  correlation-only helper confirmation, private zeroizing retention of the
+  validated hello key/deadline, and malformed-manager-candidate retirement in
+  the expected-peer foundation. Pure V2 desktop dispatch now returns immediate
+  results or authenticated launch actions, but actual RPC-manager reachability,
+  helper RPC send/launch, signed-helper `ncalrpc`, installed SCM/cross-session/
+  elevated evidence, support matrix, and release authority remain absent; Phase
+  1 is not passed and both compiled policies remain **STOP-SHIP**/`None`.
 - 2026-08-29 - Extended the Phase 1 debug-only evidence with an actual suspended
   inert target, exact 96-byte `TARGET_FROZEN` plus 56/96-byte parent-death
   command/report frames, an exact two-member kill-on-close Job, third-member

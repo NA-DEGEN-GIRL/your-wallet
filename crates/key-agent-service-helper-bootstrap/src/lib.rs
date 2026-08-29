@@ -17,9 +17,10 @@ pub use self::gate_spec::{
 };
 
 pub use self::wire::{
-    AdoptionWireError, HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HelperAdoptionAck,
-    HelperBootstrapHello, HelperBootstrapRole, decode_adoption_ack, decode_bootstrap_hello,
-    encode_adoption_ack, encode_bootstrap_hello,
+    AdoptionWireError, HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES,
+    HELPER_RPC_CONFIRMATION_BYTES, HelperAdoptionAck, HelperBootstrapHello, HelperBootstrapRole,
+    HelperRpcConfirmation, decode_adoption_ack, decode_bootstrap_hello, decode_rpc_confirmation,
+    encode_adoption_ack, encode_bootstrap_hello, encode_rpc_confirmation,
 };
 
 #[cfg(all(

@@ -14,6 +14,7 @@ child-capture-feasibility-test-hook = []
 
 [dependencies]
 key-agent-service-wire = { path = "../key-agent-service-wire" }
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

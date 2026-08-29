@@ -15,14 +15,15 @@ use windows::Win32::System::Console::{
 use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
+use zeroize::Zeroizing;
 
 use crate::gate_spec::{
     ADOPTION_COMPLETE_R10_MARKER, ADOPTION_COMPLETE_R11_MARKER, REQUEST_INPUT_MARKER,
     RESPONSE_OUTPUT_MARKER,
 };
 use crate::wire::{
-    HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HelperAdoptionAck,
-    HelperBootstrapHello, HelperBootstrapRole,
+    HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HELPER_RPC_CONFIRMATION_BYTES,
+    HelperAdoptionAck, HelperBootstrapHello, HelperBootstrapRole, HelperRpcConfirmation,
 };
 
 const REQUEST_INPUT_DUPLICATE_ACCESS: u32 = 0x0010_0001;
@@ -127,6 +128,7 @@ pub(super) struct BootstrappedInjectedChannels {
     _request_input: FreshHandle,
     _response_output: FreshHandle,
     _source_access_and_direction: UnverifiedSourceAccessAndDirection,
+    _helper_rpc_correlation: RetainedHelperRpcCorrelation,
 }
 
 impl fmt::Debug for BootstrappedInjectedChannels {
@@ -142,7 +144,7 @@ pub(super) fn complete_injected_channel_bootstrap(
     let request_input = channels.request_input.word();
     let response_output = channels.response_output.word();
     let mut operations = WindowsBootstrapOperations;
-    complete_bootstrap_with_operations(
+    let helper_rpc_correlation = complete_bootstrap_with_operations(
         &mut operations,
         request_input,
         response_output,
@@ -153,7 +155,62 @@ pub(super) fn complete_injected_channel_bootstrap(
         _request_input: channels.request_input,
         _response_output: channels.response_output,
         _source_access_and_direction: channels.source_access_and_direction,
+        _helper_rpc_correlation: helper_rpc_correlation,
     })
+}
+
+/// Opaque, zeroizing continuation state for the later helper RPC round trip.
+///
+/// The encoded correlation key is retained instead of reconstructing it from
+/// ambient process state. The absolute deadline is likewise kept private: it
+/// is neither cloneable nor available through a raw accessor. A later reviewed
+/// integration must consume this state only after the authenticated
+/// `HelperReady` acknowledgement and must still treat expected-peer registry
+/// classification as the sole server-side role authority.
+struct RetainedHelperRpcCorrelation {
+    confirmation_frame: Zeroizing<[u8; HELPER_RPC_CONFIRMATION_BYTES]>,
+    deadline_tick_count_ms: Zeroizing<u64>,
+}
+
+impl RetainedHelperRpcCorrelation {
+    fn from_hello(hello: &HelperBootstrapHello) -> Result<Self, ()> {
+        let retained = Self {
+            confirmation_frame: Zeroizing::new(
+                HelperRpcConfirmation::new(hello.epoch_nonce(), hello.request_id(), hello.role())
+                    .encode(),
+            ),
+            deadline_tick_count_ms: Zeroizing::new(hello.deadline_tick_count_ms().get()),
+        };
+        if retained.exactly_matches_hello(hello) {
+            Ok(retained)
+        } else {
+            Err(())
+        }
+    }
+
+    fn confirmation(&self) -> Result<HelperRpcConfirmation, ()> {
+        HelperRpcConfirmation::decode(self.confirmation_frame.as_slice()).map_err(|_| ())
+    }
+
+    fn exactly_matches_hello(&self, hello: &HelperBootstrapHello) -> bool {
+        self.confirmation().is_ok_and(|confirmation| {
+            confirmation
+                .ensure_correlates_with(hello.epoch_nonce(), hello.request_id(), hello.role())
+                .is_ok()
+                && *self.deadline_tick_count_ms == hello.deadline_tick_count_ms().get()
+        })
+    }
+
+    #[cfg(test)]
+    fn is_live_at_for_test(&self, tick_count_ms: u64) -> bool {
+        tick_count_ms < *self.deadline_tick_count_ms
+    }
+}
+
+impl fmt::Debug for RetainedHelperRpcCorrelation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RetainedHelperRpcCorrelation([REDACTED])")
+    }
 }
 
 /// Deliberate kernel-evidence blocker retained in the adopted type.
@@ -327,10 +384,10 @@ fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
     request_input: HandleWord,
     response_output: HandleWord,
     expected_role: HelperBootstrapRole,
-) -> Result<(), ()> {
+) -> Result<RetainedHelperRpcCorrelation, ()> {
     let hello_bytes =
         read_exact_request::<HELPER_BOOTSTRAP_HELLO_BYTES, _>(operations, request_input)?;
-    let hello = HelperBootstrapHello::decode(&hello_bytes).map_err(|_| ())?;
+    let hello = HelperBootstrapHello::decode(hello_bytes.as_slice()).map_err(|_| ())?;
     if hello.role() != expected_role {
         return Err(());
     }
@@ -358,8 +415,10 @@ fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
         return Err(());
     }
 
-    let acknowledgement =
-        HelperAdoptionAck::new(hello.epoch_nonce(), hello.request_id(), hello.role()).encode();
+    let helper_rpc_correlation = RetainedHelperRpcCorrelation::from_hello(&hello)?;
+    let acknowledgement = Zeroizing::new(
+        HelperAdoptionAck::new(hello.epoch_nonce(), hello.request_id(), hello.role()).encode(),
+    );
     write_exact_response(operations, response_output, &acknowledgement)?;
     // The exact synchronous write completes before this transition. Do not use
     // `FlushFileBuffers`: its documented `GENERIC_WRITE` requirement is wider
@@ -367,14 +426,14 @@ fn complete_bootstrap_with_operations<Operations: BootstrapOperations>(
     // Gate two independently stops the child while the parent reads and binds
     // the complete ACK, before installing the explicit suspend count.
     operations.enter_adoption_complete_gate();
-    Ok(())
+    Ok(helper_rpc_correlation)
 }
 
 fn read_exact_request<const N: usize, Operations: BootstrapOperations>(
     operations: &mut Operations,
     handle: HandleWord,
-) -> Result<[u8; N], ()> {
-    let mut bytes = [0_u8; N];
+) -> Result<Zeroizing<[u8; N]>, ()> {
+    let mut bytes = Zeroizing::new([0_u8; N]);
     let mut offset = 0;
     while offset < bytes.len() {
         let remaining = bytes.len() - offset;
@@ -603,8 +662,9 @@ mod tests {
     use super::{
         BootstrapOperations, DUPLICATE_OPTIONS_NONE, EXPECTED_FILE_TYPE, EXPECTED_HANDLE_FLAGS,
         FreshHandleOwner, HandleOperations, HandleWord, MAX_BOOTSTRAP_WINDOW_MILLISECONDS,
-        REQUEST_INPUT_DUPLICATE_ACCESS, RESPONSE_OUTPUT_DUPLICATE_ACCESS, StandardStream,
-        adopt_candidate_words, complete_bootstrap_with_operations, filetime_word,
+        REQUEST_INPUT_DUPLICATE_ACCESS, RESPONSE_OUTPUT_DUPLICATE_ACCESS,
+        RetainedHelperRpcCorrelation, StandardStream, adopt_candidate_words,
+        complete_bootstrap_with_operations, filetime_word,
     };
     use crate::wire::{
         HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES, HelperAdoptionAck,
@@ -1229,13 +1289,28 @@ mod tests {
             HandleWord(FRESH_RESPONSE),
             expected_role,
         )
+        .map(|_| ())
+    }
+
+    fn complete_with_retained_correlation(
+        operations: &mut FakeBootstrapOperations,
+        expected_role: HelperBootstrapRole,
+    ) -> Result<RetainedHelperRpcCorrelation, ()> {
+        complete_bootstrap_with_operations(
+            operations,
+            HandleWord(FRESH_REQUEST),
+            HandleWord(FRESH_RESPONSE),
+            expected_role,
+        )
     }
 
     #[test]
     fn successful_bootstrap_has_exact_order_ack_and_fake_gate() -> Result<(), WireError> {
         let hello = sample_bootstrap_hello()?;
         let mut operations = FakeBootstrapOperations::scenario()?;
-        assert_eq!(complete_with_fake(&mut operations), Ok(()));
+        let retained =
+            complete_with_retained_correlation(&mut operations, HelperBootstrapRole::Approval)
+                .map_err(|()| WireError::InvalidValue)?;
         assert_eq!(
             operations.events,
             [
@@ -1262,6 +1337,23 @@ mod tests {
             hello.request_id(),
             hello.role(),
         )?;
+
+        let confirmation = retained
+            .confirmation()
+            .map_err(|()| WireError::InvalidValue)?;
+        confirmation.ensure_correlates_with(
+            hello.epoch_nonce(),
+            hello.request_id(),
+            hello.role(),
+        )?;
+        assert!(retained.is_live_at_for_test(BOOTSTRAP_NOW_MILLISECONDS));
+        assert!(retained.is_live_at_for_test(BOOTSTRAP_DEADLINE_MILLISECONDS - 1));
+        assert!(!retained.is_live_at_for_test(BOOTSTRAP_DEADLINE_MILLISECONDS));
+        assert!(!retained.is_live_at_for_test(BOOTSTRAP_DEADLINE_MILLISECONDS + 1));
+        assert_eq!(
+            format!("{retained:?}"),
+            "RetainedHelperRpcCorrelation([REDACTED])"
+        );
         Ok(())
     }
 
@@ -1355,12 +1447,18 @@ mod tests {
 
         let mut matched =
             FakeBootstrapOperations::scenario_for_role(HelperBootstrapRole::SecretInput)?;
-        assert_eq!(
-            complete_with_expected_role(&mut matched, HelperBootstrapRole::SecretInput),
-            Ok(())
-        );
+        let retained =
+            complete_with_retained_correlation(&mut matched, HelperBootstrapRole::SecretInput)
+                .map_err(|()| WireError::InvalidValue)?;
         assert_eq!(
             HelperAdoptionAck::decode(&matched.written_response)?.role(),
+            HelperBootstrapRole::SecretInput
+        );
+        assert_eq!(
+            retained
+                .confirmation()
+                .map_err(|()| WireError::InvalidValue)?
+                .role(),
             HelperBootstrapRole::SecretInput
         );
         assert!(matched.has_entered_gate());

@@ -78,6 +78,42 @@ server impersonates the retained authenticated desktop token and requires exact
 `OpenProcess(PROCESS_DUP_HANDLE, FALSE, suspended_child_pid)`, with token
 bookends and exact-once revert.
 
+The default version-1 service codec is immutable: `YWKASV01` continues to admit
+only its exact 20-byte open-epoch request, 52-byte open-epoch ACK, 72-byte status
+request, and 72-byte `Unavailable` response. A separate non-default
+`debug-feasibility-v2` module defines `YWKASV02` version 2 with exactly six
+non-negotiated frame kinds:
+
+- 20-byte open-epoch request;
+- 52-byte open-epoch acknowledgement;
+- 72-byte desktop-command request;
+- 72-byte desktop-command response;
+- 68-byte helper-ready request;
+- 68-byte helper-ready acknowledgement.
+
+The V2 desktop command set is closed to `Status`,
+`LaunchApprovalRpcProbe`, and `LaunchSecretInputRpcProbe`. Its result set is
+closed to `Unavailable`, `ApprovalRpcProbeCompleted`, and
+`SecretInputRpcProbeCompleted`. `Unavailable` is a valid fail-closed result for
+every command; each completed result correlates only with its matching launch
+probe, and `Status` has no completed-success result. Every bound frame requires a
+nonzero epoch nonce and request ID. No V2 field carries role, PID, image identity,
+or other peer authority; those facts remain transport/expected-peer state.
+
+The fixed-capacity epoch table shares one capacity across both generations but
+permanently binds each issued nonce to V1 or V2 with a distinct derivation domain.
+It removes a matching nonce before checking the presented version, so a wrong-
+version attempt is terminal and cannot be retried through the issuing version.
+
+The feature-gated pure V2 desktop dispatcher authenticates exactly once before
+decoding. Open-epoch and Status produce immediate correlated responses; either
+probe launch consumes the V2 epoch and returns a move-only action owning the
+freshly authenticated peer and exact request. A desktop `HelperReady` is rejected
+as authentication failure before the epoch is looked up or consumed. V1 delegates
+through an explicit already-authenticated V1 path with unchanged behavior. No
+`ServerContext`, real RPC-manager, launch-wait, or helper-send path consumes a V2
+dispatch outcome yet.
+
 The helper transport candidate proves only local RPC plus a low-integrity,
 restricted, limited-elevation AppContainer shape without UI access, interactive
 SID, or `SeDebugPrivilege`. The fixed-capacity expected-peer registry separately
@@ -89,12 +125,28 @@ consume the expected peer exactly once. Duplicate identity/key races, replay,
 wrong role/phase, stop, and cancellation fail closed; cancellation performs
 bounded process reap and exact-zero Job cleanup.
 
-No production RPC dispatch, lifecycle, or helper wire calls this role-aware
-foundation. Signed-helper `ncalrpc` E2E, endpoint and service identity, installed
-SCM/cross-session/elevated-service evidence, parent-pinned target image,
-system-wide Job-handle exclusion, and the supported-kernel matrix remain
-**STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
-`None`.
+When a malformed helper manager frame yields no trustworthy registry key, a
+dormant rejection transition scans the retained candidates outside the registry
+mutex. It retires exact matches and peers whose relationship cannot be proved,
+preserves only definite non-matches, and treats ambiguity, revalidation failure,
+query failure, panic, and a conflicting registration race as fail-closed terminal
+outcomes for affected owners.
+
+The helper-adoption ACK remains the exact 72-byte `YWKHBA01` frame. A separate
+72-byte `YWKHRC01` helper-RPC confirmation carries the bootstrap hello's epoch
+nonce, request ID, and fixed role only as launch-side correlation after a future
+helper-ready acknowledgement. It never authenticates the helper, grants role
+authority, or reuses the adoption ACK. The child bootstrap now retains that
+encoded correlation key and the validated absolute hello deadline privately in
+zeroizing, non-cloneable state with no raw accessor. The actual helper-ready RPC
+send, confirmation send, and launch-coordinator round trip are not wired.
+
+No production/runtime RPC manager, lifecycle, or helper send/launch path calls
+this role-aware foundation. Signed-helper `ncalrpc` E2E, endpoint and service
+identity, installed SCM/cross-session/elevated-service evidence, parent-pinned
+target image, system-wide Job-handle exclusion, and the supported-kernel matrix
+remain **STOP-SHIP**. `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY`
+remain `None`.
 
 ### Debug-only subprocess contract
 

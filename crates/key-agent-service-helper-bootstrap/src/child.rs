@@ -32,8 +32,9 @@ impl fmt::Debug for AdoptedInjectedChannels {
 /// adoption-complete debugger gate have all succeeded.
 ///
 /// The value remains move-only and thread-bound. It exposes neither raw handles
-/// nor I/O; a later UI integration must consume it through another reviewed
-/// protocol transition.
+/// nor I/O. It privately retains the zeroizing bootstrap correlation key and
+/// absolute deadline for a later reviewed `HelperReady` transition; neither is
+/// cloneable or exposed through a raw accessor.
 #[must_use = "bootstrapped injected channels must remain owned through helper startup"]
 pub struct BootstrappedInjectedChannels {
     _inner: windows::BootstrappedInjectedChannels,

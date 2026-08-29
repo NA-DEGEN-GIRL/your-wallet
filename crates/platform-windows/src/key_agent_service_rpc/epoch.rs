@@ -26,6 +26,16 @@ pub(super) const EPOCH_CAPACITY: usize = 16;
 pub(super) const EPOCH_LIFETIME: Duration = Duration::from_secs(5);
 
 const EPOCH_SEED_BYTES: usize = 32;
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+const EPOCH_NONCE_DOMAIN_V2: &[u8] = b"your-wallet.key-agent-service.epoch.v2\0";
+
+/// Wire generation permanently bound to an issued epoch.
+#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProtocolVersion {
+    V1,
+    V2,
+}
 const EPOCH_NONCE_DOMAIN_V1: &[u8] = b"YourWallet.KeyAgentService.EpochNonce.v1\0";
 
 /// Sealing marker kept visible only inside the service RPC module.
@@ -100,6 +110,8 @@ pub(super) enum EpochError {
 
 struct EpochSlot<P, I> {
     nonce: Zeroizing<[u8; 32]>,
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    protocol_version: ProtocolVersion,
     peer: P,
     deadline: I,
 }
@@ -159,6 +171,29 @@ where
 
     /// Issues one live epoch for an exact peer, without eviction.
     pub(super) fn issue(&self, peer: P) -> Result<EpochNonce, EpochError> {
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        let result = self.issue_inner(peer, ProtocolVersion::V1);
+        #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
+        let result = self.issue_inner(peer);
+        result
+    }
+
+    /// Issues one live epoch permanently bound to `protocol_version`.
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    pub(super) fn issue_for_version(
+        &self,
+        peer: P,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EpochNonce, EpochError> {
+        self.issue_inner(peer, protocol_version)
+    }
+
+    fn issue_inner(
+        &self,
+        peer: P,
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        protocol_version: ProtocolVersion,
+    ) -> Result<EpochNonce, EpochError> {
         let mut state = self.lock_state()?;
         if state.stopped {
             return Err(EpochError::Stopping);
@@ -195,6 +230,9 @@ where
             .ok_or(EpochError::Internal)?;
         let next_counter = state.counter.checked_add(1).ok_or(EpochError::Internal)?;
         state.counter = next_counter;
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        let nonce_bytes = derive_nonce(&state.seed, next_counter, protocol_version)?;
+        #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
         let nonce_bytes = derive_nonce(&state.seed, next_counter)?;
 
         if state
@@ -210,6 +248,8 @@ where
 
         state.slots[slot_index] = Some(EpochSlot {
             nonce: nonce_bytes,
+            #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+            protocol_version,
             peer,
             deadline,
         });
@@ -222,6 +262,35 @@ where
     /// expiry, peer, or OS-state checks below. Every failure therefore consumes
     /// the nonce and cannot be retried as an oracle.
     pub(super) fn consume(&self, nonce: EpochNonce, current_peer: &P) -> Result<(), EpochError> {
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        let result = self.consume_inner(nonce, current_peer, ProtocolVersion::V1);
+        #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
+        let result = self.consume_inner(nonce, current_peer);
+        result
+    }
+
+    /// Spends an epoch exactly once under its bound protocol generation.
+    ///
+    /// A matching nonce is removed before the version check. Presenting an
+    /// epoch through the wrong protocol generation is therefore terminal and
+    /// cannot be retried through the generation that issued it.
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    pub(super) fn consume_for_version(
+        &self,
+        nonce: EpochNonce,
+        current_peer: &P,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), EpochError> {
+        self.consume_inner(nonce, current_peer, protocol_version)
+    }
+
+    fn consume_inner(
+        &self,
+        nonce: EpochNonce,
+        current_peer: &P,
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), EpochError> {
         let slot = {
             let mut state = self.lock_state()?;
             if state.stopped {
@@ -239,6 +308,10 @@ where
             state.slots[slot_index].take().ok_or(EpochError::Internal)?
         };
 
+        #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+        if slot.protocol_version != protocol_version {
+            return Err(EpochError::Denied);
+        }
         let now = self.clock.now().ok_or(EpochError::Internal)?;
         if now >= slot.deadline {
             return Err(EpochError::Denied);
@@ -287,8 +360,16 @@ where
 fn derive_nonce(
     seed: &[u8; EPOCH_SEED_BYTES],
     counter: u64,
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    protocol_version: ProtocolVersion,
 ) -> Result<Zeroizing<[u8; 32]>, EpochError> {
     let mut mac = EpochHmacSha256::new_from_slice(seed).map_err(|_| EpochError::Internal)?;
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    mac.update(match protocol_version {
+        ProtocolVersion::V1 => EPOCH_NONCE_DOMAIN_V1,
+        ProtocolVersion::V2 => EPOCH_NONCE_DOMAIN_V2,
+    });
+    #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]
     mac.update(EPOCH_NONCE_DOMAIN_V1);
     mac.update(&counter.to_be_bytes());
     let nonce_bytes: [u8; 32] = mac.finalize().into_bytes().into();
@@ -429,6 +510,67 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn same_exact_peer_cannot_open_parallel_epochs_across_versions() -> Result<(), EpochError> {
+        let table = table(TestClock::at(1_000))?;
+        let _nonce = table.issue_for_version(TestPeer::allowed(7), ProtocolVersion::V2)?;
+        assert_eq!(table.issue(TestPeer::allowed(7)), Err(EpochError::Denied));
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn protocol_versions_use_distinct_nonce_domains() -> Result<(), EpochError> {
+        let v1_table = table(TestClock::at(1_000))?;
+        let v2_table = table(TestClock::at(1_000))?;
+        let v1_nonce = v1_table.issue(TestPeer::allowed(7))?;
+        let v2_nonce = v2_table.issue_for_version(TestPeer::allowed(7), ProtocolVersion::V2)?;
+        assert_ne!(v1_nonce, v2_nonce);
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn cross_version_attempt_is_terminal_before_matching_version_replay() -> Result<(), EpochError>
+    {
+        let table = table(TestClock::at(1_000))?;
+
+        let v1_nonce = table.issue(TestPeer::allowed(1))?;
+        assert_eq!(
+            table.consume_for_version(v1_nonce, &TestPeer::allowed(1), ProtocolVersion::V2),
+            Err(EpochError::Denied)
+        );
+        assert_eq!(
+            table.consume(v1_nonce, &TestPeer::allowed(1)),
+            Err(EpochError::Denied)
+        );
+
+        let v2_nonce = table.issue_for_version(TestPeer::allowed(2), ProtocolVersion::V2)?;
+        assert_eq!(
+            table.consume(v2_nonce, &TestPeer::allowed(2)),
+            Err(EpochError::Denied)
+        );
+        assert_eq!(
+            table.consume_for_version(v2_nonce, &TestPeer::allowed(2), ProtocolVersion::V2),
+            Err(EpochError::Denied)
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn matching_v2_epoch_is_consumed_exactly_once() -> Result<(), EpochError> {
+        let table = table(TestClock::at(1_000))?;
+        let nonce = table.issue_for_version(TestPeer::allowed(7), ProtocolVersion::V2)?;
+        table.consume_for_version(nonce, &TestPeer::allowed(7), ProtocolVersion::V2)?;
+        assert_eq!(
+            table.consume_for_version(nonce, &TestPeer::allowed(7), ProtocolVersion::V2),
+            Err(EpochError::Denied)
+        );
+        Ok(())
+    }
+
     #[test]
     fn concurrent_issue_for_same_peer_has_exactly_one_winner() -> Result<(), EpochError> {
         let table = Arc::new(table(TestClock::at(1_000))?);
@@ -479,6 +621,34 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn fixed_capacity_is_shared_across_protocol_versions() -> Result<(), EpochError> {
+        let table = table(TestClock::at(1_000))?;
+        let mut first_v2_nonce = None;
+        for identity in 0..EPOCH_CAPACITY {
+            let identity = u64::try_from(identity).map_err(|_| EpochError::Internal)?;
+            let protocol_version = if identity % 2 == 0 {
+                ProtocolVersion::V1
+            } else {
+                ProtocolVersion::V2
+            };
+            let nonce = table.issue_for_version(TestPeer::allowed(identity), protocol_version)?;
+            if protocol_version == ProtocolVersion::V2 && first_v2_nonce.is_none() {
+                first_v2_nonce = Some((nonce, identity));
+            }
+        }
+        assert_eq!(
+            table.issue_for_version(TestPeer::allowed(99), ProtocolVersion::V2),
+            Err(EpochError::Full)
+        );
+
+        let (nonce, identity) = first_v2_nonce.ok_or(EpochError::Internal)?;
+        table.consume_for_version(nonce, &TestPeer::allowed(identity), ProtocolVersion::V2)?;
+        let _replacement = table.issue(TestPeer::allowed(99))?;
+        Ok(())
+    }
+
     #[test]
     fn expiry_is_inclusive_at_exactly_five_seconds() -> Result<(), EpochError> {
         let clock = TestClock::at(1_000);
@@ -493,6 +663,23 @@ mod tests {
             table.consume(nonce, &TestPeer::allowed(3)),
             Err(EpochError::Denied)
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn expiry_cleanup_releases_peer_and_capacity_across_versions() -> Result<(), EpochError> {
+        let clock = TestClock::at(1_000);
+        let table = table(clock.clone())?;
+        let expired_v2 = table.issue_for_version(TestPeer::allowed(3), ProtocolVersion::V2)?;
+        clock.advance(5_000);
+
+        let replacement_v1 = table.issue(TestPeer::allowed(3))?;
+        assert_eq!(
+            table.consume_for_version(expired_v2, &TestPeer::allowed(3), ProtocolVersion::V2),
+            Err(EpochError::Denied)
+        );
+        table.consume(replacement_v1, &TestPeer::allowed(3))?;
         Ok(())
     }
 

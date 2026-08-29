@@ -1,4 +1,4 @@
-//! Fixed, secret-free frames for helper-handle adoption.
+//! Fixed, secret-free frames for helper bootstrap and RPC correlation.
 //!
 //! These frames carry correlation evidence only. Their CRC32C detects framing
 //! corruption, but neither a frame nor its checksum authenticates a peer or
@@ -16,6 +16,8 @@ use key_agent_service_wire::{EpochNonce, ServiceRequestId, WireError};
 pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;
 /// Exact byte length of a service-to-helper bootstrap hello.
 pub const HELPER_BOOTSTRAP_HELLO_BYTES: usize = 100;
+/// Exact byte length of a helper RPC round-trip confirmation.
+pub const HELPER_RPC_CONFIRMATION_BYTES: usize = 72;
 
 /// Stable, data-free failure categories for the helper-bootstrap frames.
 ///
@@ -27,9 +29,11 @@ pub type AdoptionWireError = WireError;
 
 const HELPER_ADOPTION_MAGIC: [u8; 8] = *b"YWKHBA01";
 const HELPER_BOOTSTRAP_HELLO_MAGIC: [u8; 8] = *b"YWKHBH01";
+const HELPER_RPC_CONFIRMATION_MAGIC: [u8; 8] = *b"YWKHRC01";
 const VERSION_V1: u16 = 1;
 const FRAME_HELPER_ADOPTION_ACK: u16 = 1;
 const FRAME_HELPER_BOOTSTRAP_HELLO: u16 = 1;
+const FRAME_HELPER_RPC_CONFIRMATION: u16 = 1;
 const HEADER_RESERVED_OFFSET: usize = 12;
 const EPOCH_NONCE_OFFSET: usize = 16;
 const EPOCH_NONCE_BYTES: usize = 32;
@@ -39,6 +43,7 @@ const ROLE_OFFSET: usize = REQUEST_ID_OFFSET + REQUEST_ID_BYTES;
 const ROLE_RESERVED_OFFSET: usize = ROLE_OFFSET + 2;
 const COMMON_CORRELATION_END: usize = ROLE_RESERVED_OFFSET + 2;
 const ACK_CHECKSUM_OFFSET: usize = COMMON_CORRELATION_END;
+const RPC_CONFIRMATION_CHECKSUM_OFFSET: usize = COMMON_CORRELATION_END;
 const SERVICE_PROCESS_ID_OFFSET: usize = COMMON_CORRELATION_END;
 const CHILD_PROCESS_ID_OFFSET: usize = SERVICE_PROCESS_ID_OFFSET + 4;
 const CHILD_CREATION_FILETIME_OFFSET: usize = CHILD_PROCESS_ID_OFFSET + 4;
@@ -49,6 +54,7 @@ const CRC32C_POLYNOMIAL_REVERSED: u32 = 0x82F6_3B78;
 
 const _: () = assert!(ACK_CHECKSUM_OFFSET + 4 == HELPER_ADOPTION_ACK_BYTES);
 const _: () = assert!(HELLO_CHECKSUM_OFFSET + 4 == HELPER_BOOTSTRAP_HELLO_BYTES);
+const _: () = assert!(RPC_CONFIRMATION_CHECKSUM_OFFSET + 4 == HELPER_RPC_CONFIRMATION_BYTES);
 
 /// Closed role set for a service-launched helper process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,6 +385,122 @@ impl fmt::Debug for HelperAdoptionAck {
     }
 }
 
+/// Correlation evidence emitted only after the helper's later RPC-ready round trip.
+///
+/// This frame is deliberately distinct from [`HelperAdoptionAck`]. Its role is
+/// copied from the authenticated bootstrap hello solely so the launch
+/// coordinator can correlate the later round trip. It neither authenticates
+/// the helper nor grants role authority: the service's expected-peer registry
+/// remains the sole owner of server-side role classification.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct HelperRpcConfirmation {
+    epoch_nonce: EpochNonce,
+    request_id: ServiceRequestId,
+    role: HelperBootstrapRole,
+}
+
+impl HelperRpcConfirmation {
+    /// Constructs confirmation evidence from an already validated bootstrap key.
+    #[must_use]
+    pub const fn new(
+        epoch_nonce: EpochNonce,
+        request_id: ServiceRequestId,
+        role: HelperBootstrapRole,
+    ) -> Self {
+        Self {
+            epoch_nonce,
+            request_id,
+            role,
+        }
+    }
+
+    /// Returns the service epoch correlated by this confirmation.
+    #[must_use]
+    pub const fn epoch_nonce(&self) -> EpochNonce {
+        self.epoch_nonce
+    }
+
+    /// Returns the service request correlated by this confirmation.
+    #[must_use]
+    pub const fn request_id(&self) -> ServiceRequestId {
+        self.request_id
+    }
+
+    /// Returns the bootstrap role used only as correlation evidence.
+    ///
+    /// This value is not server-side role authority. The authenticated
+    /// expected-peer registry must independently classify the RPC caller.
+    #[must_use]
+    pub const fn role(&self) -> HelperBootstrapRole {
+        self.role
+    }
+
+    /// Encodes the one canonical fixed-length RPC confirmation frame.
+    #[must_use]
+    pub fn encode(&self) -> [u8; HELPER_RPC_CONFIRMATION_BYTES] {
+        let mut frame = [0_u8; HELPER_RPC_CONFIRMATION_BYTES];
+        encode_common_correlation(
+            &mut frame,
+            HELPER_RPC_CONFIRMATION_MAGIC,
+            FRAME_HELPER_RPC_CONFIRMATION,
+            self.epoch_nonce,
+            self.request_id,
+            self.role,
+        );
+        write_checksum(&mut frame, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        frame
+    }
+
+    /// Decodes one complete frame and rejects every noncanonical byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`WireError`] category for malformed or unbounded
+    /// input.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let (epoch_nonce, request_id, role) = decode_common_correlation(
+            bytes,
+            HELPER_RPC_CONFIRMATION_BYTES,
+            HELPER_RPC_CONFIRMATION_MAGIC,
+            FRAME_HELPER_RPC_CONFIRMATION,
+            RPC_CONFIRMATION_CHECKSUM_OFFSET,
+        )?;
+        Ok(Self::new(epoch_nonce, request_id, role))
+    }
+
+    /// Checks all correlation fields against trusted launch-side expectations.
+    ///
+    /// Success proves correlation only. In particular, matching `role` must
+    /// never replace the service's expected-peer role classification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::BindingMismatch`] if any correlation field differs.
+    pub fn ensure_correlates_with(
+        &self,
+        epoch_nonce: EpochNonce,
+        request_id: ServiceRequestId,
+        role: HelperBootstrapRole,
+    ) -> Result<(), WireError> {
+        if self.epoch_nonce == epoch_nonce && self.request_id == request_id && self.role == role {
+            Ok(())
+        } else {
+            Err(WireError::BindingMismatch)
+        }
+    }
+}
+
+impl fmt::Debug for HelperRpcConfirmation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HelperRpcConfirmation")
+            .field("epoch_nonce", &"[REDACTED]")
+            .field("request_id", &"[REDACTED]")
+            .field("role", &self.role)
+            .finish()
+    }
+}
+
 /// Encodes one canonical helper-adoption acknowledgement.
 #[must_use]
 pub fn encode_adoption_ack(acknowledgement: &HelperAdoptionAck) -> [u8; HELPER_ADOPTION_ACK_BYTES] {
@@ -393,6 +515,24 @@ pub fn encode_adoption_ack(acknowledgement: &HelperAdoptionAck) -> [u8; HELPER_A
 /// input.
 pub fn decode_adoption_ack(bytes: &[u8]) -> Result<HelperAdoptionAck, AdoptionWireError> {
     HelperAdoptionAck::decode(bytes)
+}
+
+/// Encodes one canonical helper RPC round-trip confirmation.
+#[must_use]
+pub fn encode_rpc_confirmation(
+    confirmation: &HelperRpcConfirmation,
+) -> [u8; HELPER_RPC_CONFIRMATION_BYTES] {
+    confirmation.encode()
+}
+
+/// Decodes one complete helper RPC round-trip confirmation.
+///
+/// # Errors
+///
+/// Returns a stable [`AdoptionWireError`] category for malformed or unbounded
+/// input.
+pub fn decode_rpc_confirmation(bytes: &[u8]) -> Result<HelperRpcConfirmation, AdoptionWireError> {
+    HelperRpcConfirmation::decode(bytes)
 }
 
 /// Encodes one canonical service-to-helper bootstrap hello.
@@ -557,6 +697,16 @@ mod tests {
             NonZeroU32::new(0x0506_0708).ok_or(WireError::InvalidValue)?,
             NonZeroU64::new(0x1112_1314_1516_1718).ok_or(WireError::InvalidValue)?,
             NonZeroU64::new(0x2122_2324_2526_2728).ok_or(WireError::InvalidValue)?,
+        ))
+    }
+
+    fn sample_rpc_confirmation(
+        role: HelperBootstrapRole,
+    ) -> Result<HelperRpcConfirmation, WireError> {
+        Ok(HelperRpcConfirmation::new(
+            EpochNonce::new([0xA5; EPOCH_NONCE_BYTES])?,
+            ServiceRequestId::new([0x5A; REQUEST_ID_BYTES])?,
+            role,
         ))
     }
 
@@ -751,6 +901,195 @@ mod tests {
         assert_eq!(
             format!("{ack:?}"),
             "HelperAdoptionAck { epoch_nonce: \"[REDACTED]\", request_id: \"[REDACTED]\", role: Approval }"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmation_both_roles_round_trip_with_distinct_magic() -> Result<(), WireError> {
+        for role in [
+            HelperBootstrapRole::Approval,
+            HelperBootstrapRole::SecretInput,
+        ] {
+            let original = sample_rpc_confirmation(role)?;
+            let encoded = encode_rpc_confirmation(&original);
+            assert_eq!(encoded.len(), HELPER_RPC_CONFIRMATION_BYTES);
+            assert_eq!(&encoded[..8], b"YWKHRC01");
+            assert_eq!(decode_rpc_confirmation(&encoded)?, original);
+            assert_eq!(
+                HelperAdoptionAck::decode(&encoded),
+                Err(WireError::InvalidMagic)
+            );
+        }
+
+        let adoption = sample_ack(HelperBootstrapRole::Approval)?.encode();
+        assert_eq!(
+            HelperRpcConfirmation::decode(&adoption),
+            Err(WireError::InvalidMagic)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmation_rejects_every_nonexact_length() -> Result<(), WireError> {
+        let encoded = sample_rpc_confirmation(HelperBootstrapRole::Approval)?.encode();
+        for length in 0..HELPER_RPC_CONFIRMATION_BYTES {
+            assert_eq!(
+                HelperRpcConfirmation::decode(&encoded[..length]),
+                Err(WireError::Truncated)
+            );
+        }
+
+        let mut with_trailing = [0_u8; HELPER_RPC_CONFIRMATION_BYTES * 2];
+        with_trailing[..HELPER_RPC_CONFIRMATION_BYTES].copy_from_slice(&encoded);
+        for length in HELPER_RPC_CONFIRMATION_BYTES + 1..=with_trailing.len() {
+            assert_eq!(
+                HelperRpcConfirmation::decode(&with_trailing[..length]),
+                Err(WireError::TrailingData)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmation_rejects_every_single_byte_mutation() -> Result<(), WireError> {
+        let encoded = sample_rpc_confirmation(HelperBootstrapRole::SecretInput)?.encode();
+        for index in 0..HELPER_RPC_CONFIRMATION_BYTES {
+            let mut mutated = encoded;
+            mutated[index] ^= 1;
+            assert!(HelperRpcConfirmation::decode(&mutated).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recomputed_crc_cannot_canonicalize_invalid_rpc_confirmation_header() -> Result<(), WireError>
+    {
+        let encoded = sample_rpc_confirmation(HelperBootstrapRole::Approval)?.encode();
+
+        let mut invalid_magic = encoded;
+        invalid_magic[0] ^= 1;
+        rewrite_checksum(&mut invalid_magic, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&invalid_magic),
+            Err(WireError::InvalidMagic)
+        );
+
+        let mut unsupported_version = encoded;
+        unsupported_version[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        rewrite_checksum(&mut unsupported_version, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&unsupported_version),
+            Err(WireError::UnsupportedVersion)
+        );
+
+        let mut unknown_kind = encoded;
+        unknown_kind[10..12].copy_from_slice(&2_u16.to_be_bytes());
+        rewrite_checksum(&mut unknown_kind, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&unknown_kind),
+            Err(WireError::UnknownKind)
+        );
+
+        let mut nonzero_reserved = encoded;
+        nonzero_reserved[HEADER_RESERVED_OFFSET] = 1;
+        rewrite_checksum(&mut nonzero_reserved, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&nonzero_reserved),
+            Err(WireError::NonZeroReserved)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recomputed_crc_cannot_canonicalize_invalid_rpc_confirmation_body() -> Result<(), WireError> {
+        let encoded = sample_rpc_confirmation(HelperBootstrapRole::Approval)?.encode();
+
+        let mut zero_epoch_nonce = encoded;
+        zero_epoch_nonce[EPOCH_NONCE_OFFSET..REQUEST_ID_OFFSET].fill(0);
+        rewrite_checksum(&mut zero_epoch_nonce, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&zero_epoch_nonce),
+            Err(WireError::InvalidValue)
+        );
+
+        let mut zero_request_id = encoded;
+        zero_request_id[REQUEST_ID_OFFSET..ROLE_OFFSET].fill(0);
+        rewrite_checksum(&mut zero_request_id, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&zero_request_id),
+            Err(WireError::InvalidValue)
+        );
+
+        let mut unknown_role = encoded;
+        unknown_role[ROLE_OFFSET..ROLE_RESERVED_OFFSET].copy_from_slice(&3_u16.to_be_bytes());
+        rewrite_checksum(&mut unknown_role, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&unknown_role),
+            Err(WireError::UnknownKind)
+        );
+
+        let mut nonzero_reserved = encoded;
+        nonzero_reserved[ROLE_RESERVED_OFFSET] = 1;
+        rewrite_checksum(&mut nonzero_reserved, RPC_CONFIRMATION_CHECKSUM_OFFSET);
+        assert_eq!(
+            HelperRpcConfirmation::decode(&nonzero_reserved),
+            Err(WireError::NonZeroReserved)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmation_role_is_correlation_not_peer_authority() -> Result<(), WireError> {
+        let epoch_nonce = EpochNonce::new([0xA5; EPOCH_NONCE_BYTES])?;
+        let request_id = ServiceRequestId::new([0x5A; REQUEST_ID_BYTES])?;
+        let confirmation =
+            HelperRpcConfirmation::new(epoch_nonce, request_id, HelperBootstrapRole::Approval);
+
+        assert_eq!(confirmation.epoch_nonce(), epoch_nonce);
+        assert_eq!(confirmation.request_id(), request_id);
+        assert_eq!(confirmation.role(), HelperBootstrapRole::Approval);
+        assert_eq!(
+            confirmation.ensure_correlates_with(
+                epoch_nonce,
+                request_id,
+                HelperBootstrapRole::Approval
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            confirmation.ensure_correlates_with(
+                EpochNonce::new([0xA6; EPOCH_NONCE_BYTES])?,
+                request_id,
+                HelperBootstrapRole::Approval
+            ),
+            Err(WireError::BindingMismatch)
+        );
+        assert_eq!(
+            confirmation.ensure_correlates_with(
+                epoch_nonce,
+                ServiceRequestId::new([0x5B; REQUEST_ID_BYTES])?,
+                HelperBootstrapRole::Approval
+            ),
+            Err(WireError::BindingMismatch)
+        );
+        assert_eq!(
+            confirmation.ensure_correlates_with(
+                epoch_nonce,
+                request_id,
+                HelperBootstrapRole::SecretInput
+            ),
+            Err(WireError::BindingMismatch)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_confirmation_debug_output_redacts_correlation_values() -> Result<(), WireError> {
+        let confirmation = sample_rpc_confirmation(HelperBootstrapRole::Approval)?;
+        assert_eq!(
+            format!("{confirmation:?}"),
+            "HelperRpcConfirmation { epoch_nonce: \"[REDACTED]\", request_id: \"[REDACTED]\", role: Approval }"
         );
         Ok(())
     }

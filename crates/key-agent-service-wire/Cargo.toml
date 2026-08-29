@@ -7,6 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 build = false
 
+[features]
+default = []
+debug-feasibility-v2 = []
+
 [dependencies]
 
 [lints]

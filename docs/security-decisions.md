@@ -587,16 +587,36 @@ that distinct-principal direction. The committed Phase 1 work remains an
 explicit debug-only, no-secret feasibility surface: an inert SCM lifecycle, a
 dependency-free bounded service wire, a checked-in classic-MIDL x64 sys
 boundary, and an opt-in local-RPC `Status -> Unavailable` server fixture. The
-wire can only open an epoch or request status, binds status responses to a
-nonzero epoch nonce and request identifier, and never accepts identity, role,
-or deadline fields as authority. The sys boundary fixes one zero-padded 76-byte
-RPC frame, distinct client/server symbols, a call-lifetime server binding,
-closed manager errors, and an SEH containment shim. The generated 76-byte MIDL
+immutable default `YWKASV01` wire can only open an epoch or request status,
+binds status responses to a nonzero epoch nonce and request identifier, and
+never accepts identity, role, or deadline fields as authority. The sys boundary
+fixes one zero-padded 76-byte RPC frame, distinct client/server symbols, a call-
+lifetime server binding, closed manager errors, and an SEH containment shim. The
+generated 76-byte MIDL
 frame plus canonical Rust decoder are the hard message boundary. The
 `MaxCalls = 8` and `MaxRpcSize = 76` values passed to the RPC runtime are only
 registration/listen hints. The application independently caps concurrent If3
 callback-authentication work at eight permits and serializes manager dispatch
 behind one mutex.
+
+A separate non-default `debug-feasibility-v2` module leaves that V1 contract
+unchanged and defines debug-only `YWKASV02` V2. Its six exact frame lengths are
+20/52 bytes for open-epoch request/ACK, 72/72 bytes for desktop-command
+request/response, and 68/68 bytes for helper-ready request/ACK. Desktop commands
+are closed to Status, Approval RPC probe, and Secret Input RPC probe. Results are
+closed to fail-closed `Unavailable` plus the two role-matching probe-completed
+values. `Unavailable` is permitted for every command; completed results cannot
+cross-bind. The V2 wire accepts no role, PID, image identity, or other peer
+authority.
+
+The feature-gated pure V2 desktop dispatch boundary authenticates once before
+decoding. It returns immediate open-epoch or Status/`Unavailable` responses, or
+a move-only Approval/Secret Input launch action that owns the freshly
+authenticated peer and exact consumed request. A desktop `HelperReady` is
+authentication-denied before epoch lookup or consumption. V1 dispatch delegates
+to an explicit already-authenticated V1 method without changing behavior. The
+V2 outcomes have no `ServerContext`, actual RPC-manager, launch-wait, or helper-
+send caller.
 
 The debug server fixes one explicit endpoint and security descriptor, registers
 WINNT authentication plus an If3 callback with local-only, secure-only, and
@@ -656,9 +676,26 @@ stop, and cancel MUST fail closed. Terminal cancellation MUST request terminatio
 bounded-wait the exact process, and prove the Job empty; an in-flight cleanup
 request MUST NOT report quiet success before the owner settles.
 
+If a malformed helper manager frame cannot yield a trustworthy expected-peer
+key, rejection MUST still settle related authority. The dormant manager scan
+retires exact matches and any peer whose relationship query is indeterminate,
+while only definite non-matches may remain live. Candidate revalidation failure
+does not spare an exact match; ambiguous matches, query failure, panic, and a
+conflicting registration race retire affected owners and fail closed.
+
+The 72-byte `YWKHBA01` helper-adoption ACK MUST NOT be reused as proof of the
+later RPC round trip. The distinct 72-byte `YWKHRC01` confirmation carries the
+validated bootstrap epoch, request ID, and fixed role only as correlation for a
+future helper-ready acknowledgement; it does not authenticate the helper or
+grant role authority. Child bootstrap retains the encoded correlation key and
+absolute hello deadline only in private zeroizing, non-cloneable state. No
+runtime path currently sends that confirmation or consumes it in a launch
+coordinator.
+
 These rules currently exist only as a dormant feasibility foundation. There is
-no production RPC/lifecycle/wire caller and no signed-helper `ncalrpc` E2E, so
-they authorize no helper operation or release-policy change.
+no runtime manager reachability for the pure V2 dispatcher, helper send/launch
+lifecycle, or signed-helper `ncalrpc` E2E, so they authorize no helper operation
+or release-policy change.
 
 The separate debug service-token observer runs before SCM publishes
 `SERVICE_RUNNING`. Its safe policy and narrow Windows adapter can verify the
@@ -766,6 +803,15 @@ omits `SERVICE_STOPPED`. While a worker drains, a shutdown reporter advances
 `SERVICE_STOP_PENDING` every 500 ms with a 3-second wait hint. It aborts at the
 15-second deadline, on status-report failure, or on reporter disconnect, so an
 uncertain rundown is never reported as a clean stop.
+
+The debug epoch foundation now shares that fixed capacity across V1 and V2 while
+permanently recording the issuing protocol generation in every slot and deriving
+the nonce under a generation-specific domain. A consume attempt removes the
+matching nonce before checking the requested generation. Presenting a V1 epoch
+to V2 or a V2 epoch to V1 is therefore a terminal denial, not a retryable version
+probe. This binding and pure V2 desktop dispatch exist only behind the LPAC-
+launch debug feature; the live `ServerContext` RPC manager still dispatches only
+immutable V1.
 
 Only the exact Windows debug feature can enter that server. Direct launch,
 default and production configurations, non-Windows builds, and every release
