@@ -1143,19 +1143,21 @@ module-private lifecycle core with zero production callers now models all eleven
 mandatory no-secret startup observations; exact Active-marker commit and
 readback before listener preparation; `SERVICE_RUNNING` publication before
 admission; lock, unlock, logoff, and user-switch invalidation; and the fixed
-eleven-step stop sequence ending in single-instance release and exact
-Clean-marker commit/readback. Each startup typestate consumes its preceding
-authority. The final cleanup precheck consumes the live runtime into a
-`CleanCommitPending` authority only after exact cleanup order, empty work and
-retained-token registries, and single-instance release are proven. Only that
-move-only pending authority may accept distinct committed and reread Clean
-receipts and directly mint the sole stopped-report permit; an invalid or
-ambiguous receipt requires recovery instead of claiming an Active restart.
-This leaves no modeled post-Clean/pre-stopped crash window. Work,
-retained-token, and quarantined-session registries are bounded at 256, 64, and
-64 entries. Quarantine exhaustion invalidates every live fixture authority,
-discards retained tokens, latches the first fatal reason, and preserves the
-Active restart observation. Work, session, and generation identifiers are
+eleven-step stop sequence ending in exact Clean-marker commit/readback followed
+by single-instance release. Each startup typestate consumes its preceding
+authority. After the first nine exact cleanup
+steps and empty work/token registries are proven, a final pre-Clean check
+consumes the live runtime into `CleanCommitPending` while retaining the exact
+writer lease. Distinct committed and reread Clean receipts can produce only
+`CleanCommittedWithWriter`; the sole stopped-report permit requires its final
+backend-bound writer-release receipt. Invalid or ambiguous evidence cannot
+claim a clean stop, and a Clean reload still retains the writer-release
+obligation. Work, retained-token, and quarantined-session registries are bounded
+at 256, 64, and 64 entries. Quarantine exhaustion invalidates every live fixture
+authority, discards retained tokens, and latches the first fatal reason. Durable
+Active evidence remains authoritative until exact Clean commit, and stopped
+evidence remains withheld until exact writer release. Work and session
+identifiers and every durable identity/generation/commitment surface are
 redacted from debug output, and no session is automatically revalidated.
 
 This is an ordering model and test slice only. It creates no SCM listener,
@@ -1167,6 +1169,50 @@ single-instance lease, outbound-denial proof, session-notification hookup, and
 crash/reboot kernel evidence remain absent. Phase 1 and Phase 2 exit gates
 remain not passed; `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
 `None`, and the ordinary/release service executable remains silent exit 78.
+
+**Current Phase 2B status: started, not passed.** A second production-compiled,
+module-private, zero-runtime-root core now defines exact 148-byte `YWRUNV01`
+run-marker and `YWHIWV01` independent high-water envelopes. Both bind the fixed
+installation identity, nonzero generation, predecessor/current lineage
+commitments, reserved-zero schema, and a distinct HMAC-SHA256 domain under a
+zeroizing fixture authentication key. Only an authenticated exact Clean pair
+plus one move-only single-writer lease can produce `BootEvidence`. The lifecycle
+now carries the sealed chain `PreparedActiveTransition -> ActiveRunLease ->
+PreparedCleanTransition -> CleanCommittedWithWriter ->
+PendingFinalWriterRelease -> StoppedRunEvidence`; raw durable observations, raw
+receipt wrappers, copied generation authority, and the former
+`single_instance_released` boolean are no longer lifecycle inputs.
+
+Active and Clean each require exact prior-state CAS, distinct commit and reread
+receipts, agreement of marker plus high-water checkpoint, and the same opaque
+backend/lease binding as their originating transition. Every ambiguous commit
+consumes its transition into a lifecycle-branded Active or Clean reload state.
+Before either successor is constructed, the supplied transition key must
+reauthenticate the exact held prior marker and checkpoint; a key switch retains
+only terminal writer-exit authority.
+Exact prior Clean requires the full startup observations again before an Active
+retry, exact fully committed Active may resume only through its startup reload
+wrapper, and an exact reloaded Clean candidate can produce only
+`CleanCommittedWithWriter`; the cleanup wrapper and exact final writer release
+remain mandatory before stopped evidence. A marker-only advance, checkpoint
+drift, rollback, equivocation, authentication failure, missing object, wrong
+installation, backend or writer mismatch, CAS conflict, or reread drift
+requires terminal recovery. Every post-acquisition failure retains a move-only,
+terminal-only writer-exit authority that can prove exact release without any
+conversion to Boot, Active, Clean, or Stopped authority. Clean commit and
+readback occur while the writer remains held, so a second boot cannot enter the
+release boundary; fixture crash/exit release preserves the last authenticated
+durable state without minting a stopped report.
+
+This remains a no-OS fault model, not product storage. Its only backend is a
+fixed-capacity `cfg(test)` memory fixture and its HMAC key is not a production
+key source. There is still no `%ProgramData%` service-owned root, service-SID
+owner/DACL adapter, installer-seeded initial marker, kernel singleton object,
+TPM-backed authentication/high-water anchor, power-loss or reboot evidence, or
+production caller. Existing LPAC user storage and the signing journal are not
+reused as service run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**;
+both compiled policies remain `None`, and ordinary/release execution remains
+silent exit 78.
 
 ### Phase 3 — Authenticated Broker and helper runtime
 

@@ -11,6 +11,15 @@ use std::num::{NonZeroU32, NonZeroU64};
 
 use thiserror::Error;
 
+use super::durable_run_state::{
+    ActiveReloadReceipt, ActiveReloadRequired, ActiveRunLease, BootEvidence, CleanReloadReceipt,
+    CleanReloadRequired, CommittedActiveMarker, CommittedCleanMarker, DurableFailureWithWriter,
+    FixtureRunStateAuthenticationKey, PendingFinalWriterRelease, PreparedActiveTransition,
+    PreparedCleanTransition, RecoveryExitEvidence, RecoveryRequired, ReloadedActiveRunState,
+    RereadActiveMarker, RereadCleanMarker, StoppedRunEvidence, WriterExitPending,
+    WriterExitReceipt, WriterLeaseReleaseReceipt,
+};
+
 const STARTUP_REQUIREMENT_COUNT: usize = 11;
 const MAX_ACTIVE_FIXTURE_WORK: usize = 256;
 const MAX_RETAINED_USER_TOKEN_SESSIONS: usize = 64;
@@ -70,69 +79,6 @@ enum StartupObservation {
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RecoveryReason {
-    ActiveRunMarker,
-    PersistedRecoveryRequired,
-    MissingRunMarker,
-    InvalidRunMarker,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum DurableRunObservation {
-    CleanShutdown { generation: u64 },
-    ActiveRun { generation: u64 },
-    RecoveryRequired,
-    Missing,
-    Invalid,
-}
-
-impl fmt::Debug for DurableRunObservation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CleanShutdown { .. } => {
-                formatter.write_str("DurableRunObservation::CleanShutdown([GENERATION])")
-            }
-            Self::ActiveRun { .. } => {
-                formatter.write_str("DurableRunObservation::ActiveRun([GENERATION])")
-            }
-            Self::RecoveryRequired => {
-                formatter.write_str("DurableRunObservation::RecoveryRequired")
-            }
-            Self::Missing => formatter.write_str("DurableRunObservation::Missing"),
-            Self::Invalid => formatter.write_str("DurableRunObservation::Invalid"),
-        }
-    }
-}
-
-struct CommittedRunMarkerObservation(DurableRunObservation);
-
-impl CommittedRunMarkerObservation {
-    const fn into_observation(self) -> DurableRunObservation {
-        self.0
-    }
-}
-
-impl fmt::Debug for CommittedRunMarkerObservation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("CommittedRunMarkerObservation([REDACTED])")
-    }
-}
-
-struct RereadRunMarkerObservation(DurableRunObservation);
-
-impl RereadRunMarkerObservation {
-    const fn into_observation(self) -> DurableRunObservation {
-        self.0
-    }
-}
-
-impl fmt::Debug for RereadRunMarkerObservation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("RereadRunMarkerObservation([REDACTED])")
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 enum StartupFailure {
     #[error("a required no-secret startup observation is missing: {0:?}")]
@@ -143,21 +89,64 @@ enum StartupFailure {
     Unavailable(NoSecretStartupRequirement),
     #[error("a no-secret startup observation was supplied more than once: {0:?}")]
     DuplicateObservation(NoSecretStartupRequirement),
-    #[error("service recovery is required: {0:?}")]
-    RecoveryRequired(RecoveryReason),
-    #[error("the clean-shutdown generation is invalid")]
-    InvalidCleanShutdownGeneration,
-    #[error("the clean-shutdown generation is exhausted")]
-    CleanShutdownGenerationExhausted,
-    #[error("the active-run marker commit did not match the expected generation")]
-    ActiveMarkerCommitMismatch,
-    #[error("the active-run marker readback did not match the committed generation")]
-    ActiveMarkerReadbackMismatch,
+    #[error("durable run-state recovery is required: {0}")]
+    DurableRecovery(RecoveryRequired),
+}
+
+enum StartupWriterExit {
+    NotAcquired,
+    Pending(WriterExitPending),
+}
+
+struct StartupExitRequired {
+    failure: StartupFailure,
+    writer_exit: StartupWriterExit,
+}
+
+impl StartupExitRequired {
+    const fn without_writer(failure: StartupFailure) -> Self {
+        Self {
+            failure,
+            writer_exit: StartupWriterExit::NotAcquired,
+        }
+    }
+
+    const fn with_writer(failure: StartupFailure, writer_exit: WriterExitPending) -> Self {
+        Self {
+            failure,
+            writer_exit: StartupWriterExit::Pending(writer_exit),
+        }
+    }
+
+    fn from_durable(failure: DurableFailureWithWriter) -> Self {
+        let reason = failure.reason();
+        Self::with_writer(
+            StartupFailure::DurableRecovery(reason),
+            failure.into_writer_exit(),
+        )
+    }
+
+    fn into_writer_exit(self) -> Result<(StartupFailure, WriterExitPending), StartupFailure> {
+        match self.writer_exit {
+            StartupWriterExit::NotAcquired => Err(self.failure),
+            StartupWriterExit::Pending(writer_exit) => Ok((self.failure, writer_exit)),
+        }
+    }
+}
+
+impl fmt::Debug for StartupExitRequired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartupExitRequired")
+            .field("failure", &self.failure)
+            .field("writer_exit", &"[REDACTED]")
+            .finish()
+    }
 }
 
 struct NoSecretStartupAttempt {
     observations: [Option<StartupObservation>; STARTUP_REQUIREMENT_COUNT],
-    durable_run: DurableRunObservation,
+    boot: Result<BootEvidence, RecoveryRequired>,
     latched_failure: Option<StartupFailure>,
 }
 
@@ -168,10 +157,10 @@ impl fmt::Debug for NoSecretStartupAttempt {
 }
 
 impl NoSecretStartupAttempt {
-    fn new(durable_run: DurableRunObservation) -> Self {
+    fn new(boot: Result<BootEvidence, RecoveryRequired>) -> Self {
         Self {
             observations: [None; STARTUP_REQUIREMENT_COUNT],
-            durable_run,
+            boot,
             latched_failure: None,
         }
     }
@@ -191,93 +180,77 @@ impl NoSecretStartupAttempt {
         Ok(())
     }
 
-    fn finish(self) -> Result<PendingNoSecretStartup, StartupFailure> {
+    fn finish(
+        self,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<PendingNoSecretStartup, StartupExitRequired> {
         if let Some(failure) = self.latched_failure {
-            return Err(failure);
+            return Err(self.into_exit(failure));
         }
         for requirement in NoSecretStartupRequirement::ALL {
             match self.observations[requirement.index()] {
-                None => return Err(StartupFailure::Missing(requirement)),
+                None => {
+                    let failure = StartupFailure::Missing(requirement);
+                    return Err(self.into_exit(failure));
+                }
                 Some(StartupObservation::Mismatch) => {
-                    return Err(StartupFailure::Mismatch(requirement));
+                    let failure = StartupFailure::Mismatch(requirement);
+                    return Err(self.into_exit(failure));
                 }
                 Some(StartupObservation::Unavailable) => {
-                    return Err(StartupFailure::Unavailable(requirement));
+                    let failure = StartupFailure::Unavailable(requirement);
+                    return Err(self.into_exit(failure));
                 }
                 Some(StartupObservation::Verified) => {}
             }
         }
 
-        let clean_generation = match self.durable_run {
-            DurableRunObservation::CleanShutdown { generation: 0 } => {
-                return Err(StartupFailure::InvalidCleanShutdownGeneration);
-            }
-            DurableRunObservation::CleanShutdown { generation } => generation,
-            DurableRunObservation::ActiveRun { .. } => {
-                return Err(StartupFailure::RecoveryRequired(
-                    RecoveryReason::ActiveRunMarker,
-                ));
-            }
-            DurableRunObservation::RecoveryRequired => {
-                return Err(StartupFailure::RecoveryRequired(
-                    RecoveryReason::PersistedRecoveryRequired,
-                ));
-            }
-            DurableRunObservation::Missing => {
-                return Err(StartupFailure::RecoveryRequired(
-                    RecoveryReason::MissingRunMarker,
-                ));
-            }
-            DurableRunObservation::Invalid => {
-                return Err(StartupFailure::RecoveryRequired(
-                    RecoveryReason::InvalidRunMarker,
-                ));
-            }
-        };
-        let active_generation = clean_generation
-            .checked_add(1)
-            .ok_or(StartupFailure::CleanShutdownGenerationExhausted)?;
-        let next_clean_shutdown_generation = active_generation
-            .checked_add(1)
-            .ok_or(StartupFailure::CleanShutdownGenerationExhausted)?;
+        let boot = self.boot.map_err(|recovery| {
+            StartupExitRequired::without_writer(StartupFailure::DurableRecovery(recovery))
+        })?;
+        let active_transition = boot
+            .prepare_active(key)
+            .map_err(StartupExitRequired::from_durable)?;
+        Ok(PendingNoSecretStartup { active_transition })
+    }
 
-        Ok(PendingNoSecretStartup {
-            active_generation: NonZeroU64::new(active_generation)
-                .ok_or(StartupFailure::InvalidCleanShutdownGeneration)?,
-            next_clean_shutdown_generation: NonZeroU64::new(next_clean_shutdown_generation)
-                .ok_or(StartupFailure::InvalidCleanShutdownGeneration)?,
-        })
+    fn into_exit(self, failure: StartupFailure) -> StartupExitRequired {
+        match self.boot {
+            Ok(boot) => StartupExitRequired::with_writer(failure, boot.into_writer_exit()),
+            Err(_) => StartupExitRequired::without_writer(failure),
+        }
     }
 }
 
 struct PendingNoSecretStartup {
-    active_generation: NonZeroU64,
-    next_clean_shutdown_generation: NonZeroU64,
+    active_transition: PreparedActiveTransition,
 }
 
 impl PendingNoSecretStartup {
+    fn transition_request(&self) -> &PreparedActiveTransition {
+        &self.active_transition
+    }
+
     fn commit_and_reread_active_marker(
         self,
-        committed: CommittedRunMarkerObservation,
-        reread: RereadRunMarkerObservation,
-    ) -> Result<ListenerPendingRuntime, StartupFailure> {
-        let committed = committed.into_observation();
-        let reread = reread.into_observation();
-        let expected = self.active_generation.get();
-        if committed
-            != (DurableRunObservation::ActiveRun {
-                generation: expected,
-            })
-        {
-            return Err(StartupFailure::ActiveMarkerCommitMismatch);
+        committed: CommittedActiveMarker,
+        reread: RereadActiveMarker,
+    ) -> Result<ListenerPendingRuntime, StartupExitRequired> {
+        let active_run = self
+            .active_transition
+            .complete(committed, reread)
+            .map_err(StartupExitRequired::from_durable)?;
+        Ok(ListenerPendingRuntime { active_run })
+    }
+
+    fn commit_ambiguous(self) -> PendingActiveReload {
+        PendingActiveReload {
+            reload: self.active_transition.commit_ambiguous(),
         }
-        if reread != committed {
-            return Err(StartupFailure::ActiveMarkerReadbackMismatch);
-        }
-        Ok(ListenerPendingRuntime {
-            active_generation: self.active_generation,
-            next_clean_shutdown_generation: self.next_clean_shutdown_generation,
-        })
+    }
+
+    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired {
+        StartupExitRequired::from_durable(self.active_transition.abort(reason))
     }
 }
 
@@ -287,16 +260,67 @@ impl fmt::Debug for PendingNoSecretStartup {
     }
 }
 
+struct PendingActiveReload {
+    reload: ActiveReloadRequired,
+}
+
+impl PendingActiveReload {
+    fn reload_request(&self) -> &ActiveReloadRequired {
+        &self.reload
+    }
+
+    fn complete(
+        self,
+        receipt: ActiveReloadReceipt,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<ActiveReloadResolution, StartupExitRequired> {
+        let reloaded = self
+            .reload
+            .complete_reload(receipt, key)
+            .map_err(StartupExitRequired::from_durable)?;
+        Ok(match reloaded {
+            ReloadedActiveRunState::Boot(boot) => {
+                ActiveReloadResolution::Revalidate(NoSecretStartupAttempt::new(Ok(boot)))
+            }
+            ReloadedActiveRunState::Active(active_run) => {
+                ActiveReloadResolution::Resume(ListenerPendingRuntime { active_run })
+            }
+        })
+    }
+
+    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired {
+        StartupExitRequired::from_durable(self.reload.abort(reason))
+    }
+}
+
+impl fmt::Debug for PendingActiveReload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingActiveReload([REDACTED])")
+    }
+}
+
+enum ActiveReloadResolution {
+    Revalidate(NoSecretStartupAttempt),
+    Resume(ListenerPendingRuntime),
+}
+
+impl fmt::Debug for ActiveReloadResolution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Revalidate(_) => formatter.write_str("ActiveReloadResolution::Revalidate"),
+            Self::Resume(_) => formatter.write_str("ActiveReloadResolution::Resume"),
+        }
+    }
+}
+
 struct ListenerPendingRuntime {
-    active_generation: NonZeroU64,
-    next_clean_shutdown_generation: NonZeroU64,
+    active_run: ActiveRunLease,
 }
 
 impl ListenerPendingRuntime {
     fn record_listeners_prepared(self) -> ScmRunningPendingRuntime {
         ScmRunningPendingRuntime {
-            active_generation: self.active_generation,
-            next_clean_shutdown_generation: self.next_clean_shutdown_generation,
+            active_run: self.active_run,
         }
     }
 }
@@ -308,15 +332,13 @@ impl fmt::Debug for ListenerPendingRuntime {
 }
 
 struct ScmRunningPendingRuntime {
-    active_generation: NonZeroU64,
-    next_clean_shutdown_generation: NonZeroU64,
+    active_run: ActiveRunLease,
 }
 
 impl ScmRunningPendingRuntime {
     fn record_scm_running_published(self) -> AdmissionPendingRuntime {
         AdmissionPendingRuntime {
-            active_generation: self.active_generation,
-            next_clean_shutdown_generation: self.next_clean_shutdown_generation,
+            active_run: self.active_run,
         }
     }
 }
@@ -328,13 +350,12 @@ impl fmt::Debug for ScmRunningPendingRuntime {
 }
 
 struct AdmissionPendingRuntime {
-    active_generation: NonZeroU64,
-    next_clean_shutdown_generation: NonZeroU64,
+    active_run: ActiveRunLease,
 }
 
 impl AdmissionPendingRuntime {
     fn open_admission(self) -> NoSecretService {
-        NoSecretService::new(self.active_generation, self.next_clean_shutdown_generation)
+        NoSecretService::new(self.active_run)
     }
 }
 
@@ -415,8 +436,8 @@ enum CleanupStep {
     DiscardUserTokens,
     FlushDefinedDurableRecords,
     ReleaseHardwareAndStorageHandles,
-    ReleaseSingleInstanceLease,
     CommitAndRereadCleanMarker,
+    ReleaseSingleInstanceLease,
 }
 
 impl CleanupStep {
@@ -430,8 +451,8 @@ impl CleanupStep {
         Self::DiscardUserTokens,
         Self::FlushDefinedDurableRecords,
         Self::ReleaseHardwareAndStorageHandles,
-        Self::ReleaseSingleInstanceLease,
         Self::CommitAndRereadCleanMarker,
+        Self::ReleaseSingleInstanceLease,
     ];
 }
 
@@ -508,40 +529,52 @@ enum LifecycleError {
     CleanupIncomplete,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct CleanShutdownRecord {
-    generation: NonZeroU64,
-}
-
-impl CleanShutdownRecord {
-    const fn recovery_observation(self) -> DurableRunObservation {
-        DurableRunObservation::CleanShutdown {
-            generation: self.generation.get(),
-        }
-    }
-}
-
-impl fmt::Debug for CleanShutdownRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("CleanShutdownRecord([GENERATION])")
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExitReason {
     CleanupOutOfOrder,
-    InvalidCleanShutdownReceipt,
     CleanupIncomplete,
+    FatalRuntime,
+    DurableRecovery,
 }
 
 struct ExitRequired {
-    restart_observation: DurableRunObservation,
     reason: ExitReason,
+    durable_recovery: Option<RecoveryRequired>,
+    writer_exit: WriterExitPending,
 }
 
 impl ExitRequired {
-    const fn restart_observation(&self) -> DurableRunObservation {
-        self.restart_observation
+    const fn cleanup(reason: ExitReason, writer_exit: WriterExitPending) -> Self {
+        Self {
+            reason,
+            durable_recovery: None,
+            writer_exit,
+        }
+    }
+
+    fn durable(failure: DurableFailureWithWriter) -> Self {
+        let recovery = failure.reason();
+        Self {
+            reason: ExitReason::DurableRecovery,
+            durable_recovery: Some(recovery),
+            writer_exit: failure.into_writer_exit(),
+        }
+    }
+
+    fn writer_exit_request(&self) -> &WriterExitPending {
+        &self.writer_exit
+    }
+
+    fn complete_writer_exit(
+        self,
+        receipt: WriterExitReceipt,
+    ) -> Result<RecoveryExitPermit, DurableFailureWithWriter> {
+        let retired = self.writer_exit.complete(receipt)?;
+        Ok(RecoveryExitPermit {
+            reason: self.reason,
+            durable_recovery: self.durable_recovery,
+            _retired: retired,
+        })
     }
 }
 
@@ -549,39 +582,89 @@ impl fmt::Debug for ExitRequired {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ExitRequired")
-            .field("restart_observation", &"[REDACTED]")
             .field("reason", &self.reason)
+            .field("durable_recovery", &self.durable_recovery)
+            .field("writer_exit", &"[REDACTED]")
             .finish()
     }
 }
 
+struct RecoveryExitPermit {
+    reason: ExitReason,
+    durable_recovery: Option<RecoveryRequired>,
+    _retired: RecoveryExitEvidence,
+}
+
+impl fmt::Debug for RecoveryExitPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecoveryExitPermit")
+            .field("reason", &self.reason)
+            .field("durable_recovery", &self.durable_recovery)
+            .field("_retired", &"[REDACTED]")
+            .finish()
+    }
+}
+
+struct SingleInstanceReleasePending {
+    pending: PendingFinalWriterRelease,
+}
+
+impl SingleInstanceReleasePending {
+    fn release_request(&self) -> &PendingFinalWriterRelease {
+        &self.pending
+    }
+
+    fn complete(self, receipt: WriterLeaseReleaseReceipt) -> Result<StoppedPermit, ExitRequired> {
+        let stopped = self
+            .pending
+            .complete(receipt)
+            .map_err(ExitRequired::durable)?;
+        Ok(StoppedPermit::from_durable_evidence(stopped))
+    }
+
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+        ExitRequired::durable(self.pending.abort(reason))
+    }
+}
+
+impl fmt::Debug for SingleInstanceReleasePending {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SingleInstanceReleasePending([REDACTED])")
+    }
+}
+
 struct CleanCommitPending {
-    active_generation: NonZeroU64,
-    next_clean_shutdown_generation: NonZeroU64,
+    transition: PreparedCleanTransition,
 }
 
 impl CleanCommitPending {
+    fn transition_request(&self) -> &PreparedCleanTransition {
+        &self.transition
+    }
+
     fn commit_and_reread_clean_marker(
         self,
-        committed: CommittedRunMarkerObservation,
-        reread: RereadRunMarkerObservation,
-    ) -> Result<StoppedPermit, ExitRequired> {
-        let committed = committed.into_observation();
-        let reread = reread.into_observation();
-        let expected = DurableRunObservation::CleanShutdown {
-            generation: self.next_clean_shutdown_generation.get(),
-        };
-        if committed != expected || reread != expected {
-            return Err(ExitRequired {
-                restart_observation: DurableRunObservation::RecoveryRequired,
-                reason: ExitReason::InvalidCleanShutdownReceipt,
-            });
-        }
-        Ok(StoppedPermit {
-            clean_shutdown: CleanShutdownRecord {
-                generation: self.next_clean_shutdown_generation,
-            },
+        committed: CommittedCleanMarker,
+        reread: RereadCleanMarker,
+    ) -> Result<SingleInstanceReleasePending, ExitRequired> {
+        let committed = self
+            .transition
+            .complete(committed, reread)
+            .map_err(ExitRequired::durable)?;
+        Ok(SingleInstanceReleasePending {
+            pending: committed.prepare_writer_release(),
         })
+    }
+
+    fn commit_ambiguous(self) -> PendingCleanReload {
+        PendingCleanReload {
+            reload: self.transition.commit_ambiguous(),
+        }
+    }
+
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+        ExitRequired::durable(self.transition.abort(reason))
     }
 }
 
@@ -591,44 +674,74 @@ impl fmt::Debug for CleanCommitPending {
     }
 }
 
+struct PendingCleanReload {
+    reload: CleanReloadRequired,
+}
+
+impl PendingCleanReload {
+    fn reload_request(&self) -> &CleanReloadRequired {
+        &self.reload
+    }
+
+    fn complete(
+        self,
+        receipt: CleanReloadReceipt,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<SingleInstanceReleasePending, ExitRequired> {
+        let committed = self
+            .reload
+            .complete_reload(receipt, key)
+            .map_err(ExitRequired::durable)?;
+        Ok(SingleInstanceReleasePending {
+            pending: committed.prepare_writer_release(),
+        })
+    }
+
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+        ExitRequired::durable(self.reload.abort(reason))
+    }
+}
+
+impl fmt::Debug for PendingCleanReload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PendingCleanReload([REDACTED])")
+    }
+}
+
 struct StoppedPermit {
-    clean_shutdown: CleanShutdownRecord,
+    stopped: StoppedRunEvidence,
 }
 
 impl StoppedPermit {
-    const fn restart_observation(&self) -> DurableRunObservation {
-        self.clean_shutdown.recovery_observation()
+    const fn from_durable_evidence(stopped: StoppedRunEvidence) -> Self {
+        Self { stopped }
     }
 }
 
 impl fmt::Debug for StoppedPermit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("StoppedPermit([CLEAN GENERATION])")
+        formatter.write_str("StoppedPermit([REDACTED DURABLE EVIDENCE])")
     }
 }
 
 struct NoSecretService {
     state: RuntimeState,
-    active_generation: NonZeroU64,
+    active_run: ActiveRunLease,
     work: BTreeMap<WorkId, FixtureWork>,
     user_token_sessions: BTreeSet<SessionId>,
     invalid_sessions: BTreeSet<SessionId>,
     next_cleanup_index: usize,
-    next_clean_shutdown_generation: NonZeroU64,
-    single_instance_released: bool,
 }
 
 impl NoSecretService {
-    fn new(active_generation: NonZeroU64, next_clean_shutdown_generation: NonZeroU64) -> Self {
+    fn new(active_run: ActiveRunLease) -> Self {
         Self {
             state: RuntimeState::Ready,
-            active_generation,
+            active_run,
             work: BTreeMap::new(),
             user_token_sessions: BTreeSet::new(),
             invalid_sessions: BTreeSet::new(),
             next_cleanup_index: 0,
-            next_clean_shutdown_generation,
-            single_instance_released: false,
         }
     }
 
@@ -805,7 +918,10 @@ impl NoSecretService {
             self.latch_fatal(FatalReason::CleanupProtocolViolation);
             return Err(LifecycleError::CleanupOutOfOrder);
         }
-        if step == CleanupStep::CommitAndRereadCleanMarker {
+        if matches!(
+            step,
+            CleanupStep::ReleaseSingleInstanceLease | CleanupStep::CommitAndRereadCleanMarker
+        ) {
             self.latch_fatal(FatalReason::CleanupProtocolViolation);
             return Err(LifecycleError::InvalidCleanShutdownReceipt);
         }
@@ -827,10 +943,7 @@ impl NoSecretService {
             }
             CleanupStep::ReapHelpers => self.work.clear(),
             CleanupStep::DiscardUserTokens => self.user_token_sessions.clear(),
-            CleanupStep::ReleaseSingleInstanceLease => {
-                self.single_instance_released = true;
-            }
-            CleanupStep::CommitAndRereadCleanMarker => {
+            CleanupStep::ReleaseSingleInstanceLease | CleanupStep::CommitAndRereadCleanMarker => {
                 self.latch_fatal(FatalReason::CleanupProtocolViolation);
                 return Err(LifecycleError::InvalidCleanShutdownReceipt);
             }
@@ -839,30 +952,37 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn prepare_clean_commit(self) -> Result<CleanCommitPending, ExitRequired> {
+    fn prepare_clean_commit(
+        self,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<CleanCommitPending, ExitRequired> {
         if self.expected_cleanup_step() != Some(CleanupStep::CommitAndRereadCleanMarker) {
-            return Err(ExitRequired {
-                restart_observation: DurableRunObservation::ActiveRun {
-                    generation: self.active_generation.get(),
-                },
-                reason: ExitReason::CleanupOutOfOrder,
-            });
+            return Err(ExitRequired::cleanup(
+                ExitReason::CleanupOutOfOrder,
+                self.active_run.into_writer_exit(),
+            ));
         }
-        if !self.work.is_empty()
-            || !self.user_token_sessions.is_empty()
-            || !self.single_instance_released
-        {
-            return Err(ExitRequired {
-                restart_observation: DurableRunObservation::ActiveRun {
-                    generation: self.active_generation.get(),
-                },
-                reason: ExitReason::CleanupIncomplete,
-            });
+        if !self.work.is_empty() || !self.user_token_sessions.is_empty() {
+            return Err(ExitRequired::cleanup(
+                ExitReason::CleanupIncomplete,
+                self.active_run.into_writer_exit(),
+            ));
         }
-        Ok(CleanCommitPending {
-            active_generation: self.active_generation,
-            next_clean_shutdown_generation: self.next_clean_shutdown_generation,
-        })
+        let transition = self
+            .active_run
+            .prepare_clean(key)
+            .map_err(ExitRequired::durable)?;
+        Ok(CleanCommitPending { transition })
+    }
+
+    fn prepare_fatal_exit(self) -> Result<ExitRequired, LifecycleError> {
+        if !matches!(self.state, RuntimeState::Fatal(_)) {
+            return Err(LifecycleError::NotReady);
+        }
+        Ok(ExitRequired::cleanup(
+            ExitReason::FatalRuntime,
+            self.active_run.into_writer_exit(),
+        ))
     }
 
     fn fail_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
@@ -886,12 +1006,6 @@ impl NoSecretService {
         self.latch_fatal(FatalReason::ServiceCrash);
     }
 
-    const fn restart_observation(&self) -> DurableRunObservation {
-        DurableRunObservation::ActiveRun {
-            generation: self.active_generation.get(),
-        }
-    }
-
     fn require_ready(&self) -> Result<(), LifecycleError> {
         match self.state {
             RuntimeState::Ready => Ok(()),
@@ -912,646 +1026,15 @@ impl fmt::Debug for NoSecretService {
         formatter
             .debug_struct("NoSecretService")
             .field("state", &self.state)
-            .field("active_generation", &"[GENERATION]")
+            .field("active_run", &"[REDACTED DURABLE AUTHORITY]")
             .field("work", &"[REDACTED FIXTURE WORK]")
             .field("user_token_sessions", &"[REDACTED SESSIONS]")
             .field("invalid_sessions", &"[REDACTED SESSIONS]")
             .field("next_cleanup_index", &self.next_cleanup_index)
-            .field("next_clean_shutdown_generation", &"[GENERATION]")
-            .field("single_instance_released", &self.single_instance_released)
             .finish()
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::error::Error;
-
-    use super::{
-        CleanupStep, CommittedRunMarkerObservation, DurableRunObservation, ExitReason, FatalReason,
-        LifecycleError, MAX_ACTIVE_FIXTURE_WORK, MAX_QUARANTINED_SESSIONS,
-        MAX_RETAINED_USER_TOKEN_SESSIONS, NoSecretFixtureWorkKind, NoSecretService,
-        NoSecretStartupAttempt, NoSecretStartupRequirement, PendingNoSecretStartup, RecoveryReason,
-        RereadRunMarkerObservation, RuntimeState, SessionEvent, SessionId,
-        SessionInvalidationReport, StartupFailure, StartupObservation, StopReason, WorkId,
-        WorkState,
-    };
-
-    fn pending_startup(
-        durable_run: DurableRunObservation,
-    ) -> Result<PendingNoSecretStartup, StartupFailure> {
-        let mut attempt = NoSecretStartupAttempt::new(durable_run);
-        for requirement in NoSecretStartupRequirement::ALL {
-            attempt.observe(requirement, StartupObservation::Verified)?;
-        }
-        attempt.finish()
-    }
-
-    fn ready_service(clean_generation: u64) -> Result<NoSecretService, StartupFailure> {
-        let pending = pending_startup(DurableRunObservation::CleanShutdown {
-            generation: clean_generation,
-        })?;
-        let active = DurableRunObservation::ActiveRun {
-            generation: pending.active_generation.get(),
-        };
-        Ok(pending
-            .commit_and_reread_active_marker(
-                CommittedRunMarkerObservation(active),
-                RereadRunMarkerObservation(active),
-            )?
-            .record_listeners_prepared()
-            .record_scm_running_published()
-            .open_admission())
-    }
-
-    fn finish_nonfinal_cleanup_step(
-        service: &mut NoSecretService,
-        step: CleanupStep,
-    ) -> Result<(), LifecycleError> {
-        assert_ne!(step, CleanupStep::CommitAndRereadCleanMarker);
-        service.complete_cleanup_step(step)
-    }
-
-    #[test]
-    fn every_startup_requirement_is_mandatory() -> Result<(), Box<dyn Error>> {
-        for missing in NoSecretStartupRequirement::ALL {
-            let mut attempt =
-                NoSecretStartupAttempt::new(DurableRunObservation::CleanShutdown { generation: 1 });
-            for requirement in NoSecretStartupRequirement::ALL {
-                if requirement != missing {
-                    attempt.observe(requirement, StartupObservation::Verified)?;
-                }
-            }
-            assert_eq!(
-                attempt.finish().map(|_| ()),
-                Err(StartupFailure::Missing(missing))
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> Result<(), Box<dyn Error>>
-    {
-        for rejected in NoSecretStartupRequirement::ALL {
-            for observation in [
-                StartupObservation::Mismatch,
-                StartupObservation::Unavailable,
-            ] {
-                let mut attempt =
-                    NoSecretStartupAttempt::new(DurableRunObservation::CleanShutdown {
-                        generation: 1,
-                    });
-                for requirement in NoSecretStartupRequirement::ALL {
-                    let observed = if requirement == rejected {
-                        observation
-                    } else {
-                        StartupObservation::Verified
-                    };
-                    attempt.observe(requirement, observed)?;
-                }
-                let expected = match observation {
-                    StartupObservation::Mismatch => StartupFailure::Mismatch(rejected),
-                    StartupObservation::Unavailable => StartupFailure::Unavailable(rejected),
-                    StartupObservation::Verified => return Err("invalid test case".into()),
-                };
-                assert_eq!(attempt.finish().map(|_| ()), Err(expected));
-            }
-        }
-
-        let requirement = NoSecretStartupRequirement::ServiceConfiguration;
-        let mut attempt =
-            NoSecretStartupAttempt::new(DurableRunObservation::CleanShutdown { generation: 1 });
-        attempt.observe(requirement, StartupObservation::Mismatch)?;
-        assert_eq!(
-            attempt.observe(requirement, StartupObservation::Verified),
-            Err(StartupFailure::DuplicateObservation(requirement))
-        );
-        for remaining in NoSecretStartupRequirement::ALL {
-            if remaining != requirement {
-                attempt.observe(remaining, StartupObservation::Verified)?;
-            }
-        }
-        assert_eq!(
-            attempt.finish().map(|_| ()),
-            Err(StartupFailure::DuplicateObservation(requirement))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn only_exact_clean_marker_can_enter_the_ordered_startup_chain() -> Result<(), Box<dyn Error>> {
-        let clean = ready_service(7)?;
-        assert_eq!(clean.active_generation.get(), 8);
-        assert_eq!(clean.next_clean_shutdown_generation.get(), 9);
-
-        assert_eq!(
-            pending_startup(DurableRunObservation::CleanShutdown { generation: 0 }).map(|_| ()),
-            Err(StartupFailure::InvalidCleanShutdownGeneration)
-        );
-        for (observation, reason) in [
-            (
-                DurableRunObservation::ActiveRun { generation: 7 },
-                RecoveryReason::ActiveRunMarker,
-            ),
-            (
-                DurableRunObservation::RecoveryRequired,
-                RecoveryReason::PersistedRecoveryRequired,
-            ),
-            (
-                DurableRunObservation::Missing,
-                RecoveryReason::MissingRunMarker,
-            ),
-            (
-                DurableRunObservation::Invalid,
-                RecoveryReason::InvalidRunMarker,
-            ),
-        ] {
-            assert_eq!(
-                pending_startup(observation).map(|_| ()),
-                Err(StartupFailure::RecoveryRequired(reason))
-            );
-        }
-        for generation in [u64::MAX - 1, u64::MAX] {
-            assert_eq!(
-                pending_startup(DurableRunObservation::CleanShutdown { generation }).map(|_| ()),
-                Err(StartupFailure::CleanShutdownGenerationExhausted)
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn active_marker_commit_and_readback_are_exact_before_listener_preparation()
-    -> Result<(), Box<dyn Error>> {
-        let pending = pending_startup(DurableRunObservation::CleanShutdown { generation: 10 })?;
-        assert_eq!(
-            pending
-                .commit_and_reread_active_marker(
-                    CommittedRunMarkerObservation(DurableRunObservation::ActiveRun {
-                        generation: 12,
-                    }),
-                    RereadRunMarkerObservation(DurableRunObservation::ActiveRun { generation: 12 }),
-                )
-                .map(|_| ()),
-            Err(StartupFailure::ActiveMarkerCommitMismatch)
-        );
-
-        let pending = pending_startup(DurableRunObservation::CleanShutdown { generation: 10 })?;
-        assert_eq!(
-            pending
-                .commit_and_reread_active_marker(
-                    CommittedRunMarkerObservation(DurableRunObservation::ActiveRun {
-                        generation: 11,
-                    }),
-                    RereadRunMarkerObservation(DurableRunObservation::CleanShutdown {
-                        generation: 10,
-                    }),
-                )
-                .map(|_| ()),
-            Err(StartupFailure::ActiveMarkerReadbackMismatch)
-        );
-
-        let service = ready_service(10)?;
-        assert_eq!(service.state, RuntimeState::Ready);
-        assert_eq!(
-            service.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 11 }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn lock_and_unlock_invalidate_exact_session_without_discarding_its_user_token()
-    -> Result<(), Box<dyn Error>> {
-        let first_session = SessionId::new(11)?;
-        let second_session = SessionId::new(12)?;
-        let first_work = WorkId::new(101)?;
-        let second_work = WorkId::new(102)?;
-        let mut service = ready_service(1)?;
-        service.retain_user_token(first_session)?;
-        service.retain_user_token(second_session)?;
-        service.admit_fixture_work(first_work, first_session, NoSecretFixtureWorkKind::Approval)?;
-        service.admit_fixture_work(
-            second_work,
-            second_session,
-            NoSecretFixtureWorkKind::SecretInput,
-        )?;
-
-        let report = service.handle_session_event(SessionEvent::Lock(first_session))?;
-        assert_eq!(report.authorities_invalidated, 1);
-        assert_eq!(report.helper_terminations_required, 1);
-        assert_eq!(report.user_tokens_discarded, 0);
-        assert!(report.revalidation_required);
-        assert!(service.user_token_sessions.contains(&first_session));
-        assert_eq!(
-            service.admit_fixture_work(
-                WorkId::new(103)?,
-                first_session,
-                NoSecretFixtureWorkKind::Approval,
-            ),
-            Err(LifecycleError::SessionInvalidated)
-        );
-        service.reap_cancelled_fixture_work(first_work)?;
-        assert!(service.work.contains_key(&second_work));
-
-        let missed_lock_session = SessionId::new(13)?;
-        let missed_lock_work = WorkId::new(104)?;
-        let mut unlock_service = ready_service(1)?;
-        unlock_service.retain_user_token(missed_lock_session)?;
-        unlock_service.admit_fixture_work(
-            missed_lock_work,
-            missed_lock_session,
-            NoSecretFixtureWorkKind::Approval,
-        )?;
-        let unlock =
-            unlock_service.handle_session_event(SessionEvent::Unlock(missed_lock_session))?;
-        assert_eq!(unlock.authorities_invalidated, 1);
-        assert_eq!(unlock.helper_terminations_required, 1);
-        assert_eq!(unlock.user_tokens_discarded, 0);
-        assert_eq!(
-            unlock_service
-                .work
-                .get(&missed_lock_work)
-                .map(|work| work.state),
-            Some(WorkState::CancellationPending)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn logoff_and_user_switch_discard_user_tokens_and_require_helper_reap()
-    -> Result<(), Box<dyn Error>> {
-        let first_session = SessionId::new(21)?;
-        let second_session = SessionId::new(22)?;
-        let first_work = WorkId::new(201)?;
-        let second_work = WorkId::new(202)?;
-        let mut service = ready_service(1)?;
-        service.retain_user_token(first_session)?;
-        service.retain_user_token(second_session)?;
-        service.admit_fixture_work(first_work, first_session, NoSecretFixtureWorkKind::Approval)?;
-        service.admit_fixture_work(
-            second_work,
-            second_session,
-            NoSecretFixtureWorkKind::SecretInput,
-        )?;
-
-        let logoff = service.handle_session_event(SessionEvent::Logoff(first_session))?;
-        assert_eq!(logoff.authorities_invalidated, 1);
-        assert_eq!(logoff.user_tokens_discarded, 1);
-        assert!(!service.user_token_sessions.contains(&first_session));
-
-        let switched = service.handle_session_event(SessionEvent::UserSwitch(second_session))?;
-        assert_eq!(switched.authorities_invalidated, 1);
-        assert_eq!(switched.helper_terminations_required, 1);
-        assert_eq!(switched.user_tokens_discarded, 1);
-        assert!(service.user_token_sessions.is_empty());
-        assert_eq!(
-            service.handle_session_event(SessionEvent::Unlock(first_session))?,
-            SessionInvalidationReport::empty(true)
-        );
-        assert_eq!(
-            service.admit_fixture_work(
-                WorkId::new(203)?,
-                first_session,
-                NoSecretFixtureWorkKind::Approval,
-            ),
-            Err(LifecycleError::SessionInvalidated)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn session_quarantine_exhaustion_fails_closed_and_discards_live_authority()
-    -> Result<(), Box<dyn Error>> {
-        let live_session = SessionId::new(999)?;
-        let live_work = WorkId::new(901)?;
-        let mut service = ready_service(1)?;
-        service.retain_user_token(live_session)?;
-        service.admit_fixture_work(
-            live_work,
-            live_session,
-            NoSecretFixtureWorkKind::SecretInput,
-        )?;
-
-        let max_quarantined_sessions = u32::try_from(MAX_QUARANTINED_SESSIONS)?;
-        for value in 1..=max_quarantined_sessions {
-            service.handle_session_event(SessionEvent::Unlock(SessionId::new(value)?))?;
-        }
-        assert_eq!(service.invalid_sessions.len(), MAX_QUARANTINED_SESSIONS);
-        assert_eq!(
-            service.handle_session_event(SessionEvent::Lock(SessionId::new(100)?)),
-            Err(LifecycleError::SessionQuarantineExhausted)
-        );
-        assert_eq!(
-            service.state,
-            RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
-        );
-        assert!(service.user_token_sessions.is_empty());
-        assert_eq!(
-            service.work.get(&live_work).map(|work| work.state),
-            Some(WorkState::TerminationPending)
-        );
-        service.crash();
-        assert_eq!(
-            service.state,
-            RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
-        );
-        assert_eq!(
-            service.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-
-        let switch_live_session = SessionId::new(999)?;
-        let switch_live_work = WorkId::new(902)?;
-        let mut switch_service = ready_service(1)?;
-        switch_service.admit_fixture_work(
-            switch_live_work,
-            switch_live_session,
-            NoSecretFixtureWorkKind::Approval,
-        )?;
-        let max_retained_sessions = u32::try_from(MAX_RETAINED_USER_TOKEN_SESSIONS)?;
-        for value in 1..=max_retained_sessions {
-            switch_service.retain_user_token(SessionId::new(value)?)?;
-        }
-        assert_eq!(
-            switch_service.handle_session_event(SessionEvent::UserSwitch(SessionId::new(1_000)?)),
-            Err(LifecycleError::SessionQuarantineExhausted)
-        );
-        assert_eq!(
-            switch_service.state,
-            RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
-        );
-        assert!(switch_service.user_token_sessions.is_empty());
-        assert_eq!(
-            switch_service
-                .work
-                .get(&switch_live_work)
-                .map(|work| work.state),
-            Some(WorkState::TerminationPending)
-        );
-        assert_eq!(
-            switch_service.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_registries_are_bounded_before_mutation() -> Result<(), Box<dyn Error>> {
-        let shared_session = SessionId::new(500)?;
-        let mut work_service = ready_service(1)?;
-        let max_active_fixture_work = u64::try_from(MAX_ACTIVE_FIXTURE_WORK)?;
-        for value in 1..=max_active_fixture_work {
-            work_service.admit_fixture_work(
-                WorkId::new(value)?,
-                shared_session,
-                NoSecretFixtureWorkKind::Approval,
-            )?;
-        }
-        assert_eq!(work_service.work.len(), MAX_ACTIVE_FIXTURE_WORK);
-        assert_eq!(
-            work_service.admit_fixture_work(
-                WorkId::new(max_active_fixture_work + 1)?,
-                shared_session,
-                NoSecretFixtureWorkKind::Approval,
-            ),
-            Err(LifecycleError::WorkCapacityExhausted)
-        );
-        assert_eq!(work_service.work.len(), MAX_ACTIVE_FIXTURE_WORK);
-
-        let mut token_service = ready_service(1)?;
-        let max_retained_user_token_sessions = u32::try_from(MAX_RETAINED_USER_TOKEN_SESSIONS)?;
-        for value in 1..=max_retained_user_token_sessions {
-            token_service.retain_user_token(SessionId::new(value)?)?;
-        }
-        assert_eq!(
-            token_service.user_token_sessions.len(),
-            MAX_RETAINED_USER_TOKEN_SESSIONS
-        );
-        token_service.retain_user_token(SessionId::new(1)?)?;
-        assert_eq!(
-            token_service.retain_user_token(SessionId::new(max_retained_user_token_sessions + 1,)?),
-            Err(LifecycleError::UserTokenCapacityExhausted)
-        );
-        assert_eq!(
-            token_service.user_token_sessions.len(),
-            MAX_RETAINED_USER_TOKEN_SESSIONS
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn stop_closes_admission_and_clean_commit_atomically_mints_stopped_permit()
-    -> Result<(), Box<dyn Error>> {
-        let session = SessionId::new(31)?;
-        let mut service = ready_service(1)?;
-        service.retain_user_token(session)?;
-        service.admit_fixture_work(
-            WorkId::new(301)?,
-            session,
-            NoSecretFixtureWorkKind::Approval,
-        )?;
-
-        service.begin_stop(StopReason::ScmStop)?;
-        service.begin_stop(StopReason::SystemShutdown)?;
-        assert_eq!(
-            service.expected_cleanup_step(),
-            Some(CleanupStep::RejectNewWork)
-        );
-        assert_eq!(
-            service.admit_fixture_work(
-                WorkId::new(302)?,
-                session,
-                NoSecretFixtureWorkKind::SecretInput,
-            ),
-            Err(LifecycleError::NotReady)
-        );
-        for step in CleanupStep::ORDERED
-            .iter()
-            .take(CleanupStep::ORDERED.len() - 1)
-            .copied()
-        {
-            assert_eq!(service.expected_cleanup_step(), Some(step));
-            finish_nonfinal_cleanup_step(&mut service, step)?;
-        }
-        assert_eq!(
-            service.expected_cleanup_step(),
-            Some(CleanupStep::CommitAndRereadCleanMarker)
-        );
-        let clean = DurableRunObservation::CleanShutdown { generation: 3 };
-        let Ok(clean_pending) = service.prepare_clean_commit() else {
-            return Err("exact cleanup prerequisites unexpectedly required exit".into());
-        };
-        let Ok(stopped) = clean_pending.commit_and_reread_clean_marker(
-            CommittedRunMarkerObservation(clean),
-            RereadRunMarkerObservation(clean),
-        ) else {
-            return Err("exact clean marker unexpectedly required exit".into());
-        };
-        assert_eq!(
-            stopped.restart_observation(),
-            DurableRunObservation::CleanShutdown { generation: 3 }
-        );
-
-        let restarted = ready_service(3)?;
-        assert_eq!(restarted.active_generation.get(), 4);
-        assert_eq!(restarted.next_clean_shutdown_generation.get(), 5);
-        Ok(())
-    }
-
-    #[test]
-    fn every_cleanup_failure_requires_recovery_and_never_reports_stopped()
-    -> Result<(), Box<dyn Error>> {
-        for failed_index in 0..CleanupStep::ORDERED.len() {
-            let mut service = ready_service(1)?;
-            service.begin_stop(StopReason::ScmStop)?;
-            for step in CleanupStep::ORDERED.iter().take(failed_index).copied() {
-                finish_nonfinal_cleanup_step(&mut service, step)?;
-            }
-            let failed = CleanupStep::ORDERED[failed_index];
-            service.fail_cleanup(failed)?;
-            assert_eq!(service.expected_cleanup_step(), None);
-            assert_eq!(
-                service.state,
-                RuntimeState::Fatal(FatalReason::CleanupFailed(failed))
-            );
-            assert_eq!(
-                service.restart_observation(),
-                DurableRunObservation::ActiveRun { generation: 2 }
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn out_of_order_incomplete_or_invalid_clean_transition_requires_exit()
-    -> Result<(), Box<dyn Error>> {
-        let mut out_of_order = ready_service(1)?;
-        out_of_order.begin_stop(StopReason::ScmStop)?;
-        assert_eq!(
-            out_of_order.complete_cleanup_step(CleanupStep::CancelRequests),
-            Err(LifecycleError::CleanupOutOfOrder)
-        );
-        assert_eq!(
-            out_of_order.begin_stop(StopReason::ScmStop),
-            Err(LifecycleError::Fatal)
-        );
-
-        let mut premature = ready_service(1)?;
-        premature.begin_stop(StopReason::ScmStop)?;
-        let Err(exit) = premature.prepare_clean_commit() else {
-            return Err("out-of-order cleanup unexpectedly prepared a clean commit".into());
-        };
-        assert_eq!(exit.reason, ExitReason::CleanupOutOfOrder);
-        assert_eq!(
-            exit.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-
-        let mut incomplete = ready_service(1)?;
-        incomplete.begin_stop(StopReason::ScmStop)?;
-        for step in CleanupStep::ORDERED
-            .iter()
-            .take_while(|step| **step != CleanupStep::CommitAndRereadCleanMarker)
-            .copied()
-        {
-            finish_nonfinal_cleanup_step(&mut incomplete, step)?;
-        }
-        incomplete.single_instance_released = false;
-        let Err(exit) = incomplete.prepare_clean_commit() else {
-            return Err("incomplete cleanup unexpectedly prepared a clean commit".into());
-        };
-        assert_eq!(exit.reason, ExitReason::CleanupIncomplete);
-        assert_eq!(
-            exit.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-
-        let mut wrong_generation = ready_service(1)?;
-        wrong_generation.begin_stop(StopReason::ScmStop)?;
-        for step in CleanupStep::ORDERED
-            .iter()
-            .take_while(|step| **step != CleanupStep::CommitAndRereadCleanMarker)
-            .copied()
-        {
-            finish_nonfinal_cleanup_step(&mut wrong_generation, step)?;
-        }
-        let Ok(clean_pending) = wrong_generation.prepare_clean_commit() else {
-            return Err("exact cleanup prerequisites unexpectedly required exit".into());
-        };
-        let Err(exit) = clean_pending.commit_and_reread_clean_marker(
-            CommittedRunMarkerObservation(DurableRunObservation::CleanShutdown { generation: 4 }),
-            RereadRunMarkerObservation(DurableRunObservation::CleanShutdown { generation: 4 }),
-        ) else {
-            return Err("wrong clean generation unexpectedly minted a stopped permit".into());
-        };
-        assert_eq!(exit.reason, ExitReason::InvalidCleanShutdownReceipt);
-        assert_eq!(
-            exit.restart_observation(),
-            DurableRunObservation::RecoveryRequired
-        );
-        assert_eq!(
-            pending_startup(exit.restart_observation()).map(|_| ()),
-            Err(StartupFailure::RecoveryRequired(
-                RecoveryReason::PersistedRecoveryRequired
-            ))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn crash_and_cleanup_deadline_never_produce_clean_restart_evidence()
-    -> Result<(), Box<dyn Error>> {
-        let mut crashed = ready_service(1)?;
-        crashed.crash();
-        assert_eq!(
-            crashed.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-        assert_eq!(
-            crashed.state,
-            RuntimeState::Fatal(FatalReason::ServiceCrash)
-        );
-
-        let mut expired = ready_service(1)?;
-        expired.begin_stop(StopReason::SystemShutdown)?;
-        expired.cleanup_deadline_expired()?;
-        assert_eq!(
-            expired.restart_observation(),
-            DurableRunObservation::ActiveRun { generation: 2 }
-        );
-        assert_eq!(
-            expired.state,
-            RuntimeState::Fatal(FatalReason::CleanupDeadlineExpired)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn debug_output_redacts_work_session_and_generation_identifiers() -> Result<(), Box<dyn Error>>
-    {
-        let session = SessionId::new(882_771)?;
-        let work = WorkId::new(991_663)?;
-        let mut service = ready_service(44)?;
-        service.retain_user_token(session)?;
-        service.admit_fixture_work(work, session, NoSecretFixtureWorkKind::Approval)?;
-
-        let marker = DurableRunObservation::ActiveRun {
-            generation: 775_544,
-        };
-        let startup = NoSecretStartupAttempt::new(marker);
-        let committed = CommittedRunMarkerObservation(marker);
-        let reread = RereadRunMarkerObservation(marker);
-        let debug = format!(
-            "{service:?} {session:?} {work:?} {marker:?} {startup:?} {committed:?} {reread:?}"
-        );
-        assert!(!debug.contains("882771"));
-        assert!(!debug.contains("991663"));
-        assert!(!debug.contains("775544"));
-        assert!(!debug.contains("generation: 44"));
-        assert!(debug.contains("[REDACTED"));
-        assert!(debug.contains("[GENERATION]"));
-        Ok(())
-    }
-}
+#[path = "lifecycle_core_tests.rs"]
+mod tests;

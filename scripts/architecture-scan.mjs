@@ -2455,13 +2455,35 @@ const keyAgentServiceRustFiles = await rustProductionSources(
 const keyAgentServicePlatformSource = await text(
   "crates/platform-windows/src/key_agent_service.rs",
 );
+const keyAgentServiceDurableRunStatePath =
+  "crates/platform-windows/src/key_agent_service/durable_run_state.rs";
+const keyAgentServiceDurableRunState = await text(
+  keyAgentServiceDurableRunStatePath,
+);
+const keyAgentServiceDurableTestOnlyImport =
+  "\n#[cfg(test)]\nuse std::sync::atomic::{AtomicU64, Ordering};\n";
+const keyAgentServiceDurableFixtureMarker =
+  "\n#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum DurableRunStateCommitFault";
+const keyAgentServiceDurableFixtureBoundary =
+  keyAgentServiceDurableRunState.indexOf(
+    keyAgentServiceDurableFixtureMarker,
+  );
+const keyAgentServiceDurableRunStateProduction =
+  keyAgentServiceDurableFixtureBoundary === -1
+    ? ""
+    : keyAgentServiceDurableRunState.slice(
+        0,
+        keyAgentServiceDurableFixtureBoundary,
+      ).replace(keyAgentServiceDurableTestOnlyImport, "\n");
 const keyAgentServiceLifecycleCorePath =
   "crates/platform-windows/src/key_agent_service/lifecycle_core.rs";
 const keyAgentServiceLifecycleCore = await text(
   keyAgentServiceLifecycleCorePath,
 );
-const keyAgentServiceLifecycleCoreProduction = withoutBottomTestModule(
-  keyAgentServiceLifecycleCore,
+const keyAgentServiceLifecycleCoreTestsPath =
+  "crates/platform-windows/src/key_agent_service/lifecycle_core_tests.rs";
+const keyAgentServiceLifecycleCoreTests = await text(
+  keyAgentServiceLifecycleCoreTestsPath,
 );
 const keyAgentServiceLifecycleDirectoryInventory =
   await trustedDirectoryEntryInventory(
@@ -5752,136 +5774,447 @@ requireInvariant(
   "the Key Agent service must remain non-publishable, safe-only, silent, network/key-agent-free, default/release unavailable, and gated by the exact debug SCM, service-token, and status-RPC precedence with effective mutation probes",
 );
 
-const keyAgentServiceLifecycleTypestates = [
-  "CommittedRunMarkerObservation",
-  "RereadRunMarkerObservation",
+const keyAgentServiceDurableBridgeTypes = [
+  "RunMarkerState",
+  "RecoveryRequired",
+  "InstallationIdentity",
+  "FixtureRunStateAuthenticationKey",
+  "SealedStartupObservation",
+  "SingleWriterLease",
+  "BootEvidence",
+  "PreparedActiveTransition",
+  "CommittedActiveMarker",
+  "RereadActiveMarker",
+  "ActiveRunLease",
+  "PreparedCleanTransition",
+  "CommittedCleanMarker",
+  "RereadCleanMarker",
+  "CleanCommittedWithWriter",
+  "PendingFinalWriterRelease",
+  "WriterLeaseReleaseReceipt",
+  "ActiveReloadRequired",
+  "ActiveReloadReceipt",
+  "ReloadedActiveRunState",
+  "CleanReloadRequired",
+  "CleanReloadReceipt",
+  "DurableFailureWithWriter",
+  "WriterExitPending",
+  "WriterExitReceipt",
+  "RecoveryExitEvidence",
+  "StoppedRunEvidence",
+];
+const keyAgentServiceDurableBridgeFunctions = [
+  "from_fixed_bytes",
+  "from_fixture_bytes",
+  "state",
+  "generation",
+  "bind_writer",
+  "prepare_active",
+  "abort",
+  "into_writer_exit",
+  "generation",
+  "complete",
+  "commit_ambiguous",
+  "abort",
+  "into_writer_exit",
+  "generation",
+  "prepare_clean",
+  "abort",
+  "into_writer_exit",
+  "complete",
+  "commit_ambiguous",
+  "abort",
+  "into_writer_exit",
+  "generation",
+  "prepare_writer_release",
+  "abort",
+  "into_writer_exit",
+  "complete",
+  "abort",
+  "into_writer_exit",
+  "complete_reload",
+  "abort",
+  "into_writer_exit",
+  "complete_reload",
+  "abort",
+  "into_writer_exit",
+  "reason",
+  "into_writer_exit",
+  "complete",
+  "generation",
+];
+const keyAgentServiceDurableEvidenceTypes = [
+  "FixtureRunStateAuthenticationKey",
+  "SealedStartupObservation",
+  "SingleWriterLease",
+  "BootEvidence",
+  "PreparedActiveTransition",
+  "CommittedActiveMarker",
+  "RereadActiveMarker",
+  "ActiveRunLease",
+  "PreparedCleanTransition",
+  "CommittedCleanMarker",
+  "RereadCleanMarker",
+  "CleanCommittedWithWriter",
+  "PendingFinalWriterRelease",
+  "WriterLeaseReleaseReceipt",
+  "ActiveReloadRequired",
+  "ActiveReloadReceipt",
+  "ReloadedActiveRunState",
+  "CleanReloadRequired",
+  "CleanReloadReceipt",
+  "DurableFailureWithWriter",
+  "WriterExitPending",
+  "WriterExitReceipt",
+  "RecoveryExitEvidence",
+  "StoppedRunEvidence",
+];
+const keyAgentServiceLifecycleEvidenceTypes = [
+  "StartupWriterExit",
+  "StartupExitRequired",
   "NoSecretStartupAttempt",
   "PendingNoSecretStartup",
+  "PendingActiveReload",
+  "ActiveReloadResolution",
   "ListenerPendingRuntime",
   "ScmRunningPendingRuntime",
   "AdmissionPendingRuntime",
-  "NoSecretService",
   "ExitRequired",
+  "RecoveryExitPermit",
+  "SingleInstanceReleasePending",
   "CleanCommitPending",
+  "PendingCleanReload",
   "StoppedPermit",
+  "NoSecretService",
 ];
+const approvedKeyAgentServiceDurableSourceSha256 =
+  "be95660a8b7ccbb08c8f78b169ac06ebc18ae52fd97469c77c7700a1a927d146";
+const approvedKeyAgentServiceDurableProductionSha256 =
+  "68212fa6b4e8a607fb88c83d9f1705e8b855c42f9fe12f644af59b83c020045a";
 const approvedKeyAgentServiceLifecycleSourceSha256 =
-  "bd5d470f914af4c3c1d4919935ff5d5727bd5894ebbc6ab8b21256625a15f79d";
+  "abad3a2bda794fc11faf32c60acfd3465a4124b47ce7cea056d47cdf8c395295";
+const approvedKeyAgentServiceLifecycleTestsSha256 =
+  "b6d9fe2cb597a656b5dcfa0cfc0b0f08886fb8ebafb677d753d89bfd7334b11b";
+const keyAgentServiceDurableTestNames = [
+  "canonical_v1_clean_marker_and_checkpoint_round_trip",
+  "canonical_v1_layout_matches_independent_golden_digests",
+  "missing_marker_or_checkpoint_requires_recovery",
+  "malformed_or_noncanonical_envelopes_require_recovery",
+  "valid_mac_noncanonical_fields_and_domain_swapped_tags_fail_closed",
+  "authentication_and_installation_mismatch_require_recovery",
+  "rollback_and_one_sided_high_water_advance_require_recovery",
+  "same_generation_equivocation_requires_recovery",
+  "authenticated_non_clean_startup_cannot_mint_boot_evidence",
+  "transition_key_must_reauthenticate_the_held_lineage",
+  "crash_release_preserves_active_recovery_evidence_and_frees_writer",
+  "active_cas_conflict_and_commit_receipt_mismatch_require_recovery",
+  "active_post_commit_reread_drift_requires_recovery",
+  "ambiguous_active_before_write_reloads_exact_boot_evidence",
+  "ambiguous_active_after_marker_requires_recovery",
+  "ambiguous_active_after_checkpoint_reloads_runtime_authority",
+  "writer_lease_is_exclusive_and_release_receipt_is_exact",
+  "exact_clean_commit_and_reread_mint_stopped_evidence",
+  "ambiguous_clean_after_checkpoint_recovers_clean_with_writer_before_stopped",
+  "ambiguous_clean_before_write_requires_recovery",
+  "ambiguous_clean_after_marker_requires_recovery",
+  "clean_post_commit_reread_drift_requires_recovery",
+  "cross_backend_commit_reread_and_release_receipts_are_rejected",
+  "cross_backend_reload_receipts_are_rejected",
+  "ambiguous_or_mismatched_final_release_retires_without_stopped_authority",
+  "generation_exhaustion_requires_recovery",
+  "move_only_authorities_and_receipts_cannot_be_clone_or_copy",
+  "debug_redacts_key_generation_installation_mac_and_checkpoint",
+  "fixture_backend_is_fixed_capacity_and_has_no_history_growth",
+];
 const keyAgentServiceLifecycleTestNames = [
   "every_startup_requirement_is_mandatory",
   "mismatched_unavailable_and_duplicate_observations_fail_closed",
-  "only_exact_clean_marker_can_enter_the_ordered_startup_chain",
-  "active_marker_commit_and_readback_are_exact_before_listener_preparation",
+  "only_sealed_clean_boot_can_enter_the_ordered_startup_chain",
+  "active_commit_readback_and_reload_are_exact_before_listener_preparation",
   "lock_and_unlock_invalidate_exact_session_without_discarding_its_user_token",
-  "logoff_and_user_switch_discard_user_tokens_and_require_helper_reap",
-  "session_quarantine_exhaustion_fails_closed_and_discards_live_authority",
+  "logoff_and_user_switch_discard_tokens_and_require_helper_reap",
+  "session_quarantine_exhaustion_fails_closed_and_preserves_first_fatal_reason",
   "runtime_registries_are_bounded_before_mutation",
-  "stop_closes_admission_and_clean_commit_atomically_mints_stopped_permit",
-  "every_cleanup_failure_requires_recovery_and_never_reports_stopped",
-  "out_of_order_incomplete_or_invalid_clean_transition_requires_exit",
-  "crash_and_cleanup_deadline_never_produce_clean_restart_evidence",
-  "debug_output_redacts_work_session_and_generation_identifiers",
+  "stop_commits_clean_while_held_then_exact_release_mints_stopped_permit",
+  "every_pre_clean_cleanup_failure_leaves_active_and_retires_the_writer",
+  "out_of_order_incomplete_and_clean_reread_drift_require_exit",
+  "held_writer_closes_the_clean_commit_to_final_release_interleaving",
+  "exact_clean_ambiguous_reload_still_requires_the_branded_final_release",
+  "final_release_ambiguity_or_mismatch_retires_only_through_terminal_exit",
+  "fatal_exit_preserves_active_marker_and_retires_the_fixture_writer",
+  "crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifiers",
 ];
-const keyAgentServiceLifecycleContract = ({
+const keyAgentServiceLifecycleTestSuffix =
+  "\n#[cfg(test)]\n#[path = \"lifecycle_core_tests.rs\"]\nmod tests;\n";
+const keyAgentServicePhaseTwoPartitionDurable = (source) => {
+  const boundary = source.indexOf(keyAgentServiceDurableFixtureMarker);
+  if (
+    boundary === -1 ||
+    source.indexOf(
+      keyAgentServiceDurableFixtureMarker,
+      boundary + keyAgentServiceDurableFixtureMarker.length,
+    ) !== -1 ||
+    source.split(keyAgentServiceDurableTestOnlyImport).length - 1 !== 1
+  ) {
+    return null;
+  }
+  return {
+    production: source
+      .slice(0, boundary)
+      .replace(keyAgentServiceDurableTestOnlyImport, "\n"),
+    fixture: source.slice(boundary),
+  };
+};
+const keyAgentServicePhaseTwoPartitionLifecycle = (source) =>
+  source.endsWith(keyAgentServiceLifecycleTestSuffix)
+    ? source.slice(0, -keyAgentServiceLifecycleTestSuffix.length)
+    : null;
+const keyAgentServiceMoveOnlyEvidenceContract = (source, names) => {
+  const code = rustLexicalCode(source);
+  return names.every((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const declarationCount = (
+      code.match(new RegExp(`\\b(?:struct|enum)\\s+${escaped}\\b`, "gu")) ?? []
+    ).length;
+    const forbiddenDerive = new RegExp(
+      `#\\s*\\[\\s*derive\\s*\\([^)]*\\b(?:Clone|Copy|Default)\\b[^)]*\\)\\s*\\]\\s*(?:pub\\s*\\([^)]*\\)\\s+)?(?:struct|enum)\\s+${escaped}\\b`,
+      "u",
+    ).test(code);
+    const forbiddenTrait = new RegExp(
+      `\\bimpl\\s+(?:Clone|Copy|Default)\\s+for\\s+${escaped}\\b`,
+      "u",
+    ).test(code);
+    const conversionTo = new RegExp(
+      `\\bimpl(?:\\s*<[^>{}]*>)?\\s+(?:From|Into|TryFrom|TryInto)(?:\\s*<[^>{}]*>)?\\s+for\\s+${escaped}\\b`,
+      "u",
+    ).test(code);
+    const conversionFrom = new RegExp(
+      `\\bimpl(?:\\s*<[^>{}]*>)?\\s+(?:From|Into|TryFrom|TryInto)\\s*<\\s*${escaped}\\s*>`,
+      "u",
+    ).test(code);
+    return (
+      declarationCount === 1 &&
+      !forbiddenDerive &&
+      !forbiddenTrait &&
+      !conversionTo &&
+      !conversionFrom
+    );
+  });
+};
+const keyAgentServicePhaseTwoPinContract = ({
+  durableSource,
+  lifecycleSource,
+  lifecycleTests,
+}) => {
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  return (
+    durable !== null &&
+    normalizedSourceSha256(durableSource) ===
+      approvedKeyAgentServiceDurableSourceSha256 &&
+    normalizedSourceSha256(durable.production) ===
+      approvedKeyAgentServiceDurableProductionSha256 &&
+    normalizedSourceSha256(lifecycleSource) ===
+      approvedKeyAgentServiceLifecycleSourceSha256 &&
+    normalizedSourceSha256(lifecycleTests) ===
+      approvedKeyAgentServiceLifecycleTestsSha256
+  );
+};
+const keyAgentServicePhaseTwoSemanticContract = ({
   main,
+  platformManifest,
   platformService,
   platformLib,
+  durableSource,
   lifecycleSource,
+  lifecycleTests,
   directoryInventory,
   designDocument,
   architectureDocument,
 }) => {
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+  const durableCode = rustLexicalCode(durable.production);
+  const durableFixtureProductionCode = rustLexicalCode(
+    withoutCfgTestItems(durable.fixture),
+  ).trim();
+  const durableCompact = compactRust(durable.production);
+  const lifecycleCode = rustLexicalCode(lifecycleProduction);
+  const lifecycleCompact = compactRust(lifecycleProduction);
   const serviceCode = rustLexicalCode(platformService);
-  const production = withoutBottomTestModule(lifecycleSource);
-  const code = rustLexicalCode(production);
-  const compact = compactRust(production);
+  const platformLibCode = rustLexicalCode(platformLib);
   const compactMain = compactRust(main);
-  const useInventory = rustUseItems(production).map((item) =>
+  const combinedProductionCode = `${durableCode}\n${lifecycleCode}`;
+  const durablePublicTypes = [
+    ...durableCode.matchAll(
+      /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const durablePublicFunctions = [
+    ...durableCode.matchAll(
+      /\bpub\s*\(\s*super\s*\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const durableNonSuperVisibility = durableCode.replace(
+    /\bpub\s*\(\s*super\s*\)/gu,
+    "",
+  );
+  const privateDurableFunctionCounts = Object.freeze({
+    as_bytes: 3,
+    from_durable_bytes: 1,
+    from_exclusive_acquisition: 1,
+    expected_marker_bytes: 2,
+    expected_checkpoint_bytes: 2,
+    candidate_marker_bytes: 2,
+    candidate_checkpoint_bytes: 2,
+    from_durable_observation: 4,
+    from_release_readback: 1,
+  });
+  const durablePrivateFunctionsRemainPrivate = Object.entries(
+    privateDurableFunctionCounts,
+  ).every(([name, expected]) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    return (
+      (durableCode.match(new RegExp(`\\bfn\\s+${escaped}\\b`, "gu")) ?? [])
+        .length === expected &&
+      !new RegExp(
+        `\\bpub\\s*\\([^)]*\\)\\s+(?:const\\s+)?fn\\s+${escaped}\\b`,
+        "u",
+      ).test(durableCode)
+    );
+  });
+  const durableUseInventory = rustUseItems(durable.production).map((item) =>
     compactRust(item.source),
   );
-  const orderedDeriveInventory = rustAttributeItems(production)
+  const lifecycleUseInventory = rustUseItems(lifecycleProduction).map((item) =>
+    compactRust(item.source),
+  );
+  const orderedDeriveInventory = rustAttributeItems(lifecycleProduction)
     .map((attribute) => compactRust(attribute.source))
     .filter((attribute) => /\b(?:Ord|PartialOrd)\b/u.test(attribute));
   const forbiddenAuthority =
-    /\b(?:approve_and_sign|RawPrivateKey|SignedArtifact|SigningIntent|PreparedAuthorization|TcpStream|TcpListener|UdpSocket|reqwest|ureq|hyper|COMPILED_PARENT_POLICY|COMPILED_RELEASE_POLICY|SERVICE_UNAVAILABLE|key_agent_service_rpc|key_agent_service_launch|approval_ui|secret_input)\b/u;
+    /\b(?:approve_and_sign|RawPrivateKey|SignedArtifact|SigningIntent|PreparedAuthorization|COMPILED_PARENT_POLICY|COMPILED_RELEASE_POLICY|key_agent_service_rpc|key_agent_service_launch|approval_ui|secret_input)\b/u;
   const forbiddenAdapter =
-    /\b(?:crate|super|windows|std::(?:env|fs|io|net|process|sync|thread))\s*::|\b(?:OpenSCManagerW|CreateServiceW|StartServiceCtrlDispatcherW|CreateFileW|RegOpenKeyExW|FwpmEngineOpen|HANDLE|SOCKET)\b|\bextern\s+(?:crate|"C"|"system")|\b(?:include|env|option_env)!/u;
-  const cloneOrCopyTypestate = keyAgentServiceLifecycleTypestates.some(
-    (name) => {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-      return (
-        new RegExp(
-          `#\\s*\\[\\s*derive\\s*\\([^)]*\\b(?:Clone|Copy)\\b[^)]*\\)\\s*\\]\\s*struct\\s+${escaped}\\b`,
-          "u",
-        ).test(code) ||
-        new RegExp(`\\bimpl\\s+(?:Clone|Copy)\\s+for\\s+${escaped}\\b`, "u").test(
-          code,
-        )
-      );
-    },
-  );
-  const conversionTypestate = keyAgentServiceLifecycleTypestates.some((name) => {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    return (
-      new RegExp(
-        `\\bimpl(?:\\s*<[^>{}]*>)?\\s+(?:From|Into|TryFrom|TryInto)(?:\\s*<[^>{}]*>)?\\s+for\\s+${escaped}\\b`,
-        "u",
-      ).test(code) ||
-      new RegExp(`\\bimpl\\s+Default\\s+for\\s+${escaped}\\b`, "u").test(
-        code,
-      )
-    );
-  });
-  const designMarkers = [
+    /\b(?:windows|winapi|tokio|mio|std::(?:env|fs|io|net|process|sync|thread))\s*::|\b(?:OpenSCManagerW|CreateServiceW|StartServiceCtrlDispatcherW|CreateFileW|RegOpenKeyExW|FwpmEngineOpen|CreateMutexW|HANDLE|SC_HANDLE|SOCKET|TcpStream|TcpListener|UdpSocket|reqwest|ureq|hyper)\b|\bextern\s+(?:crate|"C"|"system")|\b(?:include|env|option_env)!/u;
+  const forbiddenLifecycleDurableShape =
+    /\b(?:DurableRunObservation|CommittedRunMarkerObservation|RereadRunMarkerObservation|ReloadRequired|ReloadedRunState|active_generation|clean_generation|next_clean_shutdown_generation|single_instance_released)\b/u;
+  const designPhaseTwoAStart = designDocument.indexOf(
     "**Current Phase 2A status: started, not passed.**",
+  );
+  const designPhaseTwoBStart = designDocument.indexOf(
+    "**Current Phase 2B status: started, not passed.**",
+    designPhaseTwoAStart,
+  );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoBStart,
+  );
+  const phaseTwoADesign =
+    designPhaseTwoAStart === -1 || designPhaseTwoBStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoAStart, designPhaseTwoBStart);
+  const phaseTwoBDesign =
+    designPhaseTwoBStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoBStart, designPhaseThreeStart);
+  const normalizedPhaseTwoADesign = phaseTwoADesign.replace(/\s+/gu, " ");
+  const normalizedPhaseTwoBDesign = phaseTwoBDesign.replace(/\s+/gu, " ");
+  const lifecycleArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) => line.startsWith("| Windows service lifecycle model |"));
+  const durableArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) => line.startsWith("| Windows service durable run state |"));
+  const normalizedLifecycleArchitecture = (
+    lifecycleArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const normalizedDurableArchitecture = (
+    durableArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const phaseTwoADesignMarkers = [
     "module-private lifecycle core with zero production callers",
     "all eleven mandatory no-secret startup observations",
-    "The final cleanup precheck consumes the live runtime into a",
-    "`CleanCommitPending` authority only after exact cleanup order",
-    "Only that move-only pending authority may accept distinct committed and reread Clean receipts",
-    "ambiguous receipt requires recovery instead of claiming an Active restart",
-    "latches the first fatal reason",
+    "Clean-marker commit/readback followed by single-instance release",
+    "`CleanCommitPending` while retaining the exact writer lease",
+    "`CleanCommittedWithWriter`",
+    "sole stopped-report permit requires its final backend-bound writer-release receipt",
+    "Clean reload still retains the writer-release obligation",
     "bounded at 256, 64, and 64 entries",
+    "latches the first fatal reason",
     "There is no production caller or OS adapter.",
-    "Phase 1 and Phase 2 exit gates",
-    "remain not passed",
-    "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain",
-    "the ordinary/release service executable remains silent exit 78",
+    "Phase 1 and Phase 2 exit gates remain not passed",
+    "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`",
+    "ordinary/release service executable remains silent exit 78",
   ];
-  const architectureMarkers = [
-    "| Windows service lifecycle model |",
+  const phaseTwoBDesignMarkers = [
+    "module-private, zero-runtime-root core",
+    "exact 148-byte `YWRUNV01` run-marker and `YWHIWV01` independent high-water envelopes",
+    "reserved-zero schema",
+    "distinct HMAC-SHA256 domain",
+    "`PreparedActiveTransition -> ActiveRunLease -> PreparedCleanTransition -> CleanCommittedWithWriter -> PendingFinalWriterRelease -> StoppedRunEvidence`",
+    "same opaque backend/lease binding",
+    "lifecycle-branded Active or Clean reload state",
+    "terminal-only writer-exit authority",
+    "supplied transition key must reauthenticate the exact held prior marker and checkpoint",
+    "a key switch retains only terminal writer-exit authority",
+    "Clean commit and readback occur while the writer remains held",
+    "no-OS fault model, not product storage",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  const lifecycleArchitectureMarkers = [
     "module-private, zero-production-caller Phase 2A core",
-    "final precheck consumes the runtime into `CleanCommitPending`",
-    "only that move-only authority can accept distinct commit/readback receipts",
-    "Invalid or ambiguous Clean evidence requires recovery rather than claiming an Active restart",
-    "Quarantine exhaustion invalidates live fixture authority",
-    "preserves the first fatal reason",
+    "Clean-marker commit/readback while the writer remains held, followed by exact single-instance release",
+    "`CleanCommittedWithWriter`",
+    "exact backend-bound writer-release receipt is the sole path to the stopped-report permit",
+    "Lifecycle-owned Active and Clean reload wrappers",
+    "no bare durable reload state can re-enter the listener or stopped path",
     "imports no OS, SCM, storage, firewall, network, key, or signing adapter",
     "Phase 1 and Phase 2 exit gates remain not passed",
     "both compiled policies remain `None`",
     "ordinary/release service remains silent exit 78",
   ];
-  const designSectionStart = designDocument.indexOf(
-    "**Current Phase 2A status: started, not passed.**",
-  );
-  const designSectionEnd = designDocument.indexOf(
-    "\n### Phase 3",
-    designSectionStart,
-  );
-  const lifecycleDesignSection =
-    designSectionStart === -1 || designSectionEnd === -1
-      ? ""
-      : designDocument.slice(designSectionStart, designSectionEnd);
-  const lifecycleArchitectureRows = architectureDocument
-    .split(/\r?\n/gu)
-    .filter((line) => line.startsWith("| Windows service lifecycle model |"));
-  const normalizedDesignDocument = lifecycleDesignSection.replace(/\s+/gu, " ");
-  const normalizedArchitectureDocument = (
-    lifecycleArchitectureRows[0] ?? ""
-  ).replace(/\s+/gu, " ");
+  const durableArchitectureMarkers = [
+    "module-private, zero-runtime-root Phase 2B core",
+    "exact 148-byte authenticated `YWRUNV01` marker and independent `YWHIWV01` high-water envelopes",
+    "reserved-zero schema",
+    "domain-separated fixture HMAC",
+    "`PreparedCleanTransition`, `CleanCommittedWithWriter`, final writer release, and `StoppedRunEvidence`",
+    "Every commit, reread, reload, and release receipt is bound to the originating opaque backend and lease",
+    "Active and Clean ambiguity use distinct move-only reload types",
+    "Every Active or Clean preparation first reauthenticates the exact held prior marker/checkpoint under the supplied transition key",
+    "a key switch retains only terminal writer-exit authority",
+    "terminal-only writer-exit authority",
+    "no filesystem/registry/SCM/kernel-singleton adapter",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  let markerCommitment;
+  let authenticate;
+  let verifyAuthentication;
+  let buildSnapshot;
+  let verifyObservation;
+  let verifyMarker;
+  let verifyCheckpoint;
+  let bindWriter;
+  let prepareActive;
+  let activeTransition;
+  let prepareClean;
+  let cleanTransition;
+  let finalRelease;
+  let activeReload;
+  let cleanReload;
+  let writerExit;
+  let fixtureBoot;
+  let fixtureCommitActive;
+  let fixtureCommitClean;
+  let fixtureRelease;
+  let fixtureRetire;
   let startupObserve;
   let startupFinish;
-  let activeCommit;
+  let pendingStartup;
+  let pendingActiveReload;
   let listenerPrepared;
   let scmRunningPublished;
   let admissionOpen;
@@ -5892,115 +6225,442 @@ const keyAgentServiceLifecycleContract = ({
   let sessionQuarantineFailure;
   let cleanupCompletion;
   let cleanPrepare;
-  let cleanCommit;
+  let lifecycleCleanCommit;
+  let lifecycleCleanReload;
+  let lifecycleFinalRelease;
+  let lifecycleExit;
+  let stoppedPermit;
   let fatalLatch;
   try {
-    startupObserve = rustFunctionBlock(production, "observe");
-    startupFinish = rustFunctionBlock(production, "finish");
-    activeCommit = rustFunctionBlock(
-      production,
-      "commit_and_reread_active_marker",
+    markerCommitment = rustFunctionBlock(durable.production, "marker_commitment");
+    authenticate = rustFunctionBlock(durable.production, "authenticate");
+    verifyAuthentication = rustFunctionBlock(
+      durable.production,
+      "verify_authentication",
     );
-    listenerPrepared = rustFunctionBlock(production, "record_listeners_prepared");
+    buildSnapshot = rustFunctionBlock(durable.production, "build_snapshot");
+    verifyObservation = rustFunctionBlock(
+      durable.production,
+      "verify_observation",
+    );
+    verifyMarker = rustFunctionBlock(durable.production, "verify_marker");
+    verifyCheckpoint = rustFunctionBlock(durable.production, "verify_checkpoint");
+    bindWriter = rustFunctionBlock(durable.production, "bind_writer");
+    prepareActive = rustFunctionBlock(durable.production, "prepare_active");
+    activeTransition = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+PreparedActiveTransition\s*\{/u,
+    );
+    prepareClean = rustFunctionBlock(durable.production, "prepare_clean");
+    cleanTransition = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+PreparedCleanTransition\s*\{/u,
+    );
+    finalRelease = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+PendingFinalWriterRelease\s*\{/u,
+    );
+    activeReload = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+ActiveReloadRequired\s*\{/u,
+    );
+    cleanReload = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+CleanReloadRequired\s*\{/u,
+    );
+    writerExit = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+WriterExitPending\s*\{/u,
+    );
+    fixtureBoot = rustFunctionBlock(durable.fixture, "boot");
+    fixtureCommitActive = rustFunctionBlock(durable.fixture, "commit_active");
+    fixtureCommitClean = rustFunctionBlock(durable.fixture, "commit_clean");
+    fixtureRelease = rustFunctionBlock(durable.fixture, "release_writer");
+    fixtureRetire = rustFunctionBlock(
+      durable.fixture,
+      "retire_writer_for_exit",
+    );
+    startupObserve = rustFunctionBlock(lifecycleProduction, "observe");
+    startupFinish = rustFunctionBlock(lifecycleProduction, "finish");
+    pendingStartup = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+PendingNoSecretStartup\s*\{/u,
+    );
+    pendingActiveReload = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+PendingActiveReload\s*\{/u,
+    );
+    listenerPrepared = rustFunctionBlock(
+      lifecycleProduction,
+      "record_listeners_prepared",
+    );
     scmRunningPublished = rustFunctionBlock(
-      production,
+      lifecycleProduction,
       "record_scm_running_published",
     );
-    admissionOpen = rustFunctionBlock(production, "open_admission");
-    workAdmission = rustFunctionBlock(production, "admit_fixture_work");
-    tokenRetention = rustFunctionBlock(production, "retain_user_token");
+    admissionOpen = rustFunctionBlock(lifecycleProduction, "open_admission");
+    workAdmission = rustFunctionBlock(lifecycleProduction, "admit_fixture_work");
+    tokenRetention = rustFunctionBlock(lifecycleProduction, "retain_user_token");
     sessionInvalidationAll = rustFunctionBlock(
-      production,
+      lifecycleProduction,
       "invalidate_all_sessions",
     );
-    sessionQuarantine = rustFunctionBlock(production, "quarantine_session");
+    sessionQuarantine = rustFunctionBlock(
+      lifecycleProduction,
+      "quarantine_session",
+    );
     sessionQuarantineFailure = rustFunctionBlock(
-      production,
+      lifecycleProduction,
       "fail_closed_for_session_quarantine_exhaustion",
     );
-    cleanupCompletion = rustFunctionBlock(production, "complete_cleanup_step");
-    cleanPrepare = rustFunctionBlock(production, "prepare_clean_commit");
-    cleanCommit = rustFunctionBlock(
-      production,
-      "commit_and_reread_clean_marker",
+    cleanupCompletion = rustFunctionBlock(
+      lifecycleProduction,
+      "complete_cleanup_step",
     );
-    fatalLatch = rustFunctionBlock(production, "latch_fatal");
+    cleanPrepare = rustFunctionBlock(lifecycleProduction, "prepare_clean_commit");
+    lifecycleCleanCommit = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+CleanCommitPending\s*\{/u,
+    );
+    lifecycleCleanReload = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+PendingCleanReload\s*\{/u,
+    );
+    lifecycleFinalRelease = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+SingleInstanceReleasePending\s*\{/u,
+    );
+    lifecycleExit = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+ExitRequired\s*\{/u,
+    );
+    stoppedPermit = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+StoppedPermit\s*\{/u,
+    );
+    fatalLatch = rustFunctionBlock(lifecycleProduction, "latch_fatal");
   } catch {
     return false;
   }
   return (
+    (serviceCode.match(/\bmod\s+durable_run_state\s*;/gu) ?? []).length === 1 &&
     (serviceCode.match(/\bmod\s+lifecycle_core\s*;/gu) ?? []).length === 1 &&
+    /#\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]\s*mod\s+durable_run_state\s*;/u.test(
+      serviceCode,
+    ) &&
     /#\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]\s*mod\s+lifecycle_core\s*;/u.test(
       serviceCode,
     ) &&
-    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+lifecycle_core\b/u.test(serviceCode) &&
-    !rustLexicalCode(platformLib).includes("lifecycle_core") &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+(?:durable_run_state|lifecycle_core)\b/u.test(
+      serviceCode,
+    ) &&
+    !platformLibCode.includes("durable_run_state") &&
+    !platformLibCode.includes("lifecycle_core") &&
     JSON.stringify(directoryInventory) ===
-      JSON.stringify([{ name: "lifecycle_core.rs", kind: "file" }]) &&
-    normalizedSourceSha256(lifecycleSource) ===
-      approvedKeyAgentServiceLifecycleSourceSha256 &&
-    JSON.stringify(useInventory) ===
+      JSON.stringify([
+        { name: "durable_run_state.rs", kind: "file" },
+        { name: "lifecycle_core_tests.rs", kind: "file" },
+        { name: "lifecycle_core.rs", kind: "file" },
+      ]) &&
+    JSON.stringify(durableUseInventory) ===
+      JSON.stringify([
+        "usestd::fmt;",
+        "usestd::num::NonZeroU64;",
+        "usehmac::{Hmac,Mac};",
+        "usesha2::{Digestas_,Sha256};",
+        "usesubtle::ConstantTimeEqas_;",
+        "usethiserror::Error;",
+        "usezeroize::Zeroizeas_;",
+      ]) &&
+    JSON.stringify(lifecycleUseInventory) ===
       JSON.stringify([
         "usestd::collections::{BTreeMap,BTreeSet};",
         "usestd::fmt;",
         "usestd::num::{NonZeroU32,NonZeroU64};",
         "usethiserror::Error;",
+        "usesuper::durable_run_state::{ActiveReloadReceipt,ActiveReloadRequired,ActiveRunLease,BootEvidence,CleanReloadReceipt,CleanReloadRequired,CommittedActiveMarker,CommittedCleanMarker,DurableFailureWithWriter,FixtureRunStateAuthenticationKey,PendingFinalWriterRelease,PreparedActiveTransition,PreparedCleanTransition,RecoveryExitEvidence,RecoveryRequired,ReloadedActiveRunState,RereadActiveMarker,RereadCleanMarker,StoppedRunEvidence,WriterExitPending,WriterExitReceipt,WriterLeaseReleaseReceipt,};",
       ]) &&
+    /^hmac\.workspace\s*=\s*true$/mu.test(platformManifest) &&
+    /^sha2\.workspace\s*=\s*true$/mu.test(platformManifest) &&
+    /^subtle\.workspace\s*=\s*true$/mu.test(platformManifest) &&
+    /^zeroize\.workspace\s*=\s*true$/mu.test(platformManifest) &&
+    JSON.stringify(durablePublicTypes) ===
+      JSON.stringify(keyAgentServiceDurableBridgeTypes) &&
+    JSON.stringify(durablePublicFunctions) ===
+      JSON.stringify(keyAgentServiceDurableBridgeFunctions) &&
+    !/\bpub\b/u.test(durableNonSuperVisibility) &&
+    !/\bpub\b/u.test(lifecycleCode) &&
+    durablePrivateFunctionsRemainPrivate &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      durable.production,
+      keyAgentServiceDurableEvidenceTypes,
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      lifecycleProduction,
+      keyAgentServiceLifecycleEvidenceTypes,
+    ) &&
+    rustUnsafeKeywordCount(durable.production) === 0 &&
+    rustUnsafeKeywordCount(lifecycleProduction) === 0 &&
+    durableFixtureProductionCode === "" &&
+    !forbiddenAuthority.test(combinedProductionCode) &&
+    !forbiddenAdapter.test(combinedProductionCode) &&
+    !forbiddenLifecycleDurableShape.test(lifecycleCode) &&
+    durableSource.split(keyAgentServiceDurableTestOnlyImport).length - 1 === 1 &&
+    durableSource.includes(
+      "const RUN_MARKER_MAGIC_V1: &[u8; 8] = b\"YWRUNV01\";",
+    ) &&
+    durableSource.includes(
+      "const HIGH_WATER_MAGIC_V1: &[u8; 8] = b\"YWHIWV01\";",
+    ) &&
+    durableSource.includes(
+      'b"your-wallet/windows-key-agent/run-marker/commitment/v1\\0"',
+    ) &&
+    durableSource.includes(
+      'b"your-wallet/windows-key-agent/run-marker/mac/v1\\0"',
+    ) &&
+    durableSource.includes(
+      'b"your-wallet/windows-key-agent/run-high-water/mac/v1\\0"',
+    ) &&
+    durableCompact.includes("constRUN_STATE_SCHEMA_V1:u16=1;") &&
+    durableCompact.includes("constRUN_MARKER_RESERVED_V1:u8=0;") &&
+    durableCompact.includes("constHIGH_WATER_RESERVED_V1:u16=0;") &&
+    durableCompact.includes("constINSTALLATION_IDENTITY_BYTES:usize=32;") &&
+    durableCompact.includes("constCOMMITMENT_BYTES:usize=32;") &&
+    durableCompact.includes("constMAC_BYTES:usize=32;") &&
+    durableCompact.includes("constRUN_MARKER_BODY_BYTES:usize=116;") &&
+    durableCompact.includes(
+      "constRUN_MARKER_BYTES:usize=RUN_MARKER_BODY_BYTES+MAC_BYTES;",
+    ) &&
+    durableCompact.includes("constHIGH_WATER_BODY_BYTES:usize=116;") &&
+    durableCompact.includes(
+      "constHIGH_WATER_BYTES:usize=HIGH_WATER_BODY_BYTES+MAC_BYTES;",
+    ) &&
+    durableCompact.includes("constMARKER_VERSION_OFFSET:usize=8;") &&
+    durableCompact.includes("constMARKER_STATE_OFFSET:usize=10;") &&
+    durableCompact.includes("constMARKER_RESERVED_OFFSET:usize=11;") &&
+    durableCompact.includes("constMARKER_GENERATION_OFFSET:usize=12;") &&
+    durableCompact.includes("constMARKER_INSTALLATION_OFFSET:usize=20;") &&
+    durableCompact.includes("constMARKER_PREDECESSOR_OFFSET:usize=52;") &&
+    durableCompact.includes("constMARKER_CURRENT_OFFSET:usize=84;") &&
+    durableCompact.includes("constCHECKPOINT_VERSION_OFFSET:usize=8;") &&
+    durableCompact.includes("constCHECKPOINT_RESERVED_OFFSET:usize=10;") &&
+    durableCompact.includes("constCHECKPOINT_GENERATION_OFFSET:usize=12;") &&
+    durableCompact.includes("constCHECKPOINT_INSTALLATION_OFFSET:usize=20;") &&
+    durableCompact.includes("constCHECKPOINT_PREDECESSOR_OFFSET:usize=52;") &&
+    durableCompact.includes("constCHECKPOINT_CURRENT_OFFSET:usize=84;") &&
+    compactRust(markerCommitment).includes(
+      "letmutdigest=Sha256::new();digest.update(RUN_MARKER_COMMITMENT_DOMAIN_V1);digest.update(RUN_STATE_SCHEMA_V1.to_be_bytes());digest.update([state.tag()]);digest.update([RUN_MARKER_RESERVED_V1]);digest.update(generation.get().to_be_bytes());digest.update(installation.as_bytes());digest.update(predecessor.as_bytes());Commitment(digest.finalize().into())",
+    ) &&
+    compactRust(authenticate).includes(
+      "letmutmac=HmacSha256::new_from_slice(key.as_bytes()).map_err(|_|RecoveryRequired::InvalidFixtureAuthenticationKey)?;mac.update(domain);mac.update(body);Ok(mac.finalize().into_bytes().into())",
+    ) &&
+    compactRust(verifyAuthentication).includes(
+      "letmutmac=HmacSha256::new_from_slice(key.as_bytes()).map_err(|_|RecoveryRequired::InvalidFixtureAuthenticationKey)?;mac.update(domain);mac.update(body);mac.verify_slice(tag).map_err(|_|RecoveryRequired::AuthenticationFailed)",
+    ) &&
+    durableCompact.includes(
+      "fnconstant_time_eq(&self,other:&Self)->bool{bool::from(self.0.ct_eq(&other.0))}",
+    ) &&
+    hasOrderedCompactMarkers(buildSnapshot, [
+      "ifgeneration.get()==1&&predecessor!=Commitment::ZERO",
+      "ifgeneration.get()>1&&predecessor==Commitment::ZERO",
+      "letcurrent=marker_commitment(state,generation,installation,predecessor)",
+      "copy_from_slice(RUN_MARKER_MAGIC_V1)",
+      "marker[MARKER_RESERVED_OFFSET]=RUN_MARKER_RESERVED_V1",
+      "copy_from_slice(installation.as_bytes())",
+      "copy_from_slice(predecessor.as_bytes())",
+      "copy_from_slice(current.as_bytes())",
+      "authenticate(key,RUN_MARKER_MAC_DOMAIN_V1",
+      "copy_from_slice(HIGH_WATER_MAGIC_V1)",
+      "copy_from_slice(&HIGH_WATER_RESERVED_V1.to_be_bytes())",
+      "authenticate(key,HIGH_WATER_MAC_DOMAIN_V1",
+      "Ok(DurableSnapshot",
+    ]) &&
+    hasOrderedCompactMarkers(verifyObservation, [
+      "FixedObservation::Missing=>returnErr(RecoveryRequired::MissingRunMarker)",
+      "FixedObservation::Missing=>returnErr(RecoveryRequired::MissingHighWaterCheckpoint)",
+      "letmarker=verify_marker(&marker_bytes,expected_installation,key)?",
+      "letcheckpoint=verify_checkpoint(&checkpoint_bytes,expected_installation,key)?",
+      "ifmarker.generation<checkpoint.generation",
+      "RecoveryRequired::RollbackDetected",
+      "ifmarker.generation>checkpoint.generation",
+      "RecoveryRequired::HighWaterDrift",
+      "ifmarker.installation!=checkpoint.installation",
+      "if!marker.predecessor.constant_time_eq(&checkpoint.predecessor)||!marker.current.constant_time_eq(&checkpoint.current)",
+      "RecoveryRequired::EquivocationDetected",
+      "Ok(DurableSnapshot",
+    ]) &&
+    hasOrderedCompactMarkers(verifyMarker, [
+      "verify_authentication(key,RUN_MARKER_MAC_DOMAIN_V1",
+      "RUN_MARKER_MAGIC_V1",
+      "RUN_STATE_SCHEMA_V1",
+      "RUN_MARKER_RESERVED_V1",
+      "RunMarkerState::from_tag",
+      "NonZeroU64::new",
+      "ifinstallation!=expected_installation",
+      "if(generation.get()==1&&predecessor!=Commitment::ZERO)||(generation.get()>1&&predecessor==Commitment::ZERO)",
+      "letexpected_current=marker_commitment",
+      "if!current.constant_time_eq(&expected_current)",
+    ]) &&
+    hasOrderedCompactMarkers(verifyCheckpoint, [
+      "verify_authentication(key,HIGH_WATER_MAC_DOMAIN_V1",
+      "HIGH_WATER_MAGIC_V1",
+      "RUN_STATE_SCHEMA_V1",
+      "HIGH_WATER_RESERVED_V1",
+      "NonZeroU64::new",
+      "ifinstallation!=expected_installation",
+      "if(generation.get()==1&&predecessor!=Commitment::ZERO)||(generation.get()>1&&predecessor==Commitment::ZERO)",
+    ]) &&
+    hasOrderedCompactMarkers(bindWriter, [
+      "ifself.binding!=lease.binding",
+      "RecoveryRequired::BackendBindingMismatch",
+      "ifself.durable.marker.state!=RunMarkerState::Clean",
+      "RecoveryRequired::PersistedNonCleanState",
+      "ifself.durable.marker.installation!=lease.installation",
+      "Ok(BootEvidence",
+    ]) &&
+    hasOrderedCompactMarkers(prepareActive, [
+      "letSelf{durable,lease}=self",
+      "letauthenticated_prior=matchverify_observation(",
+      "&durable.bytes.observation()",
+      "lease.installation",
+      "key",
+      "Err(reason)=>returnErr(DurableFailureWithWriter::new(reason,lease))",
+      "ifauthenticated_prior!=durable",
+      "RecoveryRequired::EquivocationDetected",
+      "next_generation(durable.marker.generation)",
+      "RunMarkerState::Active",
+      "durable.marker.installation",
+      "durable.marker.current",
+      "Ok(PreparedActiveTransition",
+    ]) &&
+    hasOrderedCompactMarkers(activeTransition, [
+      "committed_binding!=lease.binding||reread_binding!=lease.binding",
+      "committed_epoch!=lease.epoch||reread_epoch!=lease.epoch",
+      "committed_observation!=successor.bytes.observation()",
+      "reread_observation!=successor.bytes.observation()",
+      "Ok(ActiveRunLease",
+      "fncommit_ambiguous(self)->ActiveReloadRequired",
+    ]) &&
+    hasOrderedCompactMarkers(prepareClean, [
+      "letSelf{durable,lease}=self",
+      "letauthenticated_prior=matchverify_observation(",
+      "&durable.bytes.observation()",
+      "lease.installation",
+      "key",
+      "Err(reason)=>returnErr(DurableFailureWithWriter::new(reason,lease))",
+      "ifauthenticated_prior!=durable",
+      "RecoveryRequired::EquivocationDetected",
+      "next_generation(durable.marker.generation)",
+      "RunMarkerState::Clean",
+      "durable.marker.installation",
+      "durable.marker.current",
+      "Ok(PreparedCleanTransition",
+    ]) &&
+    hasOrderedCompactMarkers(cleanTransition, [
+      "committed_binding!=lease.binding||reread_binding!=lease.binding",
+      "committed_epoch!=lease.epoch||reread_epoch!=lease.epoch",
+      "committed_observation!=successor.bytes.observation()",
+      "reread_observation!=successor.bytes.observation()",
+      "Ok(CleanCommittedWithWriter",
+      "fncommit_ambiguous(self)->CleanReloadRequired",
+    ]) &&
+    hasOrderedCompactMarkers(finalRelease, [
+      "fncomplete(self,receipt:WriterLeaseReleaseReceipt,)->Result<StoppedRunEvidence,DurableFailureWithWriter>",
+      "ifreceipt.binding!=lease.binding",
+      "ifreceipt.installation!=lease.installation||receipt.epoch!=lease.epoch",
+      "Ok(StoppedRunEvidence{durable})",
+    ]) &&
+    hasOrderedCompactMarkers(activeReload, [
+      "ifreceipt.binding!=lease.binding",
+      "if!writer_observation_matches(receipt.writer,&lease)",
+      "verify_observation(&receipt.observed,lease.installation,key)",
+      "ifdurable==successor",
+      "ReloadedActiveRunState::Active",
+      "ifdurable==prior",
+      "ReloadedActiveRunState::Boot",
+      "classify_unknown_reload(&durable,&prior)",
+    ]) &&
+    hasOrderedCompactMarkers(cleanReload, [
+      "ifreceipt.binding!=lease.binding",
+      "if!writer_observation_matches(receipt.writer,&lease)",
+      "verify_observation(&receipt.observed,lease.installation,key)",
+      "ifdurable==successor",
+      "Ok(CleanCommittedWithWriter{durable,lease})",
+      "ifdurable==prior",
+      "RecoveryRequired::AmbiguousCleanCommitNotApplied",
+      "classify_unknown_reload(&durable,&prior)",
+    ]) &&
+    hasOrderedCompactMarkers(writerExit, [
+      "fncomplete(self,receipt:WriterExitReceipt,)->Result<RecoveryExitEvidence,DurableFailureWithWriter>",
+      "ifreceipt.binding!=lease.binding",
+      "ifreceipt.installation!=lease.installation||receipt.epoch!=lease.epoch",
+      "Ok(RecoveryExitEvidence",
+    ]) &&
+    !/\b(?:BootEvidence|ActiveRunLease|PreparedCleanTransition|CleanCommittedWithWriter|StoppedRunEvidence)\b/u.test(
+      rustLexicalCode(writerExit),
+    ) &&
+    hasOrderedCompactMarkers(fixtureBoot, [
+      "letobservation=self.reopen(key,installation)?",
+      "ifobservation.state()!=RunMarkerState::Clean",
+      "returnErr(RecoveryRequired::PersistedNonCleanState)",
+      "letlease=self.acquire_writer(installation)?",
+      "Ok(BootEvidence",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureCommitActive, [
+      "iftransition.lease.binding!=self.binding",
+      "ifself.held_writer!=Some((transition.lease.installation,transition.lease.epoch))",
+      "self.marker.as_ref()!=Some(transition.expected_marker_bytes())",
+      "self.checkpoint.as_ref()!=Some(transition.expected_checkpoint_bytes())",
+      "self.binding",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureCommitClean, [
+      "iftransition.lease.binding!=self.binding",
+      "ifself.held_writer!=Some((transition.lease.installation,transition.lease.epoch))",
+      "self.marker.as_ref()!=Some(transition.expected_marker_bytes())",
+      "self.checkpoint.as_ref()!=Some(transition.expected_checkpoint_bytes())",
+      "self.binding",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureRelease, [
+      "pending:&PendingFinalWriterRelease",
+      "ifpending.lease.binding!=self.binding",
+      "ifself.held_writer!=Some(expected)",
+      "self.held_writer=None",
+      "self.last_released_writer=Some(expected)",
+      "WriterLeaseReleaseReceipt::from_release_readback",
+      "self.binding",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureRetire, [
+      "pending:&WriterExitPending",
+      "ifpending.lease.binding!=self.binding",
+      "Some(held)ifheld==expected",
+      "self.held_writer=None",
+      "self.last_released_writer=Some(expected)",
+      "Noneifself.last_released_writer==Some(expected)",
+      "WriterExitReceipt",
+      "binding:self.binding",
+    ]) &&
     JSON.stringify(orderedDeriveInventory) ===
       JSON.stringify([
         "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]",
         "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]",
       ]) &&
-    compact.includes(
+    lifecycleCompact.includes(
       "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]structWorkId(NonZeroU64);",
     ) &&
-    compact.includes(
+    lifecycleCompact.includes(
       "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]structSessionId(NonZeroU32);",
     ) &&
-    !/\bpub(?:\s*\([^)]*\))?\s/u.test(code) &&
-    !/\b(?:macro_rules|macro)\s*!?\b/u.test(code) &&
-    rustUnsafeKeywordCount(production) === 0 &&
-    !keyAgentServiceNetworkSurface.test(code) &&
-    !forbiddenAuthority.test(code) &&
-    !forbiddenAdapter.test(code) &&
-    !cloneOrCopyTypestate &&
-    !conversionTypestate &&
-    compact.includes("constMAX_ACTIVE_FIXTURE_WORK:usize=256;") &&
-    compact.includes("constMAX_RETAINED_USER_TOKEN_SESSIONS:usize=64;") &&
-    compact.includes("constMAX_QUARANTINED_SESSIONS:usize=64;") &&
-    compact.includes(
+    lifecycleCompact.includes("constMAX_ACTIVE_FIXTURE_WORK:usize=256;") &&
+    lifecycleCompact.includes(
+      "constMAX_RETAINED_USER_TOKEN_SESSIONS:usize=64;",
+    ) &&
+    lifecycleCompact.includes("constMAX_QUARANTINED_SESSIONS:usize=64;") &&
+    lifecycleCompact.includes(
       "constALL:[Self;STARTUP_REQUIREMENT_COUNT]=[Self::ServiceToken,Self::RestrictedServiceSid,Self::PrivilegeSet,Self::InstalledImage,Self::ServiceConfiguration,Self::StorageBinding,Self::ProviderBinding,Self::AnchorBinding,Self::FirewallPolicy,Self::SingleInstanceLease,Self::EnrolledUser,];",
     ) &&
-    compact.includes(
-      "constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseHardwareAndStorageHandles,Self::ReleaseSingleInstanceLease,Self::CommitAndRereadCleanMarker,];",
+    lifecycleCompact.includes(
+      "constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseHardwareAndStorageHandles,Self::CommitAndRereadCleanMarker,Self::ReleaseSingleInstanceLease,];",
     ) &&
-    compact.includes(
-      "fnfinish(self)->Result<PendingNoSecretStartup,StartupFailure>{",
-    ) &&
-    compact.includes(
-      "fncommit_and_reread_active_marker(self,committed:CommittedRunMarkerObservation,reread:RereadRunMarkerObservation,)->Result<ListenerPendingRuntime,StartupFailure>{",
-    ) &&
-    compact.includes(
-      "fnrecord_listeners_prepared(self)->ScmRunningPendingRuntime{",
-    ) &&
-    compact.includes(
-      "fnrecord_scm_running_published(self)->AdmissionPendingRuntime{",
-    ) &&
-    compact.includes("fnopen_admission(self)->NoSecretService{") &&
-    compact.includes(
-      "fnprepare_clean_commit(self)->Result<CleanCommitPending,ExitRequired>{",
-    ) &&
-    compact.includes(
-      "fncommit_and_reread_clean_marker(self,committed:CommittedRunMarkerObservation,reread:RereadRunMarkerObservation,)->Result<StoppedPermit,ExitRequired>{",
-    ) &&
-    compact.includes(
-      "implCleanCommitPending{fncommit_and_reread_clean_marker(self,committed:CommittedRunMarkerObservation,reread:RereadRunMarkerObservation,)->Result<StoppedPermit,ExitRequired>{",
-    ) &&
-    compact.includes(
-      "structExitRequired{restart_observation:DurableRunObservation,reason:ExitReason,}",
-    ) &&
-    (code.match(/\bfn\s+into_observation\s*\(\s*self\s*\)/gu) ?? [])
-      .length === 2 &&
     hasOrderedCompactMarkers(startupObserve, [
       "letslot=&mutself.observations[requirement.index()]",
       "ifslot.is_some()",
@@ -6011,38 +6671,98 @@ const keyAgentServiceLifecycleContract = ({
     hasOrderedCompactMarkers(startupFinish, [
       "ifletSome(failure)=self.latched_failure",
       "forrequirementinNoSecretStartupRequirement::ALL",
-      "Some(StartupObservation::Mismatch)",
-      "Err(StartupFailure::Mismatch(requirement))",
-      "Some(StartupObservation::Unavailable)",
-      "Err(StartupFailure::Unavailable(requirement))",
-      "letclean_generation=matchself.durable_run",
-      "DurableRunObservation::CleanShutdown{generation:0}",
-      "DurableRunObservation::ActiveRun{..}",
-      "RecoveryReason::ActiveRunMarker",
-      ".checked_add(1)",
-      ".checked_add(1)",
-      "Ok(PendingNoSecretStartup{",
+      "StartupFailure::Missing(requirement)",
+      "StartupFailure::Mismatch(requirement)",
+      "StartupFailure::Unavailable(requirement)",
+      "letboot=self.boot.map_err",
+      ".prepare_active(key)",
+      "Ok(PendingNoSecretStartup{active_transition})",
     ]) &&
-    hasOrderedCompactMarkers(activeCommit, [
-      "letcommitted=committed.into_observation()",
-      "letreread=reread.into_observation()",
-      "letexpected=self.active_generation.get()",
-      "ifcommitted!=(DurableRunObservation::ActiveRun{generation:expected,})",
-      "returnErr(StartupFailure::ActiveMarkerCommitMismatch)",
-      "ifreread!=committed",
-      "returnErr(StartupFailure::ActiveMarkerReadbackMismatch)",
-      "Ok(ListenerPendingRuntime{",
+    hasOrderedCompactMarkers(pendingStartup, [
+      "CommittedActiveMarker",
+      "RereadActiveMarker",
+      ".complete(committed,reread)",
+      "Ok(ListenerPendingRuntime{active_run})",
+      "fncommit_ambiguous(self)->PendingActiveReload",
+    ]) &&
+    hasOrderedCompactMarkers(pendingActiveReload, [
+      "receipt:ActiveReloadReceipt",
+      ".complete_reload(receipt,key)",
+      "ReloadedActiveRunState::Boot(boot)",
+      "ActiveReloadResolution::Revalidate(NoSecretStartupAttempt::new(Ok(boot)))",
+      "ReloadedActiveRunState::Active(active_run)",
+      "ActiveReloadResolution::Resume(ListenerPendingRuntime{active_run})",
     ]) &&
     compactRust(listenerPrepared).includes(
-      "fnrecord_listeners_prepared(self)->ScmRunningPendingRuntime{ScmRunningPendingRuntime{active_generation:self.active_generation,next_clean_shutdown_generation:self.next_clean_shutdown_generation,}}",
+      "fnrecord_listeners_prepared(self)->ScmRunningPendingRuntime{ScmRunningPendingRuntime{active_run:self.active_run,}}",
     ) &&
     compactRust(scmRunningPublished).includes(
-      "fnrecord_scm_running_published(self)->AdmissionPendingRuntime{AdmissionPendingRuntime{active_generation:self.active_generation,next_clean_shutdown_generation:self.next_clean_shutdown_generation,}}",
+      "fnrecord_scm_running_published(self)->AdmissionPendingRuntime{AdmissionPendingRuntime{active_run:self.active_run,}}",
     ) &&
     compactRust(admissionOpen).includes(
-      "fnopen_admission(self)->NoSecretService{NoSecretService::new(self.active_generation,self.next_clean_shutdown_generation)}",
+      "fnopen_admission(self)->NoSecretService{NoSecretService::new(self.active_run)}",
     ) &&
-    (code.match(/\bopen_admission\b/gu) ?? []).length === 1 &&
+    (lifecycleCode.match(/\bopen_admission\s*\(/gu) ?? []).length === 1 &&
+    lifecycleCompact.includes(
+      "structListenerPendingRuntime{active_run:ActiveRunLease,}",
+    ) &&
+    lifecycleCompact.includes(
+      "structScmRunningPendingRuntime{active_run:ActiveRunLease,}",
+    ) &&
+    lifecycleCompact.includes(
+      "structAdmissionPendingRuntime{active_run:ActiveRunLease,}",
+    ) &&
+    lifecycleCompact.includes("structNoSecretService{state:RuntimeState,active_run:ActiveRunLease,") &&
+    hasOrderedCompactMarkers(cleanupCompletion, [
+      "ifself.expected_cleanup_step()!=Some(step)",
+      "self.latch_fatal(FatalReason::CleanupProtocolViolation)",
+      "ifmatches!(step,CleanupStep::ReleaseSingleInstanceLease|CleanupStep::CommitAndRereadCleanMarker)",
+      "returnErr(LifecycleError::InvalidCleanShutdownReceipt)",
+      "CleanupStep::ReapHelpers=>self.work.clear()",
+      "CleanupStep::DiscardUserTokens=>self.user_token_sessions.clear()",
+      "CleanupStep::ReleaseSingleInstanceLease|CleanupStep::CommitAndRereadCleanMarker",
+      "self.next_cleanup_index+=1",
+    ]) &&
+    hasOrderedCompactMarkers(cleanPrepare, [
+      "self.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
+      "self.active_run.into_writer_exit()",
+      "if!self.work.is_empty()||!self.user_token_sessions.is_empty()",
+      "self.active_run.into_writer_exit()",
+      ".active_run.prepare_clean(key)",
+      "Ok(CleanCommitPending{transition})",
+    ]) &&
+    hasOrderedCompactMarkers(lifecycleCleanCommit, [
+      "CommittedCleanMarker",
+      "RereadCleanMarker",
+      "Result<SingleInstanceReleasePending,ExitRequired>",
+      ".transition.complete(committed,reread)",
+      "pending:committed.prepare_writer_release()",
+      "fncommit_ambiguous(self)->PendingCleanReload",
+    ]) &&
+    hasOrderedCompactMarkers(lifecycleCleanReload, [
+      "receipt:CleanReloadReceipt",
+      "Result<SingleInstanceReleasePending,ExitRequired>",
+      ".complete_reload(receipt,key)",
+      "pending:committed.prepare_writer_release()",
+    ]) &&
+    hasOrderedCompactMarkers(lifecycleFinalRelease, [
+      "fnrelease_request(&self)->&PendingFinalWriterRelease",
+      "fncomplete(self,receipt:WriterLeaseReleaseReceipt)->Result<StoppedPermit,ExitRequired>",
+      ".pending.complete(receipt)",
+      "Ok(StoppedPermit::from_durable_evidence(stopped))",
+    ]) &&
+    hasOrderedCompactMarkers(lifecycleExit, [
+      "writer_exit:WriterExitPending",
+      "fnwriter_exit_request(&self)->&WriterExitPending",
+      "fncomplete_writer_exit(self,receipt:WriterExitReceipt,)->Result<RecoveryExitPermit,DurableFailureWithWriter>",
+      "self.writer_exit.complete(receipt)?",
+      "Ok(RecoveryExitPermit",
+    ]) &&
+    compactRust(stoppedPermit) ===
+      "implStoppedPermit{constfnfrom_durable_evidence(stopped:StoppedRunEvidence)->Self{Self{stopped}}}" &&
+    (lifecycleCode.match(/\bStoppedPermit\s*::\s*from_durable_evidence\s*\(/gu) ?? [])
+      .length === 1 &&
+    !/\bfrom_reloaded_state\b/u.test(lifecycleCode) &&
     hasOrderedCompactMarkers(workAdmission, [
       "self.require_ready()?",
       "ifself.invalid_sessions.contains(&session)",
@@ -6085,257 +6805,259 @@ const keyAgentServiceLifecycleContract = ({
       "self.user_token_sessions.clear()",
       "self.latch_fatal(FatalReason::SessionQuarantineExceeded)",
     ]) &&
-    hasOrderedCompactMarkers(cleanupCompletion, [
-      "ifself.expected_cleanup_step()!=Some(step)",
-      "self.latch_fatal(FatalReason::CleanupProtocolViolation)",
-      "ifstep==CleanupStep::CommitAndRereadCleanMarker",
-      "CleanupStep::ReapHelpers=>self.work.clear()",
-      "CleanupStep::DiscardUserTokens=>self.user_token_sessions.clear()",
-      "CleanupStep::ReleaseSingleInstanceLease",
-      "self.single_instance_released=true",
-      "self.next_cleanup_index+=1",
-    ]) &&
-    hasOrderedCompactMarkers(cleanPrepare, [
-      "ifself.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
-      "restart_observation:DurableRunObservation::ActiveRun",
-      "reason:ExitReason::CleanupOutOfOrder",
-      "if!self.work.is_empty()||!self.user_token_sessions.is_empty()||!self.single_instance_released",
-      "restart_observation:DurableRunObservation::ActiveRun",
-      "reason:ExitReason::CleanupIncomplete",
-      "Ok(CleanCommitPending{",
-    ]) &&
-    hasOrderedCompactMarkers(cleanCommit, [
-      "letcommitted=committed.into_observation()",
-      "letreread=reread.into_observation()",
-      "letexpected=DurableRunObservation::CleanShutdown",
-      "ifcommitted!=expected||reread!=expected",
-      "restart_observation:DurableRunObservation::RecoveryRequired",
-      "reason:ExitReason::InvalidCleanShutdownReceipt",
-      "Ok(StoppedPermit{",
-    ]) &&
     compactRust(fatalLatch) ===
       "fnlatch_fatal(&mutself,reason:FatalReason){if!matches!(self.state,RuntimeState::Fatal(_)){self.state=RuntimeState::Fatal(reason);}}" &&
-    (code.match(/\bNoSecretService\s*::\s*new\s*\(/gu) ?? []).length === 1 &&
-    (code.match(/\bfn\s+commit_and_reread_active_marker\s*\(/gu) ?? [])
-      .length === 1 &&
-    (code.match(/\bfn\s+record_listeners_prepared\s*\(/gu) ?? []).length ===
-      1 &&
-    (code.match(/\bfn\s+record_scm_running_published\s*\(/gu) ?? []).length ===
-      1 &&
-    (code.match(/\bfn\s+open_admission\s*\(/gu) ?? []).length === 1 &&
-    (code.match(/\bfn\s+prepare_clean_commit\s*\(/gu) ?? []).length === 1 &&
-    (code.match(/\bfn\s+commit_and_reread_clean_marker\s*\(/gu) ?? [])
-      .length === 1 &&
     main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
     keyAgentServiceLiteralCount(
       compactMain,
       "std::process::exit(SERVICE_UNAVAILABLE)",
     ) === 1 &&
-    designMarkers.every((marker) => normalizedDesignDocument.includes(marker)) &&
-    designSectionStart !== -1 &&
-    designSectionEnd > designSectionStart &&
-    lifecycleArchitectureRows.length === 1 &&
-    architectureMarkers.every((marker) =>
-      normalizedArchitectureDocument.includes(marker),
+    designPhaseTwoAStart !== -1 &&
+    designPhaseTwoBStart > designPhaseTwoAStart &&
+    designPhaseThreeStart > designPhaseTwoBStart &&
+    phaseTwoADesignMarkers.every((marker) =>
+      normalizedPhaseTwoADesign.includes(marker),
     ) &&
-    !lifecycleDesignSection.includes("**Current Phase 2A status: passed.**") &&
-    !normalizedDesignDocument.includes("There is a production caller or OS adapter.") &&
-    !normalizedArchitectureDocument.includes(
+    phaseTwoBDesignMarkers.every((marker) =>
+      normalizedPhaseTwoBDesign.includes(marker),
+    ) &&
+    !phaseTwoADesign.includes("**Current Phase 2A status: passed.**") &&
+    !phaseTwoBDesign.includes("**Current Phase 2B status: passed.**") &&
+    lifecycleArchitectureRows.length === 1 &&
+    durableArchitectureRows.length === 1 &&
+    lifecycleArchitectureMarkers.every((marker) =>
+      normalizedLifecycleArchitecture.includes(marker),
+    ) &&
+    durableArchitectureMarkers.every((marker) =>
+      normalizedDurableArchitecture.includes(marker),
+    ) &&
+    !normalizedLifecycleArchitecture.includes(
       "Phase 1 and Phase 2 exit gates have passed",
     ) &&
-    JSON.stringify(keyAgentServiceRustTestNameInventory(lifecycleSource)) ===
+    !normalizedDurableArchitecture.includes("both compiled policies are `Some`") &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(durableSource)) ===
+      JSON.stringify(keyAgentServiceDurableTestNames) &&
+    JSON.stringify(keyAgentServiceRustTestNameInventory(lifecycleTests)) ===
       JSON.stringify(keyAgentServiceLifecycleTestNames)
   );
 };
-const keyAgentServiceLifecycleInputs = Object.freeze({
+const keyAgentServicePhaseTwoInputs = Object.freeze({
   main: keyAgentServiceMain,
+  platformManifest: keyAgentServicePlatformManifest,
   platformService: keyAgentServicePlatformSource,
   platformLib: keyAgentServicePlatformLib,
+  durableSource: keyAgentServiceDurableRunState,
   lifecycleSource: keyAgentServiceLifecycleCore,
+  lifecycleTests: keyAgentServiceLifecycleCoreTests,
   directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
   designDocument: keyAgentServiceDesign,
   architectureDocument: sepoliaArchitectureDoc,
 });
-const lifecycleTestModuleMarker = "\n#[cfg(test)]\nmod tests {";
-const mutateKeyAgentServiceLifecycleSource = (search, replacement) => ({
-  ...keyAgentServiceLifecycleInputs,
-  lifecycleSource: keyAgentServiceLifecycleCore.replace(search, replacement),
-});
-const keyAgentServiceLifecycleMutationProbes = [
+const mutateKeyAgentServicePhaseTwoInput = (
+  field,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoInputs[field];
+  const first = source.indexOf(search);
+  if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
+    return keyAgentServicePhaseTwoInputs;
+  }
+  return {
+    ...keyAgentServicePhaseTwoInputs,
+    [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
+  };
+};
+const keyAgentServicePhaseTwoSemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    pub(super) fn prepare_active(\n        self,\n        key: &FixtureRunStateAuthenticationKey,\n    ) -> Result<PreparedActiveTransition, DurableFailureWithWriter> {\n        let Self { durable, lease } = self;\n        let authenticated_prior =\n            match verify_observation(&durable.bytes.observation(), lease.installation, key) {\n                Ok(authenticated_prior) => authenticated_prior,\n                Err(reason) => return Err(DurableFailureWithWriter::new(reason, lease)),\n            };\n        if authenticated_prior != durable {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::EquivocationDetected,\n                lease,\n            ));\n        }\n        let generation = match next_generation(durable.marker.generation) {",
+    "    pub(super) fn prepare_active(\n        self,\n        key: &FixtureRunStateAuthenticationKey,\n    ) -> Result<PreparedActiveTransition, DurableFailureWithWriter> {\n        let Self { durable, lease } = self;\n        let generation = match next_generation(durable.marker.generation) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    pub(super) fn prepare_clean(\n        self,\n        key: &FixtureRunStateAuthenticationKey,\n    ) -> Result<PreparedCleanTransition, DurableFailureWithWriter> {\n        let Self { durable, lease } = self;\n        let authenticated_prior =\n            match verify_observation(&durable.bytes.observation(), lease.installation, key) {\n                Ok(authenticated_prior) => authenticated_prior,\n                Err(reason) => return Err(DurableFailureWithWriter::new(reason, lease)),\n            };\n        if authenticated_prior != durable {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::EquivocationDetected,\n                lease,\n            ));\n        }\n        let generation = match next_generation(durable.marker.generation) {",
+    "    pub(super) fn prepare_clean(\n        self,\n        key: &FixtureRunStateAuthenticationKey,\n    ) -> Result<PreparedCleanTransition, DurableFailureWithWriter> {\n        let Self { durable, lease } = self;\n        let generation = match next_generation(durable.marker.generation) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    mac.verify_slice(tag)\n        .map_err(|_| RecoveryRequired::AuthenticationFailed)",
+    "    let _ = tag;\n    Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    let checkpoint = verify_checkpoint(&checkpoint_bytes, expected_installation, key)?;",
+    "    let checkpoint = VerifiedHighWaterCheckpoint { generation: marker.generation, installation: marker.installation, predecessor: marker.predecessor, current: marker.current };",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    fn from_durable_bytes(\n",
+    "    pub(super) fn from_durable_bytes(\n",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "pub(super) struct PreparedCleanTransition {",
+    "#[derive(Clone)]\npub(super) struct PreparedCleanTransition {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        let observation = self.reopen(key, installation)?;\n        if observation.state() != RunMarkerState::Clean {\n            return Err(RecoveryRequired::PersistedNonCleanState);\n        }\n        let lease = self.acquire_writer(installation)?;",
+    "        let lease = self.acquire_writer(installation)?;\n        let observation = self.reopen(key, installation)?;\n        if observation.state() != RunMarkerState::Clean {\n            return Err(RecoveryRequired::PersistedNonCleanState);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if durable == prior {\n            return Ok(ReloadedActiveRunState::Boot(BootEvidence {",
+    "        if durable.marker.state == RunMarkerState::Clean {\n            return Ok(ReloadedActiveRunState::Boot(BootEvidence {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if durable == successor {\n            return Ok(CleanCommittedWithWriter { durable, lease });\n        }",
+    "        if durable.marker.state == RunMarkerState::Clean {\n            return Ok(CleanCommittedWithWriter { durable, lease });\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        let RereadActiveMarker {\n            observed: reread_observation,\n            lease_epoch: reread_epoch,\n            binding: reread_binding,\n        } = reread;\n        if committed_binding != lease.binding || reread_binding != lease.binding {",
+    "        let RereadActiveMarker {\n            observed: reread_observation,\n            lease_epoch: reread_epoch,\n            binding: reread_binding,\n        } = reread;\n        if false {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        let Self { durable, lease } = self;\n        if receipt.binding != lease.binding {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::BackendBindingMismatch,\n                lease,\n            ));\n        }\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
+    "        let Self { durable, lease } = self;\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    pub(super) fn complete(\n        self,\n        receipt: WriterExitReceipt,\n    ) -> Result<RecoveryExitEvidence, DurableFailureWithWriter> {",
+    "    pub(super) fn complete(\n        self,\n        receipt: WriterExitReceipt,\n    ) -> Result<StoppedRunEvidence, DurableFailureWithWriter> {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "    next_cleanup_index: usize,\n}",
+    "    next_cleanup_index: usize,\n    single_instance_released: bool,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "    next_cleanup_index: usize,\n}",
+    "    next_cleanup_index: usize,\n    legacy_receipt: DurableRunObservation,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "        Self::CommitAndRereadCleanMarker,\n        Self::ReleaseSingleInstanceLease,",
+    "        Self::ReleaseSingleInstanceLease,\n        Self::CommitAndRereadCleanMarker,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "        if matches!(\n            step,\n            CleanupStep::ReleaseSingleInstanceLease | CleanupStep::CommitAndRereadCleanMarker\n        ) {",
+    "        if matches!(step, CleanupStep::CommitAndRereadCleanMarker) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "    fn commit_and_reread_clean_marker(\n        self,\n        committed: CommittedCleanMarker,\n        reread: RereadCleanMarker,\n    ) -> Result<SingleInstanceReleasePending, ExitRequired> {",
+    "    fn commit_and_reread_clean_marker(\n        self,\n        committed: CommittedCleanMarker,\n        reread: RereadCleanMarker,\n    ) -> Result<StoppedPermit, ExitRequired> {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    keyAgentServiceLifecycleTestSuffix,
+    "\nfn hidden_open_admission_caller(runtime: AdmissionPendingRuntime) -> NoSecretService { runtime.open_admission() }\n" +
+      keyAgentServiceLifecycleTestSuffix,
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    keyAgentServiceDurableFixtureMarker,
+    "\nfn hidden_storage_adapter() { let _ = std::fs::File::open(\"fixture\"); }\n" +
+      keyAgentServiceDurableFixtureMarker,
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "\n#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum DurableRunStateRereadFault",
+    "\nfn hidden_phase_two_runtime_root() {}\n\n#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum DurableRunStateRereadFault",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "platformService",
+    "mod durable_run_state;",
+    "pub mod durable_run_state;",
+  ),
   {
-    ...keyAgentServiceLifecycleInputs,
-    platformService: keyAgentServicePlatformSource.replace(
-      "mod lifecycle_core;",
-      "pub mod lifecycle_core;",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    platformLib: `${keyAgentServicePlatformLib}\npub use key_agent_service::lifecycle_core;\n`,
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    lifecycleSource: keyAgentServiceLifecycleCore.replace(
-      "struct PendingNoSecretStartup {",
-      "#[derive(Clone)]\nstruct PendingNoSecretStartup {",
-    ),
-  },
-  mutateKeyAgentServiceLifecycleSource(
-    "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum StartupObservation",
-    "#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\nenum StartupObservation",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "    fn record_listeners_prepared(self) -> ScmRunningPendingRuntime {",
-    "    fn record_listeners_prepared(&self) -> ScmRunningPendingRuntime {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "    fn prepare_clean_commit(self) -> Result<CleanCommitPending, ExitRequired> {",
-    "    fn prepare_clean_commit(&self) -> Result<CleanCommitPending, ExitRequired> {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "impl CleanCommitPending {",
-    "impl NoSecretService {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        for requirement in NoSecretStartupRequirement::ALL {\n            match self.observations",
-    "        for requirement in [NoSecretStartupRequirement::ServiceToken] {\n            match self.observations",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "                    return Err(StartupFailure::Mismatch(requirement));",
-    "                    continue;",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "                    return Err(StartupFailure::Unavailable(requirement));",
-    "                    continue;",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        if reread != committed {",
-    "        if false {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    lifecycleTestModuleMarker,
-    "\nfn bypass_scm_running(runtime: AdmissionPendingRuntime) -> NoSecretService { runtime.open_admission() }\n" +
-      lifecycleTestModuleMarker,
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        if committed != expected || reread != expected {",
-    "        if committed != expected {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "                restart_observation: DurableRunObservation::RecoveryRequired,",
-    "                restart_observation: DurableRunObservation::ActiveRun { generation: self.active_generation.get() },",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "            || !self.single_instance_released\n",
-    "",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        if self.invalid_sessions.len() >= MAX_QUARANTINED_SESSIONS {",
-    "        if self.invalid_sessions.len() > MAX_QUARANTINED_SESSIONS {",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        self.latch_fatal(FatalReason::SessionQuarantineExceeded);",
-    "        let _ = FatalReason::SessionQuarantineExceeded;",
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    "        if !matches!(self.state, RuntimeState::Fatal(_)) {\n            self.state = RuntimeState::Fatal(reason);\n        }",
-    "        self.state = RuntimeState::Fatal(reason);",
-  ),
-  {
-    ...keyAgentServiceLifecycleInputs,
-    lifecycleSource: keyAgentServiceLifecycleCore.replace(
-      lifecycleTestModuleMarker,
-      "\npub(crate) fn hidden_runtime_authority() {}\n" +
-        lifecycleTestModuleMarker,
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    lifecycleSource: keyAgentServiceLifecycleCore.replace(
-      lifecycleTestModuleMarker,
-      "\nfn hidden_network() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n" +
-        lifecycleTestModuleMarker,
-    ),
-  },
-  mutateKeyAgentServiceLifecycleSource(
-    lifecycleTestModuleMarker,
-    "\nfn hidden_file() { let _ = std::fs::File::open(\"fixture\"); }\n" +
-      lifecycleTestModuleMarker,
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    lifecycleTestModuleMarker,
-    "\nfn hidden_process() { let _ = std::process::Command::new(\"fixture\"); }\n" +
-      lifecycleTestModuleMarker,
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    lifecycleTestModuleMarker,
-    "\nfn hidden_windows() { let _ = windows::Win32::Foundation::HANDLE::default(); }\n" +
-      lifecycleTestModuleMarker,
-  ),
-  mutateKeyAgentServiceLifecycleSource(
-    lifecycleTestModuleMarker,
-    "\nfn hidden_parent_adapter() { super::run_inert_key_agent_service_fixture(); }\n" +
-      lifecycleTestModuleMarker,
-  ),
-  {
-    ...keyAgentServiceLifecycleInputs,
-    lifecycleSource: keyAgentServiceLifecycleCore.replace(
-      "        Self::ReleaseSingleInstanceLease,\n        Self::CommitAndRereadCleanMarker,",
-      "        Self::CommitAndRereadCleanMarker,\n        Self::ReleaseSingleInstanceLease,",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
+    ...keyAgentServicePhaseTwoInputs,
     directoryInventory: [
       ...keyAgentServiceLifecycleDirectoryInventory,
       { name: "hidden.rs", kind: "file" },
     ],
   },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    main: keyAgentServiceMain.replace(
-      "const SERVICE_UNAVAILABLE: i32 = 78;",
-      "const SERVICE_UNAVAILABLE: i32 = 0;",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    designDocument: keyAgentServiceDesign.replace(
-      "**Current Phase 2A status: started, not passed.**",
-      "**Current Phase 2A status: passed.**",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    designDocument: keyAgentServiceDesign.replace(
-      "no production caller or OS adapter.",
-      "a production caller or OS adapter.",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    architectureDocument: sepoliaArchitectureDoc.replace(
-      "Phase 1 and Phase 2 exit gates remain not passed",
-      "Phase 1 and Phase 2 exit gates have passed",
-    ),
-  },
-  {
-    ...keyAgentServiceLifecycleInputs,
-    architectureDocument: sepoliaArchitectureDoc.replace(
-      "both compiled policies remain `None`, and the ordinary/release service remains silent exit 78",
-      "both compiled policies are `Some`, and the ordinary/release service remains silent exit 78",
-    ),
-  },
+  mutateKeyAgentServicePhaseTwoInput(
+    "main",
+    "const SERVICE_UNAVAILABLE: i32 = 78;",
+    "const SERVICE_UNAVAILABLE: i32 = 0;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "**Current Phase 2A status: started, not passed.**",
+    "**Current Phase 2A status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "**Current Phase 2B status: started, not passed.**",
+    "**Current Phase 2B status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "Phase 1 and Phase 2 exit gates remain not passed",
+    "Phase 1 and Phase 2 exit gates have passed",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "both compiled policies remain `None`, and the ordinary/release service remains silent exit 78",
+    "both compiled policies are `Some`, and the ordinary/release service remains silent exit 78",
+  ),
+];
+const keyAgentServicePhaseTwoPinMutationProbes = [
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "//! Authenticated, no-secret durable run-state fixture.",
+    "//! Authenticated, no-secret durable run-state fixture (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "//! No-secret Windows Key Agent service lifecycle and recovery contract.",
+    "//! No-secret Windows Key Agent service lifecycle and recovery contract (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleTests",
+    "use std::error::Error;",
+    "use std::error::Error; // mutated",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "            last_writer_epoch: 0,\n",
+    "            last_writer_epoch: 0_u64,\n",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "            return Err(\"wrong transition key minted Active preparation authority\".into());",
+    "            return Err(\"wrong transition key minted Active preparation authority (mutated)\".into());",
+  ),
 ];
 requireInvariant(
-  keyAgentServiceLifecycleContract(keyAgentServiceLifecycleInputs) &&
-    keyAgentServiceLifecycleMutationProbes.every(
+  keyAgentServicePhaseTwoSemanticContract(keyAgentServicePhaseTwoInputs) &&
+    keyAgentServicePhaseTwoPinContract(keyAgentServicePhaseTwoInputs) &&
+    keyAgentServicePhaseTwoSemanticMutationProbes.length === 27 &&
+    keyAgentServicePhaseTwoSemanticMutationProbes.every(
       (probe) =>
-        Object.keys(keyAgentServiceLifecycleInputs).some(
-          (key) => probe[key] !== keyAgentServiceLifecycleInputs[key],
-        ) && !keyAgentServiceLifecycleContract(probe),
+        probe !== keyAgentServicePhaseTwoInputs &&
+        Object.keys(keyAgentServicePhaseTwoInputs).some(
+          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+        ) &&
+        !keyAgentServicePhaseTwoSemanticContract(probe),
+    ) &&
+    keyAgentServicePhaseTwoPinMutationProbes.length === 5 &&
+    keyAgentServicePhaseTwoPinMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServicePhaseTwoInputs &&
+        Object.keys(keyAgentServicePhaseTwoInputs).some(
+          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+        ) &&
+        !keyAgentServicePhaseTwoPinContract(probe),
     ),
-  "the no-secret Phase 2A lifecycle core must remain a source-pinned private zero-caller move-only ordering model with exact imports, bounded registries, startup/Active/readback/listener/SCM/admission and stop/Clean/readback sequencing, no OS/signing/network adapter, fixed tests and docs, disabled policies, exit 78, and effective semantic mutations",
+  "the Phase 2A/2B no-secret service models must remain full-source-pinned private zero-runtime-root modules whose durable fixture tail contains only cfg(test) items, with exact authenticated marker/checkpoint codecs, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 27 independently effective semantic plus five source-pin mutations",
 );
 
 const approvedKeyAgentServiceTokenFixturePaths = [
@@ -15733,14 +16455,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "6eef98b857a64bbb9b294068221720d6afcfde9ceeff7721e0614ccd8a63787e",
+    sha256: "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "af692bf84af05537e60aaef9c1705a49d631baa8be9e8286b1600d85e6bf6114",
+    sha256: "a60c55dd69161a973b1b7b46b3226d379c0b709a34d65def4d80bf02b00eb19c",
   },
   {
     path: "docs/security-decisions.md",
@@ -23792,7 +24514,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "a63c29b2cfdf16614edc1781ec63ffc2cb58572bc60cb6c723f9a8d1974e0c7e";
+  "81c6d465aa96c864d893a9e5b02b996f94783fafb2fad7e63ab60d1d9ecd7a8a";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -25149,6 +25871,10 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_debugger.rs",
     attribute: '#[path = "key_agent_debugger_transport/mod.rs"]',
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
+    attribute: '#[path = "lifecycle_core_tests.rs"]',
   },
 ];
 const compilationBindingEdgeProbes = {
@@ -44322,7 +45048,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "6ccfa84b476734666c45879e6d7a442f1c149df89c16512c495d98bf374fed52",
+    sha256: "ed2591aab1862b39d18ab00d81b31f1c03cd2a3731ccb0ce4f594b77c7b9d18f",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -45169,10 +45895,22 @@ requireInvariant(
         "usecore::mem::{offset_of,size_of};",
         "usecore::mem::{offset_of,size_of,size_of_val};",
         "usecore::ptr;",
+        "usestd::error::Error;",
         "usethiserror::Error;",
         "usewindows::core::{PCWSTR,w};",
       ].includes(item.source),
     ) &&
+    JSON.stringify(
+      platformWindowsExpansionSensitiveUseInventory.filter(
+        ({ source }) => source === "usestd::error::Error;",
+      ),
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service/lifecycle_core_tests.rs",
+          source: "usestd::error::Error;",
+        },
+      ]) &&
     JSON.stringify(platformWindowsGlobUseInventory) ===
       JSON.stringify([
         {
@@ -52448,7 +53186,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "6eef98b857a64bbb9b294068221720d6afcfde9ceeff7721e0614ccd8a63787e",
+    "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -58317,7 +59055,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "6eef98b857a64bbb9b294068221720d6afcfde9ceeff7721e0614ccd8a63787e",
+  "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -68199,13 +68937,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "6eef98b857a64bbb9b294068221720d6afcfde9ceeff7721e0614ccd8a63787e",
+    sha256: "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "af692bf84af05537e60aaef9c1705a49d631baa8be9e8286b1600d85e6bf6114",
+    sha256: "a60c55dd69161a973b1b7b46b3226d379c0b709a34d65def4d80bf02b00eb19c",
   },
   {
     path: "docs/security-decisions.md",
