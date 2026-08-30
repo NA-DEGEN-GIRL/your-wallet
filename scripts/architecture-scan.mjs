@@ -8562,6 +8562,49 @@ const keyAgentServicePhaseTwoCPinMutationProbes = [
     "use std::{error::Error, fmt, io, num::NonZeroU64}; // mutated",
   ),
 ];
+const keyAgentServicePhaseTwoCProbeChanged = (probe) =>
+  probe !== keyAgentServicePhaseTwoInputs &&
+  Object.keys(keyAgentServicePhaseTwoInputs).some(
+    (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+  );
+const keyAgentServicePhaseTwoCSemanticMutationResults =
+  keyAgentServicePhaseTwoCSemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoCProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoCSemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoCPinMutationResults =
+  keyAgentServicePhaseTwoCPinMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoCProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoCPinContract(probe),
+  }));
+const keyAgentServicePhaseTwoCAggregatePredicates = Object.freeze([
+  keyAgentServicePhaseTwoCSemanticContract(keyAgentServicePhaseTwoInputs),
+  keyAgentServicePhaseTwoCPinContract(keyAgentServicePhaseTwoInputs),
+  keyAgentServicePhaseTwoCSemanticMutationProbes.length === 64,
+  ...keyAgentServicePhaseTwoCSemanticMutationResults.map(
+    ({ changed, rejected }) => changed && rejected,
+  ),
+  keyAgentServicePhaseTwoCPinMutationProbes.length === 3,
+  ...keyAgentServicePhaseTwoCPinMutationResults.map(
+    ({ changed, rejected }) => changed && rejected,
+  ),
+]);
+const keyAgentServicePhaseTwoCFailedPredicateIndexes = (predicates) =>
+  predicates.flatMap((passed, index) => (passed ? [] : [index]));
+const keyAgentServicePhaseTwoCAggregateFailureIndexes =
+  keyAgentServicePhaseTwoCFailedPredicateIndexes(
+    keyAgentServicePhaseTwoCAggregatePredicates,
+  );
+const keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults = [0, 3, 70].map(
+  (failedIndex) => {
+    const predicates = keyAgentServicePhaseTwoCAggregatePredicates.map(
+      (passed, index) => (index === failedIndex ? false : passed),
+    );
+    return keyAgentServicePhaseTwoCFailedPredicateIndexes(predicates);
+  },
+);
 requireInvariant(
   keyAgentServicePhaseTwoSemanticContract(keyAgentServicePhaseTwoInputs) &&
     keyAgentServicePhaseTwoPinContract(keyAgentServicePhaseTwoInputs) &&
@@ -8586,27 +8629,12 @@ requireInvariant(
   "the Phase 2A/2B no-secret service models must remain full-source-pinned private zero-runtime-root modules whose durable fixture tail contains only cfg(test) items, with exact authenticated marker/checkpoint codecs, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, private one-shot normal-release and terminal-retirement phases plus exact writer-epoch reconciliation latches, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 44 independently effective semantic plus five source-pin mutations",
 );
 requireInvariant(
-  keyAgentServicePhaseTwoCSemanticContract(keyAgentServicePhaseTwoInputs) &&
-    keyAgentServicePhaseTwoCPinContract(keyAgentServicePhaseTwoInputs) &&
-    keyAgentServicePhaseTwoCSemanticMutationProbes.length === 64 &&
-    keyAgentServicePhaseTwoCSemanticMutationProbes.every(
-      (probe) =>
-        probe !== keyAgentServicePhaseTwoInputs &&
-        Object.keys(keyAgentServicePhaseTwoInputs).some(
-          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
-        ) &&
-        !keyAgentServicePhaseTwoCSemanticContract(probe),
-    ) &&
-    keyAgentServicePhaseTwoCPinMutationProbes.length === 3 &&
-    keyAgentServicePhaseTwoCPinMutationProbes.every(
-      (probe) =>
-        probe !== keyAgentServicePhaseTwoInputs &&
-        Object.keys(keyAgentServicePhaseTwoInputs).some(
-          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
-        ) &&
-        !keyAgentServicePhaseTwoCPinContract(probe),
-    ),
-  "the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with exact Missing/Missing observation under a distinct held provisioning writer, canonical Clean generation one and ZERO predecessor, absent/absent CAS, backend/installation/writer/attempt/dual-round-bound one-shot commit/reread/reload/normal-release/terminal-retirement receipts, terminal retry and reconciliation latches, exact writer retirement before Provisioned state, no boot conversion or auto-initialization, fixed tests and docs, disabled policies, exit 78, and 64 independently effective semantic plus three source-pin mutations",
+  keyAgentServicePhaseTwoCAggregatePredicates.length === 71 &&
+    keyAgentServicePhaseTwoCAggregateFailureIndexes.length === 0 &&
+    JSON.stringify(
+      keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults,
+    ) === JSON.stringify([[0], [3], [70]]),
+  `the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with exact Missing/Missing observation under a distinct held provisioning writer, canonical Clean generation one and ZERO predecessor, absent/absent CAS, backend/installation/writer/attempt/dual-round-bound one-shot commit/reread/reload/normal-release/terminal-retirement receipts, terminal retry and reconciliation latches, exact writer retirement before Provisioned state, no boot conversion or auto-initialization, fixed tests and docs, disabled policies, exit 78, and 64 independently effective semantic plus three source-pin mutations; aggregate predicate indexes are 0=semantic base, 1=pin base, 2=semantic count, 3..66=semantic probes, 67=pin count, and 68..70=pin probes; failed predicate indexes=${JSON.stringify(keyAgentServicePhaseTwoCAggregateFailureIndexes)}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 clearRustAnalysisCaches("key-agent-service-phase-two-family");
 
@@ -26005,13 +26033,404 @@ const sealedKeyAgentStdioDefinition = rustLexicalItemBlock(
   keyAgentChildBootstrapProduction,
   /(?:^|\n)\s*struct\s+SealedKeyAgentStdio\s*\{/u,
 );
-const platformWindowsProductionFiles = await rustProductionSources(
+const keyAgentServiceProvisioningTestOnlyExternalModuleSpec = Object.freeze({
+  parentPath:
+    "crates/platform-windows/src/key_agent_service/durable_run_state.rs",
+  moduleName: "provisioning_tests",
+  relativePath: "durable_run_state/provisioning_tests.rs",
+  targetPath:
+    "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs",
+});
+const platformWindowsProductionCandidates = await rustProductionSources(
   "crates/platform-windows/src",
   { withoutInlineTests: true },
 );
-const workspaceRustProductionFiles = (
+const workspaceRustProductionCandidates = (
   await rustProductionSources("crates", { withoutInlineTests: true })
 ).filter((file) => /^crates\/[^/]+\/src\//u.test(file.path));
+const keyAgentServiceResolvedModuleInboundEdges = (files, targetPath) =>
+  files.flatMap((file) => {
+    const code = rustLexicalCode(file.source);
+    const fileName = file.path.split("/").at(-1);
+    const fileStem = fileName.replace(/\.rs$/u, "");
+    const sourceDirectory = dirname(file.path).replaceAll("\\", "/");
+    const moduleDirectory = ["lib.rs", "main.rs", "mod.rs"].includes(fileName)
+      ? sourceDirectory
+      : `${sourceDirectory}/${fileStem}`;
+    const inlineModules = [
+      ...code.matchAll(
+        /(?<![\p{XID_Continue}_#])(?:(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)\s*\{)/gu,
+      ),
+    ].flatMap((match) => {
+      const opening = code.indexOf("{", match.index);
+      const closing = matchingRustDelimiter(code, opening, "{", "}");
+      return closing === -1
+        ? []
+        : [
+            {
+              opening,
+              closing,
+              name: match.groups.name.replace(/^r#/u, ""),
+            },
+          ];
+    });
+    const resolveModuleTarget = (base, literal) =>
+      relative(root, resolve(root, base, literal)).replaceAll("\\", "/");
+    return rustModuleDeclarations(file.source).flatMap((moduleDeclaration) => {
+      const attributes = rustAttachedOuterAttributes(
+        file.source,
+        moduleDeclaration.index,
+      );
+      const inlineNames = inlineModules
+        .filter(
+          ({ opening, closing }) =>
+            opening < moduleDeclaration.index &&
+            moduleDeclaration.index < closing,
+        )
+        .sort((left, right) => left.opening - right.opening)
+        .map(({ name }) => name);
+      const explicitBase =
+        inlineNames.length === 0
+          ? sourceDirectory
+          : [moduleDirectory, ...inlineNames].join("/");
+      const defaultBase = [moduleDirectory, ...inlineNames].join("/");
+      const normalizedAttributes = attributes.map((attribute) =>
+        attribute.source.replace(/\s+/gu, ""),
+      );
+      const directPathAttribute = attributes.some((attribute) =>
+        /^#\s*\[\s*path\b/u.test(attribute.source),
+      );
+      const pathEdges = attributes.flatMap((attribute) => {
+        const conditional = /^#\s*\[\s*cfg_attr\b/u.test(attribute.source);
+        const direct = /^#\s*\[\s*path\b/u.test(attribute.source);
+        if (!conditional && !direct) {
+          return [];
+        }
+        const attributeCode = rustLexicalCode(attribute.source);
+        const assignments = [...attributeCode.matchAll(/\bpath\s*=/gu)];
+        if (assignments.length === 0) {
+          return direct || /\bpath\b/u.test(attributeCode)
+            ? [
+                {
+                  declaringFile: file.path,
+                  module: moduleDeclaration.name,
+                  resolution: "unparsed-path",
+                  literal: "[UNPARSED]",
+                  resolvedTarget: "[UNRESOLVED]",
+                  attributes: normalizedAttributes,
+                },
+              ]
+            : [];
+        }
+        return assignments.map((assignment) => {
+          let cursor = assignment.index + assignment[0].length;
+          while (/\s/u.test(attribute.source[cursor] ?? "")) cursor += 1;
+          let literal;
+          if (attribute.source[cursor] === '"') {
+            const closing = attribute.source.indexOf('"', cursor + 1);
+            if (
+              closing !== -1 &&
+              !attribute.source.slice(cursor + 1, closing).includes("\\")
+            ) {
+              literal = attribute.source.slice(cursor + 1, closing);
+            }
+          } else if (attribute.source[cursor] === "r") {
+            let quote = cursor + 1;
+            while (attribute.source[quote] === "#") quote += 1;
+            if (attribute.source[quote] === '"') {
+              const hashes = attribute.source.slice(cursor + 1, quote);
+              const terminator = `"${hashes}`;
+              const closing = attribute.source.indexOf(terminator, quote + 1);
+              if (closing !== -1) {
+                literal = attribute.source.slice(quote + 1, closing);
+              }
+            }
+          }
+          return {
+            declaringFile: file.path,
+            module: moduleDeclaration.name,
+            resolution:
+              literal === undefined
+                ? "unparsed-path"
+                : conditional
+                  ? "cfg-attr-path"
+                  : "path",
+            literal: literal ?? "[UNPARSED]",
+            resolvedTarget:
+              literal === undefined
+                ? "[UNRESOLVED]"
+                : resolveModuleTarget(explicitBase, literal),
+            attributes: normalizedAttributes,
+          };
+        });
+      });
+      const defaultEdges = directPathAttribute
+        ? []
+        : [
+            {
+              resolution: "default-file",
+              literal: `${moduleDeclaration.name}.rs`,
+            },
+            {
+              resolution: "default-mod",
+              literal: `${moduleDeclaration.name}/mod.rs`,
+            },
+          ].map(({ resolution, literal }) => ({
+            declaringFile: file.path,
+            module: moduleDeclaration.name,
+            resolution,
+            literal,
+            resolvedTarget: resolveModuleTarget(defaultBase, literal),
+            attributes: normalizedAttributes,
+          }));
+      return [...pathEdges, ...defaultEdges].filter(
+        ({ resolution, resolvedTarget }) =>
+          resolution === "unparsed-path" || resolvedTarget === targetPath,
+      );
+    });
+  });
+const keyAgentServiceProvisioningTestOnlyExternalModuleContract = ({
+  parentSource,
+  targetSource,
+  platformCandidates,
+  workspaceCandidates,
+  spec,
+}) => {
+  if (
+    JSON.stringify(spec) !==
+    JSON.stringify({
+      parentPath:
+        "crates/platform-windows/src/key_agent_service/durable_run_state.rs",
+      moduleName: "provisioning_tests",
+      relativePath: "durable_run_state/provisioning_tests.rs",
+      targetPath:
+        "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs",
+    })
+  ) {
+    return false;
+  }
+  const parentCode = rustLexicalCode(parentSource);
+  const moduleMatches = [
+    ...parentCode.matchAll(/\bmod\s+provisioning_tests\s*;/gu),
+  ];
+  if (moduleMatches.length !== 1) return false;
+  const attachedAttributes = rustAttachedOuterAttributes(
+    parentSource,
+    moduleMatches[0].index,
+  ).map((attribute) => attribute.source.replace(/\s+/gu, ""));
+  const resolvedTargetPath = relative(
+    root,
+    resolve(root, dirname(spec.parentPath), spec.relativePath),
+  ).replaceAll("\\", "/");
+  const productionParent = withoutCfgTestItems(
+    withoutBottomTestModule(parentSource),
+  );
+  const expectedTarget = withoutCfgTestItems(
+    withoutBottomTestModule(targetSource),
+  );
+  const exactCandidate = (candidates, path) =>
+    candidates.filter((candidate) => candidate.path === path);
+  const platformParents = exactCandidate(platformCandidates, spec.parentPath);
+  const platformTargets = exactCandidate(platformCandidates, spec.targetPath);
+  const workspaceParents = exactCandidate(workspaceCandidates, spec.parentPath);
+  const workspaceTargets = exactCandidate(workspaceCandidates, spec.targetPath);
+  if (
+    JSON.stringify(attachedAttributes) !==
+      JSON.stringify([
+        "#[cfg(test)]",
+        '#[path="durable_run_state/provisioning_tests.rs"]',
+      ]) ||
+    resolvedTargetPath !== spec.targetPath ||
+    /\bmod\s+provisioning_tests\s*;/u.test(
+      rustLexicalCode(productionParent),
+    ) ||
+    productionParent.includes(spec.relativePath) ||
+    platformParents.length !== 1 ||
+    platformParents[0].source !== productionParent ||
+    platformTargets.length !== 1 ||
+    platformTargets[0].source !== expectedTarget ||
+    workspaceParents.length !== 1 ||
+    workspaceParents[0].source !== productionParent ||
+    workspaceTargets.length !== 1 ||
+    workspaceTargets[0].source !== expectedTarget
+  ) {
+    return false;
+  }
+  const expectedInboundEdge = {
+    declaringFile: spec.parentPath,
+    module: spec.moduleName,
+    resolution: "path",
+    literal: spec.relativePath,
+    resolvedTarget: spec.targetPath,
+    attributes: [
+      "#[cfg(test)]",
+      '#[path="durable_run_state/provisioning_tests.rs"]',
+    ],
+  };
+  const expectedParentInboundEdges =
+    keyAgentServiceResolvedModuleInboundEdges(
+      [{ path: spec.parentPath, source: parentSource }],
+      spec.targetPath,
+    );
+  const platformInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      platformCandidates,
+      spec.targetPath,
+    ),
+  ];
+  const workspaceInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      workspaceCandidates,
+      spec.targetPath,
+    ),
+  ];
+  return (
+    JSON.stringify(platformInboundEdges) ===
+      JSON.stringify([expectedInboundEdge]) &&
+    JSON.stringify(workspaceInboundEdges) ===
+      JSON.stringify([expectedInboundEdge])
+  );
+};
+const keyAgentServiceProvisioningTestOnlyExternalModuleInputs = Object.freeze({
+  parentSource: keyAgentServiceDurableRunState,
+  targetSource: keyAgentServiceDurableProvisioningTests,
+  platformCandidates: platformWindowsProductionCandidates,
+  workspaceCandidates: workspaceRustProductionCandidates,
+  spec: keyAgentServiceProvisioningTestOnlyExternalModuleSpec,
+});
+const mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput = (
+  field,
+  value,
+) => ({
+  ...keyAgentServiceProvisioningTestOnlyExternalModuleInputs,
+  [field]: value,
+});
+const keyAgentServiceProvisioningTestOnlyExternalModuleMutationProbes = [
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceDurableRunState.replace(
+      '#[cfg(test)]\n#[path = "durable_run_state/provisioning_tests.rs"]',
+      '#[cfg(windows)]\n#[path = "durable_run_state/provisioning_tests.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceDurableRunState.replace(
+      '#[path = "durable_run_state/provisioning_tests.rs"]',
+      '#[path = "durable_run_state/hidden.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceDurableRunState.replace(
+      "mod provisioning_tests;",
+      "mod hidden_provisioning_tests;",
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "targetSource",
+    `${keyAgentServiceDurableProvisioningTests}\n// hidden target mutation\n`,
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput("spec", {
+    ...keyAgentServiceProvisioningTestOnlyExternalModuleSpec,
+    targetPath:
+      "crates/platform-windows/src/key_agent_service/durable_run_state/hidden.rs",
+  }),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path ===
+      keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath
+        ? { ...candidate, source: `${candidate.source}\n// hidden candidate mutation\n` }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "key_agent_service/durable_run_state/provisioning_tests.rs"]\nmod production_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = r#"key_agent_service/durable_run_state/provisioning_tests.rs"#]\nmod raw_production_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "workspaceCandidates",
+    workspaceRustProductionCandidates.map((candidate) =>
+      candidate.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "../../platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs"]\nmod cross_crate_production_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceProvisioningTestOnlyExternalModuleInput(
+    "platformCandidates",
+    [
+      ...platformWindowsProductionCandidates,
+      {
+        path: "crates/platform-windows/src/key_agent_service/durable_run_state/mod.rs",
+        source: "mod provisioning_tests;\n",
+      },
+    ],
+  ),
+];
+requireInvariant(
+    keyAgentServiceProvisioningTestOnlyExternalModuleContract(
+      keyAgentServiceProvisioningTestOnlyExternalModuleInputs,
+    ) &&
+    keyAgentServiceProvisioningTestOnlyExternalModuleMutationProbes.length ===
+      10 &&
+    keyAgentServiceProvisioningTestOnlyExternalModuleMutationProbes.every(
+      (probe) =>
+        Object.keys(keyAgentServiceProvisioningTestOnlyExternalModuleInputs).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceProvisioningTestOnlyExternalModuleInputs[field],
+        ) &&
+        !keyAgentServiceProvisioningTestOnlyExternalModuleContract(probe),
+    ),
+  "the exact cfg(test)-plus-path provisioning test module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, or default inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and ten effective relationship mutations",
+);
+const platformWindowsTestOnlyExternalSourcePathSet = new Set([
+  keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath,
+]);
+const platformWindowsProductionFiles =
+  platformWindowsProductionCandidates.filter(
+    ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
+  );
+const workspaceRustProductionFiles = workspaceRustProductionCandidates.filter(
+  ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
+);
+requireInvariant(
+  platformWindowsProductionCandidates.length ===
+    platformWindowsProductionFiles.length + 1 &&
+    workspaceRustProductionCandidates.length ===
+      workspaceRustProductionFiles.length + 1 &&
+    platformWindowsProductionFiles.every(
+      ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
+    ) &&
+    workspaceRustProductionFiles.every(
+      ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
+    ),
+  "only the one relationship-proved provisioning test target may be removed from production-source analysis",
+);
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
 const workspaceRustCompilationInputs = [
@@ -47450,7 +47869,6 @@ requireInvariant(
         "usecore::mem::{offset_of,size_of,size_of_val};",
         "usecore::ptr;",
         "usestd::error::Error;",
-        "usestd::{error::Error,fmt,io,num::NonZeroU64};",
         "usethiserror::Error;",
         "usewindows::core::{PCWSTR,w};",
       ].includes(item.source),
@@ -47464,18 +47882,6 @@ requireInvariant(
         {
           path: "crates/platform-windows/src/key_agent_service/lifecycle_core_tests.rs",
           source: "usestd::error::Error;",
-        },
-      ]) &&
-    JSON.stringify(
-      platformWindowsExpansionSensitiveUseInventory.filter(
-        ({ source }) =>
-          source === "usestd::{error::Error,fmt,io,num::NonZeroU64};",
-      ),
-    ) ===
-      JSON.stringify([
-        {
-          path: "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs",
-          source: "usestd::{error::Error,fmt,io,num::NonZeroU64};",
         },
       ]) &&
     JSON.stringify(platformWindowsGlobUseInventory) ===
