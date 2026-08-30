@@ -9,10 +9,10 @@
 
 use thiserror::Error;
 
-// Production-compiled Phase 2A-2C lifecycle, durable-run-state, and
-// provisioning models. They remain private, have no OS adapter or runtime
-// caller, and cannot mint a real listener, persistent-storage capability, or
-// signing authority.
+// Production-compiled Phase 2A-2D lifecycle, durable-run-state, provisioning,
+// and lease-first runtime-boot models. They remain private, have no OS adapter
+// or runtime caller, and cannot mint a real listener, persistent-storage
+// capability, or signing authority.
 #[allow(dead_code)]
 mod durable_run_state;
 

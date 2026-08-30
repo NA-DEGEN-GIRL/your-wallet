@@ -16,11 +16,14 @@ use super::durable_run_state::{
     CleanReloadRequired, CommittedActiveMarker, CommittedCleanMarker, DurableFailureWithWriter,
     FixtureRunStateAuthenticationKey, PendingFinalWriterRelease, PreparedActiveTransition,
     PreparedCleanTransition, RecoveryExitEvidence, RecoveryRequired, ReloadedActiveRunState,
-    RereadActiveMarker, RereadCleanMarker, StoppedRunEvidence, WriterExitPending,
-    WriterExitReceipt, WriterLeaseReleaseReceipt,
+    RereadActiveMarker, RereadCleanMarker, RuntimeBootStartFailure, StoppedRunEvidence,
+    WriterExitPending, WriterExitReceipt, WriterLeaseReleaseReceipt,
 };
 
-const STARTUP_REQUIREMENT_COUNT: usize = 11;
+const LOGICAL_STARTUP_REQUIREMENT_COUNT: usize = 11;
+const LEASE_BOUND_STARTUP_REQUIREMENT_COUNT: usize = 2;
+const STARTUP_REQUIREMENT_COUNT: usize =
+    LOGICAL_STARTUP_REQUIREMENT_COUNT - LEASE_BOUND_STARTUP_REQUIREMENT_COUNT;
 const MAX_ACTIVE_FIXTURE_WORK: usize = 256;
 const MAX_RETAINED_USER_TOKEN_SESSIONS: usize = 64;
 const MAX_QUARANTINED_SESSIONS: usize = 64;
@@ -32,11 +35,9 @@ enum NoSecretStartupRequirement {
     PrivilegeSet,
     InstalledImage,
     ServiceConfiguration,
-    StorageBinding,
     ProviderBinding,
     AnchorBinding,
     FirewallPolicy,
-    SingleInstanceLease,
     EnrolledUser,
 }
 
@@ -47,11 +48,9 @@ impl NoSecretStartupRequirement {
         Self::PrivilegeSet,
         Self::InstalledImage,
         Self::ServiceConfiguration,
-        Self::StorageBinding,
         Self::ProviderBinding,
         Self::AnchorBinding,
         Self::FirewallPolicy,
-        Self::SingleInstanceLease,
         Self::EnrolledUser,
     ];
 
@@ -62,12 +61,10 @@ impl NoSecretStartupRequirement {
             Self::PrivilegeSet => 2,
             Self::InstalledImage => 3,
             Self::ServiceConfiguration => 4,
-            Self::StorageBinding => 5,
-            Self::ProviderBinding => 6,
-            Self::AnchorBinding => 7,
-            Self::FirewallPolicy => 8,
-            Self::SingleInstanceLease => 9,
-            Self::EnrolledUser => 10,
+            Self::ProviderBinding => 5,
+            Self::AnchorBinding => 6,
+            Self::FirewallPolicy => 7,
+            Self::EnrolledUser => 8,
         }
     }
 }
@@ -126,6 +123,16 @@ impl StartupExitRequired {
         )
     }
 
+    fn from_runtime_boot(failure: RuntimeBootStartFailure) -> Self {
+        let reason = failure.reason();
+        match failure.into_writer_exit() {
+            Err(_) => Self::without_writer(StartupFailure::DurableRecovery(reason)),
+            Ok((_, writer_exit)) => {
+                Self::with_writer(StartupFailure::DurableRecovery(reason), writer_exit)
+            }
+        }
+    }
+
     fn into_writer_exit(self) -> Result<(StartupFailure, WriterExitPending), StartupFailure> {
         match self.writer_exit {
             StartupWriterExit::NotAcquired => Err(self.failure),
@@ -146,7 +153,7 @@ impl fmt::Debug for StartupExitRequired {
 
 struct NoSecretStartupAttempt {
     observations: [Option<StartupObservation>; STARTUP_REQUIREMENT_COUNT],
-    boot: Result<BootEvidence, RecoveryRequired>,
+    boot: Result<BootEvidence, RuntimeBootStartFailure>,
     latched_failure: Option<StartupFailure>,
 }
 
@@ -157,7 +164,7 @@ impl fmt::Debug for NoSecretStartupAttempt {
 }
 
 impl NoSecretStartupAttempt {
-    fn new(boot: Result<BootEvidence, RecoveryRequired>) -> Self {
+    fn new(boot: Result<BootEvidence, RuntimeBootStartFailure>) -> Self {
         Self {
             observations: [None; STARTUP_REQUIREMENT_COUNT],
             boot,
@@ -205,9 +212,7 @@ impl NoSecretStartupAttempt {
             }
         }
 
-        let boot = self.boot.map_err(|recovery| {
-            StartupExitRequired::without_writer(StartupFailure::DurableRecovery(recovery))
-        })?;
+        let boot = self.boot.map_err(StartupExitRequired::from_runtime_boot)?;
         let active_transition = boot
             .prepare_active(key)
             .map_err(StartupExitRequired::from_durable)?;
@@ -217,7 +222,10 @@ impl NoSecretStartupAttempt {
     fn into_exit(self, failure: StartupFailure) -> StartupExitRequired {
         match self.boot {
             Ok(boot) => StartupExitRequired::with_writer(failure, boot.into_writer_exit()),
-            Err(_) => StartupExitRequired::without_writer(failure),
+            Err(runtime_failure) => match runtime_failure.into_writer_exit() {
+                Err(_) => StartupExitRequired::without_writer(failure),
+                Ok((_, writer_exit)) => StartupExitRequired::with_writer(failure, writer_exit),
+            },
         }
     }
 }
@@ -435,7 +443,7 @@ enum CleanupStep {
     ReapHelpers,
     DiscardUserTokens,
     FlushDefinedDurableRecords,
-    ReleaseHardwareAndStorageHandles,
+    ReleaseRequestHardwareAndStorageHandles,
     CommitAndRereadCleanMarker,
     ReleaseSingleInstanceLease,
 }
@@ -450,7 +458,7 @@ impl CleanupStep {
         Self::ReapHelpers,
         Self::DiscardUserTokens,
         Self::FlushDefinedDurableRecords,
-        Self::ReleaseHardwareAndStorageHandles,
+        Self::ReleaseRequestHardwareAndStorageHandles,
         Self::CommitAndRereadCleanMarker,
         Self::ReleaseSingleInstanceLease,
     ];
@@ -930,7 +938,7 @@ impl NoSecretService {
             CleanupStep::RejectNewWork
             | CleanupStep::CloseAndDrainListeners
             | CleanupStep::FlushDefinedDurableRecords
-            | CleanupStep::ReleaseHardwareAndStorageHandles => {}
+            | CleanupStep::ReleaseRequestHardwareAndStorageHandles => {}
             CleanupStep::InvalidateNonDurableAuthority | CleanupStep::CancelRequests => {
                 for work in self.work.values_mut() {
                     work.state = WorkState::CancellationPending;

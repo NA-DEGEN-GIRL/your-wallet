@@ -838,11 +838,15 @@ durable broadcast lifecycle; it is never re-signed.
 
 ### 11. Lifecycle is fail-closed
 
-On every start, before accepting requests, the service verifies its token,
-service SID/restricted state, privilege set, executable/file identity,
-configuration, storage/PCP/anchor bindings, firewall policy, single-instance
-lease, enrolled user state, and durable recovery state. Any mismatch leaves the
-service unavailable without repairing security-sensitive state automatically.
+On every start, before accepting requests, nine externally supplied observations
+verify the service token, restricted service SID, privilege set, executable/file
+identity, configuration, PCP provider binding, rollback-anchor binding, firewall
+policy, and enrolled user state. The remaining storage-binding and single-
+instance requirements are not caller-supplied booleans: lease-first runtime boot
+must acquire the exact backend/installation writer before observing either
+durable file, and only the resulting lease-bound `BootEvidence` carries those
+requirements structurally. Any mismatch leaves the service unavailable without
+repairing security-sensitive state automatically.
 
 For each request, the service owns one finite state machine:
 
@@ -858,9 +862,13 @@ The service registers for session-change notifications. Lock invalidates live
 approval/secret sessions; logoff and user switch additionally terminate all
 helpers and discard user-token capabilities. SCM stop rejects new work, closes
 listeners, cancels/terminates helpers, flushes only already-defined durable
-records, releases hardware handles, and reports stopped only after bounded
-cleanup. If cleanup cannot be proven, the service exits fail-closed and the next
-start enters recovery before listening.
+records, and releases request-scoped hardware and storage handles. A production
+adapter must keep the service-lifetime run-state root, run-state authentication
+key provider, rollback/high-water anchor, and writer held through exact Clean
+commit and independent reread and through the final writer release. The service
+reports stopped only after that bounded sequence. If cleanup cannot be proven,
+the service exits fail-closed and the next start enters recovery before
+listening.
 
 The debug fixtures implement the SCM/RPC rundown subset of this policy. If
 startup rollback or stop rundown cannot prove that RPC-referenced runtime state
@@ -1139,16 +1147,24 @@ models may be loaded with fixture keys only.
 network denial, session, crash, and reboot suites pass with no signing surface.
 
 **Current Phase 2A status: started, not passed.** A production-compiled,
-module-private lifecycle core with zero production callers now models all eleven
-mandatory no-secret startup observations; exact Active-marker commit and
+module-private lifecycle core with zero production callers now models nine
+externally supplied no-secret startup observations. Storage binding and the
+single-instance writer are the other two logical startup requirements, but they
+arrive structurally inside lease-bound `BootEvidence` rather than as caller-
+supplied observations. The core requires exact Active-marker commit and
 readback before listener preparation; `SERVICE_RUNNING` publication before
 admission; lock, unlock, logoff, and user-switch invalidation; and the fixed
 eleven-step stop sequence ending in exact Clean-marker commit/readback followed
 by single-instance release. Each startup typestate consumes its preceding
-authority. After the first nine exact cleanup
-steps and empty work/token registries are proven, a final pre-Clean check
-consumes the live runtime into `CleanCommitPending` while retaining the exact
-writer lease. Distinct committed and reread Clean receipts can produce only
+authority. After the first nine exact cleanup steps and empty work/token
+registries are proven, a final pre-Clean check consumes the live runtime into
+`CleanCommitPending` while retaining the exact writer lease. The ninth cleanup
+step, `CleanupStep::ReleaseRequestHardwareAndStorageHandles`, names only
+request-scoped cleanup. This core proves that durable state authority and the
+exact writer survive through Clean commit, independent reread, and final
+release. Retaining the future run-state-root handle, authentication-key
+provider, and rollback/high-water-anchor handle across the same boundary
+remains an adapter obligation. Distinct committed and reread Clean receipts can produce only
 `CleanCommittedWithWriter`; the sole stopped-report permit requires its final
 backend-bound writer-release receipt. Invalid or ambiguous evidence cannot
 claim a clean stop, and a Clean reload still retains the writer-release
@@ -1175,9 +1191,13 @@ module-private, zero-runtime-root core now defines exact 148-byte `YWRUNV01`
 run-marker and `YWHIWV01` independent high-water envelopes. Both bind the fixed
 installation identity, nonzero generation, predecessor/current lineage
 commitments, reserved-zero schema, and a distinct HMAC-SHA256 domain under a
-zeroizing fixture authentication key. Only an authenticated exact Clean pair
-plus one move-only single-writer lease can produce `BootEvidence`. The lifecycle
-now carries the sealed chain `PreparedActiveTransition -> ActiveRunLease ->
+zeroizing fixture authentication key. The Boot-producing runtime path first
+acquires the exact backend/installation writer and only then freshly observes
+and authenticates the marker and checkpoint; only an exact Clean pair observed
+under that move-only writer can produce `BootEvidence`. A separate `cfg(test)`
+inspection carries no lease-binding, Boot, or mutation authority. The lifecycle
+now carries the sealed chain
+`PreparedActiveTransition -> ActiveRunLease ->
 PreparedCleanTransition -> CleanCommittedWithWriter ->
 PendingFinalWriterRelease -> StoppedRunEvidence`; raw durable observations, raw
 receipt wrappers, copied generation authority, and the former
@@ -1254,10 +1274,10 @@ until matching reload or terminal reconciliation.
 
 Provisioning completion remains withheld until the exact provisioning writer
 is released. The resulting `ProvisionedRunState` has no conversion to
-`BootEvidence` or a runtime writer. Runtime startup must separately reopen and
-authenticate the new Clean pair and acquire a fresh runtime writer through the
-existing boot path. Ordinary boot on a missing pair still requires recovery
-and never auto-initializes storage.
+`BootEvidence` or a runtime writer. Runtime startup must separately acquire a
+fresh runtime writer and only then reopen and authenticate the new Clean pair
+through the existing boot path. Ordinary boot on a missing pair still requires
+recovery and never auto-initializes storage.
 
 This is still only a bounded memory fault model with a fixture key and
 fixture-only fresh-install authority. It does not prove that a missing pair is
@@ -1269,7 +1289,52 @@ Deletion of an existing store must never be accepted as fresh installation by
 a future adapter. Phase 1 and Phase 2 remain **STOP-SHIP**; both compiled
 policies remain `None`, and ordinary/release execution remains silent exit 78.
 
-### Phase 3 — Authenticated Broker and helper runtime
+**Current Phase 2D status: started, not passed.** The Boot-producing runtime
+path now mirrors the writer-first provisioning boundary. The backend must
+acquire the exact runtime writer for one backend and installation before the
+fresh run-marker/high-water observation used to mint Boot authority. Fixture
+`begin_runtime_boot` yields the
+move-only `RuntimeWriterAcquired` state; `finish_runtime_boot` consumes it
+exactly once into either exact authenticated Clean `BootEvidence` or a terminal
+failure that retains the same writer obligation. A failure before acquisition
+is `RuntimeBootStartFailure::BeforeWriter`; every observation, authentication,
+state, backend-binding, or writer-epoch failure after acquisition is
+`RuntimeBootStartFailure::WithWriter` and must complete exact terminal writer
+retirement. A separate `cfg(test)` inspection may authenticate fixture bytes
+without a writer, but it has no lease-binding, Boot, or mutation authority and
+cannot later bind a newly acquired writer.
+
+Missing/Missing, either one-sided missing state, malformed bytes, a wrong
+authentication key, Active or RecoveryRequired state, and cross-backend or
+cross-epoch substitution never initialize, provision, repair, or mint
+`BootEvidence`. They preserve the observed durable state, retain only terminal
+writer-exit authority, and block runtime or provisioning writer reacquisition
+until the exact writer is retired. A fresh-install provisioning authority
+remains a separate fixture-only capability and cannot be derived from any
+runtime-boot result.
+
+The eleven logical startup requirements are therefore nine external
+observations plus storage-binding and single-instance evidence carried
+structurally by the lease-bound `BootEvidence`. Shutdown likewise distinguishes
+request-scoped hardware/storage cleanup from service-lifetime run-state
+authority. This core proves that its durable state authority and exact writer
+remain live through Clean commit, independent reread, and final release; the
+future adapter must additionally retain its run-state-root handle,
+authentication-key provider, and anchor handle across that boundary.
+
+This remains a module-private, zero-runtime-root contract over only the bounded
+memory fixture and fixture authentication key. It has no filesystem or other OS
+adapter, production constructor or caller, `%ProgramData%` root, service-SID
+owner/DACL enforcement, installer or SCM integration, kernel singleton,
+power-loss/reboot proof, TPM-backed key or anchor, secret, signing transition,
+or release authority. The next Windows storage slice is an exact held service
+run-state root plus an installer-created `run.lock`; it is not a global named
+mutex and does not reuse the existing enrolled-user/LPAC storage or signing
+journal as run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**; both
+compiled policies remain `None`, and ordinary/release execution remains silent
+exit 78.
+
+### Phase 3 – Authenticated Broker and helper runtime
 
 Add the bounded Broker control protocol, exact request admission, service-owned
 Approval/Secret Input creation, selected non-inherited bootstrap, full helper
@@ -1358,6 +1423,19 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-31 - Added the Phase 2D lease-first runtime-boot contract. The Boot-
+  producing runtime path now acquires the exact backend/installation writer
+  before its fresh durable observation, consumes `RuntimeWriterAcquired` exactly once, and
+  distinguishes `BeforeWriter` from writer-retaining `WithWriter` failures.
+  Free or stale observations cannot bind later; missing, one-sided, malformed,
+  wrong-key, non-Clean, cross-backend, and cross-epoch state remains terminal
+  and cannot auto-initialize or provision. Clarified that nine startup facts are
+  external observations while storage binding and single-instance evidence are
+  carried structurally by `BootEvidence`. The model retains durable authority
+  and its writer through Clean commit/reread and final release; retaining actual
+  root, key-provider, and anchor handles remains a future adapter obligation.
+  This remains a fixture-only, zero-runtime-root model; Phase 1 and Phase 2 are
+  not passed and both compiled policies remain **STOP-SHIP**/`None`.
 - 2026-08-30 - Added the debug-only Phase 1B executable service/helper RPC
   slice. The live role-aware manager now consumes V2 launch actions while
   retaining completion locally; an occupied single worker rejects queueing

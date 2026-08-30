@@ -5,15 +5,16 @@ use super::super::durable_run_state::{
     DurableRunStateCommitFailure, DurableRunStateCommitFault, DurableRunStateFixture,
     DurableRunStateFixtureSeed, DurableRunStateReleaseFailure, DurableRunStateReleaseFault,
     DurableRunStateRereadFault, FixtureRunStateAuthenticationKey, InstallationIdentity,
-    RecoveryRequired, RunMarkerState,
+    RecoveryRequired, RunMarkerState, RuntimeBootStartFailure,
 };
 use super::{
-    ActiveReloadResolution, CleanupStep, ExitReason, ExitRequired, FatalReason, LifecycleError,
+    ActiveReloadResolution, CleanupStep, ExitReason, ExitRequired, FatalReason,
+    LEASE_BOUND_STARTUP_REQUIREMENT_COUNT, LOGICAL_STARTUP_REQUIREMENT_COUNT, LifecycleError,
     MAX_ACTIVE_FIXTURE_WORK, MAX_QUARANTINED_SESSIONS, MAX_RETAINED_USER_TOKEN_SESSIONS,
     NoSecretFixtureWorkKind, NoSecretService, NoSecretStartupAttempt, NoSecretStartupRequirement,
-    PendingNoSecretStartup, RuntimeState, SessionEvent, SessionId, SessionInvalidationReport,
-    StartupExitRequired, StartupFailure, StartupObservation, StopReason, StoppedPermit, WorkId,
-    WorkState,
+    PendingNoSecretStartup, RuntimeState, STARTUP_REQUIREMENT_COUNT, SessionEvent, SessionId,
+    SessionInvalidationReport, StartupExitRequired, StartupFailure, StartupObservation, StopReason,
+    StoppedPermit, WorkId, WorkState,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -64,7 +65,7 @@ impl LifecycleHarness {
         })
     }
 
-    fn boot(&mut self) -> Result<super::BootEvidence, RecoveryRequired> {
+    fn boot(&mut self) -> Result<super::BootEvidence, RuntimeBootStartFailure> {
         self.store.boot(&self.key, self.installation)
     }
 
@@ -132,6 +133,28 @@ impl LifecycleHarness {
             .retire_writer_for_exit(exit.writer_exit_request())?;
         Ok(exit.complete_writer_exit(receipt)?)
     }
+
+    fn expect_boot_failure(
+        &mut self,
+        expected: RecoveryRequired,
+        writer_acquired: bool,
+    ) -> TestResult {
+        let Err(failure) = self.boot() else {
+            return Err("runtime boot unexpectedly minted authority".into());
+        };
+        assert_eq!(failure.reason(), expected);
+        match (writer_acquired, failure.into_writer_exit()) {
+            (false, Err(reason)) => assert_eq!(reason, expected),
+            (true, Ok((reason, writer_exit))) => {
+                assert_eq!(reason, expected);
+                let receipt = self.store.retire_writer_for_exit(&writer_exit)?;
+                let _retired = writer_exit.complete(receipt)?;
+            }
+            (false, Ok(_)) => return Err("pre-writer failure retained a writer".into()),
+            (true, Err(_)) => return Err("post-acquisition failure lost its writer".into()),
+        }
+        Ok(())
+    }
 }
 
 fn require_exit_ok<T>(result: Result<T, ExitRequired>) -> TestResult<T> {
@@ -167,6 +190,10 @@ fn advance_to_clean_commit(service: &mut NoSecretService) -> Result<(), Lifecycl
 
 #[test]
 fn every_startup_requirement_is_mandatory() -> TestResult {
+    assert_eq!(LOGICAL_STARTUP_REQUIREMENT_COUNT, 11);
+    assert_eq!(LEASE_BOUND_STARTUP_REQUIREMENT_COUNT, 2);
+    assert_eq!(STARTUP_REQUIREMENT_COUNT, 9);
+    assert_eq!(NoSecretStartupRequirement::ALL.len(), 9);
     for missing in NoSecretStartupRequirement::ALL {
         let mut harness = LifecycleHarness::provisioned()?;
         let mut attempt = harness.startup_attempt();
@@ -184,6 +211,57 @@ fn every_startup_requirement_is_mandatory() -> TestResult {
             StartupFailure::Missing(missing)
         );
     }
+    Ok(())
+}
+
+#[test]
+fn unrelated_observation_failure_retains_a_post_acquisition_writer_until_retirement() -> TestResult
+{
+    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Active)?;
+    let mut attempt = harness.startup_attempt();
+    let Err(runtime_reacquire) = harness.store.begin_runtime_boot(harness.installation) else {
+        return Err("startup attempt allowed a second runtime writer".into());
+    };
+    assert!(matches!(
+        runtime_reacquire,
+        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+    ));
+    let Err(provisioning_reacquire) = harness
+        .store
+        .begin_initial_provisioning(&harness.key, harness.installation)
+    else {
+        return Err("startup attempt allowed a provisioning writer".into());
+    };
+    assert!(format!("{provisioning_reacquire:?}").contains("WriterLeaseUnavailable"));
+
+    let rejected = NoSecretStartupRequirement::ServiceToken;
+    for requirement in NoSecretStartupRequirement::ALL {
+        attempt.observe(
+            requirement,
+            if requirement == rejected {
+                StartupObservation::Mismatch
+            } else {
+                StartupObservation::Verified
+            },
+        )?;
+    }
+    let Err(exit) = attempt.finish(&harness.key) else {
+        return Err("unrelated observation failure minted startup authority".into());
+    };
+    let Ok((failure, writer_exit)) = exit.into_writer_exit() else {
+        return Err("unrelated observation failure discarded the acquired writer".into());
+    };
+    assert_eq!(failure, StartupFailure::Mismatch(rejected));
+    let Err(runtime_reacquire) = harness.store.begin_runtime_boot(harness.installation) else {
+        return Err("pending startup exit allowed runtime writer reacquisition".into());
+    };
+    assert!(matches!(
+        runtime_reacquire,
+        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+    ));
+    let receipt = harness.store.retire_writer_for_exit(&writer_exit)?;
+    let _retired = writer_exit.complete(receipt)?;
+    harness.expect_boot_failure(RecoveryRequired::PersistedNonCleanState, true)?;
     Ok(())
 }
 
@@ -273,7 +351,8 @@ fn only_sealed_clean_boot_can_enter_the_ordered_startup_chain() -> TestResult {
             let Err(observed) = harness.boot() else {
                 return Err("non-clean startup minted boot authority".into());
             };
-            assert_eq!(observed, expected);
+            assert_eq!(observed.reason(), expected);
+            assert!(matches!(observed, RuntimeBootStartFailure::WithWriter(_)));
             let mut attempt = NoSecretStartupAttempt::new(Err(observed));
             for requirement in NoSecretStartupRequirement::ALL {
                 attempt.observe(requirement, StartupObservation::Verified)?;
@@ -295,7 +374,10 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
     let mut happy = LifecycleHarness::provisioned()?;
     let service = happy.ready_service()?;
     assert_eq!(
-        happy.store.reopen(&happy.key, happy.installation)?.state(),
+        happy
+            .store
+            .inspect_startup_for_test(&happy.key, happy.installation)?
+            .state(),
         RunMarkerState::Active
     );
     drop(service);
@@ -542,17 +624,11 @@ fn stop_commits_clean_while_held_then_exact_release_mints_stopped_permit() -> Te
     assert_eq!(
         harness
             .store
-            .reopen(&harness.key, harness.installation)?
+            .inspect_startup_for_test(&harness.key, harness.installation)?
             .state(),
         RunMarkerState::Clean
     );
-    assert_eq!(
-        harness
-            .store
-            .boot(&harness.key, harness.installation)
-            .map(|_| ()),
-        Err(RecoveryRequired::WriterLeaseUnavailable)
-    );
+    harness.expect_boot_failure(RecoveryRequired::WriterLeaseUnavailable, false)?;
     let stopped = harness.release_clean(release)?;
     assert!(format!("{stopped:?}").contains("[REDACTED DURABLE EVIDENCE]"));
     assert!(harness.ready_service().is_ok());
@@ -579,20 +655,14 @@ fn every_pre_clean_cleanup_failure_leaves_active_and_retires_the_writer() -> Tes
         assert_eq!(
             harness
                 .store
-                .reopen(&harness.key, harness.installation)?
+                .inspect_startup_for_test(&harness.key, harness.installation)?
                 .state(),
             RunMarkerState::Active
         );
         let exit = service.prepare_fatal_exit()?;
         let retired = harness.retire_exit(exit)?;
         assert_eq!(retired.reason, ExitReason::FatalRuntime);
-        assert_eq!(
-            harness
-                .store
-                .boot(&harness.key, harness.installation)
-                .map(|_| ()),
-            Err(RecoveryRequired::PersistedNonCleanState)
-        );
+        harness.expect_boot_failure(RecoveryRequired::PersistedNonCleanState, true)?;
     }
     Ok(())
 }
@@ -649,13 +719,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
     );
     let retired = conflict_harness.retire_exit(exit)?;
     assert_eq!(retired.reason, ExitReason::DurableRecovery);
-    assert_eq!(
-        conflict_harness
-            .store
-            .boot(&conflict_harness.key, conflict_harness.installation)
-            .map(|_| ()),
-        Err(RecoveryRequired::PersistedNonCleanState)
-    );
+    conflict_harness.expect_boot_failure(RecoveryRequired::PersistedNonCleanState, true)?;
 
     let mut drift_harness = LifecycleHarness::provisioned()?;
     let mut drift = drift_harness.ready_service()?;
@@ -697,25 +761,13 @@ fn held_writer_closes_the_clean_commit_to_final_release_interleaving() -> TestRe
     advance_to_clean_commit(&mut service)?;
 
     for _ in 0..2 {
-        assert_eq!(
-            harness
-                .store
-                .boot(&harness.key, harness.installation)
-                .map(|_| ()),
-            Err(RecoveryRequired::PersistedNonCleanState)
-        );
+        harness.expect_boot_failure(RecoveryRequired::WriterLeaseUnavailable, false)?;
     }
 
     let clean = harness.prepare_clean(service)?;
     let release = harness.commit_clean(clean)?;
     for _ in 0..2 {
-        assert_eq!(
-            harness
-                .store
-                .boot(&harness.key, harness.installation)
-                .map(|_| ()),
-            Err(RecoveryRequired::WriterLeaseUnavailable)
-        );
+        harness.expect_boot_failure(RecoveryRequired::WriterLeaseUnavailable, false)?;
     }
     let _stopped = harness.release_clean(release)?;
     assert!(
@@ -761,13 +813,7 @@ fn exact_clean_ambiguous_reload_still_requires_the_branded_final_release() -> Te
             assert_eq!(retired.durable_recovery, Some(expected));
         } else {
             let release = require_exit_ok(reload.complete(receipt, &harness.key))?;
-            assert_eq!(
-                harness
-                    .store
-                    .boot(&harness.key, harness.installation)
-                    .map(|_| ()),
-                Err(RecoveryRequired::WriterLeaseUnavailable)
-            );
+            harness.expect_boot_failure(RecoveryRequired::WriterLeaseUnavailable, false)?;
             let _permit = harness.release_clean(release)?;
             assert!(
                 harness
@@ -855,18 +901,12 @@ fn fatal_exit_preserves_active_marker_and_retires_the_fixture_writer() -> TestRe
     assert_eq!(
         harness
             .store
-            .reopen(&harness.key, harness.installation)?
+            .inspect_startup_for_test(&harness.key, harness.installation)?
             .state(),
         RunMarkerState::Active
     );
     for _ in 0..2 {
-        assert_eq!(
-            harness
-                .store
-                .boot(&harness.key, harness.installation)
-                .map(|_| ()),
-            Err(RecoveryRequired::PersistedNonCleanState)
-        );
+        harness.expect_boot_failure(RecoveryRequired::PersistedNonCleanState, true)?;
     }
     Ok(())
 }
@@ -883,7 +923,7 @@ fn crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifie
     assert_eq!(
         crash_harness
             .store
-            .reopen(&crash_harness.key, crash_harness.installation)?
+            .inspect_startup_for_test(&crash_harness.key, crash_harness.installation)?
             .state(),
         RunMarkerState::Active
     );

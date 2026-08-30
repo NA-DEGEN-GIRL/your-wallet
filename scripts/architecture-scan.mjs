@@ -2485,10 +2485,11 @@ const keyAgentServiceDurableFixtureBoundary =
 const keyAgentServiceDurableRunStateProduction =
   keyAgentServiceDurableFixtureBoundary === -1
     ? ""
-    : keyAgentServiceDurableRunState.slice(
-        0,
-        keyAgentServiceDurableFixtureBoundary,
-      ).replace(keyAgentServiceDurableTestOnlyImport, "\n");
+    : withoutCfgTestItems(
+        keyAgentServiceDurableRunState
+          .slice(0, keyAgentServiceDurableFixtureBoundary)
+          .replace(keyAgentServiceDurableTestOnlyImport, "\n"),
+      );
 const keyAgentServiceLifecycleCorePath =
   "crates/platform-windows/src/key_agent_service/lifecycle_core.rs";
 const keyAgentServiceLifecycleCore = await text(
@@ -5793,8 +5794,9 @@ const keyAgentServiceDurableBridgeTypes = [
   "RecoveryRequired",
   "InstallationIdentity",
   "FixtureRunStateAuthenticationKey",
-  "SealedStartupObservation",
   "SingleWriterLease",
+  "RuntimeWriterAcquired",
+  "RuntimeBootStartFailure",
   "BootEvidence",
   "PreparedActiveTransition",
   "CommittedActiveMarker",
@@ -5820,9 +5822,8 @@ const keyAgentServiceDurableBridgeTypes = [
 const keyAgentServiceDurableBridgeFunctions = [
   "from_fixed_bytes",
   "from_fixture_bytes",
-  "state",
-  "generation",
-  "bind_writer",
+  "reason",
+  "into_writer_exit",
   "prepare_active",
   "abort",
   "into_writer_exit",
@@ -5859,8 +5860,9 @@ const keyAgentServiceDurableBridgeFunctions = [
 ];
 const keyAgentServiceDurableEvidenceTypes = [
   "FixtureRunStateAuthenticationKey",
-  "SealedStartupObservation",
   "SingleWriterLease",
+  "RuntimeWriterAcquired",
+  "RuntimeBootStartFailure",
   "BootEvidence",
   "PreparedActiveTransition",
   "CommittedActiveMarker",
@@ -5887,6 +5889,9 @@ const keyAgentServiceDurableOperationEvidenceTypes = [
   "OneShotCommitOperation",
   "OneShotReleaseOperation",
   "OneShotReloadOperation",
+];
+const keyAgentServiceDurableTestOnlyEvidenceTypes = [
+  "StartupObservationInspection",
 ];
 const keyAgentServiceProvisioningVisibleTypes = [
   "FreshInstallProvisioningAuthority",
@@ -6045,28 +6050,32 @@ const keyAgentServiceLifecycleEvidenceTypes = [
   "NoSecretService",
 ];
 const approvedKeyAgentServiceDurableSourceSha256 =
-  "e40df84b14423880f6e5dadfae561e08e579b21c0b0a7fcd09622f3acc30aa84";
+  "7b87469f312e08ae7420e32aa296e6b0ef3b491e84cb91ddf41b9295fbdf392b";
 const approvedKeyAgentServiceDurableProductionSha256 =
-  "cd230a6ef1f949488592dc6524f20470225c46c20913c44016f63a9fb095e6c0";
+  "ae37d7b04079d519ae65cb6453d4ede3c671bbf1c66b002e38ccbf74d87e6b3d";
 const approvedKeyAgentServiceProvisioningSourceSha256 =
   "bbd80d1985d625a47219e3c8cb2b3c6db9bcc7b8d9ddc149482d7263b7633237";
 const approvedKeyAgentServiceProvisioningProductionSha256 =
   "0e7e338eeec0b2310feb3ee63c6894637770d1bcc3b6fd8762675f6dfd7f6116";
 const approvedKeyAgentServiceProvisioningTestsSha256 =
-  "e47850b4e689311303e45e763c1def27988bafce560961bdd153b074541bad74";
+  "dd09f53f20943b9104539a6bbe38ffde23fcb2a07429cf92ef865ff759f955cc";
 const approvedKeyAgentServiceLifecycleSourceSha256 =
-  "abad3a2bda794fc11faf32c60acfd3465a4124b47ce7cea056d47cdf8c395295";
+  "cb8eb9c7e511fc191e8fcaf1ecc2d95a497e53338900a4eaa2fc8dca196ac16a";
 const approvedKeyAgentServiceLifecycleTestsSha256 =
-  "62f1bd203fd886d452ab0a7ba0e032495f7897ef71e4f92650ca9ea7b0ba583e";
+  "1fd6fba77408e27fee219c56b25674fccc219effd199028c249cc938c312768a";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
   "missing_marker_or_checkpoint_requires_recovery",
   "malformed_or_noncanonical_envelopes_require_recovery",
+  "malformed_runtime_objects_retain_writer_until_terminal_retirement",
+  "stale_test_inspection_cannot_override_fresh_writer_bound_observation",
+  "runtime_writer_epoch_mismatch_retains_original_writer_authority",
   "valid_mac_noncanonical_fields_and_domain_swapped_tags_fail_closed",
   "authentication_and_installation_mismatch_require_recovery",
   "rollback_and_one_sided_high_water_advance_require_recovery",
   "same_generation_equivocation_requires_recovery",
+  "runtime_lineage_and_installation_failures_are_writer_retaining",
   "authenticated_non_clean_startup_cannot_mint_boot_evidence",
   "transition_key_must_reauthenticate_the_held_lineage",
   "crash_release_preserves_active_recovery_evidence_and_frees_writer",
@@ -6092,7 +6101,10 @@ const keyAgentServiceDurableTestNames = [
 ];
 const keyAgentServiceProvisioningTestNames = [
   "golden_initial_clean_then_release_requires_a_fresh_runtime_boot",
-  "ordinary_boot_missing_never_auto_initializes_or_acquires_a_writer",
+  "ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement",
+  "rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_roles",
+  "wrong_runtime_key_is_post_writer_and_retires_before_clean_can_boot",
+  "cross_backend_runtime_failure_retires_only_the_originating_writer",
   "runtime_and_provisioning_writer_roles_are_mutually_exclusive",
   "preexisting_full_one_sided_and_invalid_bytes_are_rejected_without_mutation",
   "ambiguous_before_write_needs_one_fresh_round_before_retry",
@@ -6116,6 +6128,7 @@ const keyAgentServiceProvisioningTestNames = [
 ];
 const keyAgentServiceLifecycleTestNames = [
   "every_startup_requirement_is_mandatory",
+  "unrelated_observation_failure_retains_a_post_acquisition_writer_until_retirement",
   "mismatched_unavailable_and_duplicate_observations_fail_closed",
   "only_sealed_clean_boot_can_enter_the_ordered_startup_chain",
   "active_commit_readback_and_reload_are_exact_before_listener_preparation",
@@ -6146,10 +6159,11 @@ const keyAgentServicePhaseTwoPartitionDurable = (source) => {
   ) {
     return null;
   }
+  const preFixture = source
+    .slice(0, boundary)
+    .replace(keyAgentServiceDurableTestOnlyImport, "\n");
   return {
-    production: source
-      .slice(0, boundary)
-      .replace(keyAgentServiceDurableTestOnlyImport, "\n"),
+    production: withoutCfgTestItems(preFixture),
     fixture: source.slice(boundary),
   };
 };
@@ -6252,7 +6266,6 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   const privateDurableFunctionCounts = Object.freeze({
     new: 5,
     as_bytes: 3,
-    from_durable_bytes: 1,
     from_exclusive_acquisition: 1,
     expected_marker_bytes: 2,
     expected_checkpoint_bytes: 2,
@@ -6300,9 +6313,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "**Current Phase 2C status: started, not passed.**",
     designPhaseTwoBStart,
   );
+  const designPhaseTwoDStart = designDocument.indexOf(
+    "**Current Phase 2D status: started, not passed.**",
+    designPhaseTwoCStart,
+  );
   const designPhaseThreeStart = designDocument.indexOf(
     "\n### Phase 3",
-    designPhaseTwoCStart,
+    designPhaseTwoDStart,
   );
   const phaseTwoADesign =
     designPhaseTwoAStart === -1 || designPhaseTwoBStart === -1
@@ -6312,8 +6329,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     designPhaseTwoBStart === -1 || designPhaseTwoCStart === -1
       ? ""
       : designDocument.slice(designPhaseTwoBStart, designPhaseTwoCStart);
+  const phaseTwoDDesign =
+    designPhaseTwoDStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoDStart, designPhaseThreeStart);
   const normalizedPhaseTwoADesign = phaseTwoADesign.replace(/\s+/gu, " ");
   const normalizedPhaseTwoBDesign = phaseTwoBDesign.replace(/\s+/gu, " ");
+  const normalizedPhaseTwoDDesign = phaseTwoDDesign.replace(/\s+/gu, " ");
   const normalizedArchitectureDocument = architectureDocument.replace(
     /\s+/gu,
     " ",
@@ -6324,17 +6346,30 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   const durableArchitectureRows = architectureDocument
     .split(/\r?\n/gu)
     .filter((line) => line.startsWith("| Windows service durable run state |"));
+  const runtimeBootArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service lease-first runtime boot |"),
+    );
   const normalizedLifecycleArchitecture = (
     lifecycleArchitectureRows[0] ?? ""
   ).replace(/\s+/gu, " ");
   const normalizedDurableArchitecture = (
     durableArchitectureRows[0] ?? ""
   ).replace(/\s+/gu, " ");
+  const normalizedRuntimeBootArchitecture = (
+    runtimeBootArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
   const phaseTwoADesignMarkers = [
     "module-private lifecycle core with zero production callers",
-    "all eleven mandatory no-secret startup observations",
+    "nine externally supplied no-secret startup observations",
+    "other two logical startup requirements",
+    "arrive structurally inside lease-bound `BootEvidence`",
     "Clean-marker commit/readback followed by single-instance release",
     "`CleanCommitPending` while retaining the exact writer lease",
+    "`CleanupStep::ReleaseRequestHardwareAndStorageHandles`, names only request-scoped cleanup",
+    "future run-state-root handle, authentication-key provider, and rollback/high-water-anchor handle",
+    "remains an adapter obligation",
     "`CleanCommittedWithWriter`",
     "sole stopped-report permit requires its final backend-bound writer-release receipt",
     "Clean reload still retains the writer-release obligation",
@@ -6350,6 +6385,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "exact 148-byte `YWRUNV01` run-marker and `YWHIWV01` independent high-water envelopes",
     "reserved-zero schema",
     "distinct HMAC-SHA256 domain",
+    "first acquires the exact backend/installation writer and only then freshly observes and authenticates the marker and checkpoint",
+    "separate `cfg(test)` inspection carries no lease-binding, Boot, or mutation authority",
     "`PreparedActiveTransition -> ActiveRunLease -> PreparedCleanTransition -> CleanCommittedWithWriter -> PendingFinalWriterRelease -> StoppedRunEvidence`",
     "same opaque backend/lease binding",
     "lifecycle-branded Active or Clean reload state",
@@ -6370,6 +6407,11 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   ];
   const lifecycleArchitectureMarkers = [
     "module-private, zero-production-caller Phase 2A core",
+    "nine externally supplied mandatory startup observations",
+    "other two logical requirements and arrive structurally inside lease-bound `BootEvidence`",
+    "`CleanupStep::ReleaseRequestHardwareAndStorageHandles` names only request-scoped cleanup",
+    "retaining the future run-state-root handle, authentication-key provider, and rollback/high-water-anchor handle",
+    "remains an adapter obligation",
     "Clean-marker commit/readback while the writer remains held, followed by exact single-instance release",
     "`CleanCommittedWithWriter`",
     "exact backend-bound writer-release receipt is the sole path to the stopped-report permit",
@@ -6385,6 +6427,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "exact 148-byte authenticated `YWRUNV01` marker and independent `YWHIWV01` high-water envelopes",
     "reserved-zero schema",
     "domain-separated fixture HMAC",
+    "only after the exact backend/installation writer has been acquired",
+    "separate `cfg(test)` inspection is authority-free and cannot later bind a writer or mint Boot authority",
     "`PreparedCleanTransition`, `CleanCommittedWithWriter`, final writer release, and `StoppedRunEvidence`",
     "Every commit, reread, reload, and release receipt is bound to the originating opaque backend and lease",
     "Private one-shot phases enforce commit-attempt, commit-receipt, reread, reload-receipt, normal release-receipt, and terminal-retirement receipt order",
@@ -6394,6 +6438,49 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "a key switch retains only terminal writer-exit authority",
     "terminal-only writer-exit authority",
     "no filesystem/registry/SCM/kernel-singleton adapter",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  const phaseTwoDDesignMarkers = [
+    "Boot-producing runtime path now mirrors the writer-first provisioning boundary",
+    "acquire the exact runtime writer for one backend and installation before the fresh run-marker/high-water observation",
+    "`begin_runtime_boot`",
+    "move-only `RuntimeWriterAcquired` state",
+    "`finish_runtime_boot` consumes it exactly once",
+    "`RuntimeBootStartFailure::BeforeWriter`",
+    "`RuntimeBootStartFailure::WithWriter`",
+    "exact terminal writer retirement",
+    "separate `cfg(test)` inspection",
+    "no lease-binding, Boot, or mutation authority",
+    "cannot later bind a newly acquired writer",
+    "never initialize, provision, repair, or mint `BootEvidence`",
+    "nine external observations plus storage-binding and single-instance evidence carried structurally by the lease-bound `BootEvidence`",
+    "request-scoped hardware/storage cleanup",
+    "future adapter must additionally retain its run-state-root handle, authentication-key provider, and anchor handle",
+    "held service run-state root plus an installer-created `run.lock`",
+    "not a global named mutex",
+    "does not reuse the existing enrolled-user/LPAC storage or signing journal",
+    "Phase 1 and Phase 2 remain **STOP-SHIP**",
+    "compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  const runtimeBootArchitectureMarkers = [
+    "production-compiled, module-private, zero-runtime-root Phase 2D contract",
+    "`begin_runtime_boot` acquires the exact backend/installation writer before the fresh marker/high-water observation",
+    "move-only `RuntimeWriterAcquired`",
+    "`finish_runtime_boot` consumes it once",
+    "`RuntimeBootStartFailure::WithWriter`",
+    "Acquisition failures are `BeforeWriter`",
+    "post-acquisition observation, authentication, non-Clean-state, backend-binding, or writer-epoch failure retains terminal writer-exit authority",
+    "separate `cfg(test)` inspection",
+    "no lease-binding, Boot, or mutation authority",
+    "never auto-initialize, provision, repair, or mint Boot authority",
+    "Exact terminal retirement is required before runtime or provisioning writer reacquisition",
+    "nine external startup observations plus structurally carried storage binding and single-instance evidence remain eleven logical requirements",
+    "held service run-state root plus installer-created `run.lock`",
+    "not a global named mutex",
+    "reuse of enrolled-user/LPAC storage",
+    "Phase 1 and Phase 2 remain **STOP-SHIP**",
     "both compiled policies remain `None`",
     "ordinary/release execution remains silent exit 78",
   ];
@@ -6407,7 +6494,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   let oneShotCommit;
   let oneShotRelease;
   let oneShotReload;
-  let bindWriter;
+  let runtimeBootFailure;
+  let startupInspection;
+  let runtimeBootFailureDebug;
+  let startupInspectionDebug;
   let prepareActive;
   let activeTransition;
   let prepareClean;
@@ -6416,8 +6506,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   let activeReload;
   let cleanReload;
   let writerExit;
+  let beginRuntimeBoot;
+  let inspectStartupForTest;
+  let finishRuntimeBoot;
   let fixtureBoot;
-  let fixtureAcquireWriter;
   let fixtureReloadActive;
   let fixtureReloadClean;
   let fixtureCommitActive;
@@ -6428,6 +6520,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   let fixtureRetire;
   let startupObserve;
   let startupFinish;
+  let startupFromRuntimeBoot;
+  let startupIntoExit;
+  let startupRequirement;
   let pendingStartup;
   let pendingActiveReload;
   let listenerPrepared;
@@ -6472,7 +6567,22 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       durable.production,
       /\bimpl\s+OneShotReloadOperation\s*\{/u,
     );
-    bindWriter = rustFunctionBlock(durable.production, "bind_writer");
+    runtimeBootFailure = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+RuntimeBootStartFailure\s*\{/u,
+    );
+    startupInspection = rustLexicalItemBlock(
+      durableSource,
+      /\bimpl\s+StartupObservationInspection\s*\{/u,
+    );
+    startupInspectionDebug = rustLexicalItemBlock(
+      durableSource,
+      /\bimpl\s+fmt\s*::\s*Debug\s+for\s+StartupObservationInspection\s*\{/u,
+    );
+    runtimeBootFailureDebug = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+fmt\s*::\s*Debug\s+for\s+RuntimeBootStartFailure\s*\{/u,
+    );
     prepareActive = rustFunctionBlock(durable.production, "prepare_active");
     activeTransition = rustLexicalItemBlock(
       durable.production,
@@ -6499,8 +6609,16 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       durable.production,
       /\bimpl\s+WriterExitPending\s*\{/u,
     );
+    beginRuntimeBoot = rustFunctionBlock(durable.fixture, "begin_runtime_boot");
+    inspectStartupForTest = rustFunctionBlock(
+      durable.fixture,
+      "inspect_startup_for_test",
+    );
+    finishRuntimeBoot = rustFunctionBlock(
+      durable.fixture,
+      "finish_runtime_boot",
+    );
     fixtureBoot = rustFunctionBlock(durable.fixture, "boot");
-    fixtureAcquireWriter = rustFunctionBlock(durable.fixture, "acquire_writer");
     fixtureReloadActive = rustFunctionBlock(durable.fixture, "reload_active");
     fixtureReloadClean = rustFunctionBlock(durable.fixture, "reload_clean");
     fixtureCommitActive = rustFunctionBlock(durable.fixture, "commit_active");
@@ -6514,6 +6632,15 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     );
     startupObserve = rustFunctionBlock(lifecycleProduction, "observe");
     startupFinish = rustFunctionBlock(lifecycleProduction, "finish");
+    startupFromRuntimeBoot = rustFunctionBlock(
+      lifecycleProduction,
+      "from_runtime_boot",
+    );
+    startupIntoExit = rustFunctionBlock(lifecycleProduction, "into_exit");
+    startupRequirement = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\benum\s+NoSecretStartupRequirement\s*\{/u,
+    );
     pendingStartup = rustLexicalItemBlock(
       lifecycleProduction,
       /\bimpl\s+PendingNoSecretStartup\s*\{/u,
@@ -6612,7 +6739,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         "usestd::fmt;",
         "usestd::num::{NonZeroU32,NonZeroU64};",
         "usethiserror::Error;",
-        "usesuper::durable_run_state::{ActiveReloadReceipt,ActiveReloadRequired,ActiveRunLease,BootEvidence,CleanReloadReceipt,CleanReloadRequired,CommittedActiveMarker,CommittedCleanMarker,DurableFailureWithWriter,FixtureRunStateAuthenticationKey,PendingFinalWriterRelease,PreparedActiveTransition,PreparedCleanTransition,RecoveryExitEvidence,RecoveryRequired,ReloadedActiveRunState,RereadActiveMarker,RereadCleanMarker,StoppedRunEvidence,WriterExitPending,WriterExitReceipt,WriterLeaseReleaseReceipt,};",
+        "usesuper::durable_run_state::{ActiveReloadReceipt,ActiveReloadRequired,ActiveRunLease,BootEvidence,CleanReloadReceipt,CleanReloadRequired,CommittedActiveMarker,CommittedCleanMarker,DurableFailureWithWriter,FixtureRunStateAuthenticationKey,PendingFinalWriterRelease,PreparedActiveTransition,PreparedCleanTransition,RecoveryExitEvidence,RecoveryRequired,ReloadedActiveRunState,RereadActiveMarker,RereadCleanMarker,RuntimeBootStartFailure,StoppedRunEvidence,WriterExitPending,WriterExitReceipt,WriterLeaseReleaseReceipt,};",
       ]) &&
     /^hmac\.workspace\s*=\s*true$/mu.test(platformManifest) &&
     /^sha2\.workspace\s*=\s*true$/mu.test(platformManifest) &&
@@ -6634,6 +6761,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       keyAgentServiceDurableOperationEvidenceTypes,
     ) &&
     keyAgentServiceMoveOnlyEvidenceContract(
+      durableSource,
+      keyAgentServiceDurableTestOnlyEvidenceTypes,
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
       lifecycleProduction,
       keyAgentServiceLifecycleEvidenceTypes,
     ) &&
@@ -6643,6 +6774,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     !forbiddenAuthority.test(combinedProductionCode) &&
     !forbiddenAdapter.test(combinedProductionCode) &&
     !forbiddenLifecycleDurableShape.test(lifecycleCode) &&
+    !/\b(?:SealedStartupObservation|bind_writer|reopen|acquire_writer)\b/u.test(
+      rustLexicalCode(durableSource),
+    ) &&
     durableSource.split(keyAgentServiceDurableTestOnlyImport).length - 1 === 1 &&
     durableSource.includes(
       "const RUN_MARKER_MAGIC_V1: &[u8; 8] = b\"YWRUNV01\";",
@@ -6789,14 +6923,65 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "fnhas_exact_receipt(&self)->bool",
       "self.0.get()",
     ]) &&
-    hasOrderedCompactMarkers(bindWriter, [
-      "ifself.binding!=lease.binding",
-      "RecoveryRequired::BackendBindingMismatch",
-      "ifself.durable.marker.state!=RunMarkerState::Clean",
-      "RecoveryRequired::PersistedNonCleanState",
-      "ifself.durable.marker.installation!=lease.installation",
-      "Ok(BootEvidence",
+    hasOrderedCompactMarkers(runtimeBootFailure, [
+      "fnreason(&self)->RecoveryRequired",
+      "Self::BeforeWriter(reason)=>*reason",
+      "Self::WithWriter(failure)=>failure.reason()",
+      "fninto_writer_exit(self,)->Result<(RecoveryRequired,WriterExitPending),RecoveryRequired>",
+      "Self::BeforeWriter(reason)=>Err(reason)",
+      "Self::WithWriter(failure)",
+      "letreason=failure.reason()",
+      "Ok((reason,failure.into_writer_exit()))",
     ]) &&
+    (rustLexicalCode(durableSource).match(
+      /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*pub\s*\(\s*super\s*\)\s+struct\s+StartupObservationInspection\b/gu,
+    ) ?? []).length === 1 &&
+    durableSource.includes(
+      "#[cfg(test)]\npub(super) struct StartupObservationInspection {\n    durable: DurableSnapshot,\n}",
+    ) &&
+    (rustLexicalCode(durableSource).match(
+      /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*impl\s+StartupObservationInspection\b/gu,
+    ) ?? []).length === 1 &&
+    (rustLexicalCode(durableSource).match(
+      /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*impl\s+fmt\s*::\s*Debug\s+for\s+StartupObservationInspection\b/gu,
+    ) ?? []).length === 1 &&
+    !durableCode.includes("StartupObservationInspection") &&
+    hasOrderedCompactMarkers(startupInspection, [
+      "fnfrom_durable_bytes(",
+      "letobserved=SnapshotObservation::capture(marker,checkpoint)",
+      "verify_observation(&observed,expected_installation,key).map(|durable|Self{durable})",
+      "pub(super)constfnstate(&self)->RunMarkerState",
+      "self.durable.marker.state",
+      "pub(super)constfngeneration(&self)->NonZeroU64",
+      "self.durable.marker.generation",
+    ]) &&
+    !/\b(?:SingleWriterLease|RuntimeWriterAcquired|RuntimeBootStartFailure|BootEvidence|WriterExitPending|BackendBinding)\b/u.test(
+      rustLexicalCode(startupInspection),
+    ) &&
+    !/\bpub\s*\([^)]*\)\s+(?:const\s+)?fn\s+from_durable_bytes\b/u.test(
+      rustLexicalCode(startupInspection),
+    ) &&
+    startupInspectionDebug.includes(
+      '.debug_struct("StartupObservationInspection")',
+    ) &&
+    startupInspectionDebug.includes(
+      '.field("state", &self.durable.marker.state)',
+    ) &&
+    startupInspectionDebug.includes('.field("generation", &"[REDACTED]")') &&
+    startupInspectionDebug.includes(
+      '.field("installation", &"[REDACTED]")',
+    ) &&
+    startupInspectionDebug.includes('.field("commitment", &"[REDACTED]")') &&
+    startupInspectionDebug.includes('.field("checkpoint", &"[REDACTED]")') &&
+    runtimeBootFailureDebug.includes(
+      '.debug_struct("RuntimeBootStartFailure")',
+    ) &&
+    runtimeBootFailureDebug.includes(
+      'Self::BeforeWriter(_) => "before-writer"',
+    ) &&
+    runtimeBootFailureDebug.includes('Self::WithWriter(_) => "with-writer"') &&
+    runtimeBootFailureDebug.includes('.field("reason", &self.reason())') &&
+    runtimeBootFailureDebug.includes('.field("writer", &"[REDACTED]")') &&
     hasOrderedCompactMarkers(prepareActive, [
       "letSelf{durable,lease}=self",
       "letauthenticated_prior=matchverify_observation(",
@@ -6905,21 +7090,69 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     durableFixtureCompact.includes(
       "constfnterminal_runtime(kind:FixtureCommitKind,writer:FixtureWriterRecord)->Self{Self{kind,writer_epoch:writer.epoch,provisioning_round:None,reload_allowed:false,}}",
     ) &&
-    hasOrderedCompactMarkers(fixtureBoot, [
-      "letobservation=self.reopen(key,installation)?",
-      "ifobservation.state()!=RunMarkerState::Clean",
-      "returnErr(RecoveryRequired::PersistedNonCleanState)",
-      "letlease=self.acquire_writer(installation)?",
-      "Ok(BootEvidence",
-    ]) &&
-    hasOrderedCompactMarkers(fixtureAcquireWriter, [
+    hasOrderedCompactMarkers(beginRuntimeBoot, [
+      "ifinstallation!=self.installation",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::InstallationIdentityMismatch,)",
       "ifself.held_writer.is_some()",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable,)",
       "ifself.release_reconciliation.is_some()",
-      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterReleaseReconciliationRequired,)",
       "ifself.unresolved_commit_ambiguity.is_some()",
-      "RecoveryRequired::CommitReloadRequired",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::CommitReloadRequired,)",
+      "last_writer_epoch.checked_add(1).and_then(NonZeroU64::new).ok_or(RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable,))?",
+      "self.last_writer_epoch=epoch.get()",
       "self.held_writer=Some(FixtureWriterRecord::runtime(installation,epoch))",
+      "Ok(RuntimeWriterAcquired{lease:SingleWriterLease::from_exclusive_acquisition(installation,epoch,self.binding),})",
     ]) &&
+    !/\b(?:marker_bytes|checkpoint_bytes|SnapshotObservation|verify_observation|RunMarkerState|BootEvidence|begin_initial_provisioning|prepare_initial_clean)\b/u.test(
+      rustLexicalCode(beginRuntimeBoot),
+    ) &&
+    hasOrderedCompactMarkers(finishRuntimeBoot, [
+      "letRuntimeWriterAcquired{lease}=acquired",
+      "iflease.binding!=self.binding",
+      "RuntimeBootStartFailure::WithWriter(DurableFailureWithWriter::new(RecoveryRequired::BackendBindingMismatch,lease),)",
+      "iflease.installation!=self.installation",
+      "RuntimeBootStartFailure::WithWriter(DurableFailureWithWriter::new(RecoveryRequired::InstallationIdentityMismatch,lease,),)",
+      "letexpected=FixtureWriterRecord::runtime(lease.installation,lease.epoch)",
+      "ifself.held_writer!=Some(expected)",
+      "RuntimeBootStartFailure::WithWriter(DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch,lease),)",
+      "letobserved=SnapshotObservation::capture(self.marker_bytes(),self.checkpoint_bytes())",
+      "verify_observation(&observed,lease.installation,key)",
+      "RuntimeBootStartFailure::WithWriter(DurableFailureWithWriter::new(reason,lease),)",
+      "ifdurable.marker.state!=RunMarkerState::Clean",
+      "RuntimeBootStartFailure::WithWriter(DurableFailureWithWriter::new(RecoveryRequired::PersistedNonCleanState,lease),)",
+      "Ok(BootEvidence{durable,lease})",
+    ]) &&
+    (compactRust(finishRuntimeBoot).match(
+      /RuntimeBootStartFailure::WithWriter\(/gu,
+    ) ?? []).length === 5 &&
+    !compactRust(finishRuntimeBoot).includes(
+      "RuntimeBootStartFailure::BeforeWriter",
+    ) &&
+    hasOrderedCompactMarkers(inspectStartupForTest, [
+      "StartupObservationInspection::from_durable_bytes(",
+      "self.marker_bytes()",
+      "self.checkpoint_bytes()",
+      "installation",
+      "key",
+    ]) &&
+    !/\b(?:held_writer|SingleWriterLease|RuntimeWriterAcquired|RuntimeBootStartFailure|BootEvidence|begin_initial_provisioning|prepare_initial_clean)\b/u.test(
+      rustLexicalCode(inspectStartupForTest),
+    ) &&
+    compactRust(fixtureBoot).includes(
+      "letacquired=self.begin_runtime_boot(installation)?;self.finish_runtime_boot(acquired,key)"
+    ) &&
+    keyAgentServiceLiteralCount(
+      compactRust(fixtureBoot),
+      "begin_runtime_boot(installation)",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      compactRust(fixtureBoot),
+      "finish_runtime_boot(acquired,key)",
+    ) === 1 &&
+    !/\b(?:SnapshotObservation|verify_observation|inspect_startup_for_test|begin_initial_provisioning|prepare_initial_clean|ProvisionedRunState)\b/u.test(
+      rustLexicalCode(fixtureBoot),
+    ) &&
     hasOrderedCompactMarkers(fixtureReloadActive, [
       "pending:&ActiveReloadRequired",
       "ifpending.lease.binding!=self.binding",
@@ -7056,10 +7289,31 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     ) &&
     lifecycleCompact.includes("constMAX_QUARANTINED_SESSIONS:usize=64;") &&
     lifecycleCompact.includes(
-      "constALL:[Self;STARTUP_REQUIREMENT_COUNT]=[Self::ServiceToken,Self::RestrictedServiceSid,Self::PrivilegeSet,Self::InstalledImage,Self::ServiceConfiguration,Self::StorageBinding,Self::ProviderBinding,Self::AnchorBinding,Self::FirewallPolicy,Self::SingleInstanceLease,Self::EnrolledUser,];",
+      "constLOGICAL_STARTUP_REQUIREMENT_COUNT:usize=11;",
     ) &&
     lifecycleCompact.includes(
-      "constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseHardwareAndStorageHandles,Self::CommitAndRereadCleanMarker,Self::ReleaseSingleInstanceLease,];",
+      "constLEASE_BOUND_STARTUP_REQUIREMENT_COUNT:usize=2;",
+    ) &&
+    lifecycleCompact.includes(
+      "constSTARTUP_REQUIREMENT_COUNT:usize=LOGICAL_STARTUP_REQUIREMENT_COUNT-LEASE_BOUND_STARTUP_REQUIREMENT_COUNT;",
+    ) &&
+    compactRust(startupRequirement) ===
+      "enumNoSecretStartupRequirement{ServiceToken,RestrictedServiceSid,PrivilegeSet,InstalledImage,ServiceConfiguration,ProviderBinding,AnchorBinding,FirewallPolicy,EnrolledUser,}" &&
+    lifecycleCompact.includes(
+      "constALL:[Self;STARTUP_REQUIREMENT_COUNT]=[Self::ServiceToken,Self::RestrictedServiceSid,Self::PrivilegeSet,Self::InstalledImage,Self::ServiceConfiguration,Self::ProviderBinding,Self::AnchorBinding,Self::FirewallPolicy,Self::EnrolledUser,];",
+    ) &&
+    lifecycleCompact.includes(
+      "constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseRequestHardwareAndStorageHandles,Self::CommitAndRereadCleanMarker,Self::ReleaseSingleInstanceLease,];",
+    ) &&
+    !/\bReleaseHardwareAndStorageHandles\b/u.test(lifecycleCode) &&
+    durableCompact.includes(
+      "pub(super)structSingleWriterLease{installation:InstallationIdentity,epoch:NonZeroU64,binding:BackendBinding,}",
+    ) &&
+    durableCompact.includes(
+      "pub(super)structBootEvidence{durable:DurableSnapshot,lease:SingleWriterLease,}",
+    ) &&
+    lifecycleCompact.includes(
+      "boot:Result<BootEvidence,RuntimeBootStartFailure>",
     ) &&
     hasOrderedCompactMarkers(startupObserve, [
       "letslot=&mutself.observations[requirement.index()]",
@@ -7077,6 +7331,20 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "letboot=self.boot.map_err",
       ".prepare_active(key)",
       "Ok(PendingNoSecretStartup{active_transition})",
+    ]) &&
+    hasOrderedCompactMarkers(startupFromRuntimeBoot, [
+      "letreason=failure.reason()",
+      "matchfailure.into_writer_exit()",
+      "Err(_)=>Self::without_writer(StartupFailure::DurableRecovery(reason))",
+      "Ok((_,writer_exit))",
+      "Self::with_writer(StartupFailure::DurableRecovery(reason),writer_exit)",
+    ]) &&
+    hasOrderedCompactMarkers(startupIntoExit, [
+      "matchself.boot",
+      "Ok(boot)=>StartupExitRequired::with_writer(failure,boot.into_writer_exit())",
+      "Err(runtime_failure)=>matchruntime_failure.into_writer_exit()",
+      "Err(_)=>StartupExitRequired::without_writer(failure)",
+      "Ok((_,writer_exit))=>StartupExitRequired::with_writer(failure,writer_exit)",
     ]) &&
     hasOrderedCompactMarkers(pendingStartup, [
       "CommittedActiveMarker",
@@ -7118,6 +7386,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "self.latch_fatal(FatalReason::CleanupProtocolViolation)",
       "ifmatches!(step,CleanupStep::ReleaseSingleInstanceLease|CleanupStep::CommitAndRereadCleanMarker)",
       "returnErr(LifecycleError::InvalidCleanShutdownReceipt)",
+      "CleanupStep::ReleaseRequestHardwareAndStorageHandles=>{}",
       "CleanupStep::ReapHelpers=>self.work.clear()",
       "CleanupStep::DiscardUserTokens=>self.user_token_sessions.clear()",
       "CleanupStep::ReleaseSingleInstanceLease|CleanupStep::CommitAndRereadCleanMarker",
@@ -7215,22 +7484,31 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     designPhaseTwoAStart !== -1 &&
     designPhaseTwoBStart > designPhaseTwoAStart &&
     designPhaseTwoCStart > designPhaseTwoBStart &&
-    designPhaseThreeStart > designPhaseTwoCStart &&
+    designPhaseTwoDStart > designPhaseTwoCStart &&
+    designPhaseThreeStart > designPhaseTwoDStart &&
     phaseTwoADesignMarkers.every((marker) =>
       normalizedPhaseTwoADesign.includes(marker),
     ) &&
     phaseTwoBDesignMarkers.every((marker) =>
       normalizedPhaseTwoBDesign.includes(marker),
     ) &&
+    phaseTwoDDesignMarkers.every((marker) =>
+      normalizedPhaseTwoDDesign.includes(marker),
+    ) &&
     !phaseTwoADesign.includes("**Current Phase 2A status: passed.**") &&
     !phaseTwoBDesign.includes("**Current Phase 2B status: passed.**") &&
+    !phaseTwoDDesign.includes("**Current Phase 2D status: passed.**") &&
     lifecycleArchitectureRows.length === 1 &&
     durableArchitectureRows.length === 1 &&
+    runtimeBootArchitectureRows.length === 1 &&
     lifecycleArchitectureMarkers.every((marker) =>
       normalizedLifecycleArchitecture.includes(marker),
     ) &&
     durableArchitectureMarkers.every((marker) =>
       normalizedDurableArchitecture.includes(marker),
+    ) &&
+    runtimeBootArchitectureMarkers.every((marker) =>
+      normalizedRuntimeBootArchitecture.includes(marker),
     ) &&
     normalizedArchitectureDocument.includes(
       "a terminal failure means a consumed durable outcome or receipt-validation failure",
@@ -7243,6 +7521,12 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "Phase 1 and Phase 2 exit gates have passed",
     ) &&
     !normalizedDurableArchitecture.includes("both compiled policies are `Some`") &&
+    !normalizedRuntimeBootArchitecture.includes(
+      "Phase 1 and Phase 2 exit gates have passed",
+    ) &&
+    !normalizedRuntimeBootArchitecture.includes(
+      "both compiled policies are `Some`",
+    ) &&
     JSON.stringify(keyAgentServiceRustTestNameInventory(durableSource)) ===
       JSON.stringify(keyAgentServiceDurableTestNames) &&
     JSON.stringify(keyAgentServiceRustTestNameInventory(lifecycleTests)) ===
@@ -7362,14 +7646,14 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
   const designPhaseTwoCStart = designDocument.indexOf(
     "**Current Phase 2C status: started, not passed.**",
   );
-  const designPhaseThreeStart = designDocument.indexOf(
-    "\n### Phase 3",
+  const designPhaseTwoDStart = designDocument.indexOf(
+    "**Current Phase 2D status: started, not passed.**",
     designPhaseTwoCStart,
   );
   const phaseTwoCDesign =
-    designPhaseTwoCStart === -1 || designPhaseThreeStart === -1
+    designPhaseTwoCStart === -1 || designPhaseTwoDStart === -1
       ? ""
-      : designDocument.slice(designPhaseTwoCStart, designPhaseThreeStart);
+      : designDocument.slice(designPhaseTwoCStart, designPhaseTwoDStart);
   const normalizedPhaseTwoCDesign = phaseTwoCDesign.replace(/\s+/gu, " ");
   const normalizedArchitectureDocument = architectureDocument.replace(
     /\s+/gu,
@@ -7404,7 +7688,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     "terminal retirement uses the last round actually issued by the backend",
     "Exact writer-epoch latches prevent same-round commit or release retry and block both provisioning and runtime writer reacquisition",
     "`ProvisionedRunState` has no conversion to `BootEvidence` or a runtime writer",
-    "separately reopen and authenticate",
+    "separately acquire a fresh runtime writer and only then reopen and authenticate",
     "never auto-initializes storage",
     "no elevated installer provenance or lease",
     "production constructor, or production caller",
@@ -7458,7 +7742,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
   let fixtureReload;
   let fixtureRelease;
   let fixtureRetire;
-  let fixtureRuntimeAcquire;
+  let fixtureRuntimeBegin;
   let fixtureBoot;
   try {
     authorityValidation = rustFunctionBlock(
@@ -7538,7 +7822,10 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
       provisioningSource,
       "retire_provisioning_writer_for_exit",
     );
-    fixtureRuntimeAcquire = rustFunctionBlock(durable.fixture, "acquire_writer");
+    fixtureRuntimeBegin = rustFunctionBlock(
+      durable.fixture,
+      "begin_runtime_boot",
+    );
     fixtureBoot = rustFunctionBlock(durable.fixture, "boot");
   } catch {
     return false;
@@ -7649,14 +7936,17 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
       "pub(super)constfnprovisioning(installation:InstallationIdentity,epoch:NonZeroU64,attempt:NonZeroU64,)->Self{Self{role:FixtureWriterRole::Provisioning,installation,epoch,provisioning_attempt:Some(attempt),}}",
     ) &&
     durableFixtureCompact.includes("held_writer:Option<FixtureWriterRecord>") &&
-    hasOrderedCompactMarkers(fixtureRuntimeAcquire, [
+    hasOrderedCompactMarkers(fixtureRuntimeBegin, [
+      "ifinstallation!=self.installation",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::InstallationIdentityMismatch,)",
       "ifself.held_writer.is_some()",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable,)",
       "ifself.release_reconciliation.is_some()",
-      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterReleaseReconciliationRequired,)",
       "ifself.unresolved_commit_ambiguity.is_some()",
-      "RecoveryRequired::CommitReloadRequired",
+      "RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::CommitReloadRequired,)",
       "self.held_writer=Some(FixtureWriterRecord::runtime(installation,epoch))",
-      "SingleWriterLease::from_exclusive_acquisition",
+      "Ok(RuntimeWriterAcquired{lease:SingleWriterLease::from_exclusive_acquisition",
     ]) &&
     hasOrderedCompactMarkers(fixtureEmpty, [
       "marker:None",
@@ -7896,18 +8186,15 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
       rustLexicalCode(`${provisioningFailure}\n${provisioningWriterExit}`),
     ) &&
     hasOrderedCompactMarkers(fixtureBoot, [
-      "letobservation=self.reopen(key,installation)?",
-      "ifobservation.state()!=RunMarkerState::Clean",
-      "returnErr(RecoveryRequired::PersistedNonCleanState)",
-      "letlease=self.acquire_writer(installation)?",
-      "Ok(BootEvidence",
+      "letacquired=self.begin_runtime_boot(installation)?",
+      "self.finish_runtime_boot(acquired,key)",
     ]) &&
     !/\b(?:begin_initial_provisioning|prepare_initial_clean|ProvisionedRunState|build_snapshot|empty)\b/u.test(
       rustLexicalCode(fixtureBoot),
     ) &&
     main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
     designPhaseTwoCStart !== -1 &&
-    designPhaseThreeStart > designPhaseTwoCStart &&
+    designPhaseTwoDStart > designPhaseTwoCStart &&
     phaseTwoCDesignMarkers.every((marker) =>
       normalizedPhaseTwoCDesign.includes(marker),
     ) &&
@@ -7998,8 +8285,8 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
-    "        let observation = self.reopen(key, installation)?;\n        if observation.state() != RunMarkerState::Clean {\n            return Err(RecoveryRequired::PersistedNonCleanState);\n        }\n        let lease = self.acquire_writer(installation)?;",
-    "        let lease = self.acquire_writer(installation)?;\n        let observation = self.reopen(key, installation)?;\n        if observation.state() != RunMarkerState::Clean {\n            return Err(RecoveryRequired::PersistedNonCleanState);\n        }",
+    "        let expected = FixtureWriterRecord::runtime(lease.installation, lease.epoch);\n        if self.held_writer != Some(expected) {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch, lease),\n            ));\n        }\n        let observed = SnapshotObservation::capture(self.marker_bytes(), self.checkpoint_bytes());",
+    "        let observed = SnapshotObservation::capture(self.marker_bytes(), self.checkpoint_bytes());\n        let expected = FixtureWriterRecord::runtime(lease.installation, lease.epoch);\n        if self.held_writer != Some(expected) {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch, lease),\n            ));\n        }",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
@@ -8132,13 +8419,13 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
-    "        if self.held_writer.is_some() {\n            return Err(RecoveryRequired::WriterLeaseUnavailable);\n        }\n        if self.release_reconciliation.is_some() {",
-    "        if self.held_writer.is_some() {\n            return Err(RecoveryRequired::WriterLeaseUnavailable);\n        }\n        if false && self.release_reconciliation.is_some() {",
+    "        if self.held_writer.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::WriterLeaseUnavailable,\n            ));\n        }\n        if self.release_reconciliation.is_some() {",
+    "        if self.held_writer.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::WriterLeaseUnavailable,\n            ));\n        }\n        if false && self.release_reconciliation.is_some() {",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
-    "        if self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired);\n        }\n        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired);\n        }\n        let epoch = self",
-    "        if self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired);\n        }\n        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired);\n        }\n        let epoch = self",
+    "        if self.release_reconciliation.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::WriterReleaseReconciliationRequired,\n            ));\n        }\n        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::CommitReloadRequired,\n            ));\n        }\n        let epoch = self",
+    "        if self.release_reconciliation.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::WriterReleaseReconciliationRequired,\n            ));\n        }\n        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::CommitReloadRequired,\n            ));\n        }\n        let epoch = self",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
@@ -8189,6 +8476,76 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
     "durableSource",
     "    const fn new(lease: SingleWriterLease) -> Self {\n        Self {\n            lease,\n            operation: OneShotReleaseOperation::new(),\n        }\n    }",
     "    const fn new(lease: SingleWriterLease) -> Self {\n        Self {\n            lease,\n            operation: OneShotReleaseOperation(Cell::new(ReleaseOperationPhase::ReleaseReceiptIssued)),\n        }\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "pub(super) struct RuntimeWriterAcquired {\n    lease: SingleWriterLease,\n}",
+    "pub(super) struct RuntimeWriterAcquired {\n    lease: SingleWriterLease,\n}\n\nimpl StartupObservationInspection { fn bind_writer(self, acquired: RuntimeWriterAcquired) -> BootEvidence { let _ = acquired; unreachable!() } }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "#[cfg(test)]\npub(super) struct StartupObservationInspection {\n    durable: DurableSnapshot,\n}",
+    "#[cfg(test)]\npub(super) struct StartupObservationInspection {\n    durable: DurableSnapshot,\n    lease: SingleWriterLease,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if lease.binding != self.binding {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::BackendBindingMismatch, lease),\n            ));\n        }",
+    "        if false && lease.binding != self.binding {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::BackendBindingMismatch, lease),\n            ));\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.held_writer != Some(expected) {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch, lease),\n            ));\n        }",
+    "        if false && self.held_writer != Some(expected) {\n            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch, lease),\n            ));\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "            return Err(RuntimeBootStartFailure::WithWriter(\n                DurableFailureWithWriter::new(RecoveryRequired::BackendBindingMismatch, lease),\n            ));",
+    "            return Err(RuntimeBootStartFailure::BeforeWriter(\n                RecoveryRequired::BackendBindingMismatch,\n            ));",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        let acquired = self.begin_runtime_boot(installation)?;\n        self.finish_runtime_boot(acquired, key)",
+    "        let _acquired = self.begin_runtime_boot(installation)?;\n        unreachable!(\"writer acquired without fresh observation\")",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "            Ok((_, writer_exit)) => {\n                Self::with_writer(StartupFailure::DurableRecovery(reason), writer_exit)\n            }",
+    "            Ok((_, _writer_exit)) => {\n                Self::without_writer(StartupFailure::DurableRecovery(reason))\n            }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "    ServiceConfiguration,\n    ProviderBinding,",
+    "    ServiceConfiguration,\n    StorageBinding,\n    SingleInstanceLease,\n    ProviderBinding,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "const LEASE_BOUND_STARTUP_REQUIREMENT_COUNT: usize = 2;",
+    "const LEASE_BOUND_STARTUP_REQUIREMENT_COUNT: usize = 1;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "    ReleaseRequestHardwareAndStorageHandles,",
+    "    ReleaseHardwareAndStorageHandles,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "**Current Phase 2D status: started, not passed.**",
+    "**Current Phase 2D status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    "            Ok(boot) => StartupExitRequired::with_writer(failure, boot.into_writer_exit()),",
+    "            Ok(_boot) => StartupExitRequired::without_writer(failure),",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "            .field(\"generation\", &\"[REDACTED]\")\n            .field(\"installation\", &\"[REDACTED]\")\n            .field(\"commitment\", &\"[REDACTED]\")\n            .field(\"checkpoint\", &\"[REDACTED]\")",
+    "            .field(\"generation\", &self.durable.marker.generation)\n            .field(\"installation\", &\"[REDACTED]\")\n            .field(\"commitment\", &\"[REDACTED]\")\n            .field(\"checkpoint\", &\"[REDACTED]\")",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "the\nfuture adapter must additionally retain its run-state-root handle,\nauthentication-key provider, and anchor handle across that boundary.",
+    "the\ncurrent core additionally retains its run-state-root handle,\nauthentication-key provider, and anchor handle across that boundary.",
   ),
 ];
 const keyAgentServicePhaseTwoPinMutationProbes = [
@@ -8481,8 +8838,8 @@ const keyAgentServicePhaseTwoCSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
-    "        let observation = self.reopen(key, installation)?;",
-    "        let observation = self.begin_initial_provisioning(key, installation)?.prepare_initial_clean()?;",
+    "        let acquired = self.begin_runtime_boot(installation)?;\n        self.finish_runtime_boot(acquired, key)",
+    "        let _ = self.begin_initial_provisioning(key, installation)?;\n        unreachable!(\"ordinary runtime boot auto-provisioned\")",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "provisioningSource",
@@ -8511,8 +8868,8 @@ const keyAgentServicePhaseTwoCSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "provisioningTests",
-    "fn ordinary_boot_missing_never_auto_initializes_or_acquires_a_writer()",
-    "fn ordinary_boot_missing_auto_initializes_and_acquires_a_writer()",
+    "fn ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement()",
+    "fn ordinary_boot_missing_auto_initializes_and_skips_writer_retirement()",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "main",
@@ -8605,28 +8962,39 @@ const keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults = [0, 3, 70].ma
     return keyAgentServicePhaseTwoCFailedPredicateIndexes(predicates);
   },
 );
+const keyAgentServicePhaseTwoProbeChanged = (probe) =>
+  probe !== keyAgentServicePhaseTwoInputs &&
+  Object.keys(keyAgentServicePhaseTwoInputs).some(
+    (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+  );
+const keyAgentServicePhaseTwoSemanticBaseResult =
+  keyAgentServicePhaseTwoSemanticContract(keyAgentServicePhaseTwoInputs);
+const keyAgentServicePhaseTwoPinBaseResult =
+  keyAgentServicePhaseTwoPinContract(keyAgentServicePhaseTwoInputs);
+const keyAgentServicePhaseTwoSemanticMutationResults =
+  keyAgentServicePhaseTwoSemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoSemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoPinMutationResults =
+  keyAgentServicePhaseTwoPinMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoPinContract(probe),
+  }));
 requireInvariant(
-  keyAgentServicePhaseTwoSemanticContract(keyAgentServicePhaseTwoInputs) &&
-    keyAgentServicePhaseTwoPinContract(keyAgentServicePhaseTwoInputs) &&
-    keyAgentServicePhaseTwoSemanticMutationProbes.length === 44 &&
-    keyAgentServicePhaseTwoSemanticMutationProbes.every(
-      (probe) =>
-        probe !== keyAgentServicePhaseTwoInputs &&
-        Object.keys(keyAgentServicePhaseTwoInputs).some(
-          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
-        ) &&
-        !keyAgentServicePhaseTwoSemanticContract(probe),
+  keyAgentServicePhaseTwoSemanticBaseResult &&
+    keyAgentServicePhaseTwoPinBaseResult &&
+    keyAgentServicePhaseTwoSemanticMutationProbes.length === 58 &&
+    keyAgentServicePhaseTwoSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
     ) &&
     keyAgentServicePhaseTwoPinMutationProbes.length === 5 &&
-    keyAgentServicePhaseTwoPinMutationProbes.every(
-      (probe) =>
-        probe !== keyAgentServicePhaseTwoInputs &&
-        Object.keys(keyAgentServicePhaseTwoInputs).some(
-          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
-        ) &&
-        !keyAgentServicePhaseTwoPinContract(probe),
+    keyAgentServicePhaseTwoPinMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
     ),
-  "the Phase 2A/2B no-secret service models must remain full-source-pinned private zero-runtime-root modules whose durable fixture tail contains only cfg(test) items, with exact authenticated marker/checkpoint codecs, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, private one-shot normal-release and terminal-retirement phases plus exact writer-epoch reconciliation latches, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 44 independently effective semantic plus five source-pin mutations",
+  `the Phase 2A/2B/2D no-secret service models must remain full-source-pinned private zero-runtime-root modules whose production partition excludes cfg(test) inspection and whose fixture tail contains only cfg(test) items, with lease-first runtime boot, exact backend/installation/writer-epoch validation before fresh marker/checkpoint authentication, BeforeWriter versus writer-retaining WithWriter failures, authority-free redacted test inspection, nine external plus two lease-bound structural startup requirements, request-scoped cleanup, no runtime auto-provisioning, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, private one-shot normal-release and terminal-retirement phases plus exact writer-epoch reconciliation latches, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 58 independently effective semantic plus five source-pin mutations; semantic base=${keyAgentServicePhaseTwoSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoCAggregatePredicates.length === 71 &&
@@ -18033,14 +18401,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
+    sha256: "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "535e01cfb274daa8d8d8545149a434daca2008c8e600818d3083f87e4992b48b",
+    sha256: "4db6973c3d88a5adb6d59eea35aae1280045dde8db6bc06b3b609df8d3040121",
   },
   {
     path: "docs/security-decisions.md",
@@ -26483,7 +26851,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "c8f792ad5aaef88f7d15643ccdf95c2771d72fc5f55066e603ff84c1a8153e45";
+  "d5324ef457cefc3182e2557ff6332d01d67b3cc19f9278572364c6002f0e39fc";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -47021,7 +47389,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "7a1a6c5a2c01d010f68430b726b015a628848e5e1923b20e48e5c4ec147a572d",
+    sha256: "67a4838893c6a37c1430e0cb821509946af4c590dd1a0d40cde193f038361e38",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -55159,7 +55527,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
+    "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -61028,7 +61396,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
+  "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -70910,13 +71278,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
+    sha256: "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "535e01cfb274daa8d8d8545149a434daca2008c8e600818d3083f87e4992b48b",
+    sha256: "4db6973c3d88a5adb6d59eea35aae1280045dde8db6bc06b3b609df8d3040121",
   },
   {
     path: "docs/security-decisions.md",
