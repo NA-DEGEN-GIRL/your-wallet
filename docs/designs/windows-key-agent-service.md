@@ -1190,6 +1190,11 @@ consumes its transition into a lifecycle-branded Active or Clean reload state.
 Before either successor is constructed, the supplied transition key must
 reauthenticate the exact held prior marker and checkpoint; a key switch retains
 only terminal writer-exit authority.
+Each prepared commit carries a private one-shot phase from attempt through
+commit receipt and independent reread. Reload, normal release, and terminal-
+retirement receipts are likewise one-shot. The bounded backend latches an ambiguous or terminal commit and any
+unresolved release against the exact writer epoch, blocking direct retry and
+writer reacquisition until the matching reload or terminal retirement.
 Exact prior Clean requires the full startup observations again before an Active
 retry, exact fully committed Active may resume only through its startup reload
 wrapper, and an exact reloaded Clean candidate can produce only
@@ -1197,9 +1202,12 @@ wrapper, and an exact reloaded Clean candidate can produce only
 remain mandatory before stopped evidence. A marker-only advance, checkpoint
 drift, rollback, equivocation, authentication failure, missing object, wrong
 installation, backend or writer mismatch, CAS conflict, or reread drift
-requires terminal recovery. Every post-acquisition failure retains a move-only,
-terminal-only writer-exit authority that can prove exact release without any
-conversion to Boot, Active, Clean, or Stopped authority. Clean commit and
+requires terminal recovery. Every consumed durable-outcome or receipt-
+validation failure retains a move-only, terminal-only writer-exit authority
+that can prove exact release without any conversion to Boot, Active, Clean, or
+Stopped authority. A non-consuming request-validation, duplicate, or replay
+rejection cannot issue a second or replacement receipt and does not invalidate
+an already-issued exact receipt. Clean commit and
 readback occur while the writer remains held, so a second boot cannot enter the
 release boundary; fixture crash/exit release preserves the last authenticated
 durable state without minting a stopped report.
@@ -1213,6 +1221,53 @@ production caller. Existing LPAC user storage and the signing journal are not
 reused as service run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**;
 both compiled policies remain `None`, and ordinary/release execution remains
 silent exit 78.
+
+**Current Phase 2C status: started, not passed.** This zero-runtime-root
+slice replaces the ordinary fixture's out-of-band generation-one Clean seed
+with a production-compiled provisioning typestate. A fixture-only, move-only
+fresh-install authority is bound to one installation, backend, provisioning
+attempt, and exact fixture authentication key. It cannot become runtime
+authority. The backend must first acquire a distinct provisioning writer and,
+while that writer remains held, independently observe both the run marker and
+high-water checkpoint as missing before it can produce
+`UnprovisionedWithWriter`.
+
+The only candidate from that authority is canonical Clean generation one with
+a zero predecessor. It requires an exact absent/absent compare-and-swap,
+distinct commit and reread receipts, and the same backend, installation,
+provisioning writer, attempt, and ambiguity round. An ambiguous commit may
+recover only an exact fully committed candidate or an exact still-empty pair;
+the latter requires a fresh backend-issued round before retry. A one-sided,
+malformed, pre-existing, wrong-key, cross-backend, stale, or drifting state is
+terminal and is never repaired or adopted. Every consumed durable-outcome or
+receipt-validation failure retains only provisioning-writer exit authority. A
+non-consuming request-validation, duplicate, or replay rejection cannot issue
+a second or replacement receipt and does not invalidate an already-issued
+exact receipt.
+
+The same private one-shot commit, reread, reload, normal-release, and terminal-
+retirement phases apply to provisioning. An ambiguity preserves both the prior backend round and the
+candidate fresh round, so terminal retirement uses the last round actually
+issued by the backend. Exact writer-epoch latches prevent same-round commit or
+release retry and block both provisioning and runtime writer reacquisition
+until matching reload or terminal reconciliation.
+
+Provisioning completion remains withheld until the exact provisioning writer
+is released. The resulting `ProvisionedRunState` has no conversion to
+`BootEvidence` or a runtime writer. Runtime startup must separately reopen and
+authenticate the new Clean pair and acquire a fresh runtime writer through the
+existing boot path. Ordinary boot on a missing pair still requires recovery
+and never auto-initializes storage.
+
+This is still only a bounded memory fault model with a fixture key and
+fixture-only fresh-install authority. It does not prove that a missing pair is
+a virgin installation and supplies no elevated installer provenance or lease,
+installer journal, `%ProgramData%` storage, service-SID owner/DACL enforcement,
+SCM configuration, signed immutable artifacts, TPM/high-water anchor,
+power-loss/reboot behavior, production constructor, or production caller.
+Deletion of an existing store must never be accepted as fresh installation by
+a future adapter. Phase 1 and Phase 2 remain **STOP-SHIP**; both compiled
+policies remain `None`, and ordinary/release execution remains silent exit 78.
 
 ### Phase 3 — Authenticated Broker and helper runtime
 

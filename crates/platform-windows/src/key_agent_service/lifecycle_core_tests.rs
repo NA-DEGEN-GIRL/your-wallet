@@ -36,6 +36,34 @@ impl LifecycleHarness {
         })
     }
 
+    fn provisioned() -> TestResult<Self> {
+        let key = FixtureRunStateAuthenticationKey::from_fixture_bytes([0x5a; 32])?;
+        let installation = InstallationIdentity::from_fixed_bytes([0x41; 32])?;
+        let mut store = DurableRunStateFixture::empty(installation)?;
+        let unprovisioned = store
+            .begin_initial_provisioning(&key, installation)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let transition = unprovisioned
+            .prepare_initial_clean()
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let committed = store.commit_initial_clean(&transition)?;
+        let reread = store.reread_initial_clean(&transition)?;
+        let clean = transition
+            .complete(committed, reread)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let pending = clean.prepare_writer_release();
+        let receipt = store.release_provisioning_writer(&pending)?;
+        let provisioned = pending
+            .complete(receipt)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        assert_eq!(provisioned.generation().get(), 1);
+        Ok(Self {
+            store,
+            key,
+            installation,
+        })
+    }
+
     fn boot(&mut self) -> Result<super::BootEvidence, RecoveryRequired> {
         self.store.boot(&self.key, self.installation)
     }
@@ -57,7 +85,7 @@ impl LifecycleHarness {
     fn ready_service(&mut self) -> TestResult<NoSecretService> {
         let pending = self.pending_startup()?;
         let committed = self.store.commit_active(pending.transition_request())?;
-        let reread = self.store.reread_active(pending.transition_request());
+        let reread = self.store.reread_active(pending.transition_request())?;
         let listener =
             require_startup_ok(pending.commit_and_reread_active_marker(committed, reread))?;
         Ok(listener
@@ -75,7 +103,7 @@ impl LifecycleHarness {
         pending: super::CleanCommitPending,
     ) -> TestResult<super::SingleInstanceReleasePending> {
         let committed = self.store.commit_clean(pending.transition_request())?;
-        let reread = self.store.reread_clean(pending.transition_request());
+        let reread = self.store.reread_clean(pending.transition_request())?;
         require_exit_ok(pending.commit_and_reread_clean_marker(committed, reread))
     }
 
@@ -140,7 +168,7 @@ fn advance_to_clean_commit(service: &mut NoSecretService) -> Result<(), Lifecycl
 #[test]
 fn every_startup_requirement_is_mandatory() -> TestResult {
     for missing in NoSecretStartupRequirement::ALL {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let mut attempt = harness.startup_attempt();
         for requirement in NoSecretStartupRequirement::ALL {
             if requirement != missing {
@@ -166,7 +194,7 @@ fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> TestResult
             StartupObservation::Mismatch,
             StartupObservation::Unavailable,
         ] {
-            let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+            let mut harness = LifecycleHarness::provisioned()?;
             let mut attempt = harness.startup_attempt();
             for requirement in NoSecretStartupRequirement::ALL {
                 attempt.observe(
@@ -190,7 +218,7 @@ fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> TestResult
         }
     }
 
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let requirement = NoSecretStartupRequirement::ServiceConfiguration;
     let mut attempt = harness.startup_attempt();
     attempt.observe(requirement, StartupObservation::Mismatch)?;
@@ -215,7 +243,7 @@ fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> TestResult
 
 #[test]
 fn only_sealed_clean_boot_can_enter_the_ordered_startup_chain() -> TestResult {
-    let mut clean = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut clean = LifecycleHarness::provisioned()?;
     assert!(clean.pending_startup().is_ok());
 
     for (seed, expected) in [
@@ -264,7 +292,7 @@ fn only_sealed_clean_boot_can_enter_the_ordered_startup_chain() -> TestResult {
 
 #[test]
 fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> TestResult {
-    let mut happy = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut happy = LifecycleHarness::provisioned()?;
     let service = happy.ready_service()?;
     assert_eq!(
         happy.store.reopen(&happy.key, happy.installation)?.state(),
@@ -277,11 +305,11 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         DurableRunStateRereadFault::MarkerDrift,
         DurableRunStateRereadFault::CheckpointDrift,
     ] {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let pending = harness.pending_startup()?;
         let committed = harness.store.commit_active(pending.transition_request())?;
         harness.store.set_reread_fault(fault);
-        let reread = harness.store.reread_active(pending.transition_request());
+        let reread = harness.store.reread_active(pending.transition_request())?;
         let Err(exit) = pending.commit_and_reread_active_marker(committed, reread) else {
             return Err("drifting Active readback produced listener authority".into());
         };
@@ -291,7 +319,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         );
     }
 
-    let mut conflict = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut conflict = LifecycleHarness::provisioned()?;
     let pending = conflict.pending_startup()?;
     conflict
         .store
@@ -307,7 +335,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         StartupFailure::DurableRecovery(RecoveryRequired::CompareAndSwapConflict)
     );
 
-    let mut before_write = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut before_write = LifecycleHarness::provisioned()?;
     let pending = before_write.pending_startup()?;
     before_write
         .store
@@ -319,7 +347,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         Err(DurableRunStateCommitFailure::Ambiguous)
     );
     let reload = pending.commit_ambiguous();
-    let receipt = before_write.store.reload_active(reload.reload_request());
+    let receipt = before_write.store.reload_active(reload.reload_request())?;
     let resolution = require_startup_ok(reload.complete(receipt, &before_write.key))?;
     let ActiveReloadResolution::Revalidate(attempt) = resolution else {
         return Err("before-write Active ambiguity skipped startup revalidation".into());
@@ -332,7 +360,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         StartupFailure::Missing(NoSecretStartupRequirement::ServiceToken)
     );
 
-    let mut ambiguous = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut ambiguous = LifecycleHarness::provisioned()?;
     let pending = ambiguous.pending_startup()?;
     ambiguous
         .store
@@ -342,7 +370,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         Err(DurableRunStateCommitFailure::Ambiguous)
     );
     let reload = pending.commit_ambiguous();
-    let receipt = ambiguous.store.reload_active(reload.reload_request());
+    let receipt = ambiguous.store.reload_active(reload.reload_request())?;
     let listener = match require_startup_ok(reload.complete(receipt, &ambiguous.key))? {
         ActiveReloadResolution::Resume(listener) => listener,
         ActiveReloadResolution::Revalidate(_) => {
@@ -360,7 +388,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
 #[test]
 fn lock_and_unlock_invalidate_exact_session_without_discarding_its_user_token() -> TestResult {
     for event in [SessionEvent::Lock, SessionEvent::Unlock] {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let mut service = harness.ready_service()?;
         let session = SessionId::new(7)?;
         service.retain_user_token(session)?;
@@ -390,7 +418,7 @@ fn lock_and_unlock_invalidate_exact_session_without_discarding_its_user_token() 
 
 #[test]
 fn logoff_and_user_switch_discard_tokens_and_require_helper_reap() -> TestResult {
-    let mut logoff_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut logoff_harness = LifecycleHarness::provisioned()?;
     let mut logoff = logoff_harness.ready_service()?;
     let session = SessionId::new(17)?;
     logoff.retain_user_token(session)?;
@@ -403,7 +431,7 @@ fn logoff_and_user_switch_discard_tokens_and_require_helper_reap() -> TestResult
     assert_eq!(report.user_tokens_discarded, 1);
     assert_eq!(report.helper_terminations_required, 1);
 
-    let mut switch_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut switch_harness = LifecycleHarness::provisioned()?;
     let mut switched = switch_harness.ready_service()?;
     for (work, session) in [(31, 27), (32, 28)] {
         let session = SessionId::new(session)?;
@@ -430,7 +458,7 @@ fn logoff_and_user_switch_discard_tokens_and_require_helper_reap() -> TestResult
 
 #[test]
 fn session_quarantine_exhaustion_fails_closed_and_preserves_first_fatal_reason() -> TestResult {
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     for value in 1..=MAX_QUARANTINED_SESSIONS {
         service
@@ -465,7 +493,7 @@ fn session_quarantine_exhaustion_fails_closed_and_preserves_first_fatal_reason()
 
 #[test]
 fn runtime_registries_are_bounded_before_mutation() -> TestResult {
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     let session = SessionId::new(1)?;
     for value in 1..=MAX_ACTIVE_FIXTURE_WORK {
@@ -503,7 +531,7 @@ fn runtime_registries_are_bounded_before_mutation() -> TestResult {
 
 #[test]
 fn stop_commits_clean_while_held_then_exact_release_mints_stopped_permit() -> TestResult {
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     let session = SessionId::new(3)?;
     service.retain_user_token(session)?;
@@ -534,7 +562,7 @@ fn stop_commits_clean_while_held_then_exact_release_mints_stopped_permit() -> Te
 #[test]
 fn every_pre_clean_cleanup_failure_leaves_active_and_retires_the_writer() -> TestResult {
     for failed_step in CleanupStep::ORDERED.into_iter().take(10) {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let mut service = harness.ready_service()?;
         service.begin_stop(StopReason::ScmStop)?;
         for step in CleanupStep::ORDERED {
@@ -571,7 +599,7 @@ fn every_pre_clean_cleanup_failure_leaves_active_and_retires_the_writer() -> Tes
 
 #[test]
 fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
-    let mut premature_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut premature_harness = LifecycleHarness::provisioned()?;
     let premature = premature_harness.ready_service()?;
     let Err(exit) = premature.prepare_clean_commit(&premature_harness.key) else {
         return Err("out-of-order Clean preparation produced authority".into());
@@ -580,7 +608,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
     let retired = premature_harness.retire_exit(exit)?;
     assert_eq!(retired.reason, ExitReason::CleanupOutOfOrder);
 
-    let mut incomplete_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut incomplete_harness = LifecycleHarness::provisioned()?;
     let mut incomplete = incomplete_harness.ready_service()?;
     advance_to_clean_commit(&mut incomplete)?;
     let session = SessionId::new(91)?;
@@ -599,7 +627,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
     let retired = incomplete_harness.retire_exit(exit)?;
     assert_eq!(retired.reason, ExitReason::CleanupIncomplete);
 
-    let mut conflict_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut conflict_harness = LifecycleHarness::provisioned()?;
     let mut conflict = conflict_harness.ready_service()?;
     advance_to_clean_commit(&mut conflict)?;
     let pending = conflict_harness.prepare_clean(conflict)?;
@@ -629,7 +657,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
         Err(RecoveryRequired::PersistedNonCleanState)
     );
 
-    let mut drift_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut drift_harness = LifecycleHarness::provisioned()?;
     let mut drift = drift_harness.ready_service()?;
     advance_to_clean_commit(&mut drift)?;
     let pending = drift_harness.prepare_clean(drift)?;
@@ -641,7 +669,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
         .set_reread_fault(DurableRunStateRereadFault::MarkerDrift);
     let reread = drift_harness
         .store
-        .reread_clean(pending.transition_request());
+        .reread_clean(pending.transition_request())?;
     let Err(exit) = pending.commit_and_reread_clean_marker(committed, reread) else {
         return Err("drifting Clean readback minted stopped authority".into());
     };
@@ -664,7 +692,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
 
 #[test]
 fn held_writer_closes_the_clean_commit_to_final_release_interleaving() -> TestResult {
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     advance_to_clean_commit(&mut service)?;
 
@@ -712,7 +740,7 @@ fn exact_clean_ambiguous_reload_still_requires_the_branded_final_release() -> Te
         ),
         (DurableRunStateCommitFault::AmbiguousAfterCheckpoint, None),
     ] {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let mut service = harness.ready_service()?;
         advance_to_clean_commit(&mut service)?;
         let pending = harness.prepare_clean(service)?;
@@ -722,7 +750,7 @@ fn exact_clean_ambiguous_reload_still_requires_the_branded_final_release() -> Te
             Err(DurableRunStateCommitFailure::Ambiguous)
         );
         let reload = pending.commit_ambiguous();
-        let receipt = harness.store.reload_clean(reload.reload_request());
+        let receipt = harness.store.reload_clean(reload.reload_request())?;
         if let Some(expected) = expected_error {
             let Err(exit) = reload.complete(receipt, &harness.key) else {
                 return Err("ambiguous Clean fault unexpectedly reloaded authority".into());
@@ -758,7 +786,7 @@ fn final_release_ambiguity_or_mismatch_retires_only_through_terminal_exit() -> T
         DurableRunStateReleaseFault::AmbiguousBeforeRelease,
         DurableRunStateReleaseFault::AmbiguousAfterRelease,
     ] {
-        let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+        let mut harness = LifecycleHarness::provisioned()?;
         let mut service = harness.ready_service()?;
         advance_to_clean_commit(&mut service)?;
         let clean = harness.prepare_clean(service)?;
@@ -786,7 +814,7 @@ fn final_release_ambiguity_or_mismatch_retires_only_through_terminal_exit() -> T
         );
     }
 
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     advance_to_clean_commit(&mut service)?;
     let clean = harness.prepare_clean(service)?;
@@ -818,7 +846,7 @@ fn final_release_ambiguity_or_mismatch_retires_only_through_terminal_exit() -> T
 
 #[test]
 fn fatal_exit_preserves_active_marker_and_retires_the_fixture_writer() -> TestResult {
-    let mut harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut harness = LifecycleHarness::provisioned()?;
     let mut service = harness.ready_service()?;
     service.crash();
     let exit = service.prepare_fatal_exit()?;
@@ -845,7 +873,7 @@ fn fatal_exit_preserves_active_marker_and_retires_the_fixture_writer() -> TestRe
 
 #[test]
 fn crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifiers() -> TestResult {
-    let mut crash_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut crash_harness = LifecycleHarness::provisioned()?;
     let mut crashed = crash_harness.ready_service()?;
     crashed.crash();
     assert_eq!(
@@ -860,7 +888,7 @@ fn crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifie
         RunMarkerState::Active
     );
 
-    let mut deadline_harness = LifecycleHarness::new(DurableRunStateFixtureSeed::Clean)?;
+    let mut deadline_harness = LifecycleHarness::provisioned()?;
     let mut expired = deadline_harness.ready_service()?;
     expired.begin_stop(StopReason::SystemShutdown)?;
     expired.cleanup_deadline_expired()?;

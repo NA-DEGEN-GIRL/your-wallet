@@ -7,6 +7,7 @@
 //! future Windows adapter must preserve. The only backend is a bounded
 //! in-memory fault fixture compiled under `cfg(test)`.
 
+use std::cell::Cell;
 use std::fmt;
 use std::num::NonZeroU64;
 
@@ -18,6 +19,8 @@ use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 use zeroize::Zeroize as _;
+
+mod provisioning;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -151,6 +154,140 @@ pub(super) enum RecoveryRequired {
     /// Final writer release may or may not have completed.
     #[error("the durable run-state writer release is ambiguous")]
     WriterReleaseAmbiguous,
+    /// Fresh-install provisioning observed any pre-existing durable bytes.
+    #[error("fresh-install provisioning did not observe an exactly empty run state")]
+    InitialProvisioningStateNotEmpty,
+    /// A provisioning receipt named another fresh-install authority attempt.
+    #[error("the fresh-install provisioning authority attempt mismatched")]
+    ProvisioningAttemptMismatch,
+    /// A provisioning receipt was not captured in the exact fresh reload round.
+    #[error("the fresh-install provisioning reload round mismatched")]
+    ProvisioningReloadRoundMismatch,
+    /// The bounded fixture could not allocate another provisioning attempt.
+    #[error("the fresh-install provisioning authority attempt is exhausted")]
+    ProvisioningAttemptExhausted,
+    /// The bounded fixture could not allocate another ambiguity reload round.
+    #[error("the fresh-install provisioning reload round is exhausted")]
+    ProvisioningReloadRoundExhausted,
+    /// An ambiguous commit must be resolved by its exact reload path.
+    #[error("the ambiguous durable run-state commit requires exact reload")]
+    CommitReloadRequired,
+    /// An uncertain completed writer release requires terminal reconciliation.
+    #[error("the durable run-state writer release requires terminal reconciliation")]
+    WriterReleaseReconciliationRequired,
+    /// A one-shot backend operation was attempted more than once.
+    #[error("the durable run-state one-shot operation was already attempted")]
+    OperationAttemptReused,
+    /// Receipts were presented outside their exact backend operation phase.
+    #[error("the durable run-state backend operation phase mismatched")]
+    OperationPhaseMismatch,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CommitOperationPhase {
+    Ready,
+    CommitAttempted,
+    CommitReceiptIssued,
+    RereadIssued,
+}
+
+struct OneShotCommitOperation(Cell<CommitOperationPhase>);
+
+impl OneShotCommitOperation {
+    const fn new() -> Self {
+        Self(Cell::new(CommitOperationPhase::Ready))
+    }
+
+    fn begin_commit(&self) -> Result<(), RecoveryRequired> {
+        if self.0.get() != CommitOperationPhase::Ready {
+            return Err(RecoveryRequired::OperationAttemptReused);
+        }
+        self.0.set(CommitOperationPhase::CommitAttempted);
+        Ok(())
+    }
+
+    fn record_commit_receipt(&self) -> Result<(), RecoveryRequired> {
+        if self.0.get() != CommitOperationPhase::CommitAttempted {
+            return Err(RecoveryRequired::OperationPhaseMismatch);
+        }
+        self.0.set(CommitOperationPhase::CommitReceiptIssued);
+        Ok(())
+    }
+
+    fn begin_reread(&self) -> Result<(), RecoveryRequired> {
+        match self.0.get() {
+            CommitOperationPhase::CommitReceiptIssued => {
+                self.0.set(CommitOperationPhase::RereadIssued);
+                Ok(())
+            }
+            CommitOperationPhase::RereadIssued => Err(RecoveryRequired::OperationAttemptReused),
+            CommitOperationPhase::Ready | CommitOperationPhase::CommitAttempted => {
+                Err(RecoveryRequired::OperationPhaseMismatch)
+            }
+        }
+    }
+
+    fn has_exact_receipt_pair(&self) -> bool {
+        self.0.get() == CommitOperationPhase::RereadIssued
+    }
+
+    fn has_unresolved_commit_attempt(&self) -> bool {
+        self.0.get() == CommitOperationPhase::CommitAttempted
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReleaseOperationPhase {
+    Ready,
+    Attempted,
+    ReceiptIssued,
+}
+
+struct OneShotReleaseOperation(Cell<ReleaseOperationPhase>);
+
+impl OneShotReleaseOperation {
+    const fn new() -> Self {
+        Self(Cell::new(ReleaseOperationPhase::Ready))
+    }
+
+    fn begin_release(&self) -> Result<(), RecoveryRequired> {
+        if self.0.get() != ReleaseOperationPhase::Ready {
+            return Err(RecoveryRequired::OperationAttemptReused);
+        }
+        self.0.set(ReleaseOperationPhase::Attempted);
+        Ok(())
+    }
+
+    fn record_release_receipt(&self) -> Result<(), RecoveryRequired> {
+        if self.0.get() != ReleaseOperationPhase::Attempted {
+            return Err(RecoveryRequired::OperationPhaseMismatch);
+        }
+        self.0.set(ReleaseOperationPhase::ReceiptIssued);
+        Ok(())
+    }
+
+    fn has_exact_receipt(&self) -> bool {
+        self.0.get() == ReleaseOperationPhase::ReceiptIssued
+    }
+}
+
+struct OneShotReloadOperation(Cell<bool>);
+
+impl OneShotReloadOperation {
+    const fn new() -> Self {
+        Self(Cell::new(false))
+    }
+
+    fn record_reload_receipt(&self) -> Result<(), RecoveryRequired> {
+        if self.0.replace(true) {
+            return Err(RecoveryRequired::OperationAttemptReused);
+        }
+        Ok(())
+    }
+
+    fn has_exact_receipt(&self) -> bool {
+        self.0.get()
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -480,6 +617,7 @@ impl BootEvidence {
             prior: durable,
             successor,
             lease,
+            operation: OneShotCommitOperation::new(),
         })
     }
 
@@ -491,7 +629,7 @@ impl BootEvidence {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 
     /// Returns the authenticated clean generation without exposing raw bytes.
@@ -512,6 +650,7 @@ pub(super) struct PreparedActiveTransition {
     prior: DurableSnapshot,
     successor: DurableSnapshot,
     lease: SingleWriterLease,
+    operation: OneShotCommitOperation,
 }
 
 impl PreparedActiveTransition {
@@ -547,6 +686,7 @@ impl PreparedActiveTransition {
             prior: _,
             successor,
             lease,
+            operation,
         } = self;
         let CommittedActiveMarker {
             observed: committed_observation,
@@ -567,6 +707,12 @@ impl PreparedActiveTransition {
         if committed_epoch != lease.epoch || reread_epoch != lease.epoch {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt_pair() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -595,6 +741,7 @@ impl PreparedActiveTransition {
             prior: self.prior,
             successor: self.successor,
             lease: self.lease,
+            operation: OneShotReloadOperation::new(),
         }
     }
 
@@ -606,7 +753,7 @@ impl PreparedActiveTransition {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -727,6 +874,7 @@ impl ActiveRunLease {
             prior: durable,
             successor,
             lease,
+            operation: OneShotCommitOperation::new(),
         })
     }
 
@@ -738,7 +886,7 @@ impl ActiveRunLease {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -754,6 +902,7 @@ pub(super) struct PreparedCleanTransition {
     prior: DurableSnapshot,
     successor: DurableSnapshot,
     lease: SingleWriterLease,
+    operation: OneShotCommitOperation,
 }
 
 impl PreparedCleanTransition {
@@ -789,6 +938,7 @@ impl PreparedCleanTransition {
             prior: _,
             successor,
             lease,
+            operation,
         } = self;
         let CommittedCleanMarker {
             observed: committed_observation,
@@ -809,6 +959,12 @@ impl PreparedCleanTransition {
         if committed_epoch != lease.epoch || reread_epoch != lease.epoch {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt_pair() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -841,6 +997,7 @@ impl PreparedCleanTransition {
             prior: self.prior,
             successor: self.successor,
             lease: self.lease,
+            operation: OneShotReloadOperation::new(),
         }
     }
 
@@ -852,7 +1009,7 @@ impl PreparedCleanTransition {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -938,6 +1095,7 @@ impl CleanCommittedWithWriter {
         PendingFinalWriterRelease {
             durable: self.durable,
             lease: self.lease,
+            operation: OneShotReleaseOperation::new(),
         }
     }
 
@@ -949,7 +1107,7 @@ impl CleanCommittedWithWriter {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -963,6 +1121,7 @@ impl fmt::Debug for CleanCommittedWithWriter {
 pub(super) struct PendingFinalWriterRelease {
     durable: DurableSnapshot,
     lease: SingleWriterLease,
+    operation: OneShotReleaseOperation,
 }
 
 impl PendingFinalWriterRelease {
@@ -972,7 +1131,11 @@ impl PendingFinalWriterRelease {
         self,
         receipt: WriterLeaseReleaseReceipt,
     ) -> Result<StoppedRunEvidence, DurableFailureWithWriter> {
-        let Self { durable, lease } = self;
+        let Self {
+            durable,
+            lease,
+            operation,
+        } = self;
         if receipt.binding != lease.binding {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::BackendBindingMismatch,
@@ -982,6 +1145,12 @@ impl PendingFinalWriterRelease {
         if receipt.installation != lease.installation || receipt.epoch != lease.epoch {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -996,7 +1165,7 @@ impl PendingFinalWriterRelease {
     /// Retires or reconciles the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -1055,6 +1224,7 @@ pub(super) struct ActiveReloadRequired {
     prior: DurableSnapshot,
     successor: DurableSnapshot,
     lease: SingleWriterLease,
+    operation: OneShotReloadOperation,
 }
 
 impl ActiveReloadRequired {
@@ -1069,6 +1239,7 @@ impl ActiveReloadRequired {
             prior,
             successor,
             lease,
+            operation,
         } = self;
         if receipt.binding != lease.binding {
             return Err(DurableFailureWithWriter::new(
@@ -1079,6 +1250,12 @@ impl ActiveReloadRequired {
         if !writer_observation_matches(receipt.writer, &lease) {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -1112,7 +1289,7 @@ impl ActiveReloadRequired {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -1157,6 +1334,7 @@ pub(super) struct CleanReloadRequired {
     prior: DurableSnapshot,
     successor: DurableSnapshot,
     lease: SingleWriterLease,
+    operation: OneShotReloadOperation,
 }
 
 impl CleanReloadRequired {
@@ -1171,6 +1349,7 @@ impl CleanReloadRequired {
             prior,
             successor,
             lease,
+            operation,
         } = self;
         if receipt.binding != lease.binding {
             return Err(DurableFailureWithWriter::new(
@@ -1181,6 +1360,12 @@ impl CleanReloadRequired {
         if !writer_observation_matches(receipt.writer, &lease) {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -1207,7 +1392,7 @@ impl CleanReloadRequired {
     /// Retires the writer for a non-durable lifecycle failure.
     #[must_use]
     pub(super) fn into_writer_exit(self) -> WriterExitPending {
-        WriterExitPending { lease: self.lease }
+        WriterExitPending::new(self.lease)
     }
 }
 
@@ -1241,7 +1426,7 @@ impl DurableFailureWithWriter {
     fn new(reason: RecoveryRequired, lease: SingleWriterLease) -> Self {
         Self {
             reason,
-            exit: WriterExitPending { lease },
+            exit: WriterExitPending::new(lease),
         }
     }
 
@@ -1287,16 +1472,24 @@ impl std::error::Error for DurableFailureWithWriter {
 /// Move-only writer authority that can only retire for process exit.
 pub(super) struct WriterExitPending {
     lease: SingleWriterLease,
+    operation: OneShotReleaseOperation,
 }
 
 impl WriterExitPending {
+    const fn new(lease: SingleWriterLease) -> Self {
+        Self {
+            lease,
+            operation: OneShotReleaseOperation::new(),
+        }
+    }
+
     /// Verifies exact retirement/reconciliation and yields no reusable authority.
     #[allow(clippy::needless_pass_by_value)]
     pub(super) fn complete(
         self,
         receipt: WriterExitReceipt,
     ) -> Result<RecoveryExitEvidence, DurableFailureWithWriter> {
-        let Self { lease } = self;
+        let Self { lease, operation } = self;
         if receipt.binding != lease.binding {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::BackendBindingMismatch,
@@ -1306,6 +1499,12 @@ impl WriterExitPending {
         if receipt.installation != lease.installation || receipt.epoch != lease.epoch {
             return Err(DurableFailureWithWriter::new(
                 RecoveryRequired::WriterLeaseMismatch,
+                lease,
+            ));
+        }
+        if !operation.has_exact_receipt() {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::OperationPhaseMismatch,
                 lease,
             ));
         }
@@ -1719,8 +1918,6 @@ pub(super) enum DurableRunStateReleaseFailure {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DurableRunStateFixtureSeed {
-    /// Canonical generation-one Clean marker and checkpoint.
-    Clean,
     /// Canonical generation-two Active marker and checkpoint.
     Active,
     /// Canonical generation-two persisted recovery marker and checkpoint.
@@ -1733,6 +1930,109 @@ pub(super) enum DurableRunStateFixtureSeed {
     Invalid,
 }
 
+/// Mutually exclusive writer roles used by the bounded test backend.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FixtureWriterRole {
+    /// Ordinary boot/runtime/shutdown writer authority.
+    Runtime,
+    /// Fresh-install generation-one provisioning writer authority.
+    Provisioning,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct FixtureWriterRecord {
+    role: FixtureWriterRole,
+    installation: InstallationIdentity,
+    epoch: NonZeroU64,
+    provisioning_attempt: Option<NonZeroU64>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FixtureCommitKind {
+    Active,
+    Clean,
+    InitialClean,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct FixtureCommitAmbiguity {
+    kind: FixtureCommitKind,
+    writer_epoch: NonZeroU64,
+    provisioning_round: Option<NonZeroU64>,
+    reload_allowed: bool,
+}
+
+#[cfg(test)]
+impl FixtureCommitAmbiguity {
+    const fn runtime(kind: FixtureCommitKind, writer: FixtureWriterRecord) -> Self {
+        Self {
+            kind,
+            writer_epoch: writer.epoch,
+            provisioning_round: None,
+            reload_allowed: true,
+        }
+    }
+
+    const fn terminal_runtime(kind: FixtureCommitKind, writer: FixtureWriterRecord) -> Self {
+        Self {
+            kind,
+            writer_epoch: writer.epoch,
+            provisioning_round: None,
+            reload_allowed: false,
+        }
+    }
+
+    pub(super) const fn provisioning(writer: FixtureWriterRecord, round: NonZeroU64) -> Self {
+        Self {
+            kind: FixtureCommitKind::InitialClean,
+            writer_epoch: writer.epoch,
+            provisioning_round: Some(round),
+            reload_allowed: true,
+        }
+    }
+
+    pub(super) const fn terminal_provisioning(
+        writer: FixtureWriterRecord,
+        round: NonZeroU64,
+    ) -> Self {
+        Self {
+            kind: FixtureCommitKind::InitialClean,
+            writer_epoch: writer.epoch,
+            provisioning_round: Some(round),
+            reload_allowed: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl FixtureWriterRecord {
+    const fn runtime(installation: InstallationIdentity, epoch: NonZeroU64) -> Self {
+        Self {
+            role: FixtureWriterRole::Runtime,
+            installation,
+            epoch,
+            provisioning_attempt: None,
+        }
+    }
+
+    pub(super) const fn provisioning(
+        installation: InstallationIdentity,
+        epoch: NonZeroU64,
+        attempt: NonZeroU64,
+    ) -> Self {
+        Self {
+            role: FixtureWriterRole::Provisioning,
+            installation,
+            epoch,
+            provisioning_attempt: Some(attempt),
+        }
+    }
+}
+
 /// Bounded, allocation-free in-memory backend used only by unit tests.
 #[cfg(test)]
 pub(super) struct DurableRunStateFixture {
@@ -1740,9 +2040,13 @@ pub(super) struct DurableRunStateFixture {
     checkpoint: Option<[u8; HIGH_WATER_BYTES]>,
     installation: InstallationIdentity,
     binding: BackendBinding,
-    held_writer: Option<(InstallationIdentity, NonZeroU64)>,
-    last_released_writer: Option<(InstallationIdentity, NonZeroU64)>,
+    held_writer: Option<FixtureWriterRecord>,
+    last_released_writer: Option<FixtureWriterRecord>,
     last_writer_epoch: u64,
+    last_provisioning_attempt: u64,
+    provisioning_reload_round: u64,
+    unresolved_commit_ambiguity: Option<FixtureCommitAmbiguity>,
+    release_reconciliation: Option<NonZeroU64>,
     commit_fault: DurableRunStateCommitFault,
     reread_fault: DurableRunStateRereadFault,
     release_fault: DurableRunStateReleaseFault,
@@ -1777,8 +2081,7 @@ impl DurableRunStateFixture {
         installation: InstallationIdentity,
     ) -> Result<Self, RecoveryRequired> {
         let (state, generation) = match seed {
-            DurableRunStateFixtureSeed::Clean
-            | DurableRunStateFixtureSeed::MissingMarker
+            DurableRunStateFixtureSeed::MissingMarker
             | DurableRunStateFixtureSeed::MissingCheckpoint
             | DurableRunStateFixtureSeed::Invalid => (RunMarkerState::Clean, 1),
             DurableRunStateFixtureSeed::Active => (RunMarkerState::Active, 2),
@@ -1799,9 +2102,7 @@ impl DurableRunStateFixture {
                     marker[RUN_MARKER_BODY_BYTES] ^= 1;
                 }
             }
-            DurableRunStateFixtureSeed::Clean
-            | DurableRunStateFixtureSeed::Active
-            | DurableRunStateFixtureSeed::RecoveryRequired => {}
+            DurableRunStateFixtureSeed::Active | DurableRunStateFixtureSeed::RecoveryRequired => {}
         }
         Ok(fixture)
     }
@@ -1822,6 +2123,10 @@ impl DurableRunStateFixture {
             held_writer: None,
             last_released_writer: None,
             last_writer_epoch: 0,
+            last_provisioning_attempt: 0,
+            provisioning_reload_round: 0,
+            unresolved_commit_ambiguity: None,
+            release_reconciliation: None,
             commit_fault: DurableRunStateCommitFault::None,
             reread_fault: DurableRunStateRereadFault::None,
             release_fault: DurableRunStateReleaseFault::None,
@@ -1856,13 +2161,19 @@ impl DurableRunStateFixture {
         if self.held_writer.is_some() {
             return Err(RecoveryRequired::WriterLeaseUnavailable);
         }
+        if self.release_reconciliation.is_some() {
+            return Err(RecoveryRequired::WriterReleaseReconciliationRequired);
+        }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired);
+        }
         let epoch = self
             .last_writer_epoch
             .checked_add(1)
             .and_then(NonZeroU64::new)
             .ok_or(RecoveryRequired::WriterLeaseUnavailable)?;
         self.last_writer_epoch = epoch.get();
-        self.held_writer = Some((installation, epoch));
+        self.held_writer = Some(FixtureWriterRecord::runtime(installation, epoch));
         Ok(SingleWriterLease::from_exclusive_acquisition(
             installation,
             epoch,
@@ -1872,11 +2183,16 @@ impl DurableRunStateFixture {
 
     fn writer_observation(&self) -> WriterObservation {
         match self.held_writer {
-            Some((installation, epoch)) => WriterObservation::Held {
+            Some(FixtureWriterRecord {
+                role: FixtureWriterRole::Runtime,
+                installation,
+                epoch,
+                provisioning_attempt: None,
+            }) => WriterObservation::Held {
                 installation,
                 epoch,
             },
-            None => WriterObservation::Missing,
+            Some(_) | None => WriterObservation::Missing,
         }
     }
 
@@ -1924,24 +2240,64 @@ impl DurableRunStateFixture {
 
     /// Captures a fresh backend-bound Active reload receipt without consuming
     /// the pending durable authority.
-    pub(super) fn reload_active(&self, pending: &ActiveReloadRequired) -> ActiveReloadReceipt {
-        let _ = pending;
-        ActiveReloadReceipt {
+    pub(super) fn reload_active(
+        &mut self,
+        pending: &ActiveReloadRequired,
+    ) -> Result<ActiveReloadReceipt, RecoveryRequired> {
+        let expected =
+            FixtureWriterRecord::runtime(pending.lease.installation, pending.lease.epoch);
+        if pending.lease.binding != self.binding {
+            return Err(RecoveryRequired::BackendBindingMismatch);
+        }
+        if self.held_writer != Some(expected) {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
+        }
+        if self.unresolved_commit_ambiguity
+            != Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ))
+        {
+            return Err(RecoveryRequired::CommitReloadRequired);
+        }
+        pending.operation.record_reload_receipt()?;
+        self.unresolved_commit_ambiguity = None;
+        Ok(ActiveReloadReceipt {
             observed: SnapshotObservation::capture(self.marker_bytes(), self.checkpoint_bytes()),
             writer: self.writer_observation(),
             binding: self.binding,
-        }
+        })
     }
 
     /// Captures a fresh backend-bound Clean reload receipt without consuming
     /// the pending durable authority.
-    pub(super) fn reload_clean(&self, pending: &CleanReloadRequired) -> CleanReloadReceipt {
-        let _ = pending;
-        CleanReloadReceipt {
+    pub(super) fn reload_clean(
+        &mut self,
+        pending: &CleanReloadRequired,
+    ) -> Result<CleanReloadReceipt, RecoveryRequired> {
+        let expected =
+            FixtureWriterRecord::runtime(pending.lease.installation, pending.lease.epoch);
+        if pending.lease.binding != self.binding {
+            return Err(RecoveryRequired::BackendBindingMismatch);
+        }
+        if self.held_writer != Some(expected) {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
+        }
+        if self.unresolved_commit_ambiguity
+            != Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ))
+        {
+            return Err(RecoveryRequired::CommitReloadRequired);
+        }
+        pending.operation.record_reload_receipt()?;
+        self.unresolved_commit_ambiguity = None;
+        Ok(CleanReloadReceipt {
             observed: SnapshotObservation::capture(self.marker_bytes(), self.checkpoint_bytes()),
             writer: self.writer_observation(),
             binding: self.binding,
-        }
+        })
     }
 
     pub(super) fn set_commit_fault(&mut self, fault: DurableRunStateCommitFault) {
@@ -1981,29 +2337,56 @@ impl DurableRunStateFixture {
         if transition.lease.binding != self.binding {
             return Err(RecoveryRequired::BackendBindingMismatch.into());
         }
-        if self.held_writer != Some((transition.lease.installation, transition.lease.epoch)) {
+        let expected =
+            FixtureWriterRecord::runtime(transition.lease.installation, transition.lease.epoch);
+        if self.held_writer != Some(expected) {
             return Err(RecoveryRequired::WriterLeaseMismatch.into());
         }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired.into());
+        }
+        transition.operation.begin_commit()?;
         if self.marker.as_ref() != Some(transition.expected_marker_bytes())
             || self.checkpoint.as_ref() != Some(transition.expected_checkpoint_bytes())
         {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::terminal_runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ));
             return Err(RecoveryRequired::CompareAndSwapConflict.into());
         }
         let fault = self.take_commit_fault();
         if fault == DurableRunStateCommitFault::CompareAndSwapConflict {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::terminal_runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ));
             return Err(RecoveryRequired::CompareAndSwapConflict.into());
         }
         if fault == DurableRunStateCommitFault::AmbiguousBeforeWrite {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
         self.marker = Some(*transition.candidate_marker_bytes());
         if fault == DurableRunStateCommitFault::AmbiguousAfterMarker {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
         self.checkpoint = Some(*transition.candidate_checkpoint_bytes());
         if fault == DurableRunStateCommitFault::AmbiguousAfterCheckpoint {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Active,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
+        transition.operation.record_commit_receipt()?;
         Ok(CommittedActiveMarker::from_durable_observation(
             self.marker_bytes(),
             self.checkpoint_bytes(),
@@ -2015,7 +2398,19 @@ impl DurableRunStateFixture {
     pub(super) fn reread_active(
         &mut self,
         transition: &PreparedActiveTransition,
-    ) -> RereadActiveMarker {
+    ) -> Result<RereadActiveMarker, RecoveryRequired> {
+        if transition.lease.binding != self.binding {
+            return Err(RecoveryRequired::BackendBindingMismatch);
+        }
+        let expected =
+            FixtureWriterRecord::runtime(transition.lease.installation, transition.lease.epoch);
+        if self.held_writer != Some(expected) {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
+        }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired);
+        }
+        transition.operation.begin_reread()?;
         let fault = self.take_reread_fault();
         let marker = match fault {
             DurableRunStateRereadFault::MissingMarker => None,
@@ -2034,12 +2429,12 @@ impl DurableRunStateFixture {
             | DurableRunStateRereadFault::MissingMarker
             | DurableRunStateRereadFault::MarkerDrift => self.checkpoint_bytes(),
         };
-        RereadActiveMarker::from_durable_observation(
+        Ok(RereadActiveMarker::from_durable_observation(
             marker,
             checkpoint,
             transition.lease.epoch,
             self.binding,
-        )
+        ))
     }
 
     pub(super) fn commit_clean(
@@ -2049,29 +2444,56 @@ impl DurableRunStateFixture {
         if transition.lease.binding != self.binding {
             return Err(RecoveryRequired::BackendBindingMismatch.into());
         }
-        if self.held_writer != Some((transition.lease.installation, transition.lease.epoch)) {
+        let expected =
+            FixtureWriterRecord::runtime(transition.lease.installation, transition.lease.epoch);
+        if self.held_writer != Some(expected) {
             return Err(RecoveryRequired::WriterLeaseMismatch.into());
         }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired.into());
+        }
+        transition.operation.begin_commit()?;
         if self.marker.as_ref() != Some(transition.expected_marker_bytes())
             || self.checkpoint.as_ref() != Some(transition.expected_checkpoint_bytes())
         {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::terminal_runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ));
             return Err(RecoveryRequired::CompareAndSwapConflict.into());
         }
         let fault = self.take_commit_fault();
         if fault == DurableRunStateCommitFault::CompareAndSwapConflict {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::terminal_runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ));
             return Err(RecoveryRequired::CompareAndSwapConflict.into());
         }
         if fault == DurableRunStateCommitFault::AmbiguousBeforeWrite {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
         self.marker = Some(*transition.candidate_marker_bytes());
         if fault == DurableRunStateCommitFault::AmbiguousAfterMarker {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
         self.checkpoint = Some(*transition.candidate_checkpoint_bytes());
         if fault == DurableRunStateCommitFault::AmbiguousAfterCheckpoint {
+            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::runtime(
+                FixtureCommitKind::Clean,
+                expected,
+            ));
             return Err(DurableRunStateCommitFailure::Ambiguous);
         }
+        transition.operation.record_commit_receipt()?;
         Ok(CommittedCleanMarker::from_durable_observation(
             self.marker_bytes(),
             self.checkpoint_bytes(),
@@ -2083,7 +2505,19 @@ impl DurableRunStateFixture {
     pub(super) fn reread_clean(
         &mut self,
         transition: &PreparedCleanTransition,
-    ) -> RereadCleanMarker {
+    ) -> Result<RereadCleanMarker, RecoveryRequired> {
+        if transition.lease.binding != self.binding {
+            return Err(RecoveryRequired::BackendBindingMismatch);
+        }
+        let expected =
+            FixtureWriterRecord::runtime(transition.lease.installation, transition.lease.epoch);
+        if self.held_writer != Some(expected) {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
+        }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired);
+        }
+        transition.operation.begin_reread()?;
         let fault = self.take_reread_fault();
         let marker = match fault {
             DurableRunStateRereadFault::MissingMarker => None,
@@ -2102,12 +2536,12 @@ impl DurableRunStateFixture {
             | DurableRunStateRereadFault::MissingMarker
             | DurableRunStateRereadFault::MarkerDrift => self.checkpoint_bytes(),
         };
-        RereadCleanMarker::from_durable_observation(
+        Ok(RereadCleanMarker::from_durable_observation(
             marker,
             checkpoint,
             transition.lease.epoch,
             self.binding,
-        )
+        ))
     }
 
     /// Releases the exact writer only after authenticated Clean completion.
@@ -2118,17 +2552,27 @@ impl DurableRunStateFixture {
         if pending.lease.binding != self.binding {
             return Err(RecoveryRequired::BackendBindingMismatch.into());
         }
-        let expected = (pending.lease.installation, pending.lease.epoch);
+        let expected =
+            FixtureWriterRecord::runtime(pending.lease.installation, pending.lease.epoch);
+        if self.release_reconciliation.is_some() {
+            return Err(RecoveryRequired::WriterReleaseReconciliationRequired.into());
+        }
         if self.held_writer != Some(expected) {
             return Err(RecoveryRequired::WriterLeaseMismatch.into());
         }
+        if self.unresolved_commit_ambiguity.is_some() {
+            return Err(RecoveryRequired::CommitReloadRequired.into());
+        }
+        pending.operation.begin_release()?;
         let fault = self.take_release_fault();
         if fault == DurableRunStateReleaseFault::AmbiguousBeforeRelease {
+            self.release_reconciliation = Some(expected.epoch);
             return Err(DurableRunStateReleaseFailure::Ambiguous);
         }
         self.held_writer = None;
         self.last_released_writer = Some(expected);
         if fault == DurableRunStateReleaseFault::AmbiguousAfterRelease {
+            self.release_reconciliation = Some(expected.epoch);
             return Err(DurableRunStateReleaseFailure::Ambiguous);
         }
         let receipt_epoch = if fault == DurableRunStateReleaseFault::MismatchedReceiptAfterRelease {
@@ -2140,6 +2584,10 @@ impl DurableRunStateFixture {
         } else {
             pending.lease.epoch
         };
+        if fault == DurableRunStateReleaseFault::MismatchedReceiptAfterRelease {
+            self.release_reconciliation = Some(expected.epoch);
+        }
+        pending.operation.record_release_receipt()?;
         Ok(WriterLeaseReleaseReceipt::from_release_readback(
             pending.lease.installation,
             receipt_epoch,
@@ -2155,15 +2603,33 @@ impl DurableRunStateFixture {
         if pending.lease.binding != self.binding {
             return Err(RecoveryRequired::BackendBindingMismatch);
         }
-        let expected = (pending.lease.installation, pending.lease.epoch);
-        match self.held_writer {
-            Some(held) if held == expected => {
-                self.held_writer = None;
-                self.last_released_writer = Some(expected);
-            }
-            None if self.last_released_writer == Some(expected) => {}
-            Some(_) | None => return Err(RecoveryRequired::WriterLeaseMismatch),
+        let expected =
+            FixtureWriterRecord::runtime(pending.lease.installation, pending.lease.epoch);
+        if self
+            .unresolved_commit_ambiguity
+            .is_some_and(|ambiguity| ambiguity.writer_epoch != expected.epoch)
+        {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
         }
+        if self
+            .release_reconciliation
+            .is_some_and(|reconciliation| reconciliation != expected.epoch)
+        {
+            return Err(RecoveryRequired::WriterLeaseMismatch);
+        }
+        let writer_was_held = match self.held_writer {
+            Some(held) if held == expected => true,
+            None if self.last_released_writer == Some(expected) => false,
+            Some(_) | None => return Err(RecoveryRequired::WriterLeaseMismatch),
+        };
+        pending.operation.begin_release()?;
+        if writer_was_held {
+            self.held_writer = None;
+            self.last_released_writer = Some(expected);
+        }
+        self.unresolved_commit_ambiguity = None;
+        self.release_reconciliation = None;
+        pending.operation.record_release_receipt()?;
         Ok(WriterExitReceipt {
             installation: pending.lease.installation,
             epoch: pending.lease.epoch,
@@ -2180,8 +2646,12 @@ impl fmt::Debug for DurableRunStateFixture {
 }
 
 #[cfg(test)]
+#[path = "durable_run_state/provisioning_tests.rs"]
+mod provisioning_tests;
+
+#[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, io};
 
     use super::{
         ActiveReloadRequired, ActiveRunLease, BootEvidence, CanonicalSnapshot,
@@ -2238,6 +2708,31 @@ mod tests {
         )
     }
 
+    fn freshly_provisioned_backend(
+        key: &FixtureRunStateAuthenticationKey,
+        installation: InstallationIdentity,
+    ) -> Result<FaultBackend, Box<dyn Error>> {
+        let mut backend = FaultBackend::empty(installation)?;
+        let unprovisioned = backend
+            .begin_initial_provisioning(key, installation)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let transition = unprovisioned
+            .prepare_initial_clean()
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let committed = backend.commit_initial_clean(&transition)?;
+        let reread = backend.reread_initial_clean(&transition)?;
+        let clean = transition
+            .complete(committed, reread)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        let pending = clean.prepare_writer_release();
+        let receipt = backend.release_provisioning_writer(&pending)?;
+        let provisioned = pending
+            .complete(receipt)
+            .map_err(|failure| io::Error::other(format!("{failure:?}")))?;
+        assert_eq!(provisioned.generation(), NonZeroU64::MIN);
+        Ok(backend)
+    }
+
     fn startup_observation(
         backend: &FaultBackend,
         key: &FixtureRunStateAuthenticationKey,
@@ -2261,7 +2756,7 @@ mod tests {
     ) -> Result<ActiveRunLease, Box<dyn Error>> {
         let transition = boot_evidence(backend, key, installation)?.prepare_active(key)?;
         let committed = backend.commit_active(&transition)?;
-        let reread = backend.reread_active(&transition);
+        let reread = backend.reread_active(&transition)?;
         Ok(transition.complete(committed, reread)?)
     }
 
@@ -2281,7 +2776,7 @@ mod tests {
     ) -> Result<CleanCommittedWithWriter, Box<dyn Error>> {
         let transition = clean_transition(backend, key, installation)?;
         let committed = backend.commit_clean(&transition)?;
-        let reread = backend.reread_clean(&transition);
+        let reread = backend.reread_clean(&transition)?;
         Ok(transition.complete(committed, reread)?)
     }
 
@@ -2296,19 +2791,25 @@ mod tests {
 
     fn reload_active_from_backend(
         reload: ActiveReloadRequired,
-        backend: &FaultBackend,
+        backend: &mut FaultBackend,
         key: &FixtureRunStateAuthenticationKey,
     ) -> Result<ReloadedActiveRunState, DurableFailureWithWriter> {
-        let receipt = backend.reload_active(&reload);
+        let receipt = match backend.reload_active(&reload) {
+            Ok(receipt) => receipt,
+            Err(reason) => return Err(reload.abort(reason)),
+        };
         reload.complete_reload(receipt, key)
     }
 
     fn reload_clean_from_backend(
         reload: CleanReloadRequired,
-        backend: &FaultBackend,
+        backend: &mut FaultBackend,
         key: &FixtureRunStateAuthenticationKey,
     ) -> Result<CleanCommittedWithWriter, DurableFailureWithWriter> {
-        let receipt = backend.reload_clean(&reload);
+        let receipt = match backend.reload_clean(&reload) {
+            Ok(receipt) => receipt,
+            Err(reason) => return Err(reload.abort(reason)),
+        };
         reload.complete_reload(receipt, key)
     }
 
@@ -2351,7 +2852,7 @@ mod tests {
     fn canonical_v1_clean_marker_and_checkpoint_round_trip() -> TestResult {
         let key = fixture_key()?;
         let installation = fixture_identity(0x21)?;
-        let backend = FaultBackend::new(FixtureSeed::Clean, &key, installation)?;
+        let backend = freshly_provisioned_backend(&key, installation)?;
         let snapshot = backend.canonical_snapshot()?;
         assert_eq!(&snapshot.marker[..8], b"YWRUNV01");
         assert_eq!(&snapshot.checkpoint[..8], b"YWHIWV01");
@@ -2367,7 +2868,7 @@ mod tests {
     fn canonical_v1_layout_matches_independent_golden_digests() -> TestResult {
         let key = fixture_key()?;
         let installation = fixture_identity(0x21)?;
-        let backend = FaultBackend::new(FixtureSeed::Clean, &key, installation)?;
+        let backend = freshly_provisioned_backend(&key, installation)?;
         let snapshot = backend.canonical_snapshot()?;
 
         assert_eq!(snapshot.marker.len(), 148);
@@ -2725,25 +3226,34 @@ mod tests {
                 RecoveryRequired::CompareAndSwapConflict
             ))
         );
+        assert_eq!(
+            backend.commit_active(&transition).map(|_| ()),
+            Err(FixtureCommitFailure::Recovery(
+                RecoveryRequired::CommitReloadRequired
+            ))
+        );
+        let _exit = retire_failure(
+            &mut backend,
+            transition.abort(RecoveryRequired::CompareAndSwapConflict),
+        )?;
 
-        let prior = backend.canonical_snapshot()?;
+        let mut receipt_backend = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
+        let transition =
+            boot_evidence(&mut receipt_backend, &key, installation)?.prepare_active(&key)?;
+        let prior = receipt_backend.canonical_snapshot()?;
+        let _exact_committed = receipt_backend.commit_active(&transition)?;
         let committed = super::CommittedActiveMarker::from_durable_observation(
             Some(&prior.marker),
             Some(&prior.checkpoint),
             transition.lease.epoch,
-            backend.binding,
+            receipt_backend.binding,
         );
-        let reread = super::RereadActiveMarker::from_durable_observation(
-            Some(transition.candidate_marker_bytes()),
-            Some(transition.candidate_checkpoint_bytes()),
-            transition.lease.epoch,
-            backend.binding,
-        );
+        let reread = receipt_backend.reread_active(&transition)?;
         let Err(failure) = transition.complete(committed, reread) else {
             return Err("mismatched Active receipt minted runtime authority".into());
         };
         assert_eq!(failure.reason(), RecoveryRequired::CommitReceiptMismatch);
-        let _exit = retire_failure(&mut backend, failure)?;
+        let _exit = retire_failure(&mut receipt_backend, failure)?;
         Ok(())
     }
 
@@ -2755,12 +3265,41 @@ mod tests {
         let transition = boot_evidence(&mut backend, &key, installation)?.prepare_active(&key)?;
         let committed = backend.commit_active(&transition)?;
         backend.set_reread_fault(FixtureRereadFault::CheckpointDrift);
-        let reread = backend.reread_active(&transition);
+        let reread = backend.reread_active(&transition)?;
         let Err(failure) = transition.complete(committed, reread) else {
             return Err("drifting Active reread minted runtime authority".into());
         };
         assert_eq!(failure.reason(), RecoveryRequired::RereadDrift);
         let _exit = retire_failure(&mut backend, failure)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_commit_and_reread_attempts_are_one_shot() -> TestResult {
+        let key = fixture_key()?;
+        let installation = fixture_identity(0x6a)?;
+        let mut backend = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
+        let transition = boot_evidence(&mut backend, &key, installation)?.prepare_active(&key)?;
+        let committed = backend.commit_active(&transition)?;
+        assert_eq!(
+            backend.commit_active(&transition).map(|_| ()),
+            Err(FixtureCommitFailure::Recovery(
+                RecoveryRequired::OperationAttemptReused
+            ))
+        );
+        let reread = backend.reread_active(&transition)?;
+        assert_eq!(
+            backend.reread_active(&transition).map(|_| ()),
+            Err(RecoveryRequired::OperationAttemptReused)
+        );
+        let active = transition.complete(committed, reread)?;
+        let exit = active.into_writer_exit();
+        let receipt = backend.retire_writer_for_exit(&exit)?;
+        assert_eq!(
+            backend.retire_writer_for_exit(&exit).map(|_| ()),
+            Err(RecoveryRequired::OperationAttemptReused)
+        );
+        let _retired = exit.complete(receipt)?;
         Ok(())
     }
 
@@ -2775,7 +3314,14 @@ mod tests {
             backend.commit_active(&transition),
             Err(FixtureCommitFailure::Ambiguous)
         );
-        let reloaded = reload_active_from_backend(transition.commit_ambiguous(), &backend, &key)?;
+        assert_eq!(
+            backend.commit_active(&transition).map(|_| ()),
+            Err(FixtureCommitFailure::Recovery(
+                RecoveryRequired::CommitReloadRequired
+            ))
+        );
+        let reloaded =
+            reload_active_from_backend(transition.commit_ambiguous(), &mut backend, &key)?;
         let ReloadedActiveRunState::Boot(boot) = reloaded else {
             return Err("ambiguous pre-write Active commit did not restore boot evidence".into());
         };
@@ -2798,7 +3344,7 @@ mod tests {
             Err(FixtureCommitFailure::Ambiguous)
         );
         let Err(failure) =
-            reload_active_from_backend(transition.commit_ambiguous(), &backend, &key)
+            reload_active_from_backend(transition.commit_ambiguous(), &mut backend, &key)
         else {
             return Err("partial Active commit reloaded authority".into());
         };
@@ -2818,7 +3364,8 @@ mod tests {
             backend.commit_active(&transition),
             Err(FixtureCommitFailure::Ambiguous)
         );
-        let reloaded = reload_active_from_backend(transition.commit_ambiguous(), &backend, &key)?;
+        let reloaded =
+            reload_active_from_backend(transition.commit_ambiguous(), &mut backend, &key)?;
         let ReloadedActiveRunState::Active(active) = reloaded else {
             return Err(
                 "complete ambiguous Active commit did not restore runtime authority".into(),
@@ -2844,11 +3391,11 @@ mod tests {
         let boot = startup_observation(&backend, &key, installation)?.bind_writer(first)?;
         let transition = boot.prepare_active(&key)?;
         let committed = backend.commit_active(&transition)?;
-        let reread = backend.reread_active(&transition);
+        let reread = backend.reread_active(&transition)?;
         let active = transition.complete(committed, reread)?;
         let clean_transition = active.prepare_clean(&key)?;
         let committed = backend.commit_clean(&clean_transition)?;
-        let reread = backend.reread_clean(&clean_transition);
+        let reread = backend.reread_clean(&clean_transition)?;
         let clean = clean_transition.complete(committed, reread)?;
         let pending = clean.prepare_writer_release();
         let wrong = super::WriterLeaseReleaseReceipt::from_release_readback(
@@ -2871,7 +3418,7 @@ mod tests {
         let mut backend = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
         let transition = clean_transition(&mut backend, &key, installation)?;
         let committed = backend.commit_clean(&transition)?;
-        let reread = backend.reread_clean(&transition);
+        let reread = backend.reread_clean(&transition)?;
         let clean = transition.complete(committed, reread)?;
         assert_eq!(clean.generation(), nonzero(3)?);
         let stopped = stop_clean_run(&mut backend, clean)?;
@@ -2894,7 +3441,7 @@ mod tests {
             backend.commit_clean(&transition),
             Err(FixtureCommitFailure::Ambiguous)
         );
-        let clean = reload_clean_from_backend(transition.commit_ambiguous(), &backend, &key)?;
+        let clean = reload_clean_from_backend(transition.commit_ambiguous(), &mut backend, &key)?;
         assert_eq!(clean.generation(), nonzero(3)?);
         assert!(backend.held_writer.is_some());
         let stopped = stop_clean_run(&mut backend, clean)?;
@@ -2913,7 +3460,8 @@ mod tests {
             backend.commit_clean(&transition),
             Err(FixtureCommitFailure::Ambiguous)
         );
-        let Err(failure) = reload_clean_from_backend(transition.commit_ambiguous(), &backend, &key)
+        let Err(failure) =
+            reload_clean_from_backend(transition.commit_ambiguous(), &mut backend, &key)
         else {
             return Err("unapplied ambiguous Clean commit restored authority".into());
         };
@@ -2936,7 +3484,8 @@ mod tests {
             backend.commit_clean(&transition),
             Err(FixtureCommitFailure::Ambiguous)
         );
-        let Err(failure) = reload_clean_from_backend(transition.commit_ambiguous(), &backend, &key)
+        let Err(failure) =
+            reload_clean_from_backend(transition.commit_ambiguous(), &mut backend, &key)
         else {
             return Err("partial Clean commit restored authority".into());
         };
@@ -2953,7 +3502,7 @@ mod tests {
         let transition = clean_transition(&mut backend, &key, installation)?;
         let committed = backend.commit_clean(&transition)?;
         backend.set_reread_fault(FixtureRereadFault::MissingMarker);
-        let reread = backend.reread_clean(&transition);
+        let reread = backend.reread_clean(&transition)?;
         let Err(failure) = transition.complete(committed, reread) else {
             return Err("drifting Clean reread restored clean authority".into());
         };
@@ -2974,7 +3523,7 @@ mod tests {
         let transition_b =
             boot_evidence(&mut active_b, &key, installation)?.prepare_active(&key)?;
         let committed_a = active_a.commit_active(&transition_a)?;
-        let reread_a = active_a.reread_active(&transition_a);
+        let reread_a = active_a.reread_active(&transition_a)?;
         let Err(failure_b) = transition_b.complete(committed_a, reread_a) else {
             return Err("cross-backend Active receipts minted runtime authority".into());
         };
@@ -2989,7 +3538,7 @@ mod tests {
         let transition_a = clean_transition(&mut clean_a, &key, installation)?;
         let transition_b = clean_transition(&mut clean_b, &key, installation)?;
         let committed_a = clean_a.commit_clean(&transition_a)?;
-        let reread_a = clean_a.reread_clean(&transition_a);
+        let reread_a = clean_a.reread_clean(&transition_a)?;
         let Err(failure_b) = transition_b.complete(committed_a, reread_a) else {
             return Err("cross-backend Clean receipts restored clean authority".into());
         };
@@ -3014,6 +3563,25 @@ mod tests {
         let exit_a = pending_a.into_writer_exit();
         let receipt_a = release_a.retire_writer_for_exit(&exit_a)?;
         let _exit_a = exit_a.complete(receipt_a)?;
+
+        let mut terminal_a = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
+        let mut terminal_b = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
+        let exit_a = boot_evidence(&mut terminal_a, &key, installation)?.into_writer_exit();
+        let exit_b = boot_evidence(&mut terminal_b, &key, installation)?.into_writer_exit();
+        let receipt_a = terminal_a.retire_writer_for_exit(&exit_a)?;
+        let receipt_b = terminal_b.retire_writer_for_exit(&exit_b)?;
+        let Err(failure_a) = exit_a.complete(receipt_b) else {
+            return Err("cross-backend terminal receipt completed writer retirement".into());
+        };
+        let Err(failure_b) = exit_b.complete(receipt_a) else {
+            return Err(
+                "reverse cross-backend terminal receipt completed writer retirement".into(),
+            );
+        };
+        assert_eq!(failure_a.reason(), RecoveryRequired::BackendBindingMismatch);
+        assert_eq!(failure_b.reason(), RecoveryRequired::BackendBindingMismatch);
+        let _exit_a = retire_failure(&mut terminal_a, failure_a)?;
+        let _exit_b = retire_failure(&mut terminal_b, failure_b)?;
         Ok(())
     }
 
@@ -3024,13 +3592,23 @@ mod tests {
 
         let mut active_a = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
         let mut active_b = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
-        let reload_a = boot_evidence(&mut active_a, &key, installation)?
-            .prepare_active(&key)?
-            .commit_ambiguous();
-        let reload_b = boot_evidence(&mut active_b, &key, installation)?
-            .prepare_active(&key)?
-            .commit_ambiguous();
-        let receipt_a = active_a.reload_active(&reload_a);
+        let transition_a =
+            boot_evidence(&mut active_a, &key, installation)?.prepare_active(&key)?;
+        let transition_b =
+            boot_evidence(&mut active_b, &key, installation)?.prepare_active(&key)?;
+        active_a.set_commit_fault(FixtureCommitFault::AmbiguousBeforeWrite);
+        active_b.set_commit_fault(FixtureCommitFault::AmbiguousBeforeWrite);
+        assert!(matches!(
+            active_a.commit_active(&transition_a),
+            Err(FixtureCommitFailure::Ambiguous)
+        ));
+        assert!(matches!(
+            active_b.commit_active(&transition_b),
+            Err(FixtureCommitFailure::Ambiguous)
+        ));
+        let reload_a = transition_a.commit_ambiguous();
+        let reload_b = transition_b.commit_ambiguous();
+        let receipt_a = active_a.reload_active(&reload_a)?;
         let Err(failure_b) = reload_b.complete_reload(receipt_a, &key) else {
             return Err("cross-backend Active reload restored authority".into());
         };
@@ -3042,9 +3620,21 @@ mod tests {
 
         let mut clean_a = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
         let mut clean_b = seeded_backend(RunMarkerState::Clean, 1, &key, installation)?;
-        let reload_a = clean_transition(&mut clean_a, &key, installation)?.commit_ambiguous();
-        let reload_b = clean_transition(&mut clean_b, &key, installation)?.commit_ambiguous();
-        let receipt_a = clean_a.reload_clean(&reload_a);
+        let transition_a = clean_transition(&mut clean_a, &key, installation)?;
+        let transition_b = clean_transition(&mut clean_b, &key, installation)?;
+        clean_a.set_commit_fault(FixtureCommitFault::AmbiguousBeforeWrite);
+        clean_b.set_commit_fault(FixtureCommitFault::AmbiguousBeforeWrite);
+        assert!(matches!(
+            clean_a.commit_clean(&transition_a),
+            Err(FixtureCommitFailure::Ambiguous)
+        ));
+        assert!(matches!(
+            clean_b.commit_clean(&transition_b),
+            Err(FixtureCommitFailure::Ambiguous)
+        ));
+        let reload_a = transition_a.commit_ambiguous();
+        let reload_b = transition_b.commit_ambiguous();
+        let receipt_a = clean_a.reload_clean(&reload_a)?;
         let Err(failure_b) = reload_b.complete_reload(receipt_a, &key) else {
             return Err("cross-backend Clean reload restored authority".into());
         };
@@ -3073,6 +3663,21 @@ mod tests {
                 backend.release_writer(&pending),
                 Err(FixtureReleaseFailure::Ambiguous)
             ));
+            assert_eq!(
+                backend.release_writer(&pending).map(|_| ()),
+                Err(FixtureReleaseFailure::Recovery(
+                    RecoveryRequired::WriterReleaseReconciliationRequired
+                ))
+            );
+            let expected_boot_error = if fault == FixtureReleaseFault::AmbiguousBeforeRelease {
+                RecoveryRequired::WriterLeaseUnavailable
+            } else {
+                RecoveryRequired::WriterReleaseReconciliationRequired
+            };
+            assert_eq!(
+                backend.boot(&key, installation).map(|_| ()),
+                Err(expected_boot_error)
+            );
             let failure = pending.abort(RecoveryRequired::WriterReleaseAmbiguous);
             let _exit = retire_failure(&mut backend, failure)?;
             let restarted = boot_evidence(&mut backend, &key, installation)?;
@@ -3089,6 +3694,10 @@ mod tests {
             return Err("mismatched release receipt minted stopped evidence".into());
         };
         assert_eq!(failure.reason(), RecoveryRequired::WriterLeaseMismatch);
+        assert_eq!(
+            backend.boot(&key, installation).map(|_| ()),
+            Err(RecoveryRequired::WriterReleaseReconciliationRequired)
+        );
         let _exit = retire_failure(&mut backend, failure)?;
         Ok(())
     }

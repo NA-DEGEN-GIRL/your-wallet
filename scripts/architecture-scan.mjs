@@ -2460,6 +2460,20 @@ const keyAgentServiceDurableRunStatePath =
 const keyAgentServiceDurableRunState = await text(
   keyAgentServiceDurableRunStatePath,
 );
+const keyAgentServiceDurableProvisioningPath =
+  "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning.rs";
+const keyAgentServiceDurableProvisioning = await text(
+  keyAgentServiceDurableProvisioningPath,
+);
+const keyAgentServiceDurableProvisioningTestsPath =
+  "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs";
+const keyAgentServiceDurableProvisioningTests = await text(
+  keyAgentServiceDurableProvisioningTestsPath,
+);
+const keyAgentServiceDurableRunStateDirectoryInventory =
+  await trustedDirectoryEntryInventory(
+    "crates/platform-windows/src/key_agent_service/durable_run_state",
+  );
 const keyAgentServiceDurableTestOnlyImport =
   "\n#[cfg(test)]\nuse std::sync::atomic::{AtomicU64, Ordering};\n";
 const keyAgentServiceDurableFixtureMarker =
@@ -5869,6 +5883,149 @@ const keyAgentServiceDurableEvidenceTypes = [
   "RecoveryExitEvidence",
   "StoppedRunEvidence",
 ];
+const keyAgentServiceDurableOperationEvidenceTypes = [
+  "OneShotCommitOperation",
+  "OneShotReleaseOperation",
+  "OneShotReloadOperation",
+];
+const keyAgentServiceProvisioningVisibleTypes = [
+  "FreshInstallProvisioningAuthority",
+  "ProvisioningWriterLease",
+  "InitialProvisioningStartFailure",
+  "UnprovisionedWithWriter",
+  "PreparedInitialCleanTransition",
+  "CommittedInitialCleanMarker",
+  "RereadInitialCleanMarker",
+  "InitialCleanReloadRequired",
+  "InitialCleanReloadReceipt",
+  "ReloadedInitialCleanState",
+  "InitialCleanCommittedWithWriter",
+  "PendingProvisioningWriterRelease",
+  "ProvisioningWriterReleaseReceipt",
+  "ProvisionedRunState",
+  "ProvisioningFailureWithWriter",
+  "ProvisioningWriterExitPending",
+  "ProvisioningWriterExitReceipt",
+  "ProvisioningRecoveryExitEvidence",
+];
+const keyAgentServiceProvisioningProductionTypes = [
+  "FreshInstallProvisioningAuthority",
+  "ProvisioningWriterLease",
+  "ProvisioningOperationBinding",
+  "InitialProvisioningStartFailure",
+  "UnprovisionedWithWriter",
+  "PreparedInitialCleanTransition",
+  "CommittedInitialCleanMarker",
+  "RereadInitialCleanMarker",
+  "ProvisioningWriterObservation",
+  "InitialCleanReloadRequired",
+  "InitialCleanReloadReceipt",
+  "ReloadedInitialCleanState",
+  "InitialCleanCommittedWithWriter",
+  "PendingProvisioningWriterRelease",
+  "ProvisioningWriterReleaseReceipt",
+  "ProvisionedRunState",
+  "ProvisioningFailureWithWriter",
+  "ProvisioningWriterExitPending",
+  "ProvisioningWriterExitReceipt",
+  "ProvisioningRecoveryExitEvidence",
+];
+const keyAgentServiceProvisioningVisibleFunctions = [
+  "reason",
+  "prepare_initial_clean",
+  "abort",
+  "into_writer_exit",
+  "complete",
+  "commit_ambiguous",
+  "abort",
+  "into_writer_exit",
+  "complete_reload",
+  "abort",
+  "into_writer_exit",
+  "generation",
+  "prepare_writer_release",
+  "abort",
+  "into_writer_exit",
+  "complete",
+  "abort",
+  "into_writer_exit",
+  "generation",
+  "reason",
+  "into_writer_exit",
+  "complete",
+];
+const keyAgentServiceProvisioningProductionFunctions = [
+  "fmt",
+  "fmt",
+  "from_authority_and_lease",
+  "validate_authority_and_lease",
+  "validate_operation_binding",
+  "reason",
+  "fmt",
+  "prepare_initial_clean",
+  "abort",
+  "into_writer_exit",
+  "fmt",
+  "complete",
+  "commit_ambiguous",
+  "abort",
+  "into_writer_exit",
+  "fmt",
+  "fmt",
+  "fmt",
+  "complete_reload",
+  "terminal_round",
+  "abort",
+  "into_writer_exit",
+  "fmt",
+  "fmt",
+  "fmt",
+  "generation",
+  "prepare_writer_release",
+  "abort",
+  "into_writer_exit",
+  "fmt",
+  "complete",
+  "abort",
+  "into_writer_exit",
+  "fmt",
+  "fmt",
+  "generation",
+  "fmt",
+  "new",
+  "reason",
+  "into_writer_exit",
+  "fmt",
+  "fmt",
+  "source",
+  "new",
+  "complete",
+  "fmt",
+  "fmt",
+  "fmt",
+  "observation_is_exactly_empty",
+  "classify_initial_observation",
+];
+const keyAgentServiceProvisioningEvidenceTypes = [
+  "FreshInstallProvisioningAuthority",
+  "ProvisioningWriterLease",
+  "InitialProvisioningStartFailure",
+  "UnprovisionedWithWriter",
+  "PreparedInitialCleanTransition",
+  "CommittedInitialCleanMarker",
+  "RereadInitialCleanMarker",
+  "InitialCleanReloadRequired",
+  "InitialCleanReloadReceipt",
+  "ReloadedInitialCleanState",
+  "InitialCleanCommittedWithWriter",
+  "PendingProvisioningWriterRelease",
+  "ProvisioningWriterReleaseReceipt",
+  "ProvisionedRunState",
+  "ProvisioningFailureWithWriter",
+  "ProvisioningWriterExitPending",
+  "ProvisioningWriterExitReceipt",
+  "ProvisioningRecoveryExitEvidence",
+];
 const keyAgentServiceLifecycleEvidenceTypes = [
   "StartupWriterExit",
   "StartupExitRequired",
@@ -5888,13 +6045,19 @@ const keyAgentServiceLifecycleEvidenceTypes = [
   "NoSecretService",
 ];
 const approvedKeyAgentServiceDurableSourceSha256 =
-  "be95660a8b7ccbb08c8f78b169ac06ebc18ae52fd97469c77c7700a1a927d146";
+  "e40df84b14423880f6e5dadfae561e08e579b21c0b0a7fcd09622f3acc30aa84";
 const approvedKeyAgentServiceDurableProductionSha256 =
-  "68212fa6b4e8a607fb88c83d9f1705e8b855c42f9fe12f644af59b83c020045a";
+  "cd230a6ef1f949488592dc6524f20470225c46c20913c44016f63a9fb095e6c0";
+const approvedKeyAgentServiceProvisioningSourceSha256 =
+  "bbd80d1985d625a47219e3c8cb2b3c6db9bcc7b8d9ddc149482d7263b7633237";
+const approvedKeyAgentServiceProvisioningProductionSha256 =
+  "0e7e338eeec0b2310feb3ee63c6894637770d1bcc3b6fd8762675f6dfd7f6116";
+const approvedKeyAgentServiceProvisioningTestsSha256 =
+  "e47850b4e689311303e45e763c1def27988bafce560961bdd153b074541bad74";
 const approvedKeyAgentServiceLifecycleSourceSha256 =
   "abad3a2bda794fc11faf32c60acfd3465a4124b47ce7cea056d47cdf8c395295";
 const approvedKeyAgentServiceLifecycleTestsSha256 =
-  "b6d9fe2cb597a656b5dcfa0cfc0b0f08886fb8ebafb677d753d89bfd7334b11b";
+  "62f1bd203fd886d452ab0a7ba0e032495f7897ef71e4f92650ca9ea7b0ba583e";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -5909,6 +6072,7 @@ const keyAgentServiceDurableTestNames = [
   "crash_release_preserves_active_recovery_evidence_and_frees_writer",
   "active_cas_conflict_and_commit_receipt_mismatch_require_recovery",
   "active_post_commit_reread_drift_requires_recovery",
+  "runtime_commit_and_reread_attempts_are_one_shot",
   "ambiguous_active_before_write_reloads_exact_boot_evidence",
   "ambiguous_active_after_marker_requires_recovery",
   "ambiguous_active_after_checkpoint_reloads_runtime_authority",
@@ -5925,6 +6089,30 @@ const keyAgentServiceDurableTestNames = [
   "move_only_authorities_and_receipts_cannot_be_clone_or_copy",
   "debug_redacts_key_generation_installation_mac_and_checkpoint",
   "fixture_backend_is_fixed_capacity_and_has_no_history_growth",
+];
+const keyAgentServiceProvisioningTestNames = [
+  "golden_initial_clean_then_release_requires_a_fresh_runtime_boot",
+  "ordinary_boot_missing_never_auto_initializes_or_acquires_a_writer",
+  "runtime_and_provisioning_writer_roles_are_mutually_exclusive",
+  "preexisting_full_one_sided_and_invalid_bytes_are_rejected_without_mutation",
+  "ambiguous_before_write_needs_one_fresh_round_before_retry",
+  "ambiguous_after_checkpoint_recovers_committed_with_writer_only",
+  "partial_ambiguous_commit_is_terminal_and_retirement_preserves_bytes",
+  "known_commit_failure_is_terminal_and_preserves_missing_missing",
+  "premature_or_successful_commit_ambiguous_cannot_strand_the_writer",
+  "successful_commit_reread_and_release_attempts_are_one_shot",
+  "post_commit_reread_drift_is_terminal_and_keeps_committed_bytes",
+  "cross_backend_commit_receipts_and_reread_requests_are_rejected",
+  "cross_backend_reread_release_and_terminal_receipts_are_each_rejected",
+  "cross_backend_ambiguity_reload_receipts_are_rejected_at_the_advanced_round",
+  "wrong_installation_key_and_receipt_installation_fail_closed",
+  "writer_epoch_substitution_is_rejected",
+  "authority_attempt_substitution_is_rejected",
+  "reload_round_substitution_and_replay_are_rejected",
+  "ambiguous_final_release_never_mints_provisioned_and_preserves_bytes",
+  "mismatched_release_and_terminal_round_receipts_only_reconcile_for_exit",
+  "bounded_counter_overflow_fails_without_unbound_authority",
+  "provisioning_authorities_are_move_only_and_debug_redacted",
 ];
 const keyAgentServiceLifecycleTestNames = [
   "every_startup_requirement_is_mandatory",
@@ -6040,6 +6228,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     withoutCfgTestItems(durable.fixture),
   ).trim();
   const durableCompact = compactRust(durable.production);
+  const durableFixtureCompact = compactRust(durable.fixture);
   const lifecycleCode = rustLexicalCode(lifecycleProduction);
   const lifecycleCompact = compactRust(lifecycleProduction);
   const serviceCode = rustLexicalCode(platformService);
@@ -6061,6 +6250,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "",
   );
   const privateDurableFunctionCounts = Object.freeze({
+    new: 5,
     as_bytes: 3,
     from_durable_bytes: 1,
     from_exclusive_acquisition: 1,
@@ -6106,20 +6296,28 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "**Current Phase 2B status: started, not passed.**",
     designPhaseTwoAStart,
   );
+  const designPhaseTwoCStart = designDocument.indexOf(
+    "**Current Phase 2C status: started, not passed.**",
+    designPhaseTwoBStart,
+  );
   const designPhaseThreeStart = designDocument.indexOf(
     "\n### Phase 3",
-    designPhaseTwoBStart,
+    designPhaseTwoCStart,
   );
   const phaseTwoADesign =
     designPhaseTwoAStart === -1 || designPhaseTwoBStart === -1
       ? ""
       : designDocument.slice(designPhaseTwoAStart, designPhaseTwoBStart);
   const phaseTwoBDesign =
-    designPhaseTwoBStart === -1 || designPhaseThreeStart === -1
+    designPhaseTwoBStart === -1 || designPhaseTwoCStart === -1
       ? ""
-      : designDocument.slice(designPhaseTwoBStart, designPhaseThreeStart);
+      : designDocument.slice(designPhaseTwoBStart, designPhaseTwoCStart);
   const normalizedPhaseTwoADesign = phaseTwoADesign.replace(/\s+/gu, " ");
   const normalizedPhaseTwoBDesign = phaseTwoBDesign.replace(/\s+/gu, " ");
+  const normalizedArchitectureDocument = architectureDocument.replace(
+    /\s+/gu,
+    " ",
+  );
   const lifecycleArchitectureRows = architectureDocument
     .split(/\r?\n/gu)
     .filter((line) => line.startsWith("| Windows service lifecycle model |"));
@@ -6155,7 +6353,14 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "`PreparedActiveTransition -> ActiveRunLease -> PreparedCleanTransition -> CleanCommittedWithWriter -> PendingFinalWriterRelease -> StoppedRunEvidence`",
     "same opaque backend/lease binding",
     "lifecycle-branded Active or Clean reload state",
+    "Each prepared commit carries a private one-shot phase from attempt through commit receipt and independent reread",
+    "Reload, normal release, and terminal-",
+    "retirement receipts are likewise one-shot",
+    "unresolved release against the exact writer epoch",
     "terminal-only writer-exit authority",
+    "Every consumed durable-outcome",
+    "validation failure retains a move-only, terminal-only writer-exit authority",
+    "A non-consuming request-validation, duplicate, or replay rejection cannot issue a second or replacement receipt",
     "supplied transition key must reauthenticate the exact held prior marker and checkpoint",
     "a key switch retains only terminal writer-exit authority",
     "Clean commit and readback occur while the writer remains held",
@@ -6182,6 +6387,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "domain-separated fixture HMAC",
     "`PreparedCleanTransition`, `CleanCommittedWithWriter`, final writer release, and `StoppedRunEvidence`",
     "Every commit, reread, reload, and release receipt is bound to the originating opaque backend and lease",
+    "Private one-shot phases enforce commit-attempt, commit-receipt, reread, reload-receipt, normal release-receipt, and terminal-retirement receipt order",
+    "exact writer-epoch latches block direct retry and writer reacquisition",
     "Active and Clean ambiguity use distinct move-only reload types",
     "Every Active or Clean preparation first reauthenticates the exact held prior marker/checkpoint under the supplied transition key",
     "a key switch retains only terminal writer-exit authority",
@@ -6197,6 +6404,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   let verifyObservation;
   let verifyMarker;
   let verifyCheckpoint;
+  let oneShotCommit;
+  let oneShotRelease;
+  let oneShotReload;
   let bindWriter;
   let prepareActive;
   let activeTransition;
@@ -6207,8 +6417,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   let cleanReload;
   let writerExit;
   let fixtureBoot;
+  let fixtureAcquireWriter;
+  let fixtureReloadActive;
+  let fixtureReloadClean;
   let fixtureCommitActive;
+  let fixtureRereadActive;
   let fixtureCommitClean;
+  let fixtureRereadClean;
   let fixtureRelease;
   let fixtureRetire;
   let startupObserve;
@@ -6245,6 +6460,18 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     );
     verifyMarker = rustFunctionBlock(durable.production, "verify_marker");
     verifyCheckpoint = rustFunctionBlock(durable.production, "verify_checkpoint");
+    oneShotCommit = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+OneShotCommitOperation\s*\{/u,
+    );
+    oneShotRelease = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+OneShotReleaseOperation\s*\{/u,
+    );
+    oneShotReload = rustLexicalItemBlock(
+      durable.production,
+      /\bimpl\s+OneShotReloadOperation\s*\{/u,
+    );
     bindWriter = rustFunctionBlock(durable.production, "bind_writer");
     prepareActive = rustFunctionBlock(durable.production, "prepare_active");
     activeTransition = rustLexicalItemBlock(
@@ -6273,8 +6500,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       /\bimpl\s+WriterExitPending\s*\{/u,
     );
     fixtureBoot = rustFunctionBlock(durable.fixture, "boot");
+    fixtureAcquireWriter = rustFunctionBlock(durable.fixture, "acquire_writer");
+    fixtureReloadActive = rustFunctionBlock(durable.fixture, "reload_active");
+    fixtureReloadClean = rustFunctionBlock(durable.fixture, "reload_clean");
     fixtureCommitActive = rustFunctionBlock(durable.fixture, "commit_active");
+    fixtureRereadActive = rustFunctionBlock(durable.fixture, "reread_active");
     fixtureCommitClean = rustFunctionBlock(durable.fixture, "commit_clean");
+    fixtureRereadClean = rustFunctionBlock(durable.fixture, "reread_clean");
     fixtureRelease = rustFunctionBlock(durable.fixture, "release_writer");
     fixtureRetire = rustFunctionBlock(
       durable.fixture,
@@ -6358,12 +6590,14 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     !platformLibCode.includes("lifecycle_core") &&
     JSON.stringify(directoryInventory) ===
       JSON.stringify([
+        { name: "durable_run_state", kind: "directory" },
         { name: "durable_run_state.rs", kind: "file" },
         { name: "lifecycle_core_tests.rs", kind: "file" },
         { name: "lifecycle_core.rs", kind: "file" },
       ]) &&
     JSON.stringify(durableUseInventory) ===
       JSON.stringify([
+        "usestd::cell::Cell;",
         "usestd::fmt;",
         "usestd::num::NonZeroU64;",
         "usehmac::{Hmac,Mac};",
@@ -6394,6 +6628,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     keyAgentServiceMoveOnlyEvidenceContract(
       durable.production,
       keyAgentServiceDurableEvidenceTypes,
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      durable.production,
+      keyAgentServiceDurableOperationEvidenceTypes,
     ) &&
     keyAgentServiceMoveOnlyEvidenceContract(
       lifecycleProduction,
@@ -6510,6 +6748,47 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "ifinstallation!=expected_installation",
       "if(generation.get()==1&&predecessor!=Commitment::ZERO)||(generation.get()>1&&predecessor==Commitment::ZERO)",
     ]) &&
+    hasOrderedCompactMarkers(oneShotCommit, [
+      "Self(Cell::new(CommitOperationPhase::Ready))",
+      "fnbegin_commit(&self)->Result<(),RecoveryRequired>",
+      "ifself.0.get()!=CommitOperationPhase::Ready",
+      "RecoveryRequired::OperationAttemptReused",
+      "self.0.set(CommitOperationPhase::CommitAttempted)",
+      "fnrecord_commit_receipt(&self)->Result<(),RecoveryRequired>",
+      "ifself.0.get()!=CommitOperationPhase::CommitAttempted",
+      "self.0.set(CommitOperationPhase::CommitReceiptIssued)",
+      "fnbegin_reread(&self)->Result<(),RecoveryRequired>",
+      "matchself.0.get()",
+      "CommitOperationPhase::CommitReceiptIssued",
+      "self.0.set(CommitOperationPhase::RereadIssued)",
+      "CommitOperationPhase::RereadIssued=>Err(RecoveryRequired::OperationAttemptReused)",
+      "CommitOperationPhase::Ready|CommitOperationPhase::CommitAttempted",
+      "Err(RecoveryRequired::OperationPhaseMismatch)",
+      "fnhas_exact_receipt_pair(&self)->bool",
+      "self.0.get()==CommitOperationPhase::RereadIssued",
+      "fnhas_unresolved_commit_attempt(&self)->bool",
+      "self.0.get()==CommitOperationPhase::CommitAttempted",
+    ]) &&
+    hasOrderedCompactMarkers(oneShotRelease, [
+      "Self(Cell::new(ReleaseOperationPhase::Ready))",
+      "fnbegin_release(&self)->Result<(),RecoveryRequired>",
+      "ifself.0.get()!=ReleaseOperationPhase::Ready",
+      "RecoveryRequired::OperationAttemptReused",
+      "self.0.set(ReleaseOperationPhase::Attempted)",
+      "fnrecord_release_receipt(&self)->Result<(),RecoveryRequired>",
+      "ifself.0.get()!=ReleaseOperationPhase::Attempted",
+      "self.0.set(ReleaseOperationPhase::ReceiptIssued)",
+      "fnhas_exact_receipt(&self)->bool",
+      "self.0.get()==ReleaseOperationPhase::ReceiptIssued",
+    ]) &&
+    hasOrderedCompactMarkers(oneShotReload, [
+      "Self(Cell::new(false))",
+      "fnrecord_reload_receipt(&self)->Result<(),RecoveryRequired>",
+      "ifself.0.replace(true)",
+      "RecoveryRequired::OperationAttemptReused",
+      "fnhas_exact_receipt(&self)->bool",
+      "self.0.get()",
+    ]) &&
     hasOrderedCompactMarkers(bindWriter, [
       "ifself.binding!=lease.binding",
       "RecoveryRequired::BackendBindingMismatch",
@@ -6536,6 +6815,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     hasOrderedCompactMarkers(activeTransition, [
       "committed_binding!=lease.binding||reread_binding!=lease.binding",
       "committed_epoch!=lease.epoch||reread_epoch!=lease.epoch",
+      "if!operation.has_exact_receipt_pair()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "committed_observation!=successor.bytes.observation()",
       "reread_observation!=successor.bytes.observation()",
       "Ok(ActiveRunLease",
@@ -6559,6 +6840,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     hasOrderedCompactMarkers(cleanTransition, [
       "committed_binding!=lease.binding||reread_binding!=lease.binding",
       "committed_epoch!=lease.epoch||reread_epoch!=lease.epoch",
+      "if!operation.has_exact_receipt_pair()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "committed_observation!=successor.bytes.observation()",
       "reread_observation!=successor.bytes.observation()",
       "Ok(CleanCommittedWithWriter",
@@ -6568,11 +6851,15 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "fncomplete(self,receipt:WriterLeaseReleaseReceipt,)->Result<StoppedRunEvidence,DurableFailureWithWriter>",
       "ifreceipt.binding!=lease.binding",
       "ifreceipt.installation!=lease.installation||receipt.epoch!=lease.epoch",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "Ok(StoppedRunEvidence{durable})",
     ]) &&
     hasOrderedCompactMarkers(activeReload, [
       "ifreceipt.binding!=lease.binding",
       "if!writer_observation_matches(receipt.writer,&lease)",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "verify_observation(&receipt.observed,lease.installation,key)",
       "ifdurable==successor",
       "ReloadedActiveRunState::Active",
@@ -6583,6 +6870,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     hasOrderedCompactMarkers(cleanReload, [
       "ifreceipt.binding!=lease.binding",
       "if!writer_observation_matches(receipt.writer,&lease)",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "verify_observation(&receipt.observed,lease.installation,key)",
       "ifdurable==successor",
       "Ok(CleanCommittedWithWriter{durable,lease})",
@@ -6591,13 +6880,30 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "classify_unknown_reload(&durable,&prior)",
     ]) &&
     hasOrderedCompactMarkers(writerExit, [
+      "constfnnew(lease:SingleWriterLease)->Self",
+      "operation:OneShotReleaseOperation::new()",
       "fncomplete(self,receipt:WriterExitReceipt,)->Result<RecoveryExitEvidence,DurableFailureWithWriter>",
+      "letSelf{lease,operation}=self",
       "ifreceipt.binding!=lease.binding",
       "ifreceipt.installation!=lease.installation||receipt.epoch!=lease.epoch",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
       "Ok(RecoveryExitEvidence",
     ]) &&
+    rustStructLiteralSites(durable.production, "WriterExitPending").length === 0 &&
+    (durableCode.match(/\bWriterExitPending\s*::\s*new\s*\(/gu) ?? [])
+      .length === 9 &&
     !/\b(?:BootEvidence|ActiveRunLease|PreparedCleanTransition|CleanCommittedWithWriter|StoppedRunEvidence)\b/u.test(
       rustLexicalCode(writerExit),
+    ) &&
+    durableFixtureCompact.includes(
+      "structFixtureCommitAmbiguity{kind:FixtureCommitKind,writer_epoch:NonZeroU64,provisioning_round:Option<NonZeroU64>,reload_allowed:bool,}",
+    ) &&
+    durableFixtureCompact.includes(
+      "constfnruntime(kind:FixtureCommitKind,writer:FixtureWriterRecord)->Self{Self{kind,writer_epoch:writer.epoch,provisioning_round:None,reload_allowed:true,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "constfnterminal_runtime(kind:FixtureCommitKind,writer:FixtureWriterRecord)->Self{Self{kind,writer_epoch:writer.epoch,provisioning_round:None,reload_allowed:false,}}",
     ) &&
     hasOrderedCompactMarkers(fixtureBoot, [
       "letobservation=self.reopen(key,installation)?",
@@ -6606,36 +6912,130 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "letlease=self.acquire_writer(installation)?",
       "Ok(BootEvidence",
     ]) &&
+    hasOrderedCompactMarkers(fixtureAcquireWriter, [
+      "ifself.held_writer.is_some()",
+      "ifself.release_reconciliation.is_some()",
+      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "self.held_writer=Some(FixtureWriterRecord::runtime(installation,epoch))",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureReloadActive, [
+      "pending:&ActiveReloadRequired",
+      "ifpending.lease.binding!=self.binding",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity!=Some(FixtureCommitAmbiguity::runtime(FixtureCommitKind::Active,expected,))",
+      "RecoveryRequired::CommitReloadRequired",
+      "pending.operation.record_reload_receipt()?",
+      "self.unresolved_commit_ambiguity=None",
+      "Ok(ActiveReloadReceipt",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureReloadClean, [
+      "pending:&CleanReloadRequired",
+      "ifpending.lease.binding!=self.binding",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity!=Some(FixtureCommitAmbiguity::runtime(FixtureCommitKind::Clean,expected,))",
+      "RecoveryRequired::CommitReloadRequired",
+      "pending.operation.record_reload_receipt()?",
+      "self.unresolved_commit_ambiguity=None",
+      "Ok(CleanReloadReceipt",
+    ]) &&
     hasOrderedCompactMarkers(fixtureCommitActive, [
       "iftransition.lease.binding!=self.binding",
-      "ifself.held_writer!=Some((transition.lease.installation,transition.lease.epoch))",
+      "letexpected=FixtureWriterRecord::runtime(transition.lease.installation,transition.lease.epoch)",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "transition.operation.begin_commit()?",
       "self.marker.as_ref()!=Some(transition.expected_marker_bytes())",
       "self.checkpoint.as_ref()!=Some(transition.expected_checkpoint_bytes())",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::terminal_runtime(FixtureCommitKind::Active,expected,))",
+      "fault==DurableRunStateCommitFault::CompareAndSwapConflict",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::terminal_runtime(FixtureCommitKind::Active,expected,))",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::runtime(FixtureCommitKind::Active,expected,))",
+      "transition.operation.record_commit_receipt()?",
       "self.binding",
+    ]) &&
+    (compactRust(fixtureCommitActive).match(
+      /FixtureCommitAmbiguity::terminal_runtime\(FixtureCommitKind::Active,expected,\)/gu,
+    ) ?? []).length === 2 &&
+    (compactRust(fixtureCommitActive).match(
+      /FixtureCommitAmbiguity::runtime\(FixtureCommitKind::Active,expected,\)/gu,
+    ) ?? []).length === 3 &&
+    hasOrderedCompactMarkers(fixtureRereadActive, [
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "transition.operation.begin_reread()?",
+      "letfault=self.take_reread_fault()",
+      "RereadActiveMarker::from_durable_observation",
     ]) &&
     hasOrderedCompactMarkers(fixtureCommitClean, [
       "iftransition.lease.binding!=self.binding",
-      "ifself.held_writer!=Some((transition.lease.installation,transition.lease.epoch))",
+      "letexpected=FixtureWriterRecord::runtime(transition.lease.installation,transition.lease.epoch)",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "transition.operation.begin_commit()?",
       "self.marker.as_ref()!=Some(transition.expected_marker_bytes())",
       "self.checkpoint.as_ref()!=Some(transition.expected_checkpoint_bytes())",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::terminal_runtime(FixtureCommitKind::Clean,expected,))",
+      "fault==DurableRunStateCommitFault::CompareAndSwapConflict",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::terminal_runtime(FixtureCommitKind::Clean,expected,))",
+      "self.unresolved_commit_ambiguity=Some(FixtureCommitAmbiguity::runtime(FixtureCommitKind::Clean,expected,))",
+      "transition.operation.record_commit_receipt()?",
       "self.binding",
+    ]) &&
+    (compactRust(fixtureCommitClean).match(
+      /FixtureCommitAmbiguity::terminal_runtime\(FixtureCommitKind::Clean,expected,\)/gu,
+    ) ?? []).length === 2 &&
+    (compactRust(fixtureCommitClean).match(
+      /FixtureCommitAmbiguity::runtime\(FixtureCommitKind::Clean,expected,\)/gu,
+    ) ?? []).length === 3 &&
+    hasOrderedCompactMarkers(fixtureRereadClean, [
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "transition.operation.begin_reread()?",
+      "letfault=self.take_reread_fault()",
+      "RereadCleanMarker::from_durable_observation",
     ]) &&
     hasOrderedCompactMarkers(fixtureRelease, [
       "pending:&PendingFinalWriterRelease",
       "ifpending.lease.binding!=self.binding",
+      "letexpected=FixtureWriterRecord::runtime(pending.lease.installation,pending.lease.epoch)",
+      "ifself.release_reconciliation.is_some()",
       "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "pending.operation.begin_release()?",
+      "fault==DurableRunStateReleaseFault::AmbiguousBeforeRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
       "self.held_writer=None",
       "self.last_released_writer=Some(expected)",
+      "fault==DurableRunStateReleaseFault::AmbiguousAfterRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
+      "fault==DurableRunStateReleaseFault::MismatchedReceiptAfterRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
+      "pending.operation.record_release_receipt()?",
       "WriterLeaseReleaseReceipt::from_release_readback",
       "self.binding",
     ]) &&
+    (compactRust(fixtureRelease).match(
+      /self\.release_reconciliation=Some\(expected\.epoch\)/gu,
+    ) ?? []).length === 3 &&
     hasOrderedCompactMarkers(fixtureRetire, [
       "pending:&WriterExitPending",
       "ifpending.lease.binding!=self.binding",
-      "Some(held)ifheld==expected",
+      "unresolved_commit_ambiguity",
+      "ambiguity.writer_epoch!=expected.epoch",
+      "release_reconciliation",
+      "reconciliation!=expected.epoch",
+      "letwriter_was_held=matchself.held_writer",
+      "Some(held)ifheld==expected=>true",
+      "Noneifself.last_released_writer==Some(expected)=>false",
+      "pending.operation.begin_release()?",
+      "ifwriter_was_held",
       "self.held_writer=None",
       "self.last_released_writer=Some(expected)",
-      "Noneifself.last_released_writer==Some(expected)",
+      "self.unresolved_commit_ambiguity=None",
+      "self.release_reconciliation=None",
+      "pending.operation.record_release_receipt()?",
       "WriterExitReceipt",
       "binding:self.binding",
     ]) &&
@@ -6814,7 +7214,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     ) === 1 &&
     designPhaseTwoAStart !== -1 &&
     designPhaseTwoBStart > designPhaseTwoAStart &&
-    designPhaseThreeStart > designPhaseTwoBStart &&
+    designPhaseTwoCStart > designPhaseTwoBStart &&
+    designPhaseThreeStart > designPhaseTwoCStart &&
     phaseTwoADesignMarkers.every((marker) =>
       normalizedPhaseTwoADesign.includes(marker),
     ) &&
@@ -6831,6 +7232,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     durableArchitectureMarkers.every((marker) =>
       normalizedDurableArchitecture.includes(marker),
     ) &&
+    normalizedArchitectureDocument.includes(
+      "a terminal failure means a consumed durable outcome or receipt-validation failure",
+    ) &&
+    normalizedArchitectureDocument.includes(
+      "Non-consuming request-validation, duplicate, and replay rejections cannot issue a second or replacement receipt; they do not invalidate an already-issued exact receipt",
+    ) &&
+    !normalizedDurableArchitecture.includes("Every post-acquisition failure") &&
     !normalizedLifecycleArchitecture.includes(
       "Phase 1 and Phase 2 exit gates have passed",
     ) &&
@@ -6841,15 +7249,704 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       JSON.stringify(keyAgentServiceLifecycleTestNames)
   );
 };
+const keyAgentServicePhaseTwoCPinContract = ({
+  provisioningSource,
+  provisioningTests,
+}) => {
+  const provisioningProduction = withoutCfgTestItems(provisioningSource);
+  return (
+    normalizedSourceSha256(provisioningSource) ===
+      approvedKeyAgentServiceProvisioningSourceSha256 &&
+    normalizedSourceSha256(provisioningProduction) ===
+      approvedKeyAgentServiceProvisioningProductionSha256 &&
+    normalizedSourceSha256(provisioningTests) ===
+      approvedKeyAgentServiceProvisioningTestsSha256
+  );
+};
+const keyAgentServicePhaseTwoCSemanticContract = ({
+  main,
+  platformService,
+  platformLib,
+  durableSource,
+  provisioningSource,
+  provisioningTests,
+  lifecycleSource,
+  directoryInventory,
+  provisioningDirectoryInventory,
+  designDocument,
+  architectureDocument,
+}) => {
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+
+  const provisioningProduction = withoutCfgTestItems(provisioningSource);
+  const provisioningCode = rustLexicalCode(provisioningProduction);
+  const provisioningCompact = compactRust(provisioningProduction);
+  const provisioningUseInventory = rustUseItems(provisioningProduction).map(
+    (item) => compactRust(item.source),
+  );
+  const provisioningVisibleTypes = [
+    ...provisioningCode.matchAll(
+      /\bpub\s*\(\s*(?:in\s+crate\s*::\s*key_agent_service|super)\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const provisioningProductionTypes = [
+    ...provisioningCode.matchAll(
+      /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const provisioningVisibleFunctions = [
+    ...provisioningCode.matchAll(
+      /\bpub\s*\(\s*(?:in\s+crate\s*::\s*key_agent_service|super)\s*\)\s+(?:const\s+)?fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const provisioningProductionFunctions = [
+    ...provisioningCode.matchAll(
+      /\bfn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const provisioningNonRestrictedVisibility = provisioningCode.replace(
+    /\bpub\s*\(\s*(?:in\s+crate\s*::\s*key_agent_service|super)\s*\)/gu,
+    "",
+  );
+  const provisioningPrivateFunctionCounts = Object.freeze({
+    from_authority_and_lease: 1,
+    new: 2,
+    terminal_round: 1,
+  });
+  const provisioningPrivateFunctionsRemainPrivate = Object.entries(
+    provisioningPrivateFunctionCounts,
+  ).every(([name, expected]) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    return (
+      (provisioningCode.match(new RegExp(`\\bfn\\s+${escaped}\\b`, "gu")) ?? [])
+        .length === expected &&
+      !new RegExp(
+        `\\bpub\\s*\\([^)]*\\)\\s+(?:const\\s+)?fn\\s+${escaped}\\b`,
+        "u",
+      ).test(provisioningCode)
+    );
+  });
+  const durableFixtureCompact = compactRust(durable.fixture);
+  const provisioningConsumerCode = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      durable.production.replace(/\bmod\s+provisioning\s*;/u, ""),
+      lifecycleProduction,
+    ].join("\n"),
+  );
+  const provisioningTypeNames = new RegExp(
+    `\\b(?:${keyAgentServiceProvisioningVisibleTypes.join("|")})\\b`,
+    "u",
+  );
+  const productionFreshAuthorityConstructionSites = [
+    ...rustStructLiteralSites(
+      provisioningProduction,
+      "FreshInstallProvisioningAuthority",
+    ),
+    ...rustStructLiteralSites(provisioningProduction, "ProvisioningWriterLease"),
+  ];
+  const forbiddenAuthority =
+    /\b(?:approve_and_sign|RawPrivateKey|SignedArtifact|SigningIntent|PreparedAuthorization|COMPILED_PARENT_POLICY|COMPILED_RELEASE_POLICY|key_agent_service_rpc|key_agent_service_launch|approval_ui|secret_input)\b/u;
+  const forbiddenAdapter =
+    /\b(?:windows|winapi|tokio|mio|std::(?:env|fs|io|net|process|sync|thread))\s*::|\b(?:OpenSCManagerW|CreateServiceW|StartServiceCtrlDispatcherW|CreateFileW|RegOpenKeyExW|FwpmEngineOpen|CreateMutexW|NCryptOpenStorageProvider|NCryptCreatePersistedKey|TPM|HANDLE|SC_HANDLE|SOCKET|TcpStream|TcpListener|UdpSocket|reqwest|ureq|hyper)\b|\bextern\s+(?:crate|"C"|"system")|\b(?:include|env|option_env)!/u;
+  const rawProvisioningSurface =
+    /\bpub\s*\([^)]*\)\s+(?:const\s+)?fn\s+(?:from_authority_and_lease|new|as_bytes|from_durable_bytes|from_exclusive_acquisition|expected_marker_bytes|expected_checkpoint_bytes|candidate_marker_bytes|candidate_checkpoint_bytes|from_durable_observation|from_release_readback)\b/u;
+  const forbiddenProvisioningConversion =
+    /\bimpl(?:\s*<[^>{}]*>)?\s+(?:From|Into|TryFrom|TryInto)\b|\btype\s+ProvisioningWriterLease\s*=|\btype\s+SingleWriterLease\s*=/u;
+
+  const designPhaseTwoCStart = designDocument.indexOf(
+    "**Current Phase 2C status: started, not passed.**",
+  );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoCStart,
+  );
+  const phaseTwoCDesign =
+    designPhaseTwoCStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoCStart, designPhaseThreeStart);
+  const normalizedPhaseTwoCDesign = phaseTwoCDesign.replace(/\s+/gu, " ");
+  const normalizedArchitectureDocument = architectureDocument.replace(
+    /\s+/gu,
+    " ",
+  );
+  const provisioningArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service durable provisioning |"),
+    );
+  const normalizedProvisioningArchitecture = (
+    provisioningArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const phaseTwoCDesignMarkers = [
+    "production-compiled provisioning typestate",
+    "fixture-only, move-only fresh-install authority",
+    "bound to one installation, backend, provisioning attempt, and exact fixture authentication key",
+    "acquire a distinct provisioning writer",
+    "both the run marker and high-water checkpoint as missing",
+    "`UnprovisionedWithWriter`",
+    "canonical Clean generation one with a zero predecessor",
+    "exact absent/absent compare-and-swap",
+    "distinct commit and reread receipts",
+    "same backend, installation, provisioning writer, attempt, and ambiguity round",
+    "fresh backend-issued round before retry",
+    "one-sided, malformed, pre-existing, wrong-key, cross-backend, stale, or drifting state is terminal",
+    "Every consumed durable-outcome or receipt-validation failure retains only provisioning-writer exit authority",
+    "non-consuming request-validation, duplicate, or replay rejection cannot issue a second or replacement receipt and does not invalidate an already-issued exact receipt",
+    "same private one-shot commit, reread, reload, normal-release, and terminal-",
+    "retirement phases apply to provisioning",
+    "preserves both the prior backend round and the candidate fresh round",
+    "terminal retirement uses the last round actually issued by the backend",
+    "Exact writer-epoch latches prevent same-round commit or release retry and block both provisioning and runtime writer reacquisition",
+    "`ProvisionedRunState` has no conversion to `BootEvidence` or a runtime writer",
+    "separately reopen and authenticate",
+    "never auto-initializes storage",
+    "no elevated installer provenance or lease",
+    "production constructor, or production caller",
+    "Phase 1 and Phase 2 remain **STOP-SHIP**",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  const provisioningArchitectureMarkers = [
+    "production-compiled, module-private, zero-runtime-root Phase 2C typestate",
+    "fixture-only move-only fresh-install authority",
+    "distinct provisioning writer",
+    "independent exact Missing/Missing observation",
+    "runtime and provisioning writers are mutually exclusive and not convertible",
+    "canonical Clean generation one with a zero predecessor",
+    "Exact absent/absent CAS",
+    "separate commit and reread receipts",
+    "backend/installation/writer/attempt/round binding",
+    "shared private one-shot phases reject commit, reread, reload, normal release, and terminal-retirement receipt reuse",
+    "exact writer-epoch latches block same-round retry and runtime or provisioning reacquisition",
+    "ambiguity retains the prior and candidate rounds so exit reconciles only the last round actually issued by the backend",
+    "fresh backend-issued round over an exact still-empty pair",
+    "exact full candidate may recover only with the writer obligation retained",
+    "one-sided, malformed, stale, wrong-key, cross-backend, or drifting evidence is terminal",
+    "`ProvisionedRunState` cannot become `BootEvidence`",
+    "ordinary missing-state boot never auto-initializes or repairs",
+    "no production fresh-install authority or caller",
+    "elevated installer provenance/lease or journal",
+    "TPM/non-rollbackable anchor",
+    "Phase 1 and Phase 2 remain **STOP-SHIP**",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+
+  let authorityValidation;
+  let operationValidation;
+  let exactEmptyObservation;
+  let classifyInitialObservation;
+  let unprovisioned;
+  let preparedTransition;
+  let reloadRequired;
+  let committedWithWriter;
+  let pendingRelease;
+  let provisionedState;
+  let provisioningFailure;
+  let provisioningWriterExit;
+  let fixtureEmpty;
+  let fixtureBegin;
+  let fixtureExpectedWriter;
+  let fixtureCommit;
+  let fixtureReread;
+  let fixtureReload;
+  let fixtureRelease;
+  let fixtureRetire;
+  let fixtureRuntimeAcquire;
+  let fixtureBoot;
+  try {
+    authorityValidation = rustFunctionBlock(
+      provisioningProduction,
+      "validate_authority_and_lease",
+    );
+    operationValidation = rustFunctionBlock(
+      provisioningProduction,
+      "validate_operation_binding",
+    );
+    exactEmptyObservation = rustFunctionBlock(
+      provisioningProduction,
+      "observation_is_exactly_empty",
+    );
+    classifyInitialObservation = rustFunctionBlock(
+      provisioningProduction,
+      "classify_initial_observation",
+    );
+    unprovisioned = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+UnprovisionedWithWriter\s*<'key>\s*\{/u,
+    );
+    preparedTransition = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+PreparedInitialCleanTransition\s*<'key>\s*\{/u,
+    );
+    reloadRequired = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+InitialCleanReloadRequired\s*<'key>\s*\{/u,
+    );
+    committedWithWriter = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+InitialCleanCommittedWithWriter\s*<'key>\s*\{/u,
+    );
+    pendingRelease = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+PendingProvisioningWriterRelease\s*<'key>\s*\{/u,
+    );
+    provisionedState = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s+ProvisionedRunState\s*\{/u,
+    );
+    provisioningFailure = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+ProvisioningFailureWithWriter\s*<'key>\s*\{/u,
+    );
+    provisioningWriterExit = rustLexicalItemBlock(
+      provisioningProduction,
+      /\bimpl\s*<'key>\s+ProvisioningWriterExitPending\s*<'key>\s*\{/u,
+    );
+    fixtureEmpty = rustFunctionBlock(provisioningSource, "empty");
+    fixtureBegin = rustFunctionBlock(
+      provisioningSource,
+      "begin_initial_provisioning",
+    );
+    fixtureExpectedWriter = rustFunctionBlock(
+      provisioningSource,
+      "expected_provisioning_writer",
+    );
+    fixtureCommit = rustFunctionBlock(
+      provisioningSource,
+      "commit_initial_clean",
+    );
+    fixtureReread = rustFunctionBlock(
+      provisioningSource,
+      "reread_initial_clean",
+    );
+    fixtureReload = rustFunctionBlock(
+      provisioningSource,
+      "reload_initial_clean",
+    );
+    fixtureRelease = rustFunctionBlock(
+      provisioningSource,
+      "release_provisioning_writer",
+    );
+    fixtureRetire = rustFunctionBlock(
+      provisioningSource,
+      "retire_provisioning_writer_for_exit",
+    );
+    fixtureRuntimeAcquire = rustFunctionBlock(durable.fixture, "acquire_writer");
+    fixtureBoot = rustFunctionBlock(durable.fixture, "boot");
+  } catch {
+    return false;
+  }
+
+  return (
+    (rustLexicalCode(durable.production).match(/\bmod\s+provisioning\s*;/gu) ?? [])
+      .length === 1 &&
+    /\bmod\s+provisioning\s*;/u.test(rustLexicalCode(durable.production)) &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+provisioning\b/u.test(
+      rustLexicalCode(durable.production),
+    ) &&
+    /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*#\s*\[\s*path\s*=\s*"durable_run_state\/provisioning_tests\.rs"\s*\]\s*mod\s+provisioning_tests\s*;/u.test(
+      durable.fixture,
+    ) &&
+    JSON.stringify(directoryInventory) ===
+      JSON.stringify([
+        { name: "durable_run_state", kind: "directory" },
+        { name: "durable_run_state.rs", kind: "file" },
+        { name: "lifecycle_core_tests.rs", kind: "file" },
+        { name: "lifecycle_core.rs", kind: "file" },
+      ]) &&
+    JSON.stringify(provisioningDirectoryInventory) ===
+      JSON.stringify([
+        { name: "provisioning_tests.rs", kind: "file" },
+        { name: "provisioning.rs", kind: "file" },
+      ]) &&
+    JSON.stringify(provisioningUseInventory) ===
+      JSON.stringify([
+        "usestd::fmt;",
+        "usestd::num::NonZeroU64;",
+        "usesuper::{BackendBinding,Commitment,DurableSnapshot,FixtureRunStateAuthenticationKey,InstallationIdentity,OneShotCommitOperation,OneShotReleaseOperation,OneShotReloadOperation,RecoveryRequired,RunMarkerState,SnapshotObservation,build_snapshot,verify_observation,};",
+      ]) &&
+    JSON.stringify(provisioningVisibleTypes) ===
+      JSON.stringify(keyAgentServiceProvisioningVisibleTypes) &&
+    JSON.stringify(provisioningProductionTypes) ===
+      JSON.stringify(keyAgentServiceProvisioningProductionTypes) &&
+    JSON.stringify(provisioningVisibleFunctions) ===
+      JSON.stringify(keyAgentServiceProvisioningVisibleFunctions) &&
+    JSON.stringify(provisioningProductionFunctions) ===
+      JSON.stringify(keyAgentServiceProvisioningProductionFunctions) &&
+    !/\bpub\b/u.test(provisioningNonRestrictedVisibility) &&
+    provisioningPrivateFunctionsRemainPrivate &&
+    !rawProvisioningSurface.test(provisioningCode) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      provisioningProduction,
+      keyAgentServiceProvisioningEvidenceTypes,
+    ) &&
+    !forbiddenProvisioningConversion.test(provisioningCode) &&
+    rustUnsafeKeywordCount(provisioningProduction) === 0 &&
+    !forbiddenAuthority.test(provisioningCode) &&
+    !forbiddenAdapter.test(provisioningCode) &&
+    !provisioningTypeNames.test(provisioningConsumerCode) &&
+    productionFreshAuthorityConstructionSites.length === 0 &&
+    !/\b(?:SingleWriterLease|BootEvidence)\b/u.test(provisioningCode) &&
+    provisioningCompact.includes(
+      "structProvisioningOperationBinding{installation:InstallationIdentity,writer_epoch:NonZeroU64,backend:BackendBinding,authority_attempt:NonZeroU64,reload_round:NonZeroU64,}",
+    ) &&
+    hasOrderedCompactMarkers(authorityValidation, [
+      "ifauthority.binding!=lease.binding",
+      "RecoveryRequired::BackendBindingMismatch",
+      "ifauthority.installation!=lease.installation",
+      "RecoveryRequired::InstallationIdentityMismatch",
+      "ifauthority.attempt!=lease.attempt",
+      "RecoveryRequired::ProvisioningAttemptMismatch",
+    ]) &&
+    hasOrderedCompactMarkers(operationValidation, [
+      "validate_authority_and_lease(authority,lease)?",
+      "ifobserved.backend!=authority.binding",
+      "ifobserved.installation!=authority.installation",
+      "ifobserved.writer_epoch!=lease.epoch",
+      "ifobserved.authority_attempt!=authority.attempt",
+      "ifobserved.reload_round!=reload_round",
+    ]) &&
+    compactRust(exactEmptyObservation).includes(
+      "matches!((observed.marker,observed.checkpoint),(super::FixedObservation::Missing,super::FixedObservation::Missing))",
+    ) &&
+    hasOrderedCompactMarkers(classifyInitialObservation, [
+      "(super::FixedObservation::Malformed,_)=>RecoveryRequired::MalformedRunMarker",
+      "(_,super::FixedObservation::Malformed)=>RecoveryRequired::MalformedHighWaterCheckpoint",
+      "_=>RecoveryRequired::InitialProvisioningStateNotEmpty",
+    ]) &&
+    durableFixtureCompact.includes(
+      "enumFixtureWriterRole{Runtime,Provisioning,}",
+    ) &&
+    durableFixtureCompact.includes(
+      "structFixtureWriterRecord{role:FixtureWriterRole,installation:InstallationIdentity,epoch:NonZeroU64,provisioning_attempt:Option<NonZeroU64>,}",
+    ) &&
+    durableFixtureCompact.includes(
+      "structFixtureCommitAmbiguity{kind:FixtureCommitKind,writer_epoch:NonZeroU64,provisioning_round:Option<NonZeroU64>,reload_allowed:bool,}",
+    ) &&
+    durableFixtureCompact.includes(
+      "constfnruntime(kind:FixtureCommitKind,writer:FixtureWriterRecord)->Self{Self{kind,writer_epoch:writer.epoch,provisioning_round:None,reload_allowed:true,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "constfnterminal_runtime(kind:FixtureCommitKind,writer:FixtureWriterRecord)->Self{Self{kind,writer_epoch:writer.epoch,provisioning_round:None,reload_allowed:false,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "pub(super)constfnprovisioning(writer:FixtureWriterRecord,round:NonZeroU64)->Self{Self{kind:FixtureCommitKind::InitialClean,writer_epoch:writer.epoch,provisioning_round:Some(round),reload_allowed:true,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "pub(super)constfnterminal_provisioning(writer:FixtureWriterRecord,round:NonZeroU64,)->Self{Self{kind:FixtureCommitKind::InitialClean,writer_epoch:writer.epoch,provisioning_round:Some(round),reload_allowed:false,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "constfnruntime(installation:InstallationIdentity,epoch:NonZeroU64)->Self{Self{role:FixtureWriterRole::Runtime,installation,epoch,provisioning_attempt:None,}}",
+    ) &&
+    durableFixtureCompact.includes(
+      "pub(super)constfnprovisioning(installation:InstallationIdentity,epoch:NonZeroU64,attempt:NonZeroU64,)->Self{Self{role:FixtureWriterRole::Provisioning,installation,epoch,provisioning_attempt:Some(attempt),}}",
+    ) &&
+    durableFixtureCompact.includes("held_writer:Option<FixtureWriterRecord>") &&
+    hasOrderedCompactMarkers(fixtureRuntimeAcquire, [
+      "ifself.held_writer.is_some()",
+      "ifself.release_reconciliation.is_some()",
+      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "self.held_writer=Some(FixtureWriterRecord::runtime(installation,epoch))",
+      "SingleWriterLease::from_exclusive_acquisition",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureEmpty, [
+      "marker:None",
+      "checkpoint:None",
+      "held_writer:None",
+      "last_provisioning_attempt:0",
+      "provisioning_reload_round:0",
+      "unresolved_commit_ambiguity:None",
+      "release_reconciliation:None",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureBegin, [
+      "ifinstallation!=self.installation",
+      "ifself.held_writer.is_some()",
+      "ifself.release_reconciliation.is_some()",
+      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "last_writer_epoch",
+      "checked_add(1)",
+      "last_provisioning_attempt",
+      "checked_add(1)",
+      "self.last_writer_epoch=epoch.get()",
+      "self.last_provisioning_attempt=attempt.get()",
+      "self.provisioning_reload_round=NonZeroU64::MIN.get()",
+      "self.held_writer=Some(FixtureWriterRecord::provisioning",
+      "letauthority=FreshInstallProvisioningAuthority",
+      "letlease=ProvisioningWriterLease",
+      "letobserved=SnapshotObservation::capture(self.marker_bytes(),self.checkpoint_bytes())",
+      "if!observation_is_exactly_empty(&observed)",
+      "InitialProvisioningStartFailure::WithWriter",
+      "NonZeroU64::MIN",
+      "Ok(UnprovisionedWithWriter",
+      "reload_round:NonZeroU64::MIN",
+    ]) &&
+    hasOrderedCompactMarkers(unprovisioned, [
+      "validate_authority_and_lease(&authority,&lease)",
+      "build_snapshot(",
+      "RunMarkerState::Clean",
+      "NonZeroU64::MIN",
+      "authority.installation",
+      "Commitment::ZERO",
+      "authority.key",
+      "Ok(PreparedInitialCleanTransition",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureExpectedWriter, [
+      "validate_authority_and_lease(&transition.authority,&transition.lease)?",
+      "iftransition.authority.binding!=self.binding",
+      "iftransition.reload_round.get()!=self.provisioning_reload_round",
+      "Ok(FixtureWriterRecord::provisioning",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureCommit, [
+      "letexpected=self.expected_provisioning_writer(transition)?",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "transition.operation.begin_commit()?",
+      "ifself.marker.is_some()||self.checkpoint.is_some()",
+      "FixtureCommitAmbiguity::terminal_provisioning(expected,transition.reload_round,)",
+      "RecoveryRequired::CompareAndSwapConflict",
+      "fault==DurableRunStateCommitFault::CompareAndSwapConflict",
+      "FixtureCommitAmbiguity::terminal_provisioning(expected,transition.reload_round,)",
+      "FixtureCommitAmbiguity::provisioning(expected,transition.reload_round,)",
+      "self.marker=Some(transition.candidate.bytes.marker)",
+      "self.checkpoint=Some(transition.candidate.bytes.checkpoint)",
+      "transition.operation.record_commit_receipt()?",
+      "CommittedInitialCleanMarker",
+      "ProvisioningOperationBinding::from_authority_and_lease",
+    ]) &&
+    (compactRust(fixtureCommit).match(
+      /FixtureCommitAmbiguity::terminal_provisioning\(expected,transition\.reload_round,\)/gu,
+    ) ?? []).length === 2 &&
+    (compactRust(fixtureCommit).match(
+      /FixtureCommitAmbiguity::provisioning\(expected,transition\.reload_round,\)/gu,
+    ) ?? []).length === 3 &&
+    hasOrderedCompactMarkers(fixtureReread, [
+      "letexpected=self.expected_provisioning_writer(transition)?",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "transition.operation.begin_reread()?",
+      "letfault=self.take_reread_fault()",
+      "RereadInitialCleanMarker",
+      "SnapshotObservation::capture(marker,checkpoint)",
+      "ProvisioningOperationBinding::from_authority_and_lease",
+    ]) &&
+    hasOrderedCompactMarkers(preparedTransition, [
+      "committed:CommittedInitialCleanMarker",
+      "reread:RereadInitialCleanMarker",
+      "validate_operation_binding(committed.proof",
+      "validate_operation_binding(reread.proof",
+      "if!operation.has_exact_receipt_pair()",
+      "RecoveryRequired::OperationPhaseMismatch",
+      "ifcommitted.observed!=candidate.bytes.observation()",
+      "if reread.observed!=candidate.bytes.observation()".replace(" ", ""),
+      "verify_observation(&reread.observed,authority.installation,authority.key)",
+      "ifauthenticated!=candidate",
+      "Ok(InitialCleanCommittedWithWriter",
+      "fncommit_ambiguous(self,)->Result<InitialCleanReloadRequired<'key>,ProvisioningFailureWithWriter<'key>>",
+      "if!operation.has_unresolved_commit_attempt()",
+      "RecoveryRequired::OperationPhaseMismatch",
+      "checked_add(1)",
+      "InitialCleanReloadRequired",
+      "prior_round:reload_round",
+      "reload_round:next_round",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureReload, [
+      "validate_authority_and_lease(&pending.authority,&pending.lease)?",
+      "ifpending.authority.binding!=self.binding",
+      "ifself.held_writer!=Some(expected_writer)",
+      "ifpending.operation.has_exact_receipt()",
+      "RecoveryRequired::OperationAttemptReused",
+      "letcurrent_round=NonZeroU64::new(self.provisioning_reload_round)",
+      "ifpending.prior_round!=current_round",
+      "ifself.unresolved_commit_ambiguity!=Some(FixtureCommitAmbiguity::provisioning(expected_writer,current_round,))",
+      "RecoveryRequired::CommitReloadRequired",
+      "provisioning_reload_round",
+      "checked_add(1)",
+      "ifpending.reload_round!=next_round",
+      "pending.operation.record_reload_receipt()?",
+      "self.provisioning_reload_round=next_round.get()",
+      "InitialCleanReloadReceipt",
+      "writer:ProvisioningWriterObservation::Held",
+      "next_round",
+      "self.unresolved_commit_ambiguity=None",
+    ]) &&
+    hasOrderedCompactMarkers(reloadRequired, [
+      "prior_round,reload_round,operation",
+      "letterminal_round=ifoperation.has_exact_receipt(){reload_round}else{prior_round}",
+      "validate_operation_binding(receipt.proof,&authority,&lease,reload_round)",
+      "ifreceipt.writer!=expected_writer",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
+      "ifobservation_is_exactly_empty(&receipt.observed)",
+      "ReloadedInitialCleanState::Retry",
+      "reload_round",
+      "ifreceipt.observed==candidate.bytes.observation()",
+      "verify_observation(&receipt.observed,authority.installation,authority.key",
+      "ifauthenticated!=candidate",
+      "ReloadedInitialCleanState::Committed",
+      "InitialCleanCommittedWithWriter",
+      "classify_initial_observation(&receipt.observed)",
+      "fnterminal_round(&self)->NonZeroU64",
+      "ifself.operation.has_exact_receipt(){self.reload_round}else{self.prior_round}",
+      "letterminal_round=self.terminal_round()",
+      "ProvisioningWriterExitPending::new(self.authority,self.lease,terminal_round)",
+    ]) &&
+    hasOrderedCompactMarkers(committedWithWriter, [
+      "fnprepare_writer_release(self,)->PendingProvisioningWriterRelease",
+      "durable:self.durable",
+      "authority:self.authority",
+      "lease:self.lease",
+      "reload_round:self.reload_round",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureRelease, [
+      "validate_authority_and_lease(&pending.authority,&pending.lease)?",
+      "ifpending.authority.binding!=self.binding",
+      "ifpending.reload_round.get()!=self.provisioning_reload_round",
+      "ifself.release_reconciliation.is_some()",
+      "RecoveryRequired::WriterReleaseReconciliationRequired",
+      "ifself.held_writer!=Some(expected)",
+      "ifself.unresolved_commit_ambiguity.is_some()",
+      "RecoveryRequired::CommitReloadRequired",
+      "pending.operation.begin_release()?",
+      "fault==DurableRunStateReleaseFault::AmbiguousBeforeRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
+      "self.held_writer=None",
+      "self.last_released_writer=Some(expected)",
+      "fault==DurableRunStateReleaseFault::AmbiguousAfterRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
+      "fault==DurableRunStateReleaseFault::MismatchedReceiptAfterRelease",
+      "self.release_reconciliation=Some(expected.epoch)",
+      "pending.operation.record_release_receipt()?",
+      "ProvisioningWriterReleaseReceipt",
+      "backend:self.binding",
+      "reload_round:pending.reload_round",
+    ]) &&
+    (compactRust(fixtureRelease).match(
+      /self\.release_reconciliation=Some\(expected\.epoch\)/gu,
+    ) ?? []).length === 3 &&
+    hasOrderedCompactMarkers(pendingRelease, [
+      "fncomplete(self,receipt:ProvisioningWriterReleaseReceipt,)->Result<ProvisionedRunState,ProvisioningFailureWithWriter<'key>>",
+      "validate_operation_binding(receipt.proof,&authority,&lease,reload_round)",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
+      "Ok(ProvisionedRunState{durable})",
+    ]) &&
+    !/\b(?:BootEvidence|SingleWriterLease)\b/u.test(
+      rustLexicalCode(`${pendingRelease}\n${provisionedState}`),
+    ) &&
+    hasOrderedCompactMarkers(provisioningFailure, [
+      "exit:ProvisioningWriterExitPending",
+      "fninto_writer_exit(self)->ProvisioningWriterExitPending<'key>",
+      "self.exit",
+    ]) &&
+    hasOrderedCompactMarkers(fixtureRetire, [
+      "validate_authority_and_lease(&pending.authority,&pending.lease)?",
+      "ifpending.authority.binding!=self.binding",
+      "unresolved_commit_ambiguity",
+      "ambiguity.writer_epoch!=expected.epoch",
+      "release_reconciliation",
+      "reconciliation!=expected.epoch",
+      "ifletSome(ambiguity)=self.unresolved_commit_ambiguity",
+      "letcurrent_round=ambiguity.provisioning_round",
+      "ifpending.reload_round!=current_round",
+      "elseifpending.reload_round.get()!=self.provisioning_reload_round",
+      "letwriter_was_held=matchself.held_writer",
+      "Some(held)ifheld==expected=>true",
+      "Noneifself.last_released_writer==Some(expected)=>false",
+      "pending.operation.begin_release()?",
+      "ifwriter_was_held",
+      "self.held_writer=None",
+      "self.last_released_writer=Some(expected)",
+      "self.unresolved_commit_ambiguity=None",
+      "self.release_reconciliation=None",
+      "pending.operation.record_release_receipt()?",
+      "ProvisioningWriterExitReceipt",
+      "reload_round",
+    ]) &&
+    hasOrderedCompactMarkers(provisioningWriterExit, [
+      "constfnnew(authority:FreshInstallProvisioningAuthority<'key>,lease:ProvisioningWriterLease,reload_round:NonZeroU64,)->Self",
+      "operation:OneShotReleaseOperation::new()",
+      "receipt:ProvisioningWriterExitReceipt",
+      "letSelf{authority,lease,reload_round,operation,}=self",
+      "validate_operation_binding(receipt.proof,&authority,&lease,reload_round)",
+      "if!operation.has_exact_receipt()",
+      "RecoveryRequired::OperationPhaseMismatch",
+      "Ok(ProvisioningRecoveryExitEvidence",
+    ]) &&
+    rustStructLiteralSites(
+      provisioningProduction,
+      "ProvisioningWriterExitPending",
+    ).length === 0 &&
+    (provisioningCode.match(
+      /\bProvisioningWriterExitPending\s*::\s*new\s*\(/gu,
+    ) ?? []).length === 6 &&
+    !/\b(?:ProvisionedRunState|BootEvidence|SingleWriterLease)\b/u.test(
+      rustLexicalCode(`${provisioningFailure}\n${provisioningWriterExit}`),
+    ) &&
+    hasOrderedCompactMarkers(fixtureBoot, [
+      "letobservation=self.reopen(key,installation)?",
+      "ifobservation.state()!=RunMarkerState::Clean",
+      "returnErr(RecoveryRequired::PersistedNonCleanState)",
+      "letlease=self.acquire_writer(installation)?",
+      "Ok(BootEvidence",
+    ]) &&
+    !/\b(?:begin_initial_provisioning|prepare_initial_clean|ProvisionedRunState|build_snapshot|empty)\b/u.test(
+      rustLexicalCode(fixtureBoot),
+    ) &&
+    main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
+    designPhaseTwoCStart !== -1 &&
+    designPhaseThreeStart > designPhaseTwoCStart &&
+    phaseTwoCDesignMarkers.every((marker) =>
+      normalizedPhaseTwoCDesign.includes(marker),
+    ) &&
+    !phaseTwoCDesign.includes("**Current Phase 2C status: passed.**") &&
+    provisioningArchitectureRows.length === 1 &&
+    provisioningArchitectureMarkers.every((marker) =>
+      normalizedProvisioningArchitecture.includes(marker),
+    ) &&
+    normalizedArchitectureDocument.includes(
+      "a terminal failure means a consumed durable outcome or receipt-validation failure",
+    ) &&
+    normalizedArchitectureDocument.includes(
+      "Non-consuming request-validation, duplicate, and replay rejections cannot issue a second or replacement receipt; they do not invalidate an already-issued exact receipt",
+    ) &&
+    !normalizedProvisioningArchitecture.includes("Every post-acquisition failure") &&
+    !normalizedProvisioningArchitecture.includes(
+      "Phase 1 and Phase 2 exit gates have passed",
+    ) &&
+    !normalizedProvisioningArchitecture.includes(
+      "both compiled policies are `Some`",
+    ) &&
+    JSON.stringify(
+      keyAgentServiceRustTestNameInventory(provisioningTests),
+    ) === JSON.stringify(keyAgentServiceProvisioningTestNames)
+  );
+};
 const keyAgentServicePhaseTwoInputs = Object.freeze({
   main: keyAgentServiceMain,
   platformManifest: keyAgentServicePlatformManifest,
   platformService: keyAgentServicePlatformSource,
   platformLib: keyAgentServicePlatformLib,
   durableSource: keyAgentServiceDurableRunState,
+  provisioningSource: keyAgentServiceDurableProvisioning,
+  provisioningTests: keyAgentServiceDurableProvisioningTests,
   lifecycleSource: keyAgentServiceLifecycleCore,
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
   directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
+  provisioningDirectoryInventory:
+    keyAgentServiceDurableRunStateDirectoryInventory,
   designDocument: keyAgentServiceDesign,
   architectureDocument: sepoliaArchitectureDoc,
 });
@@ -6921,8 +8018,8 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
-    "        let Self { durable, lease } = self;\n        if receipt.binding != lease.binding {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::BackendBindingMismatch,\n                lease,\n            ));\n        }\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
-    "        let Self { durable, lease } = self;\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
+    "        let Self {\n            durable,\n            lease,\n            operation,\n        } = self;\n        if receipt.binding != lease.binding {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::BackendBindingMismatch,\n                lease,\n            ));\n        }\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
+    "        let Self {\n            durable,\n            lease,\n            operation,\n        } = self;\n        if receipt.installation != lease.installation || receipt.epoch != lease.epoch {",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "durableSource",
@@ -7008,6 +8105,91 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
     "both compiled policies remain `None`, and the ordinary/release service remains silent exit 78",
     "both compiled policies are `Some`, and the ordinary/release service remains silent exit 78",
   ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    fn has_unresolved_commit_attempt(&self) -> bool {\n        self.0.get() == CommitOperationPhase::CommitAttempted\n    }",
+    "    fn has_unresolved_commit_attempt(&self) -> bool {\n        true\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    const fn terminal_runtime(kind: FixtureCommitKind, writer: FixtureWriterRecord) -> Self {\n        Self {\n            kind,\n            writer_epoch: writer.epoch,\n            provisioning_round: None,\n            reload_allowed: false,\n        }\n    }",
+    "    const fn terminal_runtime(kind: FixtureCommitKind, writer: FixtureWriterRecord) -> Self {\n        Self {\n            kind,\n            writer_epoch: writer.epoch,\n            provisioning_round: None,\n            reload_allowed: true,\n        }\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.0.get() != CommitOperationPhase::Ready {",
+    "        if false && self.0.get() != CommitOperationPhase::Ready {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.0.get() != ReleaseOperationPhase::Ready {",
+    "        if false && self.0.get() != ReleaseOperationPhase::Ready {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.0.replace(true) {",
+    "        if false && self.0.replace(true) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.held_writer.is_some() {\n            return Err(RecoveryRequired::WriterLeaseUnavailable);\n        }\n        if self.release_reconciliation.is_some() {",
+    "        if self.held_writer.is_some() {\n            return Err(RecoveryRequired::WriterLeaseUnavailable);\n        }\n        if false && self.release_reconciliation.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired);\n        }\n        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired);\n        }\n        let epoch = self",
+    "        if self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired);\n        }\n        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired);\n        }\n        let epoch = self",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::runtime(\n                FixtureCommitKind::Active,\n                expected,\n            ))",
+    "        if false && self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::runtime(\n                FixtureCommitKind::Active,\n                expected,\n            ))",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::runtime(\n                FixtureCommitKind::Clean,\n                expected,\n            ))",
+    "        if false && self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::runtime(\n                FixtureCommitKind::Clean,\n                expected,\n            ))",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if fault == DurableRunStateReleaseFault::AmbiguousBeforeRelease {\n            self.release_reconciliation = Some(expected.epoch);",
+    "        if fault == DurableRunStateReleaseFault::AmbiguousBeforeRelease {\n            self.release_reconciliation = None;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "            .is_some_and(|ambiguity| ambiguity.writer_epoch != expected.epoch)",
+    "            .is_some_and(|ambiguity| ambiguity.writer_epoch == expected.epoch)",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "a terminal failure means a consumed durable\noutcome or receipt-validation failure",
+    "a terminal failure means any post-acquisition\noutcome or request-validation failure",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "Non-consuming request-validation,\nduplicate, and replay rejections cannot issue a second or replacement receipt;\nthey do not invalidate an already-issued exact receipt.",
+    "Request-validation, duplicate, and replay rejection invalidates every\nalready-issued exact receipt.",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        pending.operation.begin_release()?;\n        if writer_was_held {",
+    "        let _ = &pending.operation;\n        if writer_was_held {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        self.release_reconciliation = None;\n        pending.operation.record_release_receipt()?;\n        Ok(WriterExitReceipt {",
+    "        self.release_reconciliation = None;\n        let _ = &pending.operation;\n        Ok(WriterExitReceipt {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        if !operation.has_exact_receipt() {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                lease,\n            ));\n        }\n        Ok(RecoveryExitEvidence {",
+    "        if false && !operation.has_exact_receipt() {\n            return Err(DurableFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                lease,\n            ));\n        }\n        Ok(RecoveryExitEvidence {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "    const fn new(lease: SingleWriterLease) -> Self {\n        Self {\n            lease,\n            operation: OneShotReleaseOperation::new(),\n        }\n    }",
+    "    const fn new(lease: SingleWriterLease) -> Self {\n        Self {\n            lease,\n            operation: OneShotReleaseOperation(Cell::new(ReleaseOperationPhase::ReleaseReceiptIssued)),\n        }\n    }",
+  ),
 ];
 const keyAgentServicePhaseTwoPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoInput(
@@ -7036,10 +8218,354 @@ const keyAgentServicePhaseTwoPinMutationProbes = [
     "            return Err(\"wrong transition key minted Active preparation authority (mutated)\".into());",
   ),
 ];
+const keyAgentServicePhaseTwoCSemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "mod provisioning;",
+    "pub(super) mod provisioning;",
+  ),
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    directoryInventory: [
+      ...keyAgentServiceLifecycleDirectoryInventory,
+      { name: "hidden.rs", kind: "file" },
+    ],
+  },
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    provisioningDirectoryInventory: [
+      ...keyAgentServiceDurableRunStateDirectoryInventory,
+      { name: "hidden.rs", kind: "file" },
+    ],
+  },
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "    const fn from_authority_and_lease(\n",
+    "    pub(super) const fn from_authority_and_lease(\n",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "pub(in crate::key_agent_service) struct UnprovisionedWithWriter<'key> {",
+    "#[derive(Clone)]\npub(in crate::key_agent_service) struct UnprovisionedWithWriter<'key> {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "\n#[cfg(test)]\nuse super::{",
+    "\nimpl From<ProvisionedRunState> for u64 { fn from(value: ProvisionedRunState) -> Self { value.generation().get() } }\n\n#[cfg(test)]\nuse super::{",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "lifecycleSource",
+    keyAgentServiceLifecycleTestSuffix,
+    "\nfn hidden_provisioning_caller(value: ProvisionedRunState) -> NonZeroU64 { value.generation() }\n" +
+      keyAgentServiceLifecycleTestSuffix,
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "\n#[cfg(test)]\nuse super::{",
+    "\nfn hidden_provisioning_adapter() { let _ = std::fs::File::open(\"fixture\"); }\n\n#[cfg(test)]\nuse super::{",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "\n#[cfg(test)]\nuse super::{",
+    "\nfn hidden_provisioning_signer() { approve_and_sign(); }\n\n#[cfg(test)]\nuse super::{",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "\n#[cfg(test)]\nuse super::{",
+    "\nfn hidden_fresh_authority<'key>(key: &'key FixtureRunStateAuthenticationKey, installation: InstallationIdentity, binding: BackendBinding, attempt: NonZeroU64) -> FreshInstallProvisioningAuthority<'key> { FreshInstallProvisioningAuthority { key, installation, binding, attempt } }\n\n#[cfg(test)]\nuse super::{",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        (\n            super::FixedObservation::Missing,\n            super::FixedObservation::Missing\n        )",
+    "        (super::FixedObservation::Missing, _)",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "pub(super) enum FixtureWriterRole {\n    /// Ordinary boot/runtime/shutdown writer authority.\n    Runtime,\n    /// Fresh-install generation-one provisioning writer authority.\n    Provisioning,\n}",
+    "pub(super) enum FixtureWriterRole {\n    /// Ordinary boot/runtime/shutdown writer authority.\n    Runtime,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.held_writer.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::WriterLeaseUnavailable,\n            ));\n        }\n        if self.release_reconciliation.is_some() {",
+    "        if false && self.held_writer.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::WriterLeaseUnavailable,\n            ));\n        }\n        if self.release_reconciliation.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.release_reconciliation.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::WriterReleaseReconciliationRequired,\n            ));\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+    "        if false && self.release_reconciliation.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::WriterReleaseReconciliationRequired,\n            ));\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::CommitReloadRequired,\n            ));\n        }\n        let Some(epoch) = self",
+    "        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(InitialProvisioningStartFailure::BeforeWriter(\n                RecoveryRequired::CommitReloadRequired,\n            ));\n        }\n        let Some(epoch) = self",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        self.held_writer = Some(FixtureWriterRecord::provisioning(\n            installation,\n            epoch,\n            attempt,\n        ));",
+    "        self.held_writer = Some(FixtureWriterRecord::runtime(installation, epoch));",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            RunMarkerState::Clean,\n            NonZeroU64::MIN,\n            authority.installation,\n            Commitment::ZERO,",
+    "            RunMarkerState::Active,\n            NonZeroU64::MIN,\n            authority.installation,\n            Commitment::ZERO,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            RunMarkerState::Clean,\n            NonZeroU64::MIN,\n            authority.installation,\n            Commitment::ZERO,",
+    "            RunMarkerState::Clean,\n            NonZeroU64::new(2).expect(\"nonzero\"),\n            authority.installation,\n            Commitment::ZERO,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            RunMarkerState::Clean,\n            NonZeroU64::MIN,\n            authority.installation,\n            Commitment::ZERO,",
+    "            RunMarkerState::Clean,\n            NonZeroU64::MIN,\n            authority.installation,\n            Commitment([1_u8; 32]),",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if transition.authority.binding != self.binding {\n            return Err(RecoveryRequired::BackendBindingMismatch);\n        }",
+    "        if false && transition.authority.binding != self.binding {\n            return Err(RecoveryRequired::BackendBindingMismatch);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        let expected = self.expected_provisioning_writer(transition)?;\n        if self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch.into());\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+    "        let expected = self.expected_provisioning_writer(transition)?;\n        if false && self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch.into());\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        transition.operation.begin_commit()?;",
+    "        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        transition.operation.begin_commit()?;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        transition.operation.begin_commit()?;",
+    "        let _ = &transition.operation;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.marker.is_some() || self.checkpoint.is_some() {",
+    "        if self.marker.is_some() && self.checkpoint.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if fault == DurableRunStateCommitFault::CompareAndSwapConflict {\n            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::terminal_provisioning(\n                expected,\n                transition.reload_round,\n            ));",
+    "        if fault == DurableRunStateCommitFault::CompareAndSwapConflict {\n            self.unresolved_commit_ambiguity = Some(FixtureCommitAmbiguity::provisioning(\n                expected,\n                transition.reload_round,\n            ));",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        transition.operation.record_commit_receipt()?;",
+    "        let _ = &transition.operation;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch);\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+    "        if false && self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch);\n        }\n        if self.unresolved_commit_ambiguity.is_some() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        transition.operation.begin_reread()?;",
+    "        let _ = &transition.operation;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if !operation.has_exact_receipt_pair() {",
+    "        if false && !operation.has_exact_receipt_pair() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if committed.observed != candidate.bytes.observation() {",
+    "        if false && committed.observed != candidate.bytes.observation() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            match verify_observation(&reread.observed, authority.installation, authority.key) {",
+    "            match verify_observation(&candidate.bytes.observation(), authority.installation, authority.key) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if !operation.has_unresolved_commit_attempt() {",
+    "        if false && !operation.has_unresolved_commit_attempt() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            prior_round: reload_round,\n            reload_round: next_round,",
+    "            prior_round: next_round,\n            reload_round: next_round,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        validate_authority_and_lease(&pending.authority, &pending.lease)?;\n        if pending.authority.binding != self.binding {\n            return Err(RecoveryRequired::BackendBindingMismatch);\n        }\n        let expected_writer = FixtureWriterRecord::provisioning(",
+    "        validate_authority_and_lease(&pending.authority, &pending.lease)?;\n        if false && pending.authority.binding != self.binding {\n            return Err(RecoveryRequired::BackendBindingMismatch);\n        }\n        let expected_writer = FixtureWriterRecord::provisioning(",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.held_writer != Some(expected_writer) {\n            return Err(RecoveryRequired::WriterLeaseMismatch);\n        }",
+    "        if false && self.held_writer != Some(expected_writer) {\n            return Err(RecoveryRequired::WriterLeaseMismatch);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if pending.operation.has_exact_receipt() {\n            return Err(RecoveryRequired::OperationAttemptReused);\n        }",
+    "        if false && pending.operation.has_exact_receipt() {\n            return Err(RecoveryRequired::OperationAttemptReused);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if pending.prior_round != current_round {",
+    "        if false && pending.prior_round != current_round {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::provisioning(\n                expected_writer,\n                current_round,\n            ))",
+    "        if false && self.unresolved_commit_ambiguity\n            != Some(FixtureCommitAmbiguity::provisioning(\n                expected_writer,\n                current_round,\n            ))",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if pending.reload_round != next_round {",
+    "        if false && pending.reload_round != next_round {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        pending.operation.record_reload_receipt()?;",
+    "        let _ = &pending.operation;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        let terminal_round = if operation.has_exact_receipt() {\n            reload_round\n        } else {\n            prior_round\n        };",
+    "        let terminal_round = reload_round;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if receipt.writer != expected_writer {",
+    "        if false && receipt.writer != expected_writer {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if receipt.observed == candidate.bytes.observation() {",
+    "        if receipt.observed.marker == candidate.bytes.observation().marker {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired.into());\n        }",
+    "        if false && self.release_reconciliation.is_some() {\n            return Err(RecoveryRequired::WriterReleaseReconciliationRequired.into());\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch.into());\n        }\n        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        pending.operation.begin_release()?;",
+    "        if false && self.held_writer != Some(expected) {\n            return Err(RecoveryRequired::WriterLeaseMismatch.into());\n        }\n        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        pending.operation.begin_release()?;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        pending.operation.begin_release()?;",
+    "        if false && self.unresolved_commit_ambiguity.is_some() {\n            return Err(RecoveryRequired::CommitReloadRequired.into());\n        }\n        pending.operation.begin_release()?;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        pending.operation.begin_release()?;\n        let fault = self.take_release_fault();",
+    "        let _ = &pending.operation;\n        let fault = self.take_release_fault();",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if fault == DurableRunStateReleaseFault::AmbiguousBeforeRelease {\n            self.release_reconciliation = Some(expected.epoch);",
+    "        if fault == DurableRunStateReleaseFault::AmbiguousBeforeRelease {\n            self.release_reconciliation = None;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        pending.operation.record_release_receipt()?;\n        Ok(ProvisioningWriterReleaseReceipt {",
+    "        let _ = &pending.operation;\n        Ok(ProvisioningWriterReleaseReceipt {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if !operation.has_exact_receipt() {\n            return Err(ProvisioningFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                authority,\n                lease,\n                reload_round,\n            ));\n        }\n        Ok(ProvisionedRunState { durable })",
+    "        if false && !operation.has_exact_receipt() {\n            return Err(ProvisioningFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                authority,\n                lease,\n                reload_round,\n            ));\n        }\n        Ok(ProvisionedRunState { durable })",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "impl ProvisionedRunState {\n    /// Returns the exact provisioned generation.\n    #[must_use]\n    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {",
+    "impl ProvisionedRunState {\n    pub(in crate::key_agent_service) fn into_boot(self) -> BootEvidence { unreachable!() }\n\n    /// Returns the exact provisioned generation.\n    #[must_use]\n    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "durableSource",
+    "        let observation = self.reopen(key, installation)?;",
+    "        let observation = self.begin_initial_provisioning(key, installation)?.prepare_initial_clean()?;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            .is_some_and(|ambiguity| ambiguity.writer_epoch != expected.epoch)",
+    "            .is_some_and(|ambiguity| ambiguity.writer_epoch == expected.epoch)",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            if pending.reload_round != current_round {",
+    "            if false && pending.reload_round != current_round {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "            Some(held) if held == expected => true,",
+    "            Some(held) if held.role == FixtureWriterRole::Provisioning => true,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "**Current Phase 2C status: started, not passed.**",
+    "**Current Phase 2C status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "or power-loss/reboot proof. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies remain `None`, and ordinary/release execution remains silent exit 78",
+    "or power-loss/reboot proof. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies are `Some`, and ordinary/release execution remains silent exit 78",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningTests",
+    "fn ordinary_boot_missing_never_auto_initializes_or_acquires_a_writer()",
+    "fn ordinary_boot_missing_auto_initializes_and_acquires_a_writer()",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "main",
+    "const SERVICE_UNAVAILABLE: i32 = 78;",
+    "const SERVICE_UNAVAILABLE: i32 = 0;",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        pending.operation.begin_release()?;\n        if writer_was_held {",
+    "        let _ = &pending.operation;\n        if writer_was_held {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        self.release_reconciliation = None;\n        pending.operation.record_release_receipt()?;\n        Ok(ProvisioningWriterExitReceipt {",
+    "        self.release_reconciliation = None;\n        let _ = &pending.operation;\n        Ok(ProvisioningWriterExitReceipt {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "        if !operation.has_exact_receipt() {\n            return Err(ProvisioningFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                authority,\n                lease,\n                reload_round,\n            ));\n        }\n        Ok(ProvisioningRecoveryExitEvidence {",
+    "        if false && !operation.has_exact_receipt() {\n            return Err(ProvisioningFailureWithWriter::new(\n                RecoveryRequired::OperationPhaseMismatch,\n                authority,\n                lease,\n                reload_round,\n            ));\n        }\n        Ok(ProvisioningRecoveryExitEvidence {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "    const fn new(\n        authority: FreshInstallProvisioningAuthority<'key>,\n        lease: ProvisioningWriterLease,\n        reload_round: NonZeroU64,\n    ) -> Self {\n        Self {\n            authority,\n            lease,\n            reload_round,\n            operation: OneShotReleaseOperation::new(),\n        }\n    }",
+    "    const fn new(\n        authority: FreshInstallProvisioningAuthority<'key>,\n        lease: ProvisioningWriterLease,\n        reload_round: NonZeroU64,\n    ) -> Self {\n        Self {\n            authority,\n            lease,\n            reload_round,\n            operation: OneShotReleaseOperation(Cell::new(ReleaseOperationPhase::ReleaseReceiptIssued)),\n        }\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "shared private one-shot phases reject commit, reread, reload, normal release, and terminal-retirement receipt reuse",
+    "shared private phases allow terminal-retirement receipt reuse",
+  ),
+];
+const keyAgentServicePhaseTwoCPinMutationProbes = [
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "//! Fresh-install generation-one provisioning typestate.",
+    "//! Fresh-install generation-one provisioning typestate (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    "\n#[cfg(test)]\nuse super::{",
+    "\n#[cfg(test)]\n// mutated fixture boundary\nuse super::{",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningTests",
+    "use std::{error::Error, fmt, io, num::NonZeroU64};",
+    "use std::{error::Error, fmt, io, num::NonZeroU64}; // mutated",
+  ),
+];
 requireInvariant(
   keyAgentServicePhaseTwoSemanticContract(keyAgentServicePhaseTwoInputs) &&
     keyAgentServicePhaseTwoPinContract(keyAgentServicePhaseTwoInputs) &&
-    keyAgentServicePhaseTwoSemanticMutationProbes.length === 27 &&
+    keyAgentServicePhaseTwoSemanticMutationProbes.length === 44 &&
     keyAgentServicePhaseTwoSemanticMutationProbes.every(
       (probe) =>
         probe !== keyAgentServicePhaseTwoInputs &&
@@ -7057,8 +8583,32 @@ requireInvariant(
         ) &&
         !keyAgentServicePhaseTwoPinContract(probe),
     ),
-  "the Phase 2A/2B no-secret service models must remain full-source-pinned private zero-runtime-root modules whose durable fixture tail contains only cfg(test) items, with exact authenticated marker/checkpoint codecs, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 27 independently effective semantic plus five source-pin mutations",
+  "the Phase 2A/2B no-secret service models must remain full-source-pinned private zero-runtime-root modules whose durable fixture tail contains only cfg(test) items, with exact authenticated marker/checkpoint codecs, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, private one-shot normal-release and terminal-retirement phases plus exact writer-epoch reconciliation latches, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 44 independently effective semantic plus five source-pin mutations",
 );
+requireInvariant(
+  keyAgentServicePhaseTwoCSemanticContract(keyAgentServicePhaseTwoInputs) &&
+    keyAgentServicePhaseTwoCPinContract(keyAgentServicePhaseTwoInputs) &&
+    keyAgentServicePhaseTwoCSemanticMutationProbes.length === 64 &&
+    keyAgentServicePhaseTwoCSemanticMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServicePhaseTwoInputs &&
+        Object.keys(keyAgentServicePhaseTwoInputs).some(
+          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+        ) &&
+        !keyAgentServicePhaseTwoCSemanticContract(probe),
+    ) &&
+    keyAgentServicePhaseTwoCPinMutationProbes.length === 3 &&
+    keyAgentServicePhaseTwoCPinMutationProbes.every(
+      (probe) =>
+        probe !== keyAgentServicePhaseTwoInputs &&
+        Object.keys(keyAgentServicePhaseTwoInputs).some(
+          (key) => probe[key] !== keyAgentServicePhaseTwoInputs[key],
+        ) &&
+        !keyAgentServicePhaseTwoCPinContract(probe),
+    ),
+  "the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with exact Missing/Missing observation under a distinct held provisioning writer, canonical Clean generation one and ZERO predecessor, absent/absent CAS, backend/installation/writer/attempt/dual-round-bound one-shot commit/reread/reload/normal-release/terminal-retirement receipts, terminal retry and reconciliation latches, exact writer retirement before Provisioned state, no boot conversion or auto-initialization, fixed tests and docs, disabled policies, exit 78, and 64 independently effective semantic plus three source-pin mutations",
+);
+clearRustAnalysisCaches("key-agent-service-phase-two-family");
 
 const approvedKeyAgentServiceTokenFixturePaths = [
   keyAgentServiceTokenFixturePaths.policy,
@@ -16455,14 +18005,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
+    sha256: "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "a60c55dd69161a973b1b7b46b3226d379c0b709a34d65def4d80bf02b00eb19c",
+    sha256: "535e01cfb274daa8d8d8545149a434daca2008c8e600818d3083f87e4992b48b",
   },
   {
     path: "docs/security-decisions.md",
@@ -24514,7 +26064,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "81c6d465aa96c864d893a9e5b02b996f94783fafb2fad7e63ab60d1d9ecd7a8a";
+  "c8f792ad5aaef88f7d15643ccdf95c2771d72fc5f55066e603ff84c1a8153e45";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -25871,6 +27421,10 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_debugger.rs",
     attribute: '#[path = "key_agent_debugger_transport/mod.rs"]',
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/durable_run_state.rs",
+    attribute: '#[path = "durable_run_state/provisioning_tests.rs"]',
   },
   {
     path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
@@ -45048,7 +46602,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "ed2591aab1862b39d18ab00d81b31f1c03cd2a3731ccb0ce4f594b77c7b9d18f",
+    sha256: "7a1a6c5a2c01d010f68430b726b015a628848e5e1923b20e48e5c4ec147a572d",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -45896,6 +47450,7 @@ requireInvariant(
         "usecore::mem::{offset_of,size_of,size_of_val};",
         "usecore::ptr;",
         "usestd::error::Error;",
+        "usestd::{error::Error,fmt,io,num::NonZeroU64};",
         "usethiserror::Error;",
         "usewindows::core::{PCWSTR,w};",
       ].includes(item.source),
@@ -45909,6 +47464,18 @@ requireInvariant(
         {
           path: "crates/platform-windows/src/key_agent_service/lifecycle_core_tests.rs",
           source: "usestd::error::Error;",
+        },
+      ]) &&
+    JSON.stringify(
+      platformWindowsExpansionSensitiveUseInventory.filter(
+        ({ source }) =>
+          source === "usestd::{error::Error,fmt,io,num::NonZeroU64};",
+      ),
+    ) ===
+      JSON.stringify([
+        {
+          path: "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs",
+          source: "usestd::{error::Error,fmt,io,num::NonZeroU64};",
         },
       ]) &&
     JSON.stringify(platformWindowsGlobUseInventory) ===
@@ -53186,7 +54753,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
+    "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -59055,7 +60622,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
+  "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -68937,13 +70504,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "239e93ae563f16fd511540b76bffdd801bfcdd7e2f114daf3c5e8d61321c675b",
+    sha256: "4009f964cc4671b07c0818a3fbcd1246954f260e89be04f1d792628569e068a9",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "a60c55dd69161a973b1b7b46b3226d379c0b709a34d65def4d80bf02b00eb19c",
+    sha256: "535e01cfb274daa8d8d8545149a434daca2008c8e600818d3083f87e4992b48b",
   },
   {
     path: "docs/security-decisions.md",
@@ -76653,6 +78220,7 @@ requireInvariant(
 );
 
 const expectedRustAnalysisCacheFamilyClearLabels = Object.freeze([
+  "key-agent-service-phase-two-family",
   "service-wire-v2-family",
   "helper-bootstrap-reachability-family",
   "restricted-launch-family",
