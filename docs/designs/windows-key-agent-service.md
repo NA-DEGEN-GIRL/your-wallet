@@ -1138,6 +1138,36 @@ models may be loaded with fixture keys only.
 **Exit gate:** install/repair/upgrade/uninstall, token/DACL, storage identity,
 network denial, session, crash, and reboot suites pass with no signing surface.
 
+**Current Phase 2A status: started, not passed.** A production-compiled,
+module-private lifecycle core with zero production callers now models all eleven
+mandatory no-secret startup observations; exact Active-marker commit and
+readback before listener preparation; `SERVICE_RUNNING` publication before
+admission; lock, unlock, logoff, and user-switch invalidation; and the fixed
+eleven-step stop sequence ending in single-instance release and exact
+Clean-marker commit/readback. Each startup typestate consumes its preceding
+authority. The final cleanup precheck consumes the live runtime into a
+`CleanCommitPending` authority only after exact cleanup order, empty work and
+retained-token registries, and single-instance release are proven. Only that
+move-only pending authority may accept distinct committed and reread Clean
+receipts and directly mint the sole stopped-report permit; an invalid or
+ambiguous receipt requires recovery instead of claiming an Active restart.
+This leaves no modeled post-Clean/pre-stopped crash window. Work,
+retained-token, and quarantined-session registries are bounded at 256, 64, and
+64 entries. Quarantine exhaustion invalidates every live fixture authority,
+discards retained tokens, latches the first fatal reason, and preserves the
+Active restart observation. Work, session, and generation identifiers are
+redacted from debug output, and no session is automatically revalidated.
+
+This is an ordering model and test slice only. It creates no SCM listener,
+handle, process, RPC endpoint, storage or rollback-anchor binding, firewall
+rule, cryptographic key, secret, approval result, or signing authority. There
+is no production caller or OS adapter. Installer/configuration readback,
+service-token and DACL enforcement, durable storage/recovery, a live
+single-instance lease, outbound-denial proof, session-notification hookup, and
+crash/reboot kernel evidence remain absent. Phase 1 and Phase 2 exit gates
+remain not passed; `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
+`None`, and the ordinary/release service executable remains silent exit 78.
+
 ### Phase 3 — Authenticated Broker and helper runtime
 
 Add the bounded Broker control protocol, exact request admission, service-owned

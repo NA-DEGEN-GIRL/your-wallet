@@ -9,6 +9,11 @@
 
 use thiserror::Error;
 
+// Production-compiled Phase 2A ordering model. It remains private, has no OS
+// adapter or runtime caller, and cannot mint a listener or signing authority.
+#[allow(dead_code)]
+mod lifecycle_core;
+
 /// Fixed SCM service name selected by ADR 0001.
 pub const KEY_AGENT_SERVICE_NAME: &str = "YourWalletKeyAgent";
 
